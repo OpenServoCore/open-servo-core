@@ -51,11 +51,6 @@ const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; 2] {
     t
 }
 
-/// A bus body of budget `ticks`, with its interrupt entry and exit.
-const fn bus_body(ticks: u32) -> u64 {
-    (ticks + budget::ENTRY_EXIT) as u64
-}
-
 /// Sim-time cost of each `ServoBus` handler body, us. Zero (the default)
 /// delivers every event at its wire tick -- the ideal-CPU model the logical
 /// suites pin.
@@ -124,9 +119,6 @@ pub enum Vector {
     Compare,
     Break,
     TxDone,
-    /// The TEL stager (SW), pended when the kernel banks a batch and when a
-    /// TX release or deadline body leaves a banked batch unblocked.
-    Stage,
 }
 
 /// The kernel tick's PFIC level against the bus vectors.
@@ -166,15 +158,19 @@ pub struct KernelLane {
     pub events: KernelEvents,
 }
 
-/// The TEL burst a kernel lane paces, HCLK ticks: on every kernel body while
-/// the burst runs (by regime), on the body that banks a batch, and the
-/// stager vector's bodies that start a frame and that start nothing.
+/// The TEL burst a kernel lane paces, HCLK ticks, on top of the body: a
+/// row (by regime), a row 0's head and a bank, and the TX lane the kernel
+/// owns while the burst streams - its poll on every tick, each CRC feed,
+/// DMA arm and patch where it runs.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct TelCosts {
     pub encode: [u64; 2],
+    pub head: u64,
     pub bank: u64,
-    pub stage: u64,
     pub poll: u64,
+    pub feed: u64,
+    pub arm: u64,
+    pub patch: u64,
 }
 
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
@@ -206,9 +202,12 @@ impl KernelLane {
             floor: None,
             tel: TelCosts {
                 encode: budget::TEL_ENCODE.map(u64::from),
+                head: budget::TEL_HEAD as u64,
                 bank: budget::TEL_BANK as u64,
-                stage: bus_body(budget::body(Body::TelStage)),
-                poll: bus_body(budget::body(Body::TelPoll)),
+                poll: budget::TEL_POLL as u64,
+                feed: budget::TEL_FEED as u64,
+                arm: budget::TEL_ARM as u64,
+                patch: budget::TEL_PATCH as u64,
             },
             events: KernelEvents {
                 slow_due: budget::SLOW_DUE.map(u64::from),
@@ -249,16 +248,14 @@ impl KernelLane {
     }
 
     /// The kernel inside its budgets for `motion`: each body drawn below its
-    /// maximum, at the mean budget on average, and the stager at its mean
-    /// budgets.
+    /// maximum, at the mean budget on average, the TEL row at its mean and
+    /// the lane, which has no mean row, at its budget.
     pub fn typical(level: KernelLevel, motion: Motion, seed: u64) -> Self {
         let at = Self::at_budget(level, motion);
         Self {
             floor: Some((KERNEL_FLOOR.each_ref().map(|p| &p[..]), seed)),
             tel: TelCosts {
                 encode: budget::TEL_ENCODE_MEAN.map(u64::from),
-                stage: bus_body(budget::body_mean(Body::TelStage)),
-                poll: bus_body(budget::body_mean(Body::TelPoll)),
                 ..at.tel
             },
             ..at
@@ -315,10 +312,6 @@ pub struct Cpu {
     pend_compare: bool,
     pend_break: bool,
     pend_tx: bool,
-    pend_stage: bool,
-    /// The running body holds a frame start (`TxGate`) to its break; the
-    /// CPU it still owes after the break.
-    pub tx_held: Option<u64>,
     /// A preemption armed for the next bus body (`Sim::preempt_before_ring_read`).
     pub preempt: Option<u64>,
     /// A preempted body waiting out its preemption, and when it entered.
@@ -343,12 +336,11 @@ pub struct Entries {
     pub compare: u64,
     pub break_wake: u64,
     pub tx_done: u64,
-    pub stage: u64,
 }
 
 impl Entries {
     pub fn total(&self) -> u64 {
-        self.compare + self.break_wake + self.tx_done + self.stage
+        self.compare + self.break_wake + self.tx_done
     }
 }
 
@@ -370,24 +362,17 @@ impl Cpu {
             Vector::Compare => self.pend_compare = true,
             Vector::Break => self.pend_break = true,
             Vector::TxDone => self.pend_tx = true,
-            Vector::Stage => self.pend_stage = true,
         }
     }
 
     pub fn any_pend(&self) -> bool {
-        self.pend_compare
-            || self.pend_break
-            || self.pend_tx
-            || self.pend_stage
-            || self.deferred.is_some()
-            || self.tx_held.is_some()
+        self.pend_compare || self.pend_break || self.pend_tx || self.deferred.is_some()
     }
 
     /// Pop the highest-arbitration pended vector, if any. With the kernel
     /// on top, the TX arm and the break wake (LOW 0x80) go ahead of the
-    /// deadline mux and the TEL stager (LOW 0xC0, SysTick's lower IRQ
-    /// number first), so a pending wake suspends a reclaim or kills a stale
-    /// reply before a pending trigger acts.
+    /// deadline mux (LOW 0xC0), so a pending wake suspends a reclaim or
+    /// kills a stale reply before a pending trigger acts.
     pub fn take_pend(&mut self) -> Option<Vector> {
         let below = matches!(&self.kernel, Some(k) if k.lane.level == KernelLevel::BelowBus);
         if !below {
@@ -409,9 +394,6 @@ impl Cpu {
         } else if self.pend_tx {
             self.pend_tx = false;
             Some(Vector::TxDone)
-        } else if self.pend_stage {
-            self.pend_stage = false;
-            Some(Vector::Stage)
         } else {
             None
         }
@@ -433,27 +415,8 @@ impl Cpu {
                 self.entries.tx_done += 1;
                 self.cost.on_tx_complete_us
             }
-            Vector::Stage => {
-                self.entries.stage += 1;
-                self.occupy(now, self.kernel_tel().poll);
-                return;
-            }
         };
         self.occupy(now, us as u64 * TICKS_PER_US);
-    }
-
-    /// The body that entered at `now` reaches its break after `pre` ticks
-    /// of CPU and owes `post` more after it.
-    pub fn hold_to_break(&mut self, now: u64, pre: u64, post: u64) {
-        self.occupy(now, pre);
-        self.tx_held = Some(post);
-    }
-
-    /// The held break went out at `now`: the body runs on for what it owes.
-    pub fn resume_after_break(&mut self, now: u64) {
-        if let Some(post) = self.tx_held.take() {
-            self.occupy(now, post);
-        }
     }
 
     /// The body just run dispatched `frames` own frames: extend its
@@ -485,7 +448,6 @@ impl Cpu {
             Vector::Compare => Body::Deadline,
             Vector::Break => Body::BreakWake,
             Vector::TxDone => Body::TxDone,
-            Vector::Stage => Body::TelStage,
         };
         // Booked at entry, before any kernel preempts it: wall = net.
         let ticks = self.body_ticks as u32;

@@ -79,6 +79,45 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
     });
 }
 
+/// `cfg`'s whole CR value, EN clear, for [`rearm`] and [`stop`].
+#[inline(always)]
+pub fn cr_of(cfg: &Config) -> ch32_metapac::dma::regs::Cr {
+    let mut w = ch32_metapac::dma::regs::Cr(0);
+    w.set_dir(cfg.dir);
+    w.set_circ(cfg.circ);
+    w.set_pinc(cfg.pinc);
+    w.set_minc(cfg.minc);
+    w.set_psize(cfg.size);
+    w.set_msize(cfg.size);
+    w.set_htie(cfg.htie);
+    w.set_tcie(cfg.tcie);
+    w.set_pl(cfg.pl);
+    w
+}
+
+/// [`configure`] and start in whole-register writes: no read-modify-write,
+/// so no critical section. Only for a channel no other context touches
+/// meanwhile.
+#[inline(always)]
+pub fn rearm(ch: Channel, cr: ch32_metapac::dma::regs::Cr, paddr: u32, maddr: u32, count: u16) {
+    let n = (ch as u8 - 1) as usize;
+    let c = DMA1.ch(n);
+    c.cr().write_value(cr);
+    c.par().write_value(paddr);
+    c.mar().write_value(maddr);
+    c.ndtr().write(|w| w.set_ndt(count));
+    let mut on = cr;
+    on.set_en(true);
+    c.cr().write_value(on);
+}
+
+/// [`disable`] as one whole-register write of `cr` (see [`rearm`]).
+#[inline(always)]
+pub fn stop(ch: Channel, cr: ch32_metapac::dma::regs::Cr) {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ch(n).cr().write_value(cr);
+}
+
 /// Memory-to-memory byte copy: `src` -> `dst`, `count` bytes, started
 /// immediately (no peripheral request -- MEM2MEM free-runs at bus speed).
 /// PAR is the source (DIR = from-peripheral), both sides increment.

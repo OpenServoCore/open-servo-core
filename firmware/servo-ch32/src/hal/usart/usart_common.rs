@@ -43,15 +43,54 @@ pub fn init_bus(r: Regs, brr: u32) {
 /// no-panic plateau backstop, not a wait that ever runs in practice.
 #[inline(always)]
 pub fn send_break(r: Regs) {
-    r.ctlr1().modify(|w| w.set_m(true));
-    clear_tc(r);
-    r.datar().write(|w| w.set_dr(0));
+    start_break(r);
     let mut bound = BREAK_COMMIT_SPINS;
     while !r.statr().read().tc() && bound > 0 {
         bound -= 1;
         core::hint::spin_loop();
     }
+    end_break(r);
+}
+
+/// [`send_break`]'s first half: the 9-bit `0x00` is in the shifter on
+/// return, and TC reports its stop bit. The caller must not run
+/// [`end_break`] before TC: the M flip would reshape a shifting character.
+#[inline(always)]
+pub fn start_break(r: Regs) {
+    r.ctlr1().modify(|w| w.set_m(true));
+    clear_tc(r);
+    r.datar().write(|w| w.set_dr(0));
+}
+
+/// Back to 8-bit characters, once the break's TC is in.
+#[inline(always)]
+pub fn end_break(r: Regs) {
     r.ctlr1().modify(|w| w.set_m(false));
+}
+
+/// [`start_break`] for the top-priority context, which nothing preempts:
+/// no critical section, and TC cleared by its write-0 alone, never a
+/// read-modify-write of STATR.
+#[inline(always)]
+pub fn start_break_from_top(r: Regs) {
+    r.ctlr1().modify(|w| w.set_m(true));
+    clear_tc_w0(r);
+    r.datar().write(|w| w.set_dr(0));
+}
+
+/// Clear TC alone: STATR's clearable flags take a 0 and ignore a 1.
+#[inline(always)]
+pub fn clear_tc_w0(r: Regs) {
+    r.statr().write(|w| {
+        w.0 = !0;
+        w.set_tc(false);
+    });
+}
+
+/// [`set_dma_tx`] on, for the top-priority context (no critical section).
+#[inline(always)]
+pub fn dma_tx_on_from_top(r: Regs) {
+    r.ctlr3().modify(|w| w.set_dmat(true));
 }
 
 /// Break-commit poll bound: the law break is 11 bit-times (~22 us at the

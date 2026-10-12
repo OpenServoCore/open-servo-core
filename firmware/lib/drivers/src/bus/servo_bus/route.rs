@@ -21,14 +21,16 @@ impl<P: Providers> ServoBus<P> {
     /// are never starved by a deep backlog; `false` then, `true` once the
     /// ring is drained to the frontier.
     pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) -> bool {
-        // Own TX holds the one CRC engine until its release, and a frame the
-        // ladder hands over may need a verdict: the ladder waits, and the
-        // release re-drives it (`on_tx_complete`).
-        if self.tx.streaming() {
-            self.framer_at = None;
-            return true;
-        }
         for _ in 0..super::FRAMES_PER_WAKE {
+            // Own TX holds the one CRC engine until its release, and a frame
+            // the ladder hands over may need a verdict: the ladder waits, and
+            // the release re-drives it (`on_tx_complete`). Checked per frame:
+            // the frame before may have just started a reply or lent the
+            // lane to a TEL burst.
+            if self.tx.streaming() {
+                self.framer_at = None;
+                return true;
+            }
             // Cursor before clock: a preemption between the reads then
             // projects from a late `now`, never an early one (DES pin
             // `preempted_projection_never_aims_early`).
@@ -337,7 +339,7 @@ impl<P: Providers> ServoBus<P> {
         &mut self,
         anchor: u16,
         footprint: u16,
-        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc, P::Stager>) -> T,
+        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
     ) -> Option<(bool, Slot, T)> {
         let frame = frame_view(self.ring.bytes(), anchor, footprint);
         let (req, ctx, slot) = match decode(frame, self.id) {

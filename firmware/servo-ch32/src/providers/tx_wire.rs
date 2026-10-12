@@ -13,7 +13,8 @@ use osc_servo_drivers::traits::bus;
 use crate::hal::{dma, usart};
 use crate::providers::break_wake::BreakWake;
 
-/// Production binding to USART1 SBK/TCIE + DMA1_CH4.
+/// Production binding to USART1 SBK/TCIE + DMA1_CH4. The TEL lane drives
+/// the same channel from the kernel tick, polled: TCIE stays off for it.
 pub struct TxWire;
 
 impl bus::TxWire for TxWire {
@@ -31,34 +32,7 @@ impl bus::TxWire for TxWire {
     }
 
     fn send(&mut self, span: &[u8]) {
-        dma::disable(dma::Channel::CH4);
-        dma::clear_tc_flag(dma::Channel::CH4);
-        let cfg = dma::Config {
-            dir: dma::Dir::FROMMEMORY,
-            circ: false,
-            pinc: false,
-            minc: true,
-            size: dma::Size::BITS8,
-            htie: false,
-            tcie: false,
-            pl: dma::Pl::HIGH,
-        };
-        dma::configure(
-            dma::Channel::CH4,
-            &cfg,
-            usart::data_addr(USART1),
-            span.as_ptr() as u32,
-            span.len() as u16,
-        );
-        usart::set_dma_tx(USART1, true);
-        // Clear the TC that latched while the shifter sat empty (post-break
-        // or between arms) BEFORE the enable: TC sets only at a frame's
-        // completion (RM sec 14.8.1), so from here it can only mean this arm
-        // drained. Clearing after the enable erases a real TC whenever a
-        // preemption outlasts the arm (a 2 B arm is 6.7 us at 3M) and the
-        // TX engine wedges.
-        usart::clear_tc(USART1);
-        dma::enable(dma::Channel::CH4);
+        arm(span);
         usart::set_tc_irq(USART1, true);
     }
 
@@ -69,5 +43,71 @@ impl bus::TxWire for TxWire {
         usart::set_tc_irq(USART1, false);
         usart::set_dma_tx(USART1, false);
         dma::disable(dma::Channel::CH4);
+        // `idle` reads the count: an arm cut short must not leave it set.
+        dma::set_count(dma::Channel::CH4, 0);
     }
+
+    #[inline(always)]
+    fn idle(&self) -> bool {
+        dma::remaining(dma::Channel::CH4) == 0 && usart::is_tc(USART1)
+    }
+
+    // The TEL lane's two steps run only in the kernel tick, which nothing
+    // preempts, while the lane owns USART1 and CH4: whole-register writes,
+    // no critical sections.
+    #[inline(always)]
+    fn break_start(&mut self) {
+        BreakWake::mute();
+        usart::start_break_from_top(USART1);
+    }
+
+    #[inline(always)]
+    fn stream(&mut self, image: &[u8]) {
+        usart::end_break(USART1);
+        BreakWake::listen();
+        usart::dma_tx_on_from_top(USART1);
+        usart::clear_tc_w0(USART1);
+        dma::rearm(
+            dma::Channel::CH4,
+            dma::cr_of(&TX_DMA),
+            usart::data_addr(USART1),
+            image.as_ptr() as u32,
+            image.len() as u16,
+        );
+    }
+}
+
+const TX_DMA: dma::Config = dma::Config {
+    dir: dma::Dir::FROMMEMORY,
+    circ: false,
+    pinc: false,
+    minc: true,
+    size: dma::Size::BITS8,
+    htie: false,
+    tcie: false,
+    pl: dma::Pl::HIGH,
+};
+
+/// One CH4 arm of `span` into the data register, TC cleared behind the
+/// configuration so it can only mean this arm drained.
+#[inline(always)]
+fn arm(span: &[u8]) {
+    dma::disable(dma::Channel::CH4);
+    dma::clear_tc_flag(dma::Channel::CH4);
+    dma::configure(
+        dma::Channel::CH4,
+        &TX_DMA,
+        usart::data_addr(USART1),
+        span.as_ptr() as u32,
+        span.len() as u16,
+    );
+    usart::set_dma_tx(USART1, true);
+    // Clear the TC that latched while the shifter sat empty (post-break
+    // or between arms) BEFORE the enable: TC sets only at a frame's
+    // completion (RM sec 14.8.1), so from here it can only mean this arm
+    // drained. Clearing after the enable erases a real TC whenever a
+    // preemption outlasts the arm (a 2 B arm is 6.7 us at 3M) and the
+    // TX engine wedges.
+    usart::clear_tc(USART1);
+    dma::enable(dma::Channel::CH4);
 }

@@ -1,8 +1,9 @@
-//! TEL burst semantics (protocol sec 5.3): a committed nonzero `tel_count`
+//! TEL burst semantics (protocol sec 5.6): a committed nonzero `tel_count`
 //! arms a bounded burst of `Stream` status frames the servo initiates on the
-//! main bus; any host break aborts it. The sim's fast-tick pump synthesizes
-//! samples from `tel_sample` on the kernel's 50 us grid, so payload bytes pin
-//! against the same function.
+//! main bus, the kernel owning the TX lane from the arm's ack to the LAST
+//! frame; host traffic in that window is ignored. The sim's fast-tick pump
+//! synthesizes samples from `tel_sample` on the kernel's 50 us grid, so
+//! payload bytes pin against the same function.
 //!
 //! Fixed 3 M wire, not the baud matrix: at 3M (and 2M) a full frame streams
 //! faster than its 16-tick batch fills, so every synthesized sample lands on
@@ -13,9 +14,8 @@
 //! latest claim end, so a queued host frame pre-reserves the wire and cannot
 //! interleave with the servo's own burst frames in one `run()` (an F8
 //! collision). Mid-burst host action is therefore modelled with the
-//! non-claiming inject primitives (`inject_break_at`, `inject_garble_at`),
-//! exactly as the resilience suite injects noise -- the break IS the abort
-//! lever, and garble IS the wire fault.
+//! non-claiming inject primitives (`inject_frame_at`, `inject_garble_at`),
+//! exactly as the resilience suite injects noise.
 
 use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
@@ -34,6 +34,10 @@ const ID5: u8 = 5;
 const ID6: u8 = 6;
 /// pos + current + duty + vdiff -- the ident ladder's mask.
 const MASK: u16 = 0x1B;
+/// The start rule's lead for `MASK`'s 7 B rows at 3M: a full frame breaks
+/// after this row has landed (`osc_servo_drivers::tel`), and arms a tick
+/// later.
+const LEAD: u64 = 12;
 /// Sim ticks per TEL fast tick (50 us at 48 ticks/us).
 const TICK: u64 = 50 * 48;
 
@@ -214,20 +218,24 @@ fn burst_hold_commit() {
     });
     assert_eq!((mask, duty), (MASK, 0x0100), "COMMIT applied the batch");
 
-    // Capture began within a tick or two of the COMMIT: the first frame's
-    // break lands one 16-tick batch (plus the grid-alignment tick and end
-    // detection) after the commit frame drained.
+    // Capture began within a tick or two of the COMMIT (no ack to wait
+    // for: the lane passes at the arm): the first frame's break follows its
+    // lead row, plus the grid-alignment tick and end detection.
     let f0 = burst[0];
     assert!(
-        f0.at >= commit_end + 15 * TICK && f0.at <= commit_end + 18 * TICK,
+        f0.at >= commit_end + LEAD * TICK && f0.at <= commit_end + (LEAD + 3) * TICK,
         "first burst frame at {} vs commit end {}",
         f0.at,
         commit_end
     );
 }
 
+/// sec 5.6: the servo owns the line from the arm's ack to the LAST frame. A
+/// host write between two burst frames is ignored - no reply, no effect,
+/// the burst streams whole - and the first instruction after LAST is
+/// served, the ignored one never.
 #[test_log::test]
-fn burst_abort_on_host_break() {
+fn burst_ignores_a_host_frame_and_serves_the_next_after_last() {
     // Probe run: an unmolested 48-sample burst, to time the gap between
     // frames 0 and 1 (the sim is deterministic).
     let (frame0_end, frame1_at) = {
@@ -238,42 +246,36 @@ fn burst_abort_on_host_break() {
         assert_eq!(burst.len(), 3);
         (burst[0].end, burst[1].at)
     };
-    // The host reclaims the line between frame 0 and frame 1. A bare break
-    // is the abort lever (a real host frame here can't be modelled: the DES
-    // claims the wire monotonically, so a queued host frame would pre-reserve
-    // the line and F8-collide with the burst's own frames -- see the module
-    // note). The ping after proves the servo answers on the reclaimed line.
-    let break_at_us = (frame0_end + frame1_at) / 2 / 48;
+    let at_us = (frame0_end + frame1_at) / 2 / 48;
 
     let mut sim = sim3m();
-    sim.add_servo(ID5);
+    let s = sim.add_servo(ID5);
     prime_mask(&mut sim);
     sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 48));
-    sim.inject_break_at(break_at_us);
+    sim.inject_frame_at(at_us, &write_u16(ID5, 0, GOAL_DUTY, 0x0123));
     let frames = sim.run();
+    let servo = servo_frames(&frames);
+    assert_eq!(servo.len(), 4, "the ack and the whole burst: {frames:#?}");
+    for (i, f) in servo[1..].iter().enumerate() {
+        assert_valid(f);
+        assert_eq!(status(f).1, expect_payload(48, i), "frame {i}");
+    }
 
-    // The break kills the burst: frame 0 made it out, nothing after.
-    let burst = stream_frames(&frames);
-    assert_eq!(
-        burst.len(),
-        1,
-        "burst must die at the host break: {frames:#?}"
-    );
-    assert_eq!(status(burst[0]).1[0], 0);
-    assert!(
-        !stream_frames(&frames)
-            .iter()
-            .any(|f| f.at > break_at_us * 48),
-        "no burst frame after the host break"
-    );
-
-    // The servo answers a ping on the reclaimed line.
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
     let servo = servo_frames(&frames);
-    assert_eq!(servo.len(), 1, "ping answered once: {frames:#?}");
+    assert_eq!(
+        servo.len(),
+        1,
+        "one reply, to the ping after LAST: {frames:#?}"
+    );
     assert_valid(servo[0]);
     assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
+    assert_eq!(
+        sim.servo_table(s, |t| t.control.lifecycle.goal_duty),
+        0,
+        "the mid-burst write never applies"
+    );
 
     // A re-arm streams a full fresh burst from seq 0 and tick 0.
     sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
@@ -286,9 +288,41 @@ fn burst_abort_on_host_break() {
     }
 }
 
+/// Ticks lost mid-frame (any cause): the DMA reads the rows behind them
+/// before they land, so the frame ships stale bytes against the CRC the
+/// engine took over the fresh ones. It fails its CRC, the host sees a seq
+/// hole, and the burst runs on to LAST: nothing wedges.
+#[test_log::test]
+fn tel_lost_ticks_mid_frame_fail_the_crc_and_leave_a_seq_hole() {
+    let mut sim = sim3m();
+    let s = sim.add_servo(ID5);
+    // Frame 1 arms on burst tick 16 + LEAD + 1; lose the six after it.
+    let from = 16 + LEAD as u32 + 2;
+    sim.lose_tel_ticks(s, from, from + 6);
+    let frames = arm(&mut sim, 48);
+    let burst = stream_frames(&frames);
+    assert_eq!(burst.len(), 3, "{frames:#?}");
+    let ok: Vec<bool> = burst.iter().map(|f| frame_crc_ok(f)).collect();
+    assert_eq!(ok, [true, false, true]);
+    let kept: Vec<u8> = burst
+        .iter()
+        .filter(|f| frame_crc_ok(f))
+        .map(|f| status(f).1[0])
+        .collect();
+    assert_eq!(kept, [0, 2], "the seq hole");
+    assert_ne!(status(burst[2]).1[1] & FLAG_LAST, 0);
+
+    sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let servo = servo_frames(&frames);
+    assert_eq!(servo.len(), 1, "the line is the bus's again: {frames:#?}");
+    assert_valid(servo[0]);
+}
+
 #[test_log::test]
 fn burst_frame_corruption_is_detectable() {
-    // Probe run for frame 1's wire span (see burst_abort_on_host_break).
+    // Probe run for frame 1's wire span (see
+    // burst_ignores_a_host_frame_and_serves_the_next_after_last).
     let garble_at_us = {
         let mut sim = sim3m();
         sim.add_servo(ID5);

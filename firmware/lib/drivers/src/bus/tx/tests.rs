@@ -66,6 +66,11 @@ impl TxWire for FakeWire {
     fn release(&mut self) {
         self.0.borrow_mut().push(Event::Release);
     }
+    fn idle(&self) -> bool {
+        true
+    }
+    fn break_start(&mut self) {}
+    fn stream(&mut self, _image: &[u8]) {}
 }
 
 fn engine() -> (TxEngine<FakeWire>, Rc<RefCell<Vec<Event>>>) {

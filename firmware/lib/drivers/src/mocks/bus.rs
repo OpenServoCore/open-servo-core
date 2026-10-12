@@ -15,9 +15,7 @@ use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 
 use crate::bus::ServoBus;
-use crate::traits::bus::{
-    BreakStamps, CrcEngine, Deadline, Providers, RxRing, StagerWake, TxWire, UsartBaud,
-};
+use crate::traits::bus::{BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
 
 /// Ring length -- even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
@@ -137,6 +135,7 @@ impl Deadline for FakeDeadline {
 pub struct FakeCrc {
     state: u16,
     snap: Vec<u8>,
+    sick: bool,
 }
 
 impl FakeCrc {
@@ -144,6 +143,15 @@ impl FakeCrc {
         FakeCrc {
             state: 0,
             snap: std::vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+            sick: false,
+        }
+    }
+
+    /// An engine whose result never comes.
+    pub fn sick() -> Self {
+        FakeCrc {
+            sick: true,
+            ..Self::new()
         }
     }
 }
@@ -171,7 +179,7 @@ impl CrcEngine for FakeCrc {
     }
 
     fn result(&mut self) -> Option<u16> {
-        Some(self.state)
+        (!self.sick).then_some(self.state)
     }
 }
 
@@ -181,11 +189,23 @@ pub enum WireEvent {
     Start,
     Send(Vec<u8>),
     Release,
+    /// A TEL lane break, logged when the scenario lets it finish.
+    Break,
+    /// A TEL lane image, read whole when the scenario lets it finish.
+    Stream(Vec<u8>),
 }
 
-/// Half-duplex TX wire recording break/arm/release into a shared log.
+#[derive(Default)]
+struct WireState {
+    log: RefCell<Vec<WireEvent>>,
+    /// A lane break or image the scenario has not let finish.
+    busy: Cell<Option<(*const u8, usize)>>,
+}
+
+/// Half-duplex TX wire recording break/arm/release into a shared log. The
+/// TEL lane's break and image stay on the wire until [`Self::finish`].
 #[derive(Clone, Default)]
-pub struct FakeWire(Rc<RefCell<Vec<WireEvent>>>);
+pub struct FakeWire(Rc<WireState>);
 
 impl FakeWire {
     pub fn new() -> Self {
@@ -193,36 +213,91 @@ impl FakeWire {
     }
 
     pub fn log(&self) -> Vec<WireEvent> {
-        self.0.borrow().clone()
+        self.0.log.borrow().clone()
     }
 
     pub fn started(&self) -> bool {
-        self.0.borrow().contains(&WireEvent::Start)
+        self.0.log.borrow().contains(&WireEvent::Start)
     }
 
     /// Concatenated `Send` bytes -- the reply frame minus its `0x00` prefix.
     pub fn sent(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        for e in self.0.borrow().iter() {
+        for e in self.0.log.borrow().iter() {
             if let WireEvent::Send(v) = e {
                 out.extend_from_slice(v);
             }
         }
         out
     }
+
+    /// The lane's break or image leaves the wire now; an image is read at
+    /// this instant, as late as the DMA could read its last byte.
+    pub fn finish(&self) {
+        let Some((ptr, len)) = self.0.busy.take() else {
+            return;
+        };
+        let e = if len == 0 {
+            WireEvent::Break
+        } else {
+            // SAFETY: test-only: the image is a leaked channel's, live for
+            // the program.
+            WireEvent::Stream(unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec())
+        };
+        self.0.log.borrow_mut().push(e);
+    }
+
+    /// The lane's break is on the wire.
+    pub fn breaking(&self) -> bool {
+        matches!(self.0.busy.get(), Some((_, 0)))
+    }
+
+    /// The length of the lane image on the wire.
+    pub fn streaming(&self) -> Option<usize> {
+        self.0
+            .busy
+            .get()
+            .map(|(_, len)| len)
+            .filter(|&len| len != 0)
+    }
+
+    /// Every lane image finished so far, in order.
+    pub fn streamed(&self) -> Vec<Vec<u8>> {
+        self.0
+            .log
+            .borrow()
+            .iter()
+            .filter_map(|e| match e {
+                WireEvent::Stream(v) => Some(v.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 impl TxWire for FakeWire {
     fn start_frame(&mut self) {
-        self.0.borrow_mut().push(WireEvent::Start);
+        self.0.log.borrow_mut().push(WireEvent::Start);
     }
 
     fn send(&mut self, span: &[u8]) {
-        self.0.borrow_mut().push(WireEvent::Send(span.to_vec()));
+        self.0.log.borrow_mut().push(WireEvent::Send(span.to_vec()));
     }
 
     fn release(&mut self) {
-        self.0.borrow_mut().push(WireEvent::Release);
+        self.0.log.borrow_mut().push(WireEvent::Release);
+    }
+
+    fn idle(&self) -> bool {
+        self.0.busy.get().is_none()
+    }
+
+    fn break_start(&mut self) {
+        self.0.busy.set(Some((core::ptr::null(), 0)));
+    }
+
+    fn stream(&mut self, image: &[u8]) {
+        self.0.busy.set(Some((image.as_ptr(), image.len())));
     }
 }
 
@@ -266,22 +341,6 @@ impl BreakStamps for FakeStamps {
     }
 }
 
-/// Counts stager wakes; clones share the count.
-#[derive(Clone, Default)]
-pub struct FakeStager(Rc<Cell<u32>>);
-
-impl FakeStager {
-    pub fn wakes(&self) -> u32 {
-        self.0.get()
-    }
-}
-
-impl StagerWake for FakeStager {
-    fn wake(&self) {
-        self.0.set(self.0.get() + 1);
-    }
-}
-
 /// ZST binding each role to its fake (driver-pattern sec 5.4).
 pub struct TestProviders;
 
@@ -292,7 +351,6 @@ impl Providers for TestProviders {
     type Tx = FakeWire;
     type Baud = FakeBaud;
     type Stamps = FakeStamps;
-    type Stager = FakeStager;
 }
 
 /// Owns the shared fake state and builds a `ServoBus` over it.
@@ -302,7 +360,6 @@ pub struct Harness {
     pub wire: FakeWire,
     pub baud: FakeBaud,
     pub stamps: FakeStamps,
-    pub stager: FakeStager,
 }
 
 impl Harness {
@@ -313,7 +370,6 @@ impl Harness {
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
             stamps: FakeStamps::default(),
-            stager: FakeStager::default(),
         }
     }
 

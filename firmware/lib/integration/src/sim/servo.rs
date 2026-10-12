@@ -19,7 +19,7 @@ use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
 use super::providers::{
-    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStager, SimStamps, SimWire,
+    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStamps, SimWire,
 };
 use super::store::RamStore;
 use crate::plant::TIMING;
@@ -58,7 +58,7 @@ pub struct SimServo {
     session: Session,
     bus: ServoBus<SimProviders>,
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
-    feed: TelFeed<SimStager>,
+    feed: TelFeed<SimProviders>,
     tel: &'static TelChannel,
     seed: Seed,
     /// Own frames dispatched since boot: the `cpu` model's per-frame charge
@@ -155,7 +155,7 @@ impl SimServo {
     ) -> (
         Shared,
         ServoBus<SimProviders>,
-        TelFeed<SimStager>,
+        TelFeed<SimProviders>,
         &'static TelChannel,
     ) {
         seed.handles.ring.reset();
@@ -222,12 +222,12 @@ impl SimServo {
                 seed.idx,
                 seed.handles.clock_lag.clone(),
             ),
-            SimCrc::new(),
+            SimCrc::new(seed.handles.crc.clone()),
             SimWire::new(
                 seed.core.clone(),
                 seed.handles.baud.clone(),
                 seed.idx,
-                seed.handles.tx_gate.clone(),
+                seed.handles.wire.clone(),
             ),
             SimBaud::new(seed.handles.baud.clone()),
             SimStamps::new(seed.handles.stamps.clone()),
@@ -238,7 +238,20 @@ impl SimServo {
         // Leaked like a shared RamStore: `split` wants the chip's 'static
         // channel; test-scoped, one per servo per bringup.
         let tel: &'static TelChannel = Box::leak(Box::new(TelChannel::new()));
-        let (feed, drain) = tel.split(SimStager(seed.handles.stager.clone()));
+        // The lane's handles share the bus's wire and CRC engine; its ring
+        // view keeps its own preemption lag, which models bus bodies only.
+        let h = &seed.handles;
+        let (feed, drain) = tel.split::<SimProviders>(
+            SimWire::lane(
+                seed.core.clone(),
+                h.baud.clone(),
+                seed.idx,
+                h.wire.clone(),
+                h.lane.clone(),
+            ),
+            SimCrc::lane(h.crc.clone(), seed.core.clone(), h.lane.clone()),
+            SimRing::new(h.ring.clone(), Rc::default()),
+        );
         bus.attach_tel(drain);
         (shared, bus, feed, tel)
     }
@@ -332,10 +345,15 @@ impl SimServo {
         self.bus.poll_clock_trim()
     }
 
-    /// The kernel fast tick's TEL gate (`Kernel::on_tick` checks it before
+    /// The kernel owns the TX lane (`Kernel::on_tick` checks it before
     /// building a sample) -- the sim's tick pump runs only while it holds.
     pub fn tel_active(&self) -> bool {
         self.tel.active()
+    }
+
+    /// The lent burst has nothing left for the lane.
+    pub fn tel_idle(&self) -> bool {
+        self.feed.idle()
     }
 
     /// TEL rows the encoder dropped against two unreleased buffers.
@@ -343,17 +361,12 @@ impl SimServo {
         self.tel.drops()
     }
 
-    /// One fast-tick sample into the kernel-side encoder.
+    /// One kernel tick's TEL work: the row if one is owed, then the lane.
     pub fn tel_tick(&mut self, s: &TelSample) {
         if self.feed.row_mask() != 0 {
             self.feed.on_tick(s);
         }
-    }
-
-    /// The TEL stager body (the chip's SW vector); the sim runs it when
-    /// the servo's stager pend bit is delivered.
-    pub fn poll_tel(&mut self) {
-        self.bus.poll_tel();
+        self.feed.on_tick_end();
     }
 
     /// The chip main loop's data-job poll (`data_state` module): run and

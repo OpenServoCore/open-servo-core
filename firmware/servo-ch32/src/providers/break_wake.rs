@@ -102,8 +102,19 @@ impl BreakWake {
     /// low 9.5 bit-times.
     #[inline(always)]
     pub fn muted(send_break: impl FnOnce()) {
-        tim2::mute();
+        Self::mute();
         send_break();
+        Self::listen();
+    }
+
+    /// [`Self::muted`] split for a break the caller does not wait out.
+    #[inline(always)]
+    pub fn mute() {
+        tim2::mute();
+    }
+
+    #[inline(always)]
+    pub fn listen() {
         tim2::listen();
     }
 }

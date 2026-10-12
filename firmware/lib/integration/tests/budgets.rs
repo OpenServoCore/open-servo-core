@@ -10,8 +10,9 @@ use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
-    self, Body, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES,
-    Regime, TEL_BANK, TEL_ENCODE, TICK_HZ, TICK_PERIOD, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES, Regime,
+    TEL_ARM, TEL_BANK, TEL_ENCODE, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TICK_HZ, TICK_PERIOD,
+    WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
 use osc_servo_core::kernel::{DECIM_SLOW, phase};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT, TEL_MASK};
@@ -76,9 +77,9 @@ fn burst_sim(lane: KernelLane, cost: HandlerCost) -> (usize, Sim, usize) {
     (frames, sim, s)
 }
 
-/// Every moving body at its budget, the stager and arms at theirs: the
-/// DES loses at least the bench's share of rows. With the measured means
-/// it predicted none.
+/// Every moving body at its budget and the TEL lane at its rows: the DES
+/// loses at least the bench's share of rows, and with the kernel owning
+/// the lane that share is none.
 #[test]
 fn step_soak_at_budget_drops_at_least_the_bench() {
     let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving);
@@ -91,12 +92,13 @@ fn step_soak_at_budget_drops_at_least_the_bench() {
         100.0 * share,
         100.0 * BENCH_STEP_DROPPED
     );
+    assert_eq!(dropped, 0, "rows dropped at budget");
 }
 
 /// The probe's frame rule on the DES's event order, with known costs: a
 /// window of polled READs books every exchange whole, wake to last arm,
-/// once the dump closes the last one; a burst books one TEL frame per
-/// stream frame.
+/// once the dump closes the last one; a burst books its two writes and no
+/// bus body for its stream, which the kernel puts on the wire.
 #[test]
 fn the_probe_books_every_frame_whole() {
     const POLLS: u64 = 20;
@@ -120,7 +122,8 @@ fn the_probe_books_every_frame_whole() {
     let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Quiet);
     let (frames, p) = burst_probe(lane, HandlerCost::at_budget(Frame::Write));
     let p = p.closed();
-    assert_eq!((p.host.n, p.tel.n as usize), (2, frames));
+    assert!(frames > 0);
+    assert_eq!((p.host.n, p.tel.n), (2, 0));
 }
 
 #[test]
@@ -136,14 +139,13 @@ fn the_des_charges_the_budget_table() {
     }
     let tel = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving).tel;
     assert_eq!(
-        (tel.encode, tel.bank),
-        (TEL_ENCODE.map(u64::from), TEL_BANK as u64)
+        (tel.encode, tel.bank, tel.head),
+        (TEL_ENCODE.map(u64::from), TEL_BANK as u64, TEL_HEAD as u64)
     );
     assert_eq!(
-        tel.stage,
-        (budget::body(Body::TelStage) + ENTRY_EXIT) as u64
+        [tel.poll, tel.feed, tel.arm, tel.patch],
+        [TEL_POLL, TEL_FEED, TEL_ARM, TEL_PATCH].map(u64::from)
     );
-    assert_eq!(tel.poll, (budget::body(Body::TelPoll) + ENTRY_EXIT) as u64);
     for f in Frame::ALL {
         if f == Frame::TelBatch {
             continue;
@@ -169,11 +171,6 @@ fn the_des_charges_the_measured_entry_exit() {
             );
         }
     }
-    let poll = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Quiet)
-        .tel
-        .poll;
-    let body = budget::body(Body::TelPoll) + MEASURED_ENTRY_EXIT;
-    assert_eq!(poll, body as u64);
 }
 
 /// The kernel lane's own gamma(k) at budget against the bench's for each
@@ -273,7 +270,7 @@ fn config_write_while_moving_fits_at_budget() {
 }
 
 #[test]
-#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (591), its bank (198), the health close (308) and entry and exit takes 2943, 543 over; p8 with the install 2593, 193 over"]
+#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (591), the TX lane's dearest step (354), the health close (308) and entry and exit takes 3099, 699 over; p8 with the install 2749, 349 over"]
 fn config_write_while_moving_and_streaming_fits_at_budget() {
     for (p, t) in spare_phase_ticks(true) {
         assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");

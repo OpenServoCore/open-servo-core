@@ -1,66 +1,99 @@
-//! TEL burst seam between the kernel fast tick (PFIC HIGH) and the bus-side
-//! frame stager (the transport ISRs; a banked batch wakes the stager).
-//! The two sides never share `&mut`: the channel is a pair of ping-pong
-//! payload buffers the kernel encodes into directly: each row lands at
-//! its final wire offset via the core row encoder, so no intermediate
-//! sample storage exists.
-//! Cross-side traffic is single-writer-per-field volatile load/store plus
-//! compiler fences at the buffer handoffs (single core, no atomic RMW on
-//! rv32ec).
+//! TEL burst lane (protocol sec 5.6): while a burst streams, the kernel
+//! fast tick (PFIC HIGH) owns the bus TX lane and is the transmitter. Each
+//! row lands at its final wire offset in one of two frame images; a frame
+//! breaks once its lead row has landed and its DMA reads the rows behind
+//! it as the wire reaches them, the CRC engine fed by the producer and the
+//! value patched in before the DMA gets there. No TX interrupt and no
+//! bus-level body runs for the burst: the bus lends the lane at the arming
+//! ack's release (at the arm itself when no ack follows) and takes it back
+//! in its next body once the LAST frame has left the wire.
 //!
-//! Buffer ownership rides the `ready` tags: 0 = kernel's to fill, else the
-//! arm epoch the batch was produced under -- the bus stages only its own
-//! epoch and discards strays, which closes the mid-tick re-arm race (a
-//! preempted `on_tick` finishing a stale batch publishes a dead epoch).
+//! Cross-side traffic is single-writer-per-field volatile load/store plus
+//! compiler fences (single core, no atomic RMW on rv32ec). The bus writes
+//! the arm mailbox only while the lane is its own, then `active`; the
+//! kernel, which the bus never preempts, takes the arm whole.
 
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
 
+use osc_protocol::crc::osc_crc_byte;
+use osc_protocol::frame::Header;
+use osc_protocol::wire::{self, CHAR_BIT_TIMES, Inst, ResultCode};
+use osc_servo_core::BaudRate;
+use osc_servo_core::budget::TICK_HZ;
 use osc_servo_core::tel::{
-    RowPlan, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, STREAM_TRAILER, TelSample,
-    TelStream, encode_stream_head, encode_stream_trailer,
+    FLAG_LAST, RowPlan, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, STREAM_TRAILER,
+    TelSample, TelStream, encode_stream_head, encode_stream_trailer,
 };
 
-use crate::traits::bus::StagerWake;
+use crate::traits::bus::{CrcEngine, Providers, RxRing, TxWire};
 
-/// One finished frame's metadata, kernel-written at batch finalize (before
-/// its `ready` tag), bus-read while the tag holds.
-#[derive(Copy, Clone)]
-pub(crate) struct BufMeta {
-    pub(crate) len: u16,
-    /// The first row's fault bit -> the frame's INST ALERT.
-    pub(crate) alert: bool,
-    pub(crate) last: bool,
+const CRC_LEN: usize = core::mem::size_of::<u16>();
+
+/// A frame image at its wire offsets: ALIGN, ID, LEN, INST, the payload,
+/// the CRC (sec 3.1). The DMA streams ID..CRC.
+pub const IMAGE_LEN: usize = Header::SIZE + STREAM_PAYLOAD_MAX + CRC_LEN;
+
+const ID_AT: usize = 1;
+const LEN_AT: usize = 2;
+const INST_AT: usize = 3;
+const FLAGS_AT: usize = Header::SIZE + 1;
+const ROWS_AT: usize = Header::SIZE + STREAM_HDR;
+
+/// Ticks the start rule leaves between the bank and the DMA reaching the
+/// CRC. The lane skips the bank's tick and the next frame's head tick,
+/// feeds on the one after and patches on the next: three ticks of slack
+/// remain, and the last row's read has at least as many. Late or lost
+/// ticks inside them still ship a whole frame (DES
+/// `tel_kernel_lane_never_underruns_at_budget`); more fail its CRC (DES
+/// `tel_lost_ticks_mid_frame_fail_the_crc_and_leave_a_seq_hole`).
+const LEAD_MARGIN_TICKS: u32 = 5;
+
+/// Control ticks per wire byte at `baud`, Q16, rounded down so the lead
+/// rounds late. Each arm folds to a literal: no run-time division.
+fn ticks_per_byte_q16(baud: BaudRate) -> u32 {
+    const fn q(baud_hz: u32) -> u32 {
+        ((((CHAR_BIT_TIMES * TICK_HZ) as u64) << 16) / baud_hz as u64) as u32
+    }
+    match baud {
+        BaudRate::B500000 => const { q(500_000) },
+        BaudRate::B1000000 => const { q(1_000_000) },
+        BaudRate::B2000000 => const { q(2_000_000) },
+        BaudRate::B3000000 => const { q(3_000_000) },
+    }
 }
 
-const META_ZERO: BufMeta = BufMeta {
-    len: 0,
-    alert: false,
-    last: false,
-};
+/// Even base: the CRC feed reads halfwords from it (F12).
+#[repr(C, align(2))]
+struct Image([u8; IMAGE_LEN]);
 
-/// The shared storage. Field writers: `bufs`/`meta`/`ready`(set)/`drops`
-/// belong to the kernel side ([`TelFeed`]); `active`, the arm mailbox, and
-/// `ready`(clear) to the bus side ([`TelDrain`]). The dual-writer `ready`
-/// tags are safe: each side stores only constants its protocol phase owns.
+/// The image's covered length (ALIGN..trailer), from its LEN, never past
+/// the CRC slot.
+#[inline(always)]
+fn covered(img: &[u8; IMAGE_LEN]) -> usize {
+    wire::covered_len(img[LEN_AT]).min(IMAGE_LEN - CRC_LEN)
+}
+
+/// The shared storage. Field writers: the images, `drops`, `last_out` and
+/// `resume` belong to the kernel side ([`TelFeed`]); the mailbox and
+/// `active` to the bus side ([`TelDrain`]).
 pub struct TelChannel {
-    bufs: [SyncUnsafeCell<[u8; STREAM_PAYLOAD_MAX]>; 2],
-    meta: [SyncUnsafeCell<BufMeta>; 2],
-    ready: [SyncUnsafeCell<u8>; 2],
-    /// Burst gate the producer polls each tick.
+    images: [SyncUnsafeCell<Image>; 2],
+    /// The kernel owns the TX lane.
     active: SyncUnsafeCell<bool>,
+    plan: SyncUnsafeCell<RowPlan>,
     arm_mask: SyncUnsafeCell<u16>,
-    /// Row plans the arm builds and the pickup copies: an arm writes the
-    /// slot the last published arm does not name and posts its index, so
-    /// the kernel, which the bus never preempts, never copies a slot
-    /// mid-write, however many arms land between two ticks.
-    plans: [SyncUnsafeCell<RowPlan>; 2],
-    arm_slot: SyncUnsafeCell<u8>,
     arm_count: SyncUnsafeCell<u16>,
-    /// Mailbox epoch, written last (fence-ordered), never 0; the kernel
-    /// double-reads it around the payload to reject a torn pickup.
+    arm_id: SyncUnsafeCell<u8>,
+    arm_rate: SyncUnsafeCell<BaudRate>,
+    /// Mailbox epoch, written last, never 0.
     arm_seq: SyncUnsafeCell<u8>,
-    /// Samples dropped while both buffers were ready, monotonic wrapping.
+    /// The epoch whose LAST frame is on the wire, and the RX ring cursor
+    /// read while it streamed.
+    last_out: SyncUnsafeCell<u8>,
+    resume: SyncUnsafeCell<u16>,
+    /// Rows dropped while both images held unfinished frames, monotonic
+    /// wrapping.
     drops: SyncUnsafeCell<u16>,
 }
 
@@ -68,141 +101,292 @@ impl TelChannel {
     #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self {
-            bufs: [
-                SyncUnsafeCell::new([0; STREAM_PAYLOAD_MAX]),
-                SyncUnsafeCell::new([0; STREAM_PAYLOAD_MAX]),
-            ],
-            meta: [
-                SyncUnsafeCell::new(META_ZERO),
-                SyncUnsafeCell::new(META_ZERO),
-            ],
-            ready: [SyncUnsafeCell::new(0), SyncUnsafeCell::new(0)],
+            images: [const { SyncUnsafeCell::new(Image([0; IMAGE_LEN])) }; 2],
             active: SyncUnsafeCell::new(false),
+            plan: SyncUnsafeCell::new(RowPlan::EMPTY),
             arm_mask: SyncUnsafeCell::new(0),
-            plans: [const { SyncUnsafeCell::new(RowPlan::EMPTY) }; 2],
-            arm_slot: SyncUnsafeCell::new(0),
             arm_count: SyncUnsafeCell::new(0),
+            arm_id: SyncUnsafeCell::new(0),
+            arm_rate: SyncUnsafeCell::new(BaudRate::RESCUE),
             arm_seq: SyncUnsafeCell::new(0),
+            last_out: SyncUnsafeCell::new(0),
+            resume: SyncUnsafeCell::new(0),
             drops: SyncUnsafeCell::new(0),
         }
     }
 
-    /// The bus-side burst gate. Any context: the bus is its only writer.
+    /// The kernel owns the TX lane. Any context: the bus is its only
+    /// writer.
     pub fn active(&self) -> bool {
         // SAFETY: single-byte volatile read of a bus-written flag.
         unsafe { self.active.get().read_volatile() }
     }
 
-    /// Rows dropped against full buffers, monotonic wrapping. Any context:
+    /// Rows dropped against full images, monotonic wrapping. Any context:
     /// the kernel side is the counter's only writer.
     pub fn drops(&self) -> u16 {
         // SAFETY: single-word volatile read of a kernel-written counter.
         unsafe { self.drops.get().read_volatile() }
     }
 
-    /// Split into the two halves. Call once at bringup: a second feed or
-    /// drain breaks the single-writer discipline.
-    pub fn split<W: StagerWake>(&'static self, stager: W) -> (TelFeed<W>, TelDrain<W>) {
+    /// Split into the two halves over the lane's wire, CRC engine and RX
+    /// ring handles. Call once at bringup: a second feed or drain breaks
+    /// the single-writer discipline.
+    pub fn split<P: Providers>(
+        &'static self,
+        wire: P::Tx,
+        crc: P::Crc,
+        ring: P::Ring,
+    ) -> (TelFeed<P>, TelDrain) {
         (
             TelFeed {
                 ch: self,
-                stager: stager.clone(),
+                wire,
+                crc,
+                ring,
+                epoch: 0,
                 mask: 0,
                 plan: RowPlan::EMPTY,
+                id: 0,
+                tpb_q16: 0,
                 remaining: 0,
                 seq: 0,
-                epoch: 0,
-                idx: 0,
-                at: STREAM_HDR,
+                done: 0,
+                at: ROWS_AT,
                 n: 0,
+                rows: 0,
+                lead: 0,
                 valid: 0,
                 alert: false,
-                lead_alert: false,
+                phase: Phase::Idle,
+                fed: 0,
+                crc_due: false,
+                landed: false,
             },
-            TelDrain {
-                ch: self,
-                slot: 0,
-                stager,
-            },
+            TelDrain { ch: self },
         )
+    }
+
+    /// Frame `f`'s image.
+    ///
+    /// # Safety
+    /// Kernel side only: the images are its own, and the DMA only reads.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn image(&self, f: u8) -> &mut [u8; IMAGE_LEN] {
+        // SAFETY: see fn doc.
+        unsafe { &mut (*self.images[(f & 1) as usize].get()).0 }
     }
 }
 
-/// Kernel-side half: the fast tick's [`TelStream`] sink and the incremental
-/// frame encoder. All fields but `ch` and `stager` are kernel-private
-/// encoder state.
-pub struct TelFeed<W: StagerWake> {
-    ch: &'static TelChannel,
-    stager: W,
-    mask: u16,
-    plan: RowPlan,
-    remaining: u16,
-    seq: u8,
-    /// Arm epoch this burst produces under (`arm_seq` at pickup).
-    epoch: u8,
-    idx: usize,
-    at: usize,
-    n: u32,
-    valid: u32,
-    alert: bool,
-    lead_alert: bool,
+/// Frame `done`'s place on the lane.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Phase {
+    Idle,
+    Break,
+    Stream,
 }
 
-impl<W: StagerWake> TelFeed<W> {
-    /// The bus-side burst gate, as the feed sees it.
+/// Kernel-side half: the fast tick's [`TelStream`] sink, the incremental
+/// frame encoder and the TX lane. All fields but `ch` are kernel-private.
+pub struct TelFeed<P: Providers> {
+    ch: &'static TelChannel,
+    wire: P::Tx,
+    crc: P::Crc,
+    ring: P::Ring,
+    /// The arm this burst runs under (`arm_seq` at pickup).
+    epoch: u8,
+    mask: u16,
+    plan: RowPlan,
+    id: u8,
+    tpb_q16: u32,
+    remaining: u16,
+    /// Frames begun: the filling one carries `seq`. Frames before `done`
+    /// have left the wire, which may include the filling one: a frame the
+    /// wire outran (late ticks) ships stale and fails its CRC, and its rows
+    /// land on until its bank.
+    seq: u8,
+    done: u8,
+    /// The filling frame: write offset, rows landed and planned, the rows
+    /// a cut-through start waits past, the valid bitmap and the fault OR.
+    at: usize,
+    n: u8,
+    rows: u8,
+    lead: u8,
+    valid: u32,
+    alert: bool,
+    /// Frame `done` on the lane: its phase, the covered bytes fed to the
+    /// CRC engine, and whether its CRC still owes a feed or the patch.
+    phase: Phase,
+    fed: usize,
+    crc_due: bool,
+    /// This tick landed a head or a trailer: the lane leaves it be.
+    landed: bool,
+}
+
+impl<P: Providers> TelFeed<P> {
+    /// The kernel owns the TX lane.
     pub fn active(&self) -> bool {
         self.ch.active()
     }
 
-    /// Consume a posted arm: seq moved and the payload read back consistent
-    /// (a torn read -- the mailbox rewritten mid-pickup -- retries next
-    /// tick). A pickup resets the whole encoder.
-    fn poll_arm(&mut self) {
+    /// Nothing of the posted burst is left for the lane: every frame has
+    /// left the wire.
+    pub fn idle(&self) -> bool {
         // SAFETY: bus-written mailbox seq, volatile-read (type doc).
         let seq = unsafe { self.ch.arm_seq.get().read_volatile() };
-        if seq != self.epoch {
-            self.pickup(seq);
-        }
+        seq == self.epoch && self.remaining == 0 && self.done == self.seq
     }
 
     #[cold]
     #[inline(never)]
     fn pickup(&mut self, seq: u8) {
         let ch = self.ch;
-        // SAFETY: mailbox fields are bus-written, volatile-read here; the
-        // seq double-read brackets the payload (type doc).
-        let (mask, slot, count) = unsafe {
-            let mask = ch.arm_mask.get().read_volatile();
-            let slot = ch.arm_slot.get().read_volatile() as usize & 1;
-            let count = ch.arm_count.get().read_volatile();
-            if ch.arm_seq.get().read_volatile() != seq {
-                return;
-            }
-            (mask, slot, count)
-        };
         compiler_fence(Ordering::Acquire);
-        // SAFETY: the published arm's slot, which no arm writes (type doc):
-        // a plain word copy.
-        let plan = unsafe { *ch.plans[slot].get() };
+        // SAFETY: the bus wrote the mailbox before its seq and writes it
+        // only while the lane is its own; the bus never preempts this side.
+        unsafe {
+            self.plan = ch.plan.get().read_volatile();
+            self.mask = ch.arm_mask.get().read_volatile();
+            self.remaining = ch.arm_count.get().read_volatile();
+            self.id = ch.arm_id.get().read_volatile();
+            self.tpb_q16 = ticks_per_byte_q16(ch.arm_rate.get().read_volatile());
+        }
+        if self.plan.is_empty() {
+            self.remaining = 0;
+        }
         self.epoch = seq;
-        self.mask = mask;
-        self.plan = plan;
-        self.remaining = if plan.is_empty() { 0 } else { count };
         self.seq = 0;
-        self.idx = 0;
-        self.at = STREAM_HDR;
+        self.done = 0;
         self.n = 0;
+        self.phase = Phase::Idle;
+        if self.remaining == 0 {
+            // The bus lends only for a nonzero admitted arm; an empty one
+            // still hands the lane back.
+            self.publish_last();
+        }
+    }
+
+    /// Row 0 of frame `seq`: header, head, and the start rule's lead.
+    fn head(&mut self, img: &mut [u8; IMAGE_LEN], s: &TelSample) {
+        let rows = (self.remaining as usize).min(STREAM_SAMPLES_MAX);
+        let cov = ROWS_AT + rows * self.plan.len() + STREAM_TRAILER;
+        img[ID_AT] = self.id;
+        img[LEN_AT] = wire::len_for((cov - Header::SIZE) as u8);
+        img[INST_AT] = Inst::status(ResultCode::Stream, s.fault).0;
+        let last = rows == self.remaining as usize;
+        encode_stream_head(self.seq, last, s.tick, &mut img[Header::SIZE..]);
+        // The DMA reaches the CRC (cov - 2) byte-times after the arm, a
+        // tick behind the break; the patch is a tick behind the bank.
+        let ticks = ((cov - CRC_LEN) as u32 * self.tpb_q16) >> 16;
+        self.lead = (rows as u32 - 1 + LEAD_MARGIN_TICKS).saturating_sub(ticks) as u8;
+        self.rows = rows as u8;
+        self.at = ROWS_AT;
         self.valid = 0;
         self.alert = false;
     }
+
+    /// Frame `done` may start: it is banked, or its rows passed the lead.
+    #[inline(always)]
+    fn startable(&self) -> bool {
+        let banked = self.seq.wrapping_sub(self.done) as i8;
+        banked > 0 || banked == 0 && self.n > self.lead
+    }
+
+    /// Frame `done` on the lane: the CRC engine's remaining feed or the
+    /// patch, else its arm once the break has gone out. A result not in
+    /// yet lets the arm go first, the patch retrying while the frame
+    /// streams: a sick engine costs that frame its CRC, never the lane.
+    #[inline(never)]
+    fn service(&mut self) {
+        let f = self.done;
+        // SAFETY: kernel side (fn doc of `image`).
+        let img = unsafe { self.ch.image(f) };
+        let cov = covered(img);
+        if self.crc_due {
+            let even = cov & !1;
+            if self.fed < even {
+                return self.feed(img, even);
+            }
+            if let Some(v) = self.crc.result() {
+                let v = match img.get(cov - 1) {
+                    Some(&b) if cov & 1 == 1 => osc_crc_byte(v, b),
+                    _ => v,
+                };
+                let slot = img
+                    .get_mut(cov..)
+                    .and_then(|s| s.first_chunk_mut::<CRC_LEN>());
+                if let Some(slot) = slot {
+                    *slot = v.to_le_bytes();
+                }
+                self.crc_due = false;
+                return;
+            }
+        }
+        if self.phase != Phase::Break || !self.wire.idle() {
+            return;
+        }
+        if let Some(frame) = img.get(ID_AT..cov + CRC_LEN) {
+            self.wire.stream(frame);
+            self.phase = Phase::Stream;
+            if img[FLAGS_AT] & FLAG_LAST != 0 {
+                self.publish_last();
+            }
+        }
+    }
+
+    /// Start frame `done`: reset the CRC engine, feed what is written, and
+    /// break.
+    #[inline(never)]
+    fn start(&mut self) {
+        let f = self.done;
+        // SAFETY: kernel side (fn doc of `image`).
+        let img = unsafe { self.ch.image(f) };
+        let banked = f != self.seq;
+        let written = if banked { covered(img) } else { self.at };
+        self.crc.reset();
+        self.fed = 0;
+        self.feed(img, written & !1);
+        self.crc_due = banked;
+        self.wire.break_start();
+        self.phase = Phase::Break;
+    }
+
+    /// Feed the CRC engine the image's covered bytes from `fed` to the
+    /// even `to`. One call site for the engine's arm: inlined twice it
+    /// doubles the lane's flash.
+    #[inline(never)]
+    fn feed(&mut self, img: &[u8; IMAGE_LEN], to: usize) {
+        if let Some(span) = img.get(self.fed..to) {
+            self.crc.feed(span);
+        }
+        self.fed = to;
+    }
+
+    /// The burst's LAST frame is streaming, and the receiver is deaf to the
+    /// wire under its own TX: the ring cursor is still, and the bus
+    /// resumes its ladder there.
+    fn publish_last(&mut self) {
+        let cursor = self.ring.cursor();
+        // SAFETY: kernel-written fields (type doc); the fence orders the
+        // cursor ahead of the epoch the bus keys on.
+        unsafe {
+            self.ch.resume.get().write_volatile(cursor);
+            compiler_fence(Ordering::Release);
+            self.ch.last_out.get().write_volatile(self.epoch);
+        }
+    }
 }
 
-impl<W: StagerWake> TelStream for TelFeed<W> {
+impl<P: Providers> TelStream for TelFeed<P> {
     fn row_mask(&mut self) -> u16 {
         if !self.ch.active() {
             return 0;
         }
-        self.poll_arm();
+        // SAFETY: bus-written mailbox seq, volatile-read (type doc).
+        let seq = unsafe { self.ch.arm_seq.get().read_volatile() };
+        if seq != self.epoch {
+            self.pickup(seq);
+        }
         if self.remaining == 0 { 0 } else { self.mask }
     }
 
@@ -213,389 +397,135 @@ impl<W: StagerWake> TelStream for TelFeed<W> {
         if self.remaining == 0 {
             return;
         }
-        let ch = self.ch;
-        let idx = self.idx & 1;
-        // SAFETY: single-writer discipline (type doc). The buffer `&mut` is
-        // exclusive while its ready tag is 0 (the bus touches only tagged
-        // buffers).
-        unsafe {
-            if ch.ready[idx].get().read_volatile() != 0 {
-                // Consumer stalled: never block the fast tick.
-                let d = ch.drops.get();
-                d.write_volatile(d.read_volatile().wrapping_add(1));
+        // SAFETY: kernel side (fn doc of `image`).
+        let img = unsafe { self.ch.image(self.seq) };
+        if self.n == 0 {
+            self.landed = true;
+            if self.seq.wrapping_sub(self.done) as i8 >= 2 {
+                // Both images hold unfinished frames: never block the tick.
+                // SAFETY: kernel-written counter (type doc).
+                unsafe {
+                    let d = self.ch.drops.get();
+                    d.write_volatile(d.read_volatile().wrapping_add(1));
+                }
+                self.landed = false;
                 return;
             }
-            let buf = &mut *ch.bufs[idx].get();
-            if self.n == 0 {
-                let last = self.remaining as usize <= STREAM_SAMPLES_MAX;
-                encode_stream_head(self.seq, last, sample.tick, buf);
-                self.lead_alert = sample.fault;
-            }
-            let at = self.at;
-            self.at = at + self.plan.len();
-            self.valid |= (sample.window_valid as u32) << self.n;
-            self.alert |= sample.fault;
-            self.n += 1;
-            self.remaining -= 1;
-            if let Some(row) = buf.get_mut(at..) {
-                self.plan.encode(sample, row);
-            }
+            self.head(img, sample);
         }
-        if self.n as usize == STREAM_SAMPLES_MAX || self.remaining == 0 {
-            self.bank(idx);
+        let at = self.at;
+        self.at = at + self.plan.len();
+        self.valid |= (sample.window_valid as u32) << self.n;
+        self.alert |= sample.fault;
+        self.n += 1;
+        self.remaining -= 1;
+        if let Some(row) = img.get_mut(at..) {
+            self.plan.encode(sample, row);
         }
-    }
-}
-
-impl<W: StagerWake> TelFeed<W> {
-    /// Close the batch in buffer `idx`: trailer, metadata, its ready tag,
-    /// then the stager's wake.
-    #[inline(never)]
-    fn bank(&mut self, idx: usize) {
-        let ch = self.ch;
-        let last = self.remaining == 0;
-        // SAFETY: single-writer discipline (type doc); the tag store is
-        // fenced behind the payload and metadata writes.
-        unsafe {
-            if let Some(out) = (*ch.bufs[idx].get()).get_mut(self.at..) {
+        if self.n == self.rows {
+            if let Some(out) = img.get_mut(self.at..) {
                 encode_stream_trailer(self.valid, self.alert, out);
             }
-            ch.meta[idx].get().write_volatile(BufMeta {
-                len: (self.at + STREAM_TRAILER) as u16,
-                alert: self.lead_alert,
-                last,
-            });
-            // A re-arm that landed mid-batch abandons the batch: its
-            // pickup next tick restarts the encoder, and the epoch tag
-            // would be dead at the bus anyway.
-            if ch.arm_seq.get().read_volatile() == self.epoch {
-                compiler_fence(Ordering::Release);
-                ch.ready[idx].get().write_volatile(self.epoch);
-                self.stager.wake();
-                crate::bench::tel_banked();
-                self.seq = self.seq.wrapping_add(1);
-                self.idx ^= 1;
-            }
+            // A started frame owes the engine the rest of its bytes.
+            self.crc_due |= self.phase != Phase::Idle && self.seq == self.done;
+            self.landed = true;
+            self.seq = self.seq.wrapping_add(1);
+            self.n = 0;
+            crate::bench::tel_banked();
         }
-        self.at = STREAM_HDR;
-        self.n = 0;
-        self.valid = 0;
-        self.alert = false;
+    }
+
+    /// The TX lane, inline: the tick that owes it nothing pays a flag test
+    /// and the TX poll. It takes one step a tick at most - each is a few
+    /// hundred HCLK, and two would not fit beside the dearest phases
+    /// (budget `tel_lane`) - and none on a tick that landed a head or a
+    /// trailer. Frame `done`'s CRC step comes first (the patch lands ahead
+    /// of an arm), then its arm, or the start of the next frame. A frame's
+    /// end is a few stores, so the next can start in the same tick: a tick
+    /// apart, the wire would idle one tick a frame.
+    #[inline(always)]
+    fn on_tick_end(&mut self) {
+        if !self.ch.active() || core::mem::take(&mut self.landed) {
+            return;
+        }
+        match self.phase {
+            Phase::Idle => {}
+            // A frame off the wire owes nothing more, a CRC step included.
+            Phase::Stream if self.wire.idle() => {
+                self.done = self.done.wrapping_add(1);
+                self.phase = Phase::Idle;
+                self.crc_due = false;
+            }
+            _ if self.crc_due => return self.service(),
+            Phase::Break if self.wire.idle() => return self.service(),
+            _ => return,
+        }
+        if self.startable() {
+            self.start();
+        }
     }
 }
 
-/// Bus-side half: posts arms, gates the producer, consumes ready buffers.
-pub struct TelDrain<W: StagerWake> {
+/// Bus-side half: posts arms, lends the lane and takes it back.
+pub struct TelDrain {
     ch: &'static TelChannel,
-    /// The plan slot the last posted arm named.
-    slot: u8,
-    stager: W,
 }
 
-impl<W: StagerWake> TelDrain<W> {
-    /// Post an arm to the kernel side; returns its epoch (never 0). A mask
-    /// with no row in the buffers posts an empty plan, which parks the
-    /// burst instead of overrunning them.
-    pub(crate) fn send_arm(&mut self, mask: u16, count: u16) -> u8 {
-        let ch = self.ch;
+impl TelDrain {
+    /// Post a burst's row plan, while the lane is the bus's. The plan's
+    /// layout walk is the arm's dear half (~500 HCLK): it runs in the body
+    /// that dispatches the arm, not in the ack's release that lends.
+    pub(crate) fn post(&mut self, mask: u16) {
         let plan = RowPlan::new(mask).unwrap_or(RowPlan::EMPTY);
-        self.slot ^= 1;
-        // SAFETY: sole mailbox writer (type doc); payload lands before the
-        // fenced seq store the kernel keys on, in the slot the published
-        // arm does not name.
+        // SAFETY: sole mailbox writer, and the kernel reads the plan only
+        // at the pickup a later `start` keys (type doc).
         unsafe {
-            ch.plans[self.slot as usize & 1].get().write_volatile(plan);
-            ch.arm_mask.get().write_volatile(mask);
-            ch.arm_slot.get().write_volatile(self.slot);
+            self.ch.plan.get().write_volatile(plan);
+            self.ch.arm_mask.get().write_volatile(mask);
+        }
+    }
+
+    /// Lend the kernel the lane for the posted plan: it takes the arm at
+    /// its next tick. Returns the arm's epoch (never 0).
+    pub(crate) fn start(&mut self, count: u16, id: u8, rate: BaudRate) -> u8 {
+        let ch = self.ch;
+        // SAFETY: sole mailbox writer, and the lane is the bus's until the
+        // `active` store (type doc).
+        unsafe {
             ch.arm_count.get().write_volatile(count);
+            ch.arm_id.get().write_volatile(id);
+            ch.arm_rate.get().write_volatile(rate);
             let mut seq = ch.arm_seq.get().read_volatile().wrapping_add(1);
             if seq == 0 {
                 seq = 1;
             }
             compiler_fence(Ordering::Release);
             ch.arm_seq.get().write_volatile(seq);
+            ch.active.get().write_volatile(true);
             seq
         }
     }
 
-    pub(crate) fn set_active(&mut self, on: bool) {
-        // SAFETY: sole writer of `active` (type doc).
-        unsafe { self.ch.active.get().write_volatile(on) };
-    }
-
-    /// Free both buffers (arm/abort: stale batches never stage).
-    pub(crate) fn clear_ready(&mut self) {
-        // SAFETY: ready-clear is the bus's store (type doc).
+    /// The RX ring cursor to resume at once the burst posted as `epoch`
+    /// has its LAST frame on the wire; read ahead of the caller's check
+    /// that the wire went idle.
+    pub(crate) fn last_out(&self, epoch: u8) -> Option<u16> {
+        // SAFETY: kernel-written fields, volatile-read; the fence keeps the
+        // cursor read behind the epoch it was published under.
         unsafe {
-            self.ch.ready[0].get().write_volatile(0);
-            self.ch.ready[1].get().write_volatile(0);
-        }
-    }
-
-    /// Metadata of buffer `idx` if it is ready under `epoch`; a stray epoch
-    /// (dead burst) is discarded on sight.
-    pub(crate) fn ready(&mut self, idx: usize, epoch: u8) -> Option<BufMeta> {
-        let ch = self.ch;
-        // SAFETY: tag read gates the meta read behind an acquire fence;
-        // ready-clear is the bus's store (type doc).
-        unsafe {
-            let tag = ch.ready[idx & 1].get().read_volatile();
-            if tag == 0 {
-                return None;
-            }
-            if tag != epoch {
-                ch.ready[idx & 1].get().write_volatile(0);
+            if self.ch.last_out.get().read_volatile() != epoch {
                 return None;
             }
             compiler_fence(Ordering::Acquire);
-            Some(ch.meta[idx & 1].get().read_volatile())
+            Some(self.ch.resume.get().read_volatile())
         }
     }
 
-    /// Borrow a ready buffer's payload for staging.
-    pub(crate) fn payload(&self, idx: usize) -> &[u8; STREAM_PAYLOAD_MAX] {
-        // SAFETY: the caller holds the buffer's ready tag (`ready` returned
-        // Some); the kernel writes only untagged buffers.
-        unsafe { &*self.ch.bufs[idx & 1].get() }
-    }
-
-    /// Return buffer `idx` to the kernel (after the frame's TX released).
-    pub(crate) fn release(&mut self, idx: usize) {
-        // SAFETY: ready-clear is the bus's store (type doc).
-        unsafe { self.ch.ready[idx & 1].get().write_volatile(0) };
-    }
-
-    pub(crate) fn wake(&self) {
-        self.stager.wake();
+    pub(crate) fn stop(&mut self) {
+        // SAFETY: sole writer of `active` (type doc).
+        unsafe { self.ch.active.get().write_volatile(false) };
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mocks::bus::FakeStager;
-    use osc_servo_core::tel::{FLAG_LAST, encode_stream};
-    const MASK_SIX: u16 = 0x3F;
-
-    type Feed = TelFeed<FakeStager>;
-    type Drain = TelDrain<FakeStager>;
-
-    /// The kernel's per-tick sequence: ask for the row, then hand it over.
-    fn tick(feed: &mut Feed, s: &TelSample) {
-        if feed.row_mask() != 0 {
-            feed.on_tick(s);
-        }
-    }
-
-    fn leaked() -> &'static TelChannel {
-        std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()))
-    }
-
-    fn channel() -> (Feed, Drain) {
-        leaked().split(FakeStager::default())
-    }
-
-    fn sample(i: u16) -> TelSample {
-        TelSample {
-            pos: 0x4000 + i,
-            current: -(i as i16),
-            tick: 0xFFF0u16.wrapping_add(i),
-            window_valid: i.is_multiple_of(2),
-            ..Default::default()
-        }
-    }
-
-    fn arm(drain: &mut Drain, mask: u16, count: u16) -> u8 {
-        let epoch = drain.send_arm(mask, count);
-        drain.clear_ready();
-        drain.set_active(true);
-        epoch
-    }
-
-    #[test]
-    fn active_flag_is_the_bus_gate() {
-        let (feed, mut drain) = channel();
-        assert!(!feed.active());
-        drain.set_active(true);
-        assert!(feed.active());
-        drain.set_active(false);
-        assert!(!feed.active());
-    }
-
-    #[test]
-    fn batches_match_encode_stream_byte_for_byte() {
-        let (mut feed, mut drain) = channel();
-        let epoch = arm(&mut drain, MASK_SIX, 20);
-        let samples: std::vec::Vec<TelSample> = (0..20).map(sample).collect();
-        for s in &samples {
-            tick(&mut feed, s);
-        }
-
-        let mut want = [0u8; STREAM_PAYLOAD_MAX];
-        let n0 = encode_stream(MASK_SIX, 0, false, &samples[..16], &mut want);
-        let m0 = drain.ready(0, epoch).expect("first batch ready");
-        assert_eq!((m0.len as usize, m0.last), (n0, false));
-        assert_eq!(drain.payload(0)[..n0], want[..n0]);
-
-        let n1 = encode_stream(MASK_SIX, 1, true, &samples[16..], &mut want);
-        let m1 = drain.ready(1, epoch).expect("last batch ready");
-        assert_eq!((m1.len as usize, m1.last), (n1, true));
-        assert_eq!(drain.payload(1)[..n1], want[..n1]);
-        assert_eq!(drain.payload(1)[1], FLAG_LAST);
-    }
-
-    /// The head is row 0's: LAST is known once the burst's remaining rows
-    /// fit the batch, the stamp and INST ALERT are row 0's own. The trailer
-    /// lands at the bank with the batch's fault OR.
-    #[test]
-    fn head_lands_at_row_0_and_trailer_at_the_bank() {
-        use osc_protocol::tel::StreamFrame;
-        let (mut feed, mut drain) = channel();
-        let epoch = arm(&mut drain, MASK_SIX, 32);
-        let mut s: std::vec::Vec<TelSample> = (0..32).map(sample).collect();
-        s[5].fault = true;
-        s[16].fault = true;
-        tick(&mut feed, &s[0]);
-        assert_eq!(drain.payload(0)[..STREAM_HDR], [0, 0, 0xF0, 0xFF]);
-        for x in &s[1..17] {
-            tick(&mut feed, x);
-        }
-        assert_eq!(drain.payload(1)[..STREAM_HDR], [1, FLAG_LAST, 0x00, 0x00]);
-
-        let m0 = drain.ready(0, epoch).expect("first batch ready");
-        assert!(!m0.alert, "row 0 ran clean");
-        let f0 = StreamFrame::parse(MASK_SIX, &drain.payload(0)[..m0.len as usize]);
-        let f0 = f0.expect("a frame");
-        assert_eq!(
-            (f0.len(), f0.tick, f0.last, f0.alert),
-            (16, 0xFFF0, false, true)
-        );
-
-        for x in &s[17..] {
-            tick(&mut feed, x);
-        }
-        let m1 = drain.ready(1, epoch).expect("last batch ready");
-        assert!(m1.alert && m1.last, "row 0 faulted");
-        let f1 = StreamFrame::parse(MASK_SIX, &drain.payload(1)[..m1.len as usize]);
-        let f1 = f1.expect("a frame");
-        assert_eq!((f1.len(), f1.tick, f1.valid), (16, 0x0000, 0x5555));
-    }
-
-    #[test]
-    fn stalled_consumer_drops_and_counts_and_the_stamp_jumps() {
-        let ch = leaked();
-        let (mut feed, mut drain) = ch.split(FakeStager::default());
-        let epoch = arm(&mut drain, MASK_SIX, 200);
-        for i in 0..37 {
-            tick(&mut feed, &sample(i));
-        }
-        // both buffers ready, 5 samples dropped against them
-        assert_eq!(ch.drops(), 5);
-        // release one: production resumes into it
-        assert!(drain.ready(0, epoch).is_some());
-        drain.release(0);
-        for i in 0..16 {
-            tick(&mut feed, &sample(100 + i));
-        }
-        assert_eq!(ch.drops(), 5);
-        let m = drain.ready(0, epoch).expect("refilled batch");
-        assert!(!m.last);
-        // the dropped rows show as a stamp jump, not as a seq hole
-        let p = drain.payload(0);
-        assert_eq!(p[0], 2);
-        assert_eq!(p[2..4], sample(100).tick.to_le_bytes());
-    }
-
-    /// Arms that land between two ticks alternate plan slots: the pickup
-    /// takes the last one's plan whole, whatever the arms before it wrote.
-    #[test]
-    fn back_to_back_arms_take_the_latest_plan() {
-        use osc_servo_core::tel::{BIT_CURRENT, BIT_POS};
-        let (mut feed, mut drain) = channel();
-        drain.send_arm(MASK_SIX, 16);
-        drain.send_arm(BIT_POS | BIT_CURRENT, 16);
-        let epoch = arm(&mut drain, BIT_POS, 2);
-        let samples = [sample(1), sample(2)];
-        for s in &samples {
-            tick(&mut feed, s);
-        }
-        let mut want = [0u8; STREAM_PAYLOAD_MAX];
-        let n = encode_stream(BIT_POS, 0, true, &samples, &mut want);
-        let m = drain.ready(0, epoch).expect("the last arm's batch");
-        assert_eq!(m.len as usize, n);
-        assert_eq!(drain.payload(0)[..n], want[..n]);
-    }
-
-    #[test]
-    fn rearm_discards_the_old_epoch() {
-        let (mut feed, mut drain) = channel();
-        let e1 = arm(&mut drain, MASK_SIX, 16);
-        for i in 0..16 {
-            tick(&mut feed, &sample(i));
-        }
-        assert!(drain.ready(0, e1).is_some());
-
-        // new burst: the un-staged old batch is a stray now
-        let e2 = arm(&mut drain, MASK_SIX, 5);
-        assert!(drain.ready(0, e2).is_none(), "old epoch discarded");
-        for i in 0..5 {
-            tick(&mut feed, &sample(50 + i));
-        }
-        let m = drain.ready(0, e2).expect("fresh burst lands in buffer 0");
-        assert!(m.last);
-        // seq restarted at 0
-        assert_eq!(drain.payload(0)[0], 0);
-    }
-
-    #[test]
-    fn count_zero_arm_parks_the_encoder() {
-        let ch = leaked();
-        let (mut feed, mut drain) = ch.split(FakeStager::default());
-        arm(&mut drain, MASK_SIX, 32);
-        for i in 0..4 {
-            tick(&mut feed, &sample(i));
-        }
-        let e = drain.send_arm(MASK_SIX, 0);
-        drain.clear_ready();
-        drain.set_active(false);
-        for i in 0..40 {
-            tick(&mut feed, &sample(i));
-        }
-        assert!(drain.ready(0, e).is_none());
-        assert!(drain.ready(1, e).is_none());
-        assert_eq!(ch.drops(), 0);
-    }
-
-    /// The stager's only kernel-side event: each published batch wakes it
-    /// once, after its ready tag. Rows, drops and an abandoned batch never
-    /// wake it.
-    #[test]
-    fn each_banked_batch_wakes_the_stager_once() {
-        let ch = leaked();
-        let stager = FakeStager::default();
-        let (mut feed, mut drain) = ch.split(stager.clone());
-        let epoch = arm(&mut drain, MASK_SIX, 40);
-        for i in 0..15 {
-            tick(&mut feed, &sample(i));
-        }
-        assert_eq!(stager.wakes(), 0, "rows alone never wake");
-        tick(&mut feed, &sample(15));
-        assert_eq!(stager.wakes(), 1);
-        assert!(drain.ready(0, epoch).is_some(), "tag lands with the wake");
-        for i in 16..48 {
-            tick(&mut feed, &sample(i));
-        }
-        assert_eq!(stager.wakes(), 2, "the stalled consumer's drops: none");
-        assert!(ch.drops() > 0);
-
-        // An arm that moved before the bank abandons the batch unpublished.
-        drain.release(0);
-        drain.release(1);
-        for i in 0..7 {
-            tick(&mut feed, &sample(i));
-        }
-        drain.send_arm(MASK_SIX, 40);
-        feed.on_tick(&sample(7));
-        assert_eq!(stager.wakes(), 2, "abandoned batch");
-    }
-}
+mod tests;

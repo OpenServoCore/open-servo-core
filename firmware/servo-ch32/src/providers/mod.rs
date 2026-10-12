@@ -11,6 +11,5 @@ pub mod deadline;
 pub mod digital_out;
 pub mod monotonic;
 pub mod ring;
-pub mod stager;
 pub mod tx_wire;
 pub mod usart_baud;

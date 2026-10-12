@@ -407,7 +407,7 @@ fn every_mean_budget_sits_inside_its_maximum() {
 #[test]
 fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
     let mut k = KernelProbe::ZERO;
-    let enc = TEL_ENCODE_MEAN[Regime::Open as usize];
+    let enc = TEL_ENCODE_MEAN[Regime::Open as usize] + TEL_LANE_MEAN;
     let plain = KERNEL_MEAN[OPEN as usize].into_iter().min().unwrap_or(0);
     for i in 1..2 * MEAN_MIN_BODIES {
         let p = i as usize % PHASES;

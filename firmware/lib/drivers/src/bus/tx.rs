@@ -37,6 +37,8 @@ const CRC_ARM: Arm = Arm::Buf {
 pub enum TxOut {
     Armed,
     Released,
+    /// Released, and the wire passed to the TEL lane (sec 5.6).
+    Lent,
 }
 
 /// One DMA arm (or CRC feed) as a descriptor -- resolved to a slice only at
@@ -63,6 +65,9 @@ enum State {
     Streaming {
         crc_armed: bool,
     },
+    /// The TEL lane owns the wire and the CRC engine (sec 5.6) until
+    /// [`TxEngine::reclaim`]: nothing here touches either.
+    Lent,
 }
 
 pub struct TxEngine<W: TxWire> {
@@ -78,6 +83,8 @@ pub struct TxEngine<W: TxWire> {
     /// pointer targets engine-stable storage -- buffer or snapshot).
     tail: Option<*const u8>,
     alert: bool,
+    /// The frame in hand passes the wire to the TEL lane at its release.
+    lend: bool,
     crc_misses: u32,
 }
 
@@ -91,6 +98,7 @@ impl<W: TxWire> TxEngine<W> {
             state: State::Idle,
             tail: None,
             alert: false,
+            lend: false,
             crc_misses: 0,
         }
     }
@@ -127,9 +135,43 @@ impl<W: TxWire> TxEngine<W> {
         }
     }
 
-    /// Arms are on the wire -- the servo owns the line until the final TC.
+    /// Arms are on the wire - the servo owns the line until the final TC
+    /// (a TEL burst's until its lane comes back).
     pub fn streaming(&self) -> bool {
-        matches!(self.state, State::Streaming { .. })
+        matches!(self.state, State::Streaming { .. } | State::Lent)
+    }
+
+    /// The TEL lane owns the wire.
+    pub fn lent(&self) -> bool {
+        matches!(self.state, State::Lent)
+    }
+
+    /// Pass the wire to the TEL lane now, or at the release of the frame
+    /// in hand: an abort of that frame cancels the pass.
+    pub fn lend(&mut self) {
+        match self.state {
+            State::Idle => self.state = State::Lent,
+            State::Lent => {}
+            _ => self.lend = true,
+        }
+    }
+
+    /// Keep the wire at the release of the frame in hand.
+    pub fn keep(&mut self) {
+        self.lend = false;
+    }
+
+    /// Take the wire back from the TEL lane.
+    pub fn reclaim(&mut self) {
+        if self.lent() {
+            self.wire.release();
+            self.state = State::Idle;
+        }
+    }
+
+    /// The wire's last character left the shifter.
+    pub fn wire_idle(&self) -> bool {
+        self.wire.idle()
     }
 
     /// Build the frame layout for a status reply; touches no wire state
@@ -227,6 +269,7 @@ impl<W: TxWire> TxEngine<W> {
         // Placeholder CRC: what ships if the patch window is missed.
         self.buf.bytes_mut()[CRC_AT..].fill(0);
         self.alert = alert;
+        self.lend = false;
         self.state = State::Staged { slot_key: None };
         Ok(())
     }
@@ -267,6 +310,11 @@ impl<W: TxWire> TxEngine<W> {
             }
             State::Streaming { crc_armed: true } => {
                 self.wire.release();
+                if self.lend {
+                    self.lend = false;
+                    self.state = State::Lent;
+                    return TxOut::Lent;
+                }
                 self.state = State::Idle;
                 TxOut::Released
             }
@@ -314,10 +362,12 @@ impl<W: TxWire> TxEngine<W> {
         }
     }
 
-    /// Drop anything staged or streaming and release the wire.
+    /// Drop anything staged or streaming and release the wire; a lent
+    /// wire stays the lane's.
     pub fn abort(&mut self) {
-        if self.busy() {
+        if matches!(self.state, State::Staged { .. } | State::Streaming { .. }) {
             self.wire.release();
+            self.lend = false;
             self.state = State::Idle;
         }
     }

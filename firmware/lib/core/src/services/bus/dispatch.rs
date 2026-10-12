@@ -6,6 +6,7 @@ use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 
 use crate::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN, StoreError};
+use crate::regions::burst::state as burst_state;
 use crate::regions::hooks::ControlTableHooks;
 use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, CONTROL_BASE_ADDR,
@@ -149,8 +150,7 @@ impl Dispatch for Dispatcher<'_> {
         }
         self.shared.table.commit_from(self.staged, &pending.snap);
         self.after_commit(pending.addr, pending.len);
-        let tel_mask = self.shared.table.with(|t| t.control.lifecycle.tel_mask);
-        let mut hooks = ControlTableHooks::new(reply, tel_mask);
+        let mut hooks = ControlTableHooks::new(reply, self.tel_mask());
         self.shared
             .table
             .with(|t| t.dispatch_events(pending.addr, pending.len, &mut hooks));
@@ -164,6 +164,16 @@ impl Dispatch for Dispatcher<'_> {
 }
 
 impl Dispatcher<'_> {
+    /// The mask a `tel_count` write arms under: none while a shunt burst
+    /// is ARMED or CAPTURING, so the arm parks and the write still acks.
+    /// DONE holds nothing: the capture is over.
+    fn tel_mask(&self) -> u16 {
+        self.shared.table.with(|t| match t.burst.window.state {
+            burst_state::ARMED | burst_state::CAPTURING => 0,
+            _ => t.control.lifecycle.tel_mask,
+        })
+    }
+
     fn send<R: Reply>(reply: &mut R, status: Status<'_>) {
         // TX overflow is a sizing bug, not a runtime error -- bench telemetry
         // catches it at integration.
@@ -420,8 +430,7 @@ impl Dispatcher<'_> {
         }
         self.shared.table.commit_staged(self.staged);
         Self::ack(alert, ctx, Ok(()), reply);
-        let tel_mask = self.shared.table.with(|t| t.control.lifecycle.tel_mask);
-        let mut hooks = ControlTableHooks::new(reply, tel_mask);
+        let mut hooks = ControlTableHooks::new(reply, self.tel_mask());
         for (addr, len) in spans {
             self.after_commit(addr, len);
             self.shared

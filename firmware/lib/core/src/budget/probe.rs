@@ -692,7 +692,7 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
             wall: 0,
             nested: 0,
             budget: 0,
-            mean_budget: super::TEL_ENCODE_MEAN[r as usize],
+            mean_budget: super::TEL_ENCODE_MEAN[r as usize] + super::TEL_LANE_MEAN,
         });
     }
     let slowest = s

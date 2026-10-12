@@ -135,18 +135,23 @@ pub struct Sim {
 }
 
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
-/// ADC tick, running only while a burst is armed (the kernel's `tel.active()`
-/// gate). Sample values are synthesized from the per-burst tick index
-/// ([`tel_sample`]), so tests pin payload bytes against the same function -
-/// or, with a [`Track`], played back from recorded rows.
+/// ADC tick, running while the kernel owns the TX lane and the burst has
+/// work left (the kernel's `tel.active()` gate). Sample values are
+/// synthesized from the per-burst tick index ([`tel_sample`]), so tests pin
+/// payload bytes against the same function - or, with a [`Track`], played
+/// back from recorded rows.
 struct TelPump {
     running: bool,
     /// Stale scheduled ticks die by epoch (the Compare generation idiom).
     epoch: u64,
     /// Per-burst tick index, reset at every pump start.
     n: u32,
-    /// Samples the encoder took this burst (fed less dropped).
+    /// Samples the encoder took this burst (fed less dropped), of `count`.
     encoded: u32,
+    count: u32,
+    /// Per-burst ticks [from, to) the kernel never runs (see
+    /// [`Sim::lose_tel_ticks`]).
+    lost: Option<(u32, u32)>,
     /// Synthesized samples carry fault=true over ticks [from, to).
     fault: Option<(u32, u32)>,
     track: Option<Track>,
@@ -353,6 +358,8 @@ impl Sim {
             epoch: 0,
             n: 0,
             encoded: 0,
+            count: 0,
+            lost: None,
             fault: None,
             track: None,
             banks: Vec::new(),
@@ -387,6 +394,13 @@ impl Sim {
         self.tels[i].fault = Some((from, to));
     }
 
+    /// Servo `i`'s kernel runs nothing over per-burst ticks [from, to): no
+    /// row lands and its TX lane is not served, while the wire streams on -
+    /// ticks lost to any cause.
+    pub fn lose_tel_ticks(&mut self, i: usize, from: u32, to: u32) {
+        self.tels[i].lost = Some((from, to));
+    }
+
     /// Give servo `i`'s handler bodies sim-time cost (`cpu` module): events
     /// landing while a body runs pend and coalesce as on silicon. Zero-cost
     /// (the default) is the ideal-CPU model.
@@ -414,7 +428,7 @@ impl Sim {
     }
 
     /// Sim ticks at which servo `i`'s encoder banked a TEL batch, in order:
-    /// the end of the tick that published it.
+    /// the tick that landed its last row.
     pub fn tel_banks(&self, i: usize) -> &[u64] {
         &self.tels[i].banks
     }
@@ -678,6 +692,22 @@ impl Sim {
             .schedule(Event::StrayBreak { baud }, at);
     }
 
+    /// A whole frame dropped onto the wire at `at_us` the way
+    /// [`Self::inject_break_at`] and [`Self::inject_garble_at`] drop theirs,
+    /// bypassing host serialization: a host talking over the servo's own
+    /// line. Its break wakes every servo and its bytes ring at wire pace.
+    pub fn inject_frame_at(&mut self, at_us: u64, frame: &[u8]) {
+        let at = self.clamp_at(at_us);
+        let baud = self.rate;
+        let bt = byte_ticks(baud);
+        let break_end = at + break_ticks(baud);
+        let mut c = self.core.borrow_mut();
+        c.schedule(Event::StrayBreak { baud }, break_end);
+        for (k, &byte) in frame[1..].iter().enumerate() {
+            c.schedule(Event::WireGarble { byte }, break_end + (k as u64 + 1) * bt);
+        }
+    }
+
     /// Rescue pulse: line dominant for `us` (sec 9.1). Two modeled effects:
     /// each servo's main-loop sampler reads it low on the sample cadence
     /// (declaring once >= RESCUE_LOW_US of frozen-ring low has elapsed), and
@@ -807,6 +837,23 @@ impl Sim {
                 }
             }
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
+            Event::DmaFetch {
+                talker,
+                src,
+                baud,
+                at,
+                last,
+            } => {
+                // SAFETY: `src` points into a servo's leaked TEL channel,
+                // live for the program; the sim is single-threaded.
+                let byte = unsafe { src.read() };
+                let mut c = self.core.borrow_mut();
+                c.schedule(Event::WireData { talker, byte, baud }, at);
+                if last {
+                    c.schedule(Event::ServoTxEnd { talker }, at);
+                }
+            }
+            Event::ServoTxEnd { talker } => self.core.borrow_mut().finalize_servo_frame(talker),
             Event::TelTick { servo, epoch } => self.tel_tick(servo, epoch),
             Event::CpuFree { servo } => self.cpu_free(servo),
             Event::KernelScan { servo } => self.kernel_scan(servo),
@@ -888,71 +935,100 @@ impl Sim {
         }
     }
 
-    /// Start the fast-tick pump for any burst the event just armed.
+    /// Start the fast-tick pump for any burst the event just lent the lane,
+    /// and stop it once the burst has nothing left.
     fn tel_pump(&mut self) {
         let now = self.core.borrow().now();
         for j in 0..self.servos.len() {
-            if self.servos[j].tel_active() {
-                if !self.tels[j].running {
-                    let t = &mut self.tels[j];
-                    t.running = true;
-                    t.epoch += 1;
-                    t.n = 0;
-                    t.encoded = 0;
-                    if self.cpus[j].kernel_until().is_some() {
-                        continue;
-                    }
-                    let at = (now / TEL_TICK + 1) * TEL_TICK;
-                    self.core.borrow_mut().schedule(
-                        Event::TelTick {
-                            servo: j,
-                            epoch: t.epoch,
-                        },
-                        at,
-                    );
-                }
-            } else {
+            if !self.servos[j].tel_active() || self.servos[j].tel_idle() {
                 self.tels[j].running = false;
+                continue;
             }
+            if self.tels[j].running {
+                continue;
+            }
+            let count = self.servos[j].with_table(|t| t.control.lifecycle.tel_count);
+            let t = &mut self.tels[j];
+            t.running = true;
+            t.epoch += 1;
+            t.n = 0;
+            t.encoded = 0;
+            t.count = count as u32;
+            if self.cpus[j].kernel_until().is_some() {
+                continue;
+            }
+            let at = (now / TEL_TICK + 1) * TEL_TICK;
+            self.core.borrow_mut().schedule(
+                Event::TelTick {
+                    servo: j,
+                    epoch: t.epoch,
+                },
+                at,
+            );
         }
     }
 
-    /// One 50 us fast tick at servo `j`: synthesize (or play back) the next
-    /// sample, feed the kernel-side encoder, re-arm. Ticks from a dead pump
-    /// (burst ended or aborted since scheduling) drop by the running/epoch
-    /// gates.
+    /// One 50 us fast tick at servo `j` with no kernel lane: the tick's TEL
+    /// work, then re-arm. Ticks from a dead pump (the burst done since
+    /// scheduling) drop by the running/epoch gates.
     fn tel_tick(&mut self, j: usize, epoch: u64) {
         let now = self.core.borrow().now();
-        if self.tels[j].epoch != epoch || !self.tel_sample(j, now) {
+        if self.tels[j].epoch != epoch || self.tel_step(j, now).is_none() {
             return;
         }
-        self.tick_wake(j, now);
         self.core
             .borrow_mut()
             .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
     }
 
-    /// Feed servo `j`'s encoder its next sample while a burst runs.
-    fn tel_sample(&mut self, j: usize, now: u64) -> bool {
+    /// Servo `j`'s TEL work for one kernel tick: its row, if one is owed,
+    /// then the TX lane. Returns what the lane charges on top of the row's
+    /// encode, None once the pump is down.
+    fn tel_step(&mut self, j: usize, now: u64) -> Option<u64> {
         let t = &mut self.tels[j];
         if !t.running || !self.servos[j].tel_active() {
-            return false;
+            return None;
         }
+        let n = t.n;
+        t.n += 1;
+        if t.lost.is_some_and(|(from, to)| (from..to).contains(&n)) {
+            return Some(0);
+        }
+        let owed = t.encoded < t.count;
         let mut s = match &t.track {
             Some(track) => track.rows[track.row(now)],
-            None => tel_sample(t.n),
+            None => tel_sample(n),
         };
         if let Some((from, to)) = t.fault {
-            s.fault = t.n >= from && t.n < to;
+            s.fault = n >= from && n < to;
         }
-        s.tick = t.n as u16;
-        t.n += 1;
+        s.tick = n as u16;
+        let drops = self.servos[j].tel_drops();
+        let lane = self.handles[j].lane.snapshot();
         self.servos[j].tel_tick(&s);
-        true
+        let c = self.cpus[j].kernel_tel();
+        let mut cost = c.poll;
+        let t = &mut self.tels[j];
+        if owed && self.servos[j].tel_drops() == drops {
+            t.encoded += 1;
+            let at = t.encoded % STREAM_SAMPLES_MAX as u32;
+            if at == 1 {
+                cost += c.head;
+            }
+            if at == 0 || t.encoded == t.count {
+                cost += c.bank;
+                t.banks.push(now);
+            }
+        }
+        let [wire, feeds, patches] = self.handles[j].lane.snapshot();
+        let [wire0, feeds0, patches0] = lane;
+        cost += (feeds - feeds0) * c.feed + (wire - wire0) * c.arm;
+        cost += (patches - patches0) * c.patch;
+        Some(cost)
     }
 
-    /// The kernel lane's tail: the tick's TEL sample (a banking sample
-    /// lengthens the body and pends the stager vector at the bus level).
+    /// The kernel lane's tail: the tick's TEL row and lane work, which
+    /// lengthen the body.
     fn kernel_tail(&mut self, j: usize) {
         let now = self.core.borrow().now();
         if let Some(end) = self.cpus[j].kernel_until()
@@ -963,33 +1039,8 @@ impl Sim {
                 .schedule(Event::KernelTail { servo: j }, end);
             return;
         }
-        let drops = self.servos[j].tel_drops();
-        if !self.tel_sample(j, now) {
-            return;
-        }
-        if self.servos[j].tel_drops() == drops {
-            let t = &mut self.tels[j];
-            t.encoded += 1;
-            if t.encoded.is_multiple_of(STREAM_SAMPLES_MAX as u32) {
-                let bank = self.cpus[j].kernel_tel().bank;
-                self.cpus[j].extend_kernel(now, bank);
-            }
-        }
-        self.tick_wake(j, now);
-    }
-
-    /// A fast tick's end: the only wake it can have raised is its bank's.
-    fn tick_wake(&mut self, j: usize, now: u64) {
-        if self.handles[j].stager.get() {
-            self.tels[j].banks.push(now);
-        }
-        self.deliver_stager(j);
-    }
-
-    /// Deliver servo `j`'s stager vector if a wake pended it.
-    fn deliver_stager(&mut self, j: usize) {
-        if self.handles[j].stager.take() {
-            self.deliver(j, Vector::Stage);
+        if let Some(cost) = self.tel_step(j, now) {
+            self.cpus[j].extend_kernel(now, cost);
         }
     }
 
@@ -1089,30 +1140,17 @@ impl Sim {
         let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
-        let starts = self.handles[j].tx_gate.starts();
-        // A frame the stager starts breaks once its body has run up to the
-        // trigger, preemptions included: at budget, its whole body.
-        let gate = v == Vector::Stage;
-        if gate {
-            self.handles[j].tx_gate.hold();
-        }
+        let starts = self.handles[j].wire.starts();
         match v {
             Vector::Compare => self.servos[j].on_deadline(),
             Vector::Break => self.servos[j].on_break(),
             Vector::TxDone => self.servos[j].on_tx_complete(),
-            Vector::Stage => self.servos[j].poll_tel(),
-        }
-        if gate && self.handles[j].tx_gate.holding() {
-            let stage = self.cpus[j].kernel_tel().stage;
-            self.cpus[j].hold_to_break(now, stage, 0);
-            self.schedule_free(j);
         }
         let frames = self.servos[j].dispatched() - before;
         self.cpus[j].charge_frames(frames);
-        let started = self.handles[j].tx_gate.starts() > starts;
+        let started = self.handles[j].wire.starts() > starts;
         self.cpus[j].book(v, frames > 0, started);
         self.handles[j].clock_lag.set(0);
-        self.deliver_stager(j);
     }
 
     fn kernel_scan(&mut self, j: usize) {
@@ -1136,8 +1174,11 @@ impl Sim {
                 .schedule(Event::KernelRetry { servo: j }, at);
         }
         if self.cpus[j].kernel_stats().entries > entries && self.tels[j].running {
-            let encode = self.cpus[j].kernel_encode();
-            self.cpus[j].extend_kernel(now, encode);
+            let t = &self.tels[j];
+            if t.encoded < t.count {
+                let encode = self.cpus[j].kernel_encode();
+                self.cpus[j].extend_kernel(now, encode);
+            }
             if let Some(end) = self.cpus[j].kernel_until() {
                 self.core
                     .borrow_mut()
@@ -1169,12 +1210,6 @@ impl Sim {
             if self.cpus[j].any_pend() {
                 self.schedule_free(j);
             }
-            return;
-        }
-        if self.cpus[j].tx_held.is_some() {
-            self.handles[j].tx_gate.open();
-            self.cpus[j].resume_after_break(now);
-            self.schedule_free(j);
             return;
         }
         if let Some((v, entry)) = self.cpus[j].deferred.take() {

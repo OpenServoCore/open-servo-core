@@ -22,7 +22,8 @@ pub(crate) trait ControlTableHookEvents {
 pub(crate) struct ControlTableHooks<'a, R: Reply + ?Sized> {
     reply: &'a mut R,
     /// Post-commit `tel_mask`, snapshotted by the dispatcher so a
-    /// `tel_count` hook can pair the arm with the mask it streams under.
+    /// `tel_count` hook can pair the arm with the mask it streams under; 0
+    /// while a shunt burst holds the ADC.
     tel_mask: u16,
 }
 
