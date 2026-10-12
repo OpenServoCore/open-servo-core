@@ -476,7 +476,9 @@ impl Cpu {
             Vector::TxDone => Body::TxDone,
             Vector::Stage => Body::TelStage,
         };
-        p.body(self.body_ticks as u32, body);
+        // Booked at entry, before any kernel preempts it: wall = net.
+        let ticks = self.body_ticks as u32;
+        p.body(ticks, ticks, 0, body);
     }
 
     fn occupy(&mut self, now: u64, ticks: u64) {

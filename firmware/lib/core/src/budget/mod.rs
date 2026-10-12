@@ -9,8 +9,9 @@
 //! 3% with at least 1 us of margin; means plus 5%) or E (estimated, from the
 //! named instrument plus the stated headroom). Kernel values are whole tick
 //! bodies, entry stamp to exit stamp, by drive arm and medium phase; bus
-//! values exclude the kernel time that preempted them. Interrupt entry and
-//! exit fall outside every stamp: [`ENTRY_EXIT`] carries them for the DES.
+//! values exclude the kernel vectors that preempted them, each with its
+//! interrupt entry and exit at [`ENTRY_EXIT`]. Interrupt entry and exit fall
+//! outside every stamp: [`ENTRY_EXIT`] carries them for the DES.
 
 pub mod probe;
 
