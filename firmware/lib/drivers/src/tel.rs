@@ -48,8 +48,12 @@ pub struct TelChannel {
     /// Burst gate the producer polls each tick.
     active: SyncUnsafeCell<bool>,
     arm_mask: SyncUnsafeCell<u16>,
-    /// The mask's row, planned at the arm so the kernel only copies it.
-    arm_plan: SyncUnsafeCell<RowPlan>,
+    /// Row plans the arm builds and the pickup copies: an arm writes the
+    /// slot the last published arm does not name and posts its index, so
+    /// the kernel, which the bus never preempts, never copies a slot
+    /// mid-write, however many arms land between two ticks.
+    plans: [SyncUnsafeCell<RowPlan>; 2],
+    arm_slot: SyncUnsafeCell<u8>,
     arm_count: SyncUnsafeCell<u16>,
     /// Mailbox epoch, written last (fence-ordered), never 0; the kernel
     /// double-reads it around the payload to reject a torn pickup.
@@ -73,7 +77,8 @@ impl TelChannel {
             ready: [SyncUnsafeCell::new(0), SyncUnsafeCell::new(0)],
             active: SyncUnsafeCell::new(false),
             arm_mask: SyncUnsafeCell::new(0),
-            arm_plan: SyncUnsafeCell::new(RowPlan::EMPTY),
+            plans: [const { SyncUnsafeCell::new(RowPlan::EMPTY) }; 2],
+            arm_slot: SyncUnsafeCell::new(0),
             arm_count: SyncUnsafeCell::new(0),
             arm_seq: SyncUnsafeCell::new(0),
             drops: SyncUnsafeCell::new(0),
@@ -110,7 +115,7 @@ impl TelChannel {
                 valid: 0,
                 alert: false,
             },
-            TelDrain { ch: self },
+            TelDrain { ch: self, slot: 0 },
         )
     }
 }
@@ -155,15 +160,19 @@ impl TelFeed {
         let ch = self.ch;
         // SAFETY: mailbox fields are bus-written, volatile-read here; the
         // seq double-read brackets the payload (type doc).
-        let (mask, plan, count) = unsafe {
+        let (mask, slot, count) = unsafe {
             let mask = ch.arm_mask.get().read_volatile();
-            let plan = ch.arm_plan.get().read_volatile();
+            let slot = ch.arm_slot.get().read_volatile() as usize & 1;
             let count = ch.arm_count.get().read_volatile();
             if ch.arm_seq.get().read_volatile() != seq {
                 return;
             }
-            (mask, plan, count)
+            (mask, slot, count)
         };
+        compiler_fence(Ordering::Acquire);
+        // SAFETY: the published arm's slot, which no arm writes (type doc):
+        // a plain word copy.
+        let plan = unsafe { *ch.plans[slot].get() };
         self.epoch = seq;
         self.mask = mask;
         self.plan = plan;
@@ -257,6 +266,8 @@ impl TelFeed {
 /// Bus-side half: posts arms, gates the producer, consumes ready buffers.
 pub struct TelDrain {
     ch: &'static TelChannel,
+    /// The plan slot the last posted arm named.
+    slot: u8,
 }
 
 impl TelDrain {
@@ -266,11 +277,14 @@ impl TelDrain {
     pub(crate) fn send_arm(&mut self, mask: u16, count: u16) -> u8 {
         let ch = self.ch;
         let plan = RowPlan::new(mask).unwrap_or(RowPlan::EMPTY);
+        self.slot ^= 1;
         // SAFETY: sole mailbox writer (type doc); payload lands before the
-        // fenced seq store the kernel keys on.
+        // fenced seq store the kernel keys on, in the slot the published
+        // arm does not name.
         unsafe {
+            ch.plans[self.slot as usize & 1].get().write_volatile(plan);
             ch.arm_mask.get().write_volatile(mask);
-            ch.arm_plan.get().write_volatile(plan);
+            ch.arm_slot.get().write_volatile(self.slot);
             ch.arm_count.get().write_volatile(count);
             let mut seq = ch.arm_seq.get().read_volatile().wrapping_add(1);
             if seq == 0 {
@@ -418,6 +432,26 @@ mod tests {
         assert_eq!(ch.drops(), 5);
         let m = drain.ready(0, epoch).expect("refilled batch");
         assert!(!m.last);
+    }
+
+    /// Arms that land between two ticks alternate plan slots: the pickup
+    /// takes the last one's plan whole, whatever the arms before it wrote.
+    #[test]
+    fn back_to_back_arms_take_the_latest_plan() {
+        use osc_servo_core::tel::{BIT_CURRENT, BIT_POS};
+        let (mut feed, mut drain) = channel();
+        drain.send_arm(MASK_SIX, 16);
+        drain.send_arm(BIT_POS | BIT_CURRENT, 16);
+        let epoch = arm(&mut drain, BIT_POS, 2);
+        let samples = [sample(1), sample(2)];
+        for s in &samples {
+            tick(&mut feed, s);
+        }
+        let mut want = [0u8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(BIT_POS, 0, true, &samples, &mut want);
+        let m = drain.ready(0, epoch).expect("the last arm's batch");
+        assert_eq!(m.len as usize, n);
+        assert_eq!(drain.payload(0)[..n], want[..n]);
     }
 
     #[test]

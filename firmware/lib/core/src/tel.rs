@@ -168,7 +168,9 @@ impl TelStream for () {
 }
 
 /// A mask's row as the encoder walks it, built once per arm: the sample
-/// offsets of the 16-bit slots, then of the 12-bit pairs.
+/// offsets of the 16-bit slots, then of the 12-bit pairs. Word-aligned so
+/// the kernel's pickup copies it in four words.
+#[repr(C, align(4))]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct RowPlan {
     at: [u8; FIELDS],
