@@ -200,11 +200,12 @@ pub const fn body(b: Body) -> u32 {
 ///
 /// M: each body's largest window mean (at least [`MEAN_MIN_BODIES`]
 /// bodies), the same spin rule. BreakWake: the GREAD slot window; Deadline:
-/// the goal WRITE; TelPoll: TEL still; the rest TEL stepping.
+/// the goal WRITE; TelPoll: TEL still; the rest TEL stepping, TxDone with
+/// the stager wake on release (316).
 pub const fn body_mean(b: Body) -> u32 {
     match b {
         Body::BreakWake => 803,
-        Body::TxDone => 302,
+        Body::TxDone => 332,
         Body::Deadline => 5770,
         Body::TelStage => 1152,
         Body::TelPoll => 44,
