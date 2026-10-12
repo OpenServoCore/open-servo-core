@@ -113,7 +113,7 @@ fn event_tick(phase: u8, ev: Events) -> u32 {
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
-#[ignore = "over budget: the TEL row (612) and its bank (183) put the freeze tick at 3140 with the health close and entry and exit, 740 over; a plain Closed p1 with the TEL row alone takes 2763"]
+#[ignore = "over budget: the TEL row (671) and its bank (177) put the freeze tick at 2988 with the health close and entry and exit, 588 over (side 2964, install 2811); a plain Closed p1 with the TEL row alone takes 2626"]
 #[case::streaming(true)]
 fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     let carried = Events {
@@ -160,7 +160,7 @@ fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
 /// The SLOW-due tick while six fields stream and step, Closed at budget,
 /// with a bank and the health close on it.
 #[test]
-#[ignore = "over budget: 1455 + SLOW 753 + TEL 612 + bank 183 + health close 93 = 3096 against 2320, 776 over; with a 300 TEL row and bank still 281 over"]
+#[ignore = "over budget: 1250 + SLOW 753 + TEL 671 + bank 177 + health close 93 + entry and exit 80 = 3024 against 2400, 624 over; with a 300 TEL row and bank still 76 over"]
 fn slow_due_fits_at_budget_while_streaming() {
     let ev = Events {
         slow: true,
@@ -378,7 +378,7 @@ fn tel_widest_row_keeps_up_at_rest() {
 }
 
 #[test]
-#[ignore = "over budget on main: stepping at budget, a 1600-row burst of six packed fields drops 4553 rows and sends 9 of 100 frames (start 0); the Closed rows at their maxima plus the TEL encode fill the tick, and the drops stop only near a zero encode"]
+#[ignore = "over budget on main: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops 1931-2004 rows over the 16 starts; the Closed rows with entry and exit plus the TEL row average 2284 of the 2400 period, less than one stager poll (214) per tick"]
 fn tel_six_packed_fields_fit_at_budget_while_stepping() {
     for k in 0..STARTS {
         let got = tel_burst(SIX_FIELDS, Motion::Moving, k);
