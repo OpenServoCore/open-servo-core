@@ -12,7 +12,6 @@ use super::ident::IdentAgg;
 use super::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
-use crate::math::sat_clamp;
 use crate::pos_lut;
 use crate::tel::{self, TelSample, TelStream};
 use crate::traits::{DecayMode, MotorCmd};
@@ -244,7 +243,8 @@ impl Fast {
             None
         };
         if let Some(i) = i_meas {
-            self.i_meas_last = sat_clamp(i, i16::MIN as i32, i16::MAX as i32) as i16;
+            // 12-bit shunt codes under a settle gain < 2.0: |i| <= 8190
+            self.i_meas_last = i as i16;
         }
         let oc_over = i_meas.map(|i| i.unsigned_abs() > fc.oc_trip_counts as u32);
         if self.oc.sample(oc_over, fc.oc_trip_ticks) {
@@ -259,7 +259,8 @@ impl Fast {
         let vdiff =
             window::vdiff_from_frame(frame, sel).map(|v| if fc.drive_polarity { v } else { -v });
         if let Some(vdiff) = vdiff {
-            self.vdiff_last = sat_clamp(vdiff, i16::MIN as i32, i16::MAX as i32) as i16;
+            // 12-bit taps: |vdiff| <= 4095
+            self.vdiff_last = vdiff as i16;
         }
         self.bemf.sample(
             ticks,

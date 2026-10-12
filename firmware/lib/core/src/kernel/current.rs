@@ -13,8 +13,8 @@ use crate::math::{q_mul, sat_add, sat_clamp, sat_mul, sat_sub};
 /// i32-exact: u16 gain * 2^13 <= 2^29.
 const E_LIM_CC: i32 = 8192;
 
-/// Back-calculation excess clamp, vcounts. The excess u_cl - u is unbounded
-/// (u saturates i32 under hostile inputs); 8192 is already 2x a 12-bit vbus,
+/// Back-calculation excess clamp, vcounts. The excess u_cl - u reaches
+/// |u| < 2^23 under hostile inputs; 8192 is already 2x a 12-bit vbus,
 /// so clamping only limits the per-tick unwind rate, and the product bound
 /// matches E_LIM_CC: kaw * 2^13 <= 2^29.
 const AW_LIM_VC: i32 = 8192;
@@ -84,7 +84,8 @@ impl CurrentLoop {
     /// and the output rides integrator + feedforward (`u_ff_vc`) until the
     /// window returns. `rail` and `recip_vbus_q15` must describe the same
     /// vbus (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~=
-    /// 32767`) or the duty cap is off by their mismatch.
+    /// 32767`) or the duty cap is off by their mismatch. The voltage sums
+    /// rely on `u_ff_vc` being the free fn `u_ff_vc`'s output (<= 2^19).
     pub fn step(
         &mut self,
         i_ref: i32,
@@ -98,13 +99,14 @@ impl CurrentLoop {
             Some(i) => sat_clamp(sat_sub(i_ref, i), -E_LIM_CC, E_LIM_CC),
             None => 0,
         };
-        // kp * 2^13 <= 2^29, i32-exact before the shift
-        let u_pi = sat_add(q_mul(gains.kp_q88 as i32, e, 8), self.integ_vq16 >> 16);
-        let u = sat_add(u_pi, u_ff_vc);
+        // kp * 2^13 <= 2^29, i32-exact before the shift; |u_pi| < 2^22, so
+        // u, and u_cl - u below, stay under 2^23
+        let u_pi = q_mul(gains.kp_q88 as i32, e, 8) + (self.integ_vq16 >> 16);
+        let u = u_pi + u_ff_vc;
         let v_max = rail.v_max_vc;
         let u_cl = sat_clamp(u, -v_max, v_max);
         if i_meas.is_some() {
-            let aw = sat_clamp(sat_sub(u_cl, u), -AW_LIM_VC, AW_LIM_VC);
+            let aw = sat_clamp(u_cl - u, -AW_LIM_VC, AW_LIM_VC);
             // Q4.12 * ccounts -> vQ16 needs << (16 - 12); the products are
             // i32-exact (<= 2^29 per the E/AW clamps) but << 4 can reach
             // 2^33, so the shift saturates via mul. Integrator clamp:
@@ -332,6 +334,26 @@ mod tests {
                                 d.unsigned_abs() <= 20000,
                                 "d={d} vbus={vbus} i_ref={i_ref} omega={omega}"
                             );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn voltage_sums_stay_in_i32_at_extreme_inputs() {
+        // debug overflow checks trip if any plain add or subtract in `step`
+        // leaves i32
+        let gains = g(u16::MAX, u16::MAX, u16::MAX, u16::MAX, u16::MAX);
+        for vbus in [1u16, 4095, u16::MAX] {
+            let recip = recip_for(vbus);
+            for i_ref in [i32::MIN, 0, i32::MAX] {
+                for omega in [i32::MIN, 0, i32::MAX] {
+                    for i_meas in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
+                        let mut cur = CurrentLoop::new();
+                        for _ in 0..20 {
+                            step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);
                         }
                     }
                 }
