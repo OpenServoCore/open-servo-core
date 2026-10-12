@@ -98,21 +98,20 @@ pub const TEL_BANK: u32 = 183;
 /// tracked seat.
 pub const SLOW_DUE: [u32; 2] = [753, 753];
 
-/// The due tick that closes a thermal reference window (two reciprocal
-/// divides, the install, the cold check) in place of [`SLOW_DUE`]: at most
-/// once per seat, 190 gated SLOW runs after it opens. E: priced at 1428
-/// over the plain tick, plus 10%; no loaded seat has run on the bench.
-pub const SLOW_CLOSE: u32 = 1571;
+/// The due tick that freezes a thermal reference window, in place of
+/// [`SLOW_DUE`]: at most once per seat, 190 gated SLOW runs after it opens.
+/// E: priced at 651 over the plain tick, plus 10%; no loaded seat has run
+/// on the bench.
+pub const SLOW_CLOSE: u32 = 717;
 
-/// The staged close's install at phase 8 of the due period, once the close
-/// moves off the SLOW tick. E: priced at about 400, plus 10%.
-pub const THERM_INSTALL: u32 = 440;
-
-/// The thermometer's side work on phase THERM_SIDE (`kernel::phase`), on
-/// top of its row: the NTC the period before a SLOW tick (a conversion and
-/// its bound once a second), or the derate after one. E: priced at 375 (a
-/// conversion; the derate on its ramp 249) over the plain tick, plus 10%.
-pub const THERM_SIDE: u32 = 413;
+/// The thermometer's stages on the spare phases (`kernel::phase`), on top
+/// of their rows. THERM_INSTALL: a frozen window's install after its SLOW
+/// tick (two reciprocal divides). THERM_SIDE: the NTC the period before a
+/// SLOW tick (a conversion and its bound once a second), or the derate and
+/// a cold check after one. E: priced at 531 and at 573 (the derate on its
+/// ramp with a cold check; a conversion 384) over the plain tick, plus 10%.
+pub const THERM_INSTALL: u32 = 585;
+pub const THERM_SIDE: u32 = 631;
 
 /// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, and
 /// the catch-up it adds after a lost tick. E: priced on the executed path.
@@ -296,6 +295,9 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     } else if ev.slow {
         t += SLOW_DUE[r];
     }
+    if ev.install {
+        t += THERM_INSTALL;
+    }
     if ev.side {
         t += THERM_SIDE;
     }
@@ -317,6 +319,7 @@ pub struct Events {
     /// The SLOW block ran; `close`: and froze a thermal reference window.
     pub slow: bool,
     pub close: bool,
-    /// The thermometer's side work on phase THERM_SIDE.
+    /// The thermometer's stages on phases THERM_INSTALL and THERM_SIDE.
+    pub install: bool,
     pub side: bool,
 }
