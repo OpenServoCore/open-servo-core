@@ -479,7 +479,9 @@ impl TxWire for SimWire {
     }
 
     fn release(&mut self) {
-        self.core.borrow_mut().finalize_servo_frame();
+        self.core
+            .borrow_mut()
+            .finalize_servo_frame(Talker::Servo(self.idx));
     }
 }
 

@@ -630,3 +630,38 @@ fn reclaim_window_counts_from_the_slots_own_readiness() {
         assert_eq!(decoded(f).0, ResultCode::Ok);
     }
 }
+
+/// Slot 0's TX-done bodies outlast slot 1's reply gap, so its TX releases
+/// after slot 1's break. The pin is open drain and nothing times off the
+/// release (protocol sec 2), so the wire is free from slot 0's last stop bit
+/// and both statuses stand whole.
+#[test]
+fn chain_slot_follows_a_predecessor_still_in_its_release_body() {
+    let mut sim = Sim::new(BaudRate::B3000000);
+    for id in [1u8, 2] {
+        let s = sim.add_servo(id);
+        sim.set_handler_cost(
+            s,
+            HandlerCost {
+                on_tx_complete_us: 40,
+                ..Default::default()
+            },
+        );
+    }
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform(GOAL_VELOCITY, 4, &[1, 2]),
+    ));
+    let frames = sim.run();
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 2, "{frames:#?}");
+    assert!(reps.iter().all(|f| !f.collided), "{frames:#?}");
+    assert_eq!(responder(reps[0]), 1);
+    assert_eq!(responder(reps[1]), 2);
+    assert!(reps[1].at >= reps[0].end + support::reply_gap_ticks());
+    for f in reps {
+        assert_eq!(decoded(f).0, ResultCode::Ok);
+    }
+}
