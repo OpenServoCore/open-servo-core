@@ -69,13 +69,16 @@ fn kernel_ticks_book_by_what_they_carried() {
         ..PLAIN
     };
     tick(&mut k, 8, 2200, 6, closed, close);
-    assert_eq!(k.tick[0][0], Load::ZERO, "the boot tick books nothing");
+    assert_eq!(k.load(OPEN, 0), Load::ZERO, "the boot tick books nothing");
     let one = |b| Load {
         n: 1,
         sum: b,
         max: b,
     };
-    assert_eq!((k.tick[0][1], k.tick[1][1]), (one(1100), one(LONG_TICKS)));
+    assert_eq!(
+        (k.load(OPEN, 1), k.load(closed, 1)),
+        (one(1100), one(LONG_TICKS))
+    );
     assert_eq!((k.tel_max[2], k.bank_max[3]), (1500, 1700));
     assert_eq!(
         (k.refresh.max, k.slow[1], k.close),
@@ -322,13 +325,14 @@ fn every_mean_budget_sits_inside_its_maximum() {
 fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
     let mut k = KernelProbe::ZERO;
     let enc = TEL_ENCODE_MEAN[Regime::Open as usize];
+    let plain = KERNEL_MEAN[OPEN as usize].into_iter().min().unwrap_or(0);
     for i in 1..2 * MEAN_MIN_BODIES {
         let p = i as usize % PHASES;
-        tick(&mut k, 2 * i, 600, p, OPEN, PLAIN);
+        tick(&mut k, 2 * i, plain, p, OPEN, PLAIN);
         tick(
             &mut k,
             2 * i + 1,
-            600 + enc + 1,
+            plain + enc + 1,
             p,
             OPEN,
             Events { tel: true, ..PLAIN },

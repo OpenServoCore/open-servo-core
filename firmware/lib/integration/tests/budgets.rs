@@ -11,7 +11,7 @@ use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
     self, Body, ENTRY_EXIT, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES, Regime,
-    TEL_BANK, TEL_ENCODE, TICK_HZ, WINDOW_LOAD, WINDOW_TICKS,
+    TEL_BANK, TEL_ENCODE, TICK_HZ, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
 use osc_servo_core::kernel::DECIM_SLOW;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT, TEL_MASK};
@@ -175,9 +175,9 @@ fn the_des_charges_the_measured_entry_exit() {
     assert_eq!(poll, body as u64);
 }
 
-/// The kernel lane's own gamma(k) at budget, over two SLOW cycles with no
-/// traffic, against the bench's for each regime. A k the bench has not
-/// measured fails until a fill records it.
+/// The kernel lane's own gamma(k) at budget against the bench's for each
+/// regime: over two SLOW cycles with no traffic, and through a six-field
+/// burst. A k the bench has not measured fails until a fill records it.
 #[test]
 fn window_load_at_budget_is_never_below_bench() {
     let ticks = 2 * DECIM_SLOW as u64 * PHASES as u64;
@@ -186,19 +186,22 @@ fn window_load_at_budget_is_never_below_bench() {
         (Regime::Open, Motion::Quiet),
         (Regime::Closed, Motion::Moving),
     ] {
+        let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
         let mut sim = Sim::new(BaudRate::B3000000);
         let s = sim.add_servo(ID);
-        let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
         sim.set_kernel_lane(s, lane, START_US + ticks * TICK_US);
         sim.run();
-        let des = sim.kernel_stats(s).windows.gamma;
-        for ((k, des), bench) in WINDOW_TICKS
-            .into_iter()
-            .zip(des)
-            .zip(WINDOW_LOAD[r as usize])
-        {
-            if bench == 0 || des < bench {
-                short.push(format!("{r:?} gamma({k}): DES {des}, bench {bench}"));
+        let quiet = sim.kernel_stats(s).windows.gamma;
+        let (_, sim, s) = burst_sim(lane, HandlerCost::at_budget(Frame::Write));
+        let tel = sim.kernel_stats(s).windows.gamma;
+        for (des, bench, what) in [
+            (quiet, WINDOW_LOAD[r as usize], ""),
+            (tel, WINDOW_LOAD_TEL[r as usize], " TEL"),
+        ] {
+            for ((k, des), bench) in WINDOW_TICKS.into_iter().zip(des).zip(bench) {
+                if bench == 0 || des < bench {
+                    short.push(format!("{r:?}{what} gamma({k}): DES {des}, bench {bench}"));
+                }
             }
         }
     }

@@ -177,13 +177,13 @@ pub struct TelCosts {
 }
 
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
-/// block on phase SLOW every DECIM_SLOW periods, and the tick-load close
-/// every [`budget::HEALTH_CLOSE_TICKS`] ticks, with the catch-up when a
-/// tick was lost since the last one. The close lands on the SLOW tick:
-/// the critical instant.
+/// block on phase SLOW every DECIM_SLOW periods (by regime), and the
+/// tick-load close every [`budget::HEALTH_CLOSE_TICKS`] ticks, with the
+/// catch-up when a tick was lost since the last one. The close lands on the
+/// SLOW tick: the critical instant.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
-    pub slow_due: u64,
+    pub slow_due: [u64; 2],
     pub health_close: u64,
     pub catch_up: u64,
 }
@@ -204,7 +204,7 @@ impl KernelLane {
                 poll: bus_body(budget::body(Body::TelPoll)),
             },
             events: KernelEvents {
-                slow_due: budget::SLOW_DUE as u64,
+                slow_due: budget::SLOW_DUE.map(u64::from),
                 health_close: budget::HEALTH_CLOSE as u64,
                 catch_up: budget::CATCH_UP as u64,
             },
@@ -217,13 +217,14 @@ impl KernelLane {
     /// `(bus + longest) / (1 - U)`, U the share of a medium period of the
     /// lane's heavier regime, a close in every period (TEL off).
     pub fn wall(&self, bus: u64) -> u64 {
-        let phases = self.phases[self.heavier() as usize];
+        let r = self.heavier() as usize;
+        let phases = self.phases[r];
         let ev = &self.events;
         let busy = phases.iter().sum::<u64>() + ev.health_close;
         let span = phases.len() as u64 * KERNEL_PERIOD;
         let slow = phases
             .get(phase::SLOW as usize)
-            .map_or(0, |b| b + ev.slow_due);
+            .map_or(0, |b| b + ev.slow_due[r]);
         let longest = phases.iter().copied().max().unwrap_or(0).max(slow);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
@@ -591,7 +592,7 @@ impl Cpu {
         }
         let ev = k.lane.events;
         if k.phase == phase::SLOW as usize && k.periods.is_multiple_of(DECIM_SLOW as u64) {
-            cost += ev.slow_due;
+            cost += ev.slow_due[r];
         }
         let close = budget::HEALTH_CLOSE_TICKS as u64;
         if (tick + close - phase::SLOW as u64).is_multiple_of(close) {

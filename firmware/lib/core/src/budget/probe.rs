@@ -9,6 +9,8 @@ use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_
 /// budgeted body: counted, kept out of every statistic.
 pub const HALT_TICKS: u32 = 1000 * TICKS_PER_US;
 
+const _: () = assert!(HALT_TICKS <= u16::MAX as u32);
+
 /// Kernel body histogram: 5 us bins, the last one open.
 pub const HIST_BIN: u32 = 5 * TICKS_PER_US;
 pub const HIST_BINS: usize = 16;
@@ -40,6 +42,18 @@ impl Load {
     pub fn mean(&self) -> u32 {
         self.sum.checked_div(self.n).unwrap_or(0)
     }
+}
+
+/// A [`Load`] whose maximum is kept apart, narrow.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct Tally {
+    pub n: u32,
+    pub sum: u32,
+}
+
+impl Tally {
+    pub const ZERO: Self = Self { n: 0, sum: 0 };
 }
 
 const RING: usize = WINDOW_TICKS[WINDOW_TICKS.len() - 1];
@@ -91,12 +105,14 @@ pub const LONG_TICKS: u32 = 30 * TICKS_PER_US;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct KernelProbe {
-    /// Ticks with no event, by regime and phase.
-    pub tick: [[Load; PHASES]; 2],
+    /// Ticks with no event, by regime and phase, and the longest of each:
+    /// [`Self::load`].
+    pub tick: [[Tally; PHASES]; 2],
+    pub tick_max: [[u16; PHASES]; 2],
     /// Longest TEL tick that banked nothing, by phase.
-    pub tel_max: [u32; PHASES],
+    pub tel_max: [u16; PHASES],
     /// Longest banking tick, by phase.
-    pub bank_max: [u32; PHASES],
+    pub bank_max: [u16; PHASES],
     /// TEL ticks that banked nothing, all phases.
     pub tel: Load,
     /// CONTROL ticks that rebuilt the configuration.
@@ -120,7 +136,8 @@ pub struct KernelProbe {
 
 impl KernelProbe {
     pub const ZERO: Self = Self {
-        tick: [[Load::ZERO; PHASES]; 2],
+        tick: [[Tally::ZERO; PHASES]; 2],
+        tick_max: [[0; PHASES]; 2],
         tel_max: [0; PHASES],
         bank_max: [0; PHASES],
         tel: Load::ZERO,
@@ -164,6 +181,7 @@ impl KernelProbe {
             self.late_max = self.late_max.max(late);
         }
         self.windows.add(body);
+        let body16 = body as u16;
         let r = r as usize;
         if body >= LONG_TICKS
             && let Some(n) = self.long.get_mut(r)
@@ -180,15 +198,32 @@ impl KernelProbe {
             }
         } else if ev.bank {
             if let Some(m) = self.bank_max.get_mut(phase) {
-                *m = (*m).max(body);
+                *m = (*m).max(body16);
             }
         } else if ev.tel {
             self.tel.add(body);
             if let Some(m) = self.tel_max.get_mut(phase) {
-                *m = (*m).max(body);
+                *m = (*m).max(body16);
             }
-        } else if let Some(l) = self.tick.get_mut(r).and_then(|t| t.get_mut(phase)) {
-            l.add(body);
+        } else if let (Some(t), Some(m)) = (
+            self.tick.get_mut(r).and_then(|t| t.get_mut(phase)),
+            self.tick_max.get_mut(r).and_then(|m| m.get_mut(phase)),
+        ) {
+            t.n = t.n.wrapping_add(1);
+            t.sum = t.sum.wrapping_add(body);
+            *m = (*m).max(body16);
+        }
+    }
+
+    /// The plain ticks of `r` at `phase`.
+    pub fn load(&self, r: Regime, phase: usize) -> Load {
+        let r = r as usize;
+        let t = self.tick.get(r).and_then(|t| t.get(phase));
+        let max = self.tick_max.get(r).and_then(|m| m.get(phase));
+        Load {
+            n: t.map_or(0, |t| t.n),
+            sum: t.map_or(0, |t| t.sum),
+            max: max.map_or(0, |&m| m.into()),
         }
     }
 
@@ -209,7 +244,7 @@ impl KernelProbe {
     /// The regime the window's TEL and event ticks are held to: Closed once
     /// any tick drove.
     pub fn drove(&self) -> Regime {
-        if self.slow[1].n != 0 || self.tick[1].iter().any(|l| l.n != 0) {
+        if self.slow[1].n != 0 || self.tick[1].iter().any(|t| t.n != 0) {
             Regime::Closed
         } else {
             Regime::Open
@@ -223,19 +258,22 @@ impl KernelProbe {
         }
         let mut r = Words(w);
         Some(Self {
-            tick: core::array::from_fn(|_| core::array::from_fn(|_| r.load())),
-            tel_max: core::array::from_fn(|_| r.word()),
-            bank_max: core::array::from_fn(|_| r.word()),
+            tick: core::array::from_fn(|_| {
+                core::array::from_fn(|_| Tally {
+                    n: r.word(),
+                    sum: r.word(),
+                })
+            }),
+            tick_max: core::array::from_fn(|_| r.halves()),
+            tel_max: r.halves(),
+            bank_max: r.halves(),
             tel: r.load(),
             refresh: r.load(),
             slow: core::array::from_fn(|_| r.load()),
             close: r.load(),
             long: core::array::from_fn(|_| r.word()),
             windows: Windows {
-                ring: {
-                    let half: [u32; RING / 2] = core::array::from_fn(|_| r.word());
-                    core::array::from_fn(|i| (half[i / 2] >> (16 * (i % 2))) as u16)
-                },
+                ring: r.halves(),
                 at: r.word(),
                 sum: core::array::from_fn(|_| r.word()),
                 gamma: core::array::from_fn(|_| r.word()),
@@ -411,6 +449,17 @@ impl Words<'_> {
             max: self.word(),
         }
     }
+
+    /// `N` halfwords, two to a little-endian word (`N` even).
+    fn halves<const N: usize>(&mut self) -> [u16; N] {
+        let mut w = 0;
+        core::array::from_fn(|i| {
+            if i % 2 == 0 {
+                w = self.word();
+            }
+            (w >> (16 * (i % 2))) as u16
+        })
+    }
 }
 
 /// One measured window: whether it streamed, and the frames the host sent
@@ -460,10 +509,10 @@ impl Row {
 /// Every budgeted component of a window, measured against the table.
 pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(Row)) {
     for r in Regime::ALL {
-        for (p, t) in k.tick[r as usize].iter().enumerate() {
+        for p in 0..PHASES {
             let budget = super::kernel_tick(r, p, Events::default());
             let mean = super::KERNEL_MEAN[r as usize][p];
-            f(load_row(Component::Tick(r, p), *t, budget, mean));
+            f(load_row(Component::Tick(r, p), k.load(r, p), budget, mean));
         }
     }
     let r = k.drove();
@@ -475,12 +524,12 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     for (p, (tel_max, bank_max)) in k.tel_max.into_iter().zip(k.bank_max).enumerate() {
         f(max_row(
             Component::TelTick(p),
-            tel_max,
+            tel_max.into(),
             super::kernel_tick(r, p, tel),
         ));
         f(max_row(
             Component::BankTick(p),
-            bank_max,
+            bank_max.into(),
             super::kernel_tick(r, p, bank),
         ));
     }
