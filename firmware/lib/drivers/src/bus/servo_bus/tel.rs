@@ -10,8 +10,7 @@ use crate::tel::TelDrain;
 
 pub(super) struct TelBurst {
     drain: Option<TelDrain>,
-    /// The arm the next lend streams.
-    mask: u16,
+    /// The arm the next lend streams; its plan is posted.
     count: u16,
     /// The lent burst's epoch.
     epoch: u8,
@@ -21,7 +20,6 @@ impl TelBurst {
     pub(super) const fn new() -> Self {
         Self {
             drain: None,
-            mask: 0,
             count: 0,
             epoch: 0,
         }
@@ -31,17 +29,24 @@ impl TelBurst {
         self.drain = Some(drain);
     }
 
-    /// `Reply::tel_arm`: true when the arm wants the lane (count 0 disarms).
+    /// `Reply::tel_arm`, never while the lane is lent: true when the arm
+    /// wants the lane (count 0 disarms), its plan then posted.
     pub(super) fn arm(&mut self, mask: u16, count: u16) -> bool {
-        self.mask = mask;
         self.count = count;
-        count != 0 && self.drain.is_some()
+        let Some(d) = self.drain.as_mut() else {
+            return false;
+        };
+        if count == 0 {
+            return false;
+        }
+        d.post(mask);
+        true
     }
 
     /// Lend the lane: the kernel streams the arm from its next tick.
     pub(super) fn start(&mut self, id: u8, rate: BaudRate) {
         if let Some(d) = self.drain.as_mut() {
-            self.epoch = d.start(self.mask, self.count, id, rate);
+            self.epoch = d.start(self.count, id, rate);
         }
     }
 

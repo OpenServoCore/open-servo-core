@@ -74,6 +74,12 @@ impl Rig {
         }
     }
 
+    /// The bus's arm: post the plan, then lend the lane.
+    fn arm(&mut self, mask: u16, count: u16, id: u8, rate: BaudRate) -> u8 {
+        self.drain.post(mask);
+        self.drain.start(count, id, rate)
+    }
+
     /// Ticks until the wire carries an image, at most `bound`.
     fn tick_to_stream(&mut self, i: &mut u16, bound: u16) {
         for _ in 0..bound {
@@ -124,7 +130,7 @@ fn golden(mask: u16, seq: u8, last: bool, rows: core::ops::Range<u16>) -> std::v
 #[test]
 fn frames_stream_cut_through_and_match_encode_stream() {
     let mut r = rig();
-    r.drain.start(MASK_SIX, 20, ID, RATE);
+    r.arm(MASK_SIX, 20, ID, RATE);
     let mut i = 0;
     r.tick_to_stream(&mut i, 16);
     // 11 B rows at 3M: cov 190, the CRC 188 byte-times (12.5 ticks) behind
@@ -152,7 +158,7 @@ fn frames_stream_cut_through_and_match_encode_stream() {
 #[test]
 fn rows_landing_behind_the_read_fail_the_crc() {
     let mut r = rig();
-    r.drain.start(MASK_SIX, 16, ID, RATE);
+    r.arm(MASK_SIX, 16, ID, RATE);
     let mut i = 0;
     r.tick_to_stream(&mut i, 16);
     r.wire.finish();
@@ -173,7 +179,7 @@ fn rows_landing_behind_the_read_fail_the_crc() {
 #[test]
 fn sick_crc_engine_costs_the_crc_never_the_lane() {
     let mut r = rig_with(FakeCrc::sick());
-    r.drain.start(MASK_SIX, 40, ID, RATE);
+    r.arm(MASK_SIX, 40, ID, RATE);
     r.run(0, 120);
     let frames = r.wire.streamed();
     assert_eq!(frames.len(), 3);
@@ -199,7 +205,7 @@ fn lead_follows_the_start_rule() {
         (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW, 9),
     ] {
         let mut r = rig();
-        r.drain.start(mask, 32, ID, rate);
+        r.arm(mask, 32, ID, rate);
         let mut n = 0;
         while r.wire.idle() {
             r.tick(&sample(n));
@@ -222,7 +228,7 @@ fn odd_covered_span_folds_its_tail_byte() {
     // leave the covered span odd.
     let mask = 0x0C0;
     assert_eq!(osc_servo_core::tel::row_bytes(mask), 3);
-    r.drain.start(mask, 3, ID, RATE);
+    r.arm(mask, 3, ID, RATE);
     for i in 0..8 {
         r.tick(&sample(i));
         r.wire.finish();
@@ -236,7 +242,7 @@ fn odd_covered_span_folds_its_tail_byte() {
 #[test]
 fn full_images_drop_and_count() {
     let mut r = rig();
-    r.drain.start(BIT_POS, 64, ID, RATE);
+    r.arm(BIT_POS, 64, ID, RATE);
     let mut i = 0;
     // The wire never finishes an image: frame 0 streams, frame 1 banks at
     // row 31, and frame 2's row 0 drops from tick 32 on.
@@ -264,7 +270,7 @@ fn full_images_drop_and_count() {
 #[test]
 fn last_frame_publishes_the_resume_cursor() {
     let mut r = rig();
-    let epoch = r.drain.start(BIT_POS, 2, ID, RATE);
+    let epoch = r.arm(BIT_POS, 2, ID, RATE);
     r.ring.set_cursor(77);
     let mut i = 0;
     while r.wire.streaming().is_none() {
@@ -275,7 +281,7 @@ fn last_frame_publishes_the_resume_cursor() {
     }
     assert_eq!(r.drain.last_out(epoch), Some(77));
 
-    let epoch = r.drain.start(0, 5, ID, RATE);
+    let epoch = r.arm(0, 5, ID, RATE);
     r.ring.set_cursor(91);
     r.tick(&sample(0));
     assert_eq!(r.drain.last_out(epoch), Some(91));
@@ -291,10 +297,29 @@ fn lane_runs_only_while_lent() {
         r.tick(&sample(i));
     }
     assert!(r.wire.log().is_empty());
-    r.drain.start(BIT_POS, 64, ID, RATE);
+    r.arm(BIT_POS, 64, ID, RATE);
     r.drain.stop();
     for i in 0..20 {
         r.tick(&sample(i));
     }
     assert!(r.wire.idle() && r.wire.log().is_empty());
+}
+
+/// The bus posts the plan where it dispatches the arm and lends at the
+/// ack's release: a post alone moves nothing, and the lend streams the
+/// latest plan posted.
+#[test]
+fn a_posted_plan_waits_for_its_lend() {
+    let mut r = rig();
+    r.drain.post(BIT_POS);
+    r.drain.post(MASK_SIX);
+    for i in 0..20 {
+        r.tick(&sample(i));
+    }
+    assert!(r.wire.log().is_empty());
+    r.drain.start(16, ID, RATE);
+    r.run(0, 40);
+    let f = &r.wire.streamed()[0];
+    assert_eq!(payload(f), golden(MASK_SIX, 0, true, 0..16));
+    assert!(r.feed.idle());
 }

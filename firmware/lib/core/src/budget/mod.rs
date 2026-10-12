@@ -248,10 +248,12 @@ impl Body {
 ///
 /// M: each body's net maximum over every budget window, a 1M window's
 /// Deadline and TelStage less [`spin_extra`]. Deadline: the goal WRITE at
-/// 1M; the rest from the TEL stepping window.
+/// 1M; BreakWake: the first wake after a burst's LAST, which takes the TX
+/// lane back from the kernel (997, TEL stepping); the rest from the TEL
+/// stepping window.
 pub const fn body(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 905,
+        Body::BreakWake => 1045,
         Body::TxDone => 426,
         Body::Deadline => 7116,
         Body::TelStage => 1266,

@@ -472,16 +472,26 @@ pub struct TelDrain {
 }
 
 impl TelDrain {
-    /// Post a burst and lend the kernel the lane: it takes the arm at its
-    /// next tick. Returns the arm's epoch (never 0).
-    pub(crate) fn start(&mut self, mask: u16, count: u16, id: u8, rate: BaudRate) -> u8 {
-        let ch = self.ch;
+    /// Post a burst's row plan, while the lane is the bus's. The plan's
+    /// layout walk is the arm's dear half (~500 HCLK): it runs in the body
+    /// that dispatches the arm, not in the ack's release that lends.
+    pub(crate) fn post(&mut self, mask: u16) {
         let plan = RowPlan::new(mask).unwrap_or(RowPlan::EMPTY);
+        // SAFETY: sole mailbox writer, and the kernel reads the plan only
+        // at the pickup a later `start` keys (type doc).
+        unsafe {
+            self.ch.plan.get().write_volatile(plan);
+            self.ch.arm_mask.get().write_volatile(mask);
+        }
+    }
+
+    /// Lend the kernel the lane for the posted plan: it takes the arm at
+    /// its next tick. Returns the arm's epoch (never 0).
+    pub(crate) fn start(&mut self, count: u16, id: u8, rate: BaudRate) -> u8 {
+        let ch = self.ch;
         // SAFETY: sole mailbox writer, and the lane is the bus's until the
         // `active` store (type doc).
         unsafe {
-            ch.plan.get().write_volatile(plan);
-            ch.arm_mask.get().write_volatile(mask);
             ch.arm_count.get().write_volatile(count);
             ch.arm_id.get().write_volatile(id);
             ch.arm_rate.get().write_volatile(rate);
