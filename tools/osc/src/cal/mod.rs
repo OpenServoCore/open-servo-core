@@ -122,6 +122,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let id = Id::new(id);
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
+    crate::rig::pump::admit_watch(&mut c, id)?;
     let lim = crate::rig::limits::read(&mut c, id)?;
 
     let sense = read_sense(&mut c, id)?;

@@ -41,6 +41,10 @@ pub const SPEED_SPAN_MS: f64 = 10.0;
 /// before the capture ends past the brake point.
 pub const CAPTURE_SHARE: f64 = 0.8;
 
+/// The longest TEL burst a servo arms, ms: one second of ticks, the host
+/// silent throughout (protocol sec 5.6). A longer run chains bursts.
+pub const BURST_MS_MAX: f64 = 1000.0;
+
 /// The traverse's guard inside the stops just found: each end more than
 /// [`STOP_TOL`] in, so no rest of the run reads as a stop, and inside the
 /// guard of the soft limits in force (`soft`, None on a servo never
@@ -409,7 +413,7 @@ impl Sweep {
             return Cmd::Pause { ms: 0 };
         };
         r.polls += 1;
-        let governed = o.duty_mean_q15 != goal;
+        let governed = !o.duty_is(goal);
         let t0 = *r.t0.get_or_insert(t);
         if !r.streamed
             && let Some(g) = gap
@@ -495,7 +499,7 @@ impl Sweep {
         if !ms.is_finite() || ms < SPEED_SPAN_MS {
             return None;
         }
-        let samples = (ms * self.cfg.tick_hz / 1000.0).min(u16::MAX as f64) as u16;
+        let samples = (ms.min(BURST_MS_MAX) * self.cfg.tick_hz / 1000.0) as u16;
         let c = self.captured.get_or_insert(Captured {
             bursts: 0,
             samples: 0,
@@ -759,6 +763,12 @@ mod tests {
                 .filter_map(|l| l.strip_prefix("stream ")?.parse().ok())
                 .collect();
             assert_eq!(streams.len() as u32, c.bursts, "{what}");
+            assert!(
+                streams
+                    .iter()
+                    .all(|&n| n as f64 <= BURST_MS_MAX * SweepCfg::default().tick_hz / 1000.0),
+                "{what}: {streams:?}"
+            );
             assert_eq!(streams.iter().sum::<u32>(), c.samples, "{what}");
             // the run brakes, it never coasts: the brake write follows the
             // capture, before any zero duty
@@ -785,12 +795,11 @@ mod tests {
             assert_eq!(servo.pressed_ms, 0.0, "{what}: driven into a stop");
             assert!(!servo.torque, "{what}");
             assert_eq!(
-                &log[log.len() - 4..],
+                &log[log.len() - 3..],
                 [
                     "write goal_duty 0",
                     "write torque_enable 0",
                     "write tel_mask 0",
-                    "write ident_agg 0"
                 ],
                 "{what}"
             );

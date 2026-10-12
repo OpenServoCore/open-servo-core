@@ -21,6 +21,11 @@
 //! }
 //! ```
 //!
+//! A drive watches while it waits: every `Pause` streams TEL rows of the
+//! pot, current, duty and differential ([`crate::window`]), handed in through
+//! [`Experiment::push_watch`] as each burst lands, and the next `Read`
+//! carries the latest window.
+//!
 //! [`Guarded`] wraps any experiment with the safety envelope, and ends one
 //! whose burst the servo dropped rows from: such a burst is not evidence.
 //! Rig limits live in [`RigParams`], the one home for bench constants.
@@ -47,19 +52,26 @@ pub mod winding;
 use osc_servo_core::kernel::DECIM_MED;
 
 use crate::burst::Capture;
-use crate::frame::{SeqUnwrap, TelBurst, TelemetrySnapshot, duty_counts};
+use crate::frame::{SeqUnwrap, TelBurst, TelemetrySnapshot, counts_q15, duty_counts};
 use crate::pot::Pot;
 use crate::regs::{Reg, control};
+use crate::window::{WINDOW_TICKS, Watch, Watched, Window};
 
 /// One driver action. `Write` is a single-field wire write (the value is
 /// truncated to the reg width by the driver); `Read` is one gread of the
-/// telemetry region whose parsed snapshot feeds the NEXT `step`; `Stream`
-/// arms a TEL burst of `samples` fast ticks - with `goal` Some the driver
-/// stages that write and the arm under HOLD and fires one broadcast COMMIT,
-/// so the write applies in the same instant the capture starts. The decoded
-/// burst, with the rows the servo dropped from it, returns through
-/// [`Experiment::push_tel`] before the next `step`.
-/// The mask is sticky: write TEL_MASK with an ordinary `Write` first.
+/// telemetry region, whose snapshot, the latest watched window attached,
+/// feeds the NEXT `step`. `Pause` is a watch: the whole windows that fit in
+/// it stream, the window's fields and the pot when the line holds it, in
+/// bursts of at most [`crate::window::WATCH_BURST_MS`], each handed in
+/// through [`Experiment::push_watch`] as it lands; a pause too short for a
+/// window sleeps. `Stream` arms a TEL burst of `samples` fast ticks - with
+/// `goal` Some the driver stages that write and the arm under HOLD and
+/// fires one broadcast COMMIT, so the write applies in the same instant
+/// the capture starts. The decoded burst, with the rows the servo dropped
+/// from it, returns through [`Experiment::push_tel`] before the next
+/// `step`.
+/// The mask is sticky: write TEL_MASK with an ordinary `Write` first; the
+/// driver restores it after a watch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     Write {
@@ -97,6 +109,8 @@ pub trait Experiment {
     fn push_tel(&mut self, _tel: &TelBurst) {}
     /// The capture from the last [`Cmd::Burst`].
     fn push_burst(&mut self, _cap: &Capture) {}
+    /// One watch burst of a `Pause`, as it lands.
+    fn push_watch(&mut self, _w: &Watch) {}
     /// Set once the experiment stopped on something that ends the whole
     /// run, not just itself: [`Guarded`] preempts it on the next step.
     fn halted(&self) -> Option<AbortReason> {
@@ -113,7 +127,7 @@ pub struct RigParams {
     /// Soft travel guard; `None` disables (end-stop experiments stall at
     /// the physical ends on purpose - see [`RigParams::without_pos_guard`]).
     pub pos_guard: Option<(u16, u16)>,
-    /// Abort threshold on the ident-window current mean, counts.
+    /// Abort threshold on the window's current mean, counts.
     pub i_abort: i16,
     /// The servo's window floor, q15. The abort judges the current mean
     /// only while `|duty_mean|` is at or over it: under it, and at torque
@@ -126,7 +140,7 @@ pub struct RigParams {
     /// dwell region, for a servo with a damaged spot in its train (consumed
     /// by the ladder/inertia experiments). None by default.
     pub slip: Option<(u16, u16)>,
-    /// Ident windows discarded after every duty change (L transient +
+    /// Windows discarded after every duty change (L transient +
     /// window-boundary smear).
     pub settle_windows: u32,
     /// End-stop stall detect: a seek read whose pos moved <= `stall_eps`
@@ -213,7 +227,7 @@ pub enum AbortReason {
     Fault { flags: u8, code: u8 },
     /// Position left the soft guard band.
     PosGuard { pos: u16 },
-    /// Ident-window current mean exceeded the abort threshold mid-drive.
+    /// The window's current mean exceeded the abort threshold mid-drive.
     Overcurrent { i_mean: i16 },
     /// A seek came to rest short of anywhere it could stop: jammed, or the
     /// pot is not reading. `moved` is the travel since the seek started.
@@ -255,12 +269,12 @@ impl core::fmt::Display for AbortReason {
 impl std::error::Error for AbortReason {}
 
 enum GuardState {
-    AggOn,
     Run,
+    /// A watch flagged a fault: one read for its flags and code.
+    FaultRead,
     DutyOff,
     TorqueOff,
     PermitOff,
-    AggOff,
     Finished,
 }
 
@@ -268,9 +282,9 @@ enum GuardState {
 /// the inner experiment with duty-0 + torque-off before reporting Done.
 /// The inner experiment is left unstepped from that point on, so a stall
 /// permit it granted is withdrawn here: the envelope watches the writes.
-/// The current abort and every experiment read the ident aggregate, which
-/// the servo runs only on request: the envelope turns it on before the
-/// first step and off once the run is over, aborted or not.
+/// It judges every watch as it lands - each row's pot against the travel
+/// guard, each window's current mean against the abort, the ALERT flag -
+/// and every read; the driver ends a pause at the first trip.
 pub struct Guarded<E> {
     exp: E,
     params: RigParams,
@@ -284,7 +298,7 @@ impl<E: Experiment> Guarded<E> {
         Self {
             exp,
             params,
-            state: GuardState::AggOn,
+            state: GuardState::Run,
             abort: None,
             permit: false,
         }
@@ -311,15 +325,36 @@ impl<E: Experiment> Guarded<E> {
         {
             return Some(AbortReason::PosGuard { pos: o.pos });
         }
-        if o.duty_mean_q15 != 0
-            && o.duty_mean_q15.unsigned_abs() >= self.params.window_floor_q15
-            && o.i_mean_counts.unsigned_abs() > self.params.i_abort.unsigned_abs()
-        {
-            return Some(AbortReason::Overcurrent {
-                i_mean: o.i_mean_counts,
-            });
+        self.over_current(o.i_mean_counts, o.duty_mean_counts, o.pwm_period_ticks)
+    }
+
+    /// The current mean measures only over the window floor: under it the
+    /// servo repeats the last current it measured.
+    fn over_current(&self, i_mean: i16, duty: i16, pwm: u16) -> Option<AbortReason> {
+        let floor = duty_counts(self.params.window_floor_q15 as i16, pwm);
+        (duty != 0
+            && duty.unsigned_abs() >= floor.unsigned_abs()
+            && i_mean.unsigned_abs() > self.params.i_abort.unsigned_abs())
+        .then_some(AbortReason::Overcurrent { i_mean })
+    }
+
+    fn watch_violation(&self, w: &Watch) -> Option<AbortReason> {
+        if w.alert {
+            return Some(AbortReason::Fault { flags: 0, code: 0 });
         }
-        None
+        if let Some((lo, hi)) = self.params.pos_guard
+            && let Some((min, max)) = w.pos
+        {
+            if min < lo {
+                return Some(AbortReason::PosGuard { pos: min });
+            }
+            if max > hi {
+                return Some(AbortReason::PosGuard { pos: max });
+            }
+        }
+        w.windows.iter().find_map(|x| {
+            self.over_current(x.window.i_mean, x.window.duty_mean, w.pwm_period_ticks)
+        })
     }
 }
 
@@ -332,23 +367,24 @@ impl<E: Experiment> Experiment for Guarded<E> {
                 .or_else(|| obs.and_then(|o| self.violation(o)))
         {
             self.abort = Some(reason);
+            self.state = if reason == (AbortReason::Fault { flags: 0, code: 0 }) {
+                GuardState::FaultRead
+            } else {
+                GuardState::DutyOff
+            };
+        }
+        if let (GuardState::FaultRead, Some(o)) = (&self.state, obs) {
+            self.abort = Some(AbortReason::Fault {
+                flags: o.fault_flags,
+                code: o.fault_code,
+            });
             self.state = GuardState::DutyOff;
         }
         match self.state {
-            GuardState::AggOn => {
-                self.state = GuardState::Run;
-                Cmd::Write {
-                    reg: control::IDENT_AGG,
-                    value: 1,
-                }
-            }
             GuardState::Run => match self.exp.step(obs) {
                 Cmd::Done => {
                     self.state = GuardState::Finished;
-                    Cmd::Write {
-                        reg: control::IDENT_AGG,
-                        value: 0,
-                    }
+                    Cmd::Done
                 }
                 cmd => {
                     if let Cmd::Write { reg, value } = cmd
@@ -359,6 +395,7 @@ impl<E: Experiment> Experiment for Guarded<E> {
                     cmd
                 }
             },
+            GuardState::FaultRead => Cmd::Read,
             GuardState::DutyOff => {
                 self.state = GuardState::TorqueOff;
                 Cmd::Write {
@@ -370,7 +407,7 @@ impl<E: Experiment> Experiment for Guarded<E> {
                 self.state = if self.permit {
                     GuardState::PermitOff
                 } else {
-                    GuardState::AggOff
+                    GuardState::Finished
                 };
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
@@ -378,17 +415,10 @@ impl<E: Experiment> Experiment for Guarded<E> {
                 }
             }
             GuardState::PermitOff => {
-                self.state = GuardState::AggOff;
+                self.state = GuardState::Finished;
                 self.permit = false;
                 Cmd::Write {
                     reg: control::STALL_PERMIT,
-                    value: 0,
-                }
-            }
-            GuardState::AggOff => {
-                self.state = GuardState::Finished;
-                Cmd::Write {
-                    reg: control::IDENT_AGG,
                     value: 0,
                 }
             }
@@ -406,6 +436,13 @@ impl<E: Experiment> Experiment for Guarded<E> {
 
     fn push_burst(&mut self, cap: &Capture) {
         self.exp.push_burst(cap);
+    }
+
+    fn push_watch(&mut self, w: &Watch) {
+        if matches!(self.state, GuardState::Run) && self.abort.is_none() {
+            self.abort = self.watch_violation(w);
+        }
+        self.exp.push_watch(w);
     }
 
     fn halted(&self) -> Option<AbortReason> {
@@ -477,6 +514,10 @@ impl<E: Experiment> Experiment for Permitted<E> {
         self.exp.push_burst(cap);
     }
 
+    fn push_watch(&mut self, w: &Watch) {
+        self.exp.push_watch(w);
+    }
+
     fn halted(&self) -> Option<AbortReason> {
         self.exp.halted()
     }
@@ -507,12 +548,9 @@ pub const GOVERNED: &str = "declined: the current limit governed this window";
 /// change, q15.
 pub const SLEW_Q15_PER_TICK: u32 = 128;
 
-/// Fast ticks one ident aggregate window spans.
-const TICKS_PER_WINDOW: u32 = 16;
-
-/// One ident aggregate window, ms, on a servo ticking at `tick_hz`.
+/// One window, ms, on a servo ticking at `tick_hz`.
 pub fn window_ms(tick_hz: f64) -> f64 {
-    TICKS_PER_WINDOW as f64 * 1000.0 / tick_hz
+    WINDOW_TICKS as f64 * 1000.0 / tick_hz
 }
 
 /// Ticks the applied duty may take to reach `goal` from `start` before the
@@ -599,31 +637,29 @@ struct Goal {
     governed: usize,
 }
 
-/// One accepted ident aggregate window.
+/// One accepted window.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct WindowSample {
     /// When the host read it ([`TelemetrySnapshot::host_ms`]), never the
-    /// window counter: each read stalls the kernel for a few ticks, so
+    /// window number: each read stalls the kernel for a few ticks, so
     /// under polling `agg_seq` runs slow of real time.
     pub t_ms: f64,
     /// Signed bias-subtracted window current mean, counts.
     pub i: f64,
     /// Drive-window va - vb mean, vcounts.
     pub vdiff: f64,
-    /// Commanded duty mean over the window, q15.
+    /// Applied duty mean over the window, q15.
     pub duty_q15: f64,
 }
 
 /// Turns polled snapshots into deduplicated window samples: a sample is
-/// accepted only when `agg_seq` advanced (torn or repeated reads yield
-/// None), and the first `settle` windows after every duty transition are
-/// discarded. `agg_seq` counts windows and judges the slew, both in the
-/// servo's own ticks; the sample's time is the host's. The driver's
-/// re-read/agg_seq-match dance guards torn aggregates; this stream guards
-/// duplicates and settling.
+/// accepted only when `agg_seq` advanced (a read that formed no window
+/// yields None), and the first `settle` windows after every duty transition
+/// are discarded. `agg_seq` numbers windows and judges the slew, both in
+/// the servo's own ticks; the sample's time is the host's.
 ///
 /// Marked with an OpenLoop goal ([`WindowStream::mark_goal`]) it also
-/// accepts only windows whose `duty_mean_q15` is the goal: the climb is
+/// accepts only windows whose applied duty is the goal's: the climb is
 /// trimmed, and a window the limiter held under the goal is declined.
 pub struct WindowStream {
     unwrap: SeqUnwrap,
@@ -631,8 +667,11 @@ pub struct WindowStream {
     settle: u32,
     settle_windows: u32,
     goal: Option<Goal>,
-    /// `duty_mean_q15` of the last window seen.
+    /// The least Q15 that applies the last window's duty mean.
     applied: i16,
+    /// Windows watched since the last [`WindowStream::drain`].
+    pending: Vec<Watched>,
+    pwm_period_ticks: u16,
 }
 
 impl WindowStream {
@@ -644,12 +683,41 @@ impl WindowStream {
             settle_windows: params.settle_windows,
             goal: None,
             applied: 0,
+            pending: Vec::new(),
+            pwm_period_ticks: 0,
         }
+    }
+
+    /// Queue a watch's windows for the next [`WindowStream::drain`].
+    pub fn watch(&mut self, w: &Watch) {
+        self.pending.extend_from_slice(&w.windows);
+        self.pwm_period_ticks = w.pwm_period_ticks;
+    }
+
+    /// The windows watched since the last drain that the stream accepts,
+    /// each with its last row's pot reading when the watch carries it.
+    pub fn drain(&mut self) -> Vec<(WindowSample, Option<u16>)> {
+        let pending = core::mem::take(&mut self.pending);
+        let pwm = self.pwm_period_ticks;
+        pending
+            .iter()
+            .filter_map(|x| Some((self.accept(x.seq, x.t_ms, &x.window, pwm)?, x.pos)))
+            .collect()
+    }
+
+    /// A mark starts from the duty last watched; windows queued before it
+    /// belong to the drive it ends.
+    fn flush(&mut self) {
+        if let Some(x) = self.pending.last() {
+            self.applied = least_q15(x.window.duty_mean, self.pwm_period_ticks);
+        }
+        self.pending.clear();
     }
 
     /// Call on every duty change whose goal is not an OpenLoop duty; the
     /// next `settle_windows` accepted windows are dropped.
     pub fn mark_transition(&mut self) {
+        self.flush();
         self.settle = self.settle_windows;
         self.goal = None;
     }
@@ -658,12 +726,13 @@ impl WindowStream {
     /// that follows another slews from the duty last seen applied;
     /// otherwise from rest.
     pub fn mark_goal(&mut self, goal_q15: i16) {
+        self.flush();
         let start = if self.goal.is_some() { self.applied } else { 0 };
         let ticks = slew_ticks(goal_q15, start);
         self.settle = self.settle_windows;
         self.goal = Some(Goal {
             q15: goal_q15,
-            slew_windows: ticks.div_ceil(TICKS_PER_WINDOW) as u64 + 1,
+            slew_windows: ticks.div_ceil(WINDOW_TICKS as u32) as u64 + 1,
             first: None,
             reached: false,
             clean: 0,
@@ -677,17 +746,30 @@ impl WindowStream {
         self.goal.is_some_and(|g| g.clean == 0 && g.governed > 0)
     }
 
+    /// The window a snapshot carries, keyed by its `agg_seq`.
     pub fn push(&mut self, o: &TelemetrySnapshot) -> Option<WindowSample> {
         let seq = self.unwrap.push(o.agg_seq);
+        let w = Window {
+            i_mean: o.i_mean_counts,
+            i_min: o.i_min_counts,
+            i_max: o.i_max_counts,
+            vdiff_mean: o.vdiff_mean,
+            duty_mean: o.duty_mean_counts,
+        };
+        self.accept(seq, o.host_ms, &w, o.pwm_period_ticks)
+    }
+
+    fn accept(&mut self, seq: u64, t_ms: f64, w: &Window, pwm: u16) -> Option<WindowSample> {
         if self.last == Some(seq) {
             return None;
         }
         self.last = Some(seq);
-        self.applied = o.duty_mean_q15;
+        self.applied = least_q15(w.duty_mean, pwm);
         let judged = self.goal.as_mut().map(|g| {
             let first = *g.first.get_or_insert(seq);
-            g.reached |= o.duty_mean_q15 == g.q15;
-            match (o.duty_mean_q15 == g.q15, g.reached) {
+            let clean = w.duty_mean == duty_counts(g.q15, pwm);
+            g.reached |= clean;
+            match (clean, g.reached) {
                 (true, _) => Applied::Clean,
                 (false, false) if seq - first < g.slew_windows => Applied::Slew,
                 _ => Applied::Governed,
@@ -708,10 +790,10 @@ impl WindowStream {
             }
         }
         Some(WindowSample {
-            t_ms: o.host_ms,
-            i: o.i_mean_counts as f64,
-            vdiff: o.vdiff_mean as f64,
-            duty_q15: o.duty_mean_q15 as f64,
+            t_ms,
+            i: w.i_mean as f64,
+            vdiff: w.vdiff_mean as f64,
+            duty_q15: counts_q15(w.duty_mean, pwm),
         })
     }
 }
@@ -726,13 +808,14 @@ mod tests {
     use super::endstop::Endstop;
     use super::ladder::{Declined, Ladder, LadderCfg};
     use super::testkit::{
-        FakeServo, PWM_PERIOD_TICKS as ARR, TICK_HZ, bench_mg90, bench_mg90_saved, pump,
+        Bus, FakeServo, PWM_PERIOD_TICKS as ARR, TICK_HZ, bench_mg90, bench_mg90_saved, pump,
     };
     use super::*;
     use crate::runway::Runway;
+    use crate::window::{WATCH_BURST_MS, Windows};
 
     #[test]
-    fn torn_agg_seq_no_duplicate_sample() {
+    fn repeated_agg_seq_no_duplicate_sample() {
         let params = crate::exp::testkit::rig();
         let mut ws = WindowStream::new(&params);
         let mut o = TelemetrySnapshot {
@@ -779,7 +862,8 @@ mod tests {
             .filter_map(|(seq, d)| {
                 let o = TelemetrySnapshot {
                     agg_seq: seq as u16,
-                    duty_mean_q15: *d,
+                    duty_mean_counts: duty_counts(*d, ARR),
+                    pwm_period_ticks: ARR,
                     ..Default::default()
                 };
                 ws.push(&o).map(|_| seq as u16)
@@ -795,7 +879,11 @@ mod tests {
         let (ws, kept) = stream(8000, &[6000, 8000, 8000, 7400, 7900, 8000]);
         assert_eq!(kept, [1, 2, 5]);
         assert!(!ws.declined(), "clean windows remain");
-        let (ws, kept) = stream(-8000, &[-6000, -8000, -7999]);
+        // -7970 applies one compare count under -8000; -7999 applies the same
+        let (ws, kept) = stream(-8000, &[-6000, -8000, -7970, -7999]);
+        assert_eq!(kept, [1, 3]);
+        assert!(!ws.declined());
+        let (ws, kept) = stream(-8000, &[-6000, -8000, -7970]);
         assert_eq!(kept, [1]);
         assert!(!ws.declined());
     }
@@ -896,14 +984,14 @@ mod tests {
         let params = crate::exp::testkit::rig();
         let mut ws = WindowStream::new(&params);
         let goal = 20971;
-        s.write(control::IDENT_AGG, 1);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, goal as i32);
         ws.mark_goal(goal);
+        let mut windows = Windows::new(ARR);
         let (mut governed_reads, mut kept) = (0, Vec::new());
         for _ in 0..150 {
             s.advance(2);
-            let o = s.read();
+            let o = s.read_window(&mut windows);
             governed_reads += (o.limit_flags & 1) as usize;
             if let Some(w) = ws.push(&o) {
                 kept.push(w);
@@ -911,7 +999,8 @@ mod tests {
         }
         assert!(governed_reads > 50, "the climb was never governed");
         assert!(kept.len() > 30, "{} windows", kept.len());
-        assert!(kept.iter().all(|w| w.duty_q15 == goal as f64));
+        let applied = counts_q15(duty_counts(goal, ARR), ARR);
+        assert!(kept.iter().all(|w| w.duty_q15 == applied));
         assert!(!ws.declined());
     }
 
@@ -934,10 +1023,9 @@ mod tests {
         servo.fault_at_ms = Some(50.0);
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(matches!(exp.abort(), Some(AbortReason::Fault { .. })));
-        let tail: Vec<&String> = log.iter().rev().take(3).collect();
-        assert_eq!(*tail[2], "write goal_duty 0");
-        assert_eq!(*tail[1], "write torque_enable 0");
-        assert_eq!(*tail[0], "write ident_agg 0");
+        let tail: Vec<&String> = log.iter().rev().take(2).collect();
+        assert_eq!(*tail[1], "write goal_duty 0");
+        assert_eq!(*tail[0], "write torque_enable 0");
     }
 
     /// A burst the servo dropped rows from is not evidence: the run ends on
@@ -968,11 +1056,7 @@ mod tests {
         let at = log.iter().position(|l| l.starts_with("stream")).unwrap();
         assert_eq!(
             log[at + 1..],
-            [
-                "write goal_duty 0",
-                "write torque_enable 0",
-                "write ident_agg 0"
-            ]
+            ["write goal_duty 0", "write torque_enable 0"]
         );
     }
 
@@ -1008,7 +1092,7 @@ mod tests {
         assert!(matches!(exp.abort(), Some(AbortReason::PosGuard { pos } ) if pos > 3950));
         assert_eq!(
             log[log.len() - 2..],
-            ["write torque_enable 0", "write ident_agg 0"]
+            ["write goal_duty 0", "write torque_enable 0"]
         );
     }
 
@@ -1032,14 +1116,26 @@ mod tests {
         Cmd::Write { reg, value }
     }
 
-    /// The envelope runs the aggregate for exactly its run; a drive that
-    /// runs outside one reads windows that never move.
+    /// Every read carries the window streamed just before it: at rest it
+    /// reads no drive, after a goal the goal's compare count, numbered on
+    /// past the first.
     #[test]
-    fn the_envelope_brackets_the_ident_aggregate() {
-        let script = || {
+    fn every_read_carries_its_window() {
+        let mut servo = FakeServo::new(3.37);
+        let mut rest = Script(vec![Cmd::Read], None);
+        pump(&mut rest, &mut servo, 100);
+        let rest = rest.1.expect("the read");
+        assert_eq!(
+            (
+                rest.duty_mean_counts,
+                rest.i_mean_counts,
+                rest.pwm_period_ticks
+            ),
+            (0, 0, ARR)
+        );
+        let mut exp = Guarded::new(
             Script(
                 vec![
-                    Cmd::Read,
                     write(control::TORQUE_ENABLE, 1),
                     write(control::GOAL_DUTY, 6000),
                     Cmd::Pause { ms: 50 },
@@ -1048,21 +1144,105 @@ mod tests {
                     write(control::TORQUE_ENABLE, 0),
                 ],
                 None,
-            )
-        };
-        let mut servo = FakeServo::new(3.37);
-        let mut bare = script();
-        pump(&mut bare, &mut servo, 100);
-        let o = bare.1.expect("the read");
-        assert_eq!((o.agg_seq, o.i_mean_counts, o.duty_mean_q15), (0, 0, 0));
-
-        let mut exp = Guarded::new(script(), testkit::rig());
-        let log = pump(&mut exp, &mut servo, 100);
-        assert_eq!(log.first().map(String::as_str), Some("write ident_agg 1"));
-        assert_eq!(log.last().map(String::as_str), Some("write ident_agg 0"));
+            ),
+            testkit::rig(),
+        );
+        pump(&mut exp, &mut servo, 100);
         let o = exp.into_inner().1.expect("the read");
-        assert!(o.agg_seq > 0 && o.duty_mean_q15 == 6000, "{o:?}");
-        assert!(!servo.ident_agg);
+        assert!(o.agg_seq > rest.agg_seq, "{o:?}");
+        assert!(o.duty_is(6000) && o.i_mean_counts > 0, "{o:?}");
+    }
+
+    /// A long pause is watched in bursts, and the guard judges each as it
+    /// lands: a shaft that crosses the travel guard mid-pause stops at the
+    /// end of the burst it crossed in, never at the pause's end, and no
+    /// read comes first.
+    #[test]
+    fn the_guard_stops_a_watched_drive_at_the_burst_it_crossed_in() {
+        let mut servo = FakeServo::new(3.37);
+        servo.free_speed = 1000.0;
+        servo.pos = 3000.0;
+        // 0.5 counts/ms: the guard at 3200 is crossed 400 ms in
+        let duty = 16384;
+        let mut exp = Guarded::new(
+            Script(
+                vec![
+                    write(control::TORQUE_ENABLE, 1),
+                    write(control::GOAL_DUTY, duty),
+                    Cmd::Pause { ms: 3000 },
+                    Cmd::Read,
+                ],
+                None,
+            ),
+            RigParams::new(Some((250, 3200)), i16::MAX),
+        );
+        let log = pump(&mut exp, &mut servo, 100);
+        let reach = 0.5 * WATCH_BURST_MS as f64 * Bus::BENCH.pause_scale;
+        assert!(
+            matches!(exp.abort(), Some(AbortReason::PosGuard { pos }) if pos > 3200 && (pos as f64) <= 3200.0 + reach),
+            "{:?}",
+            exp.abort()
+        );
+        assert!(servo.t_ms < 1000.0, "the pause ran on to {}", servo.t_ms);
+        assert_eq!(
+            log[log.len() - 2..],
+            ["write goal_duty 0", "write torque_enable 0"]
+        );
+        assert!(exp.into_inner().1.is_none(), "a read came first");
+    }
+
+    /// Every window of a watch is judged: a locked shaft over the abort
+    /// stops at the first burst, before any read.
+    #[test]
+    fn the_guard_judges_every_watched_window() {
+        let mut servo = FakeServo::new(3.37);
+        servo.jam = Some(servo.pos);
+        let mut exp = Guarded::new(
+            Script(
+                vec![
+                    write(control::TORQUE_ENABLE, 1),
+                    write(control::GOAL_DUTY, 12000),
+                    Cmd::Pause { ms: 1000 },
+                    Cmd::Read,
+                ],
+                None,
+            ),
+            RigParams::new(None, 150),
+        );
+        pump(&mut exp, &mut servo, 100);
+        assert!(
+            matches!(exp.abort(), Some(AbortReason::Overcurrent { i_mean }) if i_mean > 150),
+            "{:?}",
+            exp.abort()
+        );
+        assert!(servo.t_ms < 400.0, "{}", servo.t_ms);
+        assert!(exp.into_inner().1.is_none());
+    }
+
+    /// A watch frame flagged a fault: the guard reads its flags and code,
+    /// then stops the drive, the pause cut short.
+    #[test]
+    fn a_fault_mid_watch_reads_its_code_then_stops() {
+        let mut servo = FakeServo::new(3.37);
+        servo.fault_at_ms = Some(100.0);
+        let mut exp = Guarded::new(
+            Script(
+                vec![
+                    write(control::TORQUE_ENABLE, 1),
+                    write(control::GOAL_DUTY, 6000),
+                    Cmd::Pause { ms: 3000 },
+                ],
+                None,
+            ),
+            testkit::rig(),
+        );
+        let log = pump(&mut exp, &mut servo, 100);
+        assert_eq!(exp.abort(), Some(AbortReason::Fault { flags: 32, code: 6 }));
+        assert!(servo.t_ms < 1000.0, "{}", servo.t_ms);
+        assert_eq!(
+            log[log.len() - 2..],
+            ["write goal_duty 0", "write torque_enable 0"]
+        );
     }
 
     /// Pushed against the low soft limit at a stop: only a live permit
@@ -1186,13 +1366,14 @@ mod tests {
 
     /// The current mean measures only over the window floor: under it the
     /// servo repeats the last current it measured, which the guard leaves
-    /// unjudged. A servo that publishes no floor has every nonzero duty
-    /// judged.
+    /// unjudged. A servo that publishes no floor has every duty the bridge
+    /// applies judged; 13 in Q15 applies no compare count, 14 one.
     #[test]
     fn the_guard_judges_the_current_only_over_the_floor() {
         let judged = |floor: u16, duty: i16| {
             let o = TelemetrySnapshot {
-                duty_mean_q15: duty,
+                duty_mean_counts: duty_counts(duty, ARR),
+                pwm_period_ticks: ARR,
                 i_mean_counts: 351,
                 ..Default::default()
             };
@@ -1210,7 +1391,8 @@ mod tests {
             assert_eq!(judged(4356, duty), over, "{duty}");
         }
         assert_eq!(judged(0, 0), None);
-        for duty in [1, 3211, -3211] {
+        assert_eq!(judged(0, 13), None);
+        for duty in [14, 3211, -3211] {
             assert_eq!(judged(0, duty), over, "{duty}");
         }
     }
@@ -1229,7 +1411,6 @@ mod tests {
             s.jam = Some(s.pos);
             let mut rung = Script(
                 vec![
-                    write(control::IDENT_AGG, 1),
                     write(control::TORQUE_ENABLE, 1),
                     write(control::GOAL_DUTY, 6500),
                     Cmd::Pause { ms: 100 },
@@ -1245,7 +1426,7 @@ mod tests {
             s.current_limit = Some(280);
             s.jam = None;
             let o = rung.1.expect("the rest read");
-            assert_eq!(o.duty_mean_q15, 0);
+            assert_eq!(o.duty_mean_counts, 0);
             assert!(o.i_mean_counts > 350, "held {}", o.i_mean_counts);
             s
         };
@@ -1258,8 +1439,9 @@ mod tests {
             &mut s,
         );
         assert_eq!(run.exp.abort(), None);
-        assert!(run.obs.iter().any(|o| o.duty_mean_q15 != 0
-            && o.duty_mean_q15 < s.floor_q15
+        let floor = duty_counts(s.floor_q15, ARR);
+        assert!(run.obs.iter().any(|o| o.duty_mean_counts != 0
+            && o.duty_mean_counts < floor
             && o.i_mean_counts > 350));
         assert!(run.exp.into_inner().arrived());
 
@@ -1279,6 +1461,10 @@ mod tests {
     }
 
     impl<E: Experiment> Experiment for Seen<E> {
+        fn push_watch(&mut self, w: &crate::window::Watch) {
+            self.exp.push_watch(w);
+        }
+
         fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
             self.obs.extend(obs.copied());
             self.exp.step(obs)
@@ -1342,7 +1528,7 @@ mod tests {
 
     /// Reads of a ladder's rungs, from its first read at a rung's goal.
     fn rung_reads(obs: &[TelemetrySnapshot]) -> &[TelemetrySnapshot] {
-        let first = obs.iter().position(|o| o.duty_mean_q15 > 5000).unwrap();
+        let first = obs.iter().position(|o| o.duty_mean_q15() > 5000.0).unwrap();
         &obs[first..]
     }
 
@@ -1446,7 +1632,7 @@ mod tests {
             let governed = run
                 .obs
                 .iter()
-                .filter(|o| o.duty_mean_q15 != 0 && o.limit_flags & LIMIT_GOVERNING != 0)
+                .filter(|o| o.duty_mean_counts != 0 && o.limit_flags & LIMIT_GOVERNING != 0)
                 .count();
             assert!(governed > 100, "{governed} governed reads");
             let exp = run.exp.into_inner();
@@ -1535,7 +1721,8 @@ mod tests {
             .filter_map(|(seq, &(duty, i, flags))| {
                 ws.push(&TelemetrySnapshot {
                     agg_seq: seq as u16,
-                    duty_mean_q15: duty,
+                    duty_mean_counts: duty_counts(duty, ARR),
+                    pwm_period_ticks: ARR,
                     i_mean_counts: i,
                     limit_flags: flags,
                     ..Default::default()
@@ -1547,7 +1734,8 @@ mod tests {
         assert!(!ws.declined());
         let held = ws.push(&TelemetrySnapshot {
             agg_seq: 3,
-            duty_mean_q15: goal - 40,
+            duty_mean_counts: duty_counts(goal - 40, ARR),
+            pwm_period_ticks: ARR,
             i_mean_counts: 270,
             ..Default::default()
         });

@@ -277,9 +277,6 @@ mod tests {
         assert!(fit.duty_bk_fwd.is_none());
         assert!(fit.duty_bk_rev.is_none());
         assert!(fit.asymmetry.is_none());
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write torque_enable 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write torque_enable 0"]);
     }
 }

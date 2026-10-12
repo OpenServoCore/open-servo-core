@@ -406,6 +406,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
     if drives(&args.cmd) {
+        pump::admit_watch(&mut c, id)?;
         let lim = crate::rig::limits::read(&mut c, id)?;
         let env = lim.envelope(cli.guard, cli.i_abort)?;
         let sense = read_sense(&mut c, id)?;

@@ -1,11 +1,11 @@
-//! Bias: torque off, the raw sensors at rest. The ident aggregate block is
-//! stale at torque-off (last-valid feed), so the polls read the raw
-//! snapshot fields: current bias sanity and noise, vbus sanity. The pot's
-//! rest noise, sigma_theta for the fusion synthesis, comes from a TEL
-//! stream instead: a polled read lands on the bus's own disturbance and
-//! reads about twice as noisy. It is taken in raw counts and scaled by the
-//! position table's travel-average gain, never by the gain of the one
-//! interval the shaft rests in.
+//! Bias: torque off, the raw sensors at rest. A window says nothing with
+//! nothing driving, so the polls read the raw snapshot fields: current
+//! bias sanity and noise, vbus sanity. The pot's rest noise, sigma_theta
+//! for the fusion synthesis, comes from a TEL stream instead: a polled
+//! read lands on the bus's own disturbance and reads about twice as noisy.
+//! It is taken in raw counts and scaled by the position table's
+//! travel-average gain, never by the gain of the one interval the shaft
+//! rests in.
 //!
 //! The ADC skips codes at its quarter-scale carries: a rest within
 //! [`CARRY_BAND`] of one reads a noise that is not the sensor's. Such a

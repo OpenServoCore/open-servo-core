@@ -48,7 +48,7 @@ pub(crate) const SNAPSHOT_COLUMNS: &str = "host_ms,fault_flags,fault_code,mode_a
     theta_hat_q16,omega_hat_cps,omega_hat_src,tau_d_counts,i_lim_counts,t_winding_cc,\
     vbus_counts,duty_applied_q15,omega_bemf_cps,r_hat_q12,i_hat_counts,sample_tick,pos,current,\
     current_trough,current_bias_counts,i_mean_counts,i_min_counts,i_max_counts,vdiff_mean,\
-    duty_mean_q15,agg_seq";
+    duty_mean_counts,agg_seq";
 
 impl SnapshotLog {
     pub(crate) fn create(dir: &OutDir, name: &str) -> Result<Self> {
@@ -90,7 +90,7 @@ pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
         s.i_min_counts,
         s.i_max_counts,
         s.vdiff_mean,
-        s.duty_mean_q15,
+        s.duty_mean_counts,
         s.agg_seq
     )
 }

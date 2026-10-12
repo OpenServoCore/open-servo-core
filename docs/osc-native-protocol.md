@@ -1139,15 +1139,22 @@ Under the Same Band" has the planning behind it):
   warned about. Identification also refuses soft limits that span the
   whole pot (a servo `osc cal` never ran on) and an abort threshold
   more than a quarter over the limit.
-- Each drive writes `ident_agg` 1 (sec 5.10) before its first read,
-  its `mode`, then `torque_enable` 1, then, only
+- Each drive watches while it waits: every pause is a TEL burst of
+  `current`, `vdiff` and `duty`, and `pos` when the line's rows hold it,
+  of whole 16-tick windows, at most 250 ms long. The host folds each
+  window into floor means and the current's extremes, judges every row
+  and window as the burst lands, and reads TELEMETRY between bursts for
+  what the stream does not carry (`limit_flags`, the fault code, the
+  estimates). `osc` refuses a line whose rows cannot carry the window's
+  three fields (1 M) before it drives.
+- Each drive writes its `mode`, then `torque_enable` 1, then, only
   for a drive that stalls on purpose (cal's stop approach, the
   resistance stop ladder, the held burst route, the current verify's
   stop stalls), `stall_permit` 1. A held permit is rewritten every
-  250 ms, between commands and inside every pause.
+  250 ms, between commands and between watch bursts.
 - Every exit of a drive - done, aborted, interrupted or failed on the
-  wire - writes `goal_duty` 0, `torque_enable` 0, when it held one,
-  `stall_permit` 0, and `ident_agg` 0, in that order, and a guard
+  wire - writes `goal_duty` 0, `torque_enable` 0 and, when it held one,
+  `stall_permit` 0, in that order, and a guard
   around the drive writes them again with the other goals, `tel_count`
   and `tel_mask` zeroed. A killed host skips that; the lease then runs out inside the
   second and the servo's own protections carry the rest.

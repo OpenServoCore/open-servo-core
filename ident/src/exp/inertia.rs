@@ -1427,10 +1427,7 @@ mod tests {
             exp.abort()
         );
         assert!(!log.iter().any(|l| l.starts_with("stream")), "{log:?}");
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write torque_enable 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write torque_enable 0"]);
         assert!(!servo.torque);
     }
 
@@ -1526,6 +1523,10 @@ mod tests {
     }
 
     impl<E: Experiment> Experiment for Positions<E> {
+        fn push_watch(&mut self, w: &crate::window::Watch) {
+            self.exp.push_watch(w);
+        }
+
         fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
             self.seen.extend(obs.map(|o| o.pos));
             self.exp.step(obs)
@@ -1566,7 +1567,7 @@ mod tests {
         };
         let plan = DutyPlan::new(&lim, 7270.0 / 4096.0, Some(0.145));
         let params = RigParams::new(Some(GUARD), 350).with_stops((209, 3849));
-        let bus = Bus::BENCH.with_slow_reads(1);
+        let bus = Bus::BENCH.with_slow_reads(2);
         let run = |aborts: RigParams| {
             let mut servo = bench_mg90(3204);
             servo.pos = 2029.0;

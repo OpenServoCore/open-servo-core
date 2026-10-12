@@ -1,16 +1,15 @@
 //! Steady-state duty ladder: constant-duty sweeps across the travel, both
 //! directions, for the Ke fit and the kinetic friction line. Each rung
 //! seeks the start band at one end of the guard, brakes, rests, then runs
-//! free toward the other end collecting ident windows paired with pot
-//! position; the steady segment (settle windows dropped, from where the
+//! free toward the other end collecting the windows it watches, each paired
+//! with its own pot reading; the steady segment (settle windows dropped, from where the
 //! current is flat to the end trim, slip zone masked) gives omega as the
 //! pos-slope LS, plus the segment's mean current and winding volts. Fits
 //! live in [`crate::fits`]; rungs whose segment is too short or that stall
 //! mid-sweep are dropped with a warning, not silently.
 //!
-//! Every speed is timed on the host's clock ([`TelemetrySnapshot::host_ms`]):
-//! each read stalls the servo's kernel for a few ticks, so under polling its
-//! window counter runs slow and would read every speed fast. On a servo
+//! Every speed is timed on the host's clock: each window at the time its
+//! burst landed, less the ticks after its last row. On a servo
 //! that carries an identified Ke the firmware's back-EMF speed, which has no
 //! clock in it, checks the timed ones ([`servo_check`]): a ladder they
 //! disagree with by more than [`SERVO_SPEED_TOL`] declines, whatever its r2.
@@ -22,9 +21,9 @@
 //! applied duty under the goal - then settles and runs, and brakes at its
 //! end position with the brake idiom, never a coast. What each rung
 //! measured - speed, climb acceleration, stop, and how fast it was polled -
-//! sizes the next: a poll yields at most one window, so the steady windows
-//! take the poll cadence, not the window period, and a stretch of them in
-//! a slip zone is travel the fit never sees. The brake points are planned
+//! sizes the next: a poll yields the windows its watch holds, so the steady
+//! windows take the poll cadence shared among them, and a stretch of them
+//! in a slip zone is travel the fit never sees. The brake points are planned
 //! on the inset guard; the run aborts only on the soft limits, so a brake a
 //! slow read made late is no abort.
 //!
@@ -59,6 +58,7 @@ use crate::regs::control;
 use crate::runway::{
     BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS, Need, Runway, STOP_MARGIN, fits,
 };
+use crate::window::{WINDOW_TICKS, Watch, watch_rows};
 
 const Q15: f64 = 32767.0;
 
@@ -105,11 +105,11 @@ pub struct LadderCfg {
     pub rungs_q15: Vec<i16>,
     /// Seek drive toward the start end, q15.
     pub seek_duty_q15: i16,
-    /// Pause between a rung's reads: a poll yields at most one window, so
-    /// a pause only spends travel.
+    /// The watch between a rung's reads: its whole windows are the rung's
+    /// samples, and the guard's reaction time grows by it.
     pub poll_ms: u32,
-    /// One telemetry snapshot on the bus, ms: a rung polls at this plus
-    /// `poll_ms` until a rung has timed its own polls.
+    /// One poll's bus time on top of its watch, ms: a rung polls at this
+    /// plus `poll_ms` until a rung has timed its own polls.
     pub snapshot_ms: f64,
     pub seek_poll_ms: u32,
     /// Rest after every seek and every sweep.
@@ -137,8 +137,8 @@ impl LadderCfg {
         Self {
             rungs_q15: RUNGS_Q15.to_vec(),
             seek_duty_q15: 8520,
-            poll_ms: 0,
-            // the bench bus: two reads
+            poll_ms: 2,
+            // the bench bus: two transactions, the watch's arm and the read
             snapshot_ms: 3.5,
             seek_poll_ms: 30,
             rest_ms: 300,
@@ -424,6 +424,8 @@ impl Ladder {
     pub fn new(mut cfg: LadderCfg, params: &RigParams, runway: Runway) -> Self {
         cfg.rungs_q15.sort_unstable();
         cfg.rungs_q15.dedup();
+        // a rung samples only what it watches
+        cfg.poll_ms = cfg.poll_ms.max(window_ms(cfg.tick_hz).ceil() as u32);
         Self {
             cfg,
             params: *params,
@@ -540,7 +542,7 @@ impl Ladder {
     }
 
     /// Settle and steady windows at the cadence the last rung was polled
-    /// at: a poll yields at most one window, however short the window.
+    /// at, shared among the windows each poll's watch holds.
     /// [`STEADY_MARGIN`] over that leaves room for a slow read or two.
     fn steady_ms(&self) -> f64 {
         let windows = self.params.settle_windows as f64
@@ -548,7 +550,9 @@ impl Ladder {
         let poll = self
             .cadence
             .unwrap_or(self.cfg.snapshot_ms + self.cfg.poll_ms as f64);
-        STEADY_MARGIN * windows * window_ms(self.cfg.tick_hz).max(poll)
+        let per_poll =
+            watch_rows(self.cfg.poll_ms as f64, self.cfg.tick_hz).max(WINDOW_TICKS) / WINDOW_TICKS;
+        STEADY_MARGIN * windows * window_ms(self.cfg.tick_hz).max(poll / per_poll as f64)
     }
 
     fn reset_motion_track(&mut self) {
@@ -727,13 +731,13 @@ impl Ladder {
     fn rung_eval(&mut self, o: &TelemetrySnapshot) -> Cmd {
         let t = o.host_ms;
         self.reads.push((t, o.pos));
-        let window = self.windows.push(o);
+        let windows = self.windows.drain();
         let (dir, duty) = (self.dir(), self.duty());
         let v_now = self.speed().unwrap_or(0.0);
         let Some(r) = self.rung.as_mut() else {
             return self.off();
         };
-        let governed = o.duty_mean_q15 != r.goal;
+        let governed = !o.duty_is(r.goal);
         let t0 = *r.t0.get_or_insert(t);
         let (need, from, climbing, goal) = (r.need, r.from, r.climbing, r.goal);
         if climbing {
@@ -758,11 +762,12 @@ impl Ladder {
             self.block(seek::blocked(from, o.pos));
             return self.off();
         }
-        if let Some(w) = window {
+        for (w, pos) in windows {
+            let pos = pos.unwrap_or(o.pos);
             self.sweep_samples.push(SweepSample {
                 w,
-                pos: o.pos,
-                counts: self.params.pot.counts(o.pos),
+                pos,
+                counts: self.params.pot.counts(pos),
                 bemf: o.omega_bemf_cps as f64,
             });
         }
@@ -1041,6 +1046,10 @@ impl Experiment for Ladder {
         }
     }
 
+    fn push_watch(&mut self, w: &Watch) {
+        self.windows.watch(w);
+    }
+
     fn halted(&self) -> Option<AbortReason> {
         self.halt
     }
@@ -1048,9 +1057,12 @@ impl Experiment for Ladder {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{Bus, FakeServo, TICK_HZ, bench_mg90, bent_pot, pump, pump_on};
+    use super::super::testkit::{
+        Bus, FakeServo, PWM_PERIOD_TICKS as ARR, TICK_HZ, bench_mg90, bent_pot, pump, pump_on,
+    };
     use super::super::{Guarded, RigParams};
     use super::*;
+    use crate::frame::{counts_q15, duty_counts};
     use crate::limits::{GUARD_INSET, duty_for};
     use crate::pot::Pot;
     use crate::runway::{Envelope, Line, Supply};
@@ -1113,10 +1125,9 @@ mod tests {
     }
 
     /// The fake loses kernel ticks to every read, as the bench board does,
-    /// so its window counter runs slow the faster it is polled. Read back
-    /// to back, a snapshot every 1.9 ms as the bench ladder reads, and
-    /// paused to a 10 ms cadence, the ladder fits the planted Ke within 1%
-    /// both ways, and the two agree to 1%.
+    /// so its tick counter runs slow the faster it is polled. Watching 2 ms
+    /// between reads that take 1.9 ms, and watching 7, the ladder fits the
+    /// planted Ke within 1% both ways, and the two agree to 1%.
     #[test]
     fn polling_does_not_change_the_fitted_ke() {
         let ke = |poll_ms: u32| {
@@ -1137,8 +1148,8 @@ mod tests {
             assert_eq!(exp.declined(), None, "{:?}", exp.warnings());
             exp.fit(3.37).expect("usable rungs").ke.ke_vpc
         };
-        let (fast, slow) = (ke(0), ke(7));
-        println!("Ke polled every 1.9 ms {fast:.5}, every 10 ms {slow:.5}, planted 0.1731");
+        let (fast, slow) = (ke(2), ke(7));
+        println!("Ke watched 2 ms a poll {fast:.5}, 7 ms {slow:.5}, planted 0.1731");
         for k in [fast, slow] {
             assert!((k / 0.1731 - 1.0).abs() < 0.01, "ke {k}, planted 0.1731");
         }
@@ -1291,6 +1302,8 @@ mod tests {
             servo_ke: true,
             ..LadderCfg::new(20_000.0)
         };
+        // recorded when the servo published its windows' Q15 duty: as the
+        // bridge applied it, at the bench servo's PWM period
         let text = std::fs::read_to_string(format!("{dir}/ladder_snapshots.csv")).unwrap();
         let reads: Vec<TelemetrySnapshot> = text
             .lines()
@@ -1302,17 +1315,25 @@ mod tests {
                     pos: v[1] as u16,
                     i_mean_counts: v[2] as i16,
                     vdiff_mean: v[3] as i16,
-                    duty_mean_q15: v[4] as i16,
+                    duty_mean_counts: duty_counts(v[4] as i16, ARR),
+                    pwm_period_ticks: ARR,
                     agg_seq: v[5] as u16,
                     omega_bemf_cps: v[6] as i16,
                     ..Default::default()
                 }
             })
             .collect();
+        let goals: Vec<i16> = text
+            .lines()
+            .skip(1)
+            .map(|l| l.split(',').nth(4).unwrap().parse().unwrap())
+            .collect();
         let rungs = |window_clock: bool| {
             let mut out = Vec::new();
-            for seg in reads.chunk_by(|a, b| a.duty_mean_q15 == b.duty_mean_q15) {
-                let goal = seg[0].duty_mean_q15;
+            let mut at = 0;
+            for seg in reads.chunk_by(|a, b| a.duty_mean_counts == b.duty_mean_counts) {
+                let goal = goals[at];
+                at += seg.len();
                 let mut ws = WindowStream::new(&params);
                 ws.mark_goal(goal);
                 let mut seq = crate::frame::SeqUnwrap::default();
@@ -1378,6 +1399,89 @@ mod tests {
             panic!("{old_check:?}");
         };
         assert!(off < -SERVO_SPEED_TOL, "{off}");
+    }
+
+    /// The fits take the applied duty. The recorded bench ladder's windows,
+    /// their commanded Q15 duty swapped for what the bridge applied for it
+    /// (compare counts of the 1200-count period, back on the Q15 scale),
+    /// give every rung the same winding volts within the duty's half-count
+    /// quantization, and the same Ke within a tenth of a percent: the volts
+    /// are duty x vdiff / Q15 either way, so no scale moved.
+    #[test]
+    fn the_applied_duty_fits_the_recorded_ladder_as_the_commanded_one_did() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/ident-mg90");
+        let image: crate::lut::Image =
+            serde_json::from_str(&std::fs::read_to_string(format!("{dir}/pos-lut.json")).unwrap())
+                .unwrap();
+        let params = RigParams {
+            pot: Pot::live(image.lut().expect("the table")),
+            ..RigParams::new(None, 350)
+        };
+        let cfg = LadderCfg::new(20_000.0);
+        let text = std::fs::read_to_string(format!("{dir}/ladder_snapshots.csv")).unwrap();
+        let rows: Vec<Vec<f64>> = text
+            .lines()
+            .skip(1)
+            .map(|l| l.split(',').map(|x| x.parse().unwrap()).collect())
+            .collect();
+        let fit = |applied: bool| {
+            let mut points = Vec::new();
+            for seg in rows.chunk_by(|a, b| a[4] == b[4]) {
+                let goal = seg[0][4] as i16;
+                let samples: Vec<SweepSample> = seg
+                    .iter()
+                    .map(|v| {
+                        let q15 = v[4] as i16;
+                        let duty_q15 = if applied {
+                            counts_q15(duty_counts(q15, ARR), ARR)
+                        } else {
+                            q15 as f64
+                        };
+                        SweepSample {
+                            w: WindowSample {
+                                t_ms: v[0],
+                                i: v[2],
+                                vdiff: v[3],
+                                duty_q15,
+                            },
+                            pos: v[1] as u16,
+                            counts: params.pot.counts(v[1] as u16),
+                            bemf: v[6],
+                        }
+                    })
+                    .collect();
+                let st = steady(&samples, goal.signum() as i8, &cfg, &params).unwrap();
+                points.push((
+                    goal,
+                    st.v,
+                    RungPoint {
+                        omega: st.omega,
+                        i: st.i,
+                        v: st.v,
+                    },
+                ));
+            }
+            points
+        };
+        let (old, new) = (fit(false), fit(true));
+        assert_eq!(old.len(), 12);
+        for ((goal, v_old, _), (_, v_new, _)) in old.iter().zip(&new) {
+            let half_count = 0.5 / duty_counts(*goal, ARR).unsigned_abs() as f64;
+            assert!(
+                (v_new / v_old - 1.0).abs() <= half_count,
+                "{goal}: {v_new} against {v_old}"
+            );
+        }
+        let ke = |p: &[(i16, f64, RungPoint)]| {
+            let pts: Vec<RungPoint> = p.iter().map(|x| x.2).collect();
+            ke_fit(&pts, 1.774_902_343_75).unwrap().ke_vpc
+        };
+        let (ke_old, ke_new) = (ke(&old), ke(&new));
+        println!("Ke commanded duty {ke_old:.6}, applied {ke_new:.6}");
+        assert!(
+            (ke_new / ke_old - 1.0).abs() < 1e-3,
+            "{ke_new} against {ke_old}"
+        );
     }
 
     /// The sweeps' steady stretches lie mostly across the middle of the
@@ -1518,6 +1622,10 @@ mod tests {
     }
 
     impl<E: Experiment> Experiment for Spy<E> {
+        fn push_watch(&mut self, w: &crate::window::Watch) {
+            self.exp.push_watch(w);
+        }
+
         fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
             if let Some(o) = obs {
                 self.seen.push(*o);
@@ -1574,7 +1682,7 @@ mod tests {
         pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
-        assert_eq!(exp.sized().len(), 11);
+        assert_eq!(exp.sized().len(), 11, "{:?}", exp.warnings());
         let w = exp.warnings();
         assert!(
             w.len() == 1 && w[0].starts_with("the -64% rung needs"),
@@ -1687,10 +1795,7 @@ mod tests {
                 moved: 610 - rest
             })
         );
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write torque_enable 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write torque_enable 0"]);
         assert!(!jammed.torque);
 
         // viscous load: the friction current reaches the limit at 2 counts/ms
@@ -1713,10 +1818,7 @@ mod tests {
         );
         assert_eq!(exp.sized().len(), 1);
         assert_eq!(brakes(&log), 2, "the rung brakes before the ladder ends");
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write torque_enable 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write torque_enable 0"]);
         assert!(!heavy.torque);
     }
 
@@ -1782,7 +1884,7 @@ mod tests {
             0,
             "ended by the fold"
         );
-        let rung = s.seen.iter().filter(|o| o.duty_mean_q15 > 5000).count();
+        let rung = s.seen.iter().filter(|o| o.duty_mean_q15() > 5000.0).count();
         assert!(rung < 20, "{rung} rung reads");
         assert!(!servo.torque);
     }
@@ -1854,7 +1956,7 @@ mod tests {
         let governed: Vec<i16> = s
             .seen
             .iter()
-            .filter(|o| o.duty_mean_q15 != 0 && o.limit_flags & 1 != 0)
+            .filter(|o| o.duty_mean_counts != 0 && o.limit_flags & 1 != 0)
             .map(|o| o.i_mean_counts.abs())
             .collect();
         let top = governed.iter().copied().max().unwrap();

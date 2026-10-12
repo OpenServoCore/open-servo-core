@@ -1,8 +1,11 @@
 //! The driver loop from osc-ident's exp module doc: Write -> wire write,
-//! Read -> telemetry gread + parse, Pause -> sleep in slices that honor
-//! ctrl-c, Stream -> one TEL burst on the main bus (HOLD+COMMIT when it
-//! carries a goal), Done -> break. A stall permit the experiment holds is
-//! rewritten between commands and pause slices while the lease runs.
+//! Read -> telemetry gread + parse, the latest watched window attached
+//! ([`Windows`]), Pause -> a watch: TEL bursts of its whole windows, each
+//! folded and handed to the experiment as it lands, the pause ended at the
+//! first guard trip (a pause too short for a window sleeps), Stream -> one
+//! TEL burst on the main bus (HOLD+COMMIT when it carries a goal), Done ->
+//! break. A stall permit the experiment holds is rewritten between
+//! commands and between watch bursts while the lease runs.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -15,9 +18,11 @@ use osc_client::{BaudRate, Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TEL_MASK_ALL, TelBurst, TelFrame, TelemetrySnapshot};
+use osc_ident::frame::{TEL_BIT_CURRENT, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VDIFF};
 use osc_ident::limits::PermitLease;
 use osc_ident::regs::{Reg, calib, config, control, telemetry};
 use osc_ident::units::{self, SenseParams};
+use osc_ident::window::{WATCH_BURST_MS, Watch, Windows, watch_rows};
 use osc_protocol::{build, tel};
 
 use super::csvio::SnapshotLog;
@@ -45,47 +50,32 @@ pub(crate) fn read_i32<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> Result<i
 
 const TEL_BASE: u16 = telemetry::FAULT_FLAGS.addr;
 const TEL_LEN: u16 = telemetry::WINDOW_FLOOR_Q15.addr + 2 - TEL_BASE;
-const IDENT_BASE: u16 = telemetry::I_MEAN_COUNTS.addr;
-const IDENT_LEN: u16 = telemetry::AGG_SEQ.addr + 2 - IDENT_BASE;
 
-/// One telemetry snapshot with the torn-ident-window guard: the full read
-/// is paired with a 12 B re-read of the ident block, and only a pair whose
-/// agg_seq agrees is returned (the block is written mid-tick; agg_seq lands
-/// last). Bounded retries - a stubbornly torn read returns the last full
-/// snapshot, which the engine's WindowStream then dedups by seq anyway.
+/// One telemetry snapshot, no window.
 pub(crate) fn read_snapshot<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<TelemetrySnapshot> {
     read_stamped(c, id, Instant::now())
 }
 
 /// [`read_snapshot`] stamped with the wall clock since `t0`, ms, at the
-/// middle of the region read it returns: the time an experiment's fits
-/// take, since every read stalls the servo's own tick counter.
+/// middle of the region read: the time an experiment's fits take, since
+/// every read stalls the servo's own tick counter.
 pub(crate) fn read_stamped<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     t0: Instant,
 ) -> Result<TelemetrySnapshot> {
     let ms = || t0.elapsed().as_secs_f64() * 1000.0;
-    let mut last = None;
-    for _ in 0..3 {
-        let before = ms();
-        let raw = c.read(id, TEL_BASE, TEL_LEN).context("telemetry read")?;
-        let mut snap =
-            TelemetrySnapshot::parse(TEL_BASE, &raw).context("telemetry parse (short read?)")?;
-        snap.host_ms = (before + ms()) / 2.0;
-        let ib = c.read(id, IDENT_BASE, IDENT_LEN).context("ident re-read")?;
-        let re_seq = u16::from_le_bytes([ib[10], ib[11]]);
-        if re_seq == snap.agg_seq {
-            return Ok(snap);
-        }
-        last = Some(snap);
-    }
-    Ok(last.expect("loop ran"))
+    let before = ms();
+    let raw = c.read(id, TEL_BASE, TEL_LEN).context("telemetry read")?;
+    let mut snap =
+        TelemetrySnapshot::parse(TEL_BASE, &raw).context("telemetry parse (short read?)")?;
+    snap.host_ms = (before + ms()) / 2.0;
+    Ok(snap)
 }
 
 /// Run the closure, then force the servo safe (duty/goals zero, torque,
-/// stall permit, TEL and the ident aggregate off) whether it succeeded,
-/// failed, or was ctrl-c'd.
+/// stall permit and TEL off) whether it succeeded, failed, or was
+/// ctrl-c'd.
 /// A hard kill skips this - a leased permit then runs out within a second
 /// (a plain-level one stays until a reboot), and the servo's own
 /// protections are the backstop.
@@ -131,6 +121,11 @@ impl Lease {
             self.write(s, control::STALL_PERMIT, 1)?;
         }
         Ok(())
+    }
+
+    /// The longest stretch of a pause before the permit is due again.
+    pub(crate) fn slice(&self, ms: u32) -> u32 {
+        self.state.slice(ms)
     }
 
     pub(crate) fn keep<S: Servo>(&mut self, s: &mut S) -> Result<()> {
@@ -210,6 +205,38 @@ pub(crate) fn tel_row_limit<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(BaudR
     Ok((baud, max as usize))
 }
 
+/// What a window folds: the one place a drive's watch selects its fields.
+const WINDOW_FIELDS: u16 = TEL_BIT_CURRENT | TEL_BIT_VDIFF | TEL_BIT_DUTY;
+
+/// The watch with the pot: the guard judges every row's position and the
+/// ladder pairs every window with its own.
+pub(crate) const WATCH_FIELDS: u16 = WINDOW_FIELDS | TEL_BIT_POS;
+
+/// The fields a watch streams on a line whose rows hold `row_bytes_max`:
+/// the pot too when it fits, else the window's alone, the pot then read at
+/// the region reads; None when not even those fit.
+fn watch_selection(row_bytes_max: usize) -> Option<u16> {
+    [WATCH_FIELDS, WINDOW_FIELDS]
+        .into_iter()
+        .find(|&m| tel::row_bytes(m) <= row_bytes_max)
+}
+
+/// The fields a drive's watches stream on this line ([`watch_selection`]),
+/// or, on a line too slow for even the window's own, a refusal before
+/// anything drives.
+pub(crate) fn admit_watch<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<u16> {
+    let (baud, max) = tel_row_limit(c, id)?;
+    watch_selection(max).with_context(|| {
+        format!(
+            "identification watches its drives on a TEL stream of current, vdiff and duty, {} B \
+             rows; the servo streams rows of at most {max} B at {} kbaud (protocol sec 5.6). \
+             Move the bus to a faster rate first (osc baud 3000000).",
+            tel::row_bytes(WINDOW_FIELDS),
+            baud.as_hz() / 1000
+        )
+    })
+}
+
 /// A `tel_mask` whose row the servo carries at `baud`, or why not in words.
 pub(crate) fn admit_tel_mask(mask: u16, baud: BaudRate, max: usize) -> Result<u16> {
     let row = tel::row_bytes(check_tel_mask(mask)?);
@@ -224,12 +251,8 @@ pub(crate) fn admit_tel_mask(mask: u16, baud: BaudRate, max: usize) -> Result<u1
     Ok(mask)
 }
 
-/// One TEL burst on the main bus. With `goal` Some the goal write and the
-/// TEL_COUNT arm are staged under HOLD and a broadcast COMMIT (the stream
-/// carrier) applies both in the same instant; with None the acked
-/// TEL_COUNT write itself carries the stream. Frames decode through
-/// [`StreamAssembler`] under `mask`; corrupt frames never appear (the
-/// adapter drops them into garble + a seq hole).
+/// One TEL burst on the main bus, `mask` admitted at the line's rate first
+/// ([`stream_tel_burst`]).
 pub(crate) fn exchange_tel_burst<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -239,6 +262,55 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
 ) -> Result<(Vec<TelFrame>, BurstStats)> {
     let (baud, max) = tel_row_limit(c, id)?;
     admit_tel_mask(mask, baud, max)?;
+    stream_tel_burst(c, id, samples, goal, mask)
+}
+
+/// One TEL burst on the main bus under the `mask` the servo holds. With
+/// `goal` Some the goal write and the TEL_COUNT arm are staged under HOLD
+/// and a broadcast COMMIT (the stream carrier) applies both in the same
+/// instant; with None the acked TEL_COUNT write itself carries the stream.
+/// Frames decode through [`StreamAssembler`] under `mask`; corrupt frames
+/// never appear (the adapter drops them into garble + a seq hole).
+pub(crate) fn stream_tel_burst<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    samples: u16,
+    goal: Option<(Reg, i32)>,
+    mask: u16,
+) -> Result<(Vec<TelFrame>, BurstStats)> {
+    let (frames, stats, whole, _) = stream_frames(c, id, samples, goal, mask)?;
+    if !whole {
+        bail!(
+            "tel burst timed out mid-stream ({} of {} samples)",
+            stats.samples,
+            samples
+        );
+    }
+    Ok((frames, stats))
+}
+
+/// One watch burst of `rows` under the `mask` the servo holds: its rows
+/// and whether a frame flagged a fault. A frame the line lost leaves the
+/// rows short, which the fold counts: lost rows, never the run.
+pub(crate) fn watch_rows_on<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    rows: u16,
+    mask: u16,
+) -> Result<(Vec<TelFrame>, bool)> {
+    let (frames, _, _, alert) = stream_frames(c, id, rows, None, mask)?;
+    Ok((frames, alert))
+}
+
+/// [`stream_tel_burst`]'s exchange: the rows, the burst's evidence, false
+/// when the LAST frame never came, and whether a frame flagged a fault.
+fn stream_frames<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    samples: u16,
+    goal: Option<(Reg, i32)>,
+    mask: u16,
+) -> Result<(Vec<TelFrame>, BurstStats, bool, bool)> {
     let window = stream_window(samples);
     c.set_guard(window + Duration::from_secs(1));
     let reply = match goal {
@@ -283,14 +355,8 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
         laps: reply.laps,
         rows_dropped: 0,
     };
-    if matches!(reply.outcome, Outcome::Timeout { .. }) {
-        bail!(
-            "tel burst timed out mid-stream ({} of {} samples)",
-            stats.samples,
-            samples
-        );
-    }
-    Ok((frames, stats))
+    let whole = !matches!(reply.outcome, Outcome::Timeout { .. });
+    Ok((frames, stats, whole, asm.alert()))
 }
 
 /// The burst handshake's wire moves. The arm has to be atomic - a servo
@@ -392,12 +458,42 @@ fn arm_seen<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ArmSeen> {
     })
 }
 
+/// What a run's watches stream and how they fold, read off the servo once.
+struct Watching {
+    mask: u16,
+    tick_hz: f64,
+    pwm: u16,
+    windows: Windows,
+}
+
+impl Watching {
+    fn get<'w, S: Servo>(slot: &'w mut Option<Self>, s: &mut S) -> Result<&'w mut Self> {
+        if slot.is_none() {
+            let pwm = s.pwm_period_ticks()?;
+            *slot = Some(Self {
+                mask: s.watch_mask()?,
+                tick_hz: s.tick_hz()?,
+                pwm,
+                windows: Windows::new(pwm),
+            });
+        }
+        Ok(slot.as_mut().expect("set above"))
+    }
+}
+
 pub(crate) struct Pump<'a, S: Servo = Wire<&'a mut Client<NusbPipe>>> {
     servo: S,
     log: Option<&'a mut SnapshotLog>,
-    /// Mirror of the sticky TEL_MASK register, tracked off the experiment's
-    /// own writes; the stream decoder keys on it.
+    /// The sticky TEL_MASK as the experiment wrote it; the stream decoder
+    /// keys on it.
     mask: u16,
+    /// The TEL_MASK the servo holds: a watch leaves its own, and an
+    /// experiment's stream restores the experiment's first.
+    servo_mask: u16,
+    /// The watch, once the run's first read or pause admitted the line.
+    watch: Option<Watching>,
+    /// Rows the watches lacked.
+    lost: u32,
     /// Every decoded frame across the run's bursts, in order - the CSV log
     /// source (the experiment gets the same frames via push_tel).
     pub(crate) tel: Vec<TelFrame>,
@@ -423,6 +519,9 @@ impl<'a, S: Servo> Pump<'a, S> {
             servo,
             log,
             mask: 0,
+            servo_mask: 0,
+            watch: None,
+            lost: 0,
             tel: Vec::new(),
             lease: Lease::new(false),
             pwm_period_ticks: None,
@@ -442,31 +541,55 @@ impl<'a, S: Servo> Pump<'a, S> {
                 Cmd::Write { reg, value } => {
                     if reg == control::TEL_MASK {
                         self.mask = value as u16;
+                        self.servo_mask = self.mask;
                     }
                     self.lease.write(s, reg, value)?;
                 }
                 Cmd::Read => {
-                    let snap = s.snapshot()?;
+                    let w = Watching::get(&mut self.watch, s)?;
+                    let mut snap = s.snapshot()?;
+                    w.windows.attach(&mut snap);
                     if let Some(log) = self.log.as_mut() {
                         log.push(snap.host_ms, &snap)?;
                     }
                     pending = Some(snap);
                 }
                 Cmd::Pause { ms } => {
-                    // 5 ms slices keep ctrl-c prompt and the lease fresh
+                    let w = Watching::get(&mut self.watch, s)?;
                     let mut left = ms;
-                    while left > 0 {
+                    while left > 0 && exp.halted().is_none() {
                         if STOP.load(Ordering::SeqCst) {
                             bail!("interrupted");
                         }
-                        let slice = left.min(5);
-                        s.sleep(slice);
+                        let slice = self.lease.slice(left).min(WATCH_BURST_MS);
+                        let end = s.now_ms() + slice as f64;
+                        let rows = watch_rows(slice as f64, w.tick_hz);
+                        if rows > 0 {
+                            if self.servo_mask != w.mask {
+                                s.write(control::TEL_MASK, w.mask as i32)?;
+                                self.servo_mask = w.mask;
+                            }
+                            let (frames, alert) = s.watch(rows, w.mask)?;
+                            let watch =
+                                Watch::fold(&frames, rows, alert, s.now_ms(), w.tick_hz, w.pwm);
+                            self.lost += watch.lost as u32;
+                            w.windows.watched(&watch);
+                            exp.push_watch(&watch);
+                        }
+                        // 5 ms sleeps keep ctrl-c prompt while nothing streams
+                        while s.now_ms() < end && exp.halted().is_none() {
+                            s.sleep(((end - s.now_ms()).ceil() as u32).clamp(1, 5));
+                        }
                         left -= slice;
                         self.lease.keep(s)?;
                     }
                 }
                 Cmd::Stream { samples, goal } => {
                     self.lease.check_stream(samples)?;
+                    if self.servo_mask != self.mask {
+                        s.write(control::TEL_MASK, self.mask as i32)?;
+                        self.servo_mask = self.mask;
+                    }
                     let (frames, st) = s.stream(samples, goal, self.mask)?;
                     eprintln!(
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
@@ -506,7 +629,15 @@ impl<'a, S: Servo> Pump<'a, S> {
                     );
                     exp.push_burst(&cap);
                 }
-                Cmd::Done => return Ok(()),
+                Cmd::Done => {
+                    if self.lost > 0 {
+                        eprintln!(
+                            "warning: the watches lacked {} rows (lost frames or dropped rows)",
+                            self.lost
+                        );
+                    }
+                    return Ok(());
+                }
             }
         }
     }
@@ -601,6 +732,95 @@ mod tests {
         }
     }
 
+    /// A watch through the in-process servo stack: one burst of three
+    /// whole windows under the mask the line admits, folded to the floor
+    /// means of what the servo packed, the pot's extremes kept.
+    #[test]
+    fn a_watch_streams_whole_through_the_servo_stack() {
+        use osc_client::fake::{FakePipe, TelSample, tel_sample};
+        let pipe = FakePipe::new(BaudRate::B2000000, &[1]);
+        let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
+        let mask = admit_watch(&mut c, id).unwrap();
+        write_reg(&mut c, id, control::TEL_MASK, mask as i32).unwrap();
+        let (frames, alert) = watch_rows_on(&mut c, id, 48, mask).unwrap();
+        let w = Watch::fold(&frames, 48, alert, 100.0, 20_000.0, 1200);
+        assert_eq!((w.windows.len(), w.lost, w.alert), (3, 0, false));
+        let s: Vec<TelSample> = frames.iter().map(|f| tel_sample(f.tick as u32)).collect();
+        for (k, x) in w.windows.iter().enumerate() {
+            let rows = &s[16 * k..16 * (k + 1)];
+            let mean = |f: fn(&TelSample) -> i16| {
+                (rows.iter().map(|r| f(r) as i32).sum::<i32>() >> 4) as i16
+            };
+            assert_eq!(x.window.i_mean, mean(|r| r.current));
+            assert_eq!(x.window.vdiff_mean, mean(|r| r.vdiff));
+            assert_eq!(x.window.duty_mean, mean(|r| r.duty));
+        }
+        if mask & osc_ident::frame::TEL_BIT_POS != 0 {
+            let lo = s.iter().map(|r| r.pos).min().unwrap();
+            let hi = s.iter().map(|r| r.pos).max().unwrap();
+            assert_eq!(w.pos, Some((lo, hi)));
+        }
+    }
+
+    /// A watch leaves its own mask on the servo; the experiment's stream
+    /// after it runs under the experiment's mask, and the read after the
+    /// watch carries its window.
+    #[test]
+    fn a_stream_after_a_read_runs_under_the_experiments_mask() {
+        use super::super::servo::bench::Bench;
+        use crate::capture::Supply;
+        use osc_ident::frame::{TEL_BIT_CURRENT, TEL_BIT_POS};
+
+        #[derive(Default)]
+        struct Exp {
+            cmds: Vec<Cmd>,
+            tel: Vec<TelFrame>,
+            seen: Vec<TelemetrySnapshot>,
+        }
+        impl Experiment for Exp {
+            fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+                self.seen.extend(obs.copied());
+                if self.cmds.is_empty() {
+                    Cmd::Done
+                } else {
+                    self.cmds.remove(0)
+                }
+            }
+            fn push_tel(&mut self, tel: &TelBurst) {
+                self.tel.extend_from_slice(&tel.frames);
+            }
+        }
+        let mask = TEL_BIT_POS | TEL_BIT_CURRENT;
+        let mut exp = Exp {
+            cmds: vec![
+                Cmd::Write {
+                    reg: control::TEL_MASK,
+                    value: mask as i32,
+                },
+                Cmd::Read,
+                Cmd::Pause { ms: 5 },
+                Cmd::Stream {
+                    samples: 32,
+                    goal: None,
+                },
+                Cmd::Read,
+            ],
+            ..Default::default()
+        };
+        let mut b = Bench::mg90(Supply::TwoS);
+        Pump::on(&mut b, None).run(&mut exp).unwrap();
+        assert_eq!(exp.tel.len(), 32);
+        assert!(
+            exp.tel
+                .iter()
+                .all(|f| f.pos.is_some() && f.current.is_some() && f.vdiff.is_none())
+        );
+        let [a, b] = exp.seen[..] else {
+            panic!("two reads, {} seen", exp.seen.len())
+        };
+        assert!(a.pwm_period_ticks != 0 && b.agg_seq > a.agg_seq);
+    }
+
     #[test]
     fn write_arm_truncates_by_width() {
         // the exact bytes the Write arm sends per width
@@ -621,11 +841,47 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_span_covers_the_ident_block() {
+    fn telemetry_span_covers_the_region_through_the_floor() {
         assert_eq!(TEL_BASE, 0x200);
         assert_eq!(TEL_LEN, 0x6a);
-        assert_eq!(IDENT_BASE, 0x25a);
-        assert_eq!(IDENT_LEN, 12);
+    }
+
+    /// The watch takes what the line's rows hold, the pot included when it
+    /// fits; a line too slow for the window's own fields is refused in
+    /// words before anything drives.
+    #[test]
+    fn identification_refuses_a_line_too_slow_for_its_watch() {
+        use osc_client::fake::FakePipe;
+        let (full, bare) = (tel::row_bytes(WATCH_FIELDS), tel::row_bytes(WINDOW_FIELDS));
+        assert_eq!(watch_selection(full), Some(WATCH_FIELDS));
+        assert_eq!(
+            watch_selection(full - 1),
+            (bare < full).then_some(WINDOW_FIELDS)
+        );
+        assert_eq!(watch_selection(bare - 1), None);
+        for baud in [BaudRate::B1000000, BaudRate::B2000000, BaudRate::B3000000] {
+            let pipe = FakePipe::new(baud, &[1]);
+            let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
+            let (_, max) = tel_row_limit(&mut c, id).unwrap();
+            match (admit_watch(&mut c, id), watch_selection(max)) {
+                (Ok(mask), Some(want)) => assert_eq!(mask, want, "{baud:?}"),
+                (Err(e), None) => assert_eq!(
+                    e.to_string(),
+                    format!(
+                        "identification watches its drives on a TEL stream of current, vdiff \
+                         and duty, {} B rows; the servo streams rows of at most {max} B at {} \
+                         kbaud (protocol sec 5.6). Move the bus to a faster rate first (osc \
+                         baud 3000000).",
+                        tel::row_bytes(WINDOW_FIELDS),
+                        baud.as_hz() / 1000
+                    )
+                ),
+                (got, want) => panic!("{baud:?}: {got:?} against {want:?}"),
+            }
+        }
+        let pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
+        assert!(admit_watch(&mut c, id).is_err(), "1 M carries a watch");
     }
 
     #[test]
