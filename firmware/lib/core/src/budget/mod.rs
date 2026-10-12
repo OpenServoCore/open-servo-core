@@ -54,8 +54,8 @@ impl Regime {
 /// stepping windows hold every Closed maximum). Phase SLOW off its due
 /// period is a plain tick; the due body is [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; 2] = [
-    [825, 1251, 1104, 1080, 666, 1089, 627, 942, 582, 711],
-    [1678, 2071, 1997, 1926, 1892, 1895, 1455, 1734, 1410, 1500],
+    [827, 1211, 911, 1118, 656, 1112, 641, 953, 602, 695],
+    [1466, 1782, 1758, 1696, 1659, 1690, 1250, 1523, 1205, 1304],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
@@ -63,8 +63,8 @@ pub const KERNEL: [[u32; PHASES]; 2] = [
 /// M: per phase the largest window mean of the same windows, Closed from
 /// the stepping windows.
 pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
-    [806, 1140, 1083, 960, 645, 965, 607, 815, 560, 573],
-    [1511, 1885, 1829, 1640, 1722, 1648, 1280, 1486, 1228, 1243],
+    [807, 1070, 888, 980, 632, 973, 607, 810, 575, 577],
+    [1298, 1602, 1564, 1440, 1495, 1439, 1060, 1259, 1022, 1027],
 ];
 
 /// A window's mean is judged only over this many bodies.
@@ -74,34 +74,38 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// configuration write, on top of [`KERNEL`], each at most once per period
 /// and in place of the thermometer's stage on that tick: the fast half, the
 /// thermometer's config and its bound at phase THERM_INSTALL; the rest of
-/// the medium half and the floors at THERM_SIDE. E: each stage tick over
-/// the same tick without the write, 486 and 420, priced on the release
+/// the medium half and the floors at THERM_SIDE. REFRESH_1, E: the stage
+/// tick over the same tick without the write, 486, priced on the release
 /// image (fetch model on the emulated trace, quiet and stepping alike),
-/// plus 10%.
+/// plus 10%; its M from one tick per run, 525, does not lower it.
+/// REFRESH_2, M, above its E 462: the stage tick over the window's plain
+/// maximum at the phase, one tick per run in each 1M window.
 pub const REFRESH_1: u32 = 535;
-pub const REFRESH_2: u32 = 462;
+pub const REFRESH_2: u32 = 474;
 
 /// Every tick of a TEL burst (row gate, sample build and the out-of-line
 /// row), on top of [`KERNEL`], per regime, the widest row 3M admits (11 B).
-/// E: the unpacked six-field rows' M (Open 651, Closed 612) less the priced
-/// saving, 45: the emulated tick prices the widest packed row at 426
-/// against the unpacked six fields' 471.
-pub const TEL_ENCODE: [u32; 2] = [606, 567];
+/// M for the six-field 9 B rows plus E for the widest row, 18: priced at
+/// 426 against six packed fields' 408. Six-field M: per phase the TEL
+/// ticks' maximum over the plain maximum, Open still 540, Closed stepping
+/// 417; Closed is raised to its mean budget.
+pub const TEL_ENCODE: [u32; 2] = [606, 671];
 
-/// Its mean over a window: the TEL ticks' mean less the plain ticks'. E:
-/// the unpacked rows' M less the same 45.
-pub const TEL_ENCODE_MEAN: [u32; 2] = [472, 567];
+/// Its mean over a window: the TEL ticks' mean less the plain ticks'. M
+/// for six fields, still 403, stepping 621, plus the same 18.
+pub const TEL_ENCODE_MEAN: [u32; 2] = [442, 671];
 
-/// The tick that banks a TEL batch, on top of [`TEL_ENCODE`]. E: the
-/// unpacked bank's M, 183, plus the priced cost of the out-of-line bank,
-/// 51 (117 against 66 on the emulated tick).
-pub const TEL_BANK: u32 = 234;
+/// The tick that banks a TEL batch, on top of [`TEL_ENCODE`], any row
+/// width. M: per phase the banking ticks' maximum over the TEL ticks', 129
+/// (stepping and still alike).
+pub const TEL_BANK: u32 = 177;
 
 /// The SLOW block on its due tick (phase SLOW, every DECIM_SLOW periods),
 /// on top of the phase's row, per regime. E: the dearest path, a tracked
 /// seat (any drive that holds current), priced at 684 over the plain tick
 /// (the ungated moving path at 471), plus 10%. No bench window has run a
-/// tracked seat.
+/// tracked seat; the untracked path's M, the due maximum over the phase's
+/// plain mean, is 408 Open and 673 Closed.
 pub const SLOW_DUE: [u32; 2] = [753, 753];
 
 /// The due tick that freezes a thermal reference window, in place of
@@ -114,10 +118,13 @@ pub const SLOW_CLOSE: u32 = 717;
 /// of their rows. THERM_INSTALL: a frozen window's install after its SLOW
 /// tick (two reciprocal divides). THERM_SIDE: the NTC the period before a
 /// SLOW tick (a conversion and its bound once a second), or the derate and
-/// a cold check after one. E: priced at 531 and at 573 (the derate on its
-/// ramp with a cold check; a conversion 384) over the plain tick, plus 10%.
+/// a cold check after one. THERM_INSTALL, E: priced at 531 over the plain
+/// tick, plus 10%; no bench window has run one. THERM_SIDE, M, above its E
+/// 631: the stage tick over the window's plain maximum at the phase, 591
+/// (hold); in the TEL windows over the TEL tick's maximum, at most 402,
+/// since [`kernel_tick`] stacks the TEL row on it.
 pub const THERM_INSTALL: u32 = 585;
-pub const THERM_SIDE: u32 = 631;
+pub const THERM_SIDE: u32 = 639;
 
 /// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, and
 /// the catch-up it adds after a lost tick. E: priced on the executed path.
@@ -142,12 +149,12 @@ pub const WINDOW_TICKS: [usize; 4] = [2, 4, 10, 20];
 /// ticks took. M: the quiet windows (Open) and the stepping windows
 /// (Closed).
 pub const WINDOW_LOAD: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[2160, 3712, 8195, 15695], [3950, 7386, 16501, 32226]];
+    [[1951, 3470, 8216, 15705], [3450, 6519, 14522, 27944]];
 
 /// The same with six fields streaming at 3M. M: TEL still (Open) and TEL
 /// stepping (Closed).
 pub const WINDOW_LOAD_TEL: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[3192, 5788, 13461, 26225], [5016, 9588, 21618, 42454]];
+    [[2894, 5246, 12480, 24296], [4318, 8067, 18419, 35634]];
 
 /// Bus vector bodies.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -176,35 +183,31 @@ impl Body {
 
 /// Longest body of each bus vector at [`BUDGET_BAUD_HZ`], any traffic.
 ///
-/// BreakWake, E: 18.2 us max (bus-on-top spine probe) plus 1.8 us. TxDone,
-/// E: 11.1 us TEL arm max (same probe) plus 0.9 us. Deadline, E: the 62.5 us
-/// READ dispatch body (v1 probe) plus a goal WRITE's rules and commit (31 us)
-/// plus 16.5 us. TelStage, E: the stager max 22.5 us (v2 probe, SW stager)
-/// plus 1.5 us. TelPoll, E: 0.8 us mean derived from the same window, plus
-/// 1.2 us.
+/// M: each body's net maximum over every budget window, a 1M window's
+/// Deadline and TelStage less [`spin_extra`]. Deadline: the goal WRITE at
+/// 1M; the rest from the TEL stepping window.
 pub const fn body(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 960,
-        Body::TxDone => 576,
-        Body::Deadline => 5280,
-        Body::TelStage => 1152,
-        Body::TelPoll => 96,
+        Body::BreakWake => 905,
+        Body::TxDone => 426,
+        Body::Deadline => 7116,
+        Body::TelStage => 1266,
+        Body::TelPoll => 134,
     }
 }
 
 /// The same bodies' mean over a window.
 ///
-/// BreakWake, E: 16.0 us (v1 probe, polling ladder). TxDone, E: 4.7 us per
-/// arm (two-arm replies, bench probe) plus 1.3 us. Deadline, E: 82.1 us over
-/// two bodies per READ (v1 probe) plus 4 us. TelStage, E: 20 us, the staging
-/// share of the v2 SW stager window. TelPoll, E: 0.8 us, its polling share.
+/// M: each body's largest window mean (at least [`MEAN_MIN_BODIES`]
+/// bodies), the same spin rule. BreakWake: the GREAD slot window; Deadline:
+/// the goal WRITE; TelPoll: TEL still; the rest TEL stepping.
 pub const fn body_mean(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 768,
-        Body::TxDone => 288,
-        Body::Deadline => 2160,
-        Body::TelStage => 960,
-        Body::TelPoll => 40,
+        Body::BreakWake => 803,
+        Body::TxDone => 302,
+        Body::Deadline => 5770,
+        Body::TelStage => 1152,
+        Body::TelPoll => 44,
     }
 }
 

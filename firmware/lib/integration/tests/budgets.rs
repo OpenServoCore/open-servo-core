@@ -274,7 +274,7 @@ fn config_write_while_moving_fits_at_budget() {
 }
 
 #[test]
-#[ignore = "red at budget: a Closed TEL tick with its bank does not fit the period yet"]
+#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (671) and its bank (177), the health close and entry and exit takes 2964, 564 over; p8 with the install 2811, 411 over"]
 fn config_write_while_moving_and_streaming_fits_at_budget() {
     for (p, t) in spare_phase_ticks(true) {
         assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
