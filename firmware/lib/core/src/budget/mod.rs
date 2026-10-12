@@ -49,13 +49,13 @@ impl Regime {
 /// Kernel tick body with no event on it, per regime and phase: the longest
 /// a window may show.
 ///
-/// M, drive-arm tagged: Open over the quiet, hold, parked hold and stepping
-/// windows' Open ticks, Closed over the same windows' Closed ticks (the
-/// stepping windows hold every Closed maximum). Phase SLOW off its due
+/// M, drive-arm tagged on this image, a closing tick booked apart:
+/// Open over the quiet, hold, parked hold and stepping windows' Open ticks,
+/// Closed over the same windows' Closed ticks. Phase SLOW off its due
 /// period is a plain tick; the due body is [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; 2] = [
-    [827, 1211, 911, 1118, 656, 1112, 641, 953, 602, 695],
-    [1466, 1782, 1758, 1696, 1659, 1690, 1250, 1523, 1205, 1304],
+    [818, 1070, 890, 932, 641, 956, 641, 806, 599, 593],
+    [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
@@ -63,8 +63,8 @@ pub const KERNEL: [[u32; PHASES]; 2] = [
 /// M: per phase the largest window mean of the same windows, Closed from
 /// the stepping windows.
 pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
-    [807, 1070, 888, 980, 632, 973, 607, 810, 575, 577],
-    [1298, 1602, 1564, 1440, 1495, 1439, 1060, 1259, 1022, 1027],
+    [805, 1062, 867, 915, 622, 951, 611, 795, 578, 566],
+    [1234, 1528, 1495, 1307, 1454, 1367, 994, 1175, 956, 948],
 ];
 
 /// A window's mean is judged only over this many bodies.
@@ -86,19 +86,20 @@ pub const REFRESH_2: u32 = 474;
 /// Every tick of a TEL burst (row gate, sample build and the out-of-line
 /// row), on top of [`KERNEL`], per regime, the widest row 3M admits (11 B).
 /// M for the six-field 9 B rows plus E for the widest row, 18: priced at
-/// 426 against six packed fields' 408. Six-field M: per phase the TEL
-/// ticks' maximum over the plain maximum, Open still 540, Closed stepping
-/// 417; Closed is raised to its mean budget.
-pub const TEL_ENCODE: [u32; 2] = [606, 671];
+/// 426 against six packed fields' 408. Six-field M: the TEL ticks' maximum
+/// over the plain maximum, drive-arm tagged, the largest phase: Open 570
+/// (tel still), Closed 525 (stepping).
+pub const TEL_ENCODE: [u32; 2] = [636, 591];
 
 /// Its mean over a window: the TEL ticks' mean less the plain ticks'. M
-/// for six fields, still 403, stepping 621, plus the same 18.
-pub const TEL_ENCODE_MEAN: [u32; 2] = [442, 671];
+/// for six fields, the largest window mean, Open 438 (stepping), Closed 389
+/// (stepping), plus the same 18.
+pub const TEL_ENCODE_MEAN: [u32; 2] = [478, 427];
 
 /// The tick that banks a TEL batch, on top of [`TEL_ENCODE`], any row
-/// width. M: per phase the banking ticks' maximum over the TEL ticks', 129
-/// (stepping and still alike).
-pub const TEL_BANK: u32 = 177;
+/// width. M: the banking ticks' maximum over the TEL ticks', the largest
+/// phase of either regime, 150 (Open, stepping).
+pub const TEL_BANK: u32 = 198;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
 /// DECIM_SLOW periods): the permit lease, undervoltage and the
@@ -130,10 +131,13 @@ pub const THERM_INSTALL: u32 = 585;
 pub const THERM_SIDE: u32 = 639;
 
 /// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, on top
-/// of the tick it lands on, and the catch-up it adds after a lost tick. E:
-/// priced on the executed path. The probe books a closing tick apart, so
-/// no other row holds a close.
-pub const HEALTH_CLOSE: u32 = 93;
+/// of the tick it lands on, and the catch-up it adds after a lost tick.
+/// HEALTH_CLOSE, M: the closing ticks' maximum over the plain maximum (in
+/// the TEL windows over the TEL ticks'), the largest phase of either
+/// regime, 260 (Open p5, tel still; 150 outside the TEL windows). The
+/// probe books a close ahead of a bank, so that cell may hold a bank too.
+/// CATCH_UP, E: priced on the executed path.
+pub const HEALTH_CLOSE: u32 = 308;
 pub const HEALTH_CLOSE_TICKS: u32 = 16;
 pub const CATCH_UP: u32 = 111;
 
