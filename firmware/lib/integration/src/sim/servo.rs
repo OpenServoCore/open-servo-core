@@ -19,7 +19,7 @@ use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
 use super::providers::{
-    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStamps, SimWire,
+    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStager, SimStamps, SimWire,
 };
 use super::store::RamStore;
 use crate::plant::TIMING;
@@ -58,7 +58,7 @@ pub struct SimServo {
     session: Session,
     bus: ServoBus<SimProviders>,
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
-    feed: TelFeed,
+    feed: TelFeed<SimStager>,
     tel: &'static TelChannel,
     seed: Seed,
     /// Own frames dispatched since boot: the `cpu` model's per-frame charge
@@ -152,7 +152,12 @@ impl SimServo {
     fn bringup(
         seed: &Seed,
         uid: [u8; 16],
-    ) -> (Shared, ServoBus<SimProviders>, TelFeed, &'static TelChannel) {
+    ) -> (
+        Shared,
+        ServoBus<SimProviders>,
+        TelFeed<SimStager>,
+        &'static TelChannel,
+    ) {
         seed.handles.ring.reset();
 
         let shared = Shared::new();
@@ -233,7 +238,7 @@ impl SimServo {
         // Leaked like a shared RamStore: `split` wants the chip's 'static
         // channel; test-scoped, one per servo per bringup.
         let tel: &'static TelChannel = Box::leak(Box::new(TelChannel::new()));
-        let (feed, drain) = tel.split();
+        let (feed, drain) = tel.split(SimStager(seed.handles.stager.clone()));
         bus.attach_tel(drain);
         (shared, bus, feed, tel)
     }
@@ -345,8 +350,8 @@ impl SimServo {
         }
     }
 
-    /// The TEL poll the chip kernel tick pends at the bus level; the sim
-    /// calls it after each fast tick outside handler bodies.
+    /// The TEL stager body (the chip's SW vector); the sim runs it when
+    /// the servo's stager pend bit is delivered.
     pub fn poll_tel(&mut self) {
         self.bus.poll_tel();
     }

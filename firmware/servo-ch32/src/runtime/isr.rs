@@ -8,7 +8,7 @@ use osc_servo_core::{ControlIo, RegionStorageRaw, Sensors};
 use crate::hal::{pfic, systick, usart};
 use crate::providers::break_wake::BreakWake;
 use crate::runtime::Drivers;
-use crate::runtime::statics::{KERNEL, SESSION, SHARED, TEL_CHANNEL};
+use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 use crate::runtime::tick_load::TickLoad;
 
 /// Touched only from the DMA1 CH1 vector, which never preempts itself.
@@ -137,20 +137,14 @@ pub fn on_adc_dma_tc() {
         }
     }
 
-    // TEL burst (protocol sec 5.6): the six raw fields' 155 B frame drains in ~520 us of
-    // the 800 us its successor takes to fill, so a batch must stage within
-    // a tick of banking or of the wire freeing; the main loop, starved by a
-    // driving tick, staged up to 300 us late and the kernel dropped rows.
-    // Last on purpose: staging is transport work, run by the SW vector at
-    // the bus level, never inside the kernel's body.
-    let tel = TEL_CHANNEL.active();
-    if tel {
-        pfic::pend_software();
-    }
-    crate::probe::kernel_exit(entry, tags, after, tel);
+    crate::probe::kernel_exit(entry, tags, after);
 }
 
-/// SW vector -- the TEL stager, pended by the kernel tick's last statement.
+/// SW vector - the TEL stager (protocol sec 5.6), pended through
+/// `providers::stager` when the kernel banks a batch and when a bus body
+/// clears what blocked one: staging is transport work at the bus level,
+/// never inside the kernel's body, and never in the main loop, which a
+/// driving tick starves for longer than a batch may wait.
 ///
 /// SAFETY: the bus driver is installed before this vector unmasks, and SW
 /// shares the bus level with TIM2, USART1 and SysTick, so no concurrent

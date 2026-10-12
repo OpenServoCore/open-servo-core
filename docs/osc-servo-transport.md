@@ -34,7 +34,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | USART1 vector   | PFIC LOW (0x80). TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, sec 7) | TC body ~2-4 us/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC LOW (0xC0), after a pending wake or TC. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1-5 us; dispatch bodies ~10-70 us |
-| SW vector (14)  | PFIC LOW (0xC0). The TEL stager: `poll_tel`, pended through PFIC_IPSR1 bit 14 by the kernel tick's last statement while a burst is live | one entry per tick while a burst runs; ~23 us when it stages a frame |
+| SW vector (14)  | PFIC LOW (0xC0). The TEL stager: `poll_tel`, pended through PFIC_IPSR1 bit 14 when the kernel banks a batch, and by a TX release or deadline body that leaves a banked batch unblocked | one or two entries per batch; ~23 us when it stages a frame |
 | DMA1 CH5        | USART1 RX -> 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (sec 7) | zero CPU |
 | DMA1 CH7        | TIM2_CH2 (IC2, rising edge) -> a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (sec 7) | zero CPU |
 | DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> TIM3's free-running HCLK count into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 8) | zero CPU; read only during a CAL train |
@@ -329,12 +329,14 @@ be staged behind the CRC verdict:
   path exists. Mechanics: the arm plans the mask's packed row (protocol
   sec 5.6) and posts the plan; the kernel packs each control-tick sample
   once, in one out-of-line call, directly at its final wire offset in a
-  ping-pong buffer pair (the kernel's context, PFIC HIGH); the tick's
-  last statement pends the SW vector, whose `poll_tel` stages a ready
-  buffer through the ordinary stage/trigger path at the bus level, never
-  inside the kernel's body. It runs per tick, not in the main loop: the
-  six raw fields' 155 B frame leaves ~280 us of its 800 us batch window
-  spare, and a driving tick starves the main loop for longer than that.
+  ping-pong buffer pair (the kernel's context, PFIC HIGH); banking a
+  buffer pends the SW vector, whose `poll_tel` stages a ready buffer
+  through the ordinary stage/trigger path at the bus level, never inside
+  the kernel's body. The bus pends it again where it clears what held a
+  banked buffer back: the TX release, and a deadline body's verdict or
+  reply kill. It runs on these events, not in the main loop: the six raw
+  fields' 155 B frame leaves ~280 us of its 800 us batch window spare,
+  and a driving tick starves the main loop for longer than that.
   Cross-context traffic is three flags and an arm mailbox,
   single-writer volatile discipline, no atomics. Any RX break aborts the burst with the speculation-kill trio
   (disarm, tx.abort, chain reset); buffers published under a dead arm

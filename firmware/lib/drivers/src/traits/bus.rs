@@ -81,6 +81,14 @@ pub trait BreakStamps {
     fn clear(&mut self);
 }
 
+/// Pends the TEL stager ([`crate::bus::ServoBus::poll_tel`]), which runs at
+/// the bus level once the waking context returns. Any context may wake it;
+/// wakes merge while one is pending, and a wake with nothing to stage costs
+/// one empty poll.
+pub trait StagerWake: Clone {
+    fn wake(&self);
+}
+
 /// Role bundle for the `ServoBus` composite (driver-pattern sec 5.4).
 pub trait Providers {
     type Ring: RxRing;
@@ -89,6 +97,7 @@ pub trait Providers {
     type Tx: TxWire;
     type Baud: UsartBaud;
     type Stamps: BreakStamps;
+    type Stager: StagerWake;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

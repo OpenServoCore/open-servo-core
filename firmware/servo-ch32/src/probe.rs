@@ -105,17 +105,17 @@ pub fn tick_before(tags: ProbeTags) -> TickTags {
 }
 
 /// The kernel tick that began at `entry` ends now. `after`: the kernel's
-/// tags after the body; `tel`: the TEL burst ran.
+/// tags after the body.
 #[inline(always)]
 #[allow(unused_variables)]
-pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, tel: bool) {
+pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags) {
     #[cfg(feature = "bench")]
     {
         let exit = systick::ticks();
         let b = before.tags;
         let ev = Events {
             refresh: after.refresh_staged != b.refresh_staged,
-            tel,
+            tel: crate::runtime::statics::TEL_CHANNEL.active(),
             bank: osc_servo_drivers::bench::tel_banks() != before.banks,
             slow: b.slow_due,
             close: b.slow_due && after.therm & stage::INSTALL != 0,

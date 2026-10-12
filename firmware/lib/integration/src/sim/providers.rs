@@ -1,4 +1,4 @@
-//! The six `osc_servo_drivers::traits::bus` providers over per-servo shared state
+//! The seven `osc_servo_drivers::traits::bus` providers over per-servo shared state
 //! (`docs/osc-native-protocol.md` sec 4, 10). Each provider is a thin view onto
 //! `Rc`-shared cells the [`super::Sim`] also holds a handle to, so wire
 //! deliveries and the driver see one ring, one clock, one baud.
@@ -11,7 +11,8 @@ use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 use osc_servo_drivers::traits::bus::{
-    BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
+    BreakStamps, CrcEngine, Deadline, Providers, RxRing, StagerWake, TxWire, UsartBaud,
+    tick_reached,
 };
 
 use super::core::{Core, Event, Talker, break_ticks, byte_ticks};
@@ -178,6 +179,8 @@ pub struct Handles {
     pub stamps: Rc<StampState>,
     /// Holds a body's own frame start until the body reaches its trigger.
     pub tx_gate: Rc<TxGate>,
+    /// The stager vector's pend bit: wakes merge until the sim delivers it.
+    pub stager: Rc<Cell<bool>>,
 }
 
 impl Handles {
@@ -189,6 +192,7 @@ impl Handles {
             clock_lag: Rc::new(Cell::new(0)),
             stamps: Rc::default(),
             tx_gate: Rc::default(),
+            stager: Rc::default(),
         }
     }
 }
@@ -519,6 +523,16 @@ impl BreakStamps for SimStamps {
     }
 }
 
+/// Sets the servo's stager pend bit, for both halves of its TEL channel.
+#[derive(Clone)]
+pub struct SimStager(pub Rc<Cell<bool>>);
+
+impl StagerWake for SimStager {
+    fn wake(&self) {
+        self.0.set(true);
+    }
+}
+
 /// ZST binding each provider role for the `ServoBus` composite.
 pub struct SimProviders;
 
@@ -529,4 +543,5 @@ impl Providers for SimProviders {
     type Tx = SimWire;
     type Baud = SimBaud;
     type Stamps = SimStamps;
+    type Stager = SimStager;
 }

@@ -89,7 +89,7 @@ pub struct ServoBus<P: Providers> {
     // Clock discipline (sec 9.3): MGMT CAL + trim loop.
     clock: ClockDiscipline,
     // TEL burst stager (sec 5.3): armed by tel_count, fed by `poll_tel`.
-    burst: TelBurst,
+    burst: TelBurst<P::Stager>,
     // Rescue sampler window (sec 9.1): the first low sample's tick and the
     // cursor the ring must hold until the declaration.
     rescue_since: Option<u32>,
@@ -162,7 +162,7 @@ impl<P: Providers> ServoBus<P> {
 
     /// Bind the TEL sample channel's consumer half. Bringup-only, before any
     /// arm can arrive; without it `tel_arm` stays a drop.
-    pub fn attach_tel(&mut self, drain: crate::tel::TelDrain) {
+    pub fn attach_tel(&mut self, drain: crate::tel::TelDrain<P::Stager>) {
         self.burst.attach(drain);
     }
 
@@ -307,6 +307,7 @@ impl<P: Providers> ServoBus<P> {
                 break;
             }
         }
+        self.burst.wake_if_ready();
         self.arm_deadline();
     }
 
@@ -325,6 +326,7 @@ impl<P: Providers> ServoBus<P> {
             }
             // A pending reboot waits for the main loop's `take_reboot`.
             self.burst.on_tx_released();
+            self.burst.wake_if_ready();
             // The ladder waited on the CRC engine while the reply streamed.
             if !self.framer.caught_up(self.ring.cursor()) {
                 self.framer_at = Some(self.deadline.now());

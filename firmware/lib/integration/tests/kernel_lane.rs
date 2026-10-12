@@ -378,7 +378,7 @@ fn tel_widest_row_keeps_up_at_rest() {
 }
 
 #[test]
-#[ignore = "over budget on main: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops 1931-2004 rows over the 16 starts; the Closed rows with entry and exit plus the TEL row average 2284 of the 2400 period, less than one stager poll (214) per tick"]
+#[ignore = "over budget on main: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops 1931-2004 rows over the 16 starts; the Closed rows with entry and exit plus the TEL row average 2284 of the 2400 period, too little left for the bus to stage each batch"]
 fn tel_six_packed_fields_fit_at_budget_while_stepping() {
     for k in 0..STARTS {
         let got = tel_burst(SIX_FIELDS, Motion::Moving, k);

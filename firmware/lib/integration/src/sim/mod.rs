@@ -150,6 +150,8 @@ struct TelPump {
     /// Synthesized samples carry fault=true over ticks [from, to).
     fault: Option<(u32, u32)>,
     track: Option<Track>,
+    /// Sim ticks of every batch the encoder banked, across bursts.
+    banks: Vec<u64>,
 }
 
 /// Recorded fast-tick rows a servo plays back in place of the synthesized
@@ -347,6 +349,7 @@ impl Sim {
             encoded: 0,
             fault: None,
             track: None,
+            banks: Vec::new(),
         });
         idx
     }
@@ -402,6 +405,12 @@ impl Sim {
     /// TEL rows servo `i`'s encoder dropped against unreleased buffers.
     pub fn tel_drops(&self, i: usize) -> u16 {
         self.servos[i].tel_drops()
+    }
+
+    /// Sim ticks at which servo `i`'s encoder banked a TEL batch, in order:
+    /// the end of the tick that published it.
+    pub fn tel_banks(&self, i: usize) -> &[u64] {
+        &self.tels[i].banks
     }
 
     /// Servo `i`'s next handler body enters on time and is preempted for
@@ -906,11 +915,7 @@ impl Sim {
         if self.tels[j].epoch != epoch || !self.tel_sample(j, now) {
             return;
         }
-        // the chip's tick tail polls; one landing inside a bus body leaves
-        // the stage to the next tick
-        if !self.cpus[j].busy(now) {
-            self.servos[j].poll_tel();
-        }
+        self.tick_wake(j, now);
         self.core
             .borrow_mut()
             .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
@@ -935,8 +940,7 @@ impl Sim {
     }
 
     /// The kernel lane's tail: the tick's TEL sample (a banking sample
-    /// lengthens the body), then the stager vector the kernel's last
-    /// statement pends at the bus level.
+    /// lengthens the body and pends the stager vector at the bus level).
     fn kernel_tail(&mut self, j: usize) {
         let now = self.core.borrow().now();
         if let Some(end) = self.cpus[j].kernel_until()
@@ -959,7 +963,22 @@ impl Sim {
                 self.cpus[j].extend_kernel(now, bank);
             }
         }
-        self.deliver(j, Vector::Stage);
+        self.tick_wake(j, now);
+    }
+
+    /// A fast tick's end: the only wake it can have raised is its bank's.
+    fn tick_wake(&mut self, j: usize, now: u64) {
+        if self.handles[j].stager.get() {
+            self.tels[j].banks.push(now);
+        }
+        self.deliver_stager(j);
+    }
+
+    /// Deliver servo `j`'s stager vector if a wake pended it.
+    fn deliver_stager(&mut self, j: usize) {
+        if self.handles[j].stager.take() {
+            self.deliver(j, Vector::Stage);
+        }
     }
 
     /// Image servo `j`'s current track row in its live table: the raw ADC
@@ -1081,6 +1100,7 @@ impl Sim {
         let started = self.handles[j].tx_gate.starts() > starts;
         self.cpus[j].book(v, frames > 0, started);
         self.handles[j].clock_lag.set(0);
+        self.deliver_stager(j);
     }
 
     fn kernel_scan(&mut self, j: usize) {

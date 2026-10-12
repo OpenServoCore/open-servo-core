@@ -337,7 +337,7 @@ impl<P: Providers> ServoBus<P> {
         &mut self,
         anchor: u16,
         footprint: u16,
-        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
+        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc, P::Stager>) -> T,
     ) -> Option<(bool, Slot, T)> {
         let frame = frame_view(self.ring.bytes(), anchor, footprint);
         let (req, ctx, slot) = match decode(frame, self.id) {

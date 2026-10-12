@@ -1,5 +1,5 @@
 //! TEL burst seam between the kernel fast tick (PFIC HIGH) and the bus-side
-//! frame stager (the transport ISRs, incl. the SW vector each tick pends).
+//! frame stager (the transport ISRs; a banked batch wakes the stager).
 //! The two sides never share `&mut`: the channel is a pair of ping-pong
 //! payload buffers the kernel encodes into directly: each row lands at
 //! its final wire offset via the core row encoder, so no intermediate
@@ -20,6 +20,8 @@ use osc_servo_core::tel::{
     RowPlan, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, TelStream,
     encode_stream_hdr,
 };
+
+use crate::traits::bus::StagerWake;
 
 /// One finished frame's metadata, kernel-written at batch finalize (before
 /// its `ready` tag), bus-read while the tag holds.
@@ -100,10 +102,11 @@ impl TelChannel {
 
     /// Split into the two halves. Call once at bringup: a second feed or
     /// drain breaks the single-writer discipline.
-    pub fn split(&'static self) -> (TelFeed, TelDrain) {
+    pub fn split<W: StagerWake>(&'static self, stager: W) -> (TelFeed<W>, TelDrain<W>) {
         (
             TelFeed {
                 ch: self,
+                stager: stager.clone(),
                 mask: 0,
                 plan: RowPlan::EMPTY,
                 remaining: 0,
@@ -115,15 +118,21 @@ impl TelChannel {
                 valid: 0,
                 alert: false,
             },
-            TelDrain { ch: self, slot: 0 },
+            TelDrain {
+                ch: self,
+                slot: 0,
+                stager,
+            },
         )
     }
 }
 
 /// Kernel-side half: the fast tick's [`TelStream`] sink and the incremental
-/// frame encoder. All fields but `ch` are kernel-private encoder state.
-pub struct TelFeed {
+/// frame encoder. All fields but `ch` and `stager` are kernel-private
+/// encoder state.
+pub struct TelFeed<W: StagerWake> {
     ch: &'static TelChannel,
+    stager: W,
     mask: u16,
     plan: RowPlan,
     remaining: u16,
@@ -137,7 +146,7 @@ pub struct TelFeed {
     alert: bool,
 }
 
-impl TelFeed {
+impl<W: StagerWake> TelFeed<W> {
     /// The bus-side burst gate, as the feed sees it.
     pub fn active(&self) -> bool {
         self.ch.active()
@@ -186,7 +195,7 @@ impl TelFeed {
     }
 }
 
-impl TelStream for TelFeed {
+impl<W: StagerWake> TelStream for TelFeed<W> {
     fn row_mask(&mut self) -> u16 {
         if !self.ch.active() {
             return 0;
@@ -230,8 +239,9 @@ impl TelStream for TelFeed {
     }
 }
 
-impl TelFeed {
-    /// Close the batch in buffer `idx`: header, metadata, then its ready tag.
+impl<W: StagerWake> TelFeed<W> {
+    /// Close the batch in buffer `idx`: header, metadata, its ready tag,
+    /// then the stager's wake.
     #[inline(never)]
     fn bank(&mut self, idx: usize) {
         let ch = self.ch;
@@ -251,6 +261,7 @@ impl TelFeed {
             if ch.arm_seq.get().read_volatile() == self.epoch {
                 compiler_fence(Ordering::Release);
                 ch.ready[idx].get().write_volatile(self.epoch);
+                self.stager.wake();
                 crate::bench::tel_banked();
                 self.seq = self.seq.wrapping_add(1);
                 self.idx ^= 1;
@@ -264,13 +275,14 @@ impl TelFeed {
 }
 
 /// Bus-side half: posts arms, gates the producer, consumes ready buffers.
-pub struct TelDrain {
+pub struct TelDrain<W: StagerWake> {
     ch: &'static TelChannel,
     /// The plan slot the last posted arm named.
     slot: u8,
+    stager: W,
 }
 
-impl TelDrain {
+impl<W: StagerWake> TelDrain<W> {
     /// Post an arm to the kernel side; returns its epoch (never 0). A mask
     /// with no row in the buffers posts an empty plan, which parks the
     /// burst instead of overrunning them.
@@ -342,16 +354,24 @@ impl TelDrain {
         // SAFETY: ready-clear is the bus's store (type doc).
         unsafe { self.ch.ready[idx & 1].get().write_volatile(0) };
     }
+
+    pub(crate) fn wake(&self) {
+        self.stager.wake();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mocks::bus::FakeStager;
     use osc_servo_core::tel::{FLAG_LAST, encode_stream};
     const MASK_SIX: u16 = 0x3F;
 
+    type Feed = TelFeed<FakeStager>;
+    type Drain = TelDrain<FakeStager>;
+
     /// The kernel's per-tick sequence: ask for the row, then hand it over.
-    fn tick(feed: &mut TelFeed, s: &TelSample) {
+    fn tick(feed: &mut Feed, s: &TelSample) {
         if feed.row_mask() != 0 {
             feed.on_tick(s);
         }
@@ -361,8 +381,8 @@ mod tests {
         std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()))
     }
 
-    fn channel() -> (TelFeed, TelDrain) {
-        leaked().split()
+    fn channel() -> (Feed, Drain) {
+        leaked().split(FakeStager::default())
     }
 
     fn sample(i: u16) -> TelSample {
@@ -374,7 +394,7 @@ mod tests {
         }
     }
 
-    fn arm(drain: &mut TelDrain, mask: u16, count: u16) -> u8 {
+    fn arm(drain: &mut Drain, mask: u16, count: u16) -> u8 {
         let epoch = drain.send_arm(mask, count);
         drain.clear_ready();
         drain.set_active(true);
@@ -416,7 +436,7 @@ mod tests {
     #[test]
     fn stalled_consumer_drops_and_counts() {
         let ch = leaked();
-        let (mut feed, mut drain) = ch.split();
+        let (mut feed, mut drain) = ch.split(FakeStager::default());
         let epoch = arm(&mut drain, MASK_SIX, 200);
         for i in 0..37 {
             tick(&mut feed, &sample(i));
@@ -478,7 +498,7 @@ mod tests {
     #[test]
     fn count_zero_arm_parks_the_encoder() {
         let ch = leaked();
-        let (mut feed, mut drain) = ch.split();
+        let (mut feed, mut drain) = ch.split(FakeStager::default());
         arm(&mut drain, MASK_SIX, 32);
         for i in 0..4 {
             tick(&mut feed, &sample(i));
@@ -492,5 +512,38 @@ mod tests {
         assert!(drain.ready(0, e).is_none());
         assert!(drain.ready(1, e).is_none());
         assert_eq!(ch.drops(), 0);
+    }
+
+    /// The stager's only kernel-side event: each published batch wakes it
+    /// once, after its ready tag. Rows, drops and an abandoned batch never
+    /// wake it.
+    #[test]
+    fn each_banked_batch_wakes_the_stager_once() {
+        let ch = leaked();
+        let stager = FakeStager::default();
+        let (mut feed, mut drain) = ch.split(stager.clone());
+        let epoch = arm(&mut drain, MASK_SIX, 40);
+        for i in 0..15 {
+            tick(&mut feed, &sample(i));
+        }
+        assert_eq!(stager.wakes(), 0, "rows alone never wake");
+        tick(&mut feed, &sample(15));
+        assert_eq!(stager.wakes(), 1);
+        assert!(drain.ready(0, epoch).is_some(), "tag lands with the wake");
+        for i in 16..48 {
+            tick(&mut feed, &sample(i));
+        }
+        assert_eq!(stager.wakes(), 2, "the stalled consumer's drops: none");
+        assert!(ch.drops() > 0);
+
+        // An arm that moved before the bank abandons the batch unpublished.
+        drain.release(0);
+        drain.release(1);
+        for i in 0..7 {
+            tick(&mut feed, &sample(i));
+        }
+        drain.send_arm(MASK_SIX, 40);
+        feed.on_tick(&sample(7));
+        assert_eq!(stager.wakes(), 2, "abandoned batch");
     }
 }
