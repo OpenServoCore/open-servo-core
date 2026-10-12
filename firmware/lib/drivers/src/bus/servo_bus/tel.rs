@@ -1,21 +1,28 @@
 //! TEL burst stager: puts the kernel-encoded ping-pong buffers on the wire
 //! as `Stream` status frames (protocol sec 5.3). A committed nonzero
-//! `tel_count` write arms it; the kernel tick's poll stages one ready buffer
-//! per frame whenever the wire is ours; any host break kills it (`on_break` --
+//! `tel_count` write arms it; the stager stages one ready buffer per frame
+//! whenever the wire is ours; any host break kills it (`on_break` -
 //! reclaiming the line IS the abort lever). ALERT carries the batch's
 //! fault-OR (the fault contract), already folded by the encoder.
+//!
+//! The stager runs only when woken: by the kernel when it banks a batch,
+//! and by the bus after the work of the two bodies that can clear what
+//! holds a banked batch back - the TX release (the frame in flight, a
+//! reply) and the deadline body (a pending verdict, a killed reply). A
+//! break wake needs none: it aborts a live burst on entry, and a batch
+//! banked after an arm inside it pends its own wake.
 
 use osc_protocol::wire::{self, ResultCode};
 use osc_servo_core::tel::STREAM_PAYLOAD_MAX;
 
 use super::ServoBus;
 use crate::tel::{BufMeta, TelDrain};
-use crate::traits::bus::Providers;
+use crate::traits::bus::{Providers, StagerWake};
 
 const _: () = assert!(STREAM_PAYLOAD_MAX <= wire::MAX_PAYLOAD as usize);
 
-pub(super) struct TelBurst {
-    drain: Option<TelDrain>,
+pub(super) struct TelBurst<W: StagerWake> {
+    drain: Option<TelDrain<W>>,
     /// Arm epoch this burst stages under (`send_arm`'s tag).
     epoch: u8,
     /// Next buffer to stage; the kernel fills 0 first after every arm.
@@ -27,7 +34,7 @@ pub(super) struct TelBurst {
     last_in_flight: bool,
 }
 
-impl TelBurst {
+impl<W: StagerWake> TelBurst<W> {
     pub(super) const fn new() -> Self {
         Self {
             drain: None,
@@ -39,7 +46,7 @@ impl TelBurst {
         }
     }
 
-    pub(super) fn attach(&mut self, drain: TelDrain) {
+    pub(super) fn attach(&mut self, drain: TelDrain<W>) {
         self.drain = Some(drain);
     }
 
@@ -48,7 +55,10 @@ impl TelBurst {
     }
 
     /// `Reply::tel_arm`: count 0 disarms; a fresh arm simply overwrites a
-    /// live burst (stale buffers die by epoch, the encoder restarts).
+    /// live burst (stale buffers die by epoch, the encoder restarts). Out
+    /// of line: inlined, this once-per-burst body reshapes the dispatcher's
+    /// commit and dispatch code that every write runs.
+    #[inline(never)]
     pub(super) fn arm(&mut self, mask: u16, count: u16) {
         let Some(d) = self.drain.as_mut() else {
             return;
@@ -104,11 +114,21 @@ impl TelBurst {
         let meta = self.drain.as_mut()?.ready(next, epoch)?;
         Some((next, meta))
     }
+
+    /// After bus work that may have cleared what held the next batch back:
+    /// wake the stager if that batch is banked.
+    pub(super) fn wake_if_ready(&mut self) {
+        if self.next_ready().is_some()
+            && let Some(d) = self.drain.as_ref()
+        {
+            d.wake();
+        }
+    }
 }
 
 impl<P: Providers> ServoBus<P> {
-    /// Per-tick TEL poll, at the bus level from the SW vector the kernel
-    /// tick pends: when a burst is live, a batch is banked, and the wire is
+    /// The stager body, at the bus level from the vector a [`StagerWake`]
+    /// pends: when a burst is live, a batch is banked, and the wire is
     /// ours -- TX idle, no frame mid-verdict -- stage the next `Stream`
     /// status frame and put it on the wire. The arm's break-silence contract
     /// makes the immediate trigger safe: any host traffic would have killed

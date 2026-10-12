@@ -15,7 +15,9 @@ use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 
 use crate::bus::ServoBus;
-use crate::traits::bus::{BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
+use crate::traits::bus::{
+    BreakStamps, CrcEngine, Deadline, Providers, RxRing, StagerWake, TxWire, UsartBaud,
+};
 
 /// Ring length -- even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
@@ -264,6 +266,22 @@ impl BreakStamps for FakeStamps {
     }
 }
 
+/// Counts stager wakes; clones share the count.
+#[derive(Clone, Default)]
+pub struct FakeStager(Rc<Cell<u32>>);
+
+impl FakeStager {
+    pub fn wakes(&self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl StagerWake for FakeStager {
+    fn wake(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
 /// ZST binding each role to its fake (driver-pattern sec 5.4).
 pub struct TestProviders;
 
@@ -274,6 +292,7 @@ impl Providers for TestProviders {
     type Tx = FakeWire;
     type Baud = FakeBaud;
     type Stamps = FakeStamps;
+    type Stager = FakeStager;
 }
 
 /// Owns the shared fake state and builds a `ServoBus` over it.
@@ -283,6 +302,7 @@ pub struct Harness {
     pub wire: FakeWire,
     pub baud: FakeBaud,
     pub stamps: FakeStamps,
+    pub stager: FakeStager,
 }
 
 impl Harness {
@@ -293,6 +313,7 @@ impl Harness {
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
             stamps: FakeStamps::default(),
+            stager: FakeStager::default(),
         }
     }
 

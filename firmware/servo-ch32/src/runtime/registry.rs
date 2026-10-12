@@ -25,6 +25,7 @@ use crate::providers::deadline::Deadline;
 use crate::providers::digital_out::DigitalOut;
 use crate::providers::monotonic::Monotonic;
 use crate::providers::ring::RxRing;
+use crate::providers::stager::Stager;
 use crate::providers::tx_wire::TxWire;
 use crate::providers::usart_baud::UsartBaud;
 
@@ -42,6 +43,7 @@ impl Providers for V006Providers {
     type Tx = TxWire;
     type Baud = UsartBaud;
     type Stamps = BreakStamps;
+    type Stager = Stager;
 }
 
 type Bus = ServoBus<V006Providers>;

@@ -124,7 +124,8 @@ pub enum Vector {
     Compare,
     Break,
     TxDone,
-    /// The TEL stager (SW), pended by every kernel tick of a burst.
+    /// The TEL stager (SW), pended when the kernel banks a batch and when a
+    /// TX release or deadline body leaves a banked batch unblocked.
     Stage,
 }
 
