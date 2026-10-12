@@ -1,4 +1,5 @@
 use ch32_metapac::TIM1;
+use ch32_metapac::common::{RW, Reg};
 use ch32_metapac::timer::vals::{Cms, Dir, Mms, Ocm};
 
 use crate::hal::clocks::TIM_CLK_HZ;
@@ -73,6 +74,22 @@ pub fn configure_compare_trigger(ch: Channel, ccr: u16) {
 #[inline]
 pub fn set_duty(ch: Channel, value: u16) {
     TIM1.chcvr((ch as u8 - 1) as usize).write_value(value);
+}
+
+/// A channel's compare register, resolved once so a per-tick writer stores
+/// through it without the channel lookup.
+#[derive(Copy, Clone)]
+pub struct DutyReg(Reg<u16, RW>);
+
+impl DutyReg {
+    pub fn new(ch: Channel) -> Self {
+        Self(TIM1.chcvr((ch as u8 - 1) as usize))
+    }
+
+    #[inline(always)]
+    pub fn write(self, value: u16) {
+        self.0.write_value(value);
+    }
 }
 
 /// RCR=0 with center-aligned -> UEV at both peak and trough.

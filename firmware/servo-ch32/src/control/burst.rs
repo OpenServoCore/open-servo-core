@@ -22,13 +22,13 @@ use core::sync::atomic::compiler_fence;
 
 use portable_atomic::{AtomicU8, Ordering};
 
+use osc_servo_core::estimator::window;
 use osc_servo_core::kernel::limits::flag;
 use osc_servo_core::regions::burst::{
     BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };
 use osc_servo_core::regions::{ControlTable, DecaySelect, Mode};
 use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
-use osc_units::Effort;
 
 use crate::cfg::chip;
 use crate::control::sensors::scan;
@@ -326,7 +326,8 @@ fn step(p: *mut ControlTable) {
     let kernel = unsafe { (*KERNEL.get()).assume_init_mut() };
     let (_sensors, motor) = kernel.io.parts();
     motor.write(MotorCmd::Drive {
-        duty: Effort(f.duty_q15),
+        ticks: window::drive_ticks(f.duty_q15, timer::period()) as u16,
+        reverse: f.duty_q15 < 0,
         decay: f.decay,
     });
     // Measured, not assumed: the ISR entry latency lands in the index.

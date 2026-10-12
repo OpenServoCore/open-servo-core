@@ -223,7 +223,7 @@ fn run(lut: Option<&[i16; POINTS]>, ticks: u32, script: Script) -> Vec<Row> {
         f.pos = (f.pos as i32 + n).clamp(0, 4095) as u16;
         k.on_tick(f, &sh);
         let cmd = last_cmd(&k);
-        duty = duty_of(cmd);
+        duty = duty_of(&k);
         let code = cmd_code(cmd);
         crc = osc_crc_continue(crc, &[code]);
         crc = osc_crc_continue(crc, &duty.to_le_bytes());

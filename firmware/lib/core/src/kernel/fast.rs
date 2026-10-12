@@ -16,7 +16,6 @@ use crate::pos_lut;
 use crate::tel::{TelSample, TelStream};
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
-use osc_units::Effort;
 
 /// What the drive does until the medium half commands otherwise.
 #[derive(Copy, Clone, Default)]
@@ -97,6 +96,9 @@ pub struct Fast {
     /// `duty_applied_q15` publish - `CurrentLoop::last_duty` is not used for
     /// telemetry because the gate can override the loop's output.
     pub(super) duty_q15: i16,
+    /// The drive width the motor write programmed for `duty_q15`
+    /// (`window::drive_ticks`), 0 while Brake/Disabled: next tick's window.
+    pub(super) ticks: u16,
     decay: DecayMode,
     /// The last command's bridge state, and the ticks it has left before
     /// its shunt sample counts as zero current (`ZERO_SETTLE_TICKS` from
@@ -130,6 +132,7 @@ impl Fast {
             ol: DutyLimiter::new(),
             ident: IdentAgg::new(),
             duty_q15: 0,
+            ticks: 0,
             decay: DecayMode::Slow,
             bridge: Bridge::Asleep,
             settle: ZERO_SETTLE_TICKS,
@@ -198,7 +201,7 @@ impl Fast {
         tel: &mut T,
         shared: &Shared,
     ) -> Measured {
-        let ticks = window::drive_ticks(self.duty_q15, self.pwm_arr);
+        let ticks = self.ticks as u32;
         let fwd = self.duty_q15 >= 0;
         let sel = window::select(
             self.decay,
@@ -378,11 +381,7 @@ impl Fast {
                     self.decay = DecayMode::Slow;
                     MotorCmd::Brake
                 } else {
-                    self.decay = fc.ol_decay;
-                    MotorCmd::Drive {
-                        duty: Effort(duty),
-                        decay: fc.ol_decay,
-                    }
+                    self.drive_cmd(duty, fc.ol_decay, fc.drive_polarity)
                 }
             }
             Drive::Closed { omega_ff_q16 } => {
@@ -425,18 +424,14 @@ impl Fast {
                     self.duty_q15 = duty;
                     // closed-loop decay is fixed Slow (spec: config enum
                     // exists for OpenLoop identification only)
-                    self.decay = DecayMode::Slow;
-                    MotorCmd::Drive {
-                        duty: Effort(duty),
-                        decay: DecayMode::Slow,
-                    }
+                    self.drive_cmd(duty, DecayMode::Slow, fc.drive_polarity)
                 }
             }
         };
         let bridge = match out {
             MotorCmd::Disabled => Bridge::Asleep,
             MotorCmd::Brake => Bridge::Brake,
-            MotorCmd::Drive { duty, .. } if duty.0 == 0 => Bridge::Coast,
+            MotorCmd::Drive { .. } if self.duty_q15 == 0 => Bridge::Coast,
             _ => Bridge::Drive,
         };
         if bridge == self.bridge {
@@ -445,19 +440,27 @@ impl Fast {
             self.settle = ZERO_SETTLE_TICKS;
             self.bridge = bridge;
         }
-        // logical (+duty moves counts up) -> wiring, on the output only:
-        // duty_q15 and the published duty stay logical. Off and the brake
-        // drive nothing: the held current drops (`i_meas_last`)
+        // Off and the brake drive nothing: the held current drops
+        // (`i_meas_last`)
         match out {
-            MotorCmd::Drive { duty, decay } if !fc.drive_polarity => MotorCmd::Drive {
-                duty: Effort(duty.0.saturating_neg()),
-                decay,
-            },
-            MotorCmd::Drive { .. } => out,
+            MotorCmd::Drive { ticks, .. } => self.ticks = ticks,
             _ => {
+                self.ticks = 0;
                 self.i_meas_last = 0;
-                out
             }
+        }
+        out
+    }
+
+    /// The drive of `duty` (logical: +duty moves counts up) in the wiring's
+    /// frame; `duty_q15` and the published duty stay logical. A zero width
+    /// coasts whatever its `reverse`.
+    fn drive_cmd(&mut self, duty: i16, decay: DecayMode, drive_polarity: bool) -> MotorCmd {
+        self.decay = decay;
+        MotorCmd::Drive {
+            ticks: window::drive_ticks(duty, self.pwm_arr) as u16,
+            reverse: (duty < 0) == drive_polarity,
+            decay,
         }
     }
 }

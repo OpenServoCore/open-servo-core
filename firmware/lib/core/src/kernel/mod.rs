@@ -195,6 +195,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.booted = true;
     }
 
+    /// The logical duty the last tick commanded: the motor write carries
+    /// only its width and the wiring's sign.
+    pub fn duty_q15(&self) -> i16 {
+        self.fast.duty_q15()
+    }
+
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
     pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
         let phase = self.phase;

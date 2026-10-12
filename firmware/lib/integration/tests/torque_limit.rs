@@ -89,9 +89,9 @@ fn floor() -> i16 {
 fn run(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut RlPlant, ticks: u32) -> Vec<(i16, i32)> {
     (0..ticks)
         .map(|_| {
-            let duty = k.io.motor.last.map_or(0, duty_of);
+            let duty = duty_of(k);
             k.on_tick(p.step(duty), sh);
-            (duty_of(last_cmd(k)), p.current())
+            (duty_of(k), p.current())
         })
         .collect()
 }

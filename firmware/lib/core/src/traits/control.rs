@@ -1,5 +1,3 @@
-use osc_units::Effort;
-
 use crate::SensorFrame;
 
 /// What the kernel control loop reads from the board hardware.
@@ -34,8 +32,14 @@ pub enum MotorCmd {
     Coast,
     /// `drv_en` HIGH, both low-side FETs on. Short-circuit braking.
     Brake,
-    /// `drv_en` HIGH, PWM drive with selectable off-window decay.
-    Drive { duty: Effort, decay: DecayMode },
+    /// `drv_en` HIGH, PWM drive: `ticks` of the period on (`window::drive_ticks`),
+    /// `reverse` in the wiring's frame, selectable off-window decay. Zero
+    /// ticks coast.
+    Drive {
+        ticks: u16,
+        reverse: bool,
+        decay: DecayMode,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -61,8 +65,8 @@ mod tests {
     use core::mem::size_of;
 
     #[test]
-    fn motor_cmd_stays_small() {
-        assert!(size_of::<MotorCmd>() <= 8, "got {}", size_of::<MotorCmd>());
+    fn motor_cmd_fits_one_register() {
+        assert_eq!(size_of::<MotorCmd>(), size_of::<u32>());
     }
 
     #[test]

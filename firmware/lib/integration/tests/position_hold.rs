@@ -140,14 +140,14 @@ impl Mg90 {
         self.out - RESIDUAL.0 * (std::f64::consts::TAU * self.out / RESIDUAL.1).sin()
     }
 
-    /// One FAST tick under `cmd`, with the chip's mapping: a sub-tick duty
+    /// One FAST tick under `cmd`, with the chip's mapping: a zero width
     /// coasts, Brake shorts the winding, Coast and Disabled open it.
     fn step(&mut self, cmd: Option<MotorCmd>) -> SensorFrame {
         let volts = match cmd {
-            Some(MotorCmd::Drive { duty, .. }) => {
-                let ticks = (duty.0.unsigned_abs() as u32 * ARR + (1 << 14)) >> 15;
-                (ticks != 0).then(|| ticks as f64 / ARR as f64 * VBUS * (duty.0 as f64).signum())
-            }
+            Some(MotorCmd::Drive { ticks, reverse, .. }) => (ticks != 0).then(|| {
+                let v = ticks as f64 / ARR as f64 * VBUS;
+                if reverse { -v } else { v }
+            }),
             Some(MotorCmd::Brake) => Some(0.0),
             _ => None,
         };
@@ -174,7 +174,7 @@ impl Mg90 {
             .out
             .clamp(self.rotor - LASH / 2.0, self.rotor + LASH / 2.0);
         let raw = raw_of(&self.lut, self.sensed()) + SIGMA_RAW * self.rng.gauss();
-        let fwd = !matches!(cmd, Some(MotorCmd::Drive { duty, .. }) if duty.0 < 0);
+        let fwd = !matches!(cmd, Some(MotorCmd::Drive { reverse: true, .. }));
         let (sample, va, vb) = if fwd {
             (self.i, VBUS as u16, 0)
         } else {
@@ -198,7 +198,7 @@ impl Mg90 {
     /// What the rail supplies: the winding current over the on fraction.
     fn supply(&self, cmd: Option<MotorCmd>) -> f64 {
         match cmd {
-            Some(MotorCmd::Drive { duty, .. }) => (self.i * duty.0 as f64 / 32767.0).abs(),
+            Some(MotorCmd::Drive { ticks, .. }) => (self.i * ticks as f64 / ARR as f64).abs(),
             _ => 0.0,
         }
     }

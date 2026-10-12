@@ -643,7 +643,7 @@ fn tel_pos_lin_is_interp_q4_of_pos_on_every_sample() {
             _ => {}
         }
         kn.on_tick(plant.step(duty), &sh);
-        duty = duty_of(kn.io.motor.last.expect("a motor write happened"));
+        duty = duty_of(&kn);
     }
     let samples = std::mem::take(&mut *rec.borrow_mut());
     assert_eq!(samples.len(), 12_000);
