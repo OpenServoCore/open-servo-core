@@ -84,9 +84,7 @@ fn kernel_lane_below_bus_reproduces_bench_loss(
 
 #[rstest]
 #[case::quiet(Motion::Quiet)]
-#[ignore = "over budget on main: the Closed SLOW-due tick at budget takes 2549 with entry and exit (1455 + SLOW 921 + health close 93 + 80) > 2400 until the SLOW body is trimmed"]
 #[case::hold(Motion::Hold)]
-#[ignore = "over budget on main: the Closed SLOW-due tick at budget takes 2549 with entry and exit (1455 + SLOW 921 + health close 93 + 80) > 2400 until the SLOW body is trimmed"]
 #[case::moving(Motion::Moving)]
 fn kernel_on_top_loses_no_tick_under_polling(
     #[case] motion: Motion,
