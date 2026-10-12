@@ -208,6 +208,7 @@ impl TelStream for TelFeed {
                 if ch.arm_seq.get().read_volatile() == self.epoch {
                     compiler_fence(Ordering::Release);
                     ch.ready[idx].get().write_volatile(self.epoch);
+                    crate::bench::tel_banked();
                     self.seq = self.seq.wrapping_add(1);
                     self.idx ^= 1;
                 }

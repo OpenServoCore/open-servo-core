@@ -163,6 +163,12 @@ const WINDOW_MARGIN_BYTES: u32 = 16;
 /// SAVE/FACTORY flash-stall allowance (sec 9.4: erase + program run
 /// 5-10 ms; ~50 ms is the protocol's comfortable guidance).
 const SLOW_OP_EXTRA_US: u32 = 50_000;
+/// How late after a GREAD's end its slots can be ready: every servo on the
+/// chain works through the same bus backlog, stretched by its control
+/// kernel (protocol sec 6). Sized by the DES pin
+/// `host_waits_for_a_reclaim_counted_from_readiness` from the servo's
+/// budget table.
+pub const CHAIN_READY_LAG_US: u32 = 5_000;
 /// TX scratch: the largest legal frame (258 ring bytes) plus alignment.
 type TxBuf = FrameBuf<264>;
 
@@ -561,8 +567,8 @@ impl<P: Providers> HostBus<P> {
     }
 
     /// Full await window: RESPONSE_DEADLINE + the expected reply's wire
-    /// time + margin (+ the ENUM slot draw under Collect, + a second
-    /// RESPONSE_DEADLINE for a chain slot's reclaim, + the flash-stall
+    /// time + margin (+ the ENUM slot draw under Collect, + the slots'
+    /// readiness lag for a chain slot's reclaim, + the flash-stall
     /// allowance on slow ops). An upper bound for failure detection, not a
     /// grid -- transport sec 9.4's "elastically late" rule made concrete.
     fn window_for(&self, plan: &Shape) -> u32 {
@@ -579,7 +585,7 @@ impl<P: Providers> HostBus<P> {
             // A silent slot's successor reclaims one RESPONSE_DEADLINE after
             // it is ready, which can trail the host's window by a backlog
             // (protocol sec 6).
-            Replies::Chain(_) => w += self.response_deadline_us as u32 * t,
+            Replies::Chain(_) => w += CHAIN_READY_LAG_US.max(self.response_deadline_us as u32) * t,
             _ => {}
         }
         if plan.slow {

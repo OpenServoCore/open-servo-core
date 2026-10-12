@@ -303,6 +303,13 @@ impl Core {
     /// frame's record -- the wire carries one span of colliding energy, not
     /// two frames. Any host-involved overlap is a harness invariant break.
     pub fn begin_frame(&mut self, at: u64, talker: Talker) {
+        // A servo's frame ends at its last byte; its release body may still
+        // wait for the CPU (no wire deadline at TC, transport sec 7).
+        if talker == Talker::Host
+            && matches!(&self.pending, Some(p) if matches!(p.talker, Talker::Servo(_)) && at >= p.end)
+        {
+            self.finalize_frame();
+        }
         if let Some(p) = self.pending.as_mut() {
             if matches!(p.talker, Talker::Servo(_)) && matches!(talker, Talker::Servo(_)) {
                 p.collided = true;
@@ -328,6 +335,13 @@ impl Core {
         if let Some(p) = self.pending.as_mut() {
             p.bytes.push(byte);
             p.end = at;
+        }
+    }
+
+    /// A servo released the wire: close the servo frame still recording.
+    pub fn finalize_servo_frame(&mut self) {
+        if matches!(&self.pending, Some(p) if matches!(p.talker, Talker::Servo(_))) {
+            self.finalize_frame();
         }
     }
 

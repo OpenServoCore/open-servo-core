@@ -219,7 +219,7 @@ impl SimServo {
                 seed.core.clone(),
                 seed.handles.baud.clone(),
                 seed.idx,
-                seed.handles.tx_lead.clone(),
+                seed.handles.tx_gate.clone(),
             ),
             SimBaud::new(seed.handles.baud.clone()),
             SimStamps::new(seed.handles.stamps.clone()),

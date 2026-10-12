@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(sync_unsafe_cell)]
 
+pub mod budget;
 pub mod data_state;
 pub mod debug;
 pub mod estimator;

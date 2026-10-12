@@ -19,6 +19,7 @@ pub struct TxWire;
 impl bus::TxWire for TxWire {
     fn start_frame(&mut self) {
         crate::log::trace!("tx.start");
+        crate::probe::bus_probe(|p| p.mark_start());
         // send_break (the protocol sec 3 law shape -- a bracketed-M 0x00 character)
         // blocks until the break has committed through its stop bit. The
         // shifter is therefore EMPTY when send(arm0) runs: TCIE must

@@ -23,6 +23,7 @@ const SHORTS_PER_LONG: u16 = 1 << (LONG_LOG2 - SHORT_LOG2);
 const LOST_MAX: u16 = 16;
 
 const _: () = assert!(COST_MAX > 2 * PERIOD);
+const _: () = assert!(SHORT as u32 == osc_servo_core::budget::HEALTH_CLOSE_TICKS);
 const _: () = assert!((COST_MAX as u64) << LONG_LOG2 <= u32::MAX as u64);
 
 /// Share of the kernel period that `cost` SysTick ticks take, Q15,

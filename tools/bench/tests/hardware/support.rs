@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 pub use bench::cli::SETTLE_MS;
 use bench::discover::{self, Found};
 use bench::osc::{
@@ -23,10 +23,12 @@ use bench::run::{
 };
 use bench::wire::Wire;
 use bench::{BOOT_BAUD, RESCUE_BAUD, SUPPORTED_BAUDS};
-use osc_protocol::wire::ResultCode;
+use osc_client::{DEFAULT_GUARD, StreamReply};
+use osc_protocol::build;
+use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
 use osc_servo_core::regions::config::addr::pos_limits::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
-use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT};
 
 pub struct Bench {
     wire: Wire,
@@ -39,6 +41,8 @@ pub struct Bench {
     /// and where every test leaves the bus. Rescue leaves the register
     /// untouched (protocol sec 9.1), so it reads true from a parked servo.
     home_baud: u32,
+    /// Exchanges run through the engine rather than [`Wire::send_frame`].
+    engine_frames: u64,
 }
 
 static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
@@ -67,6 +71,7 @@ static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
         id,
         goal_rails,
         home_baud,
+        engine_frames: 0,
     })
 });
 
@@ -91,6 +96,34 @@ impl Bench {
     /// A GOAL_POSITION value the goal rule accepts on any calibration.
     pub fn goal_mid(&self) -> i32 {
         (self.goal_rails.start() + self.goal_rails.end()) / 2
+    }
+
+    /// `goal` moved inside the range the goal rule accepts.
+    pub fn goal_clamp(&self, goal: i32) -> i32 {
+        goal.clamp(*self.goal_rails.start(), *self.goal_rails.end())
+    }
+
+    /// Instruction frames put on the wire since connect, engine exchanges
+    /// included.
+    pub fn frames_sent(&self) -> u64 {
+        self.wire.frames_sent() + self.engine_frames
+    }
+
+    /// One TEL burst of `rows` as the stream soaks run it: the acked
+    /// `tel_count` write carries the stream and the engine collects its
+    /// frames within `window`. Edge capture cannot keep pace with a stream
+    /// and laps; it restarts clean after.
+    pub fn tel_stream(&mut self, rows: u16, window: Duration) -> Result<StreamReply> {
+        let mut p = [0u8; 8];
+        let n = build::write(&mut p, TEL_COUNT, &rows.to_le_bytes()).context("tel_count")?;
+        let inst = Inst::instruction(Opcode::Write, 0);
+        let c = self.wire.client();
+        c.set_guard(window + DEFAULT_GUARD);
+        let r = c.exchange_stream(Id::new(self.id), inst, &p[..n], window);
+        c.set_guard(DEFAULT_GUARD);
+        self.engine_frames += 1;
+        self.wire.reset()?;
+        Ok(r?)
     }
 
     /// Offset that keeps the burst value schedule (sentinel 0, then

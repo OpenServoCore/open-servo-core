@@ -106,7 +106,7 @@ pub struct Medium {
     pub(super) i_band: IBand,
     limit_flags: u8,
     pub(super) vbus: VbusEst,
-    thermal: WindingTherm,
+    pub(super) thermal: WindingTherm,
     /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
     pub(super) omega_sw: OmegaSwitch,
     /// The duty OpenLoop applies while its ceiling sits under the window

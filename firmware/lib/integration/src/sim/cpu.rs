@@ -7,45 +7,59 @@
 //! charges occupancy, not intra-body effect timing.
 //!
 //! An optional kernel lane models the ADC scan tick as a periodic preemptor
-//! at a selectable level against the bus vectors.
+//! at a selectable level against the bus vectors, charged by drive arm.
+//!
+//! Costs at budget come from `osc_servo_core::budget`, the table the bench
+//! test `budgets` holds the chip to, each with its interrupt entry and exit.
+
+use osc_servo_core::budget::probe::{BusProbe, Windows};
+use osc_servo_core::budget::{self, Body, Frame, PHASES, Regime};
+use osc_servo_core::kernel::{DECIM_SLOW, phase};
 
 use super::core::TICKS_PER_US;
 
-/// Kernel tick period: one ADC scan per 20 kHz PWM period, HCLK ticks.
-pub const KERNEL_PERIOD: u64 = 50 * TICKS_PER_US;
+/// Kernel tick period: one ADC scan per PWM period, HCLK ticks.
+pub const KERNEL_PERIOD: u64 = budget::TICK_PERIOD as u64;
 
-/// Kernel body per phase (CONTROL, OBSERVER, TRAJECTORY, LIMITS, VELOCITY,
-/// RAIL, SLOW, PUBLISH, two free), HCLK ticks: cpu-probe v2 LOW-exclusive
-/// means over three 20 s windows, torque off, no traffic.
-pub const KERNEL_QUIET: [u64; 10] = [981, 1250, 732, 1087, 768, 1033, 763, 943, 702, 712];
+const _: () = assert!(TICKS_PER_US == budget::TICKS_PER_US as u64);
 
-/// The same instrument holding at centre.
-pub const KERNEL_HOLD: [u64; 10] = [1023, 1250, 1239, 1096, 792, 1072, 763, 943, 702, 712];
+/// Kernel tick bodies at budget by regime and phase.
+pub static KERNEL_AT_BUDGET: [[u64; PHASES]; 2] = kernel_bodies(false);
 
-/// The same instrument under the chainload sine (N=1, +/-300 at 100 Hz): the
-/// closed current loop runs on every tick.
-pub const KERNEL_MOVING: [u64; 10] = [1644, 1889, 1876, 1710, 1732, 1700, 1375, 1556, 1313, 1322];
+/// The lowest body the typical lane draws: a uniform draw from here to the
+/// budget has the mean budget for its mean, or more where the maximum sits
+/// over twice the mean (the floor stops at zero).
+pub static KERNEL_FLOOR: [[u64; PHASES]; 2] = kernel_bodies(true);
 
-/// Staging one six-field TEL frame at 3M from the kernel tick's tail, stage
-/// through trigger, HCLK ticks: cpu-probe v1 over a 1 s burst while moving
-/// (23.3 us).
-pub const TEL_STAGE_COST: u64 = 1118;
+const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; 2] {
+    let mut t = [[0; PHASES]; 2];
+    let mut r = 0;
+    while r < t.len() {
+        let mut p = 0;
+        while p < PHASES {
+            let max = budget::KERNEL[r][p];
+            let body = if floor {
+                (2 * budget::KERNEL_MEAN[r][p]).saturating_sub(max)
+            } else {
+                max
+            };
+            t[r][p] = (body + budget::ENTRY_EXIT) as u64;
+            p += 1;
+        }
+        r += 1;
+    }
+    t
+}
 
-/// An own 32 B READ at 3M as the chip's bus bodies cost it with the kernel
-/// below the bus: cpu-probe v1 over the polling ladder: TIM2 16.0 us, SysTick 82.1 us in two bodies, USART1
-/// 20.8 us in three TCs per frame. The sim spends the SysTick share over
-/// three compare bodies (header, dispatch, trigger): 3 x 20 + 22.
-pub const READ32_3M_COST: HandlerCost = HandlerCost {
-    on_break_us: 16,
-    on_deadline_us: 20,
-    on_tx_complete_us: 7,
-    per_frame_us: 22,
-};
+/// A bus body of budget `ticks`, with its interrupt entry and exit.
+const fn bus_body(ticks: u32) -> u64 {
+    (ticks + budget::ENTRY_EXIT) as u64
+}
 
 /// Sim-time cost of each `ServoBus` handler body, us. Zero (the default)
 /// delivers every event at its wire tick -- the ideal-CPU model the logical
 /// suites pin.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct HandlerCost {
     pub on_break_us: u32,
     pub on_deadline_us: u32,
@@ -58,12 +72,60 @@ pub struct HandlerCost {
     pub per_frame_us: u32,
 }
 
+impl HandlerCost {
+    /// Frame type `f` at budget: the break wake and each reply arm at their
+    /// bodies' budgets, the rest of the frame's budget on the body that
+    /// dispatches it (with the entries of the two deadline bodies a reply
+    /// takes on the chip), rounded up to whole us.
+    pub fn at_budget(f: Frame) -> Self {
+        Self::split(
+            budget::body(Body::BreakWake),
+            budget::body(Body::TxDone),
+            budget::frame(f),
+        )
+    }
+
+    /// The same split of the mean budgets.
+    pub fn typical(f: Frame) -> Self {
+        Self::split(
+            budget::body_mean(Body::BreakWake),
+            budget::body_mean(Body::TxDone),
+            budget::frame_mean(f),
+        )
+    }
+
+    fn split(wake: u32, arm: u32, frame: u32) -> Self {
+        let entry = budget::ENTRY_EXIT;
+        let rest = frame.saturating_sub(wake + Frame::REPLY_ARMS * arm);
+        Self {
+            on_break_us: us_ceil(wake + entry),
+            on_deadline_us: 0,
+            on_tx_complete_us: us_ceil(arm + entry),
+            per_frame_us: us_ceil(rest + 2 * entry),
+        }
+    }
+
+    /// The CPU this cost charges one replied frame, HCLK ticks.
+    pub fn frame_ticks(&self) -> u64 {
+        (self.on_break_us as u64
+            + Frame::REPLY_ARMS as u64 * self.on_tx_complete_us as u64
+            + self.per_frame_us as u64)
+            * TICKS_PER_US
+    }
+}
+
+fn us_ceil(ticks: u32) -> u32 {
+    ticks.div_ceil(budget::TICKS_PER_US)
+}
+
 /// The transport vectors.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Vector {
     Compare,
     Break,
     TxDone,
+    /// The TEL stager (SW), pended by every kernel tick of a burst.
+    Stage,
 }
 
 /// The kernel tick's PFIC level against the bus vectors.
@@ -76,12 +138,121 @@ pub enum KernelLevel {
     AboveBus,
 }
 
+/// What the host asks of the servo; the lane charges the drive arm it
+/// leads to.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Motion {
+    /// Torque off or parked: Open.
+    Quiet,
+    /// Closed for [`budget::HOLD_APPROACH_TICKS`] after the lane starts or
+    /// the goal moves, then Open.
+    Hold,
+    /// Stepping or tracking: Closed.
+    Moving,
+}
+
 /// A periodic preemptor: one kernel body per scan, phases in turn.
 #[derive(Copy, Clone)]
 pub struct KernelLane {
     pub level: KernelLevel,
-    /// Body per phase, HCLK ticks.
-    pub phases: &'static [u64],
+    pub motion: Motion,
+    /// Body per phase by regime, HCLK ticks.
+    pub phases: [&'static [u64]; 2],
+    /// Each body drawn uniformly from this floor up to its phase cost,
+    /// seeded; `None` runs every body at its phase cost.
+    pub floor: Option<([&'static [u64]; 2], u64)>,
+    pub tel: TelCosts,
+    pub events: KernelEvents,
+}
+
+/// The TEL burst a kernel lane paces, HCLK ticks: on every kernel body while
+/// the burst runs (by regime), on the body that banks a batch, and the
+/// stager vector's bodies that start a frame and that start nothing.
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct TelCosts {
+    pub encode: [u64; 2],
+    pub bank: u64,
+    pub stage: u64,
+    pub poll: u64,
+}
+
+/// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
+/// block on phase SLOW every DECIM_SLOW periods (by regime), and the
+/// tick-load close every [`budget::HEALTH_CLOSE_TICKS`] ticks, with the
+/// catch-up when a tick was lost since the last one. The close lands on the
+/// SLOW tick: the critical instant.
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct KernelEvents {
+    pub slow_due: [u64; 2],
+    pub health_close: u64,
+    pub catch_up: u64,
+}
+
+impl KernelLane {
+    /// The kernel at budget for `motion`: every body and event at its
+    /// maximum.
+    pub fn at_budget(level: KernelLevel, motion: Motion) -> Self {
+        Self {
+            level,
+            motion,
+            phases: KERNEL_AT_BUDGET.each_ref().map(|p| &p[..]),
+            floor: None,
+            tel: TelCosts {
+                encode: budget::TEL_ENCODE.map(u64::from),
+                bank: budget::TEL_BANK as u64,
+                stage: bus_body(budget::body(Body::TelStage)),
+                poll: bus_body(budget::body(Body::TelPoll)),
+            },
+            events: KernelEvents {
+                slow_due: budget::SLOW_DUE.map(u64::from),
+                health_close: budget::HEALTH_CLOSE as u64,
+                catch_up: budget::CATCH_UP as u64,
+            },
+        }
+    }
+
+    /// The longest `bus` ticks of bus work can take on the wall under this
+    /// lane above the bus: every scan in the span preempts it, the first
+    /// with the longest body (the SLOW tick with its events), so
+    /// `(bus + longest) / (1 - U)`, U the share of a medium period of the
+    /// lane's heavier regime, a close in every period (TEL off).
+    pub fn wall(&self, bus: u64) -> u64 {
+        let r = self.heavier() as usize;
+        let phases = self.phases[r];
+        let ev = &self.events;
+        let busy = phases.iter().sum::<u64>() + ev.health_close;
+        let span = phases.len() as u64 * KERNEL_PERIOD;
+        let slow = phases
+            .get(phase::SLOW as usize)
+            .map_or(0, |b| b + ev.slow_due[r]);
+        let longest = phases.iter().copied().max().unwrap_or(0).max(slow);
+        let longest = longest + ev.health_close + ev.catch_up;
+        ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
+    }
+
+    fn heavier(&self) -> Regime {
+        match self.motion {
+            Motion::Quiet => Regime::Open,
+            Motion::Hold | Motion::Moving => Regime::Closed,
+        }
+    }
+
+    /// The kernel inside its budgets for `motion`: each body drawn below its
+    /// maximum, at the mean budget on average, and the stager at its mean
+    /// budgets.
+    pub fn typical(level: KernelLevel, motion: Motion, seed: u64) -> Self {
+        let at = Self::at_budget(level, motion);
+        Self {
+            floor: Some((KERNEL_FLOOR.each_ref().map(|p| &p[..]), seed)),
+            tel: TelCosts {
+                encode: budget::TEL_ENCODE_MEAN.map(u64::from),
+                stage: bus_body(budget::body_mean(Body::TelStage)),
+                poll: bus_body(budget::body_mean(Body::TelPoll)),
+                ..at.tel
+            },
+            ..at
+        }
+    }
 }
 
 /// What the kernel lane saw, HCLK ticks where timed.
@@ -96,15 +267,31 @@ pub struct KernelStats {
     pub entry_latency_sum: u64,
     /// Ticks the kernel added to the bus bodies it preempted.
     pub bus_stretch: u64,
+    /// Bodies longer than one period, the chip's `tick_over_count`.
+    pub over: u64,
+    /// Ticks charged on the Closed rows.
+    pub closed: u64,
+    /// gamma(k) of the bodies, entry and exit excluded (probe scope).
+    pub windows: Windows,
 }
 
 struct Kernel {
     lane: KernelLane,
+    rng: u64,
     /// No scan after this tick.
     until: u64,
     phase: usize,
+    periods: u64,
+    /// The goal last seen, and the entry a hold's approach began at.
+    goal: Option<i32>,
+    goal_at: u64,
+    lost_at_close: u64,
+    regime: Regime,
+    /// The running body, extensions included.
+    body: u64,
     /// The scan pended and not yet entered.
     pend_at: Option<u64>,
+    entered: u64,
     run_until: u64,
     retry_at: Option<u64>,
     stats: KernelStats,
@@ -117,6 +304,10 @@ pub struct Cpu {
     pend_compare: bool,
     pend_break: bool,
     pend_tx: bool,
+    pend_stage: bool,
+    /// The running body holds a frame start (`TxGate`) to its break; the
+    /// CPU it still owes after the break.
+    pub tx_held: Option<u64>,
     /// A preemption armed for the next bus body (`Sim::preempt_before_ring_read`).
     pub preempt: Option<u64>,
     /// A preempted body waiting out its preemption, and when it entered.
@@ -129,6 +320,10 @@ pub struct Cpu {
     delivered_breaks: u64,
     entries: Entries,
     frames_max: u64,
+    /// CPU the running bus body charged, HCLK ticks.
+    body_ticks: u64,
+    /// The chip's bus probe, fed the charged bodies.
+    pub probe: BusProbe,
 }
 
 /// Handler bodies run, per vector.
@@ -137,11 +332,12 @@ pub struct Entries {
     pub compare: u64,
     pub break_wake: u64,
     pub tx_done: u64,
+    pub stage: u64,
 }
 
 impl Entries {
     pub fn total(&self) -> u64 {
-        self.compare + self.break_wake + self.tx_done
+        self.compare + self.break_wake + self.tx_done + self.stage
     }
 }
 
@@ -163,17 +359,24 @@ impl Cpu {
             Vector::Compare => self.pend_compare = true,
             Vector::Break => self.pend_break = true,
             Vector::TxDone => self.pend_tx = true,
+            Vector::Stage => self.pend_stage = true,
         }
     }
 
     pub fn any_pend(&self) -> bool {
-        self.pend_compare || self.pend_break || self.pend_tx || self.deferred.is_some()
+        self.pend_compare
+            || self.pend_break
+            || self.pend_tx
+            || self.pend_stage
+            || self.deferred.is_some()
+            || self.tx_held.is_some()
     }
 
     /// Pop the highest-arbitration pended vector, if any. With the kernel
     /// on top, the TX arm and the break wake (LOW 0x80) go ahead of the
-    /// deadline mux (LOW 0xC0), so a pending wake suspends a reclaim or
-    /// kills a stale reply before a pending trigger acts.
+    /// deadline mux and the TEL stager (LOW 0xC0, SysTick's lower IRQ
+    /// number first), so a pending wake suspends a reclaim or kills a stale
+    /// reply before a pending trigger acts.
     pub fn take_pend(&mut self) -> Option<Vector> {
         let below = matches!(&self.kernel, Some(k) if k.lane.level == KernelLevel::BelowBus);
         if !below {
@@ -195,6 +398,9 @@ impl Cpu {
         } else if self.pend_tx {
             self.pend_tx = false;
             Some(Vector::TxDone)
+        } else if self.pend_stage {
+            self.pend_stage = false;
+            Some(Vector::Stage)
         } else {
             None
         }
@@ -216,8 +422,27 @@ impl Cpu {
                 self.entries.tx_done += 1;
                 self.cost.on_tx_complete_us
             }
+            Vector::Stage => {
+                self.entries.stage += 1;
+                self.occupy(now, self.kernel_tel().poll);
+                return;
+            }
         };
         self.occupy(now, us as u64 * TICKS_PER_US);
+    }
+
+    /// The body that entered at `now` reaches its break after `pre` ticks
+    /// of CPU and owes `post` more after it.
+    pub fn hold_to_break(&mut self, now: u64, pre: u64, post: u64) {
+        self.occupy(now, pre);
+        self.tx_held = Some(post);
+    }
+
+    /// The held break went out at `now`: the body runs on for what it owes.
+    pub fn resume_after_break(&mut self, now: u64) {
+        if let Some(post) = self.tx_held.take() {
+            self.occupy(now, post);
+        }
     }
 
     /// The body just run dispatched `frames` own frames: extend its
@@ -233,8 +458,30 @@ impl Cpu {
         self.deferred = Some((v, now));
     }
 
+    /// Book the bus body just run on the probe, as the chip stamps it.
+    pub fn book(&mut self, v: Vector, dispatched: bool, started: bool) {
+        let p = &mut self.probe;
+        if v == Vector::Break {
+            p.mark_break();
+        }
+        if dispatched {
+            p.mark_dispatch();
+        }
+        if started {
+            p.mark_start();
+        }
+        let body = match v {
+            Vector::Compare => Body::Deadline,
+            Vector::Break => Body::BreakWake,
+            Vector::TxDone => Body::TxDone,
+            Vector::Stage => Body::TelStage,
+        };
+        p.body(self.body_ticks as u32, body);
+    }
+
     fn occupy(&mut self, now: u64, ticks: u64) {
         self.busy_until = now + ticks;
+        self.body_ticks = ticks;
         self.kernel_preempted = false;
         if let Some(k) = self.kernel.as_mut()
             && k.lane.level == KernelLevel::BelowBus
@@ -247,6 +494,7 @@ impl Cpu {
 
     fn extend(&mut self, ticks: u64) {
         self.busy_until += ticks;
+        self.body_ticks += ticks;
         if self.kernel_preempted
             && let Some(k) = self.kernel.as_mut()
         {
@@ -255,11 +503,20 @@ impl Cpu {
     }
 
     pub fn start_kernel(&mut self, lane: KernelLane, until: u64) {
+        let rng = lane.floor.map_or(0, |(_, seed)| seed);
         self.kernel = Some(Kernel {
             lane,
+            rng: rng.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             until,
             phase: 0,
+            periods: 0,
+            goal: None,
+            goal_at: 0,
+            lost_at_close: 0,
+            regime: Regime::Open,
+            body: 0,
             pend_at: None,
+            entered: 0,
             run_until: 0,
             retry_at: None,
             stats: KernelStats::default(),
@@ -302,12 +559,55 @@ impl Cpu {
             return Some(at);
         }
         k.pend_at = None;
+        if k.run_until - k.entered > KERNEL_PERIOD {
+            k.stats.over += 1;
+        }
+        let tick = k.stats.entries;
+        if tick > 0 {
+            let entry_exit = budget::ENTRY_EXIT as u64;
+            k.stats
+                .windows
+                .add(k.body.saturating_sub(entry_exit) as u32);
+        }
+        k.entered = now;
         let latency = now - pend_at;
         k.stats.entries += 1;
         k.stats.entry_latency_max = k.stats.entry_latency_max.max(latency);
         k.stats.entry_latency_sum += latency;
-        let cost = k.lane.phases[k.phase];
-        k.phase = (k.phase + 1) % k.lane.phases.len();
+        let approach = budget::HOLD_APPROACH_TICKS as u64;
+        k.regime = match k.lane.motion {
+            Motion::Quiet => Regime::Open,
+            Motion::Hold if tick - k.goal_at >= approach => Regime::Open,
+            Motion::Hold | Motion::Moving => Regime::Closed,
+        };
+        k.stats.closed += (k.regime == Regime::Closed) as u64;
+        let r = k.regime as usize;
+        let mut cost = k.lane.phases[r][k.phase];
+        if let Some((floor, _)) = k.lane.floor {
+            k.rng ^= k.rng << 13;
+            k.rng ^= k.rng >> 7;
+            k.rng ^= k.rng << 17;
+            let lo = floor[r][k.phase].min(cost);
+            cost = lo + k.rng % (cost - lo + 1);
+        }
+        let ev = k.lane.events;
+        if k.phase == phase::SLOW as usize && k.periods.is_multiple_of(DECIM_SLOW as u64) {
+            cost += ev.slow_due[r];
+        }
+        let close = budget::HEALTH_CLOSE_TICKS as u64;
+        if (tick + close - phase::SLOW as u64).is_multiple_of(close) {
+            cost += ev.health_close;
+            if k.stats.lost > k.lost_at_close {
+                cost += ev.catch_up;
+            }
+            k.lost_at_close = k.stats.lost;
+        }
+        k.phase += 1;
+        if k.phase == k.lane.phases[r].len() {
+            k.phase = 0;
+            k.periods += 1;
+        }
+        k.body = cost;
         k.run_until = now + cost;
         if k.lane.level == KernelLevel::AboveBus && now < bus_until {
             self.busy_until += cost;
@@ -321,11 +621,34 @@ impl Cpu {
         self.kernel.as_ref().map(|k| k.run_until)
     }
 
+    /// The lane's TEL costs (zero without a lane).
+    pub fn kernel_tel(&self) -> TelCosts {
+        self.kernel.as_ref().map(|k| k.lane.tel).unwrap_or_default()
+    }
+
+    /// The TEL encode the running body's regime carries.
+    pub fn kernel_encode(&self) -> u64 {
+        self.kernel
+            .as_ref()
+            .map_or(0, |k| k.lane.tel.encode[k.regime as usize])
+    }
+
+    /// The goal register as the next kernel tick reads it: a move restarts
+    /// a hold's approach.
+    pub fn kernel_goal(&mut self, goal: i32) {
+        if let Some(k) = self.kernel.as_mut()
+            && k.goal.replace(goal).is_some_and(|g| g != goal)
+        {
+            k.goal_at = k.stats.entries;
+        }
+    }
+
     /// Lengthen the kernel body ending at `now` by `ticks` of tail work.
     pub fn extend_kernel(&mut self, now: u64, ticks: u64) {
         let Some(k) = self.kernel.as_mut() else {
             return;
         };
+        k.body += ticks;
         k.run_until += ticks;
         if k.lane.level == KernelLevel::AboveBus && now < self.busy_until {
             self.busy_until += ticks;
