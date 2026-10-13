@@ -119,6 +119,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     /// one committed set. At an odd one (the first tick only) the next even
     /// count differs from it and takes again.
     #[inline(never)]
+    #[rustc_align(4)]
     fn take_config(&mut self, shared: &Shared) {
         self.config_seq = shared.config_seq();
         // the count load stays ahead of the field reads
@@ -136,6 +137,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     /// The first tick's configuration: the window floors, the take and the
     /// rail clamp. Out of line, so the tick body keeps its shape.
     #[inline(never)]
+    #[rustc_align(4)]
     fn configure(&mut self, shared: &Shared) {
         self.cfg.load_floors(shared, &self.timing);
         let p = shared.table.region_ptr();

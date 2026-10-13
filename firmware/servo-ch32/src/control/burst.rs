@@ -164,6 +164,7 @@ pub fn poll_arm(shared: &Shared) {
 }
 
 #[inline(never)]
+#[rustc_align(4)]
 fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
     let f = fsm();
     match s {
@@ -244,6 +245,7 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
 /// DMA1 CH1 events while the scan is suspended: HT applies the step, TC
 /// restores the scan. Both flags are polled because a delayed vector entry can
 /// find them together.
+#[rustc_align(4)]
 pub fn on_dma_event(shared: &Shared) {
     let p = shared.table.region_ptr();
     if dma::is_ht_flag(CH) {

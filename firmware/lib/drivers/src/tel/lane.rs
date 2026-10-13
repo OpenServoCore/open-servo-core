@@ -72,6 +72,7 @@ impl<P: Providers> TelLane<P> {
 
     #[cold]
     #[inline(never)]
+    #[rustc_align(4)]
     fn pickup(&mut self, seq: u8) {
         let ch = self.ch;
         compiler_fence(Ordering::Acquire);
@@ -110,6 +111,7 @@ impl<P: Providers> TelLane<P> {
     /// yet lets the arm go first, the patch retrying while the frame
     /// streams: a sick engine costs that frame its CRC, never the lane.
     #[inline(never)]
+    #[rustc_align(4)]
     fn service(&mut self) {
         let f = self.done;
         // SAFETY: kernel side (fn doc of `image`).
@@ -145,6 +147,7 @@ impl<P: Providers> TelLane<P> {
     /// Start frame `done`: reset the CRC engine, feed what is written, and
     /// break.
     #[inline(never)]
+    #[rustc_align(4)]
     fn start(&mut self) {
         let f = self.done;
         // SAFETY: kernel side (fn doc of `image`).
@@ -167,6 +170,7 @@ impl<P: Providers> TelLane<P> {
     /// even `to`. One call site for the engine's arm: inlined twice it
     /// doubles the lane's flash.
     #[inline(never)]
+    #[rustc_align(4)]
     fn feed(&mut self, img: &[u8; IMAGE_LEN], to: usize) {
         if let Some(span) = img.get(self.fed..to) {
             self.crc.feed(span);

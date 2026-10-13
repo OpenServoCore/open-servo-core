@@ -85,6 +85,7 @@ impl TrajGen {
     /// v_up by this test every tick is inductively overshoot-free: a safe
     /// v_up leaves the whole decel tail inside |d| - vt, and each decel tick
     /// preserves the remaining-travel identity D(v) = v_next*dt + D(v_next).
+    #[rustc_align(4)]
     pub fn step_position(
         &mut self,
         goal_counts: i32,

@@ -215,6 +215,7 @@ pub(super) fn follow_drive(order: Direction) {
 /// that gap leaves the swap to the next.
 #[cold]
 #[inline(never)]
+#[rustc_align(4)]
 fn swap_taps(d: Direction) {
     critical_section::with(|_| {
         if swap_gap(timer::counting_down(), timer::counter(), timer::period()) {

@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(sync_unsafe_cell)]
+#![feature(fn_align)]
 
 pub mod bench;
 pub mod bus;

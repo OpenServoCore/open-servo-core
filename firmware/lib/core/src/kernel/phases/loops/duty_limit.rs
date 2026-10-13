@@ -37,6 +37,7 @@ impl DutyLimiter {
     /// window-valid current magnitude, 0 for an invalid window (the same
     /// honest zero the current loop uses). A goal at or under the floor
     /// comes back unchanged while `base_q15 >= floor_q15`.
+    #[rustc_align(4)]
     pub fn step(
         &mut self,
         goal_mag: u16,
