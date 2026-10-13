@@ -36,4 +36,6 @@ ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 # Forward the drivers' probe counters (crate::bench pattern).
 bench        = ["osc-servo-drivers/bench"]
+# The TEL step measurement image: TEL tallies in place of the bus record.
+bench-telcost = ["bench", "osc-servo-drivers/bench-telcost"]
 defmt        = ["dep:defmt", "osc-servo-core/defmt", "osc-servo-drivers/defmt", "osc-log/defmt"]

@@ -1429,8 +1429,13 @@ fn tel_split(
     table: &'static ControlTableCell,
 ) -> Feed {
     let ch: &'static TelChannel = std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()));
-    let (feed, drain) =
-        ch.split::<TestProviders>(h.wire.clone(), FakeCrc::new(), h.ring.clone(), table);
+    let (feed, drain) = ch.split::<TestProviders>(
+        h.wire.clone(),
+        FakeCrc::new(),
+        h.ring.clone(),
+        h.deadline.clone(),
+        table,
+    );
     bus.attach_tel(drain);
     feed
 }

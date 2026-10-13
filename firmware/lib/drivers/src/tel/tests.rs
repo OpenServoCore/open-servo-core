@@ -1,5 +1,5 @@
 use super::*;
-use crate::mocks::bus::{FakeCrc, FakeRing, FakeWire, TestProviders};
+use crate::mocks::bus::{FakeCrc, FakeDeadline, FakeRing, FakeWire, TestProviders};
 use osc_protocol::crc::osc_crc;
 use osc_protocol::tel::StreamFrame;
 use osc_servo_core::regions::telemetry::addr::{estimates, tick};
@@ -29,6 +29,9 @@ struct Rig {
     table: &'static ControlTableCell,
     /// The kernel's `hold_start` on every tick.
     hold_start: bool,
+    /// Each tick's row step and, while the lane is the kernel's, the lane's
+    /// step in place of `on_tick_end`; kept when set.
+    steps: Option<std::vec::Vec<(Option<TelStep>, Option<TelStep>)>>,
 }
 
 fn rig() -> Rig {
@@ -41,7 +44,8 @@ fn rig_with(crc: FakeCrc) -> Rig {
         std::boxed::Box::leak(std::boxed::Box::new(ControlTableCell::new()));
     let wire = FakeWire::new();
     let ring = FakeRing::new();
-    let (feed, drain) = ch.split::<TestProviders>(wire.clone(), crc, ring.clone(), table);
+    let (feed, drain) =
+        ch.split::<TestProviders>(wire.clone(), crc, ring.clone(), FakeDeadline::new(), table);
     Rig {
         feed,
         drain,
@@ -50,6 +54,7 @@ fn rig_with(crc: FakeCrc) -> Rig {
         ch,
         table,
         hold_start: false,
+        steps: None,
     }
 }
 
@@ -103,13 +108,20 @@ impl Rig {
             tb.telemetry.estimates.vbus_counts = vbus;
         });
         let hold = self.hold_start;
+        let row = (self.feed.remaining != 0).then(|| self.feed.row_step());
         self.feed.on_tick(|| hold);
         let (next, rail) = sample(i.wrapping_add(0x80));
         self.table.with_mut(|tb| {
             tb.telemetry.tick = next;
             tb.telemetry.estimates.vbus_counts = rail;
         });
-        self.feed.on_tick_end();
+        match self.steps.as_mut() {
+            Some(steps) => {
+                let lane = self.feed.active().then(|| self.feed.lane());
+                steps.push((row, lane));
+            }
+            None => self.feed.on_tick_end(),
+        }
     }
 
     /// Ticks rows `from..to`, the wire carrying each image for its wire
@@ -457,4 +469,47 @@ fn an_arm_end_zeroes_tel_count() {
     r.table.with_mut(|t| t.control.tel.tel_count = 4000);
     r.drain.end();
     assert_eq!(r.table.with(|t| t.control.tel.tel_count), 0);
+}
+
+/// The steps the TEL cost probe books: a row step on each row after the
+/// pickup's (which lands frame 0's head), heads and banks by the frame's
+/// rows landed, and one lane step on every tick the lane is the kernel's.
+#[test]
+fn tel_steps_follow_the_rows_and_the_lane() {
+    let mut r = rig();
+    r.steps = Some(std::vec::Vec::new());
+    r.arm(SIX, 20);
+    r.run(0, 64);
+    assert_eq!(r.wire.streamed().len(), 2);
+    let steps = r.steps.take().unwrap_or_default();
+    let rows: std::vec::Vec<TelStep> = steps.iter().filter_map(|s| s.0).collect();
+    let mut want = std::vec![TelStep::Row; 14];
+    want.extend([TelStep::Bank, TelStep::Head, TelStep::Row, TelStep::Row]);
+    want.push(TelStep::Bank);
+    assert_eq!(rows, want, "row 0 lands with the pickup");
+    let lanes: std::vec::Vec<TelStep> = steps.iter().filter_map(|s| s.1).collect();
+    let active = steps.iter().take_while(|s| s.1.is_some()).count();
+    assert_eq!(lanes.len(), active, "a lane step on every active tick");
+    for (t, (row, lane)) in steps.iter().enumerate() {
+        let landed = t == 0 || matches!(row, Some(TelStep::Head | TelStep::Bank));
+        if landed {
+            assert_eq!(
+                *lane,
+                Some(TelStep::Poll),
+                "tick {t}: a landed tick holds the lane"
+            );
+        }
+    }
+    // Frame 0 starts cut-through: its arm, the feed past its bank, the
+    // patch. Frame 1 starts banked, fed whole: the patch, then its arm.
+    let work: std::vec::Vec<TelStep> = lanes
+        .iter()
+        .copied()
+        .filter(|&s| s != TelStep::Poll)
+        .collect();
+    use TelStep::{Service, Start};
+    assert_eq!(
+        work,
+        [Start, Service, Service, Service, Start, Service, Service]
+    );
 }

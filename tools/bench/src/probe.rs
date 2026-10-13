@@ -1,64 +1,124 @@
 //! Budget probe reader: the bench image's `KERNEL_PROBE` and `BUS_PROBE`
 //! records (servo-ch32 `probe`, `--features bench`), found by symbol in the
-//! flashed ELF and read off the running chip with `wlink dump`. A dump can
+//! flashed ELF and read off the running chip with `wlink dump`. The
+//! `bench-telcost` image carries `TEL_TALLY` and `TEL_COST` in place of
+//! `BUS_PROBE`; the symbols present name the layout. A dump can
 //! halt the hart (and costs the kernel 16 ticks): read between windows only,
 //! and check the servo still runs after.
 
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use osc_servo_core::budget::probe::{BusProbe, KernelProbe};
+use osc_servo_core::budget::probe::{BusProbe, KernelProbe, TelCost, TelTally};
 
 pub const KERNEL_SYMBOL: &str = "KERNEL_PROBE";
 pub const BUS_SYMBOL: &str = "BUS_PROBE";
+pub const TEL_TALLY_SYMBOL: &str = "TEL_TALLY";
+pub const TEL_COST_SYMBOL: &str = "TEL_COST";
 
-/// One read of both records: decoded, the bus record's last frame closed,
-/// and the words as dumped.
+/// One read of the records: decoded, the bus record's last frame closed,
+/// and the words as dumped. A bench image has `bus`, a telcost image `tel`.
 #[derive(Debug)]
 pub struct Snapshot {
     pub kernel: KernelProbe,
-    pub bus: BusProbe,
+    pub bus: Option<BusProbe>,
+    pub tel: Option<TelSnapshot>,
     pub kernel_words: Vec<u32>,
     pub bus_words: Vec<u32>,
 }
 
-/// Where the two records sit in the bench image's RAM.
+#[derive(Debug)]
+pub struct TelSnapshot {
+    pub tally: TelTally,
+    pub cost: TelCost,
+    pub tally_words: Vec<u32>,
+    pub cost_words: Vec<u32>,
+}
+
+/// Where the records sit in the image's RAM.
 #[derive(Copy, Clone, Debug)]
 pub struct Reader {
     kernel: u32,
-    bus: u32,
+    layout: Layout,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Layout {
+    Bench { bus: u32 },
+    TelCost { tally: u32, cost: u32 },
 }
 
 impl Reader {
-    /// Locate both records in `elf`, checking each size against the layout
-    /// this build decodes.
+    /// Locate the records in `elf`, checking each size against the layout
+    /// this build decodes: `BUS_PROBE` makes a bench image, `TEL_COST` and
+    /// `TEL_TALLY` a telcost one.
     pub fn from_elf(elf: &[u8]) -> Result<Self> {
-        let at = |name: &str, words: usize| -> Result<u32> {
-            let (addr, size) =
-                symbol(elf, name)?.with_context(|| format!("{name} missing: not a bench image"))?;
+        let at = |name: &str, words: usize| -> Result<Option<u32>> {
+            let Some((addr, size)) = symbol(elf, name)? else {
+                return Ok(None);
+            };
             ensure!(
                 size as usize == 4 * words,
                 "{name}: {size} B in the image, {} B decoded: rebuild the bench tools",
                 4 * words
             );
-            Ok(addr)
+            Ok(Some(addr))
         };
-        Ok(Self {
-            kernel: at(KERNEL_SYMBOL, KernelProbe::WORDS)?,
-            bus: at(BUS_SYMBOL, BusProbe::WORDS)?,
-        })
+        let kernel = at(KERNEL_SYMBOL, KernelProbe::WORDS)?
+            .with_context(|| format!("{KERNEL_SYMBOL} missing: not a bench image"))?;
+        let bus = at(BUS_SYMBOL, BusProbe::WORDS)?;
+        let tally = at(TEL_TALLY_SYMBOL, TelTally::WORDS)?;
+        let cost = at(TEL_COST_SYMBOL, TelCost::WORDS)?;
+        let layout = match (bus, tally, cost) {
+            (Some(bus), None, None) => Layout::Bench { bus },
+            (None, Some(tally), Some(cost)) => Layout::TelCost { tally, cost },
+            _ => bail!(
+                "neither a bench image ({BUS_SYMBOL}) nor a telcost image \
+                 ({TEL_TALLY_SYMBOL} and {TEL_COST_SYMBOL})"
+            ),
+        };
+        Ok(Self { kernel, layout })
+    }
+
+    /// The image carries the TEL step records, and no bus record.
+    pub fn telcost(&self) -> bool {
+        matches!(self.layout, Layout::TelCost { .. })
     }
 
     pub fn read(&self) -> Result<Snapshot> {
         let kernel_words = words(&dump(self.kernel, 4 * KernelProbe::WORDS)?);
-        let bus_words = words(&dump(self.bus, 4 * BusProbe::WORDS)?);
-        Ok(Snapshot {
-            kernel: KernelProbe::from_words(&kernel_words).context("kernel record")?,
-            bus: BusProbe::from_words(&bus_words)
-                .context("bus record")?
-                .closed(),
-            kernel_words,
-            bus_words,
+        let kernel = KernelProbe::from_words(&kernel_words).context("kernel record")?;
+        Ok(match self.layout {
+            Layout::Bench { bus } => {
+                let bus_words = words(&dump(bus, 4 * BusProbe::WORDS)?);
+                Snapshot {
+                    kernel,
+                    bus: Some(
+                        BusProbe::from_words(&bus_words)
+                            .context("bus record")?
+                            .closed(),
+                    ),
+                    tel: None,
+                    kernel_words,
+                    bus_words,
+                }
+            }
+            Layout::TelCost { tally, cost } => {
+                let tally_words = words(&dump(tally, 4 * TelTally::WORDS)?);
+                let cost_words = words(&dump(cost, 4 * TelCost::WORDS)?);
+                Snapshot {
+                    kernel,
+                    bus: None,
+                    tel: Some(TelSnapshot {
+                        tally: TelTally::from_words(&tally_words).context("TEL tally")?,
+                        cost: TelCost::from_words(&cost_words).context("TEL step record")?,
+                        tally_words,
+                        cost_words,
+                    }),
+                    kernel_words,
+                    bus_words: Vec::new(),
+                }
+            }
         })
     }
 }
@@ -251,7 +311,29 @@ mod tests {
         assert!(Reader::from_elf(&e).is_err());
         let b = 4 * BusProbe::WORDS as u32;
         let e = elf(&[("BUS_PROBE", 0x100, b), ("KERNEL_PROBE", 0x200, k)]);
-        assert!(Reader::from_elf(&e).is_ok());
+        assert!(Reader::from_elf(&e).is_ok_and(|r| !r.telcost()));
+    }
+
+    #[test]
+    fn the_symbols_present_name_the_layout() {
+        let k = 4 * KernelProbe::WORDS as u32;
+        let t = 4 * TelTally::WORDS as u32;
+        let c = 4 * TelCost::WORDS as u32;
+        let b = 4 * BusProbe::WORDS as u32;
+        let tel = [
+            ("KERNEL_PROBE", 0x200, k),
+            ("TEL_TALLY", 0x400, t),
+            ("TEL_COST", 0x500, c),
+        ];
+        assert!(Reader::from_elf(&elf(&tel)).is_ok_and(|r| r.telcost()));
+        assert!(
+            Reader::from_elf(&elf(&tel[..2])).is_err(),
+            "half a telcost image"
+        );
+        let mut both = tel.to_vec();
+        both.push(("BUS_PROBE", 0x100, b));
+        assert!(Reader::from_elf(&elf(&both)).is_err(), "both layouts");
+        assert!(Reader::from_elf(&elf(&tel[..1])).is_err(), "no layout");
     }
 
     #[test]

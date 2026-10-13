@@ -5,6 +5,7 @@
 
 use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
 use crate::kernel::phase;
+use crate::tel::STREAM_SAMPLES_MAX;
 
 /// A body longer than this is a debugger halt or a flash save, not a
 /// budgeted body: counted, kept out of every statistic.
@@ -452,6 +453,288 @@ impl BusProbe {
             flags: r.word(),
         })
     }
+}
+
+/// A TEL step the `bench-telcost` image times (drivers `tel`): the arm's
+/// pickup; the tick's row, landing a frame head, a plain row or the bank;
+/// the lane's step, none, a frame's start or a CRC feed, patch or arm.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TelStep {
+    Pickup,
+    Head,
+    Row,
+    Bank,
+    Poll,
+    Start,
+    Service,
+}
+
+impl TelStep {
+    pub const ALL: [Self; 7] = [
+        Self::Pickup,
+        Self::Head,
+        Self::Row,
+        Self::Bank,
+        Self::Poll,
+        Self::Start,
+        Self::Service,
+    ];
+}
+
+const TEL_STEPS: usize = TelStep::ALL.len();
+
+/// TEL steps by [`TelStep`]: count, total and longest, HCLK ticks, each
+/// less `cal`, a back-to-back stamp pair's cost; a step longer than
+/// [`HALT_TICKS`] is a halt and books nowhere. `tick`: the running kernel
+/// tick's steps, which the tick's end takes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TelCost {
+    pub n: [u32; TEL_STEPS],
+    pub sum: [u32; TEL_STEPS],
+    pub max: [u16; TEL_STEPS],
+    pub cal: u16,
+    pub tick: u32,
+}
+
+impl TelCost {
+    pub const ZERO: Self = Self {
+        n: [0; TEL_STEPS],
+        sum: [0; TEL_STEPS],
+        max: [0; TEL_STEPS],
+        cal: 0,
+        tick: 0,
+    };
+
+    pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
+
+    /// Step `s` took `wall` ticks between its stamps.
+    #[inline(always)]
+    pub fn add(&mut self, s: TelStep, wall: u32) {
+        if wall > HALT_TICKS {
+            return;
+        }
+        let d = wall.saturating_sub(self.cal.into());
+        let i = s as usize;
+        if let (Some(n), Some(sum), Some(m)) =
+            (self.n.get_mut(i), self.sum.get_mut(i), self.max.get_mut(i))
+        {
+            *n = n.wrapping_add(1);
+            *sum = sum.wrapping_add(d);
+            *m = (*m).max(d as u16);
+        }
+        self.tick = self.tick.wrapping_add(d);
+    }
+
+    pub fn load(&self, s: TelStep) -> Load {
+        let i = s as usize;
+        Load {
+            n: self.n[i],
+            sum: self.sum[i],
+            max: self.max[i].into(),
+        }
+    }
+
+    /// Decode a dump, little-endian words in field order.
+    pub fn from_words(w: &[u32]) -> Option<Self> {
+        if w.len() != Self::WORDS {
+            return None;
+        }
+        let mut r = Words(w);
+        let n = core::array::from_fn(|_| r.word());
+        let sum = core::array::from_fn(|_| r.word());
+        let h: [u16; TEL_STEPS + 1] = r.halves();
+        Some(Self {
+            n,
+            sum,
+            max: core::array::from_fn(|i| h[i]),
+            cal: h[TEL_STEPS],
+            tick: r.word(),
+        })
+    }
+}
+
+/// The `bench-telcost` image's TEL ticks beside [`KernelProbe`], booked by
+/// its rules. The image stamps every other burst: an unstamped burst's TEL
+/// and banking ticks book their bodies, by regime and phase for matching
+/// against the plain ticks; a stamped burst's book their steps' total. A
+/// burst's first tick (pickup and head) books apart.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TelTally {
+    pub tel_n: [[u16; PHASES]; 2],
+    pub bank_n: [[u16; PHASES]; 2],
+    pub tel_sum: [u32; 2],
+    pub bank_sum: [u32; 2],
+    pub first: [Load; 2],
+    pub tel_steps: Tally,
+    pub bank_steps: Tally,
+}
+
+impl TelTally {
+    pub const ZERO: Self = Self {
+        tel_n: [[0; PHASES]; 2],
+        bank_n: [[0; PHASES]; 2],
+        tel_sum: [0; 2],
+        bank_sum: [0; 2],
+        first: [Load::ZERO; 2],
+        tel_steps: Tally::ZERO,
+        bank_steps: Tally::ZERO,
+    };
+
+    pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
+
+    /// The tick [`KernelProbe::tick`] booked; `first`: it picked up an arm;
+    /// `steps`: its stamped steps' total, under a stamped burst.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick(
+        &mut self,
+        body: u32,
+        phase: usize,
+        r: Regime,
+        ev: Events,
+        first: bool,
+        steps: Option<u32>,
+        boot: bool,
+    ) {
+        let apart = ev.refresh || ev.close || ev.slow || ev.finish || ev.install || ev.side;
+        if boot || body > HALT_TICKS || apart || ev.health || !(ev.bank || ev.tel) {
+            return;
+        }
+        let r = r as usize;
+        let (n, sum, stepped) = match (ev.bank, first) {
+            (true, _) => (&mut self.bank_n, &mut self.bank_sum, &mut self.bank_steps),
+            (false, false) => (&mut self.tel_n, &mut self.tel_sum, &mut self.tel_steps),
+            (false, true) => {
+                if let Some(l) = self.first.get_mut(r) {
+                    l.add(body);
+                }
+                return;
+            }
+        };
+        if let Some(d) = steps {
+            stepped.n = stepped.n.wrapping_add(1);
+            stepped.sum = stepped.sum.wrapping_add(d);
+        } else {
+            if let Some(n) = n.get_mut(r).and_then(|n| n.get_mut(phase)) {
+                *n = n.saturating_add(1);
+            }
+            if let Some(s) = sum.get_mut(r) {
+                *s = s.wrapping_add(body);
+            }
+        }
+    }
+
+    /// Decode a dump, little-endian words in field order.
+    pub fn from_words(w: &[u32]) -> Option<Self> {
+        if w.len() != Self::WORDS {
+            return None;
+        }
+        let mut r = Words(w);
+        Some(Self {
+            tel_n: core::array::from_fn(|_| r.halves()),
+            bank_n: core::array::from_fn(|_| r.halves()),
+            tel_sum: core::array::from_fn(|_| r.word()),
+            bank_sum: core::array::from_fn(|_| r.word()),
+            first: core::array::from_fn(|_| r.load()),
+            tel_steps: Tally {
+                n: r.word(),
+                sum: r.word(),
+            },
+            bank_steps: Tally {
+                n: r.word(),
+                sum: r.word(),
+            },
+        })
+    }
+}
+
+/// A `bench-telcost` window's TEL cost, HCLK ticks per tick. Host-side.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TelReport {
+    /// Unstamped TEL ticks that banked nothing and banking ticks over the
+    /// plain ticks of their regime and phase, and their counts; `None`
+    /// where one ran on a phase that had no plain tick.
+    pub tel: Option<f32>,
+    pub tel_n: u32,
+    pub bank: Option<f32>,
+    pub bank_n: u32,
+    /// The mean TEL tick's excess, one tick in [`STREAM_SAMPLES_MAX`]
+    /// banking.
+    pub per_tick: Option<f32>,
+    /// The stamped steps' total of the same mean tick, and the stamped
+    /// ticks it is over; `None` without both kinds.
+    pub steps: Option<f32>,
+    pub steps_n: u32,
+}
+
+impl TelReport {
+    pub fn of(k: &KernelProbe, t: &TelTally) -> Self {
+        let tel = matched(k, &t.tel_n, t.tel_sum.map(u64::from), None);
+        let bank = matched(k, &t.bank_n, t.bank_sum.map(u64::from), None);
+        let w = 1.0 / STREAM_SAMPLES_MAX as f32;
+        let mix = |row: f32, bank: f32| (1.0 - w) * row + w * bank;
+        let mean = |s: Tally| (s.n != 0).then(|| s.sum as f32 / s.n as f32);
+        let steps = match (mean(t.tel_steps), mean(t.bank_steps)) {
+            (Some(r), Some(b)) => Some(mix(r, b)),
+            _ => None,
+        };
+        let per_tick = match (tel, bank) {
+            (Some((r, _)), Some((b, _))) => Some(mix(r, b)),
+            _ => None,
+        };
+        Self {
+            tel: tel.map(|(e, _)| e),
+            tel_n: tel.map_or(0, |(_, n)| n),
+            bank: bank.map(|(e, _)| e),
+            bank_n: bank.map_or(0, |(_, n)| n),
+            per_tick,
+            steps,
+            steps_n: t.tel_steps.n.wrapping_add(t.bank_steps.n),
+        }
+    }
+
+    /// The unstamped TEL ticks of `r` over its plain ticks, phase by phase:
+    /// the [`Component::TelRow`] mean with each phase's own plain mean.
+    pub fn tel_row(k: &KernelProbe, t: &TelTally, r: Regime) -> Option<f32> {
+        let i = r as usize;
+        let mut sum = [0; 2];
+        sum[i] = u64::from(t.tel_sum[i]);
+        matched(k, &t.tel_n, sum, Some(r)).map(|(e, _)| e)
+    }
+}
+
+/// Ticks counted `n` by regime and phase, totalling `sum` by regime, over
+/// the plain ticks' mean of each one's regime and phase; and their count.
+fn matched(
+    k: &KernelProbe,
+    n: &[[u16; PHASES]; 2],
+    sum: [u64; 2],
+    only: Option<Regime>,
+) -> Option<(f32, u32)> {
+    let (mut count, mut total, mut plain) = (0u64, 0u64, 0f64);
+    for r in Regime::ALL {
+        if only.is_some_and(|o| o != r) {
+            continue;
+        }
+        let i = r as usize;
+        total += sum[i];
+        for p in 0..PHASES {
+            let c = u64::from(n[i][p]);
+            if c == 0 {
+                continue;
+            }
+            let t = k.tick[i][p];
+            if t.n == 0 {
+                return None;
+            }
+            count += c;
+            plain += c as f64 * f64::from(t.sum) / f64::from(t.n);
+        }
+    }
+    (count != 0).then(|| (((total as f64 - plain) / count as f64) as f32, count as u32))
 }
 
 struct Words<'a>(&'a [u32]);

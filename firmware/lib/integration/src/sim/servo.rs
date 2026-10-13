@@ -257,6 +257,12 @@ impl SimServo {
             ),
             SimCrc::lane(h.crc.clone(), seed.core.clone(), h.lane.clone()),
             SimRing::new(h.ring.clone(), Rc::default()),
+            SimDeadline::new(
+                seed.core.clone(),
+                h.deadline.clone(),
+                seed.idx,
+                h.clock_lag.clone(),
+            ),
             &shared.table,
         );
         bus.attach_tel(drain);

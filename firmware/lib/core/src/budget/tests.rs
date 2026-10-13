@@ -1,5 +1,6 @@
 use super::probe::{
-    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, Windows, rows,
+    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, TelCost, TelReport,
+    TelStep, TelTally, Windows, rows,
 };
 use super::*;
 
@@ -633,4 +634,164 @@ fn a_finish_charges_its_own_row_and_a_close_replaces_it() {
         ..finish
     };
     assert_eq!(kernel_tick(closed, p, close), base + SLOW_CLOSE);
+}
+
+/// A TEL step books its stamps' time less the stamp pair's own, never
+/// below zero, into its step and the running tick's total; a halt between
+/// the stamps books nowhere. The record decodes from its words.
+#[test]
+fn tel_steps_book_less_the_stamp_pair_and_skip_halts() {
+    let mut c = TelCost {
+        cal: 12,
+        ..TelCost::ZERO
+    };
+    c.add(TelStep::Row, 112);
+    c.add(TelStep::Row, 62);
+    c.add(TelStep::Poll, 5);
+    c.add(TelStep::Poll, HALT_TICKS + 1);
+    assert_eq!(
+        c.load(TelStep::Row),
+        Load {
+            n: 2,
+            sum: 150,
+            max: 100
+        }
+    );
+    assert_eq!(
+        c.load(TelStep::Poll),
+        Load {
+            n: 1,
+            sum: 0,
+            max: 0
+        }
+    );
+    assert_eq!(c.load(TelStep::Bank), Load::ZERO);
+    assert_eq!(c.tick, 150);
+    assert_eq!(TelCost::from_words(words(&c)), Some(c));
+}
+
+/// The tally books a tick where the kernel record books it as TEL or
+/// banking: an unstamped burst's body by phase, a stamped burst's steps,
+/// a burst's first tick apart, and nothing the record books elsewhere.
+#[test]
+fn tel_tally_books_unstamped_bodies_and_stamped_steps() {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let closed = Regime::Closed;
+    let tel = Events { tel: true, ..PLAIN };
+    let bank = Events { bank: true, ..tel };
+    let ticks = [
+        (0, 900, tel, false, None),
+        (1, 1500, tel, true, Some(700)),
+        (2, 1100, tel, false, None),
+        (3, 1200, tel, false, None),
+        (4, 1700, bank, false, None),
+        (5, 1300, Events { slow: true, ..tel }, false, None),
+        (
+            6,
+            1300,
+            Events {
+                health: true,
+                ..bank
+            },
+            false,
+            None,
+        ),
+        (7, 1000, PLAIN, false, None),
+        (8, 1400, tel, false, Some(300)),
+        (9, 1600, bank, false, Some(450)),
+    ];
+    for (n, body, ev, first, steps) in ticks {
+        let p = n as usize % PHASES;
+        tick(&mut k, n, body, p, closed, ev);
+        t.tick(body, p, closed, ev, first, steps, n == 0);
+    }
+    assert_eq!(
+        t.first[1],
+        Load {
+            n: 1,
+            sum: 1500,
+            max: 1500
+        }
+    );
+    assert_eq!(t.tel_n[1][..4], [0, 0, 1, 1]);
+    assert_eq!(t.tel_sum[1], 2300);
+    assert_eq!((t.bank_n[1][4], t.bank_sum[1]), (1, 1700));
+    assert_eq!(t.bank_n[1].iter().sum::<u16>(), 1);
+    assert_eq!((t.tel_steps.n, t.tel_steps.sum), (1, 300));
+    assert_eq!((t.bank_steps.n, t.bank_steps.sum), (1, 450));
+    assert_eq!(t.tel_n[0], [0; PHASES]);
+    assert_eq!(TelTally::from_words(words(&t)), Some(t));
+}
+
+/// The TEL cost holds each unstamped TEL and banking tick against the
+/// plain ticks of its own phase: phases that differ by hundreds of ticks,
+/// and TEL ticks that land on two of them, still read the row's true
+/// excess, where the all-phase mean does not. A banking tick weighs one in
+/// a frame, in the cost and in the stamped steps alike.
+#[test]
+fn tel_cost_matches_each_tel_tick_to_its_phase() {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let closed = Regime::Closed;
+    let (enc, banked) = (120, 400);
+    let plain = |p: usize| 1000 + 100 * p as u32;
+    let tel = Events { tel: true, ..PLAIN };
+    let bank = Events { bank: true, ..tel };
+    let mut n = 1;
+    let mut run = |k: &mut KernelProbe, body: u32, p: usize, ev: Events, steps: Option<u32>| {
+        tick(k, n, body, p, closed, ev);
+        t.tick(body, p, closed, ev, false, steps, false);
+        n += 1;
+    };
+    for p in 0..PHASES {
+        for _ in 0..=p {
+            run(&mut k, plain(p), p, PLAIN, None);
+        }
+    }
+    for _ in 0..2 * MEAN_MIN_BODIES {
+        run(&mut k, plain(0) + enc, 0, tel, None);
+        run(&mut k, plain(9) + enc, 9, tel, None);
+        run(&mut k, plain(4) + banked, 4, bank, None);
+        run(&mut k, plain(2) + enc + 50, 2, tel, Some(100));
+        run(&mut k, plain(3) + banked, 3, bank, Some(300));
+    }
+    let r = TelReport::of(&k, &t);
+    assert_eq!((r.tel, r.tel_n), (Some(enc as f32), 4 * MEAN_MIN_BODIES));
+    assert_eq!(
+        (r.bank, r.bank_n),
+        (Some(banked as f32), 2 * MEAN_MIN_BODIES)
+    );
+    let w = 1.0 / crate::tel::STREAM_SAMPLES_MAX as f32;
+    let mix = |a: f32, b: f32| (1.0 - w) * a + w * b;
+    let near = |x: Option<f32>, want: f32| x.is_some_and(|x| (x - want).abs() < 1e-3);
+    assert!(near(r.per_tick, mix(enc as f32, banked as f32)), "{r:?}");
+    assert!(near(r.steps, mix(100.0, 300.0)), "{r:?}");
+    assert_eq!(r.steps_n, 4 * MEAN_MIN_BODIES);
+    assert_eq!(TelReport::tel_row(&k, &t, closed), Some(enc as f32));
+    assert_eq!(TelReport::tel_row(&k, &t, OPEN), None);
+    let s = Scenario {
+        tel: true,
+        frames: &[],
+    };
+    let mut pooled = 0;
+    rows(&k, &BusProbe::ZERO, &s, |r| {
+        if r.component == Component::TelRow(closed) {
+            pooled = r.mean;
+        }
+    });
+    assert_ne!(pooled, enc, "the all-phase mean misreads the row");
+}
+
+/// A TEL tick on a phase with no plain tick has nothing to match.
+#[test]
+fn tel_cost_needs_a_plain_tick_on_every_tel_phase() {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let tel = Events { tel: true, ..PLAIN };
+    tick(&mut k, 1, 1000, 1, OPEN, PLAIN);
+    tick(&mut k, 2, 1200, 2, OPEN, tel);
+    t.tick(1200, 2, OPEN, tel, false, None, false);
+    let r = TelReport::of(&k, &t);
+    assert_eq!((r.tel, r.per_tick), (None, None));
 }

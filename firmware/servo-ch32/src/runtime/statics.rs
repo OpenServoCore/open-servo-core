@@ -5,6 +5,7 @@ use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use crate::control::Ch32ControlIo;
 use crate::providers::crc::Crc;
+use crate::providers::deadline::Deadline;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
 use crate::runtime::registry::V006Providers;
@@ -36,7 +37,8 @@ pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
 /// frame, under the painted stack, for the program's life.
 #[inline(never)]
 pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
-    let (feed, drain) = TEL_CHANNEL.split::<V006Providers>(TxWire, Crc, RxRing, &SHARED.table);
+    let (feed, drain) =
+        TEL_CHANNEL.split::<V006Providers>(TxWire, Crc, RxRing, Deadline, &SHARED.table);
     unsafe {
         // SAFETY: pre-IRQ (install_irqs runs after) and `Drivers::install`
         // already built the bus in bringup, so the reach-in is single-context.
