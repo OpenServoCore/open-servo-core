@@ -43,6 +43,8 @@ jobs:
         run: cargo check -p osc-servo-drivers --features mocks
       - name: cargo check --features bench
         run: cargo check -p osc-servo-drivers --features bench
+      - name: cargo check --features bench-telcost
+        run: cargo check -p osc-servo-drivers --features bench-telcost
       - name: cargo test osc-host --features bench
         run: cargo test -p osc-host --features bench
       - name: cargo check osc-integration --features bench
@@ -73,6 +75,8 @@ jobs:
         run: cargo test --features ch32v006x8x6 --lib
       - name: cargo check --features bench
         run: cargo check --features ch32v006x8x6,bench
+      - name: cargo check --features bench-telcost
+        run: cargo check --features ch32v006x8x6,bench-telcost
 
   osc-dev-v006-cross-build:
     name: cross-build (boards/osc-dev-v006)

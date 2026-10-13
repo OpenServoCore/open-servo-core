@@ -1,5 +1,6 @@
 use super::probe::{
-    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, Windows, rows,
+    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, TelCost, TelReport,
+    TelStep, TelTally, Windows, rows,
 };
 use super::*;
 
@@ -633,4 +634,163 @@ fn a_finish_charges_its_own_row_and_a_close_replaces_it() {
         ..finish
     };
     assert_eq!(kernel_tick(closed, p, close), base + SLOW_CLOSE);
+}
+
+/// A TEL step books its stamps' time less the stamp pair's own, never
+/// below zero, and the record decodes from its words.
+#[test]
+fn tel_steps_book_less_the_stamp_pair() {
+    let mut c = TelCost {
+        cal: 12,
+        step: 40,
+        ..TelCost::ZERO
+    };
+    c.add(TelStep::Row, 112);
+    c.add(TelStep::Row, 62);
+    c.add(TelStep::Poll, 5);
+    assert_eq!(
+        c.load(TelStep::Row),
+        Load {
+            n: 2,
+            sum: 150,
+            max: 100
+        }
+    );
+    assert_eq!(
+        c.load(TelStep::Poll),
+        Load {
+            n: 1,
+            sum: 0,
+            max: 0
+        }
+    );
+    assert_eq!(c.load(TelStep::Bank), Load::ZERO);
+    assert_eq!(TelCost::from_words(words(&c)), Some(c));
+}
+
+/// The tally books a tick where the kernel record books it as TEL or
+/// banking, a burst's first tick apart, and nothing it books elsewhere.
+#[test]
+fn tel_tally_books_the_kernel_record_s_tel_and_bank_ticks() {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let closed = Regime::Closed;
+    let tel = Events { tel: true, ..PLAIN };
+    let bank = Events { bank: true, ..tel };
+    let ticks = [
+        (0, 900, tel, false),
+        (1, 1500, tel, true),
+        (2, 1100, tel, false),
+        (3, 1200, tel, false),
+        (4, 1700, bank, false),
+        (5, 1300, Events { slow: true, ..tel }, false),
+        (
+            6,
+            1300,
+            Events {
+                health: true,
+                ..bank
+            },
+            false,
+        ),
+        (7, 1000, PLAIN, false),
+    ];
+    for (n, body, ev, first) in ticks {
+        let p = n as usize % PHASES;
+        tick(&mut k, n, body, p, closed, ev);
+        t.tick(body, p, closed, ev, first, n == 0);
+    }
+    assert_eq!(
+        t.first[1],
+        Load {
+            n: 1,
+            sum: 1500,
+            max: 1500
+        }
+    );
+    assert_eq!(t.tel_n[1][..4], [0, 0, 1, 1]);
+    assert_eq!(k.tel[1].n - t.first[1].n, 2);
+    assert_eq!((t.bank_n[1][4], t.bank_sum[1]), (1, 1700));
+    assert_eq!(t.bank_n[1].iter().sum::<u16>(), 1);
+    assert_eq!(t.tel_n[0], [0; PHASES]);
+    assert_eq!(TelTally::from_words(words(&t)), Some(t));
+}
+
+/// The TEL cost holds each TEL and banking tick against the plain ticks of
+/// its own phase: phases that differ by hundreds of ticks, and TEL ticks
+/// that land on two of them, still read the row's true excess, where the
+/// all-phase mean does not. A banking tick weighs one in a frame, the
+/// probe's own stamps come off, and a burst's first tick stays out.
+#[test]
+fn tel_cost_matches_each_tel_tick_to_its_phase() {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let closed = Regime::Closed;
+    let (enc, banked) = (120, 400);
+    let plain = |p: usize| 1000 + 100 * p as u32;
+    let tel = Events { tel: true, ..PLAIN };
+    let bank = Events { bank: true, ..tel };
+    let mut n = 1;
+    let mut run = |k: &mut KernelProbe, body: u32, p: usize, ev: Events, first: bool| {
+        tick(k, n, body, p, closed, ev);
+        t.tick(body, p, closed, ev, first, false);
+        n += 1;
+    };
+    for p in 0..PHASES {
+        for _ in 0..=p {
+            run(&mut k, plain(p), p, PLAIN, false);
+        }
+    }
+    for _ in 0..2 * MEAN_MIN_BODIES {
+        run(&mut k, plain(0) + enc, 0, tel, false);
+        run(&mut k, plain(9) + enc, 9, tel, false);
+        run(&mut k, plain(4) + banked, 4, bank, false);
+    }
+    run(&mut k, 5000, 3, tel, true);
+    let mut c = TelCost {
+        step: 10,
+        ..TelCost::ZERO
+    };
+    c.n[TelStep::Row as usize] = 50;
+    c.sum[TelStep::Row as usize] = 3000;
+    c.n[TelStep::Poll as usize] = 100;
+    c.sum[TelStep::Poll as usize] = 2000;
+    c.n[TelStep::Pickup as usize] = 1;
+    c.sum[TelStep::Pickup as usize] = 900;
+    let r = TelReport::of(&k, &t, &c);
+    assert_eq!((r.tel, r.tel_n), (Some(enc as f32), 4 * MEAN_MIN_BODIES));
+    assert_eq!(
+        (r.bank, r.bank_n),
+        (Some(banked as f32), 2 * MEAN_MIN_BODIES)
+    );
+    assert_eq!((r.probe, r.steps), (15.0, 50.0));
+    let w = 1.0 / crate::tel::STREAM_SAMPLES_MAX as f32;
+    let want = (1.0 - w) * enc as f32 + w * banked as f32 - 15.0;
+    assert!(r.per_tick.is_some_and(|x| (x - want).abs() < 1e-3), "{r:?}");
+    assert_eq!(TelReport::tel_row(&k, &t, closed), Some(enc as f32));
+    assert_eq!(TelReport::tel_row(&k, &t, OPEN), None);
+    let s = Scenario {
+        tel: true,
+        frames: &[],
+    };
+    let mut pooled = 0;
+    rows(&k, &BusProbe::ZERO, &s, |r| {
+        if r.component == Component::TelRow(closed) {
+            pooled = r.mean;
+        }
+    });
+    assert_ne!(pooled, enc, "the all-phase mean misreads the row");
+}
+
+/// A TEL tick on a phase with no plain tick has nothing to match.
+#[test]
+fn tel_cost_needs_a_plain_tick_on_every_tel_phase() {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let tel = Events { tel: true, ..PLAIN };
+    tick(&mut k, 1, 1000, 1, OPEN, PLAIN);
+    tick(&mut k, 2, 1200, 2, OPEN, tel);
+    t.tick(1200, 2, OPEN, tel, false, false);
+    let r = TelReport::of(&k, &t, &TelCost::ZERO);
+    assert_eq!((r.tel, r.per_tick), (None, None));
 }

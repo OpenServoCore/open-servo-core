@@ -21,6 +21,9 @@
 //! time (the kernel vectors inside it subtracted), which the table judges,
 //! and for its longest one the wall time and the kernel vectors nested.
 //! A report-only window is never held to the table.
+//! A telcost image (`--features bench-telcost`, no bus record) reports the
+//! TEL windows' cost per tick and per TEL step instead, held only to its
+//! own self-check; its windows run no budget, bus or host-frame check.
 
 use std::any::Any;
 use std::env;
@@ -39,8 +42,10 @@ use osc_client::Outcome;
 use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
-use osc_servo_core::budget::probe::{Component, LONG_TICKS, Row, Scenario, rows, us};
-use osc_servo_core::budget::{Frame, WINDOW_TICKS};
+use osc_servo_core::budget::probe::{
+    Component, KernelProbe, LONG_TICKS, Row, Scenario, TelReport, TelStep, rows, us,
+};
+use osc_servo_core::budget::{Frame, Regime, TICKS_PER_US, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, MODE, TORQUE_ENABLE};
@@ -77,6 +82,9 @@ const THETA_FRAC_BITS: u32 = 16;
 /// may move.
 const SEAT_PUSH: i32 = 40;
 const SEAT_MOVE_MAX: i32 = 10;
+/// What a TEL tick may carry beyond its stamped steps: the flag and epoch
+/// tests around them, which no stamp covers.
+const TEL_CHECK_SLACK: f32 = 30.0;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Gate {
@@ -313,13 +321,19 @@ impl Fill {
             tel_drops: u16::from_le_bytes([d0, d1]),
             stack_free_min: u16::from_le_bytes([s0, s1]),
         };
-        if u64::from(w.snap.bus.host.n) != w.sent {
+        if let Some(bus) = &w.snap.bus
+            && u64::from(bus.host.n) != w.sent
+        {
             self.failed.push(format!(
                 "{name}: {} host frames booked, {} sent",
-                w.snap.bus.host.n, w.sent
+                bus.host.n, w.sent
             ));
         }
-        self.report(&w);
+        if w.snap.tel.is_some() {
+            self.report_tel(&w);
+        } else {
+            self.report(&w);
+        }
     }
 
     /// Print the window's components against their budgets and its raw
@@ -329,7 +343,10 @@ impl Fill {
             tel: w.tel,
             frames: &w.frames,
         };
-        let (k, bus) = (&w.snap.kernel, &w.snap.bus);
+        let k = &w.snap.kernel;
+        let Some(bus) = &w.snap.bus else {
+            return;
+        };
         let mut text = String::new();
         let _ = writeln!(
             text,
@@ -347,14 +364,7 @@ impl Fill {
         for (kt, g) in WINDOW_TICKS.into_iter().zip(k.windows.gamma) {
             let _ = writeln!(text, "  gamma({kt:>2})            {}", ticks(g));
         }
-        let [open, closed] = k.long;
-        let share = 100.0 * closed as f32 / (open + closed).max(1) as f32;
-        let _ = writeln!(
-            text,
-            "  ticks >= {:.0} us: Open {open}, Closed {closed} ({share:.1}% Closed)",
-            us(LONG_TICKS)
-        );
-        let _ = writeln!(text, "  entry lateness max  {}", ticks(k.late_max));
+        long_ticks(&mut text, k);
         rows(k, bus, &s, |r| {
             if r.n == 0 && r.max == 0 {
                 return;
@@ -367,14 +377,120 @@ impl Fill {
         });
         let _ = writeln!(text, "  kernel words {:08x?}", w.snap.kernel_words);
         let _ = writeln!(text, "  bus words {:08x?}", w.snap.bus_words);
+        self.emit(w, &text);
+    }
+
+    /// A telcost window: the TEL steps, the TEL ticks over the plain ticks
+    /// of their phase, the mean TEL cost a tick and its self-check.
+    fn report_tel(&mut self, w: &Window) {
+        let (k, Some(tel)) = (&w.snap.kernel, &w.snap.tel) else {
+            return;
+        };
+        let (t, c) = (&tel.tally, &tel.cost);
+        let mut text = String::new();
+        let _ = writeln!(
+            text,
+            "== {} (telcost{}): kernel halts {}, frames sent {}, tel_drop {}, \
+             stack_free_min {} B\n  budget, bus and host-frame checks: skipped (telcost image)",
+            w.name,
+            if w.tel { ", TEL" } else { "" },
+            k.halts,
+            w.sent,
+            w.tel_drops,
+            w.stack_free_min
+        );
+        let _ = writeln!(
+            text,
+            "  stamp pair {}, stamped step {}",
+            ticks(c.cal.into()),
+            ticks(c.step)
+        );
+        for s in TelStep::ALL {
+            let l = c.load(s);
+            let _ = writeln!(
+                text,
+                "  TEL step {:<8} n {:>7}  mean {}  max {}",
+                format!("{s:?}"),
+                l.n,
+                ticks(l.mean()),
+                ticks(l.max)
+            );
+        }
+        for r in Regime::ALL {
+            let first = t.first[r as usize];
+            if let Some(m) = TelReport::tel_row(k, t, r) {
+                let _ = writeln!(text, "  {r:?} TEL row, phase-matched  mean {}", fticks(m));
+            }
+            if first.n != 0 {
+                let _ = writeln!(
+                    text,
+                    "  {r:?} first TEL tick     n {:>7}  mean {}  max {}",
+                    first.n,
+                    ticks(first.mean()),
+                    ticks(first.max)
+                );
+            }
+        }
+        let rep = TelReport::of(k, t, c);
+        let _ = writeln!(
+            text,
+            "  TEL ticks n {} over plain {}, bank ticks n {} over plain {}",
+            rep.tel_n,
+            opt_ticks(rep.tel),
+            rep.bank_n,
+            opt_ticks(rep.bank)
+        );
+        let _ = writeln!(
+            text,
+            "  TEL per tick {} (bank 1/{}, probe {} off), steps {}",
+            opt_ticks(rep.per_tick),
+            osc_servo_core::tel::STREAM_SAMPLES_MAX,
+            fticks(rep.probe),
+            fticks(rep.steps)
+        );
+        if w.tel {
+            let pass = rep
+                .per_tick
+                .is_some_and(|x| rep.steps <= x && x <= rep.steps + TEL_CHECK_SLACK);
+            let l = format!(
+                "self-check steps {:.1} <= TEL per tick {} <= steps + {TEL_CHECK_SLACK}",
+                rep.steps,
+                opt_ticks(rep.per_tick)
+            );
+            let _ = writeln!(text, "  {l}: {}", if pass { "PASS" } else { "FAIL" });
+            if !pass {
+                self.failed.push(format!("{}: {l}", w.name));
+            }
+        }
+        long_ticks(&mut text, k);
+        let _ = writeln!(text, "  kernel words {:08x?}", w.snap.kernel_words);
+        let _ = writeln!(text, "  TEL tally words {:08x?}", tel.tally_words);
+        let _ = writeln!(text, "  TEL step words {:08x?}", tel.cost_words);
+        self.emit(w, &text);
+    }
+
+    /// Print a window's report and save it under `BUDGET_OUT`.
+    fn emit(&self, w: &Window, text: &str) {
         print!("{text}");
         if let Some(dir) = &self.out {
             let file = dir.join(format!("{}.txt", w.name.replace(' ', "-")));
-            if let Err(e) = std::fs::write(&file, &text) {
+            if let Err(e) = std::fs::write(&file, text) {
                 println!("  (not saved to {}: {e})", file.display());
             }
         }
     }
+}
+
+/// The long ticks by arm and the entry lateness.
+fn long_ticks(text: &mut String, k: &KernelProbe) {
+    let [open, closed] = k.long;
+    let share = 100.0 * closed as f32 / (open + closed).max(1) as f32;
+    let _ = writeln!(
+        text,
+        "  ticks >= {:.0} us: Open {open}, Closed {closed} ({share:.1}% Closed)",
+        us(LONG_TICKS)
+    );
+    let _ = writeln!(text, "  entry lateness max  {}", ticks(k.late_max));
 }
 
 /// `BUDGET_WINDOWS` names the window.
@@ -532,6 +648,18 @@ fn panic_text(e: &(dyn Any + Send)) -> String {
 /// `t` ticks as ticks and us.
 fn ticks(t: u32) -> String {
     format!("{t:>5} ticks = {:>6.1} us", us(t))
+}
+
+/// A mean `t` ticks as ticks and us.
+fn fticks(t: f32) -> String {
+    format!("{t:>7.1} ticks = {:>6.2} us", t / TICKS_PER_US as f32)
+}
+
+fn opt_ticks(t: Option<f32>) -> String {
+    t.map_or_else(
+        || "unmatched (a TEL phase with no plain tick)".into(),
+        fticks,
+    )
 }
 
 fn line(r: &Row) -> String {

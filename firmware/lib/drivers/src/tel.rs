@@ -28,6 +28,7 @@ use osc_servo_core::tel::{
 };
 use osc_servo_core::{ControlTableCell, RegionStorageRaw};
 
+use crate::bench::{self, TelStep};
 use crate::traits::bus::{CrcEngine, Providers, RxRing, TxWire};
 
 const CRC_LEN: usize = core::mem::size_of::<u16>();
@@ -122,22 +123,26 @@ impl TelChannel {
         unsafe { self.drops.get().read_volatile() }
     }
 
-    /// Split into the two halves over the lane's wire, CRC engine and RX
-    /// ring handles and the table the rows copy from. Call once at bringup:
-    /// a second feed or drain breaks the single-writer discipline.
+    /// Split into the two halves over the lane's wire, CRC engine, RX ring
+    /// and clock handles and the table the rows copy from. Call once at
+    /// bringup, before interrupts run: a second feed or drain breaks the
+    /// single-writer discipline.
     pub fn split<P: Providers>(
         &'static self,
         wire: P::Tx,
         crc: P::Crc,
         ring: P::Ring,
+        clock: P::Deadline,
         table: &'static ControlTableCell,
     ) -> (TelFeed<P>, TelDrain) {
+        bench::tel_calibrate(&clock);
         (
             TelFeed {
                 ch: self,
                 wire,
                 crc,
                 ring,
+                clock,
                 table,
                 epoch: 0,
                 id: 0,
@@ -246,6 +251,9 @@ pub struct TelFeed<P: Providers> {
     wire: P::Tx,
     crc: P::Crc,
     ring: P::Ring,
+    /// The `bench-telcost` stamps' time base.
+    #[cfg_attr(not(feature = "bench-telcost"), allow(dead_code))]
+    clock: P::Deadline,
     table: &'static ControlTableCell,
     /// The arm this burst runs under (`arm_seq` at pickup).
     epoch: u8,
@@ -514,10 +522,15 @@ impl<P: Providers> TelStream for TelFeed<P> {
             if hold_start() {
                 return;
             }
+            let t = bench::tel_stamp(&self.clock);
             self.pickup(seq);
+            bench::tel_step(&self.clock, t, TelStep::Pickup);
         }
         if self.remaining != 0 {
+            let s = bench::tel_ahead(|| self.row_step());
+            let t = bench::tel_stamp(&self.clock);
             self.row();
+            bench::tel_step(&self.clock, t, s);
         }
     }
 
@@ -542,8 +555,30 @@ impl<P: Providers> TelStream for TelFeed<P> {
         if !self.ch.active() {
             return;
         }
+        let t = bench::tel_stamp(&self.clock);
+        let s = self.lane();
+        bench::tel_step(&self.clock, t, s);
+    }
+}
+
+impl<P: Providers> TelFeed<P> {
+    /// The step the tick's row takes, from the frame's rows landed.
+    #[inline(always)]
+    fn row_step(&self) -> TelStep {
+        if self.n == 0 {
+            TelStep::Head
+        } else if self.n + 1 == self.rows {
+            TelStep::Bank
+        } else {
+            TelStep::Row
+        }
+    }
+
+    /// The lane's step of an active tick ([`TelStream::on_tick_end`]).
+    #[inline(always)]
+    fn lane(&mut self) -> TelStep {
         if core::mem::take(&mut self.landed) {
-            return;
+            return TelStep::Poll;
         }
         match self.phase {
             Phase::Idle => {}
@@ -553,13 +588,21 @@ impl<P: Providers> TelStream for TelFeed<P> {
                 self.phase = Phase::Idle;
                 self.crc_due = false;
             }
-            _ if self.crc_due => return self.service(),
-            Phase::Break if self.wire.idle() => return self.service(),
-            _ => return,
+            _ if self.crc_due => {
+                self.service();
+                return TelStep::Service;
+            }
+            Phase::Break if self.wire.idle() => {
+                self.service();
+                return TelStep::Service;
+            }
+            _ => return TelStep::Poll,
         }
         if self.startable() {
             self.start();
+            return TelStep::Start;
         }
+        TelStep::Poll
     }
 }
 
