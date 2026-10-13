@@ -11,9 +11,8 @@ use crate::math::q_mul;
 use crate::pos_lut;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
-use crate::tel::TelStream;
-use crate::tel::tick_flag;
-use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors};
+use crate::regions::telemetry::tick_flag;
+use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
 use crate::{ControlTable, RegionStorage, SensorFrame, Shared, TelemetryTick};
 
 const BIAS: u16 = 2048;
@@ -953,10 +952,7 @@ fn reversed_polarity_negates_the_openloop_write() {
     assert_eq!(written_duty(&k), -8000);
     assert_eq!(k.fast.duty_q15, 8000);
     // the tick block's duty is logical, the previous tick's command
-    assert_eq!(
-        tick_block(&sh).duty_ticks,
-        crate::tel::duty_counts(8000, ARR)
-    );
+    assert_eq!(tick_block(&sh).duty_ticks, window::duty_counts(8000, ARR));
 }
 
 #[test]
@@ -2330,7 +2326,7 @@ fn tick_block(sh: &Shared) -> TelemetryTick {
     sh.table.with(|t| t.telemetry.tick)
 }
 
-/// The tick block as each row's first chunk sees it: read at `on_tick`.
+/// The tick block as each row's first chunk sees it: read at `on_publish`.
 struct RecTel {
     table: *const crate::ControlTableCell,
     rows: heapless::Vec<TelemetryTick, 64>,
@@ -2343,8 +2339,8 @@ impl RecTel {
         }
     }
 }
-impl crate::tel::TelStream for RecTel {
-    fn on_tick(&mut self, _: impl FnOnce() -> bool) {
+impl TelStream for RecTel {
+    fn on_publish(&mut self, _: impl FnOnce() -> bool) {
         // SAFETY: the test's `Shared` outlives the kernel that owns this.
         let t = unsafe { (*self.table).with(|t| t.telemetry.tick) };
         let _ = self.rows.push(t);
@@ -2356,8 +2352,8 @@ impl crate::tel::TelStream for RecTel {
 struct HoldTel {
     held: bool,
 }
-impl crate::tel::TelStream for HoldTel {
-    fn on_tick(&mut self, _: impl FnOnce() -> bool) {}
+impl TelStream for HoldTel {
+    fn on_publish(&mut self, _: impl FnOnce() -> bool) {}
     fn hold(&mut self) {
         self.held = true;
     }
@@ -2410,7 +2406,7 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
     assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
 }
 
-/// The row's first chunk is taken at `on_tick`: the tick block is whole by
+/// The row's first chunk is taken at `on_publish`: the tick block is whole by
 /// then - this scan's frame, the stamp the ISR published, and the
 /// conclusions on the window the previous command drove - and nothing in
 /// the tick writes it after, so both chunks copy one tick.
@@ -2473,7 +2469,7 @@ fn tick_block_carries_the_measured_window() {
         k.on_scan(frame(2100, BIAS + 40), &sh);
     }
     let t = tick_block(&sh);
-    assert_eq!(t.duty_ticks, crate::tel::duty_counts(8000, ARR));
+    assert_eq!(t.duty_ticks, window::duty_counts(8000, ARR));
     assert_eq!(t.i_tick_counts, 40);
     // reverse rides negative, as the host's goal quantization has it
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
@@ -2483,7 +2479,7 @@ fn tick_block_carries_the_measured_window() {
     }
     let t = tick_block(&sh);
     assert_eq!(t.duty_ticks, -293);
-    assert_eq!(t.duty_ticks, crate::tel::duty_counts(-8000, ARR));
+    assert_eq!(t.duty_ticks, window::duty_counts(-8000, ARR));
     assert_eq!(t.i_tick_counts, -40);
 }
 
@@ -2775,8 +2771,8 @@ fn a_take_moves_the_probe_tag_at_therm_install_alone() {
 struct StartTel {
     held: heapless::Vec<bool, 64>,
 }
-impl crate::tel::TelStream for StartTel {
-    fn on_tick(&mut self, hold_start: impl FnOnce() -> bool) {
+impl TelStream for StartTel {
+    fn on_publish(&mut self, hold_start: impl FnOnce() -> bool) {
         let _ = self.held.push(hold_start());
     }
 }

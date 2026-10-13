@@ -148,6 +148,14 @@ pub fn drive_ticks(duty: i16, pwm_arr: u16) -> u32 {
     (mag * pwm_arr as u32 + (1 << 14)) >> 15
 }
 
+/// The TEL `duty` a logical Q15 duty drives at `pwm_arr`: the
+/// [`drive_ticks`] width, negative in reverse. Hosts quantize a goal with
+/// it to compare against the rows.
+pub fn duty_counts(duty_q15: i16, pwm_arr: u16) -> i16 {
+    let ticks = drive_ticks(duty_q15, pwm_arr) as i16;
+    if duty_q15 < 0 { -ticks } else { ticks }
+}
+
 /// Inverse of `drive_ticks`: the smallest duty magnitude whose window
 /// `select` accepts against the `min_ticks` floor; full duty when none does.
 /// `recip_arr_q24` per `bemf::RECIP_ARR_SHIFT`. The floored reciprocal reads

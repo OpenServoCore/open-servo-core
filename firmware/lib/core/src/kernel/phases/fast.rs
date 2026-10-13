@@ -11,7 +11,7 @@ use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
 use crate::kernel::KernelTiming;
 use crate::kernel::config::KernelConfig;
-use crate::tel::tick_flag;
+use crate::regions::telemetry::tick_flag;
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, Shared};
 

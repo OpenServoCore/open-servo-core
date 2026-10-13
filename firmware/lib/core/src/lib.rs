@@ -64,8 +64,7 @@ pub use regions::{
 pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
-pub use tel::TelStream;
 pub use traits::{
     Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reply, Request,
-    RequestCtx, SendError, Sensors, Status,
+    RequestCtx, SendError, Sensors, Status, TelStream,
 };

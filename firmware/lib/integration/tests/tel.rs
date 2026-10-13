@@ -21,13 +21,14 @@ use osc_integration::sim::{
     frame_crc_ok, instruction, status, tel_sample,
 };
 use osc_protocol::tel::StreamFrame;
-use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode, STREAM_FLAG_LAST};
 use osc_servo_core::BaudRate;
 use osc_servo_core::TelemetryTick;
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_DUTY;
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::{estimates, tick};
-use osc_servo_core::tel::{Chunk, Chunks, FLAG_LAST, STREAM_HDR, tick_flag};
+use osc_servo_core::regions::telemetry::tick_flag;
+use osc_servo_core::tel::{Chunk, Chunks, STREAM_HDR};
 
 mod support;
 
@@ -131,7 +132,11 @@ fn burst_end_to_end() {
         // seq, LAST placement, and the 16/16/8 sample split all pin here:
         // the golden encodes tick data 0..40 through the same encoder.
         assert_eq!(payload, expect_payload(40, i), "frame {i} payload");
-        assert_eq!(payload[1] & FLAG_LAST != 0, i == 2, "LAST only on frame 2");
+        assert_eq!(
+            payload[1] & STREAM_FLAG_LAST != 0,
+            i == 2,
+            "LAST only on frame 2"
+        );
     }
 
     // After LAST the line frees: across a 5 ms horizon the only new traffic
@@ -368,7 +373,7 @@ fn tel_lost_ticks_mid_frame_fail_the_crc_and_leave_a_seq_hole() {
         .map(|f| status(f).1[0])
         .collect();
     assert_eq!(kept, [0, 2], "the seq hole");
-    assert_ne!(status(burst[2]).1[1] & FLAG_LAST, 0);
+    assert_ne!(status(burst[2]).1[1] & STREAM_FLAG_LAST, 0);
 
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();

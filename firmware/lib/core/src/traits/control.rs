@@ -27,6 +27,26 @@ pub trait ControlIo {
     fn parts(&mut self) -> (&mut Self::Sensors, &mut Self::Motor);
 }
 
+/// The kernel's per-fast-tick stream hook; core never names the transport.
+pub trait TelStream {
+    /// The tick block is published: the row's first chunk may be taken.
+    /// `hold_start`, asked only when a burst would start: true on the
+    /// kernel's configuration take phase and while a take is pending, when
+    /// the burst waits a tick, so no tick carries both a take and a row.
+    fn on_publish(&mut self, hold_start: impl FnOnce() -> bool);
+    /// The tick runs a SLOW or thermometer stage: the TX lane takes no step
+    /// on it. Any time before [`Self::on_tick_end`].
+    fn hold(&mut self) {}
+    /// The tick's last work, after the drive is written: the row's second
+    /// chunk, then the TX lane.
+    fn on_tick_end(&mut self) {}
+}
+
+/// Stream absent (boards without a burst producer, tests).
+impl TelStream for () {
+    fn on_publish(&mut self, _: impl FnOnce() -> bool) {}
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum MotorCmd {
     /// `drv_en` LOW. Driver powered down; outputs hi-Z. Boot/fault state.

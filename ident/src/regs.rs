@@ -176,7 +176,7 @@ pub mod telemetry {
     pub const VCAL: Reg = reg(0x023a, 2);
     pub const VMOTOR_A_TROUGH: Reg = reg(0x0248, 2);
     pub const VMOTOR_B_TROUGH: Reg = reg(0x024a, 2);
-    /// `osc_servo_core::tel::tick_flag` bits.
+    /// `osc_servo_core::regions::telemetry::tick_flag` bits.
     pub const TICK_FLAGS: Reg = reg(0x024c, 2);
     pub const SAMPLE_TICK: Reg = reg(0x0250, 4);
     pub const THETA_HAT_Q16: Reg = reg(0x0254, 4);

@@ -109,7 +109,7 @@ impl Rig {
         });
         let hold = self.hold_start;
         let row = (self.feed.remaining != 0).then(|| self.feed.row_step());
-        self.feed.on_tick(|| hold);
+        self.feed.on_publish(|| hold);
         let (next, rail) = sample(i.wrapping_add(0x80));
         self.table.with_mut(|tb| {
             tb.telemetry.tick = next;

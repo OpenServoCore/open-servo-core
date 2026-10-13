@@ -15,8 +15,7 @@ use super::phases::fast::{Command, Fast};
 use super::phases::loops::faults::FaultLatch;
 use super::phases::{self, Control, Medium};
 use crate::estimator::window;
-use crate::tel::TelStream;
-use crate::traits::{ControlIo, Motor};
+use crate::traits::{ControlIo, Motor, TelStream};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
 
 /// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
@@ -217,7 +216,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // No burst starts on the take's phase, nor while a take is pending.
         // Asked only at a start: a count read every tick costs every tick.
         self.tel
-            .on_tick(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
+            .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
         let staged = self.medium.step(
             phase,
             &meas,

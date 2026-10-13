@@ -20,13 +20,14 @@ use core::cell::SyncUnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use osc_protocol::frame::Header;
-use osc_protocol::wire::{self, CHAR_BIT_TIMES, Inst, ResultCode};
+use osc_protocol::tel::encode_stream_head;
+use osc_protocol::wire::{self, CHAR_BIT_TIMES, Inst, ResultCode, STREAM_FLAG_LAST};
 use osc_servo_core::kernel::TICK_HZ;
+use osc_servo_core::regions::telemetry::tick_flag;
 use osc_servo_core::tel::{
-    BAUD, Chunk, Chunks, FLAG_LAST, ROW_BYTES_MAX, STREAM_HDR, STREAM_PAYLOAD_MAX,
-    STREAM_SAMPLES_MAX, TelStream, encode_stream_head, tick_flag,
+    BAUD, Chunk, Chunks, ROW_BYTES_MAX, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX,
 };
-use osc_servo_core::{ControlTableCell, RegionStorageRaw};
+use osc_servo_core::{ControlTableCell, RegionStorageRaw, TelStream};
 
 use crate::bench::{self, TelStep};
 use crate::traits::bus::{CrcEngine, Providers, RxRing, TxWire};
@@ -460,7 +461,7 @@ impl<P: Providers> TelFeed<P> {
         if let Some(frame) = img.get(ID_AT..cov + CRC_LEN) {
             self.wire.stream(frame);
             self.phase = Phase::Stream;
-            if img[FLAGS_AT] & FLAG_LAST != 0 {
+            if img[FLAGS_AT] & STREAM_FLAG_LAST != 0 {
                 self.publish_last();
             }
         }
@@ -517,7 +518,7 @@ impl<P: Providers> TelStream for TelFeed<P> {
     /// The burst starts at the arm's pickup: a held start leaves the arm in
     /// the mailbox, and the lane idle, for the next tick.
     #[inline(always)]
-    fn on_tick(&mut self, hold_start: impl FnOnce() -> bool) {
+    fn on_publish(&mut self, hold_start: impl FnOnce() -> bool) {
         if !self.ch.active() {
             return;
         }

@@ -27,7 +27,8 @@ use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
-use osc_servo_core::tel::{STREAM_SAMPLES_MAX, tick_flag};
+use osc_servo_core::regions::telemetry::tick_flag;
+use osc_servo_core::tel::STREAM_SAMPLES_MAX;
 use osc_servo_core::{BaudRate, BootMode, ControlTable, TelemetryTick};
 use osc_servo_drivers::bus::LinkDiag;
 

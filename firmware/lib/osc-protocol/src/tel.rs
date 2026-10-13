@@ -144,6 +144,21 @@ impl<'a> StreamFrame<'a> {
     }
 }
 
+/// Serialize the stream head at the front of `buf`: everything row 0
+/// knows. Order-free vs the rows: it never touches bytes past
+/// [`wire::STREAM_HDR`]; a `buf` shorter than that stays untouched.
+pub fn encode_stream_head(stream_seq: u8, last: bool, tick: u16, buf: &mut [u8]) {
+    if let Some(h) = buf.first_chunk_mut::<{ wire::STREAM_HDR }>() {
+        let [t0, t1] = tick.to_le_bytes();
+        *h = [
+            stream_seq,
+            if last { wire::STREAM_FLAG_LAST } else { 0 },
+            t0,
+            t1,
+        ];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +214,28 @@ mod tests {
         assert!(StreamFrame::parse(2, &p[..4]).is_none(), "no row");
         assert!(StreamFrame::parse(2, &p[..3]).is_none(), "no head");
         assert!(StreamFrame::parse(0, &p).is_none());
+    }
+
+    #[test]
+    fn head_carries_seq_flags_and_the_stamp() {
+        let mut buf = [0xEE; wire::STREAM_HDR + 1];
+        encode_stream_head(0x42, true, 0x1234, &mut buf);
+        assert_eq!(buf, [0x42, wire::STREAM_FLAG_LAST, 0x34, 0x12, 0xEE]);
+        let mut short = [0xEE; wire::STREAM_HDR - 1];
+        encode_stream_head(1, false, 2, &mut short);
+        assert_eq!(short, [0xEE; wire::STREAM_HDR - 1]);
+    }
+
+    /// The host detects the burst end from the head the servo encodes.
+    #[test]
+    fn stream_last_reads_the_encoded_last_flag() {
+        use crate::FrameBytes;
+        use crate::wire::{Inst, ResultCode, stream_last};
+        let inst = Inst::status(ResultCode::Stream, false);
+        let mut buf = [0u8; wire::STREAM_HDR + 2];
+        encode_stream_head(0, true, 0, &mut buf);
+        assert!(stream_last(inst, FrameBytes::from(&buf[..])));
+        encode_stream_head(0, false, 0, &mut buf);
+        assert!(!stream_last(inst, FrameBytes::from(&buf[..])));
     }
 }
