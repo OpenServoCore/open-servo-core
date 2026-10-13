@@ -12,6 +12,11 @@
 //! values exclude the kernel vectors that preempted them, each with its
 //! interrupt entry and exit at [`ENTRY_EXIT`]. Interrupt entry and exit fall
 //! outside every stamp: [`ENTRY_EXIT`] carries them for the DES.
+//!
+//! A row changes only with its evidence: a raised M comes from the probe on
+//! the production image, a raised E names its new instrument, and the DES
+//! pins re-run against the new table in the same change. A red window or
+//! pin is never cleared by raising a row alone.
 
 pub mod probe;
 

@@ -1,6 +1,8 @@
 //! The DES charges the budget table (`osc_servo_core::budget`), the one the
 //! bench test `budgets` holds the chip to; at budget it predicts no fewer
 //! TEL rows lost than the bench measured.
+//! Pins run at budget; a red pin is a design finding, never a looser
+//! threshold.
 
 use osc_integration::sim::{
     HandlerCost, KERNEL_AT_BUDGET, KERNEL_FLOOR, KernelLane, KernelLevel, Motion, Sim, Source,
