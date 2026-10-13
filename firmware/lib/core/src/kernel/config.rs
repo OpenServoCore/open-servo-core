@@ -2,13 +2,16 @@
 //! consumers take. Configuration changes only on a host write, so the kernel
 //! rebuilds this in two halves on the free phases after `Shared::config_gen`
 //! has moved, and whole on its first tick; no other tick copies a table
-//! block.
+//! block. A write reaches the kernel only inside `INPUT_START..INPUT_END`.
 
 use super::{CurrentGains, KernelTiming, LimitCfg, PositionCfg, TrajCfg, VelocityGains};
 use crate::estimator::{FusionGains, NtcCfg, ThermCfg, window};
 use crate::math::q_mul_u;
+use crate::regions::calib::{CalibThermal, addr as calib_addr};
 use crate::regions::config::DecaySelect;
-use crate::regions::config::{DEFAULT_RTHERM_COLD_BAND_Q016, DEFAULT_RTHERM_SEAT_BAND_COUNTS};
+use crate::regions::config::{
+    DEFAULT_RTHERM_COLD_BAND_Q016, DEFAULT_RTHERM_SEAT_BAND_COUNTS, addr as config_addr,
+};
 use crate::traits::DecayMode;
 use crate::{RegionStorageRaw, Shared};
 
@@ -21,6 +24,11 @@ macro_rules! rd {
         unsafe { (&raw const (*$p).$($f).+).read_volatile() }
     };
 }
+
+/// The table span `load` and `load_therm` read: CONFIG from the soft limits
+/// on, CALIB up to its thermal block.
+pub const INPUT_START: u16 = config_addr::pos_limits::POS_MIN_SOFT_COUNTS;
+pub const INPUT_END: u16 = calib_addr::thermal::TH_ALPHA_Q24 + CalibThermal::CT_SIZE;
 
 /// What the per-tick path reads; the medium path reads it too.
 #[derive(Copy, Clone, Default)]
@@ -39,6 +47,8 @@ pub struct FastConfig {
     /// Smallest duty with a valid shunt window: where the OpenLoop ceiling
     /// restarts, published as `window_floor_q15`.
     pub ol_floor_q15: u16,
+    /// `v_floor_ticks` as duties, published at the OpenLoop decay.
+    pub v_floor_q15: [u16; 2],
     pub v_undervolt_counts: u16,
     pub current: CurrentGains,
 }
@@ -70,17 +80,26 @@ pub struct KernelConfig {
 }
 
 impl FastConfig {
-    /// As `MediumConfig::load`.
-    pub(super) fn load(&mut self, shared: &Shared, timing: &KernelTiming) {
+    /// The window floors. Every input is a read-only board fact
+    /// (`floor_inputs_are_read_only`), so the first tick derives them once.
+    pub(super) fn load_floors(&mut self, shared: &Shared, timing: &KernelTiming) {
         let p = shared.table.region_ptr();
         let i_window_min_ticks = rd!(p.calib.sense.i_window_min_ticks);
         self.i_window_min_ticks = i_window_min_ticks;
-        self.ol_floor_q15 =
-            window::floor_duty(i_window_min_ticks, timing.pwm_arr, timing.recip_arr_q24);
-        self.v_floor_ticks = window::v_floors(
+        let [v0, v1] = window::v_floors(
             rd!(p.calib.sense.v_window_min_ticks),
             timing.v_trough_min_ticks,
         );
+        self.v_floor_ticks = [v0, v1];
+        let [i, v0, v1] = [i_window_min_ticks, v0, v1]
+            .map(|ticks| window::floor_duty(ticks, timing.pwm_arr, timing.recip_arr_q24));
+        self.ol_floor_q15 = i;
+        self.v_floor_q15 = [v0, v1];
+    }
+
+    /// As `MediumConfig::load`.
+    pub(super) fn load(&mut self, shared: &Shared) {
+        let p = shared.table.region_ptr();
         self.oc_trip_counts = rd!(p.config.limits.oc_trip_counts);
         self.oc_trip_ticks = rd!(p.config.limits.oc_trip_ticks);
         self.drive_polarity = rd!(p.config.limits.drive_polarity);
@@ -105,7 +124,8 @@ impl FastConfig {
 impl MediumConfig {
     /// Field by field into place, each read where it is stored: a block
     /// copy holds the whole half live across the build.
-    pub(super) fn load(&mut self, shared: &Shared, timing: &KernelTiming) {
+    /// `ke_vpc_q` is the fast half's read.
+    pub(super) fn load(&mut self, shared: &Shared, timing: &KernelTiming, ke_vpc_q: u16) {
         let p = shared.table.region_ptr();
         let ms_to_ticks = |ms: u16| q_mul_u(ms as u32, timing.ticks_per_ms_q16, 16);
         let fric_fc_counts = rd!(p.calib.motor.fric_fc_counts);
@@ -126,7 +146,7 @@ impl MediumConfig {
         };
         self.r_q12 = rd!(p.calib.motor.r_q12);
         self.recip_ke_q = rd!(p.calib.motor.recip_ke_q);
-        self.ke_unset = self.recip_ke_q == 0 || rd!(p.calib.motor.ke_vpc_q) == 0;
+        self.ke_unset = self.recip_ke_q == 0 || ke_vpc_q == 0;
         let vel_limit_cps = rd!(p.config.loop_position.velocity_limit_cps);
         let pos_min_soft_counts = rd!(p.config.pos_limits.pos_min_soft_counts);
         let pos_max_soft_counts = rd!(p.config.pos_limits.pos_max_soft_counts);

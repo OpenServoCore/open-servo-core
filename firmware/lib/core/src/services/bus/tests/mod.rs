@@ -961,7 +961,7 @@ fn assign_matching_uid_sets_id_before_ack() {
     // also marks modified-since-save (sec 9.4).
     assert_eq!(shared.table.with(|t| t.config.common.id), 42);
     assert_eq!(dirty(&shared), 1);
-    assert_eq!(shared.config_gen(), 1, "a CONFIG write");
+    assert_eq!(shared.config_gen(), 0, "the kernel reads no id");
 }
 
 #[test]
@@ -1583,6 +1583,7 @@ pub(crate) fn write_committed(shared: &Shared, addr: u16, data: &[u8]) {
 #[test]
 fn config_and_calib_writes_move_the_config_generation() {
     use crate::regions::calib::addr::motor::R_Q12;
+    use crate::regions::calib::addr::thermal::NTC_K2_Q24;
     use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
     use crate::regions::control::addr::lifecycle::GOAL_DUTY;
     let shared = Shared::new();
@@ -1603,4 +1604,35 @@ fn config_and_calib_writes_move_the_config_generation() {
     assert_eq!(shared.config_gen(), 2, "staged, not committed");
     go(Request::Commit);
     assert_eq!(shared.config_gen(), 3);
+    go(write(NTC_K2_Q24, &[0, 1], false));
+    assert_eq!(shared.config_gen(), 4, "the last kernel input");
+}
+
+#[test]
+fn a_common_block_write_leaves_the_kernel_configuration_alone() {
+    use crate::regions::config::addr::common::{BAUD_RATE_IDX, ID, RESPONSE_DEADLINE_US};
+    use crate::regions::config::addr::pos_limits::POS_MAX_PHYS_COUNTS;
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let mut go = |req| pass(&shared, &mut staged, &mut pending, &mut reply, req);
+
+    go(write(ID, &[7], false));
+    go(write(BAUD_RATE_IDX, &[1], false));
+    go(write(RESPONSE_DEADLINE_US, &[100, 0], false));
+    go(write(POS_MAX_PHYS_COUNTS, &[100, 0, 0, 0], false));
+    go(Request::Assign {
+        uid: UID,
+        new_id: 42,
+    });
+    shared.table.with(|t| {
+        let c = &t.config;
+        assert_eq!(
+            (c.common.baud_rate_idx, c.common.response_deadline_us),
+            (1, 100)
+        );
+        assert_eq!((c.common.id, c.pos_limits.pos_max_phys_counts), (42, 100));
+    });
+    assert_eq!(shared.config_gen(), 0);
 }

@@ -27,9 +27,10 @@ pub struct Shared {
     /// kernel renews its lease when it moves (`permit_after_commit`).
     /// Dispatch is the sole writer.
     permit_gen: AtomicU8,
-    /// Bumped by dispatch on every committed write into CONFIG or CALIB (and
-    /// ASSIGN's id); the kernel rebuilds its configuration from the table
-    /// when it moves. Dispatch is the sole writer.
+    /// Bumped by dispatch on every committed write reaching the kernel's
+    /// inputs (`kernel::INPUT_START..INPUT_END`); the kernel rebuilds its
+    /// configuration from the table when it moves. Dispatch is the sole
+    /// writer.
     config_gen: AtomicU8,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
     /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
@@ -113,7 +114,7 @@ impl Shared {
         self.permit_gen.load(Ordering::Relaxed)
     }
 
-    /// Bus dispatch: CONFIG or CALIB changed under the kernel.
+    /// Bus dispatch: a kernel input changed under the kernel.
     pub fn config_touch(&self) {
         // The kernel preempts dispatch: the committed stores land before the
         // generation it snapshots them under (`Kernel::refresh_fast` holds the

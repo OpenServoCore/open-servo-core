@@ -30,6 +30,7 @@ pub mod position;
 pub mod trajectory;
 pub mod velocity;
 
+pub use config::{INPUT_END, INPUT_START};
 pub use current::{CurrentGains, CurrentLoop};
 pub use limits::{IBand, LimitCfg, LimitState};
 pub use medium::phase;
@@ -175,53 +176,64 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
-    /// The first refresh stage: `cfg.fast` and the rail clamp the fast
-    /// half derives from it, so the drive of this tick runs on the pair;
-    /// then the thermometer's config and its bound. The generation is read
-    /// before the copy: a write landing during either stage leaves the
-    /// counter ahead of `config_gen`, so the next THERM_INSTALL rebuilds
-    /// again.
+    /// The first refresh stage: `cfg.fast`, then the thermometer's config
+    /// and its bound. The rail clamp follows `duty_max_q15` at the next RAIL
+    /// phase. The generation is read before the copy: a write landing
+    /// during either stage leaves the counter ahead of `config_gen`, so the
+    /// next THERM_INSTALL rebuilds again.
     #[inline(never)]
     fn refresh_fast(&mut self, shared: &Shared) {
         self.config_gen = shared.config_gen();
         // the generation load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
-        self.cfg.fast.load(shared, &self.timing);
-        self.cmd.prepare_rail(&self.cfg.fast);
+        self.cfg.fast.load(shared);
         self.cfg.medium.load_therm(shared);
         self.medium.thermal.bound(&self.cfg.medium.therm);
         self.refresh_staged = true;
     }
 
-    /// The second stage: the rest of `cfg.medium`, and the floors published
-    /// from `cfg.fast`. No medium phase and no thermometer stage runs between
-    /// the stages, so the next CONTROL phase is the first to read
-    /// `cfg.medium`, and it reads both stages of one refresh unless a write
-    /// landed between them.
+    /// The second stage: the rest of `cfg.medium`, and the terminal floor
+    /// published at the OpenLoop decay. No medium phase and no thermometer
+    /// stage runs between the stages, so the next CONTROL phase is the first
+    /// to read `cfg.medium`, and it reads both stages of one refresh unless
+    /// a write landed between them.
     #[inline(never)]
     fn refresh_medium(&mut self, shared: &Shared) {
-        self.cfg.medium.load(shared, &self.timing);
-        self.refresh_staged = false;
         let fc = &self.cfg.fast;
-        let v_floor = window::floor_duty(
-            fc.v_floor_ticks[fc.ol_decay as usize],
-            self.timing.pwm_arr,
-            self.timing.recip_arr_q24,
-        );
+        self.cfg
+            .medium
+            .load(shared, &self.timing, fc.current.ke_q412);
+        self.refresh_staged = false;
+        let v_floor = fc.v_floor_q15[fc.ol_decay as usize];
         let p = shared.table.region_ptr();
-        // SAFETY: sole-telemetry-writer contract (type doc); volatile stores.
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
         unsafe {
-            (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(fc.ol_floor_q15);
             (&raw mut (*p).telemetry_ext.limits_ext.window_v_floor_q15).write_volatile(v_floor);
         }
+    }
+
+    /// The first tick's configuration: the window floors, both refresh
+    /// stages and the rail clamp. Out of line, so the tick body keeps its
+    /// shape.
+    #[inline(never)]
+    fn configure(&mut self, shared: &Shared) {
+        self.cfg.fast.load_floors(shared, &self.timing);
+        let p = shared.table.region_ptr();
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
+        unsafe {
+            (&raw mut (*p).telemetry.limits.window_floor_q15)
+                .write_volatile(self.cfg.fast.ol_floor_q15);
+        }
+        self.refresh_fast(shared);
+        self.refresh_medium(shared);
+        self.cmd.prepare_rail(&self.cfg.fast);
     }
 
     /// First tick: the configuration, then the observer and the bias
     /// tracker seeded at the boot measurement.
     fn boot(&mut self, shared: &Shared) {
         let frame = shared.frame();
-        self.refresh_fast(shared);
-        self.refresh_medium(shared);
+        self.configure(shared);
         let ctl = Control::read(shared);
         self.medium.seed(
             medium::pos_q4(shared, ctl.lut_live, frame.pos()),

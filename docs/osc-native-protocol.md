@@ -1044,10 +1044,9 @@ a Q15 duty magnitude) is the smallest duty whose drive window the shunt
 reads: CALIB `i_window_min_ticks` turned into a duty against the board's
 PWM period, 1734 (5.3%) for 64 ticks of 1200 on osc-dev-v006. It is
 the value the OpenLoop limiter uses, where its ceiling restarts and its
-blind band (below) begins, published at the kernel's first tick and
-again whenever a CONFIG or CALIB write reaches the kernel, torque on or
-off, so a rewrite of `i_window_min_ticks` shows within two medium ticks
-(1 ms).
+blind band (below) begins, published once, at the kernel's first tick,
+torque on or off: `i_window_min_ticks` is read-only, so the floor never
+changes after boot (unit `floor_inputs_are_read_only`).
 0 means the servo publishes no floor: the kernel has not ticked yet, or
 the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a
@@ -1061,8 +1060,9 @@ the low-side tap, sampled 37 ticks before the crest, has finished its
 rise, in either direction. Under Fast decay the window sits at the
 trough, where the low-side tap closes 135 ticks in, and the board raises the floor to 160 ticks (4356, 13.3%); the
 register follows the OpenLoop decay (DES
-`window_v_floor_follows_the_openloop_decay`). It is published with
-`window_floor_q15`, at the same moments. A window between the two floors
+`window_v_floor_follows_the_openloop_decay`). It is published at the
+kernel's first tick and again within two medium ticks (1 ms) of a
+CONFIG write that reaches the kernel. A window between the two floors
 reads current but no `va - vb`, so the tick block's `vdiff_counts` holds the last
 differential read there. Which
 floor a host plans against follows what its fit reads: a drive judged

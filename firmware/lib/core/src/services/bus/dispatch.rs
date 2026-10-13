@@ -5,12 +5,13 @@ use osc_protocol::frame::uid_prefix_matches;
 use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 
+use crate::kernel;
 use crate::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN, StoreError};
 use crate::regions::burst::state as burst_state;
 use crate::regions::hooks::ControlTableHooks;
 use crate::regions::{
-    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, CONTROL_BASE_ADDR,
-    PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
+    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
+    PROFILE_REGION_SIZE,
 };
 use crate::tel::{Chunk, Chunks};
 use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
@@ -227,9 +228,8 @@ impl Dispatcher<'_> {
     /// write.
     fn after_commit(&self, addr: u16, len: u16) {
         self.mark_dirty_if_persistent(addr, len);
-        // CONFIG and CALIB sit below CONTROL, so a span starting there
-        // reaches one of them
-        if addr < CONTROL_BASE_ADDR {
+        // only a span overlapping the kernel's inputs moves the generation
+        if addr < kernel::INPUT_END && addr + len > kernel::INPUT_START {
             self.shared.config_touch();
         }
         self.shared.pos_lut_after_commit(addr, len);
@@ -514,7 +514,6 @@ impl Dispatcher<'_> {
             t.config.common.id = new_id;
             t.telemetry.common.status_flags |= STATUS_FLAG_CONFIG_DIRTY;
         });
-        self.shared.config_touch();
         reply.set_id(new_id);
         Self::ack(alert, ctx, Ok(()), reply);
     }

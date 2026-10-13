@@ -728,7 +728,7 @@ fn openloop_duty_passthrough_clamped_with_decay() {
 }
 
 #[test]
-fn duty_max_write_caps_the_closed_loop_at_the_refresh_tick() {
+fn duty_max_write_caps_the_closed_loop_at_the_rail_phase() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
@@ -742,10 +742,13 @@ fn duty_max_write_caps_the_closed_loop_at_the_refresh_tick() {
         k.on_scan(frame(2000, BIAS), &sh);
     }
     assert!(written_duty(&k) > 32000, "duty={}", written_duty(&k));
-    // the clamp is prepared at the rail commit, so the refresh re-prepares
-    // it: the cap lands with the configuration, not at the next RAIL phase
+    // the refresh leaves the clamp alone; the next RAIL phase prepares it
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
-    while k.phase != phase::THERM_INSTALL {
+    run_to(&mut k, &sh, frame(2000, BIAS), phase::THERM_INSTALL);
+    k.on_scan(frame(2000, BIAS), &sh);
+    assert_eq!(k.cfg.fast.current.duty_max_q15, 8000, "the refresh ran");
+    assert!(written_duty(&k) > 32000, "the refresh tick");
+    while k.phase != phase::RAIL {
         k.on_scan(frame(2000, BIAS), &sh);
         assert!(written_duty(&k) > 32000);
     }
@@ -2514,6 +2517,52 @@ fn first_tick_takes_the_configuration_without_a_write() {
         sh.table.with(|t| t.telemetry.limits.window_floor_q15),
         k.cfg.fast.ol_floor_q15
     );
+}
+
+#[test]
+fn floor_inputs_are_read_only() {
+    use crate::regions::calib::CalibRegs;
+    use crate::regions::calib::addr::sense::{I_WINDOW_MIN_TICKS, V_WINDOW_MIN_TICKS};
+    for input in [I_WINDOW_MIN_TICKS, V_WINDOW_MIN_TICKS] {
+        assert!(
+            CalibRegs::CT_WRITABLE_ABS
+                .iter()
+                .all(|&(a, n)| input + 2 <= a || a + n <= input),
+            "{input:#x} is writable"
+        );
+    }
+}
+
+#[test]
+fn refresh_keeps_the_floors_of_the_first_tick() {
+    let f = frame(2000, BIAS);
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    k.on_scan(f, &sh);
+    let floors = |k: &Kernel<FakeIo>| {
+        let fc = &k.cfg.fast;
+        (fc.ol_floor_q15, fc.v_floor_ticks, fc.v_floor_q15)
+    };
+    let published = || {
+        sh.table.with(|t| {
+            (
+                t.telemetry.limits.window_floor_q15,
+                t.telemetry_ext.limits_ext.window_v_floor_q15,
+            )
+        })
+    };
+    let booted = (floors(&k), published());
+    write_config(&sh, |t| {
+        t.calib.sense.i_window_min_ticks = 240;
+        t.calib.sense.v_window_min_ticks = 240;
+        t.config.loop_current.duty_max_q15 = 5000;
+    });
+    for _ in 0..2 * DECIM_MED {
+        k.on_scan(f, &sh);
+    }
+    assert_eq!(ol_max(&k), 5000, "the refresh ran");
+    assert_eq!((floors(&k), published()), booted);
 }
 
 #[test]
