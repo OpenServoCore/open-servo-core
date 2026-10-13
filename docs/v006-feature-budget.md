@@ -181,7 +181,7 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 
 ## Method
 
-- Build: in `firmware/boards/osc-dev-v006`, `CARGO_TARGET_DIR=<worktree>/target-v006 cargo build --release -p osc-dev-v006-app`, plus a second target directory with `--features bench` for the flag diff.
+- Build: `scripts/build-image.sh --bench <rev> osc-dev-v006`, which builds the release app and the `--features bench` app from one fixed path (the README's Firmware section says why the path matters).
 - Sections: `llvm-size -A`. Symbols: `llvm-nm -S --size-sort -C`.
 - Flash per module: a pyelftools script walks every CU's line program, drops sequences garbage-collected to address 0, and assigns each 2-byte slot to its innermost project file. If that file is core/std, compiler-builtins or the `math`/`bytes` helpers, the slot goes to the deepest `DW_TAG_inlined_subroutine` call site (or subprogram) that is project code. 52,000 of the 52,440 B of code carry line info.
 - RAM: `llvm-nm` addresses for the statics and the DWARF struct layout for their members (`Shared`, `Kernel<..>`, `ServoBus<..>`, `Session`, `TelChannel`, `Cells`).
