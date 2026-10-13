@@ -151,7 +151,12 @@ impl TelChannel {
                 crc_due: false,
                 landed: false,
             },
-            TelPost { ch: self, table },
+            TelPost {
+                ch: self,
+                table,
+                count: 0,
+                epoch: 0,
+            },
         )
     }
 

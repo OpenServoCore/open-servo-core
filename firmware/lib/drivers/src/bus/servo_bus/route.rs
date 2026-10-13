@@ -364,7 +364,7 @@ impl<P: Providers> ServoBus<P> {
             pending_reboot: &mut self.pending_reboot,
             pending_cal: &mut self.clock.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
-            burst: &mut self.burst,
+            tel: &mut self.tel,
             rate: self.rate,
             staged: false,
             tolerant,
