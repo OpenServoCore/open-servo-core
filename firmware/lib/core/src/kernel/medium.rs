@@ -178,7 +178,8 @@ impl Medium {
         self.thermal.ntc(ntc_raw, &cfg.medium.therm);
     }
 
-    /// Phase `k` of the medium chain (`phase`), on this tick's sample.
+    /// Phase `k` of the medium chain (`phase`), on this tick's sample;
+    /// whether a SLOW stage ran.
     #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
@@ -190,7 +191,7 @@ impl Medium {
         faults: &mut FaultLatch,
         fast: &mut Fast,
         cmd: &mut Command,
-    ) {
+    ) -> bool {
         match k {
             phase::CONTROL => self.control(frame.pos, cfg, shared, faults, fast, cmd),
             phase::OBSERVER => self.observe(frame.pos, cfg, shared, fast),
@@ -198,10 +199,11 @@ impl Medium {
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
             phase::RAIL => self.rail(frame, cfg, faults, cmd),
-            phase::SLOW => self.slow(m, cfg, faults),
+            phase::SLOW => return self.slow(m, cfg, faults),
             phase::PUBLISH => self.publish(frame, shared, faults, fast),
             _ => {}
         }
+        false
     }
 
     /// CONTROL: the read, the edges, and the drive kind they imply.
@@ -528,19 +530,21 @@ impl Medium {
     /// neither sets the period's longest tick: on the due tick the permit
     /// lease, undervoltage and the thermometer's step on this tick's
     /// window; on the next period's SLOW phase its temperature and
-    /// overtemperature.
-    fn slow(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
+    /// overtemperature. Whether a stage ran.
+    fn slow(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) -> bool {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
             if self.slow_periods == 1 {
                 self.slow_finish(cfg, faults);
+                return true;
             } else if self.slow_periods == DECIM_SLOW - 1 {
                 self.thermal.request(thermal::stage::NTC);
             }
-            return;
+            return false;
         }
         self.slow_periods = 0;
         self.slow_due(m, cfg, faults);
+        true
     }
 
     fn slow_due(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {

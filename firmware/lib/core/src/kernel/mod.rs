@@ -297,7 +297,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             &mut self.tel,
             shared,
         );
-        self.medium.step(
+        let staged = self.medium.step(
             phase,
             &frame,
             &meas,
@@ -307,8 +307,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             &mut self.fast,
             &mut self.cmd,
         );
-        // the count wrapped (the due stage) or is one past (the finish)
-        if phase == medium::phase::SLOW && self.medium.slow_periods <= 1 {
+        if staged {
             self.tel.hold();
         }
         let out = self
