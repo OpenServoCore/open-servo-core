@@ -590,6 +590,7 @@ impl WindingTherm {
     }
 
     #[inline(never)]
+    #[rustc_align(4)]
     fn install_reference(&mut self) {
         let r_ref = recip_div(
             self.sum_v.unsigned_abs() << 12,

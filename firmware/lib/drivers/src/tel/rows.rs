@@ -92,6 +92,7 @@ impl<P: Providers> TelLane<P> {
     /// line: once a frame, and the rows between keep their registers.
     #[cold]
     #[inline(never)]
+    #[rustc_align(4)]
     fn head(&mut self) -> bool {
         if self.seq.wrapping_sub(self.done) as i8 >= 2 {
             // Never block the tick.
@@ -136,6 +137,7 @@ impl<P: Providers> TelLane<P> {
     /// DMA's. Out of line: the row's whole cost is its own, one call from
     /// the kernel.
     #[inline(never)]
+    #[rustc_align(4)]
     pub(super) fn row(&mut self) {
         if self.n == 0 && !self.head() {
             return;
