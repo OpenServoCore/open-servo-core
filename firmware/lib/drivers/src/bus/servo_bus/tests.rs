@@ -1403,7 +1403,7 @@ fn lagged_break_wakes_resolve_every_frame() {
 // --- TEL burst ------------------------------------------------------------
 
 use crate::mocks::bus::{FakeCrc, TestProviders};
-use crate::tel::{TelChannel, TelFeed};
+use crate::tel::{TelChannel, TelLane};
 use osc_protocol::crc::osc_crc;
 use osc_protocol::wire::STREAM_FLAG_LAST;
 use osc_servo_core::ControlTableCell;
@@ -1412,7 +1412,7 @@ use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::tick::POS;
 use osc_servo_core::tel::{Chunk, Chunks};
 
-type Feed = TelFeed<TestProviders>;
+type Lane = TelLane<TestProviders>;
 
 /// TEL streams at this rate only.
 const TEL_RATE: BaudRate = BaudRate::B3000000;
@@ -1429,17 +1429,17 @@ fn tel_split(
     h: &Harness,
     bus: &mut crate::bus::ServoBus<TestProviders>,
     table: &'static ControlTableCell,
-) -> Feed {
+) -> Lane {
     let ch: &'static TelChannel = std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()));
-    let (feed, drain) = ch.split::<TestProviders>(
+    let (lane, post) = ch.split::<TestProviders>(
         h.wire.clone(),
         FakeCrc::new(),
         h.ring.clone(),
         h.deadline.clone(),
         table,
     );
-    bus.attach_tel(drain);
-    feed
+    bus.attach_tel(post);
+    lane
 }
 
 /// One register write over the wire at `anchor`, its ack drained; returns
@@ -1481,7 +1481,7 @@ fn tel_count(shared: &Shared) -> u16 {
 
 /// The kernel's tick: the tick block's `pos`, the row, then the tail; a
 /// break on the wire ends before the next tick.
-fn tick(feed: &mut Feed, h: &Harness, shared: &Shared, pos: u16) {
+fn tick(lane: &mut Lane, h: &Harness, shared: &Shared, pos: u16) {
     if h.wire.breaking() {
         h.wire.finish();
     }
@@ -1489,15 +1489,15 @@ fn tick(feed: &mut Feed, h: &Harness, shared: &Shared, pos: u16) {
         t.telemetry.tick.pos = pos;
         t.telemetry.tick.sample_tick = 0x0100 + (pos as u32 & 0xFF);
     });
-    feed.on_publish(|| false);
-    feed.on_tick_end();
+    lane.on_publish(|| false);
+    lane.on_tick_end();
 }
 
 /// Tick the burst through, each image read whole once its wire time has
 /// passed (bytes x 10 bit-times at 3M, in 50 us ticks); the images the
 /// wire carried.
 fn stream_all(
-    feed: &mut Feed,
+    lane: &mut Lane,
     h: &Harness,
     shared: &Shared,
     ticks: u16,
@@ -1506,7 +1506,7 @@ fn stream_all(
     let from = h.wire.streamed().len();
     let mut left: Option<usize> = None;
     for i in 0..ticks {
-        tick(feed, h, shared, 0x2000 + i);
+        tick(lane, h, shared, 0x2000 + i);
         if left.is_none() {
             left = h.wire.streaming().map(|len| len.div_ceil(BYTES_PER_TICK));
         }
@@ -1518,7 +1518,7 @@ fn stream_all(
                 *l -= 1;
             }
         }
-        if feed.idle() {
+        if lane.idle() {
             break;
         }
     }
@@ -1566,7 +1566,7 @@ fn tel_lane_passes_at_the_ack_release() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let mut feed = tel_split(&h, &mut bus, &shared.table);
+    let mut lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1580,12 +1580,12 @@ fn tel_lane_passes_at_the_ack_release() {
         bus.tx.streaming() && !bus.tx.lent(),
         "the ack holds the wire"
     );
-    assert!(!feed.active(), "the lane waits for the ack");
+    assert!(!lane.active(), "the lane waits for the ack");
     drain_tx(&mut bus, &h);
-    assert!(feed.active() && bus.tx.lent(), "the ack's release lends");
+    assert!(lane.active() && bus.tx.lent(), "the ack's release lends");
     assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
 
-    let frames = stream_all(&mut feed, &h, shared, 64);
+    let frames = stream_all(&mut lane, &h, shared, 64);
     assert_eq!(frames.len(), 2, "16 rows, then the 4-row LAST frame");
     let f1 = &frames[0];
     assert_eq!(f1[..3], [ID, wire::len_for(4 + 16 * 2), 0xA4]);
@@ -1609,7 +1609,7 @@ fn tel_count_reads_zero_after_last() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let mut feed = tel_split(&h, &mut bus, &shared.table);
+    let mut lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1625,7 +1625,7 @@ fn tel_count_reads_zero_after_last() {
     );
     assert!(bus.tx.lent());
     for i in 0..4 {
-        tick(&mut feed, &h, shared, i);
+        tick(&mut lane, &h, shared, i);
     }
     let replies = h.wire.log().len();
 
@@ -1635,7 +1635,7 @@ fn tel_count_reads_zero_after_last() {
     h.deadline.set_now(40_000);
     bus.on_break(&mut d);
     assert_eq!(h.deadline.armed(), None, "nothing scheduled for it");
-    let frames = stream_all(&mut feed, &h, shared, 64);
+    let frames = stream_all(&mut lane, &h, shared, 64);
     assert_eq!(frames.len(), 2, "the burst runs on");
     assert!(
         !h.wire.log()[replies..].contains(&WireEvent::Start),
@@ -1662,7 +1662,7 @@ fn tel_count_reads_zero_after_last() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(payload, [0, 0], "tel_count reads 0 once the burst is over");
     assert!(
-        !feed.active() && !bus.tx.lent(),
+        !lane.active() && !bus.tx.lent(),
         "the lane is the bus's again"
     );
 }
@@ -1673,7 +1673,7 @@ fn tel_arm_with_no_ack_lends_at_the_arm() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let mut feed = tel_split(&h, &mut bus, &shared.table);
+    let mut lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1687,8 +1687,8 @@ fn tel_arm_with_no_ack_lends_at_the_arm() {
         100,
         20_000,
     );
-    assert!(feed.active() && bus.tx.lent());
-    let frames = stream_all(&mut feed, &h, shared, 32);
+    assert!(lane.active() && bus.tx.lent());
+    let frames = stream_all(&mut lane, &h, shared, 32);
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0][3..5], [0, STREAM_FLAG_LAST]);
     assert_frame_crc(&frames[0]);
@@ -1701,7 +1701,7 @@ fn tel_count_reads_zero_after_a_dropped_lend() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let feed = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1719,7 +1719,7 @@ fn tel_count_reads_zero_after_a_dropped_lend() {
     if h.deadline.armed().is_some() {
         fire(&mut bus, &h, &mut d);
     }
-    assert!(!bus.tx.busy() && !feed.active(), "no lane without its ack");
+    assert!(!bus.tx.busy() && !lane.active(), "no lane without its ack");
     assert_eq!(tel_count(shared), 0);
 }
 
@@ -1730,7 +1730,7 @@ fn tel_count_reads_zero_after_an_arm_below_three_megabaud() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = tel_shared();
-    let feed = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1745,7 +1745,7 @@ fn tel_count_reads_zero_after_an_arm_below_three_megabaud() {
         1000,
     );
     assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
-    assert!(!feed.active(), "below 3M an arm never lends");
+    assert!(!lane.active(), "below 3M an arm never lends");
     assert_eq!(tel_count(shared), 0);
 }
 
@@ -1756,7 +1756,7 @@ fn tel_count_reads_zero_after_an_arm_that_is_no_row() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let feed = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1772,7 +1772,7 @@ fn tel_count_reads_zero_after_an_arm_that_is_no_row() {
         1000,
     );
     assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
-    assert!(!feed.active(), "a row over 12 B never lends");
+    assert!(!lane.active(), "a row over 12 B never lends");
     assert_eq!(tel_count(shared), 0);
 
     let at = write_at(
@@ -1785,7 +1785,7 @@ fn tel_count_reads_zero_after_an_arm_that_is_no_row() {
         at,
         40_000,
     );
-    assert!(!feed.active(), "count 0 never lends");
+    assert!(!lane.active(), "count 0 never lends");
     write_at(
         &mut bus,
         &h,
@@ -1796,7 +1796,7 @@ fn tel_count_reads_zero_after_an_arm_that_is_no_row() {
         at,
         80_000,
     );
-    assert!(feed.active());
+    assert!(lane.active());
 }
 
 /// The chunks carry no table rules, so the 10 B arm block validates as
@@ -1807,7 +1807,7 @@ fn tel_count_reads_zero_after_an_arm_with_an_odd_chunk() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let feed = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1823,7 +1823,7 @@ fn tel_count_reads_zero_after_an_arm_with_an_odd_chunk() {
         1000,
     );
     assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
-    assert!(!feed.active(), "an odd chunk never lends");
+    assert!(!lane.active(), "an odd chunk never lends");
     assert_eq!(tel_count(shared), 0);
 }
 
@@ -1835,12 +1835,12 @@ fn tel_count_over_the_cap_rejects() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = tel_shared();
-    let feed = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
     let arm = arm_bytes(POS_ROW, BURST_ROWS_MAX + 1);
     write_at(&mut bus, &h, &mut d, 0, CHUNK0_ADDR, &arm, 100, 1000);
     assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Validation));
-    assert!(!feed.active());
+    assert!(!lane.active());
 }
