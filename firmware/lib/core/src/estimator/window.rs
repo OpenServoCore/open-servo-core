@@ -152,7 +152,8 @@ pub fn drive_ticks(duty: i16, pwm_arr: u16) -> u32 {
 /// `select` accepts against the `min_ticks` floor; full duty when none does.
 /// `recip_arr_q24` per `bemf::RECIP_ARR_SHIFT`. The floored reciprocal reads
 /// the quotient low by under two while `min_ticks <= 512`; the remainder
-/// closes the gap, so no divide.
+/// closes the gap, so no divide. Boot only: out of line, one copy.
+#[inline(never)]
 pub fn floor_duty(min_ticks: u16, pwm_arr: u16, recip_arr_q24: u32) -> u16 {
     // drive_ticks(d) >= t  <=>  d * arr >= (t << 15) - (1 << 14)
     let need = ((min_ticks.max(1) as u32) << 15) - (1 << 14);

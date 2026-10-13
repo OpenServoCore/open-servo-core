@@ -79,14 +79,16 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// configuration write, on top of [`KERNEL`], each at most once per period
 /// and in place of the thermometer's stage on that tick: the fast half, the
 /// thermometer's config and its bound at phase THERM_INSTALL; the rest of
-/// the medium half and the floors at THERM_SIDE. REFRESH_1, E: the stage
-/// tick over the same tick without the write, 486, priced on the release
-/// image (fetch model on the emulated trace, quiet and stepping alike),
-/// plus 10%; its M from one tick per run, 525, does not lower it.
-/// REFRESH_2, M, above its E 462: the stage tick over the window's plain
-/// maximum at the phase, one tick per run in each 1M window.
-pub const REFRESH_1: u32 = 535;
-pub const REFRESH_2: u32 = 474;
+/// the medium half and the terminal floor's store at THERM_SIDE. Both E,
+/// plus 10%: the previous stage E (486 and 462, the stage tick over the
+/// same tick without the write, fetch model on the release image) less the
+/// fetch model's price of the code the floors, the rail clamp and the
+/// second Ke read took out of each stage body (load/store 3.25, ALU 2, mul
+/// 10, call and return 12, jump 6 HCLK, on the release disassembly): 140
+/// at THERM_INSTALL, 93 at THERM_SIDE, so 346 and 369. The previous M (525
+/// and 474) measured the larger bodies.
+pub const REFRESH_1: u32 = 381;
+pub const REFRESH_2: u32 = 406;
 
 /// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
 /// predate it, by regime and phase: the scan landed by the ADC DMA (the

@@ -65,8 +65,8 @@ pub struct Command {
 impl Command {
     /// The clamp on the undervolt-floored vbus: the same floor `VbusEst`
     /// applies to the reciprocal, so (clamp, recip) stay the contract pair
-    /// even before the first seed. Runs at the rail commit and at every
-    /// configuration refresh.
+    /// even before the first seed. Runs at the first tick and at every RAIL
+    /// phase, which is where a `duty_max_q15` write reaches it.
     pub fn prepare_rail(&mut self, fc: &FastConfig) {
         let vbus_eff = self.vbus_counts.max(fc.v_undervolt_counts);
         self.rail = RailClamp::new(fc.current.duty_max_q15, vbus_eff);
