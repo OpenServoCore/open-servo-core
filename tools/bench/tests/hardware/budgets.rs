@@ -87,8 +87,10 @@ const SEAT_PUSH: i32 = 40;
 const SEAT_MOVE_MAX: i32 = 10;
 /// What an unstamped TEL tick may carry beyond a stamped one's steps: the
 /// flag, epoch and stamping tests around them, which no stamp covers, and
-/// any cycles the TEL DMA takes from the rest of the tick.
-const TEL_CHECK_SLACK: f32 = 30.0;
+/// any cycles the TEL DMA takes from the rest of the tick. M: 28.7-30.6 in
+/// tel still and tel stepping, two runs each (main 459b9ebb, telcost image),
+/// plus 10%.
+const TEL_CHECK_SLACK: f32 = 34.0;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Gate {
