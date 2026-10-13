@@ -148,10 +148,13 @@ pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, health: bool)
         k.tick(entry, body, b.phase as usize, r, ev, !b.booted);
         #[cfg(feature = "bench-telcost")]
         {
-            let first = osc_servo_drivers::bench::tel_pickups() != before.pickups;
+            use osc_servo_drivers::bench as tel;
+            let first = tel::tel_pickups() != before.pickups;
+            let steps = tel::tel_tick_steps();
+            let steps = tel::tel_stamping().then_some(steps);
             // SAFETY: as KERNEL_PROBE.
             let t = unsafe { &mut *core::ptr::addr_of_mut!(TEL_TALLY) };
-            t.tick(body, b.phase as usize, r, ev, first, !b.booted);
+            t.tick(body, b.phase as usize, r, ev, first, steps, !b.booted);
         }
         // The update itself runs inside any bus body this tick preempted.
         k.ended(exit, systick::ticks());

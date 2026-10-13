@@ -43,7 +43,7 @@ impl TrimProbe {
     };
 }
 
-#[cfg(feature = "bench")]
+#[cfg(all(feature = "bench", not(feature = "bench-telcost")))]
 #[unsafe(no_mangle)]
 pub static mut TRIM_PROBE: TrimProbe = TrimProbe::ZERO;
 
@@ -53,7 +53,7 @@ pub static mut TRIM_PROBE: TrimProbe = TrimProbe::ZERO;
 pub fn trim_probe(f: impl FnOnce(&mut TrimProbe)) {
     // SAFETY: single-hart; every writer runs at the one transport priority
     // (the bus level), so accesses never interleave. The debug link only reads.
-    #[cfg(feature = "bench")]
+    #[cfg(all(feature = "bench", not(feature = "bench-telcost")))]
     unsafe {
         f(&mut *core::ptr::addr_of_mut!(TRIM_PROBE));
     }
@@ -102,19 +102,6 @@ pub fn tel_stamp(clock: &impl Deadline) -> u32 {
     0
 }
 
-/// The step `f` names, judged before the step changes what it reads;
-/// `f` runs only under `bench-telcost`.
-#[inline(always)]
-#[allow(unused_variables)]
-pub fn tel_ahead(f: impl FnOnce() -> TelStep) -> TelStep {
-    #[cfg(feature = "bench-telcost")]
-    {
-        f()
-    }
-    #[cfg(not(feature = "bench-telcost"))]
-    TelStep::Row
-}
-
 /// Step `s`, stamped at `from`, ends now.
 #[inline(always)]
 #[allow(unused_variables)]
@@ -127,27 +114,17 @@ pub fn tel_step(clock: &impl Deadline, from: u32, s: TelStep) {
     }
 }
 
-/// Price the stamps before any step: a back-to-back pair, then a whole
-/// stamped step around nothing. Call once, before interrupts run.
+/// Price a back-to-back stamp pair. Call once, before interrupts run.
 #[inline(always)]
 #[allow(unused_variables)]
 pub fn tel_calibrate(clock: &impl Deadline) {
     // SAFETY: pre-IRQ bringup, ahead of the record's only other writer.
     #[cfg(feature = "bench-telcost")]
     unsafe {
-        let c = &mut *core::ptr::addr_of_mut!(TEL_COST);
         let a = clock.now();
         let b = clock.now();
-        c.cal = b.wrapping_sub(a).min(u16::MAX.into()) as u16;
-        let outer = clock.now();
-        let t = tel_stamp(clock);
-        tel_step(clock, t, TelStep::Pickup);
-        let end = clock.now();
-        *c = osc_servo_core::budget::probe::TelCost {
-            cal: c.cal,
-            step: end.wrapping_sub(outer).saturating_sub(c.cal.into()),
-            ..osc_servo_core::budget::probe::TelCost::ZERO
-        };
+        let cal = &raw mut TEL_COST.cal;
+        cal.write_volatile(b.wrapping_sub(a).min(u16::MAX.into()) as u16);
     }
 }
 
@@ -158,6 +135,28 @@ pub fn tel_pickups() -> u32 {
     // SAFETY: one-word volatile read.
     unsafe {
         (&raw const TEL_COST.n[TelStep::Pickup as usize]).read_volatile()
+    }
+    #[cfg(not(feature = "bench-telcost"))]
+    0
+}
+
+/// The burst picked up last stamps its steps: every other one does, the
+/// rest run unstamped for the kernel's TEL cost.
+#[inline(always)]
+pub fn tel_stamping() -> bool {
+    tel_pickups() & 1 != 0
+}
+
+/// The running kernel tick's steps, taken: the tick's end calls it.
+#[inline(always)]
+pub fn tel_tick_steps() -> u32 {
+    #[cfg(feature = "bench-telcost")]
+    // SAFETY: the kernel tick's end, the record's only writer's context.
+    unsafe {
+        let t = &raw mut TEL_COST.tick;
+        let steps = t.read();
+        t.write(0);
+        steps
     }
     #[cfg(not(feature = "bench-telcost"))]
     0

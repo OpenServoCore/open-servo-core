@@ -143,6 +143,8 @@ impl TelChannel {
                 crc,
                 ring,
                 clock,
+                #[cfg(feature = "bench-telcost")]
+                stamp: false,
                 table,
                 epoch: 0,
                 id: 0,
@@ -254,6 +256,9 @@ pub struct TelFeed<P: Providers> {
     /// The `bench-telcost` stamps' time base.
     #[cfg_attr(not(feature = "bench-telcost"), allow(dead_code))]
     clock: P::Deadline,
+    /// This burst stamps its steps.
+    #[cfg(feature = "bench-telcost")]
+    stamp: bool,
     table: &'static ControlTableCell,
     /// The arm this burst runs under (`arm_seq` at pickup).
     epoch: u8,
@@ -525,12 +530,20 @@ impl<P: Providers> TelStream for TelFeed<P> {
             let t = bench::tel_stamp(&self.clock);
             self.pickup(seq);
             bench::tel_step(&self.clock, t, TelStep::Pickup);
+            #[cfg(feature = "bench-telcost")]
+            {
+                self.stamp = bench::tel_stamping();
+            }
         }
         if self.remaining != 0 {
-            let s = bench::tel_ahead(|| self.row_step());
-            let t = bench::tel_stamp(&self.clock);
-            self.row();
-            bench::tel_step(&self.clock, t, s);
+            if self.stamping() {
+                let s = self.row_step();
+                let t = bench::tel_stamp(&self.clock);
+                self.row();
+                bench::tel_step(&self.clock, t, s);
+            } else {
+                self.row();
+            }
         }
     }
 
@@ -555,13 +568,28 @@ impl<P: Providers> TelStream for TelFeed<P> {
         if !self.ch.active() {
             return;
         }
-        let t = bench::tel_stamp(&self.clock);
-        let s = self.lane();
-        bench::tel_step(&self.clock, t, s);
+        if self.stamping() {
+            let t = bench::tel_stamp(&self.clock);
+            let s = self.lane();
+            bench::tel_step(&self.clock, t, s);
+        } else {
+            self.lane();
+        }
     }
 }
 
 impl<P: Providers> TelFeed<P> {
+    /// This burst stamps its steps; never without `bench-telcost`.
+    #[inline(always)]
+    fn stamping(&self) -> bool {
+        #[cfg(feature = "bench-telcost")]
+        {
+            self.stamp
+        }
+        #[cfg(not(feature = "bench-telcost"))]
+        false
+    }
+
     /// The step the tick's row takes, from the frame's rows landed.
     #[inline(always)]
     fn row_step(&self) -> TelStep {

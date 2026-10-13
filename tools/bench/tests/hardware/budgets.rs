@@ -23,7 +23,10 @@
 //! A report-only window is never held to the table.
 //! A telcost image (`--features bench-telcost`, no bus record) reports the
 //! TEL windows' cost per tick and per TEL step instead, held only to its
-//! own self-check; its windows run no budget, bus or host-frame check.
+//! own self-check; its windows run no budget, bus or host-frame check. It
+//! stamps every other burst: the unstamped ones give the cost per tick, the
+//! stamped ones its steps. A ping ahead of the read hands the bus the TX
+//! lane, so no TEL tick lands between the records' dumps.
 
 use std::any::Any;
 use std::env;
@@ -82,8 +85,9 @@ const THETA_FRAC_BITS: u32 = 16;
 /// may move.
 const SEAT_PUSH: i32 = 40;
 const SEAT_MOVE_MAX: i32 = 10;
-/// What a TEL tick may carry beyond its stamped steps: the flag and epoch
-/// tests around them, which no stamp covers.
+/// What an unstamped TEL tick may carry beyond a stamped one's steps: the
+/// flag, epoch and stamping tests around them, which no stamp covers, and
+/// any cycles the TEL DMA takes from the rest of the tick.
 const TEL_CHECK_SLACK: f32 = 30.0;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -308,6 +312,12 @@ impl Fill {
             self.failed.push(format!("{name}: {}", panic_text(&*e)));
         }
         let sent = b.frames_sent() - from;
+        if self.reader.telcost() {
+            let ping = build_ping(b.id());
+            if let Err(e) = b.xfer(&ping) {
+                self.failed.push(format!("{name}: lane handback ping: {e}"));
+            }
+        }
         let snap = self.reader.read().expect("read the budget probe");
         running(b);
         let [d0, d1, s0, s1] = read_bytes::<4>(b, TEL_DROP_COUNT);
@@ -399,12 +409,7 @@ impl Fill {
             w.tel_drops,
             w.stack_free_min
         );
-        let _ = writeln!(
-            text,
-            "  stamp pair {}, stamped step {}",
-            ticks(c.cal.into()),
-            ticks(c.step)
-        );
+        let _ = writeln!(text, "  stamp pair {}", ticks(c.cal.into()));
         for s in TelStep::ALL {
             let l = c.load(s);
             let _ = writeln!(
@@ -431,7 +436,7 @@ impl Fill {
                 );
             }
         }
-        let rep = TelReport::of(k, t, c);
+        let rep = TelReport::of(k, t);
         let _ = writeln!(
             text,
             "  TEL ticks n {} over plain {}, bank ticks n {} over plain {}",
@@ -442,19 +447,20 @@ impl Fill {
         );
         let _ = writeln!(
             text,
-            "  TEL per tick {} (bank 1/{}, probe {} off), steps {}",
+            "  TEL per tick {} unstamped, steps {} over {} stamped ticks (bank 1/{})",
             opt_ticks(rep.per_tick),
-            osc_servo_core::tel::STREAM_SAMPLES_MAX,
-            fticks(rep.probe),
-            fticks(rep.steps)
+            opt_ticks(rep.steps),
+            rep.steps_n,
+            osc_servo_core::tel::STREAM_SAMPLES_MAX
         );
         if w.tel {
-            let pass = rep
-                .per_tick
-                .is_some_and(|x| rep.steps <= x && x <= rep.steps + TEL_CHECK_SLACK);
+            let pass = match (rep.steps, rep.per_tick) {
+                (Some(s), Some(x)) => s <= x && x <= s + TEL_CHECK_SLACK,
+                _ => false,
+            };
             let l = format!(
-                "self-check steps {:.1} <= TEL per tick {} <= steps + {TEL_CHECK_SLACK}",
-                rep.steps,
+                "self-check steps {} <= TEL per tick {} <= steps + {TEL_CHECK_SLACK}",
+                opt_ticks(rep.steps),
                 opt_ticks(rep.per_tick)
             );
             let _ = writeln!(text, "  {l}: {}", if pass { "PASS" } else { "FAIL" });
@@ -657,7 +663,7 @@ fn fticks(t: f32) -> String {
 
 fn opt_ticks(t: Option<f32>) -> String {
     t.map_or_else(
-        || "unmatched (a TEL phase with no plain tick)".into(),
+        || "none (no tick, or a TEL phase with no plain tick)".into(),
         fticks,
     )
 }
