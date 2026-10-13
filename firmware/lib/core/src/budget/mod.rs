@@ -5,18 +5,26 @@
 //! the DES charges these values as its costs. While that test is green, the
 //! DES runs no component cheaper than silicon.
 //!
-//! Each value is M (measured by the budget probe, the larger of two runs plus
-//! 3% with at least 1 us of margin; means plus 5%) or E (estimated, from the
-//! named instrument plus the stated headroom). Kernel values are whole tick
-//! bodies, entry stamp to exit stamp, by drive arm and medium phase; bus
-//! values exclude the kernel vectors that preempted them, each with its
-//! interrupt entry and exit at [`ENTRY_EXIT`]. Interrupt entry and exit fall
-//! outside every stamp: [`ENTRY_EXIT`] carries them for the DES.
+//! Each value is M (measured by the budget probe, the largest of its runs
+//! plus 3% with at least 1 us of margin; means plus 5%) or E (estimated,
+//! from the named instrument plus the stated headroom). Kernel values are
+//! whole tick bodies, entry stamp to exit stamp, by drive arm and medium
+//! phase; bus values exclude the kernel vectors that preempted them, each
+//! with its interrupt entry and exit at [`ENTRY_EXIT`]. Interrupt entry and
+//! exit fall outside every stamp: [`ENTRY_EXIT`] carries them for the DES.
 //!
 //! A row changes only with its evidence: a raised M comes from the probe on
 //! the production image, a raised E names its new instrument, and the DES
 //! pins re-run against the new table in the same change. A red window or
 //! pin is never cleared by raising a row alone.
+//!
+//! Every kernel row, maximum and mean, carries [`LAYOUT`] on top. The
+//! allowance counts against the hard budgets (the tick period, the
+//! turnaround deadline, every DES pin at budget, the stack reserve): fit is
+//! judged with it, and it is never a reason to exceed one. The thermal rows
+//! ([`SLOW_FINISH`], [`SLOW_CLOSE`], [`THERM_INSTALL`], [`THERM_SIDE`]) are
+//! excepted while the thermometer's stages are being redesigned: their pins
+//! report and do not gate fit.
 
 pub mod probe;
 
@@ -56,19 +64,22 @@ impl Regime {
 ///
 /// M, drive-arm tagged on this image, a closing tick booked apart:
 /// Open over the quiet, hold, parked hold and stepping windows' Open ticks,
-/// Closed over the same windows' Closed ticks. Phase SLOW off its due
-/// period is a plain tick; the due body is [`SLOW_DUE`].
+/// Closed over the same windows' Closed ticks. Open phases 0, 5 and 7, M:
+/// r3-refill, every gated window's Open ticks, 3 runs, less
+/// [`TICK_PUBLISH`]. Phase SLOW off its due period is a plain tick; the due
+/// body is [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; 2] = [
-    [818, 1070, 890, 932, 641, 956, 641, 806, 599, 593],
+    [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean of the same windows, Closed from
-/// the stepping windows.
+/// the stepping windows. Open phases 0 and 7, M: r3-refill, every gated
+/// window's largest Open mean, 3 runs, less [`TICK_PUBLISH`].
 pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
-    [805, 1062, 867, 915, 622, 951, 611, 795, 578, 566],
+    [781, 1062, 867, 915, 622, 951, 611, 782, 578, 566],
     [1234, 1528, 1495, 1307, 1454, 1367, 994, 1175, 956, 948],
 ];
 
@@ -184,7 +195,8 @@ pub const TEL_LANE_MEAN: u32 = 124;
 /// DECIM_SLOW periods): the permit lease, undervoltage and the
 /// thermometer's step on the tick's window, on top of the phase's row, per
 /// regime. E: the dearest path, a tracked seat (any drive that holds
-/// current), priced at 405 over the plain tick, plus 10%.
+/// current), priced at 405 over the plain tick, plus 10%; no window has run
+/// it (r3-refill measured at most Open 252, Closed 351).
 pub const SLOW_DUE: [u32; 2] = [446, 446];
 
 /// The second stage on the next period's SLOW phase: the thermometer's
@@ -211,12 +223,12 @@ pub const THERM_SIDE: u32 = 639;
 
 /// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
-/// HEALTH_CLOSE, M: the closing ticks' maximum over the plain maximum (in
-/// the TEL windows over the TEL ticks'), the largest phase of either
-/// regime, 260 (Open p5, tel still; 150 outside the TEL windows). The
-/// probe books a close ahead of a bank, so that cell may hold a bank too.
-/// CATCH_UP, E: priced on the executed path.
-pub const HEALTH_CLOSE: u32 = 308;
+/// HEALTH_CLOSE, M: r3-refill, the closing ticks' maximum over the plain
+/// maximum (in the TEL windows over the TEL ticks'), either regime, every
+/// window with the report-only one, 3 runs: 228 (Closed, hold raw pos;
+/// 159 in the TEL windows). The probe books a close ahead of a bank, so
+/// that cell may hold a bank too. CATCH_UP, E: priced on the executed path.
+pub const HEALTH_CLOSE: u32 = 276;
 pub const HEALTH_CLOSE_TICKS: u32 = 2 * PHASES as u32;
 pub const CATCH_UP: u32 = 111;
 
@@ -273,14 +285,15 @@ pub const WINDOW_TICKS: [usize; 4] = [2, 4, 10, 20];
 
 /// gamma(k) on the bench by regime: the most the bodies of k consecutive
 /// ticks took. M: the quiet windows (Open) and the stepping windows
-/// (Closed).
+/// (Closed). Closed and Open gamma(2) and gamma(4), M: r3-refill, the same
+/// windows, 3 runs.
 pub const WINDOW_LOAD: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[1951, 3470, 8216, 15705], [3450, 6519, 14522, 27944]];
+    [[1861, 3461, 8216, 15705], [3446, 6459, 14369, 27820]];
 
-/// The same with six fields streaming at 3M. M: TEL still (Open) and TEL
-/// stepping (Closed).
+/// The same with six fields streaming at 3M. M: r3-refill, TEL still
+/// (Open) and TEL stepping (Closed), 3 runs.
 pub const WINDOW_LOAD_TEL: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[2894, 5246, 12480, 24296], [4318, 8067, 18419, 35634]];
+    [[2806, 4886, 11628, 22137], [4249, 7831, 17150, 33348]];
 
 /// Bus vector bodies.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -299,29 +312,28 @@ impl Body {
 
 /// Longest body of each bus vector at [`BUDGET_BAUD_HZ`], any traffic.
 ///
-/// M: each body's net maximum over every budget window, a 1M window's
-/// Deadline less [`spin_extra`]. Deadline: the goal WRITE at 1M; BreakWake:
-/// the first wake after a burst's LAST, which takes the TX lane back from
-/// the kernel (997, TEL stepping); the rest from the TEL stepping window.
+/// M: r3-refill, each body's net maximum over every window, a 1M window's
+/// Deadline less [`spin_extra`], 3 runs: BreakWake 978 (TEL stepping),
+/// TxDone 305 (stepping), Deadline 5953 (the TEL chunk WRITE, arm10).
 pub const fn body(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 1045,
-        Body::TxDone => 426,
-        Body::Deadline => 7116,
+        Body::BreakWake => 1026,
+        Body::TxDone => 353,
+        Body::Deadline => 6132,
     }
 }
 
 /// The same bodies' mean over a window.
 ///
-/// M: each body's largest window mean (at least [`MEAN_MIN_BODIES`]
-/// bodies), the same spin rule. BreakWake: the GREAD slot window; Deadline:
-/// the goal WRITE; TxDone: TEL stepping, with the stager wake on release
-/// (316).
+/// M: r3-refill, each body's largest window mean (at least
+/// [`MEAN_MIN_BODIES`] bodies), the same spin rule, 3 runs: BreakWake 756
+/// (arm10), TxDone 243 (stepping, the goal WRITE), Deadline 4496 (the goal
+/// WRITE).
 pub const fn body_mean(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 803,
-        Body::TxDone => 332,
-        Body::Deadline => 5770,
+        Body::BreakWake => 794,
+        Body::TxDone => 256,
+        Body::Deadline => 4721,
     }
 }
 
