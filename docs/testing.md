@@ -163,7 +163,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   1000 counts/s is over 1.1x the limit only within the first
   millisecond, no fault.
 - `openloop_stall_yields_like_closed_loop` - Yield response: the limit
-  folds to the yield value no sooner than `stall_time_ms` and within
+  folds to the yield value no sooner than `stall_time_ticks` and within
   100 ms after it, and stays folded on every tick of the next second.
 - `openloop_stall_faults_on_the_boot_response` - Fault response: STALL
   latches in the same window and the drive disables.

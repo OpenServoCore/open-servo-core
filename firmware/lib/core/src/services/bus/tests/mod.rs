@@ -961,7 +961,7 @@ fn assign_matching_uid_sets_id_before_ack() {
     // also marks modified-since-save (sec 9.4).
     assert_eq!(shared.table.with(|t| t.config.common.id), 42);
     assert_eq!(dirty(&shared), 1);
-    assert_eq!(shared.config_gen(), 0, "the kernel reads no id");
+    assert_eq!(shared.config_seq(), 0, "the kernel reads no id");
 }
 
 #[test]
@@ -1580,38 +1580,53 @@ pub(crate) fn write_committed(shared: &Shared, addr: u16, data: &[u8]) {
     assert_eq!(reply.last().result, ResultCode::Ok);
 }
 
+/// Every frame that commits a kernel input moves the configuration count
+/// by one odd/even pair, however many spans its COMMIT carries; nothing
+/// else moves it.
 #[test]
-fn config_and_calib_writes_move_the_config_generation() {
+fn config_commits_step_the_count_one_pair_per_frame() {
     use crate::regions::calib::addr::motor::R_Q12;
+    use crate::regions::calib::addr::stamp::PLANT_STAMP;
     use crate::regions::calib::addr::thermal::NTC_K2_Q24;
     use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
+    use crate::regions::config::addr::pos_soft::POS_MIN_SOFT_COUNTS;
     use crate::regions::control::addr::lifecycle::GOAL_DUTY;
     let shared = Shared::new();
+    shared.table.with_mut(|t| {
+        t.config.pos_phys.pos_max_phys_counts = 4095;
+        t.config.pos_soft.pos_max_soft_counts = 4095;
+    });
     let mut staged = StagedWrites::new();
     let mut pending = None;
     let mut reply = FakeReply::new();
     let mut go = |req| pass(&shared, &mut staged, &mut pending, &mut reply, req);
 
     go(write(GOAL_DUTY, &[0, 1], false));
-    assert_eq!(shared.config_gen(), 0, "CONTROL is not configuration");
+    assert_eq!(shared.config_seq(), 0, "CONTROL is not configuration");
     go(write(DUTY_MAX_Q15, &[0, 1], false));
-    assert_eq!(shared.config_gen(), 1);
+    assert_eq!(shared.config_seq(), 2);
     go(write(R_Q12, &[0, 1], false));
-    assert_eq!(shared.config_gen(), 2, "CALIB is");
+    assert_eq!(shared.config_seq(), 4, "CALIB is");
+    go(write(PLANT_STAMP, &[0, 1], false));
+    assert_eq!(shared.config_seq(), 4, "the stamp sits past the span");
 
-    // a held write moves it at its COMMIT, not at the staging
+    // held writes move it at their COMMIT, once for the frame
     go(write(DUTY_MAX_Q15, &[0, 2], true));
-    assert_eq!(shared.config_gen(), 2, "staged, not committed");
+    go(write(NTC_K2_Q24, &[0, 2], true));
+    go(write(GOAL_DUTY, &[0, 2], true));
+    assert_eq!(shared.config_seq(), 4, "staged, not committed");
     go(Request::Commit);
-    assert_eq!(shared.config_gen(), 3);
+    assert_eq!(shared.config_seq(), 6);
     go(write(NTC_K2_Q24, &[0, 1], false));
-    assert_eq!(shared.config_gen(), 4, "the last kernel input");
+    assert_eq!(shared.config_seq(), 8, "the last kernel input");
+    go(write(POS_MIN_SOFT_COUNTS, &[1, 0, 0, 0], false));
+    assert_eq!(shared.config_seq(), 10, "the first");
 }
 
 #[test]
 fn a_common_block_write_leaves_the_kernel_configuration_alone() {
     use crate::regions::config::addr::common::{BAUD_RATE_IDX, ID, RESPONSE_DEADLINE_US};
-    use crate::regions::config::addr::pos_limits::POS_MAX_PHYS_COUNTS;
+    use crate::regions::config::addr::pos_phys::POS_MAX_PHYS_COUNTS;
     let shared = shared_with_uid();
     let mut staged = StagedWrites::new();
     let mut pending = None;
@@ -1632,7 +1647,7 @@ fn a_common_block_write_leaves_the_kernel_configuration_alone() {
             (c.common.baud_rate_idx, c.common.response_deadline_us),
             (1, 100)
         );
-        assert_eq!((c.common.id, c.pos_limits.pos_max_phys_counts), (42, 100));
+        assert_eq!((c.common.id, c.pos_phys.pos_max_phys_counts), (42, 100));
     });
-    assert_eq!(shared.config_gen(), 0);
+    assert_eq!(shared.config_seq(), 0);
 }

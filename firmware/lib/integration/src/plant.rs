@@ -9,10 +9,11 @@
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::estimator::window;
 use osc_servo_core::pos_lut::{self, POINTS};
+use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::stamp;
 use osc_servo_core::tel::TelStream;
 use osc_servo_core::{
-    ControlIo, DecaySelect, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
+    ControlIo, DecayMode, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
     SensorFrame, Sensors, Shared, StallResponse,
 };
 
@@ -40,7 +41,6 @@ pub const TIMING: KernelTiming = KernelTiming {
     recip_arr_q24: (1 << RECIP_ARR_SHIFT) / ARR as u32,
     tick_hz: 20_000,
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
-    ticks_per_ms_q16: 20 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 960,
     v_trough_min_ticks: 0,
@@ -96,8 +96,8 @@ pub fn last_cmd(k: &Kernel<FakeIo>) -> MotorCmd {
 pub fn seed(shared: &Shared) {
     shared.table.with_mut(|t| {
         let c = &mut t.config;
-        c.pos_limits.pos_min_soft_counts = 0;
-        c.pos_limits.pos_max_soft_counts = 4095;
+        c.pos_soft.pos_min_soft_counts = 0;
+        c.pos_soft.pos_max_soft_counts = 4095;
         c.loop_current.i_kp_q88 = 256;
         c.loop_current.i_ki_q412 = 200;
         c.loop_current.i_kaw_q412 = 2048;
@@ -114,14 +114,14 @@ pub fn seed(shared: &Shared) {
         c.limits.stall_response = StallResponse::Yield;
         c.limits.drive_polarity = true;
         c.limits.stall_omega_max_cps = 500;
-        c.limits.stall_time_ms = 50;
+        c.limits.stall_time_ticks = ms_ticks(50);
         c.limits.stall_yield_counts = 300;
         c.limits.stall_release_counts = 150;
         c.limits.stall_tau_trip_counts = 1200;
         // inside the 12-bit span above BIAS: the plant's samples clamp at 4095
         c.limits.oc_trip_counts = 1800;
         c.limits.oc_trip_ticks = 4;
-        c.limits.openloop_decay = DecaySelect::Slow;
+        c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = true;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
@@ -132,7 +132,7 @@ pub fn seed(shared: &Shared) {
         c.fusion.l2_q88 = 1024;
         c.fusion.l3_q88 = 256;
         c.fault_cfg.pos_error_counts = u16::MAX;
-        c.fault_cfg.pos_error_time_ms = 500;
+        c.fault_cfg.pos_error_time_ticks = ms_ticks(500);
         c.fault_cfg.sensor_delta_max = 256;
         c.fault_cfg.sensor_bad_count = 4;
         let cal = &mut t.calib;

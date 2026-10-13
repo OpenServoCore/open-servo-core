@@ -25,8 +25,9 @@ use osc_servo_core::persist::Slot;
 use osc_servo_core::regions::CALIB_BASE_ADDR;
 use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, R_Q12, RECIP_KE_Q};
 use osc_servo_core::regions::calib::addr::stamp::PLANT_STAMP;
-use osc_servo_core::regions::config::addr::limits::STALL_TIME_MS;
+use osc_servo_core::regions::config::addr::limits::STALL_TIME_TICKS;
 use osc_servo_core::regions::config::addr::loop_velocity::V_KP_Q88;
+use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
 use osc_servo_core::stamp::compute;
@@ -322,6 +323,7 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
                 cmds[cmds.len() - 1]
             );
         }
+        sh.config_commit_begin();
         set(&sh, |t| {
             if reg == RECIP_KE_Q {
                 t.calib.motor.recip_ke_q = 0;
@@ -329,10 +331,10 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
                 t.calib.motor.ke_vpc_q = 0;
             }
         });
-        sh.config_touch();
+        sh.config_commit_end();
         // tick n runs medium phase n % DECIM_MED; the write reaches the
-        // kernel at the next refresh stages, and the belt latches at the
-        // CONTROL phase after them
+        // kernel at the next THERM_INSTALL, and the belt latches at the
+        // CONTROL phase after it
         let ticks = 200 + RUN + phase;
         let med = DECIM_MED as u32;
         let stage = (kernel_phase::THERM_INSTALL as u32 + med - ticks % med) % med;
@@ -691,7 +693,7 @@ fn partial_covered_write_blocks_next_enable(baud_idx: u8) {
     let store = RamStore::leak();
     let mut sim = sim(baud_idx);
     let s = stamped_servo(&mut sim, store);
-    write_ok(&mut sim, STALL_TIME_MS, &200u16.to_le_bytes());
+    write_ok(&mut sim, STALL_TIME_TICKS, &ms_ticks(200).to_le_bytes());
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
         0,
@@ -840,7 +842,7 @@ fn torn_save_boots_stamp_mismatch(baud_idx: u8) {
     let store = RamStore::leak();
     let mut sim = support::sim(baud_idx);
     stamped_servo(&mut sim, store);
-    write_ok(&mut sim, STALL_TIME_MS, &200u16.to_le_bytes());
+    write_ok(&mut sim, STALL_TIME_TICKS, &ms_ticks(200).to_le_bytes());
     store.tear(Tear::AfterConfig);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
     let mut rebooted = support::sim(baud_idx);

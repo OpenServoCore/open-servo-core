@@ -334,7 +334,7 @@ pub(super) fn bench() -> Front {
         },
         stall: Stall {
             folds: true,
-            time_ms: 500,
+            time_ticks: 10_000,
             release: 84,
         },
         sc,

@@ -6,6 +6,7 @@
 //! construction, sagging battery included.
 
 use crate::math::{q_mul, sat_add, sat_clamp, sat_mul};
+use crate::regions::config::ConfigLoopCurrent;
 
 /// PI error clamp, ccounts. Physical error is bounded by shunt full scale
 /// plus the current limit (|i_meas| <= 4095, |i_ref| <= i_lim <= 4095), so
@@ -19,26 +20,15 @@ const E_LIM_CC: i32 = 8192;
 /// matches E_LIM_CC: kaw * 2^13 <= 2^29.
 const AW_LIM_VC: i32 = 8192;
 
-/// CONFIG loop_current gains plus the CALIB forward Ke, prebuilt by the
-/// kernel's configuration refresh (`kernel::config`). `ke_q412` is `CalibMotor.ke_vpc_q`: vcounts per c/s,
-/// the decoupling feedforward (NOT `recip_ke_q`, which points the other way).
-#[derive(Copy, Clone, Default)]
-pub struct CurrentGains {
-    pub kp_q88: u16,
-    pub ki_q412: u16,
-    pub kaw_q412: u16,
-    pub ke_q412: u16,
-    pub duty_max_q15: u16,
-}
-
 /// The Ke decoupling feed-forward, vcounts, on `omega_ff_q16` csQ16: the
 /// decoupling reference the kernel picks per mode - the trajectory's
 /// omega_star in Velocity/Position, zero otherwise - never a velocity
 /// estimate: the back-EMF estimate is the loop's own output read back, the
-/// pot observer rails at rest.
-pub fn u_ff_vc(omega_ff_q16: i32, gains: &CurrentGains) -> i32 {
+/// pot observer rails at rest. `ke_vpc_q` is `CalibMotor.ke_vpc_q`, vcounts
+/// per c/s (NOT `recip_ke_q`, which points the other way).
+pub fn u_ff_vc(omega_ff_q16: i32, ke_vpc_q: u16) -> i32 {
     // csQ16 * Q4.12 >> 28 -> vcounts; i64 product <= 2^31 * 2^16 = 2^47
-    q_mul(omega_ff_q16, gains.ke_q412 as i32, 28)
+    q_mul(omega_ff_q16, ke_vpc_q as i32, 28)
 }
 
 /// The voltage clamp `duty_max * vbus` and the integrator bound it sets,
@@ -95,7 +85,7 @@ impl CurrentLoop {
         u_ff_vc: i32,
         rail: &RailClamp,
         recip_vbus_q15: u32,
-        gains: &CurrentGains,
+        gains: &ConfigLoopCurrent,
     ) -> i16 {
         let e = match i_meas {
             Some(i) => sat_clamp(i_ref - i, -E_LIM_CC, E_LIM_CC),
@@ -103,7 +93,7 @@ impl CurrentLoop {
         };
         // kp * 2^13 <= 2^29, i32-exact before the shift; |u_pi| < 2^22, so
         // u, and u_cl - u below, stay under 2^23
-        let u_pi = q_mul(gains.kp_q88 as i32, e, 8) + (self.integ_vq16 >> 16);
+        let u_pi = q_mul(gains.i_kp_q88 as i32, e, 8) + (self.integ_vq16 >> 16);
         let u = u_pi + u_ff_vc;
         let v_max = rail.v_max_vc;
         let u_cl = sat_clamp(u, -v_max, v_max);
@@ -114,8 +104,8 @@ impl CurrentLoop {
             // 2^33, so the shift saturates via mul. Integrator clamp:
             // +-(v_max << 16), never charged past what the output can
             // deliver (belt on top of back-calc).
-            let ki_term = sat_mul(q_mul(gains.ki_q412 as i32, e, 0), 1 << 4);
-            let aw_term = sat_mul(q_mul(gains.kaw_q412 as i32, aw, 0), 1 << 4);
+            let ki_term = sat_mul(q_mul(gains.i_ki_q412 as i32, e, 0), 1 << 4);
+            let aw_term = sat_mul(q_mul(gains.i_kaw_q412 as i32, aw, 0), 1 << 4);
             let lim = rail.integ_lim_vq16;
             self.integ_vq16 = sat_clamp(
                 sat_add(sat_add(self.integ_vq16, ki_term), aw_term),
@@ -155,16 +145,16 @@ mod tests {
         omega_ff_q16: i32,
         vbus: u16,
         recip: u32,
-        gains: &CurrentGains,
+        gains: &Gains,
     ) -> i16 {
-        let rail = RailClamp::new(gains.duty_max_q15, vbus);
+        let rail = RailClamp::new(gains.lc.duty_max_q15, vbus);
         cur.step(
             i_ref,
             i_meas,
-            u_ff_vc(omega_ff_q16, gains),
+            u_ff_vc(omega_ff_q16, gains.ke),
             &rail,
             recip,
-            gains,
+            &gains.lc,
         )
     }
 
@@ -174,13 +164,21 @@ mod tests {
 
     const KP_1: u16 = 1 << 8; // 1.0 vcounts/ccount
 
-    fn g(kp: u16, ki: u16, kaw: u16, ke: u16, duty_max: u16) -> CurrentGains {
-        CurrentGains {
-            kp_q88: kp,
-            ki_q412: ki,
-            kaw_q412: kaw,
-            ke_q412: ke,
-            duty_max_q15: duty_max,
+    /// The loop's block and the forward Ke the feed-forward takes.
+    struct Gains {
+        lc: ConfigLoopCurrent,
+        ke: u16,
+    }
+
+    fn g(kp: u16, ki: u16, kaw: u16, ke: u16, duty_max: u16) -> Gains {
+        Gains {
+            lc: ConfigLoopCurrent {
+                i_kp_q88: kp,
+                i_ki_q412: ki,
+                i_kaw_q412: kaw,
+                duty_max_q15: duty_max,
+            },
+            ke,
         }
     }
 

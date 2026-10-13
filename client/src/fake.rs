@@ -6,7 +6,7 @@
 use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
-use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW, LimitCfg, LimitState};
+use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW, LimitState};
 use osc_servo_core::{ControlTable, stamp};
 
 use crate::pipe::{Pipe, PipeError};
@@ -103,12 +103,7 @@ impl Winding {
             k1_q88: th.ntc_k1_q88,
             k2_q24: th.ntc_k2_q24,
         };
-        let lim = LimitCfg {
-            current_limit_counts: t.config.limits.current_limit_counts,
-            derate_start_cc: t.config.thermal.derate_start_cc,
-            cutoff_cc: t.config.thermal.cutoff_cc,
-            ..Default::default()
-        };
+        let (lim, therm) = (t.config.limits, t.config.thermal);
         let dt_s = now_us.saturating_sub(self.at_us) as f64 * 1e-6;
         self.at_us = now_us;
         let t_ntc = thermal::ntc_cc(raw, &ntc);
@@ -119,7 +114,7 @@ impl Winding {
                 let steady = th.th_g_q016 as f64 / 65536.0 * self.i_sq_mean * r0 as f64 / 4096.0;
                 self.excess_cc += (steady - self.excess_cc) * -(-dt_s / tau_s).exp_m1();
                 let t_cc = if self.forced {
-                    (lim.derate_start_cc as i32 + lim.cutoff_cc as i32) / 2
+                    (therm.derate_start_cc as i32 + therm.cutoff_cc as i32) / 2
                 } else {
                     base as i32 + self.excess_cc as i32
                 };
@@ -128,8 +123,8 @@ impl Winding {
             _ => (UNSET_CC, flag::UNSET),
         };
         let mut limits = LimitState::new();
-        limits.update_derate(t_cc, &lim);
-        limits.fold(false, 0, 0, 0, false, &lim);
+        limits.update_derate(t_cc, &lim, &therm);
+        limits.fold(false, 0, 0, 0, false, &lim, &t.config.pos_soft);
         t.telemetry.tick.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
         t.telemetry.estimates.i_lim_counts = limits.i_lim_counts();
@@ -206,10 +201,10 @@ impl FakePipe {
             t.calib.motor.fric_fc_counts = seed::FRIC_FC_COUNTS;
             t.calib.motor.fric_fv_q016 = seed::FRIC_FV_Q016;
             t.calib.motor.ke_vpc_q = seed::KE_VPC_Q;
-            t.config.pos_limits.pos_min_phys_counts = seed::POS_MIN_PHYS_COUNTS;
-            t.config.pos_limits.pos_max_phys_counts = seed::POS_MAX_PHYS_COUNTS;
-            t.config.pos_limits.pos_min_soft_counts = seed::POS_MIN_SOFT_COUNTS;
-            t.config.pos_limits.pos_max_soft_counts = seed::POS_MAX_SOFT_COUNTS;
+            t.config.pos_phys.pos_min_phys_counts = seed::POS_MIN_PHYS_COUNTS;
+            t.config.pos_phys.pos_max_phys_counts = seed::POS_MAX_PHYS_COUNTS;
+            t.config.pos_soft.pos_min_soft_counts = seed::POS_MIN_SOFT_COUNTS;
+            t.config.pos_soft.pos_max_soft_counts = seed::POS_MAX_SOFT_COUNTS;
             t.config.limits.drive_polarity = seed::DRIVE_POLARITY;
             if therm != Therm::Off {
                 let th = &mut t.calib.thermal;

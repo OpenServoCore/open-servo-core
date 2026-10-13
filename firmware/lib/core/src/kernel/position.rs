@@ -20,6 +20,7 @@
 
 use super::trajectory::VEL_CAP_CPS;
 use crate::math::q_mul;
+use crate::regions::config::ConfigLoopPosition;
 
 /// P error clamp, cQ16 (128 counts): 2^16 * 2^23 >> 8 < 2^31 keeps the kp
 /// product i32-exact for any gain encoding (velocity.rs E_LIM discipline).
@@ -31,15 +32,6 @@ const E_LIM_CQ16: i32 = 1 << 23;
 /// |error| (2^31), so the product saturates instead of wrapping. The
 /// identity's largest band, 65535 x 16, sits under it.
 const BAND_SAT_Q4: u32 = (1 << 20) - 1;
-
-/// CONFIG loop_position gain + hold fields (`CurrentGains` convention).
-#[derive(Copy, Clone, Default)]
-pub struct PositionCfg {
-    pub kp_q88: u16,
-    /// Raw sensor counts; 0 disables the hold predicate entirely.
-    pub pos_deadband_counts: u16,
-    pub vel_limit_cps: u16,
-}
 
 /// omega_ref for the velocity loop plus the anti-hunt flag (kernel maps
 /// hold -> Brake).
@@ -58,13 +50,15 @@ pub fn step(
     omega_star_q16: i32,
     theta_hat_q16: i32,
     band_gain_q4: u16,
-    cfg: &PositionCfg,
+    cfg: &ConfigLoopPosition,
 ) -> PosOut {
     let e_raw = theta_star_q16.saturating_sub(theta_hat_q16);
     let e = e_raw.clamp(-E_LIM_CQ16, E_LIM_CQ16);
-    let v_lim = (cfg.vel_limit_cps.min(VEL_CAP_CPS) as i32) << 16;
+    // the table rule bounds the limit; the min keeps the clamp below
+    // panic-free on a corrupt one
+    let v_lim = (cfg.velocity_limit_cps.min(VEL_CAP_CPS) as i32) << 16;
     // Q8.8 * cQ16 >> 8 -> csQ16, i32-exact per E_LIM
-    let omega_ref = q_mul(cfg.kp_q88 as i32, e, 8)
+    let omega_ref = q_mul(cfg.p_kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
         .clamp(-v_lim, v_lim);
     // raw-magnitude compares as u32: the band reaches 2^32 - 2^12, past i32
@@ -83,11 +77,12 @@ mod tests {
     /// The identity's band gain.
     const ID: u16 = crate::pos_lut::GRID as u16;
 
-    fn c(kp: u16, db: u16, vl: u16) -> PositionCfg {
-        PositionCfg {
-            kp_q88: kp,
+    fn c(kp: u16, db: u16, vl: u16) -> ConfigLoopPosition {
+        ConfigLoopPosition {
+            p_kp_q88: kp,
             pos_deadband_counts: db,
-            vel_limit_cps: vl,
+            velocity_limit_cps: vl,
+            accel_limit_q88: 0,
         }
     }
 

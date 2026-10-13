@@ -576,6 +576,10 @@ reciprocal), then one multiply-shift per sample - the same arithmetic
 discipline the servo itself uses. Divides sit at configuration edges,
 never in the per-sample path.
 
+Durations the kernel times are counts as well: `stall_time_ticks` and
+`pos_error_time_ticks` (u32) are kernel ticks at CALIB `tick_hz`, and a
+host converts milliseconds with it.
+
 Servo-side conversion would spend scarce cycles on a divide-free chip
 to produce numbers the servo itself never consumes; counts keep the
 loop math native and the calibration honest. It is also the established
@@ -790,8 +794,9 @@ opens all. A refusal latches the `data` fault (below) and the servo
 stays disabled for that run. A reason that appears mid-run - a live
 edit of a covered field - waits for the next entry; the one thing that
 stops a running loop is the physics belt. A CONFIG or CALIB write
-reaches the kernel in two stages at the end of a medium period, within
-two medium ticks (1 ms) of the commit. If that write leaves
+reaches the kernel whole, at one tick near the end of a medium period,
+within a medium period (0.5 ms) of the commit, or a period later when
+that tick lands inside the next commit. If that write leaves
 `recip_ke_q == 0` or `ke_vpc_q == 0` under a running Velocity or
 Position loop, the same fault latches at the next medium tick and the
 drive stops. Until then the loop keeps running
@@ -825,10 +830,10 @@ result later in the same medium period.
 `stall` latches in OpenLoop as it does in the closed loops: there the
 stall timer runs off the duty ceiling (sec 5.8), so with
 `stall_response` at its boot value of Fault, an OpenLoop drive held
-against a stop or a jam for longer than `stall_time_ms` latches it
+against a stop or a jam for longer than `stall_time_ticks` latches it
 unless a stall permit is live.
 
-**Plant stamp.** `plant_stamp` (u16, RW, `0x0B2` in CALIB, persisted)
+**Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
 and calibrated fields plus the effective position table. Firmware
 recomputes it over what actually landed at every checkpoint and reports
@@ -1015,7 +1020,7 @@ host's *request*; the *grant* is a lease the servo keeps:
 The lease is what bounds a host that dies mid-run: the servo is
 unguarded for at most what is left of the second, then the stall timer
 runs again. A permit written once against a locked rotor, with a
-500 ms `stall_time_ms` and the boot Fault response, latches `stall`
+500 ms `stall_time_ticks` and the boot Fault response, latches `stall`
 between 1.5 and 1.6 s after the write (DES
 `dead_host_stall_trips_within_the_lease`). A TEL burst is a silent host
 too (sec 5.6).
@@ -1061,7 +1066,7 @@ rise, in either direction. Under Fast decay the window sits at the
 trough, where the low-side tap closes 135 ticks in, and the board raises the floor to 160 ticks (4356, 13.3%); the
 register follows the OpenLoop decay (DES
 `window_v_floor_follows_the_openloop_decay`). It is published at the
-kernel's first tick and again within two medium ticks (1 ms) of a
+kernel's first tick and again within a medium period (0.5 ms) of a
 CONFIG write that reaches the kernel. A window between the two floors
 reads current but no `va - vb`, so the tick block's `vdiff_counts` holds the last
 differential read there. Which
@@ -1517,8 +1522,8 @@ so that is what gets gated:
 Two images, each with its own A/B slot pair and sequence number, one
 8-byte header each: magic, layout version, seq u16, body length u16,
 CRC-16/ARC u16 over the header and the body. The CONFIG image (magic
-`C`, version 5) is the CONFIG region ++ the PROFILE region, 200 B in one
-256 B page per slot. The CALIB image (magic `K`, version 3) is the
+`C`, version 6) is the CONFIG region ++ the PROFILE region, 200 B in one
+256 B page per slot. The CALIB image (magic `K`, version 4) is the
 CALIB region ++ the position table's 256 host-written calibration
 points i16 LE (the fixed last one is not stored): 776 B, four pages per slot, one CRC, so the
 calibration and the table it validates save and load as one unit and a

@@ -18,6 +18,12 @@ use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx
 use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
 
+/// A span overlapping the kernel's inputs: its commit runs under an odd
+/// configuration count (`Shared::config_commit_begin`).
+fn reaches_the_kernel(addr: u16, len: u16) -> bool {
+    addr < kernel::SPAN_END && addr + len > kernel::SPAN_START
+}
+
 /// Map a control-table write/stage failure onto an osc-native result code
 /// (sec 5.3 layer 2). Read-only writes are `Access`; field-rule rejections are
 /// `Validation`; the rest (bounds, staging-full) are `Range`.
@@ -156,8 +162,15 @@ impl Dispatch for Dispatcher<'_> {
         // SAFETY: the caller keeps the request bytes readable and unchanged
         // until this verdict (trait contract).
         let (head, tail) = unsafe { (&*head, &*tail) };
-        self.shared.table.store_split(addr, head, tail);
         let len = (head.len() + tail.len()) as u16;
+        let config = reaches_the_kernel(addr, len);
+        if config {
+            self.shared.config_commit_begin();
+        }
+        self.shared.table.store_split(addr, head, tail);
+        if config {
+            self.shared.config_commit_end();
+        }
         self.after_commit(addr, len);
         let mut hooks = ControlTableHooks::new(reply);
         self.shared
@@ -223,15 +236,10 @@ impl Dispatcher<'_> {
     }
 
     /// The post-commit bookkeeping every committed span gets: the dirty
-    /// bit, the configuration generation, a position table command, a stall
-    /// permit grant, then the data-state consequences of a covered or stamp
-    /// write.
+    /// bit, a position table command, a stall permit grant, then the
+    /// data-state consequences of a covered or stamp write.
     fn after_commit(&self, addr: u16, len: u16) {
         self.mark_dirty_if_persistent(addr, len);
-        // only a span overlapping the kernel's inputs moves the generation
-        if addr < kernel::INPUT_END && addr + len > kernel::INPUT_START {
-            self.shared.config_touch();
-        }
         self.shared.pos_lut_after_commit(addr, len);
         self.shared.permit_after_commit(addr, len);
         self.shared.data_state_after_commit(addr, len);
@@ -446,8 +454,15 @@ impl Dispatcher<'_> {
         // Capture each entry's span before commit_staged clears the buffer, so
         // hooks fire on the applied values (apply-then-events, mirroring write).
         let mut spans: Vec<(u16, u16), STAGE_ENTRY_CAP> = Vec::new();
+        let mut config = false;
         for (addr, data) in self.staged.iter_all() {
-            let _ = spans.push((addr, data.len() as u16));
+            let len = data.len() as u16;
+            config |= reaches_the_kernel(addr, len);
+            let _ = spans.push((addr, len));
+        }
+        // one count pair per frame: every span of the COMMIT is one set
+        if config {
+            self.shared.config_commit_begin();
         }
         self.shared.table.commit_staged(self.staged);
         Self::ack(alert, ctx, Ok(()), reply);
@@ -459,6 +474,11 @@ impl Dispatcher<'_> {
                 .with(|t| t.dispatch_events(addr, len, &mut hooks));
         }
         hooks.finish(|| self.tel_chunks());
+        // closed after the hooks, not right behind the stores: the ack
+        // between would be compiled twice, once per outcome
+        if config {
+            self.shared.config_commit_end();
+        }
     }
 
     /// sec 9.2 ENUM: reply with the full UID iff ours begins with the queried

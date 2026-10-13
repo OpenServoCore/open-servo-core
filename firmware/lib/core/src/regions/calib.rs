@@ -38,36 +38,39 @@ pub struct CalibSense {
 /// own R (vcounts per ccount, Q4.12) at a seated hold, reduced to 25.00 C
 /// (`estimator::thermal::R_COLD_REF_CC`) through copper and the board NTC.
 /// The hot-reboot floor, the cold-R health check and the excess bound read
-/// it; 0 = no thermometer. The six bytes behind it held the retired
-/// resistance anchor (t0, slope, LMS step) and stay reserved.
+/// it; 0 = no thermometer.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibWinding {
     pub r0_q12: u16,
-    #[ct_field(skip)]
-    pub _rsvd_anchor: [u8; 6],
 }
 
-/// Motor identification: `ke_uvs_per_rad` is the host-facing record; the rest
-/// are firmware-shaped -- bemf subtract R (Q4.12), reciprocal Ke (c/s per
-/// vcount Q6.10, estimator::bemf convention), fusion current gain (bakes
-/// Ts/J, Q3.13: rig B runs ~3.4 so Q0.16 saturated), the friction model
-/// (Coulomb ccounts, viscous Q0.16, breakaway
-/// ccounts), and forward Ke (vcounts per c/s Q4.12, the current loop's bemf
-/// decoupling feedforward). Forward and reciprocal Ke are both host-written:
-/// the chip has no divide to derive one from the other. SG90 scale ~0.28
-/// vcounts per c/s (~1150 stored); the u16 caps at 16, 57x headroom.
+/// Motor identification, firmware-shaped: bemf subtract R (Q4.12),
+/// reciprocal Ke (c/s per vcount Q6.10, estimator::bemf convention), fusion
+/// current gain (bakes Ts/J, Q3.13: rig B runs ~3.4 so Q0.16 saturated), the
+/// friction model (Coulomb ccounts, viscous Q0.16), and forward Ke (vcounts
+/// per c/s Q4.12, the current loop's bemf decoupling feedforward). Forward
+/// and reciprocal Ke are both host-written: the chip has no divide to derive
+/// one from the other. SG90 scale ~0.28 vcounts per c/s (~1150 stored); the
+/// u16 caps at 16, 57x headroom.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibMotor {
-    pub ke_uvs_per_rad: u16,
     pub r_q12: u16,
     pub recip_ke_q: u16,
     pub b_i_q313: u16,
     pub fric_fc_counts: u16,
     pub fric_fv_q016: u16,
-    pub fric_breakaway_counts: u16,
     pub ke_vpc_q: u16,
+}
+
+/// The identification record firmware never reads: Ke as the host states
+/// it and the breakaway friction, ccounts.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibMotorExt {
+    pub ke_uvs_per_rad: u16,
+    pub fric_breakaway_counts: u16,
 }
 
 /// Count<->angle scale and gearing, pure host-facing metadata: firmware never
@@ -158,15 +161,16 @@ pub struct CalibStamp {
     size = crate::regions::CALIB_REGION_SIZE,
 )]
 pub struct CalibRegs {
-    pub pot: CalibPot,
-    pub sense: CalibSense,
-    pub winding: CalibWinding,
     pub motor: CalibMotor,
+    pub winding: CalibWinding,
+    pub thermal: CalibThermal,
+    pub motor_ext: CalibMotorExt,
+    pub pot: CalibPot,
     pub kinematics: CalibKinematics,
     pub stamp: CalibStamp,
+    pub sense: CalibSense,
     pub sense_ext: CalibSenseExt,
-    pub thermal: CalibThermal,
     pub pwm: CalibPwm,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 174],
+    pub _rsvd_tail: [u8; 180],
 }

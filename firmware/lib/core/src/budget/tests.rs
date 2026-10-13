@@ -90,7 +90,7 @@ fn kernel_ticks_book_by_what_they_carried() {
     assert_eq!((k.tel_max[0][2], k.bank_max[0][3]), (1500, 1700));
     assert_eq!(
         (k.refresh, k.slow[1], k.close),
-        ([one(2000), Load::ZERO], one(1900), one(2200))
+        (one(2000), one(1900), one(2200))
     );
     assert_eq!((k.install, k.side), (one(1600), one(1700)));
     assert_eq!(
@@ -99,8 +99,15 @@ fn kernel_ticks_book_by_what_they_carried() {
         "the stages stay off the plain rows"
     );
     assert_eq!((k.halts, k.long), (1, [3, 5]));
-    tick(&mut k, 11, 1800, 9, OPEN, refresh);
-    assert_eq!(k.refresh, [one(2000), one(1800)], "booked by stage");
+    tick(&mut k, 11, 1800, 8, OPEN, refresh);
+    assert_eq!(
+        k.refresh,
+        Load {
+            n: 2,
+            sum: 3800,
+            max: 2000
+        }
+    );
     let finish = Events {
         finish: true,
         ..PLAIN
@@ -501,26 +508,21 @@ fn gamma_is_the_heaviest_run_of_k_ticks() {
 }
 
 #[test]
-fn each_refresh_stage_charges_its_own_row() {
+fn a_configuration_take_charges_its_row() {
     let refresh = Events {
         refresh: true,
         ..PLAIN
     };
-    let closed = Regime::Closed as usize;
-    for (p, row) in [
-        (phase::THERM_INSTALL as usize, REFRESH_1),
-        (phase::THERM_SIDE as usize, REFRESH_2),
-    ] {
-        assert_eq!(
-            kernel_tick(Regime::Closed, p, refresh),
-            KERNEL[closed][p] + TICK_PUBLISH[closed][p] + LAYOUT + row
-        );
-    }
+    let (closed, p) = (Regime::Closed as usize, phase::THERM_INSTALL as usize);
+    assert_eq!(
+        kernel_tick(Regime::Closed, p, refresh),
+        KERNEL[closed][p] + TICK_PUBLISH[closed][p] + LAYOUT + REFRESH
+    );
 }
 
 /// The chip closes a tick-load window on every twentieth tick, the first
 /// at the boot count's first PUBLISH tick: every close lands on PUBLISH,
-/// never on a SLOW, thermometer or refresh phase.
+/// never on a SLOW, thermometer or configuration take's phase.
 #[test]
 fn the_health_close_lands_only_on_publish() {
     let lands: heapless::Vec<usize, PHASES> =
@@ -536,8 +538,8 @@ fn the_health_close_lands_only_on_publish() {
 }
 
 /// A SLOW or thermometer stage tick holds the TX lane: its TEL tick
-/// carries the poll and a head or a bank, never a lane step. A refresh tick
-/// does not hold.
+/// carries the poll and a head or a bank, never a lane step. A configuration
+/// take does not hold.
 #[test]
 fn a_stage_tick_holds_the_tel_lane() {
     let closed = Regime::Closed;

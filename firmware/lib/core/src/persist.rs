@@ -56,12 +56,12 @@ pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout change; a mismatched image boots
 /// `ImageState::Stale` (board defaults stand, closed loop gated) rather
 /// than migrating.
-pub const IMAGE_VERSION: u8 = 5;
+pub const IMAGE_VERSION: u8 = 6;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 3;
+pub const CALIB_IMAGE_VERSION: u8 = 4;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1010,65 +1010,25 @@ mod tests {
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
-    /// A CALIB image SAVEd by the resistance-anchor firmware (anchor r0
-    /// 4170 at 26.5 C, slope 1602, mu 7670 behind it, zeros where the
-    /// thermometer block now sits) loads whole: r0, table, kinematics and
-    /// stamp land, the anchor's bytes fall in reserved space, and the zero
-    /// model reads the sentinel until the host writes one.
+    /// Images SAVEd before the kernel's inputs became one span (CONFIG 5,
+    /// CALIB 3) boot stale: the seeds stand until the host recovers the
+    /// set by field name.
     #[test]
-    fn anchor_era_calib_image_loads_with_the_thermometer_unset() {
-        use crate::estimator::thermal::{Sample, UNSET_CC};
-        use crate::estimator::{NtcCfg, ThermCfg, WindingTherm};
-        use crate::regions::calib::addr::{kinematics, stamp, winding};
+    fn images_before_the_kernel_span_are_stale() {
+        let mut old = image_of(7);
+        reseal_version(&mut old, 5);
+        assert_eq!(
+            boot_overlay(&seeded_table(), &old, &[0xFF; IMAGE_LEN]).state,
+            ImageState::Stale
+        );
         let mut old = calib_image_of(7);
-        let mut put = |addr: u16, v: u16| {
-            let at = HEADER_LEN + (addr - CALIB_BASE_ADDR) as usize;
-            old[at..at + 2].copy_from_slice(&v.to_le_bytes());
-        };
-        for (i, v) in [4170, 2650, 1602, 7670].into_iter().enumerate() {
-            put(winding::R0_Q12 + 2 * i as u16, v);
-        }
-        put(kinematics::GEAR_RATIO_CENTI, 30805);
-        put(stamp::PLANT_STAMP, 0xBEEF);
         reseal_version(&mut old, 3);
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Loaded
+            ImageState::Stale
         );
-        assert_eq!(pos_lut_state(&sh), state::LIVE);
-        let th = sh.table.with(|t| {
-            assert_eq!(t.calib.winding.r0_q12, 4170);
-            assert_eq!(t.calib.motor.r_q12, 13800);
-            assert_eq!(t.calib.kinematics.gear_ratio_centi, 30805);
-            assert_eq!(t.calib.stamp.plant_stamp, 0xBEEF);
-            t.calib.thermal
-        });
-        let cfg = ThermCfg {
-            alpha_q24: th.th_alpha_q24,
-            g_q016: th.th_g_q016,
-            mu_q016: th.th_mu_q016,
-            r_cold_q12: 4170,
-            ntc: NtcCfg {
-                raw_ref: th.ntc_raw_ref,
-                t_ref_cc: th.ntc_t_ref_cc,
-                k1_q88: th.ntc_k1_q88,
-                k2_q24: th.ntc_k2_q24,
-            },
-            ..Default::default()
-        };
-        let seated = Sample {
-            v_mean: Some(1200),
-            i_meas: Some(400),
-            pos_counts: 2000,
-            ..Default::default()
-        };
-        let mut therm = WindingTherm::new();
-        for _ in 0..256 {
-            therm.ntc(2048, &cfg);
-            therm.step(&seated, &cfg);
-            assert_eq!(therm.finish(&cfg), UNSET_CC);
-        }
+        assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
     }
 
     /// The layout before the tables joined the image: the region alone as

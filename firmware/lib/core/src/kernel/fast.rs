@@ -4,7 +4,7 @@
 //! control table.
 
 use super::KernelTiming;
-use super::config::FastConfig;
+use super::config::KernelConfig;
 use super::current::{CurrentLoop, RailClamp};
 use super::duty_limit::DutyLimiter;
 use super::faults::{self, FaultLatch, OcDetector};
@@ -67,9 +67,9 @@ impl Command {
     /// applies to the reciprocal, so (clamp, recip) stay the contract pair
     /// even before the first seed. Runs at the first tick and at every RAIL
     /// phase, which is where a `duty_max_q15` write reaches it.
-    pub fn prepare_rail(&mut self, fc: &FastConfig) {
-        let vbus_eff = self.vbus_counts.max(fc.v_undervolt_counts);
-        self.rail = RailClamp::new(fc.current.duty_max_q15, vbus_eff);
+    pub fn prepare_rail(&mut self, cfg: &KernelConfig) {
+        let vbus_eff = self.vbus_counts.max(cfg.thermal.v_undervolt_counts);
+        self.rail = RailClamp::new(cfg.loop_current.duty_max_q15, vbus_eff);
     }
 }
 
@@ -191,7 +191,7 @@ impl Fast {
     /// flips (bang-bang bench test pins this).
     pub fn measure<T: TelStream>(
         &mut self,
-        fc: &FastConfig,
+        cfg: &KernelConfig,
         faults: &mut FaultLatch,
         tel: &mut T,
         shared: &Shared,
@@ -202,8 +202,8 @@ impl Fast {
         let sel = window::select(
             self.decay,
             ticks,
-            fc.i_window_min_ticks,
-            fc.v_floor_ticks[self.decay as usize],
+            cfg.i_window_min_ticks,
+            cfg.v_floor_ticks[self.decay as usize],
         );
         let zero = match self.bridge {
             Bridge::Drive => {
@@ -232,15 +232,15 @@ impl Fast {
             // 12-bit shunt codes under a settle gain < 2.0: |i| <= 8190
             self.i_meas_last = i as i16;
         }
-        let oc_over = i_meas.map(|i| i.unsigned_abs() > fc.oc_trip_counts as u32);
-        if self.oc.sample(oc_over, fc.oc_trip_ticks) {
+        let oc_over = i_meas.map(|i| i.unsigned_abs() > cfg.limits.oc_trip_counts as u32);
+        if self.oc.sample(oc_over, cfg.limits.oc_trip_ticks) {
             faults.raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
         }
 
         // the taps read physical va - vb; a reversed motor makes that the
         // negative of the logical drive direction every consumer expects.
         // m is 0 or -1: (v ^ m) - m negates without a branch
-        let m = fc.drive_polarity as i32 - 1;
+        let m = cfg.limits.drive_polarity as i32 - 1;
         let vdiff = window::vdiff_from_frame(frame, sel).map(|v| (v ^ m) - m);
         if let Some(vdiff) = vdiff {
             // 12-bit taps: |vdiff| <= 4095
@@ -283,7 +283,7 @@ impl Fast {
     pub fn drive(
         &mut self,
         m: &Measured,
-        fc: &FastConfig,
+        cfg: &KernelConfig,
         cmd: &Command,
         faults: &FaultLatch,
     ) -> MotorCmd {
@@ -328,12 +328,12 @@ impl Fast {
                     u_ff_vc,
                     &cmd.rail,
                     cmd.vbus_recip_q15,
-                    &fc.current,
+                    &cfg.loop_current,
                 );
                 self.duty_q15 = duty;
                 // closed-loop decay is fixed Slow (spec: config enum
                 // exists for OpenLoop identification only)
-                self.drive_cmd(duty, DecayMode::Slow, fc.drive_polarity)
+                self.drive_cmd(duty, DecayMode::Slow, cfg.limits.drive_polarity)
             }
         } else if let Drive::Brake = drive {
             // anti-hunt: park instead of dithering on friction; the frozen
@@ -356,7 +356,7 @@ impl Fast {
                     // the floor like the run edge does. So is a zero goal, which
                     // drives nothing: the held current restarts from 0 with it
                     if goal.signum() != (self.duty_q15 as i32).signum() {
-                        self.ol.reset(fc.ol_floor_q15);
+                        self.ol.reset(cfg.ol_floor_q15);
                         self.i_meas_last = 0;
                     }
                     let lim = if goal >= 0 { cmd.band.hi } else { cmd.band.lo };
@@ -368,7 +368,7 @@ impl Fast {
                         goal.unsigned_abs() as u16,
                         i_abs,
                         lim.unsigned_abs(),
-                        fc.ol_floor_q15,
+                        cfg.ol_floor_q15,
                         cmd.ol_base_q15,
                     ) as i16;
                     let mut duty = if goal < 0 { -mag } else { mag };
@@ -383,13 +383,13 @@ impl Fast {
                     self.duty_q15 = duty;
                     // a zeroed push still coasts on its momentum into the
                     // physical stop, so the wall brakes whatever the flag says
-                    if blocked || (duty == 0 && fc.ol_zero_brake) {
+                    if blocked || (duty == 0 && cfg.limits.openloop_zero_brake) {
                         // chip-side Drive{0, Slow} maps to coast; a winding short
                         // must be commanded explicitly
                         self.decay = DecayMode::Slow;
                         MotorCmd::Brake
                     } else {
-                        self.drive_cmd(duty, fc.ol_decay, fc.drive_polarity)
+                        self.drive_cmd(duty, cfg.limits.openloop_decay, cfg.limits.drive_polarity)
                     }
                 }
                 // Off; Closed took the branch above

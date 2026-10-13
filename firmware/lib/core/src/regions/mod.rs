@@ -29,13 +29,13 @@ pub mod telemetry_ext;
 
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
-    CalibKinematics, CalibMotor, CalibPot, CalibRegs, CalibSense, CalibSenseExt, CalibStamp,
-    CalibWinding,
+    CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
+    CalibStamp, CalibThermal, CalibWinding,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
-    ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
-    DecaySelect, StallResponse,
+    ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys, ConfigPosSoft, ConfigRegs,
+    ConfigThermal, ConfigThermalExt, StallResponse,
 };
 pub use control::{BootMode, ControlBurst, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
@@ -98,10 +98,10 @@ impl ControlTableCell {
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| {
             let cfg = &mut t.config;
-            cfg.pos_limits.pos_min_phys_counts = defaults.pos_min_phys_counts;
-            cfg.pos_limits.pos_max_phys_counts = defaults.pos_max_phys_counts;
-            cfg.pos_limits.pos_min_soft_counts = defaults.pos_min_phys_counts;
-            cfg.pos_limits.pos_max_soft_counts = defaults.pos_max_phys_counts;
+            cfg.pos_phys.pos_min_phys_counts = defaults.pos_min_phys_counts;
+            cfg.pos_phys.pos_max_phys_counts = defaults.pos_max_phys_counts;
+            cfg.pos_soft.pos_min_soft_counts = defaults.pos_min_phys_counts;
+            cfg.pos_soft.pos_max_soft_counts = defaults.pos_max_phys_counts;
             cfg.common.id = defaults.id;
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;
@@ -119,7 +119,7 @@ impl ControlTableCell {
             cfg.limits.current_limit_counts = current.current_limit_counts;
             cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
             cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
-            cfg.limits.stall_time_ms = config::DEFAULT_STALL_TIME_MS;
+            cfg.limits.stall_time_ticks = config::DEFAULT_STALL_TIME_TICKS;
             cfg.limits.stall_yield_counts = current.stall_yield_counts;
             cfg.limits.stall_release_counts = current.stall_release_counts;
             cfg.limits.stall_tau_trip_counts = current.stall_tau_trip_counts;
@@ -133,7 +133,7 @@ impl ControlTableCell {
             cfg.thermal_ext.rtherm_seat_band_counts = config::DEFAULT_RTHERM_SEAT_BAND_COUNTS;
             cfg.thermal_ext.rtherm_cold_band_q016 = config::DEFAULT_RTHERM_COLD_BAND_Q016;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
-            cfg.fault_cfg.pos_error_time_ms = config::DEFAULT_POS_ERROR_TIME_MS;
+            cfg.fault_cfg.pos_error_time_ticks = config::DEFAULT_POS_ERROR_TIME_TICKS;
             cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
             cfg.fault_cfg.sensor_bad_count = config::DEFAULT_SENSOR_BAD_COUNT;
         });
@@ -240,7 +240,7 @@ mod tests {
             table::RESPONSE_DEADLINE_US
         );
         assert_eq!(
-            config_addr::pos_limits::POS_MIN_PHYS_COUNTS,
+            config_addr::pos_phys::POS_MIN_PHYS_COUNTS,
             table::CONFIG_COMMON_END
         );
 
@@ -371,35 +371,34 @@ mod tests {
         );
     }
 
-    /// Pins the CALIB layout: the pot stops at the region front, the
-    /// host-written blocks contiguous through the stamp, the RO board facts
-    /// behind them.
+    /// Pins the CALIB layout: the kernel's blocks at the region front, then
+    /// the rest of the host-written blocks contiguous through the stamp, the
+    /// RO board facts behind them.
     #[test]
     fn calib_layout_keeps_the_host_written_blocks_contiguous() {
         use super::calib::addr::{
-            kinematics, motor, pot, sense, sense_ext, stamp, thermal, winding,
+            kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, stamp, thermal, winding,
         };
-        assert_eq!(pot::RAW_MIN, super::CALIB_BASE_ADDR);
-        assert_eq!(pot::RAW_MAX, 0x082);
-        assert_eq!(sense::SHUNT_R_MOHM, 0x084);
-        assert_eq!(winding::R0_Q12, 0x094);
-        assert_eq!(motor::KE_UVS_PER_RAD, 0x09C);
-        assert_eq!(motor::RECIP_KE_Q, 0x0A0);
-        assert_eq!(motor::KE_VPC_Q, 0x0AA);
-        assert_eq!(kinematics::ANGLE_MIN_CDEG, 0x0AC);
-        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0B0);
-        assert_eq!(stamp::PLANT_STAMP, 0x0B2);
-        assert_eq!(sense_ext::VBUS_DIV_TOP_OHM, 0x0B4);
-        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C0);
-        assert_eq!(thermal::TH_ALPHA_Q24, 0x0C2);
+        assert_eq!(motor::R_Q12, super::CALIB_BASE_ADDR);
+        assert_eq!(motor::KE_VPC_Q, 0x08A);
+        assert_eq!(winding::R0_Q12, 0x08C);
+        assert_eq!(thermal::TH_ALPHA_Q24, 0x08E);
+        assert_eq!(thermal::NTC_K2_Q24, 0x09A);
+        assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x09C);
+        assert_eq!(pot::RAW_MIN, 0x0A0);
+        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0A8);
+        assert_eq!(stamp::PLANT_STAMP, 0x0AA);
+        assert_eq!(sense::SHUNT_R_MOHM, 0x0AC);
+        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C8);
+        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CA);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
                 .filter(|d| d.addr >= lo && d.addr < hi)
                 .all(|d| d.writable)
         };
-        assert!(rw(winding::R0_Q12, stamp::PLANT_STAMP + 2));
-        assert!(!rw(sense_ext::VBUS_DIV_TOP_OHM, 0x0C2));
+        assert!(rw(motor::R_Q12, stamp::PLANT_STAMP + 2));
+        assert!(!rw(sense::SHUNT_R_MOHM, pwm::PWM_PERIOD_TICKS + 2));
     }
 
     /// `boot_mode` is an ABI pin: the burst block appends after

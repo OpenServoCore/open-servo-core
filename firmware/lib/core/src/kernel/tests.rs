@@ -7,7 +7,7 @@ use super::*;
 use crate::estimator::{OmegaSource, bemf, bias, window};
 use crate::math::q_mul;
 use crate::pos_lut;
-use crate::regions::config::{DecaySelect, StallResponse};
+use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
 use crate::tel::tick_flag;
 use crate::traits::{DecayMode, MotorCmd, Sensors};
@@ -26,7 +26,6 @@ const TIMING: KernelTiming = KernelTiming {
     recip_arr_q24: (1 << bemf::RECIP_ARR_SHIFT) / ARR as u32,
     tick_hz: 20_000,
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
-    ticks_per_ms_q16: 20 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 600,
     v_trough_min_ticks: 0,
@@ -78,8 +77,8 @@ fn last_cmd(k: &Kernel<FakeIo>) -> MotorCmd {
 fn seed(shared: &Shared) {
     shared.table.with_mut(|t| {
         let c = &mut t.config;
-        c.pos_limits.pos_min_soft_counts = 0;
-        c.pos_limits.pos_max_soft_counts = 4095;
+        c.pos_soft.pos_min_soft_counts = 0;
+        c.pos_soft.pos_max_soft_counts = 4095;
         c.loop_current.i_kp_q88 = 256;
         c.loop_current.i_ki_q412 = 200;
         c.loop_current.i_kaw_q412 = 2048;
@@ -96,13 +95,13 @@ fn seed(shared: &Shared) {
         c.limits.stall_response = StallResponse::Yield;
         c.limits.drive_polarity = true;
         c.limits.stall_omega_max_cps = 500;
-        c.limits.stall_time_ms = 50;
+        c.limits.stall_time_ticks = ms_ticks(50);
         c.limits.stall_yield_counts = 300;
         c.limits.stall_release_counts = 150;
         c.limits.stall_tau_trip_counts = 1200;
         c.limits.oc_trip_counts = 2400;
         c.limits.oc_trip_ticks = 4;
-        c.limits.openloop_decay = DecaySelect::Slow;
+        c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = false;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
@@ -115,7 +114,7 @@ fn seed(shared: &Shared) {
         // 0.5 cc per count is stable, 2.0 rails the filter
         c.fusion.l3_q88 = 128;
         c.fault_cfg.pos_error_counts = 400;
-        c.fault_cfg.pos_error_time_ms = 500;
+        c.fault_cfg.pos_error_time_ticks = ms_ticks(500);
         c.fault_cfg.sensor_delta_max = 256;
         c.fault_cfg.sensor_bad_count = 4;
         let cal = &mut t.calib;
@@ -135,10 +134,11 @@ fn seed(shared: &Shared) {
 }
 
 /// A committed CONFIG or CALIB write, as the dispatcher lands it: the table
-/// changes and the configuration generation moves.
+/// changes under an odd configuration count, even again after.
 fn write_config(sh: &Shared, f: impl FnOnce(&mut ControlTable)) {
+    sh.config_commit_begin();
     sh.table.with_mut(f);
-    sh.config_touch();
+    sh.config_commit_end();
 }
 
 /// Rail-tap counts that scale to exactly `vmotor` terminal counts.
@@ -338,7 +338,7 @@ fn permit_rig(sh: &Shared) -> Kernel<FakeIo> {
     sh.table.with_mut(|t| {
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.torque_enable = true;
-        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.pos_soft.pos_max_soft_counts = 3000;
     });
     let mut k = kernel();
     for _ in 0..400 {
@@ -706,7 +706,7 @@ fn openloop_duty_passthrough_clamped_with_decay() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
-        t.config.limits.openloop_decay = DecaySelect::Fast;
+        t.config.limits.openloop_decay = DecayMode::Fast;
     });
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS));
@@ -742,12 +742,12 @@ fn duty_max_write_caps_the_closed_loop_at_the_rail_phase() {
         k.on_scan(frame(2000, BIAS), &sh);
     }
     assert!(written_duty(&k) > 32000, "duty={}", written_duty(&k));
-    // the refresh leaves the clamp alone; the next RAIL phase prepares it
+    // the take leaves the clamp alone; the next RAIL phase prepares it
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
     run_to(&mut k, &sh, frame(2000, BIAS), phase::THERM_INSTALL);
     k.on_scan(frame(2000, BIAS), &sh);
-    assert_eq!(k.cfg.fast.current.duty_max_q15, 8000, "the refresh ran");
-    assert!(written_duty(&k) > 32000, "the refresh tick");
+    assert_eq!(k.cfg.loop_current.duty_max_q15, 8000, "the take ran");
+    assert!(written_duty(&k) > 32000, "the take tick");
     while k.phase != phase::RAIL {
         k.on_scan(frame(2000, BIAS), &sh);
         assert!(written_duty(&k) > 32000);
@@ -1192,9 +1192,9 @@ fn position_error_latches_after_persistence() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.goal_position = 3500;
         t.config.fault_cfg.pos_error_counts = 100;
-        t.config.fault_cfg.pos_error_time_ms = 10; // 20 medium ticks
+        t.config.fault_cfg.pos_error_time_ticks = ms_ticks(10); // 20 medium ticks
         // keep the stall path out of this test
-        t.config.limits.stall_time_ms = 60000;
+        t.config.limits.stall_time_ticks = ms_ticks(60000);
     });
     let mut k = kernel();
     // pot frozen at 500 while the profile marches away
@@ -1270,7 +1270,7 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     };
     // Fast decay: the trough IS the drive window. The decay lands at a
     // medium boundary, so it goes in ahead of the drive.
-    write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Fast);
+    write_config(&sh, |t| t.config.limits.openloop_decay = DecayMode::Fast);
     ticks(&mut k, &sh, frame(2000, BIAS), DECIM_MED as u32);
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
@@ -1292,7 +1292,7 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
         .with_mut(|t| t.control.lifecycle.goal_duty = i16::MAX);
     settle(&mut k, &sh, shifted());
     assert_eq!(published_bias(&sh), BIAS);
-    write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Slow);
+    write_config(&sh, |t| t.config.limits.openloop_decay = DecayMode::Slow);
     ticks(&mut k, &sh, shifted(), 3000);
     assert_eq!(drive_duty(&k), Some(i16::MAX));
     assert_eq!(published_bias(&sh), BIAS);
@@ -1885,7 +1885,7 @@ fn velocity_mode_tracks_a_ramp() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Velocity;
         // plenty of travel so the pot never rails
-        t.config.pos_limits.pos_max_soft_counts = 1_000_000;
+        t.config.pos_soft.pos_max_soft_counts = 1_000_000;
     });
     let mut k = kernel();
     let mut plant = Plant::new(100);
@@ -2132,25 +2132,15 @@ fn hold_freezes_and_drains_the_velocity_loop() {
     for _ in 0..2000 {
         run_plant(&mut k, &sh, &mut plant, 1);
         if k.phase == phase::VELOCITY + 1 && !k.medium.hold {
-            let vg = sh.table.with(|t| {
-                let v = &t.config.loop_velocity;
-                let m = &t.calib.motor;
-                VelocityGains {
-                    kp_q88: v.v_kp_q88,
-                    ki_q412: v.v_ki_q412,
-                    kaw_q412: v.v_kaw_q412,
-                    j_ff_q88: v.j_ff_q88,
-                    fric_fc_counts: m.fric_fc_counts,
-                    fric_fv_q016: m.fric_fv_q016,
-                }
-            });
+            let (lv, motor) = sh.table.with(|t| (t.config.loop_velocity, t.calib.motor));
             let fresh = VelocityLoop::new().step(
                 k.medium.omega_ref_q16,
                 k.medium.omega_hat,
                 k.medium.traj.alpha_star_q16(),
                 k.medium.traj.omega_star_q16(),
                 k.medium.i_band,
-                &vg,
+                &lv,
+                &motor,
             );
             assert_ne!(fresh, 0, "the wake must command something");
             assert_eq!(k.medium.i_ref_cc, fresh, "the hold left integrator charge");
@@ -2168,7 +2158,7 @@ fn current_mode_endstop_unwinds_duty_to_zero() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Current;
         t.control.lifecycle.goal_current = 300;
-        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.pos_soft.pos_max_soft_counts = 3000;
         t.config.fault_cfg.pos_error_counts = u16::MAX;
         t.config.limits.stall_tau_trip_counts = u16::MAX;
     });
@@ -2204,7 +2194,7 @@ fn velocity_mode_brakes_at_the_soft_wall() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Velocity;
         t.control.lifecycle.goal_velocity = 2000;
-        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.pos_soft.pos_max_soft_counts = 3000;
         t.config.fault_cfg.pos_error_counts = u16::MAX;
         t.config.limits.stall_tau_trip_counts = u16::MAX;
     });
@@ -2253,7 +2243,7 @@ fn openloop_endstop_zeroes_outbound_duty() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
-        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.pos_soft.pos_max_soft_counts = 3000;
         t.config.limits.stall_tau_trip_counts = u16::MAX;
     });
     let mut k = kernel();
@@ -2273,7 +2263,7 @@ fn openloop_endstop_zeroes_outbound_duty() {
     run_plant(&mut k, &sh, &mut plant, 2_000);
     assert_eq!(k.fast.duty_q15, -8000, "retreat from the wall blocked");
     // mirrored at the min wall, crossed in free flight like the top one
-    write_config(&sh, |t| t.config.pos_limits.pos_min_soft_counts = 500);
+    write_config(&sh, |t| t.config.pos_soft.pos_min_soft_counts = 500);
     run_plant(&mut k, &sh, &mut plant, 25_000);
     assert!(
         plant.pos() >= 450 && plant.pos() <= 500,
@@ -2373,7 +2363,7 @@ impl crate::tel::TelStream for HoldTel {
 
 /// The kernel holds the TX lane on every tick that runs a SLOW stage (due
 /// or finish) or a thermometer stage (an install or a side, each consuming
-/// its pending bit) and on no other: never a refresh stage's tick, never a
+/// its pending bit) and on no other: never a configuration take's tick, never a
 /// plain one. A tracked seat runs every stage, an install included.
 #[test]
 fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
@@ -2390,7 +2380,7 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
     );
     let hot = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hot);
-    // due, finish, install, side, refresh
+    // due, finish, install, side, configuration take
     let mut seen = [0u32; 5];
     for t in 0..BASE_FAST_TICKS {
         if t == BASE_FAST_TICKS / 2 {
@@ -2407,7 +2397,7 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
             before.slow_finish,
             stage && before.phase == phase::THERM_INSTALL,
             stage && before.phase == phase::THERM_SIDE,
-            before.refresh_staged != after.refresh_staged,
+            before.config_seq != after.config_seq,
         ];
         for (n, &hit) in seen.iter_mut().zip(&kind) {
             *n += hit as u32;
@@ -2495,11 +2485,11 @@ fn tick_block_carries_the_measured_window() {
     assert_eq!(t.i_tick_counts, -40);
 }
 
-// --- Configuration snapshot -----------------------------------------------
+// --- Configuration take ---------------------------------------------------
 
 /// The OpenLoop duty clamp the kernel holds.
 fn ol_max(k: &Kernel<FakeIo>) -> u16 {
-    k.cfg.fast.ol_duty_max_q15
+    k.cfg.loop_current.duty_max_q15
 }
 
 #[test]
@@ -2509,13 +2499,13 @@ fn first_tick_takes_the_configuration_without_a_write() {
     sh.table
         .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
     let mut k = kernel();
-    assert_eq!(sh.config_gen(), k.config_gen, "nothing moved the counter");
+    assert_eq!(sh.config_seq(), k.config_seq, "nothing moved the count");
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 5000);
-    assert_eq!(k.cfg.medium.limits.stall_time_ticks, 1000, "50 ms");
+    assert_eq!(k.cfg.limits.stall_time_ticks, 1000, "50 ms");
     assert_eq!(
         sh.table.with(|t| t.telemetry.limits.window_floor_q15),
-        k.cfg.fast.ol_floor_q15
+        k.cfg.ol_floor_q15
     );
 }
 
@@ -2534,15 +2524,15 @@ fn floor_inputs_are_read_only() {
 }
 
 #[test]
-fn refresh_keeps_the_floors_of_the_first_tick() {
+fn a_take_keeps_the_floors_of_the_first_tick() {
     let f = frame(2000, BIAS);
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
     k.on_scan(f, &sh);
     let floors = |k: &Kernel<FakeIo>| {
-        let fc = &k.cfg.fast;
-        (fc.ol_floor_q15, fc.v_floor_ticks, fc.v_floor_q15)
+        let c = &k.cfg;
+        (c.ol_floor_q15, c.v_floor_ticks, c.v_floor_q15)
     };
     let published = || {
         sh.table.with(|t| {
@@ -2561,12 +2551,12 @@ fn refresh_keeps_the_floors_of_the_first_tick() {
     for _ in 0..2 * DECIM_MED {
         k.on_scan(f, &sh);
     }
-    assert_eq!(ol_max(&k), 5000, "the refresh ran");
+    assert_eq!(ol_max(&k), 5000, "the take ran");
     assert_eq!((floors(&k), published()), booted);
 }
 
 #[test]
-fn dispatched_config_write_lands_at_the_refresh_stages() {
+fn dispatched_config_write_lands_at_the_take() {
     use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
     let sh = Shared::new();
     seed(&sh);
@@ -2577,38 +2567,39 @@ fn dispatched_config_write_lands_at_the_refresh_stages() {
     assert_eq!(sh.table.with(|t| t.config.loop_current.duty_max_q15), 5000);
     while k.phase != phase::THERM_INSTALL {
         k.on_scan(frame(2000, BIAS), &sh);
-        assert_eq!(ol_max(&k), 32767, "before the first stage");
+        assert_eq!(ol_max(&k), 32767, "before the take");
     }
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 5000);
 }
 
-/// A CONFIG write touching both halves: a fast field, and a medium field
-/// beside the Ke pair the belt and the boxcar read.
-fn write_both_halves(sh: &Shared) {
+/// A write across the span: a fast-path field, a medium field and the Ke
+/// pair the belt and the boxcar read.
+fn write_across_the_span(sh: &Shared) {
     write_config(sh, |t| {
         t.config.loop_current.duty_max_q15 = 5000;
-        t.config.limits.stall_time_ms = 20;
+        t.config.limits.stall_time_ticks = ms_ticks(20);
         t.calib.motor.recip_ke_q = 0;
     });
 }
 
-/// (fast half, medium half) new: duty_max, then stall time and the Ke pair.
-fn halves_new(k: &Kernel<FakeIo>) -> (bool, bool) {
-    let m = &k.cfg.medium;
+/// Which of the three fields the kernel holds new.
+fn fields_new(k: &Kernel<FakeIo>) -> [bool; 3] {
+    let c = &k.cfg;
     assert_eq!(
-        m.ke_unset,
-        m.recip_ke_q == 0,
+        c.ke_unset,
+        c.motor.recip_ke_q == 0,
         "the belt reads the boxcar's Ke"
     );
-    (
+    [
         ol_max(k) == 5000,
-        m.limits.stall_time_ticks == 400 && m.recip_ke_q == 0,
-    )
+        c.limits.stall_time_ticks == 400,
+        c.motor.recip_ke_q == 0,
+    ]
 }
 
 #[test]
-fn config_write_lands_whole_within_two_medium_periods() {
+fn config_write_lands_whole_at_one_tick_within_a_medium_period() {
     let f = frame(2000, BIAS);
     for at in 0..DECIM_MED {
         let sh = Shared::new();
@@ -2617,37 +2608,24 @@ fn config_write_lands_whole_within_two_medium_periods() {
         for _ in 0..DECIM_MED + at {
             k.on_scan(f, &sh);
         }
-        write_both_halves(&sh);
+        write_across_the_span(&sh);
         let mut ticks = 0;
-        while halves_new(&k) != (true, true) {
-            let before = halves_new(&k);
+        while fields_new(&k) != [true; 3] {
             let p = k.phase;
             k.on_scan(f, &sh);
             ticks += 1;
-            let after = halves_new(&k);
-            // the fast half moves at its stage, the medium half at its own,
-            // so CONTROL never reads one half without the other
+            let after = fields_new(&k);
             assert!(
-                after.0 == before.0 || p == phase::THERM_INSTALL,
-                "write at {at}"
+                after == [false; 3] || (after == [true; 3] && p == phase::THERM_INSTALL),
+                "write at {at}: {after:?} after phase {p}"
             );
-            assert!(
-                after.1 == before.1 || p == phase::THERM_SIDE,
-                "write at {at}"
-            );
-            if p == phase::CONTROL {
-                assert_eq!(before.0, before.1, "write at {at}");
-            }
         }
-        assert!(
-            ticks <= 2 * DECIM_MED as u32,
-            "write at {at}: {ticks} ticks"
-        );
+        assert!(ticks <= DECIM_MED as u32, "write at {at}: {ticks} ticks");
     }
 }
 
 #[test]
-fn unmoved_generation_keeps_the_snapshot() {
+fn unmoved_count_keeps_the_configuration() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
@@ -2662,53 +2640,132 @@ fn unmoved_generation_keeps_the_snapshot() {
 }
 
 #[test]
-fn a_write_during_either_stage_refreshes_again() {
+fn a_write_after_the_take_takes_again() {
     let f = frame(2000, BIAS);
-    for stage in [phase::THERM_INSTALL, phase::THERM_SIDE] {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    k.on_scan(f, &sh);
+    write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
+    run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+    k.on_scan(f, &sh);
+    assert_eq!(ol_max(&k), 6000);
+    // a commit after the take: the count it recorded is behind, so the next
+    // THERM_INSTALL copies the span again
+    write_config(&sh, |t| t.config.limits.stall_time_ticks = ms_ticks(20));
+    sh.table
+        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+    assert_ne!(k.config_seq, sh.config_seq());
+    for _ in 0..DECIM_MED {
+        k.on_scan(f, &sh);
+    }
+    assert_eq!(ol_max(&k), 5000);
+    assert_eq!(k.cfg.limits.stall_time_ticks, 400);
+    assert_eq!(k.config_seq, sh.config_seq());
+}
+
+/// The kernel's span as its bytes.
+fn span_bytes(k: &Kernel<FakeIo>) -> [u8; SPAN_BYTES] {
+    // SAFETY: the span is the front of the repr(C) `KernelConfig`
+    // (`config` const asserts), every byte initialized.
+    unsafe { (&raw const k.cfg).cast::<[u8; SPAN_BYTES]>().read() }
+}
+
+const SPAN_BYTES: usize = (SPAN_END - SPAN_START) as usize;
+
+/// The next committed set: the table's span new in every word, every value
+/// still valid for its field.
+fn next_set(sh: &Shared) -> [u32; SPAN_BYTES / 4] {
+    use crate::regions::config::addr::limits::OPENLOOP_ZERO_BRAKE;
+    let mut words = [0u32; SPAN_BYTES / 4];
+    sh.table.with(|t| {
+        // SAFETY: the table is repr(C) bytes, the span word-aligned.
+        let p = (t as *const ControlTable).cast::<u32>();
+        for (i, w) in words.iter_mut().enumerate() {
+            *w = unsafe { p.add(SPAN_START as usize / 4 + i).read() };
+        }
+    });
+    let bool_word = (OPENLOOP_ZERO_BRAKE - SPAN_START) as usize / 4;
+    for (i, w) in words.iter_mut().enumerate() {
+        // byte 0 of each word is a plain integer, but for the one bool, whose
+        // neighbour is reserved
+        let shift = if i == bool_word { 8 } else { 0 };
+        *w = w.wrapping_add(1 << shift);
+    }
+    words
+}
+
+fn store_word(sh: &Shared, i: usize, w: u32) {
+    // SAFETY: as `next_set`; the word holds valid values for its fields.
+    sh.table.with_mut(|t| unsafe {
+        (t as *mut ControlTable)
+            .cast::<u32>()
+            .add(SPAN_START as usize / 4 + i)
+            .write(w)
+    });
+}
+
+/// A THERM_INSTALL tick after every store of a whole-span commit, with the
+/// set committed before it not yet taken: the kernel keeps the set it holds
+/// while the count is odd, never a mix, and takes the newest whole set at
+/// the first THERM_INSTALL after the commit ends.
+#[test]
+fn kernel_never_reads_a_set_under_commit() {
+    let f = frame(2000, BIAS);
+    for stores in 0..=SPAN_BYTES / 4 {
         let sh = Shared::new();
         seed(&sh);
         let mut k = kernel();
         k.on_scan(f, &sh);
-        write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
-        run_to(&mut k, &sh, f, stage);
-        k.on_scan(f, &sh);
-        assert_eq!(ol_max(&k), 6000);
-        // the stage's copy finished ahead of a commit: the generation it
-        // recorded is behind, so the next first stage copies both halves
-        write_config(&sh, |t| t.config.limits.stall_time_ms = 20);
-        sh.table
-            .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
-        assert_ne!(k.config_gen, sh.config_gen());
-        for _ in 0..2 * DECIM_MED {
-            k.on_scan(f, &sh);
+        let held = span_bytes(&k);
+        // a whole set committed and not yet taken
+        let b = next_set(&sh);
+        sh.config_commit_begin();
+        for (i, &w) in b.iter().enumerate() {
+            store_word(&sh, i, w);
         }
-        assert_eq!(ol_max(&k), 5000, "stage {stage}");
-        assert_eq!(k.cfg.medium.limits.stall_time_ticks, 400, "stage {stage}");
-        assert_eq!(k.config_gen, sh.config_gen());
+        sh.config_commit_end();
+        // the next one under way at THERM_INSTALL, `stores` words in
+        run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+        let c = next_set(&sh);
+        sh.config_commit_begin();
+        for (i, &w) in c.iter().enumerate().take(stores) {
+            store_word(&sh, i, w);
+        }
+        k.on_scan(f, &sh);
+        assert_eq!(span_bytes(&k), held, "{stores} stores in");
+        for (i, &w) in c.iter().enumerate().skip(stores) {
+            store_word(&sh, i, w);
+        }
+        sh.config_commit_end();
+        run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+        k.on_scan(f, &sh);
+        let want: heapless::Vec<u8, SPAN_BYTES> = c.iter().flat_map(|w| w.to_ne_bytes()).collect();
+        assert_eq!(span_bytes(&k)[..], want[..], "{stores} stores in");
+        assert_eq!(k.config_seq, sh.config_seq());
     }
 }
 
 #[test]
-fn each_refresh_stage_flips_the_probe_tag() {
+fn a_take_moves_the_probe_tag_at_therm_install_alone() {
     let f = frame(2000, BIAS);
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
     k.on_scan(f, &sh);
     run_to(&mut k, &sh, f, phase::CONTROL);
-    write_both_halves(&sh);
-    let mut flips = [0u32; DECIM_MED as usize];
+    write_across_the_span(&sh);
+    let mut moves = [0u32; DECIM_MED as usize];
     for _ in 0..2 * DECIM_MED {
         let before = k.probe_tags();
         k.on_scan(f, &sh);
-        if k.probe_tags().refresh_staged != before.refresh_staged {
-            flips[before.phase as usize] += 1;
+        if k.probe_tags().config_seq != before.config_seq {
+            moves[before.phase as usize] += 1;
         }
     }
     let mut want = [0; DECIM_MED as usize];
     want[phase::THERM_INSTALL as usize] = 1;
-    want[phase::THERM_SIDE as usize] = 1;
-    assert_eq!(flips, want);
+    assert_eq!(moves, want);
 }
 
 // --- Host writes land at the CONTROL phase ---------------------------------
@@ -2793,7 +2850,7 @@ fn openloop_8000(t: &mut ControlTable) {
 
 /// The OpenLoop restart: from the window floor, one slew step per tick.
 fn restarts_from_the_floor(r: &Phased, n: usize) -> bool {
-    let floor = r.k.cfg.fast.ol_floor_q15 as i16;
+    let floor = r.k.cfg.ol_floor_q15 as i16;
     let slew = (n - r.boundary + 1) as i16 * duty_limit::UP_Q15 as i16;
     r.cmds[n] == (3, (floor + slew).min(8000))
 }
@@ -2953,7 +3010,7 @@ fn the_slow_block_runs_every_32_periods() {
 }
 
 #[test]
-fn a_refresh_stage_takes_the_spare_phase_and_the_thermometer_waits_a_period() {
+fn a_take_owns_therm_install_and_the_install_waits_a_period() {
     use crate::estimator::thermal::stage;
     let f = frame(2000, BIAS);
     let sh = Shared::new();
@@ -2963,15 +3020,26 @@ fn a_refresh_stage_takes_the_spare_phase_and_the_thermometer_waits_a_period() {
     for _ in 0..=2 * DECIM_MED {
         k.on_scan(f, &sh);
     }
-    write_config(&sh, |t| t.config.limits.stall_time_ms = 20);
-    run_to(&mut k, &sh, f, phase::THERM_SIDE);
-    k.medium.thermal.request(stage::NTC);
+    write_config(&sh, |t| t.config.limits.stall_time_ticks = ms_ticks(20));
+    run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+    k.medium.thermal.request(stage::INSTALL | stage::NTC);
     k.on_scan(f, &sh);
-    assert_eq!(k.cfg.medium.limits.stall_time_ticks, 400, "the refresh ran");
-    assert_ne!(k.medium.thermal.pending() & stage::NTC, 0, "the NTC waits");
-    run_to(&mut k, &sh, f, phase::THERM_SIDE);
+    assert_eq!(k.cfg.limits.stall_time_ticks, 400, "the take ran");
+    let pending = k.medium.thermal.pending();
+    assert_ne!(pending & stage::INSTALL, 0, "the install waits");
     k.on_scan(f, &sh);
-    assert_eq!(k.medium.thermal.pending() & stage::NTC, 0, "a period later");
+    assert_eq!(
+        k.medium.thermal.pending() & stage::NTC,
+        0,
+        "THERM_SIDE is its own"
+    );
+    run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+    k.on_scan(f, &sh);
+    assert_eq!(
+        k.medium.thermal.pending() & stage::INSTALL,
+        0,
+        "a period later"
+    );
 }
 
 /// The SLOW block's stages land one per period: the due stage, the finish

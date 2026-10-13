@@ -33,66 +33,66 @@ pub mod config {
     /// 0 = a stall latches a fault, 1 = it folds the limit to the yield.
     pub const STALL_RESPONSE: Reg = reg(0x004a, 1);
     pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
-    pub const STALL_TIME_MS: Reg = reg(0x004e, 2);
-    pub const STALL_YIELD_COUNTS: Reg = reg(0x0050, 2);
+    pub const STALL_TIME_TICKS: Reg = reg(0x004c, 4);
+    pub const STALL_YIELD_COUNTS: Reg = reg(0x0052, 2);
     /// The fold holds while the disturbance estimate reads this or more.
-    pub const STALL_RELEASE_COUNTS: Reg = reg(0x0052, 2);
-    pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0054, 2);
-    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
-    pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0064, 2);
-    pub const RTHERM_SEAT_BAND_COUNTS: Reg = reg(0x0076, 2);
-    pub const RTHERM_COLD_BAND_Q016: Reg = reg(0x0078, 2);
-    pub const L1_Q016: Reg = reg(0x0068, 2);
-    pub const L2_Q88: Reg = reg(0x006a, 2);
-    pub const L3_Q88: Reg = reg(0x006c, 2);
+    pub const STALL_RELEASE_COUNTS: Reg = reg(0x0054, 2);
+    pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0056, 2);
+    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
+    pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0068, 2);
+    pub const RTHERM_SEAT_BAND_COUNTS: Reg = reg(0x006a, 2);
+    pub const RTHERM_COLD_BAND_Q016: Reg = reg(0x006c, 2);
+    pub const L1_Q016: Reg = reg(0x006e, 2);
+    pub const L2_Q88: Reg = reg(0x0070, 2);
+    pub const L3_Q88: Reg = reg(0x0072, 2);
 }
 
 pub mod calib {
     use super::{Reg, reg};
 
+    pub const R_Q12: Reg = reg(0x0080, 2);
+    pub const RECIP_KE_Q: Reg = reg(0x0082, 2);
+    pub const B_I_Q313: Reg = reg(0x0084, 2);
+    pub const FRIC_FC_COUNTS: Reg = reg(0x0086, 2);
+    pub const FRIC_FV_Q016: Reg = reg(0x0088, 2);
+    pub const KE_VPC_Q: Reg = reg(0x008a, 2);
+    pub const R0_Q12: Reg = reg(0x008c, 2);
+    pub const TH_ALPHA_Q24: Reg = reg(0x008e, 2);
+    pub const TH_G_Q016: Reg = reg(0x0090, 2);
+    pub const TH_MU_Q016: Reg = reg(0x0092, 2);
+    pub const NTC_RAW_REF: Reg = reg(0x0094, 2);
+    pub const NTC_T_REF_CC: Reg = reg(0x0096, 2);
+    pub const NTC_K1_Q88: Reg = reg(0x0098, 2);
+    pub const NTC_K2_Q24: Reg = reg(0x009a, 2);
+    pub const FRIC_BREAKAWAY_COUNTS: Reg = reg(0x009e, 2);
     /// The pot stops: the angle-map ends and the position table's validation
     /// domain.
-    pub const RAW_MIN: Reg = reg(0x0080, 2);
-    pub const RAW_MAX: Reg = reg(0x0082, 2);
-    pub const SHUNT_R_MOHM: Reg = reg(0x0084, 2);
-    pub const GAIN_MILLI: Reg = reg(0x0086, 2);
-    pub const VMOTOR_DIV_TOP: Reg = reg(0x0088, 2);
-    pub const VMOTOR_DIV_BOT: Reg = reg(0x008a, 2);
-    pub const VDD_MV: Reg = reg(0x008c, 2);
-    pub const TICK_HZ: Reg = reg(0x008e, 2);
-    pub const I_WINDOW_MIN_TICKS: Reg = reg(0x0090, 2);
-    pub const V_WINDOW_MIN_TICKS: Reg = reg(0x0092, 2);
-    pub const R0_Q12: Reg = reg(0x0094, 2);
-    pub const R_Q12: Reg = reg(0x009e, 2);
-    pub const RECIP_KE_Q: Reg = reg(0x00a0, 2);
-    pub const B_I_Q313: Reg = reg(0x00a2, 2);
-    pub const FRIC_FC_COUNTS: Reg = reg(0x00a4, 2);
-    pub const FRIC_FV_Q016: Reg = reg(0x00a6, 2);
-    pub const FRIC_BREAKAWAY_COUNTS: Reg = reg(0x00a8, 2);
-    pub const KE_VPC_Q: Reg = reg(0x00aa, 2);
-    pub const ANGLE_MIN_CDEG: Reg = reg(0x00ac, 2);
-    pub const ANGLE_MAX_CDEG: Reg = reg(0x00ae, 2);
-    pub const GEAR_RATIO_CENTI: Reg = reg(0x00b0, 2);
+    pub const RAW_MIN: Reg = reg(0x00a0, 2);
+    pub const RAW_MAX: Reg = reg(0x00a2, 2);
+    pub const ANGLE_MIN_CDEG: Reg = reg(0x00a4, 2);
+    pub const ANGLE_MAX_CDEG: Reg = reg(0x00a6, 2);
+    pub const GEAR_RATIO_CENTI: Reg = reg(0x00a8, 2);
     /// The plant stamp over the descriptor's covered list plus the effective
     /// position table; 0 = never stamped. Firmware verifies a torque-off
     /// write of it and at boot and SAVE (`data_flags` STAMP_MISMATCH).
-    pub const PLANT_STAMP: Reg = reg(0x00b2, 2);
-    pub const VBUS_DIV_TOP_OHM: Reg = reg(0x00b4, 2);
-    pub const VBUS_DIV_BOT_OHM: Reg = reg(0x00b6, 2);
-    pub const NTC_PULLUP_OHM: Reg = reg(0x00b8, 2);
-    pub const NTC_R25_OHM: Reg = reg(0x00ba, 2);
-    pub const NTC_BETA: Reg = reg(0x00bc, 2);
-    pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x00be, 2);
-    pub const RAIL_DROP_MV: Reg = reg(0x00c0, 2);
-    pub const TH_ALPHA_Q24: Reg = reg(0x00c2, 2);
-    pub const TH_G_Q016: Reg = reg(0x00c4, 2);
-    pub const TH_MU_Q016: Reg = reg(0x00c6, 2);
-    pub const NTC_RAW_REF: Reg = reg(0x00c8, 2);
-    pub const NTC_T_REF_CC: Reg = reg(0x00ca, 2);
-    pub const NTC_K1_Q88: Reg = reg(0x00cc, 2);
-    pub const NTC_K2_Q24: Reg = reg(0x00ce, 2);
+    pub const PLANT_STAMP: Reg = reg(0x00aa, 2);
+    pub const SHUNT_R_MOHM: Reg = reg(0x00ac, 2);
+    pub const GAIN_MILLI: Reg = reg(0x00ae, 2);
+    pub const VMOTOR_DIV_TOP: Reg = reg(0x00b0, 2);
+    pub const VMOTOR_DIV_BOT: Reg = reg(0x00b2, 2);
+    pub const VDD_MV: Reg = reg(0x00b4, 2);
+    pub const TICK_HZ: Reg = reg(0x00b6, 2);
+    pub const I_WINDOW_MIN_TICKS: Reg = reg(0x00b8, 2);
+    pub const V_WINDOW_MIN_TICKS: Reg = reg(0x00ba, 2);
+    pub const VBUS_DIV_TOP_OHM: Reg = reg(0x00bc, 2);
+    pub const VBUS_DIV_BOT_OHM: Reg = reg(0x00be, 2);
+    pub const NTC_PULLUP_OHM: Reg = reg(0x00c0, 2);
+    pub const NTC_R25_OHM: Reg = reg(0x00c2, 2);
+    pub const NTC_BETA: Reg = reg(0x00c4, 2);
+    pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x00c6, 2);
+    pub const RAIL_DROP_MV: Reg = reg(0x00c8, 2);
     /// The PWM period, compare counts: TEL `duty_counts`' full scale. RO.
-    pub const PWM_PERIOD_TICKS: Reg = reg(0x00d0, 2);
+    pub const PWM_PERIOD_TICKS: Reg = reg(0x00ca, 2);
 }
 
 pub mod control {
@@ -230,7 +230,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("current_limit_counts", config::CURRENT_LIMIT_COUNTS),
     ("stall_response", config::STALL_RESPONSE),
     ("drive_polarity", config::DRIVE_POLARITY),
-    ("stall_time_ms", config::STALL_TIME_MS),
+    ("stall_time_ticks", config::STALL_TIME_TICKS),
     ("stall_yield_counts", config::STALL_YIELD_COUNTS),
     ("stall_release_counts", config::STALL_RELEASE_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),

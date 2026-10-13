@@ -5,7 +5,7 @@
 //! is written by the phase that computes it and read by the later phases
 //! and by the fast half.
 
-use super::config::{FastConfig, KernelConfig, MediumConfig};
+use super::config::KernelConfig;
 use super::fast::{Command, Drive, Fast, Measured};
 use super::faults::{self, Detectors, FaultLatch};
 use super::limits::{self, IBand, LimitState};
@@ -38,13 +38,12 @@ pub mod phase {
     /// Estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
     /// The period after the thermometer's finish: the install of a
-    /// reference it froze; the first stage of a configuration refresh takes
-    /// it first. A stage whose phase another stage takes waits a period:
-    /// its pending bit carries it.
+    /// reference it froze; a configuration take has it first. A stage whose
+    /// phase another stage takes waits a period: its pending bit carries
+    /// it.
     pub const THERM_INSTALL: u8 = 8;
     /// The NTC the period before a SLOW tick; the period after the finish,
-    /// the derate from its temperature and the cold check after an install;
-    /// the second refresh stage takes it first.
+    /// the derate from its temperature and the cold check after an install.
     pub const THERM_SIDE: u8 = 9;
 }
 
@@ -172,7 +171,7 @@ impl Medium {
     /// thermometer at the NTC ahead of the first SLOW tick.
     pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig) {
         self.fusion.seed(pos_q4);
-        self.thermal.ntc(ntc_raw, &cfg.medium.therm);
+        self.thermal.ntc(ntc_raw, &cfg.therm);
     }
 
     /// Phase `k` of the medium chain (`phase`), on this tick's sample;
@@ -212,11 +211,10 @@ impl Medium {
         fast: &mut Fast,
         cmd: &mut Command,
     ) {
-        let fc = &cfg.fast;
         self.ctl = Control::read(shared);
-        self.admit(&cfg.medium, shared, faults, fast);
-        self.edges(raw_pos, fc, shared, faults, fast);
-        cmd.drive = self.drive(fc, faults);
+        self.admit(cfg, shared, faults, fast);
+        self.edges(raw_pos, cfg, shared, faults, fast);
+        cmd.drive = self.drive(cfg, faults);
         // the resets of an edge reach the fast half with the drive they
         // change
         cmd.i_ref_cc = self.i_ref_cc;
@@ -225,7 +223,7 @@ impl Medium {
     /// The torque enable edge, the data-state entry check and the Ke belt.
     fn admit(
         &mut self,
-        mc: &MediumConfig,
+        cfg: &KernelConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
@@ -259,7 +257,9 @@ impl Medium {
         // Physics belt: a closed loop on a zero Ke runs open (the boxcar
         // yields nothing, the current loop decouples nothing), whatever the
         // flags say - a live write of 0 into a running loop stops it here.
-        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && mc.ke_unset
+        if life.torque_enable
+            && matches!(life.mode, Mode::Velocity | Mode::Position)
+            && cfg.ke_unset
         {
             faults.raise(faults::BIT_DATA, faults::CODE_DATA);
         }
@@ -269,7 +269,7 @@ impl Medium {
     fn edges(
         &mut self,
         raw_pos: u16,
-        fc: &FastConfig,
+        cfg: &KernelConfig,
         shared: &Shared,
         faults: &FaultLatch,
         fast: &mut Fast,
@@ -288,7 +288,7 @@ impl Medium {
             }
             fast.reset_current_loop();
             self.vel.reset();
-            fast.reset_limiter(fc.ol_floor_q15);
+            fast.reset_limiter(cfg.ol_floor_q15);
             self.i_ref_cc = 0;
             self.omega_ref_q16 = 0;
             self.hold = false;
@@ -297,7 +297,7 @@ impl Medium {
         if run && life.mode != self.mode_prev {
             // mode change mid-run: reference = estimate, at rest
             self.traj.reseed(self.fusion.theta_q16());
-            fast.reset_limiter(fc.ol_floor_q15);
+            fast.reset_limiter(cfg.ol_floor_q15);
             self.hold = false;
         }
         self.mode_prev = life.mode;
@@ -306,14 +306,14 @@ impl Medium {
 
     /// The drive kind the fast half runs: off, the hold's park, OpenLoop
     /// at its clamped goal, or the current loop.
-    fn drive(&self, fc: &FastConfig, faults: &FaultLatch) -> Drive {
+    fn drive(&self, cfg: &KernelConfig, faults: &FaultLatch) -> Drive {
         let life = &self.ctl.life;
         if !life.torque_enable || faults.mask() != 0 {
             return Drive::Off;
         }
         match life.mode {
             Mode::OpenLoop => {
-                let max = fc.ol_duty_max_q15 as i32;
+                let max = cfg.loop_current.duty_max_q15 as i32;
                 Drive::OpenLoop {
                     goal_q15: (life.goal_duty as i32).clamp(-max, max),
                 }
@@ -322,7 +322,7 @@ impl Medium {
             // Ke decoupling rides the profile, not an estimate
             // (`current::u_ff_vc`); Current mode has no profile
             Mode::Velocity | Mode::Position => Drive::Closed {
-                u_ff_vc: current::u_ff_vc(self.traj.omega_star_q16(), &fc.current),
+                u_ff_vc: current::u_ff_vc(self.traj.omega_star_q16(), cfg.motor.ke_vpc_q),
             },
             Mode::Current => Drive::Closed { u_ff_vc: 0 },
         }
@@ -330,16 +330,21 @@ impl Medium {
 
     /// OBSERVER, on this tick's sample.
     fn observe(&mut self, raw_pos: u16, cfg: &KernelConfig, shared: &Shared, fast: &mut Fast) {
-        let mc = &cfg.medium;
         // the band gain is the interval this sample linearized in
         let (pos, band_gain_q4) = if self.ctl.lut_live {
             shared.pos_lut_q4_band_gain(raw_pos)
         } else {
             (pos_lut::identity_q4(raw_pos), pos_lut::GRID as u16)
         };
-        self.omega_bemf = fast.close_bemf_half(mc.r_q12, mc.recip_ke_q, self.recip_arr_q24);
-        self.fusion
-            .step(fast.i_meas_last() as i32, pos, self.dt_med_q32, &mc.fusion);
+        let m = &cfg.motor;
+        self.omega_bemf = fast.close_bemf_half(m.r_q12, m.recip_ke_q, self.recip_arr_q24);
+        self.fusion.step(
+            fast.i_meas_last() as i32,
+            pos,
+            self.dt_med_q32,
+            &cfg.fusion,
+            m,
+        );
         // The observer's omega keeps the rest-shaped consumers (stall
         // verdict, thermometer gate): it is always there and reads small at
         // rest, where the boxcar has no window at all.
@@ -352,32 +357,32 @@ impl Medium {
         if !self.run {
             return;
         }
-        let mc = &cfg.medium;
+        let (lp, soft) = (&cfg.loop_position, &cfg.pos_soft);
         let life = &self.ctl.life;
         let theta_hat = self.fusion.theta_q16();
         match life.mode {
             Mode::Position => {
                 self.traj
-                    .step_position(life.goal_position, self.dt_med_q32, &mc.traj);
+                    .step_position(life.goal_position, self.dt_med_q32, lp, soft);
                 let out = position::step(
                     self.traj.theta_star_q16(),
                     self.traj.omega_star_q16(),
                     theta_hat,
                     self.band_gain_q4,
-                    &mc.position,
+                    lp,
                 );
                 self.omega_ref_q16 = out.omega_ref_q16;
                 self.hold = out.hold;
             }
             Mode::Velocity => {
                 self.traj
-                    .step_velocity(life.goal_velocity, theta_hat, &mc.traj);
+                    .step_velocity(life.goal_velocity, theta_hat, lp, soft);
                 self.omega_ref_q16 = self.traj.omega_star_q16();
                 self.hold = false;
             }
             Mode::Current | Mode::OpenLoop => self.hold = false,
         }
-        cmd.drive = self.drive(&cfg.fast, faults);
+        cmd.drive = self.drive(cfg, faults);
     }
 
     /// LIMITS: the band, the OpenLoop base duty, the stall verdict.
@@ -388,7 +393,6 @@ impl Medium {
         faults: &mut FaultLatch,
         fast: &mut Fast,
     ) {
-        let (fc, mc) = (&cfg.fast, &cfg.medium);
         let life = &self.ctl.life;
         // pinned = last command sat at a nonzero ceiling, in OpenLoop the
         // duty ceiling held under the goal
@@ -413,21 +417,23 @@ impl Medium {
             self.fusion.tau_d_counts().unsigned_abs(),
             self.fusion.theta_q16() >> 16,
             permit,
-            &mc.limits,
+            &cfg.limits,
+            &cfg.pos_soft,
         );
         self.i_band = band;
         // the stall-safe duty lim x R / vbus: winding R alone, so it errs low
         // by the bridge and shunt; unset R keeps it at the floor
-        self.ol_base_q15 = if mc.r_q12 == 0 {
-            fc.ol_floor_q15
+        let r_q12 = cfg.motor.r_q12;
+        self.ol_base_q15 = if r_q12 == 0 {
+            cfg.ol_floor_q15
         } else {
             let lim = if life.goal_duty >= 0 {
                 band.hi
             } else {
                 band.lo
             };
-            let v = q_mul_u(lim.unsigned_abs(), mc.r_q12 as u32, 12);
-            q_mul_u(v, self.vbus.recip_q15(), 15).min(fc.ol_floor_q15 as u32) as u16
+            let v = q_mul_u(lim.unsigned_abs(), r_q12 as u32, 12);
+            q_mul_u(v, self.vbus.recip_q15(), 15).min(cfg.ol_floor_q15 as u32) as u16
         };
         if self.run && self.limits.stall_fault_pending() {
             faults.raise(faults::BIT_STALL, faults::CODE_STALL);
@@ -465,7 +471,8 @@ impl Medium {
                         self.traj.alpha_star_q16(),
                         self.traj.omega_star_q16(),
                         self.i_band,
-                        &cfg.medium.velocity,
+                        &cfg.loop_velocity,
+                        &cfg.motor,
                     );
                 }
                 // directional band: an endstop blocks only inward goals;
@@ -488,16 +495,18 @@ impl Medium {
         faults: &mut FaultLatch,
         cmd: &mut Command,
     ) {
-        let (fc, mc) = (&cfg.fast, &cfg.medium);
-        self.vbus.step(frame.vbus_raw(), fc.v_undervolt_counts);
+        let fault_cfg = &cfg.fault_cfg;
+        self.vbus
+            .step(frame.vbus_raw(), cfg.thermal.v_undervolt_counts);
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
-        cmd.prepare_rail(fc);
+        cmd.prepare_rail(cfg);
         // raw-pot sanity screen runs in every mode, torque-off included
-        if self
-            .det
-            .sensor_sample(frame.pos(), mc.sensor_delta_max, mc.sensor_bad_count)
-        {
+        if self.det.sensor_sample(
+            frame.pos(),
+            fault_cfg.sensor_delta_max,
+            fault_cfg.sensor_bad_count,
+        ) {
             faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
         }
         // tracking-error persistence: only meaningful with a live profile
@@ -508,10 +517,10 @@ impl Medium {
                 .theta_star_q16()
                 .saturating_sub(self.fusion.theta_q16())
                 .unsigned_abs()
-                > (mc.pos_error_counts as u32) << 16;
+                > (fault_cfg.pos_error_counts as u32) << 16;
         if self
             .det
-            .pos_err_sample(pos_err_over, mc.pos_error_time_ticks)
+            .pos_err_sample(pos_err_over, fault_cfg.pos_error_time_ticks)
         {
             faults.raise(faults::BIT_POSITION_ERROR, faults::CODE_POSITION_ERROR);
         }
@@ -539,7 +548,6 @@ impl Medium {
     }
 
     fn slow_due(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
-        let (fc, mc) = (&cfg.fast, &cfg.medium);
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
         // v_mean needs the taps' window valid (bemf RECIP_ARR contract)
         let v_mean = m.vdiff.map(|vdiff| {
@@ -554,26 +562,25 @@ impl Medium {
                 v_mean,
                 i_meas: m.i_meas,
                 omega_hat_cps: self.fusion.omega_q16() >> 16,
-                ke_vpc_q: fc.current.ke_q412,
+                ke_vpc_q: cfg.motor.ke_vpc_q,
                 pos_counts: self.fusion.theta_q16() >> 16,
             },
-            &mc.therm,
+            &cfg.therm,
         );
         // the rail tap samples drive or not, so a held sag never outlives the
         // sag itself: ack clears once the rail is back
-        if self.vbus.vbus_counts() < fc.v_undervolt_counts {
+        if self.vbus.vbus_counts() < cfg.thermal.v_undervolt_counts {
             faults.raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
         }
     }
 
     fn slow_finish(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch) {
-        let mc = &cfg.medium;
-        let t_cc = self.thermal.finish(&mc.therm);
+        let t_cc = self.thermal.finish(&cfg.therm);
         // the fold reads the derate from the next period's LIMITS on, so it
         // waits for THERM_SIDE; UNSET_CC sits under every threshold: no
         // derate, no cutoff
         self.thermal.request(thermal::stage::DERATE);
-        if t_cc >= mc.limits.cutoff_cc {
+        if t_cc >= cfg.thermal.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
         }
     }
@@ -588,9 +595,9 @@ impl Medium {
         }
         if self.thermal.take(thermal::stage::DERATE) {
             self.limits
-                .update_derate(self.thermal.t_cc(), &cfg.medium.limits);
+                .update_derate(self.thermal.t_cc(), &cfg.limits, &cfg.thermal);
         }
-        self.thermal.side(ntc_raw, &cfg.medium.therm);
+        self.thermal.side(ntc_raw, &cfg.therm);
         true
     }
 

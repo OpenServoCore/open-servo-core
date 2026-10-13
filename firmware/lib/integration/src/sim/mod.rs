@@ -1143,6 +1143,7 @@ impl Sim {
         }
         let frames = self.servos[j].dispatched() - before;
         self.cpus[j].charge_frames(frames);
+        self.cpus[j].kernel_config(self.servos[j].config_seq());
         self.cpus[j].book(v, frames > 0);
         self.handles[j].clock_lag.set(0);
     }

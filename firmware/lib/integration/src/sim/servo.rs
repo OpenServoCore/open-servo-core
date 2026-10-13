@@ -320,6 +320,12 @@ impl SimServo {
         self.bus.on_deadline(&mut dispatcher);
     }
 
+    /// The configuration count the servo's dispatch keeps
+    /// (`Shared::config_seq`).
+    pub fn config_seq(&self) -> u8 {
+        self.shared.config_seq()
+    }
+
     /// Own frames dispatched since boot.
     pub fn dispatched(&self) -> u64 {
         self.dispatched

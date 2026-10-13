@@ -103,7 +103,7 @@ fn virgin_servo_stalls_at_the_class_limit() {
         p.locked = true;
         run(&mut k, &sh, &mut p, 400);
         drive(&sh, goal);
-        // inside stall_time_ms: the boot stall response is not under test
+        // inside stall_time_ticks: the boot stall response is not under test
         let r = run(&mut k, &sh, &mut p, 8_000);
         let peak = r.iter().map(|&(_, i)| i.abs()).max().unwrap_or(0);
         let held = &r[2_000..];
