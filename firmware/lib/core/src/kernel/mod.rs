@@ -23,10 +23,9 @@
 mod config;
 pub mod current;
 pub mod duty_limit;
-mod fast;
 pub mod faults;
 pub mod limits;
-mod medium;
+mod phases;
 pub mod position;
 mod scheduler;
 pub mod trajectory;
@@ -45,15 +44,13 @@ pub use velocity::VelocityLoop;
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use self::fast::{Command, Fast};
-use self::medium::{Control, Medium};
+use self::phases::fast::{self, Command, Fast};
+use self::phases::{Control, Medium};
 use crate::estimator::window;
 use crate::tel::TelStream;
 use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
 
-/// Stall permit lease in SLOW ticks: 63 x 16 ms = 1.008 s from the grant.
-pub const PERMIT_LEASE_TICKS: u8 = 63;
 /// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
 /// TIM1 ARR and the board's dividers, so core never divides at runtime or
 /// install - every field is a compile-time quotient on the chip side
@@ -206,7 +203,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.configure(shared);
         let ctl = Control::read(shared);
         self.medium.seed(
-            medium::pos_q4(shared, ctl.lut_live, frame.pos()),
+            phases::pos_q4(shared, ctl.lut_live, frame.pos()),
             frame.ntc_raw(),
             &self.cfg,
         );
