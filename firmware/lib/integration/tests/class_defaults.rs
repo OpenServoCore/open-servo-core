@@ -9,8 +9,8 @@ use osc_servo_core::{
     BaudRate, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode, RegionStorage, Shared,
 };
 
-/// 300 mA on this chain.
-const CLASS_LIM: i32 = 333;
+/// 500 mA on this chain.
+const CLASS_LIM: i32 = 554;
 const GOAL_64: i16 = 20971;
 const MID: u16 = 2050;
 

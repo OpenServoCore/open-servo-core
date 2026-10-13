@@ -161,19 +161,22 @@ pub struct ConfigLimits {
     pub _rsvd_align: [u8; 3],
 }
 
-// Class limits: an unconfigured servo boots protected as the weakest
-// plausible servo of the micro class, whose teeth and plastic end stops
-// show damage near 0.30 A of static stall. The limit and the collision trip
-// sit there, the stall fold and its release below it; host-tunable per
-// servo. Current thresholds are physical (mA) and reach the table in counts
+// Class limits: an unconfigured servo boots on a limit that keeps a micro
+// servo usable while bounding the torque its gear train takes. The limit and
+// the collision trip sit at 500 mA. The stall fold stays under the ~0.30 A
+// of static stall at which micro-class teeth and plastic end stops show
+// damage, since a folded stall holds there while the blockage lasts; its
+// release sits below the fold, or a held stall unfolds. Host-tunable per
+// servo: a plastic train such as the SG90's gets a lower limit from its
+// host. Current thresholds are physical (mA) and reach the table in counts
 // through `CurrentDefaults::from_sense`.
-pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 300;
+pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 500;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_TICKS: u32 = ms_ticks(500);
 pub const DEFAULT_STALL_YIELD_MA: u16 = 180;
 pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
-pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 300;
+pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 500;
 // Copper and shunt guard, not a gear-train limit: 2.2 A sits above any
 // micro-class stall on 2S (2.1 A) and below where the osc-dev-v006 chain
 // saturates (~2.3 A over its 1.10 V reference on 60 mOhm, the amplifier
@@ -365,8 +368,8 @@ const _: () = assert!(crate::kernel::TICK_HZ.is_multiple_of(1000));
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
 /// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4
 /// counts/A on the arm-B rig (33 mOhm, G 15.000, 3300 mV), 1108.5 on the
-/// osc-dev-v006 board (60 mOhm, G 14.884), where the 300 mA class limit is
-/// 333.
+/// osc-dev-v006 board (60 mOhm, G 14.884), where the 500 mA class limit is
+/// 554.
 pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> u16 {
     let num = ma as u64 * gain_milli as u64 * shunt_r_mohm as u64 * ADC_COUNTS_PER_VDD;
     let den = vdd_mv as u64 * 1_000_000;
@@ -418,17 +421,17 @@ mod tests {
     #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {
         let d = CurrentDefaults::from_sense(33, 15_000, 3300);
-        assert_eq!(d.current_limit_counts, 184);
+        assert_eq!(d.current_limit_counts, 307);
         assert_eq!(d.stall_yield_counts, 111);
         assert_eq!(d.stall_release_counts, 55);
-        assert_eq!(d.stall_tau_trip_counts, 184);
+        assert_eq!(d.stall_tau_trip_counts, 307);
         assert_eq!(d.oc_trip_counts, 1352);
         assert_eq!(d.rtherm_i_min_counts, 92);
     }
 
     #[test]
     fn current_counts_scales_with_the_shunt_and_saturates() {
-        assert_eq!(current_counts(300, 60, 14_884, 3300), 333);
+        assert_eq!(current_counts(500, 60, 14_884, 3300), 554);
         assert_eq!(current_counts(0, 60, 14_884, 3300), 0);
         assert_eq!(current_counts(u16::MAX, u16::MAX, u16::MAX, 1), u16::MAX);
     }

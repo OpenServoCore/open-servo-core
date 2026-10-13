@@ -1113,8 +1113,8 @@ current is at most the limit. A servo with no identified resistance
 (`r_q12` 0) has the floor as its base, so the lowest duty it applies to
 a goal above the floor is the floor itself, and stall current in the
 blind band is bounded by `floor x Vbus / R` of the actual winding:
-0.085 A for a 4.9 ohm winding on 7.9 V, and under the 300 mA class
-limit for any winding above 1.48 ohm on 8.4 V. If the floor
+0.085 A for a 4.9 ohm winding on 7.9 V, and under the 500 mA class
+limit for any winding above 0.89 ohm on 8.4 V. If the floor
 already draws more than the limit, the applied duty stays pinned at
 the floor and the stall timer decides (DES
 `virgin_blind_band_passes_to_the_window_floor`).

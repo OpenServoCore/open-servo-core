@@ -455,8 +455,9 @@ fn hold_draws_no_supply_current_at_rest() {
 }
 
 /// Three seconds parked under pot noise, the stall timer armed to fault
-/// and the collision trip at the 300 mA class default on this sense chain:
-/// the parked loop never pins its current reference, so nothing trips.
+/// and the collision trip at 300 mA on this sense chain, under the class
+/// default: the parked loop never pins its current reference, so nothing
+/// trips.
 #[test]
 fn hold_never_trips_the_stall_detector() {
     let g = goals(7, 1);

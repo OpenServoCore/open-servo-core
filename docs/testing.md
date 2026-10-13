@@ -102,8 +102,8 @@ The floor, the observer and the defaults (`core/src/estimator/window.rs`,
   driven and moving shaft never moves tau_d off zero while theta still
   tracks.
 - `arm_b_rig_reproduces_the_count_seeds` - the class defaults land as
-  184 / 111 / 55 / 184 / 1352 / 92 counts on the 33 mohm chain.
-- `current_counts_scales_with_the_shunt_and_saturates` - 300 mA is 335
+  307 / 111 / 55 / 307 / 1352 / 92 counts on the 33 mohm chain.
+- `current_counts_scales_with_the_shunt_and_saturates` - 500 mA is 554
   counts on the 60 mohm chain.
 
 The current the limiter reads (`core/src/estimator/window.rs`,
@@ -199,7 +199,7 @@ A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 - `virgin_openloop_run_never_collision_trips` - free runs at +/-64%, 30%
   and 0 raise no fault and leave tau_d at zero.
 - `virgin_servo_stalls_at_the_class_limit` - locked at 64%, it holds at
-  the 335-count class limit: peak within 1.1x, mean 0.85x to 1.0x, no
+  the 554-count class limit: peak within 1.1x, mean 0.85x to 1.0x, no
   fault inside the stall time.
 
 ## Identification and calibration pins
