@@ -25,10 +25,14 @@ use bench::wire::Wire;
 use bench::{BOOT_BAUD, RESCUE_BAUD, SUPPORTED_BAUDS};
 use osc_client::{DEFAULT_GUARD, StreamReply};
 use osc_protocol::build;
+use osc_protocol::tel::{CHUNKS_MAX, Chunks};
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
 use osc_servo_core::regions::config::addr::pos_limits::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
-use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+
+const _: () = assert!(CHUNK0_ADDR + 4 * CHUNKS_MAX as u16 == TEL_COUNT);
 
 pub struct Bench {
     wire: Wire,
@@ -109,13 +113,22 @@ impl Bench {
         self.wire.frames_sent() + self.engine_frames
     }
 
-    /// One TEL burst of `rows` as the stream soaks run it: the acked
-    /// `tel_count` write carries the stream and the engine collects its
-    /// frames within `window`. Edge capture cannot keep pace with a stream
-    /// and laps; it restarts clean after.
-    pub fn tel_stream(&mut self, rows: u16, window: Duration) -> Result<StreamReply> {
-        let mut p = [0u8; 8];
-        let n = build::write(&mut p, TEL_COUNT, &rows.to_le_bytes()).context("tel_count")?;
+    /// One TEL burst of `rows` of `chunks` as the stream soaks run it: the
+    /// acked WRITE of the chunks and `tel_count` carries the stream and the
+    /// engine collects its frames within `window`. Edge capture cannot keep
+    /// pace with a stream and laps; it restarts clean after.
+    pub fn tel_stream(
+        &mut self,
+        chunks: Chunks,
+        rows: u16,
+        window: Duration,
+    ) -> Result<StreamReply> {
+        let mut arm = [0u8; 4 * CHUNKS_MAX + 2];
+        let (regs, count) = arm.split_at_mut(4 * CHUNKS_MAX);
+        regs.copy_from_slice(&chunks.to_le_bytes());
+        count.copy_from_slice(&rows.to_le_bytes());
+        let mut p = [0u8; 2 + 4 * CHUNKS_MAX + 2];
+        let n = build::write(&mut p, CHUNK0_ADDR, &arm).context("tel arm")?;
         let inst = Inst::instruction(Opcode::Write, 0);
         let c = self.wire.client();
         c.set_guard(window + DEFAULT_GUARD);

@@ -49,7 +49,7 @@ fn run(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut RlPlant, ticks: u32) -> Vec<
     (0..ticks)
         .map(|_| {
             let duty = duty_of(k);
-            k.on_tick(p.step(duty), sh);
+            k.on_scan(p.step(duty), sh);
             (duty_of(k), p.current())
         })
         .collect()

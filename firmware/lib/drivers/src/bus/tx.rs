@@ -363,13 +363,15 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Drop anything staged or streaming and release the wire; a lent
-    /// wire stays the lane's.
-    pub fn abort(&mut self) {
+    /// wire stays the lane's. True when a pending lend went with it.
+    #[must_use]
+    pub fn abort(&mut self) -> bool {
         if matches!(self.state, State::Staged { .. } | State::Streaming { .. }) {
             self.wire.release();
-            self.lend = false;
             self.state = State::Idle;
+            return core::mem::take(&mut self.lend);
         }
+        false
     }
 
     /// CRC-engine patch-window misses (placeholder CRC shipped), monotonic.

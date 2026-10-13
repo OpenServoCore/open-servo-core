@@ -1023,7 +1023,7 @@ mod tests {
             "a fresh table reads zeros"
         );
         c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
-            let h = &mut t.telemetry.health;
+            let h = &mut t.telemetry_ext.health;
             h.tick_load_mean_q15 = 11928;
             h.tick_over_count = 12;
             h.tick_lost_count = 3;

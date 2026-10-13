@@ -451,7 +451,7 @@ pub(super) mod bench {
             static_load: false,
             guard: (532, 3526),
             stops: Some((232, 3849)),
-            tel_mask: 0x1cd,
+            tel_chunks: osc_ident::frame::TEL_RAW,
             rung_tries: 3,
         }
     }
@@ -503,7 +503,7 @@ mod tests {
             static_load: false,
             guard: (532, 3526),
             stops: Some((232, 3849)),
-            tel_mask: 0x1cd,
+            tel_chunks: osc_ident::frame::TEL_RAW,
             rung_tries: 3,
         }
     }

@@ -7,8 +7,10 @@ use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use crate::persist::ConfigStore;
 use crate::pos_lut::POINTS;
+use crate::regions::TelemetryTick;
 use crate::regions::control::addr::lifecycle::STALL_PERMIT;
-use crate::{ControlTableCell, RegionStorage};
+use crate::sensor_frame::Frame;
+use crate::{ControlTableCell, RegionStorage, RegionStorageRaw};
 
 #[repr(C)]
 pub struct Shared {
@@ -89,6 +91,22 @@ impl Shared {
                 Ordering::Relaxed,
             );
         }
+    }
+
+    /// The table's tick block, where the chip's ADC DMA and tick ISR land
+    /// each scan (`TelemetryTick`).
+    #[inline(always)]
+    pub fn tick_block(&self) -> *mut TelemetryTick {
+        let p = self.table.region_ptr();
+        // SAFETY: in-bounds field projection of the static table.
+        unsafe { &raw mut (*p).telemetry.tick }
+    }
+
+    /// The frame the tick block holds, read in place.
+    #[inline(always)]
+    pub fn frame(&self) -> Frame<'_> {
+        // SAFETY: the static table outlives the borrow of `self`.
+        unsafe { Frame::new(self.tick_block()) }
     }
 
     pub(crate) fn permit_gen(&self) -> u8 {

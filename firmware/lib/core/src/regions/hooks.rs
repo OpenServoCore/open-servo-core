@@ -10,6 +10,7 @@
 //! stays an internal concern of the table layer.
 
 use crate::regions::config::BaudRate;
+use crate::tel::Chunks;
 use crate::traits::Reply;
 
 pub(crate) trait ControlTableHookEvents {
@@ -21,15 +22,31 @@ pub(crate) trait ControlTableHookEvents {
 
 pub(crate) struct ControlTableHooks<'a, R: Reply + ?Sized> {
     reply: &'a mut R,
-    /// Post-commit `tel_mask`, snapshotted by the dispatcher so a
-    /// `tel_count` hook can pair the arm with the mask it streams under; 0
-    /// while a shunt burst holds the ADC.
-    tel_mask: u16,
+    /// Post-commit chunks, snapshotted by the dispatcher so a `tel_count`
+    /// write can pair the arm with the row it streams; none while a shunt
+    /// burst holds the ADC.
+    tel_chunks: Chunks,
+    /// The commit's last `tel_count`, armed at [`Self::finish`].
+    tel_count: Option<u16>,
 }
 
 impl<'a, R: Reply + ?Sized> ControlTableHooks<'a, R> {
-    pub(crate) fn new(reply: &'a mut R, tel_mask: u16) -> Self {
-        Self { reply, tel_mask }
+    pub(crate) fn new(reply: &'a mut R, tel_chunks: Chunks) -> Self {
+        Self {
+            reply,
+            tel_chunks,
+            tel_count: None,
+        }
+    }
+
+    /// After the commit's events, outside any table borrow: a refused arm
+    /// zeroes `tel_count` in the bus (`Reply::tel_arm`).
+    pub(crate) fn finish(self) {
+        if let Some(value) = self.tel_count {
+            // No row cannot arm; count 0 carries the disarm.
+            let count = if self.tel_chunks.valid() { value } else { 0 };
+            self.reply.tel_arm(self.tel_chunks, count);
+        }
     }
 }
 
@@ -48,8 +65,6 @@ impl<R: Reply + ?Sized> ControlTableHookEvents for ControlTableHooks<'_, R> {
         self.reply.set_response_deadline(value);
     }
     fn on_tel_count_write(&mut self, value: u16) {
-        // Mask 0 cannot arm; count 0 carries the disarm.
-        let count = if self.tel_mask == 0 { 0 } else { value };
-        self.reply.tel_arm(self.tel_mask, count);
+        self.tel_count = Some(value);
     }
 }

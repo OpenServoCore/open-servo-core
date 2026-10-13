@@ -48,22 +48,10 @@
 use super::seek::{self, Watch};
 use super::{AbortReason, Applied, Cmd, Experiment, GOVERNED, RigParams, judge};
 use crate::fitmath::{linear_ls, median, origin_ls, quantile};
-use crate::frame::{
-    TEL_BIT_CURRENT_RAW, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VBUS_RAW, TEL_BIT_VMOTOR_A,
-    TEL_BIT_VMOTOR_B, TelBurst, TelFrame, TelemetrySnapshot, counts_q15,
-};
+use crate::frame::{TEL_RL, TelBurst, TelFrame, TelemetrySnapshot, counts_q15};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
 use crate::units::{self, SenseParams};
-
-/// Measurements only: pot, applied duty, raw current, both terminals and
-/// the raw rail: six 12-bit fields, a 9 B row.
-pub const TEL_RL_MASK: u16 = TEL_BIT_POS
-    | TEL_BIT_DUTY
-    | TEL_BIT_CURRENT_RAW
-    | TEL_BIT_VMOTOR_A
-    | TEL_BIT_VMOTOR_B
-    | TEL_BIT_VBUS_RAW;
 
 const Q15: f64 = 32767.0;
 
@@ -509,7 +497,6 @@ pub fn plan_toggles(segs: &[Segment], sc: &Scales, cfg: &RlCfg) -> (Vec<Chain>, 
 
 enum Phase {
     ModeWrite,
-    TelMask,
     SeekTorqueOn,
     SeekRead,
     SeekEval,
@@ -524,7 +511,6 @@ enum Phase {
     ChainTorqueOff,
     ChainPause,
     FinishDuty,
-    MaskOff,
     FinishTorque,
     Finished,
 }
@@ -619,6 +605,7 @@ impl Rl {
         Cmd::Stream {
             samples: self.cfg.step_periods.max(1),
             goal: Some((control::GOAL_DUTY, duty as i32)),
+            chunks: TEL_RL,
         }
     }
 
@@ -652,17 +639,10 @@ impl Experiment for Rl {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
         match self.phase {
             Phase::ModeWrite => {
-                self.phase = Phase::TelMask;
+                self.phase = Phase::SeekTorqueOn;
                 Cmd::Write {
                     reg: control::MODE,
                     value: 0,
-                }
-            }
-            Phase::TelMask => {
-                self.phase = Phase::SeekTorqueOn;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: TEL_RL_MASK as i32,
                 }
             }
             Phase::SeekTorqueOn => {
@@ -742,6 +722,7 @@ impl Experiment for Rl {
                 Cmd::Stream {
                     samples: self.samples(self.cfg.baseline_ms),
                     goal: None,
+                    chunks: TEL_RL,
                 }
             }
             Phase::ChainTorqueOn => {
@@ -793,16 +774,9 @@ impl Experiment for Rl {
                 }
             }
             Phase::FinishDuty => {
-                self.phase = Phase::MaskOff;
-                Cmd::Write {
-                    reg: control::GOAL_DUTY,
-                    value: 0,
-                }
-            }
-            Phase::MaskOff => {
                 self.phase = Phase::FinishTorque;
                 Cmd::Write {
-                    reg: control::TEL_MASK,
+                    reg: control::GOAL_DUTY,
                     value: 0,
                 }
             }
@@ -1634,9 +1608,8 @@ mod tests {
             })
             .unwrap();
         assert!(torque_on < first_drive, "torque on before any drive");
-        let tail: Vec<&String> = log.iter().rev().take(3).collect();
-        assert_eq!(*tail[2], "write goal_duty 0");
-        assert_eq!(*tail[1], "write tel_mask 0");
+        let tail: Vec<&String> = log.iter().rev().take(2).collect();
+        assert_eq!(*tail[1], "write goal_duty 0");
         assert_eq!(*tail[0], "write torque_enable 0");
         // a rest baseline, a probe chain, both directions at two biases,
         // and the null control
@@ -1784,7 +1757,8 @@ mod tests {
         let log = pump(&mut exp, &mut servo, 500_000);
         assert!(!log.contains(&"OVERRUN".to_string()));
         assert!(
-            log.iter().any(|l| l.starts_with("stream 8 goal_duty")),
+            log.iter()
+                .any(|l| l.starts_with("stream 8 0x232+6,0x23c+6 goal_duty")),
             "toggles arm 8 periods"
         );
         let exp = exp.into_inner();

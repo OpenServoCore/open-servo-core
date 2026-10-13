@@ -178,6 +178,12 @@ impl CrcEngine for FakeCrc {
         unsafe { self.snap.as_ptr().add(off) }
     }
 
+    unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
+        assert_eq!((dst as usize | src as usize) & 1, 0, "halfword ends");
+        // SAFETY: the caller's contract.
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, 2 * units as usize) };
+    }
+
     fn result(&mut self) -> Option<u16> {
         (!self.sick).then_some(self.state)
     }

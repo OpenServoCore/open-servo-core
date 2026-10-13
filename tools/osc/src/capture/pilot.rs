@@ -38,7 +38,7 @@ use super::envelope::{
 use super::front::{self, Front, Proved};
 use super::procs::{CoastBlock, Procedure};
 use super::verdict::{dropped, load_held, settled};
-use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS as SEEK_SETTLE_MS, Supply, TEL_MASK, WINDOW_MS};
+use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS as SEEK_SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::park::park;
 use crate::rig::pump;
 use crate::rig::servo::{Servo, Wire, guard};
@@ -1104,7 +1104,7 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, rig: &Rig) -> Cfg {
         static_load: false,
         guard: (lim.guard[0], lim.guard[1]),
         stops: Some((lim.phys[0], lim.phys[1])),
-        tel_mask: TEL_MASK,
+        tel_chunks: osc_ident::frame::TEL_RAW,
         rung_tries: RUNG_TRIES,
     }
 }
@@ -1347,6 +1347,7 @@ mod tests {
     use crate::rig::servo::bench::{Bench, rail, torque};
     use osc_ident::limits::CLASS_R_MIN;
     use osc_ident::regs::control;
+    use osc_protocol::tel::Chunks;
 
     fn bench_rig(front: &Front) -> Rig {
         Rig {
@@ -1937,7 +1938,8 @@ mod tests {
             .unwrap();
         assert_eq!(e.to_string(), flat);
         assert!(!b.servo.torque);
-        assert_eq!((b.servo.t_ms, b.servo.tel_mask), (t, 0), "nothing moved");
+        assert_eq!(b.servo.t_ms, t, "nothing moved");
+        assert_eq!(b.servo.tel_chunks, Chunks::NONE, "nothing streamed");
         let id = b.id();
         let armed = b.c.read(id, control::TEL_COUNT.addr, 2).unwrap();
         assert_eq!(armed, [0, 0], "no burst armed");

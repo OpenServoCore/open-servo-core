@@ -4,13 +4,13 @@
 //! the line from there to the LAST frame: the bus serves nothing until it
 //! takes the lane back, in its first body after LAST has left the wire.
 
-use osc_servo_core::BaudRate;
+use osc_servo_core::tel::Chunks;
 
 use crate::tel::TelDrain;
 
 pub(super) struct TelBurst {
     drain: Option<TelDrain>,
-    /// The arm the next lend streams; its plan is posted.
+    /// The arm the next lend streams; its chunks are posted.
     count: u16,
     /// The lent burst's epoch.
     epoch: u8,
@@ -30,23 +30,31 @@ impl TelBurst {
     }
 
     /// `Reply::tel_arm`, never while the lane is lent: true when the arm
-    /// wants the lane (count 0 disarms), its plan then posted.
-    pub(super) fn arm(&mut self, mask: u16, count: u16) -> bool {
+    /// wants the lane, its chunks then posted; count 0 disarms and ends it.
+    pub(super) fn arm(&mut self, chunks: Chunks, count: u16) -> bool {
         self.count = count;
         let Some(d) = self.drain.as_mut() else {
             return false;
         };
         if count == 0 {
+            d.end();
             return false;
         }
-        d.post(mask);
+        d.post(chunks);
         true
     }
 
-    /// Lend the lane: the kernel streams the arm from its next tick.
-    pub(super) fn start(&mut self, id: u8, rate: BaudRate) {
+    /// The posted arm will not stream: its lend was dropped with the ack.
+    pub(super) fn void(&mut self) {
         if let Some(d) = self.drain.as_mut() {
-            self.epoch = d.start(self.count, id, rate);
+            d.end();
+        }
+    }
+
+    /// Lend the lane: the kernel streams the arm from its next tick.
+    pub(super) fn start(&mut self, id: u8) {
+        if let Some(d) = self.drain.as_mut() {
+            self.epoch = d.start(self.count, id);
         }
     }
 
@@ -58,9 +66,11 @@ impl TelBurst {
         idle().then_some(resume)
     }
 
+    /// The lane is back: the burst is over.
     pub(super) fn stop(&mut self) {
         if let Some(d) = self.drain.as_mut() {
             d.stop();
+            d.end();
         }
     }
 }

@@ -46,6 +46,15 @@ pub trait CrcEngine {
     /// offsets let a caller linearize a ring-wrapped span. Contents stay
     /// valid until the next `snapshot` call over the same range.
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8;
+    /// Copy `units` halfwords from `src` to `dst` on the snapshot's
+    /// transfer path: started now, it lands ahead of any feed armed after
+    /// it. Fire and forget: a copy still in flight lands first (a bounded
+    /// wait), so a row's two copies may follow each other.
+    ///
+    /// # Safety
+    /// `src` readable and `dst` writable for `2 * units` bytes, both even,
+    /// and no snapshot in flight.
+    unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16);
     /// The CRC over everything fed since reset, once the engine has drained
     /// the fed spans; `None` while still busy.
     fn result(&mut self) -> Option<u16>;

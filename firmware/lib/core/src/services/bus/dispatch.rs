@@ -12,6 +12,7 @@ use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, CONTROL_BASE_ADDR,
     PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
 };
+use crate::tel::{Chunk, Chunks};
 use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
@@ -150,10 +151,11 @@ impl Dispatch for Dispatcher<'_> {
         }
         self.shared.table.commit_from(self.staged, &pending.snap);
         self.after_commit(pending.addr, pending.len);
-        let mut hooks = ControlTableHooks::new(reply, self.tel_mask());
+        let mut hooks = ControlTableHooks::new(reply, self.tel_chunks());
         self.shared
             .table
             .with(|t| t.dispatch_events(pending.addr, pending.len, &mut hooks));
+        hooks.finish();
     }
 
     fn revert(&mut self) {
@@ -164,13 +166,22 @@ impl Dispatch for Dispatcher<'_> {
 }
 
 impl Dispatcher<'_> {
-    /// The mask a `tel_count` write arms under: none while a shunt burst
-    /// is ARMED or CAPTURING, so the arm parks and the write still acks.
-    /// DONE holds nothing: the capture is over.
-    fn tel_mask(&self) -> u16 {
+    /// The row a `tel_count` write arms with: none while a shunt burst is
+    /// ARMED or CAPTURING, or its arm is committed and the kernel has not
+    /// judged it yet (IDLE with `arm` at 1: the kernel judges at its next
+    /// tick, which can land before this arm's lend), so the arm parks and
+    /// the write still acks. DONE holds nothing: the capture is over.
+    fn tel_chunks(&self) -> Chunks {
         self.shared.table.with(|t| match t.burst.window.state {
-            burst_state::ARMED | burst_state::CAPTURING => 0,
-            _ => t.control.lifecycle.tel_mask,
+            burst_state::ARMED | burst_state::CAPTURING => Chunks::NONE,
+            burst_state::IDLE if t.control.burst.arm == 1 => Chunks::NONE,
+            _ => {
+                let c = &t.control.tel;
+                Chunks::two(
+                    Chunk::new(c.chunk0_addr, c.chunk0_len),
+                    Chunk::new(c.chunk1_addr, c.chunk1_len),
+                )
+            }
         })
     }
 
@@ -430,13 +441,14 @@ impl Dispatcher<'_> {
         }
         self.shared.table.commit_staged(self.staged);
         Self::ack(alert, ctx, Ok(()), reply);
-        let mut hooks = ControlTableHooks::new(reply, self.tel_mask());
+        let mut hooks = ControlTableHooks::new(reply, self.tel_chunks());
         for (addr, len) in spans {
             self.after_commit(addr, len);
             self.shared
                 .table
                 .with(|t| t.dispatch_events(addr, len, &mut hooks));
         }
+        hooks.finish();
     }
 
     /// sec 9.2 ENUM: reply with the full UID iff ours begins with the queried

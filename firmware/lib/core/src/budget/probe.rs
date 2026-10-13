@@ -512,7 +512,7 @@ pub enum Component {
     Install,
     Side,
     /// The TEL ticks' mean over the same regime's plain ticks' (mean only).
-    TelEncode(Regime),
+    TelRow(Regime),
     Body(Body),
     HostFrame,
 }
@@ -549,7 +549,7 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     for r in Regime::ALL {
         for p in 0..PHASES {
             let budget = super::kernel_tick(r, p, Events::default());
-            let mean = super::KERNEL_MEAN[r as usize][p];
+            let mean = super::tick_body_mean(r, p);
             f(load_row(Component::Tick(r, p), k.load(r, p), budget, mean));
         }
     }
@@ -646,14 +646,14 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         });
         let plain_mean = sum.checked_div(n).unwrap_or(0) as u32;
         f(Row {
-            component: Component::TelEncode(r),
+            component: Component::TelRow(r),
             n: tel.n,
             mean: tel.mean().saturating_sub(plain_mean),
             max: 0,
             wall: 0,
             nested: 0,
             budget: 0,
-            mean_budget: super::TEL_ENCODE_MEAN[r as usize] + super::TEL_LANE_MEAN,
+            mean_budget: super::TEL_ROW_MEAN + super::TEL_LANE_MEAN,
         });
     }
     let slowest = s

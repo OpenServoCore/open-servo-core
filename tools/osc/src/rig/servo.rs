@@ -12,6 +12,7 @@ use osc_client::blocking::Client;
 use osc_client::pipe::Pipe;
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 use osc_ident::regs::{Reg, calib, control, telemetry};
+use osc_protocol::tel::Chunks;
 
 use super::pump::{
     BurstStats, admit_watch, exchange_tel_burst, read_stamped, watch_rows_on, write_reg,
@@ -29,23 +30,24 @@ pub(crate) trait Servo {
     fn write(&mut self, reg: Reg, value: i32) -> Result<()>;
     /// One telemetry snapshot, stamped `now_ms` at its read.
     fn snapshot(&mut self) -> Result<TelemetrySnapshot>;
-    /// One TEL burst of `samples` fast ticks under `mask`, the `goal` write
-    /// applied in the instant the burst starts. Drives call [`Servo::stream`].
+    /// One TEL burst of `samples` fast ticks of `chunks` rows, the `goal`
+    /// write applied in the instant the burst starts. Drives call
+    /// [`Servo::stream`].
     fn burst(
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
-        mask: u16,
+        chunks: Chunks,
     ) -> Result<(Vec<TelFrame>, BurstStats)>;
     fn sleep(&mut self, ms: u32);
 
-    /// One watch burst of `rows` under the `mask` the servo holds
+    /// One watch burst of `rows` of `chunks`
     /// ([`osc_ident::window`]): its rows, and whether a frame flagged a
     /// fault.
-    fn watch(&mut self, rows: u16, mask: u16) -> Result<(Vec<TelFrame>, bool)>;
+    fn watch(&mut self, rows: u16, chunks: Chunks) -> Result<(Vec<TelFrame>, bool)>;
 
     /// What the line carries a watch in: [`admit_watch`].
-    fn watch_mask(&mut self) -> Result<u16> {
+    fn watch_chunks(&mut self) -> Result<Chunks> {
         let id = self.id();
         admit_watch(self.client(), id)
     }
@@ -72,11 +74,11 @@ pub(crate) trait Servo {
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
-        mask: u16,
+        chunks: Chunks,
     ) -> Result<(Vec<TelFrame>, BurstStats)> {
         let id = self.id();
         let before = read_u16(self.client(), id, telemetry::TEL_DROP_COUNT)?;
-        let (frames, mut stats) = self.burst(samples, goal, mask)?;
+        let (frames, mut stats) = self.burst(samples, goal, chunks)?;
         let after = read_u16(self.client(), id, telemetry::TEL_DROP_COUNT)?;
         stats.rows_dropped = after.wrapping_sub(before);
         Ok((frames, stats))
@@ -110,21 +112,21 @@ impl<S: Servo + ?Sized> Servo for &mut S {
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
-        mask: u16,
+        chunks: Chunks,
     ) -> Result<(Vec<TelFrame>, BurstStats)> {
-        (**self).burst(samples, goal, mask)
+        (**self).burst(samples, goal, chunks)
     }
 
     fn sleep(&mut self, ms: u32) {
         (**self).sleep(ms)
     }
 
-    fn watch(&mut self, rows: u16, mask: u16) -> Result<(Vec<TelFrame>, bool)> {
-        (**self).watch(rows, mask)
+    fn watch(&mut self, rows: u16, chunks: Chunks) -> Result<(Vec<TelFrame>, bool)> {
+        (**self).watch(rows, chunks)
     }
 
-    fn watch_mask(&mut self) -> Result<u16> {
-        (**self).watch_mask()
+    fn watch_chunks(&mut self) -> Result<Chunks> {
+        (**self).watch_chunks()
     }
 
     fn tick_hz(&mut self) -> Result<f64> {
@@ -196,9 +198,9 @@ impl<C: AsClient> Servo for Wire<C> {
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
-        mask: u16,
+        chunks: Chunks,
     ) -> Result<(Vec<TelFrame>, BurstStats)> {
-        exchange_tel_burst(self.c.get(), self.id, samples, goal, mask)
+        exchange_tel_burst(self.c.get(), self.id, samples, goal, chunks)
     }
 
     fn sleep(&mut self, ms: u32) {
@@ -206,8 +208,8 @@ impl<C: AsClient> Servo for Wire<C> {
     }
 
     /// No admission read: the run's first watch admitted the line.
-    fn watch(&mut self, rows: u16, mask: u16) -> Result<(Vec<TelFrame>, bool)> {
-        watch_rows_on(self.c.get(), self.id, rows, mask)
+    fn watch(&mut self, rows: u16, chunks: Chunks) -> Result<(Vec<TelFrame>, bool)> {
+        watch_rows_on(self.c.get(), self.id, rows, chunks)
     }
 }
 
@@ -222,14 +224,13 @@ pub(crate) fn guard<S: Servo, T>(s: &mut S, f: impl FnOnce(&mut S) -> Result<T>)
 }
 
 /// What leaves a servo safe, in the order it is written.
-pub(crate) const SAFE: [(Reg, i32); 7] = [
+pub(crate) const SAFE: [(Reg, i32); 6] = [
     (control::GOAL_DUTY, 0),
     (control::GOAL_CURRENT, 0),
     (control::GOAL_VELOCITY, 0),
     (control::TORQUE_ENABLE, 0),
     (control::STALL_PERMIT, 0),
     (control::TEL_COUNT, 0),
-    (control::TEL_MASK, 0),
 ];
 
 /// The bench servo in-process: its table is the in-process servo stack's,
@@ -278,26 +279,12 @@ pub(crate) mod bench {
 
     /// Every later read of the rail ADC sees `vbus_raw`.
     pub(crate) fn rail(c: &mut Client<FakePipe>, vbus_raw: u16) {
-        c.pipe_mut().set_track(
-            0,
-            vec![TelSample {
-                pos: 2029,
-                current: 0,
-                current_trough: 0,
-                duty: 0,
-                vdiff: 0,
-                vbus: 3204,
-                current_raw: 0,
-                vmotor_a: 0,
-                vmotor_b: 0,
-                vbus_raw,
-                ntc_raw: 0,
-                pos_lin_q4: 0,
-                tick: 0,
-                window_valid: false,
-                fault: false,
-            }],
-        );
+        let mut s = TelSample {
+            vbus_counts: 3204,
+            ..TelSample::default()
+        };
+        (s.tick.pos, s.tick.vbus_raw) = (2029, vbus_raw);
+        c.pipe_mut().set_track(0, vec![s]);
     }
 
     pub(crate) fn torque(c: &mut Client<FakePipe>, id: Id) -> u8 {
@@ -412,7 +399,7 @@ pub(crate) mod bench {
         }
 
         /// The watch's arm, the other transaction, then its rows.
-        fn watch(&mut self, rows: u16, _mask: u16) -> Result<(Vec<TelFrame>, bool)> {
+        fn watch(&mut self, rows: u16, _chunks: Chunks) -> Result<(Vec<TelFrame>, bool)> {
             self.busy(self.bus.read_ms / 2.0, 1.0);
             let mut frames = Vec::new();
             let alert = self.servo.watch(rows, &mut frames);
@@ -420,8 +407,8 @@ pub(crate) mod bench {
         }
 
         /// The test servo streams the whole watch.
-        fn watch_mask(&mut self) -> Result<u16> {
-            Ok(crate::rig::pump::WATCH_FIELDS)
+        fn watch_chunks(&mut self) -> Result<Chunks> {
+            Ok(crate::rig::pump::WATCH_CHUNKS)
         }
 
         fn tick_hz(&mut self) -> Result<f64> {
@@ -434,9 +421,10 @@ pub(crate) mod bench {
             &mut self,
             samples: u16,
             goal: Option<(Reg, i32)>,
-            _mask: u16,
+            chunks: Chunks,
         ) -> Result<(Vec<TelFrame>, BurstStats)> {
             self.busy(2.0 * self.bus.write_ms, 3.0);
+            self.servo.tel_chunks = chunks;
             if let Some((reg, value)) = goal {
                 self.servo.write(reg, value);
             }
@@ -444,7 +432,7 @@ pub(crate) mod bench {
             self.servo.stream(samples, &mut frames);
             let dropped = self.servo.rows_dropped;
             self.c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
-                let h = &mut t.telemetry.health;
+                let h = &mut t.telemetry_ext.health;
                 h.tel_drop_count = h.tel_drop_count.wrapping_add(dropped);
             });
             let counts = |q15: i16| duty_counts(q15, PWM_PERIOD_TICKS);
@@ -491,19 +479,20 @@ mod tests {
     use super::bench::Bench;
     use super::*;
     use crate::capture::Supply;
+    use osc_ident::frame::TEL_RAW;
 
     /// A stream reads the rows the servo dropped from it off the table: the
     /// counter's change across it, through its wrap.
     #[test]
     fn a_stream_carries_the_rows_the_servo_dropped_from_it() {
         let mut b = Bench::mg90(Supply::TwoS);
-        let (_, st) = b.stream(200, None, 0x1cd).unwrap();
+        let (_, st) = b.stream(200, None, TEL_RAW).unwrap();
         assert_eq!(st.rows_dropped, 0);
         b.c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
-            t.telemetry.health.tel_drop_count = u16::MAX - 1;
+            t.telemetry_ext.health.tel_drop_count = u16::MAX - 1;
         });
         b.servo.rows_dropped = 3;
-        let (_, st) = b.stream(200, None, 0x1cd).unwrap();
+        let (_, st) = b.stream(200, None, TEL_RAW).unwrap();
         assert_eq!(st.rows_dropped, 3);
         let id = b.id();
         assert_eq!(

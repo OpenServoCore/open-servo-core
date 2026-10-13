@@ -395,7 +395,7 @@ fn cfg(p: &Procedure, env: &Envelope, plan: &Plan, proved: &Proved) -> Cfg {
         static_load: false,
         guard: (env.limits.guard[0], env.limits.guard[1]),
         stops: Some((env.limits.phys[0], env.limits.phys[1])),
-        tel_mask: p.tel_mask,
+        tel_chunks: p.tel_chunks,
         rung_tries: RUNG_TRIES,
     }
 }
@@ -1241,7 +1241,8 @@ mod tests {
         assert_eq!(c.dirs, Dirs::Both);
         assert_eq!(c.guard, (532, 3526));
         // the bench session's pacing
-        assert_eq!((c.rest_ms, c.baseline_ms, c.tel_mask), (1500, 1000, 0x1cd));
+        assert_eq!((c.rest_ms, c.baseline_ms), (1500, 1000));
+        assert_eq!(c.tel_chunks, osc_ident::frame::TEL_RAW);
         assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (15, 15));
         assert!(!c.stall && !c.static_load);
         assert_eq!(

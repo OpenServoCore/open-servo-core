@@ -41,6 +41,7 @@ impl CrcEngine for FakeCrc {
         self.copies += 1;
         unsafe { self.snap.as_ptr().add(off) }
     }
+    unsafe fn copy(&mut self, _dst: *mut u8, _src: *const u8, _units: u16) {}
     fn result(&mut self) -> Option<u16> {
         Some(self.state)
     }
@@ -343,13 +344,13 @@ fn abort_releases_and_unblocks_stage() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
     eng.stage(&mut crc, 1, ResultCode::Ok, false, &[]).unwrap();
-    eng.abort();
+    let _ = eng.abort();
     assert_eq!(*log.borrow(), vec![Event::Release]);
     assert!(!eng.busy());
     eng.stage(&mut crc, 2, ResultCode::Ok, false, &[]).unwrap();
     // Aborting mid-stream also releases.
     eng.trigger(&mut crc, None);
-    eng.abort();
+    let _ = eng.abort();
     assert_eq!(*log.borrow().last().unwrap(), Event::Release);
     assert!(!eng.busy());
 }

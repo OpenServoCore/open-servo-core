@@ -34,11 +34,12 @@ use crate::burst::{
     ArmSeen, CHAN_INTERLEAVE, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK,
     SAMPLE_US, SAMPLES, frame_len, rejected,
 };
-use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, duty_counts};
+use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, chunks_text, decode_row, duty_counts};
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, config, control};
 use crate::window::{WATCH_BURST_MS, WINDOW_TICKS, Watch, Windows, watch_rows};
+use osc_protocol::tel::{self, Chunks};
 
 /// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
 pub const TICK_HZ: f64 = 20_100.0;
@@ -193,9 +194,8 @@ pub struct FakeServo {
     pub breakaway_q15: i16,
     /// Reported pos gains +80 counts inside this zone (slip artifact).
     pub glitch_zone: Option<(f64, f64)>,
-    /// A nonlinear pot: `pos` is the true position, the raw reading is the
-    /// count this table linearizes back to it, and `pos_lin` streams the
-    /// table's own Q4 word as the firmware would. None = a linear pot.
+    /// A nonlinear pot: `pos` is the true position and the raw reading is
+    /// the count this table linearizes back to it. None = a linear pot.
     pub pot: Option<GridLut>,
     /// True position, counts.
     pub pos: f64,
@@ -270,9 +270,10 @@ pub struct FakeServo {
     i_valid: f64,
     pub torque: bool,
     pub duty: i16,
-    pub tel_mask: u16,
-    /// The last `tel_count` written, kept past the burst's LAST frame as
-    /// the servo keeps it.
+    /// The row the last [`Cmd::Stream`] armed.
+    pub tel_chunks: Chunks,
+    /// The last `tel_count` written; the servo zeroes it when the burst's
+    /// LAST frame leaves.
     pub tel_count: u16,
     omega_dyn: f64,
     pub t_ms: f64,
@@ -343,7 +344,7 @@ impl FakeServo {
             i_valid: 0.0,
             torque: false,
             duty: 0,
-            tel_mask: 0,
+            tel_chunks: Chunks::NONE,
             tel_count: 0,
             omega_dyn: 0.0,
             t_ms: 0.0,
@@ -399,13 +400,6 @@ impl FakeServo {
             lo - 1
         } else {
             lo
-        }
-    }
-
-    fn q4_of(&self, raw: u16) -> u16 {
-        match &self.pot {
-            Some(lut) => lut.q4(raw),
-            None => raw << 4,
         }
     }
 
@@ -773,8 +767,6 @@ impl FakeServo {
             self.reset_ceiling(from);
             self.duty = goal;
             self.t_duty_change = self.t_ms;
-        } else if reg == control::TEL_MASK {
-            self.tel_mask = value as u16;
         } else if reg == control::TEL_COUNT {
             self.tel_count = value as u16;
         } else if reg == config::DRIVE_POLARITY {
@@ -888,26 +880,29 @@ impl FakeServo {
     }
 
     /// One armed TEL burst: `samples` fast ticks integrated from t0 (the
-    /// arm instant - any goal write is already applied), one frame per tick
-    /// with the mask-selected fields. Mask 0 streams nothing, like the
-    /// firmware's disarmed producer.
+    /// arm instant - any goal write is already applied), one row per tick
+    /// of the table bytes `tel_chunks` select, decoded as a host decodes
+    /// them. Invalid chunks stream nothing, like the firmware's refused
+    /// arm.
     pub fn stream(&mut self, samples: u16, sink: &mut Vec<TelFrame>) {
-        self.tel_count = samples;
+        use crate::regs::telemetry as t;
         let dt = 1.0 / (self.f_med * 10.0);
         let t0 = self.t_ms;
+        let chunks = self.tel_chunks;
+        let mut table = [0u8; tel::TABLE_BYTES as usize];
+        let mut row = Vec::with_capacity(chunks.row_bytes());
         for k in 0..samples {
             self.tick(dt);
             self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
             if self.pressing() {
                 self.pressed_ms += dt * 1000.0;
             }
-            if self.tel_mask == 0 {
+            if !chunks.valid() {
                 continue;
             }
             let noise = self.noise();
             let duty = self.applied();
             let driving = duty != 0;
-            let sel = |bit: u16| self.tel_mask & bit != 0;
             let i = if self.dynamic {
                 self.i_dyn()
             } else {
@@ -918,34 +913,38 @@ impl FakeServo {
                     0.0
                 }
             };
-            let raw = self.read_pot(self.pos, noise);
-            sink.push(TelFrame {
-                tick: k as u64,
-                window_valid: driving,
-                pos: sel(1 << 0).then_some(raw),
-                current: sel(1 << 1).then(|| i.round() as i16),
-                current_trough: sel(1 << 2).then_some(512),
-                duty_counts: sel(1 << 3).then(|| duty_counts(duty, PWM_PERIOD_TICKS)),
-                vdiff: sel(1 << 4).then(|| {
-                    if driving {
-                        (self.vbus * duty.signum() as f64) as i16
-                    } else {
-                        0
-                    }
-                }),
-                vbus: sel(1 << 5).then_some(self.vbus as u16),
-                // raw terminal fakes: driven side carries the rail, the
-                // other sits low; raw current rides a 512-count bias and
-                // is a MAGNITUDE - the low-side shunt sees drive current
-                // the same way whichever way the bridge is pointed
-                // (window.rs applies the direction sign downstream)
-                current_raw: sel(1 << 6).then(|| (512.0 + i.abs()).round() as u16),
-                vmotor_a: sel(1 << 7).then_some(if duty > 0 { self.vbus as u16 } else { 0 }),
-                vmotor_b: sel(1 << 8).then_some(if duty < 0 { self.vbus as u16 } else { 0 }),
-                vbus_raw: sel(1 << 9).then_some(self.vbus as u16),
-                ntc_raw: sel(1 << 10).then_some(2048),
-                pos_lin: sel(1 << 11).then(|| self.q4_of(raw)),
-            });
+            let vdiff = if driving {
+                (self.vbus * duty.signum() as f64) as i16
+            } else {
+                0
+            };
+            let vbus = self.vbus as u16;
+            let mut put = |r: Reg, v: u16| {
+                let a = r.addr as usize;
+                table[a..a + 2].copy_from_slice(&v.to_le_bytes());
+            };
+            put(t::I_TICK_COUNTS, i.round() as i16 as u16);
+            put(t::VDIFF_COUNTS, vdiff as u16);
+            put(t::DUTY_TICKS, duty_counts(duty, PWM_PERIOD_TICKS) as u16);
+            put(t::POS, self.read_pot(self.pos, noise));
+            put(t::CURRENT_TROUGH, 512);
+            // raw terminal fakes: driven side carries the rail, the other
+            // sits low; raw current rides a 512-count bias and is a
+            // MAGNITUDE - the low-side shunt sees drive current the same
+            // way whichever way the bridge is pointed (window.rs applies
+            // the direction sign downstream)
+            put(t::CURRENT_RAW, (512.0 + i.abs()).round() as u16);
+            put(t::VMOTOR_A, if duty > 0 { vbus } else { 0 });
+            put(t::VMOTOR_B, if duty < 0 { vbus } else { 0 });
+            put(t::VBUS_RAW, vbus);
+            put(t::NTC_RAW, 2048);
+            put(t::VBUS_COUNTS, vbus);
+            row.clear();
+            for c in chunks.0 {
+                row.extend_from_slice(&table[c.addr as usize..(c.addr + c.len) as usize]);
+            }
+            // the fake's shunt reads every drive window
+            sink.push(decode_row(&chunks, 0, &row, k as u64));
         }
         self.t_ms = t0 + samples as f64 * dt * 1000.0;
         self.ticks += samples as f64;
@@ -981,7 +980,6 @@ impl FakeServo {
     /// current and differential the fake senses ([`FakeServo::sensed`])
     /// and the counts the bridge applies; true when a fault is latched.
     pub fn watch(&mut self, rows: u16, sink: &mut Vec<TelFrame>) -> bool {
-        self.tel_count = rows;
         let dt = 1.0 / (self.f_med * 10.0);
         let t0 = self.t_ms;
         for k in 0..rows as u64 {
@@ -1061,10 +1059,10 @@ impl FakeServo {
             fault_flags: if fault { 32 } else { 0 },
             fault_code: if fault { 6 } else { 0 },
             pos,
-            current: (512.0 + if driving { i } else { 0.0 }).round() as u16,
+            current_raw: (512.0 + if driving { i } else { 0.0 }).round() as u16,
             current_bias_counts: 512,
             vbus_counts: self.vbus as u16,
-            duty_applied_q15: duty,
+            duty_ticks: duty_counts(duty, PWM_PERIOD_TICKS),
             i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
@@ -1440,8 +1438,9 @@ fn charge_write(servo: &mut FakeServo, lease: &mut PermitLease, bus: &Bus, reg: 
 }
 
 /// Drive an experiment against the fake servo over `bus`; returns the
-/// command log ("write <field> <value>" entries, "stream <samples> [<field>
-/// <value>]" per burst, plus a trailing marker on overrun). A Stream arm
+/// command log ("write <field> <value>" entries, "stream <samples> <chunks>
+/// [<field> <value>]" per burst, the chunks as [`chunks_text`] names them,
+/// plus a trailing marker on overrun). A Stream arm
 /// applies its goal at t0, synthesizes the burst's per-tick frames from the
 /// plant, and hands them back through `push_tel` with the rows the servo
 /// counts dropped from it - the driver contract. A
@@ -1511,17 +1510,23 @@ pub fn pump_on<E: Experiment>(
                     keep(&mut lease, servo, &mut log);
                 }
             }
-            Cmd::Stream { samples, goal } => {
+            Cmd::Stream {
+                samples,
+                goal,
+                chunks,
+            } => {
                 // the goal and the arm go out held; the commit starts both
                 let lost = 3.0 * servo.ticks_lost_per_txn;
                 servo.busy_ms(2.0 * bus.write_ms, lost);
+                servo.tel_chunks = chunks;
+                let rows = chunks_text(&chunks);
                 match goal {
                     Some((reg, value)) => {
                         servo.write(reg, value);
                         lease.wrote(reg, value, servo.t_ms);
-                        log.push(format!("stream {} {} {}", samples, reg_name(reg), value));
+                        log.push(format!("stream {samples} {rows} {} {value}", reg_name(reg)));
                     }
-                    None => log.push(format!("stream {samples}")),
+                    None => log.push(format!("stream {samples} {rows}")),
                 }
                 let mut tel = TelBurst {
                     frames: Vec::new(),
@@ -1549,7 +1554,7 @@ pub fn pump_on<E: Experiment>(
                         control::GOAL_DUTY,
                         control::TORQUE_ENABLE,
                         control::STALL_PERMIT,
-                        control::TEL_MASK,
+                        control::TEL_COUNT,
                     ] {
                         charge_write(servo, &mut lease, &bus, reg, 0);
                         log.push(format!("write {} 0", reg_name(reg)));
@@ -1611,7 +1616,7 @@ mod tests {
             s.current_limit = Some(LIM);
             s.jam = jam;
             s.pos = pos;
-            s.tel_mask = (1 << 1) | (1 << 3);
+            s.tel_chunks = crate::frame::TEL_LADDER;
             s.write(control::TORQUE_ENABLE, 1);
             s.write(control::GOAL_DUTY, sign * pct(64));
             assert_eq!(s.limit_flags(), 0, "a plain slew is not governed");
@@ -1628,11 +1633,11 @@ mod tests {
             s.advance(50);
             let o = s.read();
             let exact = (LIM as f64 * s.r / s.vbus * 32767.0) as i16;
-            let under = exact - o.duty_applied_q15 * sign as i16;
+            let under = exact - s.applied() * sign as i16;
             assert!(
                 (1..=128).contains(&under),
                 "{jam:?} {sign}: applied {} for {exact}",
-                o.duty_applied_q15
+                s.applied()
             );
             let i = s.sensed().0.round().abs();
             assert!(i >= band && i < LIM as f64, "{jam:?} {sign}: {i}");
@@ -1728,7 +1733,7 @@ mod tests {
         assert!(w > 3000.0, "{w}");
         s.write(control::GOAL_DUTY, -pct(30));
         let o = s.read();
-        assert_eq!(o.duty_applied_q15, -s.floor_q15);
+        assert_eq!(s.applied(), -s.floor_q15);
         let want = (s.floor_q15 as f64 / 32767.0 * s.vbus + s.ke * w) / s.r;
         let i = s.sensed().0.round();
         assert!((i + want).abs() < 1.0, "{i} for {want}");
@@ -1737,7 +1742,8 @@ mod tests {
     }
 
     /// Asked to, the fake refuses a burst arm the firmware would: with a
-    /// TEL count armed (a watch's outlives its rows), over the volts cap,
+    /// TEL count armed (never a finished watch's: the servo zeroes it at
+    /// the LAST frame), over the volts cap,
     /// inside the spacing, or outside the soft limits without the permit.
     /// The pump then ends the run as the CLI does: the reason the host
     /// reads back, then the guard's writes.
@@ -1748,9 +1754,10 @@ mod tests {
         s.pos = 2000.0;
         assert_eq!(s.arm(q15(25)), Err("torque off"));
         s.write(control::TORQUE_ENABLE, 1);
-        s.watch(16, &mut Vec::new());
+        s.write(control::TEL_COUNT, 16);
         assert_eq!(s.arm(q15(25)), Err("a TEL count armed"));
         s.write(control::TEL_COUNT, 0);
+        s.watch(16, &mut Vec::new());
         assert_eq!(s.arm(q15(45)), Err("over the burst volts cap"));
         assert_eq!(s.arm(-q15(40)), Ok(()));
         s.advance(99);
@@ -1791,7 +1798,7 @@ mod tests {
                 "write goal_duty 0",
                 "write torque_enable 0",
                 "write stall_permit 0",
-                "write tel_mask 0",
+                "write tel_count 0",
             ]
         );
         assert!(exp.seen.is_empty(), "the run went no further");
@@ -1883,7 +1890,7 @@ mod tests {
         );
 
         let before = s.read().sample_tick;
-        s.tel_mask = 1;
+        s.tel_chunks = crate::frame::TEL_POS;
         let mut tel = Vec::new();
         s.stream(3000, &mut tel);
         assert_eq!(tel.len(), 3000);
@@ -2022,11 +2029,11 @@ mod tests {
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct(10));
         s.advance(50);
-        assert_eq!(s.read().duty_applied_q15, pct(10) as i16);
+        assert_eq!(s.applied(), pct(10) as i16);
         assert_eq!(s.limit_flags(), 0);
         s.current_limit = None;
         s.write(control::GOAL_DUTY, pct(64));
-        assert_eq!(s.read().duty_applied_q15, pct(64) as i16);
+        assert_eq!(s.applied(), pct(64) as i16);
     }
 
     /// The lease: a write of true with torque on grants it, a rewrite
@@ -2042,15 +2049,11 @@ mod tests {
         let outward = -pct(10);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, outward);
-        assert_eq!(
-            s.read().duty_applied_q15,
-            0,
-            "no permit: the endstop blocks"
-        );
+        assert_eq!(s.applied(), 0, "no permit: the endstop blocks");
         assert_eq!(s.limit_flags(), 4);
 
         s.write(control::STALL_PERMIT, 1);
-        assert_eq!(s.read().duty_applied_q15, outward as i16);
+        assert_eq!(s.applied(), outward as i16);
         assert_eq!(s.limit_flags(), 8);
         s.advance(900);
         s.write(control::STALL_PERMIT, 1);
@@ -2058,7 +2061,7 @@ mod tests {
         assert!(s.permit_live(), "a rewrite extends the lease");
         s.advance(200);
         assert!(!s.permit_live());
-        assert_eq!(s.read().duty_applied_q15, 0, "the lease ran out");
+        assert_eq!(s.applied(), 0, "the lease ran out");
         assert_eq!(s.limit_flags(), 4);
         assert!(s.permit, "the request byte still reads true");
 

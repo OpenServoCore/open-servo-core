@@ -30,8 +30,9 @@ use osc_servo_core::regions::config::addr::loop_velocity::V_KP_Q88;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
 use osc_servo_core::stamp::compute;
-use osc_servo_core::tel::{TelSample, TelStream};
+use osc_servo_core::tel::{TelStream, tick_flag};
 use osc_servo_core::{ControlTable, Kernel, Mode, MotorCmd, RegionStorage, Shared};
+use osc_servo_core::{ControlTableCell, TelemetryTick};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -112,7 +113,7 @@ impl Rig {
         (0..ticks)
             .map(|_| {
                 let f = self.plant.step(self.duty);
-                self.k.on_tick(f, sh);
+                self.k.on_scan(f, sh);
                 self.duty = duty_of(&self.k);
                 last_cmd(&self.k)
             })
@@ -379,15 +380,15 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
     }
 }
 
-/// Records every TEL sample the kernel emits; the handle outlives the kernel.
-struct RecTel(Rc<RefCell<Vec<TelSample>>>);
+/// Records the tick block every row would take; the handle outlives the
+/// kernel, the table it reads the kernel too.
+struct RecTel(Rc<RefCell<Vec<TelemetryTick>>>, *const ControlTableCell);
 
 impl TelStream for RecTel {
-    fn row_mask(&mut self) -> u16 {
-        osc_servo_core::tel::MASK_ALL
-    }
-    fn on_tick(&mut self, sample: &TelSample) {
-        self.0.borrow_mut().push(*sample);
+    fn on_tick(&mut self) {
+        // SAFETY: the test's table outlives the kernel that owns this.
+        let t = unsafe { (*self.1).with(|t| t.telemetry.tick) };
+        self.0.borrow_mut().push(t);
     }
 }
 
@@ -405,7 +406,7 @@ fn virgin_servo_drives_openloop_and_current_without_alert() {
             sensors: FakeSensors,
             motor: FakeMotor { last: None },
         },
-        RecTel(tel.clone()),
+        RecTel(tel.clone(), &sh.table),
         TIMING,
     );
     let mut plant = Plant::new(START_POS);
@@ -414,7 +415,7 @@ fn virgin_servo_drives_openloop_and_current_without_alert() {
         (0..ticks)
             .map(|_| {
                 let f = plant.step(duty);
-                k.on_tick(f, sh);
+                k.on_scan(f, sh);
                 duty = duty_of(&k);
                 k.io.motor.last.expect("a motor write happened")
             })
@@ -436,10 +437,14 @@ fn virgin_servo_drives_openloop_and_current_without_alert() {
     let samples = tel.borrow();
     let first_fault = samples
         .iter()
-        .position(|s| s.fault)
+        .position(|s| s.tick_flags & tick_flag::FAULT != 0)
         .expect("the latch shows");
     assert!(first_fault >= 200 + 2000, "clean through the open modes");
-    assert!(samples[..first_fault].iter().all(|s| !s.fault));
+    assert!(
+        samples[..first_fault]
+            .iter()
+            .all(|s| s.tick_flags & tick_flag::FAULT == 0)
+    );
 }
 
 // SAVE and FACTORY over the wire

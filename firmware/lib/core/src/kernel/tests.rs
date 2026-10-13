@@ -9,8 +9,9 @@ use crate::math::q_mul;
 use crate::pos_lut;
 use crate::regions::config::{DecaySelect, StallResponse};
 use crate::regions::control::Mode;
+use crate::tel::tick_flag;
 use crate::traits::{DecayMode, MotorCmd, Sensors};
-use crate::{ControlTable, RegionStorage, Shared};
+use crate::{ControlTable, RegionStorage, Shared, TelemetryTick};
 use medium::phase;
 
 const BIAS: u16 = 2048;
@@ -35,9 +36,7 @@ const TIMING: KernelTiming = KernelTiming {
 
 struct FakeSensors;
 impl Sensors for FakeSensors {
-    fn frame(&mut self) -> SensorFrame {
-        SensorFrame::default()
-    }
+    fn land(&mut self, _: &Shared) {}
 }
 
 struct FakeMotor {
@@ -129,7 +128,7 @@ fn seed(shared: &Shared) {
         // encoded 1.0 (the old Q0.16-ceiling dynamics, kept so the pinned
         // integer sims stand); correction gains absorb the gap
         cal.motor.b_i_q313 = 8192;
-        t.telemetry.sensors.current_bias_counts = BIAS;
+        t.telemetry.refs.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
     });
@@ -161,7 +160,6 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
         vcal: 1200,
         vbus_raw: vbus_raw(3000),
         ntc_raw: 2048,
-        tick: 0,
     }
 }
 
@@ -173,7 +171,7 @@ fn settle<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame) 
         if k.fast.duty_q15 == goal {
             return;
         }
-        k.on_tick(f, sh);
+        k.on_scan(f, sh);
     }
     panic!("duty {} never reached the goal {goal}", k.fast.duty_q15);
 }
@@ -181,7 +179,7 @@ fn settle<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame) 
 /// Ticks `f` until the next tick runs medium phase `p`.
 fn run_to(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, p: u8) {
     while k.phase != p {
-        k.on_tick(f, sh);
+        k.on_scan(f, sh);
     }
 }
 
@@ -190,7 +188,7 @@ fn run_to(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, p: u8) {
 /// the last of these ticks on.
 fn to_first_command(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
     for _ in 0..=phase::VELOCITY {
-        k.on_tick(f, sh);
+        k.on_scan(f, sh);
     }
 }
 
@@ -202,7 +200,7 @@ fn torque_off_disables_and_estimators_still_track() {
     seed(&sh);
     let mut k = kernel();
     for _ in 0..40 {
-        k.on_tick(frame(2500, BIAS), &sh);
+        k.on_scan(frame(2500, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     // boot seeded the fusion at the first measurement
@@ -211,7 +209,7 @@ fn torque_off_disables_and_estimators_still_track() {
     // live b_i bleed at the plant's saturated B settles the 1500-count
     // step in ~920 medium ticks, integer-sim verified)
     for _ in 0..12000 {
-        k.on_tick(frame(1000, BIAS), &sh);
+        k.on_scan(frame(1000, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     let err = (k.medium.fusion.theta_q16() - (1000 << 16)).abs();
@@ -231,7 +229,7 @@ fn enable_edge_reseeds_without_transient() {
     seed(&sh);
     let mut k = kernel();
     for _ in 0..2000 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
@@ -240,7 +238,7 @@ fn enable_edge_reseeds_without_transient() {
     // at-goal enable: every command in the first stretch is at rest or a
     // bounded nudge - no integrator kick, no profile teleport
     for _ in 0..50 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
         match last_cmd(&k) {
             MotorCmd::Brake | MotorCmd::Disabled => {}
             MotorCmd::Drive { .. } => {
@@ -263,10 +261,10 @@ fn enable_edge_clears_hand_era_tau_d() {
     // zero - only the snap transient (e pinned at the clamp) pumps it
     for i in 0..4000u32 {
         let pos = 1000 + ((i / 4) % 2000) as u16;
-        k.on_tick(frame(pos, BIAS), &sh);
+        k.on_scan(frame(pos, BIAS), &sh);
     }
     for _ in 0..150 {
-        k.on_tick(frame(1000, BIAS), &sh);
+        k.on_scan(frame(1000, BIAS), &sh);
     }
     assert!(
         k.medium.fusion.tau_d_counts().unsigned_abs() > 200,
@@ -281,7 +279,7 @@ fn enable_edge_clears_hand_era_tau_d() {
         t.control.lifecycle.goal_current = 0;
     });
     for _ in 0..200 {
-        k.on_tick(frame(1500, BIAS), &sh);
+        k.on_scan(frame(1500, BIAS), &sh);
     }
     assert_eq!(k.faults.mask(), 0, "stale tau_d re-latched STALL");
     assert!(k.medium.fusion.tau_d_counts().unsigned_abs() < 50);
@@ -299,7 +297,7 @@ fn endstop_allows_retreat_from_the_wall() {
     let mut k = kernel();
     // parked hard against the top wall (bench: horn ratcheted to the rail)
     for _ in 0..400 {
-        k.on_tick(frame(4095, BIAS), &sh);
+        k.on_scan(frame(4095, BIAS), &sh);
     }
     // inward goal is banded to zero: the winding short holds at the wall
     assert!(
@@ -318,7 +316,7 @@ fn endstop_allows_retreat_from_the_wall() {
     (rev.vmotor_b, rev.vmotor_b_trough) = (3000, 3000);
     let mut drove = false;
     for _ in 0..400 {
-        k.on_tick(rev, &sh);
+        k.on_scan(rev, &sh);
         if let Some(duty) = drive_duty(&k) {
             drove |= duty < 0;
         }
@@ -344,7 +342,7 @@ fn permit_rig(sh: &Shared) -> Kernel<FakeIo> {
     });
     let mut k = kernel();
     for _ in 0..400 {
-        k.on_tick(frame(PAST_WALL, BIAS), sh);
+        k.on_scan(frame(PAST_WALL, BIAS), sh);
     }
     // stopped just ahead of the CONTROL phase, which reads a grant for the
     // LIMITS phase after it
@@ -373,7 +371,7 @@ fn ticks_to_lapse(k: &mut Kernel<FakeIo>, sh: &Shared, max: u32) -> u32 {
     let mut live = false;
     (1..=max)
         .find(|_| {
-            k.on_tick(frame(PAST_WALL, BIAS), sh);
+            k.on_scan(frame(PAST_WALL, BIAS), sh);
             live |= permit_live(k);
             live && !permit_live(k)
         })
@@ -395,7 +393,7 @@ fn permit_lease_expires_without_a_host() {
         "the request byte is the host's: the kernel never clears it"
     );
     for _ in 0..SEC {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
         assert!(!permit_live(&k), "a lapsed lease stays lapsed");
     }
 }
@@ -406,12 +404,12 @@ fn permit_rewrite_extends_the_lease() {
     let mut k = permit_rig(&sh);
     write_permit(&sh);
     for _ in 0..SEC * 8 / 10 {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     assert!(permit_live(&k));
     write_permit(&sh);
     for _ in 0..SEC * 8 / 10 {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
         assert!(permit_live(&k), "the rewrite renewed the lease");
     }
     let lapse = ticks_to_lapse(&mut k, &sh, SEC);
@@ -422,13 +420,13 @@ fn permit_rewrite_extends_the_lease() {
     // a write of false revokes at the next MEDIUM pass
     write_permit(&sh);
     for _ in 0..DECIM_MED {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     assert!(permit_live(&k));
     sh.table
         .with_mut(|t| t.control.lifecycle.stall_permit = false);
     for _ in 0..DECIM_MED {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     assert!(!permit_live(&k), "false revokes inside a MEDIUM tick");
 }
@@ -439,19 +437,19 @@ fn torque_off_drops_the_permit() {
     let mut k = permit_rig(&sh);
     write_permit(&sh);
     for _ in 0..SEC / 10 {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     assert!(permit_live(&k));
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..2 * DECIM_MED {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     // re-enabled well inside the second the grant had left
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
     for _ in 0..SEC {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
         assert!(!permit_live(&k), "the lease outlived torque off");
     }
     assert!(sh.table.with(|t| t.control.lifecycle.stall_permit));
@@ -464,7 +462,7 @@ fn permit_written_with_torque_off_never_grants() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..2 * DECIM_MED {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     write_permit(&sh);
     // torque back on before the next MEDIUM pass: the request alone, never
@@ -472,7 +470,7 @@ fn permit_written_with_torque_off_never_grants() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
     for _ in 0..2 * SEC {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
         assert!(!permit_live(&k), "a torque-off request granted a lease");
     }
 }
@@ -498,12 +496,12 @@ fn limit_flags_name_the_governor() {
     });
     let mut k = kernel();
     for _ in 0..2 * DECIM_MED {
-        k.on_tick(frame(2000, BIAS + 290), &sh);
+        k.on_scan(frame(2000, BIAS + 290), &sh);
     }
     for _ in 0..4 {
         run_to(&mut k, &sh, frame(2000, BIAS + 290), phase::PUBLISH + 1);
         assert_eq!(limit_flags(&sh), flag::CEILING);
-        k.on_tick(frame(2000, BIAS + 290), &sh);
+        k.on_scan(frame(2000, BIAS + 290), &sh);
     }
     assert!(k.fast.duty_q15 < 8000, "governed");
 
@@ -519,13 +517,13 @@ fn limit_flags_name_the_governor() {
     });
     let mut k = kernel();
     for _ in 0..2_000 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert_eq!(limit_flags(&sh), flag::CEILING | flag::YIELD);
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_current = 100);
     for _ in 0..2 * DECIM_MED {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert_eq!(limit_flags(&sh), flag::YIELD);
     assert_eq!(k.faults.mask(), 0);
@@ -538,13 +536,13 @@ fn limit_flags_name_the_governor() {
     // permit: the lease drops the endstop, so it stands alone
     write_permit(&sh);
     for _ in 0..DECIM_MED {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     assert_eq!(limit_flags(&sh), flag::PERMIT);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..DECIM_MED {
-        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
     }
     assert_eq!(limit_flags(&sh), flag::ENDSTOP, "torque off ends the lease");
 }
@@ -563,7 +561,7 @@ fn undervolt_follows_the_rail_tap_through_bridge_off() {
     let mut sagged = frame(2000, BIAS);
     sagged.vbus_raw = vbus_raw(1000);
     for _ in 0..400 {
-        k.on_tick(sagged, &sh);
+        k.on_scan(sagged, &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag latches");
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
@@ -572,23 +570,23 @@ fn undervolt_follows_the_rail_tap_through_bridge_off() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..400 {
-        k.on_tick(sagged, &sh);
+        k.on_scan(sagged, &sh);
     }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
     for _ in 0..2000 {
-        k.on_tick(sagged, &sh);
+        k.on_scan(sagged, &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag re-latches");
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..400 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
     for _ in 0..2000 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert_eq!(k.faults.mask(), 0, "recovered rail re-latched undervolt");
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
@@ -614,15 +612,15 @@ fn oc_latch_forces_disabled_despite_torque_enable() {
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // 4 consecutive valid over-trip samples latch on the 4th
     for _ in 0..3 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
         assert_eq!(k.faults.mask(), 0);
     }
-    k.on_tick(frame(2000, BIAS + 3000), &sh);
+    k.on_scan(frame(2000, BIAS + 3000), &sh);
     assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     // torque_enable still set: stays disabled, publish lands at medium
     for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
         assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     }
     sh.table.with(|t| {
@@ -646,7 +644,7 @@ fn ack_clears_then_relatches_while_condition_persists() {
     let mut k = kernel();
     to_first_command(&mut k, &sh, frame(2000, BIAS + 3000));
     for _ in 0..8 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
     // ack: drop then raise torque_enable, each seen at a CONTROL phase; the
@@ -654,20 +652,20 @@ fn ack_clears_then_relatches_while_condition_persists() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..DECIM_MED {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
     }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
     while k.phase != 0 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
         assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
     }
-    k.on_tick(frame(2000, BIAS + 3000), &sh);
+    k.on_scan(frame(2000, BIAS + 3000), &sh);
     assert_eq!(k.faults.mask(), 0);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // the overcurrent persists: a fresh window re-latches
     for _ in 0..5 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
@@ -685,18 +683,18 @@ fn oc_gap_rearms_the_window() {
         t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS + 3000), &sh); // warmup: invalid window
+    k.on_scan(frame(2000, BIAS + 3000), &sh); // warmup: invalid window
     for _ in 0..3 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
     }
     // one clean sample re-arms; three more over-samples do not latch
-    k.on_tick(frame(2000, BIAS + 100), &sh);
+    k.on_scan(frame(2000, BIAS + 100), &sh);
     for _ in 0..3 {
-        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        k.on_scan(frame(2000, BIAS + 3000), &sh);
     }
     assert_eq!(k.faults.mask(), 0);
     // the 4th consecutive does
-    k.on_tick(frame(2000, BIAS + 3000), &sh);
+    k.on_scan(frame(2000, BIAS + 3000), &sh);
     assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
 }
 
@@ -722,10 +720,10 @@ fn openloop_duty_passthrough_clamped_with_decay() {
     // duty_max clamps the passthrough at the next medium boundary, at once
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 5000);
     while k.phase != 0 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(written_duty(&k), 8000);
     }
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(written_duty(&k), 5000);
 }
 
@@ -741,17 +739,17 @@ fn duty_max_write_caps_the_closed_loop_at_the_refresh_tick() {
     let mut k = kernel();
     // no current ever reads back: the loop saturates at duty_max x vbus
     for _ in 0..10 * DECIM_MED {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert!(written_duty(&k) > 32000, "duty={}", written_duty(&k));
     // the clamp is prepared at the rail commit, so the refresh re-prepares
     // it: the cap lands with the configuration, not at the next RAIL phase
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
     while k.phase != phase::THERM_INSTALL {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
         assert!(written_duty(&k) > 32000);
     }
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     let d = written_duty(&k);
     assert!((7900..=8000).contains(&d), "duty={d}");
 }
@@ -766,7 +764,7 @@ fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
         t.control.lifecycle.goal_duty = 0;
     });
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     match last_cmd(&k) {
         MotorCmd::Drive { decay, .. } => {
             assert_eq!(written_duty(&k), 0);
@@ -787,13 +785,13 @@ fn openloop_zero_goal_drops_the_held_current() {
     });
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS + 200));
-    k.on_tick(frame(2000, BIAS + 200), &sh);
+    k.on_scan(frame(2000, BIAS + 200), &sh);
     assert_eq!(k.fast.i_meas_last, 200);
     // the coast drives nothing: the held current reads 0 from the tick
     // the zero goal lands, not the last driven sample
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 0);
     run_to(&mut k, &sh, frame(2000, BIAS + 200), 0);
-    k.on_tick(frame(2000, BIAS + 200), &sh);
+    k.on_scan(frame(2000, BIAS + 200), &sh);
     assert_eq!(drive_duty(&k), Some(0));
     assert_eq!(k.fast.i_meas_last, 0);
 }
@@ -809,7 +807,7 @@ fn openloop_zero_duty_brakes_when_flag_set() {
         t.config.limits.openloop_zero_brake = true;
     });
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     assert_eq!(k.fast.duty_q15, 0);
 }
@@ -825,7 +823,7 @@ fn openloop_endstop_brakes_instead_of_coasting() {
     });
     let mut k = kernel();
     for _ in 0..400 {
-        k.on_tick(frame(4095, BIAS), &sh);
+        k.on_scan(frame(4095, BIAS), &sh);
     }
     assert!(
         matches!(last_cmd(&k), MotorCmd::Brake),
@@ -834,7 +832,7 @@ fn openloop_endstop_brakes_instead_of_coasting() {
     );
     assert_eq!(k.fast.duty_q15, 0);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
-    k.on_tick(frame(4095, BIAS), &sh);
+    k.on_scan(frame(4095, BIAS), &sh);
     match last_cmd(&k) {
         MotorCmd::Drive { .. } => assert!(written_duty(&k) < 0, "duty {}", written_duty(&k)),
         other => panic!("expected retreat Drive, got {other:?}"),
@@ -882,7 +880,7 @@ fn the_next_measure_reads_the_written_width() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     run_to(&mut k, &sh, frame(2000, BIAS), 0);
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     assert_eq!(k.fast.ticks, 0);
 }
@@ -925,13 +923,13 @@ fn reversed_polarity_endstop_stays_positional() {
     let mut k = kernel();
     // +duty is still the outbound push at the top wall
     for _ in 0..400 {
-        k.on_tick(frame(4095, BIAS), &sh);
+        k.on_scan(frame(4095, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     assert_eq!(k.fast.duty_q15, 0);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     for _ in 0..400 {
-        k.on_tick(frame(4095, BIAS), &sh);
+        k.on_scan(frame(4095, BIAS), &sh);
     }
     assert_eq!(k.fast.duty_q15, -8000);
     assert_eq!(written_duty(&k), 8000);
@@ -946,14 +944,14 @@ fn reversed_polarity_negates_the_openloop_write() {
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS));
-    // past the next medium publish, which reports the previous tick's duty
-    for _ in 0..=DECIM_MED {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(written_duty(&k), -8000);
     assert_eq!(k.fast.duty_q15, 8000);
-    sh.table
-        .with(|t| assert_eq!(t.telemetry.estimates.duty_applied_q15, 8000));
+    // the tick block's duty is logical, the previous tick's command
+    assert_eq!(
+        tick_block(&sh).duty_ticks,
+        crate::tel::duty_counts(8000, ARR)
+    );
 }
 
 #[test]
@@ -965,7 +963,7 @@ fn reversed_polarity_negates_the_closed_loop_write() {
         .with_mut(|t| t.control.lifecycle.goal_current = 500);
     let mut k = kernel();
     for _ in 0..20 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert!(k.fast.duty_q15 > 0, "logical duty={}", k.fast.duty_q15);
     assert_eq!(written_duty(&k), -k.fast.duty_q15);
@@ -980,15 +978,15 @@ fn reversed_polarity_negates_vdiff() {
     let mut k = kernel();
     // the tick after the first command samples the window it drove
     to_first_command(&mut k, &sh, frame(2000, BIAS));
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     // the rewire lands with the fast half of the configuration
     write_config(&sh, |t| t.config.limits.drive_polarity = true);
     while k.phase != phase::THERM_INSTALL {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     }
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.fast.vdiff_last, 3000 - 40);
 }
 
@@ -1018,7 +1016,7 @@ fn current_mode_clamps_goal_to_i_lim() {
     run_to(&mut k, &sh, frame(2000, BIAS), phase::CONTROL);
     run_to(&mut k, &sh, frame(2000, BIAS), phase::VELOCITY);
     assert_eq!(k.medium.i_ref_cc, 1200);
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.medium.i_ref_cc, -1200);
 }
 
@@ -1049,9 +1047,9 @@ fn therm(sh: &Shared) -> (i16, u8, u16, i16) {
     sh.table.with(|t| {
         (
             t.telemetry.estimates.t_winding_cc,
-            t.telemetry.therm.therm_flags,
+            t.telemetry_ext.therm.therm_flags,
             t.telemetry.estimates.i_lim_counts,
-            t.telemetry.therm.t_ntc_cc,
+            t.telemetry_ext.therm.t_ntc_cc,
         )
     })
 }
@@ -1198,7 +1196,7 @@ fn position_error_latches_after_persistence() {
     let mut k = kernel();
     // pot frozen at 500 while the profile marches away
     for _ in 0..4000 {
-        k.on_tick(frame(500, BIAS), &sh);
+        k.on_scan(frame(500, BIAS), &sh);
         if k.faults.mask() != 0 {
             break;
         }
@@ -1213,12 +1211,13 @@ fn publishes_land_in_the_table() {
     seed(&sh);
     let mut k = kernel();
     for _ in 0..20 {
-        k.on_tick(frame(1234, 2100), &sh);
+        k.on_scan(frame(1234, 2100), &sh);
     }
     sh.table.with(|t| {
-        assert_eq!(t.telemetry.sensors.pos, 1234);
-        assert_eq!(t.telemetry.sensors.current, 2100);
-        assert_eq!(t.telemetry.sensors.vmotor_a, 3000);
+        assert_eq!(t.telemetry.tick.pos, 1234);
+        assert_eq!(t.telemetry.tick.current_raw, 2100);
+        assert_eq!(t.telemetry.tick.vmotor_a, 3000);
+        assert_eq!(t.telemetry.tick.duty_ticks, 0);
         assert_eq!(
             t.telemetry.estimates.theta_hat_q16,
             k.medium.fusion.theta_q16()
@@ -1228,7 +1227,6 @@ fn publishes_land_in_the_table() {
             k.medium.fusion.omega_q16()
         );
         assert_eq!(t.telemetry.estimates.i_lim_counts, 1200);
-        assert_eq!(t.telemetry.estimates.duty_applied_q15, 0);
         assert_eq!(t.telemetry.estimates.vbus_counts, 3000);
         assert_eq!(t.telemetry.mode.mode_active, Mode::Position as u8);
         assert_eq!(t.telemetry.mode.fault_code, faults::CODE_NONE);
@@ -1237,7 +1235,7 @@ fn publishes_land_in_the_table() {
 }
 
 fn published_bias(sh: &Shared) -> u16 {
-    sh.table.with(|t| t.telemetry.sensors.current_bias_counts)
+    sh.table.with(|t| t.telemetry.refs.current_bias_counts)
 }
 
 /// Ticks for the bias tracker to settle a step to the count: 12 time
@@ -1246,7 +1244,7 @@ const BIAS_SETTLE_TICKS: u32 = 12 << bias::ALPHA_SHIFT;
 
 fn ticks(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
     for _ in 0..n {
-        k.on_tick(f, sh);
+        k.on_scan(f, sh);
     }
 }
 
@@ -1327,7 +1325,7 @@ fn drifting_trough_bias_leaves_i_meas_flat() {
         b = BIAS + (n >> 12) as u16;
         let mut f = frame(2000, b + 300);
         f.current_trough = b;
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         if n >= 300 {
             let i = k.fast.i_meas_last as i32;
             assert!((i - 300).abs() <= 3, "tick {n}: i_meas {i}, bias {b}");
@@ -1379,7 +1377,7 @@ fn torque_off_bias_follows_a_drifting_rest() {
     // 1 count per 1024 ticks, 8 counts of lag
     for n in 0..200u32 << 10 {
         let b = BIAS - (n >> 10) as u16;
-        k.on_tick(rest(b), &sh);
+        k.on_scan(rest(b), &sh);
         if n >= 1 << 10 {
             let p = published_bias(&sh);
             assert!(p >= b && p - b <= 9, "tick {n}: bias {p}, rest {b}");
@@ -1424,7 +1422,7 @@ fn the_awake_step_is_learned_and_rides_the_torque_off_drift() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
     for _ in 0..BIAS_SETTLE_TICKS {
-        k.on_tick(rest(BIAS - 190), &sh);
+        k.on_scan(rest(BIAS - 190), &sh);
         assert_eq!(published_bias(&sh), BIAS - 190);
     }
     assert_eq!(drive_duty(&k), Some(0));
@@ -1462,7 +1460,7 @@ fn a_draining_current_is_never_learned_as_zero() {
             t.config.limits.openloop_zero_brake = zero_brake;
         });
         while core::mem::discriminant(&last_cmd(&k)) != core::mem::discriminant(&cmd) {
-            k.on_tick(driven, &sh);
+            k.on_scan(driven, &sh);
         }
         ticks(&mut k, &sh, driven, fast::ZERO_SETTLE_TICKS as u32);
         assert_eq!(published_bias(&sh), BIAS);
@@ -1502,23 +1500,22 @@ fn settle_gain_lifts_a_short_window_and_leaves_the_raw_sample() {
             sensors: FakeSensors,
             motor: FakeMotor { last: None },
         },
-        RecTel::default(),
+        (),
         timing,
     );
     let f = frame(2000, BIAS + 300);
     settle(&mut k, &sh, f);
-    k.tel.mask = crate::tel::MASK_ALL;
-    k.on_tick(f, &sh);
-    let s = *k.tel.samples.last().unwrap();
-    assert!(s.window_valid);
+    k.on_scan(f, &sh);
+    let t = tick_block(&sh);
+    assert_ne!(t.tick_flags & tick_flag::I_VALID, 0);
     // the 96..103 band: 300 x 33259 / 32768 = 304.49
-    assert_eq!(s.current, 304);
-    assert_eq!(s.current_raw, BIAS + 300);
+    assert_eq!(t.i_tick_counts, 304);
+    assert_eq!(t.current_raw, BIAS + 300);
     // past the table the gain is unity
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     settle(&mut k, &sh, f);
-    k.on_tick(f, &sh);
-    assert_eq!(k.tel.samples.last().unwrap().current, 300);
+    k.on_scan(f, &sh);
+    assert_eq!(tick_block(&sh).i_tick_counts, 300);
 }
 
 // --- Held stream samples ---------------------------------------------------
@@ -1545,26 +1542,23 @@ fn tel_settled_at_control(sh: &Shared) -> Kernel<FakeIo, RecTel> {
             sensors: FakeSensors,
             motor: FakeMotor { last: None },
         },
-        RecTel {
-            mask: crate::tel::BIT_CURRENT | crate::tel::BIT_DUTY | crate::tel::BIT_VDIFF,
-            ..RecTel::default()
-        },
+        RecTel::new(sh),
         TIMING,
     );
     settle(&mut k, sh, frame(2000, BIAS + 200));
     while k.phase != phase::CONTROL {
-        k.on_tick(frame(2000, BIAS + 200), sh);
+        k.on_scan(frame(2000, BIAS + 200), sh);
     }
-    k.tel.samples.clear();
+    k.tel.rows.clear();
     k
 }
 
-/// The (current, vdiff, duty) rows of the recorder.
+/// The (held current, differential, duty) of each row the recorder took.
 fn rows(k: &Kernel<FakeIo, RecTel>) -> heapless::Vec<(i16, i16, i16), 64> {
     k.tel
-        .samples
+        .rows
         .iter()
-        .map(|s| (s.current, s.vdiff, s.duty))
+        .map(|t| (t.i_tick_counts, t.vdiff_counts, t.duty_ticks))
         .collect()
 }
 
@@ -1577,12 +1571,16 @@ fn stream_rows_hold_the_last_valid_window_while_the_drive_pushes() {
     // last valid command drove) while the drive still pushes
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 1000);
     for _ in 0..16 {
-        k.on_tick(frame(2000, BIAS + 300), &sh);
+        k.on_scan(frame(2000, BIAS + 300), &sh);
     }
     let r = rows(&k);
     assert_eq!(r[0], (300, 2960, 293));
     assert!(r[1..].iter().all(|&row| row == (300, 2960, 37)), "{r:?}");
-    assert!(k.tel.samples[1..].iter().all(|s| !s.window_valid));
+    assert!(
+        k.tel.rows[1..]
+            .iter()
+            .all(|t| t.tick_flags & tick_flag::I_VALID == 0)
+    );
 }
 
 #[test]
@@ -1594,7 +1592,7 @@ fn stream_current_reads_zero_once_nothing_drives() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..16 {
-        k.on_tick(frame(2000, BIAS + 200), &sh);
+        k.on_scan(frame(2000, BIAS + 200), &sh);
     }
     let r = rows(&k);
     assert_eq!(r[0], (200, 2960, 293));
@@ -1616,7 +1614,7 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     settle(&mut k, &sh, frame(2000, BIAS + 100));
     run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
     for _ in 0..20 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
+        k.on_scan(frame(2000, BIAS + 100), &sh);
     }
     run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
     // closed form: (293 * 2960 / 1200 - 2.0 * 100) * 16 c/s per vcount
@@ -1633,13 +1631,13 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..DECIM_MED - 1 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
+        k.on_scan(frame(2000, BIAS + 100), &sh);
     }
     assert_eq!(
         sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps),
         8363
     );
-    k.on_tick(frame(2000, BIAS + 100), &sh);
+    k.on_scan(frame(2000, BIAS + 100), &sh);
     assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
 }
 
@@ -1663,7 +1661,7 @@ fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
         settle(&mut k, &sh, frame(2000, BIAS + 100));
         run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
         for _ in 0..20 {
-            k.on_tick(frame(2000, BIAS + 100), &sh);
+            k.on_scan(frame(2000, BIAS + 100), &sh);
         }
         run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
         assert_eq!(
@@ -1692,7 +1690,7 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     // source is the observer
     let mut n = 0;
     while k.medium.omega_sw.source() != OmegaSource::Bemf {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
+        k.on_scan(frame(2000, BIAS + 100), &sh);
         assert_eq!(published(&sh).1, 0);
         n += 1;
         assert!(n < 100, "the source never flipped");
@@ -1707,10 +1705,10 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     // through that one result, then falls back at the next period's void
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    k.on_tick(frame(2000, BIAS + 100), &sh);
+    k.on_scan(frame(2000, BIAS + 100), &sh);
     run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
     assert_eq!(published(&sh), (bemf << 16, 1));
-    k.on_tick(frame(2000, BIAS + 100), &sh);
+    k.on_scan(frame(2000, BIAS + 100), &sh);
     run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
     assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
 }
@@ -1734,7 +1732,7 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
     // profile ramps 50 c/s per medium tick to 1600 and holds; the pot sits
     // still, so both velocity estimates read ~0 - the feed must not
     for _ in 0..1000 {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert_eq!(k.medium.traj.omega_star_q16(), 1600 << 16);
     // ke 0.0625 vcounts per c/s * 1600 c/s = 100 vcounts on a 3000 rail
@@ -1750,7 +1748,7 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
         t.control.lifecycle.goal_current = 0;
     });
     for n in 0..2000u16 {
-        k.on_tick(frame(1000 + n / 10, BIAS), &sh);
+        k.on_scan(frame(1000 + n / 10, BIAS), &sh);
     }
     assert!(
         k.medium.fusion.omega_q16() > 1000 << 16,
@@ -1819,7 +1817,6 @@ impl Plant {
             vcal: 1200,
             vbus_raw: vbus_raw(self.vbus),
             ntc_raw: 2048,
-            tick: 0,
         }
     }
 
@@ -1831,7 +1828,7 @@ impl Plant {
 fn run_plant(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant, ticks: u32) {
     for _ in 0..ticks {
         let f = plant.step(k.fast.duty_q15);
-        k.on_tick(f, sh);
+        k.on_scan(f, sh);
     }
 }
 
@@ -1866,7 +1863,7 @@ fn position_step_settles_without_limit_cycle() {
     let (mut lo, mut hi, mut parked) = (i32::MAX, i32::MIN, 0u32);
     for _ in 0..2000 {
         let f = plant.step(k.fast.duty_q15);
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
         if matches!(last_cmd(&k), MotorCmd::Brake) {
@@ -2046,7 +2043,7 @@ fn hold_stays_parked_under_pot_noise() {
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let n = ((rng >> 24) as i32 % 7) - 3;
         f.pos = (f.pos as i32 + n).clamp(0, 4095) as u16;
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         if matches!(last_cmd(&k), MotorCmd::Brake) {
             parked += 1;
         }
@@ -2067,7 +2064,7 @@ fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
     });
     let mut k = kernel();
     for _ in 0..10_000 {
-        k.on_tick(frame(raw, BIAS), sh);
+        k.on_scan(frame(raw, BIAS), sh);
     }
     assert_eq!(k.faults.mask(), 0);
     assert_eq!(k.medium.traj.theta_star_q16(), goal << 16, "profile landed");
@@ -2121,7 +2118,7 @@ fn hold_freezes_and_drains_the_velocity_loop() {
         let mut f = plant.step(k.fast.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         f.pos = (f.pos as i32 + ((rng >> 24) as i32 % 7) - 3).clamp(0, 4095) as u16;
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         if k.medium.hold && k.phase == phase::VELOCITY + 1 {
             assert_eq!(k.medium.i_ref_cc, 0, "parked with a current command");
         }
@@ -2311,7 +2308,7 @@ fn position_step_survives_tick_deletion() {
         let f = plant.step(k.fast.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         if !rng.is_multiple_of(10) {
-            k.on_tick(f, &sh);
+            k.on_scan(f, &sh);
         }
     }
     assert_eq!(k.faults.mask(), 0);
@@ -2324,26 +2321,38 @@ fn position_step_survives_tick_deletion() {
     let (mut lo, mut hi) = (i32::MAX, i32::MIN);
     for _ in 0..2000 {
         let f = plant.step(k.fast.duty_q15);
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
     }
     assert!(hi - lo <= 4, "limit cycle: spread {}", hi - lo);
 }
 
-// --- TEL stream ------------------------------------------------------------
+// --- Tick block and TEL stream ----------------------------------------------
 
-#[derive(Default)]
+/// The table's tick block as the last tick left it.
+fn tick_block(sh: &Shared) -> TelemetryTick {
+    sh.table.with(|t| t.telemetry.tick)
+}
+
+/// The tick block as each row's first chunk sees it: read at `on_tick`.
 struct RecTel {
-    mask: u16,
-    samples: heapless::Vec<crate::tel::TelSample, 64>,
+    table: *const crate::ControlTableCell,
+    rows: heapless::Vec<TelemetryTick, 64>,
+}
+impl RecTel {
+    fn new(sh: &Shared) -> Self {
+        Self {
+            table: &sh.table,
+            rows: heapless::Vec::new(),
+        }
+    }
 }
 impl crate::tel::TelStream for RecTel {
-    fn row_mask(&mut self) -> u16 {
-        self.mask
-    }
-    fn on_tick(&mut self, sample: &crate::tel::TelSample) {
-        let _ = self.samples.push(*sample);
+    fn on_tick(&mut self) {
+        // SAFETY: the test's `Shared` outlives the kernel that owns this.
+        let t = unsafe { (*self.table).with(|t| t.telemetry.tick) };
+        let _ = self.rows.push(t);
     }
 }
 
@@ -2353,10 +2362,7 @@ struct HoldTel {
     held: bool,
 }
 impl crate::tel::TelStream for HoldTel {
-    fn row_mask(&mut self) -> u16 {
-        0
-    }
-    fn on_tick(&mut self, _sample: &crate::tel::TelSample) {}
+    fn on_tick(&mut self) {}
     fn hold(&mut self) {
         self.held = true;
     }
@@ -2389,7 +2395,7 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
         }
         let before = k.probe_tags();
         k.tel.held = false;
-        k.on_tick(hot, &sh);
+        k.on_scan(hot, &sh);
         let after = k.probe_tags();
         let spare = matches!(before.phase, phase::THERM_INSTALL | phase::THERM_SIDE);
         let stage = spare && before.therm != after.therm;
@@ -2409,86 +2415,81 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
     assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
 }
 
-/// The frame's stamp: each sample carries the `sample_tick` the tick ISR
-/// published ahead of the kernel body, low half.
+/// The row's first chunk is taken at `on_tick`: the tick block is whole by
+/// then - this scan's frame, the stamp the ISR published, and the
+/// conclusions on the window the previous command drove - and nothing in
+/// the tick writes it after, so both chunks copy one tick.
 #[test]
-fn tel_sample_carries_the_sample_tick() {
+fn tick_block_is_whole_when_the_row_is_taken() {
     let sh = Shared::new();
     seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
     let mut k = Kernel::with_tel(
         FakeIo {
             sensors: FakeSensors,
             motor: FakeMotor { last: None },
         },
-        RecTel::default(),
+        RecTel::new(&sh),
         TIMING,
     );
-    k.tel.mask = crate::tel::BIT_POS;
-    for t in [0x0001_FFFE, 0x0001_FFFF, 0x0002_0000] {
+    settle(&mut k, &sh, frame(2100, BIAS + 40));
+    for n in 0..2 * DECIM_MED as u32 {
+        k.tel.rows.clear();
         sh.table
-            .with_mut(|tb| tb.telemetry.estimates.sample_tick = t);
-        k.on_tick(frame(2000, BIAS), &sh);
+            .with_mut(|t| t.telemetry.tick.sample_tick = 0x1_0000 + n);
+        let f = frame(2100 + n as u16, BIAS + 40);
+        k.on_scan(f, &sh);
+        let row = k.tel.rows[0];
+        assert_eq!(row, tick_block(&sh), "tick {n}: written after the row");
+        assert_eq!((row.pos, row.sample_tick), (f.pos, 0x1_0000 + n));
+        assert_eq!(row.current_trough, BIAS);
+        assert_eq!(row.duty_ticks, 293, "8000/32768 of ARR {ARR}");
+        assert_eq!(row.i_tick_counts, 40);
+        assert_eq!(
+            row.tick_flags,
+            tick_flag::I_VALID | tick_flag::V_VALID,
+            "duty 8000 is far above the 100-tick window floors"
+        );
     }
-    let ticks: heapless::Vec<u16, 4> = k.tel.samples.iter().map(|s| s.tick).collect();
-    assert_eq!(ticks, [0xFFFE, 0xFFFF, 0x0000]);
 }
 
+/// The tick block every tick, streaming or not: the duty is the command
+/// whose window this frame measured, in the compare counts the bridge
+/// applied, logical sign; with nothing driving, no window and no current.
 #[test]
-fn tel_stream_gated_by_sink_active() {
+fn tick_block_carries_the_measured_window() {
     let sh = Shared::new();
     seed(&sh);
-    let mut k = Kernel::with_tel(
-        FakeIo {
-            sensors: FakeSensors,
-            motor: FakeMotor { last: None },
-        },
-        RecTel::default(),
-        TIMING,
-    );
-    // sink inactive: no emission, torque off or driving
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
+    let mut k = kernel();
+    k.on_scan(frame(2000, BIAS), &sh);
+    let t = tick_block(&sh);
+    assert_eq!((t.duty_ticks, t.i_tick_counts, t.tick_flags), (0, 0, 0));
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
     });
     settle(&mut k, &sh, frame(2100, BIAS + 40));
-    assert!(k.tel.samples.is_empty());
-
-    // sink active: one sample per tick
-    k.tel.mask = crate::tel::MASK_ALL;
     for _ in 0..20 {
-        k.on_tick(frame(2100, BIAS + 40), &sh);
+        k.on_scan(frame(2100, BIAS + 40), &sh);
     }
-    assert_eq!(k.tel.samples.len(), 20);
-    let s = k.tel.samples.last().unwrap();
-    assert_eq!(s.pos, 2100);
-    assert_eq!(s.pos_lin_q4, 2100 << 4, "identity: no table live");
-    assert_eq!(s.current_trough, BIAS);
-    // previous-tick alignment: the sampled duty is the command whose window
-    // this frame measured, in the compare counts the bridge applied
-    assert_eq!(s.duty, 293, "8000/32768 of ARR {ARR}");
-    assert_eq!(s.duty, crate::tel::duty_counts(8000, ARR));
-    // duty 8000/32767 of ARR is far above the 100-tick window floors
-    assert!(s.window_valid);
-    assert_eq!(s.current, 40);
-    assert!(!s.fault);
-
+    let t = tick_block(&sh);
+    assert_eq!(t.duty_ticks, crate::tel::duty_counts(8000, ARR));
+    assert_eq!(t.i_tick_counts, 40);
     // reverse rides negative, as the host's goal quantization has it
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     settle(&mut k, &sh, frame(2100, BIAS + 40));
-    k.tel.samples.clear();
-    k.on_tick(frame(2100, BIAS + 40), &sh);
-    let d = k.tel.samples.last().unwrap().duty;
-    assert_eq!(d, -293);
-    assert_eq!(d, crate::tel::duty_counts(-8000, ARR));
-
-    // a row without pos_lin skips the table read
-    k.tel.mask = crate::tel::MASK_ALL & !crate::tel::BIT_POS_LIN;
-    k.on_tick(frame(2100, BIAS + 40), &sh);
-    assert_eq!(k.tel.samples.last().unwrap().pos_lin_q4, 0);
+    for _ in 0..20 {
+        k.on_scan(frame(2100, BIAS + 40), &sh);
+    }
+    let t = tick_block(&sh);
+    assert_eq!(t.duty_ticks, -293);
+    assert_eq!(t.duty_ticks, crate::tel::duty_counts(-8000, ARR));
+    assert_eq!(t.i_tick_counts, -40);
 }
 
 // --- Configuration snapshot -----------------------------------------------
@@ -2506,7 +2507,7 @@ fn first_tick_takes_the_configuration_without_a_write() {
         .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
     let mut k = kernel();
     assert_eq!(sh.config_gen(), k.config_gen, "nothing moved the counter");
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 5000);
     assert_eq!(k.cfg.medium.limits.stall_time_ticks, 1000, "50 ms");
     assert_eq!(
@@ -2521,15 +2522,15 @@ fn dispatched_config_write_lands_at_the_refresh_stages() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 32767);
     crate::services::bus::tests::write_committed(&sh, DUTY_MAX_Q15, &5000u16.to_le_bytes());
     assert_eq!(sh.table.with(|t| t.config.loop_current.duty_max_q15), 5000);
     while k.phase != phase::THERM_INSTALL {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(ol_max(&k), 32767, "before the first stage");
     }
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 5000);
 }
 
@@ -2565,14 +2566,14 @@ fn config_write_lands_whole_within_two_medium_periods() {
         seed(&sh);
         let mut k = kernel();
         for _ in 0..DECIM_MED + at {
-            k.on_tick(f, &sh);
+            k.on_scan(f, &sh);
         }
         write_both_halves(&sh);
         let mut ticks = 0;
         while halves_new(&k) != (true, true) {
             let before = halves_new(&k);
             let p = k.phase;
-            k.on_tick(f, &sh);
+            k.on_scan(f, &sh);
             ticks += 1;
             let after = halves_new(&k);
             // the fast half moves at its stage, the medium half at its own,
@@ -2601,12 +2602,12 @@ fn unmoved_generation_keeps_the_snapshot() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_scan(frame(2000, BIAS), &sh);
     // a table edit no commit announced never reaches the kernel
     sh.table
         .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
     for _ in 0..4 * DECIM_MED {
-        k.on_tick(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS), &sh);
     }
     assert_eq!(ol_max(&k), 32767);
 }
@@ -2618,10 +2619,10 @@ fn a_write_during_either_stage_refreshes_again() {
         let sh = Shared::new();
         seed(&sh);
         let mut k = kernel();
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
         run_to(&mut k, &sh, f, stage);
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         assert_eq!(ol_max(&k), 6000);
         // the stage's copy finished ahead of a commit: the generation it
         // recorded is behind, so the next first stage copies both halves
@@ -2630,7 +2631,7 @@ fn a_write_during_either_stage_refreshes_again() {
             .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
         assert_ne!(k.config_gen, sh.config_gen());
         for _ in 0..2 * DECIM_MED {
-            k.on_tick(f, &sh);
+            k.on_scan(f, &sh);
         }
         assert_eq!(ol_max(&k), 5000, "stage {stage}");
         assert_eq!(k.cfg.medium.limits.stall_time_ticks, 400, "stage {stage}");
@@ -2644,13 +2645,13 @@ fn each_refresh_stage_flips_the_probe_tag() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     run_to(&mut k, &sh, f, phase::CONTROL);
     write_both_halves(&sh);
     let mut flips = [0u32; DECIM_MED as usize];
     for _ in 0..2 * DECIM_MED {
         let before = k.probe_tags();
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         if k.probe_tags().refresh_staged != before.refresh_staged {
             flips[before.phase as usize] += 1;
         }
@@ -2696,14 +2697,14 @@ fn phased(setup: fn(&mut ControlTable), write: fn(&mut ControlTable), phase: u8)
     }
     let (mut k, mut twin) = (kernel(), kernel());
     for _ in 0..PHASED_LEAD + phase as u32 {
-        k.on_tick(f, &sh);
-        twin.on_tick(f, &twin_sh);
+        k.on_scan(f, &sh);
+        twin.on_scan(f, &twin_sh);
     }
     sh.table.with_mut(write);
     let (mut cmds, mut twin_cmds) = ([(0, 0); PHASED_TICKS], [(0, 0); PHASED_TICKS]);
     for n in 0..PHASED_TICKS {
-        k.on_tick(f, &sh);
-        twin.on_tick(f, &twin_sh);
+        k.on_scan(f, &sh);
+        twin.on_scan(f, &twin_sh);
         cmds[n] = cmd_key(&k);
         twin_cmds[n] = cmd_key(&twin);
     }
@@ -2818,19 +2819,19 @@ fn the_chain_runs_in_phase_order() {
         })
     };
     // CONTROL: the drive kind is set, nothing downstream has run
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert!(matches!(k.cmd.drive, fast::Drive::Closed { .. }));
     assert_eq!(k.medium.traj.omega_star_q16(), 0);
     // OBSERVER, then TRAJECTORY: the profile steps on the observer's
     // estimate
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(k.medium.traj.omega_star_q16(), 0);
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     let omega_star = k.medium.traj.omega_star_q16();
     assert!(omega_star > 0);
     // LIMITS: the band exists but has not reached the command
     assert_eq!(k.medium.i_band, IBand { lo: 0, hi: 0 });
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(
         k.medium.i_band,
         IBand {
@@ -2841,7 +2842,7 @@ fn the_chain_runs_in_phase_order() {
     assert_eq!(k.cmd.band, IBand { lo: 0, hi: 0 });
     assert_eq!(k.cmd.i_ref_cc, 0);
     // VELOCITY: the reference the profile asks for lands with the band
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(
         k.cmd.band,
         IBand {
@@ -2853,19 +2854,19 @@ fn the_chain_runs_in_phase_order() {
     assert_eq!(k.cmd.i_ref_cc, k.medium.i_ref_cc);
     // RAIL: the rail estimate reaches the command
     assert_eq!(k.cmd.vbus_counts, 0);
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(k.cmd.vbus_counts, 3000);
     // SLOW, then PUBLISH
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(published(&sh), (0, 0));
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(published(&sh), (3000, Mode::Velocity as u8));
     // and once per period: the profile moves only at TRAJECTORY, by one
     // step each period
     let mut last = omega_star;
     for tick in 0..3 * DECIM_MED as u32 {
         let next = k.phase;
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         let now = k.medium.traj.omega_star_q16();
         if next == phase::TRAJECTORY {
             assert_eq!(now - last, omega_star, "tick {tick}");
@@ -2889,7 +2890,7 @@ fn the_slow_block_runs_every_32_periods() {
     for tick in 0..4 * DECIM_SLOW as u32 * DECIM_MED as u32 {
         let next = k.phase;
         let before = k.medium.slow_periods;
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         if k.medium.slow_periods < before {
             assert_eq!(next, phase::SLOW, "tick {tick}");
             runs[n] = tick;
@@ -2911,16 +2912,16 @@ fn a_refresh_stage_takes_the_spare_phase_and_the_thermometer_waits_a_period() {
     let mut k = kernel();
     // past the first SLOW finish's period, which the thermometer sits out
     for _ in 0..=2 * DECIM_MED {
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
     }
     write_config(&sh, |t| t.config.limits.stall_time_ms = 20);
     run_to(&mut k, &sh, f, phase::THERM_SIDE);
     k.medium.thermal.request(stage::NTC);
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(k.cfg.medium.limits.stall_time_ticks, 400, "the refresh ran");
     assert_ne!(k.medium.thermal.pending() & stage::NTC, 0, "the NTC waits");
     run_to(&mut k, &sh, f, phase::THERM_SIDE);
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(k.medium.thermal.pending() & stage::NTC, 0, "a period later");
 }
 
@@ -2935,10 +2936,10 @@ fn the_slow_stages_take_one_period_each() {
     seed(&sh);
     let mut k = kernel();
     run_to(&mut k, &sh, f, phase::SLOW);
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_eq!(k.medium.slow_periods, 0, "the due stage ran");
     run_to(&mut k, &sh, f, phase::SLOW);
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     assert_ne!(
         k.medium.thermal.pending() & stage::DERATE,
         0,
@@ -2950,7 +2951,7 @@ fn the_slow_stages_take_one_period_each() {
         0,
         "not in its period"
     );
-    k.on_tick(f, &sh);
+    k.on_scan(f, &sh);
     run_to(&mut k, &sh, f, phase::CONTROL);
     assert_eq!(
         k.medium.thermal.pending() & stage::DERATE,

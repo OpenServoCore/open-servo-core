@@ -23,7 +23,8 @@ pub const KERNEL_PERIOD: u64 = budget::TICK_PERIOD as u64;
 
 const _: () = assert!(TICKS_PER_US == budget::TICKS_PER_US as u64);
 
-/// Kernel tick bodies at budget by regime and phase.
+/// Kernel tick bodies at budget by regime and phase, the tick block's work
+/// and layout included.
 pub static KERNEL_AT_BUDGET: [[u64; PHASES]; 2] = kernel_bodies(false);
 
 /// The lowest body the typical lane draws: a uniform draw from here to the
@@ -37,9 +38,11 @@ const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; 2] {
     while r < t.len() {
         let mut p = 0;
         while p < PHASES {
-            let max = budget::KERNEL[r][p];
+            let regime = Regime::ALL[r];
+            let max = budget::tick_body(regime, p);
+            let mean = budget::tick_body_mean(regime, p);
             let body = if floor {
-                (2 * budget::KERNEL_MEAN[r][p]).saturating_sub(max)
+                (2 * mean).saturating_sub(max)
             } else {
                 max
             };
@@ -159,12 +162,12 @@ pub struct KernelLane {
 }
 
 /// The TEL burst a kernel lane paces, HCLK ticks, on top of the body: a
-/// row (by regime), a row 0's head and a bank, and the TX lane the kernel
-/// owns while the burst streams - its poll on every tick, each CRC feed,
-/// DMA arm and patch where it runs.
+/// row, a row 0's head and a bank, and the TX lane the kernel owns while
+/// the burst streams - its poll on every tick, each CRC feed, DMA arm and
+/// patch where it runs.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct TelCosts {
-    pub encode: [u64; 2],
+    pub row: u64,
     pub head: u64,
     pub bank: u64,
     pub poll: u64,
@@ -201,7 +204,7 @@ impl KernelLane {
             phases: KERNEL_AT_BUDGET.each_ref().map(|p| &p[..]),
             floor: None,
             tel: TelCosts {
-                encode: budget::TEL_ENCODE.map(u64::from),
+                row: budget::TEL_ROW as u64,
                 head: budget::TEL_HEAD as u64,
                 bank: budget::TEL_BANK as u64,
                 poll: budget::TEL_POLL as u64,
@@ -255,7 +258,7 @@ impl KernelLane {
         Self {
             floor: Some((KERNEL_FLOOR.each_ref().map(|p| &p[..]), seed)),
             tel: TelCosts {
-                encode: budget::TEL_ENCODE_MEAN.map(u64::from),
+                row: budget::TEL_ROW_MEAN as u64,
                 ..at.tel
             },
             ..at
@@ -275,8 +278,10 @@ pub struct KernelStats {
     pub entry_latency_sum: u64,
     /// Ticks the kernel added to the bus bodies it preempted.
     pub bus_stretch: u64,
-    /// Bodies longer than one period, the chip's `tick_over_count`.
+    /// Bodies longer than one period, the chip's `tick_over_count`, and of
+    /// those the ones a thermometer stage carried.
     pub over: u64,
+    pub therm_over: u64,
     /// Ticks charged on the Closed rows.
     pub closed: u64,
     /// TEL ticks that ran a SLOW or thermometer stage, and of those the
@@ -301,8 +306,9 @@ struct Kernel {
     goal_at: u64,
     lost_at_close: u64,
     regime: Regime,
-    /// The running body runs a SLOW or thermometer stage.
+    /// The running body runs a SLOW or thermometer stage, and which.
     stage: bool,
+    therm: bool,
     /// The running body, extensions included.
     body: u64,
     /// The scan pended and not yet entered.
@@ -495,6 +501,7 @@ impl Cpu {
             lost_at_close: 0,
             regime: Regime::Open,
             stage: false,
+            therm: false,
             body: 0,
             pend_at: None,
             entered: 0,
@@ -542,6 +549,7 @@ impl Cpu {
         k.pend_at = None;
         if k.run_until - k.entered > KERNEL_PERIOD {
             k.stats.over += 1;
+            k.stats.therm_over += k.therm as u64;
         }
         let tick = k.stats.entries;
         if tick > 0 {
@@ -582,6 +590,7 @@ impl Cpu {
             _ => None,
         };
         k.stage = stage.is_some();
+        k.therm = matches!(k.phase as u8, phase::THERM_INSTALL | phase::THERM_SIDE) && k.stage;
         cost += stage.unwrap_or(0);
         if budget::health_close_at(tick) {
             k.stats.closes[k.phase] += 1;
@@ -629,13 +638,6 @@ impl Cpu {
             k.stats.stage_tel += 1;
             k.stats.stage_steps += stepped as u64;
         }
-    }
-
-    /// The TEL encode the running body's regime carries.
-    pub fn kernel_encode(&self) -> u64 {
-        self.kernel
-            .as_ref()
-            .map_or(0, |k| k.lane.tel.encode[k.regime as usize])
     }
 
     /// The goal register as the next kernel tick reads it: a move restarts

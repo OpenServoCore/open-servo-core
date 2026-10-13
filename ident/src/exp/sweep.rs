@@ -22,9 +22,11 @@
 //! Run it inside the stops just found ([`guard`]), with the pos guard off
 //! and no permit.
 
+use osc_protocol::tel::Chunks;
+
 use super::seek::{self, STOP_TOL, Watch};
 use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams};
-use crate::frame::{TelBurst, TelemetrySnapshot};
+use crate::frame::{TEL_LADDER, TelBurst, TelemetrySnapshot};
 use crate::limits::guards;
 use crate::regs::control;
 use crate::runway::{
@@ -64,8 +66,8 @@ pub struct SweepCfg {
     /// The seek to the start band, q15: it points at a stop, so it is a
     /// stall-safe duty.
     pub seek_duty_q15: i16,
-    /// TEL field selection, written before the arm (mask is sticky).
-    pub mask: u16,
+    /// The TEL row every burst arms.
+    pub chunks: Chunks,
     /// Fast ticks a second: TEL samples per second of capture.
     pub tick_hz: f64,
     pub poll_ms: u32,
@@ -82,8 +84,7 @@ impl Default for SweepCfg {
         Self {
             duty_q15: 8520,
             seek_duty_q15: 3932,
-            // pos|current|duty|vdiff
-            mask: 0x1B,
+            chunks: TEL_LADDER,
             tick_hz: 20_000.0,
             poll_ms: 2,
             seek_poll_ms: 20,
@@ -115,7 +116,6 @@ enum After {
 enum Phase {
     ModeWrite,
     TorqueOn,
-    MaskOn,
     SeekRead,
     SeekEval,
     SeekWait,
@@ -130,7 +130,6 @@ enum Phase {
     RunWait,
     FinishDuty,
     FinishTorque,
-    MaskOff,
     Finished,
 }
 
@@ -513,6 +512,7 @@ impl Sweep {
         Some(Cmd::Stream {
             samples,
             goal: None,
+            chunks: self.cfg.chunks,
         })
     }
 
@@ -543,17 +543,10 @@ impl Experiment for Sweep {
                 }
             }
             Phase::TorqueOn => {
-                self.phase = Phase::MaskOn;
+                self.phase = Phase::SeekRead;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
                     value: 1,
-                }
-            }
-            Phase::MaskOn => {
-                self.phase = Phase::SeekRead;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: self.cfg.mask as i32,
                 }
             }
             Phase::SeekRead => {
@@ -626,16 +619,9 @@ impl Experiment for Sweep {
                 }
             }
             Phase::FinishTorque => {
-                self.phase = Phase::MaskOff;
-                Cmd::Write {
-                    reg: control::TORQUE_ENABLE,
-                    value: 0,
-                }
-            }
-            Phase::MaskOff => {
                 self.phase = Phase::Finished;
                 Cmd::Write {
-                    reg: control::TEL_MASK,
+                    reg: control::TORQUE_ENABLE,
                     value: 0,
                 }
             }
@@ -760,7 +746,7 @@ mod tests {
             );
             let streams: Vec<u32> = log
                 .iter()
-                .filter_map(|l| l.strip_prefix("stream ")?.parse().ok())
+                .filter_map(|l| l.strip_prefix("stream ")?.split(' ').next()?.parse().ok())
                 .collect();
             assert_eq!(streams.len() as u32, c.bursts, "{what}");
             assert!(
@@ -795,12 +781,8 @@ mod tests {
             assert_eq!(servo.pressed_ms, 0.0, "{what}: driven into a stop");
             assert!(!servo.torque, "{what}");
             assert_eq!(
-                &log[log.len() - 3..],
-                [
-                    "write goal_duty 0",
-                    "write torque_enable 0",
-                    "write tel_mask 0",
-                ],
+                &log[log.len() - 2..],
+                ["write goal_duty 0", "write torque_enable 0"],
                 "{what}"
             );
         }

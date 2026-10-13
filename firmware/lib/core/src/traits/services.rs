@@ -1,6 +1,7 @@
 use osc_protocol::FrameBytes;
 use osc_protocol::wire::{MgmtOp, ResultCode, UID_LEN};
 
+use crate::tel::Chunks;
 use crate::{BaudRate, BootMode};
 
 /// Reply-side runtime failure. Overflow is a sizing bug (reply exceeds the
@@ -100,11 +101,13 @@ pub trait Reply {
     fn stage_baud(&mut self, baud: BaudRate);
     /// Immediate: the bus caches this for chain-reclaim timing (sec 6).
     fn set_response_deadline(&mut self, us: u16);
-    /// TEL burst arm, fired on every committed `tel_count` write: stream
-    /// `count` samples under `mask` as `Stream` status frames once the line
-    /// is host-silent. `count` 0 disarms, and so does a mask the line's
-    /// current rate cannot carry (`tel::admits`).
-    fn tel_arm(&mut self, mask: u16, count: u16);
+    /// TEL burst arm, fired once per commit that wrote `tel_count`: stream
+    /// `count` rows of `chunks` as `Stream` status frames once the line is
+    /// host-silent. `count` 0 disarms (the dispatcher passes 0 for chunks
+    /// that are no row, `Chunks::valid`), and so does a line not at
+    /// `tel::BAUD`. The bus zeroes `tel_count` once the arm ends: refused,
+    /// its lend dropped, or its LAST frame out (protocol sec 5.6).
+    fn tel_arm(&mut self, chunks: Chunks, count: u16);
     /// Deferred reboot, honored after any in-flight TX drains.
     fn stage_reboot(&mut self, mode: BootMode);
     /// MGMT CAL accepted (sec 9.3): the bus measures the announced break train

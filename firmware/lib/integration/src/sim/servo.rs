@@ -5,10 +5,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::TelemetryTick;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
-use osc_servo_core::tel::{TelSample, TelStream};
+use osc_servo_core::tel::TelStream;
+
+use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
@@ -54,7 +57,9 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
 const PHYS_MAX_COUNTS: i32 = 4095;
 
 pub struct SimServo {
-    shared: Shared,
+    /// Leaked per bringup, as the TEL channel: the row copies read the
+    /// table through a 'static reference.
+    shared: &'static Shared,
     session: Session,
     bus: ServoBus<SimProviders>,
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
@@ -153,14 +158,14 @@ impl SimServo {
         seed: &Seed,
         uid: [u8; 16],
     ) -> (
-        Shared,
+        &'static Shared,
         ServoBus<SimProviders>,
         TelFeed<SimProviders>,
         &'static TelChannel,
     ) {
         seed.handles.ring.reset();
 
-        let shared = Shared::new();
+        let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
         shared.table.seed_config_defaults(
             &ConfigDefaults {
                 id: seed.id,
@@ -182,7 +187,7 @@ impl SimServo {
             ),
         );
         if let Some(store) = seed.store {
-            store.boot_load(&shared);
+            store.boot_load(shared);
             shared.seed_store(store);
         }
         // After boot_load, mirroring chip bringup: the calib overlay copies
@@ -251,6 +256,7 @@ impl SimServo {
             ),
             SimCrc::lane(h.crc.clone(), seed.core.clone(), h.lane.clone()),
             SimRing::new(h.ring.clone(), Rc::default()),
+            &shared.table,
         );
         bus.attach_tel(drain);
         (shared, bus, feed, tel)
@@ -286,7 +292,7 @@ impl SimServo {
         self.seed
             .store
             .expect("servo built with a store")
-            .save_table(&self.shared);
+            .save_table(self.shared);
     }
 
     /// sec 9.1: one chip main-loop line sample (thread-level, not a vector).
@@ -299,7 +305,7 @@ impl SimServo {
         // from ring data in place, so it dispatches -- build the dispatcher
         // like on_deadline.
         let mut dispatcher = Counted {
-            inner: self.session.dispatcher(&self.shared),
+            inner: self.session.dispatcher(self.shared),
             dispatched: &mut self.dispatched,
         };
         self.bus.on_break(&mut dispatcher);
@@ -307,7 +313,7 @@ impl SimServo {
 
     pub fn on_deadline(&mut self) {
         let mut dispatcher = Counted {
-            inner: self.session.dispatcher(&self.shared),
+            inner: self.session.dispatcher(self.shared),
             dispatched: &mut self.dispatched,
         };
         self.bus.on_deadline(&mut dispatcher);
@@ -361,14 +367,21 @@ impl SimServo {
         self.tel.drops()
     }
 
-    /// One kernel tick's TEL work: the row if one is owed, then the lane,
-    /// which a `hold` tick leaves be.
-    pub fn tel_tick(&mut self, s: &TelSample, hold: bool) {
+    /// One kernel tick's TEL work in the kernel's order: the tick block
+    /// lands (`s`, its stamp `tick`) beside the rail estimate as last
+    /// published, the row's chunks, then the lane, which a `hold` tick
+    /// leaves be.
+    pub fn tel_tick(&mut self, s: &TelSample, tick: u32, hold: bool) {
+        self.shared.table.with_mut(|t| {
+            t.telemetry.tick = TelemetryTick {
+                sample_tick: tick,
+                ..s.tick
+            };
+            t.telemetry.estimates.vbus_counts = s.vbus_counts;
+        });
+        self.feed.on_tick();
         if hold {
             self.feed.hold();
-        }
-        if self.feed.row_mask() != 0 {
-            self.feed.on_tick(s);
         }
         self.feed.on_tick_end();
     }

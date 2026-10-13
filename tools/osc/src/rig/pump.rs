@@ -17,13 +17,13 @@ use osc_client::pipe::Pipe;
 use osc_client::{BaudRate, Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
-use osc_ident::frame::{StreamAssembler, TEL_MASK_ALL, TelBurst, TelFrame, TelemetrySnapshot};
-use osc_ident::frame::{TEL_BIT_CURRENT, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VDIFF};
+use osc_ident::frame::{StreamAssembler, TelBurst, TelFrame, TelemetrySnapshot, chunks_text};
 use osc_ident::limits::PermitLease;
 use osc_ident::regs::{Reg, calib, config, control, telemetry};
 use osc_ident::units::{self, SenseParams};
 use osc_ident::window::{WATCH_BURST_MS, Watch, Windows, watch_rows};
-use osc_protocol::{build, tel};
+use osc_protocol::build;
+use osc_protocol::tel::{self, Chunk, Chunks};
 
 use super::csvio::SnapshotLog;
 use super::servo::{SAFE, Servo, Wire};
@@ -167,25 +167,43 @@ pub(crate) struct BurstStats {
     pub(crate) rows_dropped: u16,
 }
 
-/// A `tel_mask` a burst can stream, or why not in words: reserved bits or
-/// no field. Whether its row fits the line is the servo's call
-/// ([`admit_tel_mask`]).
-pub(crate) fn check_tel_mask(mask: u16) -> Result<u16> {
-    if mask & !TEL_MASK_ALL != 0 {
+/// Chunks a burst can stream, or why not in words: the servo's own arm
+/// rules ([`Chunks::valid`]). Whether the row fits the line is the servo's
+/// call ([`admit_tel_chunks`]).
+pub(crate) fn check_tel_chunks(chunks: Chunks) -> Result<Chunks> {
+    if !chunks.valid() {
         bail!(
-            "tel_mask {mask:#x} sets reserved bits {:#x}: the fields are bits 0..{}",
-            mask & !TEL_MASK_ALL,
-            TEL_MASK_ALL.count_ones() - 1
+            "TEL chunks {} are not a row: each chunk starts and ends on an even address \
+             below {}, the first one is not empty, and the row is at most {} B",
+            chunks_text(&chunks),
+            tel::TABLE_BYTES,
+            tel::ROW_BYTES_MAX
         );
     }
-    if mask == 0 {
-        bail!("tel_mask 0 selects no field to stream");
+    Ok(chunks)
+}
+
+/// Chunks as a user writes them, `addr+len` joined by `,` (`0x238+2`,
+/// `0x232+6,0x23c+6`; addresses hex or decimal), checked against the arm
+/// rules.
+pub(crate) fn parse_tel_chunks(text: &str) -> Result<Chunks> {
+    let mut chunks = Chunks::NONE;
+    for (n, part) in text.split(',').enumerate() {
+        let (addr, len) = part
+            .trim()
+            .split_once('+')
+            .with_context(|| format!("TEL chunk {part:?} is not addr+len"))?;
+        let c = chunks
+            .0
+            .get_mut(n)
+            .with_context(|| format!("{text:?}: a row has at most {} chunks", tel::CHUNKS_MAX))?;
+        *c = tel::Chunk::new(crate::parse_u16(addr)?, crate::parse_u16(len)?);
     }
-    Ok(mask)
+    check_tel_chunks(chunks)
 }
 
 /// The servo's TEL admission, read off its identity block: the line's rate
-/// and the longest row a burst arms with there (protocol sec 5.6).
+/// and the longest row a burst arms with (protocol sec 5.6).
 pub(crate) fn tel_row_limit<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(BaudRate, usize)> {
     use osc_protocol::table::{BAUD_RATE_IDX, CAP_TEL_ROWS, CAPABILITY_FLAGS, TEL_ROW_BYTES_MAX};
     let n = BAUD_RATE_IDX + 1 - CAPABILITY_FLAGS;
@@ -201,84 +219,125 @@ pub(crate) fn tel_row_limit<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(BaudR
     }
     let idx = at(BAUD_RATE_IDX).context("short identity read")?;
     let baud = BaudRate::from_idx(idx).with_context(|| format!("baud_rate_idx {idx}"))?;
-    let max = at(TEL_ROW_BYTES_MAX + idx as u16).context("short identity read")?;
+    let max = at(TEL_ROW_BYTES_MAX).context("short identity read")?;
     Ok((baud, max as usize))
 }
 
-/// What a window folds: the one place a drive's watch selects its fields.
-const WINDOW_FIELDS: u16 = TEL_BIT_CURRENT | TEL_BIT_VDIFF | TEL_BIT_DUTY;
+/// What a window folds, duty to the differential with the trough riding
+/// along: the one place a drive's watch selects its fields.
+const WINDOW_CHUNKS: Chunks = Chunks::one(
+    telemetry::DUTY_TICKS.addr,
+    telemetry::VDIFF_COUNTS.addr + 2 - telemetry::DUTY_TICKS.addr,
+);
 
 /// The watch with the pot: the guard judges every row's position and the
 /// ladder pairs every window with its own.
-pub(crate) const WATCH_FIELDS: u16 = WINDOW_FIELDS | TEL_BIT_POS;
+pub(crate) const WATCH_CHUNKS: Chunks =
+    Chunks::two(Chunk::new(telemetry::POS.addr, 2), WINDOW_CHUNKS.0[0]);
 
-/// The fields a watch streams on a line whose rows hold `row_bytes_max`:
+/// The chunks a watch streams on a line whose rows hold `row_bytes_max`:
 /// the pot too when it fits, else the window's alone, the pot then read at
 /// the region reads; None when not even those fit.
-fn watch_selection(row_bytes_max: usize) -> Option<u16> {
-    [WATCH_FIELDS, WINDOW_FIELDS]
+fn watch_selection(row_bytes_max: usize) -> Option<Chunks> {
+    [WATCH_CHUNKS, WINDOW_CHUNKS]
         .into_iter()
-        .find(|&m| tel::row_bytes(m) <= row_bytes_max)
+        .find(|c| c.row_bytes() <= row_bytes_max)
 }
 
-/// The fields a drive's watches stream on this line ([`watch_selection`]),
-/// or, on a line too slow for even the window's own, a refusal before
-/// anything drives.
-pub(crate) fn admit_watch<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<u16> {
+/// The chunks a drive's watches stream on this line ([`watch_selection`]),
+/// or, on a line that streams no TEL or too short a row for the window's
+/// own fields, a refusal before anything drives.
+pub(crate) fn admit_watch<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Chunks> {
     let (baud, max) = tel_row_limit(c, id)?;
+    if baud != tel::BAUD {
+        bail!(
+            "identification watches its drives on a TEL stream, which the servo streams at {} \
+             Mbaud only; the bus runs at {} kbaud. Move the bus to {}M first (osc baud {}), on \
+             a short cable with good contacts.",
+            tel::BAUD.as_hz() / 1_000_000,
+            baud.as_hz() / 1000,
+            tel::BAUD.as_hz() / 1_000_000,
+            tel::BAUD.as_hz()
+        );
+    }
     watch_selection(max).with_context(|| {
         format!(
-            "identification watches its drives on a TEL stream of current, vdiff and duty, {} B \
-             rows; the servo streams rows of at most {max} B at {} kbaud (protocol sec 5.6). \
-             Move the bus to a faster rate first (osc baud 3000000).",
-            tel::row_bytes(WINDOW_FIELDS),
-            baud.as_hz() / 1000
+            "identification watches its drives on TEL rows of duty, current and vdiff, {} B; \
+             the servo streams rows of at most {max} B (protocol sec 5.6).",
+            WINDOW_CHUNKS.row_bytes()
         )
     })
 }
 
-/// A `tel_mask` whose row the servo carries at `baud`, or why not in words.
-pub(crate) fn admit_tel_mask(mask: u16, baud: BaudRate, max: usize) -> Result<u16> {
-    let row = tel::row_bytes(check_tel_mask(mask)?);
-    if row > max {
+/// Chunks the servo streams on a line at `baud` with rows of at most `max`
+/// B, or why not in words. The servo acks an arm at any other rate and
+/// never streams.
+pub(crate) fn admit_tel_chunks(chunks: Chunks, baud: BaudRate, max: usize) -> Result<Chunks> {
+    if baud != tel::BAUD {
         bail!(
-            "tel_mask {mask:#x} packs to {row} B rows; the servo streams rows of at most {max} B \
-             at {} kbaud (its tel_row_bytes_max, protocol sec 5.6). Raise the baud or stream \
-             the fields over two bursts.",
-            baud.as_hz() / 1000
+            "TEL streams at {} Mbaud only and the bus runs at {} kbaud: raise the bus rate to \
+             {}M, and use a short cable with good contacts",
+            tel::BAUD.as_hz() / 1_000_000,
+            baud.as_hz() / 1000,
+            tel::BAUD.as_hz() / 1_000_000
         );
     }
-    Ok(mask)
+    let row = check_tel_chunks(chunks)?.row_bytes();
+    if row > max {
+        bail!(
+            "TEL chunks {} make {row} B rows; the servo streams rows of at most {max} B (its \
+             tel_row_bytes_max, protocol sec 5.6)",
+            chunks_text(&chunks)
+        );
+    }
+    Ok(chunks)
 }
 
-/// One TEL burst on the main bus, `mask` admitted at the line's rate first
+/// The one WRITE that sets the row and arms the burst: the four chunk
+/// registers, then `tel_count`.
+fn tel_arm(chunks: &Chunks, samples: u16) -> [u8; 4 * tel::CHUNKS_MAX + 2] {
+    let mut arm = [0; 4 * tel::CHUNKS_MAX + 2];
+    let (regs, count) = arm.split_at_mut(4 * tel::CHUNKS_MAX);
+    regs.copy_from_slice(&chunks.to_le_bytes());
+    count.copy_from_slice(&samples.to_le_bytes());
+    arm
+}
+
+const _: () =
+    assert!(control::CHUNK0_ADDR.addr + 4 * tel::CHUNKS_MAX as u16 == control::TEL_COUNT.addr);
+
+/// One TEL burst on the main bus, refused before anything is sent unless
+/// the servo would stream `chunks` at the line's rate
 /// ([`stream_tel_burst`]).
 pub(crate) fn exchange_tel_burst<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     samples: u16,
     goal: Option<(Reg, i32)>,
-    mask: u16,
+    chunks: Chunks,
 ) -> Result<(Vec<TelFrame>, BurstStats)> {
     let (baud, max) = tel_row_limit(c, id)?;
-    admit_tel_mask(mask, baud, max)?;
-    stream_tel_burst(c, id, samples, goal, mask)
+    admit_tel_chunks(chunks, baud, max)?;
+    let floor = super::snapshot::read_u16(c, id, calib::I_WINDOW_MIN_TICKS)?;
+    stream_tel_burst(c, id, samples, goal, chunks, floor)
 }
 
-/// One TEL burst on the main bus under the `mask` the servo holds. With
-/// `goal` Some the goal write and the TEL_COUNT arm are staged under HOLD
-/// and a broadcast COMMIT (the stream carrier) applies both in the same
-/// instant; with None the acked TEL_COUNT write itself carries the stream.
-/// Frames decode through [`StreamAssembler`] under `mask`; corrupt frames
-/// never appear (the adapter drops them into garble + a seq hole).
+/// One TEL burst on the main bus of `chunks` rows. With `goal` Some the
+/// goal write and the arm are staged under HOLD and a broadcast COMMIT (the
+/// stream carrier) applies both in the same instant; with None the acked
+/// arm write itself carries the stream. Frames decode through
+/// [`StreamAssembler`], the window judged against `floor`, the servo's
+/// `i_window_min_ticks`; corrupt frames never appear (the adapter drops
+/// them into garble + a seq hole).
 pub(crate) fn stream_tel_burst<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     samples: u16,
     goal: Option<(Reg, i32)>,
-    mask: u16,
+    chunks: Chunks,
+    floor: u16,
 ) -> Result<(Vec<TelFrame>, BurstStats)> {
-    let (frames, stats, whole, _) = stream_frames(c, id, samples, goal, mask)?;
+    let (frames, stats, whole, _) = stream_frames(c, id, samples, goal, chunks, floor)?;
     if !whole {
         bail!(
             "tel burst timed out mid-stream ({} of {} samples)",
@@ -289,16 +348,17 @@ pub(crate) fn stream_tel_burst<P: Pipe>(
     Ok((frames, stats))
 }
 
-/// One watch burst of `rows` under the `mask` the servo holds: its rows
-/// and whether a frame flagged a fault. A frame the line lost leaves the
-/// rows short, which the fold counts: lost rows, never the run.
+/// One watch burst of `rows` of `chunks`: its rows and whether a frame
+/// flagged a fault. A frame the line lost leaves the rows short, which the
+/// fold counts: lost rows, never the run. The fold judges no window, so no
+/// floor is read.
 pub(crate) fn watch_rows_on<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     rows: u16,
-    mask: u16,
+    chunks: Chunks,
 ) -> Result<(Vec<TelFrame>, bool)> {
-    let (frames, _, _, alert) = stream_frames(c, id, rows, None, mask)?;
+    let (frames, _, _, alert) = stream_frames(c, id, rows, None, chunks, 0)?;
     Ok((frames, alert))
 }
 
@@ -309,8 +369,11 @@ fn stream_frames<P: Pipe>(
     id: Id,
     samples: u16,
     goal: Option<(Reg, i32)>,
-    mask: u16,
+    chunks: Chunks,
+    floor: u16,
 ) -> Result<(Vec<TelFrame>, BurstStats, bool, bool)> {
+    let mut asm = StreamAssembler::new(chunks, floor).context("tel chunks invalid for an arm")?;
+    let arm = tel_arm(&chunks, samples);
     let window = stream_window(samples);
     c.set_guard(window + Duration::from_secs(1));
     let reply = match goal {
@@ -318,15 +381,15 @@ fn stream_frames<P: Pipe>(
             let bytes = value.to_le_bytes();
             c.write_hold(id, reg.addr, &bytes[..reg.width as usize])
                 .context("hold goal")?;
-            c.write_hold(id, control::TEL_COUNT.addr, &samples.to_le_bytes())
-                .context("hold tel_count")?;
+            c.write_hold(id, control::CHUNK0_ADDR.addr, &arm)
+                .context("hold tel arm")?;
             let inst = Inst::instruction(Opcode::Commit, 0);
             c.exchange_stream(Id::BROADCAST, inst, &[], window)
         }
         None => {
-            let mut p = [0u8; 8];
-            let n = build::write(&mut p, control::TEL_COUNT.addr, &samples.to_le_bytes())
-                .context("tel_count payload")?;
+            let mut p = [0u8; 2 + 4 * tel::CHUNKS_MAX + 2];
+            let n =
+                build::write(&mut p, control::CHUNK0_ADDR.addr, &arm).context("tel arm payload")?;
             let inst = Inst::instruction(Opcode::Write, 0);
             c.exchange_stream(id, inst, &p[..n], window)
         }
@@ -338,11 +401,11 @@ fn stream_frames<P: Pipe>(
     {
         bail!("stream arm answered {:?}", ack.result);
     }
-    let mut asm = StreamAssembler::new(mask).context("tel mask invalid for a stream arm")?;
     let mut frames = Vec::new();
     for f in &reply.frames {
         asm.push(
             f.result == Some(ResultCode::Stream),
+            f.alert,
             &f.payload,
             &mut frames,
         );
@@ -360,13 +423,13 @@ fn stream_frames<P: Pipe>(
 }
 
 /// The burst handshake's wire moves. The arm has to be atomic - a servo
-/// that sees arm=1 before the new duty or mask captures the old one - so
-/// duty, mask and arm go out under HOLD and one broadcast COMMIT applies
-/// all three. The mask is its own one-byte write: the byte after it is a
-/// reserved alignment byte that refuses writes. Before them `tel_count`
-/// goes to 0: the servo refuses an arm while it is nonzero, and it keeps
-/// the last count written past the LAST frame, so any watch or stream
-/// before the arm leaves it set.
+/// that sees arm=1 before the new duty or chans captures the old one - so
+/// duty, chans and arm go out under HOLD and one broadcast COMMIT applies
+/// all three. The chans byte is its own one-byte write: the byte after it
+/// is a reserved alignment byte that refuses writes. Before them
+/// `tel_count` goes to 0: the servo refuses an arm while a TEL count is
+/// armed, which it is only while a stream runs (the servo zeroes it when
+/// the stream ends).
 struct WireBurstIo<'a, P: Pipe> {
     c: &'a mut Client<P>,
     id: Id,
@@ -464,7 +527,7 @@ fn arm_seen<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ArmSeen> {
 
 /// What a run's watches stream and how they fold, read off the servo once.
 struct Watching {
-    mask: u16,
+    chunks: Chunks,
     tick_hz: f64,
     pwm: u16,
     windows: Windows,
@@ -475,7 +538,7 @@ impl Watching {
         if slot.is_none() {
             let pwm = s.pwm_period_ticks()?;
             *slot = Some(Self {
-                mask: s.watch_mask()?,
+                chunks: s.watch_chunks()?,
                 tick_hz: s.tick_hz()?,
                 pwm,
                 windows: Windows::new(pwm),
@@ -488,12 +551,6 @@ impl Watching {
 pub(crate) struct Pump<'a, S: Servo = Wire<&'a mut Client<NusbPipe>>> {
     servo: S,
     log: Option<&'a mut SnapshotLog>,
-    /// The sticky TEL_MASK as the experiment wrote it; the stream decoder
-    /// keys on it.
-    mask: u16,
-    /// The TEL_MASK the servo holds: a watch leaves its own, and an
-    /// experiment's stream restores the experiment's first.
-    servo_mask: u16,
     /// The watch, once the run's first read or pause admitted the line.
     watch: Option<Watching>,
     /// Rows the watches lacked.
@@ -522,8 +579,6 @@ impl<'a, S: Servo> Pump<'a, S> {
         Self {
             servo,
             log,
-            mask: 0,
-            servo_mask: 0,
             watch: None,
             lost: 0,
             tel: Vec::new(),
@@ -542,19 +597,13 @@ impl<'a, S: Servo> Pump<'a, S> {
             }
             self.lease.keep(s)?;
             match exp.step(pending.take().as_ref()) {
-                Cmd::Write { reg, value } => {
-                    if reg == control::TEL_MASK {
-                        self.mask = value as u16;
-                        self.servo_mask = self.mask;
-                    }
-                    self.lease.write(s, reg, value)?;
-                }
+                Cmd::Write { reg, value } => self.lease.write(s, reg, value)?,
                 Cmd::Read => {
                     let w = Watching::get(&mut self.watch, s)?;
                     let mut snap = s.snapshot()?;
                     w.windows.attach(&mut snap);
                     if let Some(log) = self.log.as_mut() {
-                        log.push(snap.host_ms, &snap)?;
+                        log.push(snap.host_ms, &snap, w.pwm)?;
                     }
                     pending = Some(snap);
                 }
@@ -569,11 +618,7 @@ impl<'a, S: Servo> Pump<'a, S> {
                         let end = s.now_ms() + slice as f64;
                         let rows = watch_rows(slice as f64, w.tick_hz);
                         if rows > 0 {
-                            if self.servo_mask != w.mask {
-                                s.write(control::TEL_MASK, w.mask as i32)?;
-                                self.servo_mask = w.mask;
-                            }
-                            let (frames, alert) = s.watch(rows, w.mask)?;
+                            let (frames, alert) = s.watch(rows, w.chunks)?;
                             let watch =
                                 Watch::fold(&frames, rows, alert, s.now_ms(), w.tick_hz, w.pwm);
                             self.lost += watch.lost as u32;
@@ -588,13 +633,13 @@ impl<'a, S: Servo> Pump<'a, S> {
                         self.lease.keep(s)?;
                     }
                 }
-                Cmd::Stream { samples, goal } => {
+                Cmd::Stream {
+                    samples,
+                    goal,
+                    chunks,
+                } => {
                     self.lease.check_stream(samples)?;
-                    if self.servo_mask != self.mask {
-                        s.write(control::TEL_MASK, self.mask as i32)?;
-                        self.servo_mask = self.mask;
-                    }
-                    let (frames, st) = s.stream(samples, goal, self.mask)?;
+                    let (frames, st) = s.stream(samples, goal, chunks)?;
                     eprintln!(
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
                         st.frames, st.samples, st.holes, st.garble, st.laps
@@ -650,136 +695,181 @@ impl<'a, S: Servo> Pump<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osc_ident::frame::{TEL_LADDER, TEL_POS, TEL_RAW, TEL_RL};
 
-    /// Admission is the servo's row limit at the line's rate: the six raw
-    /// fields (9 B) stream at 3 M, not at 2 M; the ladder (7 B) at 2 M.
+    /// Admission refuses a line under 3 M before anything else, then the
+    /// arm rules, then the servo's row limit.
     #[test]
-    fn a_mask_over_the_servo_row_limit_says_why() {
-        let err = |m: u16, b, max| admit_tel_mask(m, b, max).unwrap_err().to_string();
+    fn chunks_the_servo_would_not_stream_say_why() {
+        let err = |c, b, max| admit_tel_chunks(c, b, max).unwrap_err().to_string();
         assert_eq!(
-            err(0x1cd, BaudRate::B2000000, 8),
-            "tel_mask 0x1cd packs to 9 B rows; the servo streams rows of at most 8 B at 2000 \
-             kbaud (its tel_row_bytes_max, protocol sec 5.6). Raise the baud or stream the \
-             fields over two bursts."
+            err(TEL_RAW, BaudRate::B2000000, 12),
+            "TEL streams at 3 Mbaud only and the bus runs at 2000 kbaud: raise the bus rate to \
+             3M, and use a short cable with good contacts"
         );
         assert_eq!(
-            admit_tel_mask(0x1cd, BaudRate::B3000000, 11).unwrap(),
-            0x1cd
-        );
-        assert_eq!(admit_tel_mask(0x1b, BaudRate::B2000000, 8).unwrap(), 0x1b);
-        assert!(err(0x1b, BaudRate::B1000000, 4).contains("packs to 7 B rows"));
-        assert_eq!(
-            err(0x1001, BaudRate::B3000000, 11),
-            "tel_mask 0x1001 sets reserved bits 0x1000: the fields are bits 0..11"
+            admit_tel_chunks(TEL_RAW, BaudRate::B3000000, 12).unwrap(),
+            TEL_RAW
         );
         assert_eq!(
-            err(0, BaudRate::B3000000, 11),
-            "tel_mask 0 selects no field to stream"
+            err(Chunks::one(0x225, 2), BaudRate::B3000000, 12),
+            "TEL chunks 0x225+2 are not a row: each chunk starts and ends on an even address \
+             below 1024, the first one is not empty, and the row is at most 12 B"
         );
+        assert_eq!(
+            err(TEL_RAW, BaudRate::B3000000, 8),
+            "TEL chunks 0x232+8,0x240+4 make 12 B rows; the servo streams rows of at most 8 B (its \
+             tel_row_bytes_max, protocol sec 5.6)"
+        );
+        assert!(err(Chunks::NONE, BaudRate::B3000000, 12).contains("not a row"));
     }
 
-    /// The limit comes off the servo's own identity block at its own rate.
+    /// The limit comes off the servo's own identity block, and a line
+    /// under 3 M is refused before the arm goes out: the chunk registers
+    /// and `tel_count` still read zero.
     #[test]
-    fn the_row_limit_is_the_servos_at_its_rate() {
+    fn a_burst_under_three_megabaud_is_refused_before_the_arm() {
         use osc_client::fake::FakePipe;
         let pipe = FakePipe::new(BaudRate::B1000000, &[1]);
         let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-        assert_eq!(tel_row_limit(&mut c, id).unwrap(), (BaudRate::B1000000, 3));
-        let Err(refused) = exchange_tel_burst(&mut c, id, 16, None, 0x1b) else {
-            panic!("a 7 B row armed at 1 M");
+        assert_eq!(tel_row_limit(&mut c, id).unwrap(), (BaudRate::B1000000, 12));
+        let Err(refused) = exchange_tel_burst(&mut c, id, 16, None, TEL_LADDER) else {
+            panic!("a burst armed at 1 M");
         };
         assert!(
-            refused.to_string().contains("at most 3 B at 1000 kbaud"),
+            refused
+                .to_string()
+                .starts_with("TEL streams at 3 Mbaud only"),
             "{refused}"
         );
+        let regs = c.read(id, control::CHUNK0_ADDR.addr, 10).unwrap();
+        assert_eq!(regs, [0; 10]);
     }
 
     /// A burst through the in-process servo stack decodes, field for field,
-    /// the rows its encoder packed from the sim's samples: the raw capture,
-    /// R/L and ladder masks at the rates that admit them.
+    /// the table bytes its rows copied from the sim's samples: the presets,
+    /// the rail estimate in a second chunk, and a row with `tick_flags`.
+    /// The window is the servo's `i_window_min_ticks` on the duty, or the
+    /// flags themselves.
     #[test]
-    fn bursts_decode_what_the_servo_packed() {
+    fn bursts_decode_what_the_servo_copied() {
+        use super::super::snapshot::read_u16;
         use osc_client::fake::{FakePipe, tel_sample};
-        for (mask, baud) in [
-            (0x1cd, BaudRate::B3000000),
-            (0x3c9, BaudRate::B3000000),
-            (0x9cd, BaudRate::B3000000),
-            (0x1b, BaudRate::B2000000),
-            (0x81b, BaudRate::B3000000),
+        use osc_ident::frame::window_valid;
+        use osc_ident::regs::telemetry as t;
+        use osc_protocol::tel::Chunk;
+        let one = |r: Reg| Chunk::new(r.addr, r.width as u16);
+        for chunks in [
+            TEL_RAW,
+            TEL_RL,
+            TEL_LADDER,
+            TEL_POS,
+            Chunks::two(Chunk::new(0x240, 8), one(t::VBUS_COUNTS)),
+            Chunks::two(Chunk::new(0x238, 4), one(t::TICK_FLAGS)),
         ] {
-            let pipe = FakePipe::new(baud, &[1]);
+            let pipe = FakePipe::new(BaudRate::B3000000, &[1]);
             let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-            write_reg(&mut c, id, control::TEL_MASK, mask as i32).unwrap();
-            let (frames, st) = exchange_tel_burst(&mut c, id, 40, None, mask).unwrap();
-            assert_eq!((frames.len(), st.holes), (40, 0), "{mask:#x}");
+            let floor = read_u16(&mut c, id, calib::I_WINDOW_MIN_TICKS).unwrap();
+            let (frames, st) = exchange_tel_burst(&mut c, id, 40, None, chunks).unwrap();
+            assert_eq!((frames.len(), st.holes), (40, 0), "{chunks:?}");
+            let sel = |r: Reg| chunks.offset(r.addr, r.width as u16).is_some();
             for f in &frames {
-                let s = tel_sample(f.tick as u32);
-                let sel = |bit: u16| mask & bit != 0;
+                let (s, vbus) = {
+                    let s = tel_sample(f.tick as u32);
+                    (s.tick, s.vbus_counts)
+                };
+                let duty = sel(t::DUTY_TICKS).then_some(s.duty_ticks);
                 let want = TelFrame {
                     tick: f.tick,
-                    window_valid: s.window_valid,
-                    pos: sel(tel::BIT_POS).then_some(s.pos),
-                    current: sel(tel::BIT_CURRENT).then_some(s.current),
-                    current_trough: sel(tel::BIT_CURRENT_TROUGH).then_some(s.current_trough),
-                    duty_counts: sel(tel::BIT_DUTY).then_some(s.duty),
-                    vdiff: sel(tel::BIT_VDIFF).then_some(s.vdiff),
-                    vbus: sel(tel::BIT_VBUS).then_some(s.vbus),
-                    current_raw: sel(tel::BIT_CURRENT_RAW).then_some(s.current_raw),
-                    vmotor_a: sel(tel::BIT_VMOTOR_A).then_some(s.vmotor_a),
-                    vmotor_b: sel(tel::BIT_VMOTOR_B).then_some(s.vmotor_b),
-                    vbus_raw: sel(tel::BIT_VBUS_RAW).then_some(s.vbus_raw),
-                    ntc_raw: sel(tel::BIT_NTC_RAW).then_some(s.ntc_raw),
-                    pos_lin: sel(tel::BIT_POS_LIN).then_some(s.pos_lin_q4),
+                    window_valid: if sel(t::TICK_FLAGS) {
+                        s.tick_flags & osc_ident::frame::tick_flag::I_VALID != 0
+                    } else {
+                        duty.is_some_and(|d| window_valid(d, floor))
+                    },
+                    pos: sel(t::POS).then_some(s.pos),
+                    current: sel(t::I_TICK_COUNTS).then_some(s.i_tick_counts),
+                    current_trough: sel(t::CURRENT_TROUGH).then_some(s.current_trough),
+                    duty_counts: duty,
+                    vdiff: sel(t::VDIFF_COUNTS).then_some(s.vdiff_counts),
+                    vbus: sel(t::VBUS_COUNTS).then_some(vbus),
+                    current_raw: sel(t::CURRENT_RAW).then_some(s.current_raw),
+                    vmotor_a: sel(t::VMOTOR_A).then_some(s.vmotor_a),
+                    vmotor_b: sel(t::VMOTOR_B).then_some(s.vmotor_b),
+                    vbus_raw: sel(t::VBUS_RAW).then_some(s.vbus_raw),
+                    ntc_raw: sel(t::NTC_RAW).then_some(s.ntc_raw),
                 };
-                assert_eq!(*f, want, "{mask:#x}");
+                assert_eq!(*f, want, "{chunks:?}");
             }
+            let armed = c.read(id, control::CHUNK0_ADDR.addr, 8).unwrap();
+            assert_eq!(armed, chunks.to_le_bytes(), "one write set the row");
         }
+    }
+
+    #[test]
+    fn chunks_parse_as_the_user_writes_them() {
+        assert_eq!(parse_tel_chunks("0x232+8,0x240+4").unwrap(), TEL_RAW);
+        assert_eq!(parse_tel_chunks("0x232+6, 0x23c+6").unwrap(), TEL_RL);
+        assert_eq!(parse_tel_chunks("568+2").unwrap(), TEL_POS);
+        assert_eq!(parse_tel_chunks(&chunks_text(&TEL_RL)).unwrap(), TEL_RL);
+        assert!(parse_tel_chunks("0x228").is_err());
+        assert!(parse_tel_chunks("0x224+2,0x228+2,0x22c+2").is_err());
+        assert!(parse_tel_chunks("0x229+2").is_err());
+    }
+
+    /// The arm is the chunks then the count, LE: one 10 B WRITE at
+    /// `chunk0_addr`.
+    #[test]
+    fn the_arm_is_the_chunks_then_the_count() {
+        assert_eq!(
+            tel_arm(&TEL_RL, 4000),
+            [0x32, 0x02, 6, 0, 0x3C, 0x02, 6, 0, 0xA0, 0x0F]
+        );
     }
 
     /// A watch through the in-process servo stack: one burst of three
-    /// whole windows under the mask the line admits, folded to the floor
-    /// means of what the servo packed, the pot's extremes kept.
+    /// whole windows of the chunks the line admits, folded to the floor
+    /// means of what the servo copied, the pot's extremes kept.
     #[test]
     fn a_watch_streams_whole_through_the_servo_stack() {
-        use osc_client::fake::{FakePipe, TelSample, tel_sample};
-        let pipe = FakePipe::new(BaudRate::B2000000, &[1]);
+        use osc_client::fake::{FakePipe, TelemetryTick, tel_sample};
+        let pipe = FakePipe::new(BaudRate::B3000000, &[1]);
         let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-        let mask = admit_watch(&mut c, id).unwrap();
-        write_reg(&mut c, id, control::TEL_MASK, mask as i32).unwrap();
-        let (frames, alert) = watch_rows_on(&mut c, id, 48, mask).unwrap();
+        let chunks = admit_watch(&mut c, id).unwrap();
+        assert_eq!(chunks, WATCH_CHUNKS);
+        let (frames, alert) = watch_rows_on(&mut c, id, 48, chunks).unwrap();
         let w = Watch::fold(&frames, 48, alert, 100.0, 20_000.0, 1200);
         assert_eq!((w.windows.len(), w.lost, w.alert), (3, 0, false));
-        let s: Vec<TelSample> = frames.iter().map(|f| tel_sample(f.tick as u32)).collect();
+        let s: Vec<TelemetryTick> = frames
+            .iter()
+            .map(|f| tel_sample(f.tick as u32).tick)
+            .collect();
         for (k, x) in w.windows.iter().enumerate() {
             let rows = &s[16 * k..16 * (k + 1)];
-            let mean = |f: fn(&TelSample) -> i16| {
+            let mean = |f: fn(&TelemetryTick) -> i16| {
                 (rows.iter().map(|r| f(r) as i32).sum::<i32>() >> 4) as i16
             };
-            assert_eq!(x.window.i_mean, mean(|r| r.current));
-            assert_eq!(x.window.vdiff_mean, mean(|r| r.vdiff));
-            assert_eq!(x.window.duty_mean, mean(|r| r.duty));
+            assert_eq!(x.window.i_mean, mean(|r| r.i_tick_counts));
+            assert_eq!(x.window.vdiff_mean, mean(|r| r.vdiff_counts));
+            assert_eq!(x.window.duty_mean, mean(|r| r.duty_ticks));
         }
-        if mask & osc_ident::frame::TEL_BIT_POS != 0 {
-            let lo = s.iter().map(|r| r.pos).min().unwrap();
-            let hi = s.iter().map(|r| r.pos).max().unwrap();
-            assert_eq!(w.pos, Some((lo, hi)));
-        }
+        let lo = s.iter().map(|r| r.pos).min().unwrap();
+        let hi = s.iter().map(|r| r.pos).max().unwrap();
+        assert_eq!(w.pos, Some((lo, hi)));
     }
 
-    /// A watch's count outlives its LAST frame in `tel_count`, which the
-    /// servo's arm rule refuses on: the burst arm after a watch commits
-    /// with `tel_count` back at 0.
+    /// The servo zeroes `tel_count` when a watch's LAST frame leaves, so
+    /// the burst arm after a watch commits; the arm's own disarm write
+    /// finds it at 0 already.
     #[test]
     fn a_burst_arm_after_a_watch_finds_tel_disarmed() {
         use crate::rig::snapshot::read_u16;
         use osc_client::fake::FakePipe;
-        let pipe = FakePipe::new(BaudRate::B2000000, &[1]);
+        let pipe = FakePipe::new(BaudRate::B3000000, &[1]);
         let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-        let mask = admit_watch(&mut c, id).unwrap();
-        write_reg(&mut c, id, control::TEL_MASK, mask as i32).unwrap();
-        let (frames, _) = watch_rows_on(&mut c, id, 48, mask).unwrap();
+        let chunks = admit_watch(&mut c, id).unwrap();
+        let (frames, _) = watch_rows_on(&mut c, id, 48, chunks).unwrap();
         assert_eq!(frames.len(), 48);
-        assert_eq!(read_u16(&mut c, id, control::TEL_COUNT).unwrap(), 48);
+        assert_eq!(read_u16(&mut c, id, control::TEL_COUNT).unwrap(), 0);
         WireBurstIo { c: &mut c, id }
             .arm(8192, burst::CHANS_DIFF)
             .unwrap();
@@ -788,14 +878,13 @@ mod tests {
         assert_eq!(c.read(id, burst::wire::ARM.addr, 1).unwrap(), [1]);
     }
 
-    /// A watch leaves its own mask on the servo; the experiment's stream
-    /// after it runs under the experiment's mask, and the read after the
-    /// watch carries its window.
+    /// A watch arms its own chunks; the experiment's stream after it runs
+    /// under the stream's own, and the read after the watch carries its
+    /// window.
     #[test]
-    fn a_stream_after_a_read_runs_under_the_experiments_mask() {
+    fn a_stream_after_a_watch_runs_under_its_own_chunks() {
         use super::super::servo::bench::Bench;
         use crate::capture::Supply;
-        use osc_ident::frame::{TEL_BIT_CURRENT, TEL_BIT_POS};
 
         #[derive(Default)]
         struct Exp {
@@ -816,18 +905,18 @@ mod tests {
                 self.tel.extend_from_slice(&tel.frames);
             }
         }
-        let mask = TEL_BIT_POS | TEL_BIT_CURRENT;
+        let chunks = Chunks::two(
+            Chunk::new(telemetry::POS.addr, 2),
+            Chunk::new(telemetry::I_TICK_COUNTS.addr, 2),
+        );
         let mut exp = Exp {
             cmds: vec![
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: mask as i32,
-                },
                 Cmd::Read,
                 Cmd::Pause { ms: 5 },
                 Cmd::Stream {
                     samples: 32,
                     goal: None,
+                    chunks,
                 },
                 Cmd::Read,
             ],
@@ -869,45 +958,36 @@ mod tests {
     #[test]
     fn telemetry_span_covers_the_region_through_the_floor() {
         assert_eq!(TEL_BASE, 0x200);
-        assert_eq!(TEL_LEN, 0x6a);
+        assert_eq!(TEL_LEN, 0x80);
     }
 
-    /// The watch takes what the line's rows hold, the pot included when it
-    /// fits; a line too slow for the window's own fields is refused in
-    /// words before anything drives.
+    /// The watch takes what the servo's rows hold, the pot included when it
+    /// fits; a line under 3 M, which streams no TEL, is refused in words
+    /// before anything drives.
     #[test]
-    fn identification_refuses_a_line_too_slow_for_its_watch() {
+    fn identification_refuses_a_line_that_streams_no_watch() {
         use osc_client::fake::FakePipe;
-        let (full, bare) = (tel::row_bytes(WATCH_FIELDS), tel::row_bytes(WINDOW_FIELDS));
-        assert_eq!(watch_selection(full), Some(WATCH_FIELDS));
-        assert_eq!(
-            watch_selection(full - 1),
-            (bare < full).then_some(WINDOW_FIELDS)
-        );
+        let (full, bare) = (WATCH_CHUNKS.row_bytes(), WINDOW_CHUNKS.row_bytes());
+        assert_eq!(watch_selection(full), Some(WATCH_CHUNKS));
+        assert_eq!(watch_selection(full - 1), Some(WINDOW_CHUNKS));
         assert_eq!(watch_selection(bare - 1), None);
-        for baud in [BaudRate::B1000000, BaudRate::B2000000, BaudRate::B3000000] {
+        for baud in [BaudRate::B1000000, BaudRate::B2000000] {
             let pipe = FakePipe::new(baud, &[1]);
             let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-            let (_, max) = tel_row_limit(&mut c, id).unwrap();
-            match (admit_watch(&mut c, id), watch_selection(max)) {
-                (Ok(mask), Some(want)) => assert_eq!(mask, want, "{baud:?}"),
-                (Err(e), None) => assert_eq!(
-                    e.to_string(),
-                    format!(
-                        "identification watches its drives on a TEL stream of current, vdiff \
-                         and duty, {} B rows; the servo streams rows of at most {max} B at {} \
-                         kbaud (protocol sec 5.6). Move the bus to a faster rate first (osc \
-                         baud 3000000).",
-                        tel::row_bytes(WINDOW_FIELDS),
-                        baud.as_hz() / 1000
-                    )
-                ),
-                (got, want) => panic!("{baud:?}: {got:?} against {want:?}"),
-            }
+            let e = admit_watch(&mut c, id).unwrap_err().to_string();
+            assert_eq!(
+                e,
+                format!(
+                    "identification watches its drives on a TEL stream, which the servo streams \
+                     at 3 Mbaud only; the bus runs at {} kbaud. Move the bus to 3M first (osc \
+                     baud 3000000), on a short cable with good contacts.",
+                    baud.as_hz() / 1000
+                )
+            );
         }
-        let pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        let pipe = FakePipe::new(BaudRate::B3000000, &[1]);
         let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-        assert!(admit_watch(&mut c, id).is_err(), "1 M carries a watch");
+        assert_eq!(admit_watch(&mut c, id).unwrap(), WATCH_CHUNKS);
     }
 
     #[test]

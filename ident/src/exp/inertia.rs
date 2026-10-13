@@ -39,16 +39,12 @@ use crate::fits::{
     BClimb, BDecay, BDirect, BExp, Climb, InertiaPriors, StepSeries, b_climb_fit, b_decay_pool,
     b_decay_step, b_direct_fit, b_exp_fit,
 };
-use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, counts_q15, duty_counts};
+use crate::frame::{TEL_LADDER, TelBurst, TelFrame, TelemetrySnapshot, counts_q15, duty_counts};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
 use crate::runway::{
     BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS, Need, Runway, fits,
 };
-
-/// TEL frame layout the choreography arms: pos + current + duty + vdiff,
-/// plus pos_lin while the rig's position table is live ([`crate::pot::Pot`]).
-pub const TEL_LADDER_MASK: u16 = 0x1B;
 
 /// The base over the seek duty, a fraction of full scale.
 pub const BASE_OVER_SEEK: f64 = 0.05;
@@ -308,7 +304,6 @@ pub struct InertiaResult {
 enum Phase {
     ModeWrite,
     TorqueOn,
-    TelMask,
     SeekSet,
     SeekRead,
     SeekEval,
@@ -323,7 +318,6 @@ enum Phase {
     BrakeRead,
     BrakeEval,
     StepRest,
-    TelMaskOff,
     FinishTorque,
     Finished,
 }
@@ -508,7 +502,7 @@ impl Inertia {
 
     fn halt_on(&mut self, reason: AbortReason) -> Cmd {
         self.halt = Some(reason);
-        self.phase = Phase::TelMaskOff;
+        self.phase = Phase::FinishTorque;
         Cmd::Write {
             reg: control::GOAL_DUTY,
             value: 0,
@@ -537,7 +531,7 @@ impl Inertia {
         if self.polls > self.cfg.base_polls / 2 {
             self.i_run.0 += o.i_mean_counts as f64 * self.dir() as f64;
             self.i_run.1 += 1;
-            self.base_governed |= o.duty_applied_q15 != self.base();
+            self.base_governed |= !o.duty_is(self.base());
         }
         if self.polls < self.cfg.base_polls {
             self.phase = Phase::BaseRead;
@@ -618,10 +612,13 @@ impl Inertia {
     /// limiter's, not the rotor's.
     fn series_of(&self, c: &StepCapture) -> Result<StepSeries, &'static str> {
         let tick_s = 1.0 / self.cfg.tick_hz;
-        let frames: Vec<(&TelFrame, f64, i16, i16)> = c
+        let frames: Vec<(&TelFrame, u16, i16, i16)> = c
             .tel
             .iter()
-            .filter_map(|f| Some((f, f.counts()?, f.current?, f.duty_counts?)))
+            .filter_map(|f| {
+                let raw = f.pos?;
+                Some((f, raw, f.current?, f.duty_counts?))
+            })
             .collect();
         let judged = judge(
             frames.iter().map(|(f, _, _, d)| (f.tick, *d)),
@@ -633,17 +630,16 @@ impl Inertia {
             return Err(GOVERNED);
         }
         let mut s = StepSeries::default();
-        for ((f, p, cur, duty), a) in frames.iter().zip(&judged) {
-            let raw = f.pos.unwrap_or(p.round() as u16);
+        for ((f, raw, cur, duty), a) in frames.iter().zip(&judged) {
             let clean = *a == Applied::Clean;
             if clean && s.duty_q15 == 0.0 {
                 s.duty_q15 = counts_q15(*duty, c.pwm_period_ticks);
             }
             s.t.push(f.tick as f64 * tick_s);
-            s.pos.push(*p);
+            s.pos.push(self.params.pot.counts(*raw));
             s.i.push(*cur as f64);
             s.mask
-                .push(clean && f.window_valid && !self.params.in_slip(raw));
+                .push(clean && f.window_valid && !self.params.in_slip(*raw));
         }
         if s.mask.iter().filter(|m| **m).count() < 32 {
             return Err("too few samples, dropped");
@@ -687,17 +683,10 @@ impl Experiment for Inertia {
                 }
             }
             Phase::TorqueOn => {
-                self.phase = Phase::TelMask;
+                self.phase = Phase::SeekSet;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
                     value: 1,
-                }
-            }
-            Phase::TelMask => {
-                self.phase = Phase::SeekSet;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: self.params.pot.tel_mask(TEL_LADDER_MASK) as i32,
                 }
             }
             Phase::SeekSet => {
@@ -795,6 +784,7 @@ impl Experiment for Inertia {
                 Cmd::Stream {
                     samples: self.capture_samples(),
                     goal: Some((control::GOAL_DUTY, self.goal_q15 as i32)),
+                    chunks: TEL_LADDER,
                 }
             }
             Phase::StepOff => {
@@ -823,17 +813,10 @@ impl Experiment for Inertia {
                 self.phase = if self.step < self.steps() {
                     Phase::SeekSet
                 } else {
-                    Phase::TelMaskOff
+                    Phase::FinishTorque
                 };
                 Cmd::Pause {
                     ms: self.cfg.rest_ms,
-                }
-            }
-            Phase::TelMaskOff => {
-                self.phase = Phase::FinishTorque;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: 0,
                 }
             }
             Phase::FinishTorque => {
@@ -943,7 +926,7 @@ mod tests {
     /// The goal of every step burst, in order.
     fn stream_goals(log: &[String]) -> Vec<i32> {
         log.iter()
-            .filter_map(|l| l.strip_prefix("stream 3015 goal_duty "))
+            .filter_map(|l| l.strip_prefix("stream 3015 0x238+2,0x240+8 goal_duty "))
             .map(|v| v.parse().unwrap())
             .collect()
     }
@@ -1049,7 +1032,6 @@ mod tests {
                 pos: Some(v[2] as u16),
                 current: Some(v[3] as i16),
                 duty_counts: Some(v[4] as i16),
-                pos_lin: Some(v[5] as u16),
                 ..Default::default()
             };
             if f.tick == 0 {
@@ -1217,21 +1199,8 @@ mod tests {
     }
 
     #[test]
-    fn choreography_arms_masked_bursts_and_disarms() {
+    fn choreography_arms_ladder_rows_with_each_step() {
         let (_, log) = run();
-        let idx = |needle: &str| log.iter().position(|l| l == needle).unwrap();
-        let mask_on = idx("write tel_mask 27");
-        let mask_off = idx("write tel_mask 0");
-        let first_stream = log
-            .iter()
-            .position(|l| l.starts_with("stream "))
-            .expect("a burst");
-        let torque_off = log
-            .iter()
-            .rposition(|l| l == "write torque_enable 0")
-            .unwrap();
-        assert!(mask_on < first_stream, "mask written before the first arm");
-        assert!(mask_off < torque_off, "tel down before torque off");
         // six step bursts, each a goal+arm commit over a base of its sign
         let streams: Vec<usize> = log
             .iter()
@@ -1240,6 +1209,7 @@ mod tests {
             .map(|(k, _)| k)
             .collect();
         assert_eq!(streams.len(), 6);
+        assert_eq!(stream_goals(&log).len(), 6, "each a ladder row arm");
         for (n, k) in streams.iter().enumerate() {
             let base = if n % 2 == 0 { 10158 } else { -10158 };
             let last_write = log[..*k]
@@ -1259,13 +1229,13 @@ mod tests {
         assert_eq!(last_duty, "write goal_duty 0");
     }
 
-    /// With a table live the arm carries pos_lin and the series is the
-    /// kernel's word, not the bent raw count.
+    /// With a table live the series is the raw count read through it, the
+    /// kernel's counts, not the bent raw count; the arm is the same.
     /// The current decay never sees the pot: it reads B planted either
     /// way. The pot-speed diagnostic, its friction priors in the wrong
     /// counts, reads low on the raw count.
     #[test]
-    fn live_table_arms_pos_lin_and_fits_the_kernels_counts() {
+    fn live_table_fits_the_kernels_counts() {
         let table = bent_pot();
         let run = |pot: Pot| {
             let mut servo = dynamic_servo();
@@ -1287,8 +1257,9 @@ mod tests {
         };
         let (raw_log, raw, (b_raw, exp_raw)) = run(Pot::RAW);
         let (lin_log, lin, (b_lin, exp_lin)) = run(Pot::live(table));
-        assert!(raw_log.contains(&"write tel_mask 27".to_string()));
-        assert!(lin_log.contains(&"write tel_mask 2075".to_string()));
+        for log in [&raw_log, &lin_log] {
+            assert_eq!(stream_goals(log).len(), 6, "ladder rows either way");
+        }
         for b in [b_raw, b_lin] {
             assert!((b - B_PLANT).abs() / B_PLANT < 0.03, "decay b {b}");
         }

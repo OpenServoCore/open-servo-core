@@ -121,11 +121,9 @@ const _: () = assert!(
         <= osc_servo_core::estimator::bemf::ARR_MAX
 );
 
-// TEL streams the applied duty as 12-bit signed compare counts.
-const _: () = assert!(
-    crate::hal::timer::pwm_dividers_from_hz(chip::MOTOR_PWM_FREQ_HZ).1
-        <= osc_servo_core::tel::DUTY_COUNTS_MAX
-);
+// The tick block carries the applied duty as i16 compare counts.
+const _: () =
+    assert!(crate::hal::timer::pwm_dividers_from_hz(chip::MOTOR_PWM_FREQ_HZ).1 <= i16::MAX as u16);
 
 fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
     CalibSense {

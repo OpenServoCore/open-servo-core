@@ -1092,8 +1092,8 @@ fn run_held(
     let held = held.into_inner();
     for s in held.seats() {
         println!(
-            "  seated at pos {} driving {:+}: applied {} q15 at the hold, arrived at {} q15",
-            s.pos, s.dir, s.duty_applied_q15, s.arrived_q15
+            "  seated at pos {} driving {:+}: applied {} ticks at the hold, arrived at {} q15",
+            s.pos, s.dir, s.duty_ticks, s.arrived_q15
         );
     }
     for w in held.warnings() {
@@ -2793,7 +2793,7 @@ mod tests {
                 i_lim_counts: 280,
                 ..TelemetrySnapshot::default()
             };
-            log.push(4.5, &s).unwrap();
+            log.push(4.5, &s, 1200).unwrap();
         }
         record_ladder_and_steps(&out, r);
 

@@ -13,7 +13,7 @@ use osc_client::data_state::{
     self, CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, Reason, STAMP_MISMATCH, fault,
 };
 use osc_client::descriptor::{Descriptor, Kind, Value, encode};
-use osc_client::fake::{FakePipe, TelSample, Therm, seed};
+use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
 use osc_client::session::{EngineCommand, Record, Session};
@@ -23,11 +23,12 @@ use osc_client::{
 use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
+use osc_protocol::tel::{Chunk, Chunks};
 use osc_protocol::wire::UID_LEN;
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
 use osc_servo_core::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
 use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
-use osc_servo_core::regions::telemetry::addr::therm::{T_NTC_CC, THERM_FLAGS};
+use osc_servo_core::regions::telemetry_ext::addr::therm::{T_NTC_CC, THERM_FLAGS};
 
 /// V006 map fact used by read/write round trips (control.lifecycle
 /// goal_velocity); the common block is the only protocol-fixed address space.
@@ -1152,22 +1153,23 @@ mod wire {
 
 // --- TEL stream (burst carrier) ---
 
-/// V006 map facts (control.lifecycle): the burst arm registers.
-const TEL_MASK: u16 = 386;
-const TEL_COUNT: u16 = 402;
-/// pos + current + duty + vdiff -- the ident ladder's mask.
-const TEL_LADDER_MASK: u16 = 0x1B;
+/// V006 map facts (control.tel): the burst arm registers, the chunks right
+/// ahead of the count; the tick block's kernel fields.
+const CHUNK0_ADDR: u16 = 0x1E2;
+const TEL_COUNT: u16 = 0x1EA;
+const TICK: u16 = 0x240;
+/// Duty, trough, held current and differential.
+const IDENT: Chunks = Chunks::one(TICK, 8);
 const BURST_WINDOW: Duration = Duration::from_millis(50);
 
-/// TEL runs at 3M: at lower rates the producer outruns the wire and drops
-/// samples by design (see the DES tel suite).
+/// TEL runs at 3M only.
 fn tel_fleet() -> Client<FakePipe> {
     Client::connect(FakePipe::new(BaudRate::B3000000, &[5])).expect("connect")
 }
 
-fn write_mask(c: &mut Client<FakePipe>) {
-    c.write(Id::new(5), TEL_MASK, &TEL_LADDER_MASK.to_le_bytes())
-        .expect("mask");
+fn write_chunks(c: &mut Client<FakePipe>, chunks: Chunks) {
+    c.write(Id::new(5), CHUNK0_ADDR, &chunks.to_le_bytes())
+        .expect("chunks");
 }
 
 /// Arm the burst: a stream-tagged unicast WRITE to tel_count.
@@ -1182,7 +1184,7 @@ fn arm_tel(c: &mut Client<FakePipe>, count: u16) -> StreamReply {
 #[test]
 fn tel_stream_collects_ack_frames_and_last() {
     let mut c = tel_fleet();
-    write_mask(&mut c);
+    write_chunks(&mut c, IDENT);
     let reply = arm_tel(&mut c, 40);
     assert_eq!(reply.outcome, Outcome::Complete);
     let ack = reply.ack.expect("acked WRITE arm");
@@ -1192,7 +1194,7 @@ fn tel_stream_collects_ack_frames_and_last() {
         assert_eq!(f.result, Some(ResultCode::Stream));
         assert_eq!(
             f.payload,
-            expect_tel_payload(TEL_LADDER_MASK, 40, i),
+            expect_tel_payload(IDENT, 40, i),
             "frame {i} payload"
         );
     }
@@ -1200,15 +1202,32 @@ fn tel_stream_collects_ack_frames_and_last() {
     assert_eq!(reply.garble, 0);
     assert!(!reply.trailing);
 
-    // The line frees after LAST: an ordinary read still answers.
-    let got = c.read(Id::new(5), TEL_MASK, 2).expect("read after burst");
-    assert_eq!(got, TEL_LADDER_MASK.to_le_bytes());
+    // The line frees after LAST: an ordinary read still answers, the
+    // chunks as written and the count back at 0.
+    let got = c
+        .read(Id::new(5), CHUNK0_ADDR, 10)
+        .expect("read after burst");
+    assert_eq!(got[..8], IDENT.to_le_bytes());
+    assert_eq!(got[8..], [0, 0], "the servo zeroes tel_count after LAST");
+}
+
+/// Below 3M an arm acks and never streams: the stream-tagged exchange
+/// completes on the ack alone.
+#[test]
+fn tel_arm_below_three_megabaud_streams_nothing() {
+    let mut c = Client::connect(FakePipe::new(BaudRate::B2000000, &[5])).expect("connect");
+    write_chunks(&mut c, IDENT);
+    let reply = arm_tel(&mut c, 40);
+    assert_eq!(reply.ack.expect("acked").result, Some(ResultCode::Ok));
+    assert!(reply.frames.is_empty());
+    let got = c.read(Id::new(5), TEL_COUNT, 2).expect("read");
+    assert_eq!(got, [0, 0]);
 }
 
 #[test]
 fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
     let mut c = tel_fleet();
-    write_mask(&mut c);
+    write_chunks(&mut c, IDENT);
     let mut pipe = c.into_pipe();
 
     // A host arms a burst and vanishes before reading a record.
@@ -1266,10 +1285,10 @@ fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
 #[test]
 fn tel_stream_hold_commit_broadcast_carrier() {
     let mut c = tel_fleet();
-    c.write_hold(Id::new(5), TEL_MASK, &TEL_LADDER_MASK.to_le_bytes())
-        .expect("hold mask");
-    c.write_hold(Id::new(5), TEL_COUNT, &24u16.to_le_bytes())
-        .expect("hold count");
+    let mut arm = IDENT.to_le_bytes().to_vec();
+    arm.extend_from_slice(&24u16.to_le_bytes());
+    c.write_hold(Id::new(5), CHUNK0_ADDR, &arm)
+        .expect("hold the arm");
     let inst = Inst::instruction(Opcode::Commit, 0);
     let reply = c
         .exchange_stream(Id::BROADCAST, inst, &[], BURST_WINDOW)
@@ -1280,34 +1299,24 @@ fn tel_stream_hold_commit_broadcast_carrier() {
     for (i, f) in reply.frames.iter().enumerate() {
         assert_eq!(
             f.payload,
-            expect_tel_payload(TEL_LADDER_MASK, 24, i),
+            expect_tel_payload(IDENT, 24, i),
             "frame {i} payload"
         );
     }
     assert_eq!(reply.statuses, 2);
 }
 
-/// INST ALERT is the first row's fault; the trailer carries the batch's OR.
+/// INST ALERT is the first row's fault.
 #[test]
-fn tel_stream_alert_is_the_first_row_fault_and_the_tail_the_batch_or() {
+fn tel_stream_alert_is_the_first_rows_fault() {
     let mut c = tel_fleet();
     c.pipe_mut().sim_mut().set_tel_fault_ticks(0, 20, 36);
-    write_mask(&mut c);
+    write_chunks(&mut c, IDENT);
     let reply = arm_tel(&mut c, 48);
     assert_eq!(reply.outcome, Outcome::Complete);
     assert!(!reply.ack.expect("ack").alert);
     let alerts: Vec<bool> = reply.frames.iter().map(|f| f.alert).collect();
     assert_eq!(alerts, [false, false, true], "ALERT where row 0 faulted");
-    let tails: Vec<bool> = reply
-        .frames
-        .iter()
-        .map(|f| {
-            osc_protocol::tel::StreamFrame::parse(TEL_LADDER_MASK, &f.payload)
-                .expect("a frame")
-                .alert
-        })
-        .collect();
-    assert_eq!(tails, [false, true, true], "tail where any row faulted");
 }
 
 #[test]
@@ -1316,7 +1325,7 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
     // clean run holds for the injected rerun.
     let garble_at_us = {
         let mut c = tel_fleet();
-        write_mask(&mut c);
+        write_chunks(&mut c, IDENT);
         c.pipe_mut().take_frames();
         let reply = arm_tel(&mut c, 48);
         assert_eq!(reply.frames.len(), 3);
@@ -1334,7 +1343,7 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
     };
 
     let mut c = tel_fleet();
-    write_mask(&mut c);
+    write_chunks(&mut c, IDENT);
     c.pipe_mut().sim_mut().inject_garble_at(garble_at_us, 0xA5);
     let reply = arm_tel(&mut c, 48);
     assert_eq!(
@@ -1350,19 +1359,15 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
         "corrupt frame dropped; the seq gap exposes it"
     );
     assert_eq!(reply.statuses, 3, "ack + two clean frames");
-    assert_eq!(
-        reply.frames[1].payload,
-        expect_tel_payload(TEL_LADDER_MASK, 48, 2)
-    );
+    assert_eq!(reply.frames[1].payload, expect_tel_payload(IDENT, 48, 2));
 }
 
 /// Burst frame `seq`'s wire span in a clean probe run, in ticks, its ring
 /// bytes and the tick rate: the sim is deterministic, so the span holds for
 /// an injected rerun.
-fn tel_frame_span(mask: u16, count: u16, seq: usize) -> (u64, u64, u64, u64) {
+fn tel_frame_span(chunks: Chunks, count: u16, seq: usize) -> (u64, u64, u64, u64) {
     let mut c = tel_fleet();
-    c.write(Id::new(5), TEL_MASK, &mask.to_le_bytes())
-        .expect("mask");
+    write_chunks(&mut c, chunks);
     c.pipe_mut().take_frames();
     assert_eq!(arm_tel(&mut c, count).outcome, Outcome::Complete);
     let tpu = c.info().ticks_per_us as u64;
@@ -1378,24 +1383,40 @@ fn tel_frame_span(mask: u16, count: u16, seq: usize) -> (u64, u64, u64, u64) {
     (f.at, f.end, f.bytes.len() as u64, tpu)
 }
 
+/// Rows of every width a burst streams, one chunk and two.
+fn row_widths() -> [Chunks; 8] {
+    let vbus = 0x262;
+    [
+        Chunks::one(TICK, 2),
+        Chunks::one(TICK, 4),
+        Chunks::one(TICK, 6),
+        IDENT,
+        Chunks::one(TICK, 10),
+        Chunks::one(TICK + 4, 12),
+        Chunks::two(Chunk::new(TICK, 6), Chunk::new(TICK + 26, 2)),
+        Chunks::two(Chunk::new(TICK + 6, 2), Chunk::new(vbus, 2)),
+    ]
+}
+
 /// A LEN that outruns the burst must never park the walk over the clean
 /// frames behind it: garble in a header corrupts LEN itself, garble in the
 /// body turns a data zero into a hunt anchor whose next bytes read as a
-/// header. LAST lands at every mask, burst length and garble position
-/// across the second-to-last frame: each byte, and sixteenths between.
+/// header. LAST lands at every row width, burst length and garble
+/// position across the second-to-last frame: each byte, and sixteenths
+/// between.
 #[test]
 fn tel_stream_garble_never_swallows_the_next_frame() {
-    for mask in [0x01, 0x03, 0x0B, 0x1B, 0x1F, 0x3F, 0x41, 0xC1] {
+    for chunks in row_widths() {
         for count in [40u16, 48] {
-            let (at, end, bytes, tpu) = tel_frame_span(mask, count, 1);
+            let (at, end, bytes, tpu) = tel_frame_span(chunks, count, 1);
             let byte = (end - at) / bytes;
             let each = (0..=bytes + 1).map(|b| (at + b * byte, format!("byte {b}")));
             let frac = (0..=16).map(|k| (at + (end - at) * k / 16, format!("{k}/16")));
             for (garble_at, pos) in each.chain(frac) {
-                let case = format!("mask {mask:#x} count {count} garble at {pos} of frame 1");
+                let w = chunks.row_bytes();
+                let case = format!("{w} B count {count} garble at {pos} of frame 1");
                 let mut c = tel_fleet();
-                c.write(Id::new(5), TEL_MASK, &mask.to_le_bytes())
-                    .expect("mask");
+                write_chunks(&mut c, chunks);
                 c.pipe_mut()
                     .sim_mut()
                     .inject_garble_at(garble_at / tpu, 0xA5);
@@ -1411,7 +1432,7 @@ fn tel_stream_garble_never_swallows_the_next_frame() {
                 assert!(seqs == [0, 2] || seqs == [0, 1, 2], "{case}: seqs {seqs:?}");
                 for f in &reply.frames {
                     let seq = usize::from(f.payload[0]);
-                    let want = expect_tel_payload(mask, u32::from(count), seq);
+                    let want = expect_tel_payload(chunks, u32::from(count), seq);
                     assert_eq!(f.payload, want, "{case}: frame {seq}");
                 }
             }
@@ -1422,21 +1443,21 @@ fn tel_stream_garble_never_swallows_the_next_frame() {
 /// A false length never holds the burst's terminal past LAST: the claim
 /// dies at the next break mark, so LAST closes the burst within the mark's
 /// service lag of its own wire end, never at the 50 ms window. Garble lands
-/// at each byte of the second-to-last frame, every mask and length.
+/// at each byte of the second-to-last frame, every row width and length.
 #[test]
 fn tel_stream_garble_never_holds_last_to_the_window() {
     // LAST's own wire end, its last byte's stop sample, plus the host's
     // mark lag at budget: the terminal surfaces on that byte's event.
     let slack_us = osc_integration::sim::HOST_MARK_LAG_US + 1;
-    for mask in [0x01, 0x03, 0x0B, 0x1B, 0x1F, 0x3F, 0x41, 0xC1] {
+    for chunks in row_widths() {
         for count in [40u16, 48] {
-            let (at, end, bytes, tpu) = tel_frame_span(mask, count, 1);
+            let (at, end, bytes, tpu) = tel_frame_span(chunks, count, 1);
             let byte = (end - at) / bytes;
             for b in 0..=bytes + 1 {
-                let case = format!("mask {mask:#x} count {count} garble at byte {b} of frame 1");
+                let w = chunks.row_bytes();
+                let case = format!("{w} B count {count} garble at byte {b} of frame 1");
                 let mut c = tel_fleet();
-                c.write(Id::new(5), TEL_MASK, &mask.to_le_bytes())
-                    .expect("mask");
+                write_chunks(&mut c, chunks);
                 c.pipe_mut().take_frames();
                 c.pipe_mut()
                     .sim_mut()
@@ -1501,7 +1522,10 @@ fn fake_winding_rises_on_the_time_constant_toward_the_steady_excess() {
     pipe.set_track(
         0,
         vec![TelSample {
-            current: HOLD_COUNTS,
+            tick: TelemetryTick {
+                i_tick_counts: HOLD_COUNTS,
+                ..Default::default()
+            },
             ..Default::default()
         }],
     );

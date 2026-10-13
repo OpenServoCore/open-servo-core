@@ -1,150 +1,130 @@
-//! sec 5.6 TEL rows (osc-servo field set): the field a `tel_mask` bit
-//! selects, the width it rides at, and the row layout servo and host share.
+//! sec 5.6 TEL rows (osc-servo): a row is the bytes of up to two chunks of
+//! the control table at their table layout, copied whole each control
+//! tick, and a burst streams at one rate only.
 
-use crate::wire;
+use crate::wire::{self, BaudRate};
 
-pub const BIT_POS: u16 = 1 << 0;
-pub const BIT_CURRENT: u16 = 1 << 1;
-pub const BIT_CURRENT_TROUGH: u16 = 1 << 2;
-pub const BIT_DUTY: u16 = 1 << 3;
-pub const BIT_VDIFF: u16 = 1 << 4;
-pub const BIT_VBUS: u16 = 1 << 5;
-pub const BIT_CURRENT_RAW: u16 = 1 << 6;
-pub const BIT_VMOTOR_A: u16 = 1 << 7;
-pub const BIT_VMOTOR_B: u16 = 1 << 8;
-pub const BIT_VBUS_RAW: u16 = 1 << 9;
-pub const BIT_NTC_RAW: u16 = 1 << 10;
-pub const BIT_POS_LIN: u16 = 1 << 11;
-pub const MASK_ALL: u16 = 0xFFF;
-pub const FIELDS: usize = 12;
+/// The one rate a burst streams at: a frame of 16 rows of
+/// [`ROW_BYTES_MAX`] clears the wire inside its batch's ticks.
+pub const BAUD: BaudRate = BaudRate::B3000000;
 
-/// The fields that ride in 16 bits: the kernel's conclusions. The raw ADC
-/// codes and the duty ride in 12.
-pub const WIDE: u16 = BIT_CURRENT | BIT_VDIFF | BIT_VBUS | BIT_POS_LIN;
+/// The longest row: the chunks' total, bytes.
+pub const ROW_BYTES_MAX: usize = 12;
 
-/// Two's-complement fields; a 12-bit one sign-extends from bit 11.
-pub const SIGNED: u16 = BIT_CURRENT | BIT_DUTY | BIT_VDIFF;
+/// Chunks a row copies.
+pub const CHUNKS_MAX: usize = 2;
 
-pub const NARROW_BITS: u32 = 12;
-pub const NARROW_MASK: u16 = (1 << NARROW_BITS) - 1;
+/// Table bytes a chunk may cover: `[0, TABLE_BYTES)`.
+pub const TABLE_BYTES: u16 = 1024;
 
-/// The largest duty magnitude, in PWM compare counts, a 12-bit word holds.
-pub const DUTY_COUNTS_MAX: u16 = NARROW_MASK >> 1;
-
-/// Bytes of one 16-bit slot and of one packed pair of 12-bit fields.
-pub const WORD_BYTES: usize = 2;
-pub const PAIR_BYTES: usize = 3;
-
-/// A row in wire order: `words` 16-bit LE slots, then `pairs` 3-byte LE
-/// pairs `a | b << 12`. `order` lists the field bit indices slot by slot.
-/// The slots carry the wide fields and, when the mask selects an odd count
-/// of 12-bit fields, the lowest of them (holding its value), each in bit
-/// order; the other 12-bit fields pair up in bit order.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Layout {
-    pub order: [u8; FIELDS],
-    pub words: u8,
-    pub pairs: u8,
+/// One run of table bytes a row carries: `len` bytes from `addr`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Chunk {
+    pub addr: u16,
+    pub len: u16,
 }
 
-impl Layout {
-    pub const fn new(mask: u16) -> Self {
-        let m = mask & MASK_ALL;
-        let narrow = m & !WIDE;
-        let lone = if narrow.count_ones() % 2 == 1 {
-            narrow.isolate_lowest_one()
-        } else {
-            0
-        };
-        let (order, words) = push_bits([0; FIELDS], 0, (m & WIDE) | lone);
-        let (order, n) = push_bits(order, words, narrow & !lone);
-        Self {
-            order,
-            words: words as u8,
-            pairs: ((n - words) / 2) as u8,
-        }
+impl Chunk {
+    pub const fn new(addr: u16, len: u16) -> Self {
+        Self { addr, len }
+    }
+
+    /// Even ends, inside the table, at most a row.
+    const fn fits(&self) -> bool {
+        (self.addr | self.len) & 1 == 0
+            && self.len as usize <= ROW_BYTES_MAX
+            && self.addr as u32 + self.len as u32 <= TABLE_BYTES as u32
+    }
+}
+
+/// A row's chunks in CONTROL order (`chunk0_addr`, `chunk0_len`,
+/// `chunk1_addr`, `chunk1_len`); a second chunk of length 0 is none.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Chunks(pub [Chunk; CHUNKS_MAX]);
+
+impl Chunks {
+    pub const NONE: Self = Self([Chunk::new(0, 0); CHUNKS_MAX]);
+
+    pub const fn one(addr: u16, len: u16) -> Self {
+        Self([Chunk::new(addr, len), Chunk::new(0, 0)])
+    }
+
+    pub const fn two(a: Chunk, b: Chunk) -> Self {
+        Self([a, b])
     }
 
     pub const fn row_bytes(&self) -> usize {
-        WORD_BYTES * self.words as usize + PAIR_BYTES * self.pairs as usize
+        self.0[0].len as usize + self.0[1].len as usize
     }
-}
 
-const fn push_bits(mut order: [u8; FIELDS], mut n: usize, bits: u16) -> ([u8; FIELDS], usize) {
-    let bits = bits as u32;
-    let mut b = 0;
-    while bits >> b != 0 && n < FIELDS {
-        if bits >> b & 1 != 0 {
-            order[n] = b as u8;
-            n += 1;
+    /// A row a burst arms with: each chunk even and inside the table, the
+    /// first one nonempty, the row at most [`ROW_BYTES_MAX`].
+    pub const fn valid(&self) -> bool {
+        let [a, b] = self.0;
+        a.len != 0 && a.fits() && b.fits() && self.row_bytes() <= ROW_BYTES_MAX
+    }
+
+    /// Where table bytes `[addr, addr + width)` ride in a row: their offset,
+    /// or None when no one chunk holds them all.
+    pub const fn offset(&self, addr: u16, width: u16) -> Option<usize> {
+        let mut at = 0;
+        let mut i = 0;
+        while i < CHUNKS_MAX {
+            let c = self.0[i];
+            if addr >= c.addr && addr as u32 + width as u32 <= c.addr as u32 + c.len as u32 {
+                return Some(at + (addr - c.addr) as usize);
+            }
+            at += c.len as usize;
+            i += 1;
         }
-        b += 1;
+        None
     }
-    (order, n)
-}
 
-/// Bytes one row of `mask` takes on the wire: [`Layout::row_bytes`]
-/// without the walk.
-pub const fn row_bytes(mask: u16) -> usize {
-    let m = mask & MASK_ALL;
-    let narrow = (m & !WIDE).count_ones() as usize;
-    WORD_BYTES * ((m & WIDE).count_ones() as usize + narrow % 2) + PAIR_BYTES * (narrow / 2)
-}
-
-/// Payload bytes of a frame of `rows` rows of `mask`.
-pub const fn frame_len(mask: u16, rows: usize) -> usize {
-    wire::STREAM_HDR + rows * row_bytes(mask) + wire::STREAM_TRAILER
-}
-
-/// The most rows a `mask` frame carries: what the payload and the `valid`
-/// bitmap hold; 0 for a mask with no row.
-pub const fn rows_max(mask: u16) -> usize {
-    let row = row_bytes(mask);
-    if row == 0 {
-        return 0;
+    /// The four CONTROL registers, LE: one write before `tel_count`.
+    pub const fn to_le_bytes(&self) -> [u8; 4 * CHUNKS_MAX] {
+        let [a, b] = self.0;
+        let [a0, a1] = a.addr.to_le_bytes();
+        let [l0, l1] = a.len.to_le_bytes();
+        let [b0, b1] = b.addr.to_le_bytes();
+        let [m0, m1] = b.len.to_le_bytes();
+        [a0, a1, l0, l1, b0, b1, m0, m1]
     }
-    let fit = (wire::MAX_PAYLOAD as usize - wire::STREAM_HDR - wire::STREAM_TRAILER) / row;
-    if fit < wire::STREAM_ROWS_MAX {
-        fit
-    } else {
-        wire::STREAM_ROWS_MAX
+
+    pub const fn from_le_bytes(b: [u8; 4 * CHUNKS_MAX]) -> Self {
+        let [a0, a1, l0, l1, b0, b1, m0, m1] = b;
+        let w = u16::from_le_bytes;
+        Self([
+            Chunk::new(w([a0, a1]), w([l0, l1])),
+            Chunk::new(w([b0, b1]), w([m0, m1])),
+        ])
     }
 }
 
-/// One TEL frame payload (sec 5.6), split: the head, the rows, the trailer.
+/// One TEL frame payload (sec 5.6), split: the head and the rows.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StreamFrame<'a> {
     pub seq: u8,
     pub last: bool,
     /// The first row's `sample_tick`, low 16 bits.
     pub tick: u16,
-    /// Bit i: row i measured a fresh drive window.
-    pub valid: u32,
-    /// Some row of the frame saw a fault.
-    pub alert: bool,
     rows: &'a [u8],
     row_bytes: usize,
 }
 
 impl<'a> StreamFrame<'a> {
-    /// None when `payload` cannot be a `mask` frame: shorter than head and
-    /// trailer, a ragged row remainder, no row, or over [`rows_max`].
-    pub fn parse(mask: u16, payload: &'a [u8]) -> Option<Self> {
-        let row_bytes = row_bytes(mask);
-        let (head, rest) = payload.split_first_chunk::<{ wire::STREAM_HDR }>()?;
-        let (rows, trailer) = rest.split_last_chunk::<{ wire::STREAM_TRAILER }>()?;
+    /// None when `payload` cannot be a frame of `row_bytes` rows: shorter
+    /// than the head, no row, or a ragged row remainder.
+    pub fn parse(row_bytes: usize, payload: &'a [u8]) -> Option<Self> {
+        let (head, rows) = payload.split_first_chunk::<{ wire::STREAM_HDR }>()?;
         let n = rows.len().checked_div(row_bytes)?;
-        if n == 0 || n > rows_max(mask) || n * row_bytes != rows.len() {
+        if n == 0 || n * row_bytes != rows.len() {
             return None;
         }
         let [seq, flags, t0, t1] = *head;
-        let [v0, v1, v2, v3, tail, _] = *trailer;
         Some(Self {
             seq,
             last: flags & wire::STREAM_FLAG_LAST != 0,
             tick: u16::from_le_bytes([t0, t1]),
-            valid: u32::from_le_bytes([v0, v1, v2, v3]),
-            alert: tail & wire::STREAM_TAIL_ALERT != 0,
             rows,
             row_bytes,
         })
@@ -158,142 +138,66 @@ impl<'a> StreamFrame<'a> {
         self.rows.is_empty()
     }
 
-    /// The packed rows in order, each [`decode_row`]'s input.
+    /// The rows in order, each the chunks' bytes back to back.
     pub fn rows(&self) -> core::slice::ChunksExact<'a, u8> {
         self.rows.chunks_exact(self.row_bytes)
     }
-}
-
-/// One row's fields by bit index, 0 where unselected: 12-bit fields
-/// masked, the signed ones sign-extended. None when `row` is short.
-pub fn decode_row(mask: u16, row: &[u8]) -> Option<[u16; FIELDS]> {
-    let l = Layout::new(mask);
-    let (words, pairs) = l.order.split_at_checked(l.words as usize)?;
-    let (head, tail) = row.split_at_checked(WORD_BYTES * words.len())?;
-    let tail = tail.get(..PAIR_BYTES * l.pairs as usize)?;
-    let mut out = [0u16; FIELDS];
-    let mut put = |f: u8, v: u16| {
-        if let Some(o) = out.get_mut(f as usize) {
-            *o = v;
-        }
-    };
-    for (&b, &f) in head.as_chunks::<WORD_BYTES>().0.iter().zip(words) {
-        put(f, u16::from_le_bytes(b));
-    }
-    let pairs = pairs.as_chunks::<2>().0;
-    for (&[b0, b1, b2], &[fa, fb]) in tail.as_chunks::<PAIR_BYTES>().0.iter().zip(pairs) {
-        let v = u32::from_le_bytes([b0, b1, b2, 0]);
-        put(fa, v as u16);
-        put(fb, (v >> NARROW_BITS) as u16);
-    }
-    for (f, o) in out.iter_mut().enumerate() {
-        let bit = 1 << f;
-        if mask & !WIDE & bit != 0 {
-            let v = *o & NARROW_MASK;
-            let shift = 16 - NARROW_BITS;
-            *o = if SIGNED & bit != 0 {
-                ((v << shift) as i16 >> shift) as u16
-            } else {
-                v
-            };
-        }
-    }
-    Some(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const SIX_RAW: u16 =
-        BIT_POS | BIT_CURRENT_TROUGH | BIT_DUTY | BIT_CURRENT_RAW | BIT_VMOTOR_A | BIT_VMOTOR_B;
-
     #[test]
-    fn row_bytes_follow_the_widths() {
-        assert_eq!(row_bytes(0), 0);
-        assert_eq!(row_bytes(BIT_POS), 2);
-        assert_eq!(row_bytes(BIT_POS | BIT_CURRENT_RAW), 3);
-        assert_eq!(row_bytes(BIT_CURRENT), 2);
-        assert_eq!(row_bytes(SIX_RAW), 9);
-        assert_eq!(frame_len(SIX_RAW, wire::STREAM_SAMPLES_MAX), 154);
-        assert_eq!(row_bytes(0x1B), 7);
-        assert_eq!(row_bytes(MASK_ALL), 4 * 2 + 4 * 3);
-        assert_eq!(row_bytes(1 << 12), 0);
-        for m in 0..=MASK_ALL {
-            assert_eq!(row_bytes(m), Layout::new(m).row_bytes(), "{m:#x}");
-        }
+    fn chunks_admit_even_rows_inside_the_table() {
+        assert!(Chunks::one(0x228, 12).valid());
+        assert!(Chunks::two(Chunk::new(0x224, 6), Chunk::new(0x23E, 2)).valid());
+        assert!(Chunks::one(TABLE_BYTES - 2, 2).valid());
+        assert!(!Chunks::NONE.valid(), "no row");
+        assert!(!Chunks::two(Chunk::new(0, 0), Chunk::new(0x224, 2)).valid());
+        assert!(!Chunks::one(0x225, 2).valid(), "odd addr");
+        assert!(!Chunks::one(0x224, 3).valid(), "odd len");
+        assert!(!Chunks::one(0x224, 14).valid(), "over the row");
+        assert!(!Chunks::two(Chunk::new(0x224, 8), Chunk::new(0x244, 6)).valid());
+        assert!(!Chunks::one(TABLE_BYTES - 2, 4).valid(), "past the table");
+        assert!(!Chunks::one(u16::MAX - 1, 2).valid());
     }
 
     #[test]
-    fn layout_puts_words_first_then_pairs() {
-        let l = Layout::new(BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF | BIT_NTC_RAW);
-        assert_eq!((l.words, l.pairs), (3, 1));
-        assert_eq!(l.order[..5], [0, 1, 4, 3, 10]);
-        let l = Layout::new(SIX_RAW);
-        assert_eq!((l.words, l.pairs), (0, 3));
-        assert_eq!(l.order[..6], [0, 2, 3, 6, 7, 8]);
+    fn offsets_find_a_field_inside_one_chunk() {
+        let c = Chunks::two(Chunk::new(0x224, 4), Chunk::new(0x244, 8));
+        assert_eq!(c.row_bytes(), 12);
+        assert_eq!(c.offset(0x224, 2), Some(0));
+        assert_eq!(c.offset(0x226, 2), Some(2));
+        assert_eq!(c.offset(0x244, 4), Some(4));
+        assert_eq!(c.offset(0x248, 4), Some(8));
+        assert_eq!(c.offset(0x228, 2), None);
+        assert_eq!(c.offset(0x226, 4), None, "straddles a chunk end");
+        assert_eq!(Chunks::NONE.offset(0, 2), None);
     }
 
-    /// Head [seq][flags][tick u16], rows, trailer [valid u32][tail][0]: the
-    /// count comes from the length alone.
+    #[test]
+    fn chunks_round_trip_the_control_registers() {
+        let c = Chunks::two(Chunk::new(0x224, 6), Chunk::new(0x23E, 2));
+        let b = c.to_le_bytes();
+        assert_eq!(b, [0x24, 0x02, 6, 0, 0x3E, 0x02, 2, 0]);
+        assert_eq!(Chunks::from_le_bytes(b), c);
+    }
+
+    /// Head [seq][flags][tick u16], then the rows: the count comes from the
+    /// length alone.
     #[test]
     fn stream_frame_takes_its_row_count_from_the_length() {
-        let p = [
-            0x42,
-            wire::STREAM_FLAG_LAST,
-            0x34,
-            0x12,
-            0x01,
-            0x00,
-            0x02,
-            0x00,
-            0x03,
-            0x00,
-            0x05,
-            0x00,
-            0x00,
-            0x80,
-            wire::STREAM_TAIL_ALERT,
-            0,
-        ];
-        let f = StreamFrame::parse(BIT_POS, &p).expect("a frame");
-        assert_eq!((f.seq, f.last, f.tick), (0x42, true, 0x1234));
-        assert_eq!((f.valid, f.alert, f.len()), (0x8000_0005, true, 3));
+        let p = [0x42, wire::STREAM_FLAG_LAST, 0x34, 0x12, 1, 0, 2, 0, 3, 0];
+        let f = StreamFrame::parse(2, &p).expect("a frame");
+        assert_eq!((f.seq, f.last, f.tick, f.len()), (0x42, true, 0x1234, 3));
         let mut rows = f.rows();
         assert_eq!(rows.next(), Some(&[1, 0][..]));
         assert_eq!(rows.nth(1), Some(&[3, 0][..]));
         assert_eq!(rows.next(), None);
-        let f = StreamFrame::parse(BIT_POS | BIT_CURRENT, &p);
-        assert!(f.is_none(), "a ragged remainder is not a frame");
-    }
-
-    #[test]
-    fn stream_frame_rejects_empty_and_oversized_frames() {
-        let empty = [0u8; wire::STREAM_HDR + wire::STREAM_TRAILER];
-        assert!(StreamFrame::parse(BIT_POS, &empty).is_none());
-        assert!(StreamFrame::parse(BIT_POS, &empty[1..]).is_none());
-        assert!(StreamFrame::parse(0, &[0; 12]).is_none());
-        assert_eq!(rows_max(BIT_POS), wire::STREAM_ROWS_MAX);
-        assert_eq!(rows_max(SIX_RAW), 26);
-        assert_eq!(rows_max(0), 0);
-        let buf = [0u8; frame_len(BIT_POS, wire::STREAM_ROWS_MAX + 1)];
-        let max = &buf[..frame_len(BIT_POS, wire::STREAM_ROWS_MAX)];
-        assert_eq!(StreamFrame::parse(BIT_POS, max).map(|f| f.len()), Some(32));
-        assert!(StreamFrame::parse(BIT_POS, &buf).is_none());
-    }
-
-    #[test]
-    fn decode_reads_words_and_pairs() {
-        let mask = BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF | BIT_NTC_RAW;
-        // pos 0x123 (lone, a word), current -2, vdiff -300, duty -5 | ntc 0xABC << 12
-        let row = [0x23, 0x01, 0xFE, 0xFF, 0xD4, 0xFE, 0xFB, 0xCF, 0xAB, 0xEE];
-        let f = decode_row(mask, &row).expect("decodes");
-        assert_eq!(f[0], 0x123);
-        assert_eq!(f[1] as i16, -2);
-        assert_eq!(f[3] as i16, -5);
-        assert_eq!(f[4] as i16, -300);
-        assert_eq!(f[10], 0xABC);
-        assert_eq!(f[2], 0);
-        assert!(decode_row(mask, &row[..8]).is_none());
+        assert!(StreamFrame::parse(4, &p).is_none(), "a ragged remainder");
+        assert!(StreamFrame::parse(2, &p[..4]).is_none(), "no row");
+        assert!(StreamFrame::parse(2, &p[..3]).is_none(), "no head");
+        assert!(StreamFrame::parse(0, &p).is_none());
     }
 }

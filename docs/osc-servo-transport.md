@@ -40,8 +40,8 @@ Every hardware resource the transport touches, and its duty cycle:
 | DMA1 CH4        | TX arms -> USART1 DR (header, snapshot payload, CRC tail; a TEL frame's whole image); HIGH | zero CPU; TC surfaces as USART TC, polled by the kernel for TEL frames |
 | DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
-| DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly); HIGH, above CH3 | ~0.125 us/B, zero CPU |
-| DMA1 CH1        | ADC sample set -> buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick, alone at PFIC HIGH | 14-40 us body (rest to moving) |
+| DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly), or while a TEL burst streams the row copies, table chunks -> the frame image, halfwords, armed by the kernel; HIGH, above CH3 | ~0.125 us/B, zero CPU |
+| DMA1 CH1        | ADC sample set -> the control table's tick block; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick, alone at PFIC HIGH | 14-40 us body (rest to moving) |
 | PC0 CNF         | AF open-drain for good: the servo only pulls low, the host pull-up (and the board keeper) holds mark (protocol sec 2) | set once at init |
 | main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state under one bus mask per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 us/wake |
 
@@ -323,17 +323,22 @@ be staged behind the CRC verdict:
 - **Unsolicited - TEL bursts (protocol sec 5.6).** The one place the
   servo transmits without an instruction on the wire. A committed
   nonzero `tel_count` arms it; the host is silent by contract until the
-  LAST-flagged frame, so the TX lane and the CRC engine are the burst's
-  and the bus lends them to the kernel tick (PFIC HIGH): at the arming
-  ack's release, or at the arm when no ack follows. The kernel packs each
-  control-tick sample once, in one out-of-line call, at its final wire
-  offset in one of two frame images (header, head, rows, trailer, CRC
-  slot). A frame starts once its lead row has landed - the start rule
+  LAST-flagged frame, so the TX lane, the CRC engine and DMA1 CH6 (the
+  reply snapshot's channel, idle while no reply is staged) are the
+  burst's and the bus lends them to the kernel tick (PFIC HIGH): at the
+  arming ack's release, or at the arm when no ack follows. The kernel
+  lands each control tick's row with one CH6 memory-to-memory copy per
+  chunk of the table, halfword units, straight to its final wire offset
+  in one of two frame images (header, head, rows, CRC slot): both
+  chunks at a fixed point right after the tick block is published, the
+  second once the first has landed, ahead of the next scans the ADC DMA
+  lands in the block, so every row is one tick's, and CH6 above the CRC
+  feed's CH3 lands each copy ahead of any feed that reads it. A frame starts once its lead row has landed - the start rule
   leaves the DMA three ticks behind the rows and the patch - with a CRC
   reset, the written bytes' feed and the law break; the next tick arms
   CH4 for the whole image with no TCIE, the DMA reading rows as the wire
   reaches them. The bank's feed and the CRC patch follow on later ticks,
-  one lane step a tick, none on a tick that lands a head or a trailer
+  one lane step a tick, none on a tick that lands a head or a bank
   or runs a SLOW or thermometer stage;
   the kernel polls TC and starts the next frame in the tick the last one
   ends. No bus body runs between frames. Lost ticks mid-frame ship stale
@@ -341,7 +346,10 @@ be staged behind the CRC verdict:
   nothing wedges (the arm is finite). After LAST the bus takes the lane
   back in its next body, its ladder resumed at the ring cursor the
   kernel read while LAST streamed (the receiver is deaf under own TX),
-  so host traffic during the burst is skipped, never served late.
+  so host traffic during the burst is skipped, never served late, and
+  zeroes `tel_count`: the register reads nonzero only while a burst is
+  armed or streams, the shunt burst's arm condition (an arm that never
+  lends, refused or its ack cut short, zeroes it at once).
   Cross-context traffic is a lent flag, an arm mailbox and the LAST
   notice, single-writer volatile discipline, no atomics. A row that
   finds both images unfinished drops and is counted - the fast tick

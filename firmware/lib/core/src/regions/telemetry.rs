@@ -53,8 +53,71 @@ pub struct TelemetryMode {
     pub data_flags: u8,
 }
 
-/// Estimator outputs, published at the medium boundary (`sample_tick` at
-/// every fast tick). Counts-domain throughout; conversion is the host's job.
+/// One control tick (protocol sec 5.6). The chip's ADC DMA lands both scans
+/// of each PWM period at the front: the trough scan in `_scan_trough`, the
+/// crest scan from `current_raw` to `ntc_raw` in scan-slot order. The tick
+/// ISR names the terminal taps in place (`vmotor_a`, `vmotor_b`), copies the
+/// trough's shunt and taps out of the next scan's way and stamps
+/// `sample_tick`; the kernel writes its conclusions on the window the scan
+/// measured, and the TEL row is copied. The next scans land mid-tick and
+/// late in it (`budget::NEXT_TROUGH`, `budget::NEXT_CREST`), after every
+/// read of this one, so inside the tick every field is this tick's; from
+/// the next crest scan's taps to the next tick, `vmotor_a` and `vmotor_b`
+/// hold that scan's high side and the low side's late sample.
+/// Counts-domain throughout.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Block)]
+pub struct TelemetryTick {
+    #[ct_field(skip)]
+    pub _scan_trough: [u16; 7],
+    /// The shunt at the counter peak.
+    #[ct_field(access = ro)]
+    pub current_raw: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_a: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_b: u16,
+    #[ct_field(access = ro)]
+    pub pos: u16,
+    #[ct_field(access = ro)]
+    pub vcal: u16,
+    /// Direct supply divider tap (the rail `vbus_counts` derives from).
+    #[ct_field(access = ro)]
+    pub vbus_raw: u16,
+    /// NTC divider tap.
+    #[ct_field(access = ro)]
+    pub ntc_raw: u16,
+    /// The PWM compare width the window measured was driven at, negative
+    /// in reverse; full scale is CALIB `pwm_period_ticks`.
+    #[ct_field(access = ro)]
+    pub duty_ticks: i16,
+    #[ct_field(access = ro)]
+    pub current_trough: u16,
+    /// Window-selected, bias-subtracted, settle-gained, signed current
+    /// (`window::i_from_frame`), held through windows the shunt cannot read,
+    /// 0 from the first tick nothing drives.
+    #[ct_field(access = ro)]
+    pub i_tick_counts: i16,
+    /// Drive-window `va - vb`, logical sign, held through windows the
+    /// terminal taps cannot read.
+    #[ct_field(access = ro)]
+    pub vdiff_counts: i16,
+    #[ct_field(access = ro)]
+    pub vmotor_a_trough: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_b_trough: u16,
+    /// `tel::tick_flag` bits: the shunt window was read, a fault is
+    /// latched, the terminal window was read.
+    #[ct_field(access = ro)]
+    pub tick_flags: u16,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
+    #[ct_field(access = ro)]
+    pub sample_tick: u32,
+}
+
+/// Estimator outputs, published at the medium boundary. Counts-domain
+/// throughout; conversion is the host's job.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryEstimates {
@@ -77,9 +140,6 @@ pub struct TelemetryEstimates {
     pub t_winding_cc: i16,
     #[ct_field(access = ro)]
     pub vbus_counts: u16,
-    /// Post-clamp post-gate duty actually written to the bridge.
-    #[ct_field(access = ro)]
-    pub duty_applied_q15: i16,
     /// Back-EMF boxcar, whole c/s; 0 while a sub-floor window sits inside
     /// the boxcar (`omega_hat_src` then reads 0 within a millisecond).
     #[ct_field(access = ro)]
@@ -87,52 +147,27 @@ pub struct TelemetryEstimates {
     /// Winding-R LMS estimate, vcounts/ccount Q4.12.
     #[ct_field(access = ro)]
     pub r_hat_q12: u16,
-    /// Window-selected, bias-subtracted, settle-gained, signed current
-    /// sample (`window::i_from_frame`).
-    #[ct_field(access = ro)]
-    pub i_hat_counts: i16,
-    #[ct_field(access = ro)]
-    pub sample_tick: u32,
 }
 
+/// The references the raw frame is read against.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct TelemetrySensors {
-    #[ct_field(access = ro)]
-    pub pos: u16,
-    #[ct_field(access = ro)]
-    pub current: u16,
-    #[ct_field(access = ro)]
-    pub vcal: u16,
-    #[ct_field(skip)]
-    pub _rsvd_vcal: u16,
-    #[ct_field(access = ro)]
-    pub vmotor_a: u16,
-    #[ct_field(access = ro)]
-    pub vmotor_b: u16,
-    #[ct_field(access = ro)]
-    pub enc_a: u16,
-    #[ct_field(access = ro)]
-    pub enc_b: u16,
-    #[ct_field(access = ro)]
-    pub current_trough: u16,
+pub struct TelemetryRefs {
     /// Zero-current sense-chain output in use, raw ADC counts, driver
     /// awake: the boot rest measurement, then tracked from every settled
     /// tick the shunt carries no current - torque off, a brake or coast, a
-    /// Slow-decay brake trough (`estimator::bias`).
+    /// Slow-decay brake trough (`estimator::bias`). Published at the medium
+    /// boundary.
     #[ct_field(access = ro)]
     pub current_bias_counts: u16,
-    /// Direct supply divider tap, raw ADC counts (the rail `vbus_counts`
-    /// derives from).
-    #[ct_field(access = ro)]
-    pub vbus_raw: u16,
-    /// NTC divider tap, raw ADC counts.
-    #[ct_field(access = ro)]
-    pub ntc_raw: u16,
     /// Boot-measured motor-terminal divider bias (terminals high-impedance),
     /// raw ADC counts; the terminal taps read this with the rail at 0.
     #[ct_field(access = ro)]
     pub vmotor_bias_counts: u16,
+    #[ct_field(access = ro)]
+    pub enc_a: u16,
+    #[ct_field(access = ro)]
+    pub enc_b: u16,
 }
 
 /// Which limit governs the command, published at the medium boundary: one
@@ -153,76 +188,16 @@ pub struct TelemetryLimits {
     pub window_floor_q15: u16,
 }
 
-/// The terminal taps' floor beside `TelemetryLimits::window_floor_q15`,
-/// filling the reserved tail so a servo without it reads 0.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryLimitsExt {
-    /// Smallest duty whose drive window the terminal taps read
-    /// (`window::floor_duty` of `v_window_min_ticks`), Q15: a drive whose
-    /// fit needs `va - vb` runs at or above the higher of the two floors.
-    /// Published with `window_floor_q15`.
-    #[ct_field(access = ro)]
-    pub window_v_floor_q15: u16,
-}
-
-/// Servo health, written by the chip side (the tick interrupt, the main
-/// loop), never by the kernel. The `rw` counters follow the
-/// `TelemetryCommon` clear contract: the host writes zero to clear.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryHealth {
-    /// Mean share of the kernel period the tick interrupt took over the
-    /// last 4000 ticks (0.2 s at 20 kHz), Q15: 32768 = the whole period.
-    #[ct_field(access = ro)]
-    pub tick_load_mean_q15: u16,
-    /// Kernel ticks whose interrupt took longer than one period; nothing
-    /// preempts the tick, so every count is the kernel overrunning by
-    /// itself. Updated every 20 ticks. Wraps.
-    #[ct_field(access = rw)]
-    pub tick_over_count: u16,
-    /// Kernel ticks that never ran: the previous tick was still running, or
-    /// a flash SAVE stalled the core; updated every 20 ticks. Wraps.
-    #[ct_field(access = rw)]
-    pub tick_lost_count: u16,
-    /// TEL stream rows dropped because both stream buffers were waiting for
-    /// the wire. Wraps.
-    #[ct_field(access = rw)]
-    pub tel_drop_count: u16,
-    /// Smallest free stack seen since boot, bytes.
-    #[ct_field(access = ro)]
-    pub stack_free_min: u16,
-}
-
-/// Winding thermometer state beside `t_winding_cc`: the board NTC as the
-/// kernel converts it (centi-C, the carry's base) and the estimator's
-/// flags (`estimator::thermal::flag`: unset, tracking a seat, cold-R
-/// recalibrate; bits 3-7 reserved 0).
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryTherm {
-    #[ct_field(access = ro)]
-    pub t_ntc_cc: i16,
-    #[ct_field(access = ro)]
-    pub therm_flags: u8,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
-}
-
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(base = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
 pub struct TelemetryRegs {
     pub common: TelemetryCommon,
     pub mode: TelemetryMode,
+    pub tick: TelemetryTick,
     pub estimates: TelemetryEstimates,
-    pub sensors: TelemetrySensors,
+    pub refs: TelemetryRefs,
     #[ct_section(skip)]
     pub _rsvd_ident: [u8; 12],
     pub limits: TelemetryLimits,
-    pub health: TelemetryHealth,
-    pub limits_ext: TelemetryLimitsExt,
-    pub therm: TelemetryTherm,
-    #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 6],
 }

@@ -15,7 +15,7 @@
 
 use super::{Cmd, Experiment, RigParams};
 use crate::fitmath::{mean, stddev};
-use crate::frame::{TEL_BIT_POS, TelBurst, TelemetrySnapshot};
+use crate::frame::{TEL_POS, TelBurst, TelemetrySnapshot};
 use crate::pot::Pot;
 use crate::regs::control;
 
@@ -100,9 +100,7 @@ enum Phase {
     JogRest,
     Poll,
     Collect,
-    MaskOn,
     Stream,
-    MaskOff,
     Finished,
 }
 
@@ -297,12 +295,12 @@ impl Experiment for Bias {
             Phase::Collect => {
                 if let Some(o) = obs {
                     self.pos.push(self.pot.counts(o.pos));
-                    self.current.push(o.current as f64);
+                    self.current.push(o.current_raw as f64);
                     self.bias.push(o.current_bias_counts as f64);
                     self.vbus.push(o.vbus_counts as f64);
                 }
                 if self.pos.len() as u32 >= self.cfg.polls {
-                    self.phase = Phase::MaskOn;
+                    self.phase = Phase::Stream;
                     Cmd::Pause { ms: 0 }
                 } else {
                     self.phase = Phase::Poll;
@@ -311,25 +309,12 @@ impl Experiment for Bias {
                     }
                 }
             }
-            Phase::MaskOn => {
-                self.phase = Phase::Stream;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: TEL_BIT_POS as i32,
-                }
-            }
             Phase::Stream => {
-                self.phase = Phase::MaskOff;
+                self.phase = Phase::Finished;
                 Cmd::Stream {
                     samples: self.cfg.tel_samples,
                     goal: None,
-                }
-            }
-            Phase::MaskOff => {
-                self.phase = Phase::Finished;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: 0,
+                    chunks: TEL_POS,
                 }
             }
             Phase::Finished => Cmd::Done,
@@ -395,11 +380,7 @@ mod tests {
         let local = (table.counts(2116) - table.counts(2084)) / 32.0;
         assert!(local < 0.85, "{local}");
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
-        let tail: Vec<&str> = log.iter().rev().take(3).map(String::as_str).collect();
-        assert_eq!(
-            tail,
-            ["write tel_mask 0", "stream 10000", "write tel_mask 1"]
-        );
+        assert_eq!(log.last().map(String::as_str), Some("stream 10000 0x238+2"));
         assert!(!servo.torque);
     }
 

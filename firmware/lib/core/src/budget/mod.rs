@@ -88,23 +88,54 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 pub const REFRESH_1: u32 = 535;
 pub const REFRESH_2: u32 = 474;
 
-/// Every tick of a TEL burst (row gate, sample build and the out-of-line
-/// row), on top of [`KERNEL`], per regime, the widest row 3M admits (11 B).
-/// M for the six-field 9 B rows plus E for the widest row, 18: priced at
-/// 426 against six packed fields' 408. Six-field M: the TEL ticks' maximum
-/// over the plain maximum, drive-arm tagged, the largest phase: Open 570
-/// (tel still), Closed 525 (stepping).
-pub const TEL_ENCODE: [u32; 2] = [636, 591];
+/// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
+/// predate it, by regime and phase: the scan landed by the ADC DMA (the
+/// trough's copies and the taps named in place, where the bodies copied
+/// the frame), the publish (the held current, the differential, the duty
+/// and the tick flags) and the TEL gate. E: each phase's plain tick over
+/// the same tick of the image the rows were measured on, priced on the
+/// release image with the fetch model (as [`TEL_POLL`]), per drive arm
+/// (Closed; the dearer of Brake and Off for Open), plus 10%; a phase that
+/// got cheaper, PUBLISH with its dropped duplicates, is not credited. The
+/// release image prices under every row.
+pub const TICK_PUBLISH: [[u32; PHASES]; 2] = [
+    [2, 31, 11, 0, 8, 21, 11, 0, 6, 9],
+    [5, 58, 35, 25, 18, 28, 38, 0, 32, 36],
+];
 
-/// Its mean over a window: the TEL ticks' mean less the plain ticks'. M
-/// for six fields, the largest window mean, Open 438 (stepping), Closed 389
-/// (stepping), plus the same 18.
-pub const TEL_ENCODE_MEAN: [u32; 2] = [478, 427];
+/// Code layout on top of every kernel row, maximum and mean: one source
+/// compiles to tick bodies that differ by register allocation and block
+/// placement from build to build, and between the bench image the rows
+/// are measured on and the release image. E: the bench image's excess
+/// over the release image's on the same change, priced per phase as
+/// [`TICK_PUBLISH`], on mean rows.
+pub const LAYOUT: u32 = 35;
 
-/// The tick that banks a TEL batch, on top of [`TEL_ENCODE`], any row
-/// width. M: the banking ticks' maximum over the TEL ticks', the largest
-/// phase of either regime, 150 (Open, stepping).
-pub const TEL_BANK: u32 = 198;
+/// A plain tick's budget at `regime` and `phase`: its row, the tick
+/// block's work and layout.
+pub const fn tick_body(regime: Regime, phase: usize) -> u32 {
+    let (r, p) = (regime as usize, phase % PHASES);
+    KERNEL[r][p] + TICK_PUBLISH[r][p] + LAYOUT
+}
+
+/// The same plain ticks' mean over a window.
+pub const fn tick_body_mean(regime: Regime, phase: usize) -> u32 {
+    let (r, p) = (regime as usize, phase % PHASES);
+    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + LAYOUT
+}
+
+/// Every tick of a TEL burst, on top of [`KERNEL`] and the lane: the row
+/// gate, the out-of-line row (bookkeeping and both chunks' DMA copies, the
+/// second armed once the first has landed); the widest, two chunks. E,
+/// priced as [`TEL_POLL`]: the row tick over the same tick with nothing
+/// owed, 183 with two chunks (156 with one), plus 10%. A row costs the
+/// same every tick: the mean is the row.
+pub const TEL_ROW: u32 = 202;
+pub const TEL_ROW_MEAN: u32 = TEL_ROW;
+
+/// The tick that banks a TEL batch, on top of [`TEL_ROW`]: the bank's
+/// stores. E: 39 priced, plus 10%.
+pub const TEL_BANK: u32 = 43;
 
 /// The TX lane a TEL burst's kernel owns (protocol sec 5.6), on top of
 /// the TEL tick. E: each priced on the release image's executed path with
@@ -119,9 +150,10 @@ pub const TEL_BANK: u32 = 198;
 /// of the rest after a bank (207); TEL_ARM, the DMA arm behind the break
 /// with the LAST frame's resume cursor (270); TEL_PATCH, the CRC read, its
 /// odd fold and the 2 B store (240). TEL_HEAD: row 0 over a plain row, the
-/// frame header, head and start rule (90).
+/// out-of-line head: the frame header, the stamp and fault read from the
+/// tick block, the head and the start rule (177).
 pub const TEL_POLL: u32 = 99;
-pub const TEL_HEAD: u32 = 99;
+pub const TEL_HEAD: u32 = 195;
 pub const TEL_FEED: u32 = 255;
 pub const TEL_ARM: u32 = 198;
 pub const TEL_PATCH: u32 = 165;
@@ -145,9 +177,9 @@ pub const fn tel_lane(held: bool) -> u32 {
 /// The lane's share of a TEL tick over a window, for the mean budgets: a
 /// 16-row frame's polls and steps spread over its ticks. E: priced (a tick
 /// with no step 51-66, 21 on the head and bank ticks; over it a start 231,
-/// the arm 210, the rest's feed 156, the patch 189, the head 90) and
-/// averaged, 107, plus 10%.
-pub const TEL_LANE_MEAN: u32 = 118;
+/// the arm 210, the rest's feed 156, the patch 189, the head 177) and
+/// averaged, 112, plus 10%.
+pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
 /// DECIM_SLOW periods): the permit lease, undervoltage and the
@@ -212,6 +244,25 @@ pub const fn health_close_lands(phase: usize) -> bool {
 /// to the entry stamp, epilogue and exit after the exit stamp. M: 37 + 43
 /// (interrupt timing images, two runs, min == max).
 pub const ENTRY_EXIT: u32 = 80;
+/// Its entry share, the scan TC to the entry stamp.
+pub const ENTRY: u32 = 37;
+
+/// The next scans land in the tick block this long after the scan TC that
+/// starts a tick, each at its first slot (`control::sensors::scan` on the
+/// chip asserts the geometry): the trough scan half a period on, the crest
+/// scan a period on, each less the crest scan's length.
+pub const NEXT_TROUGH: u32 = 888;
+pub const NEXT_CREST: u32 = 2088;
+
+/// Past the entry stamp, the latest a tick moves the trough's samples out
+/// of the next trough scan's way. E: priced as [`TEL_POLL`], 96, plus 10%.
+pub const TROUGH_DONE: u32 = 106;
+
+/// Past the entry stamp, the latest a tick reads the crest scan in the
+/// tick block or arms a TEL row's copy of it, before any stage that runs
+/// ahead of the fast step: RAIL's rail and pot reads behind a head and a
+/// two-chunk row. E: priced as [`TEL_POLL`], 1011, plus 10%.
+pub const FRAME_DONE: u32 = 1113;
 
 /// A hold runs Closed this long after its goal moves, then parks. M: the
 /// longest Closed episode after a 600-count step, 2899 / 3396 ticks
@@ -352,7 +403,7 @@ pub const fn spin_extra(baud_hz: u32) -> u32 {
 /// the tick carried.
 pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     let r = regime as usize;
-    let mut t = KERNEL[r][phase % PHASES];
+    let mut t = tick_body(regime, phase);
     if ev.refresh {
         t += refresh(phase);
     }
@@ -374,11 +425,10 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
         // The lane leaves a banking tick be (its gate is under the poll),
         // and a stage tick, so the dearest TEL tick is the bank's or a lane
         // step's, a stage tick's the bank's or a head's. A one-row batch's
-        // head rides in TEL_BANK, whose M bank cost the trailer alone now
-        // undercuts (priced 72, the head 90).
+        // head and bank land on one tick: under a step's.
         let held = ev.slow || ev.finish || ev.close || ev.install || ev.side;
         let bank = if ev.bank { TEL_BANK + TEL_POLL } else { 0 };
-        t += TEL_ENCODE[r] + max(tel_lane(held), bank);
+        t += TEL_ROW + max(tel_lane(held), bank);
     }
     if ev.health {
         t += HEALTH_CLOSE;

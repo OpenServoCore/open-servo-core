@@ -56,19 +56,19 @@ fn write_args(addr: u16, data: &[u8]) -> Vec<u8> {
 fn tel_count_write_parks_while_a_shunt_burst_is_armed_or_capturing() {
     use osc_integration::sim::Sim;
     use osc_servo_core::BaudRate;
-    use osc_servo_core::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
-    use osc_servo_core::tel::BIT_POS;
+    use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+    use osc_servo_core::regions::telemetry::addr::tick::POS;
+    use osc_servo_core::tel::Chunks;
+    let row = Chunks::one(POS, 2).to_le_bytes();
     for (st, streams) in [(state::ARMED, 0), (state::CAPTURING, 0), (state::DONE, 1)] {
         let mut sim = Sim::new(BaudRate::B3000000);
         let s = sim.add_servo(ID5);
         sim.servo_table_mut(s, |t| t.burst.window.state = st);
-        for (addr, v) in [(TEL_MASK, BIT_POS), (TEL_COUNT, 16)] {
-            sim.host_send(&instruction(
-                ID5,
-                Opcode::Write,
-                0,
-                &write_args(addr, &v.to_le_bytes()),
-            ));
+        for (addr, v) in [
+            (CHUNK0_ADDR, &row[..]),
+            (TEL_COUNT, &16u16.to_le_bytes()[..]),
+        ] {
+            sim.host_send(&instruction(ID5, Opcode::Write, 0, &write_args(addr, v)));
             let frames = sim.run();
             let replies = servo_frames(&frames);
             assert_valid(replies[0]);

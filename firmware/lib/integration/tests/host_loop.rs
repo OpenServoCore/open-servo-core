@@ -7,7 +7,10 @@ use osc_host::engine::{Command, Outcome};
 use osc_integration::sim::{HOST_MARK_LAG_US, HostEvent, Sim, Source, assert_valid};
 use osc_protocol::build;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode, UID_LEN};
-use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+use osc_servo_core::regions::telemetry::addr::tick::I_TICK_COUNTS;
+use osc_servo_core::tel::Chunks;
 
 const ID5: u8 = 5;
 
@@ -334,13 +337,14 @@ fn cal_train_is_wire_invisible_to_the_fleet() {
 /// One 3M TEL burst through the engine, the adapter's main loop held off
 /// the engine for `stall_us` from the arm. Returns the burst's terminal.
 fn tel_burst_with_stalled_poll(stall_us: u64) -> osc_host::engine::Terminal {
-    const MASK: u16 = 0x1B;
+    // the ident four: held current, differential, duty, pos
+    const ROW: Chunks = Chunks::one(I_TICK_COUNTS, 8);
     const SAMPLES: u16 = 160;
     let mut sim = Sim::new(BaudRate::B3000000);
     sim.attach_host();
     sim.add_servo(ID5);
     let mut p = [0u8; 16];
-    let n = build::write(&mut p, TEL_MASK, &MASK.to_le_bytes()).unwrap();
+    let n = build::write(&mut p, CHUNK0_ADDR, &ROW.to_le_bytes()).unwrap();
     sim.host_submit(Command::Exchange {
         id: Id::new(ID5),
         inst: Inst::instruction(Opcode::Write, 0),

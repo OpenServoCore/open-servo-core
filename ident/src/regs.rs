@@ -104,19 +104,26 @@ pub mod control {
     /// Firmware that leases it grants about a second per write of true with
     /// torque on, and drops it on torque off ([`crate::limits::PermitLease`]).
     pub const STALL_PERMIT: Reg = reg(0x0181, 1);
-    pub const TEL_MASK: Reg = reg(0x0182, 2);
     pub const MODE: Reg = reg(0x0184, 1);
     pub const GOAL_DUTY: Reg = reg(0x0186, 2);
     pub const GOAL_POSITION: Reg = reg(0x0188, 4);
     pub const GOAL_VELOCITY: Reg = reg(0x018c, 4);
     pub const GOAL_CURRENT: Reg = reg(0x0190, 2);
-    pub const TEL_COUNT: Reg = reg(0x0192, 2);
     pub const BURST_DUTY_Q15: Reg = reg(0x0196, 2);
     pub const BURST_ARM: Reg = reg(0x0198, 1);
     pub const BURST_PAGE: Reg = reg(0x0199, 1);
     /// Extras behind the shunt: bit 0 vmotor_a, bit 1 vmotor_b, bit 2 vbus.
     /// Latched at the arm; values above 7 reject with Validation.
     pub const BURST_CHANS: Reg = reg(0x019a, 1);
+    /// The TEL row's chunks, then the arm: one WRITE of all five
+    /// ([`osc_protocol::tel::Chunks::to_le_bytes`] + `tel_count`) sets the row
+    /// and starts the burst.
+    pub const CHUNK0_ADDR: Reg = reg(0x01e2, 2);
+    pub const CHUNK0_LEN: Reg = reg(0x01e4, 2);
+    pub const CHUNK1_ADDR: Reg = reg(0x01e6, 2);
+    pub const CHUNK1_LEN: Reg = reg(0x01e8, 2);
+    /// Nonzero only while a burst is armed or streaming.
+    pub const TEL_COUNT: Reg = reg(0x01ea, 2);
 }
 
 /// BURST readback section, all RO. One READ of `PAGE_ECHO..=RESTORE_DIR` is
@@ -153,41 +160,54 @@ pub mod telemetry {
     /// Why closed loop is refused, one bit per reason (core `data_state`);
     /// 0 = the images and the identified set are this servo's own.
     pub const DATA_FLAGS: Reg = reg(0x0223, 1);
-    pub const THETA_HAT_Q16: Reg = reg(0x0224, 4);
-    pub const OMEGA_HAT_CPS: Reg = reg(0x0228, 4);
-    pub const TAU_D_COUNTS: Reg = reg(0x022c, 2);
-    pub const I_LIM_COUNTS: Reg = reg(0x022e, 2);
-    pub const T_WINDING_CC: Reg = reg(0x0230, 2);
-    pub const VBUS_COUNTS: Reg = reg(0x0232, 2);
-    pub const DUTY_APPLIED_Q15: Reg = reg(0x0234, 2);
-    pub const OMEGA_BEMF_CPS: Reg = reg(0x0236, 2);
-    pub const R_HAT_Q12: Reg = reg(0x0238, 2);
-    pub const I_HAT_COUNTS: Reg = reg(0x023a, 2);
-    pub const SAMPLE_TICK: Reg = reg(0x023c, 4);
-    pub const POS: Reg = reg(0x0240, 2);
-    pub const CURRENT: Reg = reg(0x0242, 2);
-    pub const CURRENT_TROUGH: Reg = reg(0x0250, 2);
-    pub const CURRENT_BIAS_COUNTS: Reg = reg(0x0252, 2);
-    pub const VBUS_RAW: Reg = reg(0x0254, 2);
-    pub const NTC_RAW: Reg = reg(0x0256, 2);
-    pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x0258, 2);
+    /// The tick block, `I_TICK_COUNTS..=SAMPLE_TICK`, written every control
+    /// tick: what a TEL row's first chunk copies.
+    pub const I_TICK_COUNTS: Reg = reg(0x0244, 2);
+    pub const VDIFF_COUNTS: Reg = reg(0x0246, 2);
+    /// Signed PWM compare counts; full scale is `calib::PWM_PERIOD_TICKS`.
+    pub const DUTY_TICKS: Reg = reg(0x0240, 2);
+    pub const POS: Reg = reg(0x0238, 2);
+    pub const CURRENT_TROUGH: Reg = reg(0x0242, 2);
+    pub const CURRENT_RAW: Reg = reg(0x0232, 2);
+    pub const VMOTOR_A: Reg = reg(0x0234, 2);
+    pub const VMOTOR_B: Reg = reg(0x0236, 2);
+    pub const VBUS_RAW: Reg = reg(0x023c, 2);
+    pub const NTC_RAW: Reg = reg(0x023e, 2);
+    pub const VCAL: Reg = reg(0x023a, 2);
+    pub const VMOTOR_A_TROUGH: Reg = reg(0x0248, 2);
+    pub const VMOTOR_B_TROUGH: Reg = reg(0x024a, 2);
+    /// `osc_servo_core::tel::tick_flag` bits.
+    pub const TICK_FLAGS: Reg = reg(0x024c, 2);
+    pub const SAMPLE_TICK: Reg = reg(0x0250, 4);
+    pub const THETA_HAT_Q16: Reg = reg(0x0254, 4);
+    pub const OMEGA_HAT_CPS: Reg = reg(0x0258, 4);
+    pub const TAU_D_COUNTS: Reg = reg(0x025c, 2);
+    pub const I_LIM_COUNTS: Reg = reg(0x025e, 2);
+    pub const T_WINDING_CC: Reg = reg(0x0260, 2);
+    /// Published at the medium step: a TEL row carries it as last
+    /// published, up to a tick old.
+    pub const VBUS_COUNTS: Reg = reg(0x0262, 2);
+    pub const OMEGA_BEMF_CPS: Reg = reg(0x0264, 2);
+    pub const R_HAT_Q12: Reg = reg(0x0266, 2);
+    pub const CURRENT_BIAS_COUNTS: Reg = reg(0x0268, 2);
+    pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x026a, 2);
     /// Which limit holds the command back: bit 0 the current ceiling, bit 1
     /// the stall yield fold, bit 2 an endstop, bit 3 the stall permit lease
     /// is live (core `kernel::limits::flag`).
-    pub const LIMIT_FLAGS: Reg = reg(0x0266, 1);
+    pub const LIMIT_FLAGS: Reg = reg(0x027c, 1);
     /// Smallest duty whose drive window the shunt reads, Q15: where the
     /// OpenLoop ceiling restarts and its blind band begins; 0 = not
     /// published.
-    pub const WINDOW_FLOOR_Q15: Reg = reg(0x0268, 2);
+    pub const WINDOW_FLOOR_Q15: Reg = reg(0x027e, 2);
     /// TEL rows the servo dropped because both stream buffers were waiting
-    /// for the wire; wraps. Firmware without the health block reads 0.
-    pub const TEL_DROP_COUNT: Reg = reg(0x0270, 2);
+    /// for the wire; wraps.
+    pub const TEL_DROP_COUNT: Reg = reg(0x03c6, 2);
     /// Smallest duty whose drive window the terminal taps read, Q15: a fit
     /// on `va - vb` drives at or above the higher of this and
     /// `WINDOW_FLOOR_Q15`. Firmware without it reads 0.
-    pub const WINDOW_V_FLOOR_Q15: Reg = reg(0x0274, 2);
-    pub const T_NTC_CC: Reg = reg(0x0276, 2);
-    pub const THERM_FLAGS: Reg = reg(0x0278, 1);
+    pub const WINDOW_V_FLOOR_Q15: Reg = reg(0x03ca, 2);
+    pub const T_NTC_CC: Reg = reg(0x03cc, 2);
+    pub const THERM_FLAGS: Reg = reg(0x03ce, 1);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -251,7 +271,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("rail_drop_mv", calib::RAIL_DROP_MV),
     ("torque_enable", control::TORQUE_ENABLE),
     ("stall_permit", control::STALL_PERMIT),
-    ("tel_mask", control::TEL_MASK),
     ("mode", control::MODE),
     ("goal_duty", control::GOAL_DUTY),
     ("goal_position", control::GOAL_POSITION),
@@ -262,29 +281,40 @@ pub const ALL: &[(&str, Reg)] = &[
     ("arm", control::BURST_ARM),
     ("page", control::BURST_PAGE),
     ("chans", control::BURST_CHANS),
+    ("chunk0_addr", control::CHUNK0_ADDR),
+    ("chunk0_len", control::CHUNK0_LEN),
+    ("chunk1_addr", control::CHUNK1_ADDR),
+    ("chunk1_len", control::CHUNK1_LEN),
     ("fault_flags", telemetry::FAULT_FLAGS),
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),
     ("fault_code", telemetry::FAULT_CODE),
     ("omega_hat_src", telemetry::OMEGA_HAT_SRC),
     ("data_flags", telemetry::DATA_FLAGS),
+    ("i_tick_counts", telemetry::I_TICK_COUNTS),
+    ("vdiff_counts", telemetry::VDIFF_COUNTS),
+    ("duty_ticks", telemetry::DUTY_TICKS),
+    ("pos", telemetry::POS),
+    ("current_trough", telemetry::CURRENT_TROUGH),
+    ("current_raw", telemetry::CURRENT_RAW),
+    ("vmotor_a", telemetry::VMOTOR_A),
+    ("vmotor_b", telemetry::VMOTOR_B),
+    ("vbus_raw", telemetry::VBUS_RAW),
+    ("ntc_raw", telemetry::NTC_RAW),
+    ("vcal", telemetry::VCAL),
+    ("vmotor_a_trough", telemetry::VMOTOR_A_TROUGH),
+    ("vmotor_b_trough", telemetry::VMOTOR_B_TROUGH),
+    ("tick_flags", telemetry::TICK_FLAGS),
+    ("sample_tick", telemetry::SAMPLE_TICK),
     ("theta_hat_q16", telemetry::THETA_HAT_Q16),
     ("omega_hat_cps", telemetry::OMEGA_HAT_CPS),
     ("tau_d_counts", telemetry::TAU_D_COUNTS),
     ("i_lim_counts", telemetry::I_LIM_COUNTS),
     ("t_winding_cc", telemetry::T_WINDING_CC),
     ("vbus_counts", telemetry::VBUS_COUNTS),
-    ("duty_applied_q15", telemetry::DUTY_APPLIED_Q15),
     ("omega_bemf_cps", telemetry::OMEGA_BEMF_CPS),
     ("r_hat_q12", telemetry::R_HAT_Q12),
-    ("i_hat_counts", telemetry::I_HAT_COUNTS),
-    ("sample_tick", telemetry::SAMPLE_TICK),
-    ("pos", telemetry::POS),
-    ("current", telemetry::CURRENT),
-    ("current_trough", telemetry::CURRENT_TROUGH),
     ("current_bias_counts", telemetry::CURRENT_BIAS_COUNTS),
-    ("vbus_raw", telemetry::VBUS_RAW),
-    ("ntc_raw", telemetry::NTC_RAW),
     ("vmotor_bias_counts", telemetry::VMOTOR_BIAS_COUNTS),
     ("limit_flags", telemetry::LIMIT_FLAGS),
     ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),

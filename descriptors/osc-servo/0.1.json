@@ -82,18 +82,18 @@
       "kind": "uint"
     },
     {
-      "name": "tel_wide_fields",
+      "name": "tel_row_bytes_max",
       "addr": 10,
-      "width": 2,
+      "width": 1,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "tel_row_bytes_max",
-      "addr": 12,
-      "width": 4,
+      "name": "tel_chunks_max",
+      "addr": 11,
+      "width": 1,
       "access": "ro",
-      "kind": "bytes"
+      "kind": "uint"
     },
     {
       "name": "id",
@@ -715,13 +715,6 @@
       "kind": "bool"
     },
     {
-      "name": "tel_mask",
-      "addr": 386,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "mode",
       "addr": 388,
       "width": 1,
@@ -773,14 +766,6 @@
       "width": 2,
       "access": "rw",
       "kind": "int"
-    },
-    {
-      "name": "tel_count",
-      "addr": 402,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint",
-      "max": 20000
     },
     {
       "name": "boot_mode",
@@ -859,6 +844,44 @@
       "kind": "uint"
     },
     {
+      "name": "chunk0_addr",
+      "addr": 482,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "chunk0_len",
+      "addr": 484,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 12
+    },
+    {
+      "name": "chunk1_addr",
+      "addr": 486,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "chunk1_len",
+      "addr": 488,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 12
+    },
+    {
+      "name": "tel_count",
+      "addr": 490,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 20000
+    },
+    {
       "name": "fault_flags",
       "addr": 512,
       "width": 1,
@@ -922,233 +945,205 @@
       "kind": "uint"
     },
     {
-      "name": "theta_hat_q16",
-      "addr": 548,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "omega_hat_cps",
-      "addr": 552,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "tau_d_counts",
-      "addr": 556,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "i_lim_counts",
-      "addr": 558,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "t_winding_cc",
-      "addr": 560,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "vbus_counts",
+      "name": "current_raw",
       "addr": 562,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "duty_applied_q15",
-      "addr": 564,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "omega_bemf_cps",
-      "addr": 566,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "r_hat_q12",
-      "addr": 568,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "i_hat_counts",
-      "addr": 570,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "sample_tick",
-      "addr": 572,
-      "width": 4,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "pos",
-      "addr": 576,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "current",
-      "addr": 578,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "vcal",
-      "addr": 580,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
       "name": "vmotor_a",
-      "addr": 584,
+      "addr": 564,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_b",
-      "addr": 586,
+      "addr": 566,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "enc_a",
-      "addr": 588,
+      "name": "pos",
+      "addr": 568,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "enc_b",
-      "addr": 590,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "current_trough",
-      "addr": 592,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "current_bias_counts",
-      "addr": 594,
+      "name": "vcal",
+      "addr": 570,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vbus_raw",
-      "addr": 596,
+      "addr": 572,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "ntc_raw",
-      "addr": 598,
+      "addr": 574,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "vmotor_bias_counts",
+      "name": "duty_ticks",
+      "addr": 576,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "current_trough",
+      "addr": 578,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_tick_counts",
+      "addr": 580,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vdiff_counts",
+      "addr": 582,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vmotor_a_trough",
+      "addr": 584,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vmotor_b_trough",
+      "addr": 586,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "tick_flags",
+      "addr": 588,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "sample_tick",
+      "addr": 592,
+      "width": 4,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "theta_hat_q16",
+      "addr": 596,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "omega_hat_cps",
       "addr": 600,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "tau_d_counts",
+      "addr": 604,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "i_lim_counts",
+      "addr": 606,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "limit_flags",
-      "addr": 614,
-      "width": 1,
+      "name": "t_winding_cc",
+      "addr": 608,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vbus_counts",
+      "addr": 610,
+      "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "window_floor_q15",
+      "name": "omega_bemf_cps",
+      "addr": 612,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "r_hat_q12",
+      "addr": 614,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "current_bias_counts",
       "addr": 616,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "tick_load_mean_q15",
+      "name": "vmotor_bias_counts",
       "addr": 618,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "tick_over_count",
+      "name": "enc_a",
       "addr": 620,
       "width": 2,
-      "access": "rw",
+      "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "tick_lost_count",
+      "name": "enc_b",
       "addr": 622,
       "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "tel_drop_count",
-      "addr": 624,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "stack_free_min",
-      "addr": 626,
-      "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "window_v_floor_q15",
-      "addr": 628,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "t_ntc_cc",
-      "addr": 630,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "therm_flags",
-      "addr": 632,
+      "name": "limit_flags",
+      "addr": 636,
       "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "window_floor_q15",
+      "addr": 638,
+      "width": 2,
       "access": "ro",
       "kind": "uint"
     },
@@ -1232,6 +1227,62 @@
     {
       "name": "frame_len",
       "addr": 957,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "tick_load_mean_q15",
+      "addr": 960,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "tick_over_count",
+      "addr": 962,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "tick_lost_count",
+      "addr": 964,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "tel_drop_count",
+      "addr": 966,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "stack_free_min",
+      "addr": 968,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "window_v_floor_q15",
+      "addr": 970,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "t_ntc_cc",
+      "addr": 972,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "therm_flags",
+      "addr": 974,
       "width": 1,
       "access": "ro",
       "kind": "uint"

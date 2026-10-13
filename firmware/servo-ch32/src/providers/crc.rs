@@ -15,6 +15,7 @@
 //! held across feeds accumulates).
 
 use core::cell::SyncUnsafeCell;
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use ch32_metapac::SPI1;
 use ch32_metapac::spi::regs::Ctlr1;
@@ -32,6 +33,12 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// speed, F6). An expiry leaves a partial accumulator -> the frame fails CRC
 /// and drops, which is the sanctioned "spin miss = fail" outcome (protocol sec 3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
+
+/// Bounded wait for a TEL row chunk still copying: one is at most
+/// `tel::ROW_BYTES_MAX` bytes, a few dozen HCLK at HIGH. The bound backstops
+/// a stuck channel only; the next copy then truncates it and the frame
+/// fails its CRC.
+const ROW_COPY_DRAIN_SPIN: u32 = 64;
 
 /// The snapshot buffer (protocol sec 4.2): a reply's header and payload are CH6-copied
 /// here once, and both the CRC feed (CH3) and the wire arm (CH4) stream the copy - the
@@ -57,6 +64,25 @@ const FEED_DMA: dma::Config = dma::Config {
     // CH6 so a reply snapshot is written before this reads it.
     pl: dma::Pl::MEDIUM,
 };
+
+/// The TEL row copy: halfword M2M on the snapshot's channel. HIGH, above
+/// the feed, as the snapshot.
+const ROW_COPY_DMA: dma::Config = dma::Config {
+    dir: dma::Dir::FROMPERIPHERAL,
+    circ: false,
+    pinc: true,
+    minc: true,
+    size: dma::Size::BITS16,
+    htie: false,
+    tcie: false,
+    pl: dma::Pl::HIGH,
+};
+
+/// Row copies armed while CH6 still copied, each waiting it out (bench
+/// feature).
+#[cfg(feature = "bench")]
+#[unsafe(no_mangle)]
+pub static mut ROW_COPY_BUSY: u32 = 0;
 
 /// Production binding to SPI1 + DMA1_CH3.
 pub struct Crc;
@@ -182,6 +208,33 @@ impl bus::CrcEngine for Crc {
             dma::Pl::HIGH,
         );
         dst
+    }
+
+    unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
+        // SAFETY: one-word read-modify-write of a counter only this context
+        // writes; the debug link only reads.
+        #[cfg(feature = "bench")]
+        unsafe {
+            let busy = &raw mut ROW_COPY_BUSY;
+            let hit = (dma::remaining(dma::Channel::CH6) != 0) as u32;
+            busy.write_volatile(busy.read_volatile().wrapping_add(hit));
+        }
+        // Re-pointing the channel would cut a copy still in flight.
+        let mut budget = ROW_COPY_DRAIN_SPIN;
+        while dma::remaining(dma::Channel::CH6) != 0 && budget != 0 {
+            budget -= 1;
+        }
+        // The copy reads what the CPU stored ahead of it.
+        compiler_fence(Ordering::Release);
+        // CH6 is the kernel's for a burst: no reply snapshots while the lane
+        // is lent, so whole-register writes, no critical section.
+        dma::rearm(
+            dma::Channel::CH6,
+            dma::cr_m2m(&ROW_COPY_DMA),
+            src as u32,
+            dst as u32,
+            units,
+        );
     }
 
     fn result(&mut self) -> Option<u16> {

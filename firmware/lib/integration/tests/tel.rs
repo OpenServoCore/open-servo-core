@@ -1,14 +1,13 @@
 //! TEL burst semantics (protocol sec 5.6): a committed nonzero `tel_count`
 //! arms a bounded burst of `Stream` status frames the servo initiates on the
 //! main bus, the kernel owning the TX lane from the arm's ack to the LAST
-//! frame; host traffic in that window is ignored. The sim's fast-tick pump
-//! synthesizes samples from `tel_sample` on the kernel's 50 us grid, so
-//! payload bytes pin against the same function.
+//! frame; host traffic in that window is ignored. A row is the table's
+//! chunks copied each tick; the sim's fast-tick pump plays `tel_sample`
+//! into the table on the kernel's 50 us grid, so payload bytes pin against
+//! the same function.
 //!
-//! Fixed 3 M wire, not the baud matrix: at 3M (and 2M) a full frame streams
-//! faster than its 16-tick batch fills, so every synthesized sample lands on
-//! the wire. At 1M and below the producer outruns the wire and drops samples
-//! by design (the fast tick never blocks), which would unpin the goldens.
+//! TEL streams at 3M only (`tel::BAUD`): a frame of 16 rows of the longest
+//! row clears the wire inside its 16-tick batch.
 //!
 //! DES claim note: the wire model reserves the line monotonically to the
 //! latest claim end, so a queued host frame pre-reserves the wire and cannot
@@ -21,20 +20,22 @@ use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
     frame_crc_ok, instruction, status, tel_sample,
 };
-use osc_protocol::tel::{StreamFrame, decode_row};
+use osc_protocol::tel::StreamFrame;
 use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
 use osc_servo_core::BaudRate;
-use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
-use osc_servo_core::regions::telemetry::addr::sensors::POS;
-use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST, STREAM_HDR};
+use osc_servo_core::TelemetryTick;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_DUTY;
+use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+use osc_servo_core::regions::telemetry::addr::{estimates, tick};
+use osc_servo_core::tel::{Chunk, Chunks, FLAG_LAST, STREAM_HDR, tick_flag};
 
 mod support;
 
 const ID5: u8 = 5;
 const ID6: u8 = 6;
-/// pos + current + duty + vdiff -- the ident ladder's mask.
-const MASK: u16 = 0x1B;
-/// The start rule's lead for `MASK`'s 7 B rows at 3M: a full frame breaks
+/// The crest scan's shunt, taps and pos: one 8 B chunk.
+const ROW: Chunks = Chunks::one(tick::CURRENT_RAW, 8);
+/// The start rule's lead for `ROW`'s 8 B rows at 3M: a full frame breaks
 /// after this row has landed (`osc_servo_drivers::tel`), and arms a tick
 /// later.
 const LEAD: u64 = 12;
@@ -46,16 +47,20 @@ fn sim3m() -> Sim {
 }
 
 fn write_u16(id: u8, flags: u8, addr: u16, v: u16) -> Vec<u8> {
-    let a = addr.to_le_bytes();
-    let d = v.to_le_bytes();
-    instruction(id, Opcode::Write, flags, &[a[0], a[1], d[0], d[1]])
+    write_at(id, flags, addr, &v.to_le_bytes())
 }
 
-/// Write `tel_mask`, draining its ack (a real host waits before the next
+fn write_at(id: u8, flags: u8, addr: u16, data: &[u8]) -> Vec<u8> {
+    let mut p = addr.to_le_bytes().to_vec();
+    p.extend_from_slice(data);
+    instruction(id, Opcode::Write, flags, &p)
+}
+
+/// Write the chunks, draining the ack (a real host waits before the next
 /// frame -- an unspaced second break would abort the staged reply). Leaves
 /// the caller to write `tel_count` and run for the count-ack + burst.
-fn prime_mask(sim: &mut Sim) {
-    sim.host_send(&write_u16(ID5, 0, TEL_MASK, MASK));
+fn prime_chunks(sim: &mut Sim, c: Chunks) {
+    sim.host_send(&write_at(ID5, 0, CHUNK0_ADDR, &c.to_le_bytes()));
     let frames = sim.run();
     assert_eq!(
         status(&frames[frames.len() - 1]).0.result(),
@@ -63,10 +68,10 @@ fn prime_mask(sim: &mut Sim) {
     );
 }
 
-/// `tel_mask` then `tel_count`, each acked in turn; the burst starts after
+/// The chunks then `tel_count`, each acked in turn; the burst starts after
 /// the count write's ack. Returns the count-write's ack + burst frames.
 fn arm(sim: &mut Sim, count: u16) -> Vec<WireFrame> {
-    prime_mask(sim);
+    prime_chunks(sim, ROW);
     sim.host_send(&write_u16(ID5, 0, TEL_COUNT, count));
     sim.run()
 }
@@ -86,7 +91,18 @@ fn stream_frames(frames: &[WireFrame]) -> Vec<&WireFrame> {
 }
 
 fn expect_payload(count: u32, seq: usize) -> Vec<u8> {
-    expect_tel_payload(MASK, count, seq)
+    expect_tel_payload(ROW, count, seq)
+}
+
+/// A READ of `tel_count` after the burst: what the register holds.
+fn read_tel_count(sim: &mut Sim) -> u16 {
+    let a = TEL_COUNT.to_le_bytes();
+    let at = sim.now_us() + 1_000;
+    sim.host_send_at(at, &instruction(ID5, Opcode::Read, 0, &[a[0], a[1], 2, 0]));
+    let frames = sim.run();
+    let (inst, payload) = status(servo_frames(&frames)[0]);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    u16::from_le_bytes([payload[0], payload[1]])
 }
 
 #[test_log::test]
@@ -132,37 +148,77 @@ fn burst_end_to_end() {
     assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
 }
 
-/// `pos | pos_lin`: the linearized word rides the wire beside the raw pot,
-/// in bit order, through the same encoder the golden pins.
+/// A row of two chunks streams whole: each row carries its tick's table
+/// bytes, the rail as last published. A row over 12 B is no row: the arm
+/// acks and parks, and `tel_count` reads 0.
 #[test_log::test]
-fn pos_lin_streams_beside_pos() {
-    let mask = BIT_POS | BIT_POS_LIN;
+fn tel_two_chunk_row_streams_whole() {
+    for c in [
+        Chunks::two(
+            Chunk::new(tick::I_TICK_COUNTS, 6),
+            Chunk::new(tick::TICK_FLAGS, 2),
+        ),
+        Chunks::two(
+            Chunk::new(tick::I_TICK_COUNTS, 8),
+            Chunk::new(estimates::VBUS_COUNTS, 2),
+        ),
+    ] {
+        let mut sim = sim3m();
+        sim.add_servo(ID5);
+        prime_chunks(&mut sim, c);
+        sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
+        let frames = sim.run();
+        let stream = stream_frames(&frames);
+        assert_eq!(stream.len(), 3, "{c:?}: {frames:#?}");
+        for (i, f) in stream.iter().enumerate() {
+            assert_valid(f);
+            assert_eq!(status(f).1, expect_tel_payload(c, 40, i), "{c:?} frame {i}");
+        }
+    }
+
+    let wide = Chunks::two(
+        Chunk::new(tick::DUTY_TICKS, 12),
+        Chunk::new(estimates::THETA_HAT_Q16, 8),
+    );
     let mut sim = sim3m();
     sim.add_servo(ID5);
-    sim.host_send(&write_u16(ID5, 0, TEL_MASK, mask));
+    prime_chunks(&mut sim, wide);
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
     let frames = sim.run();
+    let servo = servo_frames(&frames);
+    assert_eq!(servo.len(), 1, "the ack alone: {frames:#?}");
+    assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
+    assert_eq!(read_tel_count(&mut sim), 0);
+}
+
+/// TEL streams at 3M only: an arm at 2M acks and never streams, and
+/// `tel_count` reads 0 behind it.
+#[test_log::test]
+fn tel_arm_below_three_megabaud_is_refused() {
+    let mut sim = Sim::new(BaudRate::B2000000);
+    sim.add_servo(ID5);
+    let frames = arm(&mut sim, 40);
+    let servo = servo_frames(&frames);
+    assert_eq!(servo.len(), 1, "the ack alone: {frames:#?}");
+    assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
+    assert_eq!(read_tel_count(&mut sim), 0);
+}
+
+/// `tel_count` reads nonzero only while a burst is armed or streams: the
+/// servo zeroes it once the LAST frame is out, so a host read after the
+/// burst, and a shunt-burst arm, see it finished.
+#[test_log::test]
+fn tel_count_reads_zero_after_last() {
+    let mut sim = sim3m();
+    let s = sim.add_servo(ID5);
+    let frames = arm(&mut sim, 40);
+    assert_eq!(stream_frames(&frames).len(), 3);
     assert_eq!(
-        status(&frames[frames.len() - 1]).0.result(),
-        Some(ResultCode::Ok)
+        sim.servo_table(s, |t| t.control.tel.tel_count),
+        40,
+        "LAST is out, the lane not yet back"
     );
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 16));
-    let frames = sim.run();
-    let stream = stream_frames(&frames);
-    assert_eq!(stream.len(), 1, "{frames:#?}");
-    let (_, payload) = status(stream[0]);
-    assert_eq!(payload, expect_tel_payload(mask, 16, 0));
-    for (i, s) in payload[STREAM_HDR..STREAM_HDR + 16 * 4]
-        .chunks(4)
-        .enumerate()
-    {
-        let want = tel_sample(i as u32);
-        assert_eq!(u16::from_le_bytes([s[0], s[1]]), want.pos, "sample {i}");
-        assert_eq!(
-            u16::from_le_bytes([s[2], s[3]]),
-            want.pos_lin_q4,
-            "sample {i}"
-        );
-    }
+    assert_eq!(read_tel_count(&mut sim), 0);
 }
 
 #[test_log::test]
@@ -170,11 +226,13 @@ fn burst_hold_commit() {
     let mut sim = sim3m();
     let s = sim.add_servo(ID5);
 
-    // Stage mask, count, and a goal under HOLD: each acks, nothing applies,
-    // no burst starts. Drained per write (a real host waits for each ack).
+    // Stage the arm (chunks and count in one write) and a goal under
+    // HOLD: each acks, nothing applies, no burst starts. Drained per write
+    // (a real host waits for each ack).
+    let mut arm = ROW.to_le_bytes().to_vec();
+    arm.extend_from_slice(&24u16.to_le_bytes());
     for w in [
-        write_u16(ID5, Inst::FLAG_HOLD, TEL_MASK, MASK),
-        write_u16(ID5, Inst::FLAG_HOLD, TEL_COUNT, 24),
+        write_at(ID5, Inst::FLAG_HOLD, CHUNK0_ADDR, &arm),
         write_u16(ID5, Inst::FLAG_HOLD, GOAL_DUTY, 0x0100),
     ] {
         sim.host_send(&w);
@@ -188,12 +246,12 @@ fn burst_hold_commit() {
             "held arm must not stream"
         );
     }
-    let (mask, duty) = sim.servo_table(s, |t| {
-        (t.control.lifecycle.tel_mask, t.control.lifecycle.goal_duty)
+    let (row, duty) = sim.servo_table(s, |t| {
+        (t.control.tel.chunk0_len, t.control.lifecycle.goal_duty)
     });
-    assert_eq!((mask, duty), (0, 0), "held writes stay staged");
+    assert_eq!((row, duty), (0, 0), "held writes stay staged");
 
-    // One broadcast COMMIT applies all three in the same instant, silently.
+    // One broadcast COMMIT applies both in the same instant, silently.
     sim.host_send(&instruction(0xFE, Opcode::Commit, 0, &[]));
     let frames = sim.run();
     let commit_end = frames
@@ -213,10 +271,10 @@ fn burst_hold_commit() {
         assert_valid(f);
         assert_eq!(status(f).1, expect_payload(24, i), "frame {i} payload");
     }
-    let (mask, duty) = sim.servo_table(s, |t| {
-        (t.control.lifecycle.tel_mask, t.control.lifecycle.goal_duty)
+    let (row, duty) = sim.servo_table(s, |t| {
+        (t.control.tel.chunk0_len, t.control.lifecycle.goal_duty)
     });
-    assert_eq!((mask, duty), (MASK, 0x0100), "COMMIT applied the batch");
+    assert_eq!((row, duty), (8, 0x0100), "COMMIT applied the batch");
 
     // Capture began within a tick or two of the COMMIT (no ack to wait
     // for: the lane passes at the arm): the first frame's break follows its
@@ -250,7 +308,7 @@ fn burst_ignores_a_host_frame_and_serves_the_next_after_last() {
 
     let mut sim = sim3m();
     let s = sim.add_servo(ID5);
-    prime_mask(&mut sim);
+    prime_chunks(&mut sim, ROW);
     sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 48));
     sim.inject_frame_at(at_us, &write_u16(ID5, 0, GOAL_DUTY, 0x0123));
     let frames = sim.run();
@@ -333,7 +391,7 @@ fn burst_frame_corruption_is_detectable() {
 
     let mut sim = sim3m();
     sim.add_servo(ID5);
-    prime_mask(&mut sim);
+    prime_chunks(&mut sim, ROW);
     sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 48));
     sim.inject_garble_at(garble_at_us, 0xA5);
     let frames = sim.run();
@@ -356,41 +414,40 @@ fn burst_frame_corruption_is_detectable() {
 }
 
 /// INST ALERT is the device state when INST leaves: the frame's first
-/// row's fault. The trailer's tail carries the OR of the batch's.
+/// row's fault, which the host reads beside the row's own tick flags.
 #[test_log::test]
-fn burst_alert_is_the_first_row_fault_and_the_tail_the_batch_or() {
+fn burst_alert_is_the_first_rows_fault() {
     let mut sim = sim3m();
     let s = sim.add_servo(ID5);
     // Faulted ticks: from inside the second batch into the third's row 0.
     let faulted = 20..36;
     sim.set_tel_fault_ticks(s, faulted.start, faulted.end);
-    let frames = arm(&mut sim, 48);
+    let flagged = Chunks::two(
+        Chunk::new(tick::I_TICK_COUNTS, 8),
+        Chunk::new(tick::TICK_FLAGS, 2),
+    );
+    prime_chunks(&mut sim, flagged);
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 48));
+    let frames = sim.run();
 
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3);
     let alerts: Vec<bool> = burst.iter().map(|f| status(f).0.alert()).collect();
     assert_eq!(alerts, [false, false, true], "ALERT where row 0 faulted");
-    let tails: Vec<bool> = burst
-        .iter()
-        .map(|f| {
-            StreamFrame::parse(MASK, status(f).1)
-                .expect("a frame")
-                .alert
-        })
-        .collect();
-    assert_eq!(tails, [false, true, true], "tail where any row faulted");
-    // The rows stay the synthesized data.
     let rows: Vec<TelSample> = (0..48)
-        .map(|i| TelSample {
-            fault: faulted.contains(&i),
-            ..tel_sample(i)
+        .map(|i| {
+            let mut s = tel_sample(i);
+            if faulted.contains(&i) {
+                s.tick.tick_flags |= tick_flag::FAULT;
+            }
+            s
         })
         .collect();
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
         assert_eq!(
             status(f).1,
-            expect_tel_payload_rows(MASK, &rows, i),
+            expect_tel_payload_rows(flagged, &rows, i),
             "frame {i} payload"
         );
     }
@@ -431,7 +488,7 @@ fn burst_never_reads_as_a_rescue_pulse() {
     let mut sim = sim3m();
     sim.add_servo(ID5);
 
-    prime_mask(&mut sim);
+    prime_chunks(&mut sim, ROW);
     let t0 = sim.now_us();
     for k in 0..200 {
         sim.sample_line_at(t0 + k * 50);
@@ -474,21 +531,25 @@ fn burst_never_reads_as_a_rescue_pulse() {
 fn track(len: u16) -> Vec<TelSample> {
     (0..len)
         .map(|i| TelSample {
-            pos: 1000 + i * 7,
-            current: -(i as i16) * 3,
-            current_trough: 90 + i,
-            duty: 50 * i as i16 - 600,
-            vdiff: -(i as i16) - 40,
-            vbus: 3000 + i,
-            current_raw: 0x200 + i,
-            vmotor_a: 800 + i,
-            vmotor_b: 600 - i,
-            vbus_raw: 2000 + i,
-            ntc_raw: 1500 + i,
-            pos_lin_q4: (1000 + i * 7) << 4,
-            tick: 0,
-            window_valid: !i.is_multiple_of(3),
-            fault: false,
+            tick: TelemetryTick {
+                i_tick_counts: -(i as i16) * 3,
+                vdiff_counts: -(i as i16) - 40,
+                duty_ticks: 50 * i as i16 - 600,
+                pos: 1000 + i * 7,
+                current_trough: 90 + i,
+                current_raw: 0x200 + i,
+                vmotor_a: 800 + i,
+                vmotor_b: 600 - i,
+                vbus_raw: 2000 + i,
+                ntc_raw: 1500 + i,
+                tick_flags: if i.is_multiple_of(3) {
+                    0
+                } else {
+                    tick_flag::I_VALID
+                },
+                ..Default::default()
+            },
+            vbus_counts: 3000 + i,
         })
         .collect()
 }
@@ -505,29 +566,28 @@ fn track_rows_stream_in_order_and_loop() {
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3);
     // The pump ticks on the 50 us grid: the first sample is the row at the
-    // first grid point after the count write's ack armed the burst.
-    let first = decode_row(MASK, &status(burst[0]).1[STREAM_HDR..]).expect("a row")[0];
+    // first grid point after the count write's ack lent the lane.
+    let at = STREAM_HDR + ROW.offset(tick::POS, 2).expect("pos rides the row");
+    let p = status(burst[0]).1;
+    let first = u16::from_le_bytes([p[at], p[at + 1]]);
     let k = rows
         .iter()
-        .position(|r| r.pos == first)
+        .position(|r| r.tick.pos == first)
         .expect("first sample is a track row");
-    assert_eq!(k, (servo[0].at / TICK + 1) as usize % rows.len());
-    // 40 samples over a 24-row track wrap once; the payloads pin every row
-    // through the same encoder, in order, stamped by the pump's tick.
-    let served: Vec<TelSample> = (0..40)
-        .map(|i| TelSample {
-            tick: i as u16,
-            ..rows[(k + i) % rows.len()]
-        })
-        .collect();
+    assert_eq!(k, (servo[0].end / TICK + 1) as usize % rows.len());
+    // 40 samples over a 24-row track wrap once; the payloads pin every row,
+    // in order, stamped by the pump's tick.
+    let served: Vec<TelSample> = (0..40).map(|i| rows[(k + i) % rows.len()]).collect();
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
         assert_eq!(
             status(f).1,
-            expect_tel_payload_rows(MASK, &served, i),
+            expect_tel_payload_rows(ROW, &served, i),
             "frame {i} payload"
         );
     }
+    let f = StreamFrame::parse(ROW.row_bytes(), status(burst[1]).1).expect("a frame");
+    assert_eq!((f.seq, f.tick, f.len()), (1, 16, 16));
 
     // An empty track restores the synthesized samples, byte for byte.
     sim.set_track(s, Vec::new());
@@ -545,36 +605,19 @@ fn track_mirrors_into_the_live_table() {
     let rows = track(24);
     sim.set_track(s, rows.clone());
 
-    // Row 0 lands at set_track: the raw ADC frame into the sensors block,
-    // the row's kernel conclusions into the estimates block.
+    // Row 0 lands at set_track: the tick block (the stamp kept) and the
+    // rail estimate.
     let r = rows[0];
     sim.servo_table(s, |t| {
-        let sn = &t.telemetry.sensors;
+        let k = t.telemetry.tick;
         assert_eq!(
-            (
-                sn.pos,
-                sn.current,
-                sn.current_trough,
-                sn.vmotor_a,
-                sn.vmotor_b,
-                sn.vbus_raw,
-                sn.ntc_raw
-            ),
-            (
-                r.pos,
-                r.current_raw,
-                r.current_trough,
-                r.vmotor_a,
-                r.vmotor_b,
-                r.vbus_raw,
-                r.ntc_raw
-            )
+            k,
+            TelemetryTick {
+                sample_tick: k.sample_tick,
+                ..r.tick
+            }
         );
-        let es = &t.telemetry.estimates;
-        assert_eq!(
-            (es.vbus_counts, es.duty_applied_q15, es.i_hat_counts),
-            (r.vbus, osc_integration::plant::duty_q15(r.duty), r.current)
-        );
+        assert_eq!(t.telemetry.estimates.vbus_counts, r.vbus_counts);
     });
 
     // The cursor is sim time at the fast-tick rate, wrapping past the track;
@@ -585,14 +628,14 @@ fn track_mirrors_into_the_live_table() {
         let row = sim.track_row(s).expect("track set");
         assert_eq!(row, (sim.now_us() / 50) as usize % rows.len());
         assert_eq!(
-            sim.servo_table(s, |t| t.telemetry.sensors.pos),
-            rows[row].pos,
+            sim.servo_table(s, |t| t.telemetry.tick.pos),
+            rows[row].tick.pos,
             "exchange {k}"
         );
     }
 
     // A wire read of `pos` images the row current while the reply streamed.
-    let a = POS.to_le_bytes();
+    let a = tick::POS.to_le_bytes();
     sim.host_send(&instruction(ID5, Opcode::Read, 0, &[a[0], a[1], 2, 0]));
     let frames = sim.run();
     let reply = servo_frames(&frames)[0];
@@ -600,7 +643,7 @@ fn track_mirrors_into_the_live_table() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let got = u16::from_le_bytes([payload[0], payload[1]]);
     let on_wire: Vec<u16> = (reply.at / TICK..=reply.end / TICK)
-        .map(|r| rows[r as usize % rows.len()].pos)
+        .map(|r| rows[r as usize % rows.len()].tick.pos)
         .collect();
     assert!(on_wire.contains(&got), "read {got} not in {on_wire:?}");
 }

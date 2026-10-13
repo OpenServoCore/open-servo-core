@@ -2,11 +2,10 @@
 //! linearized counts (core pos_lut.rs): theta_hat, the loops, the limits
 //! and every plant constant fitted against pot motion (Ke, friction, B,
 //! sigma_theta) live in those counts, so the experiments fit in them too:
-//! the same table applied host-side to a polled `pos`, and the kernel's own
-//! `pos_lin` where a TEL stream carries it. At the identity both are the
-//! raw count, bit for bit, so a servo without a table fits as before.
+//! the same table applied host-side to a raw `pos`, polled or streamed. At
+//! the identity it is the raw count, bit for bit, so a servo without a
+//! table fits as before.
 
-use crate::frame::TEL_BIT_POS_LIN;
 use crate::lut::GridLut;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -52,16 +51,6 @@ impl Pot {
         }
     }
 
-    /// `mask` plus the linearized field while a table is live, so a stream
-    /// carries the kernel's own word instead of a host recomputation.
-    pub fn tel_mask(&self, mask: u16) -> u16 {
-        if self.is_live() {
-            mask | TEL_BIT_POS_LIN
-        } else {
-            mask
-        }
-    }
-
     pub fn label(&self) -> &'static str {
         if self.is_live() { "linearized" } else { "raw" }
     }
@@ -70,7 +59,6 @@ impl Pot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::TelFrame;
     use crate::lut::{GRID, POINTS};
 
     fn bent() -> GridLut {
@@ -99,26 +87,8 @@ mod tests {
     }
 
     #[test]
-    fn tel_mask_adds_pos_lin_only_while_live() {
-        assert_eq!(Pot::RAW.tel_mask(0x1B), 0x1B);
-        assert_eq!(Pot::live(GridLut::IDENTITY).tel_mask(0x1B), 0x81B);
+    fn the_label_names_the_counts() {
         assert_eq!(Pot::RAW.label(), "raw");
         assert_eq!(Pot::live(bent()).label(), "linearized");
-    }
-
-    #[test]
-    fn frame_counts_prefer_the_kernels_word() {
-        let f = TelFrame {
-            pos: Some(2000),
-            pos_lin: Some(2010 * 16 + 8),
-            ..Default::default()
-        };
-        assert_eq!(f.counts(), Some(2010.5));
-        let f = TelFrame {
-            pos: Some(2000),
-            ..Default::default()
-        };
-        assert_eq!(f.counts(), Some(2000.0));
-        assert_eq!(TelFrame::default().counts(), None);
     }
 }

@@ -2,14 +2,23 @@ use super::*;
 use crate::mocks::bus::{FakeCrc, FakeRing, FakeWire, TestProviders};
 use osc_protocol::crc::osc_crc;
 use osc_protocol::tel::StreamFrame;
-use osc_servo_core::tel::{
-    BIT_CURRENT, BIT_CURRENT_RAW, BIT_POS, BIT_POS_LIN, BIT_VBUS, BIT_VDIFF, encode_stream,
-};
+use osc_servo_core::regions::telemetry::addr::{estimates, tick};
+use osc_servo_core::tel::Chunk;
+use osc_servo_core::{RegionStorage, TelemetryTick};
 
-/// pos, current, trough, duty, vdiff, vbus: an 11 B row.
-const MASK_SIX: u16 = 0x3F;
+/// The six default fields, current_raw to pos and duty to current_trough:
+/// 12 B over two chunks.
+const SIX: Chunks = Chunks::two(
+    Chunk::new(tick::CURRENT_RAW, 8),
+    Chunk::new(tick::DUTY_TICKS, 4),
+);
+/// Duty to vdiff and the rail estimate: 10 B over two chunks.
+const IDENT_RAIL: Chunks = Chunks::two(
+    Chunk::new(tick::DUTY_TICKS, 8),
+    Chunk::new(estimates::VBUS_COUNTS, 2),
+);
+const POS: Chunks = Chunks::one(tick::POS, 2);
 const ID: u8 = 9;
-const RATE: BaudRate = BaudRate::B3000000;
 
 struct Rig {
     feed: TelFeed<TestProviders>,
@@ -17,6 +26,7 @@ struct Rig {
     wire: FakeWire,
     ring: FakeRing,
     ch: &'static TelChannel,
+    table: &'static ControlTableCell,
 }
 
 fn rig() -> Rig {
@@ -25,28 +35,76 @@ fn rig() -> Rig {
 
 fn rig_with(crc: FakeCrc) -> Rig {
     let ch: &'static TelChannel = std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()));
+    let table: &'static ControlTableCell =
+        std::boxed::Box::leak(std::boxed::Box::new(ControlTableCell::new()));
     let wire = FakeWire::new();
     let ring = FakeRing::new();
-    let (feed, drain) = ch.split::<TestProviders>(wire.clone(), crc, ring.clone());
+    let (feed, drain) = ch.split::<TestProviders>(wire.clone(), crc, ring.clone(), table);
     Rig {
         feed,
         drain,
         wire,
         ring,
         ch,
+        table,
     }
 }
 
+/// Tick `i` as the table holds it at the row: the tick block, and the rail
+/// estimate as last published.
+fn sample(i: u16) -> (TelemetryTick, u16) {
+    let t = TelemetryTick {
+        i_tick_counts: -(i as i16),
+        vdiff_counts: 300 + i as i16,
+        duty_ticks: i as i16 - 100,
+        pos: 0x400 + i,
+        current_trough: 0xB00 + i,
+        current_raw: 0x100 + i,
+        vmotor_a: 0xA00 + i,
+        vmotor_b: 0x600 + i,
+        tick_flags: if i == 3 { tick_flag::FAULT } else { 0 },
+        sample_tick: 0xFFF0u32.wrapping_add(i as u32),
+        ..Default::default()
+    };
+    (t, 1800 + i)
+}
+
+/// The row `c` copies on tick `i`.
+fn row(c: Chunks, i: u16) -> std::vec::Vec<u8> {
+    let table = ControlTableCell::new();
+    let (t, vbus) = sample(i);
+    table.with_mut(|tb| {
+        tb.telemetry.tick = t;
+        tb.telemetry.estimates.vbus_counts = vbus;
+    });
+    let base = table.region_ptr().cast::<u8>();
+    c.0.iter()
+        .flat_map(|c| c.addr..c.addr + c.len)
+        // SAFETY: test read of a local table; the chunks lie inside it.
+        .map(|a| unsafe { base.add(a as usize).read() })
+        .collect()
+}
+
 impl Rig {
-    /// The kernel's tick: ask for the row, hand it over, then the tail.
-    /// A break left on the wire ends first (11 bit-times, under a tick).
-    fn tick(&mut self, s: &TelSample) {
+    /// The kernel's tick: the tick block lands beside the rail as last
+    /// published, the row, then the medium step's rail and the next scan,
+    /// which land before the lane at the tick's end. A break left on the
+    /// wire ends first (11 bit-times, under a tick).
+    fn tick(&mut self, i: u16) {
         if self.wire.breaking() {
             self.wire.finish();
         }
-        if self.feed.row_mask() != 0 {
-            self.feed.on_tick(s);
-        }
+        let (t, vbus) = sample(i);
+        self.table.with_mut(|tb| {
+            tb.telemetry.tick = t;
+            tb.telemetry.estimates.vbus_counts = vbus;
+        });
+        self.feed.on_tick();
+        let (next, rail) = sample(i.wrapping_add(0x80));
+        self.table.with_mut(|tb| {
+            tb.telemetry.tick = next;
+            tb.telemetry.estimates.vbus_counts = rail;
+        });
         self.feed.on_tick_end();
     }
 
@@ -56,7 +114,7 @@ impl Rig {
         const BYTES_PER_TICK: usize = 15;
         let mut left: Option<usize> = None;
         for i in from..to {
-            self.tick(&sample(i));
+            self.tick(i);
             if left.is_none() {
                 left = self
                     .wire
@@ -74,33 +132,22 @@ impl Rig {
         }
     }
 
-    /// The bus's arm: post the plan, then lend the lane.
-    fn arm(&mut self, mask: u16, count: u16, id: u8, rate: BaudRate) -> u8 {
-        self.drain.post(mask);
-        self.drain.start(count, id, rate)
+    /// The bus's arm: post the chunks, then lend the lane.
+    fn arm(&mut self, c: Chunks, count: u16) -> u8 {
+        self.drain.post(c);
+        self.drain.start(count, ID)
     }
 
     /// Ticks until the wire carries an image, at most `bound`.
     fn tick_to_stream(&mut self, i: &mut u16, bound: u16) {
         for _ in 0..bound {
-            self.tick(&sample(*i));
+            self.tick(*i);
             *i += 1;
             if !self.wire.idle() && !self.wire.breaking() {
                 return;
             }
         }
         panic!("no image armed in {bound} ticks");
-    }
-}
-
-fn sample(i: u16) -> TelSample {
-    TelSample {
-        pos: 0x400 + i,
-        current: -(i as i16),
-        tick: 0xFFF0u16.wrapping_add(i),
-        window_valid: i.is_multiple_of(2),
-        fault: i == 3,
-        ..Default::default()
     }
 }
 
@@ -117,40 +164,71 @@ fn payload(frame: &[u8]) -> &[u8] {
     &frame[Header::SIZE - 1..frame.len() - CRC_LEN]
 }
 
-fn golden(mask: u16, seq: u8, last: bool, rows: core::ops::Range<u16>) -> std::vec::Vec<u8> {
-    let s: std::vec::Vec<TelSample> = rows.map(sample).collect();
-    let mut buf = [0u8; STREAM_PAYLOAD_MAX];
-    let n = encode_stream(mask, seq, last, &s, &mut buf);
-    buf[..n].to_vec()
+/// The head and the rows the table held tick by tick.
+fn golden(c: Chunks, seq: u8, last: bool, rows: core::ops::Range<u16>) -> std::vec::Vec<u8> {
+    let mut buf = std::vec![0u8; STREAM_HDR];
+    encode_stream_head(seq, last, sample(rows.start).0.sample_tick as u16, &mut buf);
+    for i in rows {
+        buf.extend(row(c, i));
+    }
+    buf
 }
 
 /// Two frames, the second the LAST: each starts on its lead row, the wire
-/// reads it at its own pace, and it decodes byte for byte as the reference
-/// encoder's payload behind the frame header.
+/// reads it at its own pace, and it decodes byte for byte as the table's
+/// chunks tick by tick behind the frame header.
 #[test]
-fn frames_stream_cut_through_and_match_encode_stream() {
+fn frames_stream_cut_through_and_carry_the_table() {
     let mut r = rig();
-    r.arm(MASK_SIX, 20, ID, RATE);
+    r.arm(SIX, 20);
     let mut i = 0;
     r.tick_to_stream(&mut i, 16);
-    // 11 B rows at 3M: cov 190, the CRC 188 byte-times (12.5 ticks) behind
-    // the arm, so the break follows row 8 and the arm row 9.
-    assert_eq!(i, 10, "armed on the tick after row 8's break");
+    // 12 B rows at 3M: cov 200, the CRC 198 byte-times (13.2 ticks) behind
+    // the arm, so the break follows row 7 and the arm row 8.
+    assert_eq!(i, 9, "armed on the tick after row 7's break");
     r.run(i, 64);
     let frames = r.wire.streamed();
     assert_eq!(frames.len(), 2);
     let inst = |alert: bool| Inst::status(ResultCode::Stream, alert).0;
     assert_eq!(
         frames[0][..3],
-        [ID, wire::len_for(4 + 16 * 11 + 6), inst(false)]
+        [ID, wire::len_for(4 + 16 * 12), inst(false)]
     );
-    assert_eq!(payload(&frames[0]), golden(MASK_SIX, 0, false, 0..16));
-    assert_eq!(
-        frames[1][..3],
-        [ID, wire::len_for(4 + 4 * 11 + 6), inst(false)]
-    );
-    assert_eq!(payload(&frames[1]), golden(MASK_SIX, 1, true, 16..20));
+    assert_eq!(payload(&frames[0]), golden(SIX, 0, false, 0..16));
+    assert_eq!(frames[1][..3], [ID, wire::len_for(4 + 4 * 12), inst(false)]);
+    assert_eq!(payload(&frames[1]), golden(SIX, 1, true, 16..20));
     assert!(r.feed.idle());
+}
+
+/// A row takes both chunks when the tick block is published, ahead of the
+/// next scan and the medium step: each carries its tick's values, the rail
+/// as last published.
+#[test]
+fn two_chunk_rows_copy_both_chunks_before_the_next_scan_lands() {
+    let mut r = rig();
+    r.arm(IDENT_RAIL, 16);
+    r.run(0, 40);
+    let f = &r.wire.streamed()[0];
+    assert_eq!(payload(f), golden(IDENT_RAIL, 0, true, 0..16));
+}
+
+/// INST ALERT is the fault flag of the frame's first row.
+#[test]
+fn alert_is_the_first_rows_fault() {
+    let mut r = rig();
+    r.arm(POS, 8);
+    r.run(3, 30);
+    let f = &r.wire.streamed()[0];
+    assert_eq!(f[2], Inst::status(ResultCode::Stream, true).0);
+    let mut r = rig();
+    r.arm(POS, 8);
+    r.run(4, 30);
+    let f = &r.wire.streamed()[0];
+    assert_eq!(
+        f[2],
+        Inst::status(ResultCode::Stream, false).0,
+        "row 1's fault"
+    );
 }
 
 /// An image the wire reads before its rows land ships stale bytes against
@@ -158,12 +236,12 @@ fn frames_stream_cut_through_and_match_encode_stream() {
 #[test]
 fn rows_landing_behind_the_read_fail_the_crc() {
     let mut r = rig();
-    r.arm(MASK_SIX, 16, ID, RATE);
+    r.arm(SIX, 16);
     let mut i = 0;
     r.tick_to_stream(&mut i, 16);
     r.wire.finish();
     while i < 20 {
-        r.tick(&sample(i));
+        r.tick(i);
         i += 1;
     }
     let f = &r.wire.streamed()[0];
@@ -179,62 +257,37 @@ fn rows_landing_behind_the_read_fail_the_crc() {
 #[test]
 fn sick_crc_engine_costs_the_crc_never_the_lane() {
     let mut r = rig_with(FakeCrc::sick());
-    r.arm(MASK_SIX, 40, ID, RATE);
+    r.arm(SIX, 40);
     r.run(0, 120);
     let frames = r.wire.streamed();
     assert_eq!(frames.len(), 3);
     for f in &frames {
-        assert_eq!(f[f.len() - CRC_LEN..], [0, 0], "never patched");
+        let mut covered = std::vec![0u8];
+        covered.extend_from_slice(&f[..f.len() - CRC_LEN]);
+        let tail = u16::from_le_bytes([f[f.len() - 2], f[f.len() - 1]]);
+        assert_ne!(osc_crc(&covered), tail, "never patched");
     }
     assert!(r.feed.idle());
 }
 
-/// The start rule at each rate's widest admitted row: the rows a full
-/// frame lands before its break.
+/// The start rule by row width: the rows a full frame lands before its
+/// break.
 #[test]
 fn lead_follows_the_start_rule() {
-    use osc_servo_core::tel::row_bytes;
-    for (rate, mask, lead) in [
-        (BaudRate::B3000000, 0x1CD, 10),
-        (BaudRate::B3000000, MASK_SIX, 8),
-        (
-            BaudRate::B2000000,
-            BIT_CURRENT | BIT_VDIFF | BIT_VBUS | BIT_POS_LIN,
-            7,
-        ),
-        (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW, 9),
+    for (c, lead) in [
+        (SIX, 7),
+        (IDENT_RAIL, 9),
+        (Chunks::one(tick::I_TICK_COUNTS, 6), 14),
     ] {
         let mut r = rig();
-        r.arm(mask, 32, ID, rate);
+        r.arm(c, 32);
         let mut n = 0;
         while r.wire.idle() {
-            r.tick(&sample(n));
+            r.tick(n);
             n += 1;
         }
-        assert_eq!(
-            n - 1,
-            lead,
-            "{rate:?} {} B: break after row {lead}",
-            row_bytes(mask)
-        );
+        assert_eq!(n - 1, lead, "{} B: break after row {lead}", c.row_bytes());
     }
-}
-
-/// An odd covered span folds its last byte into the engine's result.
-#[test]
-fn odd_covered_span_folds_its_tail_byte() {
-    let mut r = rig();
-    // current_raw and vmotor_a: one 12-bit pair, a 3 B row; three rows
-    // leave the covered span odd.
-    let mask = 0x0C0;
-    assert_eq!(osc_servo_core::tel::row_bytes(mask), 3);
-    r.arm(mask, 3, ID, RATE);
-    for i in 0..8 {
-        r.tick(&sample(i));
-        r.wire.finish();
-    }
-    let f = &r.wire.streamed()[0];
-    assert_eq!(payload(f), golden(mask, 0, true, 0..3));
 }
 
 /// Both images hold unfinished frames: the next frame's rows drop, are
@@ -242,12 +295,12 @@ fn odd_covered_span_folds_its_tail_byte() {
 #[test]
 fn full_images_drop_and_count() {
     let mut r = rig();
-    r.arm(BIT_POS, 64, ID, RATE);
+    r.arm(POS, 64);
     let mut i = 0;
     // The wire never finishes an image: frame 0 streams, frame 1 banks at
     // row 31, and frame 2's row 0 drops from tick 32 on.
     for _ in 0..37 {
-        r.tick(&sample(i));
+        r.tick(i);
         i += 1;
     }
     assert_eq!(r.ch.drops(), 5);
@@ -255,35 +308,36 @@ fn full_images_drop_and_count() {
     // that, so it drops too, and frame 2 opens on row 38.
     r.wire.finish();
     for _ in 0..40 {
-        r.tick(&sample(i));
+        r.tick(i);
         r.wire.finish();
         i += 1;
     }
     assert_eq!(r.ch.drops(), 6);
     let frames = r.wire.streamed();
-    let f2 = StreamFrame::parse(BIT_POS, payload(&frames[2])).expect("frame 2");
-    assert_eq!((f2.seq, f2.tick), (2, sample(38).tick));
+    let f2 = StreamFrame::parse(2, payload(&frames[2])).expect("frame 2");
+    assert_eq!((f2.seq, f2.tick), (2, sample(38).0.sample_tick as u16));
 }
 
 /// The LAST frame's arm publishes the RX cursor the bus resumes at, and
-/// nothing before it does; an empty arm hands the lane straight back.
+/// nothing before it does; an arm that is no row hands the lane straight
+/// back.
 #[test]
 fn last_frame_publishes_the_resume_cursor() {
     let mut r = rig();
-    let epoch = r.arm(BIT_POS, 2, ID, RATE);
+    let epoch = r.arm(POS, 2);
     r.ring.set_cursor(77);
     let mut i = 0;
     while r.wire.streaming().is_none() {
         assert_eq!(r.drain.last_out(epoch), None, "tick {i}");
-        r.tick(&sample(i));
+        r.tick(i);
         i += 1;
         assert!(i < 16, "the LAST frame never armed");
     }
     assert_eq!(r.drain.last_out(epoch), Some(77));
 
-    let epoch = r.arm(0, 5, ID, RATE);
+    let epoch = r.arm(Chunks::one(tick::POS, 14), 5);
     r.ring.set_cursor(91);
-    r.tick(&sample(0));
+    r.tick(0);
     assert_eq!(r.drain.last_out(epoch), Some(91));
     assert!(r.feed.idle());
 }
@@ -294,57 +348,57 @@ fn last_frame_publishes_the_resume_cursor() {
 fn lane_runs_only_while_lent() {
     let mut r = rig();
     for i in 0..20 {
-        r.tick(&sample(i));
+        r.tick(i);
     }
     assert!(r.wire.log().is_empty());
-    r.arm(BIT_POS, 64, ID, RATE);
+    r.arm(POS, 64);
     r.drain.stop();
     for i in 0..20 {
-        r.tick(&sample(i));
+        r.tick(i);
     }
     assert!(r.wire.idle() && r.wire.log().is_empty());
 }
 
-/// The bus posts the plan where it dispatches the arm and lends at the
+/// The bus posts the chunks where it dispatches the arm and lends at the
 /// ack's release: a post alone moves nothing, and the lend streams the
-/// latest plan posted.
+/// latest chunks posted.
 #[test]
-fn a_posted_plan_waits_for_its_lend() {
+fn posted_chunks_wait_for_their_lend() {
     let mut r = rig();
-    r.drain.post(BIT_POS);
-    r.drain.post(MASK_SIX);
+    r.drain.post(POS);
+    r.drain.post(SIX);
     for i in 0..20 {
-        r.tick(&sample(i));
+        r.tick(i);
     }
     assert!(r.wire.log().is_empty());
-    r.drain.start(16, ID, RATE);
+    r.drain.start(16, ID);
     r.run(0, 40);
     let f = &r.wire.streamed()[0];
-    assert_eq!(payload(f), golden(MASK_SIX, 0, true, 0..16));
+    assert_eq!(payload(f), golden(SIX, 0, true, 0..16));
     assert!(r.feed.idle());
 }
 
 /// A held tick takes no lane step: the break the start rule puts behind
-/// row 8 waits a tick, and the frame still streams whole.
+/// row 7 waits a tick, and the frame still streams whole.
 #[test]
 fn a_held_tick_takes_no_lane_step() {
     let mut r = rig();
-    r.arm(MASK_SIX, 16, ID, RATE);
-    for i in 0..9 {
-        if i == 8 {
+    r.arm(SIX, 16);
+    for i in 0..8 {
+        if i == 7 {
             r.feed.hold();
         }
-        r.tick(&sample(i));
+        r.tick(i);
     }
     assert!(
         r.wire.idle() && !r.wire.breaking(),
         "a break on the held tick"
     );
-    r.tick(&sample(9));
+    r.tick(8);
     assert!(r.wire.breaking(), "no break the tick after");
-    r.run(10, 40);
+    r.run(9, 40);
     let f = &r.wire.streamed()[0];
-    assert_eq!(payload(f), golden(MASK_SIX, 0, true, 0..16));
+    assert_eq!(payload(f), golden(SIX, 0, true, 0..16));
 }
 
 /// A hold outlives the row its tick drops: the frame end and the next
@@ -352,15 +406,24 @@ fn a_held_tick_takes_no_lane_step() {
 #[test]
 fn a_hold_outlives_a_dropped_row() {
     let mut r = rig();
-    r.arm(BIT_POS, 64, ID, RATE);
+    r.arm(POS, 64);
     for i in 0..37 {
-        r.tick(&sample(i));
+        r.tick(i);
     }
     r.wire.finish();
     r.feed.hold();
-    r.tick(&sample(37));
+    r.tick(37);
     assert_eq!(r.ch.drops(), 6);
     assert!(r.wire.idle() && !r.wire.breaking(), "frame 1 started");
-    r.tick(&sample(38));
+    r.tick(38);
     assert!(r.wire.breaking(), "frame 1 never started");
+}
+
+/// The bus half's end of an arm zeroes `tel_count`.
+#[test]
+fn an_arm_end_zeroes_tel_count() {
+    let mut r = rig();
+    r.table.with_mut(|t| t.control.tel.tel_count = 4000);
+    r.drain.end();
+    assert_eq!(r.table.with(|t| t.control.tel.tel_count), 0);
 }

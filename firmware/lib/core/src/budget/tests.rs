@@ -333,7 +333,7 @@ fn a_slower_rate_budgets_its_longer_law_break() {
 #[test]
 fn a_window_mean_over_its_budget_flags_once_judged() {
     let mut k = KernelProbe::ZERO;
-    let mean = KERNEL_MEAN[OPEN as usize][8];
+    let mean = tick_body_mean(OPEN, 8);
     for n in 1..MEAN_MIN_BODIES {
         tick(&mut k, n, mean + 1, 8, OPEN, PLAIN);
     }
@@ -371,16 +371,13 @@ fn every_mean_budget_sits_inside_its_maximum() {
         let (mean, max) = (frame_mean(f), frame(f));
         assert!(mean <= max, "{f:?}: {mean} {max}");
     }
-    for r in Regime::ALL {
-        let (mean, max) = (TEL_ENCODE_MEAN[r as usize], TEL_ENCODE[r as usize]);
-        assert!(mean <= max, "{r:?}: {mean} {max}");
-    }
+    const { assert!(TEL_ROW_MEAN <= TEL_ROW) };
 }
 
 #[test]
-fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
+fn the_row_mean_is_the_tel_ticks_over_the_plain_ticks() {
     let mut k = KernelProbe::ZERO;
-    let enc = TEL_ENCODE_MEAN[Regime::Open as usize] + TEL_LANE_MEAN;
+    let enc = TEL_ROW_MEAN + TEL_LANE_MEAN;
     let plain = KERNEL_MEAN[OPEN as usize].into_iter().min().unwrap_or(0);
     for i in 1..2 * MEAN_MIN_BODIES {
         let p = i as usize % PHASES;
@@ -404,17 +401,17 @@ fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
             let _ = over.push(r.component);
         }
     });
-    assert_eq!(over, [Component::TelEncode(OPEN)]);
+    assert_eq!(over, [Component::TelRow(OPEN)]);
 }
 
-/// A TEL tick books under its own drive arm, and the encode mean is judged
+/// A TEL tick books under its own drive arm, and the row mean is judged
 /// against the plain ticks of that arm: a window that drove part of the
-/// time does not count the parked ticks' lower mean as encode.
+/// time does not count the parked ticks' lower mean as the row's.
 #[test]
 fn tel_ticks_book_by_regime_against_their_regime_s_plain_ticks() {
     let mut k = KernelProbe::ZERO;
     let closed = Regime::Closed;
-    let enc = TEL_ENCODE_MEAN[closed as usize];
+    let enc = TEL_ROW_MEAN;
     let plain = KERNEL_MEAN[closed as usize].into_iter().min().unwrap_or(0);
     let tel = Events { tel: true, ..PLAIN };
     for i in 1..2 * MEAN_MIN_BODIES {
@@ -431,15 +428,15 @@ fn tel_ticks_book_by_regime_against_their_regime_s_plain_ticks() {
     };
     let mut encode = heapless::Vec::<(Component, u32), 2>::new();
     rows(&k, &BusProbe::ZERO, &s, |r| {
-        if let Component::TelEncode(_) = r.component {
+        if let Component::TelRow(_) = r.component {
             let _ = encode.push((r.component, r.mean));
         }
     });
     assert_eq!(
         encode,
         [
-            (Component::TelEncode(OPEN), 0),
-            (Component::TelEncode(closed), enc)
+            (Component::TelRow(OPEN), 0),
+            (Component::TelRow(closed), enc)
         ]
     );
 }
@@ -516,7 +513,7 @@ fn each_refresh_stage_charges_its_own_row() {
     ] {
         assert_eq!(
             kernel_tick(Regime::Closed, p, refresh),
-            KERNEL[closed][p] + row
+            KERNEL[closed][p] + TICK_PUBLISH[closed][p] + LAYOUT + row
         );
     }
 }
@@ -598,9 +595,9 @@ fn a_stage_tick_holds_the_tel_lane() {
             };
             kernel_tick(closed, p, ev) - alone
         };
-        let enc = TEL_ENCODE[closed as usize];
-        assert_eq!(with(tel), enc + TEL_POLL + TEL_HEAD, "{stage:?}");
-        assert_eq!(with(bank), enc + TEL_POLL + TEL_BANK, "{stage:?}");
+        assert_eq!(with(tel), TEL_ROW + TEL_POLL + TEL_HEAD, "{stage:?}");
+        let held = TEL_ROW + TEL_POLL + TEL_HEAD.max(TEL_BANK);
+        assert_eq!(with(bank), held, "{stage:?}");
     }
     let refresh = Events {
         refresh: true,
@@ -616,7 +613,7 @@ fn a_stage_tick_holds_the_tel_lane() {
                 ..refresh
             },
         );
-    assert_eq!(lane, TEL_ENCODE[closed as usize] + tel_lane(false));
+    assert_eq!(lane, TEL_ROW + tel_lane(false));
 }
 
 #[test]

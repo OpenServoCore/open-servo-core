@@ -15,15 +15,14 @@ pub const FIRMWARE_VERSION: u16 = 0x002;
 pub const CAPABILITY_FLAGS: u16 = 0x004;
 /// u8 RO.
 pub const HARDWARE_REVISION: u16 = 0x008;
-/// u16 RO - sec 5.6 row widths: bit i set = `tel_mask` field i rides in 16
-/// bits, clear = 12; present under `CAP_TEL_ROWS`.
-pub const TEL_WIDE_FIELDS: u16 = 0x00A;
-/// u8 x `TEL_ROW_RATES` RO - sec 5.6 admission: the longest row, in bytes,
-/// a burst arms with at each `BaudRate` index; present under `CAP_TEL_ROWS`.
-pub const TEL_ROW_BYTES_MAX: u16 = 0x00C;
-pub const TEL_ROW_RATES: usize = 4;
+/// u8 RO - sec 5.6: the longest TEL row, bytes; present under
+/// `CAP_TEL_ROWS`.
+pub const TEL_ROW_BYTES_MAX: u16 = 0x00A;
+/// u8 RO - sec 5.6: the chunks a TEL row copies at most; present under
+/// `CAP_TEL_ROWS`.
+pub const TEL_CHUNKS_MAX: u16 = 0x00B;
 
-/// `CAPABILITY_FLAGS` bit 0: `TEL_WIDE_FIELDS` and `TEL_ROW_BYTES_MAX` are
+/// `CAPABILITY_FLAGS` bit 0: `TEL_ROW_BYTES_MAX` and `TEL_CHUNKS_MAX` are
 /// published.
 pub const CAP_TEL_ROWS: u32 = 1 << 0;
 /// u8 RW -- unicast address, 0x01..=0xF9 (sec 3.1).

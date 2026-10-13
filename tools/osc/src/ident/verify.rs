@@ -59,7 +59,7 @@ impl<E: Experiment> Recorded<E> {
         }
     }
 
-    fn save(&self, out: &OutDir, name: &str) -> Result<()> {
+    fn save(&self, out: &OutDir, name: &str, pwm_period_ticks: u16) -> Result<()> {
         let mut w = out.file(name)?;
         writeln!(w, "{TOLD_COLUMNS},{SNAPSHOT_COLUMNS}")?;
         for (t, s) in &self.rows {
@@ -71,7 +71,7 @@ impl<E: Experiment> Recorded<E> {
                 t.goal_duty,
                 t.goal_current,
                 t.goal_velocity,
-                snapshot_fields(s.host_ms, s)
+                snapshot_fields(s.host_ms, s, pwm_period_ticks)
             )?;
         }
         w.flush()
@@ -125,11 +125,12 @@ fn check<S: Servo, E: Experiment>(
     exp: E,
     params: RigParams,
 ) -> Result<(E, Option<AbortReason>)> {
+    let period = s.pwm_period_ticks()?;
     let mut g = Guarded::new(Recorded::new(exp), params);
     let ran = guard(s, |s| Pump::on(&mut *s, None).run(&mut g));
     let abort = g.abort();
     let rec = g.into_inner();
-    rec.save(out, name)?;
+    rec.save(out, name, period)?;
     ran?;
     Ok((rec.exp, abort))
 }

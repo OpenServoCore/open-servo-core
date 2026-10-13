@@ -50,6 +50,7 @@ use osc_ident::frame::TelFrame;
 use osc_ident::limits::{DutyPlan, POT_MAX, ServoLimits, pct_floor};
 use osc_ident::regs::{Reg, calib, control};
 use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS};
+use osc_protocol::tel::Chunks;
 
 use crate::descriptor;
 use crate::rig::limits::Stall;
@@ -247,11 +248,12 @@ pub struct Args {
     /// in].
     #[arg(long)]
     guard_hi: Option<u16>,
-    /// TEL field mask (hex ok). Default = the raw six: pos, raw current,
-    /// trough, applied duty, vmotor_a, vmotor_b - measurements only, kernel
-    /// conclusions (vdiff/vbus/i_meas) stay out of raw captures.
-    #[arg(long, default_value = "0x1cd")]
-    tel_mask: String,
+    /// TEL row: table chunks as addr+len, at most two, comma-joined (hex
+    /// ok). Default = the raw six: raw current, vmotor_a, vmotor_b, pos,
+    /// applied duty, trough - measurements only, kernel conclusions (vdiff,
+    /// vbus, the held current) stay out of raw captures.
+    #[arg(long, default_value = "0x232+8,0x240+4")]
+    tel_chunks: String,
     /// Attempts per rung before the sweep gives up. A rung is captured as one
     /// burst, so a dropped frame anywhere in it corrupts that rung alone -
     /// retrying just the rung costs seconds where discarding the recording
@@ -260,7 +262,7 @@ pub struct Args {
     rung_tries: u32,
 }
 
-/// What one sweep run drives: `Args` minus the output dir, mask parsed.
+/// What one sweep run drives: `Args` minus the output dir, chunks parsed.
 pub(crate) struct Cfg {
     pub(crate) steps: Vec<Step>,
     pub(crate) dirs: Dirs,
@@ -276,7 +278,7 @@ pub(crate) struct Cfg {
     pub(crate) guard: (u16, u16),
     /// The pot stops, where a stop seek must come to rest.
     pub(crate) stops: Option<(u16, u16)>,
-    pub(crate) tel_mask: u16,
+    pub(crate) tel_chunks: Chunks,
     pub(crate) rung_tries: u32,
 }
 
@@ -324,9 +326,7 @@ impl Cfg {
             static_load: a.static_load,
             guard,
             stops: (!a.static_load).then_some(lim.raw),
-            tel_mask: crate::parse_u16(&a.tel_mask)
-                .and_then(pump::check_tel_mask)
-                .context("--tel-mask")?,
+            tel_chunks: pump::parse_tel_chunks(&a.tel_chunks).context("--tel-chunks")?,
             rung_tries: a.rung_tries,
         })
     }
@@ -572,6 +572,8 @@ fn rest<S: Servo>(s: &mut S, ms: u32) -> Result<()> {
     Ok(())
 }
 
+/// `pos_lin` stays an empty column: the stream no longer carries it, and
+/// every recording keeps one header.
 pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_counts,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin";
 
 pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
@@ -580,7 +582,7 @@ pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     for f in &s.frames {
         writeln!(
             w,
-            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{},{},{},",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -594,7 +596,6 @@ pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
             opt(f.vmotor_b.map(|v| v as i32)),
             opt(f.vbus_raw.map(|v| v as i32)),
             opt(f.ntc_raw.map(|v| v as i32)),
-            opt(f.pos_lin.map(|v| v as i32)),
         )?;
     }
     Ok(())
@@ -615,9 +616,11 @@ pub(crate) fn git_toplevel() -> Result<PathBuf> {
 }
 
 /// The run's constants, written as meta.json before the first burst. The
-/// `plant` block names the table the servo streamed `pos_lin` through,
+/// `plant` block names the table that linearizes the recording's `pos`,
 /// its stamp verdict and its data state at that moment; `drive` is the
 /// rule the drive ran under and the servo settings that held it.
+/// `tel_chunks` is the row as `[addr, len]` pairs; recordings from before
+/// chunked rows carry `tel_mask` instead.
 pub(crate) fn meta<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -639,7 +642,13 @@ pub(crate) fn meta<P: Pipe>(
         "stall": cfg.stall,
         "static_load": cfg.static_load,
         "guard": [cfg.guard.0, cfg.guard.1],
-        "tel_mask": cfg.tel_mask,
+        "tel_chunks": cfg
+            .tel_chunks
+            .0
+            .iter()
+            .filter(|c| c.len != 0)
+            .map(|c| [c.addr, c.len])
+            .collect::<Vec<_>>(),
         "post_rung_brake": true,
         "drive": drive,
     });
@@ -763,7 +772,7 @@ fn chains<S: Servo>(
     regs: &Regs,
     on_seg: &mut impl FnMut(&Segment) -> Result<()>,
 ) -> Result<Vec<Segment>> {
-    let mask = cfg.tel_mask;
+    let chunks = cfg.tel_chunks;
     let pwm_period_ticks = s.pwm_period_ticks()?;
     let seek_duty = pct_q15(cfg.seek_duty_pct);
     let seek_cap = pct_q15(cfg.seek_cap_pct) as i32;
@@ -776,7 +785,6 @@ fn chains<S: Servo>(
 
     s.write(regs.decay, Decay::Slow as i32)?;
     s.write(regs.zero_brake, 0)?;
-    s.write(control::TEL_MASK, mask as i32)?;
     let mut lease = Lease::new(cfg.stall || cfg.static_load);
 
     // baseline: mid-travel, torque off, noise floor at full tick rate
@@ -786,7 +794,7 @@ fn chains<S: Servo>(
             seek_band(s, &mut lease, (1750, 2350), seek_duty, seek_cap, cfg.stops)?;
         }
         lease.write(s, control::TORQUE_ENABLE, 0)?;
-        let (frames, st) = s.stream(samples_of_ms(cfg.baseline_ms), None, mask)?;
+        let (frames, st) = s.stream(samples_of_ms(cfg.baseline_ms), None, chunks)?;
         println!(
             "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
             st.frames, st.samples, st.holes, st.garble, st.laps
@@ -883,7 +891,8 @@ fn chains<S: Servo>(
                     let samples = samples_of_ms(ms);
                     lease.keep(s)?;
                     lease.check_stream(samples)?;
-                    let (frames, st) = s.stream(samples, Some((control::GOAL_DUTY, duty)), mask)?;
+                    let (frames, st) =
+                        s.stream(samples, Some((control::GOAL_DUTY, duty)), chunks)?;
                     if cfg.decay == Decay::Fast {
                         s.write(regs.decay, Decay::Slow as i32)?;
                     }
@@ -1219,7 +1228,7 @@ mod tests {
         assert!(!cfg.stall && !cfg.static_load);
         assert_eq!(cfg.guard, (532, 3526), "the soft limits, 100 counts in");
         assert_eq!(cfg.stops, Some((209, 3849)));
-        assert_eq!(cfg.tel_mask, 0x1cd);
+        assert_eq!(cfg.tel_chunks, osc_ident::frame::TEL_RAW);
         assert_eq!(cfg.rung_tries, 3);
     }
 
@@ -1294,7 +1303,7 @@ mod tests {
             static_load: false,
             guard: (532, 3526),
             stops: Some((232, 3849)),
-            tel_mask: 0x1cd,
+            tel_chunks: osc_ident::frame::TEL_RAW,
             rung_tries: 3,
         };
         for (drops, warns) in [(0, false), (3, true)] {
