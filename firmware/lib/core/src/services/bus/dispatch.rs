@@ -28,21 +28,26 @@ fn error_to_result(e: Error) -> ResultCode {
     }
 }
 
-/// A write staged before its CRC verdict (the dispatch spine). The bus
+/// A write checked before its CRC verdict (the dispatch spine). The bus
 /// rebuilds the [`Dispatcher`] each wake, so this lives in the [`Session`]
-/// and outlives the dispatcher that staged it.
+/// and outlives the dispatcher that checked it.
 ///
 /// [`Session`]: super::session::Session
-pub(crate) struct PendingWrite {
-    /// Staging watermark before this write -- commit/revert operate above it.
-    snap: Snapshot,
-    /// A held write keeps its entries for a later COMMIT; a plain write applies
-    /// them at commit time.
-    hold: bool,
-    /// The written span, for firing hooks at commit.
-    addr: u16,
-    len: u16,
+pub(crate) enum PendingWrite {
+    /// The verdict stores the request bytes in place (the
+    /// [`Dispatch::commit`] contract keeps them readable until then).
+    Plain {
+        addr: u16,
+        head: *const [u8],
+        tail: *const [u8],
+    },
+    /// Staged above `snap`; the verdict keeps it for a later COMMIT.
+    Held { snap: Snapshot },
 }
+
+// SAFETY: the pointers are plain data until `Dispatch::commit` reads them,
+// on the bus, under its contract.
+unsafe impl Sync for PendingWrite {}
 
 /// Stateless single-shot dispatcher. Holds only borrowed shared state, the
 /// HOLD-write staging buffer, and the pending-write slot -- no per-frame
@@ -71,8 +76,8 @@ impl<'a> Dispatcher<'a> {
     /// lazy). MUST run before any path that reads the staging buffer from the
     /// zero watermark -- otherwise a real COMMIT would apply the phantom bytes.
     fn revert_dangling(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            self.staged.revert_to(&pending.snap);
+        if let Some(PendingWrite::Held { snap }) = self.pending.take() {
+            self.staged.revert_to(&snap);
         }
     }
 
@@ -142,26 +147,26 @@ impl Dispatch for Dispatcher<'_> {
         }
     }
 
-    fn commit<R: Reply>(&mut self, reply: &mut R) {
-        let Some(pending) = self.pending.take() else {
-            return; // defensive: nothing pending
+    unsafe fn commit<R: Reply>(&mut self, reply: &mut R) {
+        // Held entries stay staged until a real COMMIT.
+        let Some(PendingWrite::Plain { addr, head, tail }) = self.pending.take() else {
+            return;
         };
-        if pending.hold {
-            return; // held entries stay staged until a real COMMIT
-        }
-        self.shared.table.commit_from(self.staged, &pending.snap);
-        self.after_commit(pending.addr, pending.len);
+        // SAFETY: the caller keeps the request bytes readable and unchanged
+        // until this verdict (trait contract).
+        let (head, tail) = unsafe { (&*head, &*tail) };
+        self.shared.table.store_split(addr, head, tail);
+        let len = (head.len() + tail.len()) as u16;
+        self.after_commit(addr, len);
         let mut hooks = ControlTableHooks::new(reply);
         self.shared
             .table
-            .with(|t| t.dispatch_events(pending.addr, pending.len, &mut hooks));
+            .with(|t| t.dispatch_events(addr, len, &mut hooks));
         hooks.finish(|| self.tel_chunks());
     }
 
     fn revert(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            self.staged.revert_to(&pending.snap);
-        }
+        self.revert_dangling();
     }
 }
 
@@ -383,11 +388,12 @@ impl Dispatcher<'_> {
         let _ = reply.send_status_gather(ResultCode::Ok, alert, &spans[..n]);
     }
 
-    /// Write, the spine way: validate + stage above a watermark, ack per the
-    /// reply contract, but leave the live table untouched until the verdict's
-    /// [`Dispatch::commit`]. A validation reject nacks with nothing staged
-    /// (`Done`, no commit owed); a staging-capacity overflow (held entries
-    /// filled the buffer -- a COMMIT drains it) nacks `Busy`, nothing staged.
+    /// Write, the spine way: check it (a held write also stages above a
+    /// watermark), ack per the reply contract, but leave the live table
+    /// untouched until the verdict's [`Dispatch::commit`]. A validation reject
+    /// nacks with nothing staged (`Done`, no commit owed); a held write
+    /// overflowing the staging buffer (a COMMIT drains it) nacks `Busy`,
+    /// nothing staged.
     fn write<R: Reply>(
         &mut self,
         alert: bool,
@@ -398,16 +404,20 @@ impl Dispatcher<'_> {
         reply: &mut R,
     ) -> Dispatched {
         let (head, tail) = data.segments();
-        let snap = self.staged.snapshot();
-        match self.shared.table.stage_split(addr, head, tail, self.staged) {
+        let mut checked = self.shared.table.check_split(addr, head, tail);
+        let pending = if hold {
+            let snap = self.staged.snapshot();
+            if checked.is_ok() {
+                checked = self.staged.push_split(addr, head, tail);
+            }
+            PendingWrite::Held { snap }
+        } else {
+            PendingWrite::Plain { addr, head, tail }
+        };
+        match checked {
             Ok(()) => {
                 Self::ack(alert, ctx, Ok(()), reply);
-                *self.pending = Some(PendingWrite {
-                    snap,
-                    hold,
-                    addr,
-                    len: data.len() as u16,
-                });
+                *self.pending = Some(pending);
                 Dispatched::Pending
             }
             Err(Error::StagingFull) => {

@@ -228,7 +228,8 @@ impl<P: Providers> ServoBus<P> {
         {
             if matches!(out, Dispatched::Pending) {
                 let mut handle = self.reply_handle();
-                d.commit(&mut handle);
+                // SAFETY: the frame was dispatched from the ring this wake.
+                unsafe { d.commit(&mut handle) };
             }
             if has_reply && self.tx.staged() {
                 self.sequence_reply(slot, packet_end);
@@ -281,7 +282,9 @@ impl<P: Providers> ServoBus<P> {
         // can lose a verified write.
         if p.table {
             let mut handle = self.reply_handle();
-            d.commit(&mut handle);
+            // SAFETY: the frame's bytes stay in the ring through its verdict
+            // (protocol sec 4.1).
+            unsafe { d.commit(&mut handle) };
         }
         // Sequence from the ENGINE's state, not the recorded flag: any path
         // that reclaimed the staged reply between dispatch and here would

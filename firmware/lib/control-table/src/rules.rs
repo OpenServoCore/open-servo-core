@@ -21,6 +21,8 @@ pub const OP_NE: u8 = 5;
 pub const OP_BITS: u8 = 6;
 pub const OP_MAX_ONES: u8 = 7;
 
+/// Field width in bytes, spec bits [3:0].
+pub const SPEC_WIDTH: u16 = 0xF;
 const SPEC_SIGNED: u16 = 1 << 4;
 const SPEC_ABS: u16 = 1 << 5;
 
@@ -35,6 +37,13 @@ pub struct CmpRule {
     pub addr: u16,
     pub spec: u16,
     pub val: u32,
+}
+
+impl CmpRule {
+    /// One past the field's last byte.
+    pub const fn end(&self) -> usize {
+        self.addr as usize + (self.spec & SPEC_WIDTH) as usize
+    }
 }
 
 /// One enum/bool rule as flash data (field width is always 1).
@@ -88,7 +97,7 @@ fn widen(view: &View, addr: u16, width: u8, signed: bool) -> Result<i32, Error> 
 /// saturating absolute value clamped to the field width's positive max.
 #[inline(never)]
 pub fn check_cmp(view: &View, addr: u16, spec: u16, rhs: Rhs) -> Result<(), Error> {
-    let width = (spec & 0xF) as u8;
+    let width = (spec & SPEC_WIDTH) as u8;
     let signed = spec & SPEC_SIGNED != 0;
     let mut a = widen(view, addr, width, signed)?;
     let mut r = match rhs {

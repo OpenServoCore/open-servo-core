@@ -6,7 +6,7 @@ use super::dispatch::{Dispatcher, PendingWrite};
 
 /// Per-servo dispatch session: owns the HOLD-write staging buffer that spans
 /// a WRITE+HOLD ... COMMIT sequence, plus the pending-write slot (the one write
-/// staged ahead of its CRC verdict -- the dispatch spine). Both outlive the
+/// checked ahead of its CRC verdict - the dispatch spine). Both outlive the
 /// [`Dispatcher`], which the bus rebuilds each wake. The bus driver holds one
 /// and asks it for a [`Dispatcher`] each time it has a decoded request to run.
 pub struct Session {

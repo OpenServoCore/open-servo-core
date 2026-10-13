@@ -130,8 +130,8 @@ pub enum Dispatched {
 ///
 /// Dispatch-before-verdict is the spine: `dispatch` runs before the frame's
 /// CRC verdict and STAGES effects -- the reply through `R` (the wire effect,
-/// sent or dropped by the bus) and writes into the staging buffer (the table
-/// effect, gated by [`Self::commit`]/[`Self::revert`]). COMMIT and MGMT
+/// sent or dropped by the bus) and checked writes (the table effect, gated by
+/// [`Self::commit`]/[`Self::revert`]). COMMIT and MGMT
 /// cannot stage their effects; the bus routes them verdict-first (CRC checked
 /// before dispatch), and `dispatch` applies them directly on that contract.
 pub trait Dispatch {
@@ -146,7 +146,13 @@ pub trait Dispatch {
     /// into the live table and fires its hooks; a held write keeps its
     /// entries for a later COMMIT. The bus commits before it sequences the
     /// staged reply, so the ack never leaves ahead of the effect.
-    fn commit<R: Reply>(&mut self, reply: &mut R);
+    ///
+    /// # Safety
+    /// The bytes of the request whose `dispatch` returned
+    /// [`Dispatched::Pending`] must still be readable and unchanged: a plain
+    /// write stores straight from them. A frame's bytes stay in the RX ring
+    /// until the host sends about another 254 bytes (protocol sec 4.1).
+    unsafe fn commit<R: Reply>(&mut self, reply: &mut R);
 
     /// Verdict fail (or frame died): discard the staged table effect.
     fn revert(&mut self);

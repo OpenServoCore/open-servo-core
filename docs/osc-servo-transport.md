@@ -143,8 +143,9 @@ and ISR-entry overheads.
    burst those spins stack onto the burst-cycle critical path and widen
    break-delivery lag — so no such path exists. The verdict gates two
    effect kinds: the **wire effect** (a staged reply — SEND on pass,
-   DON'T-SEND on fail) and the **table effect** (staged writes — COMMIT
-   on pass, REVERT on fail). Ping/read stage only a wire effect; a
+   DON'T-SEND on fail) and the **table effect** (a checked write - COMMIT
+   stores it from the ring on pass, REVERT drops it on fail; a HOLD write
+   is staged until a COMMIT frame). Ping/read stage only a wire effect; a
    NOREPLY write only a table effect; a reply-bearing write both, under
    one verdict, table effect first: the commit lands before the reply is
    sequenced, so the status break never leaves ahead of the effect it
