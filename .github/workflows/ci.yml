@@ -107,6 +107,11 @@ jobs:
       - name: hot callees 4-byte aligned gate
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-hot-align.sh
+      - name: cargo build --release (bench image)
+        run: CARGO_TARGET_DIR=target/bench cargo build --release -p osc-dev-v006-app --features osc-dev-v006-app/bench
+      - name: hot callees 4-byte aligned gate (bench image)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/bench/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
 
   host-ch32-build-test:
     name: build + test (firmware/host-ch32)

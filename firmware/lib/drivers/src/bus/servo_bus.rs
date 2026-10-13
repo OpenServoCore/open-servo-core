@@ -412,6 +412,7 @@ impl<P: Providers> ServoBus<P> {
     /// the covered window does, routinely) must pend it, not push it behind
     /// every future slot (bench signature: deadline B riding the +100 us
     /// rescue wake).
+    #[rustc_align(4)]
     fn arm_deadline(&mut self) {
         let now = self.deadline.now();
         let remaining = |at: u32| {

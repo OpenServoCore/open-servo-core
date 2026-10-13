@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(fn_align)]
 #![cfg_attr(feature = "sync-unsafe-cell", feature(sync_unsafe_cell))]
 
 pub mod descriptor;

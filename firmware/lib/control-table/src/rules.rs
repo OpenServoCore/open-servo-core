@@ -81,6 +81,7 @@ pub const fn within(lo: i32, hi: i32) -> u32 {
 
 /// Enum/bool rule: the candidate byte must be one of `allowed`.
 #[inline(never)]
+#[rustc_align(4)]
 pub fn check_allowed(view: &View, addr: u16, allowed: &[u8]) -> Result<(), Error> {
     let b = view.read_fixed(addr, 1)?;
     if allowed.contains(&b[0]) {
@@ -123,6 +124,7 @@ fn rhs(view: &View, v: i32, reg: bool, width: u8, signed: bool) -> Result<i32, E
 /// on `OP_IN`), both sides take a saturating absolute value clamped to the
 /// field width's positive max.
 #[inline(never)]
+#[rustc_align(4)]
 pub fn check_cmp(view: &View, addr: u16, spec: u16, val: u32) -> Result<(), Error> {
     let width = (spec & SPEC_WIDTH) as u8;
     let signed = spec & SPEC_SIGNED != 0;

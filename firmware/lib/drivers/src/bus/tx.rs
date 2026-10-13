@@ -194,6 +194,7 @@ impl<W: TxWire> TxEngine<W> {
     /// at cumulative offsets - wire and CRC both stream the one contiguous
     /// snapshot, so a scattered read costs the same single copy as a plain
     /// read (sec 4.2).
+    #[rustc_align(4)]
     pub fn stage_gather<C: CrcEngine>(
         &mut self,
         crc: &mut C,

@@ -45,6 +45,7 @@ pub struct GreadUniform<'a> {
 }
 
 impl<'a> GreadUniform<'a> {
+    #[rustc_align(4)]
     pub fn parse(payload: FrameBytes<'a>) -> Option<Self> {
         let addr = payload.u16_le_at(0)?;
         let count = payload.u16_le_at(2)?;
@@ -59,6 +60,7 @@ impl<'a> GreadUniform<'a> {
         self.ids.bytes().map(Id::new)
     }
 
+    #[rustc_align(4)]
     pub fn slot_of(&self, id: Id) -> Option<u8> {
         self.ids
             .bytes()
@@ -85,6 +87,7 @@ impl<'a> GreadPerTarget<'a> {
         GreadPerTargetIter { rest: self.entries }
     }
 
+    #[rustc_align(4)]
     pub fn find(&self, id: Id) -> Option<(u8, GreadTarget)> {
         self.iter()
             .enumerate()
@@ -126,6 +129,7 @@ pub struct GreadProfileUniform<'a> {
 }
 
 impl<'a> GreadProfileUniform<'a> {
+    #[rustc_align(4)]
     pub fn parse(payload: FrameBytes<'a>) -> Option<Self> {
         let slot = payload.u8_at(0)?;
         let ids = payload.sub(1, payload.len().checked_sub(1)?)?;
@@ -165,6 +169,7 @@ impl<'a> GreadProfilePerTarget<'a> {
         GreadProfilePerTargetIter { rest: self.entries }
     }
 
+    #[rustc_align(4)]
     pub fn find(&self, id: Id) -> Option<(u8, GreadProfileTarget)> {
         self.iter()
             .enumerate()
@@ -205,6 +210,7 @@ pub struct GwriteUniform<'a> {
 }
 
 impl<'a> GwriteUniform<'a> {
+    #[rustc_align(4)]
     pub fn parse(payload: FrameBytes<'a>) -> Option<Self> {
         let addr = payload.u16_le_at(0)?;
         let count = payload.u8_at(2)?;
@@ -239,6 +245,7 @@ impl<'a> GwriteUniform<'a> {
         }
     }
 
+    #[rustc_align(4)]
     pub fn find(&self, id: Id) -> Option<FrameBytes<'a>> {
         self.iter().find(|(i, _)| *i == id).map(|(_, d)| d)
     }
@@ -272,6 +279,7 @@ pub struct GwritePerTarget<'a> {
 }
 
 impl<'a> GwritePerTarget<'a> {
+    #[rustc_align(4)]
     pub fn parse(payload: FrameBytes<'a>) -> Option<Self> {
         if payload.is_empty() {
             return None;
@@ -289,6 +297,7 @@ impl<'a> GwritePerTarget<'a> {
         GwritePerTargetIter { rest: self.entries }
     }
 
+    #[rustc_align(4)]
     pub fn find(&self, id: Id) -> Option<GwriteTarget<'a>> {
         self.iter().find(|t| t.id == id)
     }

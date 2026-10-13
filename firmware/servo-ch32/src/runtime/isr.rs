@@ -58,6 +58,7 @@ impl BusDispatcher {
 }
 
 impl Dispatch for BusDispatcher {
+    #[rustc_align(4)]
     fn dispatch<R: Reply>(
         &mut self,
         req: Request<'_>,
@@ -68,6 +69,7 @@ impl Dispatch for BusDispatcher {
         self.with(|d| d.dispatch(req, ctx, reply))
     }
 
+    #[rustc_align(4)]
     unsafe fn commit<R: Reply>(&mut self, reply: &mut R) {
         // SAFETY: forwarded contract.
         self.with(|d| unsafe { d.commit(reply) })
@@ -219,25 +221,33 @@ pub fn on_deadline_irq() {
 /// with its scratch registers leaked into the running context -- t0 = the
 /// poked address, t2 = the poked value (canary-captured verbatim). Debug
 /// pokes perturb t0/t2; the runtime is sound.
+///
+/// Every body carries `#[rustc_align(4)]`: the bodies share one `.trap.rust`
+/// input section, so without it each entry's parity follows the sizes of the
+/// bodies linked ahead of it. The expanding crate enables `fn_align`.
 #[macro_export]
 macro_rules! install_isrs {
     () => {
         #[::qingke_rt::interrupt]
+        #[rustc_align(4)]
         fn DMA1_CHANNEL1() {
             $crate::runtime::isr::on_adc_dma_tc();
         }
 
         #[::qingke_rt::interrupt]
+        #[rustc_align(4)]
         fn TIM2() {
             $crate::runtime::isr::on_tim2();
         }
 
         #[::qingke_rt::interrupt]
+        #[rustc_align(4)]
         fn USART1() {
             $crate::runtime::isr::on_usart1();
         }
 
         #[::qingke_rt::interrupt(core)]
+        #[rustc_align(4)]
         fn SysTick() {
             $crate::runtime::isr::on_deadline_irq();
         }

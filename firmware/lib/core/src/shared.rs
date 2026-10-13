@@ -79,6 +79,7 @@ impl Shared {
     /// lives in the kernel and a torque-off request never becomes one. Bus
     /// dispatch only; one copy behind both commit sites, O(1).
     #[inline(never)]
+    #[rustc_align(4)]
     pub fn permit_after_commit(&self, addr: u16, len: u16) {
         if addr > STALL_PERMIT || addr.saturating_add(len) <= STALL_PERMIT {
             return;

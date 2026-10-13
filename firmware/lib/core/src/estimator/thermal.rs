@@ -419,6 +419,7 @@ impl WindingTherm {
     /// Ahead of every [`Self::step`]: once a second the NTC in centi-C and
     /// the bound at it, once a minute whether it moved.
     #[inline(never)]
+    #[rustc_align(4)]
     pub fn ntc(&mut self, raw: u16, cfg: &ThermCfg) {
         self.pending &= !stage::NTC;
         if self.ntc_decim == 0 {
@@ -514,6 +515,7 @@ impl WindingTherm {
     /// The excess bound for `cfg` at the NTC as converted: on every
     /// configuration load and after every conversion.
     #[inline(never)]
+    #[rustc_align(4)]
     pub fn bound(&mut self, cfg: &ThermCfg) {
         self.bound_cc = self.x_max_cc(cfg);
         self.rise_cc = rise_max_cc(self.bound_cc);
@@ -545,6 +547,7 @@ impl WindingTherm {
     /// carry takes the reference temperature) for [`Self::install`]. Out of
     /// line: the tick body takes it once per seat.
     #[inline(never)]
+    #[rustc_align(4)]
     fn reference(&mut self, v: i32, i: i32, pos: i32, t: i32, cfg: &ThermCfg) -> i32 {
         self.seat_ticks = self.seat_ticks.saturating_add(1);
         if self.seat_ticks <= REF_SKIP_TICKS {
@@ -631,6 +634,7 @@ impl WindingTherm {
     /// the last COLD_SEATS (contact only adds), flag a divergence from the
     /// stored cold R beyond the band, either way.
     #[inline(never)]
+    #[rustc_align(4)]
     fn cold_check(&mut self, r_ref: u16, cfg: &ThermCfg) {
         let f_q16 = recip_div(
             ((COPPER_ZERO_CC + R_COLD_REF_CC) as u32) << 16,

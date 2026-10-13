@@ -120,6 +120,7 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     /// both commit sites: inlined, its body pushes the table's event walk
     /// out of line and every committed write pays the call.
     #[inline(never)]
+    #[rustc_align(4)]
     fn tel_arm(&mut self, chunks: Chunks, count: u16) {
         // sec 5.6: the line is the burst's until LAST, so a second arm in
         // the body that lent it is void.
