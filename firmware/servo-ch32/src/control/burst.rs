@@ -23,7 +23,7 @@ use core::sync::atomic::compiler_fence;
 use portable_atomic::{AtomicU8, Ordering};
 
 use osc_servo_core::estimator::window;
-use osc_servo_core::kernel::limits::flag;
+use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::regions::burst::{
     BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };

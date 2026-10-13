@@ -112,7 +112,7 @@ impl VelocityLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::limits::IBand;
+    use crate::kernel::IBand;
 
     fn band(l: i32) -> IBand {
         IBand { lo: -l, hi: l }

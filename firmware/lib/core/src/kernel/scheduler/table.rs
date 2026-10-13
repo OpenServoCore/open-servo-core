@@ -1,5 +1,11 @@
-//! The schedule: the tick rate, the decimations, the medium phases and the
-//! tick-load close.
+//! The schedule: the tick rate, the decimations, the medium phases, the
+//! tick-load close, and the phase table (`Medium::step`).
+
+use crate::Shared;
+use crate::kernel::KernelConfig;
+use crate::kernel::phases::Medium;
+use crate::kernel::phases::fast::{Command, Fast, Measured};
+use crate::kernel::phases::loops::faults::FaultLatch;
 
 /// Kernel tick rate, one ADC scan per PWM period (the chip asserts it).
 pub const TICK_HZ: u32 = 20_000;
@@ -63,4 +69,33 @@ pub const fn health_close_at(tick: u64) -> bool {
 /// Whether a tick-load close can land on `phase` ([`health_close_at`]).
 pub const fn health_close_lands(phase: usize) -> bool {
     phase % DECIM_MED as usize == HEALTH_CLOSE_PHASE as usize
+}
+
+impl Medium {
+    /// Phase `k` of the medium chain (`phase`), on this tick's sample;
+    /// whether a SLOW stage ran.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        k: u8,
+        m: &Measured,
+        cfg: &KernelConfig,
+        shared: &Shared,
+        faults: &mut FaultLatch,
+        fast: &mut Fast,
+        cmd: &mut Command,
+    ) -> bool {
+        match k {
+            phase::CONTROL => self.control(shared.frame().pos(), cfg, shared, faults, fast, cmd),
+            phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
+            phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
+            phase::LIMITS => self.limit(cfg, shared, faults, fast),
+            phase::VELOCITY => self.velocity(cfg, cmd),
+            phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
+            phase::SLOW => return self.slow(m, cfg, faults),
+            phase::PUBLISH => self.publish(shared, faults, fast),
+            _ => {}
+        }
+        false
+    }
 }

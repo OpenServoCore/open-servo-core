@@ -1,8 +1,8 @@
 use super::Medium;
 use super::fast::Command;
+use super::loops::faults::{self, FaultLatch};
 use crate::Frame;
 use crate::kernel::config::KernelConfig;
-use crate::kernel::faults::{self, FaultLatch};
 use crate::regions::control::Mode;
 
 impl Medium {

@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn bits_and_codes_are_the_servo_cores() {
         use osc_servo_core::data_state as fw;
-        use osc_servo_core::kernel::faults as fwf;
+        use osc_servo_core::kernel::phases::loops::faults as fwf;
         assert_eq!(CONFIG_VIRGIN, fw::CONFIG_VIRGIN);
         assert_eq!(CONFIG_CORRUPT, fw::CONFIG_CORRUPT);
         assert_eq!(CALIB_VIRGIN, fw::CALIB_VIRGIN);

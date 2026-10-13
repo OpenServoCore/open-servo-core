@@ -2,13 +2,15 @@
 //! half (`Medium`) reads CONTROL, runs the edges, the estimators, the outer
 //! loops, the limits, the detectors and the slow block, publishes, and
 //! leaves the fast half its `Command`. The medium work is split into phases
-//! (`phase`), one stage of the chain each, one file each; every value is
+//! (`phase`), one stage of the chain each, one file each, dispatched from
+//! the schedule's table; every value is
 //! written by the phase that computes it and read by the later phases and
 //! by the fast half.
 
 mod control;
 pub(in crate::kernel) mod fast;
 mod limits;
+pub mod loops;
 mod observer;
 mod publish;
 mod rail;
@@ -18,13 +20,12 @@ mod velocity;
 
 pub(in crate::kernel) use control::Control;
 
-use self::fast::{Command, Fast, Measured};
+use self::loops::faults::Detectors;
+use self::loops::limits::{IBand, LimitState};
+use self::loops::trajectory::TrajGen;
+use self::loops::velocity::VelocityLoop;
 use super::config::KernelConfig;
-use super::faults::{Detectors, FaultLatch};
-use super::limits::{IBand, LimitState};
-use super::trajectory::TrajGen;
-use super::velocity::VelocityLoop;
-use super::{DECIM_SLOW, KernelTiming, phase};
+use super::{DECIM_SLOW, KernelTiming};
 use crate::Shared;
 use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm};
 use crate::pos_lut;
@@ -35,7 +36,7 @@ use crate::regions::control::Mode;
 /// reads it (trajectory, position loop, soft limits, stall gates) are in
 /// linearized counts. The raw pot stays for the sensors publish, TEL `pos`
 /// and the glitch screen.
-pub fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
+pub(in crate::kernel) fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
     if lut_live {
         shared.pos_lut_q4(raw)
     } else {
@@ -43,7 +44,7 @@ pub fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
     }
 }
 
-pub struct Medium {
+pub(in crate::kernel) struct Medium {
     /// `KernelTiming::dt_med_q32`.
     dt_med_q32: u32,
     /// `KernelTiming::recip_arr_q24`.
@@ -128,32 +129,5 @@ impl Medium {
     pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig) {
         self.fusion.seed(pos_q4);
         self.thermal.ntc(ntc_raw, &cfg.therm);
-    }
-
-    /// Phase `k` of the medium chain (`phase`), on this tick's sample;
-    /// whether a SLOW stage ran.
-    #[allow(clippy::too_many_arguments)]
-    pub fn step(
-        &mut self,
-        k: u8,
-        m: &Measured,
-        cfg: &KernelConfig,
-        shared: &Shared,
-        faults: &mut FaultLatch,
-        fast: &mut Fast,
-        cmd: &mut Command,
-    ) -> bool {
-        match k {
-            phase::CONTROL => self.control(shared.frame().pos(), cfg, shared, faults, fast, cmd),
-            phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
-            phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
-            phase::LIMITS => self.limit(cfg, shared, faults, fast),
-            phase::VELOCITY => self.velocity(cfg, cmd),
-            phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
-            phase::SLOW => return self.slow(m, cfg, faults),
-            phase::PUBLISH => self.publish(shared, faults, fast),
-            _ => {}
-        }
-        false
     }
 }

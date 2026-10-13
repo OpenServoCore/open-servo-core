@@ -5,7 +5,7 @@
 //! (position walls). `fold` runs at MEDIUM and is compare/min only; the
 //! derate ceiling needs a reciprocal, so it is recomputed at SLOW and cached.
 
-use super::DECIM_MED;
+use crate::kernel::DECIM_MED;
 use crate::math::recip_div;
 use crate::regions::config::{ConfigLimits, ConfigPosSoft, ConfigThermal, StallResponse};
 

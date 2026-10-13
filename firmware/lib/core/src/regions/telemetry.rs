@@ -171,7 +171,7 @@ pub struct TelemetryRefs {
 }
 
 /// Which limit governs the command, published at the medium boundary: one
-/// bit per reason (`kernel::limits::flag`), 0 = nothing holds it back.
+/// bit per reason (`kernel::phases::loops::limits::flag`), 0 = nothing holds it back.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryLimits {

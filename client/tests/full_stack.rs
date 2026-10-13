@@ -443,7 +443,7 @@ fn clear_counters_zeroes_both_in_one_write() {
 /// The checked-in descriptor: the stamp recipe and the register names the
 /// data-state helpers resolve.
 const DESCRIPTOR: &str = include_str!("../../descriptors/osc-servo/0.1.json");
-/// The kernel's latched data fault (`kernel/faults.rs` BIT_DATA).
+/// The kernel's latched data fault (`kernel/phases/loops/faults.rs` BIT_DATA).
 const BIT_DATA: u8 = 1 << 6;
 /// A never-saved, never-identified servo.
 const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET;

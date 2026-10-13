@@ -1,9 +1,9 @@
 use super::Medium;
 use super::fast::Fast;
+use super::loops::faults::{self, FaultLatch};
+use super::loops::limits;
 use crate::Shared;
 use crate::kernel::config::KernelConfig;
-use crate::kernel::faults::{self, FaultLatch};
-use crate::kernel::limits;
 use crate::math::q_mul_u;
 use crate::regions::control::Mode;
 

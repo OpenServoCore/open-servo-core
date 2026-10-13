@@ -1,4 +1,4 @@
-//! OpenLoop duty against the current band (`kernel::duty_limit`): the
+//! OpenLoop duty against the current band (`kernel::phases::loops::duty_limit`): the
 //! kernel drives the MG90-scale R-L plant rig, so every pin reads the
 //! winding current the limiter never sees directly, only through the shunt
 //! window one tick late.
@@ -8,8 +8,8 @@ use osc_integration::plant::{
     seed, stamp,
 };
 use osc_servo_core::estimator::window::floor_duty;
-use osc_servo_core::kernel::duty_limit::UP_Q15;
-use osc_servo_core::kernel::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
+use osc_servo_core::kernel::phases::loops::duty_limit::UP_Q15;
+use osc_servo_core::kernel::phases::loops::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
 use osc_servo_core::{

@@ -3,7 +3,7 @@
 //! edge is the only ack - it clears the mask and the detector state, and a
 //! still-present condition re-latches through the normal detectors.
 
-use super::DECIM_MED;
+use crate::kernel::DECIM_MED;
 
 pub const BIT_OVER_CURRENT: u8 = 1 << 0;
 pub const BIT_OVER_TEMP: u8 = 1 << 1;

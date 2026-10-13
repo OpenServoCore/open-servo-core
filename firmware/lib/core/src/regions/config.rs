@@ -1,6 +1,6 @@
 use control_table::{Block, Enum, Section};
 
-use crate::kernel::trajectory::{GOAL_LIM_COUNTS, VEL_CAP_CPS};
+use crate::kernel::phases::loops::trajectory::{GOAL_LIM_COUNTS, VEL_CAP_CPS};
 use crate::traits::DecayMode;
 
 // Wire vocabulary, hoisted to the foundation crate so the host column can
