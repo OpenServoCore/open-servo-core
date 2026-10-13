@@ -36,6 +36,22 @@ impl BStamp {
     pub const BOUNDARY: u8 = 1 << 1;
 }
 
+/// Time-order a drained capture and decode it. Polarity rings drain at
+/// slightly different instants, so batches can land out of order, and the
+/// decoder binary-searches. The engine tick is a u32 that wraps (238.6 s
+/// at 18 MHz), so order by signed offset from the first drained edge and
+/// rebase onto the earliest: a raw u32 sort decodes an exchange straddling
+/// the wrap out of order. Stamp ticks count from the capture's first edge.
+pub fn stamps_from_capture(mut edges: Vec<WireEdge>, bit_ticks: u32) -> Vec<BStamp> {
+    let first = edges.first().map_or(0, |e| e.tick);
+    edges.sort_by_key(|e| e.tick.wrapping_sub(first) as i32);
+    let base = edges.first().map_or(0, |e| e.tick);
+    for e in &mut edges {
+        e.tick = e.tick.wrapping_sub(base);
+    }
+    stamps_from_edges(&edges, bit_ticks)
+}
+
 /// Decode a time-ordered edge capture into wire-order stamps.
 /// `bit_ticks` = capture ticks per bit at the operational baud.
 pub fn stamps_from_edges(edges: &[WireEdge], bit_ticks: u32) -> Vec<BStamp> {
@@ -117,8 +133,9 @@ fn next_fall_in(edges: &[WireEdge], lo: i64, hi: i64) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::osc::{build_ping, parse_exchange};
+    use crate::osc::{build_ping, build_read, parse_exchange};
     use osc_protocol::crc::osc_crc;
+    use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 
     /// Emit one 8N1 character's real edges (transitions of
     /// start + LSB-first data + stop) at `start`.
@@ -312,5 +329,45 @@ mod tests {
         let stamps = stamps_from_edges(&edges, b as u32);
         assert_eq!(stamps[0].flags, BStamp::BOUNDARY);
         assert_eq!(stamps.len(), 1 + sent.len());
+    }
+
+    /// One real plain-flood cycle at 3M as the adapter captured it: eight
+    /// NOREPLY WRITEs to GOAL_POSITION, a READ of it, the servo's reply.
+    fn plain_flood_capture() -> Vec<WireEdge> {
+        include_str!("../testdata/plain-flood-3m.edges")
+            .split_whitespace()
+            .map(|t| {
+                let (tick, level) = t.split_at(t.len() - 1);
+                WireEdge {
+                    tick: tick.parse().unwrap(),
+                    level: if level == "v" {
+                        Level::Low
+                    } else {
+                        Level::High
+                    },
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn decodes_a_cycle_with_the_tick_wrap_before_any_edge() {
+        let b = 6; // 3M
+        let edges = plain_flood_capture();
+        let read = build_read(1, GOAL_POSITION, 4);
+        let clean = parse_exchange(&stamps_from_capture(edges.clone(), b), &read, b).unwrap();
+        assert_eq!(clean.status.payload, 240i32.to_le_bytes());
+        for (j, pivot) in edges.iter().map(|e| e.tick).enumerate() {
+            let wrapped = edges
+                .iter()
+                .map(|e| WireEdge {
+                    tick: e.tick.wrapping_sub(pivot),
+                    level: e.level,
+                })
+                .collect();
+            let ex = parse_exchange(&stamps_from_capture(wrapped, b), &read, b)
+                .unwrap_or_else(|err| panic!("wrap before edge {j}: {err:?}"));
+            assert_eq!(ex, clean, "wrap before edge {j}");
+        }
     }
 }
