@@ -50,7 +50,7 @@ On the servo the slower rate is a 2 kHz period of ten PWM ticks, and its work is
 
 The tick index is the sample clock, and every executed tick is one period. The kernel interrupt sits above the transport, so bus traffic costs it no tick (protocol sec 5.9), and everything advances one period per tick: the phase sequence, the boxcars and filters, the trajectory, the observer's prediction, the stall and tracking-error timers that the host writes in milliseconds, and the SLOW cadence. A tick is lost only to a kernel body that overruns past two periods, a flash SAVE (torque off) or a debug halt; `tick_lost_count` counts it, and the kernel does not stretch its next step to cover it.
 
-How the tick is scheduled, and why the kernel sits above the bus, is in `osc-servo-kernel.md` (kernel sec 2 and sec 3).
+How the tick is scheduled, and why the kernel sits above the bus, is in [kernel sec 2](osc-servo-kernel.md#2-static-phased-scheduling) and [kernel sec 3](osc-servo-kernel.md#3-the-kernel-above-the-bus).
 
 Each loop only has to handle one kind of physics, and each loop makes the plant look simpler to the loop outside it. By the time the position loop is involved, "apply a torque" is just a number it writes, and all the electrical mess is somebody else's problem.
 
