@@ -4,8 +4,27 @@
 //! debug-link dump and holds them against the table.
 
 use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
-use crate::kernel::phase;
+use crate::estimator::thermal::stage;
+use crate::kernel::{ProbeTags, phase};
 use crate::tel::STREAM_SAMPLES_MAX;
+
+impl Events {
+    /// The events of the kernel tick between `before` and `after`, its tags
+    /// on either side of the body; `tel`, `bank` and `health` are the
+    /// caller's.
+    pub fn between(before: ProbeTags, after: ProbeTags) -> Self {
+        let ran = before.therm & !after.therm;
+        Self {
+            refresh: after.config_seq != before.config_seq,
+            slow: before.slow_due,
+            finish: before.slow_finish,
+            close: before.slow_finish && after.therm & stage::INSTALL != 0,
+            install: ran & stage::INSTALL != 0,
+            side: ran & (stage::NTC | stage::DERATE | stage::COLD) != 0,
+            ..Self::default()
+        }
+    }
+}
 
 /// A body longer than this is a debugger halt or a flash save, not a
 /// budgeted body: counted, kept out of every statistic.

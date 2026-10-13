@@ -774,3 +774,122 @@ impl Cpu {
         self.entries
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use osc_servo_core::budget::Events;
+    use osc_servo_core::kernel::DECIM_MED;
+    use osc_servo_core::{Mode, RegionStorage, SensorFrame, Shared};
+
+    use super::*;
+    use crate::plant::{BIAS, kernel, seed, vbus_raw};
+
+    /// One bit per stage: a body's cost names the stages the lane charged.
+    const COSTS: [u64; 5] = [1, 2, 4, 8, 16];
+    static FREE: [u64; PHASES] = [0; PHASES];
+
+    fn write_config(sh: &Shared, f: impl FnOnce(&mut osc_servo_core::ControlTable)) {
+        sh.config_commit_begin();
+        sh.table.with_mut(f);
+        sh.config_commit_end();
+    }
+
+    /// The core kernel tests' hot seat: the thermometer tracks it and runs
+    /// every stage.
+    fn hot_seat(sh: &Shared) -> SensorFrame {
+        write_config(sh, |t| {
+            t.calib.thermal.th_alpha_q24 = 2097;
+            t.calib.thermal.th_g_q016 = 100;
+            t.calib.thermal.th_mu_q016 = 5369;
+            t.calib.winding.r0_q12 = 7393;
+            t.calib.thermal.ntc_raw_ref = 2048;
+            t.calib.thermal.ntc_t_ref_cc = 2500;
+            t.calib.thermal.ntc_k1_q88 = 563;
+            t.calib.thermal.ntc_k2_q24 = 5800;
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.mode = Mode::OpenLoop;
+            t.control.lifecycle.goal_duty = 8000;
+        });
+        SensorFrame {
+            pos: 2000,
+            current: BIAS + 400,
+            current_trough: BIAS,
+            vmotor_a: 3000,
+            vmotor_a_trough: 3000,
+            vmotor_b: 40,
+            vmotor_b_trough: 40,
+            vcal: 1200,
+            vbus_raw: vbus_raw(3000),
+            ntc_raw: 2048,
+        }
+    }
+
+    /// The lane's next body, reading the servo's configuration count `seq`.
+    fn lane_tick(cpu: &mut Cpu, now: &mut u64, seq: u8) -> u64 {
+        cpu.kernel_config(seq);
+        cpu.kernel_scan(*now);
+        cpu.enter_kernel(*now);
+        let body = cpu.kernel_until().unwrap_or(*now) - *now;
+        *now += KERNEL_PERIOD;
+        body
+    }
+
+    /// The lane charges each stage on the tick the kernel runs it: every
+    /// stage `Events::between` reads off a real kernel's tags (due, finish,
+    /// install, side, configuration take) lands on a tick the lane charges
+    /// it, and the SLOW block's due and finish on exactly the lane's.
+    #[test]
+    fn the_lane_charges_each_stage_on_the_kernels_tick() {
+        let sh = Shared::new();
+        seed(&sh);
+        let f = hot_seat(&sh);
+        let mut k = kernel();
+        while !k.probe_tags().slow_due {
+            k.on_scan(f, &sh);
+        }
+        let [slow, finish, install, side, refresh] = COSTS;
+        let mut cpu = Cpu::default();
+        cpu.start_kernel(
+            KernelLane {
+                level: KernelLevel::AboveBus,
+                motion: Motion::Quiet,
+                phases: [&FREE, &FREE],
+                floor: None,
+                tel: TelCosts::default(),
+                events: KernelEvents {
+                    refresh,
+                    slow_due: [slow; 2],
+                    finish,
+                    install,
+                    side,
+                    health_close: 0,
+                    catch_up: 0,
+                },
+            },
+            u64::MAX,
+        );
+        let mut now = 0;
+        for _ in 0..phase::SLOW {
+            lane_tick(&mut cpu, &mut now, sh.config_seq());
+        }
+        let ticks = 400 * DECIM_SLOW as u32 * DECIM_MED as u32;
+        let mut seen = [0u32; 5];
+        for t in 0..ticks {
+            if t == ticks / 2 {
+                write_config(&sh, |_| {});
+            }
+            let body = lane_tick(&mut cpu, &mut now, sh.config_seq());
+            let before = k.probe_tags();
+            k.on_scan(f, &sh);
+            let ev = Events::between(before, k.probe_tags());
+            let ran = [ev.slow, ev.finish, ev.install, ev.side, ev.refresh];
+            let charged = COSTS.map(|c| body & c != 0);
+            assert_eq!(ran[..2], charged[..2], "tick {t}");
+            for (n, (&r, &c)) in seen.iter_mut().zip(ran.iter().zip(&charged)) {
+                assert!(!r || c, "tick {t}: ran {ran:?}, charged {charged:?}");
+                *n += r as u32;
+            }
+        }
+        assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+    }
+}
