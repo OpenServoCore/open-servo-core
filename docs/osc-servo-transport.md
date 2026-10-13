@@ -56,6 +56,8 @@ which holds the bus off and leaves the kernel live. Free and reserved: TIM1 (mot
 I2C1_EV (30), I2C1_ER (31). The break detector holds DMA1 CH7, I2C1_RX's
 request channel. The CAL stamps hold DMA1 CH2 (TIM2_UP) and TIM3.
 
+The kernel side of this split is kernel sec 3 (`osc-servo-kernel.md`).
+
 **The bus absorbs the load, the kernel none.** With the kernel on top,
 bus traffic costs the kernel no tick; the bus becomes a background
 server, so each us of bus work costs 1 / (1 - U) us of latency, U being
