@@ -385,7 +385,7 @@ Hot means the tick interrupt and its callees, the bus vector bodies, the bus fra
 | --- | --- |
 | Hot entries at 0 mod 4 | `scripts/check-hot-align.sh`, CI, release and bench images |
 | No soft div, mod or mul, no 64-bit arithmetic | `.github/check-soft-arith.sh`, CI |
-| No `memcpy`, `memset`, `memcmp`, `memmove` on runtime paths | review |
+| No `memcpy`, `memset`, `memcmp`, `memmove` on runtime paths; bringup statics only, through `firmware/servo-ch32/src/runtime/mem.rs` | `.github/check-no-mem.sh`, CI, release and bench images |
 | No code in RAM | review |
 
 Replacements for `mem*` builtins:
@@ -404,7 +404,6 @@ Replacements for `mem*` builtins:
 ## 9. Trade-offs to accept
 
 - **Thermometer exception.** The thermometer's stage rows report and do not gate fit; the streaming case of `thermal_close_fits_at_budget_while_seated` is ignored. The budget table header names the exception.
-- **Remaining `mem*` calls.** Dispatch, frame routing, the reply gather and the position table commit still call `mem*` builtins; no CI check lists them.
 - **Elastic replies.** Reply latency follows kernel load; a turnaround measured at rest does not hold while moving ([transport sec 10](osc-servo-transport.md#10-measured-turnarounds)).
 - **Tickless windows.** A shunt burst runs no tick ([control-theory.md, What It Does Not Cover](control-theory.md#what-it-does-not-cover)); a flash SAVE or debug halt stalls the core. SAVE and halts count in `tick_lost_count`; the burst counts nowhere.
 
