@@ -18,7 +18,7 @@ use osc_servo_core::data_state::{
     CALIB_CORRUPT, CALIB_STALE, CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN,
     PLANT_UNSET, STAMP_MISMATCH, allows,
 };
-use osc_servo_core::kernel::faults::{BIT_DATA, CODE_DATA, CODE_NONE};
+use osc_servo_core::kernel::phases::loops::faults::{BIT_DATA, CODE_DATA, CODE_NONE};
 use osc_servo_core::kernel::{DECIM_MED, phase as kernel_phase};
 use osc_servo_core::persist::HEADER_LEN;
 use osc_servo_core::persist::Slot;

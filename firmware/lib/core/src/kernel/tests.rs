@@ -3,15 +3,18 @@
 //! gate, ack, dispatch shapes, publishes, and qualitative closed-loop
 //! behavior against a crude integer plant.
 
+use super::phases::fast;
+use super::phases::loops::{duty_limit, faults, limits};
 use super::*;
 use crate::estimator::{OmegaSource, bemf, bias, window};
 use crate::math::q_mul;
 use crate::pos_lut;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
+use crate::tel::TelStream;
 use crate::tel::tick_flag;
-use crate::traits::{DecayMode, MotorCmd, Sensors};
-use crate::{ControlTable, RegionStorage, Shared, TelemetryTick};
+use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors};
+use crate::{ControlTable, RegionStorage, SensorFrame, Shared, TelemetryTick};
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;

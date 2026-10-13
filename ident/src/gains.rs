@@ -539,7 +539,7 @@ mod tests {
         }
     }
 
-    /// Mirror of kernel/current.rs step, integer-exact.
+    /// Mirror of kernel/phases/loops/current.rs step, integer-exact.
     struct CurrentMirror {
         integ: i32,
     }
@@ -659,7 +659,7 @@ mod tests {
         );
     }
 
-    /// Mirror of kernel/velocity.rs step (ff paths fed zero), integer-exact.
+    /// Mirror of kernel/phases/loops/velocity.rs step (ff paths fed zero), integer-exact.
     struct VelocityMirror {
         integ: i32,
     }

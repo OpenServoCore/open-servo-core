@@ -1,7 +1,7 @@
 //! Data state: whether the persisted images and the identified set behind
 //! the closed loops are this servo's own. `data_flags` (TELEMETRY-MODE)
 //! names every reason they are not; the kernel refuses closed loop while
-//! one holds and latches `CODE_DATA` on the attempt (kernel/faults.rs), so
+//! one holds and latches `CODE_DATA` on the attempt (kernel/phases/loops/faults.rs), so
 //! a virgin servo in OpenLoop shows no ALERT.
 //!
 //! Writers: boot (pre-IRQ); the bus dispatcher (a covered write, a stamp

@@ -193,7 +193,7 @@ pub mod telemetry {
     pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x026a, 2);
     /// Which limit holds the command back: bit 0 the current ceiling, bit 1
     /// the stall yield fold, bit 2 an endstop, bit 3 the stall permit lease
-    /// is live (core `kernel::limits::flag`).
+    /// is live (core `kernel::phases::loops::limits::flag`).
     pub const LIMIT_FLAGS: Reg = reg(0x027c, 1);
     /// Smallest duty whose drive window the shunt reads, Q15: where the
     /// OpenLoop ceiling restarts and its blind band begins; 0 = not

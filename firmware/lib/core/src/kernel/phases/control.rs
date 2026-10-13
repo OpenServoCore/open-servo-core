@@ -1,8 +1,8 @@
 use super::fast::{Command, Drive, Fast};
+use super::loops::current;
+use super::loops::faults::{self, FaultLatch};
 use super::{Medium, pos_q4};
 use crate::kernel::config::KernelConfig;
-use crate::kernel::current;
-use crate::kernel::faults::{self, FaultLatch};
 use crate::pos_lut;
 use crate::regions::control::{ControlLifecycle, Mode};
 use crate::{RegionStorageRaw, Shared};

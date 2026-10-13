@@ -3,14 +3,14 @@
 //! every piece of state that moves at the PWM rate; reads nothing from the
 //! control table.
 
+use super::loops::current::{CurrentLoop, RailClamp};
+use super::loops::duty_limit::DutyLimiter;
+use super::loops::faults::{self, FaultLatch, OcDetector};
+use super::loops::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
 use crate::kernel::KernelTiming;
 use crate::kernel::config::KernelConfig;
-use crate::kernel::current::{CurrentLoop, RailClamp};
-use crate::kernel::duty_limit::DutyLimiter;
-use crate::kernel::faults::{self, FaultLatch, OcDetector};
-use crate::kernel::limits::IBand;
 use crate::tel::tick_flag;
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, Shared};

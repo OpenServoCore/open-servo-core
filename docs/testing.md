@@ -61,7 +61,7 @@ one tick late. Unless a pin says otherwise the limit is 280 counts and
 the goal is 64% duty, in both directions. Paths below are under
 `firmware/lib`.
 
-The limiter law (`core/src/kernel/duty_limit.rs`):
+The limiter law (`core/src/kernel/phases/loops/duty_limit.rs`):
 
 - `blind_goal_passes_raw` - a goal at or under the window floor comes
   back unchanged at any current, a zero limit included.

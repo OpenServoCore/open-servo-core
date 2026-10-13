@@ -1,7 +1,7 @@
 use super::Medium;
 use super::fast::Fast;
+use super::loops::faults::FaultLatch;
 use crate::estimator::bemf;
-use crate::kernel::faults::FaultLatch;
 use crate::{RegionStorageRaw, Shared};
 
 impl Medium {

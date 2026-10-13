@@ -18,7 +18,9 @@ use control_table::RegisterFile;
 use osc_integration::plant::{BIAS, Plant, duty_of, kernel, last_cmd, lut_live, seed};
 use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::kernel::faults::{BIT_OVER_CURRENT, CODE_NONE, CODE_OVER_CURRENT};
+use osc_servo_core::kernel::phases::loops::faults::{
+    BIT_OVER_CURRENT, CODE_NONE, CODE_OVER_CURRENT,
+};
 use osc_servo_core::pos_lut::{GRID_SHIFT, POINTS, interp_q4};
 use osc_servo_core::regions::{TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE};
 use osc_servo_core::{ControlTable, DecayMode, Mode, MotorCmd, RegionStorage, Shared};

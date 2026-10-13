@@ -15,7 +15,7 @@
 //! `coast_stop_cps`.
 
 use osc_integration::plant::{BIAS, FakeIo, kernel, lut_live, seed, vbus_raw};
-use osc_servo_core::kernel::limits::flag;
+use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::pos_lut::{GRID, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::{

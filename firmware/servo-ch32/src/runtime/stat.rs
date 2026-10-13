@@ -9,7 +9,7 @@
 //!   refused (not calibrated, plant unset, stamp mismatch),
 //! - dark when healthy.
 
-use osc_servo_core::kernel::faults::CODE_NONE;
+use osc_servo_core::kernel::phases::loops::faults::CODE_NONE;
 use osc_servo_drivers::led::Pattern;
 use osc_servo_drivers::traits::Monotonic as _;
 
@@ -56,7 +56,7 @@ impl LampTest {
 #[cfg(test)]
 mod tests {
     use osc_servo_core::data_state::{CALIB_VIRGIN, PLANT_UNSET};
-    use osc_servo_core::kernel::faults::{CODE_DATA, CODE_STALL};
+    use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_STALL};
 
     use super::*;
 

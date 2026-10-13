@@ -10,7 +10,7 @@ use super::config::addr::common::ID;
 use super::config::addr::pos_phys::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
 use super::config::addr::pos_soft::{POS_MAX_SOFT_COUNTS, POS_MIN_SOFT_COUNTS};
 use super::control::addr::lifecycle::GOAL_POSITION;
-use crate::kernel::trajectory::GOAL_LIM_COUNTS;
+use crate::kernel::phases::loops::trajectory::GOAL_LIM_COUNTS;
 
 type C = crate::ControlTableCell;
 const SIZE: usize = <C as RegisterMap>::SIZE;

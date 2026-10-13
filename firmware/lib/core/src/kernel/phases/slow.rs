@@ -1,8 +1,8 @@
 use super::Medium;
 use super::fast::Measured;
+use super::loops::faults::{self, FaultLatch};
 use crate::estimator::{bemf, thermal};
 use crate::kernel::config::KernelConfig;
-use crate::kernel::faults::{self, FaultLatch};
 use crate::kernel::{DECIM_SLOW, phase};
 use crate::math::q_mul;
 
