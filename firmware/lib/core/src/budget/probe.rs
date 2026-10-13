@@ -124,7 +124,7 @@ pub struct KernelProbe {
     pub refresh: Load,
     /// The SLOW block's due ticks by regime, its finish ticks, and the
     /// finishes that froze a thermal reference window; the thermometer's
-    /// stages on phases THERM_INSTALL and THERM_SIDE.
+    /// stages on phases SPARE_A and SPARE_B.
     pub slow: [Load; 2],
     pub finish: Load,
     pub close: Load,
@@ -866,7 +866,7 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         refresh: true,
         ..carried
     };
-    let budget = super::kernel_tick(r, phase::THERM_INSTALL as usize, refresh);
+    let budget = super::kernel_tick(r, phase::SPARE_A as usize, refresh);
     f(load_row(Component::Refresh, k.refresh, budget, 0));
     let slow = Events {
         slow: true,
@@ -894,12 +894,8 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     let budget = super::kernel_tick(Regime::Closed, p, close);
     f(load_row(Component::Close, k.close, budget, 0));
     let stages = [
-        (
-            Component::Install,
-            k.install,
-            crate::kernel::phase::THERM_INSTALL,
-        ),
-        (Component::Side, k.side, crate::kernel::phase::THERM_SIDE),
+        (Component::Install, k.install, crate::kernel::phase::SPARE_A),
+        (Component::Side, k.side, crate::kernel::phase::SPARE_B),
     ];
     for (c, l, p) in stages {
         let ev = Events {

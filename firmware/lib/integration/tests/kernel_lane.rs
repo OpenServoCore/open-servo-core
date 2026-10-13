@@ -16,7 +16,7 @@ use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
 use osc_servo_core::budget::{self, Body, Events, Frame, PHASES, Regime};
-use osc_servo_core::kernel::phase;
+use osc_servo_core::kernel::{self, phase};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::{estimates, tick};
@@ -108,7 +108,7 @@ fn kernel_on_top_loses_no_tick_under_polling(
 /// A Closed tick at budget carrying `ev` on `phase`, with the health close
 /// where it can land and interrupt entry and exit.
 fn event_tick(phase: u8, ev: Events) -> u32 {
-    let health = budget::health_close_lands(phase as usize);
+    let health = kernel::health_close_lands(phase as usize);
     budget::kernel_tick(Regime::Closed, phase as usize, Events { health, ..ev })
         + budget::ENTRY_EXIT
 }
@@ -136,14 +136,14 @@ fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
             },
         ),
         (
-            phase::THERM_INSTALL,
+            phase::SPARE_A,
             Events {
                 install: true,
                 ..carried
             },
         ),
         (
-            phase::THERM_SIDE,
+            phase::SPARE_B,
             Events {
                 side: true,
                 ..carried
@@ -306,7 +306,7 @@ const OPEN_SLOW_FREE: u32 = budget::TICK_PERIOD / 10;
 /// land and interrupt entry and exit, still leaves [`OPEN_SLOW_FREE`].
 #[test]
 fn open_slow_stages_leave_a_tenth_of_the_period_at_budget() {
-    let health = budget::health_close_lands(phase::SLOW as usize);
+    let health = kernel::health_close_lands(phase::SLOW as usize);
     for c in carried() {
         for stage in SLOW_STAGES {
             let t = slow_tick(Regime::Open, stage, Events { health, ..c }) + budget::ENTRY_EXIT;
@@ -725,7 +725,7 @@ fn span_runs() -> [(u16, u16); 3] {
 }
 
 /// The kernel takes a configuration within this many ticks of its commit:
-/// the next THERM_INSTALL is at most a medium period away, and the kernel
+/// the next SPARE_A is at most a medium period away, and the kernel
 /// above the bus enters every tick on its scan.
 const APPLY_TICKS: u64 = DECIM_MED_TICKS + 1;
 const DECIM_MED_TICKS: u64 = PHASES as u64;

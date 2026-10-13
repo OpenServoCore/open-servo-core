@@ -14,7 +14,7 @@
 
 use osc_servo_core::budget::probe::{BusProbe, Windows};
 use osc_servo_core::budget::{self, Body, Frame, PHASES, Regime};
-use osc_servo_core::kernel::{DECIM_SLOW, phase};
+use osc_servo_core::kernel::{self, DECIM_SLOW, phase};
 
 use super::core::TICKS_PER_US;
 
@@ -179,12 +179,12 @@ pub struct TelCosts {
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
 /// block's due stage on phase SLOW every DECIM_SLOW periods (by regime) and
 /// its finish on the next period's, the thermometer's stages around them
-/// (an install on phase THERM_INSTALL of the period after the finish,
-/// THERM_SIDE then and before the due stage), each holding the TX lane as
+/// (an install on phase SPARE_A of the period after the finish,
+/// SPARE_B then and before the due stage), each holding the TX lane as
 /// the kernel does, and the tick-load close where the chip's count lands
-/// it ([`budget::health_close_at`], the lane's first tick the boot tick),
+/// it ([`kernel::health_close_at`], the lane's first tick the boot tick),
 /// with the catch-up when a tick was lost since the last one. A
-/// configuration take runs on phase THERM_INSTALL when the servo's count is
+/// configuration take runs on phase SPARE_A when the servo's count is
 /// even and new, in place of an install there, which waits a period; it
 /// holds no lane.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
@@ -241,8 +241,8 @@ impl KernelLane {
         let span = phases.len() as u64 * KERNEL_PERIOD;
         let at = |p: u8, extra: u64| phases.get(p as usize).map_or(0, |b| b + extra);
         let events = at(phase::SLOW, ev.slow_due[r].max(ev.finish))
-            .max(at(phase::THERM_INSTALL, ev.install.max(ev.refresh)))
-            .max(at(phase::THERM_SIDE, ev.side));
+            .max(at(phase::SPARE_A, ev.install.max(ev.refresh)))
+            .max(at(phase::SPARE_B, ev.side));
         let longest = phases.iter().copied().max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
@@ -328,7 +328,7 @@ struct Kernel {
     config_seq: u8,
     config_taken: u8,
     config_new_at: Option<u64>,
-    /// A take had THERM_INSTALL when the install was due.
+    /// A take had SPARE_A when the install was due.
     install_owed: bool,
     /// The running body holds a burst's start (its phase is the take's, or
     /// a take is pending), and ran the take.
@@ -613,25 +613,25 @@ impl Cpu {
         let ev = k.lane.events;
         let slow = DECIM_SLOW as u64;
         let at = k.periods % slow;
-        let install = k.phase == phase::THERM_INSTALL as usize;
+        let install = k.phase == phase::SPARE_A as usize;
         let take = install && k.config_seq & 1 == 0 && k.config_seq != k.config_taken;
         k.took = take;
         let stage = match k.phase as u8 {
-            phase::THERM_INSTALL if take => {
+            phase::SPARE_A if take => {
                 k.install_owed |= at == 2;
                 None
             }
             phase::SLOW if at == 0 => Some(ev.slow_due[r]),
             phase::SLOW if at == 1 => Some(ev.finish),
-            phase::THERM_INSTALL if at == 2 || k.install_owed => {
+            phase::SPARE_A if at == 2 || k.install_owed => {
                 k.install_owed = false;
                 Some(ev.install)
             }
-            phase::THERM_SIDE if at == 2 || at == slow - 1 => Some(ev.side),
+            phase::SPARE_B if at == 2 || at == slow - 1 => Some(ev.side),
             _ => None,
         };
         k.stage = stage.is_some();
-        k.therm = matches!(k.phase as u8, phase::THERM_INSTALL | phase::THERM_SIDE) && k.stage;
+        k.therm = matches!(k.phase as u8, phase::SPARE_A | phase::SPARE_B) && k.stage;
         cost += stage.unwrap_or(0);
         if take {
             cost += ev.refresh;
@@ -643,7 +643,7 @@ impl Cpu {
         }
         // the kernel's start rule, asked after the take
         k.hold_start = install || k.config_seq != k.config_taken;
-        if budget::health_close_at(tick) {
+        if kernel::health_close_at(tick) {
             k.stats.closes[k.phase] += 1;
             cost += ev.health_close;
             if k.stats.lost > k.lost_at_close {

@@ -13,10 +13,10 @@ use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
     self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, LAYOUT, PHASES,
-    Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TEL_ROW, TICK_HZ,
-    TICK_PERIOD, TICK_PUBLISH, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TEL_ROW, TICK_PERIOD,
+    TICK_PUBLISH, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
-use osc_servo_core::kernel::{DECIM_SLOW, phase};
+use osc_servo_core::kernel::{self, DECIM_SLOW, TICK_HZ, phase};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::tick::DUTY_TICKS;
@@ -241,16 +241,16 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
 }
 
 /// The configuration take's tick while stepping, Closed at budget: phase
-/// THERM_INSTALL carrying the take (the thermometer's stage there waits a
+/// SPARE_A carrying the take (the thermometer's stage there waits a
 /// period), with the health close where it can land and interrupt entry and
 /// exit. It carries no TEL row: a burst's start waits out a pending take
 /// (DES `a_burst_never_streams_through_a_config_take`).
 #[test]
 fn the_take_tick_fits_at_budget_without_tel() {
-    let p = phase::THERM_INSTALL as usize;
+    let p = phase::SPARE_A as usize;
     let ev = Events {
         refresh: true,
-        health: budget::health_close_lands(p),
+        health: kernel::health_close_lands(p),
         ..Events::default()
     };
     let t = budget::kernel_tick(Regime::Closed, p, ev) + ENTRY_EXIT;

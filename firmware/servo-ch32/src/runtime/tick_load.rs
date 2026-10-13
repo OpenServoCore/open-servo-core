@@ -3,7 +3,7 @@
 //! `runtime::isr` stamps, keeps the one `TickLoad` and publishes into
 //! TELEMETRY `health`: the counters every 20 ticks, the mean every 4000.
 
-use osc_servo_core::budget::{HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS};
+use osc_servo_core::kernel::{HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS};
 
 use crate::cfg::chip;
 use crate::hal::clocks::HCLK_HZ;
@@ -19,7 +19,7 @@ const LONG: u32 = SHORT as u32 * SHORTS_PER_LONG as u32;
 /// 32768.
 const MEAN_RECIP: u64 = (32768u64 << 32).div_ceil(LONG as u64 * PERIOD as u64);
 /// The count a fresh window starts at: the first close lands on the boot
-/// count's first `HEALTH_CLOSE_PHASE` tick (`budget::health_close_at`).
+/// count's first `HEALTH_CLOSE_PHASE` tick (`kernel::health_close_at`).
 const FIRST: u8 = SHORT - 1 - HEALTH_CLOSE_PHASE;
 /// Bounds the lost-tick loop per short window.
 const LOST_MAX: u16 = 16;
@@ -93,7 +93,7 @@ impl TickLoad {
     /// A shunt burst capture runs no kernel tick: the partial short
     /// window's overruns are dropped and the next close only sets the mark.
     /// The tick count carries on, so a close stays on its grid of kernel
-    /// ticks (`budget::health_close_lands`), and so does the long window's
+    /// ticks (`kernel::health_close_lands`), and so does the long window's
     /// sum.
     #[inline(always)]
     pub fn skip(&mut self) {
@@ -159,7 +159,8 @@ mod tests {
 
     use std::vec::Vec;
 
-    use osc_servo_core::budget::{PHASES, health_close_at};
+    use osc_servo_core::budget::PHASES;
+    use osc_servo_core::kernel::health_close_at;
 
     use super::*;
 

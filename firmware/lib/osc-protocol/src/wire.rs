@@ -333,6 +333,10 @@ pub const STREAM_SAMPLES_MAX: usize = 16;
 /// Bit-times per character on the wire: start, 8 data, stop (sec 3).
 pub const CHAR_BIT_TIMES: u32 = 10;
 
+/// The law break a trigger spins out: a bracketed 9-bit `0x00` through its
+/// stop bit (sec 3).
+pub const LAW_BREAK_BIT_TIMES: u32 = 11;
+
 /// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
 /// of the wire checksum definition.

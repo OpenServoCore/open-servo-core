@@ -12,7 +12,6 @@ use crate::regions::control::Mode;
 use crate::tel::tick_flag;
 use crate::traits::{DecayMode, MotorCmd, Sensors};
 use crate::{ControlTable, RegionStorage, Shared, TelemetryTick};
-use medium::phase;
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
@@ -744,7 +743,7 @@ fn duty_max_write_caps_the_closed_loop_at_the_rail_phase() {
     assert!(written_duty(&k) > 32000, "duty={}", written_duty(&k));
     // the take leaves the clamp alone; the next RAIL phase prepares it
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
-    run_to(&mut k, &sh, frame(2000, BIAS), phase::THERM_INSTALL);
+    run_to(&mut k, &sh, frame(2000, BIAS), phase::SPARE_A);
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.cfg.loop_current.duty_max_q15, 8000, "the take ran");
     assert!(written_duty(&k) > 32000, "the take tick");
@@ -985,7 +984,7 @@ fn reversed_polarity_negates_vdiff() {
     assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     // the rewire lands with the fast half of the configuration
     write_config(&sh, |t| t.config.limits.drive_polarity = true);
-    while k.phase != phase::THERM_INSTALL {
+    while k.phase != phase::SPARE_A {
         k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     }
@@ -2390,13 +2389,13 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
         k.tel.held = false;
         k.on_scan(hot, &sh);
         let after = k.probe_tags();
-        let spare = matches!(before.phase, phase::THERM_INSTALL | phase::THERM_SIDE);
+        let spare = matches!(before.phase, phase::SPARE_A | phase::SPARE_B);
         let stage = spare && before.therm != after.therm;
         let kind = [
             before.slow_due,
             before.slow_finish,
-            stage && before.phase == phase::THERM_INSTALL,
-            stage && before.phase == phase::THERM_SIDE,
+            stage && before.phase == phase::SPARE_A,
+            stage && before.phase == phase::SPARE_B,
             before.config_seq != after.config_seq,
         ];
         for (n, &hit) in seen.iter_mut().zip(&kind) {
@@ -2565,7 +2564,7 @@ fn dispatched_config_write_lands_at_the_take() {
     assert_eq!(ol_max(&k), 32767);
     crate::services::bus::tests::write_committed(&sh, DUTY_MAX_Q15, &5000u16.to_le_bytes());
     assert_eq!(sh.table.with(|t| t.config.loop_current.duty_max_q15), 5000);
-    while k.phase != phase::THERM_INSTALL {
+    while k.phase != phase::SPARE_A {
         k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(ol_max(&k), 32767, "before the take");
     }
@@ -2616,7 +2615,7 @@ fn config_write_lands_whole_at_one_tick_within_a_medium_period() {
             ticks += 1;
             let after = fields_new(&k);
             assert!(
-                after == [false; 3] || (after == [true; 3] && p == phase::THERM_INSTALL),
+                after == [false; 3] || (after == [true; 3] && p == phase::SPARE_A),
                 "write at {at}: {after:?} after phase {p}"
             );
         }
@@ -2647,11 +2646,11 @@ fn a_write_after_the_take_takes_again() {
     let mut k = kernel();
     k.on_scan(f, &sh);
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
-    run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+    run_to(&mut k, &sh, f, phase::SPARE_A);
     k.on_scan(f, &sh);
     assert_eq!(ol_max(&k), 6000);
     // a commit after the take: the count it recorded is behind, so the next
-    // THERM_INSTALL copies the span again
+    // SPARE_A copies the span again
     write_config(&sh, |t| t.config.limits.stall_time_ticks = ms_ticks(20));
     sh.table
         .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
@@ -2705,10 +2704,10 @@ fn store_word(sh: &Shared, i: usize, w: u32) {
     });
 }
 
-/// A THERM_INSTALL tick after every store of a whole-span commit, with the
+/// A SPARE_A tick after every store of a whole-span commit, with the
 /// set committed before it not yet taken: the kernel keeps the set it holds
 /// while the count is odd, never a mix, and takes the newest whole set at
-/// the first THERM_INSTALL after the commit ends.
+/// the first SPARE_A after the commit ends.
 #[test]
 fn kernel_never_reads_a_set_under_commit() {
     let f = frame(2000, BIAS);
@@ -2725,8 +2724,8 @@ fn kernel_never_reads_a_set_under_commit() {
             store_word(&sh, i, w);
         }
         sh.config_commit_end();
-        // the next one under way at THERM_INSTALL, `stores` words in
-        run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+        // the next one under way at SPARE_A, `stores` words in
+        run_to(&mut k, &sh, f, phase::SPARE_A);
         let c = next_set(&sh);
         sh.config_commit_begin();
         for (i, &w) in c.iter().enumerate().take(stores) {
@@ -2738,7 +2737,7 @@ fn kernel_never_reads_a_set_under_commit() {
             store_word(&sh, i, w);
         }
         sh.config_commit_end();
-        run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+        run_to(&mut k, &sh, f, phase::SPARE_A);
         k.on_scan(f, &sh);
         let want: heapless::Vec<u8, SPAN_BYTES> = c.iter().flat_map(|w| w.to_ne_bytes()).collect();
         assert_eq!(span_bytes(&k)[..], want[..], "{stores} stores in");
@@ -2764,7 +2763,7 @@ fn a_take_moves_the_probe_tag_at_therm_install_alone() {
         }
     }
     let mut want = [0; DECIM_MED as usize];
-    want[phase::THERM_INSTALL as usize] = 1;
+    want[phase::SPARE_A as usize] = 1;
     assert_eq!(moves, want);
 }
 
@@ -2779,10 +2778,10 @@ impl crate::tel::TelStream for StartTel {
     }
 }
 
-/// From a commit to the THERM_INSTALL take that ends it, every tick holds
+/// From a commit to the SPARE_A take that ends it, every tick holds
 /// a burst's start, the take's own included, and after it only the take's
 /// phase does; an odd count holds too, and its take waits for the next
-/// period's THERM_INSTALL.
+/// period's SPARE_A.
 #[test]
 fn a_pending_take_holds_a_burst_start_through_its_tick() {
     let f = frame(2000, BIAS);
@@ -2819,9 +2818,8 @@ fn a_pending_take_holds_a_burst_start_through_its_tick() {
         let want = if odd_at_install { 15 } else { 5 };
         assert_eq!(take_at, want, "odd at install: {odd_at_install}");
         // tick i runs phase LIMITS + i
-        let install = |i: usize| {
-            (phase::LIMITS as usize + i) % DECIM_MED as usize == phase::THERM_INSTALL as usize
-        };
+        let install =
+            |i: usize| (phase::LIMITS as usize + i) % DECIM_MED as usize == phase::SPARE_A as usize;
         let want: heapless::Vec<bool, 64> = (0..k.tel.held.len())
             .map(|i| i <= take_at || install(i))
             .collect();
@@ -3082,7 +3080,7 @@ fn a_take_owns_therm_install_and_the_install_waits_a_period() {
         k.on_scan(f, &sh);
     }
     write_config(&sh, |t| t.config.limits.stall_time_ticks = ms_ticks(20));
-    run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+    run_to(&mut k, &sh, f, phase::SPARE_A);
     k.medium.thermal.request(stage::INSTALL | stage::NTC);
     k.on_scan(f, &sh);
     assert_eq!(k.cfg.limits.stall_time_ticks, 400, "the take ran");
@@ -3092,9 +3090,9 @@ fn a_take_owns_therm_install_and_the_install_waits_a_period() {
     assert_eq!(
         k.medium.thermal.pending() & stage::NTC,
         0,
-        "THERM_SIDE is its own"
+        "SPARE_B is its own"
     );
-    run_to(&mut k, &sh, f, phase::THERM_INSTALL);
+    run_to(&mut k, &sh, f, phase::SPARE_A);
     k.on_scan(f, &sh);
     assert_eq!(
         k.medium.thermal.pending() & stage::INSTALL,

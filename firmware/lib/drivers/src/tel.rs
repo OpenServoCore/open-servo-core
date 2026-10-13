@@ -21,7 +21,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 
 use osc_protocol::frame::Header;
 use osc_protocol::wire::{self, CHAR_BIT_TIMES, Inst, ResultCode};
-use osc_servo_core::budget::TICK_HZ;
+use osc_servo_core::kernel::TICK_HZ;
 use osc_servo_core::tel::{
     BAUD, Chunk, Chunks, FLAG_LAST, ROW_BYTES_MAX, STREAM_HDR, STREAM_PAYLOAD_MAX,
     STREAM_SAMPLES_MAX, TelStream, encode_stream_head, tick_flag,
