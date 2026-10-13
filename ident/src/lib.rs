@@ -28,3 +28,4 @@ pub mod slip;
 pub mod sources;
 pub mod thermometer;
 pub mod units;
+pub mod window;

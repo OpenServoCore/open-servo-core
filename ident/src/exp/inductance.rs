@@ -2859,14 +2859,33 @@ mod tests {
             })
             .unwrap();
         assert!(torque_on < first_drive, "torque on before any drive");
-        let tail: Vec<&String> = log.iter().rev().take(3).collect();
-        assert_eq!(*tail[2], "write goal_duty 0");
-        assert_eq!(*tail[1], "write torque_enable 0");
-        assert_eq!(*tail[0], "write ident_agg 0");
+        let tail: Vec<&String> = log.iter().rev().take(2).collect();
+        assert_eq!(*tail[1], "write goal_duty 0");
+        assert_eq!(*tail[0], "write torque_enable 0");
         let exp = exp.into_inner();
         // 2 duties x 2 signs plus the from-a-hold control x 2 signs
         assert_eq!(exp.captures().len(), 6);
         assert!(exp.fit().is_some(), "the run fits");
+    }
+
+    /// Under the firmware's arm rules the settle's watch leaves its count
+    /// in `tel_count`, which refuses an arm: every burst still arms.
+    #[test]
+    fn every_burst_arms_after_the_settle_watch() {
+        use crate::exp::testkit::{ArmRules, bench_mg90};
+        let params = crate::exp::testkit::rig();
+        let cfg = Cfg {
+            repeats: 1,
+            step_pct: vec![25, 40],
+            ..Cfg::default()
+        };
+        let mut servo = bench_mg90(3204);
+        servo.arm_rules = Some(ArmRules::FIRMWARE);
+        let mut exp = Guarded::new(Inductance::new(cfg, &params, scales()), params);
+        let log = pump(&mut exp, &mut servo, 200_000);
+        assert!(!log.iter().any(|l| l.starts_with("error")), "{log:?}");
+        assert!(exp.abort().is_none(), "abort {:?}", exp.abort());
+        assert_eq!(exp.into_inner().captures().len(), 6);
     }
 
     #[test]

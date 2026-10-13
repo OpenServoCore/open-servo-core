@@ -117,9 +117,6 @@ pub mod control {
     /// Extras behind the shunt: bit 0 vmotor_a, bit 1 vmotor_b, bit 2 vbus.
     /// Latched at the arm; values above 7 reject with Validation.
     pub const BURST_CHANS: Reg = reg(0x019a, 1);
-    /// The ident aggregate (`I_MEAN_COUNTS..=AGG_SEQ`) runs while true; off,
-    /// its registers hold their last window. RAM only, off at boot.
-    pub const IDENT_AGG: Reg = reg(0x01e0, 1);
 }
 
 /// BURST readback section, all RO. One READ of `PAGE_ECHO..=RESTORE_DIR` is
@@ -174,12 +171,6 @@ pub mod telemetry {
     pub const VBUS_RAW: Reg = reg(0x0254, 2);
     pub const NTC_RAW: Reg = reg(0x0256, 2);
     pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x0258, 2);
-    pub const I_MEAN_COUNTS: Reg = reg(0x025a, 2);
-    pub const I_MIN_COUNTS: Reg = reg(0x025c, 2);
-    pub const I_MAX_COUNTS: Reg = reg(0x025e, 2);
-    pub const VDIFF_MEAN: Reg = reg(0x0260, 2);
-    pub const DUTY_MEAN_Q15: Reg = reg(0x0262, 2);
-    pub const AGG_SEQ: Reg = reg(0x0264, 2);
     /// Which limit holds the command back: bit 0 the current ceiling, bit 1
     /// the stall yield fold, bit 2 an endstop, bit 3 the stall permit lease
     /// is live (core `kernel::limits::flag`).
@@ -271,7 +262,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("arm", control::BURST_ARM),
     ("page", control::BURST_PAGE),
     ("chans", control::BURST_CHANS),
-    ("ident_agg", control::IDENT_AGG),
     ("fault_flags", telemetry::FAULT_FLAGS),
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),
@@ -296,12 +286,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("vbus_raw", telemetry::VBUS_RAW),
     ("ntc_raw", telemetry::NTC_RAW),
     ("vmotor_bias_counts", telemetry::VMOTOR_BIAS_COUNTS),
-    ("i_mean_counts", telemetry::I_MEAN_COUNTS),
-    ("i_min_counts", telemetry::I_MIN_COUNTS),
-    ("i_max_counts", telemetry::I_MAX_COUNTS),
-    ("vdiff_mean", telemetry::VDIFF_MEAN),
-    ("duty_mean_q15", telemetry::DUTY_MEAN_Q15),
-    ("agg_seq", telemetry::AGG_SEQ),
     ("limit_flags", telemetry::LIMIT_FLAGS),
     ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),
     ("tel_drop_count", telemetry::TEL_DROP_COUNT),

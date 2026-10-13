@@ -13,9 +13,8 @@
 //! (base x rail + back-EMF) / R. A moving shaft holds the band's bottom
 //! (back-EMF keeps pulling the current under it), a still one the step
 //! nearest its top. A goal under the floor passes raw up to the stall-safe
-//! duty, the shunt blind to it - its ident window is invalid and the
-//! aggregate holds the last valid current, so a token brake at speed reads
-//! nothing. With `lease_ms` set the stall permit is a lease: granted by a
+//! duty, the shunt blind to it - its window is invalid and the stream
+//! holds the last valid current, so a token brake at speed reads nothing. With `lease_ms` set the stall permit is a lease: granted by a
 //! write of true with torque on, extended by a rewrite, dropped by torque
 //! off, false, or the lease running out. With `stall_ms` set the stall
 //! timer runs too: a limiter that holds the goal back on a still shaft that
@@ -27,9 +26,10 @@
 //! ([`Bus::BENCH`]) and the plant moves through it. The kernel loses
 //! [`TICKS_LOST_PER_TRANSACTION`] to each one, as the bench board does, so
 //! `sample_tick` and `agg_seq` run slow under polling while `host_ms` and
-//! a TEL stream's ticks keep real time.
+//! a TEL stream's ticks keep real time. Every read streams its window
+//! first ([`FakeServo::window`]).
 
-use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK, TICKS_PER_WINDOW};
+use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK};
 use crate::burst::{
     ArmSeen, CHAN_INTERLEAVE, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK,
     SAMPLE_US, SAMPLES, frame_len, rejected,
@@ -38,6 +38,7 @@ use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, duty_counts};
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, config, control};
+use crate::window::{WATCH_BURST_MS, WINDOW_TICKS, Watch, Windows, watch_rows};
 
 /// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
 pub const TICK_HZ: f64 = 20_100.0;
@@ -135,9 +136,10 @@ pub fn bench_mg90_saved(vbus: u16) -> FakeServo {
     s
 }
 
-/// What the firmware checks before it arms a burst: the volts it applies
-/// against a cap, the time since the last arm, and a position strictly
-/// inside the soft limits unless the permit is live.
+/// What the firmware checks before it arms a burst: torque on, no TEL
+/// count armed, the volts it applies against a cap, the time since the
+/// last arm, and a position strictly inside the soft limits unless the
+/// permit is live.
 #[derive(Copy, Clone, Debug)]
 pub struct ArmRules {
     /// vcounts: 3200 mV behind the terminal dividers.
@@ -163,8 +165,8 @@ const TAU_D_OF_HELD: f64 = 0.9;
 /// Kernel ticks the servo never runs while one bus transaction is served:
 /// the bus handlers preempt the kernel tick, and scans that complete inside
 /// one collapse into a single pending tick. Measured on the bench MG90's
-/// board: 5.1 ticks per snapshot, a region read and its ident re-read,
-/// regressed against the host's clock over the polls of one identification.
+/// board: 5.1 ticks per snapshot, two transactions, regressed against the
+/// host's clock over the polls of one identification.
 pub const TICKS_LOST_PER_TRANSACTION: f64 = 2.5;
 
 pub struct FakeServo {
@@ -210,17 +212,8 @@ pub struct FakeServo {
     pub ke_stored: Option<f64>,
     /// Kernel ticks one bus transaction costs.
     pub ticks_lost_per_txn: f64,
-    /// Kernel ticks run since boot: `sample_tick`, and `agg_seq` in
-    /// windows of them while the aggregate runs.
+    /// Kernel ticks run since boot: `sample_tick`.
     ticks: f64,
-    /// CONTROL `ident_agg`: off, a read repeats the aggregate the last read
-    /// with it on saw, and `agg_seq` stops.
-    pub ident_agg: bool,
-    /// The tick the aggregate last turned on at, and `agg_seq` then.
-    agg_from: f64,
-    agg_seq0: u16,
-    /// `i_mean_counts`, `vdiff_mean`, `duty_mean_q15` as last read.
-    agg_held: (i16, i16, i16),
     /// Latch a fault once this many [`Cmd::Burst`]s have been captured.
     pub fault_after_bursts: Option<u32>,
     pub bursts: u32,
@@ -272,12 +265,15 @@ pub struct FakeServo {
     /// Time the applied duty spent pushing the shaft into the end it sits
     /// at, ms.
     pub pressed_ms: f64,
-    /// The ident aggregate's last window-valid current, which it repeats
-    /// at rest and, under the limiter, under the floor.
+    /// The last window-valid current, which the window repeats at rest
+    /// and, under the limiter, under the floor.
     i_valid: f64,
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
+    /// The last `tel_count` written, kept past the burst's LAST frame as
+    /// the servo keeps it.
+    pub tel_count: u16,
     omega_dyn: f64,
     pub t_ms: f64,
     t_duty_change: f64,
@@ -319,10 +315,6 @@ impl FakeServo {
             ke_stored: None,
             ticks_lost_per_txn: TICKS_LOST_PER_TRANSACTION,
             ticks: 0.0,
-            ident_agg: false,
-            agg_from: 0.0,
-            agg_seq0: 0,
-            agg_held: (0, 0, 0),
             fault_after_bursts: None,
             bursts: 0,
             soft: None,
@@ -352,6 +344,7 @@ impl FakeServo {
             torque: false,
             duty: 0,
             tel_mask: 0,
+            tel_count: 0,
             omega_dyn: 0.0,
             t_ms: 0.0,
             t_duty_change: -1e9,
@@ -421,9 +414,9 @@ impl FakeServo {
         self.f_med * 10.0
     }
 
-    /// One ident aggregate window, ms.
+    /// One window, ms.
     fn window_ms(&self) -> f64 {
-        TICKS_PER_WINDOW as f64 * 1000.0 / self.tick_hz()
+        WINDOW_TICKS as f64 * 1000.0 / self.tick_hz()
     }
 
     /// Time a bus transaction holds the kernel off for `lost` of its
@@ -659,6 +652,8 @@ impl FakeServo {
             .is_none_or(|(lo, hi)| self.pos > lo && self.pos < hi);
         if !self.torque {
             Err("torque off")
+        } else if self.tel_count != 0 {
+            Err("a TEL count armed")
         } else if volts > rules.v_max as u32 {
             Err("over the burst volts cap")
         } else if self.t_ms - self.last_arm < rules.spacing_ms {
@@ -780,14 +775,8 @@ impl FakeServo {
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;
-        } else if reg == control::IDENT_AGG {
-            let on = value != 0;
-            if on && !self.ident_agg {
-                self.agg_from = self.ticks;
-            } else if !on && self.ident_agg {
-                self.agg_seq0 = self.agg_seq();
-            }
-            self.ident_agg = on;
+        } else if reg == control::TEL_COUNT {
+            self.tel_count = value as u16;
         } else if reg == config::DRIVE_POLARITY {
             // the register as the kernel applies it: a flip negates every
             // drive and moves the burst step to the other terminal
@@ -809,13 +798,6 @@ impl FakeServo {
         if !self.torque {
             self.permit_until = f64::NEG_INFINITY;
         }
-    }
-
-    /// Whole windows since the aggregate turned on, counted on from the
-    /// `agg_seq` it held.
-    fn agg_seq(&self) -> u16 {
-        let windows = (self.ticks - self.agg_from) as u64 / TICKS_PER_WINDOW as u64;
-        self.agg_seq0.wrapping_add(windows as u16)
     }
 
     fn reset_ceiling(&mut self, from: f64) {
@@ -910,6 +892,7 @@ impl FakeServo {
     /// with the mask-selected fields. Mask 0 streams nothing, like the
     /// firmware's disarmed producer.
     pub fn stream(&mut self, samples: u16, sink: &mut Vec<TelFrame>) {
+        self.tel_count = samples;
         let dt = 1.0 / (self.f_med * 10.0);
         let t0 = self.t_ms;
         for k in 0..samples {
@@ -969,11 +952,15 @@ impl FakeServo {
         self.stall_timer(t0);
     }
 
-    pub fn read(&mut self) -> TelemetrySnapshot {
+    /// This tick's window current and terminal differential: the current
+    /// held through a window the shunt cannot read, a governed hold
+    /// `hold_ripple` over the band, the first windows after a duty change
+    /// `transient_gain` over.
+    pub fn sensed(&mut self) -> (f64, f64) {
         let duty = self.applied();
         let driving = duty != 0;
         let blind = self.current_limit.is_some() && duty.unsigned_abs() < self.floor_q15 as u16;
-        let (i, vdiff) = if driving && blind {
+        if driving && blind {
             (self.i_valid, self.vbus * duty.signum() as f64)
         } else if driving {
             let mut i = self.i_at(duty);
@@ -987,22 +974,79 @@ impl FakeServo {
             (i, self.vbus * duty.signum() as f64)
         } else {
             (self.i_valid, 0.0)
-        };
-        let fault = matches!(self.fault_at_ms, Some(at) if self.t_ms >= at)
-            || matches!(self.fault_after_bursts, Some(n) if self.bursts >= n);
+        }
+    }
+
+    /// A watch burst of `rows` ticks of the plant, each row the pot, the
+    /// current and differential the fake senses ([`FakeServo::sensed`])
+    /// and the counts the bridge applies; true when a fault is latched.
+    pub fn watch(&mut self, rows: u16, sink: &mut Vec<TelFrame>) -> bool {
+        self.tel_count = rows;
+        let dt = 1.0 / (self.f_med * 10.0);
+        let t0 = self.t_ms;
+        for k in 0..rows as u64 {
+            self.tick(dt);
+            self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
+            if self.pressing() {
+                self.pressed_ms += dt * 1000.0;
+            }
+            let (i, vdiff) = self.sensed();
+            let noise = self.noise();
+            let pos = self.read_pot(self.pos, noise);
+            sink.push(TelFrame {
+                tick: k,
+                pos: Some(pos),
+                current: Some(i.round() as i16),
+                vdiff: Some(vdiff.round() as i16),
+                duty_counts: Some(duty_counts(self.applied(), PWM_PERIOD_TICKS)),
+                ..Default::default()
+            });
+        }
+        self.ticks += rows as f64;
+        self.stall_timer(t0);
+        self.faulted()
+    }
+
+    fn faulted(&self) -> bool {
+        matches!(self.fault_at_ms, Some(at) if self.t_ms >= at)
+            || matches!(self.fault_after_bursts, Some(n) if self.bursts >= n)
+    }
+
+    /// One watch of `rows` folded, as the pump makes it, without the bus
+    /// time.
+    pub fn watch_folded(&mut self, rows: u16) -> Watch {
+        let mut frames = Vec::new();
+        let alert = self.watch(rows, &mut frames);
+        Watch::fold(
+            &frames,
+            rows,
+            alert,
+            self.t_ms,
+            self.tick_hz(),
+            PWM_PERIOD_TICKS,
+        )
+    }
+
+    /// A read after a one-window watch, as the pump makes it, without the
+    /// bus time.
+    pub fn read_window(&mut self, windows: &mut Windows) -> TelemetrySnapshot {
+        windows.watched(&self.watch_folded(WINDOW_TICKS));
+        let mut snap = self.read();
+        windows.attach(&mut snap);
+        snap
+    }
+
+    pub fn read(&mut self) -> TelemetrySnapshot {
+        let duty = self.applied();
+        let driving = duty != 0;
+        let (i, _) = self.sensed();
+        let fault = self.faulted();
         let glitch = match self.glitch_zone {
             Some((lo, hi)) if (lo..=hi).contains(&self.pos) => 80.0,
             _ => 0.0,
         };
         let noise = self.noise();
         let pos = self.read_pot(self.pos + glitch, noise);
-        let agg_seq = if self.ident_agg {
-            self.agg_held = (i.round() as i16, vdiff.round() as i16, duty);
-            self.agg_seq()
-        } else {
-            self.agg_seq0
-        };
-        let (i_mean, vdiff_mean, duty_mean) = self.agg_held;
         let omega_bemf = match self.ke_stored {
             Some(ke) if driving => {
                 let v = duty as f64 / 32767.0 * self.vbus;
@@ -1020,14 +1064,10 @@ impl FakeServo {
             current: (512.0 + if driving { i } else { 0.0 }).round() as u16,
             current_bias_counts: 512,
             vbus_counts: self.vbus as u16,
-            i_mean_counts: i_mean,
-            vdiff_mean,
-            duty_mean_q15: duty_mean,
             duty_applied_q15: duty,
             i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
-            agg_seq,
             ..Default::default()
         }
     }
@@ -1330,7 +1370,8 @@ fn reg_name(reg: Reg) -> &'static str {
 /// applies halfway through its own.
 #[derive(Copy, Clone, Debug)]
 pub struct Bus {
-    /// One telemetry snapshot: the region read and the ident re-read.
+    /// One telemetry snapshot's two transactions: the window burst's arm
+    /// and the region read. The window's own ticks come on top.
     pub read_ms: f64,
     pub write_ms: f64,
     /// A requested pause takes this many times as long.
@@ -1416,6 +1457,7 @@ pub fn pump_on<E: Experiment>(
 ) -> Vec<String> {
     let mut log = Vec::new();
     let mut pending: Option<TelemetrySnapshot> = None;
+    let mut windows = Windows::new(PWM_PERIOD_TICKS);
     let mut lease = PermitLease::default();
     let mut lcg = bus.slow_reads.unwrap_or(0);
     let keep = |lease: &mut PermitLease, servo: &mut FakeServo, log: &mut Vec<String>| {
@@ -1440,17 +1482,31 @@ pub fn pump_on<E: Experiment>(
                         ms += SLOW_READ_MS;
                     }
                 }
-                // the region read, sampled at its end, then the re-read
+                // two transactions as before, the watch's arm and the
+                // region read, sampled halfway
                 let lost = servo.ticks_lost_per_txn;
                 servo.busy_ms(ms / 2.0, lost);
-                pending = Some(servo.read());
+                let mut snap = servo.read();
+                windows.attach(&mut snap);
+                pending = Some(snap);
                 servo.busy_ms(ms / 2.0, lost);
             }
             Cmd::Pause { ms } => {
+                // a slice streams its whole windows at its end
                 let mut left = ms;
-                while left > 0 {
-                    let slice = lease.slice(left);
-                    servo.advance_ms(slice as f64 * bus.pause_scale);
+                while left > 0 && exp.halted().is_none() {
+                    let slice = lease.slice(left).min(WATCH_BURST_MS);
+                    let tick_hz = servo.tick_hz();
+                    let rows = watch_rows(slice as f64, tick_hz);
+                    let wall = slice as f64 * bus.pause_scale;
+                    if rows > 0 {
+                        servo.advance_ms(wall - rows as f64 * 1000.0 / tick_hz);
+                        let w = servo.watch_folded(rows);
+                        windows.watched(&w);
+                        exp.push_watch(&w);
+                    } else {
+                        servo.advance_ms(wall);
+                    }
                     left -= slice;
                     keep(&mut lease, servo, &mut log);
                 }
@@ -1484,6 +1540,8 @@ pub fn pump_on<E: Experiment>(
             } => {
                 let lost = BURST_ARM_TXNS * servo.ticks_lost_per_txn;
                 servo.busy_ms(BURST_ARM_TXNS * bus.write_ms, lost);
+                // the CLI's arm writes tel_count 0 before the held trio
+                servo.write(control::TEL_COUNT, 0);
                 if servo.arm(duty_q15).is_err() {
                     let seen = servo.arm_seen();
                     log.push(format!("error: {}", rejected(duty_q15, &seen)));
@@ -1531,6 +1589,7 @@ pub fn pump_on<E: Experiment>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osc_servo_core::regions::control::Mode;
 
     /// The shaft locked at mid travel and at a stop, 64% asked both ways:
     /// the duty climbs from the floor at the kernel's slew, stops rising
@@ -1553,7 +1612,6 @@ mod tests {
             s.jam = jam;
             s.pos = pos;
             s.tel_mask = (1 << 1) | (1 << 3);
-            s.write(control::IDENT_AGG, 1);
             s.write(control::TORQUE_ENABLE, 1);
             s.write(control::GOAL_DUTY, sign * pct(64));
             assert_eq!(s.limit_flags(), 0, "a plain slew is not governed");
@@ -1576,7 +1634,7 @@ mod tests {
                 "{jam:?} {sign}: applied {} for {exact}",
                 o.duty_applied_q15
             );
-            let i = o.i_mean_counts.abs() as f64;
+            let i = s.sensed().0.round().abs();
             assert!(i >= band && i < LIM as f64, "{jam:?} {sign}: {i}");
             assert_eq!(o.i_lim_counts, LIM);
             assert_eq!(o.pos, pos as u16);
@@ -1587,7 +1645,6 @@ mod tests {
         // bottom, within one step of the ceiling over it
         let mut s = bench_mg90(3204);
         s.pos = 1000.0;
-        s.write(control::IDENT_AGG, 1);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct(64));
         let step = 128.0 / 32767.0 * s.vbus / s.r;
@@ -1595,7 +1652,7 @@ mod tests {
             s.advance(5);
             let o = s.read();
             assert_eq!(o.limit_flags & 1, 1, "governed");
-            let i = o.i_mean_counts as f64;
+            let i = s.sensed().0.round();
             assert!(i >= 245.0 && i < 245.0 + step, "climb at {i}");
         }
         assert!(s.pos > 1010.0, "the shaft climbs");
@@ -1664,7 +1721,6 @@ mod tests {
     fn fake_reversal_cannot_go_under_the_base() {
         let mut s = bench_mg90(3204);
         s.pos = 1000.0;
-        s.write(control::IDENT_AGG, 1);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct(30));
         s.advance(150);
@@ -1674,19 +1730,17 @@ mod tests {
         let o = s.read();
         assert_eq!(o.duty_applied_q15, -s.floor_q15);
         let want = (s.floor_q15 as f64 / 32767.0 * s.vbus + s.ke * w) / s.r;
-        assert!(
-            (o.i_mean_counts as f64 + want).abs() < 1.0,
-            "{} for {want}",
-            o.i_mean_counts
-        );
-        assert!(o.i_mean_counts < -350);
+        let i = s.sensed().0.round();
+        assert!((i + want).abs() < 1.0, "{i} for {want}");
+        assert!(i < -350.0);
         assert_eq!(o.limit_flags & 1, 1);
     }
 
-    /// Asked to, the fake refuses a burst arm the firmware would: over the
-    /// volts cap, inside the spacing, or outside the soft limits without
-    /// the permit. The pump then ends the run as the CLI does: the reason
-    /// the host reads back, then the guard's writes.
+    /// Asked to, the fake refuses a burst arm the firmware would: with a
+    /// TEL count armed (a watch's outlives its rows), over the volts cap,
+    /// inside the spacing, or outside the soft limits without the permit.
+    /// The pump then ends the run as the CLI does: the reason the host
+    /// reads back, then the guard's writes.
     #[test]
     fn fake_arm_can_be_rejected() {
         let mut s = bench_mg90(3204);
@@ -1694,6 +1748,9 @@ mod tests {
         s.pos = 2000.0;
         assert_eq!(s.arm(q15(25)), Err("torque off"));
         s.write(control::TORQUE_ENABLE, 1);
+        s.watch(16, &mut Vec::new());
+        assert_eq!(s.arm(q15(25)), Err("a TEL count armed"));
+        s.write(control::TEL_COUNT, 0);
         assert_eq!(s.arm(q15(45)), Err("over the burst volts cap"));
         assert_eq!(s.arm(-q15(40)), Ok(()));
         s.advance(99);
@@ -1795,14 +1852,13 @@ mod tests {
 
     /// Every read holds the kernel off for the ticks the bench board loses
     /// to a snapshot. Polled back to back at the bench ladder's 1.9 ms, the
-    /// tick and window counters run at 0.87 of the host's clock; a pause
-    /// loses nothing, and a TEL stream's ticks are the kernel's own.
+    /// tick counter runs at 0.87 of the host's clock; a pause loses
+    /// nothing, and a TEL stream's ticks are the kernel's own.
     #[test]
     fn fake_servo_loses_ticks_to_bus_traffic() {
         let bus = Bus::BENCH.with_read_ms(1.9);
         let mut exp = Steps::new(vec![Cmd::Read; 501]);
         let mut s = FakeServo::new(3.37);
-        s.write(control::IDENT_AGG, 1);
         pump_on(&mut exp, &mut s, 2000, bus);
         let (a, b) = (exp.seen[0], exp.seen[500]);
         let host = (b.host_ms - a.host_ms) * s.tick_hz() / 1000.0;
@@ -1813,8 +1869,6 @@ mod tests {
             "{per_read} ticks lost a snapshot"
         );
         assert!((ticks / host - 0.869).abs() < 0.002, "{}", ticks / host);
-        let windows = b.agg_seq.wrapping_sub(a.agg_seq) as f64;
-        assert!((windows * TICKS_PER_WINDOW as f64 - ticks).abs() <= 16.0);
 
         let mut exp = Steps::new(vec![Cmd::Read, Cmd::Pause { ms: 1000 }, Cmd::Read]);
         let mut s = FakeServo::new(3.37);
@@ -1834,6 +1888,48 @@ mod tests {
         s.stream(3000, &mut tel);
         assert_eq!(tel.len(), 3000);
         assert_eq!(s.read().sample_tick - before, 3000, "a stream is tick-true");
+    }
+
+    /// A pause streams its whole windows in one burst whatever drives,
+    /// and a long one in bursts of at most [`WATCH_BURST_MS`].
+    #[test]
+    fn a_pause_streams_its_whole_windows() {
+        #[derive(Default)]
+        struct Watches(Vec<Cmd>, Vec<usize>);
+        impl Experiment for Watches {
+            fn step(&mut self, _: Option<&TelemetrySnapshot>) -> Cmd {
+                if self.0.is_empty() {
+                    Cmd::Done
+                } else {
+                    self.0.remove(0)
+                }
+            }
+            fn push_watch(&mut self, w: &Watch) {
+                self.1.push(w.windows.len());
+            }
+        }
+        let run = |mode: i32, ms: u32| {
+            let mut exp = Watches(
+                vec![
+                    Cmd::Write {
+                        reg: control::MODE,
+                        value: mode,
+                    },
+                    Cmd::Write {
+                        reg: control::TORQUE_ENABLE,
+                        value: 1,
+                    },
+                    Cmd::Pause { ms },
+                ],
+                Vec::new(),
+            );
+            pump(&mut exp, &mut FakeServo::new(3.37), 100);
+            exp.1
+        };
+        for mode in [Mode::OpenLoop, Mode::Current] {
+            assert_eq!(run(mode as i32, 100), [125]);
+            assert_eq!(run(mode as i32, 600), [314, 314, 125]);
+        }
     }
 
     /// The bench fixture runs as fast as the servo: from 20% to 64% its

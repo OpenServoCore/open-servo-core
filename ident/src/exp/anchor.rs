@@ -1,7 +1,7 @@
 //! The thermometer's hold: the kernel's own winding R at a seat. Seek the
 //! low stop at the plan's seek duty, seat, hold at the stall-safe stop
-//! duty (the current limit governs it) and read the ident aggregate's
-//! windows: duty x vdiff / i per window is the quantity the kernel's
+//! duty (the current limit governs it) and read the window each read
+//! carries: duty x vdiff / i per window is the quantity the kernel's
 //! thermometer LMS settles on (core `estimator::thermal`), so their median
 //! is a seat's R on the thermometer's own scale; after a long idle it
 //! becomes the stored cold R ([`crate::thermometer::cold_r_q12`]).
@@ -14,6 +14,7 @@
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
+use crate::window::Watch;
 
 const Q15: f64 = 32767.0;
 
@@ -254,10 +255,9 @@ impl Experiment for Anchor {
                 Cmd::Read
             }
             Phase::HoldEval => {
-                if let Some(o) = obs
-                    && let Some(w) = self.windows.push(o)
-                {
-                    self.samples.push(w);
+                if obs.is_some() {
+                    self.samples
+                        .extend(self.windows.drain().into_iter().map(|(w, _)| w));
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
                 if self.polls_left == 0 {
@@ -286,6 +286,10 @@ impl Experiment for Anchor {
             }
             Phase::Finished => Cmd::Done,
         }
+    }
+
+    fn push_watch(&mut self, w: &Watch) {
+        self.windows.watch(w);
     }
 
     fn halted(&self) -> Option<AbortReason> {
@@ -397,11 +401,10 @@ mod tests {
                 .all(|v| v.parse::<i32>().unwrap() <= 0),
             "{log:?}"
         );
-        let tail: Vec<&String> = log.iter().rev().take(4).collect();
-        assert_eq!(*tail[3], "write goal_duty 0");
-        assert_eq!(*tail[2], "write torque_enable 0");
-        assert_eq!(*tail[1], "write stall_permit 0");
-        assert_eq!(*tail[0], "write ident_agg 0");
+        let tail: Vec<&String> = log.iter().rev().take(3).collect();
+        assert_eq!(*tail[2], "write goal_duty 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write stall_permit 0");
     }
 
     /// A shaft that rests short of the stop is blocked: no hold is

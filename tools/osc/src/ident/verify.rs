@@ -17,6 +17,7 @@ use osc_ident::exp::{AbortReason, Cmd, Experiment, Guarded, Permitted, RigParams
 use osc_ident::frame::{TelBurst, TelemetrySnapshot};
 use osc_ident::limits::ServoLimits;
 use osc_ident::regs::control;
+use osc_ident::window::Watch;
 use serde_json::{Value, json};
 
 use crate::rig::check_abort;
@@ -104,6 +105,10 @@ impl<E: Experiment> Experiment for Recorded<E> {
 
     fn push_burst(&mut self, cap: &Capture) {
         self.exp.push_burst(cap);
+    }
+
+    fn push_watch(&mut self, w: &Watch) {
+        self.exp.push_watch(w);
     }
 
     fn halted(&self) -> Option<AbortReason> {
@@ -273,6 +278,10 @@ mod tests {
         assert!(meta.get("git_sha").is_none());
         let n = v.current.as_ref().unwrap().steps.len();
         assert_eq!(meta["result"]["current"].as_array().unwrap().len(), n);
+        // every current step folds the watched windows the recorder passed on
+        for step in meta["result"]["current"].as_array().unwrap() {
+            assert!(step["windows"].as_u64().unwrap() > 0, "{step}");
+        }
 
         let rows = |name: &str| -> Vec<Vec<String>> {
             std::fs::read_to_string(out.0.join(name))

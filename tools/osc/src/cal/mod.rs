@@ -113,6 +113,10 @@ pub struct Args {
     /// Assume yes: never prompt. Required values must come from flags.
     #[arg(long)]
     yes: bool,
+    /// Write and stamp the set without MGMT SAVE: it runs until a reboot
+    /// brings the saved set back.
+    #[arg(long)]
+    no_save: bool,
 }
 
 /// Entry from the top-level `osc cal` dispatch.
@@ -122,6 +126,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let id = Id::new(id);
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
+    crate::rig::pump::admit_watch(&mut c, id)?;
     let lim = crate::rig::limits::read(&mut c, id)?;
 
     let sense = read_sense(&mut c, id)?;
@@ -249,7 +254,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     );
     println!("soft counts {soft_min_count}..{soft_max_count}");
 
-    if !args.yes && !confirm("write these values and MGMT SAVE", false)? {
+    let prompt = if args.no_save {
+        "write these values, no SAVE"
+    } else {
+        "write these values and MGMT SAVE"
+    };
+    if !args.yes && !confirm(prompt, false)? {
         println!("declined before write");
         return Ok(());
     }
@@ -262,7 +272,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         angle_cdeg: (angle_min_cdeg as i32, angle_max_cdeg as i32),
         gear_ratio_centi,
     };
-    write_calibration(&mut c, id, &d, &set)
+    write_calibration(&mut c, id, &d, &set, !args.no_save)
 }
 
 /// What cal writes once the operator accepts it.
@@ -275,12 +285,13 @@ struct Calibration {
 }
 
 /// Write the calibration, re-COMMIT a LIVE position table against the stops
-/// it moved, stamp the set and SAVE.
+/// it moved, stamp the set and, with `save`, SAVE.
 fn write_calibration<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     set: &Calibration,
+    save: bool,
 ) -> Result<()> {
     let writes: [(Reg, i32); 9] = [
         (config::POS_MIN_PHYS_COUNTS, set.phys.0),
@@ -309,7 +320,7 @@ fn write_calibration<P: Pipe>(
             ),
         }
     }
-    crate::state::commit(c, id, d, true)?;
+    crate::state::commit(c, id, d, save)?;
     Ok(())
 }
 
@@ -1268,6 +1279,7 @@ mod tests {
             soft_angle_max: None,
             gear_ratio: Some(308.05),
             yes: true,
+            no_save: false,
         }
     }
 
@@ -1414,7 +1426,7 @@ mod tests {
                 angle_cdeg: (0, 18420),
                 gear_ratio_centi: 30805,
             };
-            write_calibration(&mut c, id, &d, &set).unwrap();
+            write_calibration(&mut c, id, &d, &set, true).unwrap();
             assert_eq!(c.pos_lut_state(id, &d).unwrap(), state, "{lo}");
             assert_eq!(c.data_state(id, &d).unwrap().flags, 0, "{lo}");
             c.reboot(id).unwrap();
@@ -1434,6 +1446,40 @@ mod tests {
                 assert_eq!(read(&mut c, id, reg), want, "{lo}: {reg:?}");
             }
         }
+    }
+
+    /// Without SAVE the set runs stamped until a reboot, which brings the
+    /// saved set back.
+    #[test]
+    fn a_cal_without_save_lasts_until_a_reboot() {
+        use osc_client::BaudRate;
+        use osc_client::fake::FakePipe;
+
+        let d = Descriptor::parse(DESCRIPTOR).unwrap();
+        let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        pipe.seed_calibrated(0);
+        let mut c = Client::connect(pipe).unwrap();
+        let id = Id::new(1);
+        let regs = [
+            config::POS_MIN_PHYS_COUNTS,
+            config::POS_MAX_SOFT_COUNTS,
+            calib::RAW_MIN,
+            calib::GEAR_RATIO_CENTI,
+        ];
+        let saved: Vec<i32> = regs.iter().map(|&r| read(&mut c, id, r)).collect();
+        let set = Calibration {
+            phys: (251, 3811),
+            soft: (474, 3588),
+            angle_cdeg: (0, 18774),
+            gear_ratio_centi: 30805,
+        };
+        assert_ne!(saved, [251, 3588, 251, 30805]);
+        write_calibration(&mut c, id, &d, &set, false).unwrap();
+        let live: Vec<i32> = regs.iter().map(|&r| read(&mut c, id, r)).collect();
+        assert_eq!(live, [251, 3588, 251, 30805]);
+        c.reboot(id).unwrap();
+        let back: Vec<i32> = regs.iter().map(|&r| read(&mut c, id, r)).collect();
+        assert_eq!(back, saved);
     }
 
     /// The traverse on the bench servo the way cal drives it: a servo that

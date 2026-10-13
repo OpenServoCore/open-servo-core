@@ -18,6 +18,7 @@ use super::{AbortReason, Cmd, Experiment, GOVERNED, RigParams, WindowSample, Win
 use crate::fitmath::{linear_ls, origin_ls};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
+use crate::window::Watch;
 
 pub struct ResistanceCfg {
     /// Seek drive toward each end, q15 (26% clears the current window
@@ -267,14 +268,11 @@ impl Experiment for Resistance {
                 Cmd::Read
             }
             Phase::DwellEval => {
-                if let Some(o) = obs
-                    && let Some(w) = self.windows.push(o)
-                {
-                    self.samples.push(DwellSample {
-                        dwell: self.dwell,
-                        dir: self.dir(),
-                        w,
-                    });
+                if obs.is_some() {
+                    let (dwell, dir) = (self.dwell, self.dir());
+                    let ws = self.windows.drain();
+                    self.samples
+                        .extend(ws.into_iter().map(|(w, _)| DwellSample { dwell, dir, w }));
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
                 if self.polls_left == 0 {
@@ -332,6 +330,10 @@ impl Experiment for Resistance {
             }
             Phase::Finished => Cmd::Done,
         }
+    }
+
+    fn push_watch(&mut self, w: &Watch) {
+        self.windows.watch(w);
     }
 
     fn halted(&self) -> Option<AbortReason> {
@@ -395,10 +397,9 @@ mod tests {
         let zeros = log.iter().filter(|l| *l == "write goal_duty 0").count();
         assert!(zeros >= 8, "one rest per dwell, got {zeros}");
         // final safety pair
-        let tail: Vec<&String> = log.iter().rev().take(3).collect();
-        assert_eq!(*tail[2], "write goal_duty 0");
-        assert_eq!(*tail[1], "write torque_enable 0");
-        assert_eq!(*tail[0], "write ident_agg 0");
+        let tail: Vec<&String> = log.iter().rev().take(2).collect();
+        assert_eq!(*tail[1], "write goal_duty 0");
+        assert_eq!(*tail[0], "write torque_enable 0");
     }
 
     /// The first read an experiment was stepped with.
@@ -408,6 +409,10 @@ mod tests {
     }
 
     impl<E: Experiment> Experiment for First<E> {
+        fn push_watch(&mut self, w: &crate::window::Watch) {
+            self.exp.push_watch(w);
+        }
+
         fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
             if let Some(o) = obs {
                 self.pos.get_or_insert(o.pos);
@@ -447,10 +452,9 @@ mod tests {
                 "a dwell was commanded: {log:?}"
             );
             assert!(exp.into_inner().samples().is_empty());
-            let tail: Vec<&String> = log.iter().rev().take(3).collect();
-            assert_eq!(*tail[2], "write goal_duty 0");
-            assert_eq!(*tail[1], "write torque_enable 0");
-            assert_eq!(*tail[0], "write ident_agg 0");
+            let tail: Vec<&String> = log.iter().rev().take(2).collect();
+            assert_eq!(*tail[1], "write goal_duty 0");
+            assert_eq!(*tail[0], "write torque_enable 0");
         }
     }
 

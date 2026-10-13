@@ -9,7 +9,9 @@ use osc_protocol::tel;
 use crate::regs::{Reg, telemetry};
 
 /// One decoded read of the telemetry region. `base` is the gread start
-/// address; the slice must cover every field below or parse returns None.
+/// address; the slice must cover every region field below or parse returns
+/// None. The window fields are the host's own, filled by
+/// [`crate::window::Windows`]: parse leaves them 0.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct TelemetrySnapshot {
     /// When the region was read, ms on the host's clock: the driver stamps
@@ -37,14 +39,22 @@ pub struct TelemetrySnapshot {
     pub current: u16,
     pub current_trough: u16,
     pub current_bias_counts: u16,
+    pub limit_flags: u8,
+    pub window_floor_q15: u16,
+    /// The window streamed just before the read ([`crate::window`]): the
+    /// current's mean and extremes, counts, and the drive-window `va - vb`
+    /// mean.
     pub i_mean_counts: i16,
     pub i_min_counts: i16,
     pub i_max_counts: i16,
     pub vdiff_mean: i16,
-    pub duty_mean_q15: i16,
+    /// The window's applied duty mean, compare counts of
+    /// `pwm_period_ticks`.
+    pub duty_mean_counts: i16,
+    pub pwm_period_ticks: u16,
+    /// The window's number: `sample_tick` in windows at the read that
+    /// carried it, repeated by a read that formed none.
     pub agg_seq: u16,
-    pub limit_flags: u8,
-    pub window_floor_q15: u16,
 }
 
 fn get<const N: usize>(base: u16, bytes: &[u8], r: Reg) -> Option<[u8; N]> {
@@ -78,15 +88,21 @@ impl TelemetrySnapshot {
             current: u16::from_le_bytes(get(base, bytes, t::CURRENT)?),
             current_trough: u16::from_le_bytes(get(base, bytes, t::CURRENT_TROUGH)?),
             current_bias_counts: u16::from_le_bytes(get(base, bytes, t::CURRENT_BIAS_COUNTS)?),
-            i_mean_counts: i16::from_le_bytes(get(base, bytes, t::I_MEAN_COUNTS)?),
-            i_min_counts: i16::from_le_bytes(get(base, bytes, t::I_MIN_COUNTS)?),
-            i_max_counts: i16::from_le_bytes(get(base, bytes, t::I_MAX_COUNTS)?),
-            vdiff_mean: i16::from_le_bytes(get(base, bytes, t::VDIFF_MEAN)?),
-            duty_mean_q15: i16::from_le_bytes(get(base, bytes, t::DUTY_MEAN_Q15)?),
-            agg_seq: u16::from_le_bytes(get(base, bytes, t::AGG_SEQ)?),
             limit_flags: u8::from_le_bytes(get(base, bytes, t::LIMIT_FLAGS)?),
             window_floor_q15: u16::from_le_bytes(get(base, bytes, t::WINDOW_FLOOR_Q15)?),
+            ..Default::default()
         })
+    }
+
+    /// The window applied `goal_q15`: its duty mean is the goal's compare
+    /// count.
+    pub fn duty_is(&self, goal_q15: i16) -> bool {
+        self.duty_mean_counts == duty_counts(goal_q15, self.pwm_period_ticks)
+    }
+
+    /// The window's duty mean as Q15 of the PWM period.
+    pub fn duty_mean_q15(&self) -> f64 {
+        counts_q15(self.duty_mean_counts, self.pwm_period_ticks)
     }
 }
 
@@ -249,6 +265,7 @@ pub struct StreamAssembler {
     stamp: Option<(u16, u64)>,
     holes: u64,
     skipped: u64,
+    alert: bool,
 }
 
 impl StreamAssembler {
@@ -265,6 +282,7 @@ impl StreamAssembler {
             stamp: None,
             holes: 0,
             skipped: 0,
+            alert: false,
         })
     }
 
@@ -294,6 +312,7 @@ impl StreamAssembler {
             .stamp
             .map_or(0, |(s, t)| t + f.tick.wrapping_sub(s) as u64);
         self.stamp = Some((f.tick, tick));
+        self.alert |= f.alert;
         match decode_rows(self.mask, &f, tick) {
             Some(frames) => out.extend(frames),
             None => self.skipped += 1,
@@ -308,6 +327,11 @@ impl StreamAssembler {
     /// Statuses that were not decodable stream frames.
     pub fn skipped(&self) -> u64 {
         self.skipped
+    }
+
+    /// Some frame flagged a fault in its trailer.
+    pub fn alert(&self) -> bool {
+        self.alert
     }
 }
 
@@ -553,6 +577,28 @@ mod tests {
         assert_eq!(a.holes(), 0);
     }
 
+    /// A frame whose rows saw a fault flags it in its trailer, and the
+    /// burst carries it.
+    #[test]
+    fn assembler_carries_the_trailer_alert() {
+        let frame = |fault: bool| {
+            let rows: Vec<TelSample> = (0..4)
+                .map(|i| TelSample {
+                    fault: fault && i == 2,
+                    ..sample(i)
+                })
+                .collect();
+            let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+            let n = encode_stream(TEL_BIT_POS, 0, true, &rows, &mut buf);
+            buf[..n].to_vec()
+        };
+        for fault in [false, true] {
+            let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
+            a.push(true, &frame(fault), &mut Vec::new());
+            assert_eq!(a.alert(), fault);
+        }
+    }
+
     #[test]
     fn assembler_skips_non_stream_statuses() {
         let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
@@ -598,8 +644,6 @@ mod tests {
         put(&mut bytes, t::TAU_D_COUNTS, &(-42i16).to_le_bytes());
         put(&mut bytes, t::VBUS_COUNTS, &1713u16.to_le_bytes());
         put(&mut bytes, t::POS, &2421u16.to_le_bytes());
-        put(&mut bytes, t::I_MEAN_COUNTS, &(-33i16).to_le_bytes());
-        put(&mut bytes, t::AGG_SEQ, &513u16.to_le_bytes());
         put(&mut bytes, t::LIMIT_FLAGS, &[0x09]);
         put(&mut bytes, t::WINDOW_FLOOR_Q15, &4356u16.to_le_bytes());
         let s = TelemetrySnapshot::parse(base, &bytes).unwrap();
@@ -610,8 +654,6 @@ mod tests {
         assert_eq!(s.tau_d_counts, -42);
         assert_eq!(s.vbus_counts, 1713);
         assert_eq!(s.pos, 2421);
-        assert_eq!(s.i_mean_counts, -33);
-        assert_eq!(s.agg_seq, 513);
         assert_eq!(s.limit_flags, 0x09);
         assert_eq!(s.window_floor_q15, 4356);
 

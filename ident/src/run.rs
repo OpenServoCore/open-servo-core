@@ -1015,10 +1015,7 @@ mod tests {
                 && !rig.span(k + 1, rig.marks.len()).iter().any(permit)
         );
         let span = rig.span(k, k + 1);
-        assert_eq!(
-            span[span.len() - 2..],
-            ["write stall_permit 0", "write ident_agg 0"]
-        );
+        assert_eq!(span[span.len() - 1..], ["write stall_permit 0"]);
         assert!(servo.pressed_ms > 1000.0, "the stops were never stalled");
         assert!(!servo.torque && !servo.permit_live());
         assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
@@ -1611,10 +1608,7 @@ mod tests {
             log.iter().all(|l| !l.starts_with("burst")
                 && !(l.starts_with("stream") && l.contains("goal_duty")))
         );
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write torque_enable 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write torque_enable 0"]);
         assert!(!servo.torque && !servo.permit_live());
     }
 
@@ -1972,7 +1966,7 @@ mod tests {
              counts)"
         );
         let controls =
-            crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::IDENT_AGG.addr;
+            crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::BURST_CHANS.addr;
         for l in &rig.log {
             let l = if l.starts_with("stream ") {
                 "write tel_count"

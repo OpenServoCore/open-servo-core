@@ -17,6 +17,7 @@ use crate::fitmath::linear_ls;
 use crate::frame::TelemetrySnapshot;
 use crate::limits::{DutyPlan, Refusal, q15_floor};
 use crate::regs::control;
+use crate::window::Watch;
 
 /// Verify current, as its refusal names it.
 pub const VERIFY_CURRENT: &str = "verify current";
@@ -317,12 +318,12 @@ impl Experiment for VerifyCurrent {
                 Cmd::Read
             }
             CPhase::StepEval => {
-                if let Some(o) = obs
-                    && let Some(w) = self.windows.push(o)
-                    && let Some(c) = self.cur.as_mut()
-                {
-                    c.t0.get_or_insert(w.t_ms);
-                    c.windows.push(w);
+                let ws = obs.map(|_| self.windows.drain()).unwrap_or_default();
+                if let Some(c) = self.cur.as_mut() {
+                    for (w, _) in ws {
+                        c.t0.get_or_insert(w.t_ms);
+                        c.windows.push(w);
+                    }
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
                 if self.polls_left == 0 {
@@ -389,6 +390,10 @@ impl Experiment for VerifyCurrent {
             }
             CPhase::Finished => Cmd::Done,
         }
+    }
+
+    fn push_watch(&mut self, w: &Watch) {
+        self.windows.watch(w);
     }
 
     fn halted(&self) -> Option<AbortReason> {
@@ -794,6 +799,7 @@ mod tests {
     use crate::exp::{Guarded, Permitted};
     use crate::limits::{ServoLimits, stall_counts};
     use crate::regs::control;
+    use crate::window::{Watched, Window};
 
     const R: f64 = 7270.0 / 4096.0;
     const RAIL_2S: u16 = 3204;
@@ -824,7 +830,7 @@ mod tests {
     }
 
     /// Scripted E5: the "servo" sits at the stop each seek drives at and
-    /// echoes the last goal_current into i_mean with a fixed -5% bias.
+    /// watches the last goal_current as its window current, a fixed 5% low.
     #[test]
     fn current_verify_measures_settle_and_error() {
         let cfg = VerifyCurrentCfg::planned(&plan(RAIL_USB), 4356).unwrap();
@@ -846,17 +852,31 @@ mod tests {
                     log.push((reg, value));
                 }
                 Cmd::Read => {
-                    seq.set(seq.get().wrapping_add(1));
                     pending = Some(TelemetrySnapshot {
                         host_ms: seq.get() as f64 * 2.0,
                         pos: pos.get(),
-                        agg_seq: seq.get(),
-                        i_mean_counts: (goal.get() as f64 * 0.95) as i16,
-                        duty_mean_q15: if goal.get() != 0 { 6000 } else { 0 },
                         ..Default::default()
                     });
                 }
-                Cmd::Pause { .. } => {}
+                Cmd::Pause { .. } => {
+                    seq.set(seq.get().wrapping_add(1));
+                    let window = Window {
+                        i_mean: (goal.get() as f64 * 0.95) as i16,
+                        duty_mean: if goal.get() != 0 { 220 } else { 0 },
+                        ..Default::default()
+                    };
+                    exp.push_watch(&Watch {
+                        windows: vec![Watched {
+                            window,
+                            seq: seq.get() as u64,
+                            t_ms: seq.get() as f64 * 2.0,
+                            pos: Some(pos.get()),
+                        }],
+                        pos: Some((pos.get(), pos.get())),
+                        pwm_period_ticks: 1200,
+                        ..Default::default()
+                    });
+                }
                 Cmd::Stream { .. } | Cmd::Burst { .. } => unreachable!("verify never streams"),
                 Cmd::Done => break,
             }
@@ -1058,10 +1078,7 @@ mod tests {
             writes(&log, "goal_current").is_empty(),
             "no step on a blocked shaft"
         );
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write stall_permit 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write stall_permit 0"]);
         assert!(!servo.torque && !servo.permit_live());
 
         let mut servo = bench_mg90(RAIL_USB);

@@ -1,8 +1,8 @@
 //! The servo a drive talks to: its table over the bus for everything that
-//! moves nothing, and the four moves a drive makes - a write, a telemetry
-//! read, a TEL burst, a wait - on the one clock the servo moves on. On the
-//! bus that clock is the wall; a test servo keeps its own. Every TEL burst
-//! carries the rows the servo dropped from it, read off its table.
+//! moves nothing, and the moves a drive makes - a write, a telemetry read,
+//! a watch, a TEL burst, a wait - on the one clock the servo moves on. On
+//! the bus that clock is the wall; a test servo keeps its own. Every TEL
+//! burst carries the rows the servo dropped from it, read off its table.
 
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,9 @@ use osc_client::pipe::Pipe;
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 use osc_ident::regs::{Reg, calib, control, telemetry};
 
-use super::pump::{BurstStats, exchange_tel_burst, read_stamped, write_reg};
+use super::pump::{
+    BurstStats, admit_watch, exchange_tel_burst, read_stamped, watch_rows_on, write_reg,
+};
 use super::snapshot::read_u16;
 
 pub(crate) trait Servo {
@@ -36,6 +38,23 @@ pub(crate) trait Servo {
         mask: u16,
     ) -> Result<(Vec<TelFrame>, BurstStats)>;
     fn sleep(&mut self, ms: u32);
+
+    /// One watch burst of `rows` under the `mask` the servo holds
+    /// ([`osc_ident::window`]): its rows, and whether a frame flagged a
+    /// fault.
+    fn watch(&mut self, rows: u16, mask: u16) -> Result<(Vec<TelFrame>, bool)>;
+
+    /// What the line carries a watch in: [`admit_watch`].
+    fn watch_mask(&mut self) -> Result<u16> {
+        let id = self.id();
+        admit_watch(self.client(), id)
+    }
+
+    /// The servo's fast tick rate, Hz: one TEL row each.
+    fn tick_hz(&mut self) -> Result<f64> {
+        let id = self.id();
+        Ok(read_u16(self.client(), id, calib::TICK_HZ)? as f64)
+    }
 
     /// The PWM period the servo's TEL duty counts are of.
     fn pwm_period_ticks(&mut self) -> Result<u16> {
@@ -98,6 +117,18 @@ impl<S: Servo + ?Sized> Servo for &mut S {
 
     fn sleep(&mut self, ms: u32) {
         (**self).sleep(ms)
+    }
+
+    fn watch(&mut self, rows: u16, mask: u16) -> Result<(Vec<TelFrame>, bool)> {
+        (**self).watch(rows, mask)
+    }
+
+    fn watch_mask(&mut self) -> Result<u16> {
+        (**self).watch_mask()
+    }
+
+    fn tick_hz(&mut self) -> Result<f64> {
+        (**self).tick_hz()
     }
 }
 
@@ -173,11 +204,15 @@ impl<C: AsClient> Servo for Wire<C> {
     fn sleep(&mut self, ms: u32) {
         std::thread::sleep(Duration::from_millis(ms as u64));
     }
+
+    /// No admission read: the run's first watch admitted the line.
+    fn watch(&mut self, rows: u16, mask: u16) -> Result<(Vec<TelFrame>, bool)> {
+        watch_rows_on(self.c.get(), self.id, rows, mask)
+    }
 }
 
 /// Run `f`, then force the servo safe (duty and goals zero, torque, stall
-/// permit, TEL and the ident aggregate off) whether it succeeded, failed,
-/// or was ctrl-c'd.
+/// permit and TEL off) whether it succeeded, failed, or was ctrl-c'd.
 pub(crate) fn guard<S: Servo, T>(s: &mut S, f: impl FnOnce(&mut S) -> Result<T>) -> Result<T> {
     let r = f(s);
     for (reg, v) in SAFE {
@@ -187,7 +222,7 @@ pub(crate) fn guard<S: Servo, T>(s: &mut S, f: impl FnOnce(&mut S) -> Result<T>)
 }
 
 /// What leaves a servo safe, in the order it is written.
-pub(crate) const SAFE: [(Reg, i32); 8] = [
+pub(crate) const SAFE: [(Reg, i32); 7] = [
     (control::GOAL_DUTY, 0),
     (control::GOAL_CURRENT, 0),
     (control::GOAL_VELOCITY, 0),
@@ -195,7 +230,6 @@ pub(crate) const SAFE: [(Reg, i32); 8] = [
     (control::STALL_PERMIT, 0),
     (control::TEL_COUNT, 0),
     (control::TEL_MASK, 0),
-    (control::IDENT_AGG, 0),
 ];
 
 /// The bench servo in-process: its table is the in-process servo stack's,
@@ -368,12 +402,30 @@ pub(crate) mod bench {
             Ok(())
         }
 
+        /// The region read: one of a poll's two transactions.
         fn snapshot(&mut self) -> Result<TelemetrySnapshot> {
-            let half = self.bus.read_ms / 2.0;
-            self.busy(half, 1.0);
+            let quarter = self.bus.read_ms / 4.0;
+            self.busy(quarter, 0.5);
             let snap = self.servo.read();
-            self.busy(half, 1.0);
+            self.busy(quarter, 0.5);
             Ok(snap)
+        }
+
+        /// The watch's arm, the other transaction, then its rows.
+        fn watch(&mut self, rows: u16, _mask: u16) -> Result<(Vec<TelFrame>, bool)> {
+            self.busy(self.bus.read_ms / 2.0, 1.0);
+            let mut frames = Vec::new();
+            let alert = self.servo.watch(rows, &mut frames);
+            Ok((frames, alert))
+        }
+
+        /// The test servo streams the whole watch.
+        fn watch_mask(&mut self) -> Result<u16> {
+            Ok(crate::rig::pump::WATCH_FIELDS)
+        }
+
+        fn tick_hz(&mut self) -> Result<f64> {
+            Ok(self.servo.tick_hz())
         }
 
         /// The rows the test servo drops land in the table's

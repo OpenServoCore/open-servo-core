@@ -1150,10 +1150,7 @@ mod tests {
             .expect("a drive");
         assert!(at(log, "write torque_enable 1") < at(log, "write stall_permit 1"));
         assert!(at(log, "write stall_permit 1") < first_drive);
-        assert_eq!(
-            log[log.len() - 2..],
-            ["write stall_permit 0", "write ident_agg 0"]
-        );
+        assert_eq!(log[log.len() - 1..], ["write stall_permit 0"]);
         assert!(log.contains(&"write torque_enable 0".to_string()));
     }
 
@@ -1163,11 +1160,10 @@ mod tests {
         let (exp, log) = run(&mut s);
         assert!(exp.abort().is_none(), "{:?}", exp.abort());
         permit_brackets(&log);
-        let tail: Vec<&str> = log.iter().rev().take(4).map(String::as_str).collect();
+        let tail: Vec<&str> = log.iter().rev().take(3).map(String::as_str).collect();
         assert_eq!(
             tail,
             [
-                "write ident_agg 0",
                 "write stall_permit 0",
                 "write torque_enable 0",
                 "write goal_duty 0"
@@ -1282,11 +1278,10 @@ mod tests {
         assert!(matches!(exp.abort(), Some(AbortReason::Fault { .. })));
         permit_brackets(&log);
         assert!(!s.permit);
-        let tail: Vec<&str> = log.iter().rev().take(4).map(String::as_str).collect();
+        let tail: Vec<&str> = log.iter().rev().take(3).map(String::as_str).collect();
         assert_eq!(
             tail,
             [
-                "write ident_agg 0",
                 "write stall_permit 0",
                 "write torque_enable 0",
                 "write goal_duty 0"
