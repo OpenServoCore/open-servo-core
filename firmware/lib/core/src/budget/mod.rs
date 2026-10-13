@@ -31,14 +31,14 @@ pub mod probe;
 #[cfg(test)]
 mod tests;
 
-use crate::kernel::{DECIM_MED, phase};
+use osc_protocol::wire::LAW_BREAK_BIT_TIMES;
+
+use crate::kernel::{DECIM_MED, TICK_HZ};
 
 /// The clock every budget counts: the chip's HCLK (the chip asserts it).
 pub const CLOCK_HZ: u32 = 48_000_000;
 pub const TICKS_PER_US: u32 = CLOCK_HZ / 1_000_000;
 
-/// Kernel tick rate, one ADC scan per PWM period (the chip asserts it).
-pub const TICK_HZ: u32 = 20_000;
 pub const TICK_PERIOD: u32 = CLOCK_HZ / TICK_HZ;
 
 /// Medium phases per period; index = `kernel::phase` (8 and 9 run the fast
@@ -87,10 +87,10 @@ pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
 pub const MEAN_MIN_BODIES: u32 = 100;
 
 /// The configuration take after a write, on top of [`KERNEL`], at most once
-/// per period, at phase THERM_INSTALL and in place of the thermometer's
+/// per period, at phase SPARE_A and in place of the thermometer's
 /// stage there: the input span's word copy, the Ke belt, the thermometer's
 /// config, its bound and the terminal floor's store. It carries no TEL row:
-/// a burst starts neither on THERM_INSTALL nor while a take is pending, and
+/// a burst starts neither on SPARE_A nor while a take is pending, and
 /// the host is silent through one. E: 557, the take and the bound it calls
 /// on the release disassembly with the fetch model (load/store 3.25, ALU 2,
 /// mul 10, taken transfer 6, call and return 12 HCLK; 84 loads and stores,
@@ -221,7 +221,7 @@ pub const SLOW_CLOSE: u32 = 363;
 pub const THERM_INSTALL: u32 = 585;
 pub const THERM_SIDE: u32 = 639;
 
-/// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, on top
+/// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
 /// HEALTH_CLOSE, M: r3-refill, the closing ticks' maximum over the plain
 /// maximum (in the TEL windows over the TEL ticks'), either regime, every
@@ -229,27 +229,7 @@ pub const THERM_SIDE: u32 = 639;
 /// 159 in the TEL windows). The probe books a close ahead of a bank, so
 /// that cell may hold a bank too. CATCH_UP, E: priced on the executed path.
 pub const HEALTH_CLOSE: u32 = 276;
-pub const HEALTH_CLOSE_TICKS: u32 = 2 * PHASES as u32;
 pub const CATCH_UP: u32 = 111;
-
-/// The phase every tick-load close lands on: the lightest Closed phase that
-/// carries no SLOW or thermometer stage and no configuration take.
-pub const HEALTH_CLOSE_PHASE: u8 = phase::PUBLISH;
-
-const _: () = assert!((HEALTH_CLOSE_TICKS as usize).is_multiple_of(PHASES));
-
-/// Whether executed tick `tick` closes a tick-load window. The chip counts
-/// executed ticks from the boot tick, which runs phase CONTROL, and a shunt
-/// burst runs no tick and keeps the count, so tick `tick` runs phase
-/// `tick` modulo [`PHASES`]; the first close only sets the mark.
-pub const fn health_close_at(tick: u64) -> bool {
-    tick % HEALTH_CLOSE_TICKS as u64 == HEALTH_CLOSE_PHASE as u64
-}
-
-/// Whether a tick-load close can land on `phase` ([`health_close_at`]).
-pub const fn health_close_lands(phase: usize) -> bool {
-    phase % PHASES == HEALTH_CLOSE_PHASE as usize
-}
 
 /// Interrupt entry and exit around a stamped body: trampoline and prologue
 /// to the entry stamp, epilogue and exit after the exit stamp. M: 37 + 43
@@ -411,10 +391,6 @@ pub const fn frame_mean(f: Frame) -> u32 {
 /// The rate the bus budgets are set at (the fleet rate).
 pub const BUDGET_BAUD_HZ: u32 = 3_000_000;
 
-/// The law break the trigger spins out: a bracketed 9-bit 0x00 through its
-/// stop bit (protocol sec 3).
-pub const LAW_BREAK_BIT_TIMES: u32 = 11;
-
 /// The extra spin a trigger body (and so its frame) takes at `baud_hz` over
 /// the [`BUDGET_BAUD_HZ`] budget. Host-side: it divides.
 pub const fn spin_extra(baud_hz: u32) -> u32 {
@@ -471,7 +447,7 @@ pub struct Events {
     pub slow: bool,
     pub finish: bool,
     pub close: bool,
-    /// The thermometer's stages on phases THERM_INSTALL and THERM_SIDE.
+    /// The thermometer's stages on phases SPARE_A and SPARE_B.
     pub install: bool,
     pub side: bool,
     /// The tick-load counters closed a window.

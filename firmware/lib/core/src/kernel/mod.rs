@@ -16,7 +16,7 @@
 //! CONTROL phase. The tick index is the sample clock: every executed tick is
 //! one period, and nothing reads a wall clock. CONFIG and CALIB reach the
 //! tick through the kernel's own copy (`config`), taken whole at
-//! THERM_INSTALL after a commit and never under one, so a configuration
+//! SPARE_A after a commit and never under one, so a configuration
 //! write takes effect within a medium period, or one more when the tick
 //! lands inside the next commit.
 
@@ -28,14 +28,18 @@ pub mod faults;
 pub mod limits;
 mod medium;
 pub mod position;
+mod scheduler;
 pub mod trajectory;
 pub mod velocity;
 
 pub use config::{KernelConfig, SPAN_END, SPAN_START};
 pub use current::CurrentLoop;
 pub use limits::{IBand, LimitState};
-pub use medium::phase;
 pub use position::PosOut;
+pub use scheduler::table::{
+    DECIM_MED, DECIM_SLOW, HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, TICK_HZ, health_close_at,
+    health_close_lands, phase,
+};
 pub use trajectory::TrajGen;
 pub use velocity::VelocityLoop;
 
@@ -48,15 +52,6 @@ use crate::tel::TelStream;
 use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
 
-/// FAST -> MEDIUM decimation: MED_HZ = tick_hz / DECIM_MED (2 kHz at 20 kHz).
-pub const DECIM_MED: u8 = 10;
-const _: () = assert!(
-    medium::phase::PUBLISH < medium::phase::THERM_INSTALL
-        && medium::phase::THERM_INSTALL < medium::phase::THERM_SIDE
-        && medium::phase::THERM_SIDE < DECIM_MED
-);
-/// MEDIUM -> SLOW decimation: SLOW_HZ = MED_HZ / DECIM_SLOW (62.5 Hz).
-pub const DECIM_SLOW: u8 = 32;
 /// Stall permit lease in SLOW ticks: 63 x 16 ms = 1.008 s from the grant.
 pub const PERMIT_LEASE_TICKS: u8 = 63;
 /// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
@@ -132,7 +127,7 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     cfg: KernelConfig,
     /// The `Shared::config_seq` value `cfg` was taken at.
     config_seq: u8,
-    /// The medium phase the next tick runs (`medium::phase`).
+    /// The medium phase the next tick runs (`phase`).
     phase: u8,
     booted: bool,
     /// Shared by both halves: a raise on either disables the same tick's
@@ -160,7 +155,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             config_seq: 0,
             // the FIRST tick runs the CONTROL phase: the configuration and
             // the seeds exist before any other phase sees them
-            phase: medium::phase::CONTROL,
+            phase: phase::CONTROL,
             booted: false,
             faults: faults::FaultLatch::new(),
             fast: Fast::new(&timing),
@@ -237,9 +232,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             phase: self.phase,
             config_seq: self.config_seq,
             booted: self.booted,
-            slow_due: self.phase == medium::phase::SLOW
-                && self.medium.slow_periods + 1 >= DECIM_SLOW,
-            slow_finish: self.phase == medium::phase::SLOW && self.medium.slow_periods == 0,
+            slow_due: self.phase == phase::SLOW && self.medium.slow_periods + 1 >= DECIM_SLOW,
+            slow_finish: self.phase == phase::SLOW && self.medium.slow_periods == 0,
             therm: self.medium.thermal.pending(),
             closed: self.faults.mask() == 0 && matches!(self.cmd.drive, fast::Drive::Closed { .. }),
         }
@@ -267,11 +261,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // tick holds the TX lane; a take does not, as one can run every
         // period.
         match phase {
-            medium::phase::CONTROL if !self.booted => self.boot(shared),
-            medium::phase::THERM_INSTALL if config_due(shared.config_seq(), self.config_seq) => {
+            phase::CONTROL if !self.booted => self.boot(shared),
+            phase::SPARE_A if config_due(shared.config_seq(), self.config_seq) => {
                 self.take_config(shared)
             }
-            medium::phase::THERM_INSTALL | medium::phase::THERM_SIDE
+            phase::SPARE_A | phase::SPARE_B
                 if self.medium.thermal.pending() != 0 && self.medium.slow_periods != 1 =>
             {
                 let ran = self
@@ -286,9 +280,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let meas = self.fast.measure(&self.cfg, &mut self.faults, shared);
         // No burst starts on the take's phase, nor while a take is pending.
         // Asked only at a start: a count read every tick costs every tick.
-        self.tel.on_tick(|| {
-            phase == medium::phase::THERM_INSTALL || shared.config_seq() != self.config_seq
-        });
+        self.tel
+            .on_tick(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
         let staged = self.medium.step(
             phase,
             &meas,
@@ -310,7 +303,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
 
 /// A count the kernel has not taken, and even: no commit under way. On odd
 /// the kernel keeps its set and looks again at the next period's
-/// THERM_INSTALL; it never waits on the bus.
+/// SPARE_A; it never waits on the bus.
 fn config_due(seq: u8, taken: u8) -> bool {
     seq & 1 == 0 && seq != taken
 }

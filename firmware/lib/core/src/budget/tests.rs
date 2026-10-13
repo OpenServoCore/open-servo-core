@@ -3,6 +3,7 @@ use super::probe::{
     TelStep, TelTally, Windows, rows,
 };
 use super::*;
+use crate::kernel::{HEALTH_CLOSE_TICKS, health_close_at, health_close_lands, phase};
 
 const PLAIN: Events = Events {
     refresh: false,
@@ -514,7 +515,7 @@ fn a_configuration_take_charges_its_row() {
         refresh: true,
         ..PLAIN
     };
-    let (closed, p) = (Regime::Closed as usize, phase::THERM_INSTALL as usize);
+    let (closed, p) = (Regime::Closed as usize, phase::SPARE_A as usize);
     assert_eq!(
         kernel_tick(Regime::Closed, p, refresh),
         KERNEL[closed][p] + TICK_PUBLISH[closed][p] + LAYOUT + REFRESH
@@ -570,14 +571,14 @@ fn a_stage_tick_holds_the_tel_lane() {
             },
         ),
         (
-            phase::THERM_INSTALL,
+            phase::SPARE_A,
             Events {
                 install: true,
                 ..PLAIN
             },
         ),
         (
-            phase::THERM_SIDE,
+            phase::SPARE_B,
             Events {
                 side: true,
                 ..PLAIN
@@ -606,7 +607,7 @@ fn a_stage_tick_holds_the_tel_lane() {
         refresh: true,
         ..tel
     };
-    let p = phase::THERM_INSTALL as usize;
+    let p = phase::SPARE_A as usize;
     let lane = kernel_tick(closed, p, refresh)
         - kernel_tick(
             closed,

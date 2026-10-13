@@ -14,13 +14,13 @@ use osc_servo_core::budget::{self, Body};
 use osc_servo_core::budget::{Events, Regime, probe::KernelProbe};
 #[cfg(feature = "bench")]
 use osc_servo_core::estimator::thermal::stage;
-use osc_servo_core::kernel::ProbeTags;
+use osc_servo_core::kernel::{ProbeTags, TICK_HZ};
 
 #[cfg(feature = "bench")]
 use crate::hal::systick;
 
 const _: () = assert!(crate::hal::clocks::HCLK_HZ == budget::CLOCK_HZ);
-const _: () = assert!(crate::cfg::chip::MOTOR_PWM_FREQ_HZ == budget::TICK_HZ);
+const _: () = assert!(crate::cfg::chip::MOTOR_PWM_FREQ_HZ == TICK_HZ);
 
 #[cfg(feature = "bench")]
 #[unsafe(no_mangle)]

@@ -333,12 +333,12 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
         });
         sh.config_commit_end();
         // tick n runs medium phase n % DECIM_MED; the write reaches the
-        // kernel at the next THERM_INSTALL, and the belt latches at the
+        // kernel at the next SPARE_A, and the belt latches at the
         // CONTROL phase after it
         let ticks = 200 + RUN + phase;
         let med = DECIM_MED as u32;
-        let stage = (kernel_phase::THERM_INSTALL as u32 + med - ticks % med) % med;
-        let boundary = (stage + med - kernel_phase::THERM_INSTALL as u32) as usize;
+        let stage = (kernel_phase::SPARE_A as u32 + med - ticks % med) % med;
+        let boundary = (stage + med - kernel_phase::SPARE_A as u32) as usize;
         let published = boundary + kernel_phase::PUBLISH as usize;
         for n in 0..2 * DECIM_MED as usize {
             let cmd = rig.run(&sh, 1)[0];

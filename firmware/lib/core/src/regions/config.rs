@@ -355,12 +355,12 @@ impl CurrentDefaults {
 
 const ADC_COUNTS_PER_VDD: u64 = 4096;
 
-/// Kernel ticks in `ms` at `budget::TICK_HZ`, the rate the chip asserts.
+/// Kernel ticks in `ms` at `kernel::TICK_HZ`, the rate the chip asserts.
 pub const fn ms_ticks(ms: u32) -> u32 {
-    ms * (crate::budget::TICK_HZ / 1000)
+    ms * (crate::kernel::TICK_HZ / 1000)
 }
 
-const _: () = assert!(crate::budget::TICK_HZ.is_multiple_of(1000));
+const _: () = assert!(crate::kernel::TICK_HZ.is_multiple_of(1000));
 
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
 /// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4

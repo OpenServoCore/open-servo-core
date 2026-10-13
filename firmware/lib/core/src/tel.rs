@@ -12,9 +12,7 @@
 //!                      table layout; the count is in LEN
 
 pub use osc_protocol::tel::{BAUD, CHUNKS_MAX, Chunk, Chunks, ROW_BYTES_MAX};
-use osc_protocol::wire;
-
-use crate::budget::LAW_BREAK_BIT_TIMES;
+use osc_protocol::wire::{self, LAW_BREAK_BIT_TIMES};
 
 /// The TEL `duty` a logical Q15 duty drives at `pwm_arr`: the kernel's
 /// `window::drive_ticks` width, negative in reverse. Hosts quantize a goal
@@ -44,9 +42,9 @@ pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
 
 /// The longest burst a `tel_count` write arms: one second of control
 /// ticks. The host is silent for the whole burst (protocol sec 5.6).
-pub const BURST_ROWS_MAX: u16 = crate::budget::TICK_HZ as u16;
+pub const BURST_ROWS_MAX: u16 = crate::kernel::TICK_HZ as u16;
 
-const _: () = assert!(crate::budget::TICK_HZ <= u16::MAX as u32);
+const _: () = assert!(crate::kernel::TICK_HZ <= u16::MAX as u32);
 
 pub const STREAM_HDR: usize = wire::STREAM_HDR;
 
@@ -58,7 +56,7 @@ pub const LANE_TICKS: usize = 2;
 /// A full frame of `row`-byte rows, break to CRC, clears the [`BAUD`] wire
 /// inside its batch's ticks less [`LANE_TICKS`].
 pub const fn frame_fits(row: usize) -> bool {
-    let tick_bits = BAUD.as_hz() / crate::budget::TICK_HZ;
+    let tick_bits = BAUD.as_hz() / crate::kernel::TICK_HZ;
     let bits = (STREAM_SAMPLES_MAX - LANE_TICKS) as u32 * tick_bits;
     let chars = (bits.saturating_sub(LAW_BREAK_BIT_TIMES) / wire::CHAR_BIT_TIMES) as usize;
     // ID, LEN, INST and CRC around the payload (sec 3.1).

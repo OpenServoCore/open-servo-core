@@ -11,41 +11,12 @@ use super::faults::{self, Detectors, FaultLatch};
 use super::limits::{self, IBand, LimitState};
 use super::trajectory::TrajGen;
 use super::velocity::VelocityLoop;
-use super::{DECIM_SLOW, KernelTiming, PERMIT_LEASE_TICKS, current, position};
+use super::{DECIM_SLOW, KernelTiming, PERMIT_LEASE_TICKS, current, phase, position};
 use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm, bemf, thermal};
 use crate::math::{q_mul, q_mul_u};
 use crate::pos_lut;
 use crate::regions::control::{ControlLifecycle, Mode};
 use crate::{Frame, RegionStorageRaw, Shared};
-
-/// The stages of the medium chain, in data-flow order.
-pub mod phase {
-    /// Configuration, CONTROL, the edges and the drive kind.
-    pub const CONTROL: u8 = 0;
-    /// Back-EMF close, observer step, speed source switch.
-    pub const OBSERVER: u8 = 1;
-    /// Trajectory and position loop; the hold updates the drive kind.
-    pub const TRAJECTORY: u8 = 2;
-    /// Limits fold, OpenLoop base duty, stall fault.
-    pub const LIMITS: u8 = 3;
-    /// Velocity loop or the current clamp; reference and band land.
-    pub const VELOCITY: u8 = 4;
-    /// Rail estimate, sensor screen, position error timer.
-    pub const RAIL: u8 = 5;
-    /// The slow block, every DECIM_SLOW periods, and the thermometer's
-    /// finish one period later.
-    pub const SLOW: u8 = 6;
-    /// Estimates, mode, limits and sensors publish.
-    pub const PUBLISH: u8 = 7;
-    /// The period after the thermometer's finish: the install of a
-    /// reference it froze; a configuration take has it first. A stage whose
-    /// phase another stage takes waits a period: its pending bit carries
-    /// it.
-    pub const THERM_INSTALL: u8 = 8;
-    /// The NTC the period before a SLOW tick; the period after the finish,
-    /// the derate from its temperature and the cold check after an install.
-    pub const THERM_SIDE: u8 = 9;
-}
 
 /// One read of CONTROL.
 #[derive(Copy, Clone, Default)]
@@ -577,7 +548,7 @@ impl Medium {
     fn slow_finish(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch) {
         let t_cc = self.thermal.finish(&cfg.therm);
         // the fold reads the derate from the next period's LIMITS on, so it
-        // waits for THERM_SIDE; UNSET_CC sits under every threshold: no
+        // waits for SPARE_B; UNSET_CC sits under every threshold: no
         // derate, no cutoff
         self.thermal.request(thermal::stage::DERATE);
         if t_cc >= cfg.thermal.cutoff_cc {
@@ -585,10 +556,10 @@ impl Medium {
         }
     }
 
-    /// THERM_INSTALL and THERM_SIDE, while the thermometer has work; whether
+    /// SPARE_A and SPARE_B, while the thermometer has work; whether
     /// a stage ran.
     pub(super) fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) -> bool {
-        if k == phase::THERM_INSTALL {
+        if k == phase::SPARE_A {
             let due = self.thermal.pending() & thermal::stage::INSTALL != 0;
             self.thermal.install();
             return due;
