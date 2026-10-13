@@ -20,6 +20,7 @@ impl<P: Providers> ServoBus<P> {
     /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
     /// are never starved by a deep backlog; `false` then, `true` once the
     /// ring is drained to the frontier.
+    #[rustc_align(4)]
     pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) -> bool {
         for _ in 0..super::FRAMES_PER_WAKE {
             // Own TX holds the one CRC engine until its release, and a frame
@@ -83,6 +84,7 @@ impl<P: Providers> ServoBus<P> {
         false
     }
 
+    #[rustc_align(4)]
     pub(super) fn route_chain(&mut self, mut out: ChainOut) {
         loop {
             match out {
@@ -138,6 +140,7 @@ impl<P: Providers> ServoBus<P> {
     /// reply pipeline check the CRC first, then dispatch. A frontier frame that
     /// lands in the verdict-first path just defers -- its frame end arrives here
     /// `complete`.
+    #[rustc_align(4)]
     fn route_frame<D: Dispatch>(&mut self, span: FrameSpan, complete: bool, d: &mut D) {
         let anchor = span.anchor;
         let footprint = span.footprint;
@@ -245,6 +248,7 @@ impl<P: Providers> ServoBus<P> {
     /// The verdict on a whole frame with no staged effects: a fail drops
     /// silently (sec 5.3 L1), the hunt resuming one byte in (sec 3.3); a pass
     /// trusts the ladder again.
+    #[rustc_align(4)]
     fn crc_gate(&mut self, anchor: u16, footprint: u16) -> bool {
         if !self.crc_ok(anchor, footprint) {
             if !self.framer.probing() {
@@ -263,6 +267,7 @@ impl<P: Providers> ServoBus<P> {
     /// (or spin miss) -> revert the write (REVERT), drop the reply
     /// (DON'T-SEND), count, and rewind the ladder (sec 5.3 L1).
     #[cfg_attr(target_arch = "riscv32", inline(never))]
+    #[rustc_align(4)]
     fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
         if !self.crc_verify(p.anchor, p.footprint) {
             if p.table {
@@ -297,6 +302,7 @@ impl<P: Providers> ServoBus<P> {
     /// Sequence a staged reply onto the snoop chain. reply gap is a wire gap
     /// measured from the packet end (sec 7), not from this (later) verify wake --
     /// the estimate is the framer's, conservative by the drift adder.
+    #[rustc_align(4)]
     fn sequence_reply(&mut self, slot: Slot, packet_end: u32) {
         // sec 9.2 slot delay: a collision-tolerant reply offsets its trigger by
         // (key ^ tick) & (SLOTS-1) byte-times. Twin matchers run

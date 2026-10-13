@@ -58,6 +58,7 @@ impl BusDispatcher {
 }
 
 impl Dispatch for BusDispatcher {
+    #[rustc_align(4)]
     fn dispatch<R: Reply>(
         &mut self,
         req: Request<'_>,
@@ -68,6 +69,7 @@ impl Dispatch for BusDispatcher {
         self.with(|d| d.dispatch(req, ctx, reply))
     }
 
+    #[rustc_align(4)]
     unsafe fn commit<R: Reply>(&mut self, reply: &mut R) {
         // SAFETY: forwarded contract.
         self.with(|d| unsafe { d.commit(reply) })

@@ -190,6 +190,7 @@ impl Shared {
     /// posted COMMIT: the array is loading again, and only the next COMMIT
     /// judges it. Bus dispatch only; one copy behind both commit sites.
     #[inline(never)]
+    #[rustc_align(4)]
     pub fn pos_lut_after_commit(&self, addr: u16, len: u16) {
         if addr > POS_LUT_CMD || addr.saturating_add(len) <= POS_LUT_CMD {
             return;

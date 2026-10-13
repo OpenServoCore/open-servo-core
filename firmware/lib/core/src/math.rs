@@ -95,6 +95,7 @@ const SEED_C2_Q30: u32 = 2_021_161_080; // round(32/17 << 30)
 /// out-of-line body: every caller is slow-rate or a config load, and an
 /// inlined copy costs ~160 B of flash per site.
 #[inline(never)]
+#[rustc_align(4)]
 pub fn recip_div(num: u32, d: u32) -> u32 {
     if d <= 1 {
         return num;

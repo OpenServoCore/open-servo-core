@@ -179,6 +179,7 @@ impl<'a> View<'a> {
     /// sites measured zero gain for +146 B -- the cost is the loads, not the
     /// call.
     #[inline(never)]
+    #[rustc_align(4)]
     pub fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
         let lo = addr as usize;
         let hi = match lo.checked_add(len) {
@@ -208,6 +209,7 @@ impl<'a> View<'a> {
     /// Overlay-edge straddles and seam splits: pick each byte from live
     /// storage, `o1`, or `o2`. Bounds pre-checked by [`Self::read_fixed`].
     #[cold]
+    #[rustc_align(4)]
     fn read_mixed(&self, lo: usize, len: usize, o_lo: usize, split: usize, o_hi: usize) -> [u8; 4] {
         let mut out = [0u8; 4];
         for (i, slot) in out.iter_mut().take(len).enumerate() {
@@ -313,6 +315,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
 /// # Safety
 /// `dst` must be valid for `head.len() + tail.len()` byte writes.
 #[inline(never)]
+#[rustc_align(4)]
 unsafe fn store_units(dst: *mut u8, head: &[u8], tail: &[u8]) {
     if !tail.is_empty() {
         // SAFETY: forwarded.
@@ -343,6 +346,7 @@ unsafe fn store_units(dst: *mut u8, head: &[u8], tail: &[u8]) {
 /// As [`store_units`].
 #[cold]
 #[inline(never)]
+#[rustc_align(4)]
 unsafe fn store_seam(dst: *mut u8, head: &[u8], tail: &[u8]) {
     let mut word = [0u8; 4];
     let (pre, n, post) = seam_split(dst as usize, head, tail, &mut word);

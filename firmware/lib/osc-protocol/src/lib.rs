@@ -6,6 +6,7 @@
 //! this crate owns layout -- `#[repr(C)]` views, offset arithmetic, and the
 //! osc-CRC-16 definition.
 #![no_std]
+#![feature(fn_align)]
 
 pub mod build;
 pub mod bytes;

@@ -160,6 +160,7 @@ impl Shared {
     /// the kernel reads the flags at its next entry. Bus dispatch only;
     /// one copy behind both commit sites, O(1).
     #[inline(never)]
+    #[rustc_align(4)]
     pub fn data_state_after_commit(&self, addr: u16, len: u16) {
         let end = addr.saturating_add(len);
         if addr <= TORQUE_ENABLE && end > TORQUE_ENABLE {

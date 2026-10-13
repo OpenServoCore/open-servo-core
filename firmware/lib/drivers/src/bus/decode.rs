@@ -50,6 +50,7 @@ impl Slot {
     }
 }
 
+#[rustc_align(4)]
 pub fn decode(frame: FrameBytes<'_>, id: u8) -> Decoded<'_> {
     let (Some(b0), Some(b1), Some(b2), Some(b3)) = (
         frame.u8_at(0),

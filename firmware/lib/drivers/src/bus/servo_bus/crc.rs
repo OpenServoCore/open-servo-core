@@ -17,6 +17,7 @@ impl<P: Providers> ServoBus<P> {
     /// runs ~8x wire speed, so it drains the covered span long before the write
     /// cursor could lap the ring back onto it.
     #[cfg_attr(target_arch = "riscv32", inline(never))]
+    #[rustc_align(4)]
     pub(super) fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
