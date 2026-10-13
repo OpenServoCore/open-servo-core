@@ -1,0 +1,5 @@
+error: `within` takes no `abs` (use an `abs` ge + le pair)
+ --> tests/ui/within_abs.rs:7:5
+  |
+7 |     x: i8,
+  |     ^

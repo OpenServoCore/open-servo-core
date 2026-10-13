@@ -48,10 +48,10 @@ pub struct ControlLifecycle {
     /// Phys-validated, soft-clamped: garbage outside the rails rejects; an
     /// out-of-soft goal runs to the soft wall (trajectory clamp) instead of
     /// bouncing the write.
-    #[ct_field(
-        ge = &config::addr::pos_phys::POS_MIN_PHYS_COUNTS,
-        le = &config::addr::pos_phys::POS_MAX_PHYS_COUNTS,
-    )]
+    #[ct_field(within = (
+        &config::addr::pos_phys::POS_MIN_PHYS_COUNTS,
+        &config::addr::pos_phys::POS_MAX_PHYS_COUNTS,
+    ))]
     pub goal_position: i32,
     pub goal_velocity: i32,
     #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]

@@ -1,0 +1,5 @@
+error: within takes a `(lo, hi)` pair
+ --> tests/ui/within_not_pair.rs:6:25
+  |
+6 |     #[ct_field(within = 5u8)]
+  |                         ^^^
