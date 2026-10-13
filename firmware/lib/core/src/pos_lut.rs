@@ -60,6 +60,16 @@ pub mod cmd {
     pub const MAX: u8 = COMMIT;
 }
 
+/// Store `src` into `dst` point by point, as far as the shorter runs.
+/// Volatile keeps it a loop: a plain copy or fill loop compiles to a
+/// `memcpy` or `memset` call.
+pub(crate) fn store_points(dst: &mut [i16], src: impl IntoIterator<Item = i16>) {
+    for (d, s) in dst.iter_mut().zip(src) {
+        // SAFETY: `d` is a live, aligned, exclusive `i16`.
+        unsafe { core::ptr::from_mut(d).write_volatile(s) };
+    }
+}
+
 /// Why a table cannot be applied.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Reject {
@@ -213,16 +223,12 @@ impl Shared {
                         stale = w.pos_lut_state == state::LIVE;
                         w.pos_lut_state = state::LOADING;
                         if let Some(dst) = k.get_mut(at..) {
-                            for (d, s) in dst.iter_mut().zip(&w.pos_lut_points) {
-                                *d = *s;
-                            }
+                            store_points(dst, w.pos_lut_points.iter().copied());
                         }
                     }
                     cmd::FETCH => {
                         if let Some(src) = k.get(at..) {
-                            for (d, s) in w.pos_lut_points.iter_mut().zip(src) {
-                                *d = *s;
-                            }
+                            store_points(&mut w.pos_lut_points, src.iter().copied());
                         }
                     }
                     cmd::COMMIT if torque => w.pos_lut_state = refused,
@@ -255,7 +261,7 @@ impl Shared {
             .table
             .with(|t| t.control.pos_lut.pos_lut_state == state::LIVE);
         if !live {
-            self.with_pos_lut_mut(|k| k.fill(0));
+            self.with_pos_lut_mut(|k| store_points(k, core::iter::repeat(0)));
             self.table
                 .with_mut(|t| t.control.pos_lut.pos_lut_state = state::IDENTITY);
         }

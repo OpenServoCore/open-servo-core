@@ -33,7 +33,7 @@
 //! effective points) is what reports a lost or stale table as
 //! `STAMP_MISMATCH`.
 
-use control_table::RegisterMap;
+use control_table::{RegisterFile, RegisterMap};
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 
 use crate::data_state::ImageState;
@@ -402,22 +402,10 @@ impl ControlTableCell {
     /// flashed firmware, never a stale saved image. Bringup-only, pre-IRQ;
     /// sole writer (the `seed_config_defaults` contract).
     pub fn overlay_persistent(&self, config: &[u8; CONFIG_LEN], profile: &[u8; PROFILE_LEN]) {
-        let skip = config::addr::common::ID as usize;
-        let base = RegisterMap::base(self);
-        // SAFETY: base points at the flat map (RegisterMap contract), both
-        // regions lie inside it, and the fn doc pins the sole-writer window.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                config.as_ptr().add(skip),
-                base.add(CONFIG_BASE_ADDR as usize + skip),
-                CONFIG_LEN - skip,
-            );
-            core::ptr::copy_nonoverlapping(
-                profile.as_ptr(),
-                base.add(PROFILE_BASE_ADDR as usize),
-                PROFILE_LEN,
-            );
-        }
+        let skip = config::addr::common::ID;
+        let kept = config.get(skip as usize..).unwrap_or(&[]);
+        self.store_split(CONFIG_BASE_ADDR + skip, kept, &[]);
+        self.store_split(PROFILE_BASE_ADDR, profile, &[]);
     }
 
     /// Overlay a validated calib image -- whole region, nothing skipped: every
@@ -425,16 +413,7 @@ impl ControlTableCell {
     /// re-seeded by install AFTER this overlay so board data always wins over
     /// a stale image. Bringup-only, pre-IRQ; sole writer.
     pub fn overlay_persistent_calib(&self, calib: &[u8; CALIB_LEN]) {
-        let base = RegisterMap::base(self);
-        // SAFETY: base points at the flat map (RegisterMap contract), the
-        // region lies inside it, and the fn doc pins the sole-writer window.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                calib.as_ptr(),
-                base.add(CALIB_BASE_ADDR as usize),
-                CALIB_LEN,
-            );
-        }
+        self.store_split(CALIB_BASE_ADDR, calib, &[]);
     }
 }
 
@@ -480,13 +459,12 @@ pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> Boot
                 .table
                 .with(|t| (t.calib.pot.raw_min, t.calib.pot.raw_max));
             let live = shared.with_pos_lut_mut(|k| {
-                for (d, s) in k.iter_mut().zip(img.lut_points.as_chunks::<2>().0) {
-                    *d = i16::from_le_bytes(*s);
-                }
+                let points = img.lut_points.as_chunks::<2>().0;
+                pos_lut::store_points(k, points.iter().map(|&b| i16::from_le_bytes(b)));
                 match pos_lut::validate(k, raw_min, raw_max) {
                     Ok(()) => k.iter().any(|&c| c != 0),
                     Err(_) => {
-                        k.fill(0);
+                        pos_lut::store_points(k, core::iter::repeat(0));
                         false
                     }
                 }
