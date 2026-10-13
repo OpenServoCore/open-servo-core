@@ -43,7 +43,7 @@ pub struct ConfigCommon {
     pub tel_chunks_max: u8,
     #[ct_field(skip)]
     pub _rsvd_tel: [u8; 4],
-    #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
+    #[ct_field(within = (1u8, 249u8), hook = on_id_write)]
     pub id: u8,
     // `BaudRate` index; le gate = the enum ceiling. Zero (0.5M, the rescue
     // floor) keeps the const image all-zero so SHARED lands in .bss; the
@@ -71,19 +71,15 @@ pub struct ConfigPosPhys {
 #[derive(Copy, Clone, Block)]
 pub struct ConfigPosSoft {
     #[ct_field(
-        ge = &addr::pos_phys::POS_MIN_PHYS_COUNTS,
-        le = &addr::pos_phys::POS_MAX_PHYS_COUNTS,
+        within = (&addr::pos_phys::POS_MIN_PHYS_COUNTS, &addr::pos_phys::POS_MAX_PHYS_COUNTS),
         lt = &addr::pos_soft::POS_MAX_SOFT_COUNTS,
-        ge = -GOAL_LIM_COUNTS,
-        le = GOAL_LIM_COUNTS,
+        within = (-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS),
     )]
     pub pos_min_soft_counts: i32,
     #[ct_field(
-        ge = &addr::pos_phys::POS_MIN_PHYS_COUNTS,
-        le = &addr::pos_phys::POS_MAX_PHYS_COUNTS,
+        within = (&addr::pos_phys::POS_MIN_PHYS_COUNTS, &addr::pos_phys::POS_MAX_PHYS_COUNTS),
         gt = &addr::pos_soft::POS_MIN_SOFT_COUNTS,
-        ge = -GOAL_LIM_COUNTS,
-        le = GOAL_LIM_COUNTS,
+        within = (-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS),
     )]
     pub pos_max_soft_counts: i32,
 }

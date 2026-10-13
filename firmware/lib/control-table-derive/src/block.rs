@@ -21,6 +21,8 @@ enum CmpOp {
     Ne,
     Bits,
     MaxOnes,
+    /// `within = (lo, hi)`: the expr is that two-element tuple.
+    Within,
 }
 
 impl CmpOp {
@@ -35,6 +37,7 @@ impl CmpOp {
             CmpOp::Ne => quote!(::control_table::rules::OP_NE),
             CmpOp::Bits => quote!(::control_table::rules::OP_BITS),
             CmpOp::MaxOnes => quote!(::control_table::rules::OP_MAX_ONES),
+            CmpOp::Within => quote!(::control_table::rules::OP_IN),
         }
     }
 }
@@ -124,6 +127,17 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             ));
         }
 
+        let within = attrs
+            .compares
+            .iter()
+            .any(|(op, _)| matches!(op, CmpOp::Within));
+        if attrs.abs && within {
+            return Err(syn::Error::new(
+                name.span(),
+                "`within` takes no `abs` (use an `abs` ge + le pair)",
+            ));
+        }
+
         if attrs.skip {
             continue;
         }
@@ -142,12 +156,25 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 let abs = attrs.abs && signed;
                 for (op, expr) in &attrs.compares {
                     let op_const = op.const_tokens();
-                    let (is_reg, val) = build_rule_val(expr);
-                    let spec = if is_reg {
-                        quote!(::control_table::rules::spec(#width, #signed, #abs, #op_const)
-                            | ::control_table::rules::SPEC_RHS_REG)
+                    let mut spec =
+                        quote!(::control_table::rules::spec(#width, #signed, #abs, #op_const));
+                    let val = if let CmpOp::Within = op {
+                        let (lo, hi) = within_pair(expr)?;
+                        let (lo_reg, lo) = build_rule_val(lo);
+                        let (hi_reg, hi) = build_rule_val(hi);
+                        if lo_reg {
+                            spec.extend(quote!(| ::control_table::rules::SPEC_RHS_REG));
+                        }
+                        if hi_reg {
+                            spec.extend(quote!(| ::control_table::rules::SPEC_HI_REG));
+                        }
+                        quote!(::control_table::rules::within((#lo) as i32, (#hi) as i32))
                     } else {
-                        quote!(::control_table::rules::spec(#width, #signed, #abs, #op_const))
+                        let (is_reg, val) = build_rule_val(expr);
+                        if is_reg {
+                            spec.extend(quote!(| ::control_table::rules::SPEC_RHS_REG));
+                        }
+                        val
                     };
                     cmp_rules.push(quote! {
                         ::control_table::rules::CmpRule { addr: #rel_addr, spec: #spec, val: #val }
@@ -392,6 +419,9 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             } else if let Some(op) = cmp_op_for_path(&m.path) {
                 let val = m.value()?;
                 let expr: Expr = val.parse()?;
+                if let CmpOp::Within = op {
+                    within_pair(&expr)?;
+                }
                 out.compares.push((op, expr));
                 Ok(())
             } else {
@@ -413,6 +443,7 @@ fn cmp_op_for_path(path: &Path) -> Option<CmpOp> {
         "ne" => CmpOp::Ne,
         "bits" => CmpOp::Bits,
         "max_ones" => CmpOp::MaxOnes,
+        "within" => CmpOp::Within,
         _ => return None,
     })
 }
@@ -501,8 +532,9 @@ fn field_kind(ty: &Type) -> TokenStream2 {
 /// Descriptor `(min, max)` tokens from a field's compare clauses. Only
 /// immediate right-hand sides contribute: a register RHS names another field,
 /// and abs bounds are `|x|` bounds, not plain scalar bounds - both export as
-/// `None`. `gt`/`lt` fold to inclusive by +/-1; `eq`/`ne` contribute nothing.
-/// Two immediates on the same side of one field is an error, not last-wins.
+/// `None`. `gt`/`lt` fold to inclusive by +/-1; `eq`/`ne` contribute nothing;
+/// `within` counts as its `ge` + `le` pair. Two immediates on the same side
+/// of one field is an error, not last-wins.
 fn field_bounds(
     name: &Ident,
     compares: &[(CmpOp, Expr)],
@@ -510,8 +542,17 @@ fn field_bounds(
 ) -> syn::Result<(TokenStream2, TokenStream2)> {
     let mut min: Option<TokenStream2> = None;
     let mut max: Option<TokenStream2> = None;
+    let mut sides: Vec<(CmpOp, &Expr)> = Vec::new();
+    for (op, expr) in compares {
+        if let CmpOp::Within = op {
+            let (lo, hi) = within_pair(expr)?;
+            sides.extend([(CmpOp::Ge, lo), (CmpOp::Le, hi)]);
+        } else {
+            sides.push((*op, expr));
+        }
+    }
     if !abs {
-        for (op, expr) in compares {
+        for (op, expr) in sides {
             if let Expr::Reference(_) = expr {
                 continue;
             }
@@ -521,7 +562,7 @@ fn field_bounds(
                 CmpOp::Le => (&mut max, quote!(Some((#expr) as i32))),
                 CmpOp::Lt => (&mut max, quote!(Some(((#expr) as i32) - 1))),
                 // bit ops are mask contracts, not scalar bounds
-                CmpOp::Eq | CmpOp::Ne | CmpOp::Bits | CmpOp::MaxOnes => continue,
+                CmpOp::Eq | CmpOp::Ne | CmpOp::Bits | CmpOp::MaxOnes | CmpOp::Within => continue,
             };
             if slot.is_some() {
                 return Err(syn::Error::new(
@@ -536,6 +577,17 @@ fn field_bounds(
         min.unwrap_or_else(|| quote!(None)),
         max.unwrap_or_else(|| quote!(None)),
     ))
+}
+
+/// `(lo, hi)` of a `within` clause.
+fn within_pair(expr: &Expr) -> syn::Result<(&Expr, &Expr)> {
+    match expr {
+        Expr::Tuple(t) if t.elems.len() == 2 => Ok((&t.elems[0], &t.elems[1])),
+        _ => Err(syn::Error::new(
+            expr.span(),
+            "within takes a `(lo, hi)` pair",
+        )),
+    }
 }
 
 /// RHS of a compare as `(is_reg, val_bits)` for a `CmpRule`: a `&path`

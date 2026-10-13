@@ -299,14 +299,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
         lo,
         hi,
         |r| rules::check_allowed(&view, r.addr, r.allowed),
-        |r| {
-            let rhs = if r.spec & rules::SPEC_RHS_REG != 0 {
-                rules::Rhs::Reg(r.val as u16)
-            } else {
-                rules::Rhs::Imm(r.val as i32)
-            };
-            rules::check_cmp(&view, r.addr, r.spec, rhs)
-        },
+        |r| rules::check_cmp(&view, r.addr, r.spec, r.val),
     )
 }
 

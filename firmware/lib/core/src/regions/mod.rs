@@ -188,6 +188,9 @@ impl ControlTableCell {
 }
 
 #[cfg(test)]
+mod within_tests;
+
+#[cfg(test)]
 mod tests {
     use super::ControlTable;
     use super::config::addr as config_addr;

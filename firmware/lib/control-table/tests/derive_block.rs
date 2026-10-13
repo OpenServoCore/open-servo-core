@@ -207,6 +207,31 @@ fn ct_fields_exclusive_bounds_fold_inclusive() {
 
 #[repr(C)]
 #[derive(Block)]
+struct Within {
+    #[ct_field(within = (2i16, 9i16))]
+    span: i16,
+    lo: i16,
+    #[ct_field(within = (&0u16, 9i16))]
+    half_reg: i16,
+}
+
+#[test]
+fn within_is_one_rule_with_its_pair_bounds() {
+    // One OP_IN rule per clause; the descriptor folds it as its ge + le pair,
+    // a register side exporting None.
+    let r = Within::CT_CMP_RULES;
+    assert_eq!(r.len(), 2);
+    assert!(
+        r.iter()
+            .all(|r| (r.spec >> 8) as u8 == control_table::rules::OP_IN)
+    );
+    let f = Within::CT_FIELDS;
+    assert_eq!((f[0].min, f[0].max), (Some(2), Some(9)));
+    assert_eq!((f[2].min, f[2].max), (None, Some(9)));
+}
+
+#[repr(C)]
+#[derive(Block)]
 struct Access {
     #[ct_field(access = ro)]
     ro_field: u16,
