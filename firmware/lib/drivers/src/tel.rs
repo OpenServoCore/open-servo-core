@@ -13,7 +13,8 @@
 //! Cross-side traffic is single-writer-per-field volatile load/store plus
 //! compiler fences (single core, no atomic RMW on rv32ec). The bus writes
 //! the arm mailbox only while the lane is its own, then `active`; the
-//! kernel, which the bus never preempts, takes the arm whole.
+//! kernel, which the bus never preempts, takes the arm whole. The row plan
+//! is plain memory, ordered by the fences around `arm_seq`.
 
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -22,8 +23,8 @@ use osc_protocol::frame::Header;
 use osc_protocol::wire::{self, CHAR_BIT_TIMES, Inst, ResultCode};
 use osc_servo_core::budget::TICK_HZ;
 use osc_servo_core::tel::{
-    BAUD, CHUNKS_MAX, Chunks, FLAG_LAST, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX,
-    TelStream, encode_stream_head, tick_flag,
+    BAUD, Chunk, Chunks, FLAG_LAST, ROW_BYTES_MAX, STREAM_HDR, STREAM_PAYLOAD_MAX,
+    STREAM_SAMPLES_MAX, TelStream, encode_stream_head, tick_flag,
 };
 use osc_servo_core::{ControlTableCell, RegionStorageRaw};
 
@@ -77,7 +78,7 @@ pub struct TelChannel {
     images: [SyncUnsafeCell<Image>; 2],
     /// The kernel owns the TX lane.
     active: SyncUnsafeCell<bool>,
-    arm_chunks: SyncUnsafeCell<Chunks>,
+    arm_row: SyncUnsafeCell<RowPlan>,
     arm_count: SyncUnsafeCell<u16>,
     arm_id: SyncUnsafeCell<u8>,
     /// Mailbox epoch, written last, never 0.
@@ -97,7 +98,7 @@ impl TelChannel {
         Self {
             images: [const { SyncUnsafeCell::new(Image([0; IMAGE_LEN])) }; 2],
             active: SyncUnsafeCell::new(false),
-            arm_chunks: SyncUnsafeCell::new(Chunks::NONE),
+            arm_row: SyncUnsafeCell::new(RowPlan::NONE),
             arm_count: SyncUnsafeCell::new(0),
             arm_id: SyncUnsafeCell::new(0),
             arm_seq: SyncUnsafeCell::new(0),
@@ -140,9 +141,7 @@ impl TelChannel {
                 table,
                 epoch: 0,
                 id: 0,
-                src: [0; CHUNKS_MAX],
-                units: [0; CHUNKS_MAX],
-                row: 0,
+                plan: RowPlan::NONE,
                 remaining: 0,
                 seq: 0,
                 done: 0,
@@ -170,6 +169,68 @@ impl TelChannel {
     }
 }
 
+/// One of a row's copies: its first byte in the table (an exposed
+/// address: the feed is touched from one context, but sits in a `Sync`
+/// static), its halfwords and its offset in the row.
+#[derive(Copy, Clone)]
+struct RowCopy {
+    src: usize,
+    units: u16,
+    at: u8,
+}
+
+impl RowCopy {
+    const NONE: Self = Self {
+        src: 0,
+        units: 0,
+        at: 0,
+    };
+}
+
+/// A row's copies, the longer chunk by DMA and the shorter, at most half a
+/// row, by the CPU (under the DMA arm's cost, and one CH6 arm a row leaves
+/// none in flight at the next), and the row bytes. The bus builds it at
+/// the arm, off the kernel's first tick.
+#[derive(Copy, Clone)]
+struct RowPlan {
+    dma: RowCopy,
+    cpu: RowCopy,
+    row: u8,
+}
+
+impl RowPlan {
+    const NONE: Self = Self {
+        dma: RowCopy::NONE,
+        cpu: RowCopy::NONE,
+        row: 0,
+    };
+
+    /// The plan for `chunks` of the table at `base`, or none (row 0) for
+    /// chunks that are no row: this holds the copies inside the table and
+    /// the rows inside the images whatever the bus posts.
+    fn of(chunks: Chunks, base: *const u8) -> Self {
+        if !chunks.valid() {
+            return Self::NONE;
+        }
+        let copy = |c: Chunk, at: u16| RowCopy {
+            src: base.wrapping_add(c.addr as usize).expose_provenance(),
+            units: c.len / 2,
+            at: at as u8,
+        };
+        let [a, b] = chunks.0;
+        let (dma, cpu) = if b.len > a.len {
+            (copy(b, a.len), copy(a, 0))
+        } else {
+            (copy(a, 0), copy(b, a.len))
+        };
+        Self {
+            dma,
+            cpu,
+            row: chunks.row_bytes() as u8,
+        }
+    }
+}
+
 /// Frame `done`'s place on the lane.
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Phase {
@@ -189,12 +250,7 @@ pub struct TelFeed<P: Providers> {
     /// The arm this burst runs under (`arm_seq` at pickup).
     epoch: u8,
     id: u8,
-    /// The chunks' first bytes in the table (exposed addresses: the feed
-    /// is touched from one context, but sits in a `Sync` static) and
-    /// halfword counts, and the row bytes they make.
-    src: [usize; CHUNKS_MAX],
-    units: [u16; CHUNKS_MAX],
-    row: u8,
+    plan: RowPlan,
     remaining: u16,
     /// Frames begun: the filling one carries `seq`. Frames before `done`
     /// have left the wire, which may include the filling one: a frame the
@@ -239,22 +295,15 @@ impl<P: Providers> TelFeed<P> {
         compiler_fence(Ordering::Acquire);
         // SAFETY: the bus wrote the mailbox before its seq and writes it
         // only while the lane is its own; the bus never preempts this side.
-        let chunks = unsafe {
+        self.plan = unsafe {
             self.remaining = ch.arm_count.get().read_volatile();
             self.id = ch.arm_id.get().read_volatile();
-            ch.arm_chunks.get().read_volatile()
+            *ch.arm_row.get()
         };
-        // The bus admits only a row (`Chunks::valid`): this holds the copies
-        // inside the table and the rows inside the images whatever it posts.
-        if !chunks.valid() {
+        // A plan of no row (`RowPlan::of`) streams nothing.
+        if self.plan.row == 0 {
             self.remaining = 0;
         }
-        let base = self.table.region_ptr().cast::<u8>();
-        for ((src, units), c) in self.src.iter_mut().zip(&mut self.units).zip(chunks.0) {
-            *src = base.wrapping_add(c.addr as usize).expose_provenance();
-            *units = c.len / 2;
-        }
-        self.row = chunks.row_bytes() as u8;
         self.epoch = seq;
         self.seq = 0;
         self.done = 0;
@@ -287,7 +336,7 @@ impl<P: Providers> TelFeed<P> {
         // SAFETY: kernel side (fn doc of `image`).
         let img = unsafe { self.ch.image(self.seq) };
         let rows = (self.remaining as usize).min(STREAM_SAMPLES_MAX);
-        let cov = ROWS_AT + rows * self.row as usize;
+        let cov = ROWS_AT + rows * self.plan.row as usize;
         let p = self.table.region_ptr();
         // SAFETY: tick-block fields the tick ISR and the kernel, this
         // context, wrote earlier in the tick; volatile reads.
@@ -312,9 +361,10 @@ impl<P: Providers> TelFeed<P> {
         true
     }
 
-    /// The tick's row: both chunks copied now, while the tick block holds
-    /// this tick's scan (the next lands late in the tick). Out of line: the
-    /// row's whole cost is its own, one call from the kernel.
+    /// The tick's row, copied now while the tick block holds this tick's
+    /// scan (the next lands late in the tick): the CPU's chunk, then the
+    /// DMA's. Out of line: the row's whole cost is its own, one call from
+    /// the kernel.
     #[inline(never)]
     fn row(&mut self) {
         if self.n == 0 && !self.head() {
@@ -322,15 +372,31 @@ impl<P: Providers> TelFeed<P> {
         }
         let wr = self.wr;
         // SAFETY: `head` planned at most STREAM_SAMPLES_MAX rows of at most
-        // ROW_BYTES_MAX (`pickup`), which the image holds from ROWS_AT, so
-        // the row lies inside it; the chunks lie inside the table
+        // ROW_BYTES_MAX (`RowPlan::of`), which the image holds from ROWS_AT,
+        // so the row lies inside it; the chunks lie inside the table
         // (`Chunks::valid`); ROWS_AT, the rows and the chunks are even.
         unsafe {
-            let dst = core::ptr::with_exposed_provenance_mut(wr);
-            let src = core::ptr::with_exposed_provenance(self.src[0]);
-            self.crc.copy(dst, src, self.units[0]);
+            // The shorter chunk, at most half a row: straight-line, three
+            // halfwords at most whatever `units` holds (a loop's setup
+            // alone outprices the copy).
+            const { assert!(ROW_BYTES_MAX / 2 <= 3 * 2) };
+            let s = core::ptr::with_exposed_provenance::<u16>(self.plan.cpu.src);
+            let d = core::ptr::with_exposed_provenance_mut::<u16>(wr + self.plan.cpu.at as usize);
+            let n = self.plan.cpu.units;
+            if n != 0 {
+                d.write_volatile(s.read_volatile());
+                if n != 1 {
+                    d.add(1).write_volatile(s.add(1).read_volatile());
+                    if n != 2 {
+                        d.add(2).write_volatile(s.add(2).read_volatile());
+                    }
+                }
+            }
+            let dst = core::ptr::with_exposed_provenance_mut(wr + self.plan.dma.at as usize);
+            let src = core::ptr::with_exposed_provenance(self.plan.dma.src);
+            self.crc.copy(dst, src, self.plan.dma.units);
         }
-        self.wr = wr + self.row as usize;
+        self.wr = wr + self.plan.row as usize;
         self.n += 1;
         self.remaining -= 1;
         if self.n == self.rows {
@@ -340,14 +406,6 @@ impl<P: Providers> TelFeed<P> {
             self.seq = self.seq.wrapping_add(1);
             self.n = 0;
             crate::bench::tel_banked();
-        }
-        if self.units[1] != 0 {
-            // SAFETY: as the first chunk's, right behind it in the row.
-            unsafe {
-                let dst = core::ptr::with_exposed_provenance_mut(wr + 2 * self.units[0] as usize);
-                let src = core::ptr::with_exposed_provenance(self.src[1]);
-                self.crc.copy(dst, src, self.units[1]);
-            }
         }
     }
 
@@ -519,11 +577,12 @@ impl TelDrain {
         unsafe { (&raw mut (*p).control.tel.tel_count).write_volatile(0) };
     }
 
-    /// Post a burst's chunks, while the lane is the bus's.
+    /// Post a burst's row, while the lane is the bus's.
     pub(crate) fn post(&mut self, chunks: Chunks) {
-        // SAFETY: sole mailbox writer, and the kernel reads the chunks only
+        let plan = RowPlan::of(chunks, self.table.region_ptr().cast());
+        // SAFETY: sole mailbox writer, and the kernel reads the plan only
         // at the pickup a later `start` keys (type doc).
-        unsafe { self.ch.arm_chunks.get().write_volatile(chunks) };
+        unsafe { *self.ch.arm_row.get() = plan };
     }
 
     /// Lend the kernel the lane for the posted chunks: it takes the arm at

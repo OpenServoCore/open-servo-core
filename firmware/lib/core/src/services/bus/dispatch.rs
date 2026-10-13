@@ -151,11 +151,11 @@ impl Dispatch for Dispatcher<'_> {
         }
         self.shared.table.commit_from(self.staged, &pending.snap);
         self.after_commit(pending.addr, pending.len);
-        let mut hooks = ControlTableHooks::new(reply, self.tel_chunks());
+        let mut hooks = ControlTableHooks::new(reply);
         self.shared
             .table
             .with(|t| t.dispatch_events(pending.addr, pending.len, &mut hooks));
-        hooks.finish();
+        hooks.finish(|| self.tel_chunks());
     }
 
     fn revert(&mut self) {
@@ -441,14 +441,14 @@ impl Dispatcher<'_> {
         }
         self.shared.table.commit_staged(self.staged);
         Self::ack(alert, ctx, Ok(()), reply);
-        let mut hooks = ControlTableHooks::new(reply, self.tel_chunks());
+        let mut hooks = ControlTableHooks::new(reply);
         for (addr, len) in spans {
             self.after_commit(addr, len);
             self.shared
                 .table
                 .with(|t| t.dispatch_events(addr, len, &mut hooks));
         }
-        hooks.finish();
+        hooks.finish(|| self.tel_chunks());
     }
 
     /// sec 9.2 ENUM: reply with the full UID iff ours begins with the queried

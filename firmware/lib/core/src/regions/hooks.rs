@@ -22,30 +22,27 @@ pub(crate) trait ControlTableHookEvents {
 
 pub(crate) struct ControlTableHooks<'a, R: Reply + ?Sized> {
     reply: &'a mut R,
-    /// Post-commit chunks, snapshotted by the dispatcher so a `tel_count`
-    /// write can pair the arm with the row it streams; none while a shunt
-    /// burst holds the ADC.
-    tel_chunks: Chunks,
     /// The commit's last `tel_count`, armed at [`Self::finish`].
     tel_count: Option<u16>,
 }
 
 impl<'a, R: Reply + ?Sized> ControlTableHooks<'a, R> {
-    pub(crate) fn new(reply: &'a mut R, tel_chunks: Chunks) -> Self {
+    pub(crate) fn new(reply: &'a mut R) -> Self {
         Self {
             reply,
-            tel_chunks,
             tel_count: None,
         }
     }
 
-    /// After the commit's events, outside any table borrow: a refused arm
-    /// zeroes `tel_count` in the bus (`Reply::tel_arm`).
-    pub(crate) fn finish(self) {
+    /// After the commit's events, outside any table borrow: a `tel_count`
+    /// write arms with the post-commit `chunks`, read only then; a refused
+    /// arm zeroes `tel_count` in the bus (`Reply::tel_arm`).
+    pub(crate) fn finish(self, chunks: impl FnOnce() -> Chunks) {
         if let Some(value) = self.tel_count {
+            let chunks = chunks();
             // No row cannot arm; count 0 carries the disarm.
-            let count = if self.tel_chunks.valid() { value } else { 0 };
-            self.reply.tel_arm(self.tel_chunks, count);
+            let count = if chunks.valid() { value } else { 0 };
+            self.reply.tel_arm(chunks, count);
         }
     }
 }

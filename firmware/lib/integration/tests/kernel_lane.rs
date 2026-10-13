@@ -118,7 +118,7 @@ fn event_tick(phase: u8, ev: Events) -> u32 {
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
-#[ignore = "the thermometer's stages are being trimmed: THERM_SIDE streaming runs over the period at budget"]
+#[ignore = "the thermometer's stages are being trimmed: THERM_INSTALL and THERM_SIDE streaming run over the period at budget"]
 #[case::streaming(true)]
 fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     let carried = Events {
@@ -235,14 +235,19 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 
 /// The scans the ADC DMA lands in the tick block hold still for the tick
 /// that reads them: at budget, the trough's samples leave the next trough
-/// scan's way, and every read of the crest scan and every row copy of it
-/// is armed, behind the dearest stage that runs ahead of the fast step,
-/// before the next crest scan lands, the copy's own time included.
+/// scan's way, and every read of the crest scan and every row's one DMA
+/// copy of it is armed, behind the dearest stage that runs ahead of the
+/// fast step, before the next crest scan lands, the copy's own time
+/// included. The DMA copies the row's longer chunk, at most the whole row
+/// of one chunk; the CPU copies the shorter ahead of the arm, inside
+/// FRAME_DONE. CH6 is idle at every arm: a row's copy lands before the
+/// next tick's entry, and a late tick's row arms an exit and an entry
+/// behind the last at least.
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{
-        ENTRY, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH_1, REFRESH_2, THERM_INSTALL,
-        THERM_SIDE, TROUGH_DONE,
+        ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH_1, REFRESH_2,
+        THERM_INSTALL, THERM_SIDE, TROUGH_DONE,
     };
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
     let ahead = [REFRESH_1, REFRESH_2, THERM_INSTALL, THERM_SIDE]
@@ -252,6 +257,7 @@ fn the_tick_reads_its_scan_before_the_next_lands() {
     const { assert!(ENTRY + TROUGH_DONE <= NEXT_TROUGH) };
     let done = ENTRY + ahead + FRAME_DONE + copy;
     assert!(done <= NEXT_CREST, "{done} past {NEXT_CREST}");
+    assert!(copy <= ENTRY_EXIT, "a {copy} copy outlasts {ENTRY_EXIT}");
 }
 
 /// What any tick may carry: nothing, a TEL row, a row and its bank.

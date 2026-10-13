@@ -1393,30 +1393,35 @@ fn one_write_sets_the_row_and_arms() {
     assert_eq!(reply.tel_arm, Some((ident_rail(), 64)));
 }
 
-/// The chunk rules: even addresses inside the table, even lengths of at
-/// most a row. A rule-breaking write rejects whole.
+/// The chunks carry no rules: any value lands, and a count over chunks
+/// that are no row (odd, outside the table, over a row) arms as a disarm.
 #[test]
-fn chunk_writes_reject_odd_or_outsized_values() {
-    use crate::regions::control::addr::tel::{CHUNK0_ADDR, CHUNK0_LEN};
+fn chunk_writes_land_and_an_arm_over_no_row_disarms() {
+    use crate::regions::control::addr::tel::{CHUNK0_ADDR, CHUNK0_LEN, TEL_COUNT};
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let mut pending = None;
     let mut reply = FakeReply::new();
+    let row = ident_rail().to_le_bytes();
     for (addr, v) in [
         (CHUNK0_ADDR, 0x225u16),
-        (CHUNK0_ADDR, 0x400),
+        (CHUNK0_ADDR, 0x3FC),
         (CHUNK0_LEN, 3),
         (CHUNK0_LEN, 14),
     ] {
-        pass(
-            &shared,
-            &mut staged,
-            &mut pending,
-            &mut reply,
-            write(addr, &v.to_le_bytes(), false),
-        );
+        let v = v.to_le_bytes();
+        let mut go = |req| pass(&shared, &mut staged, &mut pending, &mut reply, req);
+        go(write_chunks(&row, false));
+        go(write(addr, &v, false));
+        go(write(TEL_COUNT, &[5, 0], false));
         let t = shared.table.with(|t| t.control.tel);
-        assert_eq!((t.chunk0_addr, t.chunk0_len), (0, 0), "{addr:#x} {v:#x}");
+        let got = if addr == CHUNK0_ADDR {
+            t.chunk0_addr
+        } else {
+            t.chunk0_len
+        };
+        assert_eq!(got.to_le_bytes(), v, "{addr:#x}");
+        assert_eq!(reply.tel_arm.map(|(_, n)| n), Some(0), "{addr:#x}");
     }
 }
 

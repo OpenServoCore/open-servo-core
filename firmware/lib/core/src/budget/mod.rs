@@ -125,12 +125,12 @@ pub const fn tick_body_mean(regime: Regime, phase: usize) -> u32 {
 }
 
 /// Every tick of a TEL burst, on top of [`KERNEL`] and the lane: the row
-/// gate, the out-of-line row (bookkeeping and both chunks' DMA copies, the
-/// second armed once the first has landed); the widest, two chunks. E,
-/// priced as [`TEL_POLL`]: the row tick over the same tick with nothing
-/// owed, 183 with two chunks (156 with one), plus 10%. A row costs the
-/// same every tick: the mean is the row.
-pub const TEL_ROW: u32 = 202;
+/// gate, the out-of-line row (bookkeeping, the shorter chunk's CPU copy
+/// and the longer chunk's DMA arm); the widest, two chunks. E, priced as
+/// [`TEL_POLL`]: the row tick over the same tick with nothing owed, 153
+/// with two chunks (129 with one), plus 10%. A row costs the same every
+/// tick: the mean is the row.
+pub const TEL_ROW: u32 = 169;
 pub const TEL_ROW_MEAN: u32 = TEL_ROW;
 
 /// The tick that banks a TEL batch, on top of [`TEL_ROW`]: the bank's
@@ -151,9 +151,10 @@ pub const TEL_BANK: u32 = 43;
 /// with the LAST frame's resume cursor (270); TEL_PATCH, the CRC read, its
 /// odd fold and the 2 B store (240). TEL_HEAD: row 0 over a plain row, the
 /// out-of-line head: the frame header, the stamp and fault read from the
-/// tick block, the head and the start rule (177).
+/// tick block, the head and the start rule (133); a burst's first row 0
+/// also takes the arm from the mailbox (250).
 pub const TEL_POLL: u32 = 99;
-pub const TEL_HEAD: u32 = 195;
+pub const TEL_HEAD: u32 = 275;
 pub const TEL_FEED: u32 = 255;
 pub const TEL_ARM: u32 = 198;
 pub const TEL_PATCH: u32 = 165;

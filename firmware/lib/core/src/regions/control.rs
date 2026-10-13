@@ -110,20 +110,15 @@ pub struct ControlPosLut {
 /// TEL burst arm (protocol sec 5.6): the row's chunks of the table, then
 /// the count, so one WRITE sets the row and arms. A row is chunk 0 and,
 /// when `chunk1_len` is nonzero, chunk 1 behind it, each copied whole at
-/// its table layout; the arm admits a row of at most
-/// `tel::ROW_BYTES_MAX` bytes at `tel::BAUD` only.
+/// its table layout. The chunks carry no rules: the arm admits a row
+/// (`tel::Chunks::valid`) at `tel::BAUD` only and disarms otherwise.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlTel {
-    /// Even, inside the table.
-    #[ct_field(bits = CHUNK_ADDR_BITS)]
     pub chunk0_addr: u16,
-    #[ct_field(bits = CHUNK_LEN_BITS, le = crate::tel::ROW_BYTES_MAX as u16)]
     pub chunk0_len: u16,
-    #[ct_field(bits = CHUNK_ADDR_BITS)]
     pub chunk1_addr: u16,
-    #[ct_field(bits = CHUNK_LEN_BITS, le = crate::tel::ROW_BYTES_MAX as u16)]
     pub chunk1_len: u16,
     /// A committed nonzero write streams that many samples (one per fast
     /// tick, batched 16 per `Stream` frame), then stops and releases the
@@ -133,12 +128,6 @@ pub struct ControlTel {
     #[ct_field(le = crate::tel::BURST_ROWS_MAX, hook = on_tel_count_write)]
     pub tel_count: u16,
 }
-
-/// A chunk address: even, under the table's 1024 B.
-const CHUNK_ADDR_BITS: u16 = osc_protocol::tel::TABLE_BYTES - 2;
-/// A chunk length: even.
-const CHUNK_LEN_BITS: u16 = 0x0E;
-const _: () = assert!(crate::tel::ROW_BYTES_MAX as u16 <= CHUNK_LEN_BITS);
 
 #[repr(C)]
 #[derive(Section)]

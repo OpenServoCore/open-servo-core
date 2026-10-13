@@ -1759,6 +1759,34 @@ fn tel_count_reads_zero_after_an_arm_that_is_no_row() {
     assert!(feed.active());
 }
 
+/// The chunks carry no table rules, so the 10 B arm block validates as
+/// a bare count: an odd chunk acks Ok, never lends, and `tel_count`
+/// reads 0 (protocol sec 5.6).
+#[test]
+fn tel_count_reads_zero_after_an_arm_with_an_odd_chunk() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, TEL_RATE, 60);
+    let shared = tel_shared();
+    let feed = tel_split(&h, &mut bus, &shared.table);
+    let mut session = Session::new();
+    let mut d = session.dispatcher(shared);
+
+    let odd = Chunks::one(POS + 1, 2);
+    write_at(
+        &mut bus,
+        &h,
+        &mut d,
+        0,
+        CHUNK0_ADDR,
+        &arm_bytes(odd, 32),
+        100,
+        1000,
+    );
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
+    assert!(!feed.active(), "an odd chunk never lends");
+    assert_eq!(tel_count(shared), 0);
+}
+
 /// The count is capped at one second of ticks: a longer write is a rule
 /// reject and lends nothing.
 #[test]

@@ -855,8 +855,7 @@
       "addr": 484,
       "width": 2,
       "access": "rw",
-      "kind": "uint",
-      "max": 12
+      "kind": "uint"
     },
     {
       "name": "chunk1_addr",
@@ -870,8 +869,7 @@
       "addr": 488,
       "width": 2,
       "access": "rw",
-      "kind": "uint",
-      "max": 12
+      "kind": "uint"
     },
     {
       "name": "tel_count",

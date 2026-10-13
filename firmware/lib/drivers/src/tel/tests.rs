@@ -201,15 +201,20 @@ fn frames_stream_cut_through_and_carry_the_table() {
 }
 
 /// A row takes both chunks when the tick block is published, ahead of the
-/// next scan and the medium step: each carries its tick's values, the rail
-/// as last published.
+/// next scan and the medium step: the shorter by the CPU and the longer
+/// by one copy, whichever leads the row. Each carries its tick's values,
+/// the rail as last published.
 #[test]
 fn two_chunk_rows_copy_both_chunks_before_the_next_scan_lands() {
-    let mut r = rig();
-    r.arm(IDENT_RAIL, 16);
-    r.run(0, 40);
-    let f = &r.wire.streamed()[0];
-    assert_eq!(payload(f), golden(IDENT_RAIL, 0, true, 0..16));
+    let [duty, rail] = IDENT_RAIL.0;
+    for c in [IDENT_RAIL, Chunks::two(rail, duty), SIX] {
+        let mut r = rig();
+        r.arm(c, 16);
+        r.run(0, 40);
+        let f = &r.wire.streamed()[0];
+        assert_eq!(payload(f), golden(c, 0, true, 0..16));
+        assert_eq!(r.feed.crc.copies(), 16, "one copy a row");
+    }
 }
 
 /// INST ALERT is the fault flag of the frame's first row.

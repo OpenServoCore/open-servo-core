@@ -327,13 +327,15 @@ be staged behind the CRC verdict:
   reply snapshot's channel, idle while no reply is staged) are the
   burst's and the bus lends them to the kernel tick (PFIC HIGH): at the
   arming ack's release, or at the arm when no ack follows. The kernel
-  lands each control tick's row with one CH6 memory-to-memory copy per
-  chunk of the table, halfword units, straight to its final wire offset
-  in one of two frame images (header, head, rows, CRC slot): both
-  chunks at a fixed point right after the tick block is published, the
-  second once the first has landed, ahead of the next scans the ADC DMA
-  lands in the block, so every row is one tick's, and CH6 above the CRC
-  feed's CH3 lands each copy ahead of any feed that reads it. A frame starts once its lead row has landed - the start rule
+  lands each control tick's row straight to its final wire offset in one
+  of two frame images (header, head, rows, CRC slot): the shorter chunk
+  (at most 6 B, under the DMA arm's cost) by CPU halfword stores, then
+  the longer by one CH6 memory-to-memory copy, at a fixed point right
+  after the tick block is published, ahead of the next scans the ADC
+  DMA lands in the block, so every row is one tick's; CH6 above the CRC
+  feed's CH3 lands the copy ahead of any feed that reads it, and one arm
+  a tick leaves no copy in flight at the next. The bus derives the
+  row's copies at the arm, so the kernel's first tick only takes them. A frame starts once its lead row has landed - the start rule
   leaves the DMA three ticks behind the rows and the patch - with a CRC
   reset, the written bytes' feed and the law break; the next tick arms
   CH4 for the whole image with no TCIE, the DMA reading rows as the wire
