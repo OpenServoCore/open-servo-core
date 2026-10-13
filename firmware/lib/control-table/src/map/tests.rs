@@ -40,8 +40,6 @@ const BASIC_CMP_RULES: &[crate::rules::CmpRule] = &[
 static BASIC_SECTIONS: &[SectionMeta] = &[SectionMeta {
     base: 0,
     size: BASIC_SIZE as u16,
-    cmp_rules: (0, 4),
-    allowed_rules: (0, 1),
 }];
 
 // Every byte writable except byte 3 (read-only, mid-range).
@@ -287,8 +285,6 @@ const MASK_WRITABLE: &[u32] = &[0xFFFF_FFFF, !(1u32 << 18), !(1u32 << 0)];
 static MASK_SECTIONS: &[SectionMeta] = &[SectionMeta {
     base: 0,
     size: MASK_SIZE as u16,
-    cmp_rules: (0, 0),
-    allowed_rules: (0, 0),
 }];
 
 struct MaskFix {
@@ -404,7 +400,8 @@ fn stage_split_validates_then_pushes_contiguously() {
 
 /// Every naturally aligned 2- and 4-byte field inside a commit lands in
 /// exactly one store, wherever the commit starts, ends or splits at the
-/// ring seam, and the stores reassemble the source bytes.
+/// ring seam; each store is aligned for its width, in address order, and
+/// the stores reassemble the source bytes.
 #[test]
 fn copy_stores_each_aligned_field_whole() {
     let src: [u8; 16] = core::array::from_fn(|i| 0xA0 | i as u8);
@@ -414,11 +411,27 @@ fn copy_stores_each_aligned_field_whole() {
                 let (head, tail) = src[..len].split_at(split);
                 let mut stores = [(0usize, [0u8; 4], 0usize); 16];
                 let mut n = 0;
-                copy_units(dst, head, tail, |i, u, w| {
+                let mut record = |i, u, w| {
                     stores[n] = (i, u, w);
                     n += 1;
-                });
+                };
+                // The unit stream store_units writes: one run, or the seam's three.
+                if tail.is_empty() {
+                    copy_run(dst, head, &mut record);
+                } else {
+                    let mut word = [0u8; 4];
+                    let (pre, n, post) = seam_split(dst, head, tail, &mut word);
+                    let runs = [(0, pre), (pre.len(), &word[..n]), (pre.len() + n, post)];
+                    for (at, src) in runs {
+                        copy_run(dst + at, src, &mut |i, u, w| record(at + i, u, w));
+                    }
+                }
                 let stores = &stores[..n];
+                assert!(
+                    stores.iter().all(|&(i, _, w)| (dst + i) % w == 0)
+                        && stores.windows(2).all(|p| p[0].0 + p[0].2 == p[1].0),
+                    "unaligned or out-of-order store: dst {dst} len {len} split {split}"
+                );
                 let mut out = [0u8; 16];
                 for &(i, u, w) in stores {
                     out[i..i + w].copy_from_slice(&u[..w]);
@@ -439,4 +452,119 @@ fn copy_stores_each_aligned_field_whole() {
             }
         }
     }
+}
+
+// Rule-start tables: rules straddling chunk edges, duplicates, empty chunks;
+// the walk must match a full overlap scan for every write.
+
+const CHUNKED_SIZE: usize = 3 * RULE_CHUNK;
+
+const fn cmp_at(addr: u16, width: u8) -> crate::rules::CmpRule {
+    crate::rules::CmpRule {
+        addr,
+        spec: crate::rules::spec(width, false, false, crate::rules::OP_LE),
+        val: 0,
+    }
+}
+
+const CHUNKED_CMP: &[crate::rules::CmpRule] = &[
+    cmp_at(2, 1),
+    cmp_at(28, 4),
+    cmp_at(30, 2),
+    cmp_at(30, 4),
+    cmp_at(31, 1),
+    cmp_at(33, 2),
+    cmp_at(90, 4),
+];
+
+const CHUNKED_ALLOWED: &[crate::rules::AllowedRule] = &[
+    crate::rules::AllowedRule {
+        addr: 0,
+        allowed: &[0],
+    },
+    crate::rules::AllowedRule {
+        addr: 31,
+        allowed: &[1],
+    },
+    crate::rules::AllowedRule {
+        addr: 32,
+        allowed: &[2],
+    },
+    crate::rules::AllowedRule {
+        addr: 95,
+        allowed: &[3],
+    },
+];
+
+const CHUNKED_CMP_FROM: [u8; 3] = cmp_from(CHUNKED_CMP);
+const CHUNKED_ALLOWED_FROM: [u8; 3] = allowed_from(CHUNKED_ALLOWED);
+
+struct Chunked;
+
+impl RegisterMap for Chunked {
+    const SIZE: usize = CHUNKED_SIZE;
+    const WRITABLE: &'static [u32] = &[!0; 3];
+    const SECTIONS: &'static [SectionMeta] = &[];
+    const CMP_RULES: &'static [crate::rules::CmpRule] = CHUNKED_CMP;
+    const ALLOWED_RULES: &'static [crate::rules::AllowedRule] = CHUNKED_ALLOWED;
+    const CMP_FROM: &'static [u8] = &CHUNKED_CMP_FROM;
+    const ALLOWED_FROM: &'static [u8] = &CHUNKED_ALLOWED_FROM;
+    fn base(&self) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+}
+
+#[test]
+fn rule_starts_skip_only_rules_ending_before_the_chunk() {
+    assert_eq!(CHUNKED_CMP_FROM, [0, 3, 6]);
+    assert_eq!(CHUNKED_ALLOWED_FROM, [0, 2, 3]);
+}
+
+#[test]
+fn rule_walk_matches_a_full_overlap_scan() {
+    for lo in 0..CHUNKED_SIZE {
+        for hi in lo + 1..=CHUNKED_SIZE {
+            let mut a = heapless::Vec::<u16, 8>::new();
+            let mut c = heapless::Vec::<(u16, u16), 8>::new();
+            for_each_rule::<Chunked>(
+                lo,
+                hi,
+                |r| {
+                    a.push(r.addr).unwrap();
+                    Ok(())
+                },
+                |r| {
+                    c.push((r.addr, r.spec)).unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let want_a = CHUNKED_ALLOWED
+                .iter()
+                .filter(|r| (lo..hi).contains(&(r.addr as usize)))
+                .map(|r| r.addr);
+            let want_c = CHUNKED_CMP
+                .iter()
+                .filter(|r| (r.addr as usize) < hi && r.end() > lo)
+                .map(|r| (r.addr, r.spec));
+            assert!(a.iter().copied().eq(want_a), "allowed [{lo}, {hi})");
+            assert!(c.iter().copied().eq(want_c), "cmp [{lo}, {hi})");
+        }
+    }
+}
+
+#[test]
+fn rule_walk_stops_at_the_first_error() {
+    let mut seen = 0;
+    let r = for_each_rule::<Chunked>(
+        0,
+        CHUNKED_SIZE,
+        |_| Ok(()),
+        |_| {
+            seen += 1;
+            Err(Error::ValidationError(ValidationKind::Compare))
+        },
+    );
+    assert_eq!(r, Err(Error::ValidationError(ValidationKind::Compare)));
+    assert_eq!(seen, 1);
 }

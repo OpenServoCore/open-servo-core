@@ -88,8 +88,9 @@ impl Dispatch for Counted<'_> {
         self.inner.dispatch(req, ctx, reply)
     }
 
-    fn commit<R: Reply>(&mut self, reply: &mut R) {
-        self.inner.commit(reply)
+    unsafe fn commit<R: Reply>(&mut self, reply: &mut R) {
+        // SAFETY: forwarded contract.
+        unsafe { self.inner.commit(reply) }
     }
 
     fn revert(&mut self) {

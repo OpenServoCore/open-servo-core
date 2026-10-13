@@ -78,30 +78,18 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
-    // Per-section index range into the table-level rule arrays: start is the
-    // cumulative rule count of preceding sections (section declaration order).
     let section_metas: Vec<TokenStream2> = sec_tys
         .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let cmp_pre = &sec_tys[..i];
-            let allowed_pre = &sec_tys[..i];
+        .map(|ty| {
             quote! {
                 ::control_table::map::SectionMeta {
                     base: <#ty>::BASE,
                     size: <#ty>::SECTION_SIZE,
-                    cmp_rules: {
-                        let start = 0u16 #(+ <#cmp_pre>::CT_CMP_RULES_ABS.len() as u16)*;
-                        (start, start + <#ty>::CT_CMP_RULES_ABS.len() as u16)
-                    },
-                    allowed_rules: {
-                        let start = 0u16 #(+ <#allowed_pre>::CT_ALLOWED_RULES_ABS.len() as u16)*;
-                        (start, start + <#ty>::CT_ALLOWED_RULES_ABS.len() as u16)
-                    },
                 }
             }
         })
         .collect();
+    let chunks = quote!((#size as usize).div_ceil(::control_table::map::RULE_CHUNK));
 
     let n_cmp = quote!(0 #(+ <#sec_tys>::CT_CMP_RULES_ABS.len())*);
     let n_allowed = quote!(0 #(+ <#sec_tys>::CT_ALLOWED_RULES_ABS.len())*);
@@ -206,6 +194,11 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 out
             };
 
+            pub const CMP_FROM: [u8; #chunks] = ::control_table::map::cmp_from(&Self::CMP_RULES);
+
+            pub const ALLOWED_FROM: [u8; #chunks] =
+                ::control_table::map::allowed_from(&Self::ALLOWED_RULES);
+
             // Table-absolute field descriptors for the host-side exporter; not
             // in the RegisterMap trait - the exporter names the table directly.
             pub const FIELDS: [::control_table::descriptor::FieldDesc; #n_fields] = {
@@ -272,6 +265,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 &#table_ty::CMP_RULES;
             const ALLOWED_RULES: &'static [::control_table::rules::AllowedRule] =
                 &#table_ty::ALLOWED_RULES;
+            const CMP_FROM: &'static [u8] = &#table_ty::CMP_FROM;
+            const ALLOWED_FROM: &'static [u8] = &#table_ty::ALLOWED_FROM;
             fn base(&self) -> *mut u8 {
                 self.0.get() as *mut u8
             }

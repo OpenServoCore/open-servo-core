@@ -68,8 +68,9 @@ impl Dispatch for BusDispatcher {
         self.with(|d| d.dispatch(req, ctx, reply))
     }
 
-    fn commit<R: Reply>(&mut self, reply: &mut R) {
-        self.with(|d| d.commit(reply))
+    unsafe fn commit<R: Reply>(&mut self, reply: &mut R) {
+        // SAFETY: forwarded contract.
+        self.with(|d| unsafe { d.commit(reply) })
     }
 
     fn revert(&mut self) {

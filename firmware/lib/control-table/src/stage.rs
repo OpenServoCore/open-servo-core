@@ -1,10 +1,9 @@
 use crate::Error;
 
-/// Total staging buffer for pending write data, in bytes. Every write stages
-/// here ahead of its CRC verdict (the dispatch spine), so the cap must fit
-/// the largest legal single write -- 250 B of data under the 252 B payload
-/// ceiling (osc-native sec 5.1: LEN is the only size limit) -- plus whatever
-/// HOLD writes are pending. Override with `OSC_STAGE_DATA_CAP`.
+/// Total staging buffer for HOLD write data, in bytes; held writes stay here
+/// until a COMMIT, so the cap must fit the largest legal single write -
+/// 250 B of data under the 252 B payload ceiling (osc-native sec 5.1: LEN is
+/// the only size limit). Override with `OSC_STAGE_DATA_CAP`.
 pub const STAGE_DATA_CAP: usize = env_usize(option_env!("OSC_STAGE_DATA_CAP"), 256);
 
 /// Max number of pending RegWrite entries before Action commits. Override

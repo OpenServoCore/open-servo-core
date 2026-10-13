@@ -137,7 +137,8 @@ fn go(shared: &Shared, staged: &mut StagedWrites, req: Request<'_>, may_reply: b
         d.dispatch(req, RequestCtx { may_reply }, &mut reply),
         Dispatched::Pending
     ) {
-        d.commit(&mut reply);
+        // SAFETY: the request bytes outlive the verdict.
+        unsafe { d.commit(&mut reply) };
     }
     reply
 }
@@ -1096,7 +1097,9 @@ fn write_stages_then_commit_applies() {
     // Staged only -- the live table is untouched until the verdict commits.
     assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 
-    disp(&shared, &mut staged, &mut pending).commit(&mut reply);
+    // SAFETY: the request bytes outlive the verdict.
+
+    unsafe { disp(&shared, &mut staged, &mut pending).commit(&mut reply) };
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
     assert!(pending.is_none());
     assert!(
@@ -1146,7 +1149,7 @@ fn write_validation_reject_nacks_nothing_staged() {
 }
 
 #[test]
-fn write_staging_full_nacks_busy_nothing_staged() {
+fn held_write_staging_full_nacks_busy_nothing_staged() {
     use control_table::STAGE_DATA_CAP;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
@@ -1158,7 +1161,7 @@ fn write_staging_full_nacks_busy_nothing_staged() {
     let mut pending = None;
     let mut reply = FakeReply::new();
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], false),
+        write(CONTROL_BASE_ADDR, &[1], true),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1170,6 +1173,33 @@ fn write_staging_full_nacks_busy_nothing_staged() {
     assert_eq!(staged.iter_all().count(), 1);
 }
 
+/// A plain write commits from its request bytes, so held entries filling the
+/// staging buffer do not refuse it, and it leaves them staged.
+#[test]
+fn plain_write_needs_no_staging_room() {
+    use control_table::STAGE_DATA_CAP;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    staged
+        .push(CONTROL_BASE_ADDR, &[0u8; STAGE_DATA_CAP])
+        .unwrap();
+
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let gv = 7i32.to_le_bytes();
+    let out = disp(&shared, &mut staged, &mut pending).dispatch(
+        write(GOAL_VELOCITY, &gv, false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(matches!(out, Dispatched::Pending));
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    // SAFETY: the request bytes outlive the verdict.
+    unsafe { disp(&shared, &mut staged, &mut pending).commit(&mut reply) };
+    assert_eq!(shared.table.with(|t| t.control.lifecycle.goal_velocity), 7);
+    assert_eq!(staged.iter_all().count(), 1);
+}
+
 #[test]
 fn dangling_pending_write_auto_reverts_on_next_dispatch() {
     let shared = Shared::new();
@@ -1177,25 +1207,28 @@ fn dangling_pending_write_auto_reverts_on_next_dispatch() {
     let mut pending = None;
     let mut reply = FakeReply::new();
 
-    // Stage a write but never commit/revert (frame died with no verdict).
-    disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], false),
-        RequestCtx { may_reply: true },
-        &mut reply,
-    );
-    assert!(pending.is_some());
-    assert!(!staged.is_empty());
+    // A plain and a held write, each never committed nor reverted (frame died
+    // with no verdict): the plain one stages nothing, the held one stages.
+    for hold in [false, true] {
+        disp(&shared, &mut staged, &mut pending).dispatch(
+            write(CONTROL_BASE_ADDR, &[1], hold),
+            RequestCtx { may_reply: true },
+            &mut reply,
+        );
+        assert!(pending.is_some());
+        assert_eq!(staged.is_empty(), !hold);
 
-    // A following dispatch drops the dangling write before running.
-    let mut reply2 = FakeReply::new();
-    disp(&shared, &mut staged, &mut pending).dispatch(
-        Request::Ping,
-        RequestCtx { may_reply: true },
-        &mut reply2,
-    );
-    assert!(pending.is_none());
-    assert!(staged.is_empty());
-    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
+        // A following dispatch drops the dangling write before running.
+        let mut reply2 = FakeReply::new();
+        disp(&shared, &mut staged, &mut pending).dispatch(
+            Request::Ping,
+            RequestCtx { may_reply: true },
+            &mut reply2,
+        );
+        assert!(pending.is_none());
+        assert!(staged.is_empty());
+        assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
+    }
 }
 
 #[test]
@@ -1212,7 +1245,8 @@ fn real_commit_after_dangling_write_applies_only_held_entries() {
         RequestCtx { may_reply: true },
         &mut reply,
     );
-    disp(&shared, &mut staged, &mut pending).commit(&mut reply);
+    // SAFETY: the request bytes outlive the verdict.
+    unsafe { disp(&shared, &mut staged, &mut pending).commit(&mut reply) };
     // A write on top stages goal_velocity, then dies (dangling -- no verdict).
     let gv = 5i32.to_le_bytes();
     disp(&shared, &mut staged, &mut pending).dispatch(
@@ -1249,7 +1283,8 @@ fn held_write_keeps_entries_through_its_verdict() {
     assert_eq!(reply.last().result, ResultCode::Ok);
 
     // CRC passed: a held write keeps its entry staged (it applies on COMMIT).
-    disp(&shared, &mut staged, &mut pending).commit(&mut reply);
+    // SAFETY: the request bytes outlive the verdict.
+    unsafe { disp(&shared, &mut staged, &mut pending).commit(&mut reply) };
     assert!(pending.is_none());
     assert!(
         !staged.is_empty(),
@@ -1282,7 +1317,9 @@ fn hooks_fire_on_write_commit() {
     // Hooks are deferred to the verdict -- nothing staged through the reply yet.
     assert_eq!(reply.staged_id, None);
 
-    disp(&shared, &mut staged, &mut pending).commit(&mut reply);
+    // SAFETY: the request bytes outlive the verdict.
+
+    unsafe { disp(&shared, &mut staged, &mut pending).commit(&mut reply) };
     assert_eq!(reply.staged_id, Some(42));
 }
 
@@ -1301,7 +1338,8 @@ fn hooks_fire_on_real_commit() {
         &mut reply,
     );
     assert_eq!(reply.staged_id, None, "HOLD stages, no hook yet");
-    disp(&shared, &mut staged, &mut pending).commit(&mut reply);
+    // SAFETY: the request bytes outlive the verdict.
+    unsafe { disp(&shared, &mut staged, &mut pending).commit(&mut reply) };
     assert_eq!(reply.staged_id, None, "held verdict defers to COMMIT");
 
     disp(&shared, &mut staged, &mut pending).dispatch(
@@ -1326,7 +1364,8 @@ fn pass(
         d.dispatch(req, RequestCtx { may_reply: true }, reply),
         Dispatched::Pending
     ) {
-        d.commit(reply);
+        // SAFETY: the request bytes outlive the verdict.
+        unsafe { d.commit(reply) };
     }
 }
 

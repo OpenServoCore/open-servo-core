@@ -571,4 +571,51 @@ mod tests {
             table::profile_span_word(0x208, 63)
         );
     }
+
+    /// The validate walk starts each rule array at its chunk's `*_FROM` entry
+    /// and stops at the first rule past the write: over every write the table
+    /// can hold, it must visit exactly the rules a full scan finds overlapping,
+    /// in the same order.
+    #[test]
+    fn rule_walk_visits_exactly_the_overlapping_rules() {
+        use control_table::RegisterMap;
+        use control_table::map::for_each_rule;
+        use heapless::Vec;
+        type C = crate::ControlTableCell;
+        let allowed = <C as RegisterMap>::ALLOWED_RULES;
+        let cmp = <C as RegisterMap>::CMP_RULES;
+        assert!(!allowed.is_empty() && !cmp.is_empty());
+        for lo in 0..C::SIZE {
+            for hi in lo + 1..=C::SIZE {
+                let mut got_a: Vec<(u16, *const u8), 32> = Vec::new();
+                let mut got_c: Vec<(u16, u16, u32), 32> = Vec::new();
+                let walked = for_each_rule::<C>(
+                    lo,
+                    hi,
+                    |r| {
+                        got_a.push((r.addr, r.allowed.as_ptr())).unwrap();
+                        Ok(())
+                    },
+                    |r| {
+                        got_c.push((r.addr, r.spec, r.val)).unwrap();
+                        Ok(())
+                    },
+                );
+                assert!(walked.is_ok());
+                let want_a = allowed
+                    .iter()
+                    .filter(|r| (lo..hi).contains(&(r.addr as usize)))
+                    .map(|r| (r.addr, r.allowed.as_ptr()));
+                let want_c = cmp
+                    .iter()
+                    .filter(|r| (r.addr as usize) < hi && r.end() > lo)
+                    .map(|r| (r.addr, r.spec, r.val));
+                assert!(
+                    got_a.iter().copied().eq(want_a),
+                    "allowed [{lo:#x}, {hi:#x})"
+                );
+                assert!(got_c.iter().copied().eq(want_c), "cmp [{lo:#x}, {hi:#x})");
+            }
+        }
+    }
 }

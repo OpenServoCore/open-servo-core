@@ -390,6 +390,37 @@ fn s12_write_wrapping_ring_boundary_mutates_and_acks() {
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
+/// A plain write commits from the ring: one whose field straddles the seam
+/// (head 2 bytes, tail 2) still lands whole.
+#[test]
+fn s12_write_split_mid_field_at_the_seam_commits_whole() {
+    use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    // anchor RING_LEN - 8: header+addr at 504..510, data 510, 511 | 0, 1.
+    let addr = GOAL_VELOCITY.to_le_bytes();
+    let v = 0x0102_0304i32.to_le_bytes();
+    let frame = instruction(
+        ID,
+        Opcode::Write,
+        0,
+        &[addr[0], addr[1], v[0], v[1], v[2], v[3]],
+    );
+    deliver(&mut bus, &h, RING_LEN - 8, &frame, 1000, &mut d);
+    fire(&mut bus, &h, &mut d);
+
+    let (_, inst, _) = last_reply(&h.wire);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(
+        shared.table.with(|t| t.control.lifecycle.goal_velocity),
+        0x0102_0304
+    );
+}
+
 /// Main-loop line samples every `step` ticks over `[from, to]`, all low.
 fn sample_low(
     bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
@@ -715,10 +746,11 @@ impl<D: Dispatch> Dispatch for CommitWatch<'_, D> {
         self.inner.dispatch(req, ctx, reply)
     }
 
-    fn commit<R: osc_servo_core::Reply>(&mut self, reply: &mut R) {
+    unsafe fn commit<R: osc_servo_core::Reply>(&mut self, reply: &mut R) {
         self.commits += 1;
         self.wire_started_at_commit = self.wire.started();
-        self.inner.commit(reply);
+        // SAFETY: forwarded contract.
+        unsafe { self.inner.commit(reply) };
     }
 
     fn revert(&mut self) {
@@ -866,8 +898,9 @@ impl<D: Dispatch> Dispatch for DispatchCount<D> {
         self.inner.dispatch(req, ctx, reply)
     }
 
-    fn commit<R: osc_servo_core::Reply>(&mut self, reply: &mut R) {
-        self.inner.commit(reply);
+    unsafe fn commit<R: osc_servo_core::Reply>(&mut self, reply: &mut R) {
+        // SAFETY: forwarded contract.
+        unsafe { self.inner.commit(reply) };
     }
 
     fn revert(&mut self) {
