@@ -221,11 +221,14 @@ impl<W: TxWire> TxEngine<W> {
         // for the software fold at patch (sec 3.2); odd POINTERS are the CRC
         // provider's concern (it stages them through its copy channel, sec 5).
         let base: *const u8 = if total <= SMALL_COPY_MAX {
-            let pay = self.buf.payload_mut();
-            let mut at = 0;
-            for s in spans {
-                pay[at..at + s.len()].copy_from_slice(s);
-                at += s.len();
+            // Byte stores: `copy_from_slice` per span is a memcpy call.
+            for (d, s) in self
+                .buf
+                .payload_mut()
+                .iter_mut()
+                .zip(spans.iter().flat_map(|s| s.iter()))
+            {
+                *d = *s;
             }
             self.body = Arm::Buf {
                 off: 1,
