@@ -177,10 +177,10 @@ pub struct TelCosts {
 /// block's due stage on phase SLOW every DECIM_SLOW periods (by regime) and
 /// its finish on the next period's, the thermometer's stages around them
 /// (an install on phase THERM_INSTALL of the period after the finish,
-/// THERM_SIDE then and before the due stage), and the tick-load close on
-/// every [`budget::HEALTH_CLOSE_TICKS`]-th tick from the lane's first, as
-/// the chip counts it, with the catch-up when a tick was lost since the
-/// last one.
+/// THERM_SIDE then and before the due stage), each holding the TX lane as
+/// the kernel does, and the tick-load close where the chip's count lands
+/// it ([`budget::health_close_at`], the lane's first tick the boot tick),
+/// with the catch-up when a tick was lost since the last one.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub slow_due: [u64; 2],
@@ -279,6 +279,12 @@ pub struct KernelStats {
     pub over: u64,
     /// Ticks charged on the Closed rows.
     pub closed: u64,
+    /// TEL ticks that ran a SLOW or thermometer stage, and of those the
+    /// ones the TX lane took a step on.
+    pub stage_tel: u64,
+    pub stage_steps: u64,
+    /// Tick-load closes by phase.
+    pub closes: [u64; PHASES],
     /// gamma(k) of the bodies, entry and exit excluded (probe scope).
     pub windows: Windows,
 }
@@ -295,6 +301,8 @@ struct Kernel {
     goal_at: u64,
     lost_at_close: u64,
     regime: Regime,
+    /// The running body runs a SLOW or thermometer stage.
+    stage: bool,
     /// The running body, extensions included.
     body: u64,
     /// The scan pended and not yet entered.
@@ -486,6 +494,7 @@ impl Cpu {
             goal_at: 0,
             lost_at_close: 0,
             regime: Regime::Open,
+            stage: false,
             body: 0,
             pend_at: None,
             entered: 0,
@@ -565,15 +574,17 @@ impl Cpu {
         let ev = k.lane.events;
         let slow = DECIM_SLOW as u64;
         let at = k.periods % slow;
-        cost += match k.phase as u8 {
-            phase::SLOW if at == 0 => ev.slow_due[r],
-            phase::SLOW if at == 1 => ev.finish,
-            phase::THERM_INSTALL if at == 2 => ev.install,
-            phase::THERM_SIDE if at == 2 || at == slow - 1 => ev.side,
-            _ => 0,
+        let stage = match k.phase as u8 {
+            phase::SLOW if at == 0 => Some(ev.slow_due[r]),
+            phase::SLOW if at == 1 => Some(ev.finish),
+            phase::THERM_INSTALL if at == 2 => Some(ev.install),
+            phase::THERM_SIDE if at == 2 || at == slow - 1 => Some(ev.side),
+            _ => None,
         };
-        let close = budget::HEALTH_CLOSE_TICKS as u64;
-        if (tick + 1).is_multiple_of(close) {
+        k.stage = stage.is_some();
+        cost += stage.unwrap_or(0);
+        if budget::health_close_at(tick) {
+            k.stats.closes[k.phase] += 1;
             cost += ev.health_close;
             if k.stats.lost > k.lost_at_close {
                 cost += ev.catch_up;
@@ -602,6 +613,22 @@ impl Cpu {
     /// The lane's TEL costs (zero without a lane).
     pub fn kernel_tel(&self) -> TelCosts {
         self.kernel.as_ref().map(|k| k.lane.tel).unwrap_or_default()
+    }
+
+    /// The running kernel body runs a SLOW or thermometer stage: the TX
+    /// lane holds.
+    pub fn kernel_holds(&self) -> bool {
+        self.kernel.as_ref().is_some_and(|k| k.stage)
+    }
+
+    /// The running body's TEL tick: whether its TX lane took a step.
+    pub fn kernel_lane_step(&mut self, stepped: bool) {
+        if let Some(k) = self.kernel.as_mut()
+            && k.stage
+        {
+            k.stats.stage_tel += 1;
+            k.stats.stage_steps += stepped as u64;
+        }
     }
 
     /// The TEL encode the running body's regime carries.

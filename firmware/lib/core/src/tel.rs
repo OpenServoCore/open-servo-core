@@ -189,6 +189,9 @@ pub trait TelStream {
     /// kernel builds the sample only when nonzero.
     fn row_mask(&mut self) -> u16;
     fn on_tick(&mut self, sample: &TelSample);
+    /// The tick runs a SLOW or thermometer stage: the TX lane takes no step
+    /// on it. Any time before [`Self::on_tick_end`].
+    fn hold(&mut self) {}
     /// The tick's last work, after the drive is written.
     fn on_tick_end(&mut self) {}
 }

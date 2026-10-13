@@ -115,7 +115,7 @@ fn event_tick(phase: u8, ev: Events) -> u32 {
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
-#[ignore = "over budget: the TEL row (591), the TX lane's dearest step with its poll (354; a bank's tick is no dearer) and the health close (308) put the side tick at 3099 with entry and exit, 699 over (install 2749, freeze 2569); a plain Closed p1 with the same takes 2943"]
+#[ignore = "over budget, owned by the thermometer: its side (639) takes Closed p9 to 2734, its install (585) p8 to 2692 and its freeze (363) p6 to 2512, on ticks of 2095, 2107 and 2149 without it (the phase, the TEL row 591, the held lane's poll and bank 297, entry and exit 80). Each stage tick must come in at 2304 (2 us margin): side <= 209, install <= 197, freeze <= 155 on today's rows"]
 #[case::streaming(true)]
 fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     let carried = Events {
@@ -189,7 +189,7 @@ const SLOW_STAGES: [Events; 3] = [
 /// The SLOW stages while six fields stream and step, Closed at budget,
 /// with a bank on the tick.
 #[test]
-#[ignore = "over budget: Closed SLOW 1181 + TEL 591 + the TX lane's dearest step 354 + entry and exit 80 leaves 194 of the period; the due stage takes 446 (2652, 252 over), the finish 363 (2569); a plain Closed p1 with the TEL row, the lane step and the close takes 2943"]
+#[ignore = "over budget, owned by the thermometer: the due stage (446, the thermal step on a tracked seat; the lease and undervoltage are about 30 of it) takes Closed SLOW to 2595 and the finish (363) to 2512, on 2149 without them (SLOW 1181, the TEL row 591, the held lane's poll and bank 297, entry and exit 80). Each must come in at 2304 (2 us margin): due and finish <= 155 on today's rows"]
 fn slow_stages_fit_at_budget_while_streaming() {
     for stage in SLOW_STAGES {
         let ev = Events {
@@ -204,6 +204,28 @@ fn slow_stages_fit_at_budget_while_streaming() {
             budget::TICK_PERIOD
         );
     }
+}
+
+/// Every phase's plain tick while a burst streams, Closed at budget: the
+/// TEL row and a bank or the TX lane's dearest step, with the health close
+/// where it can land and interrupt entry and exit.
+#[test]
+#[ignore = "over budget, owner open (the heavy phases' bodies or the TEL tick's design): Closed p2 1684 with the TEL row (591), the TX lane's dearest step (354) and entry and exit takes 2709, 309 over; p7 with the health close (308) 2679, p4 2638, p1 2635, p5 2545, p3 2494, p0 2428. The TEL row and bank (198) are M from the image before the kernel owned the lane and are due a bench refill: on the lane image a Closed TEL tick runs at most 702 over its plain tick (row, poll and step), the row 396-489 with margin, which still leaves p2 at 2514-2607, p4 2443-2536 and p1 2440-2533"]
+fn plain_phases_fit_at_budget_while_streaming() {
+    let carried = Events {
+        tel: true,
+        bank: true,
+        ..NONE
+    };
+    let over: Vec<_> = (0..PHASES as u8)
+        .map(|p| (p, event_tick(p, carried)))
+        .filter(|&(_, t)| t > budget::TICK_PERIOD)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "(phase, ticks) over {}: {over:?}",
+        budget::TICK_PERIOD
+    );
 }
 
 /// What any tick may carry: nothing, a TEL row, a row and its bank.
@@ -421,7 +443,7 @@ const STARTS: u64 = 62;
 /// bus at budget for `motion`, the host `k` x 13 us late: the stream frames
 /// with a good CRC, and the rows the encoder dropped.
 fn tel_burst(mask: u16, motion: Motion, k: u64) -> (usize, u16) {
-    let (frames, drops) = tel_burst_at(BaudRate::B3000000, mask, motion, k);
+    let (frames, drops, _) = tel_burst_at(BaudRate::B3000000, mask, motion, k);
     let stream = |f: &&WireFrame| status(f).0.result() == Some(ResultCode::Stream);
     let good = frames
         .iter()
@@ -432,8 +454,13 @@ fn tel_burst(mask: u16, motion: Motion, k: u64) -> (usize, u16) {
 }
 
 /// [`tel_burst`] at `rate`, every servo frame from the count write on (its
-/// ack first), at budget.
-fn tel_burst_at(rate: BaudRate, mask: u16, motion: Motion, k: u64) -> (Vec<WireFrame>, u16) {
+/// ack first), at budget, and the kernel lane's stats.
+fn tel_burst_at(
+    rate: BaudRate,
+    mask: u16,
+    motion: Motion,
+    k: u64,
+) -> (Vec<WireFrame>, u16, KernelStats) {
     let start = START_US + 13 * k;
     let mut sim = Sim::new(rate);
     let s = sim.add_servo(ID);
@@ -449,7 +476,7 @@ fn tel_burst_at(rate: BaudRate, mask: u16, motion: Motion, k: u64) -> (Vec<WireF
         .into_iter()
         .filter(|f| f.from == Source::Servo(ID))
         .collect();
-    (frames, sim.tel_drops(s))
+    (frames, sim.tel_drops(s), sim.kernel_stats(s))
 }
 
 #[test]
@@ -527,7 +554,7 @@ fn tel_kernel_lane_never_underruns_at_budget() {
             assert_eq!(row_bytes(mask), row_bytes_max(rate), "{rate:?}");
         }
         for k in (0..STARTS).step_by(4) {
-            let (frames, drops) = tel_burst_at(rate, mask, Motion::Moving, k);
+            let (frames, drops, _) = tel_burst_at(rate, mask, Motion::Moving, k);
             let stream: Vec<_> = frames
                 .iter()
                 .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
@@ -554,7 +581,7 @@ fn tel_ack_crc_survives_a_burst_start() {
         (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW),
     ] {
         for k in 0..STARTS {
-            let (frames, _) = tel_burst_at(rate, mask, Motion::Moving, k);
+            let (frames, _, _) = tel_burst_at(rate, mask, Motion::Moving, k);
             let ack = &frames[0];
             assert_eq!(status(ack).0.result(), Some(ResultCode::Ok), "{rate:?} {k}");
             assert!(frame_crc_ok(ack), "{rate:?} start {k}: the ack");
@@ -562,5 +589,45 @@ fn tel_ack_crc_survives_a_burst_start() {
             assert_eq!(status(first).0.result(), Some(ResultCode::Stream));
             assert!(frame_crc_ok(first), "{rate:?} start {k}: the first frame");
         }
+    }
+}
+
+/// A SLOW or thermometer stage tick holds the TX lane: at every start
+/// offset, stepping at budget with the widest row each rate admits, the
+/// burst's stage ticks carry their rows and never a lane step.
+#[test]
+fn tel_lane_never_steps_on_a_stage_tick() {
+    use osc_servo_core::tel::{BIT_CURRENT, BIT_CURRENT_RAW, BIT_DUTY, BIT_POS, BIT_VDIFF};
+    let ladder = BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF;
+    for (rate, mask) in [
+        (BaudRate::B3000000, WIDEST_ROW),
+        (BaudRate::B2000000, ladder),
+        (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW),
+    ] {
+        for k in 0..STARTS {
+            let (_, _, st) = tel_burst_at(rate, mask, Motion::Moving, k);
+            assert!(
+                st.stage_tel > 0,
+                "{rate:?} start {k}: no stage tick streamed"
+            );
+            assert_eq!(st.stage_steps, 0, "{rate:?} start {k}: {st:?}");
+        }
+    }
+}
+
+/// The tick-load close lands on phase PUBLISH alone, never on a SLOW or
+/// thermometer stage's phase: at every start offset of a burst, stepping
+/// at budget.
+#[test]
+fn health_close_lands_only_on_publish_while_streaming() {
+    for k in 0..STARTS {
+        let (_, _, st) = tel_burst_at(BaudRate::B3000000, WIDEST_ROW, Motion::Moving, k);
+        let lands: Vec<_> = (0..PHASES).filter(|&p| st.closes[p] > 0).collect();
+        assert_eq!(
+            lands,
+            [phase::PUBLISH as usize],
+            "start {k}: {:?}",
+            st.closes
+        );
     }
 }

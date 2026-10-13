@@ -390,19 +390,19 @@ impl Fast {
                 // exists for OpenLoop identification only)
                 self.drive_cmd(duty, DecayMode::Slow, fc.drive_polarity)
             }
+        } else if let Drive::Brake = drive {
+            // anti-hunt: park instead of dithering on friction; the frozen
+            // loop resumes bumplessly on exit. The winding short brakes a
+            // shaft that enters the band at speed (Ke x omega / R, zero at
+            // rest, nothing from the rail). On friction alone a fast arrival
+            // leaves the far edge, and the wake kicks it back through at the
+            // current limit: a limit cycle. Not with the cold kinds below: a
+            // hold at rest parks here every tick.
+            self.duty_q15 = 0;
+            MotorCmd::Brake
         } else {
             core::hint::cold_path();
             match drive {
-                // anti-hunt: park instead of dithering on friction; the frozen
-                // loop resumes bumplessly on exit. The winding short brakes a
-                // shaft that enters the band at speed (Ke x omega / R, zero at
-                // rest, nothing from the rail). On friction alone a fast arrival
-                // leaves the far edge, and the wake kicks it back through at the
-                // current limit: a limit cycle.
-                Drive::Brake => {
-                    self.duty_q15 = 0;
-                    MotorCmd::Brake
-                }
                 // ceilinged against the current band above the window floor, raw
                 // at or under it; NO vbus comp - identification wants
                 // unconfounded actuation

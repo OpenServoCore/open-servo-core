@@ -2478,6 +2478,68 @@ impl crate::tel::TelStream for RecTel {
     }
 }
 
+/// Whether the kernel held the TX lane on the last tick.
+#[derive(Default)]
+struct HoldTel {
+    held: bool,
+}
+impl crate::tel::TelStream for HoldTel {
+    fn row_mask(&mut self) -> u16 {
+        0
+    }
+    fn on_tick(&mut self, _sample: &crate::tel::TelSample) {}
+    fn hold(&mut self) {
+        self.held = true;
+    }
+}
+
+/// The kernel holds the TX lane on every tick that runs a SLOW stage (due
+/// or finish) or a thermometer stage (an install or a side, each consuming
+/// its pending bit) and on no other: never a refresh stage's tick, never a
+/// plain one. A tracked seat runs every stage, an install included.
+#[test]
+fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        HoldTel::default(),
+        TIMING,
+    );
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hot);
+    // due, finish, install, side, refresh
+    let mut seen = [0u32; 5];
+    for t in 0..BASE_FAST_TICKS {
+        if t == BASE_FAST_TICKS / 2 {
+            write_config(&sh, |_| {});
+        }
+        let before = k.probe_tags();
+        k.tel.held = false;
+        k.on_tick(hot, &sh);
+        let after = k.probe_tags();
+        let spare = matches!(before.phase, phase::THERM_INSTALL | phase::THERM_SIDE);
+        let stage = spare && before.therm != after.therm;
+        let kind = [
+            before.slow_due,
+            before.slow_finish,
+            stage && before.phase == phase::THERM_INSTALL,
+            stage && before.phase == phase::THERM_SIDE,
+            before.refresh_staged != after.refresh_staged,
+        ];
+        for (n, &hit) in seen.iter_mut().zip(&kind) {
+            *n += hit as u32;
+        }
+        let want = kind[..4].iter().any(|&h| h);
+        assert_eq!(k.tel.held, want, "tick {t}: {kind:?}");
+    }
+    assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+}
+
 /// The frame's stamp: each sample carries the `sample_tick` the tick ISR
 /// published ahead of the kernel body, low half.
 #[test]

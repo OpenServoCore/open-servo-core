@@ -270,7 +270,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // Arm order is the spare phases' priority: a refresh stage owns its
         // tick, and the thermometer's stage waits a period on its pending bit,
         // as it does through the SLOW finish's period: one slow-rate stage
-        // per period keeps them from bunching on one TEL batch.
+        // per period keeps them from bunching on one TEL batch. A stage tick
+        // holds the TX lane; a refresh tick does not, as a refresh can run
+        // every period.
         match phase {
             medium::phase::CONTROL if !self.booted => self.boot(&frame, shared),
             medium::phase::THERM_INSTALL if shared.config_gen() != self.config_gen => {
@@ -280,7 +282,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             medium::phase::THERM_INSTALL | medium::phase::THERM_SIDE
                 if self.medium.thermal.pending() != 0 && self.medium.slow_periods != 1 =>
             {
-                self.medium.spare(phase, frame.ntc_raw, &self.cfg)
+                let ran = self.medium.spare(phase, frame.ntc_raw, &self.cfg);
+                if ran {
+                    self.tel.hold();
+                }
             }
             _ => {}
         }
@@ -292,7 +297,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             &mut self.tel,
             shared,
         );
-        self.medium.step(
+        let staged = self.medium.step(
             phase,
             &frame,
             &meas,
@@ -302,6 +307,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             &mut self.fast,
             &mut self.cmd,
         );
+        if staged {
+            self.tel.hold();
+        }
         let out = self
             .fast
             .drive(&meas, &self.cfg.fast, &self.cmd, &self.faults);

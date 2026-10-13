@@ -361,8 +361,12 @@ impl SimServo {
         self.tel.drops()
     }
 
-    /// One kernel tick's TEL work: the row if one is owed, then the lane.
-    pub fn tel_tick(&mut self, s: &TelSample) {
+    /// One kernel tick's TEL work: the row if one is owed, then the lane,
+    /// which a `hold` tick leaves be.
+    pub fn tel_tick(&mut self, s: &TelSample, hold: bool) {
+        if hold {
+            self.feed.hold();
+        }
         if self.feed.row_mask() != 0 {
             self.feed.on_tick(s);
         }

@@ -1167,7 +1167,7 @@ writes them, not the kernel.
 
 | addr  | name                 | access | meaning                                                                                              |
 | ----- | -------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
-| 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4096 ticks (0.2 s), Q15       |
+| 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4000 ticks (0.2 s), Q15       |
 | 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
 | 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
 | 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire, each a jump in the next frame's `tick` (sec 5.6); wraps |
@@ -1182,14 +1182,14 @@ the last statement of the tick interrupt and leaves out interrupt entry
 and exit. The tick interrupt sits above the transport, so bus traffic
 costs it no tick: it is the kernel alone. A tick counts as lost when the
 interrupt runs a whole period or more behind schedule, judged once per
-16 ticks: a late window that the next one catches up costs nothing, and
+20 ticks: a late window that the next one catches up costs nothing, and
 one window counts at most 16. Only a kernel body that overruns past two
 periods or a flash SAVE (torque off) loses one, so any count under
 traffic is the kernel's own. The kernel does not stretch for a lost
 tick: every tick it runs advances one period, and `sample_tick` stays
-the count of ticks that ran. Both counters update every 16 ticks
-(0.8 ms), the mean every 4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks before it
-that did not fill a 16-tick window count toward neither counter, and
+the count of ticks that ran. Both counters update every 20 ticks
+(1 ms), the mean every 4000. No kernel tick runs during a shunt burst (sec 5.8); the ticks before it
+that did not fill a 20-tick window count toward neither counter, and
 the first window after it counts no lost ticks.
 `stack_free_min` reads 0 until the first stack scan completes, about
 10 ms after boot.
