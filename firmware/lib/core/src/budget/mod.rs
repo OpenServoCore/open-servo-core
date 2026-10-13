@@ -233,36 +233,23 @@ pub enum Body {
     TxDone,
     /// Deadline mux (framer, dispatch, verdict, commit, trigger).
     Deadline,
-    /// The TEL stager body that seals and starts a frame.
-    TelStage,
-    /// The TEL stager body that starts nothing.
-    TelPoll,
 }
 
 impl Body {
-    pub const ALL: [Body; 5] = [
-        Body::BreakWake,
-        Body::TxDone,
-        Body::Deadline,
-        Body::TelStage,
-        Body::TelPoll,
-    ];
+    pub const ALL: [Body; 3] = [Body::BreakWake, Body::TxDone, Body::Deadline];
 }
 
 /// Longest body of each bus vector at [`BUDGET_BAUD_HZ`], any traffic.
 ///
 /// M: each body's net maximum over every budget window, a 1M window's
-/// Deadline and TelStage less [`spin_extra`]. Deadline: the goal WRITE at
-/// 1M; BreakWake: the first wake after a burst's LAST, which takes the TX
-/// lane back from the kernel (997, TEL stepping); the rest from the TEL
-/// stepping window.
+/// Deadline less [`spin_extra`]. Deadline: the goal WRITE at 1M; BreakWake:
+/// the first wake after a burst's LAST, which takes the TX lane back from
+/// the kernel (997, TEL stepping); the rest from the TEL stepping window.
 pub const fn body(b: Body) -> u32 {
     match b {
         Body::BreakWake => 1045,
         Body::TxDone => 426,
         Body::Deadline => 7116,
-        Body::TelStage => 1266,
-        Body::TelPoll => 134,
     }
 }
 
@@ -270,20 +257,18 @@ pub const fn body(b: Body) -> u32 {
 ///
 /// M: each body's largest window mean (at least [`MEAN_MIN_BODIES`]
 /// bodies), the same spin rule. BreakWake: the GREAD slot window; Deadline:
-/// the goal WRITE; TelPoll: TEL still; the rest TEL stepping, TxDone with
-/// the stager wake on release (316).
+/// the goal WRITE; TxDone: TEL stepping, with the stager wake on release
+/// (316).
 pub const fn body_mean(b: Body) -> u32 {
     match b {
         Body::BreakWake => 803,
         Body::TxDone => 332,
         Body::Deadline => 5770,
-        Body::TelStage => 1152,
-        Body::TelPoll => 44,
     }
 }
 
 /// Frame types, each the bus CPU of one exchange: every bus body from its
-/// break wake to the next frame's (a TEL batch: from its start to the next).
+/// break wake to the next frame's.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
     Ping,
@@ -295,18 +280,15 @@ pub enum Frame {
     Write,
     /// GREAD answered in slot 1 behind a silent slot 0 (reclaim).
     GreadSlot,
-    /// One six-field TEL frame (16 rows) with its arms and the polls between.
-    TelBatch,
 }
 
 impl Frame {
-    pub const ALL: [Frame; 6] = [
+    pub const ALL: [Frame; 5] = [
         Frame::Ping,
         Frame::Read32,
         Frame::Read240,
         Frame::Write,
         Frame::GreadSlot,
-        Frame::TelBatch,
     ];
 
     /// TX arms a reply streams in, each one TX-done body.
@@ -319,8 +301,7 @@ impl Frame {
 /// plus 6 us. Ping, E: the READ less its read dispatch (~5 us). Read240, E:
 /// Read32 plus 5 us (payload streams by DMA). Write, E: Read32 plus the
 /// goal rules and commit (37 us) plus 8 us. GreadSlot, E: Read32 plus the
-/// chain bookkeeping and reclaim deadline (15 us). TelBatch, E: stage 22.5,
-/// two arms, fifteen polls (v2 probe), plus 10 us.
+/// chain bookkeeping and reclaim deadline (15 us).
 pub const fn frame(f: Frame) -> u32 {
     match f {
         Frame::Ping => 5520,
@@ -328,14 +309,12 @@ pub const fn frame(f: Frame) -> u32 {
         Frame::Read240 => 6240,
         Frame::Write => 8160,
         Frame::GreadSlot => 6720,
-        Frame::TelBatch => 3360,
     }
 }
 
 /// The same frames' mean over a window. E: Read32 112 us (the v1 118.9 us
 /// less the third arm, which two-arm replies dropped); Ping, Read240, Write
-/// and GreadSlot shifted from it as in [`frame`]; TelBatch: stage 20, two
-/// arms, fifteen polls.
+/// and GreadSlot shifted from it as in [`frame`].
 pub const fn frame_mean(f: Frame) -> u32 {
     match f {
         Frame::Ping => 5136,
@@ -343,7 +322,6 @@ pub const fn frame_mean(f: Frame) -> u32 {
         Frame::Read240 => 5616,
         Frame::Write => 7152,
         Frame::GreadSlot => 6096,
-        Frame::TelBatch => 2112,
     }
 }
 

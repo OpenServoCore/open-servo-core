@@ -339,42 +339,8 @@ pub const STREAM_ROWS_MAX: usize = u32::BITS as usize;
 /// take the count from `LEN`, never from this.
 pub const STREAM_SAMPLES_MAX: usize = 16;
 
-/// The budget rate and the control tick the burst keeps up with.
-pub const STREAM_BUDGET_BAUD: BaudRate = BaudRate::B3000000;
-pub const STREAM_BUDGET_TICK_HZ: u32 = 20_000;
-
-/// Wire bytes a TEL frame spends outside its payload: the 6 of sec 3.1
-/// (break, ID, LEN, INST, CRC) and one character of slack.
-pub const STREAM_FRAME_OVERHEAD: usize = 7;
-
-/// The share of its batch's line time a TEL frame may take, percent.
-pub const STREAM_LINE_PCT: usize = 95;
-
 /// Bit-times per character on the wire: start, 8 data, stop (sec 3).
 pub const CHAR_BIT_TIMES: u32 = 10;
-
-/// Wire bytes of a full TEL frame of `row_bytes`-byte rows.
-pub const fn stream_frame_bytes(row_bytes: usize) -> usize {
-    STREAM_HDR + STREAM_SAMPLES_MAX * row_bytes + STREAM_TRAILER + STREAM_FRAME_OVERHEAD
-}
-
-/// Byte-times one batch of `STREAM_SAMPLES_MAX` ticks gives the line.
-pub const fn stream_window_bytes(baud: BaudRate, tick_hz: u32) -> usize {
-    STREAM_SAMPLES_MAX * (baud.as_hz() / CHAR_BIT_TIMES / tick_hz) as usize
-}
-
-/// A full frame of `row_bytes`-byte rows clears the wire inside its own
-/// batch's ticks within `STREAM_LINE_PCT`: the burst keeps up with the tick.
-pub const fn stream_fits(row_bytes: usize, baud: BaudRate, tick_hz: u32) -> bool {
-    stream_frame_bytes(row_bytes) * 100 <= stream_window_bytes(baud, tick_hz) * STREAM_LINE_PCT
-}
-
-/// The longest row a burst keeps up with at `baud`: the largest
-/// `row_bytes` that [`stream_fits`].
-pub const fn stream_row_bytes_max(baud: BaudRate, tick_hz: u32) -> usize {
-    let line = stream_window_bytes(baud, tick_hz) * STREAM_LINE_PCT / 100;
-    line.saturating_sub(STREAM_HDR + STREAM_TRAILER + STREAM_FRAME_OVERHEAD) / STREAM_SAMPLES_MAX
-}
 
 /// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
@@ -539,36 +505,6 @@ mod tests {
         assert_eq!(len_for(MAX_PAYLOAD), 255);
         assert_eq!(footprint(255), 258);
         assert_eq!(covered_len(255), 256);
-    }
-
-    /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times, 240 per 16-tick
-    /// batch, 228 of them usable: 13 B rows (225 wire bytes) fit, 14 do not.
-    /// The six raw fields pack to 9 B rows, a 161-byte frame. At 1 M the
-    /// head and trailer leave 59 of 76 bytes, 3 B rows; at 0.5 M none.
-    #[test]
-    fn row_bytes_per_rate_are_the_tel_budget() {
-        let hz = STREAM_BUDGET_TICK_HZ;
-        let max = |b| stream_row_bytes_max(b, hz);
-        assert_eq!(stream_window_bytes(STREAM_BUDGET_BAUD, hz), 240);
-        assert_eq!(
-            [
-                BaudRate::B500000,
-                BaudRate::B1000000,
-                BaudRate::B2000000,
-                BaudRate::B3000000
-            ]
-            .map(max),
-            [0, 3, 8, 13]
-        );
-        for b in [BaudRate::B1000000, BaudRate::B2000000, BaudRate::B3000000] {
-            assert!(stream_fits(max(b), b, hz));
-            assert!(!stream_fits(max(b) + 1, b, hz));
-        }
-        assert_eq!(stream_frame_bytes(9), 161);
-        assert!(
-            STREAM_HDR + STREAM_SAMPLES_MAX * max(STREAM_BUDGET_BAUD) + STREAM_TRAILER
-                <= MAX_PAYLOAD as usize
-        );
     }
 
     #[test]

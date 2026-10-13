@@ -115,7 +115,10 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     }
 
     /// The lane passes at the release of the ack in hand, or now when
-    /// none is: an aborted ack takes the burst with it.
+    /// none is: an aborted ack takes the burst with it. One copy behind
+    /// both commit sites: inlined, its body pushes the table's event walk
+    /// out of line and every committed write pays the call.
+    #[inline(never)]
     fn tel_arm(&mut self, mask: u16, count: u16) {
         // sec 5.6: the line is the burst's until LAST, so a second arm in
         // the body that lent it is void.

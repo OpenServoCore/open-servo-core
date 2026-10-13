@@ -27,6 +27,8 @@ pub use osc_protocol::tel::{
 use osc_protocol::tel::{NARROW_BITS, NARROW_MASK, PAIR_BYTES, WORD_BYTES};
 use osc_protocol::wire::{self, BaudRate, STREAM_TAIL_ALERT};
 
+use crate::budget::LAW_BREAK_BIT_TIMES;
+
 /// The TEL `duty` a logical Q15 duty drives at `pwm_arr`: the kernel's
 /// `window::drive_ticks` width, negative in reverse. Hosts quantize a goal
 /// with it to compare against the rows.
@@ -53,22 +55,35 @@ pub const STREAM_TRAILER: usize = wire::STREAM_TRAILER;
 
 /// The longest row the encoder and its TX lane keep up with at budget,
 /// parked and stepping (DES `tel_widest_row_keeps_up_at_rest`,
-/// `tel_widest_row_fits_at_budget_while_stepping`), short of the 13 B the
+/// `tel_widest_row_fits_at_budget_while_stepping`), short of the 12 B the
 /// 3 M wire carries.
 pub const ROW_BYTES_CPU_MAX: usize = 11;
 
-/// The longest row a burst arms with at `baud`.
+/// Ticks of a batch a frame leaves its TX lane besides its wire time: the
+/// lane breaks on one tick, arms on the next, and sees the frame end on a
+/// tick (`osc_servo_drivers::tel`).
+pub const LANE_TICKS: usize = 2;
+
+/// The longest row a burst arms with at `baud`: a full frame, break to
+/// CRC, clears the wire inside its batch's ticks less [`LANE_TICKS`], and
+/// the encoder keeps up ([`ROW_BYTES_CPU_MAX`]).
 pub const fn row_bytes_max(baud: BaudRate) -> usize {
-    let wire = wire::stream_row_bytes_max(baud, wire::STREAM_BUDGET_TICK_HZ);
-    if wire < ROW_BYTES_CPU_MAX {
-        wire
+    let tick_bits = baud.as_hz() / crate::budget::TICK_HZ;
+    let bits = (STREAM_SAMPLES_MAX - LANE_TICKS) as u32 * tick_bits;
+    let chars = (bits.saturating_sub(LAW_BREAK_BIT_TIMES) / wire::CHAR_BIT_TIMES) as usize;
+    // ID, LEN, INST and CRC around the payload (sec 3.1).
+    let framing = wire::footprint(wire::len_for(0)) - 1;
+    let fixed = framing + STREAM_HDR + STREAM_TRAILER;
+    let fit = chars.saturating_sub(fixed) / STREAM_SAMPLES_MAX;
+    if fit < ROW_BYTES_CPU_MAX {
+        fit
     } else {
         ROW_BYTES_CPU_MAX
     }
 }
 
 /// The longest row any rate admits: the buffers' row.
-pub const ROW_BYTES_MAX: usize = row_bytes_max(wire::STREAM_BUDGET_BAUD);
+pub const ROW_BYTES_MAX: usize = row_bytes_max(BaudRate::B3000000);
 
 pub const STREAM_PAYLOAD_MAX: usize =
     STREAM_HDR + STREAM_SAMPLES_MAX * ROW_BYTES_MAX + STREAM_TRAILER;
@@ -89,7 +104,8 @@ pub const ROW_BYTES_PER_RATE: [u8; osc_protocol::table::TEL_ROW_RATES] = {
 /// A burst under `mask` arms at `baud`: no reserved bit, a field, and a
 /// row the rate's capacity carries.
 pub const fn admits(mask: u16, baud: BaudRate) -> bool {
-    mask & !MASK_ALL == 0 && mask != 0 && row_bytes(mask) <= row_bytes_max(baud)
+    let max = ROW_BYTES_PER_RATE[baud.as_idx() as usize] as usize;
+    mask & !MASK_ALL == 0 && mask != 0 && row_bytes(mask) <= max
 }
 
 /// One fast tick's streamable primitives, in device counts. `pos`,
@@ -369,23 +385,34 @@ mod tests {
         assert!(STREAM_PAYLOAD_MAX <= wire::MAX_PAYLOAD as usize);
     }
 
-    /// Admission by row bytes at the current rate: the six raw fields (9 B)
-    /// at 3 M only; 2 M carries 8 B rows, 1 M 3 B, 0.5 M none; 3 M stops at
-    /// the encoder's 11 B short of the wire's 13.
+    /// Admission by frame wire time plus the lane's two ticks inside the
+    /// 16-tick batch (800 us): 3 M's 12 B frame takes 694 us, 2 M's 7 B
+    /// 641 us and 8 B 721, 1 M's 3 B 641 us and 4 B 801, 0.5 M's 1 B 642 us
+    /// and 2 B 962. 3 M stops at the encoder's 11 B; 0.5 M's byte holds no
+    /// field, so it streams nothing.
     #[test]
-    fn admission_is_by_row_bytes_at_the_rate() {
-        assert_eq!(
-            [
-                BaudRate::B500000,
-                BaudRate::B1000000,
-                BaudRate::B2000000,
-                BaudRate::B3000000
-            ]
-            .map(row_bytes_max),
-            [0, 3, 8, 11]
-        );
+    fn admission_is_by_frame_wire_time_and_the_lane_ticks() {
+        let rates = [
+            BaudRate::B500000,
+            BaudRate::B1000000,
+            BaudRate::B2000000,
+            BaudRate::B3000000,
+        ];
+        assert_eq!(rates.map(row_bytes_max), [1, 3, 7, 11]);
+        let frame_us = |b: BaudRate, row: usize| {
+            let chars = 5 + STREAM_HDR + STREAM_SAMPLES_MAX * row + STREAM_TRAILER;
+            let bits = LAW_BREAK_BIT_TIMES as usize + 10 * chars;
+            bits * 1_000_000 / b.as_hz() as usize
+        };
+        let lane_us = (STREAM_SAMPLES_MAX - LANE_TICKS) * 50;
+        for (b, wire) in rates.into_iter().zip([1, 3, 7, 12]) {
+            assert!(frame_us(b, wire) <= lane_us, "{b:?} {wire} B");
+            assert!(frame_us(b, wire + 1) > lane_us, "{b:?} {} B", wire + 1);
+        }
+        assert!((0..=MASK_ALL).all(|m| m == 0 || row_bytes(m) > 1));
         assert!(admits(MASK_RAW, BaudRate::B3000000));
         assert!(!admits(MASK_RAW, BaudRate::B2000000));
+        assert_eq!(row_bytes(MASK_LADDER), 7);
         assert!(admits(MASK_LADDER, BaudRate::B2000000));
         assert!(!admits(MASK_LADDER, BaudRate::B1000000));
         assert!(admits(BIT_POS | BIT_CURRENT_RAW, BaudRate::B1000000));
