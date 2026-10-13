@@ -730,10 +730,22 @@ fn span_runs() -> [(u16, u16); 3] {
 const APPLY_TICKS: u64 = DECIM_MED_TICKS + 1;
 const DECIM_MED_TICKS: u64 = PHASES as u64;
 
+/// How the COMMIT that carries a configuration write and a TEL arm ends.
+#[derive(Copy, Clone, Debug)]
+enum ConfigArm {
+    /// Addressed: the lane lends at its ack's release.
+    Acked,
+    /// Broadcast, as `osc` arms a step: no ack, the lane lends at the arm,
+    /// with the take still pending.
+    Silent,
+}
+
 /// A bulk configuration write committed with the TEL arm, at budget while
-/// stepping, the host `k` x 13 us late: the TEL chunks, the span's runs and
-/// the burst's count staged with HOLD, one COMMIT. The kernel lane's stats.
-fn config_burst(k: u64) -> KernelStats {
+/// stepping, the host `k` x 13 us late: the TEL chunks, then the span's
+/// runs and the burst's count staged with HOLD, one COMMIT ending `how`.
+/// Every servo frame from the chunks' ack on, the rows dropped, and the
+/// kernel lane's stats.
+fn config_burst(how: ConfigArm, k: u64) -> (Vec<WireFrame>, u16, KernelStats) {
     let start = START_US + 13 * k;
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
@@ -762,9 +774,17 @@ fn config_burst(k: u64) -> KernelStats {
         t + 1,
         &instruction(ID, Opcode::Write, Inst::FLAG_HOLD, &payload),
     );
-    sim.host_send_at(t + 1, &instruction(ID, Opcode::Commit, 0, &[]));
-    sim.run();
-    sim.kernel_stats(s)
+    let to = match how {
+        ConfigArm::Acked => ID,
+        ConfigArm::Silent => Id::BROADCAST.0,
+    };
+    sim.host_send_at(t + 1, &instruction(to, Opcode::Commit, 0, &[]));
+    let frames = sim
+        .run()
+        .into_iter()
+        .filter(|f| f.from == Source::Servo(ID))
+        .collect();
+    (frames, sim.tel_drops(s), sim.kernel_stats(s))
 }
 
 /// At every start offset the kernel takes the committed set once, within
@@ -772,8 +792,49 @@ fn config_burst(k: u64) -> KernelStats {
 #[test]
 fn config_apply_lands_within_its_bound_at_budget() {
     for k in 0..STARTS {
-        let st = config_burst(k);
+        let (_, _, st) = config_burst(ConfigArm::Acked, k);
         assert_eq!(st.takes, 1, "start {k}: {st:?}");
         assert!(st.apply_max <= APPLY_TICKS, "start {k}: {st:?}");
     }
+}
+
+/// A burst armed with a configuration take pending, at every start offset:
+/// its first row waits out the take, at most [`APPLY_TICKS`] ticks, so no
+/// tick carries the take and a row; the burst then streams whole, every
+/// row charged where the feed copied one. Some offsets must hold, or the
+/// pin tests nothing.
+#[test]
+fn a_burst_never_streams_through_a_config_take() {
+    let mut held = 0;
+    for (how, k) in [ConfigArm::Acked, ConfigArm::Silent]
+        .into_iter()
+        .flat_map(|how| (0..STARTS).map(move |k| (how, k)))
+    {
+        let (frames, drops, st) = config_burst(how, k);
+        let stream: Vec<_> = frames
+            .iter()
+            .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
+            .collect();
+        let bad = stream.iter().filter(|f| !frame_crc_ok(f)).count();
+        assert_eq!(
+            (
+                st.takes,
+                st.take_rows,
+                st.row_misses,
+                st.over - st.therm_over
+            ),
+            (1, 0, 0, 0),
+            "{how:?} start {k}: takes, rows on a take's tick, row charge misses, bodies over \
+             the period ({} thermal): {st:?}",
+            st.therm_over
+        );
+        assert_eq!(
+            (stream.len(), bad, drops),
+            (TEL_FRAMES as usize, 0, 0),
+            "{how:?} start {k}: frames, CRC-bad, rows dropped"
+        );
+        assert!(st.held_starts <= APPLY_TICKS, "{how:?} start {k}: {st:?}");
+        held = held.max(st.held_starts);
+    }
+    assert!(held > 0, "no start held");
 }

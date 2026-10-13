@@ -387,7 +387,7 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
 struct RecTel(Rc<RefCell<Vec<TelemetryTick>>>, *const ControlTableCell);
 
 impl TelStream for RecTel {
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self, _: impl FnOnce() -> bool) {
         // SAFETY: the test's table outlives the kernel that owns this.
         let t = unsafe { (*self.1).with(|t| t.telemetry.tick) };
         self.0.borrow_mut().push(t);

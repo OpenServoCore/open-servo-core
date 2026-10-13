@@ -177,7 +177,7 @@ fn settle<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame) 
 }
 
 /// Ticks `f` until the next tick runs medium phase `p`.
-fn run_to(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, p: u8) {
+fn run_to<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame, p: u8) {
     while k.phase != p {
         k.on_scan(f, sh);
     }
@@ -2342,7 +2342,7 @@ impl RecTel {
     }
 }
 impl crate::tel::TelStream for RecTel {
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self, _: impl FnOnce() -> bool) {
         // SAFETY: the test's `Shared` outlives the kernel that owns this.
         let t = unsafe { (*self.table).with(|t| t.telemetry.tick) };
         let _ = self.rows.push(t);
@@ -2355,7 +2355,7 @@ struct HoldTel {
     held: bool,
 }
 impl crate::tel::TelStream for HoldTel {
-    fn on_tick(&mut self) {}
+    fn on_tick(&mut self, _: impl FnOnce() -> bool) {}
     fn hold(&mut self) {
         self.held = true;
     }
@@ -2766,6 +2766,67 @@ fn a_take_moves_the_probe_tag_at_therm_install_alone() {
     let mut want = [0; DECIM_MED as usize];
     want[phase::THERM_INSTALL as usize] = 1;
     assert_eq!(moves, want);
+}
+
+/// The kernel's `hold_start` tick by tick.
+#[derive(Default)]
+struct StartTel {
+    held: heapless::Vec<bool, 64>,
+}
+impl crate::tel::TelStream for StartTel {
+    fn on_tick(&mut self, hold_start: impl FnOnce() -> bool) {
+        let _ = self.held.push(hold_start());
+    }
+}
+
+/// From a commit to the THERM_INSTALL take that ends it, every tick holds
+/// a burst's start, the take's own included, and after it only the take's
+/// phase does; an odd count holds too, and its take waits for the next
+/// period's THERM_INSTALL.
+#[test]
+fn a_pending_take_holds_a_burst_start_through_its_tick() {
+    let f = frame(2000, BIAS);
+    for odd_at_install in [false, true] {
+        let sh = Shared::new();
+        seed(&sh);
+        let mut k = Kernel::with_tel(
+            FakeIo {
+                sensors: FakeSensors,
+                motor: FakeMotor { last: None },
+            },
+            StartTel::default(),
+            TIMING,
+        );
+        k.on_scan(f, &sh);
+        run_to(&mut k, &sh, f, phase::LIMITS);
+        k.tel.held.clear();
+        sh.config_commit_begin();
+        if !odd_at_install {
+            sh.config_commit_end();
+        }
+        let mut take_at = None;
+        for i in 0..3 * DECIM_MED as usize {
+            if odd_at_install && i == DECIM_MED as usize {
+                sh.config_commit_end();
+            }
+            let seq = k.config_seq;
+            k.on_scan(f, &sh);
+            if take_at.is_none() && k.config_seq != seq {
+                take_at = Some(i);
+            }
+        }
+        let take_at = take_at.expect("no take");
+        let want = if odd_at_install { 15 } else { 5 };
+        assert_eq!(take_at, want, "odd at install: {odd_at_install}");
+        // tick i runs phase LIMITS + i
+        let install = |i: usize| {
+            (phase::LIMITS as usize + i) % DECIM_MED as usize == phase::THERM_INSTALL as usize
+        };
+        let want: heapless::Vec<bool, 64> = (0..k.tel.held.len())
+            .map(|i| i <= take_at || install(i))
+            .collect();
+        assert_eq!(k.tel.held, want);
+    }
 }
 
 // --- Host writes land at the CONTROL phase ---------------------------------

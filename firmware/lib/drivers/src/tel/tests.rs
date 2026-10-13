@@ -27,6 +27,8 @@ struct Rig {
     ring: FakeRing,
     ch: &'static TelChannel,
     table: &'static ControlTableCell,
+    /// The kernel's `hold_start` on every tick.
+    hold_start: bool,
 }
 
 fn rig() -> Rig {
@@ -47,6 +49,7 @@ fn rig_with(crc: FakeCrc) -> Rig {
         ring,
         ch,
         table,
+        hold_start: false,
     }
 }
 
@@ -99,7 +102,8 @@ impl Rig {
             tb.telemetry.tick = t;
             tb.telemetry.estimates.vbus_counts = vbus;
         });
-        self.feed.on_tick();
+        let hold = self.hold_start;
+        self.feed.on_tick(|| hold);
         let (next, rail) = sample(i.wrapping_add(0x80));
         self.table.with_mut(|tb| {
             tb.telemetry.tick = next;
@@ -380,6 +384,28 @@ fn posted_chunks_wait_for_their_lend() {
     r.run(0, 40);
     let f = &r.wire.streamed()[0];
     assert_eq!(payload(f), golden(SIX, 0, true, 0..16));
+    assert!(r.feed.idle());
+}
+
+/// A held start leaves the arm in the mailbox and the lane idle: the burst
+/// starts on the first tick not held, with that tick's row, and a hold
+/// once it streams holds nothing.
+#[test]
+fn a_held_start_waits_for_the_first_tick_not_held() {
+    let mut r = rig();
+    r.arm(SIX, 16);
+    r.hold_start = true;
+    for i in 0..5 {
+        r.tick(i);
+    }
+    assert!(r.wire.log().is_empty(), "the lane moved on a held start");
+    assert!(!r.feed.idle(), "the arm was dropped");
+    r.hold_start = false;
+    r.tick(5);
+    r.hold_start = true;
+    r.run(6, 50);
+    let f = &r.wire.streamed()[0];
+    assert_eq!(payload(f), golden(SIX, 0, true, 5..21));
     assert!(r.feed.idle());
 }
 

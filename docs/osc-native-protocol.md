@@ -633,6 +633,15 @@ arm commit together: the capture starts at the commit and the step edge
 lands inside it, at the first medium tick after the commit (sec 5.7). A
 committed `tel_count` of 0 disarms.
 
+A burst never shares a tick with the kernel taking a CONFIG or CALIB
+write (sec 5.7): its first row waits while a committed write is not yet
+taken, and never lands on the take's tick of the medium period. An arm
+committed with such a write, or within a medium period after one,
+streams its first row up to a medium period and a tick late (DES
+`a_burst_never_streams_through_a_config_take`). A step committed in the
+same COMMIT as a configuration write can then land ahead of the first
+row; a host that captures a step commits the configuration first.
+
 `tel_count` reads nonzero only while a burst is armed or streams: the
 servo zeroes it once the burst's LAST frame is off the wire, and at once
 for an arm that does not stream (a row that is no row, a rate under 3 M,

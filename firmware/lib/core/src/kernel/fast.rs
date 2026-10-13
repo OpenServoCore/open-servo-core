@@ -11,7 +11,7 @@ use super::faults::{self, FaultLatch, OcDetector};
 use super::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
-use crate::tel::{TelStream, tick_flag};
+use crate::tel::tick_flag;
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, Shared};
 
@@ -189,11 +189,10 @@ impl Fast {
     /// command drove: this frame's scan sampled the period that command
     /// drove, so terminal and sign attribution stay correct across sign
     /// flips (bang-bang bench test pins this).
-    pub fn measure<T: TelStream>(
+    pub fn measure(
         &mut self,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
-        tel: &mut T,
         shared: &Shared,
     ) -> Measured {
         let frame = shared.frame();
@@ -252,8 +251,8 @@ impl Fast {
             i_meas,
         );
         // The tick block, HERE before the medium step: `ticks` still holds
-        // the command whose window this frame's samples measured. The row
-        // is taken from it at once.
+        // the command whose window this frame's samples measured. The
+        // kernel takes the row from it next.
         let rev = (self.duty_q15 >> 15) as i32;
         let duty = ((ticks as i32 ^ rev) - rev) as i16;
         let flags = (tick_flag::I_VALID * i_meas.is_some() as u16)
@@ -269,7 +268,6 @@ impl Fast {
             (&raw mut (*t).duty_ticks).write_volatile(duty);
             (&raw mut (*t).tick_flags).write_volatile(flags);
         }
-        tel.on_tick();
 
         Measured {
             i_meas,

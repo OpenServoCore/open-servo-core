@@ -243,28 +243,16 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
 /// The configuration take's tick while stepping, Closed at budget: phase
 /// THERM_INSTALL carrying the take (the thermometer's stage there waits a
 /// period), with the health close where it can land and interrupt entry and
-/// exit; a TEL burst's tick on top, for which the take holds no lane.
-fn take_tick(tel: bool) -> u32 {
+/// exit. It carries no TEL row: a burst's start waits out a pending take
+/// (DES `a_burst_never_streams_through_a_config_take`).
+#[test]
+fn the_take_tick_fits_at_budget_without_tel() {
     let p = phase::THERM_INSTALL as usize;
     let ev = Events {
         refresh: true,
-        tel,
-        bank: tel,
         health: budget::health_close_lands(p),
         ..Events::default()
     };
-    budget::kernel_tick(Regime::Closed, p, ev) + ENTRY_EXIT
-}
-
-#[test]
-fn config_write_while_moving_fits_at_budget() {
-    let t = take_tick(false);
-    assert!(t <= TICK_PERIOD, "{t} > {TICK_PERIOD}");
-}
-
-#[test]
-#[ignore = "over budget: the take (REFRESH 613) and a TEL row on one tick; a burst's first row is to wait out a pending take (sec 25), which replaces this pin"]
-fn config_write_while_moving_and_streaming_fits_at_budget() {
-    let t = take_tick(true);
+    let t = budget::kernel_tick(Regime::Closed, p, ev) + ENTRY_EXIT;
     assert!(t <= TICK_PERIOD, "{t} > {TICK_PERIOD}");
 }

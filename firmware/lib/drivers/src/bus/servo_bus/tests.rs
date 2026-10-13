@@ -1482,7 +1482,7 @@ fn tick(feed: &mut Feed, h: &Harness, shared: &Shared, pos: u16) {
         t.telemetry.tick.pos = pos;
         t.telemetry.tick.sample_tick = 0x0100 + (pos as u32 & 0xFF);
     });
-    feed.on_tick();
+    feed.on_tick(|| false);
     feed.on_tick_end();
 }
 

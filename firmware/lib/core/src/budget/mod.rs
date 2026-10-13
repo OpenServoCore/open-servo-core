@@ -78,11 +78,12 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// The configuration take after a write, on top of [`KERNEL`], at most once
 /// per period, at phase THERM_INSTALL and in place of the thermometer's
 /// stage there: the input span's word copy, the Ke belt, the thermometer's
-/// config, its bound and the terminal floor's store. E: 557, the take and
-/// the bound it calls on the release disassembly with the fetch model
-/// (load/store 3.25, ALU 2, mul 10, taken transfer 6, call and return 12
-/// HCLK; 84 loads and stores, 353, and the bound's worst path, 204), plus
-/// 10%.
+/// config, its bound and the terminal floor's store. It carries no TEL row:
+/// a burst starts neither on THERM_INSTALL nor while a take is pending, and
+/// the host is silent through one. E: 557, the take and the bound it calls
+/// on the release disassembly with the fetch model (load/store 3.25, ALU 2,
+/// mul 10, taken transfer 6, call and return 12 HCLK; 84 loads and stores,
+/// 353, and the bound's worst path, 204), plus 10%.
 pub const REFRESH: u32 = 613;
 
 /// The tick block's work on every tick, on top of [`KERNEL`], whose bodies

@@ -283,9 +283,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             }
             _ => {}
         }
-        let meas = self
-            .fast
-            .measure(&self.cfg, &mut self.faults, &mut self.tel, shared);
+        let meas = self.fast.measure(&self.cfg, &mut self.faults, shared);
+        // No burst starts on the take's phase, nor while a take is pending.
+        // Asked only at a start: a count read every tick costs every tick.
+        self.tel.on_tick(|| {
+            phase == medium::phase::THERM_INSTALL || shared.config_seq() != self.config_seq
+        });
         let staged = self.medium.step(
             phase,
             &meas,

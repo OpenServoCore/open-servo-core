@@ -217,6 +217,8 @@ pub struct LaneCounts {
     pub wire: Cell<u64>,
     pub feeds: Cell<u64>,
     pub patches: Cell<u64>,
+    /// Rows copied (each row's one engine copy).
+    pub rows: Cell<u64>,
 }
 
 impl LaneCounts {
@@ -409,6 +411,9 @@ impl CrcEngine for SimCrc {
         assert_eq!((dst as usize | src as usize) & 1, 0, "halfword ends");
         // SAFETY: the caller's contract.
         unsafe { core::ptr::copy_nonoverlapping(src, dst, 2 * units as usize) };
+        if let Some(e) = self.lane.as_ref() {
+            bump(&e.counts.rows);
+        }
     }
 
     fn result(&mut self) -> Option<u16> {

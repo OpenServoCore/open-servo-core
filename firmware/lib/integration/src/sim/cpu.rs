@@ -299,6 +299,11 @@ pub struct KernelStats {
     /// tick that took it.
     pub takes: u64,
     pub apply_max: u64,
+    /// TEL rows copied on a take's tick, ticks a burst's start was held,
+    /// and ticks whose row charge and copy disagree (the sim's own check).
+    pub take_rows: u64,
+    pub held_starts: u64,
+    pub row_misses: u64,
     /// gamma(k) of the bodies, entry and exit excluded (probe scope).
     pub windows: Windows,
 }
@@ -325,6 +330,10 @@ struct Kernel {
     config_new_at: Option<u64>,
     /// A take had THERM_INSTALL when the install was due.
     install_owed: bool,
+    /// The running body holds a burst's start (its phase is the take's, or
+    /// a take is pending), and ran the take.
+    hold_start: bool,
+    took: bool,
     /// The running body, extensions included.
     body: u64,
     /// The scan pended and not yet entered.
@@ -522,6 +531,8 @@ impl Cpu {
             config_taken: 0,
             config_new_at: None,
             install_owed: false,
+            hold_start: false,
+            took: false,
             body: 0,
             pend_at: None,
             entered: 0,
@@ -602,9 +613,9 @@ impl Cpu {
         let ev = k.lane.events;
         let slow = DECIM_SLOW as u64;
         let at = k.periods % slow;
-        let take = k.phase == phase::THERM_INSTALL as usize
-            && k.config_seq & 1 == 0
-            && k.config_seq != k.config_taken;
+        let install = k.phase == phase::THERM_INSTALL as usize;
+        let take = install && k.config_seq & 1 == 0 && k.config_seq != k.config_taken;
+        k.took = take;
         let stage = match k.phase as u8 {
             phase::THERM_INSTALL if take => {
                 k.install_owed |= at == 2;
@@ -630,6 +641,8 @@ impl Cpu {
                 k.stats.apply_max = k.stats.apply_max.max(tick - from);
             }
         }
+        // the kernel's start rule, asked after the take
+        k.hold_start = install || k.config_seq != k.config_taken;
         if budget::health_close_at(tick) {
             k.stats.closes[k.phase] += 1;
             cost += ev.health_close;
@@ -666,6 +679,22 @@ impl Cpu {
     /// lane holds.
     pub fn kernel_holds(&self) -> bool {
         self.kernel.as_ref().is_some_and(|k| k.stage)
+    }
+
+    /// The running body holds a burst not yet started: its phase is the
+    /// take's, or a configuration take is pending.
+    pub fn kernel_hold_start(&self) -> bool {
+        self.kernel.as_ref().is_some_and(|k| k.hold_start)
+    }
+
+    /// The running body's TEL tick: whether a row was charged at entry,
+    /// whether the feed copied one, and whether a burst start was held.
+    pub fn kernel_row(&mut self, charged: bool, copied: bool, held: bool) {
+        if let Some(k) = self.kernel.as_mut() {
+            k.stats.take_rows += (k.took && copied) as u64;
+            k.stats.row_misses += (charged != copied) as u64;
+            k.stats.held_starts += held as u64;
+        }
     }
 
     /// The running body's TEL tick: whether its TX lane took a step.
