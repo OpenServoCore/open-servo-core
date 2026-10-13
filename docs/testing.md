@@ -480,8 +480,9 @@ thinks it heard. No wlink, no chip-counter reads; the wire is the failure
 surface, with one opt-in exception (`budgets`, below). The suite sweeps the
 full baud matrix (0.5 M / 1 M / 2 M / 3 M).
 
-- **budgets** (`budgets.rs`, `--ignored`) - needs the bench image flashed,
-  `BENCH_ELF` naming its ELF and `wlink` on the probe. Quiet, hold (with and
+- **budgets** (`budgets.rs`, `--ignored`) - needs the bench image
+  (`scripts/build-image.sh --bench`) flashed, `BENCH_ELF` naming its ELF
+  and `wlink` on the probe. Quiet, hold (with and
   without an approach move), stepping, six-field TEL still and stepping, and
   each polled frame type at 3M and 1M run in their own window, opened by a
   reboot; the budget probe's maxima and means must stay inside
