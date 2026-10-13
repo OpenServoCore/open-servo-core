@@ -56,6 +56,10 @@ pub const HEALTH_CLOSE_TICKS: u32 = 2 * DECIM_MED as u32;
 /// carries no SLOW or thermometer stage and no configuration take.
 pub const HEALTH_CLOSE_PHASE: u8 = phase::PUBLISH;
 
+/// The most lost ticks one tick-load close counts: a longer hold-off, such
+/// as a debug halt, counts exactly this many and resyncs.
+pub const HEALTH_LOST_MAX: u16 = 16;
+
 const _: () = assert!(HEALTH_CLOSE_TICKS.is_multiple_of(DECIM_MED as u32));
 
 /// Whether executed tick `tick` closes a tick-load window. The chip counts

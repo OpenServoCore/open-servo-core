@@ -25,6 +25,8 @@ pub struct Snapshot {
     pub tel: Option<TelSnapshot>,
     pub kernel_words: Vec<u32>,
     pub bus_words: Vec<u32>,
+    /// The `wlink dump`s the read took: each one halts the hart.
+    pub dumps: u16,
 }
 
 #[derive(Debug)]
@@ -86,11 +88,16 @@ impl Reader {
     }
 
     pub fn read(&self) -> Result<Snapshot> {
-        let kernel_words = words(&dump(self.kernel, 4 * KernelProbe::WORDS)?);
+        let mut dumps = 0;
+        let mut record = |addr: u32, n: usize| {
+            dumps += 1;
+            dump(addr, 4 * n).map(|b| words(&b))
+        };
+        let kernel_words = record(self.kernel, KernelProbe::WORDS)?;
         let kernel = KernelProbe::from_words(&kernel_words).context("kernel record")?;
-        Ok(match self.layout {
+        let mut snap = match self.layout {
             Layout::Bench { bus } => {
-                let bus_words = words(&dump(bus, 4 * BusProbe::WORDS)?);
+                let bus_words = record(bus, BusProbe::WORDS)?;
                 Snapshot {
                     kernel,
                     bus: Some(
@@ -101,11 +108,12 @@ impl Reader {
                     tel: None,
                     kernel_words,
                     bus_words,
+                    dumps: 0,
                 }
             }
             Layout::TelCost { tally, cost } => {
-                let tally_words = words(&dump(tally, 4 * TelTally::WORDS)?);
-                let cost_words = words(&dump(cost, 4 * TelCost::WORDS)?);
+                let tally_words = record(tally, TelTally::WORDS)?;
+                let cost_words = record(cost, TelCost::WORDS)?;
                 Snapshot {
                     kernel,
                     bus: None,
@@ -117,9 +125,12 @@ impl Reader {
                     }),
                     kernel_words,
                     bus_words: Vec::new(),
+                    dumps: 0,
                 }
             }
-        })
+        };
+        snap.dumps = dumps;
+        Ok(snap)
     }
 }
 

@@ -3,7 +3,9 @@
 //! reboot (the probe starts at zero) and read over the debug link. Fails
 //! when any component's maximum, or a mean judged over enough bodies,
 //! exceeds its budget, naming the window, the component, the measured
-//! ticks and us, and the budget; or when a window's traffic went wrong.
+//! ticks and us, and the budget; or when a window's traffic went wrong; or
+//! when its health counters, read over the bus after the dumps, show a CRC
+//! fail, a framing drop, a TEL drop or lost ticks beyond the dumps' own.
 //!
 //! Needs the bench image (`--features bench`) flashed, `BENCH_ELF` naming
 //! that ELF, and `wlink` on PATH with the probe attached; flashes nothing.
@@ -42,6 +44,7 @@ use bench::osc::{
 };
 use bench::probe::{self, Reader, Snapshot};
 use osc_client::Outcome;
+use osc_protocol::table::{CRC_FAIL_COUNT, FRAMING_DROP_COUNT};
 use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
@@ -50,12 +53,15 @@ use osc_servo_core::budget::probe::{
 };
 use osc_servo_core::budget::{Frame, Regime, TICKS_PER_US, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
+use osc_servo_core::kernel::HEALTH_LOST_MAX;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, MODE, TORQUE_ENABLE};
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::estimates::THETA_HAT_Q16;
 use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, DUTY_TICKS, POS, SAMPLE_TICK};
-use osc_servo_core::regions::telemetry_ext::addr::health::TEL_DROP_COUNT;
+use osc_servo_core::regions::telemetry_ext::addr::health::{
+    STACK_FREE_MIN, TEL_DROP_COUNT, TICK_LOST_COUNT, TICK_OVER_COUNT,
+};
 use osc_servo_core::regions::telemetry_ext::addr::therm::THERM_FLAGS;
 use serial_test::serial;
 
@@ -106,9 +112,28 @@ struct Window {
     snap: Snapshot,
     /// Instruction frames the host sent after the window's reboot.
     sent: u64,
-    /// `tel_drop_count` and `stack_free_min` at the window's end.
-    tel_drops: u16,
+    counters: Counters,
     stack_free_min: u16,
+}
+
+/// The health counters since the window's reboot, read over the bus after
+/// the probe's dumps so the bus record never books them.
+struct Counters {
+    crc_fail: u32,
+    framing_drop: u32,
+    tick_over: u16,
+    tick_lost: u16,
+    tel_drop: u16,
+}
+
+impl std::fmt::Display for Counters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "crc_fail {}, framing_drop {}, tick_over {}, tick_lost {}, tel_drop {}",
+            self.crc_fail, self.framing_drop, self.tick_over, self.tick_lost, self.tel_drop
+        )
+    }
 }
 
 /// The windows run so far and what went wrong in them.
@@ -322,7 +347,22 @@ impl Fill {
         }
         let snap = self.reader.read().expect("read the budget probe");
         running(b);
-        let [d0, d1, s0, s1] = read_bytes::<4>(b, TEL_DROP_COUNT);
+        let counters = counters(b);
+        // tick_over is reported, not judged: a debug halt inside the tick
+        // interrupt counts one, and the kernel rows already judge every tick
+        // body. Each dump's halt counts exactly HEALTH_LOST_MAX lost ticks.
+        let lost = u32::from(HEALTH_LOST_MAX) * u32::from(snap.dumps);
+        if counters.crc_fail != 0
+            || counters.framing_drop != 0
+            || counters.tel_drop != 0
+            || u32::from(counters.tick_lost) != lost
+        {
+            self.failed.push(format!(
+                "{name}: {counters}; want crc_fail, framing_drop and tel_drop 0, \
+                 tick_lost {lost} ({} dumps x {HEALTH_LOST_MAX})",
+                snap.dumps
+            ));
+        }
         let w = Window {
             name,
             gate,
@@ -330,8 +370,8 @@ impl Fill {
             frames: frames.to_vec(),
             snap,
             sent,
-            tel_drops: u16::from_le_bytes([d0, d1]),
-            stack_free_min: u16::from_le_bytes([s0, s1]),
+            counters,
+            stack_free_min: u16::from_le_bytes(read_bytes(b, STACK_FREE_MIN)),
         };
         if let Some(bus) = &w.snap.bus
             && u64::from(bus.host.n) != w.sent
@@ -363,14 +403,14 @@ impl Fill {
         let _ = writeln!(
             text,
             "== {} ({:?}{}): kernel halts {}, bus halts {}, frames sent {}, \
-             tel_drop {}, stack_free_min {} B",
+             {}, stack_free_min {} B",
             w.name,
             w.gate,
             if w.tel { ", TEL" } else { "" },
             k.halts,
             bus.halts,
             w.sent,
-            w.tel_drops,
+            w.counters,
             w.stack_free_min
         );
         for (kt, g) in WINDOW_TICKS.into_iter().zip(k.windows.gamma) {
@@ -402,13 +442,13 @@ impl Fill {
         let mut text = String::new();
         let _ = writeln!(
             text,
-            "== {} (telcost{}): kernel halts {}, frames sent {}, tel_drop {}, \
+            "== {} (telcost{}): kernel halts {}, frames sent {}, {}, \
              stack_free_min {} B\n  budget, bus and host-frame checks: skipped (telcost image)",
             w.name,
             if w.tel { ", TEL" } else { "" },
             k.halts,
             w.sent,
-            w.tel_drops,
+            w.counters,
             w.stack_free_min
         );
         let _ = writeln!(text, "  stamp pair {}", ticks(c.cal.into()));
@@ -561,6 +601,16 @@ fn ticking(b: &mut Bench) -> bool {
     let first = tick();
     sleep(Duration::from_millis(10));
     matches!((first, tick()), (Some(a), Some(c)) if a != c)
+}
+
+fn counters(b: &mut Bench) -> Counters {
+    Counters {
+        crc_fail: u32::from_le_bytes(read_bytes(b, CRC_FAIL_COUNT)),
+        framing_drop: u32::from_le_bytes(read_bytes(b, FRAMING_DROP_COUNT)),
+        tick_over: u16::from_le_bytes(read_bytes(b, TICK_OVER_COUNT)),
+        tick_lost: u16::from_le_bytes(read_bytes(b, TICK_LOST_COUNT)),
+        tel_drop: u16::from_le_bytes(read_bytes(b, TEL_DROP_COUNT)),
+    }
 }
 
 fn read_bytes<const N: usize>(b: &mut Bench, addr: u16) -> [u8; N] {
