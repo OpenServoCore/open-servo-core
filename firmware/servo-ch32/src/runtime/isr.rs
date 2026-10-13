@@ -119,25 +119,10 @@ pub fn on_adc_dma_tc() {
 
     let window = load.tick(entry, systick::ticks());
     let health = window.is_some();
-    if let Some(w) = window {
-        // SAFETY: table storage is 'static; the health block's tick fields
-        // have this vector as their only chip-side writer. The counters are
-        // stored only on a change, so a host clear races a store only when
-        // one is due.
-        unsafe {
-            let h = &raw mut (*SHARED.table.region_ptr()).telemetry_ext.health;
-            if let Some(mean) = w.mean_q15 {
-                (&raw mut (*h).tick_load_mean_q15).write_volatile(mean);
-            }
-            if w.over != 0 {
-                let over = &raw mut (*h).tick_over_count;
-                over.write_volatile(over.read_volatile().wrapping_add(w.over));
-            }
-            if w.lost != 0 {
-                let lost = &raw mut (*h).tick_lost_count;
-                lost.write_volatile(lost.read_volatile().wrapping_add(w.lost));
-            }
-        }
+    // By reference: moving the window out packs its fields into one
+    // register and costs the close tick seven instructions.
+    if let Some(w) = &window {
+        w.publish(&SHARED);
     }
 
     crate::probe::kernel_exit(entry, tags, after, health);
