@@ -136,9 +136,10 @@ pub fn bench_mg90_saved(vbus: u16) -> FakeServo {
     s
 }
 
-/// What the firmware checks before it arms a burst: the volts it applies
-/// against a cap, the time since the last arm, and a position strictly
-/// inside the soft limits unless the permit is live.
+/// What the firmware checks before it arms a burst: torque on, no TEL
+/// count armed, the volts it applies against a cap, the time since the
+/// last arm, and a position strictly inside the soft limits unless the
+/// permit is live.
 #[derive(Copy, Clone, Debug)]
 pub struct ArmRules {
     /// vcounts: 3200 mV behind the terminal dividers.
@@ -270,6 +271,9 @@ pub struct FakeServo {
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
+    /// The last `tel_count` written, kept past the burst's LAST frame as
+    /// the servo keeps it.
+    pub tel_count: u16,
     omega_dyn: f64,
     pub t_ms: f64,
     t_duty_change: f64,
@@ -340,6 +344,7 @@ impl FakeServo {
             torque: false,
             duty: 0,
             tel_mask: 0,
+            tel_count: 0,
             omega_dyn: 0.0,
             t_ms: 0.0,
             t_duty_change: -1e9,
@@ -647,6 +652,8 @@ impl FakeServo {
             .is_none_or(|(lo, hi)| self.pos > lo && self.pos < hi);
         if !self.torque {
             Err("torque off")
+        } else if self.tel_count != 0 {
+            Err("a TEL count armed")
         } else if volts > rules.v_max as u32 {
             Err("over the burst volts cap")
         } else if self.t_ms - self.last_arm < rules.spacing_ms {
@@ -768,6 +775,8 @@ impl FakeServo {
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;
+        } else if reg == control::TEL_COUNT {
+            self.tel_count = value as u16;
         } else if reg == config::DRIVE_POLARITY {
             // the register as the kernel applies it: a flip negates every
             // drive and moves the burst step to the other terminal
@@ -883,6 +892,7 @@ impl FakeServo {
     /// with the mask-selected fields. Mask 0 streams nothing, like the
     /// firmware's disarmed producer.
     pub fn stream(&mut self, samples: u16, sink: &mut Vec<TelFrame>) {
+        self.tel_count = samples;
         let dt = 1.0 / (self.f_med * 10.0);
         let t0 = self.t_ms;
         for k in 0..samples {
@@ -971,6 +981,7 @@ impl FakeServo {
     /// current and differential the fake senses ([`FakeServo::sensed`])
     /// and the counts the bridge applies; true when a fault is latched.
     pub fn watch(&mut self, rows: u16, sink: &mut Vec<TelFrame>) -> bool {
+        self.tel_count = rows;
         let dt = 1.0 / (self.f_med * 10.0);
         let t0 = self.t_ms;
         for k in 0..rows as u64 {
@@ -1529,6 +1540,8 @@ pub fn pump_on<E: Experiment>(
             } => {
                 let lost = BURST_ARM_TXNS * servo.ticks_lost_per_txn;
                 servo.busy_ms(BURST_ARM_TXNS * bus.write_ms, lost);
+                // the CLI's arm writes tel_count 0 before the held trio
+                servo.write(control::TEL_COUNT, 0);
                 if servo.arm(duty_q15).is_err() {
                     let seen = servo.arm_seen();
                     log.push(format!("error: {}", rejected(duty_q15, &seen)));
@@ -1723,10 +1736,11 @@ mod tests {
         assert_eq!(o.limit_flags & 1, 1);
     }
 
-    /// Asked to, the fake refuses a burst arm the firmware would: over the
-    /// volts cap, inside the spacing, or outside the soft limits without
-    /// the permit. The pump then ends the run as the CLI does: the reason
-    /// the host reads back, then the guard's writes.
+    /// Asked to, the fake refuses a burst arm the firmware would: with a
+    /// TEL count armed (a watch's outlives its rows), over the volts cap,
+    /// inside the spacing, or outside the soft limits without the permit.
+    /// The pump then ends the run as the CLI does: the reason the host
+    /// reads back, then the guard's writes.
     #[test]
     fn fake_arm_can_be_rejected() {
         let mut s = bench_mg90(3204);
@@ -1734,6 +1748,9 @@ mod tests {
         s.pos = 2000.0;
         assert_eq!(s.arm(q15(25)), Err("torque off"));
         s.write(control::TORQUE_ENABLE, 1);
+        s.watch(16, &mut Vec::new());
+        assert_eq!(s.arm(q15(25)), Err("a TEL count armed"));
+        s.write(control::TEL_COUNT, 0);
         assert_eq!(s.arm(q15(45)), Err("over the burst volts cap"));
         assert_eq!(s.arm(-q15(40)), Ok(()));
         s.advance(99);

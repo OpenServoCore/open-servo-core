@@ -363,7 +363,10 @@ fn stream_frames<P: Pipe>(
 /// that sees arm=1 before the new duty or mask captures the old one - so
 /// duty, mask and arm go out under HOLD and one broadcast COMMIT applies
 /// all three. The mask is its own one-byte write: the byte after it is a
-/// reserved alignment byte that refuses writes.
+/// reserved alignment byte that refuses writes. Before them `tel_count`
+/// goes to 0: the servo refuses an arm while it is nonzero, and it keeps
+/// the last count written past the LAST frame, so any watch or stream
+/// before the arm leaves it set.
 struct WireBurstIo<'a, P: Pipe> {
     c: &'a mut Client<P>,
     id: Id,
@@ -373,6 +376,7 @@ impl<P: Pipe> BurstIo for WireBurstIo<'_, P> {
     type Error = anyhow::Error;
 
     fn arm(&mut self, duty_q15: i16, chans: u8) -> Result<()> {
+        write_reg(self.c, self.id, control::TEL_COUNT, 0).context("disarm tel")?;
         self.c
             .write_hold(self.id, burst::wire::DUTY_Q15.addr, &duty_q15.to_le_bytes())
             .context("hold burst duty")?;
@@ -760,6 +764,28 @@ mod tests {
             let hi = s.iter().map(|r| r.pos).max().unwrap();
             assert_eq!(w.pos, Some((lo, hi)));
         }
+    }
+
+    /// A watch's count outlives its LAST frame in `tel_count`, which the
+    /// servo's arm rule refuses on: the burst arm after a watch commits
+    /// with `tel_count` back at 0.
+    #[test]
+    fn a_burst_arm_after_a_watch_finds_tel_disarmed() {
+        use crate::rig::snapshot::read_u16;
+        use osc_client::fake::FakePipe;
+        let pipe = FakePipe::new(BaudRate::B2000000, &[1]);
+        let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
+        let mask = admit_watch(&mut c, id).unwrap();
+        write_reg(&mut c, id, control::TEL_MASK, mask as i32).unwrap();
+        let (frames, _) = watch_rows_on(&mut c, id, 48, mask).unwrap();
+        assert_eq!(frames.len(), 48);
+        assert_eq!(read_u16(&mut c, id, control::TEL_COUNT).unwrap(), 48);
+        WireBurstIo { c: &mut c, id }
+            .arm(8192, burst::CHANS_DIFF)
+            .unwrap();
+        assert_eq!(read_u16(&mut c, id, control::TEL_COUNT).unwrap(), 0);
+        assert_eq!(read_u16(&mut c, id, burst::wire::DUTY_Q15).unwrap(), 8192);
+        assert_eq!(c.read(id, burst::wire::ARM.addr, 1).unwrap(), [1]);
     }
 
     /// A watch leaves its own mask on the servo; the experiment's stream

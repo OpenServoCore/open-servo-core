@@ -2868,6 +2868,26 @@ mod tests {
         assert!(exp.fit().is_some(), "the run fits");
     }
 
+    /// Under the firmware's arm rules the settle's watch leaves its count
+    /// in `tel_count`, which refuses an arm: every burst still arms.
+    #[test]
+    fn every_burst_arms_after_the_settle_watch() {
+        use crate::exp::testkit::{ArmRules, bench_mg90};
+        let params = crate::exp::testkit::rig();
+        let cfg = Cfg {
+            repeats: 1,
+            step_pct: vec![25, 40],
+            ..Cfg::default()
+        };
+        let mut servo = bench_mg90(3204);
+        servo.arm_rules = Some(ArmRules::FIRMWARE);
+        let mut exp = Guarded::new(Inductance::new(cfg, &params, scales()), params);
+        let log = pump(&mut exp, &mut servo, 200_000);
+        assert!(!log.iter().any(|l| l.starts_with("error")), "{log:?}");
+        assert!(exp.abort().is_none(), "abort {:?}", exp.abort());
+        assert_eq!(exp.into_inner().captures().len(), 6);
+    }
+
     #[test]
     fn a_rung_over_the_current_envelope_is_dropped() {
         let params = crate::exp::testkit::rig();
