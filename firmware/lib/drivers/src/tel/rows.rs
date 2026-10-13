@@ -133,9 +133,9 @@ impl<P: Providers> TelLane<P> {
     }
 
     /// The tick's row, copied now while the tick block holds this tick's
-    /// scan (the next lands late in the tick): the CPU's chunk, then the
-    /// DMA's. Out of line: the row's whole cost is its own, one call from
-    /// the kernel.
+    /// scan (the next lands late in the tick): the DMA's chunk armed, then
+    /// the CPU's copied while the DMA runs. Out of line: the row's whole
+    /// cost is its own, one call from the kernel.
     #[inline(never)]
     #[rustc_align(4)]
     pub(super) fn row(&mut self) {
@@ -146,8 +146,12 @@ impl<P: Providers> TelLane<P> {
         // SAFETY: `head` planned at most STREAM_SAMPLES_MAX rows of at most
         // ROW_BYTES_MAX (`RowPlan::of`), which the image holds from ROWS_AT,
         // so the row lies inside it; the chunks lie inside the table
-        // (`Chunks::valid`); ROWS_AT, the rows and the chunks are even.
+        // (`Chunks::valid`) and land on disjoint halfwords of the row;
+        // ROWS_AT, the rows and the chunks are even.
         unsafe {
+            let dst = core::ptr::with_exposed_provenance_mut(wr + self.plan.dma.at as usize);
+            let src = core::ptr::with_exposed_provenance(self.plan.dma.src);
+            self.crc.copy(dst, src, self.plan.dma.units);
             // The shorter chunk, at most half a row: straight-line, three
             // halfwords at most whatever `units` holds (a loop's setup
             // alone outprices the copy).
@@ -164,9 +168,6 @@ impl<P: Providers> TelLane<P> {
                     }
                 }
             }
-            let dst = core::ptr::with_exposed_provenance_mut(wr + self.plan.dma.at as usize);
-            let src = core::ptr::with_exposed_provenance(self.plan.dma.src);
-            self.crc.copy(dst, src, self.plan.dma.units);
         }
         self.wr = wr + self.plan.row as usize;
         self.n += 1;
