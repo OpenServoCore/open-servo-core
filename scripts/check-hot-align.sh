@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# Gate: every hot out-of-line callee of the tick enters at 0 mod 4.
+# Gate: every hot out-of-line function of the tick and bus paths enters at
+# 0 mod 4.
 #
-# The V006 fetches 4 B words with no cache, so an entry at 2 mod 4 costs an
+# The V006 fetches 4 B words with no cache, so an entry at 2 mod 4 can cost an
 # extra fetch on every call. Each function below carries #[rustc_align(4)];
 # this checks the linked image honors it and that no listed symbol is gone
 # (a rename must update this list).
@@ -27,6 +28,10 @@ hot=(
     WindingTherm::install_reference
     TrajGen::step_position
     DutyLimiter::step
+    __qingke_rt_DMA1_CHANNEL1
+    __qingke_rt_TIM2
+    __qingke_rt_USART1
+    __qingke_rt_SysTick
 )
 
 elf="${1:-firmware/boards/osc-dev-v006/target/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app}"

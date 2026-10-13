@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(fn_align)]
 
 use osc_servo_ch32::prelude::*;
 
