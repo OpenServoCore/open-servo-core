@@ -3,14 +3,14 @@
 //! every piece of state that moves at the PWM rate; reads nothing from the
 //! control table.
 
-use super::KernelTiming;
-use super::config::KernelConfig;
-use super::current::{CurrentLoop, RailClamp};
-use super::duty_limit::DutyLimiter;
-use super::faults::{self, FaultLatch, OcDetector};
-use super::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
+use crate::kernel::KernelTiming;
+use crate::kernel::config::KernelConfig;
+use crate::kernel::current::{CurrentLoop, RailClamp};
+use crate::kernel::duty_limit::DutyLimiter;
+use crate::kernel::faults::{self, FaultLatch, OcDetector};
+use crate::kernel::limits::IBand;
 use crate::tel::tick_flag;
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, Shared};
@@ -44,7 +44,7 @@ enum Bridge {
 /// as zero current: a drive's winding current drains through the body
 /// diodes into the rail in L x I / V_rail, about 0.25 ms on the MG90 at the
 /// trip current.
-pub(super) const ZERO_SETTLE_TICKS: u8 = 32;
+pub(in crate::kernel) const ZERO_SETTLE_TICKS: u8 = 32;
 
 /// Medium -> fast: everything the drive and the stream need between two
 /// medium ticks.
@@ -98,10 +98,10 @@ pub struct Fast {
     /// The duty actually commanded this tick, post-clamp post-gate: 0 while
     /// Brake/Disabled. Feeds next tick's window select: the gate can
     /// override the loop's output.
-    pub(super) duty_q15: i16,
+    pub(in crate::kernel) duty_q15: i16,
     /// The drive width the motor write programmed for `duty_q15`
     /// (`window::drive_ticks`), 0 while Brake/Disabled: next tick's window.
-    pub(super) ticks: u16,
+    pub(in crate::kernel) ticks: u16,
     decay: DecayMode,
     /// The last command's bridge state, and the ticks it has left before
     /// its shunt sample counts as zero current (`ZERO_SETTLE_TICKS` from
@@ -114,10 +114,10 @@ pub struct Fast {
     /// with no drive the winding current is gone within a period, and every
     /// window under a zero duty is invalid, so the 0 holds until the drive
     /// resumes.
-    pub(super) i_meas_last: i16,
+    pub(in crate::kernel) i_meas_last: i16,
     /// Last v-valid drive-window differential (va - vb), the tick block's
     /// `vdiff_counts` - same hold-last-valid pattern as `i_meas_last`.
-    pub(super) vdiff_last: i16,
+    pub(in crate::kernel) vdiff_last: i16,
 }
 
 impl Fast {

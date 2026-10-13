@@ -33,7 +33,7 @@ pub struct ControlLifecycle {
     /// L, which is precisely what those two guards exist to prevent, and no
     /// soft-limit value can express it because a stop can sit AT the position
     /// rail. A write of true with torque on grants a lease of about a second
-    /// (`kernel::PERMIT_LEASE_TICKS`) and a rewrite renews it; torque off or
+    /// (`kernel::phases::limits::PERMIT_LEASE_TICKS`) and a rewrite renews it; torque off or
     /// a write of false revokes it. The byte reads back the last request, not
     /// the grant: a tool that dies mid-run cannot leave a servo unguarded for
     /// longer than the lease.
