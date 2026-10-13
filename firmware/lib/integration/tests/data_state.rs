@@ -30,9 +30,9 @@ use osc_servo_core::regions::config::addr::loop_velocity::V_KP_Q88;
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
+use osc_servo_core::regions::telemetry::tick_flag;
 use osc_servo_core::stamp::compute;
-use osc_servo_core::tel::{TelStream, tick_flag};
-use osc_servo_core::{ControlTable, Kernel, Mode, MotorCmd, RegionStorage, Shared};
+use osc_servo_core::{ControlTable, Kernel, Mode, MotorCmd, RegionStorage, Shared, TelStream};
 use osc_servo_core::{ControlTableCell, TelemetryTick};
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -387,7 +387,7 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
 struct RecTel(Rc<RefCell<Vec<TelemetryTick>>>, *const ControlTableCell);
 
 impl TelStream for RecTel {
-    fn on_tick(&mut self, _: impl FnOnce() -> bool) {
+    fn on_publish(&mut self, _: impl FnOnce() -> bool) {
         // SAFETY: the test's table outlives the kernel that owns this.
         let t = unsafe { (*self.1).with(|t| t.telemetry.tick) };
         self.0.borrow_mut().push(t);

@@ -1,8 +1,7 @@
 use super::Kernel;
 use super::table::{DECIM_SLOW, phase};
 use crate::kernel::phases::fast;
-use crate::tel::TelStream;
-use crate::traits::ControlIo;
+use crate::traits::{ControlIo, TelStream};
 
 /// What the budget probe reads around a tick: before it, the medium phase
 /// it runs, whether the boot tick has run and which SLOW stage it runs; on

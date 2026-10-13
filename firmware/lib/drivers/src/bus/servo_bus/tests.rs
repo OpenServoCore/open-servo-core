@@ -1405,10 +1405,12 @@ fn lagged_break_wakes_resolve_every_frame() {
 use crate::mocks::bus::{FakeCrc, TestProviders};
 use crate::tel::{TelChannel, TelFeed};
 use osc_protocol::crc::osc_crc;
+use osc_protocol::wire::STREAM_FLAG_LAST;
 use osc_servo_core::ControlTableCell;
+use osc_servo_core::TelStream as _;
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::tick::POS;
-use osc_servo_core::tel::{Chunk, Chunks, FLAG_LAST, TelStream as _};
+use osc_servo_core::tel::{Chunk, Chunks};
 
 type Feed = TelFeed<TestProviders>;
 
@@ -1487,7 +1489,7 @@ fn tick(feed: &mut Feed, h: &Harness, shared: &Shared, pos: u16) {
         t.telemetry.tick.pos = pos;
         t.telemetry.tick.sample_tick = 0x0100 + (pos as u32 & 0xFF);
     });
-    feed.on_tick(|| false);
+    feed.on_publish(|| false);
     feed.on_tick_end();
 }
 
@@ -1592,7 +1594,7 @@ fn tel_lane_passes_at_the_ack_release() {
     assert_frame_crc(f1);
     let f2 = &frames[1];
     assert_eq!(f2[1], wire::len_for(4 + 4 * 2));
-    assert_eq!(f2[3..5], [0x01, FLAG_LAST]);
+    assert_eq!(f2[3..5], [0x01, STREAM_FLAG_LAST]);
     assert_frame_crc(f2);
     assert!(bus.tx.lent(), "taken back only in the next bus body");
     assert_eq!(tel_count(shared), 20, "armed until the bus takes it back");
@@ -1688,7 +1690,7 @@ fn tel_arm_with_no_ack_lends_at_the_arm() {
     assert!(feed.active() && bus.tx.lent());
     let frames = stream_all(&mut feed, &h, shared, 32);
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0][3..5], [0, FLAG_LAST]);
+    assert_eq!(frames[0][3..5], [0, STREAM_FLAG_LAST]);
     assert_frame_crc(&frames[0]);
 }
 

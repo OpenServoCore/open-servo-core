@@ -11,10 +11,9 @@ use osc_servo_core::estimator::window;
 use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::stamp;
-use osc_servo_core::tel::TelStream;
 use osc_servo_core::{
     ControlIo, DecayMode, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
-    SensorFrame, Sensors, Shared, StallResponse,
+    SensorFrame, Sensors, Shared, StallResponse, TelStream,
 };
 
 /// Shunt zero-current offset the plant's current samples sit on.
@@ -28,7 +27,7 @@ pub fn duty_q15(counts: i16) -> i16 {
 
 /// A Q15 duty as the compare counts TEL carries at the plant's period.
 pub fn duty_counts(q15: i16) -> i16 {
-    osc_servo_core::tel::duty_counts(q15, ARR)
+    window::duty_counts(q15, ARR)
 }
 /// A non-unity rail scale (22k/10k tap over 20k/10k terminals), so the rig
 /// exercises the rescale.

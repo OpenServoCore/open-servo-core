@@ -5,8 +5,10 @@
 use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
+use osc_protocol::tel::encode_stream_head;
 use osc_protocol::wire::{self, Id, Inst, Opcode, ResultCode};
-use osc_servo_core::tel::{Chunks, STREAM_HDR, STREAM_SAMPLES_MAX, encode_stream_head, tick_flag};
+use osc_servo_core::regions::telemetry::tick_flag;
+use osc_servo_core::tel::{Chunks, STREAM_HDR, STREAM_SAMPLES_MAX};
 use osc_servo_core::{ControlTableCell, RegionStorage, RegionStorageRaw, TelemetryTick};
 
 use super::WireFrame;

@@ -8,7 +8,7 @@
 mod control;
 mod services;
 
-pub use control::{Capabilities, ControlIo, DecayMode, Motor, MotorCmd, Sensors};
+pub use control::{Capabilities, ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
 pub use services::{
     Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, SendError, Status,
 };

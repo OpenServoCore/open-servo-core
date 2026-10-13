@@ -106,7 +106,7 @@ pub struct TelemetryTick {
     pub vmotor_a_trough: u16,
     #[ct_field(access = ro)]
     pub vmotor_b_trough: u16,
-    /// `tel::tick_flag` bits: the shunt window was read, a fault is
+    /// [`tick_flag`] bits: the shunt window was read, a fault is
     /// latched, the terminal window was read.
     #[ct_field(access = ro)]
     pub tick_flags: u16,
@@ -114,6 +114,17 @@ pub struct TelemetryTick {
     pub _rsvd_align: u16,
     #[ct_field(access = ro)]
     pub sample_tick: u32,
+}
+
+/// `TelemetryTick::tick_flags` bits, written every tick.
+pub mod tick_flag {
+    /// The shunt read the window `duty_ticks` drove: `i_tick_counts` is
+    /// fresh, not held.
+    pub const I_VALID: u16 = 1 << 0;
+    /// A fault is latched.
+    pub const FAULT: u16 = 1 << 1;
+    /// The terminal taps read the window: `vdiff_counts` is fresh.
+    pub const V_VALID: u16 = 1 << 2;
 }
 
 /// Estimator outputs, published at the medium boundary. Counts-domain

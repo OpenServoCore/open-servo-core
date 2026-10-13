@@ -134,7 +134,8 @@ impl SeqUnwrap {
 // row's sample_tick), then the rows, each the chunks' table bytes back to
 // back (the count from LEN). stream_seq restarts at 0 per arm.
 
-pub use osc_servo_core::tel::{duty_counts, tick_flag};
+pub use osc_servo_core::estimator::window::duty_counts;
+pub use osc_servo_core::regions::telemetry::tick_flag;
 
 /// The chunk covering `first..=last`, table order.
 const fn span(first: Reg, last: Reg) -> Chunk {
@@ -363,8 +364,9 @@ mod tests {
     use super::*;
     use crate::regs::telemetry as t;
 
+    use osc_protocol::tel::encode_stream_head;
     use osc_protocol::wire::STREAM_FLAG_LAST;
-    use osc_servo_core::tel::{STREAM_HDR, STREAM_PAYLOAD_MAX, encode_stream_head};
+    use osc_servo_core::tel::{STREAM_HDR, STREAM_PAYLOAD_MAX};
     use osc_servo_core::{ControlTableCell, RegionStorage, RegionStorageRaw, TelemetryTick};
 
     const PRESETS: [Chunks; 4] = [TEL_RAW, TEL_LADDER, TEL_RL, TEL_POS];

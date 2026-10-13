@@ -307,9 +307,7 @@ pub const UID_LEN: usize = 16;
 pub const ENUM_REPLY_SLOTS: u8 = 16;
 
 /// TEL burst payload flags byte (payload[1]) bit 0: LAST frame of the
-/// burst, the line frees after it. The payload layout authority is
-/// osc-servo-core's `tel` module; the bit is mirrored here so hosts detect
-/// the burst end without the servo crate (cross-checked by a core test).
+/// burst, the line frees after it. Rest reserved 0.
 pub const STREAM_FLAG_LAST: u8 = 1 << 0;
 
 /// True iff this frame ends a TEL burst: a `Stream` status whose payload

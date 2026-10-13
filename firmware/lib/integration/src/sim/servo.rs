@@ -5,11 +5,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::TelStream;
 use osc_servo_core::TelemetryTick;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
-use osc_servo_core::tel::TelStream;
 
 use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
@@ -392,7 +392,7 @@ impl SimServo {
             };
             t.telemetry.estimates.vbus_counts = s.vbus_counts;
         });
-        self.feed.on_tick(|| hold_start);
+        self.feed.on_publish(|| hold_start);
         if hold {
             self.feed.hold();
         }
