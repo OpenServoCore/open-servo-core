@@ -107,7 +107,11 @@ fn program(addr: u32, segs: &[&[u8]]) -> Result<(), StoreError> {
     let s = stored(addr, total);
     let mut off = 0;
     for seg in segs {
-        if s.get(off..off + seg.len()) != Some(*seg) {
+        // Element-wise: slice `==` is a `memcmp` call.
+        if !s
+            .get(off..off + seg.len())
+            .is_some_and(|r| r.iter().eq(seg.iter()))
+        {
             return Err(StoreError);
         }
         off += seg.len();

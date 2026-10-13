@@ -376,13 +376,13 @@ mod tests {
         let m = MgmtReq::parse(fb(&b[..n])).unwrap();
         let e = EnumReq::parse(m.args).unwrap();
         assert_eq!(e.prefix_len, 3);
-        assert_eq!(e.prefix, prefix);
+        assert_eq!(e.prefix, fb(&prefix[..1]));
         assert_eq!(mgmt_enum(&mut b, 129, &prefix), None);
 
         let uid = [7u8; wire::UID_LEN];
         let n = mgmt_assign(&mut b, &uid, 9).unwrap();
         let a = AssignReq::parse(MgmtReq::parse(fb(&b[..n])).unwrap().args).unwrap();
-        assert_eq!((a.uid, a.new_id), (uid, 9));
+        assert_eq!((a.uid, a.new_id), (fb(&uid), 9));
 
         let n = mgmt_cal(&mut b, 400, 8).unwrap();
         let c = CalReq::parse(MgmtReq::parse(fb(&b[..n])).unwrap().args).unwrap();

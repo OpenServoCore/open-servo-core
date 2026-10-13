@@ -103,26 +103,23 @@ impl StagedWrites {
     pub fn push_split(&mut self, addr: u16, head: &[u8], tail: &[u8]) -> Result<(), Error> {
         let data_off = self.data.len();
         let total = head.len() + tail.len();
-        if data_off + total > STAGE_DATA_CAP {
+        if data_off + total > STAGE_DATA_CAP || self.entries.is_full() {
             return Err(Error::StagingFull);
         }
-        self.data
-            .extend_from_slice(head)
-            .map_err(|_| Error::StagingFull)?;
-        self.data.extend_from_slice(tail).map_err(|_| {
-            self.data.truncate(data_off);
-            Error::StagingFull
-        })?;
-        self.entries
-            .push(StagedEntry {
+        // SAFETY: the check above leaves room for `total` bytes past
+        // `data_off` and for one entry; the copies write exactly those bytes
+        // before the length covers them.
+        unsafe {
+            let dst = self.data.as_mut_ptr().add(data_off);
+            copy_bytes(dst, head);
+            copy_bytes(dst.add(head.len()), tail);
+            self.data.set_len(data_off + total);
+            self.entries.push_unchecked(StagedEntry {
                 addr,
                 len: total as u16,
                 data_off: data_off as u16,
-            })
-            .map_err(|_| {
-                self.data.truncate(data_off);
-                Error::StagingFull
-            })?;
+            });
+        }
         Ok(())
     }
 
@@ -140,8 +137,55 @@ impl StagedWrites {
     }
 }
 
+/// Volatile keeps it a loop: a plain copy loop compiles to a `memcpy` call.
+///
+/// # Safety
+/// `dst` must be valid for `src.len()` byte writes.
+#[inline(always)]
+unsafe fn copy_bytes(dst: *mut u8, src: &[u8]) {
+    for (i, &b) in src.iter().enumerate() {
+        // SAFETY: forwarded.
+        unsafe { dst.add(i).write_volatile(b) };
+    }
+}
+
 impl Default for StagedWrites {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_split_lands_contiguously_and_rejects_whole() {
+        let mut s = StagedWrites::new();
+        s.push_split(7, &[1, 2, 3], &[4, 5]).unwrap();
+        s.push(9, &[6]).unwrap();
+        assert!(s.iter_all().eq([(7, &[1, 2, 3, 4, 5][..]), (9, &[6][..])]));
+
+        let fill = [0u8; STAGE_DATA_CAP];
+        let room = STAGE_DATA_CAP - 6;
+        assert_eq!(
+            s.push_split(1, &fill[..room], &[0]),
+            Err(Error::StagingFull)
+        );
+        assert_eq!(s.snapshot().data, 6, "a rejected push stages no byte");
+        s.push_split(1, &fill[..room - 1], &[0]).unwrap();
+        assert_eq!(s.snapshot().data as usize, STAGE_DATA_CAP);
+    }
+
+    #[test]
+    fn entry_cap_rejects_with_nothing_staged() {
+        let mut s = StagedWrites::new();
+        for a in 0..STAGE_ENTRY_CAP as u16 {
+            s.push(a, &[1]).unwrap();
+        }
+        let before = s.snapshot();
+        assert_eq!(s.push_split(0, &[2], &[3]), Err(Error::StagingFull));
+        let after = s.snapshot();
+        assert_eq!((after.data, after.entries), (before.data, before.entries));
     }
 }

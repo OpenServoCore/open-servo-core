@@ -2,6 +2,8 @@
 pub mod diag;
 pub mod init;
 pub mod isr;
+#[cfg(target_arch = "riscv32")]
+mod mem;
 pub mod registry;
 pub mod run;
 pub mod stack;

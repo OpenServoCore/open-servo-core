@@ -739,7 +739,7 @@ struct CommitWatch<'a, D> {
 impl<D: Dispatch> Dispatch for CommitWatch<'_, D> {
     fn dispatch<R: osc_servo_core::Reply>(
         &mut self,
-        req: osc_servo_core::Request<'_>,
+        req: &osc_servo_core::Request<'_>,
         ctx: osc_servo_core::RequestCtx,
         reply: &mut R,
     ) -> osc_servo_core::Dispatched {
@@ -890,7 +890,7 @@ struct DispatchCount<D> {
 impl<D: Dispatch> Dispatch for DispatchCount<D> {
     fn dispatch<R: osc_servo_core::Reply>(
         &mut self,
-        req: osc_servo_core::Request<'_>,
+        req: &osc_servo_core::Request<'_>,
         ctx: osc_servo_core::RequestCtx,
         reply: &mut R,
     ) -> osc_servo_core::Dispatched {

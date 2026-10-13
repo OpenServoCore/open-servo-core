@@ -61,7 +61,7 @@ impl Dispatch for BusDispatcher {
     #[rustc_align(4)]
     fn dispatch<R: Reply>(
         &mut self,
-        req: Request<'_>,
+        req: &Request<'_>,
         ctx: RequestCtx,
         reply: &mut R,
     ) -> Dispatched {

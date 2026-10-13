@@ -73,16 +73,6 @@ impl<'a> FrameBytes<'a> {
         (self.head, self.tail)
     }
 
-    /// Copy the whole view into `dst`; `None` (nothing copied) if `dst` is
-    /// shorter than the view.
-    #[inline]
-    pub fn copy_into(&self, dst: &mut [u8]) -> Option<()> {
-        let (d0, d1) = dst.split_at_mut_checked(self.head.len())?;
-        d0.copy_from_slice(self.head);
-        d1.get_mut(..self.tail.len())?.copy_from_slice(self.tail);
-        Some(())
-    }
-
     /// The logical bytes in order.
     #[inline]
     pub fn bytes(&self) -> impl Iterator<Item = u8> + 'a {
@@ -157,19 +147,6 @@ mod tests {
             assert_eq!(s, FrameBytes::from(&full[1..5]));
             assert_eq!(fb.sub(4, 3), None);
             assert_eq!(fb.sub(0, full.len()), Some(fb));
-        }
-    }
-
-    #[test]
-    fn copy_into_stitches() {
-        let full = [1u8, 2, 3, 4, 5];
-        for k in 0..=full.len() {
-            let fb = FrameBytes::new(&full[..k], &full[k..]);
-            let mut dst = [0u8; 5];
-            assert_eq!(fb.copy_into(&mut dst), Some(()));
-            assert_eq!(dst, full);
-            let mut small = [0u8; 4];
-            assert_eq!(fb.copy_into(&mut small), None);
         }
     }
 }

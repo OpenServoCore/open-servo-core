@@ -134,7 +134,7 @@ fn go(shared: &Shared, staged: &mut StagedWrites, req: Request<'_>, may_reply: b
     let mut pending = None;
     let mut d = Dispatcher::new(shared, staged, &mut pending);
     if matches!(
-        d.dispatch(req, RequestCtx { may_reply }, &mut reply),
+        d.dispatch(&req, RequestCtx { may_reply }, &mut reply),
         Dispatched::Pending
     ) {
         // SAFETY: the request bytes outlive the verdict.
@@ -907,12 +907,13 @@ fn enumerate_matching_prefix_replies_full_uid() {
     let shared = shared_with_uid();
     let mut staged = StagedWrites::new();
     for bits in [0u8, 1, 8, 127, 128] {
+        let prefix = prefix_of(bits);
         let reply = go(
             &shared,
             &mut staged,
             Request::Enumerate {
                 prefix_len: bits,
-                prefix: prefix_of(bits),
+                prefix: FrameBytes::from(&prefix[..]),
             },
             true,
         );
@@ -932,7 +933,7 @@ fn enumerate_mismatch_is_silent() {
         &mut staged,
         Request::Enumerate {
             prefix_len: 1,
-            prefix,
+            prefix: FrameBytes::from(&prefix[..]),
         },
         true,
     );
@@ -947,7 +948,7 @@ fn assign_matching_uid_sets_id_before_ack() {
         &shared,
         &mut staged,
         Request::Assign {
-            uid: UID,
+            uid: FrameBytes::from(&UID[..]),
             new_id: 42,
         },
         true,
@@ -974,7 +975,10 @@ fn assign_foreign_uid_is_silent_and_inert() {
     let reply = go(
         &shared,
         &mut staged,
-        Request::Assign { uid, new_id: 42 },
+        Request::Assign {
+            uid: FrameBytes::from(&uid[..]),
+            new_id: 42,
+        },
         true,
     );
     assert_eq!(reply.count(), 0);
@@ -991,7 +995,7 @@ fn assign_invalid_id_nacks_validation() {
             &shared,
             &mut staged,
             Request::Assign {
-                uid: UID,
+                uid: FrameBytes::from(&UID[..]),
                 new_id: bad,
             },
             true,
@@ -1009,7 +1013,7 @@ fn assign_noreply_still_applies() {
         &shared,
         &mut staged,
         Request::Assign {
-            uid: UID,
+            uid: FrameBytes::from(&UID[..]),
             new_id: 9,
         },
         false,
@@ -1088,7 +1092,7 @@ fn write_stages_then_commit_applies() {
     let mut reply = FakeReply::new();
 
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], false),
+        &write(CONTROL_BASE_ADDR, &[1], false),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1116,7 +1120,7 @@ fn write_reverts_on_fail_verdict() {
     let mut reply = FakeReply::new();
 
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], false),
+        &write(CONTROL_BASE_ADDR, &[1], false),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1138,7 +1142,7 @@ fn write_validation_reject_nacks_nothing_staged() {
 
     // 2 is outside a bool field's allowed {0, 1}: validation reject.
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[2], false),
+        &write(CONTROL_BASE_ADDR, &[2], false),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1161,7 +1165,7 @@ fn held_write_staging_full_nacks_busy_nothing_staged() {
     let mut pending = None;
     let mut reply = FakeReply::new();
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], true),
+        &write(CONTROL_BASE_ADDR, &[1], true),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1188,7 +1192,7 @@ fn plain_write_needs_no_staging_room() {
     let mut reply = FakeReply::new();
     let gv = 7i32.to_le_bytes();
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(GOAL_VELOCITY, &gv, false),
+        &write(GOAL_VELOCITY, &gv, false),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1211,7 +1215,7 @@ fn dangling_pending_write_auto_reverts_on_next_dispatch() {
     // with no verdict): the plain one stages nothing, the held one stages.
     for hold in [false, true] {
         disp(&shared, &mut staged, &mut pending).dispatch(
-            write(CONTROL_BASE_ADDR, &[1], hold),
+            &write(CONTROL_BASE_ADDR, &[1], hold),
             RequestCtx { may_reply: true },
             &mut reply,
         );
@@ -1221,7 +1225,7 @@ fn dangling_pending_write_auto_reverts_on_next_dispatch() {
         // A following dispatch drops the dangling write before running.
         let mut reply2 = FakeReply::new();
         disp(&shared, &mut staged, &mut pending).dispatch(
-            Request::Ping,
+            &Request::Ping,
             RequestCtx { may_reply: true },
             &mut reply2,
         );
@@ -1241,7 +1245,7 @@ fn real_commit_after_dangling_write_applies_only_held_entries() {
     // A HOLD write stages torque_enable=1 and gets its PASS verdict (the held
     // entry persists across frames, awaiting COMMIT).
     disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], true),
+        &write(CONTROL_BASE_ADDR, &[1], true),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1250,7 +1254,7 @@ fn real_commit_after_dangling_write_applies_only_held_entries() {
     // A write on top stages goal_velocity, then dies (dangling -- no verdict).
     let gv = 5i32.to_le_bytes();
     disp(&shared, &mut staged, &mut pending).dispatch(
-        write(GOAL_VELOCITY, &gv, false),
+        &write(GOAL_VELOCITY, &gv, false),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1259,7 +1263,7 @@ fn real_commit_after_dangling_write_applies_only_held_entries() {
     // Real COMMIT auto-reverts the dangling write, then applies only the held
     // torque_enable -- the phantom goal_velocity is gone.
     disp(&shared, &mut staged, &mut pending).dispatch(
-        Request::Commit,
+        &Request::Commit,
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1275,7 +1279,7 @@ fn held_write_keeps_entries_through_its_verdict() {
     let mut reply = FakeReply::new();
 
     let out = disp(&shared, &mut staged, &mut pending).dispatch(
-        write(CONTROL_BASE_ADDR, &[1], true),
+        &write(CONTROL_BASE_ADDR, &[1], true),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1294,7 +1298,7 @@ fn held_write_keeps_entries_through_its_verdict() {
 
     // A real COMMIT lands it.
     disp(&shared, &mut staged, &mut pending).dispatch(
-        Request::Commit,
+        &Request::Commit,
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1310,7 +1314,7 @@ fn hooks_fire_on_write_commit() {
     let mut reply = FakeReply::new();
 
     disp(&shared, &mut staged, &mut pending).dispatch(
-        write(ID, &[42], false),
+        &write(ID, &[42], false),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1333,7 +1337,7 @@ fn hooks_fire_on_real_commit() {
     let mut reply = FakeReply::new();
 
     disp(&shared, &mut staged, &mut pending).dispatch(
-        write(ID, &[42], true),
+        &write(ID, &[42], true),
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1343,7 +1347,7 @@ fn hooks_fire_on_real_commit() {
     assert_eq!(reply.staged_id, None, "held verdict defers to COMMIT");
 
     disp(&shared, &mut staged, &mut pending).dispatch(
-        Request::Commit,
+        &Request::Commit,
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1361,7 +1365,7 @@ fn pass(
 ) {
     let mut d = disp(shared, staged, pending);
     if matches!(
-        d.dispatch(req, RequestCtx { may_reply: true }, reply),
+        d.dispatch(&req, RequestCtx { may_reply: true }, reply),
         Dispatched::Pending
     ) {
         // SAFETY: the request bytes outlive the verdict.
@@ -1489,7 +1493,7 @@ fn held_chunks_and_count_arm_together_at_commit() {
     assert_eq!(reply.tel_arm, None, "held entries stay silent");
 
     disp(&shared, &mut staged, &mut pending).dispatch(
-        Request::Commit,
+        &Request::Commit,
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1519,7 +1523,7 @@ fn a_tel_arm_beside_an_unjudged_shunt_arm_parks() {
     assert_eq!(reply.tel_arm, None, "held entries stay silent");
     drop(go);
     disp(&shared, &mut staged, &mut pending).dispatch(
-        Request::Commit,
+        &Request::Commit,
         RequestCtx { may_reply: true },
         &mut reply,
     );
@@ -1638,7 +1642,7 @@ fn a_common_block_write_leaves_the_kernel_configuration_alone() {
     go(write(RESPONSE_DEADLINE_US, &[100, 0], false));
     go(write(POS_MAX_PHYS_COUNTS, &[100, 0, 0, 0], false));
     go(Request::Assign {
-        uid: UID,
+        uid: FrameBytes::from(&UID[..]),
         new_id: 42,
     });
     shared.table.with(|t| {
