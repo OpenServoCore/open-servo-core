@@ -41,7 +41,9 @@ trap 'rm -rf "$lock"' EXIT
 
 rm -rf "$src"
 mkdir -p "$src"
-git -C "$repo" archive "$rev" | tar -x -C "$src"
+# Extraction time, not commit time: cargo fingerprints by mtime, and the
+# target dir is shared across revs.
+git -C "$repo" archive "$rev" | tar -xm -C "$src"
 mkdir -p "$out"
 
 # build <board> <bin> <image> <triple> <cargo args...>
