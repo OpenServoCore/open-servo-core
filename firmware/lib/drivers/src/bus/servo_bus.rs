@@ -162,8 +162,8 @@ impl<P: Providers> ServoBus<P> {
 
     /// Bind the TEL channel's bus half. Bringup-only, before any arm can
     /// arrive; without it `tel_arm` stays a drop.
-    pub fn attach_tel(&mut self, drain: crate::tel::TelDrain) {
-        self.burst.attach(drain);
+    pub fn attach_tel(&mut self, post: crate::tel::TelPost) {
+        self.burst.attach(post);
     }
 
     /// Break-wake ISR (the bus held low a break's length, sec 3.4 -- garble

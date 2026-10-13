@@ -18,7 +18,7 @@ use osc_servo_core::{
     RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
-use osc_servo_drivers::tel::{TelChannel, TelFeed};
+use osc_servo_drivers::tel::{TelChannel, TelLane};
 
 use super::core::Core;
 use super::providers::{
@@ -63,7 +63,7 @@ pub struct SimServo {
     session: Session,
     bus: ServoBus<SimProviders>,
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
-    feed: TelFeed<SimProviders>,
+    lane: TelLane<SimProviders>,
     tel: &'static TelChannel,
     seed: Seed,
     /// Own frames dispatched since boot: the `cpu` model's per-frame charge
@@ -140,12 +140,12 @@ impl SimServo {
             sense: DEV_V006_SENSE,
             sense_ext: DEV_V006_SENSE_EXT,
         };
-        let (shared, bus, feed, tel) = Self::bringup(&seed, [id; 16]);
+        let (shared, bus, lane, tel) = Self::bringup(&seed, [id; 16]);
         let servo = Box::new(SimServo {
             shared,
             session: Session::new(),
             bus,
-            feed,
+            lane,
             tel,
             seed,
             dispatched: 0,
@@ -161,7 +161,7 @@ impl SimServo {
     ) -> (
         &'static Shared,
         ServoBus<SimProviders>,
-        TelFeed<SimProviders>,
+        TelLane<SimProviders>,
         &'static TelChannel,
     ) {
         seed.handles.ring.reset();
@@ -247,7 +247,7 @@ impl SimServo {
         // The lane's handles share the bus's wire and CRC engine; its ring
         // view keeps its own preemption lag, which models bus bodies only.
         let h = &seed.handles;
-        let (feed, drain) = tel.split::<SimProviders>(
+        let (lane, post) = tel.split::<SimProviders>(
             SimWire::lane(
                 seed.core.clone(),
                 h.baud.clone(),
@@ -265,8 +265,8 @@ impl SimServo {
             ),
             &shared.table,
         );
-        bus.attach_tel(drain);
-        (shared, bus, feed, tel)
+        bus.attach_tel(post);
+        (shared, bus, lane, tel)
     }
 
     /// Honor a staged reboot in place (sec 9.4/9.5): the store decides what
@@ -275,11 +275,11 @@ impl SimServo {
     /// then), so no reply is streaming out of the table being replaced.
     pub fn reboot(&mut self) {
         let uid = *self.shared.uid();
-        let (shared, bus, feed, tel) = Self::bringup(&self.seed, uid);
+        let (shared, bus, lane, tel) = Self::bringup(&self.seed, uid);
         self.shared = shared;
         self.session = Session::new();
         self.bus = bus;
-        self.feed = feed;
+        self.lane = lane;
         self.tel = tel;
     }
 
@@ -372,7 +372,7 @@ impl SimServo {
 
     /// The lent burst has nothing left for the lane.
     pub fn tel_idle(&self) -> bool {
-        self.feed.idle()
+        self.lane.idle()
     }
 
     /// TEL rows the encoder dropped against two unreleased buffers.
@@ -392,11 +392,11 @@ impl SimServo {
             };
             t.telemetry.estimates.vbus_counts = s.vbus_counts;
         });
-        self.feed.on_publish(|| hold_start);
+        self.lane.on_publish(|| hold_start);
         if hold {
-            self.feed.hold();
+            self.lane.hold();
         }
-        self.feed.on_tick_end();
+        self.lane.on_tick_end();
     }
 
     /// The chip main loop's data-job poll (`data_state` module): run and
