@@ -44,7 +44,6 @@ Columns:
 | Limits, stall, endstops, derate, detectors | 556 | 20 | S: 167 ins, 10 muls | MEDIUM (LIMITS) | core |
 | Rail estimator (vbus) | 338 | 16 | S: 103 ins, 11 muls | MEDIUM (RAIL) | core |
 | Winding thermometer | 286 | 8 | S: 87 ins, 8 muls, ~0 averaged | SLOW | runtime (gated by the `rtherm_*` thresholds), module |
-| Ident aggregate | 256 | 20 | S: 78 ins, only while CONTROL `ident_agg` is set (off at boot) | FAST | runtime |
 | Shunt burst (ident) | 1,066 | 1,932 | 0 at rest; the kernel stops for ~1.04 ms per burst | on request | runtime, module (identification needs it) |
 | Position table (`pos_lut`) | 794 | 514 | S: 74 ins, 1 mul per linearization | MEDIUM (OBSERVER); FAST while TEL streams `pos_lin` | runtime (`lut_live`) |
 | Fast decay | ~100-150 (E, spread over the fast path, motor write, config) | 0 | a few branches per tick | FAST | runtime (`openloop_decay`) |

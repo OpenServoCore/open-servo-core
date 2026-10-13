@@ -57,8 +57,8 @@ pub use regions::{
     CalibStamp, CalibWinding, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits,
     ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs,
     ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem, ControlTable, ControlTableCell,
-    DecaySelect, Mode, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryIdent,
-    TelemetryMode, TelemetryRegs, TelemetrySensors,
+    DecaySelect, Mode, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryMode,
+    TelemetryRegs, TelemetrySensors,
 };
 pub use sensor_frame::SensorFrame;
 pub use services::bus::{Dispatcher, Session};

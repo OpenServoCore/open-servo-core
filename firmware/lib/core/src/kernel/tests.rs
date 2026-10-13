@@ -194,19 +194,6 @@ fn to_first_command(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
     }
 }
 
-/// Ticks `f` until an ident window publishes; returns its `agg_seq`. The
-/// next tick opens a fresh window.
-fn to_ident_boundary(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) -> u16 {
-    let seq = sh.table.with(|t| t.telemetry.ident.agg_seq);
-    loop {
-        k.on_tick(f, sh);
-        let now = sh.table.with(|t| t.telemetry.ident.agg_seq);
-        if now != seq {
-            return now;
-        }
-    }
-}
-
 // --- Gate / ack / dispatch ------------------------------------------------
 
 #[test]
@@ -1534,9 +1521,10 @@ fn settle_gain_lifts_a_short_window_and_leaves_the_raw_sample() {
     assert_eq!(k.tel.samples.last().unwrap().current, 300);
 }
 
-// --- Ident aggregates -----------------------------------------------------
+// --- Held stream samples ---------------------------------------------------
 
-fn ident_setup(sh: &Shared) {
+/// OpenLoop at 8000, a duty whose windows the 100-tick floors read.
+fn drive_setup(sh: &Shared) {
     seed(sh);
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
@@ -1545,148 +1533,62 @@ fn ident_setup(sh: &Shared) {
         // starts at the floor, so windows are valid from tick 2 on (tick 1
         // measures the boot duty of 0)
         t.control.lifecycle.goal_duty = 8000;
-        t.control.ident.ident_agg = true;
     });
 }
 
-fn agg_seq(sh: &Shared) -> u16 {
-    sh.table.with(|t| t.telemetry.ident.agg_seq)
+/// A TEL kernel settled at 8000 and +200 counts, its next tick the CONTROL
+/// phase where a goal write lands, the recorder empty.
+fn tel_settled_at_control(sh: &Shared) -> Kernel<FakeIo, RecTel> {
+    drive_setup(sh);
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        RecTel {
+            mask: crate::tel::BIT_CURRENT | crate::tel::BIT_DUTY | crate::tel::BIT_VDIFF,
+            ..RecTel::default()
+        },
+        TIMING,
+    );
+    settle(&mut k, sh, frame(2000, BIAS + 200));
+    while k.phase != phase::CONTROL {
+        k.on_tick(frame(2000, BIAS + 200), sh);
+    }
+    k.tel.samples.clear();
+    k
+}
+
+/// The (current, vdiff, duty) rows of the recorder.
+fn rows(k: &Kernel<FakeIo, RecTel>) -> heapless::Vec<(i16, i16, i16), 64> {
+    k.tel
+        .samples
+        .iter()
+        .map(|s| (s.current, s.vdiff, s.duty))
+        .collect()
 }
 
 #[test]
-fn ident_aggregate_runs_only_on_request() {
+fn stream_rows_hold_the_last_valid_window_while_the_drive_pushes() {
     let sh = Shared::new();
-    ident_setup(&sh);
-    sh.table.with_mut(|t| t.control.ident.ident_agg = false);
-    let mut k = kernel();
-    let f = frame(2000, BIAS + 100);
-    for _ in 0..200 {
-        k.on_tick(f, &sh);
-    }
-    assert_eq!(agg_seq(&sh), 0, "off at boot");
-
-    // on: lands at the CONTROL phase, then a window every 16 ticks
-    sh.table.with_mut(|t| t.control.ident.ident_agg = true);
-    run_to(&mut k, &sh, f, phase::CONTROL);
-    k.on_tick(f, &sh);
-    for n in 1..=3 {
-        for _ in 0..15 {
-            k.on_tick(f, &sh);
-        }
-        assert_eq!(agg_seq(&sh), n - 1);
-        k.on_tick(f, &sh);
-        assert_eq!(agg_seq(&sh), n);
-    }
-
-    // off mid-window: the registers hold, the open window drops
-    for _ in 0..5 {
-        k.on_tick(f, &sh);
-    }
-    sh.table.with_mut(|t| t.control.ident.ident_agg = false);
-    run_to(&mut k, &sh, f, phase::CONTROL);
-    k.on_tick(f, &sh);
-    for _ in 0..100 {
-        k.on_tick(f, &sh);
-    }
-    assert_eq!(agg_seq(&sh), 3, "held while off");
-
-    // on again: the first window spans 16 fresh ticks at the new current
-    sh.table.with_mut(|t| t.control.ident.ident_agg = true);
-    let f = frame(2000, BIAS + 300);
-    run_to(&mut k, &sh, f, phase::CONTROL);
-    k.on_tick(f, &sh);
-    for _ in 0..15 {
-        k.on_tick(f, &sh);
-    }
-    assert_eq!(agg_seq(&sh), 3);
-    k.on_tick(f, &sh);
-    sh.table.with(|t| {
-        let d = &t.telemetry.ident;
-        assert_eq!(d.agg_seq, 4);
-        assert_eq!(d.i_mean_counts, 300);
-        assert_eq!(d.i_min_counts, 300);
-    });
-}
-
-#[test]
-fn ident_window_pins_aggregates() {
-    let sh = Shared::new();
-    ident_setup(&sh);
-    let mut k = kernel();
-    // the windows up to the goal duty are slew-mixed; spend them
-    settle(&mut k, &sh, frame(2000, BIAS + 100));
-    let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 100));
-    // next window: 8 ticks at +100, 4 at +300, 4 at -60, all windows valid
-    for _ in 0..8 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
-    }
-    // seq holds mid-window: publish only at the /16 boundary
-    sh.table
-        .with(|t| assert_eq!(t.telemetry.ident.agg_seq, seq));
-    for _ in 0..4 {
-        k.on_tick(frame(2000, BIAS + 300), &sh);
-    }
-    for _ in 0..4 {
-        k.on_tick(frame(2000, BIAS - 60), &sh);
-    }
-    sh.table.with(|t| {
-        let d = &t.telemetry.ident;
-        // (8*100 + 4*300 + 4*-60) >> 4 = 1760/16 = 110
-        assert_eq!(d.i_mean_counts, 110);
-        assert_eq!(d.i_min_counts, -60);
-        assert_eq!(d.i_max_counts, 300);
-        assert_eq!(d.vdiff_mean, 2960); // va 3000 - vb 40, every tick
-        assert_eq!(d.duty_mean_q15, 8000);
-        assert_eq!(d.agg_seq, seq + 1);
-    });
-}
-
-#[test]
-fn ident_invalid_ticks_hold_last_valid() {
-    let sh = Shared::new();
-    ident_setup(&sh);
-    let mut k = kernel();
-    settle(&mut k, &sh, frame(2000, BIAS + 200));
-    // an ident window that opens on a medium tick, where the goal write
-    // lands
-    let seq = loop {
-        let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
-        if k.phase == 0 {
-            break seq;
-        }
-    };
+    let mut k = tel_settled_at_control(&sh);
     // drive_ticks(1000) = 37, under the 100-tick floors: windows go
     // invalid one tick later (the first tick still measures the period the
     // last valid command drove) while the drive still pushes
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 1000);
     for _ in 0..16 {
-        k.on_tick(frame(2000, BIAS + 200), &sh);
+        k.on_tick(frame(2000, BIAS + 300), &sh);
     }
-    sh.table.with(|t| {
-        let d = &t.telemetry.ident;
-        // 15 invalid ticks held the last valid i/vdiff: means stay put
-        assert_eq!(d.i_mean_counts, 200);
-        assert_eq!(d.i_min_counts, 200);
-        assert_eq!(d.i_max_counts, 200);
-        assert_eq!(d.vdiff_mean, 2960);
-        // duty is per-tick truth: (8000 + 15 x 1000) >> 4 = 1437
-        assert_eq!(d.duty_mean_q15, 1437);
-        assert_eq!(d.agg_seq, seq + 1);
-    });
+    let r = rows(&k);
+    assert_eq!(r[0], (300, 2960, 293));
+    assert!(r[1..].iter().all(|&row| row == (300, 2960, 37)), "{r:?}");
+    assert!(k.tel.samples[1..].iter().all(|s| !s.window_valid));
 }
 
 #[test]
-fn ident_current_reads_zero_once_nothing_drives() {
+fn stream_current_reads_zero_once_nothing_drives() {
     let sh = Shared::new();
-    ident_setup(&sh);
-    let mut k = kernel();
-    settle(&mut k, &sh, frame(2000, BIAS + 200));
-    let seq = loop {
-        let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
-        if k.phase == 0 {
-            break seq;
-        }
-    };
+    let mut k = tel_settled_at_control(&sh);
     // disable: the first tick measures the period the last drive command
     // drove, the 15 after it read no current; vdiff keeps its hold
     sh.table
@@ -1694,43 +1596,10 @@ fn ident_current_reads_zero_once_nothing_drives() {
     for _ in 0..16 {
         k.on_tick(frame(2000, BIAS + 200), &sh);
     }
-    sh.table.with(|t| {
-        let d = &t.telemetry.ident;
-        // 200 >> 4 = 12
-        assert_eq!(d.i_mean_counts, 12);
-        assert_eq!(d.i_min_counts, 0);
-        assert_eq!(d.i_max_counts, 200);
-        assert_eq!(d.vdiff_mean, 2960);
-        assert_eq!(d.duty_mean_q15, 500);
-        assert_eq!(d.agg_seq, seq + 1);
-    });
+    let r = rows(&k);
+    assert_eq!(r[0], (200, 2960, 293));
+    assert!(r[1..].iter().all(|&row| row == (0, 2960, 0)), "{r:?}");
     assert_eq!(k.fast.i_meas_last, 0);
-}
-
-#[test]
-fn ident_accumulators_reset_between_windows() {
-    let sh = Shared::new();
-    ident_setup(&sh);
-    let mut k = kernel();
-    // windows 1 (boot-mixed) and 2 at a big current
-    for _ in 0..32 {
-        k.on_tick(frame(2000, BIAS + 1000), &sh);
-    }
-    sh.table
-        .with(|t| assert_eq!(t.telemetry.ident.i_max_counts, 1000));
-    // window 3: 15 ticks at 0, one at -5; window 2's 1000 must not leak
-    for _ in 0..15 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
-    k.on_tick(frame(2000, BIAS - 5), &sh);
-    sh.table.with(|t| {
-        let d = &t.telemetry.ident;
-        assert_eq!(d.i_max_counts, 0);
-        assert_eq!(d.i_min_counts, -5);
-        // sum -5 >> 4: arithmetic shift floors to -1
-        assert_eq!(d.i_mean_counts, -1);
-        assert_eq!(d.agg_seq, 3);
-    });
 }
 
 // --- Back-EMF boxcar ------------------------------------------------------
@@ -1738,7 +1607,7 @@ fn ident_accumulators_reset_between_windows() {
 #[test]
 fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let sh = Shared::new();
-    ident_setup(&sh);
+    drive_setup(&sh);
     let mut k = kernel();
     // from the OBSERVER phase after the slew every tick measures duty
     // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed 10 ticks
@@ -1780,7 +1649,7 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
 fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
     for (floor, want) in [(293, 8363), (294, 0)] {
         let sh = Shared::new();
-        ident_setup(&sh);
+        drive_setup(&sh);
         let mut k = Kernel::new(
             FakeIo {
                 sensors: FakeSensors,
@@ -1809,7 +1678,7 @@ fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
 #[test]
 fn velocity_feedback_switches_to_the_bemf_and_back() {
     let sh = Shared::new();
-    ident_setup(&sh);
+    drive_setup(&sh);
     let mut k = kernel();
     let published = |sh: &Shared| {
         sh.table.with(|t| {

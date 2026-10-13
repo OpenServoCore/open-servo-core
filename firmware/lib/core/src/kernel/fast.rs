@@ -8,7 +8,6 @@ use super::config::FastConfig;
 use super::current::{CurrentLoop, RailClamp};
 use super::duty_limit::DutyLimiter;
 use super::faults::{self, FaultLatch, OcDetector};
-use super::ident::IdentAgg;
 use super::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
@@ -64,8 +63,6 @@ pub struct Command {
     pub rail: RailClamp,
     /// The position table applies (`pos_lut_state` LIVE), for the stream.
     pub lut_live: bool,
-    /// CONTROL `ident_agg`: the identification aggregate folds.
-    pub ident_agg: bool,
 }
 
 impl Command {
@@ -101,8 +98,6 @@ pub struct Fast {
     cur: CurrentLoop,
     /// OpenLoop's duty ceiling against the band.
     ol: DutyLimiter,
-    /// Identification aggregator, own /16 fast-tick window.
-    ident: IdentAgg,
     /// The duty actually commanded this tick, post-clamp post-gate: 0 while
     /// Brake/Disabled. Feeds next tick's window select AND the
     /// `duty_applied_q15` publish: the gate can override the loop's output.
@@ -117,14 +112,14 @@ pub struct Fast {
     bridge: Bridge,
     settle: u8,
     /// Last window-valid measurement, 0 from the first tick nothing drives:
-    /// the current the observer, the stream, the ident aggregate and the
-    /// `i_hat_counts` publish read. A window under the floor holds it, as
-    /// the drive still pushes there; with no drive the winding current is
-    /// gone within a period, and every window under a zero duty is
-    /// invalid, so the 0 holds until the drive resumes.
+    /// the current the observer, the stream and the `i_hat_counts` publish
+    /// read. A window under the floor holds it, as the drive still pushes
+    /// there; with no drive the winding current is gone within a period,
+    /// and every window under a zero duty is invalid, so the 0 holds until
+    /// the drive resumes.
     pub(super) i_meas_last: i16,
-    /// Last v-valid drive-window differential (va - vb), for the ident
-    /// accumulation - same hold-last-valid pattern as `i_meas_last`.
+    /// Last v-valid drive-window differential (va - vb), for the stream -
+    /// same hold-last-valid pattern as `i_meas_last`.
     pub(super) vdiff_last: i16,
 }
 
@@ -140,7 +135,6 @@ impl Fast {
             bemf: BemfObs::new(),
             cur: CurrentLoop::new(),
             ol: DutyLimiter::new(),
-            ident: IdentAgg::new(),
             duty_q15: 0,
             ticks: 0,
             decay: DecayMode::Slow,
@@ -158,10 +152,6 @@ impl Fast {
     /// Fault ack: the overcurrent window re-arms.
     pub fn ack(&mut self) {
         self.oc.reset();
-    }
-
-    pub fn restart_ident(&mut self) {
-        self.ident.restart();
     }
 
     pub fn reset_current_loop(&mut self) {
@@ -251,9 +241,6 @@ impl Fast {
             faults.raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
         }
 
-        // IDENT: per-tick sample aligned to the window the PREVIOUS command
-        // drove - duty_q15 still holds that command here; i/vdiff hold
-        // last-valid through invalid windows (ident module doc).
         // the taps read physical va - vb; a reversed motor makes that the
         // negative of the logical drive direction every consumer expects.
         // m is 0 or -1: (v ^ m) - m negates without a branch
@@ -269,8 +256,7 @@ impl Fast {
             i_meas,
         );
         // TEL emits HERE, before the medium step: `ticks` still holds the
-        // command whose window this frame's samples measured (the same
-        // previous-tick alignment the ident aggregate uses), and the sample
+        // command whose window this frame's samples measured, and the sample
         // lands at a near-constant tick offset.
         let row = tel.row_mask();
         if row != 0 {
@@ -306,26 +292,6 @@ impl Fast {
             tel.on_tick(&s);
         }
 
-        if cmd.ident_agg {
-            core::hint::cold_path();
-            if let Some(agg) = self
-                .ident
-                .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
-            {
-                let p = shared.table.region_ptr();
-                // SAFETY: sole-telemetry-writer contract (`Kernel` doc);
-                // volatile per-field stores at the ident window boundary.
-                unsafe {
-                    let d = &raw mut (*p).telemetry.ident;
-                    (&raw mut (*d).i_mean_counts).write_volatile(agg.i_mean_counts);
-                    (&raw mut (*d).i_min_counts).write_volatile(agg.i_min_counts);
-                    (&raw mut (*d).i_max_counts).write_volatile(agg.i_max_counts);
-                    (&raw mut (*d).vdiff_mean).write_volatile(agg.vdiff_mean);
-                    (&raw mut (*d).duty_mean_q15).write_volatile(agg.duty_mean_q15);
-                    (&raw mut (*d).agg_seq).write_volatile(agg.agg_seq);
-                }
-            }
-        }
         Measured {
             i_meas,
             vdiff,
