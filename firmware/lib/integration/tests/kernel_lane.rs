@@ -239,10 +239,10 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 /// copy of it is armed, behind the dearest stage that runs ahead of the
 /// fast step, before the next crest scan lands, the copy's own time
 /// included. The DMA copies the row's longer chunk, at most the whole row
-/// of one chunk; the CPU copies the shorter ahead of the arm, inside
-/// FRAME_DONE. CH6 is idle at every arm: a row's copy lands before the
-/// next tick's entry, and a late tick's row arms an exit and an entry
-/// behind the last at least.
+/// of one chunk; the CPU copies the shorter behind the arm, while the DMA
+/// runs, inside FRAME_DONE. CH6 is idle at every arm: a row's copy lands
+/// before the next tick's entry, and a late tick's row arms an exit and
+/// an entry behind the last at least.
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{

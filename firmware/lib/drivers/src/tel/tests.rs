@@ -239,6 +239,48 @@ fn two_chunk_rows_copy_both_chunks_before_the_next_scan_lands() {
     }
 }
 
+/// A row arms the DMA's chunk before the CPU copies its own, so the two
+/// copies run side by side: at every arm the CPU's chunk has yet to land,
+/// whichever chunk leads the row.
+#[test]
+fn a_row_arms_the_dma_before_the_cpu_copies() {
+    let [duty, rail] = IDENT_RAIL.0;
+    for c in [SIX, Chunks::two(rail, duty)] {
+        let [a, b] = c.0;
+        let (dma, cpu, dma_at, cpu_at) = if b.len > a.len {
+            (b, a, a.len, 0)
+        } else {
+            (a, b, 0, a.len)
+        };
+        let landed = std::rc::Rc::new(core::cell::Cell::new(0u32));
+        let seen = landed.clone();
+        let crc = FakeCrc::probed(move |dst, src| {
+            let n = cpu.len as usize;
+            let at = dst
+                .wrapping_sub(dma_at as usize)
+                .wrapping_add(cpu_at as usize);
+            let from = src
+                .wrapping_sub(dma.addr as usize)
+                .wrapping_add(cpu.addr as usize);
+            // SAFETY: the row lies inside its image and the chunk inside
+            // the table.
+            let (row, table) = unsafe {
+                (
+                    core::slice::from_raw_parts(at, n),
+                    core::slice::from_raw_parts(from, n),
+                )
+            };
+            seen.set(seen.get() + (row == table) as u32);
+        });
+        let mut r = rig_with(crc);
+        r.arm(c, 16);
+        r.run(0, 40);
+        assert_eq!(payload(&r.wire.streamed()[0]), golden(c, 0, true, 0..16));
+        assert_eq!(r.lane.crc.copies(), 16, "one copy a row");
+        assert_eq!(landed.get(), 0, "CPU chunks landed ahead of the arm");
+    }
+}
+
 /// INST ALERT is the fault flag of the frame's first row.
 #[test]
 fn alert_is_the_first_rows_fault() {

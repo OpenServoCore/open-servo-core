@@ -5,6 +5,7 @@
 //! the driver.
 
 use core::cell::{Cell, UnsafeCell};
+use std::boxed::Box;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -137,6 +138,7 @@ pub struct FakeCrc {
     snap: Vec<u8>,
     sick: bool,
     copies: usize,
+    probe: Option<Box<dyn FnMut(*mut u8, *const u8)>>,
 }
 
 impl FakeCrc {
@@ -146,6 +148,7 @@ impl FakeCrc {
             snap: std::vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
             sick: false,
             copies: 0,
+            probe: None,
         }
     }
 
@@ -158,6 +161,15 @@ impl FakeCrc {
     pub fn sick() -> Self {
         FakeCrc {
             sick: true,
+            ..Self::new()
+        }
+    }
+
+    /// An engine that hands `probe` each copy's ends at its arm, before
+    /// the copy lands.
+    pub fn probed(probe: impl FnMut(*mut u8, *const u8) + 'static) -> Self {
+        FakeCrc {
+            probe: Some(Box::new(probe)),
             ..Self::new()
         }
     }
@@ -188,6 +200,9 @@ impl CrcEngine for FakeCrc {
     unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
         assert_eq!((dst as usize | src as usize) & 1, 0, "halfword ends");
         self.copies += 1;
+        if let Some(p) = self.probe.as_mut() {
+            p(dst, src);
+        }
         // SAFETY: the caller's contract.
         unsafe { core::ptr::copy_nonoverlapping(src, dst, 2 * units as usize) };
     }

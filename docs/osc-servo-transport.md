@@ -332,9 +332,10 @@ be staged behind the CRC verdict:
   burst's and the bus lends them to the kernel tick (PFIC HIGH): at the
   arming ack's release, or at the arm when no ack follows. The kernel
   lands each control tick's row straight to its final wire offset in one
-  of two frame images (header, head, rows, CRC slot): the shorter chunk
-  (at most 6 B, under the DMA arm's cost) by CPU halfword stores, then
-  the longer by one CH6 memory-to-memory copy, at a fixed point right
+  of two frame images (header, head, rows, CRC slot): the longer chunk
+  by one CH6 memory-to-memory copy, armed first, then the shorter (at
+  most 6 B, under the DMA arm's cost) by CPU halfword stores while the
+  copy runs, at a fixed point right
   after the tick block is published, ahead of the next scans the ADC
   DMA lands in the block, so every row is one tick's; CH6 above the CRC
   feed's CH3 lands the copy ahead of any feed that reads it, and one arm
