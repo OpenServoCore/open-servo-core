@@ -72,73 +72,131 @@ pub fn pos_lut_state_name(state: u8) -> Option<String> {
     osc_client::pos_lut::state::name(state).map(String::from)
 }
 
-/// Bytes one TEL row of `mask` takes on the wire (protocol sec 5.6).
-#[wasm_bindgen(js_name = telRowBytes)]
-pub fn tel_row_bytes(mask: u16) -> u32 {
-    osc_protocol::tel::row_bytes(mask) as u32
+/// The longest TEL row, bytes (protocol sec 5.6).
+#[wasm_bindgen(js_name = telRowBytesMax)]
+pub fn tel_row_bytes_max() -> u32 {
+    osc_protocol::tel::ROW_BYTES_MAX as u32
 }
 
-/// One packed TEL row's fields by `tel_mask` bit index, the signed ones
-/// sign-extended, 0 where unselected (protocol sec 5.6); undefined when
-/// `row` is short.
-#[wasm_bindgen(js_name = telDecodeRow)]
-pub fn tel_decode_row(mask: u16, row: &[u8]) -> Option<Vec<i32>> {
-    use osc_protocol::tel::{SIGNED, decode_row};
-    let fields = decode_row(mask, row)?;
-    Some(
-        fields
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| {
-                if SIGNED & (1 << i) != 0 {
-                    v as i16 as i32
-                } else {
-                    v as i32
-                }
+/// The chunks a TEL row copies at most.
+#[wasm_bindgen(js_name = telChunksMax)]
+pub fn tel_chunks_max() -> u32 {
+    osc_protocol::tel::CHUNKS_MAX as u32
+}
+
+/// The one rate a TEL burst streams at.
+#[wasm_bindgen(js_name = telBaud)]
+pub fn tel_baud() -> Result<Ts<BaudRate>, JsError> {
+    Ok(BaudRate::from(osc_protocol::tel::BAUD).into_ts()?)
+}
+
+/// Whether `chunks` make a row a burst arms with: even, inside the table,
+/// the first nonempty, at most `telRowBytesMax()` in all.
+#[wasm_bindgen(js_name = telChunksValid)]
+pub fn tel_chunks_valid(
+    #[wasm_bindgen(unchecked_param_type = "TelChunk[]")] chunks: JsValue,
+) -> Result<bool, JsError> {
+    let chunks: Vec<TelChunk> = serde_wasm_bindgen::from_value(chunks)?;
+    Ok(tel_chunks(&chunks).is_some_and(|c| c.valid()))
+}
+
+/// The descriptor fields a row of `chunks` carries, each where it sits in
+/// the row (a field wholly inside one chunk), in table order.
+#[wasm_bindgen(js_name = telColumns)]
+pub fn tel_columns(
+    d: &Descriptor,
+    #[wasm_bindgen(unchecked_param_type = "TelChunk[]")] chunks: JsValue,
+) -> Result<Vec<Ts<TelColumn>>, JsError> {
+    let chunks: Vec<TelChunk> = serde_wasm_bindgen::from_value(chunks)?;
+    let c =
+        tel_chunks(&chunks).ok_or_else(|| JsError::new("telColumns: more chunks than a row"))?;
+    Ok(columns(d, c)
+        .into_iter()
+        .map(|c| c.into_ts())
+        .collect::<Result<_, _>>()?)
+}
+
+/// The descriptor fields a row of `c` carries, in table order.
+fn columns(d: &Descriptor, c: osc_protocol::tel::Chunks) -> Vec<TelColumn> {
+    use osc_client::descriptor::Kind;
+    d.inner()
+        .fields
+        .iter()
+        .filter(|f| matches!(f.width, 1 | 2 | 4) && f.kind != Kind::Bytes)
+        .filter_map(|f| {
+            let offset = c.offset(f.addr, f.width)? as u16;
+            Some(TelColumn {
+                name: f.name.clone(),
+                offset,
+                width: f.width,
+                signed: f.kind == Kind::Int,
             })
-            .collect(),
-    )
+        })
+        .collect()
 }
 
-/// One TEL stream frame payload split into head, rows and trailer
-/// (protocol sec 5.6); undefined when it cannot be a `mask` frame.
+/// One TEL stream frame payload split into head and rows (protocol sec
+/// 5.6); undefined when it cannot be a frame of `rowBytes` rows.
 #[wasm_bindgen(js_name = telStreamFrame)]
-pub fn tel_stream_frame(mask: u16, payload: &[u8]) -> Result<Option<Ts<TelStreamFrame>>, JsError> {
-    Ok(osc_protocol::tel::StreamFrame::parse(mask, payload)
-        .map(|f| TelStreamFrame::from(f).into_ts())
-        .transpose()?)
+pub fn tel_stream_frame(
+    #[wasm_bindgen(js_name = rowBytes)] row_bytes: u32,
+    payload: &[u8],
+) -> Result<Option<Ts<TelStreamFrame>>, JsError> {
+    Ok(
+        osc_protocol::tel::StreamFrame::parse(row_bytes as usize, payload)
+            .map(|f| TelStreamFrame::from(f).into_ts())
+            .transpose()?,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The protocol's golden row: a lone 12-bit field in a slot, wide
-    /// signed fields, a 12-bit signed duty paired with ntc_raw.
     #[test]
-    fn tel_rows_decode_signed_by_bit() {
-        use osc_protocol::tel::{BIT_CURRENT, BIT_DUTY, BIT_NTC_RAW, BIT_POS, BIT_VDIFF};
-        let mask = BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF | BIT_NTC_RAW;
-        let row = [0x23, 0x01, 0xFE, 0xFF, 0xD4, 0xFE, 0xFB, 0xCF, 0xAB];
-        assert_eq!(tel_row_bytes(mask), 9);
-        let f = tel_decode_row(mask, &row).unwrap();
-        assert_eq!(f, [0x123, -2, 0, -5, -300, 0, 0, 0, 0, 0, 0xABC, 0]);
-        assert_eq!(tel_decode_row(mask, &row[..8]), None);
+    fn tel_stream_frames_split_head_and_rows() {
+        use osc_protocol::tel::StreamFrame;
+        let p = [3, 1, 0x10, 0x00, 0x00, 0x01, 0x01, 0x01];
+        let f = TelStreamFrame::from(StreamFrame::parse(2, &p).unwrap());
+        assert_eq!((f.seq, f.last, f.tick), (3, true, 16));
+        assert_eq!(f.rows.as_slice(), [0x00, 0x01, 0x01, 0x01]);
+        assert!(StreamFrame::parse(4, &p[..6]).is_none());
     }
 
+    /// A row's columns: the fields wholly inside a chunk, at their row
+    /// offsets, signed where the descriptor says.
     #[test]
-    fn tel_stream_frames_split_head_rows_and_trailer() {
-        use osc_protocol::tel::{BIT_POS, StreamFrame};
-        let p = [
-            3, 1, 0x10, 0x00, 0x00, 0x01, 0x01, 0x01, 0x02, 0, 0, 0, 1, 0,
+    fn tel_columns_follow_the_chunks() {
+        let d = Descriptor::parse(include_str!("../../../descriptors/osc-servo/0.1.json")).unwrap();
+        let tick = d.field("duty_ticks").unwrap().addr;
+        let vbus = d.field("vbus_counts").unwrap().addr;
+        let chunks = [
+            TelChunk { addr: tick, len: 8 },
+            TelChunk { addr: vbus, len: 2 },
         ];
-        let f = TelStreamFrame::from(StreamFrame::parse(BIT_POS, &p).unwrap());
-        assert_eq!(
-            (f.seq, f.last, f.tick, f.valid, f.alert),
-            (3, true, 16, 2, true)
-        );
-        assert_eq!(f.rows.as_slice(), [0x00, 0x01, 0x01, 0x01]);
-        assert!(StreamFrame::parse(BIT_POS, &p[..13]).is_none());
+        let c = tel_chunks(&chunks).unwrap();
+        assert!(c.valid());
+        let cols: Vec<(String, u16, bool)> = columns(&d, c)
+            .into_iter()
+            .map(|c| (c.name, c.offset, c.signed))
+            .collect();
+        let want = [
+            ("duty_ticks", 0, true),
+            ("current_trough", 2, false),
+            ("i_tick_counts", 4, true),
+            ("vdiff_counts", 6, true),
+            ("vbus_counts", 8, false),
+        ];
+        assert_eq!(cols.len(), want.len());
+        for (got, (name, offset, signed)) in cols.iter().zip(want) {
+            assert_eq!(got, &(name.to_string(), offset, signed));
+        }
+        let wide = [TelChunk {
+            addr: tick,
+            len: 14,
+        }];
+        assert!(!tel_chunks(&wide).unwrap().valid());
+        assert!(tel_chunks(&[chunks[0]; 3]).is_none());
     }
 
     #[test]

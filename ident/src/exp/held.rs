@@ -388,8 +388,8 @@ enum Phase {
 pub struct Seated {
     pub dir: i8,
     pub pos: u16,
-    /// Applied duty confirmed at the hold, q15.
-    pub duty_applied_q15: i16,
+    /// Applied duty confirmed at the hold, PWM compare counts.
+    pub duty_ticks: i16,
     /// Duty the seek arrived at, q15; above the hold when it escalated.
     pub arrived_q15: i16,
 }
@@ -508,10 +508,10 @@ impl Held {
                 seat.pos, o.pos
             ));
         }
-        if o.duty_applied_q15 == 0 || o.duty_applied_q15.signum() as i8 != seat.dir {
+        if o.duty_ticks == 0 || o.duty_ticks.signum() as i8 != seat.dir {
             return Err(format!(
-                "applied duty {} at pos {}: the kernel is not driving into the stop",
-                o.duty_applied_q15, o.pos
+                "applied duty {} ticks at pos {}: the kernel is not driving into the stop",
+                o.duty_ticks, o.pos
             ));
         }
         Ok(())
@@ -678,7 +678,7 @@ impl Experiment for Held {
                     self.seat = Some(Seated {
                         dir,
                         pos: o.pos,
-                        duty_applied_q15: o.duty_applied_q15,
+                        duty_ticks: o.duty_ticks,
                         arrived_q15: dir as i16 * self.mag,
                     });
                     self.phase = Phase::SeatSettle;
@@ -716,7 +716,7 @@ impl Experiment for Held {
                     return self.fail(format!("not a stop: {why}"));
                 }
                 seat.pos = o.pos;
-                seat.duty_applied_q15 = o.duty_applied_q15;
+                seat.duty_ticks = o.duty_ticks;
                 self.seat = Some(seat);
                 self.seats.push(seat);
                 self.at = 0;
@@ -1173,7 +1173,9 @@ mod tests {
         assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
         let seat = exp.seats()[0];
         assert_eq!((seat.dir, seat.pos), (-1, 200));
-        assert_eq!(seat.duty_applied_q15, -pct_q15(12));
+        let ticks =
+            crate::frame::duty_counts(-pct_q15(12), super::super::testkit::PWM_PERIOD_TICKS);
+        assert_eq!(seat.duty_ticks, ticks);
         let seated: Vec<&Capture> = exp.captures().iter().filter(|c| c.meta.seated).collect();
         assert_eq!(seated.len(), 3 * 2);
         for c in &seated {

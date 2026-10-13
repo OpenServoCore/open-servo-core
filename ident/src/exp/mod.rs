@@ -12,7 +12,9 @@
 //!         Cmd::Write { reg, value } => client.write(reg, value),
 //!         Cmd::Read => pending = Some(read_telemetry_region(now_ms())),
 //!         Cmd::Pause { ms } => sleep_ms(ms),
-//!         Cmd::Stream { samples, goal } => exp.push_tel(&run_burst(samples, goal)),
+//!         Cmd::Stream { samples, goal, chunks } => {
+//!             exp.push_tel(&run_burst(samples, goal, chunks))
+//!         }
 //!         Cmd::Burst { duty_q15, pre_q15, chans, seated } => {
 //!             exp.push_burst(&capture(duty_q15, pre_q15, chans, seated))
 //!         }
@@ -49,6 +51,7 @@ pub mod verify;
 pub mod wavefit;
 pub mod winding;
 
+use osc_protocol::tel::Chunks;
 use osc_servo_core::kernel::DECIM_MED;
 
 use crate::burst::Capture;
@@ -64,14 +67,12 @@ use crate::window::{WINDOW_TICKS, Watch, Watched, Window};
 /// it stream, the window's fields and the pot when the line holds it, in
 /// bursts of at most [`crate::window::WATCH_BURST_MS`], each handed in
 /// through [`Experiment::push_watch`] as it lands; a pause too short for a
-/// window sleeps. `Stream` arms a TEL burst of `samples` fast ticks - with
-/// `goal` Some the driver stages that write and the arm under HOLD and
-/// fires one broadcast COMMIT, so the write applies in the same instant
-/// the capture starts. The decoded burst, with the rows the servo dropped
-/// from it, returns through [`Experiment::push_tel`] before the next
-/// `step`.
-/// The mask is sticky: write TEL_MASK with an ordinary `Write` first; the
-/// driver restores it after a watch.
+/// window sleeps. `Stream` arms a TEL burst of `samples` fast ticks of
+/// `chunks` rows: one WRITE of the chunks and `tel_count` - with `goal`
+/// Some the driver stages that write and the arm under HOLD and fires one
+/// broadcast COMMIT, so the write applies in the same instant the capture
+/// starts. The decoded burst, with the rows the servo dropped from it,
+/// returns through [`Experiment::push_tel`] before the next `step`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     Write {
@@ -85,6 +86,7 @@ pub enum Cmd {
     Stream {
         samples: u16,
         goal: Option<(Reg, i32)>,
+        chunks: Chunks,
     },
     /// One high-rate shunt burst: the driver stages `duty_q15`, the `chans`
     /// mask and the arm under HOLD, fires one COMMIT, polls to Done and
@@ -1285,7 +1287,11 @@ mod tests {
             ]
         );
         let o = exp.into_inner().1.expect("the read");
-        assert_eq!(o.duty_applied_q15, -3000, "re-granted after the re-enable");
+        assert_eq!(
+            o.duty_ticks,
+            duty_counts(-3000, ARR),
+            "re-granted after the re-enable"
+        );
     }
 
     #[test]
@@ -1307,7 +1313,8 @@ mod tests {
         assert_eq!(grants, 1 + 3000 / crate::limits::PERMIT_REFRESH_MS as usize);
         let o = exp.into_inner().1.expect("the read");
         assert_eq!(
-            o.duty_applied_q15, -3000,
+            o.duty_ticks,
+            duty_counts(-3000, ARR),
             "the lease lapsed inside the pause"
         );
         assert_eq!(log.last().map(String::as_str), Some("write stall_permit 0"));
@@ -1357,7 +1364,7 @@ mod tests {
             o.i_mean_counts > lim.i_lim as i16,
             "the hold reads over the limit"
         );
-        assert!(o.duty_applied_q15 < 20971, "and is governed");
+        assert!(o.duty_ticks < duty_counts(20971, ARR), "and is governed");
         assert!(matches!(
             hold(lim.i_lim as i16).0,
             Some(AbortReason::Overcurrent { .. })

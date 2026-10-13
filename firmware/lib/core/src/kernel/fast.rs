@@ -11,10 +11,9 @@ use super::faults::{self, FaultLatch, OcDetector};
 use super::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
-use crate::pos_lut;
-use crate::tel::{self, TelSample, TelStream};
+use crate::tel::{TelStream, tick_flag};
 use crate::traits::{DecayMode, MotorCmd};
-use crate::{RegionStorageRaw, SensorFrame, Shared};
+use crate::{RegionStorageRaw, Shared};
 
 /// What the drive does until the medium half commands otherwise.
 #[derive(Copy, Clone, Default)]
@@ -61,8 +60,6 @@ pub struct Command {
     pub vbus_recip_q15: u32,
     /// The current loop's clamp on `vbus_counts`, prepared by `prepare_rail`.
     pub rail: RailClamp,
-    /// The position table applies (`pos_lut_state` LIVE), for the stream.
-    pub lut_live: bool,
 }
 
 impl Command {
@@ -99,8 +96,8 @@ pub struct Fast {
     /// OpenLoop's duty ceiling against the band.
     ol: DutyLimiter,
     /// The duty actually commanded this tick, post-clamp post-gate: 0 while
-    /// Brake/Disabled. Feeds next tick's window select AND the
-    /// `duty_applied_q15` publish: the gate can override the loop's output.
+    /// Brake/Disabled. Feeds next tick's window select: the gate can
+    /// override the loop's output.
     pub(super) duty_q15: i16,
     /// The drive width the motor write programmed for `duty_q15`
     /// (`window::drive_ticks`), 0 while Brake/Disabled: next tick's window.
@@ -112,14 +109,14 @@ pub struct Fast {
     bridge: Bridge,
     settle: u8,
     /// Last window-valid measurement, 0 from the first tick nothing drives:
-    /// the current the observer, the stream and the `i_hat_counts` publish
-    /// read. A window under the floor holds it, as the drive still pushes
-    /// there; with no drive the winding current is gone within a period,
-    /// and every window under a zero duty is invalid, so the 0 holds until
-    /// the drive resumes.
+    /// the current the observer and the tick block's `i_tick_counts` read.
+    /// A window under the floor holds it, as the drive still pushes there;
+    /// with no drive the winding current is gone within a period, and every
+    /// window under a zero duty is invalid, so the 0 holds until the drive
+    /// resumes.
     pub(super) i_meas_last: i16,
-    /// Last v-valid drive-window differential (va - vb), for the stream -
-    /// same hold-last-valid pattern as `i_meas_last`.
+    /// Last v-valid drive-window differential (va - vb), the tick block's
+    /// `vdiff_counts` - same hold-last-valid pattern as `i_meas_last`.
     pub(super) vdiff_last: i16,
 }
 
@@ -194,13 +191,12 @@ impl Fast {
     /// flips (bang-bang bench test pins this).
     pub fn measure<T: TelStream>(
         &mut self,
-        frame: &SensorFrame,
         fc: &FastConfig,
-        cmd: &Command,
         faults: &mut FaultLatch,
         tel: &mut T,
         shared: &Shared,
     ) -> Measured {
+        let frame = shared.frame();
         let ticks = self.ticks as u32;
         let fwd = self.duty_q15 >= 0;
         let sel = window::select(
@@ -218,7 +214,7 @@ impl Fast {
             Bridge::Asleep => Some(Zero::Asleep),
             Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
         };
-        self.bias.update(zero, frame.current_trough);
+        self.bias.update(zero, frame.current_trough());
         // gated here, not only inside: a window under the floor skips the
         // zero's rounding and the settle-gain band lookup on the tick path
         let i_meas = if sel.i_valid {
@@ -255,42 +251,25 @@ impl Fast {
             vdiff.filter(|_| ticks >= self.bemf_min_ticks as u32),
             i_meas,
         );
-        // TEL emits HERE, before the medium step: `ticks` still holds the
-        // command whose window this frame's samples measured, and the sample
-        // lands at a near-constant tick offset.
-        let row = tel.row_mask();
-        if row != 0 {
-            let pos_lin_q4 = if row & tel::BIT_POS_LIN == 0 {
-                0
-            } else if cmd.lut_live {
-                shared.pos_lut_q4(frame.pos)
-            } else {
-                pos_lut::identity_q4(frame.pos)
-            };
-            let s = TelSample {
-                pos: frame.pos,
-                current: self.i_meas_last,
-                current_trough: frame.current_trough,
-                duty: if fwd { ticks as i16 } else { -(ticks as i16) },
-                vdiff: self.vdiff_last,
-                vbus: cmd.vbus_counts,
-                current_raw: frame.current,
-                vmotor_a: frame.vmotor_a,
-                vmotor_b: frame.vmotor_b,
-                vbus_raw: frame.vbus_raw,
-                ntc_raw: frame.ntc_raw,
-                pos_lin_q4,
-                // SAFETY: table storage is 'static; the tick ISR bumps
-                // `sample_tick` before it runs this body, its only writer.
-                tick: unsafe {
-                    (&raw const (*shared.table.region_ptr()).telemetry.estimates.sample_tick)
-                        .read_volatile() as u16
-                },
-                window_valid: i_meas.is_some(),
-                fault: faults.mask() != 0,
-            };
-            tel.on_tick(&s);
+        // The tick block, HERE before the medium step: `ticks` still holds
+        // the command whose window this frame's samples measured. The row
+        // is taken from it at once.
+        let rev = (self.duty_q15 >> 15) as i32;
+        let duty = ((ticks as i32 ^ rev) - rev) as i16;
+        let flags = (tick_flag::I_VALID * i_meas.is_some() as u16)
+            | (tick_flag::FAULT * (faults.mask() != 0) as u16)
+            | (tick_flag::V_VALID * vdiff.is_some() as u16);
+        let p = shared.table.region_ptr();
+        // SAFETY: sole-telemetry-writer contract (`Kernel` doc); volatile
+        // per-field stores, ordered ahead of the row's copy.
+        unsafe {
+            let t = &raw mut (*p).telemetry.tick;
+            (&raw mut (*t).i_tick_counts).write_volatile(self.i_meas_last);
+            (&raw mut (*t).vdiff_counts).write_volatile(self.vdiff_last);
+            (&raw mut (*t).duty_ticks).write_volatile(duty);
+            (&raw mut (*t).tick_flags).write_volatile(flags);
         }
+        tel.on_tick();
 
         Measured {
             i_meas,

@@ -307,9 +307,8 @@ pub struct TelBurst {
     pub trailing: bool,
 }
 
-/// One TEL stream frame payload split (protocol sec 5.6): the head, the
-/// packed rows (`telRowBytes(mask)` each, the count from `LEN`), and the
-/// trailer.
+/// One TEL stream frame payload split (protocol sec 5.6): the head and the
+/// rows (`rowBytes` each, the count from `LEN`).
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct TelStreamFrame {
@@ -318,10 +317,6 @@ pub struct TelStreamFrame {
     /// The first row's `sample_tick`, low 16 bits: a dropped row or a lost
     /// frame shows as a jump.
     pub tick: u16,
-    /// Bit i: row i measured a fresh drive window.
-    pub valid: u32,
-    /// Some row of the frame saw a fault.
-    pub alert: bool,
     #[tsify(type = "Uint8Array")]
     pub rows: serde_bytes::ByteBuf,
 }
@@ -332,16 +327,47 @@ impl From<osc_protocol::tel::StreamFrame<'_>> for TelStreamFrame {
             seq: f.seq,
             last: f.last,
             tick: f.tick,
-            valid: f.valid,
-            alert: f.alert,
             rows: serde_bytes::ByteBuf::from(f.rows().flatten().copied().collect::<Vec<u8>>()),
         }
     }
 }
 
+/// One run of table bytes a TEL row copies (protocol sec 5.6): `len`
+/// bytes from `addr`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Tsify)]
+pub struct TelChunk {
+    pub addr: u16,
+    pub len: u16,
+}
+
+/// A row's chunks, at most `telChunksMax()`; a missing second is none.
+pub(crate) fn tel_chunks(c: &[TelChunk]) -> Option<osc_protocol::tel::Chunks> {
+    use osc_protocol::tel::{CHUNKS_MAX, Chunk, Chunks};
+    if c.len() > CHUNKS_MAX {
+        return None;
+    }
+    let at = |i: usize| {
+        c.get(i)
+            .map_or(Chunk::new(0, 0), |c| Chunk::new(c.addr, c.len))
+    };
+    Some(Chunks::two(at(0), at(1)))
+}
+
+/// A descriptor field a TEL row carries: where it sits in the row.
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct TelColumn {
+    pub name: String,
+    pub offset: u16,
+    pub width: u16,
+    pub signed: bool,
+}
+
 /// A recorded fast-tick track for the simulated adapter: one column per
-/// `TelSample` field, all the same length, in device counts as captured
-/// (`windowValid` is 0/1). Plain `number[]` columns are accepted too.
+/// field, all the same length, in device counts as captured (`windowValid`
+/// is 0/1): the tick block's (`current` the held current, `dutyQ15` the
+/// applied duty) and the rail estimate `vbus`. Plain `number[]` columns
+/// are accepted too.
 #[cfg(feature = "fake")]
 #[derive(Debug, Clone, Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]

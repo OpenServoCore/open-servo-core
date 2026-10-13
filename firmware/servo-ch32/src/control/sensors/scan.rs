@@ -6,7 +6,8 @@
 //! Two scans per PWM period under center-aligned PWM (peak + trough); UG fires
 //! TRGO at CNT=0 before CEN=1 so the trough scan lands at offset 0 and the peak
 //! scan lands at `ADC_SCAN_LEN`. Slot indices within a scan reflect the
-//! configured RSQR sequence.
+//! configured RSQR sequence. The DMA lands both straight in the table's tick
+//! block (`TelemetryTick`), the peak scan's slots on their fields.
 //!
 //! Budget at ADCCLK 24 MHz (TCONV = aperture + 12.5, RM sec 9.3; every slot
 //! runs `SampleTime::CYCLES15` = a 13.5-cycle aperture, apertures in
@@ -31,11 +32,14 @@
 //! high side is the early sample, still read under its own tap's name.
 
 use core::cell::SyncUnsafeCell;
+use core::mem::{offset_of, size_of};
 
+use osc_servo_core::regions::TelemetryTick;
 use osc_servo_core::regions::burst::{FRAME_MAX, chans};
 
 use crate::hal::clocks::{ADCCLK_HZ, TIM_CLK_HZ};
 use crate::hal::{adc, dma, timer};
+use crate::runtime::statics::SHARED;
 
 const TICKS_PER_ADCCLK: u16 = (TIM_CLK_HZ / ADCCLK_HZ) as u16;
 /// One conversion at the `CYCLES15` aperture: 13.5 + 12.5 ADCCLK.
@@ -70,15 +74,11 @@ pub(crate) const ADC_SCAN_LEN: usize = 7;
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
 pub(crate) const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;
 
-pub(crate) static ADC_DMA_BUF: SyncUnsafeCell<[u16; ADC_DMA_BUF_LEN]> =
-    SyncUnsafeCell::new([0; ADC_DMA_BUF_LEN]);
-
 /// Board-resolved channel order, seeded once at bringup from the wiring.
 static SEQ: SyncUnsafeCell<[adc::Channel; ADC_SCAN_LEN]> =
     SyncUnsafeCell::new([adc::Channel::IN0; ADC_SCAN_LEN]);
 
-pub(super) const SCAN_PEAK_OFFSET: usize = ADC_SCAN_LEN;
-pub(super) const SCAN_TROUGH_OFFSET: usize = 0;
+const SCAN_PEAK_OFFSET: usize = ADC_SCAN_LEN;
 
 pub(super) const SCAN_IDX_SHUNT_POST: usize = 0;
 /// Each tap's slot in `seq()`, the Forward order.
@@ -87,10 +87,38 @@ const SCAN_IDX_VMOTOR_B: usize = 2;
 /// The programmed scan's terminal slots, whichever tap is high.
 pub(super) const SCAN_IDX_TAP_HIGH: usize = 1;
 pub(super) const SCAN_IDX_TAP_LOW: usize = 2;
-pub(super) const SCAN_IDX_POS: usize = 3;
-pub(super) const SCAN_IDX_VCAL: usize = 4;
-pub(super) const SCAN_IDX_VBUS: usize = 5;
-pub(super) const SCAN_IDX_NTC: usize = 6;
+const SCAN_IDX_POS: usize = 3;
+const SCAN_IDX_VCAL: usize = 4;
+const SCAN_IDX_VBUS: usize = 5;
+const SCAN_IDX_NTC: usize = 6;
+
+/// The budget's scan landings: the next trough and crest scans' first slot,
+/// past the crest scan's TC, in HCLK.
+const _: () = {
+    use osc_servo_core::budget::{NEXT_CREST, NEXT_TROUGH, TICK_PERIOD};
+    assert!(TIM_CLK_HZ == crate::hal::clocks::HCLK_HZ);
+    let first = (TRIGGER_DELAY_CYCLES + CONV_CYCLES) * TICKS_PER_ADCCLK;
+    assert!(NEXT_CREST == TICK_PERIOD - SCAN_TICKS as u32 + first as u32);
+    assert!(NEXT_TROUGH == TICK_PERIOD / 2 - SCAN_TICKS as u32 + first as u32);
+};
+
+/// The tick block's front holds the DMA buffer; each peak slot lands on its
+/// field, the taps on `vmotor_a`/`vmotor_b` in sample order until the frame
+/// maps them.
+const _: () = {
+    type T = TelemetryTick;
+    const fn peak(idx: usize) -> usize {
+        (SCAN_PEAK_OFFSET + idx) * size_of::<u16>()
+    }
+    assert!(offset_of!(T, _scan_trough) == 0);
+    assert!(offset_of!(T, current_raw) == peak(SCAN_IDX_SHUNT_POST));
+    assert!(offset_of!(T, vmotor_a) == peak(SCAN_IDX_TAP_HIGH));
+    assert!(offset_of!(T, vmotor_b) == peak(SCAN_IDX_TAP_LOW));
+    assert!(offset_of!(T, pos) == peak(SCAN_IDX_POS));
+    assert!(offset_of!(T, vcal) == peak(SCAN_IDX_VCAL));
+    assert!(offset_of!(T, vbus_raw) == peak(SCAN_IDX_VBUS));
+    assert!(offset_of!(T, ntc_raw) == peak(SCAN_IDX_NTC));
+};
 
 /// HIGH, not VERYHIGH: RX (CH5) alone owns the top so an inbound byte's drain
 /// outranks everything (see the ladder in `hal::dma`). ADC is the
@@ -249,7 +277,7 @@ fn burst_frame(mask: u8, seq: &[adc::Channel; ADC_SCAN_LEN]) -> ([adc::Channel; 
     (frame, len)
 }
 
-/// Point CH1 at `ADC_DMA_BUF` and enable it. Leaves `ADC.CTLR2.DMA` alone:
+/// Point CH1 at the tick block and enable it. Leaves `ADC.CTLR2.DMA` alone:
 /// the request source is the caller's to open (a request pulsed at a disabled
 /// channel latches on this die and fires at re-enable).
 pub(crate) fn arm_dma() {
@@ -257,19 +285,25 @@ pub(crate) fn arm_dma() {
         dma::Channel::CH1,
         &DMA_CFG,
         adc::data_addr(),
-        ADC_DMA_BUF.get() as u32,
+        SHARED.tick_block() as u32,
         ADC_DMA_BUF_LEN as u16,
     );
     dma::enable(dma::Channel::CH1);
 }
 
-/// Read trough slots before peak; DMA overwrites trough first after TC.
+/// Slot `idx` of the trough scan as the DMA landed it. Drained by the frame
+/// ahead of the next trough scan.
 #[inline(always)]
-pub(super) fn scan_slot(offset: usize, idx: usize) -> u16 {
-    let i = offset + idx;
-    debug_assert!(i < 2 * ADC_SCAN_LEN);
-    // SAFETY: index bounded above; `ADC_DMA_BUF` is a fixed-length static.
-    unsafe { (ADC_DMA_BUF.get() as *const u16).add(i).read_volatile() }
+pub(super) fn trough_slot(tick: *const TelemetryTick, idx: usize) -> u16 {
+    debug_assert!(idx < ADC_SCAN_LEN);
+    // SAFETY: `tick` is the table's tick block; `idx` lies inside the
+    // trough slots; the DMA writes them, so the read is volatile.
+    unsafe {
+        (&raw const (*tick)._scan_trough)
+            .cast::<u16>()
+            .add(idx)
+            .read_volatile()
+    }
 }
 
 /// The low-side tap as the injected group last converted it: the drive

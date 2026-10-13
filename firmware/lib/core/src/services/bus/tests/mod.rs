@@ -11,6 +11,7 @@ use osc_protocol::wire::{MgmtOp, ResultCode};
 use crate::regions::CONTROL_BASE_ADDR;
 use crate::regions::config::BaudRate;
 use crate::services::bus::Dispatcher;
+use crate::tel::{Chunk, Chunks};
 use crate::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
 use crate::{BootMode, RegionStorage, Shared, StagedWrites};
 
@@ -31,7 +32,7 @@ struct FakeReply {
     set_id: Option<(u8, usize)>,
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
-    tel_arm: Option<(u16, u16)>,
+    tel_arm: Option<(Chunks, u16)>,
     reboot: Option<BootMode>,
     clock_cal: Option<(u16, u8)>,
 }
@@ -112,8 +113,8 @@ impl Reply for FakeReply {
         self.response_deadline = Some(us);
     }
 
-    fn tel_arm(&mut self, mask: u16, count: u16) {
-        self.tel_arm = Some((mask, count));
+    fn tel_arm(&mut self, chunks: Chunks, count: u16) {
+        self.tel_arm = Some((chunks, count));
     }
 
     fn stage_reboot(&mut self, mode: BootMode) {
@@ -1329,49 +1330,123 @@ fn pass(
     }
 }
 
+/// The CONTROL chunks a test row copies: the ident four, and the rail
+/// estimate behind them.
+fn ident_rail() -> Chunks {
+    use crate::regions::telemetry::addr::{estimates, tick};
+    Chunks::two(
+        Chunk::new(tick::I_TICK_COUNTS, 8),
+        Chunk::new(estimates::VBUS_COUNTS, 2),
+    )
+}
+
+fn write_chunks(b: &[u8; 8], hold: bool) -> Request<'_> {
+    write(crate::regions::control::addr::tel::CHUNK0_ADDR, b, hold)
+}
+
 #[test]
-fn tel_count_write_arms_with_the_live_mask() {
-    use crate::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
+fn tel_count_write_arms_with_the_live_chunks() {
+    use crate::regions::control::addr::tel::TEL_COUNT;
+    let (rail, none) = (ident_rail().to_le_bytes(), Chunks::NONE.to_le_bytes());
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let mut pending = None;
     let mut reply = FakeReply::new();
     let mut go = |reply: &mut FakeReply, req| pass(&shared, &mut staged, &mut pending, reply, req);
 
-    go(&mut reply, write(TEL_MASK, &[0x1B, 0], false));
-    assert_eq!(reply.tel_arm, None, "mask write alone never signals");
+    go(&mut reply, write_chunks(&rail, false));
+    assert_eq!(reply.tel_arm, None, "a chunk write alone never signals");
 
     let count = 320u16.to_le_bytes();
     go(&mut reply, write(TEL_COUNT, &count, false));
-    assert_eq!(reply.tel_arm, Some((0x1B, 320)));
+    assert_eq!(reply.tel_arm, Some((ident_rail(), 320)));
 
     // count 0 is the disarm
     go(&mut reply, write(TEL_COUNT, &[0, 0], false));
-    assert_eq!(reply.tel_arm, Some((0x1B, 0)));
+    assert_eq!(reply.tel_arm, Some((ident_rail(), 0)));
 
-    // mask 0 cannot arm: the signal degrades to a disarm
-    go(&mut reply, write(TEL_MASK, &[0, 0], false));
+    // no row cannot arm: the signal degrades to a disarm
+    go(&mut reply, write_chunks(&none, false));
     go(&mut reply, write(TEL_COUNT, &[5, 0], false));
-    assert_eq!(reply.tel_arm, Some((0, 0)));
+    assert_eq!(reply.tel_arm, Some((Chunks::NONE, 0)));
+}
+
+/// One WRITE carries the chunks and the count: the arm sees the chunks it
+/// wrote.
+#[test]
+fn one_write_sets_the_row_and_arms() {
+    use crate::regions::control::addr::tel::CHUNK0_ADDR;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let mut arm = [0u8; 10];
+    arm[..8].copy_from_slice(&ident_rail().to_le_bytes());
+    arm[8..].copy_from_slice(&64u16.to_le_bytes());
+    pass(
+        &shared,
+        &mut staged,
+        &mut pending,
+        &mut reply,
+        write(CHUNK0_ADDR, &arm, false),
+    );
+    assert_eq!(reply.tel_arm, Some((ident_rail(), 64)));
+}
+
+/// The chunks carry no rules: any value lands, and a count over chunks
+/// that are no row (odd, outside the table, over a row) arms as a disarm.
+#[test]
+fn chunk_writes_land_and_an_arm_over_no_row_disarms() {
+    use crate::regions::control::addr::tel::{CHUNK0_ADDR, CHUNK0_LEN, TEL_COUNT};
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let row = ident_rail().to_le_bytes();
+    for (addr, v) in [
+        (CHUNK0_ADDR, 0x225u16),
+        (CHUNK0_ADDR, 0x3FC),
+        (CHUNK0_LEN, 3),
+        (CHUNK0_LEN, 14),
+    ] {
+        let v = v.to_le_bytes();
+        let mut go = |req| pass(&shared, &mut staged, &mut pending, &mut reply, req);
+        go(write_chunks(&row, false));
+        go(write(addr, &v, false));
+        go(write(TEL_COUNT, &[5, 0], false));
+        let t = shared.table.with(|t| t.control.tel);
+        let got = if addr == CHUNK0_ADDR {
+            t.chunk0_addr
+        } else {
+            t.chunk0_len
+        };
+        assert_eq!(got.to_le_bytes(), v, "{addr:#x}");
+        assert_eq!(reply.tel_arm.map(|(_, n)| n), Some(0), "{addr:#x}");
+    }
 }
 
 #[test]
-fn held_mask_and_count_arm_together_at_commit() {
-    use crate::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
+fn held_chunks_and_count_arm_together_at_commit() {
+    use crate::regions::control::addr::tel::TEL_COUNT;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let mut pending = None;
     let mut reply = FakeReply::new();
 
-    for (addr, data) in [(TEL_MASK, [0x1B, 0]), (TEL_COUNT, [16, 0])] {
-        pass(
-            &shared,
-            &mut staged,
-            &mut pending,
-            &mut reply,
-            write(addr, &data, true),
-        );
-    }
+    pass(
+        &shared,
+        &mut staged,
+        &mut pending,
+        &mut reply,
+        write_chunks(&ident_rail().to_le_bytes(), true),
+    );
+    pass(
+        &shared,
+        &mut staged,
+        &mut pending,
+        &mut reply,
+        write(TEL_COUNT, &[16, 0], true),
+    );
     assert_eq!(reply.tel_arm, None, "held entries stay silent");
 
     disp(&shared, &mut staged, &mut pending).dispatch(
@@ -1381,9 +1456,45 @@ fn held_mask_and_count_arm_together_at_commit() {
     );
     assert_eq!(
         reply.tel_arm,
-        Some((0x1B, 16)),
-        "arm sees the mask from the same COMMIT"
+        Some((ident_rail(), 16)),
+        "arm sees the chunks from the same COMMIT"
     );
+}
+
+/// A shunt arm committed beside a TEL arm, or ahead of it and not yet
+/// judged by the kernel (burst IDLE, `arm` at 1): the kernel's next tick
+/// can land before the TEL lend, so the TEL arm parks as a disarm.
+#[test]
+fn a_tel_arm_beside_an_unjudged_shunt_arm_parks() {
+    use crate::regions::control::addr::burst::ARM;
+    use crate::regions::control::addr::tel::TEL_COUNT;
+    let rail = ident_rail().to_le_bytes();
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let mut go = |reply: &mut FakeReply, req| pass(&shared, &mut staged, &mut pending, reply, req);
+    go(&mut reply, write_chunks(&rail, false));
+    go(&mut reply, write(TEL_COUNT, &[16, 0], true));
+    go(&mut reply, write(ARM, &[1], true));
+    assert_eq!(reply.tel_arm, None, "held entries stay silent");
+    drop(go);
+    disp(&shared, &mut staged, &mut pending).dispatch(
+        Request::Commit,
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert_eq!(reply.tel_arm, Some((Chunks::NONE, 0)), "same COMMIT");
+
+    // back to back: the shunt arm committed, the kernel not yet ticked
+    let mut go = |reply: &mut FakeReply, req| pass(&shared, &mut staged, &mut pending, reply, req);
+    go(&mut reply, write(TEL_COUNT, &[16, 0], false));
+    assert_eq!(reply.tel_arm, Some((Chunks::NONE, 0)), "back to back");
+
+    // judged and released, the TEL arm goes
+    go(&mut reply, write(ARM, &[0], false));
+    go(&mut reply, write(TEL_COUNT, &[16, 0], false));
+    assert_eq!(reply.tel_arm, Some((ident_rail(), 16)));
 }
 
 #[test]

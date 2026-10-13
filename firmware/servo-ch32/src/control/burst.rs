@@ -170,14 +170,15 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
         state::IDLE => {
             // SAFETY: as in `poll_arm`; `sample_tick` is published by the
             // tick ISR, which is this same context.
-            let (req, life, lim_cfg, loop_cur, faults, now) = unsafe {
+            let (req, life, tel_count, lim_cfg, loop_cur, faults, now) = unsafe {
                 (
                     (&raw const (*p).control.burst).read_volatile(),
                     (&raw const (*p).control.lifecycle).read_volatile(),
+                    (&raw const (*p).control.tel.tel_count).read_volatile(),
                     (&raw const (*p).config.limits).read_volatile(),
                     (&raw const (*p).config.loop_current).read_volatile(),
                     (&raw const (*p).telemetry.common.fault_flags).read_volatile(),
-                    (&raw const (*p).telemetry.estimates.sample_tick).read_volatile(),
+                    (&raw const (*p).telemetry.tick.sample_tick).read_volatile(),
                 )
             };
             // SAFETY: as above; `vbus_counts`, `pos` and `limit_flags` are
@@ -185,7 +186,7 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             let (vbus, pos, lo, hi, limit_flags) = unsafe {
                 (
                     (&raw const (*p).telemetry.estimates.vbus_counts).read_volatile(),
-                    (&raw const (*p).telemetry.sensors.pos).read_volatile() as i32,
+                    (&raw const (*p).telemetry.tick.pos).read_volatile() as i32,
                     (&raw const (*p).config.pos_limits.pos_min_soft_counts).read_volatile(),
                     (&raw const (*p).config.pos_limits.pos_max_soft_counts).read_volatile(),
                     (&raw const (*p).telemetry.limits.limit_flags).read_volatile(),
@@ -198,7 +199,9 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             let volts = (req.duty_q15.unsigned_abs() as u32 * vbus as u32) >> 15;
             let armable = life.torque_enable
                 && life.mode == Mode::OpenLoop
-                && life.tel_count == 0
+                // nonzero only while a TEL burst is armed or streams: the
+                // bus zeroes it when the arm ends
+                && tel_count == 0
                 && faults == 0
                 && req.chans & !chans::ALL == 0
                 && spaced(now, f.armed_at)
@@ -465,7 +468,7 @@ mod tests {
             t.config.loop_current.duty_max_q15 = i16::MAX as u16;
             t.config.pos_limits.pos_min_soft_counts = SOFT_MIN;
             t.config.pos_limits.pos_max_soft_counts = SOFT_MAX;
-            t.telemetry.sensors.pos = 2048;
+            t.telemetry.tick.pos = 2048;
             t.telemetry.estimates.vbus_counts = RAIL_2S;
         });
         Rig {
@@ -483,8 +486,8 @@ mod tests {
         /// the handshake polls.
         fn tick(&self) {
             self.set(|t| {
-                let e = &mut t.telemetry.estimates;
-                e.sample_tick = e.sample_tick.wrapping_add(1);
+                let k = &mut t.telemetry.tick;
+                k.sample_tick = k.sample_tick.wrapping_add(1);
             });
             poll_arm(&self.shared);
         }
@@ -596,7 +599,7 @@ mod tests {
     fn burst_outside_the_soft_limits_needs_the_permit() {
         for pos in [0, SOFT_MIN as u16, SOFT_MAX as u16, 4095] {
             let r = rig();
-            r.set(|t| t.telemetry.sensors.pos = pos);
+            r.set(|t| t.telemetry.tick.pos = pos);
             assert_eq!(r.arm(EDGE_2S), state::REJECTED, "pos {pos}");
             r.release();
             // The request byte alone is not the grant.
@@ -608,8 +611,22 @@ mod tests {
         }
         for pos in [SOFT_MIN as u16 + 1, SOFT_MAX as u16 - 1] {
             let r = rig();
-            r.set(|t| t.telemetry.sensors.pos = pos);
+            r.set(|t| t.telemetry.tick.pos = pos);
             assert_eq!(r.arm(EDGE_2S), state::ARMED, "pos {pos}");
         }
+    }
+
+    /// `tel_count` is nonzero while a TEL burst is armed or streams, and
+    /// the bus zeroes it once the burst ends (DES
+    /// `tel_count_reads_zero_after_last`): the arm refuses during a stream
+    /// and goes after it.
+    #[test]
+    fn burst_arms_after_a_finished_stream() {
+        let r = rig();
+        r.set(|t| t.control.tel.tel_count = 4000);
+        assert_eq!(r.arm(EDGE_2S), state::REJECTED, "streaming");
+        r.release();
+        r.set(|t| t.control.tel.tel_count = 0);
+        assert_eq!(r.arm(EDGE_2S), state::ARMED, "stream finished");
     }
 }

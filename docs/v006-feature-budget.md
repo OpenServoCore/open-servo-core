@@ -45,7 +45,7 @@ Columns:
 | Rail estimator (vbus) | 338 | 16 | S: 103 ins, 11 muls | MEDIUM (RAIL) | core |
 | Winding thermometer | 286 | 8 | S: 87 ins, 8 muls, ~0 averaged | SLOW | runtime (gated by the `rtherm_*` thresholds), module |
 | Shunt burst (ident) | 1,066 | 1,932 | 0 at rest; the kernel stops for ~1.04 ms per burst | on request | runtime, module (identification needs it) |
-| Position table (`pos_lut`) | 794 | 514 | S: 74 ins, 1 mul per linearization | MEDIUM (OBSERVER); FAST while TEL streams `pos_lin` | runtime (`lut_live`) |
+| Position table (`pos_lut`) | 794 | 514 | S: 74 ins, 1 mul per linearization | MEDIUM (OBSERVER) | runtime (`lut_live`) |
 | Fast decay | ~100-150 (E, spread over the fast path, motor write, config) | 0 | a few branches per tick | FAST | runtime (`openloop_decay`) |
 | Sense: injected tap B, tap swap by direction | inside HAL/scan | 0 | M: injected tap +0.26 pts; tap swap +0.4 pts idle, +1.8-2.9 pts at 20% drive (from register allocation, not the swap itself) | FAST | core for rev-2A sensing |
 | Health: tick load, stack paint | 474 | ~20 | S: 83 ins per tick (~1 pt, E) | FAST | core (health is a regular table block in every build) |
@@ -60,11 +60,11 @@ Columns:
 | Software CRC-16 (odd-byte tail fold, ENUM key, persist) | 1,026 + 512 table in .rodata | - | one tail byte per frame | core; see the dedupe lever below |
 | Chain snoop | 640 | 20 | per foreign frame (the fleet cost above) | core for chains; a chain-length limit saves CPU, not memory |
 | Clock discipline: CAL ruler + trim loop | 2,354 less the drift tracker, since deleted (its last form, with DMA break stamps, measured 1,568 B of .text) | 64 + 16 stamp ring | 0 per tick; one DMA stamp per break, read only during a CAL train | core |
-| TEL streaming | 1,674 | 450 (double buffer 2 x 196, meta 18, feed 28, burst 12) | Staging runs at the tail of the tick. Sample encode while streaming is S: 370 ins. Burst TX by DMA costs ~0 (M) | runtime (`tel_mask` 0) |
+| TEL streaming | 1,260 out of line (row 222, head 220, pickup 142, lane 676) plus the inline gate and lane poll | 436 (two 202 B frame images, the arm mailbox) | A row is a CPU copy of its shorter chunk and one DMA copy of the longer (CH6, halfwords), as the tick block is published: per streamed tick S: 65 ins over the gate's 25 (54 with one chunk), E 129-153 HCLK; a burst's first tick takes the bus-built copies, 178 ins in all over the plain tick (E 250 HCLK over a row). The ADC DMA lands the scans in the tick block and its publish runs every tick: E 0-58 HCLK a phase over the frame copy it replaced (`budget::TICK_PUBLISH`). Burst TX by DMA costs ~0 (M) | runtime (`tel_count` 0) |
 | Dispatch + control table (map, rules, staging) | 5,918 | table 1,024, write staging 244, misc 34 | per frame | core |
 | Persistence (SAVE/FACTORY, flash driver) | 3,108 | 8 | on SAVE only (blocking flash program) | core |
 | Stamp + data state | 1,050 | - | off the tick | core |
-| Chip HAL, init, scan, motor write | 6,666 | ADC DMA buffer 28, small statics ~48 | motor write runs every tick (484 B out of line) | core |
+| Chip HAL, init, scan, motor write | 6,666 | small statics ~48 | motor write runs every tick (484 B out of line) | core |
 | Runtime glue (ISRs, main loop, registry, statics, LED) | 2,150 | LED 16 | - | core |
 | Third party (memcpy/memset, qingke-rt, critical-section) | 746 | - | - | core |
 | Startup and vector stubs (no line info) | 440 | - | - | core |
@@ -82,15 +82,14 @@ The two biggest CPU consumers are the host-frame service in the bus ISRs (80-160
 | Static | Bytes | Owner |
 |---|---|---|
 | `BURST_BUF` | 1,920 | shunt burst (960 ADC codes) |
-| `SHARED.table` | 1,024 | control table |
+| `SHARED.table` | 1,024 | control table, the ADC scans landing in its tick block |
 | `SHARED.pos_lut` | 514 | position table, 257 x i16 |
 | `RING` | 512 | transport RX ring |
-| `KERNEL` | 504 | fast 104, medium 156, config snapshot 128, timing 40, command 32, TEL feed 28, io 8, latch/phase 8 |
-| `TEL_CHANNEL` | 410 | TEL double buffer |
+| `KERNEL` | 504 | fast 104, medium 156, config snapshot 128, timing 40, command 32, TEL feed 24, io 8, latch/phase 8 |
+| `TEL_CHANNEL` | 436 | TEL frame images and arm mailbox |
 | `CELLS` (.data) | 296 | ServoBus 280 (TX engine 92, clock discipline 64, chain 20, framer 20, pending 16, TEL burst 12, misc 56), LED 16 |
 | `crc::SNAPSHOT` | 252 | reply payload span for the SPI CRC engine |
 | `SESSION` | 244 | write staging 232, pending verdict |
-| `ADC_DMA_BUF` | 28 | scan |
 | merged small statics | ~48 | burst FSM, tick load, scan sequence, break wake |
 | `SHARED` rest | 34 | uid 16, store ref 8, generation |
 | `.data` rest | 16 | config store, burst FSM |
@@ -103,9 +102,9 @@ The stack region is 2,356 B. The worst case is three levels nested. Static frame
 - 48 B hardware push.
 - LOW, the bus (SysTick): `serve_break` 48, `drive_framer` 68, `route_frame` 156, `dispatch` 220, `ConfigStore::save` 68, `program` 92, plus 32 for SysTick itself.
 - 48 B hardware push.
-- HIGH, the kernel (ADC DMA ISR): 140 B, plus `Kernel::refresh_medium` 24 B.
+- HIGH, the kernel (ADC DMA ISR): 80 B, plus `Kernel::refresh_medium` 24 B.
 
-The same frames as with the bus on top, nested in the other order. That sums to about 1,300 B. The measured free minimum is ~1.1 KB at rest, or ~1.25 KB used. The 1,536 B link assertion only guards .bss growth, not deeper call chains. The biggest frames are `__run` (inlined bring-up locals) and `dispatch` (a double 68 B Vec in `apply_commit`).
+The same frames as with the bus on top, nested in the other order. That sums to about 1,240 B. The measured free minimum is ~1.1 KB at rest, or ~1.25 KB used. The 1,536 B link assertion only guards .bss growth, not deeper call chains. The biggest frames are `__run` (inlined bring-up locals) and `dispatch` (a double 68 B Vec in `apply_commit`).
 
 ## Planned items
 
@@ -176,7 +175,7 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 
 - **The load each feature adds.** No cargo flag gates any kernel feature, so each delta needs an A/B image on the board. The deltas above that are marked M come from the bench. The S counts give an order of magnitude, not a percentage.
 - **The stack high-water mark with the planned RAM in place.** Static frame sums are an upper bound. The stack-paint minimum (`stack_free_min`) is the real number, and it should be re-read after any .bss growth over ~100 B.
-- **TEL encode cost per field, and the worst medium slice** (which phase plus the fast path makes the longest tick).
+- **The TEL row and tick block publish on silicon, and the worst medium slice** (which phase plus the fast path makes the longest tick).
 - **The fusion rings' real cost in the OBSERVER phase, and the CRC dedupe's effect on turnaround.**
 
 ## Method

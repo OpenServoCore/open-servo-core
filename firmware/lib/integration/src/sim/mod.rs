@@ -27,8 +27,8 @@ use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
-use osc_servo_core::tel::STREAM_SAMPLES_MAX;
-use osc_servo_core::{BaudRate, BootMode, ControlTable};
+use osc_servo_core::tel::{STREAM_SAMPLES_MAX, tick_flag};
+use osc_servo_core::{BaudRate, BootMode, ControlTable, TelemetryTick};
 use osc_servo_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
@@ -46,10 +46,9 @@ pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
 pub use self::support::{
-    assert_valid, expect_tel_payload, expect_tel_payload_rows, frame_crc_ok, instruction, status,
-    status_frame, tel_sample,
+    TelSample, assert_valid, expect_tel_payload, expect_tel_payload_rows, frame_crc_ok,
+    instruction, status, status_frame, tel_row, tel_sample,
 };
-pub use osc_servo_core::tel::TelSample;
 pub use osc_servo_core::{CalibSense, CalibSenseExt};
 
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
@@ -947,7 +946,7 @@ impl Sim {
             if self.tels[j].running {
                 continue;
             }
-            let count = self.servos[j].with_table(|t| t.control.lifecycle.tel_count);
+            let count = self.servos[j].with_table(|t| t.control.tel.tel_count);
             let t = &mut self.tels[j];
             t.running = true;
             t.epoch += 1;
@@ -1000,12 +999,14 @@ impl Sim {
             None => tel_sample(n),
         };
         if let Some((from, to)) = t.fault {
-            s.fault = n >= from && n < to;
+            s.tick.tick_flags &= !tick_flag::FAULT;
+            if n >= from && n < to {
+                s.tick.tick_flags |= tick_flag::FAULT;
+            }
         }
-        s.tick = n as u16;
         let drops = self.servos[j].tel_drops();
         let lane = self.handles[j].lane.snapshot();
-        self.servos[j].tel_tick(&s, self.cpus[j].kernel_holds());
+        self.servos[j].tel_tick(&s, n, self.cpus[j].kernel_holds());
         let c = self.cpus[j].kernel_tel();
         let mut cost = c.poll;
         let t = &mut self.tels[j];
@@ -1045,10 +1046,10 @@ impl Sim {
         }
     }
 
-    /// Image servo `j`'s current track row in its live table: the raw ADC
-    /// frame into the sensors block, the kernel conclusions the row carries
-    /// into the estimates block. Runs ahead of every event, so a reply
-    /// streamed at this instant reads the row the burst pump would serve.
+    /// Image servo `j`'s current track row in its live table: the tick
+    /// block (the chip's own `sample_tick` kept) and the rail estimate.
+    /// Runs ahead of every event, so a reply streamed at this instant reads
+    /// the row the burst pump would serve.
     fn mirror_track(&mut self, j: usize, now: u64) {
         let Some(t) = self.tels[j].track.as_mut() else {
             return;
@@ -1060,18 +1061,12 @@ impl Sim {
         t.mirrored = Some(row);
         let s = t.rows[row];
         self.servos[j].with_table_mut(|tb| {
-            let sn = &mut tb.telemetry.sensors;
-            sn.pos = s.pos;
-            sn.current = s.current_raw;
-            sn.current_trough = s.current_trough;
-            sn.vmotor_a = s.vmotor_a;
-            sn.vmotor_b = s.vmotor_b;
-            sn.vbus_raw = s.vbus_raw;
-            sn.ntc_raw = s.ntc_raw;
-            let es = &mut tb.telemetry.estimates;
-            es.vbus_counts = s.vbus;
-            es.duty_applied_q15 = crate::plant::duty_q15(s.duty);
-            es.i_hat_counts = s.current;
+            let k = &mut tb.telemetry.tick;
+            *k = TelemetryTick {
+                sample_tick: k.sample_tick,
+                ..s.tick
+            };
+            tb.telemetry.estimates.vbus_counts = s.vbus_counts;
         });
     }
 
@@ -1175,8 +1170,8 @@ impl Sim {
         if self.cpus[j].kernel_stats().entries > entries && self.tels[j].running {
             let t = &self.tels[j];
             if t.encoded < t.count {
-                let encode = self.cpus[j].kernel_encode();
-                self.cpus[j].extend_kernel(now, encode);
+                let row = self.cpus[j].kernel_tel().row;
+                self.cpus[j].extend_kernel(now, row);
             }
             if let Some(end) = self.cpus[j].kernel_until() {
                 self.core

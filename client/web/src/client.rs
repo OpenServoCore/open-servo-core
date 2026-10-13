@@ -19,14 +19,14 @@ use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "fake")]
-use osc_client::fake::{FakePipe, TelSample, duty_counts};
+use osc_client::fake::{FakePipe, TelSample, TelemetryTick, duty_counts, tick_flag};
 #[cfg(feature = "fake")]
 use osc_protocol::wire::UID_LEN;
 
 use crate::descriptor::Descriptor;
 use crate::types::{
     Alive, BaudRate, DataState, Found, Health, Identity, LinkInfo, Ping, PosLut, Rails,
-    StampVerdict, TelBurst,
+    StampVerdict, TelBurst, TelChunk, tel_chunks,
 };
 #[cfg(feature = "fake")]
 use crate::types::{FakeServo, Track};
@@ -320,32 +320,36 @@ impl OscClient {
         Ok(())
     }
 
-    /// One TEL burst (protocol sec 5.6): write `tel_mask`, then a
-    /// stream-tagged write of `tel_count` arms the burst and collects it
-    /// within `window_us`. The registers' addresses come from `d`.
+    /// One TEL burst (protocol sec 5.6): a stream-tagged write of the
+    /// chunks and `tel_count`, one span, arms the burst and collects it
+    /// within `window_us`. The registers' addresses come from `d`. The bus
+    /// must run at `telBaud()`: below it the servo acks and never streams.
     #[wasm_bindgen(js_name = telBurst)]
     pub async fn tel_burst(
         &self,
         id: u8,
         d: &Descriptor,
-        mask: u16,
+        #[wasm_bindgen(unchecked_param_type = "TelChunk[]")] chunks: JsValue,
         count: u16,
         #[wasm_bindgen(js_name = windowUs)] window_us: u32,
     ) -> Result<Ts<TelBurst>, JsError> {
-        let mask_f = d.field("tel_mask")?;
+        let chunks: Vec<TelChunk> = serde_wasm_bindgen::from_value(chunks)?;
+        let c = tel_chunks(&chunks)
+            .filter(|c| c.valid())
+            .ok_or_else(|| JsError::new("telBurst: the chunks make no row"))?;
+        let first = d.field("chunk0_addr")?;
         let count_f = d.field("tel_count")?;
-        let mask_b = desc::encode(mask_f, &desc::Value::Uint(mask as u64))?;
-        let count_b = desc::encode(count_f, &desc::Value::Uint(count as u64))?;
+        let span = c.to_le_bytes().len() as u16;
+        if count_f.addr != first.addr + span {
+            return Err(JsError::new(
+                "telBurst: tel_count does not follow the chunks",
+            ));
+        }
+        let mut arm = c.to_le_bytes().to_vec();
+        arm.extend(desc::encode(count_f, &desc::Value::Uint(count as u64))?);
         let id = Id::new(id);
         let window = Duration::from_micros(window_us as u64);
-        let out = cmd!(self, |c| burst(
-            c,
-            id,
-            (mask_f.addr, &mask_b),
-            (count_f.addr, &count_b),
-            window
-        )
-        .await?);
+        let out = cmd!(self, |c| burst(c, id, (first.addr, &arm), window).await?);
         Ok(out.into_ts()?)
     }
 }
@@ -447,22 +451,25 @@ fn track_rows(t: Track) -> Result<Vec<TelSample>, JsError> {
     }
     Ok((0..n)
         .map(|i| TelSample {
-            pos: t.pos[i],
-            current: t.current[i],
-            current_trough: t.current_trough[i],
-            duty: duty_counts(t.duty_q15[i]),
-            vdiff: t.vdiff[i],
-            vbus: t.vbus[i],
-            current_raw: t.current_raw[i],
-            vmotor_a: t.vmotor_a[i],
-            vmotor_b: t.vmotor_b[i],
-            vbus_raw: t.vbus_raw[i],
-            ntc_raw: t.ntc_raw[i],
-            // the fake fleet applies no table: the identity Q4 word
-            pos_lin_q4: t.pos[i] << 4,
-            tick: 0,
-            window_valid: t.window_valid[i] != 0,
-            fault: false,
+            tick: TelemetryTick {
+                i_tick_counts: t.current[i],
+                vdiff_counts: t.vdiff[i],
+                duty_ticks: duty_counts(t.duty_q15[i]),
+                pos: t.pos[i],
+                current_trough: t.current_trough[i],
+                current_raw: t.current_raw[i],
+                vmotor_a: t.vmotor_a[i],
+                vmotor_b: t.vmotor_b[i],
+                vbus_raw: t.vbus_raw[i],
+                ntc_raw: t.ntc_raw[i],
+                tick_flags: if t.window_valid[i] != 0 {
+                    tick_flag::I_VALID
+                } else {
+                    0
+                },
+                ..Default::default()
+            },
+            vbus_counts: t.vbus[i],
         })
         .collect())
 }
@@ -487,13 +494,11 @@ fn uid(id: u8) -> [u8; UID_LEN] {
 async fn burst<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
-    mask: (u16, &[u8]),
-    count: (u16, &[u8]),
+    arm: (u16, &[u8]),
     window: Duration,
 ) -> Result<TelBurst, JsError> {
-    c.write(id, mask.0, mask.1).await?;
-    let mut p = vec![0u8; count.1.len() + 4];
-    let n = build::write(&mut p, count.0, count.1).ok_or(Error::Servo(ResultCode::Limit))?;
+    let mut p = vec![0u8; arm.1.len() + 4];
+    let n = build::write(&mut p, arm.0, arm.1).ok_or(Error::Servo(ResultCode::Limit))?;
     let inst = Inst::instruction(Opcode::Write, 0);
     // The pipe guard must outlast the whole burst (see exchange_stream),
     // and the caller's own guard has to survive the detour.

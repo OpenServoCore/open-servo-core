@@ -123,9 +123,10 @@ pub struct ProbeTags {
 /// cross-field tearing accepted (each field is independently sane). CONTROL
 /// is read once per period; CONFIG and CALIB only into `cfg`, when
 /// `Shared::config_gen` moved. The kernel is the sole writer of TELEMETRY
-/// sensors/estimates/mode/limits (`data_flags` excepted: boot and dispatch
-/// write it, the kernel reads) and the `fault_flags` byte; TELEMETRY
-/// `health` belongs to the chip side.
+/// tick (its frame and `sample_tick` excepted: the ADC DMA and the tick ISR
+/// land them ahead of the kernel), estimates, refs, mode and limits (`data_flags`
+/// excepted: boot and dispatch write it, the kernel reads) and the
+/// `fault_flags` byte; TELEMETRY-EXT `health` belongs to the chip side.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,
     tel: T,
@@ -211,29 +212,28 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // SAFETY: sole-telemetry-writer contract (type doc); volatile stores.
         unsafe {
             (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(fc.ol_floor_q15);
-            (&raw mut (*p).telemetry.limits_ext.window_v_floor_q15).write_volatile(v_floor);
+            (&raw mut (*p).telemetry_ext.limits_ext.window_v_floor_q15).write_volatile(v_floor);
         }
     }
 
     /// First tick: the configuration, then the observer and the bias
     /// tracker seeded at the boot measurement.
-    fn boot(&mut self, frame: &SensorFrame, shared: &Shared) {
+    fn boot(&mut self, shared: &Shared) {
+        let frame = shared.frame();
         self.refresh_fast(shared);
         self.refresh_medium(shared);
         let ctl = Control::read(shared);
         self.medium.seed(
-            medium::pos_q4(shared, ctl.lut_live, frame.pos),
-            frame.ntc_raw,
+            medium::pos_q4(shared, ctl.lut_live, frame.pos()),
+            frame.ntc_raw(),
             &self.cfg,
         );
-        // the stream's first row linearizes like the rest
-        self.cmd.lut_live = ctl.lut_live;
         let p = shared.table.region_ptr();
         // SAFETY: same volatile read contract; install stamped the boot rest
         // measurement here before the first tick, and from here on this
         // kernel is the field's sole writer.
         self.fast.seed_bias(unsafe {
-            (&raw const (*p).telemetry.sensors.current_bias_counts).read_volatile()
+            (&raw const (*p).telemetry.refs.current_bias_counts).read_volatile()
         });
         self.booted = true;
     }
@@ -258,8 +258,19 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
-    /// Must complete well inside the kernel period (~50 us at 20 kHz).
-    pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
+    /// [`Self::on_tick`] on `frame` landed in the table's tick block first,
+    /// as the chip lands each scan.
+    pub fn on_scan(&mut self, frame: SensorFrame, shared: &Shared) {
+        // SAFETY: the tick's context is the block's frame writer, and
+        // nothing reads it meanwhile but this context.
+        unsafe { frame.land(shared.tick_block()) };
+        self.on_tick(shared);
+    }
+
+    /// Must complete well inside the kernel period (~50 us at 20 kHz). The
+    /// frame is the table's tick block's (`Shared::frame`), which the TEL
+    /// row copies from too.
+    pub fn on_tick(&mut self, shared: &Shared) {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
         // Arm order is the spare phases' priority: a refresh stage owns its
@@ -269,7 +280,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // holds the TX lane; a refresh tick does not, as a refresh can run
         // every period.
         match phase {
-            medium::phase::CONTROL if !self.booted => self.boot(&frame, shared),
+            medium::phase::CONTROL if !self.booted => self.boot(shared),
             medium::phase::THERM_INSTALL if shared.config_gen() != self.config_gen => {
                 self.refresh_fast(shared)
             }
@@ -277,24 +288,20 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             medium::phase::THERM_INSTALL | medium::phase::THERM_SIDE
                 if self.medium.thermal.pending() != 0 && self.medium.slow_periods != 1 =>
             {
-                let ran = self.medium.spare(phase, frame.ntc_raw, &self.cfg);
+                let ran = self
+                    .medium
+                    .spare(phase, shared.frame().ntc_raw(), &self.cfg);
                 if ran {
                     self.tel.hold();
                 }
             }
             _ => {}
         }
-        let meas = self.fast.measure(
-            &frame,
-            &self.cfg.fast,
-            &self.cmd,
-            &mut self.faults,
-            &mut self.tel,
-            shared,
-        );
+        let meas = self
+            .fast
+            .measure(&self.cfg.fast, &mut self.faults, &mut self.tel, shared);
         let staged = self.medium.step(
             phase,
-            &frame,
             &meas,
             &self.cfg,
             shared,

@@ -36,20 +36,19 @@ use bench::osc::{
 };
 use bench::probe::{self, Reader, Snapshot};
 use osc_client::Outcome;
-use osc_protocol::tel::StreamFrame;
+use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
 use osc_servo_core::budget::probe::{Component, LONG_TICKS, Row, Scenario, rows, us};
 use osc_servo_core::budget::{Frame, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
-use osc_servo_core::regions::control::addr::lifecycle::{
-    GOAL_POSITION, MODE, TEL_MASK, TORQUE_ENABLE,
-};
-use osc_servo_core::regions::telemetry::addr::estimates::{SAMPLE_TICK, THETA_HAT_Q16};
-use osc_servo_core::regions::telemetry::addr::health::TEL_DROP_COUNT;
-use osc_servo_core::regions::telemetry::addr::sensors::POS;
-use osc_servo_core::regions::telemetry::addr::therm::THERM_FLAGS;
+use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, MODE, TORQUE_ENABLE};
+use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+use osc_servo_core::regions::telemetry::addr::estimates::THETA_HAT_Q16;
+use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, DUTY_TICKS, POS, SAMPLE_TICK};
+use osc_servo_core::regions::telemetry_ext::addr::health::TEL_DROP_COUNT;
+use osc_servo_core::regions::telemetry_ext::addr::therm::THERM_FLAGS;
 use serial_test::serial;
 
 use crate::support::{Bench, bench};
@@ -59,8 +58,9 @@ const STEP_HOLD: Duration = Duration::from_millis(400);
 const WINDOW: Duration = Duration::from_secs(10);
 const STEP_WINDOW: Duration = Duration::from_secs(20);
 const CENTRE_SETTLE: Duration = Duration::from_millis(500);
-/// The bench soaks' six raw fields: 9 B rows, 161 B frames at 3M.
-const SIX_FIELDS: u16 = 0x1cd;
+/// The bench soaks' six raw fields, `current_raw..=pos` and
+/// `duty_ticks..=current_trough`: 12 B rows.
+const SIX_FIELDS: Chunks = Chunks::two(Chunk::new(CURRENT_RAW, 8), Chunk::new(DUTY_TICKS, 4));
 const TEL_ROWS: u16 = 4000;
 const TEL_BURSTS: u32 = 10;
 /// A burst's wire time with its drops, and margin.
@@ -184,7 +184,6 @@ fn kernel_and_bus_stay_inside_their_budgets() {
         true,
         &writes,
         |b, failed| {
-            write(b, TEL_MASK, &SIX_FIELDS.to_le_bytes());
             for _ in 0..TEL_BURSTS {
                 tel_burst(b, failed, "tel still");
             }
@@ -199,7 +198,6 @@ fn kernel_and_bus_stay_inside_their_budgets() {
         |b, failed| {
             driven(b, |b| {
                 hold_at(b, mid);
-                write(b, TEL_MASK, &SIX_FIELDS.to_le_bytes());
                 for k in 0..TEL_BURSTS {
                     write(b, GOAL_POSITION, &step_goal(mid, k).to_le_bytes());
                     tel_burst(b, failed, "tel stepping");
@@ -212,11 +210,19 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     let read32 = build_read(id, 0, 32);
     let read240 = build_read(id, 0, 240);
     let goal = build_write(id, GOAL_POSITION, &mid.to_le_bytes());
-    let polled: [(&'static str, Frame, &[u8]); 4] = [
+    // The TEL arm block with count 0 (nothing streams) and the count alone:
+    // the chunks validate as plain bytes.
+    let mut block = SIX_FIELDS.to_le_bytes().to_vec();
+    block.extend_from_slice(&0u16.to_le_bytes());
+    let arm10 = build_write(id, CHUNK0_ADDR, &block);
+    let arm2 = build_write(id, TEL_COUNT, &0u16.to_le_bytes());
+    let polled: [(&'static str, Frame, &[u8]); 6] = [
         ("ping", Frame::Ping, &ping),
         ("read 32", Frame::Read32, &read32),
         ("read 240", Frame::Read240, &read240),
         ("write", Frame::Write, &goal),
+        ("arm10", Frame::Write, &arm10),
+        ("arm2", Frame::Write, &arm2),
     ];
     for (name, frame, wire) in polled {
         f.window(
@@ -483,13 +489,13 @@ fn driven(b: &mut Bench, drive: impl FnOnce(&mut Bench)) {
 /// One six-field burst, whole: acked, every frame in, before the host
 /// speaks again.
 fn tel_burst(b: &mut Bench, failed: &mut Vec<String>, name: &str) {
-    match b.tel_stream(TEL_ROWS, TEL_WINDOW) {
+    match b.tel_stream(SIX_FIELDS, TEL_ROWS, TEL_WINDOW) {
         Ok(r) => {
             let ack = r.ack.as_ref().and_then(|a| a.result);
             let rows: usize = r
                 .frames
                 .iter()
-                .filter_map(|f| StreamFrame::parse(SIX_FIELDS, &f.payload))
+                .filter_map(|f| StreamFrame::parse(SIX_FIELDS.row_bytes(), &f.payload))
                 .map(|f| f.len())
                 .sum();
             if ack != Some(ResultCode::Ok)

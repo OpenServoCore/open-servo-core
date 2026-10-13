@@ -96,17 +96,17 @@ pub fn on_adc_dma_tc() {
 
     let (tags, after) = unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
-        let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.estimates.sample_tick;
+        let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.tick.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
 
         // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.
         let kernel = (*KERNEL.get()).assume_init_mut();
-        let frame = {
+        {
             let (sensors, _motor) = kernel.io.parts();
-            sensors.frame()
-        };
+            sensors.land(&SHARED);
+        }
         let tags = crate::probe::tick_before(kernel.probe_tags());
-        kernel.on_tick(frame, &SHARED);
+        kernel.on_tick(&SHARED);
         (tags, kernel.probe_tags())
     };
 
@@ -122,7 +122,7 @@ pub fn on_adc_dma_tc() {
         // stored only on a change, so a host clear races a store only when
         // one is due.
         unsafe {
-            let h = &raw mut (*SHARED.table.region_ptr()).telemetry.health;
+            let h = &raw mut (*SHARED.table.region_ptr()).telemetry_ext.health;
             if let Some(mean) = w.mean_q15 {
                 (&raw mut (*h).tick_load_mean_q15).write_volatile(mean);
             }

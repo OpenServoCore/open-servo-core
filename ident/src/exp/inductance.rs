@@ -2868,8 +2868,8 @@ mod tests {
         assert!(exp.fit().is_some(), "the run fits");
     }
 
-    /// Under the firmware's arm rules the settle's watch leaves its count
-    /// in `tel_count`, which refuses an arm: every burst still arms.
+    /// Under the firmware's arm rules, which refuse an arm while a TEL count
+    /// is armed, every burst still arms after the settle's watch.
     #[test]
     fn every_burst_arms_after_the_settle_watch() {
         use crate::exp::testkit::{ArmRules, bench_mg90};

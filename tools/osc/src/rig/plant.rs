@@ -2,8 +2,8 @@
 //! the kernel applies it (read for the experiments as osc-ident's `Pot`
 //! and for the records that say which counts a run was fitted in), the
 //! plant stamp against the live set, and the data state. A capture is only
-//! as interpretable as this record: the same raw pot streams as different
-//! `pos_lin` under different tables.
+//! as interpretable as this record: the same raw pot linearizes to
+//! different counts under different tables.
 
 use anyhow::Result;
 use osc_client::blocking::Client;

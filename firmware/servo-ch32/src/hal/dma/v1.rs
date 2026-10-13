@@ -29,12 +29,16 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 ///                                    so a snapshot copy never defers it past
 ///                                    one beat
 ///             CH4 TX               -- reply wire arms
-///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
+///             CH6 M2M              -- copies the reply payload into the
+///                                    snapshot for CRC + wire, or, while a
+///                                    TEL burst streams, the rows into the
+///                                    frame images
 ///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads
 ///                                    is written first (producer -> consumer)
 ///
 /// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so
-/// CH6 serves only the reply snapshot.
+/// CH6 serves only the reply snapshot and the TEL rows, which never meet:
+/// the bus stages no reply while it has lent the lane.
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum Channel {
@@ -92,6 +96,14 @@ pub fn cr_of(cfg: &Config) -> ch32_metapac::dma::regs::Cr {
     w.set_htie(cfg.htie);
     w.set_tcie(cfg.tcie);
     w.set_pl(cfg.pl);
+    w
+}
+
+/// [`cr_of`] for a memory-to-memory copy: PAR is the source.
+#[inline(always)]
+pub fn cr_m2m(cfg: &Config) -> ch32_metapac::dma::regs::Cr {
+    let mut w = cr_of(cfg);
+    w.set_mem2mem(true);
     w
 }
 

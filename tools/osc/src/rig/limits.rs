@@ -121,7 +121,7 @@ mod tests {
         assert_eq!((lim.window_v_floor_q15, lim.vdiff_floor()), (0, 4356));
         c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
             t.telemetry.limits.window_floor_q15 = 1734;
-            t.telemetry.limits_ext.window_v_floor_q15 = 4356;
+            t.telemetry_ext.limits_ext.window_v_floor_q15 = 4356;
         });
         let lim = super::read(&mut c, id).unwrap();
         assert_eq!((lim.window_floor(), lim.vdiff_floor()), (1734, 4356));

@@ -696,11 +696,10 @@ mod tests {
     /// band, streamed for `ms` from the goal write.
     fn rung(pct: u8, ms: f64) -> (Vec<TelFrame>, f64) {
         use crate::exp::testkit::bench_mg90;
-        use crate::frame::TEL_MASK_RAW;
         use crate::regs::control;
         let mut s = bench_mg90(3204);
         s.pos = 607.0;
-        s.write(control::TEL_MASK, TEL_MASK_RAW as i32);
+        s.tel_chunks = crate::frame::TEL_RAW;
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct_q15(pct) as i32);
         let hz = s.tick_hz();
@@ -769,12 +768,11 @@ mod tests {
     #[test]
     fn a_goal_never_reached_has_no_climb() {
         use crate::exp::testkit::bench_mg90;
-        use crate::frame::TEL_MASK_RAW;
         use crate::regs::control;
         let mut s = bench_mg90(3204);
         s.pos = 607.0;
         s.jam = Some(607.0);
-        s.write(control::TEL_MASK, TEL_MASK_RAW as i32);
+        s.tel_chunks = crate::frame::TEL_RAW;
         s.write(control::TORQUE_ENABLE, 1);
         let goal = pct_q15(30);
         s.write(control::GOAL_DUTY, goal as i32);

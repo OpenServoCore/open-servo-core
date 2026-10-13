@@ -58,12 +58,12 @@ pub use regions::{
     ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs,
     ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem, ControlTable, ControlTableCell,
     DecaySelect, Mode, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryMode,
-    TelemetryRegs, TelemetrySensors,
+    TelemetryRefs, TelemetryRegs, TelemetryTick,
 };
-pub use sensor_frame::SensorFrame;
+pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
-pub use tel::{TelSample, TelStream};
+pub use tel::TelStream;
 pub use traits::{
     Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reply, Request,
     RequestCtx, SendError, Sensors, Status,

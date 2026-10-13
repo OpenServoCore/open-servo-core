@@ -217,7 +217,7 @@ impl<P: Providers> ServoBus<P> {
         self.chain.reset();
         self.chain_at = None;
         if self.tx.staged() {
-            self.tx.abort();
+            self.abort_reply();
         }
         // Dispatch inline - the CRC already passed, so a staged table effect
         // commits and any reply then sequences from the packet end (the
@@ -324,7 +324,7 @@ impl<P: Providers> ServoBus<P> {
     /// Drop a not-yet-streaming staged reply and any chain sequencing it began.
     fn drop_staged(&mut self) {
         if self.tx.staged() {
-            self.tx.abort();
+            self.abort_reply();
         }
         self.chain.reset();
         self.chain_at = None;

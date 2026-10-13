@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use osc_protocol::tel::Chunks;
 use serde::Deserialize;
 
 use super::Supply;
@@ -14,6 +15,12 @@ use crate::rig::battery::SupplyCfg;
 use crate::sweep::{Decay, Step};
 
 const DEFAULT: &str = include_str!("session.toml");
+
+fn tel_chunks<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Chunks, D::Error> {
+    let text = String::deserialize(d)?;
+    crate::rig::pump::parse_tel_chunks(&text)
+        .map_err(|e| serde::de::Error::custom(format!("{e:#}")))
+}
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -23,7 +30,9 @@ pub(crate) struct Procedure {
     pub(crate) cooldown_s: u32,
     pub(crate) rest_ms: u32,
     pub(crate) baseline_ms: u32,
-    pub(crate) tel_mask: u16,
+    /// The TEL row, as `osc sweep --tel-chunks` takes it.
+    #[serde(deserialize_with = "tel_chunks")]
+    pub(crate) tel_chunks: Chunks,
     pub(crate) rotate: bool,
     #[serde(default)]
     pub(crate) supply: BTreeMap<Supply, SupplyCfg>,
@@ -107,7 +116,6 @@ impl Procedure {
         if self.recording.is_empty() {
             bail!("no [[recording]]");
         }
-        crate::rig::pump::check_tel_mask(self.tel_mask)?;
         let mut names = BTreeSet::new();
         for r in &self.recording {
             if !names.insert(&r.name) {
@@ -162,7 +170,7 @@ mod tests {
     fn compiled_default_parses() {
         let p = Procedure::parse(DEFAULT).unwrap();
         assert_eq!(p.captures, 5);
-        assert_eq!(p.tel_mask, 0x1cd);
+        assert_eq!(p.tel_chunks, osc_ident::frame::TEL_RAW);
         let recs: Vec<(&str, Decay, Vec<&str>)> = p
             .recording
             .iter()
@@ -221,6 +229,11 @@ mod tests {
         let bad = DEFAULT.replace("\"30@20\"", "\"30@\"");
         let e = format!("{:#}", Procedure::parse(&bad).unwrap_err());
         assert!(e.contains("bad ms"), "{e}");
+        let bad = DEFAULT.replace("\"0x232+8,0x240+4\"", "\"0x233+8,0x240+4\"");
+        let e = format!("{:#}", Procedure::parse(&bad).unwrap_err());
+        assert!(e.contains("not a row"), "{e}");
+        let old = DEFAULT.replace("tel_chunks = \"0x232+8,0x240+4\"", "tel_mask = 0x1cd");
+        assert!(Procedure::parse(&old).is_err(), "a mask is no row");
     }
 
     #[test]

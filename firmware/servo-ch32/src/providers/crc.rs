@@ -15,6 +15,7 @@
 //! held across feeds accumulates).
 
 use core::cell::SyncUnsafeCell;
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use ch32_metapac::SPI1;
 use ch32_metapac::spi::regs::Ctlr1;
@@ -58,6 +59,19 @@ const FEED_DMA: dma::Config = dma::Config {
     pl: dma::Pl::MEDIUM,
 };
 
+/// The TEL row copy: halfword M2M on the snapshot's channel. HIGH, above
+/// the feed, as the snapshot.
+const ROW_COPY_DMA: dma::Config = dma::Config {
+    dir: dma::Dir::FROMPERIPHERAL,
+    circ: false,
+    pinc: true,
+    minc: true,
+    size: dma::Size::BITS16,
+    htie: false,
+    tcie: false,
+    pl: dma::Pl::HIGH,
+};
+
 /// Production binding to SPI1 + DMA1_CH3.
 pub struct Crc;
 
@@ -94,9 +108,10 @@ impl Crc {
     /// DMA emptied and the shifter idled (spike `drain` predicate).
     #[inline(always)]
     fn drained() -> bool {
-        dma::remaining(dma::Channel::CH3) == 0
-            && SPI1.statr().read().txe()
-            && !SPI1.statr().read().bsy()
+        dma::remaining(dma::Channel::CH3) == 0 && {
+            let s = SPI1.statr().read();
+            s.txe() && !s.bsy()
+        }
     }
 
     /// CH3 is this provider's alone, and the bus and the TEL lane never
@@ -182,6 +197,21 @@ impl bus::CrcEngine for Crc {
             dma::Pl::HIGH,
         );
         dst
+    }
+
+    unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
+        // The copy reads what the CPU stored ahead of it.
+        compiler_fence(Ordering::Release);
+        // CH6 is the kernel's for a burst: no reply snapshots while the lane
+        // is lent, and the last row's copy landed inside its tick (trait
+        // doc), so whole-register writes, no wait, no critical section.
+        dma::rearm(
+            dma::Channel::CH6,
+            dma::cr_m2m(&ROW_COPY_DMA),
+            src as u32,
+            dst as u32,
+            units,
+        );
     }
 
     fn result(&mut self) -> Option<u16> {

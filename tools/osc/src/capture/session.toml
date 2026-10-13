@@ -31,9 +31,10 @@ cooldown_s = 150
 rest_ms = 1500
 # Torque-off noise-floor burst before the first rung.
 baseline_ms = 1000
-# TEL fields: the raw six (pos, raw current, trough, applied duty, vmotor_a,
-# vmotor_b). Kernel conclusions stay out of raw captures.
-tel_mask = 0x1cd
+# TEL row as table chunks, addr+len: the raw six (raw current, vmotor_a,
+# vmotor_b, pos, applied duty, trough). Kernel conclusions stay out of raw
+# captures.
+tel_chunks = "0x232+8,0x240+4"
 # Block order rotates by capture index, so warming within a session lands as a
 # testable trend against block position instead of hiding inside one block.
 rotate = true

@@ -133,8 +133,6 @@ pub(crate) const SETTLE_MS: u32 = 300;
 pub(crate) const REST_MS: u32 = 500;
 /// Attempts per rung; `osc sweep --rung-tries`'s default.
 pub(crate) const RUNG_TRIES: u32 = 3;
-/// The raw six; `osc sweep --tel-mask`'s default.
-pub(crate) const TEL_MASK: u16 = 0x1cd;
 /// `osc sweep --window-ms`'s default. Every planned step carries its own
 /// window, so this only reaches meta.json, where session.py reads it.
 pub(crate) const WINDOW_MS: u32 = 150;
@@ -159,9 +157,15 @@ fn print_plan(a: &PlanArgs) -> Result<()> {
     let (p, source) = procs::Procedure::load()?;
     println!("procedure: {source}");
     println!(
-        "  {} captures, warm-up {}, cooldown {} s, rest {} ms, baseline {} ms, tel_mask {:#x}, \
+        "  {} captures, warm-up {}, cooldown {} s, rest {} ms, baseline {} ms, tel_chunks {}, \
          rotate {}",
-        p.captures, p.warmup, p.cooldown_s, p.rest_ms, p.baseline_ms, p.tel_mask, p.rotate
+        p.captures,
+        p.warmup,
+        p.cooldown_s,
+        p.rest_ms,
+        p.baseline_ms,
+        osc_ident::frame::chunks_text(&p.tel_chunks),
+        p.rotate
     );
     match p.supply.get(&a.supply) {
         Some(g) => println!(

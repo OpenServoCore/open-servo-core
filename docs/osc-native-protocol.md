@@ -501,8 +501,9 @@ comms RW:
 | 0x004 | `capability_flags`     | u32   | RO     | bit 0: the two TEL row registers below |
 | 0x008 | `hardware_revision`    | u8    | RO     |                                        |
 | 0x009 | -                      | 1 B   | rsvd   |                                        |
-| 0x00A | `tel_wide_fields`      | u16   | RO     | sec 5.6: bit i set = field i rides in 16 bits, clear = 12 |
-| 0x00C | `tel_row_bytes_max`    | 4 B   | RO     | sec 5.6: the longest TEL row, bytes, per sec 2 rate index |
+| 0x00A | `tel_row_bytes_max`    | u8    | RO     | sec 5.6: the longest TEL row, bytes    |
+| 0x00B | `tel_chunks_max`       | u8    | RO     | sec 5.6: the chunks a TEL row copies at most |
+| 0x00C | -                      | 4 B   | rsvd   |                                        |
 | 0x010 | `id`                   | u8    | RW     | unicast address `0x01..=0xF9` (§3.1)   |
 | 0x011 | `baud_rate_idx`        | u8    | RW     | §2 rate index                          |
 | 0x012 | `response_deadline_us` | u16   | RW     | §7                                     |
@@ -529,8 +530,8 @@ comms RW:
   Extension fills reserved slots, announced by `capability_flags` bits —
   a host that doesn't know a bit ignores the bytes it covers.
 - Everything else is model-specific space (`0x020..0x200`,
-  `0x220..0x280`), except the profile region's own pin at
-  `0x280..0x2C0` (§5.2).
+  `0x220..0x280`, `0x2C0..0x400`), except the profile region's own pin
+  at `0x280..0x2C0` (§5.2).
 - Deliberately absent: a torque switch (SAVE self-gates via `access`,
   §9.4, and sensor nodes have no torque), the UID (MGMT ENUM is its only
   reader, §9.2), boot mode (MGMT REBOOT's payload owns it), and every
@@ -600,86 +601,112 @@ the servo, exported to the host, never converted on the way.
 
 High-rate telemetry rides the bus as a bounded burst of status frames
 the servo emits on its own schedule - no extra wire, no side channel,
-and every frame under the same CRC as the rest of the protocol. Two
-control registers arm it: `tel_mask` selects the per-sample fields (one
-bit per field, canonical order; reserved bits reject), and a committed
-nonzero write to `tel_count` starts a burst of that many control-tick
-samples. Both compose with HOLD/COMMIT, so a goal write and the arm
-commit together: the capture starts at the commit and the step edge
+and every frame under the same CRC as the rest of the protocol. A burst
+streams at 3 M only: below it a frame of the longest row does not clear
+the wire inside its batch, so a short cable with good contacts is part
+of the setup.
+
+A row is a copy of the control table: up to two chunks of it, each a
+run of table bytes at its own layout, copied whole once per control
+tick. Five CONTROL registers arm a burst (osc-servo):
+
+| addr  | name          | width | access | notes                                              |
+| ----- | ------------- | ----- | ------ | -------------------------------------------------- |
+| 0x1E2 | `chunk0_addr` | u16   | RW     | table byte address, even, under 1024               |
+| 0x1E4 | `chunk0_len`  | u16   | RW     | bytes, even, at most 12                            |
+| 0x1E6 | `chunk1_addr` | u16   | RW     | as chunk 0                                         |
+| 0x1E8 | `chunk1_len`  | u16   | RW     | 0 = one chunk                                      |
+| 0x1EA | `tel_count`   | u16   | RW     | a committed nonzero write streams that many rows   |
+
+The chunks sit right ahead of the count, so one 10 B WRITE at `0x1E2`
+sets the row and arms. The arm admits a row of at most
+`tel_row_bytes_max` bytes in all (12, sec 5.4), the first chunk
+nonempty and every chunk inside the table; a row that is not, or an arm
+at any rate but 3 M, disarms instead of streaming. The write itself acks
+(the ack precedes the commit that arms), so a host checks the row and the
+rate first. The arm composes with HOLD/COMMIT, so a goal write and the
+arm commit together: the capture starts at the commit and the step edge
 lands inside it, at the first medium tick after the commit (sec 5.7). A
-committed `tel_count` of 0 disarms. The stream carries every control
-tick; polled, the TELEMETRY sensor registers (the raw samples,
-`current_bias_counts`) refresh once per medium tick (2 kHz), like the
-estimates.
+committed `tel_count` of 0 disarms.
+
+`tel_count` reads nonzero only while a burst is armed or streams: the
+servo zeroes it once the burst's LAST frame is off the wire, and at once
+for an arm that does not stream (a row that is no row, a rate under 3 M,
+an arm a shunt burst parks, an arming ack the host's next frame cut
+short). A host that reads it 0 after a burst knows the line is free.
 
 Burst frames are ordinary status frames with result code `stream` - the
 one result code that marks a frame no instruction directly owes.
-Payload, all LE: a head, the rows, a trailer.
+Payload, all LE: a head, then the rows.
 
 ```
 [0]    stream_seq  u8, increments per frame, wraps
 [1]    flags       bit 0 = LAST frame of the burst; rest reserved 0
 [2..4] tick        u16, the first row's sample_tick, low 16 bits
-[4..]  rows        one per sample, the mask-selected fields packed
-then   valid       u32 bitmap, bit i = row i measured a fresh window
-       tail        u8, bit 0 = some row of the frame saw a fault;
-                   rest reserved 0
-       reserved    u8, 0
+[4..]  rows        per row chunk 0's bytes, then chunk 1's
 ```
 
-The head holds only what the first row knows; what only the batch's
-end knows rides behind the rows, so a frame can start on the wire
-before its last row exists.
+The row count is implicit in `LEN`: `(payload - 4) / row bytes`. A
+frame carries at least one row; a host accepts any count the payload
+holds and never assumes a batch size. osc-servo batches 16 rows per
+frame, the burst's final frame fewer. Batching is what makes the CRC
+affordable: framing overhead amortizes to well under a byte per row.
 
-`tel_mask` bits, in sample order (osc-servo): 0 `pos` (raw pot), 1
-`current` (bias-subtracted window sample, times the board's settle gain
-for its drive width, unity on a window wide enough to settle; held
-through windows the shunt cannot read, 0 from the first tick nothing
-drives: torque off, a fault, a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty` (the signed PWM
-compare count the bridge applied, logical direction; full scale is the
-model's PWM period, osc-servo `pwm_period_ticks` in CALIB, RO), 4
-`vdiff` (held through windows the terminal taps cannot read, which the
-`valid` bit does not mark when the shunt reads them, sec 5.8), 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8 `vmotor_b`, 9
-`vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot the kernel
-controls on, the Q4 word itself, sec 5.7); bits 12-15 are reserved and
-reject.
+A host decodes a row by its chunks and the model's descriptor: a field
+rides in a row when its bytes lie wholly inside one chunk, at the
+chunk's offset in the row plus its offset in the chunk
+(`osc-protocol::tel::Chunks::offset`). Every field keeps its width and
+encoding from the table.
 
-Each field rides at its own width, lossless: the raw ADC codes and
-`duty` in 12 bits (`duty` two's complement), `current`, `vdiff`, `vbus`
-and `pos_lin` in 16. `tel_wide_fields` publishes the widths (bit set =
-16), and `osc-protocol::tel` holds the same table. A row is byte
-aligned:
+What a row means is when it was copied. osc-servo keeps a tick block
+in TELEMETRY (`0x224..0x254`). The ADC's DMA lands both scans of every
+PWM period at its front: the trough scan in reserved bytes
+(`0x224..0x232`), the crest scan from `current_raw` to `ntc_raw` in
+scan order. The tick interrupt then names the terminal taps in place,
+copies the trough's shunt and taps out of the next scan's way, and
+stamps `sample_tick`; the kernel writes its conclusions on the window
+the previous command drove, and both chunks are copied. The next scans
+land mid-tick (the trough) and near the tick's end (the crest), after
+the copies, so every row holds one tick's tick block. A chunk over the
+medium-rate registers (the estimates) carries them as last published,
+up to one tick old. Host-written regions copy with per-field
+consistency only. A bus read of the tick block follows the same
+per-field rule, with one exception: for about 6 us of each period, from
+the next crest scan's taps landing to the next tick naming them,
+`vmotor_a` and `vmotor_b` hold the taps in sample order, the high side
+and then the low side's late sample, so under reverse drive the two
+read swapped. A host that needs the taps reads them from a row; a
+polled read of the motor voltage reads `vdiff_counts`, the kernel's
+drive-window differential, which holds still for the whole period.
 
-- 16-bit slots, LE: the selected 16-bit fields, and when the mask
-  selects an odd number of 12-bit fields, the lowest of those (holding
-  its value), in bit order;
-- then the other 12-bit fields in bit order, two per three bytes: the
-  pair `a, b` is the 24-bit LE word `a | b << 12`.
+| addr  | name              | width | notes                                                       |
+| ----- | ----------------- | ----- | ----------------------------------------------------------- |
+| 0x232 | `current_raw`     | u16   | the shunt at the counter peak |
+| 0x234 | `vmotor_a`        | u16   | |
+| 0x236 | `vmotor_b`        | u16   | |
+| 0x238 | `pos`             | u16   | raw pot |
+| 0x23A | `vcal`            | u16   | |
+| 0x23C | `vbus_raw`        | u16   | |
+| 0x23E | `ntc_raw`         | u16   | |
+| 0x240 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
+| 0x242 | `current_trough`  | u16   | |
+| 0x244 | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; held through windows the shunt cannot read, 0 from the first tick nothing drives |
+| 0x246 | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
+| 0x248 | `vmotor_a_trough` | u16   | |
+| 0x24A | `vmotor_b_trough` | u16   | |
+| 0x24C | `tick_flags`      | u16   | bit 0 the shunt read the window, bit 1 a fault is latched, bit 2 the terminal taps read the window |
+| 0x250 | `sample_tick`     | u32   | the tick's count |
 
-A row is `2 x slots + 3 x pairs` bytes: the six raw fields (mask
-`0x1CD`) are 9 B against 12 at two bytes a field.
-
-The row count is implicit in `LEN`: `(payload - 10) / row bytes`. A
-frame carries at least one row and at most what the payload and the
-32-bit `valid` bitmap hold (`osc-protocol::tel::rows_max`); a host
-accepts any count in that range and never assumes a batch size.
-osc-servo batches 16 rows per frame, the burst's final frame fewer.
-Batching is what makes the CRC affordable: framing overhead amortizes
-to about one byte per sample.
-
-Admission is by row bytes at the line's current rate (the rescue rate
-included), not by field count: an arm whose row is longer than
-`tel_row_bytes_max` for that rate disarms instead of streaming. The
-write itself acks (the ack precedes the commit that arms), so a host
-checks the register first. The bound is the shorter of the wire's - a
-full frame, break to CRC, must clear the wire inside its own 16-tick
-window less the two ticks the servo's TX lane spends between frames: 12
-B at 3 M, 7 at 2 M, 3 at 1 M, 1 at 0.5 M, where no field fits - and the
-servo's, the longest row it encodes at the tick rate (osc-servo: 11 B).
-2 M carries the ladder's four fields (7 B); the six raw fields need 3 M.
-An arm parks the same way while a shunt burst is armed or capturing
-(osc-servo, sec 5.8): the two share the ADC, and a shunt arm in turn
-refuses while `tel_count` is nonzero.
+Common rows are two chunks: the six raw fields (`0x232` 8 B, current to
+`pos`, and `0x240` 4 B, duty and trough), identification's four
+(`0x238` 2 B, `pos`, and `0x240` 8 B, duty to differential with the
+trough riding along), the R/L set (`0x232` 6 B, current and taps, and
+`0x23C` 6 B, rail to duty with the NTC riding along). Whether a row's
+current is a fresh window is a pure function of its duty:
+`duty_ticks != 0` and `|duty_ticks| >= i_window_min_ticks` (CALIB), the
+kernel's own window rule (`tick_flags` bit 0 says the same for a row
+that carries it). The linearized pot is not streamed: a host linearizes
+`pos` with the servo's own table (sec 5.7).
 
 The wire contract during a burst: the host is silent. The servo owns
 the line from the arm's ack (or the arming COMMIT's silence) through
@@ -692,7 +719,9 @@ again; the first instruction after LAST is served normally, a fresh
 re-arm included. The window is bounded by `tel_count`, at most one
 second of control ticks: osc-servo's field rule caps it at 20000
 (`max` in the descriptor), and a longer write rejects as a validation
-error.
+error. An arm parks while a shunt burst is armed, capturing or committed
+and not yet judged (osc-servo, sec 5.8): the two share the ADC, and a
+shunt arm in turn refuses while `tel_count` is nonzero.
 
 Integrity is the point: a corrupted burst frame fails CRC and is
 dropped whole by the host framer - it can never decode as plausible
@@ -700,21 +729,21 @@ data - and the drop is visible as a hole in the `stream_seq` numbering
 and as a jump in the next frame's `tick`. A host times rows by the
 stamps, never by `stream_seq` times a batch size: row i of a frame is
 tick `tick + i`. ALERT on a burst frame is the device's fault state at
-its first row, per the sec 5.3 device-level contract; the trailer's
-`tail` carries the OR over all of its rows.
+its first row, per the sec 5.3 device-level contract; faults latch and
+the host is silent through a burst, so a fault in any later row shows
+in the next frame's ALERT (and in the row's `tick_flags` bit 1).
 
 Timing: a batch completes every 16 control ticks. The producer never
 blocks: a row that finds both frame buffers waiting for the wire is
 dropped and counted in `tel_drop_count` (sec 5.9), with no hole in
-`stream_seq`; the next frame's `tick` jumps over it. Admission keeps the wire inside its window; rows drop
-only when the CPU falls behind, which a driving kernel can cause. Safety through the silent
-window is the servo's own - the current limit (held in every drive
-mode, OpenLoop included, sec 5.8), soft-position clamps, the stall
-timer and fault latches run in firmware regardless of the bus - and the
-host's supervisory reads resume between bursts. The one thing a silent
-host cannot do is renew a stall permit: a burst that needs one has to
-end inside the lease (sec 5.8), and `osc` refuses a burst longer than
-750 ms while it holds a permit.
+`stream_seq`; the next frame's `tick` jumps over it. Safety through the
+silent window is the servo's own - the current limit (held in every
+drive mode, OpenLoop included, sec 5.8), soft-position clamps, the
+stall timer and fault latches run in firmware regardless of the bus -
+and the host's supervisory reads resume between bursts. The one thing a
+silent host cannot do is renew a stall permit: a burst that needs one
+has to end inside the lease (sec 5.8), and `osc` refuses a burst longer
+than 750 ms while it holds a permit.
 
 ### 5.7 Data state, plant stamp and position table (osc-servo)
 
@@ -892,7 +921,7 @@ so the identity is `raw << 4` exactly and knot `k` lands at
 value seeds and innovates the position observer; `theta_hat_q16` and everything that
 reads it (trajectory, position loop, soft limits, the stall speed gate
 and the thermometer's seat band) are in linearized counts. The raw sample stays
-raw for the published `pos`, the TEL `pos` field and the sensor-delta
+raw for the published `pos` (which a TEL row carries) and the sensor-delta
 screen. The endstop brake and the soft limits trip at the same raw
 counts as before, because the table is the identity outside the stops
 (DES `endstop_trips_at_the_same_raw_counts_under_a_live_lut`).
@@ -934,9 +963,8 @@ unset admit only the identity), and every interval's Q4 gain `16 + c[k+1] - c[k]
 word cannot overflow. Ends are judged before shape. Grading a table is
 the host's job (`osc lut grade`).
 
-TEL `pos_lin` (bit 11) streams the Q4 word the kernel used that tick,
-so a host can pin its own interpolation of `pos` against it exactly
-(DES `tel_pos_lin_is_interp_q4_of_pos_on_every_sample`). SAVE persists
+A host linearizes a streamed `pos` with the same table and
+interpolation (`osc-servo-core::pos_lut::interp_q4`). SAVE persists
 the table beside the calibration in the CALIB image (sec 9.4); boot
 re-validates the loaded calibration points against the stops loaded
 with them and goes LIVE only when they validate and correct something,
@@ -992,7 +1020,7 @@ between 1.5 and 1.6 s after the write (DES
 `dead_host_stall_trips_within_the_lease`). A TEL burst is a silent host
 too (sec 5.6).
 
-**What governs.** `limit_flags` (u8, RO, `0x266` in TELEMETRY; `0x267`
+**What governs.** `limit_flags` (u8, RO, `0x27C` in TELEMETRY; `0x27D`
 is reserved) names what shaped the command at the last medium tick,
 one bit per reason; 0 means nothing held it back and no permit is
 live. It is published
@@ -1008,10 +1036,10 @@ every medium tick (2 kHz), torque on or off.
 Bit 0 is the same pin the stall timer counts, so a bit 0 that stays set
 on a still shaft is a stall in progress. The permit drops the fold and
 the endstop, so bit 3 never appears with bits 1 or 2 (unit
-`limit_flags_name_the_governor`). The flags are a polled register, not
-a TEL field: the `valid` bitmap of sec 5.6 has no spare bit.
+`limit_flags_name_the_governor`). The flags are a polled register; a TEL
+row may carry them, as any table field, at medium rate.
 
-**Window floor.** `window_floor_q15` (u16, RO, `0x268` in TELEMETRY,
+**Window floor.** `window_floor_q15` (u16, RO, `0x27E` in TELEMETRY,
 a Q15 duty magnitude) is the smallest duty whose drive window the shunt
 reads: CALIB `i_window_min_ticks` turned into a duty against the board's
 PWM period, 1734 (5.3%) for 64 ticks of 1200 on osc-dev-v006. It is
@@ -1027,7 +1055,7 @@ board constant, and `osc` refuses a servo that reports 0 (DES
 `window_floor_is_published_as_the_limiter_uses_it`).
 
 The terminal taps have a floor of their own: `window_v_floor_q15` (u16,
-RO, `0x274` in TELEMETRY, Q15) is CALIB `v_window_min_ticks` turned into
+RO, `0x3CA` in TELEMETRY-EXT, Q15) is CALIB `v_window_min_ticks` turned into
 a duty the same way, 2526 (7.7%) for 93 ticks on osc-dev-v006, where
 the low-side tap, sampled 37 ticks before the crest, has finished its
 rise, in either direction. Under Fast decay the window sits at the
@@ -1035,7 +1063,7 @@ trough, where the low-side tap closes 135 ticks in, and the board raises the flo
 register follows the OpenLoop decay (DES
 `window_v_floor_follows_the_openloop_decay`). It is published with
 `window_floor_q15`, at the same moments. A window between the two floors
-reads current but no `va - vb`, so the stream's `vdiff` holds the last
+reads current but no `va - vb`, so the tick block's `vdiff_counts` holds the last
 differential read there. Which
 floor a host plans against follows what its fit reads: a drive judged
 on current alone (the limiter's slew, an overcurrent abort, a current
@@ -1047,8 +1075,8 @@ that predates the register reads 0 there, and a host then takes
 
 **Governed windows.** In OpenLoop the applied duty equals the goal only
 when nothing governed it, and a host fitting a model to a capture needs
-to know which windows those are. The TEL `duty` field (bit 3) is the
-applied duty, the command whose window the sample measured. A goal
+to know which windows those are. The tick block's `duty_ticks` (sec 5.6)
+is the applied duty, the command whose window the row measured. A goal
 lands at the first medium tick after its commit (sec 5.7), within one
 medium period (10 ticks). From there, to a magnitude above the window
 floor, the applied duty climbs 128 (Q15) per tick from its start: the
@@ -1059,7 +1087,7 @@ after the commit (the two ticks cover the sample alignment and the
 rounding, the ten the medium period the goal may wait for), or falls
 under the goal after reaching it. A goal at or under the floor applies
 from the tick it lands unless the stall-safe base cuts it, and a cut
-one never reaches the goal. Polled, the same test reads `duty_applied_q15`
+one never reaches the goal. Polled, the same test reads `duty_ticks`
 against the goal written, once the slew is over; `limit_flags` then says
 why.
 
@@ -1091,7 +1119,8 @@ when its sign is positive under `drive_polarity` 1 or negative under 0
 its arm. `arm` 1 is refused
 unless all of these hold at the kernel tick that sees it:
 
-- torque on, mode OpenLoop, no TEL burst running (`tel_count` 0), no
+- torque on, mode OpenLoop, no TEL burst armed or streaming
+  (`tel_count` 0: the servo zeroes it when a burst ends, sec 5.6), no
   fault latched, and `chans` setting only defined bits;
 - the applied volts are at most 3.2 V: `(|duty_q15| x vbus_counts) >>
   15` at most the board's cap in vcounts, 794 on osc-dev-v006. That
@@ -1141,13 +1170,12 @@ Under the Same Band" has the planning behind it):
   whole pot (a servo `osc cal` never ran on) and an abort threshold
   more than a quarter over the limit.
 - Each drive watches while it waits: every pause is a TEL burst of
-  `current`, `vdiff` and `duty`, and `pos` when the line's rows hold it,
-  of whole 16-tick windows, at most 250 ms long. The host folds each
-  window into floor means and the current's extremes, judges every row
-  and window as the burst lands, and reads TELEMETRY between bursts for
-  what the stream does not carry (`limit_flags`, the fault code, the
-  estimates). `osc` refuses a line whose rows cannot carry the window's
-  three fields (1 M) before it drives.
+  `pos`, then `duty_ticks` to `vdiff_counts` (sec 5.6), of whole 16-tick
+  windows, at most 250 ms long. The host folds each window into floor
+  means and the current's extremes, judges every row and window as the
+  burst lands, and reads TELEMETRY between bursts for what the stream
+  does not carry (`limit_flags`, the fault code, the estimates). `osc`
+  refuses a line under 3 M, which streams no TEL, before it drives.
 - Each drive writes its `mode`, then `torque_enable` 1, then, only
   for a drive that stalls on purpose (cal's stop approach, the
   resistance stop ladder, the held burst route, the current verify's
@@ -1156,8 +1184,8 @@ Under the Same Band" has the planning behind it):
 - Every exit of a drive - done, aborted, interrupted or failed on the
   wire - writes `goal_duty` 0, `torque_enable` 0 and, when it held one,
   `stall_permit` 0, in that order, and a guard
-  around the drive writes them again with the other goals, `tel_count`
-  and `tel_mask` zeroed. A killed host skips that; the lease then runs out inside the
+  around the drive writes them again with the other goals and
+  `tel_count` zeroed. A killed host skips that; the lease then runs out inside the
   second and the servo's own protections carry the rest.
 - A shunt burst stages `duty_q15`, `chans` and `arm` 1 under HOLD and
   fires one COMMIT, then polls BURST `state`: 3 `DONE` walks the
@@ -1168,17 +1196,17 @@ Under the Same Band" has the planning behind it):
 
 ### 5.9 Health (osc-servo)
 
-Five u16 registers in TELEMETRY, after `window_floor_q15`, say how the
-servo itself is keeping up. Every build carries them; the chip side
-writes them, not the kernel.
+Five u16 registers at the front of TELEMETRY-EXT (`0x3C0..0x400`, the
+model's overflow of TELEMETRY) say how the servo itself is keeping up.
+Every build carries them; the chip side writes them, not the kernel.
 
 | addr  | name                 | access | meaning                                                                                              |
 | ----- | -------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
-| 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4000 ticks (0.2 s), Q15       |
-| 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
-| 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
-| 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire, each a jump in the next frame's `tick` (sec 5.6); wraps |
-| 0x272 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
+| 0x3C0 | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4000 ticks (0.2 s), Q15       |
+| 0x3C2 | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
+| 0x3C4 | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
+| 0x3C6 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire, each a jump in the next frame's `tick` (sec 5.6); wraps |
+| 0x3C8 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
 
 The RW registers follow the TELEMETRY-COMMON clear contract (sec 5.4):
 a host writes 0 and the servo counts on from there. The mean load

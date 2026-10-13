@@ -213,6 +213,14 @@ impl<P: Providers> ServoBus<P> {
         self.arm_deadline();
     }
 
+    /// Drop the staged or streaming reply; a TEL arm waiting on its
+    /// release goes with it.
+    fn abort_reply(&mut self) {
+        if self.tx.abort() {
+            self.burst.void();
+        }
+    }
+
     /// Take the line back from a burst whose LAST frame has left the wire.
     /// The ladder resumes at the ring cursor read while LAST streamed (the
     /// receiver is deaf under own TX, so it was still): whatever a host sent
@@ -277,7 +285,7 @@ impl<P: Providers> ServoBus<P> {
             && self.pending.is_none()
             && !self.framer.caught_up(self.ring.cursor())
         {
-            self.tx.abort();
+            self.abort_reply();
             self.chain.reset();
             self.chain_at = None;
         }
@@ -337,7 +345,7 @@ impl<P: Providers> ServoBus<P> {
         }
         // A pending reboot waits for the main loop's `take_reboot`.
         if out == TxOut::Lent {
-            self.burst.start(self.id, self.rate);
+            self.burst.start(self.id);
             return;
         }
         // The ladder waited on the CRC engine while the reply streamed.
@@ -465,7 +473,7 @@ impl<P: Providers> ServoBus<P> {
         let cursor = self.ring.cursor();
         self.framer.resync(cursor);
         self.chain.reset();
-        self.tx.abort();
+        self.abort_reply();
         // A dropped pending frame's staged table effect is reclaimed by the
         // dispatcher's auto-revert on the next dispatch.
         self.pending = None;

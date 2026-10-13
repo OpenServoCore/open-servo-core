@@ -1966,7 +1966,7 @@ mod tests {
              counts)"
         );
         let controls =
-            crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::BURST_CHANS.addr;
+            crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::TEL_COUNT.addr;
         for l in &rig.log {
             let l = if l.starts_with("stream ") {
                 "write tel_count"

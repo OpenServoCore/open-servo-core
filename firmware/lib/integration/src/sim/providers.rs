@@ -403,6 +403,14 @@ impl CrcEngine for SimCrc {
         unsafe { self.snap.as_ptr().add(off) }
     }
 
+    /// The copy lands at once: the chip's runs ahead of any later feed
+    /// or wire read on the DMA ladder, and the sim's events come later.
+    unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
+        assert_eq!((dst as usize | src as usize) & 1, 0, "halfword ends");
+        // SAFETY: the caller's contract.
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, 2 * units as usize) };
+    }
+
     fn result(&mut self) -> Option<u16> {
         if let Some(e) = self.lane.as_ref() {
             if e.core.borrow().now() < e.ready {

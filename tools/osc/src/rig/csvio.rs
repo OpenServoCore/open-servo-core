@@ -15,7 +15,7 @@ use osc_ident::exp::ladder::RungSummary;
 use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
 use osc_ident::fits::{Climb, RungPoint, StepSeries};
-use osc_ident::frame::{TelFrame, TelemetrySnapshot};
+use osc_ident::frame::{TelFrame, TelemetrySnapshot, counts_q15};
 
 pub(crate) struct OutDir(pub(crate) PathBuf);
 
@@ -57,14 +57,26 @@ impl SnapshotLog {
         Ok(Self { w })
     }
 
-    pub(crate) fn push(&mut self, host_ms: f64, s: &TelemetrySnapshot) -> Result<()> {
-        writeln!(self.w, "{}", snapshot_fields(host_ms, s))?;
+    /// `pwm_period_ticks` is the servo's, the full scale of its duty.
+    pub(crate) fn push(
+        &mut self,
+        host_ms: f64,
+        s: &TelemetrySnapshot,
+        pwm_period_ticks: u16,
+    ) -> Result<()> {
+        writeln!(self.w, "{}", snapshot_fields(host_ms, s, pwm_period_ticks))?;
         Ok(())
     }
 }
 
-/// One snapshot as [`SNAPSHOT_COLUMNS`] lays it out.
-pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
+/// One snapshot as [`SNAPSHOT_COLUMNS`] lays it out: `duty_applied_q15` is
+/// the tick block's duty as Q15 of `pwm_period_ticks`, `i_hat_counts` its
+/// held current and `current` the raw shunt sample.
+pub(crate) fn snapshot_fields(
+    host_ms: f64,
+    s: &TelemetrySnapshot,
+    pwm_period_ticks: u16,
+) -> String {
     format!(
         "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         s.fault_flags,
@@ -77,13 +89,13 @@ pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
         s.i_lim_counts,
         s.t_winding_cc,
         s.vbus_counts,
-        s.duty_applied_q15,
+        counts_q15(s.duty_ticks, pwm_period_ticks).round() as i16,
         s.omega_bemf_cps,
         s.r_hat_q12,
-        s.i_hat_counts,
+        s.i_tick_counts,
         s.sample_tick,
         s.pos,
-        s.current,
+        s.current_raw,
         s.current_trough,
         s.current_bias_counts,
         s.i_mean_counts,
@@ -95,6 +107,9 @@ pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
     )
 }
 
+/// One row per frame; `pos_lin` stays an empty column so every TEL CSV
+/// keeps one header: the stream no longer carries it, a host linearizes
+/// `pos` with the servo's position table.
 pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) -> Result<()> {
     let mut w = dir.file(name)?;
     writeln!(
@@ -105,7 +120,7 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
     for f in frames {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -119,15 +134,14 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
             opt(f.vmotor_b.map(|v| v as i32)),
             opt(f.vbus_raw.map(|v| v as i32)),
             opt(f.ntc_raw.map(|v| v as i32)),
-            opt(f.pos_lin.map(|v| v as i32)),
         )?;
     }
     Ok(())
 }
 
 /// Decoded frames back from a `write_tel_frames` CSV (cal-replay's input);
-/// empty cells are unselected fields, and a CSV from before the `pos_lin`
-/// column reads as unselected.
+/// empty cells are unselected fields. A recorded `pos_lin` is not read: a
+/// host linearizes `pos` itself.
 pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
     fn opt<T: std::str::FromStr>(s: &str) -> Result<Option<T>>
     where
@@ -155,10 +169,6 @@ pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
             vmotor_b: opt(&parts[10])?,
             vbus_raw: opt(&parts[11])?,
             ntc_raw: opt(&parts[12])?,
-            pos_lin: match parts.get(13) {
-                Some(s) => opt(s)?,
-                None => None,
-            },
         });
     }
     Ok(out)
@@ -513,7 +523,7 @@ mod tests {
                     i_lim_counts: i,
                     ..TelemetrySnapshot::default()
                 };
-                log.push(t, &s).unwrap();
+                log.push(t, &s, 1200).unwrap();
             }
         }
         assert_eq!(read_current_limit(&dir.0.join(name)).unwrap(), Some(280));
@@ -569,7 +579,6 @@ mod tests {
                 vmotor_b: Some(12),
                 vbus_raw: Some(2290),
                 ntc_raw: None,
-                pos_lin: Some(2048 << 4),
             },
             TelFrame {
                 tick: 17,
@@ -585,12 +594,37 @@ mod tests {
                 vmotor_b: Some(3),
                 vbus_raw: None,
                 ntc_raw: Some(2050),
-                pos_lin: None,
             },
         ];
         write_tel_frames(&dir, "tel.csv", &frames).unwrap();
+        let text = std::fs::read_to_string(dir.0.join("tel.csv")).unwrap();
+        assert!(text.lines().next().unwrap().ends_with(",ntc_raw,pos_lin"));
+        assert!(
+            text.lines().nth(1).unwrap().ends_with(",,"),
+            "pos_lin empty"
+        );
         let back = read_tel_frames(&dir.0.join("tel.csv")).unwrap();
         assert_eq!(back, frames);
+    }
+
+    /// The snapshot columns keep their meaning: the applied duty as Q15,
+    /// the held current as `i_hat_counts`, the raw shunt as `current`.
+    #[test]
+    fn snapshot_rows_keep_their_columns() {
+        let s = TelemetrySnapshot {
+            duty_ticks: -293,
+            i_tick_counts: -57,
+            current_raw: 620,
+            ..TelemetrySnapshot::default()
+        };
+        let row = snapshot_fields(1.0, &s, 1200);
+        let col = |name: &str| {
+            let k = SNAPSHOT_COLUMNS.split(',').position(|c| c == name).unwrap();
+            row.split(',').nth(k).unwrap().to_string()
+        };
+        assert_eq!(col("duty_applied_q15"), "-8001");
+        assert_eq!(col("i_hat_counts"), "-57");
+        assert_eq!(col("current"), "620");
     }
 
     #[test]

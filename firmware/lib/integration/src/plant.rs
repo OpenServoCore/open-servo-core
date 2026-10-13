@@ -50,9 +50,7 @@ pub const TIMING: KernelTiming = KernelTiming {
 
 pub struct FakeSensors;
 impl Sensors for FakeSensors {
-    fn frame(&mut self) -> SensorFrame {
-        SensorFrame::default()
-    }
+    fn land(&mut self, _: &Shared) {}
 }
 
 pub struct FakeMotor {
@@ -145,7 +143,7 @@ pub fn seed(shared: &Shared) {
         cal.motor.r_q12 = 8192;
         cal.motor.recip_ke_q = 16 << 10;
         cal.motor.b_i_q313 = 8192;
-        t.telemetry.sensors.current_bias_counts = BIAS;
+        t.telemetry.refs.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
     });
@@ -222,7 +220,6 @@ impl Plant {
             vcal: 1200,
             vbus_raw: vbus_raw(VBUS),
             ntc_raw: 2048,
-            tick: 0,
         }
     }
 
@@ -342,7 +339,6 @@ impl RlPlant {
             vcal: 1200,
             vbus_raw: vbus_raw(RL_VBUS),
             ntc_raw: 2048,
-            tick: 0,
         }
     }
 

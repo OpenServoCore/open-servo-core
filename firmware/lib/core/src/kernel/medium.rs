@@ -16,7 +16,7 @@ use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm, bemf, ther
 use crate::math::{q_mul, q_mul_u};
 use crate::pos_lut;
 use crate::regions::control::{ControlLifecycle, Mode};
-use crate::{RegionStorageRaw, SensorFrame, Shared};
+use crate::{Frame, RegionStorageRaw, Shared};
 
 /// The stages of the medium chain, in data-flow order.
 pub mod phase {
@@ -181,7 +181,6 @@ impl Medium {
     pub fn step(
         &mut self,
         k: u8,
-        frame: &SensorFrame,
         m: &Measured,
         cfg: &KernelConfig,
         shared: &Shared,
@@ -190,14 +189,14 @@ impl Medium {
         cmd: &mut Command,
     ) -> bool {
         match k {
-            phase::CONTROL => self.control(frame.pos, cfg, shared, faults, fast, cmd),
-            phase::OBSERVER => self.observe(frame.pos, cfg, shared, fast),
+            phase::CONTROL => self.control(shared.frame().pos(), cfg, shared, faults, fast, cmd),
+            phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
             phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
-            phase::RAIL => self.rail(frame, cfg, faults, cmd),
+            phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
             phase::SLOW => return self.slow(m, cfg, faults),
-            phase::PUBLISH => self.publish(frame, shared, faults, fast),
+            phase::PUBLISH => self.publish(shared, faults, fast),
             _ => {}
         }
         false
@@ -221,7 +220,6 @@ impl Medium {
         // the resets of an edge reach the fast half with the drive they
         // change
         cmd.i_ref_cc = self.i_ref_cc;
-        cmd.lut_live = self.ctl.lut_live;
     }
 
     /// The torque enable edge, the data-state entry check and the Ke belt.
@@ -485,20 +483,20 @@ impl Medium {
     /// the position error timer.
     fn rail(
         &mut self,
-        frame: &SensorFrame,
+        frame: Frame<'_>,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
         cmd: &mut Command,
     ) {
         let (fc, mc) = (&cfg.fast, &cfg.medium);
-        self.vbus.step(frame.vbus_raw, fc.v_undervolt_counts);
+        self.vbus.step(frame.vbus_raw(), fc.v_undervolt_counts);
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
         cmd.prepare_rail(fc);
         // raw-pot sanity screen runs in every mode, torque-off included
         if self
             .det
-            .sensor_sample(frame.pos, mc.sensor_delta_max, mc.sensor_bad_count)
+            .sensor_sample(frame.pos(), mc.sensor_delta_max, mc.sensor_bad_count)
         {
             faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
         }
@@ -596,22 +594,14 @@ impl Medium {
         true
     }
 
-    /// PUBLISH: sensors of this tick, the estimates, mode and limits.
-    fn publish(&self, frame: &SensorFrame, shared: &Shared, faults: &FaultLatch, fast: &Fast) {
+    /// PUBLISH: the estimates, mode and limits; the raw frame and the
+    /// tick's conclusions are in the table every tick (`TelemetryTick`).
+    fn publish(&self, shared: &Shared, faults: &FaultLatch, fast: &Fast) {
         let p = shared.table.region_ptr();
         // SAFETY: sole-telemetry-writer contract (`Kernel` doc); volatile
         // per-field stores.
         unsafe {
-            let s = &raw mut (*p).telemetry.sensors;
-            (&raw mut (*s).pos).write_volatile(frame.pos);
-            (&raw mut (*s).current).write_volatile(frame.current);
-            (&raw mut (*s).vcal).write_volatile(frame.vcal);
-            (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
-            (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
-            (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
-            (&raw mut (*s).vbus_raw).write_volatile(frame.vbus_raw);
-            (&raw mut (*s).ntc_raw).write_volatile(frame.ntc_raw);
-            (&raw mut (*s).current_bias_counts).write_volatile(fast.bias_counts());
+            (&raw mut (*p).telemetry.refs.current_bias_counts).write_volatile(fast.bias_counts());
             let e = &raw mut (*p).telemetry.estimates;
             (&raw mut (*e).theta_hat_q16).write_volatile(self.fusion.theta_q16());
             (&raw mut (*e).omega_hat_cps).write_volatile(self.omega_hat);
@@ -619,18 +609,16 @@ impl Medium {
             (&raw mut (*e).i_lim_counts).write_volatile(self.limits.i_lim_counts());
             (&raw mut (*e).t_winding_cc).write_volatile(self.thermal.t_cc());
             (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
-            (&raw mut (*e).duty_applied_q15).write_volatile(fast.duty_q15());
             (&raw mut (*e).omega_bemf_cps)
                 .write_volatile(bemf::omega_cps_i16(self.omega_bemf.unwrap_or(0)));
             (&raw mut (*e).r_hat_q12).write_volatile(self.thermal.r_q12());
-            (&raw mut (*e).i_hat_counts).write_volatile(fast.i_meas_last());
             let md = &raw mut (*p).telemetry.mode;
             (&raw mut (*md).mode_active).write_volatile(self.ctl.life.mode as u8);
             (&raw mut (*md).fault_code).write_volatile(faults.code());
             (&raw mut (*md).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
             (&raw mut (*p).telemetry.common.fault_flags).write_volatile(faults.mask());
             (&raw mut (*p).telemetry.limits.limit_flags).write_volatile(self.limit_flags);
-            let th = &raw mut (*p).telemetry.therm;
+            let th = &raw mut (*p).telemetry_ext.therm;
             (&raw mut (*th).t_ntc_cc).write_volatile(self.thermal.t_ntc_cc());
             (&raw mut (*th).therm_flags).write_volatile(self.thermal.flags());
         }

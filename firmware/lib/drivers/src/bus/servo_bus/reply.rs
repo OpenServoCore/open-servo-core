@@ -1,8 +1,9 @@
 //! The reply surface: `ReplyHandle` over disjoint bus fields and its builders.
 
 use osc_protocol::wire::ResultCode;
+use osc_servo_core::tel::{self, Chunks};
 use osc_servo_core::traits::{Reply, SendError, Status};
-use osc_servo_core::{BaudRate, BootMode, tel};
+use osc_servo_core::{BaudRate, BootMode};
 
 use super::super::tx::TxEngine;
 use super::ServoBus;
@@ -119,24 +120,20 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     /// both commit sites: inlined, its body pushes the table's event walk
     /// out of line and every committed write pays the call.
     #[inline(never)]
-    fn tel_arm(&mut self, mask: u16, count: u16) {
+    fn tel_arm(&mut self, chunks: Chunks, count: u16) {
         // sec 5.6: the line is the burst's until LAST, so a second arm in
         // the body that lent it is void.
         if self.tx.lent() {
             return;
         }
-        let count = if tel::admits(mask, self.rate) {
-            count
-        } else {
-            0
-        };
-        if !self.burst.arm(mask, count) {
+        let count = if self.rate == tel::BAUD { count } else { 0 };
+        if !self.burst.arm(chunks, count) {
             self.tx.keep();
             return;
         }
         self.tx.lend();
         if self.tx.lent() {
-            self.burst.start(*self.id, self.rate);
+            self.burst.start(*self.id);
         }
     }
 

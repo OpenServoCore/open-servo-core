@@ -4,13 +4,14 @@ use bench::run::Stats;
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::config::addr::common::ID;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
-use osc_servo_core::regions::telemetry::addr::sensors::{ENC_A, POS, VMOTOR_A};
+use osc_servo_core::regions::telemetry::addr::refs::ENC_A;
+use osc_servo_core::regions::telemetry::addr::tick::{POS, VMOTOR_A};
 use serial_test::serial;
 
 use crate::support::bench;
 
-/// The turnaround scatter: pos+current(4) + vmotor_a(2) + enc_a(2) from the
-/// raw telemetry block -- the protocol sec 5.2 cyclic-telemetry shape.
+/// The turnaround scatter: pos+vcal(4) + vmotor_a(2) + enc_a(2)
+/// from the raw telemetry block: the protocol sec 5.2 cyclic-telemetry shape.
 const SCATTER: [(u16, u8); 3] = [(POS, 4), (VMOTOR_A, 2), (ENC_A, 2)];
 
 /// A gathered reply is byte-identical to the concatenation of plain READs of

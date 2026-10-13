@@ -85,10 +85,9 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             // SAFETY: table storage is 'static; field access is volatile and
             // bus-masked, mirroring the sample_tick idiom in `isr.rs`.
             unsafe {
-                let telemetry =
-                    &raw mut (*crate::runtime::statics::SHARED.table.region_ptr()).telemetry;
-                let common = &raw mut (*telemetry).common;
-                let tel = &raw mut (*telemetry).health.tel_drop_count;
+                let table = crate::runtime::statics::SHARED.table.region_ptr();
+                let common = &raw mut (*table).telemetry.common;
+                let tel = &raw mut (*table).telemetry_ext.health.tel_drop_count;
                 tel.write_volatile(
                     tel.read_volatile()
                         .wrapping_add(tel_drops.wrapping_sub(tel_published)),
@@ -116,7 +115,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             // writer of this read-only field.
             unsafe {
                 (&raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
-                    .telemetry
+                    .telemetry_ext
                     .health
                     .stack_free_min)
                     .write_volatile(free);

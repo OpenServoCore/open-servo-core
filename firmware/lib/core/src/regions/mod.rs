@@ -11,7 +11,8 @@
 //!   TELEMETRY 0x200..0x280  (128 B) - RO from host
 //!   PROFILE   0x280..0x2C0  ( 64 B) - read-profile span words (sec 5.2)
 //!   BURST     0x2C0..0x3C0  (256 B) - RO paged shunt-capture readback
-//!   (reserved 0x3C0..0x400   64 B)
+//!   TELEMETRY-EXT 0x3C0..0x400 (64 B) - RO from host: health, the taps'
+//!                                       floor, the thermometer
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
 //! Cross-domain readers that must avoid forming `&T` (aliasing-sensitive
@@ -24,6 +25,7 @@ pub mod control;
 pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
+pub mod telemetry_ext;
 
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
@@ -38,8 +40,9 @@ pub use config::{
 pub use control::{BootMode, ControlBurst, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
-    TelemetryCommon, TelemetryEstimates, TelemetryMode, TelemetryRegs, TelemetrySensors,
+    TelemetryCommon, TelemetryEstimates, TelemetryMode, TelemetryRefs, TelemetryRegs, TelemetryTick,
 };
+pub use telemetry_ext::TelemetryExtRegs;
 
 use crate::regions::config::{ConfigDefaults, CurrentDefaults};
 use control_table::{RegionStorage, Table};
@@ -51,6 +54,7 @@ pub const CONTROL_REGION_SIZE: u16 = 128;
 pub const TELEMETRY_REGION_SIZE: u16 = 128;
 pub const PROFILE_REGION_SIZE: u16 = 64;
 pub const BURST_REGION_SIZE: u16 = 256;
+pub const TELEMETRY_EXT_REGION_SIZE: u16 = 64;
 
 pub const CONFIG_BASE_ADDR: u16 = 0x000;
 pub const CALIB_BASE_ADDR: u16 = 0x080;
@@ -58,6 +62,7 @@ pub const CONTROL_BASE_ADDR: u16 = 0x180;
 pub const TELEMETRY_BASE_ADDR: u16 = 0x200;
 pub const PROFILE_BASE_ADDR: u16 = 0x280;
 pub const BURST_BASE_ADDR: u16 = 0x2C0;
+pub const TELEMETRY_EXT_BASE_ADDR: u16 = 0x3C0;
 
 #[repr(C)]
 #[derive(Table)]
@@ -69,8 +74,7 @@ pub struct ControlTable {
     pub telemetry: TelemetryRegs,
     pub profile: ProfileRegs,
     pub burst: BurstRegs,
-    #[ct_table(skip)]
-    _rsvd: [u8; 64],
+    pub telemetry_ext: TelemetryExtRegs,
 }
 
 impl ControlTableCell {
@@ -147,8 +151,8 @@ impl ControlTableCell {
             common.hardware_revision = hw_rev;
             common.firmware_version = crate::FIRMWARE_VERSION;
             common.capability_flags = table::CAP_TEL_ROWS;
-            common.tel_wide_fields = crate::tel::WIDE;
-            common.tel_row_bytes_max = crate::tel::ROW_BYTES_PER_RATE;
+            common.tel_row_bytes_max = crate::tel::ROW_BYTES_MAX as u8;
+            common.tel_chunks_max = crate::tel::CHUNKS_MAX as u8;
         });
     }
 
@@ -170,7 +174,7 @@ impl ControlTableCell {
     pub fn seed_current_bias(&self, counts: u16) {
         crate::log::debug!("seed current bias: {} counts", counts);
         // SAFETY: install-time, pre-IRQ, sole writer.
-        self.with_mut(|t| t.telemetry.sensors.current_bias_counts = counts);
+        self.with_mut(|t| t.telemetry.refs.current_bias_counts = counts);
     }
 
     /// Stamp the boot-measured motor-terminal divider bias (both terminals
@@ -179,7 +183,7 @@ impl ControlTableCell {
     pub fn seed_vmotor_bias(&self, counts: u16) {
         crate::log::debug!("seed vmotor bias: {} counts", counts);
         // SAFETY: install-time, pre-IRQ, sole writer.
-        self.with_mut(|t| t.telemetry.sensors.vmotor_bias_counts = counts);
+        self.with_mut(|t| t.telemetry.refs.vmotor_bias_counts = counts);
     }
 }
 
@@ -201,8 +205,8 @@ mod tests {
             assert_eq!(t.config.common.hardware_revision, 3);
             assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
             assert_ne!(t.config.common.capability_flags & table::CAP_TEL_ROWS, 0);
-            assert_eq!(t.config.common.tel_wide_fields, crate::tel::WIDE);
-            assert_eq!(t.config.common.tel_row_bytes_max, [1, 3, 7, 11]);
+            assert_eq!(t.config.common.tel_row_bytes_max, 12);
+            assert_eq!(t.config.common.tel_chunks_max, 2);
         });
     }
 
@@ -224,11 +228,11 @@ mod tests {
             config_addr::common::CAPABILITY_FLAGS,
             table::CAPABILITY_FLAGS
         );
-        assert_eq!(config_addr::common::TEL_WIDE_FIELDS, table::TEL_WIDE_FIELDS);
         assert_eq!(
             config_addr::common::TEL_ROW_BYTES_MAX,
             table::TEL_ROW_BYTES_MAX
         );
+        assert_eq!(config_addr::common::TEL_CHUNKS_MAX, table::TEL_CHUNKS_MAX);
         assert_eq!(config_addr::common::ID, table::ID);
         assert_eq!(config_addr::common::BAUD_RATE_IDX, table::BAUD_RATE_IDX);
         assert_eq!(
@@ -437,19 +441,92 @@ mod tests {
         assert!(!by("pos_lut_state").writable);
     }
 
-    /// The health block appends after `limits` out of the reserved tail, so
-    /// every earlier address and the region size stay put; the counters a
-    /// host clears are the writable ones.
+    /// The TEL arm appends after the position table window out of the
+    /// reserved tail, past the deleted ident switch's byte: chunks then
+    /// count, so one WRITE sets the row and arms; every earlier address and
+    /// the region size stay put, and a write to the old switch is refused.
     #[test]
-    fn telemetry_health_appends_after_limits() {
-        use super::telemetry::addr::{health, limits};
-        assert_eq!(limits::LIMIT_FLAGS, 0x266);
-        assert_eq!(limits::WINDOW_FLOOR_Q15, 0x268);
-        assert_eq!(health::TICK_LOAD_MEAN_Q15, 0x26A);
-        assert_eq!(health::TICK_OVER_COUNT, 0x26C);
-        assert_eq!(health::TICK_LOST_COUNT, 0x26E);
-        assert_eq!(health::TEL_DROP_COUNT, 0x270);
-        assert_eq!(health::STACK_FREE_MIN, 0x272);
+    fn control_tel_arm_appends_after_pos_lut() {
+        use super::control::addr::{pos_lut, tel};
+        assert_eq!(pos_lut::POS_LUT_STATE, 0x1DE);
+        assert_eq!(
+            [
+                tel::CHUNK0_ADDR,
+                tel::CHUNK0_LEN,
+                tel::CHUNK1_ADDR,
+                tel::CHUNK1_LEN,
+                tel::TEL_COUNT
+            ],
+            [0x1E2, 0x1E4, 0x1E6, 0x1E8, 0x1EA]
+        );
+        assert_eq!(
+            core::mem::size_of::<super::ControlRegs>(),
+            super::CONTROL_REGION_SIZE as usize
+        );
+        let f = ControlTable::FIELDS;
+        let by = |n: &str| f.iter().find(|d| d.name == n).unwrap();
+        assert!(f.iter().all(|d| d.addr != 0x1E0 && d.name != "ident_agg"));
+        for name in [
+            "chunk0_addr",
+            "chunk0_len",
+            "chunk1_addr",
+            "chunk1_len",
+            "tel_count",
+        ] {
+            assert!(by(name).writable, "{name}");
+        }
+        assert!(
+            f.iter()
+                .all(|d| d.addr <= tel::TEL_COUNT || d.addr >= 0x200)
+        );
+    }
+
+    /// TELEMETRY behind the sec 5.4 common block and the mode bytes: the
+    /// tick block first, 4-aligned, the ADC's two scans at its front in
+    /// slot order, then the medium-rate blocks; health, the taps' floor and
+    /// the thermometer in TELEMETRY-EXT. The common row sets are each at
+    /// most two chunks of 12 B: the ident four (pos, then duty to vdiff), the
+    /// default six (current_raw to pos, then duty and current_trough), the
+    /// R/L set (current_raw to vmotor_b, then vbus_raw to duty).
+    #[test]
+    fn telemetry_lands_the_scans_at_the_tick_block_front() {
+        use super::telemetry::addr::{estimates, limits, refs, tick};
+        use super::telemetry_ext::addr::{health, limits_ext, therm};
+        assert_eq!(tick::CURRENT_RAW, 0x224 + 14);
+        assert_eq!(
+            [tick::VMOTOR_A, tick::VMOTOR_B, tick::POS, tick::VCAL],
+            [0x234, 0x236, 0x238, 0x23A]
+        );
+        assert_eq!([tick::VBUS_RAW, tick::NTC_RAW], [0x23C, 0x23E]);
+        assert_eq!(
+            [
+                tick::DUTY_TICKS,
+                tick::CURRENT_TROUGH,
+                tick::I_TICK_COUNTS,
+                tick::VDIFF_COUNTS
+            ],
+            [0x240, 0x242, 0x244, 0x246]
+        );
+        assert_eq!(
+            [
+                tick::VMOTOR_A_TROUGH,
+                tick::VMOTOR_B_TROUGH,
+                tick::TICK_FLAGS
+            ],
+            [0x248, 0x24A, 0x24C]
+        );
+        assert_eq!(tick::SAMPLE_TICK, 0x250);
+        assert_eq!(estimates::THETA_HAT_Q16, 0x254);
+        assert_eq!(estimates::R_HAT_Q12, 0x266);
+        assert_eq!(refs::CURRENT_BIAS_COUNTS, 0x268);
+        assert_eq!(refs::ENC_B, 0x26E);
+        assert_eq!(limits::LIMIT_FLAGS, 0x27C);
+        assert_eq!(limits::WINDOW_FLOOR_Q15, 0x27E);
+        assert_eq!(super::TELEMETRY_EXT_BASE_ADDR, 0x3C0);
+        assert_eq!(health::TICK_LOAD_MEAN_Q15, 0x3C0);
+        assert_eq!(health::STACK_FREE_MIN, 0x3C8);
+        assert_eq!(limits_ext::WINDOW_V_FLOOR_Q15, 0x3CA);
+        assert_eq!([therm::T_NTC_CC, therm::THERM_FLAGS], [0x3CC, 0x3CE]);
         assert_eq!(
             core::mem::size_of::<super::TelemetryRegs>(),
             super::TELEMETRY_REGION_SIZE as usize
@@ -459,24 +536,9 @@ mod tests {
         for name in ["tick_over_count", "tick_lost_count", "tel_drop_count"] {
             assert!(by(name).writable, "{name} is host-clearable");
         }
-        for name in ["tick_load_mean_q15", "stack_free_min"] {
+        for name in ["tick_load_mean_q15", "stack_free_min", "pos", "tick_flags"] {
             assert!(!by(name).writable, "{name} must stay RO");
         }
-        use super::telemetry::addr::therm;
-        assert_eq!(therm::T_NTC_CC, 0x276);
-        assert_eq!(therm::THERM_FLAGS, 0x278);
-        assert!(f.iter().all(|d| d.addr < 0x27A || d.addr >= 0x280));
-    }
-
-    /// The terminal floor fills the reserved tail after `health`, so a
-    /// servo without it reads 0 there and every earlier address stays put.
-    #[test]
-    fn telemetry_v_floor_appends_after_health() {
-        use super::telemetry::addr::limits_ext;
-        assert_eq!(limits_ext::WINDOW_V_FLOOR_Q15, 0x274);
-        let f = ControlTable::FIELDS;
-        let v = f.iter().find(|d| d.name == "window_v_floor_q15").unwrap();
-        assert!(!v.writable);
     }
 
     /// Pins the BURST section to its base and its one-READ geometry.

@@ -12,18 +12,22 @@ use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
-    self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES, Regime,
-    TEL_ARM, TEL_BANK, TEL_ENCODE, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TICK_HZ, TICK_PERIOD,
-    WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, LAYOUT, PHASES,
+    Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TEL_ROW, TICK_HZ,
+    TICK_PERIOD, TICK_PUBLISH, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
 use osc_servo_core::kernel::{DECIM_SLOW, phase};
-use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT, TEL_MASK};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+use osc_servo_core::regions::telemetry::addr::tick::DUTY_TICKS;
+use osc_servo_core::tel::Chunks;
 
 const ID: u8 = 1;
 const START_US: u64 = 1_000;
 
-/// The six raw fields of the bench soaks: a 161 B frame per 16-row batch.
-const SIX_FIELDS: u16 = 0x1cd;
+/// The six default fields of the bench soaks, one 12 B chunk: a 202 B frame
+/// per 16-row batch.
+const SIX: Chunks = Chunks::one(DUTY_TICKS, 12);
 const BURST_ROWS: u16 = 4000;
 
 /// The bench step soak at 3M (Position, a 1200-count step before each of
@@ -62,13 +66,16 @@ fn burst_sim(lane: KernelLane, cost: HandlerCost) -> (usize, Sim, usize) {
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, cost);
     sim.set_kernel_lane(s, lane, START_US + 3 * BURST_ROWS as u64 * 50);
-    sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
+    let a = CHUNK0_ADDR.to_le_bytes();
+    let mut p = vec![a[0], a[1]];
+    p.extend_from_slice(&SIX.to_le_bytes());
+    sim.host_send_at(START_US, &instruction(ID, Opcode::Write, 0, &p));
     // The host speaks again once the reply is in: at the moving budget it
     // takes about 1 ms.
     let mut t = START_US;
     while !sim.run_until(t).iter().any(|f| f.from == Source::Servo(ID)) {
         t += 1;
-        assert!(t < START_US + 10_000, "the mask write was never answered");
+        assert!(t < START_US + 10_000, "the chunk write was never answered");
     }
     sim.host_send_at(t + 1, &write_u16(TEL_COUNT, BURST_ROWS));
     let frames = sim
@@ -134,15 +141,19 @@ fn the_des_charges_the_budget_table() {
     for r in Regime::ALL {
         let i = r as usize;
         for p in 0..PHASES {
-            assert_eq!(KERNEL_AT_BUDGET[i][p], KERNEL[i][p] as u64 + entry);
+            let tick = (TICK_PUBLISH[i][p] + LAYOUT) as u64;
+            assert_eq!(KERNEL_AT_BUDGET[i][p], KERNEL[i][p] as u64 + tick + entry);
             let mean = (KERNEL_FLOOR[i][p] + KERNEL_AT_BUDGET[i][p]) / 2;
-            assert!(mean >= KERNEL_MEAN[i][p] as u64 + entry, "{r:?} phase {p}");
+            assert!(
+                mean >= KERNEL_MEAN[i][p] as u64 + tick + entry,
+                "{r:?} phase {p}"
+            );
         }
     }
     let tel = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving).tel;
     assert_eq!(
-        (tel.encode, tel.bank, tel.head),
-        (TEL_ENCODE.map(u64::from), TEL_BANK as u64, TEL_HEAD as u64)
+        (tel.row, tel.bank, tel.head),
+        (TEL_ROW as u64, TEL_BANK as u64, TEL_HEAD as u64)
     );
     assert_eq!(
         [tel.poll, tel.feed, tel.arm, tel.patch],
@@ -162,12 +173,9 @@ fn the_des_charges_the_budget_table() {
 #[test]
 fn the_des_charges_the_measured_entry_exit() {
     for r in Regime::ALL {
-        for p in 0..PHASES {
-            let body = KERNEL[r as usize][p] + MEASURED_ENTRY_EXIT;
-            assert_eq!(
-                KERNEL_AT_BUDGET[r as usize][p], body as u64,
-                "{r:?} phase {p}"
-            );
+        for (p, &at) in KERNEL_AT_BUDGET[r as usize].iter().enumerate() {
+            let body = budget::tick_body(r, p) + MEASURED_ENTRY_EXIT;
+            assert_eq!(at, body as u64, "{r:?} phase {p}");
         }
     }
 }
@@ -261,7 +269,6 @@ fn config_write_while_moving_fits_at_budget() {
 }
 
 #[test]
-#[ignore = "over budget, owned by the configuration refresh: its first stage (535) takes Closed p8 to 2699 and its second (474) p9 to 2626, on 2164 and 2152 without them (the phase, the TEL row 591, the TX lane's dearest step 354, which a refresh tick does not hold, entry and exit 80). Each stage tick must come in at 2304 (2 us margin): first stage <= 140, second <= 152 on today's rows"]
 fn config_write_while_moving_and_streaming_fits_at_budget() {
     let over: Vec<_> = spare_phase_ticks(true)
         .into_iter()

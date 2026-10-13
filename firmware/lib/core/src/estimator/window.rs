@@ -5,7 +5,7 @@
 //! alone picks the scan half. The shunt is direction-blind, so the signed
 //! current takes its sign from the commanded duty.
 
-use crate::SensorFrame;
+use crate::Frame;
 use crate::estimator::bemf::RECIP_ARR_SHIFT;
 use crate::math::{q_mul, q_mul_u};
 use crate::traits::DecayMode;
@@ -74,7 +74,7 @@ impl SettleGain {
 /// by the window's settle gain (`SettleGain::q15_at`), or `None` when the
 /// window is too narrow for a settled sample.
 pub fn i_from_frame(
-    frame: &SensorFrame,
+    frame: Frame<'_>,
     sel: WindowSel,
     duty_sign_positive: bool,
     bias: u16,
@@ -84,9 +84,9 @@ pub fn i_from_frame(
         return None;
     }
     let sample = if sel.use_trough {
-        frame.current_trough
+        frame.current_trough()
     } else {
-        frame.current
+        frame.current()
     };
     // round half up: floor((floor(2x) + 1) / 2) == floor(x + 1/2)
     let mag = (q_mul(sample as i32 - bias as i32, gain_q15 as i32, 14) + 1) >> 1;
@@ -104,14 +104,14 @@ pub(crate) const I_FROM_FRAME_MAX: i32 =
 /// `va - vb` is positive under forward drive, negative under reverse - the
 /// sign convention downstream bemf math relies on. Both taps share the
 /// board's terminal bias, so it cancels here.
-pub fn vdiff_from_frame(frame: &SensorFrame, sel: WindowSel) -> Option<i32> {
+pub fn vdiff_from_frame(frame: Frame<'_>, sel: WindowSel) -> Option<i32> {
     if !sel.v_valid {
         return None;
     }
     let (va, vb) = if sel.use_trough {
-        (frame.vmotor_a_trough, frame.vmotor_b_trough)
+        (frame.vmotor_a_trough(), frame.vmotor_b_trough())
     } else {
-        (frame.vmotor_a, frame.vmotor_b)
+        (frame.vmotor_a(), frame.vmotor_b())
     };
     Some(va as i32 - vb as i32)
 }
@@ -165,6 +165,30 @@ pub fn floor_duty(min_ticks: u16, pwm_arr: u16, recip_arr_q24: u32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SensorFrame;
+    use crate::regions::TelemetryTick;
+
+    /// `f` landed in a tick block of its own.
+    fn block(f: &SensorFrame) -> TelemetryTick {
+        let mut t = TelemetryTick::default();
+        // SAFETY: a local, written and read here alone.
+        unsafe { f.land(&mut t) };
+        t
+    }
+
+    fn i_from_frame(
+        f: &SensorFrame,
+        sel: WindowSel,
+        fwd: bool,
+        bias: u16,
+        gain: u32,
+    ) -> Option<i32> {
+        super::i_from_frame(Frame::of(&block(f)), sel, fwd, bias, gain)
+    }
+
+    fn vdiff_from_frame(f: &SensorFrame, sel: WindowSel) -> Option<i32> {
+        super::vdiff_from_frame(Frame::of(&block(f)), sel)
+    }
 
     fn frame() -> SensorFrame {
         SensorFrame {

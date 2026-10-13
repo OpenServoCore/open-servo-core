@@ -45,7 +45,6 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
         vcal: 1200,
         vbus_raw: vbus_raw(3000),
         ntc_raw: 2048,
-        tick: 0,
     }
 }
 
@@ -87,7 +86,7 @@ impl Trace {
     ) {
         for _ in 0..ticks {
             let published = k.probe_tags().phase == phase::PUBLISH;
-            k.on_tick(f, sh);
+            k.on_scan(f, sh);
             if published {
                 self.publish(sh);
             }
@@ -101,8 +100,8 @@ impl Trace {
                 e.t_winding_cc,
                 e.r_hat_q12,
                 e.i_lim_counts,
-                t.telemetry.therm.t_ntc_cc,
-                t.telemetry.therm.therm_flags,
+                t.telemetry_ext.therm.t_ntc_cc,
+                t.telemetry_ext.therm.therm_flags,
             )
         });
         let p = self.period;

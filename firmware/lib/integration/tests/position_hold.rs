@@ -191,7 +191,6 @@ impl Mg90 {
             vcal: 1200,
             vbus_raw: vbus_raw(VBUS as u16),
             ntc_raw: 2048,
-            tick: 0,
         }
     }
 
@@ -329,7 +328,7 @@ impl Session {
     fn tick(&mut self) -> Option<MotorCmd> {
         let applied = self.k.io.motor.last;
         let f = self.p.step(applied);
-        self.k.on_tick(f, &self.sh);
+        self.k.on_scan(f, &self.sh);
         applied
     }
 

@@ -229,26 +229,9 @@ mod tests {
     fn fake(vbus_raw: u16) -> (Client<FakePipe>, Id) {
         let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
         pipe.seed_calibrated(0);
-        pipe.set_track(
-            0,
-            vec![TelSample {
-                pos: 2029,
-                current: 0,
-                current_trough: 0,
-                duty: 0,
-                vdiff: 0,
-                vbus: 0,
-                current_raw: 0,
-                vmotor_a: 0,
-                vmotor_b: 0,
-                vbus_raw,
-                ntc_raw: 0,
-                pos_lin_q4: 0,
-                tick: 0,
-                window_valid: false,
-                fault: false,
-            }],
-        );
+        let mut s = TelSample::default();
+        (s.tick.pos, s.tick.vbus_raw) = (2029, vbus_raw);
+        pipe.set_track(0, vec![s]);
         (Client::connect(pipe).unwrap(), Id::new(1))
     }
 }

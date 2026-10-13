@@ -1,6 +1,6 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
-use osc_servo_core::{Kernel, KernelTiming, RegionStorageRaw, Session, Shared};
+use osc_servo_core::{Kernel, KernelTiming, Session, Shared};
 use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use crate::control::Ch32ControlIo;
@@ -36,7 +36,7 @@ pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
 /// frame, under the painted stack, for the program's life.
 #[inline(never)]
 pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
-    let (feed, drain) = TEL_CHANNEL.split::<V006Providers>(TxWire, Crc, RxRing);
+    let (feed, drain) = TEL_CHANNEL.split::<V006Providers>(TxWire, Crc, RxRing, &SHARED.table);
     unsafe {
         // SAFETY: pre-IRQ (install_irqs runs after) and `Drivers::install`
         // already built the bus in bringup, so the reach-in is single-context.
@@ -45,13 +45,4 @@ pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
         (*SESSION.get()).write(Session::new());
     }
     crate::log::info!("kernel + session installed");
-}
-
-/// `read_volatile` is load-bearing: a plain read gets hoisted out of spin loops
-/// because LLVM can't see the DMA TC ISR writing this asynchronously.
-pub fn read_sample_tick() -> u32 {
-    unsafe {
-        let p = &raw const (*SHARED.table.region_ptr()).telemetry.estimates.sample_tick;
-        p.read_volatile()
-    }
 }

@@ -321,19 +321,10 @@ pub fn stream_last(inst: Inst, payload: FrameBytes<'_>) -> bool {
 }
 
 /// sec 5.6 TEL frame payload: a `STREAM_HDR`-byte head (seq, flags, the
-/// first row's tick), the rows, one per control tick, each the
-/// `tel_mask`-selected fields packed per [`crate::tel::Layout`], then a
-/// `STREAM_TRAILER`-byte trailer (valid bitmap, tail flags, reserved). The
-/// row count is implicit in `LEN`; see [`crate::tel::StreamFrame`].
+/// first row's tick), then the rows, one per control tick, each the bytes
+/// of its chunks ([`crate::tel::Chunks`]). The row count is implicit in
+/// `LEN`; see [`crate::tel::StreamFrame`].
 pub const STREAM_HDR: usize = 4;
-pub const STREAM_TRAILER: usize = 6;
-
-/// Trailer tail byte bit 0: some row of the frame saw a fault.
-pub const STREAM_TAIL_ALERT: u8 = 1 << 0;
-
-/// The most rows one frame carries: one bit each in the trailer's
-/// `valid` bitmap. A mask's own bound is [`crate::tel::rows_max`].
-pub const STREAM_ROWS_MAX: usize = u32::BITS as usize;
 
 /// The servo's batch: rows per frame, the burst's last frame fewer. Hosts
 /// take the count from `LEN`, never from this.

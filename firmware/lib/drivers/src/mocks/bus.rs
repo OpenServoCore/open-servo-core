@@ -136,6 +136,7 @@ pub struct FakeCrc {
     state: u16,
     snap: Vec<u8>,
     sick: bool,
+    copies: usize,
 }
 
 impl FakeCrc {
@@ -144,7 +145,13 @@ impl FakeCrc {
             state: 0,
             snap: std::vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
             sick: false,
+            copies: 0,
         }
+    }
+
+    /// `copy` calls so far.
+    pub fn copies(&self) -> usize {
+        self.copies
     }
 
     /// An engine whose result never comes.
@@ -176,6 +183,13 @@ impl CrcEngine for FakeCrc {
         let off = off as usize;
         self.snap[off..off + src.len()].copy_from_slice(src);
         unsafe { self.snap.as_ptr().add(off) }
+    }
+
+    unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
+        assert_eq!((dst as usize | src as usize) & 1, 0, "halfword ends");
+        self.copies += 1;
+        // SAFETY: the caller's contract.
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, 2 * units as usize) };
     }
 
     fn result(&mut self) -> Option<u16> {

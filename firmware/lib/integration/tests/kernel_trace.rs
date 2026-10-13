@@ -8,7 +8,8 @@
 //! first diverging row with both rows in the message, so a band that must
 //! leave control bit-identical proves it here without touching the golden.
 //!
-//! Re-record only for an intended control change:
+//! Re-record only for an intended control change, or a TELEMETRY layout
+//! change, which moves the raw fold but no computed value:
 //! `KERNEL_TRACE_RECORD=1 cargo test -p osc-integration --test kernel_trace`
 
 use std::collections::BTreeSet;
@@ -112,10 +113,10 @@ struct Row {
     i_lim_counts: u16,
     t_winding_cc: i16,
     vbus_counts: u16,
-    duty_applied_q15: i16,
+    duty_ticks: i16,
     omega_bemf_cps: i16,
     r_hat_q12: u16,
-    i_hat_counts: i16,
+    i_tick_counts: i16,
 }
 
 const ROW_LEN: usize = 36;
@@ -130,18 +131,18 @@ impl Row {
             fault_code: t.telemetry.mode.fault_code,
             omega_hat_src: t.telemetry.mode.omega_hat_src,
             fault_flags: t.telemetry.common.fault_flags,
-            pos: t.telemetry.sensors.pos,
-            current_bias_counts: t.telemetry.sensors.current_bias_counts,
+            pos: t.telemetry.tick.pos,
+            current_bias_counts: t.telemetry.refs.current_bias_counts,
             theta_hat_q16: e.theta_hat_q16,
             omega_hat_cps: e.omega_hat_cps,
             tau_d_counts: e.tau_d_counts,
             i_lim_counts: e.i_lim_counts,
             t_winding_cc: e.t_winding_cc,
             vbus_counts: e.vbus_counts,
-            duty_applied_q15: e.duty_applied_q15,
+            duty_ticks: t.telemetry.tick.duty_ticks,
             omega_bemf_cps: e.omega_bemf_cps,
             r_hat_q12: e.r_hat_q12,
-            i_hat_counts: e.i_hat_counts,
+            i_tick_counts: t.telemetry.tick.i_tick_counts,
         }
     }
 
@@ -163,10 +164,10 @@ impl Row {
         out.extend_from_slice(&self.i_lim_counts.to_le_bytes());
         out.extend_from_slice(&self.t_winding_cc.to_le_bytes());
         out.extend_from_slice(&self.vbus_counts.to_le_bytes());
-        out.extend_from_slice(&self.duty_applied_q15.to_le_bytes());
+        out.extend_from_slice(&self.duty_ticks.to_le_bytes());
         out.extend_from_slice(&self.omega_bemf_cps.to_le_bytes());
         out.extend_from_slice(&self.r_hat_q12.to_le_bytes());
-        out.extend_from_slice(&self.i_hat_counts.to_le_bytes());
+        out.extend_from_slice(&self.i_tick_counts.to_le_bytes());
     }
 
     fn decode(b: &[u8; ROW_LEN]) -> Self {
@@ -188,10 +189,10 @@ impl Row {
             i_lim_counts: u16_at(22),
             t_winding_cc: i16_at(24),
             vbus_counts: u16_at(26),
-            duty_applied_q15: i16_at(28),
+            duty_ticks: i16_at(28),
             omega_bemf_cps: i16_at(30),
             r_hat_q12: u16_at(32),
-            i_hat_counts: i16_at(34),
+            i_tick_counts: i16_at(34),
         }
     }
 }
@@ -219,7 +220,7 @@ fn run(lut: Option<&[i16; POINTS]>, ticks: u32, script: Script) -> Vec<Row> {
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let n = ((rng >> 24) as i32 % 7) - 3;
         f.pos = (f.pos as i32 + n).clamp(0, 4095) as u16;
-        k.on_tick(f, &sh);
+        k.on_scan(f, &sh);
         let cmd = last_cmd(&k);
         duty = duty_of(&k);
         let code = cmd_code(cmd);
@@ -351,7 +352,9 @@ const STEP_GOAL: i32 = START_POS as i32 + 400;
 fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
     let k = support::mg90_a();
     let rows = run(Some(&k), STEP_TICKS, step_script);
-    for (i, r) in rows.iter().enumerate() {
+    // row 0 is the boot tick, ahead of the first estimate's publish; each
+    // later row's pos is three ticks newer than its estimates
+    for (i, r) in rows.iter().enumerate().skip(1) {
         let lin = (interp_q4(r.pos, &k) as i32) << (16 - GRID_SHIFT);
         // the observer lags a moving pot; +-3 counts of noise parked
         let tol = if r.omega_hat_cps.unsigned_abs() >> 16 > 100 {
@@ -401,10 +404,10 @@ fn row_codec_round_trips() {
         i_lim_counts: 1200,
         t_winding_cc: -150,
         vbus_counts: 3000,
-        duty_applied_q15: -8000,
+        duty_ticks: -293,
         omega_bemf_cps: -2,
         r_hat_q12: 8192,
-        i_hat_counts: 301,
+        i_tick_counts: 301,
     };
     let mut b = Vec::new();
     r.encode(&mut b);

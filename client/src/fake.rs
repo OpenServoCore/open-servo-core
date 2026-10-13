@@ -13,6 +13,8 @@ use crate::pipe::{Pipe, PipeError};
 
 pub use osc_integration::plant::duty_counts;
 pub use osc_integration::sim::{TelSample, tel_sample};
+pub use osc_servo_core::TelemetryTick;
+pub use osc_servo_core::tel::tick_flag;
 
 /// The dev board's own facts, one real SG90's calibration dumped off it and
 /// a bench MG90's identified motor: what a simulated servo needs to read
@@ -91,7 +93,7 @@ impl Winding {
     fn publish(&mut self, t: &mut ControlTable, now_us: u64) {
         let th = t.calib.thermal;
         let r0 = t.calib.winding.r0_q12;
-        let raw = match t.telemetry.sensors.ntc_raw {
+        let raw = match t.telemetry.tick.ntc_raw {
             0 => seed::NTC_RAW_ROOM,
             r => r,
         };
@@ -128,11 +130,11 @@ impl Winding {
         let mut limits = LimitState::new();
         limits.update_derate(t_cc, &lim);
         limits.fold(false, 0, 0, 0, false, &lim);
-        t.telemetry.sensors.ntc_raw = raw;
+        t.telemetry.tick.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
         t.telemetry.estimates.i_lim_counts = limits.i_lim_counts();
-        t.telemetry.therm.t_ntc_cc = t_ntc.unwrap_or(0);
-        t.telemetry.therm.therm_flags = flags;
+        t.telemetry_ext.therm.t_ntc_cc = t_ntc.unwrap_or(0);
+        t.telemetry_ext.therm.therm_flags = flags;
     }
 }
 
@@ -235,7 +237,7 @@ impl FakePipe {
         let n = track.len().max(1) as f64;
         self.windings[i].i_sq_mean = track
             .iter()
-            .map(|s| (s.current as f64).powi(2))
+            .map(|s| (s.tick.i_tick_counts as f64).powi(2))
             .sum::<f64>()
             / n;
         self.sim.set_track(i, track);

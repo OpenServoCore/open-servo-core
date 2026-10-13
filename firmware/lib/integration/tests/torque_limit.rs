@@ -90,7 +90,7 @@ fn run(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut RlPlant, ticks: u32) -> Vec<
     (0..ticks)
         .map(|_| {
             let duty = duty_of(k);
-            k.on_tick(p.step(duty), sh);
+            k.on_scan(p.step(duty), sh);
             (duty_of(k), p.current())
         })
         .collect()
@@ -510,7 +510,7 @@ fn window_v_floor_is_published_beside_the_current_floor() {
         sh.table.with(|t| {
             (
                 t.telemetry.limits.window_floor_q15,
-                t.telemetry.limits_ext.window_v_floor_q15,
+                t.telemetry_ext.limits_ext.window_v_floor_q15,
             )
         })
     };
@@ -539,7 +539,10 @@ fn window_v_floor_follows_the_openloop_decay() {
         t.calib.sense.v_window_min_ticks = 93;
     });
     stamp(&sh);
-    let v_floor = || sh.table.with(|t| t.telemetry.limits_ext.window_v_floor_q15);
+    let v_floor = || {
+        sh.table
+            .with(|t| t.telemetry_ext.limits_ext.window_v_floor_q15)
+    };
     let duty = |ticks| floor_duty(ticks, TIMING.pwm_arr, TIMING.recip_arr_q24);
     let mut p = RlPlant::new(MID);
     let mut k = Kernel::new(

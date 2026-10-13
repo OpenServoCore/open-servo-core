@@ -1,9 +1,10 @@
-use crate::SensorFrame;
+use crate::Shared;
 
 /// What the kernel control loop reads from the board hardware.
 pub trait Sensors {
-    /// Acquisition only: one full ADC/encoder frame in device counts.
-    fn frame(&mut self) -> SensorFrame;
+    /// Acquisition only: complete the scan's frame in device counts in the
+    /// table's tick block (`Shared::frame`), at the tick's entry.
+    fn land(&mut self, shared: &Shared);
 }
 
 /// What the kernel control loop writes to the motor driver.
