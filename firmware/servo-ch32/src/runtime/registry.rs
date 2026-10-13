@@ -78,6 +78,11 @@ impl Drivers {
     /// engine, and after the table's comms block is final (defaults
     /// seeded + saved image overlaid); `ServoBus::new` applies the
     /// effective baud to the live BRR and break-wake reload.
+    ///
+    /// Out of line: the bus's construction is a memcpy call, allowed for
+    /// bringup by name (`.github/check-no-mem.sh`); inlined it would land
+    /// in `__run` beside the main loop.
+    #[inline(never)]
     pub unsafe fn install(w: &BoardWiring) {
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
