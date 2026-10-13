@@ -4,6 +4,8 @@
 //! below the bus), and the TEL burst it paces from its tail. Above the bus,
 //! costs come from the budget table (`osc_servo_core::budget`) at budget:
 //! every body at its maximum.
+//! Pins run at budget; a red pin is a design finding, never a looser
+//! threshold.
 
 use osc_host::engine::{CHAIN_READY_LAG_US, Command, Outcome};
 use osc_integration::sim::{
