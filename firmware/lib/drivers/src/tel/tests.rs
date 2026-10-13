@@ -155,9 +155,9 @@ impl Rig {
     }
 
     /// The bus's arm: post the chunks, then lend the lane.
-    fn arm(&mut self, c: Chunks, count: u16) -> u8 {
-        self.post.post(c);
-        self.post.start(count, ID)
+    fn arm(&mut self, c: Chunks, count: u16) {
+        assert!(self.post.arm(c, count));
+        self.post.start(ID);
     }
 
     /// Ticks until the wire carries an image, at most `bound`.
@@ -351,21 +351,23 @@ fn full_images_drop_and_count() {
 #[test]
 fn last_frame_publishes_the_resume_cursor() {
     let mut r = rig();
-    let epoch = r.arm(POS, 2);
+    r.arm(POS, 2);
     r.ring.set_cursor(77);
     let mut i = 0;
     while r.wire.streaming().is_none() {
-        assert_eq!(r.post.last_out(epoch), None, "tick {i}");
+        assert_eq!(r.post.returned(|| true), None, "tick {i}");
         r.tick(i);
         i += 1;
         assert!(i < 16, "the LAST frame never armed");
     }
-    assert_eq!(r.post.last_out(epoch), Some(77));
+    assert_eq!(r.post.returned(|| false), None);
+    assert_eq!(r.post.returned(|| true), Some(77));
 
-    let epoch = r.arm(Chunks::one(tick::POS, 14), 5);
+    r.arm(Chunks::one(tick::POS, 14), 5);
+    assert_eq!(r.post.returned(|| true), None);
     r.ring.set_cursor(91);
     r.tick(0);
-    assert_eq!(r.post.last_out(epoch), Some(91));
+    assert_eq!(r.post.returned(|| true), Some(91));
     assert!(r.lane.idle());
 }
 
@@ -392,13 +394,13 @@ fn lane_runs_only_while_lent() {
 #[test]
 fn posted_chunks_wait_for_their_lend() {
     let mut r = rig();
-    r.post.post(POS);
-    r.post.post(SIX);
+    assert!(r.post.arm(POS, 16));
+    assert!(r.post.arm(SIX, 16));
     for i in 0..20 {
         r.tick(i);
     }
     assert!(r.wire.log().is_empty());
-    r.post.start(16, ID);
+    r.post.start(ID);
     r.run(0, 40);
     let f = &r.wire.streamed()[0];
     assert_eq!(payload(f), golden(SIX, 0, true, 0..16));

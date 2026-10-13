@@ -13,14 +13,12 @@ use super::clock::ClockDiscipline;
 use super::decode::Slot;
 use super::framer::Framer;
 use super::tx::{TxEngine, TxOut};
+use crate::tel::TelPost;
 use crate::traits::bus::{BreakStamps, Deadline, Providers, RxRing, UsartBaud, tick_reached};
 
 mod crc;
 mod reply;
 mod route;
-mod tel;
-
-use tel::TelBurst;
 
 /// us-per-byte numerator: 10 bit-times/byte x 1e6 us/s. `tpb = TICKS_PER_US x
 /// this / baud` stays within u32 for all four operational rates.
@@ -89,7 +87,7 @@ pub struct ServoBus<P: Providers> {
     // Clock discipline (sec 9.3): MGMT CAL + trim loop.
     clock: ClockDiscipline,
     // TEL burst (sec 5.6): armed by tel_count, streamed by the kernel.
-    burst: TelBurst,
+    tel: Option<TelPost>,
     // Rescue sampler window (sec 9.1): the first low sample's tick and the
     // cursor the ring must hold until the declaration.
     rescue_since: Option<u32>,
@@ -154,7 +152,7 @@ impl<P: Providers> ServoBus<P> {
             chain_at: None,
             unringed: None,
             clock: ClockDiscipline::new(<P::Deadline as Deadline>::CLOCK_TRIM_STEP_PPM),
-            burst: TelBurst::new(),
+            tel: None,
             rescue_since: None,
             rescue_cursor: 0,
         }
@@ -162,8 +160,8 @@ impl<P: Providers> ServoBus<P> {
 
     /// Bind the TEL channel's bus half. Bringup-only, before any arm can
     /// arrive; without it `tel_arm` stays a drop.
-    pub fn attach_tel(&mut self, post: crate::tel::TelPost) {
-        self.burst.attach(post);
+    pub fn attach_tel(&mut self, post: TelPost) {
+        self.tel = Some(post);
     }
 
     /// Break-wake ISR (the bus held low a break's length, sec 3.4 -- garble
@@ -216,8 +214,10 @@ impl<P: Providers> ServoBus<P> {
     /// Drop the staged or streaming reply; a TEL arm waiting on its
     /// release goes with it.
     fn abort_reply(&mut self) {
-        if self.tx.abort() {
-            self.burst.void();
+        if self.tx.abort()
+            && let Some(t) = self.tel.as_mut()
+        {
+            t.end();
         }
     }
 
@@ -228,11 +228,14 @@ impl<P: Providers> ServoBus<P> {
     /// one after it.
     fn take_lane(&mut self) -> bool {
         let tx = &self.tx;
-        let Some(resume) = self.burst.returned(|| tx.wire_idle()) else {
+        let Some(t) = self.tel.as_mut() else {
+            return false;
+        };
+        let Some(resume) = t.returned(|| tx.wire_idle()) else {
             return false;
         };
         self.tx.reclaim();
-        self.burst.stop();
+        t.stop();
         self.framer.resync(resume);
         true
     }
@@ -345,7 +348,9 @@ impl<P: Providers> ServoBus<P> {
         }
         // A pending reboot waits for the main loop's `take_reboot`.
         if out == TxOut::Lent {
-            self.burst.start(self.id);
+            if let Some(t) = self.tel.as_mut() {
+                t.start(self.id);
+            }
             return;
         }
         // The ladder waited on the CRC engine while the reply streamed.
