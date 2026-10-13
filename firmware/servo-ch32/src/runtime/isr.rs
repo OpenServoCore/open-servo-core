@@ -88,10 +88,10 @@ pub fn on_adc_dma_tc() {
     // A shunt burst time-shares DMA1 CH1, so its HT and TC arrive on this
     // vector; the buffer then holds raw shunt codes, not a 7-slot scan, and
     // nothing below may run against it.
-    if crate::control::burst::capturing() {
+    if crate::runtime::burst::capturing() {
         core::hint::cold_path();
         load.skip();
-        crate::control::burst::on_dma_event(&SHARED);
+        crate::runtime::burst::on_dma_event(&SHARED);
         crate::probe::kernel_other(entry);
         return;
     }
@@ -115,7 +115,7 @@ pub fn on_adc_dma_tc() {
 
     // Trailing on purpose: the burst handshake must never displace a kernel
     // tick, and a launch wants the scan TC's slack ahead of the next trigger.
-    crate::control::burst::poll_arm(&SHARED);
+    crate::runtime::burst::poll_arm(&SHARED);
 
     let window = load.tick(entry, systick::ticks());
     let health = window.is_some();

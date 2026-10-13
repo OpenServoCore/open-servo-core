@@ -6,10 +6,10 @@
 use osc_servo_core::{DecayMode, Motor as MotorTrait, MotorCmd};
 use osc_servo_drivers::Level;
 
-use crate::control::sensors::scan::{self, Direction};
 use crate::hal::Pin;
 use crate::hal::gpio::LevelWrite;
 use crate::hal::timer::{self, DutyReg};
+use crate::providers::sensors::scan::{self, Direction};
 
 const STATIC_HIGH: u16 = u16::MAX;
 

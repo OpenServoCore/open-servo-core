@@ -3,11 +3,11 @@ use core::mem::MaybeUninit;
 use osc_servo_core::{Kernel, KernelTiming, Session, Shared};
 use osc_servo_drivers::tel::{TelChannel, TelLane};
 
-use crate::control::Ch32ControlIo;
 use crate::providers::crc::Crc;
 use crate::providers::deadline::Deadline;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
+use crate::runtime::control_io::Ch32ControlIo;
 use crate::runtime::registry::V006Providers;
 
 pub static SHARED: Shared = Shared::new();
