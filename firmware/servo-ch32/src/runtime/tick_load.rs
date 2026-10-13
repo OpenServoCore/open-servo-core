@@ -3,7 +3,7 @@
 //! `runtime::isr` stamps, keeps the one `TickLoad` and publishes into
 //! TELEMETRY `health`: the counters every 20 ticks, the mean every 4000.
 
-use osc_servo_core::kernel::{HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS};
+use osc_servo_core::kernel::{HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, HEALTH_LOST_MAX};
 
 use crate::cfg::chip;
 use crate::hal::clocks::HCLK_HZ;
@@ -21,8 +21,6 @@ const MEAN_RECIP: u64 = (32768u64 << 32).div_ceil(LONG as u64 * PERIOD as u64);
 /// The count a fresh window starts at: the first close lands on the boot
 /// count's first `HEALTH_CLOSE_PHASE` tick (`kernel::health_close_at`).
 const FIRST: u8 = SHORT - 1 - HEALTH_CLOSE_PHASE;
-/// Bounds the lost-tick loop per short window.
-const LOST_MAX: u16 = 16;
 
 const _: () = assert!(SHORT as u32 == HEALTH_CLOSE_TICKS && HEALTH_CLOSE_PHASE < SHORT);
 const _: () = assert!(MEAN_RECIP <= u32::MAX as u64);
@@ -46,7 +44,7 @@ pub fn catch_up(debt: u32, elapsed: u32) -> (u32, u16) {
         .wrapping_add(elapsed)
         .saturating_sub(SHORT as u32 * PERIOD);
     let mut lost = 0;
-    while debt >= PERIOD && lost < LOST_MAX {
+    while debt >= PERIOD && lost < HEALTH_LOST_MAX {
         debt -= PERIOD;
         lost += 1;
     }
@@ -246,8 +244,8 @@ mod tests {
 
     #[test]
     fn a_long_hold_off_counts_the_bound_and_resyncs() {
-        assert_eq!(lost(0, &[0, 400, 600]), [0, LOST_MAX, 0]);
-        assert_eq!(catch_up(0, 40 * PERIOD), (0, LOST_MAX));
+        assert_eq!(lost(0, &[0, 400, 600]), [0, HEALTH_LOST_MAX, 0]);
+        assert_eq!(catch_up(0, 40 * PERIOD), (0, HEALTH_LOST_MAX));
     }
 
     #[test]

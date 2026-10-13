@@ -33,8 +33,8 @@ pub use phases::loops::position::PosOut;
 pub use phases::loops::trajectory::TrajGen;
 pub use phases::loops::velocity::VelocityLoop;
 pub use scheduler::table::{
-    DECIM_MED, DECIM_SLOW, HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, TICK_HZ, health_close_at,
-    health_close_lands, phase,
+    DECIM_MED, DECIM_SLOW, HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, HEALTH_LOST_MAX, TICK_HZ,
+    health_close_at, health_close_lands, phase,
 };
 pub use scheduler::{Kernel, KernelTiming, ProbeTags};
 
