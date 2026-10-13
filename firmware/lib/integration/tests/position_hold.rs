@@ -17,6 +17,7 @@
 use osc_integration::plant::{BIAS, FakeIo, kernel, lut_live, seed, vbus_raw};
 use osc_servo_core::kernel::limits::flag;
 use osc_servo_core::pos_lut::{GRID, POINTS};
+use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::{
     ControlTable, Kernel, MotorCmd, RegionStorage, SensorFrame, Shared, StallResponse,
 };
@@ -228,7 +229,7 @@ fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         c.loop_position.accel_limit_q88 = 5120;
         c.limits.current_limit_counts = 280;
         c.limits.stall_response = StallResponse::Yield;
-        c.limits.stall_time_ms = 500;
+        c.limits.stall_time_ticks = ms_ticks(500);
         c.limits.stall_yield_counts = 168;
         c.limits.stall_release_counts = 84;
         c.limits.stall_tau_trip_counts = 2182;

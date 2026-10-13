@@ -28,7 +28,7 @@ use osc_protocol::build;
 use osc_protocol::tel::{CHUNKS_MAX, Chunks};
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
-use osc_servo_core::regions::config::addr::pos_limits::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
+use osc_servo_core::regions::config::addr::pos_phys::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 

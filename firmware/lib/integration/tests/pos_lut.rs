@@ -550,8 +550,8 @@ fn endstop_blocks(lut: Option<&[i16; POINTS]>, pos: u16, soft: (i32, i32), duty:
         lut_live(&sh, k);
     }
     sh.table.with_mut(|t| {
-        t.config.pos_limits.pos_min_soft_counts = soft.0;
-        t.config.pos_limits.pos_max_soft_counts = soft.1;
+        t.config.pos_soft.pos_min_soft_counts = soft.0;
+        t.config.pos_soft.pos_max_soft_counts = soft.1;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = duty;
         t.control.lifecycle.torque_enable = true;

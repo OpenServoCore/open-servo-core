@@ -27,7 +27,7 @@ use osc_servo_core::kernel::limits::flag;
 use osc_servo_core::regions::burst::{
     BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };
-use osc_servo_core::regions::{ControlTable, DecaySelect, Mode};
+use osc_servo_core::regions::{ControlTable, Mode};
 use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
 
 use crate::cfg::chip;
@@ -187,8 +187,8 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
                 (
                     (&raw const (*p).telemetry.estimates.vbus_counts).read_volatile(),
                     (&raw const (*p).telemetry.tick.pos).read_volatile() as i32,
-                    (&raw const (*p).config.pos_limits.pos_min_soft_counts).read_volatile(),
-                    (&raw const (*p).config.pos_limits.pos_max_soft_counts).read_volatile(),
+                    (&raw const (*p).config.pos_soft.pos_min_soft_counts).read_volatile(),
+                    (&raw const (*p).config.pos_soft.pos_max_soft_counts).read_volatile(),
                     (&raw const (*p).telemetry.limits.limit_flags).read_volatile(),
                 )
             };
@@ -216,10 +216,7 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
             let duty = (req.duty_q15 as i32).clamp(-max, max) as i16;
             f.duty_q15 = if lim_cfg.drive_polarity { duty } else { -duty };
-            f.decay = match lim_cfg.openloop_decay {
-                DecaySelect::Slow => DecayMode::Slow,
-                DecaySelect::Fast => DecayMode::Fast,
-            };
+            f.decay = lim_cfg.openloop_decay;
             f.chans = req.chans;
             f.settle = BURST_SETTLE_TICKS;
             f.armed_at = now;
@@ -466,8 +463,8 @@ mod tests {
             t.control.lifecycle.mode = Mode::OpenLoop;
             t.config.limits.drive_polarity = true;
             t.config.loop_current.duty_max_q15 = i16::MAX as u16;
-            t.config.pos_limits.pos_min_soft_counts = SOFT_MIN;
-            t.config.pos_limits.pos_max_soft_counts = SOFT_MAX;
+            t.config.pos_soft.pos_min_soft_counts = SOFT_MIN;
+            t.config.pos_soft.pos_max_soft_counts = SOFT_MAX;
             t.telemetry.tick.pos = 2048;
             t.telemetry.estimates.vbus_counts = RAIL_2S;
         });

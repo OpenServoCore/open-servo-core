@@ -148,6 +148,8 @@ struct TelPump {
     /// Samples the encoder took this burst (fed less dropped), of `count`.
     encoded: u32,
     count: u32,
+    /// The running kernel body was charged a row.
+    row_charged: bool,
     /// Per-burst ticks [from, to) the kernel never runs (see
     /// [`Sim::lose_tel_ticks`]).
     lost: Option<(u32, u32)>,
@@ -358,6 +360,7 @@ impl Sim {
             n: 0,
             encoded: 0,
             count: 0,
+            row_charged: false,
             lost: None,
             fault: None,
             track: None,
@@ -993,7 +996,6 @@ impl Sim {
         if t.lost.is_some_and(|(from, to)| (from..to).contains(&n)) {
             return Some(0);
         }
-        let owed = t.encoded < t.count;
         let mut s = match &t.track {
             Some(track) => track.rows[track.row(now)],
             None => tel_sample(n),
@@ -1004,13 +1006,18 @@ impl Sim {
                 s.tick.tick_flags |= tick_flag::FAULT;
             }
         }
-        let drops = self.servos[j].tel_drops();
         let lane = self.handles[j].lane.snapshot();
-        self.servos[j].tel_tick(&s, n, self.cpus[j].kernel_holds());
+        let rows = self.handles[j].lane.rows.get();
+        let hold_start = self.cpus[j].kernel_hold_start();
+        let held = hold_start && t.encoded == 0;
+        self.servos[j].tel_tick(&s, n, self.cpus[j].kernel_holds(), hold_start);
+        let copied = self.handles[j].lane.rows.get() > rows;
+        let charged = std::mem::take(&mut self.tels[j].row_charged);
+        self.cpus[j].kernel_row(charged, copied, held);
         let c = self.cpus[j].kernel_tel();
         let mut cost = c.poll;
         let t = &mut self.tels[j];
-        if owed && self.servos[j].tel_drops() == drops {
+        if copied {
             t.encoded += 1;
             let at = t.encoded % STREAM_SAMPLES_MAX as u32;
             if at == 1 {
@@ -1143,6 +1150,7 @@ impl Sim {
         }
         let frames = self.servos[j].dispatched() - before;
         self.cpus[j].charge_frames(frames);
+        self.cpus[j].kernel_config(self.servos[j].config_seq());
         self.cpus[j].book(v, frames > 0);
         self.handles[j].clock_lag.set(0);
     }
@@ -1168,8 +1176,11 @@ impl Sim {
                 .schedule(Event::KernelRetry { servo: j }, at);
         }
         if self.cpus[j].kernel_stats().entries > entries && self.tels[j].running {
-            let t = &self.tels[j];
-            if t.encoded < t.count {
+            let t = &mut self.tels[j];
+            // a held start copies nothing
+            let held = self.cpus[j].kernel_hold_start() && t.encoded == 0;
+            if t.encoded < t.count && !held {
+                t.row_charged = true;
                 let row = self.cpus[j].kernel_tel().row;
                 self.cpus[j].extend_kernel(now, row);
             }

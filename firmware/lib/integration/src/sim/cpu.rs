@@ -183,9 +183,13 @@ pub struct TelCosts {
 /// THERM_SIDE then and before the due stage), each holding the TX lane as
 /// the kernel does, and the tick-load close where the chip's count lands
 /// it ([`budget::health_close_at`], the lane's first tick the boot tick),
-/// with the catch-up when a tick was lost since the last one.
+/// with the catch-up when a tick was lost since the last one. A
+/// configuration take runs on phase THERM_INSTALL when the servo's count is
+/// even and new, in place of an install there, which waits a period; it
+/// holds no lane.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
+    pub refresh: u64,
     pub slow_due: [u64; 2],
     pub finish: u64,
     pub install: u64,
@@ -213,6 +217,7 @@ impl KernelLane {
                 patch: budget::TEL_PATCH as u64,
             },
             events: KernelEvents {
+                refresh: budget::REFRESH as u64,
                 slow_due: budget::SLOW_DUE.map(u64::from),
                 finish: budget::SLOW_FINISH.max(budget::SLOW_CLOSE) as u64,
                 install: budget::THERM_INSTALL as u64,
@@ -236,7 +241,7 @@ impl KernelLane {
         let span = phases.len() as u64 * KERNEL_PERIOD;
         let at = |p: u8, extra: u64| phases.get(p as usize).map_or(0, |b| b + extra);
         let events = at(phase::SLOW, ev.slow_due[r].max(ev.finish))
-            .max(at(phase::THERM_INSTALL, ev.install))
+            .max(at(phase::THERM_INSTALL, ev.install.max(ev.refresh)))
             .max(at(phase::THERM_SIDE, ev.side));
         let longest = phases.iter().copied().max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
@@ -290,6 +295,15 @@ pub struct KernelStats {
     pub stage_steps: u64,
     /// Tick-load closes by phase.
     pub closes: [u64; PHASES],
+    /// Configuration takes, and the most ticks from a committed set to the
+    /// tick that took it.
+    pub takes: u64,
+    pub apply_max: u64,
+    /// TEL rows copied on a take's tick, ticks a burst's start was held,
+    /// and ticks whose row charge and copy disagree (the sim's own check).
+    pub take_rows: u64,
+    pub held_starts: u64,
+    pub row_misses: u64,
     /// gamma(k) of the bodies, entry and exit excluded (probe scope).
     pub windows: Windows,
 }
@@ -309,6 +323,17 @@ struct Kernel {
     /// The running body runs a SLOW or thermometer stage, and which.
     stage: bool,
     therm: bool,
+    /// The servo's configuration count as the next tick reads it, the one
+    /// the last take saw, and the tick a set not yet taken was committed at.
+    config_seq: u8,
+    config_taken: u8,
+    config_new_at: Option<u64>,
+    /// A take had THERM_INSTALL when the install was due.
+    install_owed: bool,
+    /// The running body holds a burst's start (its phase is the take's, or
+    /// a take is pending), and ran the take.
+    hold_start: bool,
+    took: bool,
     /// The running body, extensions included.
     body: u64,
     /// The scan pended and not yet entered.
@@ -502,6 +527,12 @@ impl Cpu {
             regime: Regime::Open,
             stage: false,
             therm: false,
+            config_seq: 0,
+            config_taken: 0,
+            config_new_at: None,
+            install_owed: false,
+            hold_start: false,
+            took: false,
             body: 0,
             pend_at: None,
             entered: 0,
@@ -582,16 +613,36 @@ impl Cpu {
         let ev = k.lane.events;
         let slow = DECIM_SLOW as u64;
         let at = k.periods % slow;
+        let install = k.phase == phase::THERM_INSTALL as usize;
+        let take = install && k.config_seq & 1 == 0 && k.config_seq != k.config_taken;
+        k.took = take;
         let stage = match k.phase as u8 {
+            phase::THERM_INSTALL if take => {
+                k.install_owed |= at == 2;
+                None
+            }
             phase::SLOW if at == 0 => Some(ev.slow_due[r]),
             phase::SLOW if at == 1 => Some(ev.finish),
-            phase::THERM_INSTALL if at == 2 => Some(ev.install),
+            phase::THERM_INSTALL if at == 2 || k.install_owed => {
+                k.install_owed = false;
+                Some(ev.install)
+            }
             phase::THERM_SIDE if at == 2 || at == slow - 1 => Some(ev.side),
             _ => None,
         };
         k.stage = stage.is_some();
         k.therm = matches!(k.phase as u8, phase::THERM_INSTALL | phase::THERM_SIDE) && k.stage;
         cost += stage.unwrap_or(0);
+        if take {
+            cost += ev.refresh;
+            k.config_taken = k.config_seq;
+            k.stats.takes += 1;
+            if let Some(from) = k.config_new_at.take() {
+                k.stats.apply_max = k.stats.apply_max.max(tick - from);
+            }
+        }
+        // the kernel's start rule, asked after the take
+        k.hold_start = install || k.config_seq != k.config_taken;
         if budget::health_close_at(tick) {
             k.stats.closes[k.phase] += 1;
             cost += ev.health_close;
@@ -630,6 +681,22 @@ impl Cpu {
         self.kernel.as_ref().is_some_and(|k| k.stage)
     }
 
+    /// The running body holds a burst not yet started: its phase is the
+    /// take's, or a configuration take is pending.
+    pub fn kernel_hold_start(&self) -> bool {
+        self.kernel.as_ref().is_some_and(|k| k.hold_start)
+    }
+
+    /// The running body's TEL tick: whether a row was charged at entry,
+    /// whether the feed copied one, and whether a burst start was held.
+    pub fn kernel_row(&mut self, charged: bool, copied: bool, held: bool) {
+        if let Some(k) = self.kernel.as_mut() {
+            k.stats.take_rows += (k.took && copied) as u64;
+            k.stats.row_misses += (charged != copied) as u64;
+            k.stats.held_starts += held as u64;
+        }
+    }
+
     /// The running body's TEL tick: whether its TX lane took a step.
     pub fn kernel_lane_step(&mut self, stepped: bool) {
         if let Some(k) = self.kernel.as_mut()
@@ -647,6 +714,19 @@ impl Cpu {
             && k.goal.replace(goal).is_some_and(|g| g != goal)
         {
             k.goal_at = k.stats.entries;
+        }
+    }
+
+    /// The servo's configuration count as the next tick reads it: a new
+    /// even value is a committed set, timed from the tick it lands before.
+    pub fn kernel_config(&mut self, seq: u8) {
+        if let Some(k) = self.kernel.as_mut()
+            && seq != k.config_seq
+        {
+            k.config_seq = seq;
+            if seq & 1 == 0 && k.config_new_at.is_none() {
+                k.config_new_at = Some(k.stats.entries);
+            }
         }
     }
 

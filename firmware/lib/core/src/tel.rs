@@ -73,7 +73,10 @@ pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + STREAM_SAMPLES_MAX * ROW_BYTE
 /// The kernel's per-fast-tick stream hook; core never names the transport.
 pub trait TelStream {
     /// The tick block is published: the row's first chunk may be taken.
-    fn on_tick(&mut self);
+    /// `hold_start`, asked only when a burst would start: true on the
+    /// kernel's configuration take phase and while a take is pending, when
+    /// the burst waits a tick, so no tick carries both a take and a row.
+    fn on_tick(&mut self, hold_start: impl FnOnce() -> bool);
     /// The tick runs a SLOW or thermometer stage: the TX lane takes no step
     /// on it. Any time before [`Self::on_tick_end`].
     fn hold(&mut self) {}
@@ -84,7 +87,7 @@ pub trait TelStream {
 
 /// Stream absent (boards without a burst producer, tests).
 impl TelStream for () {
-    fn on_tick(&mut self) {}
+    fn on_tick(&mut self, _: impl FnOnce() -> bool) {}
 }
 
 /// Serialize the stream head at the front of `buf`: everything row 0

@@ -1,3 +1,5 @@
+use control_table::Enum;
+
 use crate::Shared;
 
 /// What the kernel control loop reads from the board hardware.
@@ -43,13 +45,17 @@ pub enum MotorCmd {
     },
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+/// Also CONFIG `openloop_decay`, OpenLoop's off-window decay (closed-loop
+/// modes force Slow): `repr(u8)`, and a discriminant outside `ALLOWED` is
+/// UB, so table writes gate on it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
+#[repr(u8)]
 pub enum DecayMode {
-    /// Off-window = COAST (idle leg LOW). Low EMI, near-zero avg current on DRV8212P.
-    Fast,
     /// Off-window = BRAKE (idle leg HIGH). DRV8212P-correct for usable torque.
     #[default]
-    Slow,
+    Slow = 0,
+    /// Off-window = COAST (idle leg LOW). Low EMI, near-zero avg current on DRV8212P.
+    Fast = 1,
 }
 
 bitflags::bitflags! {

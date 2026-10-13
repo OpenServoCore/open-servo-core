@@ -75,20 +75,16 @@ pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
 /// A window's mean is judged only over this many bodies.
 pub const MEAN_MIN_BODIES: u32 = 100;
 
-/// The two stages that rebuild the kernel's configuration snapshot after a
-/// configuration write, on top of [`KERNEL`], each at most once per period
-/// and in place of the thermometer's stage on that tick: the fast half, the
-/// thermometer's config and its bound at phase THERM_INSTALL; the rest of
-/// the medium half and the terminal floor's store at THERM_SIDE. Both E,
-/// plus 10%: the previous stage E (486 and 462, the stage tick over the
-/// same tick without the write, fetch model on the release image) less the
-/// fetch model's price of the code the floors, the rail clamp and the
-/// second Ke read took out of each stage body (load/store 3.25, ALU 2, mul
-/// 10, call and return 12, jump 6 HCLK, on the release disassembly): 140
-/// at THERM_INSTALL, 93 at THERM_SIDE, so 346 and 369. The previous M (525
-/// and 474) measured the larger bodies.
-pub const REFRESH_1: u32 = 381;
-pub const REFRESH_2: u32 = 406;
+/// The configuration take after a write, on top of [`KERNEL`], at most once
+/// per period, at phase THERM_INSTALL and in place of the thermometer's
+/// stage there: the input span's word copy, the Ke belt, the thermometer's
+/// config, its bound and the terminal floor's store. It carries no TEL row:
+/// a burst starts neither on THERM_INSTALL nor while a take is pending, and
+/// the host is silent through one. E: 557, the take and the bound it calls
+/// on the release disassembly with the fetch model (load/store 3.25, ALU 2,
+/// mul 10, taken transfer 6, call and return 12 HCLK; 84 loads and stores,
+/// 353, and the bound's worst path, 204), plus 10%.
+pub const REFRESH: u32 = 613;
 
 /// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
 /// predate it, by regime and phase: the scan landed by the ADC DMA (the
@@ -225,7 +221,7 @@ pub const HEALTH_CLOSE_TICKS: u32 = 2 * PHASES as u32;
 pub const CATCH_UP: u32 = 111;
 
 /// The phase every tick-load close lands on: the lightest Closed phase that
-/// carries no SLOW or thermometer stage and no refresh.
+/// carries no SLOW or thermometer stage and no configuration take.
 pub const HEALTH_CLOSE_PHASE: u8 = phase::PUBLISH;
 
 const _: () = assert!((HEALTH_CLOSE_TICKS as usize).is_multiple_of(PHASES));
@@ -342,15 +338,18 @@ pub enum Frame {
     Write,
     /// GREAD answered in slot 1 behind a silent slot 0 (reclaim).
     GreadSlot,
+    /// A WRITE or COMMIT whose commit reaches the kernel's inputs.
+    ConfigWrite,
 }
 
 impl Frame {
-    pub const ALL: [Frame; 5] = [
+    pub const ALL: [Frame; 6] = [
         Frame::Ping,
         Frame::Read32,
         Frame::Read240,
         Frame::Write,
         Frame::GreadSlot,
+        Frame::ConfigWrite,
     ];
 
     /// TX arms a reply streams in, each one TX-done body.
@@ -363,7 +362,8 @@ impl Frame {
 /// plus 6 us. Ping, E: the READ less its read dispatch (~5 us). Read240, E:
 /// Read32 plus 5 us (payload streams by DMA). Write, E: Read32 plus the
 /// goal rules and commit (37 us) plus 8 us. GreadSlot, E: Read32 plus the
-/// chain bookkeeping and reclaim deadline (15 us).
+/// chain bookkeeping and reclaim deadline (15 us). ConfigWrite, E: Write
+/// plus [`CONFIG_COUNT`].
 pub const fn frame(f: Frame) -> u32 {
     match f {
         Frame::Ping => 5520,
@@ -371,12 +371,20 @@ pub const fn frame(f: Frame) -> u32 {
         Frame::Read240 => 6240,
         Frame::Write => 8160,
         Frame::GreadSlot => 6720,
+        Frame::ConfigWrite => 8160 + CONFIG_COUNT,
     }
 }
 
+/// The configuration count's odd/even pair around a commit that reaches
+/// the kernel's inputs, over a goal WRITE's commit. E: 21 on the release
+/// disassembly, each side a load, a store and four address and add ops
+/// (load/store 3.25, ALU 2 HCLK) less the taken transfer a goal WRITE takes
+/// past it (6 against 2), plus 10%.
+pub const CONFIG_COUNT: u32 = 23;
+
 /// The same frames' mean over a window. E: Read32 112 us (the v1 118.9 us
-/// less the third arm, which two-arm replies dropped); Ping, Read240, Write
-/// and GreadSlot shifted from it as in [`frame`].
+/// less the third arm, which two-arm replies dropped); Ping, Read240, Write,
+/// GreadSlot and ConfigWrite shifted from it as in [`frame`].
 pub const fn frame_mean(f: Frame) -> u32 {
     match f {
         Frame::Ping => 5136,
@@ -384,6 +392,7 @@ pub const fn frame_mean(f: Frame) -> u32 {
         Frame::Read240 => 5616,
         Frame::Write => 7152,
         Frame::GreadSlot => 6096,
+        Frame::ConfigWrite => 7152 + CONFIG_COUNT,
     }
 }
 
@@ -408,7 +417,7 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     let r = regime as usize;
     let mut t = tick_body(regime, phase);
     if ev.refresh {
-        t += refresh(phase);
+        t += REFRESH;
     }
     if ev.slow {
         t += SLOW_DUE[r];
@@ -437,15 +446,6 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
         t += HEALTH_CLOSE;
     }
     t
-}
-
-/// The refresh stage row a tick at `phase` carries.
-pub const fn refresh(phase: usize) -> u32 {
-    if phase % PHASES == phase::THERM_INSTALL as usize {
-        REFRESH_1
-    } else {
-        REFRESH_2
-    }
 }
 
 /// What a kernel tick carried beyond its phase.

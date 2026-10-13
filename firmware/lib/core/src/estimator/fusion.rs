@@ -13,6 +13,8 @@
 
 use crate::math::q_mul;
 use crate::pos_lut::GRID_SHIFT;
+use crate::regions::calib::CalibMotor;
+use crate::regions::config::ConfigFusion;
 
 /// Q4 linearized counts -> cQ16.
 const Q4_TO_Q16: u32 = 16 - GRID_SHIFT;
@@ -44,17 +46,6 @@ const TAU_D_LIM_CCQ16: i32 = 4095 << 16;
 /// shift-0 b_i product i32-exact for any gain encoding; only the << 3 to
 /// csQ16 saturates (velocity.rs shift discipline).
 const ACCEL_LIM_CC: i32 = 8192;
-
-/// CALIB motor (b_i, fric_fc) + CONFIG fusion correction gains, prebuilt by
-/// the kernel's configuration refresh.
-#[derive(Copy, Clone, Default)]
-pub struct FusionGains {
-    pub b_i_q313: u16,
-    pub l1_q016: u16,
-    pub l2_q88: u16,
-    pub l3_q88: u16,
-    pub fric_fc_counts: u16,
-}
 
 fn fric_c(omega_q16: i32, fric_fc_counts: u16) -> i32 {
     if omega_q16 > FRIC_OMEGA_EPS_CSQ16 {
@@ -95,18 +86,27 @@ impl FusionObs {
     /// `i_counts` is the caller's held current: the last window-valid
     /// measurement, 0 once nothing drives - the observer never sees the
     /// validity flag.
-    pub fn step(&mut self, i_counts: i32, pos_q4: u16, dt_q32: u32, gains: &FusionGains) {
+    /// The model is CALIB `motor`'s (b_i, fric_fc), the corrections CONFIG
+    /// `fusion`'s.
+    pub fn step(
+        &mut self,
+        i_counts: i32,
+        pos_q4: u16,
+        dt_q32: u32,
+        gains: &ConfigFusion,
+        motor: &CalibMotor,
+    ) {
         // Predict. b_i is Q3.13 of B (c/s per ccount per period), so the
         // shift-0 product lands in csQ13 (< 2^29, exact); the << 3 to csQ16
         // saturates only beyond omega full scale (ACCEL_LIM_CC keeps the
         // product itself i32-exact). Saturating subs guard a hostile
         // i_counts, everything downstream is clamp-bounded.
-        let fric = fric_c(self.omega_q16, gains.fric_fc_counts);
+        let fric = fric_c(self.omega_q16, motor.fric_fc_counts);
         let accel = i_counts
             .saturating_sub(fric)
             .saturating_sub(self.tau_d_q16 >> 16)
             .clamp(-ACCEL_LIM_CC, ACCEL_LIM_CC);
-        let d_omega = q_mul(gains.b_i_q313 as i32, accel, 0);
+        let d_omega = q_mul(motor.b_i_q313 as i32, accel, 0);
         self.omega_q16 = self
             .omega_q16
             .saturating_add(d_omega.saturating_mul(1 << 3))
@@ -130,7 +130,7 @@ impl FusionObs {
         // No model, no disturbance: with b_i unset predict explains nothing,
         // so tau_d would integrate plain position error and trip the
         // collision check in a free run.
-        self.tau_d_q16 = if gains.b_i_q313 == 0 {
+        self.tau_d_q16 = if motor.b_i_q313 == 0 {
             0
         } else {
             self.tau_d_q16
@@ -175,13 +175,32 @@ mod tests {
     // inside the stable region with the disturbance step still settling
     // exactly. If a convergence test oscillates the fix is smaller gains,
     // not more iterations.
-    const G: FusionGains = FusionGains {
-        b_i_q313: 819,
-        l1_q016: 16384,
-        l2_q88: 1024,
-        l3_q88: 2048,
-        fric_fc_counts: 0,
-    };
+    const G: Gains = gains(819, 2048, 0);
+
+    /// The corrections and the model the step reads.
+    struct Gains {
+        l: ConfigFusion,
+        motor: CalibMotor,
+    }
+
+    const fn gains(b_i_q313: u16, l3_q88: u16, fric_fc_counts: u16) -> Gains {
+        Gains {
+            l: ConfigFusion {
+                l1_q016: 16384,
+                l2_q88: 1024,
+                l3_q88,
+            },
+            motor: CalibMotor {
+                b_i_q313,
+                fric_fc_counts,
+                ..CalibMotor::new()
+            },
+        }
+    }
+
+    fn step(f: &mut FusionObs, i: i32, pos_q4: u16, g: &Gains) {
+        f.step(i, pos_q4, DT, &g.l, &g.motor);
+    }
 
     #[test]
     fn seed_identity() {
@@ -203,7 +222,7 @@ mod tests {
         }
         f.seed(q4(2000) + 8);
         assert_eq!(f.theta_q16(), (2000 << 16) + (1 << 15));
-        f.step(0, q4(2000) + 8, DT, &G);
+        step(&mut f, 0, q4(2000) + 8, &G);
         assert_eq!(f.theta_q16(), (2000 << 16) + (1 << 15), "e = 0 holds it");
     }
 
@@ -218,7 +237,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(1990));
         for _ in 0..40000 {
-            f.step(0, q4(2000), DT, &G);
+            step(&mut f, 0, q4(2000), &G);
         }
         assert_eq!(f.theta_q16(), 2000 << 16, "pin");
         assert_eq!(f.omega_q16(), 1964, "pin");
@@ -235,7 +254,7 @@ mod tests {
         // theta advance: 655200 - (1024 * 327 >> 8) = 653892.
         let mut f = FusionObs::new();
         f.seed(q4(2000));
-        f.step(100, q4(2000), DT, &G);
+        step(&mut f, 100, q4(2000), &G);
         assert_eq!(f.omega_q16(), 653892, "pin");
     }
 
@@ -246,7 +265,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(0));
         for n in 1..=3000u16 {
-            f.step(0, q4(n), DT, &G);
+            step(&mut f, 0, q4(n), &G);
         }
         let target = 2000i32 << 16;
         let err = (f.omega_q16() - target).abs();
@@ -262,7 +281,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(2000));
         for _ in 0..20000 {
-            f.step(500, q4(2000), DT, &G);
+            step(&mut f, 500, q4(2000), &G);
         }
         // the live bleed path settles tau_d onto the drive exactly
         assert_eq!(f.tau_d_counts(), 500, "pin");
@@ -275,11 +294,11 @@ mod tests {
     fn unset_model_holds_tau_d_at_zero() {
         // b_i unset, shaft ramping under drive: the innovation still
         // corrects theta and omega, tau_d never leaves zero.
-        let g = FusionGains { b_i_q313: 0, ..G };
+        let g = gains(0, 2048, 0);
         let mut f = FusionObs::new();
         f.seed(q4(2000));
         for n in 0..20000u16 {
-            f.step(500, q4(2000 + n / 16), DT, &g);
+            step(&mut f, 500, q4(2000 + n / 16), &g);
             assert_eq!(f.tau_d_counts(), 0, "step {n}");
         }
         let theta_err = (f.theta_q16() - ((2000 + 19999 / 16) << 16)).abs();
@@ -290,14 +309,11 @@ mod tests {
     fn friction_zero_band() {
         // At rest with a large Coulomb term configured, nothing moves:
         // fric_c(0) = 0, e = 0, all deltas exactly zero.
-        let g = FusionGains {
-            fric_fc_counts: 1000,
-            ..G
-        };
+        let g = gains(819, 2048, 1000);
         let mut f = FusionObs::new();
         f.seed(q4(2048));
         for _ in 0..100 {
-            f.step(0, q4(2048), DT, &g);
+            step(&mut f, 0, q4(2048), &g);
             assert_eq!(f.theta_q16(), 2048 << 16);
             assert_eq!(f.omega_q16(), 0);
             assert_eq!(f.tau_d_counts(), 0);
@@ -308,18 +324,23 @@ mod tests {
     fn clamps_under_hostile_gains() {
         // Max-encoded gains, extreme inputs: debug overflow checks are the
         // wrap detector; states must stay inside their clamps.
-        let g = FusionGains {
-            b_i_q313: u16::MAX,
-            l1_q016: u16::MAX,
-            l2_q88: u16::MAX,
-            l3_q88: u16::MAX,
-            fric_fc_counts: u16::MAX,
+        let g = Gains {
+            l: ConfigFusion {
+                l1_q016: u16::MAX,
+                l2_q88: u16::MAX,
+                l3_q88: u16::MAX,
+            },
+            motor: CalibMotor {
+                b_i_q313: u16::MAX,
+                fric_fc_counts: u16::MAX,
+                ..CalibMotor::new()
+            },
         };
         let mut f = FusionObs::new();
         for n in 0..2000 {
             let pos = if n & 1 == 0 { 0 } else { 4095 };
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
-            f.step(i, q4(pos), DT, &g);
+            step(&mut f, i, q4(pos), &g);
             assert!(f.theta_q16().abs() <= THETA_LIM_CQ16);
             assert!(f.omega_q16().abs() <= OMEGA_LIM_CSQ16);
             assert!((f.tau_d_q16).abs() <= TAU_D_LIM_CCQ16);

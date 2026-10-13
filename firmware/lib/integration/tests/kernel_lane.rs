@@ -246,11 +246,11 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{
-        ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH_1, REFRESH_2,
-        THERM_INSTALL, THERM_SIDE, TROUGH_DONE,
+        ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, THERM_INSTALL, THERM_SIDE,
+        TROUGH_DONE,
     };
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
-    let ahead = [REFRESH_1, REFRESH_2, THERM_INSTALL, THERM_SIDE]
+    let ahead = [REFRESH, THERM_INSTALL, THERM_SIDE]
         .into_iter()
         .max()
         .unwrap_or(0);
@@ -395,24 +395,23 @@ fn exchange(sim: &mut Sim, id: Id, op: Opcode, flags: u8, payload: &[u8]) -> Out
 
 /// The most bus work a chain slot can work through before it is ready,
 /// HCLK ticks: ahead of it the hot loop's GWRITE(HOLD) and COMMIT (protocol
-/// sec 7), each at most a goal WRITE's frame, then its own GREAD up to the
-/// verdict. Every servo on the chain works through the same backlog.
-fn chain_backlog() -> (u64, u64) {
-    let ahead = 2 * budget::frame(Frame::Write);
+/// sec 7), each at most a `frame`, then its own GREAD up to the verdict.
+/// Every servo on the chain works through the same backlog.
+fn chain_backlog(frame: Frame) -> (u64, u64) {
+    let ahead = 2 * budget::frame(frame);
     let own = budget::frame(Frame::GreadSlot) - Frame::REPLY_ARMS * budget::body(Body::TxDone);
     (ahead as u64, own as u64)
 }
 
 /// A GREAD whose slot 0 is absent, at 3M, the kernel above the bus at the
-/// moving budget, the slot behind the worst backlog the table allows: slot
-/// 1 dispatches at the covered checkpoint, serves its verdict behind the
-/// hot loop's frames stretched by the kernel, then reclaims one
+/// moving budget, the slot behind the worst backlog of `frame`s: slot 1
+/// dispatches at the covered checkpoint, serves its verdict behind the hot
+/// loop's frames stretched by the kernel, then reclaims one
 /// RESPONSE_DEADLINE after it is ready. The attached host is still waiting
 /// when its status arrives, flagged: its chain allowance covers the
 /// backlog's longest wall time under the kernel.
-#[test]
-fn host_waits_for_a_reclaim_counted_from_readiness() {
-    let (ahead, own) = chain_backlog();
+fn host_waits_for_a_reclaim_behind(frame: Frame) {
+    let (ahead, own) = chain_backlog(frame);
     let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving);
     let lag = lane.wall(ahead + own);
     let allowance = CHAIN_READY_LAG_US as u64 * TICKS_PER_US;
@@ -452,6 +451,18 @@ fn host_waits_for_a_reclaim_counted_from_readiness() {
         }
         other => panic!("expected slot 1's status first, got {other:?}"),
     }
+}
+
+#[test]
+fn host_waits_for_a_reclaim_counted_from_readiness() {
+    host_waits_for_a_reclaim_behind(Frame::Write);
+}
+
+/// The same with a configuration write ahead: each frame carries the
+/// configuration count's pair (`budget::CONFIG_COUNT`).
+#[test]
+fn a_config_write_frame_fits_the_chain_and_reclaim_pins() {
+    host_waits_for_a_reclaim_behind(Frame::ConfigWrite);
 }
 
 fn write_u16(addr: u16, v: u16) -> Vec<u8> {
@@ -684,4 +695,146 @@ fn health_close_lands_only_on_publish_while_streaming() {
             st.closes
         );
     }
+}
+
+/// Send `frame` at `at_us` and run until the servo answers; the us it did.
+fn exchange_at(sim: &mut Sim, at_us: u64, frame: &[u8]) -> u64 {
+    sim.host_send_at(at_us, frame);
+    let mut t = at_us;
+    while !sim.run_until(t).iter().any(|f| f.from == Source::Servo(ID)) {
+        t += 1;
+        assert!(
+            t < at_us + 10_000,
+            "the frame at {at_us} us was never answered"
+        );
+    }
+    t
+}
+
+/// The kernel's inputs in their writable runs: the span less the reserved
+/// bytes behind the limits and the fault blocks.
+fn span_runs() -> [(u16, u16); 3] {
+    use osc_servo_core::kernel::{SPAN_END, SPAN_START};
+    use osc_servo_core::regions::CALIB_BASE_ADDR;
+    use osc_servo_core::regions::config::addr::{fault_cfg, limits, thermal};
+    [
+        (SPAN_START, limits::OPENLOOP_ZERO_BRAKE + 1),
+        (thermal::DERATE_START_CC, fault_cfg::SENSOR_BAD_COUNT + 1),
+        (CALIB_BASE_ADDR, SPAN_END),
+    ]
+}
+
+/// The kernel takes a configuration within this many ticks of its commit:
+/// the next THERM_INSTALL is at most a medium period away, and the kernel
+/// above the bus enters every tick on its scan.
+const APPLY_TICKS: u64 = DECIM_MED_TICKS + 1;
+const DECIM_MED_TICKS: u64 = PHASES as u64;
+
+/// How the COMMIT that carries a configuration write and a TEL arm ends.
+#[derive(Copy, Clone, Debug)]
+enum ConfigArm {
+    /// Addressed: the lane lends at its ack's release.
+    Acked,
+    /// Broadcast, as `osc` arms a step: no ack, the lane lends at the arm,
+    /// with the take still pending.
+    Silent,
+}
+
+/// A bulk configuration write committed with the TEL arm, at budget while
+/// stepping, the host `k` x 13 us late: the TEL chunks, then the span's
+/// runs and the burst's count staged with HOLD, one COMMIT ending `how`.
+/// Every servo frame from the chunks' ack on, the rows dropped, and the
+/// kernel lane's stats.
+fn config_burst(how: ConfigArm, k: u64) -> (Vec<WireFrame>, u16, KernelStats) {
+    let start = START_US + 13 * k;
+    let mut sim = Sim::new(BaudRate::B3000000);
+    let s = sim.add_servo(ID);
+    sim.set_handler_cost(s, HandlerCost::at_budget(Frame::ConfigWrite));
+    let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving);
+    sim.set_kernel_lane(s, lane, start + 3 * rows as u64 * 50 + 10_000);
+    let mut t = exchange_at(&mut sim, start, &write_at(CHUNK0_ADDR, &SIX.to_le_bytes()));
+    for (lo, hi) in span_runs() {
+        let mut payload = lo.to_le_bytes().to_vec();
+        payload.extend(sim.servo_table(s, |tb| {
+            // SAFETY: the table is repr(C) bytes; the run lies inside it.
+            let p = (tb as *const osc_servo_core::ControlTable).cast::<u8>();
+            unsafe { core::slice::from_raw_parts(p.add(lo as usize), (hi - lo) as usize) }.to_vec()
+        }));
+        t = exchange_at(
+            &mut sim,
+            t + 1,
+            &instruction(ID, Opcode::Write, Inst::FLAG_HOLD, &payload),
+        );
+    }
+    let mut payload = TEL_COUNT.to_le_bytes().to_vec();
+    payload.extend(rows.to_le_bytes());
+    t = exchange_at(
+        &mut sim,
+        t + 1,
+        &instruction(ID, Opcode::Write, Inst::FLAG_HOLD, &payload),
+    );
+    let to = match how {
+        ConfigArm::Acked => ID,
+        ConfigArm::Silent => Id::BROADCAST.0,
+    };
+    sim.host_send_at(t + 1, &instruction(to, Opcode::Commit, 0, &[]));
+    let frames = sim
+        .run()
+        .into_iter()
+        .filter(|f| f.from == Source::Servo(ID))
+        .collect();
+    (frames, sim.tel_drops(s), sim.kernel_stats(s))
+}
+
+/// At every start offset the kernel takes the committed set once, within
+/// [`APPLY_TICKS`] of the commit, the burst it armed streaming meanwhile.
+#[test]
+fn config_apply_lands_within_its_bound_at_budget() {
+    for k in 0..STARTS {
+        let (_, _, st) = config_burst(ConfigArm::Acked, k);
+        assert_eq!(st.takes, 1, "start {k}: {st:?}");
+        assert!(st.apply_max <= APPLY_TICKS, "start {k}: {st:?}");
+    }
+}
+
+/// A burst armed with a configuration take pending, at every start offset:
+/// its first row waits out the take, at most [`APPLY_TICKS`] ticks, so no
+/// tick carries the take and a row; the burst then streams whole, every
+/// row charged where the feed copied one. Some offsets must hold, or the
+/// pin tests nothing.
+#[test]
+fn a_burst_never_streams_through_a_config_take() {
+    let mut held = 0;
+    for (how, k) in [ConfigArm::Acked, ConfigArm::Silent]
+        .into_iter()
+        .flat_map(|how| (0..STARTS).map(move |k| (how, k)))
+    {
+        let (frames, drops, st) = config_burst(how, k);
+        let stream: Vec<_> = frames
+            .iter()
+            .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
+            .collect();
+        let bad = stream.iter().filter(|f| !frame_crc_ok(f)).count();
+        assert_eq!(
+            (
+                st.takes,
+                st.take_rows,
+                st.row_misses,
+                st.over - st.therm_over
+            ),
+            (1, 0, 0, 0),
+            "{how:?} start {k}: takes, rows on a take's tick, row charge misses, bodies over \
+             the period ({} thermal): {st:?}",
+            st.therm_over
+        );
+        assert_eq!(
+            (stream.len(), bad, drops),
+            (TEL_FRAMES as usize, 0, 0),
+            "{how:?} start {k}: frames, CRC-bad, rows dropped"
+        );
+        assert!(st.held_starts <= APPLY_TICKS, "{how:?} start {k}: {st:?}");
+        held = held.max(st.held_starts);
+    }
+    assert!(held > 0, "no start held");
 }

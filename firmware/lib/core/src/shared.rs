@@ -27,11 +27,12 @@ pub struct Shared {
     /// kernel renews its lease when it moves (`permit_after_commit`).
     /// Dispatch is the sole writer.
     permit_gen: AtomicU8,
-    /// Bumped by dispatch on every committed write reaching the kernel's
-    /// inputs (`kernel::INPUT_START..INPUT_END`); the kernel rebuilds its
-    /// configuration from the table when it moves. Dispatch is the sole
-    /// writer.
-    config_gen: AtomicU8,
+    /// Even/odd around every commit reaching the kernel's inputs
+    /// (`kernel::SPAN_START..SPAN_END`): odd from before the commit's first
+    /// store to after its last, so each even value is one whole committed
+    /// set. The kernel takes its configuration only at an even value it has
+    /// not taken. Dispatch is the sole writer.
+    config_seq: AtomicU8,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
     /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
     /// is its only wire reader.
@@ -53,7 +54,7 @@ impl Shared {
             data_job: AtomicU8::new(0),
             data_gen: AtomicU16::new(0),
             permit_gen: AtomicU8::new(0),
-            config_gen: AtomicU8::new(0),
+            config_seq: AtomicU8::new(0),
             uid: SyncUnsafeCell::new([0; UID_LEN]),
             store: SyncUnsafeCell::new(None),
             pos_lut: SyncUnsafeCell::new([0; POINTS]),
@@ -114,20 +115,32 @@ impl Shared {
         self.permit_gen.load(Ordering::Relaxed)
     }
 
-    /// Bus dispatch: a kernel input changed under the kernel.
-    pub fn config_touch(&self) {
-        // The kernel preempts dispatch: the committed stores land before the
-        // generation it snapshots them under (`Kernel::refresh_fast` holds the
-        // Acquire side).
+    /// Bus dispatch, ahead of a commit reaching the kernel's inputs: the
+    /// count goes odd.
+    pub fn config_commit_begin(&self) {
+        self.config_seq_step();
+        // the odd count lands ahead of the commit's first store
         compiler_fence(Ordering::Release);
-        self.config_gen.store(
-            self.config_gen.load(Ordering::Relaxed).wrapping_add(1),
+    }
+
+    /// Bus dispatch, behind the same commit's last store: even, a new set.
+    pub fn config_commit_end(&self) {
+        // the kernel preempts dispatch: the commit's stores land ahead of the
+        // even count it takes them under (`Kernel::take_config` holds the
+        // Acquire side)
+        compiler_fence(Ordering::Release);
+        self.config_seq_step();
+    }
+
+    fn config_seq_step(&self) {
+        self.config_seq.store(
+            self.config_seq.load(Ordering::Relaxed).wrapping_add(1),
             Ordering::Relaxed,
         );
     }
 
-    pub(crate) fn config_gen(&self) -> u8 {
-        self.config_gen.load(Ordering::Relaxed)
+    pub fn config_seq(&self) -> u8 {
+        self.config_seq.load(Ordering::Relaxed)
     }
 
     pub(crate) fn data_gen(&self) -> u16 {

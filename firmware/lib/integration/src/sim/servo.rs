@@ -320,6 +320,12 @@ impl SimServo {
         self.bus.on_deadline(&mut dispatcher);
     }
 
+    /// The configuration count the servo's dispatch keeps
+    /// (`Shared::config_seq`).
+    pub fn config_seq(&self) -> u8 {
+        self.shared.config_seq()
+    }
+
     /// Own frames dispatched since boot.
     pub fn dispatched(&self) -> u64 {
         self.dispatched
@@ -371,8 +377,8 @@ impl SimServo {
     /// One kernel tick's TEL work in the kernel's order: the tick block
     /// lands (`s`, its stamp `tick`) beside the rail estimate as last
     /// published, the row's chunks, then the lane, which a `hold` tick
-    /// leaves be.
-    pub fn tel_tick(&mut self, s: &TelSample, tick: u32, hold: bool) {
+    /// leaves be; a `hold_start` tick starts no burst.
+    pub fn tel_tick(&mut self, s: &TelSample, tick: u32, hold: bool, hold_start: bool) {
         self.shared.table.with_mut(|t| {
             t.telemetry.tick = TelemetryTick {
                 sample_tick: tick,
@@ -380,7 +386,7 @@ impl SimServo {
             };
             t.telemetry.estimates.vbus_counts = s.vbus_counts;
         });
-        self.feed.on_tick();
+        self.feed.on_tick(|| hold_start);
         if hold {
             self.feed.hold();
         }

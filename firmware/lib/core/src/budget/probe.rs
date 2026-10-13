@@ -99,11 +99,6 @@ impl Windows {
     }
 }
 
-/// [`KernelProbe::refresh`]'s index for a refresh tick at `phase`.
-fn refresh_stage(phase: usize) -> usize {
-    (phase != phase::THERM_INSTALL as usize) as usize
-}
-
 /// A tick this long counts toward [`KernelProbe::long`]: the hold windows'
 /// maxima sit above it, the parked ticks below.
 pub const LONG_TICKS: u32 = 30 * TICKS_PER_US;
@@ -124,8 +119,8 @@ pub struct KernelProbe {
     pub health_max: [[u16; PHASES]; 2],
     /// TEL ticks that banked nothing, by regime, all phases.
     pub tel: [Load; 2],
-    /// Ticks that ran a configuration refresh stage, by stage.
-    pub refresh: [Load; 2],
+    /// Ticks that took the configuration.
+    pub refresh: Load,
     /// The SLOW block's due ticks by regime, its finish ticks, and the
     /// finishes that froze a thermal reference window; the thermometer's
     /// stages on phases THERM_INSTALL and THERM_SIDE.
@@ -159,7 +154,7 @@ impl KernelProbe {
         bank_max: [[0; PHASES]; 2],
         health_max: [[0; PHASES]; 2],
         tel: [Load::ZERO; 2],
-        refresh: [Load::ZERO; 2],
+        refresh: Load::ZERO,
         slow: [Load::ZERO; 2],
         finish: Load::ZERO,
         close: Load::ZERO,
@@ -211,9 +206,7 @@ impl KernelProbe {
             *n = n.wrapping_add(1);
         }
         if ev.refresh {
-            if let Some(l) = self.refresh.get_mut(refresh_stage(phase)) {
-                l.add(body);
-            }
+            self.refresh.add(body);
         } else if ev.close {
             self.close.add(body);
         } else if ev.slow {
@@ -308,7 +301,7 @@ impl KernelProbe {
             bank_max: core::array::from_fn(|_| r.halves()),
             health_max: core::array::from_fn(|_| r.halves()),
             tel: core::array::from_fn(|_| r.load()),
-            refresh: core::array::from_fn(|_| r.load()),
+            refresh: r.load(),
             slow: core::array::from_fn(|_| r.load()),
             finish: r.load(),
             close: r.load(),
@@ -504,8 +497,8 @@ pub enum Component {
     BankTick(Regime, usize),
     /// A tick that closed a tick-load window.
     Health(Regime, usize),
-    /// The refresh stage at this phase.
-    Refresh(usize),
+    /// The configuration take.
+    Refresh,
     Slow(Regime),
     Finish,
     Close,
@@ -590,14 +583,8 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         refresh: true,
         ..carried
     };
-    for (p, l) in [phase::THERM_INSTALL, phase::THERM_SIDE]
-        .map(usize::from)
-        .into_iter()
-        .zip(k.refresh)
-    {
-        let budget = super::kernel_tick(r, p, refresh);
-        f(load_row(Component::Refresh(p), l, budget, 0));
-    }
+    let budget = super::kernel_tick(r, phase::THERM_INSTALL as usize, refresh);
+    f(load_row(Component::Refresh, k.refresh, budget, 0));
     let slow = Events {
         slow: true,
         ..carried

@@ -501,14 +501,19 @@ impl<P: Providers> TelFeed<P> {
 }
 
 impl<P: Providers> TelStream for TelFeed<P> {
+    /// The burst starts at the arm's pickup: a held start leaves the arm in
+    /// the mailbox, and the lane idle, for the next tick.
     #[inline(always)]
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self, hold_start: impl FnOnce() -> bool) {
         if !self.ch.active() {
             return;
         }
         // SAFETY: bus-written mailbox seq, volatile-read (type doc).
         let seq = unsafe { self.ch.arm_seq.get().read_volatile() };
         if seq != self.epoch {
+            if hold_start() {
+                return;
+            }
             self.pickup(seq);
         }
         if self.remaining != 0 {

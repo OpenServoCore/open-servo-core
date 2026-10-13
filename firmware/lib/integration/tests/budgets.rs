@@ -240,42 +240,19 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
     assert_eq!(sim.kernel_stats(s).closed, 2 * approach);
 }
 
-/// The spare phases while stepping, Closed at budget, each carrying its
-/// refresh stage (the thermometer's stages in its place have their own
-/// pins), with the health close where it can land and interrupt entry and
-/// exit; TEL ticks of a burst on top.
-fn spare_phase_ticks(tel: bool) -> [(u8, u32); 2] {
-    let refresh = Events {
+/// The configuration take's tick while stepping, Closed at budget: phase
+/// THERM_INSTALL carrying the take (the thermometer's stage there waits a
+/// period), with the health close where it can land and interrupt entry and
+/// exit. It carries no TEL row: a burst's start waits out a pending take
+/// (DES `a_burst_never_streams_through_a_config_take`).
+#[test]
+fn the_take_tick_fits_at_budget_without_tel() {
+    let p = phase::THERM_INSTALL as usize;
+    let ev = Events {
         refresh: true,
-        tel,
-        bank: tel,
+        health: budget::health_close_lands(p),
         ..Events::default()
     };
-    [phase::THERM_INSTALL, phase::THERM_SIDE].map(|p| {
-        let health = budget::health_close_lands(p as usize);
-        let ev = Events { health, ..refresh };
-        (
-            p,
-            budget::kernel_tick(Regime::Closed, p as usize, ev) + ENTRY_EXIT,
-        )
-    })
-}
-
-#[test]
-fn config_write_while_moving_fits_at_budget() {
-    for (p, t) in spare_phase_ticks(false) {
-        assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
-    }
-}
-
-#[test]
-fn config_write_while_moving_and_streaming_fits_at_budget() {
-    let over: Vec<_> = spare_phase_ticks(true)
-        .into_iter()
-        .filter(|&(_, t)| t > TICK_PERIOD)
-        .collect();
-    assert!(
-        over.is_empty(),
-        "(phase, ticks) over {TICK_PERIOD}: {over:?}"
-    );
+    let t = budget::kernel_tick(Regime::Closed, p, ev) + ENTRY_EXIT;
+    assert!(t <= TICK_PERIOD, "{t} > {TICK_PERIOD}");
 }

@@ -114,7 +114,7 @@ pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, health: bool)
         let exit = systick::ticks();
         let b = before.tags;
         let ev = Events {
-            refresh: after.refresh_staged != b.refresh_staged,
+            refresh: after.config_seq != b.config_seq,
             tel: crate::runtime::statics::TEL_CHANNEL.active(),
             bank: osc_servo_drivers::bench::tel_banks() != before.banks,
             slow: b.slow_due,

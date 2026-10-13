@@ -8,6 +8,7 @@ use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::persist::{CALIB_LEN, CalibImage, Image, Slot};
 use osc_servo_core::regions::calib::addr::motor::R_Q12;
+use osc_servo_core::regions::calib::addr::pwm::PWM_PERIOD_TICKS;
 use osc_servo_core::regions::calib::addr::sense::TICK_HZ;
 use osc_servo_core::regions::calib::addr::thermal::TH_ALPHA_Q24;
 use osc_servo_core::regions::calib::addr::winding::R0_Q12;
@@ -242,12 +243,12 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
             t.config.common._rsvd_identity = JUNK;
             t.config.common._rsvd_tail = [JUNK; 12];
         });
-        let anchor = R0_Q12 + 2;
-        assert_eq!(read_byte(&mut sim, ID5, anchor), JUNK, "read as stored");
+        let reserved = PWM_PERIOD_TICKS + 2;
+        assert_eq!(read_byte(&mut sim, ID5, reserved), JUNK, "read as stored");
         let before = live(&sim);
         let frames = mgmt(&mut sim, ID5, MgmtOp::Save);
         assert_eq!(status(sole_reply(&frames)).0.result(), Some(ResultCode::Ok));
-        assert_eq!(read_byte(&mut sim, ID5, anchor), 0);
+        assert_eq!(read_byte(&mut sim, ID5, reserved), 0);
         let config = store.slot(Slot::A).expect("first config save lands in A");
         let config = Image::parse(&config).expect("config image parses");
         let img = store
@@ -265,7 +266,7 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
     sim.add_servo_with_store(ID5, store);
     assert_eq!(read_u16(&mut sim, ID5, R0_Q12), 4016);
     assert_eq!(read_u16(&mut sim, ID5, TH_ALPHA_Q24), 2097);
-    assert_eq!(read_byte(&mut sim, ID5, R0_Q12 + 2), 0);
+    assert_eq!(read_byte(&mut sim, ID5, PWM_PERIOD_TICKS + 2), 0);
 }
 
 /// The sec 9.2 + 9.4 field story: ASSIGN takes a new id immediately, SAVE

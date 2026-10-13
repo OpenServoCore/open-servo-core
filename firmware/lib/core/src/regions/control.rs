@@ -49,8 +49,8 @@ pub struct ControlLifecycle {
     /// out-of-soft goal runs to the soft wall (trajectory clamp) instead of
     /// bouncing the write.
     #[ct_field(
-        ge = &config::addr::pos_limits::POS_MIN_PHYS_COUNTS,
-        le = &config::addr::pos_limits::POS_MAX_PHYS_COUNTS,
+        ge = &config::addr::pos_phys::POS_MIN_PHYS_COUNTS,
+        le = &config::addr::pos_phys::POS_MAX_PHYS_COUNTS,
     )]
     pub goal_position: i32,
     pub goal_velocity: i32,

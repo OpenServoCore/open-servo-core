@@ -14,7 +14,7 @@ use osc_ident::units::{self, SenseParams};
 
 use super::battery;
 use super::pump::{read_i32, read_snapshot};
-use super::snapshot::{read_bool, read_u16};
+use super::snapshot::{read_bool, read_u16, read_u32};
 
 pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
     battery::before_drive(c, id)?;
@@ -63,7 +63,8 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
 pub(crate) struct Stall {
     /// A stall folds the limit to the yield; else it latches a fault.
     pub(crate) folds: bool,
-    pub(crate) time_ms: u16,
+    /// Kernel ticks.
+    pub(crate) time_ticks: u32,
     pub(crate) release: u16,
 }
 
@@ -74,7 +75,7 @@ impl Stall {
             .context("field read")?[0];
         Ok(Self {
             folds: response != 0,
-            time_ms: read_u16(c, id, config::STALL_TIME_MS)?,
+            time_ticks: read_u32(c, id, config::STALL_TIME_TICKS)?,
             release: read_u16(c, id, config::STALL_RELEASE_COUNTS)?,
         })
     }

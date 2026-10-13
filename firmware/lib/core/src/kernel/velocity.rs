@@ -7,6 +7,8 @@
 //! integrator - "whatever clips here back-propagates". Cogging reads 0 in v1.
 
 use crate::math::q_mul;
+use crate::regions::calib::CalibMotor;
+use crate::regions::config::ConfigLoopVelocity;
 
 /// PI error clamp, csQ16 (16384 c/s). omega spans +-32767<<16 so the raw
 /// difference spans 2^32 - saturating_sub first, then clamp. The bound keeps
@@ -26,29 +28,17 @@ const AW_LIM_CC: i32 = 8192;
 /// dithering around zero must not chatter +-fric_fc into i_ref.
 const FRIC_OMEGA_EPS_CSQ16: i32 = 1 << 16;
 
-/// CONFIG loop_velocity gains plus the CALIB friction model
-/// (`CurrentGains` convention).
-#[derive(Copy, Clone, Default)]
-pub struct VelocityGains {
-    pub kp_q88: u16,
-    pub ki_q412: u16,
-    pub kaw_q412: u16,
-    pub j_ff_q88: u16,
-    pub fric_fc_counts: u16,
-    pub fric_fv_q016: u16,
-}
-
 /// sgn(omega_star)*fric_fc outside the zero band plus the viscous slope:
 /// Q0.16 * csQ16 >> 32 -> whole ccounts, <= 2^15 for any omega.
-fn fric_ff(omega_q16: i32, gains: &VelocityGains) -> i32 {
+fn fric_ff(omega_q16: i32, motor: &CalibMotor) -> i32 {
     let coulomb = if omega_q16 > FRIC_OMEGA_EPS_CSQ16 {
-        gains.fric_fc_counts as i32
+        motor.fric_fc_counts as i32
     } else if omega_q16 < -FRIC_OMEGA_EPS_CSQ16 {
-        -(gains.fric_fc_counts as i32)
+        -(motor.fric_fc_counts as i32)
     } else {
         0
     };
-    coulomb.saturating_add(q_mul(gains.fric_fv_q016 as i32, omega_q16, 32))
+    coulomb.saturating_add(q_mul(motor.fric_fv_q016 as i32, omega_q16, 32))
 }
 
 /// State: one current-counts integrator (ccQ16).
@@ -76,7 +66,9 @@ impl VelocityLoop {
     /// integrator is also clamped to the band's widest side << 16 - a belt
     /// on top of back-calc, and when the band shrinks mid-run (derate,
     /// stall fold) the clamp drains the stale charge to the new ceiling in
-    /// one tick: intended, the fold propagates instantly.
+    /// one tick: intended, the fold propagates instantly. The friction
+    /// model is CALIB `motor`'s.
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         omega_ref_q16: i32,
@@ -84,16 +76,17 @@ impl VelocityLoop {
         alpha_star_q16: i32,
         omega_star_q16: i32,
         band: super::limits::IBand,
-        gains: &VelocityGains,
+        gains: &ConfigLoopVelocity,
+        motor: &CalibMotor,
     ) -> i32 {
         let e = omega_ref_q16
             .saturating_sub(omega_hat_q16)
             .clamp(-E_LIM_CSQ16, E_LIM_CSQ16);
         // Q8.8 * csQ16 >> 24 -> whole ccounts; <= 2^16 * 2^30 >> 24 = 2^22
-        let i_p = q_mul(gains.kp_q88 as i32, e, 24);
+        let i_p = q_mul(gains.v_kp_q88 as i32, e, 24);
         // j term <= 2^16 * 2^31 >> 24 = 2^23 for any alpha
         let i_ff = q_mul(gains.j_ff_q88 as i32, alpha_star_q16, 24)
-            .saturating_add(fric_ff(omega_star_q16, gains));
+            .saturating_add(fric_ff(omega_star_q16, motor));
         let i_raw = i_p
             .saturating_add(self.integ_ccq16 >> 16)
             .saturating_add(i_ff);
@@ -104,8 +97,8 @@ impl VelocityLoop {
         // shift saturates; kaw term mirrors current.rs (<= 2^29, << 4 can
         // reach 2^33). Integrator clamp: i_lim <= 65535 so the << 16 can
         // saturate too (12-bit shunt scale keeps real limits far below).
-        let ki_term = q_mul(gains.ki_q412 as i32, e, 16).saturating_mul(1 << 4);
-        let aw_term = q_mul(gains.kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
+        let ki_term = q_mul(gains.v_ki_q412 as i32, e, 16).saturating_mul(1 << 4);
+        let aw_term = q_mul(gains.v_kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
         let lim = band.hi.abs().max(band.lo.abs()).saturating_mul(1 << 16);
         self.integ_ccq16 = self
             .integ_ccq16
@@ -127,15 +120,38 @@ mod tests {
 
     const I_LIM: u16 = 4095;
 
-    fn g(kp: u16, ki: u16, kaw: u16, j_ff: u16, fc: u16, fv: u16) -> VelocityGains {
-        VelocityGains {
-            kp_q88: kp,
-            ki_q412: ki,
-            kaw_q412: kaw,
-            j_ff_q88: j_ff,
-            fric_fc_counts: fc,
-            fric_fv_q016: fv,
+    /// The loop's block and the friction model it reads.
+    struct Gains {
+        lv: ConfigLoopVelocity,
+        motor: CalibMotor,
+    }
+
+    fn g(kp: u16, ki: u16, kaw: u16, j_ff: u16, fc: u16, fv: u16) -> Gains {
+        Gains {
+            lv: ConfigLoopVelocity {
+                v_kp_q88: kp,
+                v_ki_q412: ki,
+                v_kaw_q412: kaw,
+                j_ff_q88: j_ff,
+            },
+            motor: CalibMotor {
+                fric_fc_counts: fc,
+                fric_fv_q016: fv,
+                ..CalibMotor::new()
+            },
         }
+    }
+
+    fn step(
+        vel: &mut VelocityLoop,
+        o_ref: i32,
+        o_hat: i32,
+        alpha: i32,
+        omega: i32,
+        band: IBand,
+        g: &Gains,
+    ) -> i32 {
+        vel.step(o_ref, o_hat, alpha, omega, band, &g.lv, &g.motor)
     }
 
     /// First-order toy plant: drive b = 2^10 csQ16 per ccount per tick,
@@ -151,20 +167,23 @@ mod tests {
         let gains = g(1 << 8, 0, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
         assert_eq!(
-            vel.step(500 << 16, 0, 0, 0, band(I_LIM as i32), &gains),
+            step(&mut vel, 500 << 16, 0, 0, 0, band(I_LIM as i32), &gains),
             500
         );
         assert_eq!(
-            vel.step(-(500 << 16), 0, 0, 0, band(I_LIM as i32), &gains),
+            step(&mut vel, -(500 << 16), 0, 0, 0, band(I_LIM as i32), &gains),
             -500
         );
         // kp 1/256: 500/256 floors to 1, arithmetic shift floors -500/256
         // to -2
         let gains = g(1, 0, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
-        assert_eq!(vel.step(500 << 16, 0, 0, 0, band(I_LIM as i32), &gains), 1);
         assert_eq!(
-            vel.step(-(500 << 16), 0, 0, 0, band(I_LIM as i32), &gains),
+            step(&mut vel, 500 << 16, 0, 0, 0, band(I_LIM as i32), &gains),
+            1
+        );
+        assert_eq!(
+            step(&mut vel, -(500 << 16), 0, 0, 0, band(I_LIM as i32), &gains),
             -2
         );
     }
@@ -178,7 +197,15 @@ mod tests {
         let mut vel = VelocityLoop::new();
         let mut omega = 0i32;
         for _ in 0..500 {
-            let i_ref = vel.step(500 << 16, omega, 0, 0, band(I_LIM as i32), &p_only);
+            let i_ref = step(
+                &mut vel,
+                500 << 16,
+                omega,
+                0,
+                0,
+                band(I_LIM as i32),
+                &p_only,
+            );
             omega = plant_omega(omega, i_ref);
         }
         assert!(omega >> 16 < 100, "p-only omega={}", omega >> 16);
@@ -188,7 +215,7 @@ mod tests {
         let mut omega = 0i32;
         let mut i_ref = 0i32;
         for _ in 0..5000 {
-            i_ref = vel.step(500 << 16, omega, 0, 0, band(I_LIM as i32), &pi);
+            i_ref = step(&mut vel, 500 << 16, omega, 0, 0, band(I_LIM as i32), &pi);
             omega = plant_omega(omega, i_ref);
         }
         assert!(((omega >> 16) - 500).abs() <= 1, "pi omega={}", omega >> 16);
@@ -203,24 +230,35 @@ mod tests {
         let mut vel = VelocityLoop::new();
         // 100 + 50 + floor(1000/256) = 100 + 50 + 3
         assert_eq!(
-            vel.step(0, 0, 100 << 16, 1000 << 16, band(I_LIM as i32), &gains),
+            step(
+                &mut vel,
+                0,
+                0,
+                100 << 16,
+                1000 << 16,
+                band(I_LIM as i32),
+                &gains
+            ),
             153
         );
         // reverse: -50 + floor(-1000/256) = -50 - 4 (arithmetic shift)
         assert_eq!(
-            vel.step(0, 0, 0, -(1000 << 16), band(I_LIM as i32), &gains),
+            step(&mut vel, 0, 0, 0, -(1000 << 16), band(I_LIM as i32), &gains),
             -54
         );
         // zero band: |omega_star| <= 1 c/s suppresses Coulomb, viscous
         // 1/256 of 1 c/s floors to 0
-        assert_eq!(vel.step(0, 0, 0, 1 << 16, band(I_LIM as i32), &gains), 0);
         assert_eq!(
-            vel.step(0, 0, 0, -(1 << 16), band(I_LIM as i32), &gains),
+            step(&mut vel, 0, 0, 0, 1 << 16, band(I_LIM as i32), &gains),
+            0
+        );
+        assert_eq!(
+            step(&mut vel, 0, 0, 0, -(1 << 16), band(I_LIM as i32), &gains),
             -1
         );
         // one past the band: Coulomb kicks in
         assert_eq!(
-            vel.step(0, 0, 0, (1 << 16) + 1, band(I_LIM as i32), &gains),
+            step(&mut vel, 0, 0, 0, (1 << 16) + 1, band(I_LIM as i32), &gains),
             50
         );
     }
@@ -239,13 +277,13 @@ mod tests {
             let mut omega = 0i32;
             let mut i_ref = 0i32;
             for _ in 0..300 {
-                i_ref = vel.step(500 << 16, omega, 0, 0, band(100), &gains);
+                i_ref = step(&mut vel, 500 << 16, omega, 0, 0, band(100), &gains);
                 omega = plant_omega(omega, i_ref);
             }
             assert_eq!(i_ref, 100, "saturated, kaw={kaw}");
             let mut ticks = 0u32;
             while ticks < 500 {
-                i_ref = vel.step(10 << 16, omega, 0, 0, band(100), &gains);
+                i_ref = step(&mut vel, 10 << 16, omega, 0, 0, band(100), &gains);
                 omega = plant_omega(omega, i_ref);
                 if i_ref <= 60 {
                     break;
@@ -269,11 +307,11 @@ mod tests {
         let gains = g(0, 1 << 12, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
         for _ in 0..200 {
-            vel.step(1000 << 16, 0, 0, 0, band(4000), &gains);
+            step(&mut vel, 1000 << 16, 0, 0, 0, band(4000), &gains);
         }
-        assert_eq!(vel.step(0, 0, 0, 0, band(4000), &gains), 4000);
-        assert_eq!(vel.step(0, 0, 0, 0, band(500), &gains), 500);
-        assert_eq!(vel.step(0, 0, 0, 0, band(4000), &gains), 500);
+        assert_eq!(step(&mut vel, 0, 0, 0, 0, band(4000), &gains), 4000);
+        assert_eq!(step(&mut vel, 0, 0, 0, 0, band(500), &gains), 500);
+        assert_eq!(step(&mut vel, 0, 0, 0, 0, band(4000), &gains), 500);
     }
 
     #[test]
@@ -288,7 +326,8 @@ mod tests {
                     for star in [i32::MIN, 0, i32::MAX] {
                         let mut vel = VelocityLoop::new();
                         for _ in 0..20 {
-                            let i = vel.step(o_ref, o_hat, star, star, band(lim as i32), &gains);
+                            let i =
+                                step(&mut vel, o_ref, o_hat, star, star, band(lim as i32), &gains);
                             assert!(
                                 i.unsigned_abs() <= lim as u32,
                                 "i={i} lim={lim} o_ref={o_ref} o_hat={o_hat} star={star}"
@@ -305,10 +344,10 @@ mod tests {
         let gains = g(64, 200, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
         for _ in 0..50 {
-            vel.step(500 << 16, 0, 0, 0, band(I_LIM as i32), &gains);
+            step(&mut vel, 500 << 16, 0, 0, 0, band(I_LIM as i32), &gains);
         }
-        assert_ne!(vel.step(0, 0, 0, 0, band(I_LIM as i32), &gains), 0);
+        assert_ne!(step(&mut vel, 0, 0, 0, 0, band(I_LIM as i32), &gains), 0);
         vel.reset();
-        assert_eq!(vel.step(0, 0, 0, 0, band(I_LIM as i32), &gains), 0);
+        assert_eq!(step(&mut vel, 0, 0, 0, 0, band(I_LIM as i32), &gains), 0);
     }
 }

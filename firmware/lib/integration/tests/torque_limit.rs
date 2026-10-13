@@ -10,9 +10,11 @@ use osc_integration::plant::{
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::duty_limit::UP_Q15;
 use osc_servo_core::kernel::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
-use osc_servo_core::regions::DecaySelect;
+use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
-use osc_servo_core::{Kernel, KernelTiming, Mode, MotorCmd, RegionStorage, Shared, StallResponse};
+use osc_servo_core::{
+    DecayMode, Kernel, KernelTiming, Mode, MotorCmd, RegionStorage, Shared, StallResponse,
+};
 
 const LIM: u16 = 280;
 /// 160 of ARR 1200: the window floor is 13.3% duty.
@@ -20,12 +22,12 @@ const I_FLOOR_TICKS: u16 = 160;
 const GOAL_64: i16 = 20971;
 const GOAL_FULL: i16 = i16::MAX;
 const MID: u16 = 2050;
-const STALL_MS: u16 = 500;
+const STALL_MS: u32 = 500;
 const YIELD: u16 = 168;
 const RELEASE: u16 = 84;
 /// FAST ticks per ms.
 const MS: u32 = 20;
-/// Bound on the observer's settle past `stall_time_ms` before omega reads
+/// Bound on the observer's settle past `stall_time_ticks` before omega reads
 /// slow and the timer runs out.
 const SETTLE_MS: u32 = 100;
 /// Under the rig's stall current at the window floor (239 counts): only a
@@ -52,7 +54,7 @@ fn rig(lim: u16) -> Shared {
         t.control.lifecycle.mode = Mode::OpenLoop;
         // the mg90-a observer and motor model: `seed`'s gains ring for over
         // a second after a current step, landing the stall trip near 2 s
-        // instead of at stall_time_ms plus the observer's settle
+        // instead of at stall_time_ticks plus the observer's settle
         t.config.fusion.l1_q016 = 8640;
         t.config.fusion.l2_q88 = 3180;
         t.config.fusion.l3_q88 = 84;
@@ -72,7 +74,7 @@ fn stall_rig(response: StallResponse) -> Shared {
     sh.table.with_mut(|t| {
         let l = &mut t.config.limits;
         l.stall_response = response;
-        l.stall_time_ms = STALL_MS;
+        l.stall_time_ticks = ms_ticks(STALL_MS);
         l.stall_yield_counts = YIELD;
         l.stall_release_counts = RELEASE;
     });
@@ -160,22 +162,18 @@ fn i_lim(sh: &Shared) -> u16 {
 }
 
 /// Mid-travel locked rotor at `goal` until the stall timer `acted`, which
-/// must hold off for the whole `stall_time_ms` and act inside the settle.
+/// must hold off for the whole `stall_time_ticks` and act inside the settle.
 fn locked_stall(sh: &Shared, goal: i16, acted: fn(&Shared) -> bool) -> (Kernel<FakeIo>, RlPlant) {
     let mut p = RlPlant::new(MID);
     p.locked = true;
     let mut k = start(sh, &mut p, goal);
-    let at = (0..(STALL_MS as u32 + SETTLE_MS) * MS)
+    let at = (0..(STALL_MS + SETTLE_MS) * MS)
         .find(|_| {
             run(&mut k, sh, &mut p, 1);
             acted(sh)
         })
         .unwrap_or_else(|| panic!("goal {goal}: the stall timer never acted"));
-    assert!(
-        at >= STALL_MS as u32 * MS,
-        "goal {goal}: acted {} ms in",
-        at / MS
-    );
+    assert!(at >= STALL_MS * MS, "goal {goal}: acted {} ms in", at / MS);
     (k, p)
 }
 
@@ -355,7 +353,8 @@ fn openloop_slew_never_counts_as_a_stall() {
     // from rest, then the slew from the floor to the goal at speed
     for (cruise, goal, from) in [(3932, GOAL_64, 300), (-3932, -GOAL_64, 3800)] {
         let sh = stall_rig(StallResponse::Fault);
-        sh.table.with_mut(|t| t.config.limits.stall_time_ms = 1);
+        sh.table
+            .with_mut(|t| t.config.limits.stall_time_ticks = ms_ticks(1));
         stamp(&sh);
         let mut p = RlPlant::new(from);
         let mut k = start(&sh, &mut p, cruise);
@@ -404,9 +403,9 @@ fn dead_host_stall_trips_within_the_lease() {
             })
             .unwrap_or_else(|| panic!("goal {goal}: never tripped"));
         // the lease holds the timer off for its second, then the timer
-        // runs its stall_time_ms on the settled observer
+        // runs its stall_time_ticks on the settled observer
         assert!(
-            (1_000 + STALL_MS as u32) * MS <= at && at <= 1_600 * MS,
+            ((1_000 + STALL_MS) * MS..=1_600 * MS).contains(&at),
             "goal {goal}: tripped {} ms in",
             at / MS
         );
@@ -548,9 +547,10 @@ fn window_v_floor_follows_the_openloop_decay() {
     );
     run(&mut k, &sh, &mut p, 1);
     assert_eq!(v_floor(), duty(93));
+    sh.config_commit_begin();
     sh.table
-        .with_mut(|t| t.config.limits.openloop_decay = DecaySelect::Fast);
-    sh.config_touch();
+        .with_mut(|t| t.config.limits.openloop_decay = DecayMode::Fast);
+    sh.config_commit_end();
     run(&mut k, &sh, &mut p, 10);
     assert_eq!(v_floor(), duty(160));
 }

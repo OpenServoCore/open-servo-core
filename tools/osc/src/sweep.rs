@@ -704,7 +704,7 @@ pub(crate) fn drive(
     m.insert("window_floor_q15".into(), lim.window_floor_q15.into());
     m.insert("stall_yield_counts".into(), lim.stall_yield.into());
     m.insert("stall_release_counts".into(), stall.release.into());
-    m.insert("stall_time_ms".into(), stall.time_ms.into());
+    m.insert("stall_time_ticks".into(), stall.time_ticks.into());
     m.insert("stall_response".into(), stall.response().into());
     m.insert("stall_tau_trip_counts".into(), lim.tau_trip.into());
     m.insert("r_q12".into(), lim.r_q12.into());

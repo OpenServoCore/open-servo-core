@@ -1,5 +1,8 @@
 use control_table::{Block, Enum, Section};
 
+use crate::kernel::trajectory::{GOAL_LIM_COUNTS, VEL_CAP_CPS};
+use crate::traits::DecayMode;
+
 // Wire vocabulary, hoisted to the foundation crate so the host column can
 // name it (grid law 2). The table field below stays a raw index because the
 // `Enum` derive impls a control-table trait -- orphan-rule-bound to whichever
@@ -15,16 +18,6 @@ pub enum StallResponse {
     #[default]
     Fault = 0,
     Yield = 1,
-}
-
-/// Off-window decay for OpenLoop drive; closed-loop modes force Slow.
-/// `repr(u8)`; same UB gate as `StallResponse`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
-#[repr(u8)]
-pub enum DecaySelect {
-    #[default]
-    Slow = 0,
-    Fast = 1,
 }
 
 /// protocol sec 5.4 CONFIG-COMMON block: identity RO at the region front,
@@ -65,21 +58,32 @@ pub struct ConfigCommon {
 
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct ConfigPosLimits {
-    #[ct_field(lt = &addr::pos_limits::POS_MAX_PHYS_COUNTS)]
+pub struct ConfigPosPhys {
+    #[ct_field(lt = &addr::pos_phys::POS_MAX_PHYS_COUNTS)]
     pub pos_min_phys_counts: i32,
-    #[ct_field(gt = &addr::pos_limits::POS_MIN_PHYS_COUNTS)]
+    #[ct_field(gt = &addr::pos_phys::POS_MIN_PHYS_COUNTS)]
     pub pos_max_phys_counts: i32,
+}
+
+/// Inside the physical stops and the trajectory's goal range, so the kernel
+/// takes them as stored.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ConfigPosSoft {
     #[ct_field(
-        ge = &addr::pos_limits::POS_MIN_PHYS_COUNTS,
-        le = &addr::pos_limits::POS_MAX_PHYS_COUNTS,
-        lt = &addr::pos_limits::POS_MAX_SOFT_COUNTS,
+        ge = &addr::pos_phys::POS_MIN_PHYS_COUNTS,
+        le = &addr::pos_phys::POS_MAX_PHYS_COUNTS,
+        lt = &addr::pos_soft::POS_MAX_SOFT_COUNTS,
+        ge = -GOAL_LIM_COUNTS,
+        le = GOAL_LIM_COUNTS,
     )]
     pub pos_min_soft_counts: i32,
     #[ct_field(
-        ge = &addr::pos_limits::POS_MIN_PHYS_COUNTS,
-        le = &addr::pos_limits::POS_MAX_PHYS_COUNTS,
-        gt = &addr::pos_limits::POS_MIN_SOFT_COUNTS,
+        ge = &addr::pos_phys::POS_MIN_PHYS_COUNTS,
+        le = &addr::pos_phys::POS_MAX_PHYS_COUNTS,
+        gt = &addr::pos_soft::POS_MIN_SOFT_COUNTS,
+        ge = -GOAL_LIM_COUNTS,
+        le = GOAL_LIM_COUNTS,
     )]
     pub pos_max_soft_counts: i32,
 }
@@ -118,6 +122,7 @@ pub struct ConfigLoopPosition {
     /// local gain into the linearized error. 0 = hold disabled. Hold brakes
     /// on position rest alone (position.rs).
     pub pos_deadband_counts: u16,
+    #[ct_field(le = VEL_CAP_CPS)]
     pub velocity_limit_cps: u16,
     /// c/s per medium tick.
     pub accel_limit_q88: u16,
@@ -144,19 +149,20 @@ pub struct ConfigLimits {
     /// false = the wiring is reversed: the kernel negates its motor output so
     /// positive duty and current still increase position counts.
     pub drive_polarity: bool,
+    /// Kernel ticks (`CalibSense.tick_hz`).
+    pub stall_time_ticks: u32,
     pub stall_omega_max_cps: u16,
-    pub stall_time_ms: u16,
     pub stall_yield_counts: u16,
     pub stall_release_counts: u16,
     /// Collision trip: |tau_d| above this is model-unexplained torque.
     pub stall_tau_trip_counts: u16,
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
-    pub openloop_decay: DecaySelect,
+    pub openloop_decay: DecayMode,
     /// true = Brake at zero commanded duty in OpenLoop (default coast).
     pub openloop_zero_brake: bool,
     #[ct_field(skip)]
-    pub _rsvd_align: u8,
+    pub _rsvd_align: [u8; 3],
 }
 
 // Class limits: an unconfigured servo boots protected as the weakest
@@ -168,7 +174,7 @@ pub struct ConfigLimits {
 pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 300;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
-pub const DEFAULT_STALL_TIME_MS: u16 = 500;
+pub const DEFAULT_STALL_TIME_TICKS: u32 = ms_ticks(500);
 pub const DEFAULT_STALL_YIELD_MA: u16 = 180;
 pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
 pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 300;
@@ -196,9 +202,6 @@ pub struct ConfigThermal {
     pub recover_cc: i16,
     pub v_undervolt_counts: u16,
     pub rtherm_i_min_counts: u16,
-    /// Held the retired speed gate; the seat band replaced it.
-    #[ct_field(skip)]
-    pub _rsvd_omega: u16,
 }
 
 // 80C derate onset / 100C cutoff / 90C recover.
@@ -254,17 +257,18 @@ pub const DEFAULT_L3_Q88: u16 = 128;
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigFaultCfg {
+    /// Kernel ticks (`CalibSense.tick_hz`).
+    pub pos_error_time_ticks: u32,
     pub pos_error_counts: u16,
-    pub pos_error_time_ms: u16,
     pub sensor_delta_max: u16,
     pub sensor_bad_count: u8,
     #[ct_field(skip)]
-    pub _rsvd_align: u8,
+    pub _rsvd_align: [u8; 3],
 }
 
 // Wide screens so healthy motion never trips; tighten per application.
 pub const DEFAULT_POS_ERROR_COUNTS: u16 = 400;
-pub const DEFAULT_POS_ERROR_TIME_MS: u16 = 500;
+pub const DEFAULT_POS_ERROR_TIME_TICKS: u32 = ms_ticks(500);
 pub const DEFAULT_SENSOR_DELTA_MAX: u16 = 256;
 pub const DEFAULT_SENSOR_BAD_COUNT: u8 = 4;
 
@@ -280,17 +284,16 @@ pub const DEFAULT_SENSOR_BAD_COUNT: u8 = 4;
 )]
 pub struct ConfigRegs {
     pub common: ConfigCommon,
-    pub pos_limits: ConfigPosLimits,
+    pub pos_phys: ConfigPosPhys,
+    pub pos_soft: ConfigPosSoft,
     pub loop_current: ConfigLoopCurrent,
     pub loop_velocity: ConfigLoopVelocity,
     pub loop_position: ConfigLoopPosition,
     pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
+    pub thermal_ext: ConfigThermalExt,
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
-    pub thermal_ext: ConfigThermalExt,
-    #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 6],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.
@@ -355,6 +358,13 @@ impl CurrentDefaults {
 }
 
 const ADC_COUNTS_PER_VDD: u64 = 4096;
+
+/// Kernel ticks in `ms` at `budget::TICK_HZ`, the rate the chip asserts.
+pub const fn ms_ticks(ms: u32) -> u32 {
+    ms * (crate::budget::TICK_HZ / 1000)
+}
+
+const _: () = assert!(crate::budget::TICK_HZ.is_multiple_of(1000));
 
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
 /// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4

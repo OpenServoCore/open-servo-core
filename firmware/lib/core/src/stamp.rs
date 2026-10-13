@@ -51,24 +51,24 @@ pub const COVERED_NAMES: [&str; 39] = [
     "l2_q88",
     "l3_q88",
     "pos_error_counts",
-    "raw_min",
-    "raw_max",
-    "ke_uvs_per_rad",
     "r_q12",
     "recip_ke_q",
     "b_i_q313",
     "fric_fc_counts",
     "fric_fv_q016",
-    "fric_breakaway_counts",
     "ke_vpc_q",
-    "angle_min_cdeg",
-    "angle_max_cdeg",
-    "gear_ratio_centi",
     "th_alpha_q24",
     "th_g_q016",
     "ntc_raw_ref",
     "ntc_t_ref_cc",
     "ntc_k1_q88",
+    "ke_uvs_per_rad",
+    "fric_breakaway_counts",
+    "raw_min",
+    "raw_max",
+    "angle_min_cdeg",
+    "angle_max_cdeg",
+    "gear_ratio_centi",
 ];
 
 /// One covered byte span of the table.
@@ -265,7 +265,7 @@ mod tests {
         t.calib.motor.recip_ke_q = 3700;
         let ke = compute(&t, None);
         assert_ne!(ke, empty);
-        t.config.pos_limits.pos_max_phys_counts = 4095;
+        t.config.pos_phys.pos_max_phys_counts = 4095;
         assert_ne!(compute(&t, None), ke);
     }
 

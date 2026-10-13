@@ -7,7 +7,7 @@
 
 use super::DECIM_MED;
 use crate::math::recip_div;
-use crate::regions::config::StallResponse;
+use crate::regions::config::{ConfigLimits, ConfigPosSoft, ConfigThermal, StallResponse};
 
 /// `limit_flags` bits: which limit holds the command back.
 pub mod flag {
@@ -20,26 +20,6 @@ pub mod flag {
     pub const ENDSTOP: u8 = 1 << 2;
     /// The stall permit lease is live.
     pub const PERMIT: u8 = 1 << 3;
-}
-
-/// CONFIG limits + thermal + pos-limits fields the block consumes
-/// (`CurrentGains` convention).
-#[derive(Copy, Clone, Default)]
-pub struct LimitCfg {
-    pub current_limit_counts: u16,
-    pub stall_response: StallResponse,
-    pub stall_omega_max_cps: u16,
-    /// Kernel ticks pinned-and-slow before the stall trips.
-    /// The table field is `stall_time_ms`; the kernel converts ms -> ticks
-    /// once at config load, so the per-tick path never multiplies.
-    pub stall_time_ticks: u32,
-    pub stall_yield_counts: u16,
-    pub stall_release_counts: u16,
-    pub stall_tau_trip_counts: u16,
-    pub derate_start_cc: i16,
-    pub cutoff_cc: i16,
-    pub pos_min_soft_counts: i32,
-    pub pos_max_soft_counts: i32,
 }
 
 /// The signed current band every command clamps into: `lo <= i_ref <= hi`.
@@ -85,15 +65,15 @@ impl LimitState {
     /// holding"). A degenerate span (cutoff <= start, no table cross-gate)
     /// degrades to a step at cutoff. At 62.5 Hz the reciprocal's ~10
     /// multiplies are noise.
-    pub fn update_derate(&mut self, t_winding_cc: i16, cfg: &LimitCfg) {
-        let span = cfg.cutoff_cc as i32 - cfg.derate_start_cc as i32;
-        self.derate_cache = if t_winding_cc >= cfg.cutoff_cc {
+    pub fn update_derate(&mut self, t_winding_cc: i16, cfg: &ConfigLimits, th: &ConfigThermal) {
+        let span = th.cutoff_cc as i32 - th.derate_start_cc as i32;
+        self.derate_cache = if t_winding_cc >= th.cutoff_cc {
             0
-        } else if t_winding_cc < cfg.derate_start_cc || span <= 0 {
+        } else if t_winding_cc < th.derate_start_cc || span <= 0 {
             cfg.current_limit_counts
         } else {
             // head in [1, span], both <= 65535: num fits u32 exactly
-            let head = (cfg.cutoff_cc as i32 - t_winding_cc as i32) as u32;
+            let head = (th.cutoff_cc as i32 - t_winding_cc as i32) as u32;
             let num = cfg.current_limit_counts as u32 * head;
             recip_div(num, span as u32).min(cfg.current_limit_counts as u32) as u16
         };
@@ -120,6 +100,7 @@ impl LimitState {
     ///
     /// `stall_permit` is the deliberate-stall escape hatch, the kernel's live
     /// lease (`ControlLifecycle::stall_permit`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fold(
         &mut self,
         i_ref_pinned: bool,
@@ -127,7 +108,8 @@ impl LimitState {
         tau_d_abs_counts: u16,
         theta_hat_counts: i32,
         stall_permit: bool,
-        cfg: &LimitCfg,
+        cfg: &ConfigLimits,
+        soft: &ConfigPosSoft,
     ) -> IBand {
         // Deliberate stall: drop the trip and the endstop, keep everything
         // electrical. Taken before the triggers so a permit granted while
@@ -173,10 +155,10 @@ impl LimitState {
             lo: -(lim as i32),
             hi: lim as i32,
         };
-        if theta_hat_counts >= cfg.pos_max_soft_counts {
+        if theta_hat_counts >= soft.pos_max_soft_counts {
             band.hi = 0;
         }
-        if theta_hat_counts <= cfg.pos_min_soft_counts {
+        if theta_hat_counts <= soft.pos_min_soft_counts {
             band.lo = 0;
         }
         band
@@ -218,6 +200,66 @@ impl Default for LimitState {
 mod tests {
     use super::*;
 
+    /// The fields the block reads, flat; `fold` and `derate` hand them over
+    /// as the table's blocks.
+    #[derive(Copy, Clone)]
+    struct LimitCfg {
+        current_limit_counts: u16,
+        stall_response: StallResponse,
+        stall_omega_max_cps: u16,
+        stall_time_ticks: u32,
+        stall_yield_counts: u16,
+        stall_release_counts: u16,
+        stall_tau_trip_counts: u16,
+        derate_start_cc: i16,
+        cutoff_cc: i16,
+        pos_min_soft_counts: i32,
+        pos_max_soft_counts: i32,
+    }
+
+    impl LimitCfg {
+        fn blocks(&self) -> (ConfigLimits, ConfigThermal, ConfigPosSoft) {
+            let limits = ConfigLimits {
+                current_limit_counts: self.current_limit_counts,
+                stall_response: self.stall_response,
+                stall_omega_max_cps: self.stall_omega_max_cps,
+                stall_time_ticks: self.stall_time_ticks,
+                stall_yield_counts: self.stall_yield_counts,
+                stall_release_counts: self.stall_release_counts,
+                stall_tau_trip_counts: self.stall_tau_trip_counts,
+                ..ConfigLimits::new()
+            };
+            let thermal = ConfigThermal {
+                derate_start_cc: self.derate_start_cc,
+                cutoff_cc: self.cutoff_cc,
+                ..ConfigThermal::new()
+            };
+            let soft = ConfigPosSoft {
+                pos_min_soft_counts: self.pos_min_soft_counts,
+                pos_max_soft_counts: self.pos_max_soft_counts,
+            };
+            (limits, thermal, soft)
+        }
+    }
+
+    fn fold(
+        st: &mut LimitState,
+        pinned: bool,
+        omega: u32,
+        tau_d: u16,
+        theta: i32,
+        permit: bool,
+        cfg: &LimitCfg,
+    ) -> IBand {
+        let (limits, _, soft) = cfg.blocks();
+        st.fold(pinned, omega, tau_d, theta, permit, &limits, &soft)
+    }
+
+    fn derate(st: &mut LimitState, t_winding_cc: i16, cfg: &LimitCfg) {
+        let (limits, thermal, _) = cfg.blocks();
+        st.update_derate(t_winding_cc, &limits, &thermal);
+    }
+
     const CFG: LimitCfg = LimitCfg {
         current_limit_counts: 1200,
         stall_response: StallResponse::Yield,
@@ -234,7 +276,7 @@ mod tests {
 
     /// Mid-range, unpinned, no load: nothing but limit/derate can bind.
     fn free_fold(st: &mut LimitState, cfg: &LimitCfg) -> u16 {
-        st.fold(false, 1000, 0, 0, false, cfg).hi as u16
+        fold(st, false, 1000, 0, 0, false, cfg).hi as u16
     }
 
     #[test]
@@ -249,22 +291,22 @@ mod tests {
     #[test]
     fn derate_endpoints_and_midpoint() {
         let mut st = LimitState::new();
-        st.update_derate(7999, &CFG);
+        derate(&mut st, 7999, &CFG);
         assert_eq!(free_fold(&mut st, &CFG), 1200);
         // onset: head == span, quotient = current_limit up to truncation
-        st.update_derate(8000, &CFG);
+        derate(&mut st, 8000, &CFG);
         assert!(free_fold(&mut st, &CFG) >= 1199);
         // midpoint -> half
-        st.update_derate(9000, &CFG);
+        derate(&mut st, 9000, &CFG);
         let mid = free_fold(&mut st, &CFG);
         assert!((599..=600).contains(&mid), "mid={mid}");
         // cutoff and beyond -> zero
-        st.update_derate(10000, &CFG);
+        derate(&mut st, 10000, &CFG);
         assert_eq!(free_fold(&mut st, &CFG), 0);
-        st.update_derate(12000, &CFG);
+        derate(&mut st, 12000, &CFG);
         assert_eq!(free_fold(&mut st, &CFG), 0);
         // recovery is just the next SLOW recompute
-        st.update_derate(2500, &CFG);
+        derate(&mut st, 2500, &CFG);
         assert_eq!(free_fold(&mut st, &CFG), 1200);
     }
 
@@ -275,9 +317,9 @@ mod tests {
             ..CFG
         };
         let mut st = LimitState::new();
-        st.update_derate(9999, &cfg);
+        derate(&mut st, 9999, &cfg);
         assert_eq!(free_fold(&mut st, &cfg), 1200);
-        st.update_derate(10000, &cfg);
+        derate(&mut st, 10000, &cfg);
         assert_eq!(free_fold(&mut st, &cfg), 0);
     }
 
@@ -285,10 +327,10 @@ mod tests {
     fn stall_timer_folds_under_yield() {
         let mut st = LimitState::new();
         for _ in 0..9 {
-            assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 1200);
+            assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 1200);
             assert!(!st.stalled());
         }
-        assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 300);
+        assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 300);
         assert!(st.stalled());
         assert!(!st.stall_fault_pending());
         assert_eq!(st.i_lim_counts(), 300);
@@ -298,47 +340,47 @@ mod tests {
     fn movement_resets_timer() {
         let mut st = LimitState::new();
         for _ in 0..9 {
-            st.fold(true, 0, 200, 0, false, &CFG);
+            fold(&mut st, true, 0, 200, 0, false, &CFG);
         }
         // one fast tick clears the count; so does an unpinned one
-        st.fold(true, 500, 200, 0, false, &CFG);
+        fold(&mut st, true, 500, 200, 0, false, &CFG);
         for _ in 0..9 {
-            assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 1200);
+            assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 1200);
         }
-        st.fold(false, 0, 200, 0, false, &CFG);
+        fold(&mut st, false, 0, 200, 0, false, &CFG);
         for _ in 0..9 {
-            assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 1200);
+            assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 1200);
         }
-        assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 300);
+        assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 300);
     }
 
     #[test]
     fn release_on_tau_d_relax_restores_and_rearms() {
         let mut st = LimitState::new();
         for _ in 0..10 {
-            st.fold(true, 0, 200, 0, false, &CFG);
+            fold(&mut st, true, 0, 200, 0, false, &CFG);
         }
         assert!(st.stalled());
         // tau_d still above release: stays folded
-        assert_eq!(st.fold(false, 1000, 150, 0, false, &CFG).hi, 300);
+        assert_eq!(fold(&mut st, false, 1000, 150, 0, false, &CFG).hi, 300);
         // relax below release: restored, and a fresh window is required
-        assert_eq!(st.fold(false, 1000, 149, 0, false, &CFG).hi, 1200);
+        assert_eq!(fold(&mut st, false, 1000, 149, 0, false, &CFG).hi, 1200);
         assert!(!st.stalled());
         for _ in 0..9 {
-            assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 1200);
+            assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 1200);
         }
-        assert_eq!(st.fold(true, 0, 200, 0, false, &CFG).hi, 300);
+        assert_eq!(fold(&mut st, true, 0, 200, 0, false, &CFG).hi, 300);
     }
 
     #[test]
     fn collision_folds_immediately() {
         let mut st = LimitState::new();
         // unpinned and moving: only the tau_d spike path can trip
-        assert_eq!(st.fold(false, 2000, 1201, 0, false, &CFG).hi, 300);
+        assert_eq!(fold(&mut st, false, 2000, 1201, 0, false, &CFG).hi, 300);
         assert!(st.stalled());
         // at the threshold is not a spike
         let mut st = LimitState::new();
-        assert_eq!(st.fold(false, 2000, 1200, 0, false, &CFG).hi, 1200);
+        assert_eq!(fold(&mut st, false, 2000, 1200, 0, false, &CFG).hi, 1200);
         assert!(!st.stalled());
     }
 
@@ -350,13 +392,13 @@ mod tests {
         };
         let mut st = LimitState::new();
         for _ in 0..10 {
-            assert_eq!(st.fold(true, 0, 200, 0, false, &cfg).hi, 1200);
+            assert_eq!(fold(&mut st, true, 0, 200, 0, false, &cfg).hi, 1200);
         }
         assert!(st.stall_fault_pending());
         assert!(!st.stalled());
         // collision pends too, still no fold
         let mut st = LimitState::new();
-        assert_eq!(st.fold(false, 2000, 1201, 0, false, &cfg).hi, 1200);
+        assert_eq!(fold(&mut st, false, 2000, 1201, 0, false, &cfg).hi, 1200);
         assert!(st.stall_fault_pending());
         assert!(!st.stalled());
     }
@@ -366,22 +408,22 @@ mod tests {
         let mut st = LimitState::new();
         // at max: the inward (positive) side collapses,
         // retreat keeps the composed limit - one band carries both verdicts
-        let b = st.fold(false, 1000, 0, 4000, false, &CFG);
+        let b = fold(&mut st, false, 1000, 0, 4000, false, &CFG);
         assert_eq!((b.lo, b.hi), (-1200, 0));
         // mirrored at min
-        let b = st.fold(false, 1000, 0, -4000, false, &CFG);
+        let b = fold(&mut st, false, 1000, 0, -4000, false, &CFG);
         assert_eq!((b.lo, b.hi), (0, 1200));
         // past the wall keeps protecting
-        assert_eq!(st.fold(false, 1000, 0, 5000, false, &CFG).hi, 0);
+        assert_eq!(fold(&mut st, false, 1000, 0, 5000, false, &CFG).hi, 0);
         // mid-range: symmetric
-        let b = st.fold(false, 1000, 0, 0, false, &CFG);
+        let b = fold(&mut st, false, 1000, 0, 0, false, &CFG);
         assert_eq!((b.lo, b.hi), (-1200, 1200));
         // past the min wall mirrors it
-        let b = st.fold(false, 1000, 0, -5000, false, &CFG);
+        let b = fold(&mut st, false, 1000, 0, -5000, false, &CFG);
         assert_eq!((b.lo, b.hi), (0, 1200));
         // the deadlock regression: a zeroed command must not re-read as an
         // inward push - the band's retreat side stays open regardless
-        let b = st.fold(false, 1000, 0, 4000, false, &CFG);
+        let b = fold(&mut st, false, 1000, 0, 4000, false, &CFG);
         assert_eq!(b.clamp(0), 0);
         assert_eq!(b.clamp(-120), -120);
         assert_eq!(b.clamp(120), 0);
@@ -391,15 +433,15 @@ mod tests {
     fn min_composition_tightest_term_wins() {
         // stalled yield 300 vs derate near cutoff: derate binds
         let mut st = LimitState::new();
-        st.update_derate(9990, &CFG); // head 10/2000 -> ~6, way under yield
+        derate(&mut st, 9990, &CFG); // head 10/2000 -> ~6, way under yield
         for _ in 0..10 {
-            st.fold(true, 0, 200, 0, false, &CFG);
+            fold(&mut st, true, 0, 200, 0, false, &CFG);
         }
         assert!(st.stalled());
-        let lim = st.fold(true, 0, 200, 0, false, &CFG).hi;
+        let lim = fold(&mut st, true, 0, 200, 0, false, &CFG).hi;
         assert!((5..=6).contains(&lim), "lim={lim}");
         // endstop zero beats everything
-        assert_eq!(st.fold(true, 0, 200, 4000, false, &CFG).hi, 0);
+        assert_eq!(fold(&mut st, true, 0, 200, 4000, false, &CFG).hi, 0);
     }
 
     /// The whole point of the permit: pushing into a wall keeps its current.
@@ -409,10 +451,10 @@ mod tests {
     #[test]
     fn permit_keeps_the_band_open_at_both_walls() {
         let mut st = LimitState::new();
-        assert_eq!(st.fold(false, 0, 0, 4000, false, &CFG).hi, 0);
-        assert_eq!(st.fold(false, 0, 0, 4000, true, &CFG).hi, 1200);
-        assert_eq!(st.fold(false, 0, 0, -4000, false, &CFG).lo, 0);
-        assert_eq!(st.fold(false, 0, 0, -4000, true, &CFG).lo, -1200);
+        assert_eq!(fold(&mut st, false, 0, 0, 4000, false, &CFG).hi, 0);
+        assert_eq!(fold(&mut st, false, 0, 0, 4000, true, &CFG).hi, 1200);
+        assert_eq!(fold(&mut st, false, 0, 0, -4000, false, &CFG).lo, 0);
+        assert_eq!(fold(&mut st, false, 0, 0, -4000, true, &CFG).lo, -1200);
     }
 
     /// Pinned and slow is the stall signature, and holding against a stop is
@@ -422,7 +464,7 @@ mod tests {
     fn permit_never_trips_the_stall_timer() {
         let mut st = LimitState::new();
         for _ in 0..(CFG.stall_time_ticks * 10) {
-            st.fold(true, 0, 0, 0, true, &CFG);
+            fold(&mut st, true, 0, 0, 0, true, &CFG);
         }
         assert!(!st.stalled());
         assert!(!st.stall_fault_pending());
@@ -436,10 +478,10 @@ mod tests {
     fn permit_releases_an_existing_stall() {
         let mut st = LimitState::new();
         for _ in 0..CFG.stall_time_ticks {
-            st.fold(true, 0, 0, 0, false, &CFG);
+            fold(&mut st, true, 0, 0, 0, false, &CFG);
         }
         assert!(st.stalled());
-        assert_eq!(st.fold(true, 0, 0, 0, true, &CFG).hi, 1200);
+        assert_eq!(fold(&mut st, true, 0, 0, 0, true, &CFG).hi, 1200);
         assert!(!st.stalled());
     }
 
@@ -449,7 +491,7 @@ mod tests {
     #[test]
     fn permit_does_not_touch_thermal_or_current_limits() {
         let mut st = LimitState::new();
-        st.update_derate(CFG.cutoff_cc, &CFG);
-        assert_eq!(st.fold(false, 0, 0, 0, true, &CFG).hi, 0);
+        derate(&mut st, CFG.cutoff_cc, &CFG);
+        assert_eq!(fold(&mut st, false, 0, 0, 0, true, &CFG).hi, 0);
     }
 }
