@@ -1,9 +1,11 @@
+use core::mem::MaybeUninit;
+
 use control_table::{RegisterFile, Snapshot};
 use heapless::Vec;
 use osc_protocol::FrameBytes;
 use osc_protocol::frame::uid_prefix_matches;
 use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
-use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
+use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::kernel;
 use crate::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN, StoreError};
@@ -100,7 +102,7 @@ impl<'a> Dispatcher<'a> {
 impl Dispatch for Dispatcher<'_> {
     fn dispatch<R: Reply>(
         &mut self,
-        req: Request<'_>,
+        req: &Request<'_>,
         ctx: RequestCtx,
         reply: &mut R,
     ) -> Dispatched {
@@ -109,7 +111,7 @@ impl Dispatch for Dispatcher<'_> {
         // or stages anything.
         self.revert_dangling();
         let alert = self.alert();
-        match req {
+        match *req {
             Request::Ping => {
                 self.ping(alert, &ctx, reply);
                 Dispatched::Done
@@ -130,11 +132,11 @@ impl Dispatch for Dispatcher<'_> {
                 Dispatched::Done
             }
             Request::Enumerate { prefix_len, prefix } => {
-                self.enumerate(alert, &ctx, prefix_len, &prefix, reply);
+                self.enumerate(alert, &ctx, prefix_len, prefix, reply);
                 Dispatched::Done
             }
             Request::Assign { uid, new_id } => {
-                self.assign(alert, &ctx, &uid, new_id, reply);
+                self.assign(alert, &ctx, uid, new_id, reply);
                 Dispatched::Done
             }
             // sec 9.3: broadcast-only (decode enforces), so no ack precedes the
@@ -373,7 +375,7 @@ impl Dispatcher<'_> {
         let Some(words) = words else {
             return nack(reply, ResultCode::Range);
         };
-        let mut spans: [&[u8]; GATHER_MAX] = [&[]; GATHER_MAX];
+        let mut spans = [const { MaybeUninit::<&[u8]>::uninit() }; GATHER_MAX];
         let mut n = 0;
         let mut total: u16 = 0;
         for w in words {
@@ -383,7 +385,7 @@ impl Dispatcher<'_> {
             let Ok(data) = RegisterFile::read(&self.shared.table, addr, count) else {
                 return nack(reply, ResultCode::Range);
             };
-            spans[n] = data;
+            spans[n].write(data);
             n += 1;
             total += count;
         }
@@ -393,7 +395,9 @@ impl Dispatcher<'_> {
         if total > MAX_PAYLOAD as u16 {
             return nack(reply, ResultCode::Limit);
         }
-        let _ = reply.send_status_gather(ResultCode::Ok, alert, &spans[..n]);
+        // SAFETY: the loop wrote `spans[i]` for every `i < n` it counted.
+        let spans = unsafe { spans[..n].assume_init_ref() };
+        let _ = reply.send_status_gather(ResultCode::Ok, alert, spans);
     }
 
     /// Write, the spine way: check it (a held write also stages above a
@@ -467,7 +471,7 @@ impl Dispatcher<'_> {
         self.shared.table.commit_staged(self.staged);
         Self::ack(alert, ctx, Ok(()), reply);
         let mut hooks = ControlTableHooks::new(reply);
-        for (addr, len) in spans {
+        for &(addr, len) in &spans {
             self.after_commit(addr, len);
             self.shared
                 .table
@@ -490,7 +494,7 @@ impl Dispatcher<'_> {
         alert: bool,
         ctx: &RequestCtx,
         prefix_len: u8,
-        prefix: &[u8; UID_LEN],
+        prefix: FrameBytes<'_>,
         reply: &mut R,
     ) {
         if !ctx.may_reply {
@@ -519,11 +523,11 @@ impl Dispatcher<'_> {
         &mut self,
         alert: bool,
         ctx: &RequestCtx,
-        uid: &[u8; UID_LEN],
+        uid: FrameBytes<'_>,
         new_id: u8,
         reply: &mut R,
     ) {
-        if uid != self.shared.uid() {
+        if uid != FrameBytes::from(&self.shared.uid()[..]) {
             return;
         }
         if Id::try_unicast(new_id).is_none() {

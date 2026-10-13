@@ -348,12 +348,14 @@ impl<P: Providers> ServoBus<P> {
         &mut self,
         anchor: u16,
         footprint: u16,
-        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
+        f: impl FnOnce(&Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
     ) -> Option<(bool, Slot, T)> {
         let frame = frame_view(self.ring.bytes(), anchor, footprint);
-        let (req, ctx, slot) = match decode(frame, self.id) {
-            Decoded::Own(req, ctx, slot) => (req, ctx, slot),
-            _ => return None,
+        // Borrowed in place: moving the request out of `Decoded` is a
+        // byte-wise memcpy call (its payload starts at offset 1).
+        let decoded = decode(frame, self.id);
+        let Decoded::Own(req, ctx, slot) = &decoded else {
+            return None;
         };
         // sec 9.2: an ENUM reply's staged wire effect is collision-tolerant --
         // its job is to collide with peer matchers (the on_break kill site
@@ -375,7 +377,7 @@ impl<P: Providers> ServoBus<P> {
             staged: false,
             tolerant,
         };
-        let out = f(req, ctx, &mut handle);
-        Some((handle.staged, slot, out))
+        let out = f(req, *ctx, &mut handle);
+        Some((handle.staged, *slot, out))
     }
 }

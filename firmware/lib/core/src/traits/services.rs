@@ -1,5 +1,5 @@
 use osc_protocol::FrameBytes;
-use osc_protocol::wire::{MgmtOp, ResultCode, UID_LEN};
+use osc_protocol::wire::{MgmtOp, ResultCode};
 
 use crate::tel::Chunks;
 use crate::{BaudRate, BootMode};
@@ -45,12 +45,12 @@ pub enum Request<'a> {
     /// prefix; silent otherwise.
     Enumerate {
         prefix_len: u8,
-        prefix: [u8; UID_LEN],
+        prefix: FrameBytes<'a>,
     },
     /// MGMT ASSIGN (sec 9.2): the servo whose UID matches takes `new_id`
     /// immediately and acks from it.
     Assign {
-        uid: [u8; UID_LEN],
+        uid: FrameBytes<'a>,
         new_id: u8,
     },
     /// MGMT CAL (sec 9.3, broadcast-only): `gaps + 1` bare breaks spaced
@@ -70,6 +70,7 @@ pub enum Request<'a> {
 }
 
 /// Bus-derived context core may not derive itself.
+#[derive(Copy, Clone)]
 pub struct RequestCtx {
     /// The wire contract permits a status for this request (false for
     /// NOREPLY-flagged instructions and non-acking broadcasts).
@@ -137,7 +138,7 @@ pub enum Dispatched {
 pub trait Dispatch {
     fn dispatch<R: Reply>(
         &mut self,
-        req: Request<'_>,
+        req: &Request<'_>,
         ctx: RequestCtx,
         reply: &mut R,
     ) -> Dispatched;

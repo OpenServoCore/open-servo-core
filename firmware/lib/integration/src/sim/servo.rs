@@ -80,7 +80,7 @@ struct Counted<'a> {
 impl Dispatch for Counted<'_> {
     fn dispatch<R: Reply>(
         &mut self,
-        req: Request<'_>,
+        req: &Request<'_>,
         ctx: RequestCtx,
         reply: &mut R,
     ) -> Dispatched {
