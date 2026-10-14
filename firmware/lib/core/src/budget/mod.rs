@@ -227,10 +227,11 @@ pub const THERM_SIDE: u32 = 639;
 
 /// The drive direction check's stage on phase SPARE_B, on top of its row:
 /// a leg's end against the pot, its verdict or an anchor, while the wiring
-/// is unproven, on a SPARE_B no thermometer stage takes. E: the dearest, a
-/// leg's end through the position table, priced on the release disassembly
-/// with the fetch model as [`REFRESH`] at 210 over the plain tick (the
-/// verdict that latches 181, an anchor 120), plus 10%. It stays inside the
+/// is unproven, on a SPARE_B no thermometer stage takes. Above both its E
+/// and its M: E, the dearest, a leg's end through the position table,
+/// priced on the release disassembly with the fetch model as [`REFRESH`]
+/// at 193 over the plain tick (the verdict that latches 181, an anchor
+/// 120), plus 10%, 212; M 219, the bench's two runs. It stays inside the
 /// thermometer's stage there, so the SPARE_B envelope is the same. The
 /// plain check rides the SPARE_B row: 9.25 proven, at most 40.5 unproven.
 pub const DRIVE_STAGE: u32 = 231;

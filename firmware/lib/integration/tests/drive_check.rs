@@ -32,6 +32,15 @@ const SEEDS: u64 = 16;
 /// The current limit of the bench set, as a load on the output.
 const LIMIT_LOAD: f64 = 280.0;
 
+/// The rev-2A bench's current limit and profile limits on the same plant:
+/// the shaft runs at its 3-6 counts/ms there, and a reversed motor's pot
+/// leads the observer by up to a leg and a half, as on the bench.
+fn bench_limits(t: &mut ControlTable) {
+    t.config.limits.current_limit_counts = 554;
+    t.config.loop_position.velocity_limit_cps = 4000;
+    t.config.loop_position.accel_limit_q88 = 10240;
+}
+
 struct Servo {
     sh: Shared,
     k: Kernel<FakeIo>,
@@ -164,7 +173,7 @@ fn an_openloop_drive_proves_the_drive() {
 
 /// A motor wired against `drive_polarity` under a closed loop, torque on at
 /// mid travel and a goal either way: the loop drives the shaft away and
-/// `drive_reversed` latches, the drive off from that tick, within three
+/// `drive_reversed` latches, the winding shorted from that tick, within three
 /// legs of pot travel from the enable: two legs on the observer's sample,
 /// then the verdict's period and the sample's age at speed and the pot's
 /// residual. 16 seeds each.
@@ -193,8 +202,8 @@ fn a_reversed_motor_faults_in_the_closed_loops_within_three_legs() {
                 assert_eq!(s.code(), CODE_DRIVE_REVERSED, "{mode:?} {dir} seed {seed}");
                 s.tick();
                 assert!(
-                    matches!(s.k.io.motor.last, Some(MotorCmd::Disabled)),
-                    "{mode:?} {dir} seed {seed}: still driving"
+                    matches!(s.k.io.motor.last, Some(MotorCmd::Brake)),
+                    "{mode:?} {dir} seed {seed}: not braking"
                 );
                 worst = worst.max(travel);
             }
@@ -204,6 +213,91 @@ fn a_reversed_motor_faults_in_the_closed_loops_within_three_legs() {
             );
         }
     }
+}
+
+/// At the bench limits, goal and torque in one write: the pot leads the
+/// observer by a full leg or more on the way, the lead that discarded legs
+/// before the rule looked only for a pot left behind, and the latch still
+/// comes within two legs, the lead and the verdict's period at speed:
+/// three and a half legs. The winding short then stops the shaft within
+/// five legs of the latch, where a coast runs ten or more. 16 seeds each.
+#[test]
+fn a_reversed_motor_at_the_bench_limits_latches_and_brakes() {
+    let mut lead: f64 = 0.0;
+    for mode in [Mode::Position, Mode::Velocity] {
+        for dir in [1i32, -1] {
+            let (mut worst, mut stop): (f64, f64) = (0.0, 0.0);
+            for seed in 1..=SEEDS {
+                let mut s = Servo::new(seed, MID, mode, |t| {
+                    bench_limits(t);
+                    t.control.lifecycle.goal_position = MID as i32 + 200 * dir;
+                    t.control.lifecycle.goal_velocity = 4000 * dir;
+                });
+                s.p.swapped = true;
+                let from = s.pos();
+                s.control(|c| c.torque_enable = true);
+                let mut travel: f64 = 0.0;
+                s.until(1000 * MS, |s| {
+                    travel = travel.max((s.pos() - from).abs());
+                    let theta = s.sh.table.with(|t| t.telemetry.estimates.theta_hat_q16);
+                    lead = lead.max((s.p.sensed() - theta as f64 / 65536.0) * s.p.omega.signum());
+                    s.reversed()
+                })
+                .unwrap_or_else(|| panic!("{mode:?} {dir} seed {seed}: never latched"));
+                worst = worst.max(travel);
+                let at = s.pos();
+                for _ in 0..400 * MS {
+                    s.tick();
+                    stop = stop.max((at - s.pos()) * dir as f64);
+                }
+                assert!(
+                    matches!(s.k.io.motor.last, Some(MotorCmd::Brake)),
+                    "{mode:?} {dir} seed {seed}: not braking"
+                );
+            }
+            let leg = DRIVE_LEG_COUNTS as f64;
+            assert!(
+                worst <= 3.5 * leg,
+                "{mode:?} {dir}: {worst:.1} counts to the latch"
+            );
+            assert!(
+                stop <= 5.0 * leg,
+                "{mode:?} {dir}: {stop:.1} counts after it"
+            );
+        }
+    }
+    assert!(
+        lead >= DRIVE_LEG_COUNTS as f64,
+        "the pot led by {lead:.1} at most"
+    );
+}
+
+/// The winding short holds from the latch through torque off, and the
+/// torque_enable 0 to 1 ack releases it with the latch.
+#[test]
+fn the_latch_brakes_until_the_ack() {
+    let mut s = Servo::new(1, 700.0, Mode::OpenLoop, |_| {});
+    s.p.swapped = true;
+    s.control(|c| {
+        c.goal_duty = 3500;
+        c.torque_enable = true;
+    });
+    s.until(3000 * MS, |s| s.reversed())
+        .expect("latches at the wall");
+    let braked = |s: &mut Servo, ticks: u32| {
+        (0..ticks).all(|_| {
+            s.tick();
+            matches!(s.k.io.motor.last, Some(MotorCmd::Brake))
+        })
+    };
+    assert!(braked(&mut s, 20 * MS));
+    s.control(|c| c.torque_enable = false);
+    assert!(braked(&mut s, 20 * MS));
+    assert!(s.reversed());
+    s.control(|c| c.torque_enable = true);
+    s.run(MS);
+    assert_eq!(s.code(), CODE_NONE);
+    assert!(matches!(s.k.io.motor.last, Some(MotorCmd::Drive { .. })));
 }
 
 /// A reversed motor on an open drive mid travel is judged only at a soft
@@ -295,6 +389,34 @@ fn a_stall_never_reads_reversed() {
                     "{mode:?} {dir} swapped {swapped}: the stall timer"
                 );
                 assert!(!s.reversed(), "{mode:?} {dir} swapped {swapped}");
+            }
+        }
+    }
+}
+
+/// A reversed motor held still under a closed loop at the bench limits,
+/// the stall yielding: the observer's model walks it the drive's way and
+/// the pot stays, so nothing proves the wiring through 1.5 s of it, and
+/// once let go the shaft runs and latches. 16 seeds each.
+#[test]
+fn a_stalled_reversed_motor_is_never_proven() {
+    for mode in [Mode::Position, Mode::Velocity] {
+        for dir in [1i32, -1] {
+            for seed in 1..=SEEDS {
+                let mut s = Servo::new(seed, MID, mode, |t| {
+                    bench_limits(t);
+                    t.config.limits.stall_response = StallResponse::Yield;
+                    t.control.lifecycle.goal_position = MID as i32 + 200 * dir;
+                    t.control.lifecycle.goal_velocity = 4000 * dir;
+                });
+                s.p.locked = true;
+                s.p.swapped = true;
+                s.control(|c| c.torque_enable = true);
+                s.run(1500 * MS);
+                assert_eq!(s.code(), CODE_NONE, "{mode:?} {dir} seed {seed}");
+                s.p.locked = false;
+                s.until(1000 * MS, |s| s.reversed())
+                    .unwrap_or_else(|| panic!("{mode:?} {dir} seed {seed}: proven while held"));
             }
         }
     }

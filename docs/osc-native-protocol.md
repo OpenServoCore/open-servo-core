@@ -834,8 +834,9 @@ newly-latched kind (`fault_code`, `0x221`):
 | 6   | 7    | `data`           |
 | 6   | 8    | `drive_reversed` |
 
-Any set bit forces the drive off; the `torque_enable` 0 to 1 edge is the
-only acknowledgement, and a still-present condition re-latches at once.
+Any set bit forces the drive off (`drive_reversed` shorts the winding
+instead, below); the `torque_enable` 0 to 1 edge is the only
+acknowledgement, and a still-present condition re-latches at once.
 The kernel reads `torque_enable`, `mode` and the goals once per medium
 tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
 and a new `goal_duty` take effect at the first medium tick after the
@@ -856,8 +857,13 @@ a write that changes `drive_polarity`, the kernel follows the observer's
 position (`theta_hat_q16`) in legs of 20 counts, about 1 degree on the
 bench MG90, once per medium period while torque is on: an idle drive
 (zero duty) drags the start of the leg along. A leg's end counts the
-next period only where the pot agrees with the observer to within a leg,
-and is judged the period after against the drive's direction, the
+next period only where the pot has come half a leg from the leg's start
+the leg's way: an observer that walks off a still rotor leaves the pot
+behind whatever offset the two hold at rest, while on a running shaft the
+observer trails the pot, a reversed motor's by up to a leg and a half
+(DES `a_reversed_motor_at_the_bench_limits_latches_and_brakes`). A leg the
+pot has not followed keeps its start. A counted leg is judged the period
+after against the drive's direction, the
 position loop's or the profile's in Position and Velocity, the applied
 duty in OpenLoop and Current. A leg the drive's way proves the wiring,
 and the check stops until the next boot or polarity change. Two legs in
@@ -868,8 +874,15 @@ an open drive mid travel (DES
 `a_reversed_motor_faults_in_the_closed_loops_within_three_legs`,
 `a_reversed_open_drive_faults_at_the_soft_limit`). A latch leaves the
 wiring unproven, so the next enable checks again; `osc cal` learns the
-polarity. A sag the loop wins does not latch it, up to a load at the
-current limit (DES `gravity_sag_at_the_limit_never_reads_reversed`).
+polarity. While `drive_reversed` is latched the bridge shorts the
+winding, the passive brake the position hold parks on, in place of
+switching the drive off: the short opposes the shaft's motion whichever
+way the motor is wired and drives nothing, so a reversed shaft stops
+within about five legs of the latch where a coast runs ten or more. The
+acknowledgement releases it with the latch (DES
+`the_latch_brakes_until_the_ack`). A sag the loop wins does not latch
+it, up to a load at the current limit (DES
+`gravity_sag_at_the_limit_never_reads_reversed`).
 Before a first move has proven the wiring, a load the limit cannot hold,
 or a push that drives a closed loop back two legs, reads the same as a
 reversed motor and latches it.

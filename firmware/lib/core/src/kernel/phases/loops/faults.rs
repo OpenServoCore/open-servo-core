@@ -1,7 +1,8 @@
 //! Fault latch + detectors (spec "Fault raise points"). Any set bit forces
-//! MotorCmd::Disabled regardless of torque_enable; the torque_enable 0->1
-//! edge is the only ack - it clears the mask and the detector state, and a
-//! still-present condition re-latches through the normal detectors.
+//! MotorCmd::Disabled regardless of torque_enable (`CODE_DRIVE_REVERSED`:
+//! MotorCmd::Brake); the torque_enable 0->1 edge is the only ack - it
+//! clears the mask and the detector state, and a still-present condition
+//! re-latches through the normal detectors.
 
 use crate::kernel::DECIM_MED;
 use crate::pos_lut::GRID_SHIFT;
@@ -208,9 +209,13 @@ pub const fn stage_due(state: u8) -> bool {
 /// unproven. A plain check holds the observer's position against an
 /// anchor: an idle drive (zero duty) drags the anchor along, a driven shaft
 /// ends a leg once it is `DRIVE_LEG_COUNTS` away. The stages follow, a check
-/// each: the leg's end counts only where the pot agrees with the observer,
-/// whose model walks its position off a locked rotor, and the next leg
-/// starts a leg on; then the leg is judged against the drive's direction. A
+/// each: the leg's end counts only where the pot has come half a leg from
+/// the leg's start, and the next leg starts a leg on; then the leg is judged
+/// against the drive's direction. The observer's model walks its position
+/// off a locked rotor and leaves the pot behind, whatever offset the two
+/// hold at rest; on a running shaft it trails the pot, a reversed motor's
+/// by up to a leg and a half, which a leg must not lose. A leg the pot has
+/// not followed keeps its start, so a walk back is no leg either. A
 /// leg the drive's way proves the wiring under the present `drive_polarity`.
 /// A leg against it after another is a reversed motor where a load cannot
 /// explain it: under a closed loop, whose reference holds against any load
@@ -300,11 +305,11 @@ impl DriveCheck {
         match self.state {
             LEG_END => {
                 self.state = TRACK;
-                if (pot_q4() - pos_q4).unsigned_abs() >= LEG_Q4 {
-                    self.anchor = pos_q4;
+                let up = pos_q4 > self.anchor;
+                let moved = pot_q4() - self.anchor;
+                if (if up { moved } else { -moved }) < (LEG_Q4 / 2) as i32 {
                     return false;
                 }
-                let up = pos_q4 > self.anchor;
                 self.leg = if up { 1 } else { -1 };
                 self.anchor += if up { LEG_Q4 as i32 } else { -(LEG_Q4 as i32) };
                 self.state = JUDGE;
@@ -548,17 +553,53 @@ mod tests {
         assert!(c.unproven());
     }
 
-    /// The observer walking off a still pot ends no leg.
+    /// One check with the pot at `pot`; whether it judged a leg.
+    fn check_pot(c: &mut DriveCheck, pos: i32, pot: i32, sign: i32) -> (bool, bool) {
+        let reversed =
+            c.check(q4(pos), 1000) && c.stage(q4(pos), || q4(pot), || sign, true, walls(pos));
+        (reversed, c.state == JUDGE)
+    }
+
+    /// The observer walking off a still pot, out three legs and back past
+    /// its start either way, ends no leg, whatever offset the two hold at
+    /// rest within half a leg.
     #[test]
     fn a_position_the_pot_disagrees_with_ends_no_leg() {
-        let mut c = started(2000);
-        for n in 0..=100 {
-            let pos = 2000 + n;
-            assert!(
-                !c.check(q4(pos), 1000) || !c.stage(q4(pos), || q4(2000), || -1, true, walls(pos))
-            );
+        for off in [-9, -4, 0, 4, 9] {
+            let mut c = started(2000);
+            let out_and_back = (0..=60).chain((-60..60).rev()).chain(-60..=0);
+            for n in out_and_back {
+                let pos = 2000 + n;
+                assert_eq!(
+                    check_pot(&mut c, pos, 2000 + off, -1),
+                    (false, false),
+                    "{off} {n}"
+                );
+            }
+            assert!(c.unproven());
         }
-        assert!(c.unproven());
-        assert!(c.state == TRACK || c.state == LEG_END);
+    }
+
+    /// A running shaft's pot leads the observer, a reversed motor's by up to
+    /// a leg and a half: the leg ends where the observer says, and two
+    /// against the drive latch as they do with the two agreeing.
+    #[test]
+    fn a_pot_ahead_of_the_observer_ends_the_leg() {
+        for sign in [1, -1] {
+            for lead in [0, 10, 25, 30] {
+                for off in [-9, 9] {
+                    let mut c = started(2000);
+                    let mut legs = 0;
+                    let at = (0..=3 * LEG).map(|n| 2000 - sign * n).find(|&pos| {
+                        let (reversed, judged) =
+                            check_pot(&mut c, pos, pos - sign * lead + off, sign);
+                        legs += judged as u32;
+                        reversed
+                    });
+                    assert_eq!(at, Some(2000 - sign * (2 * LEG + 2)), "{sign} {lead} {off}");
+                    assert_eq!(legs, 2, "{sign} {lead} {off}");
+                }
+            }
+        }
     }
 }

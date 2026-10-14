@@ -286,9 +286,14 @@ impl Fast {
         faults: &FaultLatch,
     ) -> MotorCmd {
         // a fault raised this tick, fast or medium, disables this tick's
-        // drive; the loop-reset bookkeeping follows at the medium step
+        // drive; the loop-reset bookkeeping follows at the medium step. A
+        // motor wired against `drive_polarity` runs on: the winding short
+        // stops it whichever way its leads go, and drives nothing
         let drive = if faults.mask() == 0 {
             cmd.drive
+        } else if faults.code() == faults::CODE_DRIVE_REVERSED {
+            core::hint::cold_path();
+            Drive::Brake
         } else {
             core::hint::cold_path();
             Drive::Off
