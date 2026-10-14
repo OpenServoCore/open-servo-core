@@ -28,9 +28,12 @@
 //! A telcost image (`--features bench-telcost`, no bus record) reports the
 //! TEL windows' cost per tick and per TEL step instead, held only to its
 //! own self-check; its windows run no budget, bus or host-frame check. It
-//! stamps every other burst: the unstamped ones give the cost per tick, the
-//! stamped ones its steps. A ping ahead of the read hands the bus the TX
-//! lane, so no TEL tick lands between the records' dumps.
+//! stamps every other burst: the unstamped ones give the cost per tick and
+//! the time inside the TEL hooks, the stamped ones the steps. The
+//! self-check holds the steps inside the hooks and the hooks inside the
+//! tick; the glue between them is measured, not bounded. A ping ahead of
+//! the read hands the bus the TX lane, so no TEL tick lands between the
+//! records' dumps.
 
 use std::any::Any;
 use std::env;
@@ -51,7 +54,8 @@ use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
 use osc_servo_core::budget::probe::{
-    Component, LONG_TICKS, Row, Scenario, TelReport, TelStep, WindowProbe, rows, us,
+    Component, LONG_TICKS, Row, Scenario, TEL_PER_TICK_NOISE, TelReport, TelStep, WindowProbe,
+    rows, us,
 };
 use osc_servo_core::budget::{Frame, Regime, TICKS_PER_US, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
@@ -93,13 +97,6 @@ const THETA_FRAC_BITS: u32 = 16;
 /// may move.
 const SEAT_PUSH: i32 = 40;
 const SEAT_MOVE_MAX: i32 = 10;
-/// What an unstamped TEL tick may carry beyond a stamped one's steps: the
-/// flag, epoch and stamping tests around them, which no stamp covers, and
-/// any cycles the TEL DMA takes from the rest of the tick. M: 28.7-30.6 in
-/// tel still and tel stepping, two runs each (main 459b9ebb, telcost image),
-/// plus 10%.
-const TEL_CHECK_SLACK: f32 = 34.0;
-
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Gate {
     Budget,
@@ -497,14 +494,19 @@ impl Fill {
             rep.steps_n,
             osc_servo_core::tel::STREAM_SAMPLES_MAX
         );
+        let _ = writeln!(
+            text,
+            "  TEL hooks per tick {}: glue {} unstamped, outside the hooks {}",
+            opt_ticks(rep.hooks),
+            opt_ticks(rep.glue()),
+            opt_ticks(rep.outside())
+        );
         if w.tel {
-            let pass = match (rep.steps, rep.per_tick) {
-                (Some(s), Some(x)) => s <= x && x <= s + TEL_CHECK_SLACK,
-                _ => false,
-            };
+            let pass = rep.check() == Some(true);
             let l = format!(
-                "self-check steps {} <= TEL per tick {} <= steps + {TEL_CHECK_SLACK}",
+                "self-check steps {} <= hooks {} <= TEL per tick {} + {TEL_PER_TICK_NOISE}",
                 opt_ticks(rep.steps),
+                opt_ticks(rep.hooks),
                 opt_ticks(rep.per_tick)
             );
             let _ = writeln!(text, "  {l}: {}", if pass { "PASS" } else { "FAIL" });

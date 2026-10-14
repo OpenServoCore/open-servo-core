@@ -198,6 +198,47 @@ impl<P: Providers> TelStream for TelLane<P> {
     /// the mailbox, and the lane idle, for the next tick.
     #[inline(always)]
     fn on_publish(&mut self, hold_start: impl FnOnce() -> bool) {
+        let top = bench::tel_stamp(&self.clock);
+        self.publish(hold_start);
+        bench::tel_hook(&self.clock, top);
+    }
+
+    /// A stage tick's step waits a tick, as on a head's or a bank's. A hold
+    /// while the bus owns the lane outlives it harmlessly: a burst's first
+    /// tick lands a head.
+    #[inline(always)]
+    fn hold(&mut self) {
+        self.landed = true;
+    }
+
+    /// The TX lane, inline: the tick that owes it nothing pays a flag test
+    /// and the TX poll. The lane takes one step a tick at most - each is a
+    /// few hundred HCLK, and two would not fit beside the dearest phases
+    /// (budget `tel_lane`) - and none on a tick that landed a head or a
+    /// bank, or holds. Frame `done`'s CRC step comes first (the patch lands
+    /// ahead of an arm), then its arm, or the start of the next frame. A
+    /// frame's end is a few stores, so the next can start in the same tick:
+    /// a tick apart, the wire would idle one tick a frame.
+    #[inline(always)]
+    fn on_tick_end(&mut self) {
+        let top = bench::tel_stamp(&self.clock);
+        if self.ch.active() {
+            if self.stamping() {
+                let t = bench::tel_stamp(&self.clock);
+                let s = self.lane();
+                bench::tel_step(&self.clock, t, s);
+            } else {
+                self.lane();
+            }
+        }
+        bench::tel_hook(&self.clock, top);
+    }
+}
+
+impl<P: Providers> TelLane<P> {
+    /// [`TelStream::on_publish`] inside its hook stamps.
+    #[inline(always)]
+    fn publish(&mut self, hold_start: impl FnOnce() -> bool) {
         if !self.ch.active() {
             return;
         }
@@ -227,38 +268,6 @@ impl<P: Providers> TelStream for TelLane<P> {
         }
     }
 
-    /// A stage tick's step waits a tick, as on a head's or a bank's. A hold
-    /// while the bus owns the lane outlives it harmlessly: a burst's first
-    /// tick lands a head.
-    #[inline(always)]
-    fn hold(&mut self) {
-        self.landed = true;
-    }
-
-    /// The TX lane, inline: the tick that owes it nothing pays a flag test
-    /// and the TX poll. The lane takes one step a tick at most - each is a
-    /// few hundred HCLK, and two would not fit beside the dearest phases
-    /// (budget `tel_lane`) - and none on a tick that landed a head or a
-    /// bank, or holds. Frame `done`'s CRC step comes first (the patch lands
-    /// ahead of an arm), then its arm, or the start of the next frame. A
-    /// frame's end is a few stores, so the next can start in the same tick:
-    /// a tick apart, the wire would idle one tick a frame.
-    #[inline(always)]
-    fn on_tick_end(&mut self) {
-        if !self.ch.active() {
-            return;
-        }
-        if self.stamping() {
-            let t = bench::tel_stamp(&self.clock);
-            let s = self.lane();
-            bench::tel_step(&self.clock, t, s);
-        } else {
-            self.lane();
-        }
-    }
-}
-
-impl<P: Providers> TelLane<P> {
     /// This burst stamps its steps; never without `bench-telcost`.
     #[inline(always)]
     fn stamping(&self) -> bool {

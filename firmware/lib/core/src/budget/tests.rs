@@ -1,6 +1,6 @@
 use super::probe::{
-    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, TelCost, TelReport,
-    TelStep, TelTally, WindowProbe, Windows, rows,
+    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, TEL_PER_TICK_NOISE,
+    Tally, TelCost, TelReport, TelStep, TelTally, WindowProbe, Windows, rows,
 };
 use super::*;
 use crate::kernel::{HEALTH_CLOSE_TICKS, ProbeTags, health_close_at, health_close_lands, phase};
@@ -737,8 +737,9 @@ fn tel_steps_book_less_the_stamp_pair_and_skip_halts() {
 }
 
 /// The tally books a tick where the kernel record books it as TEL or
-/// banking: an unstamped burst's body by phase, a stamped burst's steps,
-/// a burst's first tick apart, and nothing the record books elsewhere.
+/// banking: an unstamped burst's body by phase and its hook time, a
+/// stamped burst's steps, a burst's first tick apart, a plain tick's hook
+/// time by regime, and nothing the record books elsewhere.
 #[test]
 fn tel_tally_books_unstamped_bodies_and_stamped_steps() {
     let mut k = KernelProbe::ZERO;
@@ -747,12 +748,12 @@ fn tel_tally_books_unstamped_bodies_and_stamped_steps() {
     let tel = Events { tel: true, ..PLAIN };
     let bank = Events { bank: true, ..tel };
     let ticks = [
-        (0, 900, tel, false, None),
-        (1, 1500, tel, true, Some(700)),
-        (2, 1100, tel, false, None),
-        (3, 1200, tel, false, None),
-        (4, 1700, bank, false, None),
-        (5, 1300, Events { slow: true, ..tel }, false, None),
+        (0, 900, tel, false, None, 1),
+        (1, 1500, tel, true, Some(700), 2),
+        (2, 1100, tel, false, None, 300),
+        (3, 1200, tel, false, None, 310),
+        (4, 1700, bank, false, None, 500),
+        (5, 1300, Events { slow: true, ..tel }, false, None, 4),
         (
             6,
             1300,
@@ -762,15 +763,17 @@ fn tel_tally_books_unstamped_bodies_and_stamped_steps() {
             },
             false,
             None,
+            8,
         ),
-        (7, 1000, PLAIN, false, None),
-        (8, 1400, tel, false, Some(300)),
-        (9, 1600, bank, false, Some(450)),
+        (7, 1000, PLAIN, false, None, 20),
+        (8, 1400, tel, false, Some(300), 16),
+        (9, 1600, bank, false, Some(450), 32),
+        (10, HALT_TICKS + 1, PLAIN, false, None, 64),
     ];
-    for (n, body, ev, first, steps) in ticks {
+    for (n, body, ev, first, steps, hook) in ticks {
         let p = n as usize % PHASES;
         tick(&mut k, n, body, p, closed, ev);
-        t.tick(body, p, closed, ev, first, steps, n == 0);
+        t.tick(body, p, closed, ev, first, steps, hook, n == 0);
     }
     assert_eq!(
         t.first[1],
@@ -787,6 +790,8 @@ fn tel_tally_books_unstamped_bodies_and_stamped_steps() {
     assert_eq!((t.tel_steps.n, t.tel_steps.sum), (1, 300));
     assert_eq!((t.bank_steps.n, t.bank_steps.sum), (1, 450));
     assert_eq!(t.tel_n[0], [0; PHASES]);
+    assert_eq!((t.hook_tel, t.hook_bank), (610, 500));
+    assert_eq!(t.hook_plain, [Tally::ZERO, Tally { n: 1, sum: 20 }]);
     assert_eq!(TelTally::from_words(words(&t)), Some(t));
 }
 
@@ -807,7 +812,7 @@ fn tel_cost_matches_each_tel_tick_to_its_phase() {
     let mut n = 1;
     let mut run = |k: &mut KernelProbe, body: u32, p: usize, ev: Events, steps: Option<u32>| {
         tick(k, n, body, p, closed, ev);
-        t.tick(body, p, closed, ev, false, steps, false);
+        t.tick(body, p, closed, ev, false, steps, 0, false);
         n += 1;
     };
     for p in 0..PHASES {
@@ -857,7 +862,80 @@ fn tel_cost_needs_a_plain_tick_on_every_tel_phase() {
     let tel = Events { tel: true, ..PLAIN };
     tick(&mut k, 1, 1000, 1, OPEN, PLAIN);
     tick(&mut k, 2, 1200, 2, OPEN, tel);
-    t.tick(1200, 2, OPEN, tel, false, None, false);
+    t.tick(1200, 2, OPEN, tel, false, None, 0, false);
     let r = TelReport::of(&k, &t);
     assert_eq!((r.tel, r.per_tick), (None, None));
+}
+
+/// A telcost window, steady state: every plain tick of a regime runs the
+/// hooks' flag tests in `plain_hook`, every TEL tick the same plus the
+/// steps, the `glue` no step stamps, and `outside` cycles the TX DMA takes
+/// from the rest of the tick; a stamped burst books the steps alone.
+fn telcost_window(steps: u32, glue: u32, outside: u32) -> (KernelProbe, TelTally) {
+    let mut k = KernelProbe::ZERO;
+    let mut t = TelTally::ZERO;
+    let tel = Events { tel: true, ..PLAIN };
+    let bank = Events { bank: true, ..tel };
+    let (bank_steps, plain_hook) = (steps + 200, [24, 31]);
+    let mut n = 1;
+    let mut run = |k: &mut KernelProbe, body, p, r: Regime, ev, steps, hook| {
+        tick(k, n, body, p, r, ev);
+        t.tick(body, p, r, ev, false, steps, hook, false);
+        n += 1;
+    };
+    for r in Regime::ALL {
+        let hook = plain_hook[r as usize];
+        let plain = |p: usize| 1000 + 100 * p as u32 + 300 * r as u32;
+        for p in 0..PHASES {
+            run(&mut k, plain(p), p, r, PLAIN, None, hook);
+        }
+        for i in 0..2 * MEAN_MIN_BODIES as usize {
+            let p = i % PHASES;
+            let (ev, s) = if i % 16 == 15 {
+                (bank, bank_steps)
+            } else {
+                (tel, steps)
+            };
+            let x = s + glue;
+            run(&mut k, plain(p) + x + outside, p, r, ev, None, hook + x);
+            run(&mut k, plain(p) + x + 90, p, r, ev, Some(s), hook + x + 90);
+        }
+    }
+    (k, t)
+}
+
+/// The glue the hooks run beyond the steps is measured, whatever its size:
+/// a codegen shift to 45 HCLK, past the 34 the old fixed slack allowed,
+/// still passes, and the report reads it and the DMA's share apart.
+#[test]
+fn tel_self_check_measures_the_glue() {
+    let (k, t) = telcost_window(250, 45, 9);
+    let r = TelReport::of(&k, &t);
+    let near = |x: Option<f32>, want: f32| x.is_some_and(|x| (x - want).abs() < 0.05);
+    let w = 1.0 / crate::tel::STREAM_SAMPLES_MAX as f32;
+    let steps = (1.0 - w) * 250.0 + w * 450.0;
+    assert!(near(r.steps, steps), "{r:?}");
+    assert!(near(r.glue(), 45.0), "{r:?}");
+    assert!(near(r.outside(), 9.0), "{r:?}");
+    assert!(near(r.per_tick, steps + 54.0), "{r:?}");
+    assert_eq!(r.check(), Some(true));
+}
+
+/// The check fails a step stamped wider than its hook and hooks wider than
+/// the tick beyond the per-tick noise, and holds no verdict without hooks.
+#[test]
+fn tel_self_check_fails_on_crossed_stamps() {
+    let crossed = TelReport::of(&KernelProbe::ZERO, &TelTally::ZERO);
+    assert_eq!(crossed.check(), None);
+    let mut r = TelReport {
+        steps: Some(250.0),
+        hooks: Some(240.0),
+        per_tick: Some(260.0),
+        ..crossed
+    };
+    assert_eq!(r.check(), Some(false), "steps past the hooks");
+    r.hooks = Some(260.0 + TEL_PER_TICK_NOISE - 1.0);
+    assert_eq!(r.check(), Some(true), "inside the per-tick noise");
+    r.hooks = Some(260.0 + TEL_PER_TICK_NOISE + 1.0);
+    assert_eq!(r.check(), Some(false), "hooks past the tick");
 }

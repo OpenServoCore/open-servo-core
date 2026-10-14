@@ -131,9 +131,10 @@ pub fn kernel_exit(entry: u32, health: bool) {
             let first = pickups != unsafe { core::ptr::replace(&raw mut TEL_PICKUPS, pickups) };
             let steps = tel::tel_tick_steps();
             let steps = tel::tel_stamping().then_some(steps);
+            let hook = tel::tel_tick_hook();
             // SAFETY: as KERNEL_PROBE.
             let t = unsafe { &mut *core::ptr::addr_of_mut!(TEL_TALLY) };
-            t.tick(body, phase, r, ev, first, steps, boot);
+            t.tick(body, phase, r, ev, first, steps, hook, boot);
         }
         let booked = k.tick(body, || kernel.probe_tags(), tel, banks, health);
         #[cfg(feature = "bench-window")]

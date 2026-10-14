@@ -699,7 +699,9 @@ const TEL_STEPS: usize = TelStep::ALL.len();
 /// TEL steps by [`TelStep`]: count, total and longest, HCLK ticks, each
 /// less `cal`, a back-to-back stamp pair's cost; a step longer than
 /// [`HALT_TICKS`] is a halt and books nowhere. `tick`: the running kernel
-/// tick's steps, which the tick's end takes.
+/// tick's steps, which the tick's end takes. `hook`: the running tick's
+/// time inside the two TEL hooks, top to bottom, flag test included, on
+/// every tick, which the tick's end takes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TelCost {
@@ -708,6 +710,7 @@ pub struct TelCost {
     pub max: [u16; TEL_STEPS],
     pub cal: u16,
     pub tick: u32,
+    pub hook: u32,
 }
 
 impl TelCost {
@@ -717,6 +720,7 @@ impl TelCost {
         max: [0; TEL_STEPS],
         cal: 0,
         tick: 0,
+        hook: 0,
     };
 
     pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
@@ -763,6 +767,7 @@ impl TelCost {
             max: core::array::from_fn(|i| h[i]),
             cal: h[TEL_STEPS],
             tick: r.word(),
+            hook: r.word(),
         })
     }
 }
@@ -770,8 +775,9 @@ impl TelCost {
 /// The `bench-telcost` image's TEL ticks beside [`KernelProbe`], booked by
 /// its rules. The image stamps every other burst: an unstamped burst's TEL
 /// and banking ticks book their bodies, by regime and phase for matching
-/// against the plain ticks; a stamped burst's book their steps' total. A
-/// burst's first tick (pickup and head) books apart.
+/// against the plain ticks, and their hook time ([`TelCost::hook`]); a
+/// stamped burst's book their steps' total. A burst's first tick (pickup
+/// and head) books apart. The plain ticks book their hook time by regime.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TelTally {
@@ -782,6 +788,9 @@ pub struct TelTally {
     pub first: [Load; 2],
     pub tel_steps: Tally,
     pub bank_steps: Tally,
+    pub hook_plain: [Tally; 2],
+    pub hook_tel: u32,
+    pub hook_bank: u32,
 }
 
 impl TelTally {
@@ -793,12 +802,16 @@ impl TelTally {
         first: [Load::ZERO; 2],
         tel_steps: Tally::ZERO,
         bank_steps: Tally::ZERO,
+        hook_plain: [Tally::ZERO; 2],
+        hook_tel: 0,
+        hook_bank: 0,
     };
 
     pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
 
     /// The tick [`KernelProbe::tick`] booked; `first`: it picked up an arm;
-    /// `steps`: its stamped steps' total, under a stamped burst.
+    /// `steps`: its stamped steps' total, under a stamped burst; `hook`: its
+    /// time inside the TEL hooks.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub fn tick(
@@ -809,16 +822,33 @@ impl TelTally {
         ev: Events,
         first: bool,
         steps: Option<u32>,
+        hook: u32,
         boot: bool,
     ) {
         let apart = ev.refresh || ev.close || ev.slow || ev.finish || ev.install || ev.side;
-        if boot || body > HALT_TICKS || apart || ev.health || !(ev.bank || ev.tel) {
+        if boot || body > HALT_TICKS || apart || ev.health {
             return;
         }
         let r = r as usize;
-        let (n, sum, stepped) = match (ev.bank, first) {
-            (true, _) => (&mut self.bank_n, &mut self.bank_sum, &mut self.bank_steps),
-            (false, false) => (&mut self.tel_n, &mut self.tel_sum, &mut self.tel_steps),
+        if !(ev.bank || ev.tel) {
+            if let Some(p) = self.hook_plain.get_mut(r) {
+                p.add(hook);
+            }
+            return;
+        }
+        let (n, sum, stepped, hooks) = match (ev.bank, first) {
+            (true, _) => (
+                &mut self.bank_n,
+                &mut self.bank_sum,
+                &mut self.bank_steps,
+                &mut self.hook_bank,
+            ),
+            (false, false) => (
+                &mut self.tel_n,
+                &mut self.tel_sum,
+                &mut self.tel_steps,
+                &mut self.hook_tel,
+            ),
             (false, true) => {
                 if let Some(l) = self.first.get_mut(r) {
                     l.add(body);
@@ -836,6 +866,7 @@ impl TelTally {
             if let Some(s) = sum.get_mut(r) {
                 *s = s.wrapping_add(body);
             }
+            *hooks = hooks.wrapping_add(hook);
         }
     }
 
@@ -859,9 +890,21 @@ impl TelTally {
                 n: r.word(),
                 sum: r.word(),
             },
+            hook_plain: core::array::from_fn(|_| Tally {
+                n: r.word(),
+                sum: r.word(),
+            }),
+            hook_tel: r.word(),
+            hook_bank: r.word(),
         })
     }
 }
+
+/// Twice the largest run-to-run sd of a window's TEL per tick, HCLK
+/// ticks: 2.8 over four runs each of three telcost images in tel still
+/// and tel stepping. The plain ticks a moving window matches against ran
+/// in another plant state.
+pub const TEL_PER_TICK_NOISE: f32 = 6.0;
 
 /// A `bench-telcost` window's TEL cost, HCLK ticks per tick. Host-side.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -880,6 +923,10 @@ pub struct TelReport {
     /// ticks it is over; `None` without both kinds.
     pub steps: Option<f32>,
     pub steps_n: u32,
+    /// The same unstamped ticks' time inside the TEL hooks over the plain
+    /// ticks' of their regime, mixed as `per_tick`: the TEL code's whole
+    /// cost, flag tests included.
+    pub hooks: Option<f32>,
 }
 
 impl TelReport {
@@ -897,6 +944,13 @@ impl TelReport {
             (Some((r, _)), Some((b, _))) => Some(mix(r, b)),
             _ => None,
         };
+        let hooks = match (
+            hooked(&t.tel_n, t.hook_tel, &t.hook_plain),
+            hooked(&t.bank_n, t.hook_bank, &t.hook_plain),
+        ) {
+            (Some(r), Some(b)) => Some(mix(r, b)),
+            _ => None,
+        };
         Self {
             tel: tel.map(|(e, _)| e),
             tel_n: tel.map_or(0, |(_, n)| n),
@@ -905,7 +959,27 @@ impl TelReport {
             per_tick,
             steps,
             steps_n: t.tel_steps.n.wrapping_add(t.bank_steps.n),
+            hooks,
         }
+    }
+
+    /// What the hooks run that no step stamps: the gates, the register
+    /// saves around the out-of-line steps and the stamping flag's tests.
+    pub fn glue(&self) -> Option<f32> {
+        Some(self.hooks? - self.steps?)
+    }
+
+    /// The TEL tick's excess outside the hooks: the TX DMA's cycles taken
+    /// from the rest of the tick, and the plain ticks' noise.
+    pub fn outside(&self) -> Option<f32> {
+        Some(self.per_tick? - self.hooks?)
+    }
+
+    /// The self-check: the steps nest in the hooks, and the hooks in the
+    /// tick, less [`TEL_PER_TICK_NOISE`]; `None` without all three.
+    pub fn check(&self) -> Option<bool> {
+        let (s, h, x) = (self.steps?, self.hooks?, self.per_tick?);
+        Some(s <= h && h <= x + TEL_PER_TICK_NOISE)
     }
 
     /// The unstamped TEL ticks of `r` over its plain ticks, phase by phase:
@@ -916,6 +990,24 @@ impl TelReport {
         sum[i] = u64::from(t.tel_sum[i]);
         matched(k, &t.tel_n, sum, Some(r)).map(|(e, _)| e)
     }
+}
+
+/// Ticks counted `n` by regime and phase with `sum` hook time in all, over
+/// the plain ticks' hook time of each one's regime, per tick.
+fn hooked(n: &[[u16; PHASES]; 2], sum: u32, plain: &[Tally; 2]) -> Option<f32> {
+    let (mut count, mut base) = (0u64, 0f64);
+    for (n, p) in n.iter().zip(plain) {
+        let c = n.iter().map(|&c| u64::from(c)).sum::<u64>();
+        if c == 0 {
+            continue;
+        }
+        if p.n == 0 {
+            return None;
+        }
+        count += c;
+        base += c as f64 * f64::from(p.sum) / f64::from(p.n);
+    }
+    (count != 0).then(|| ((f64::from(sum) - base) / count as f64) as f32)
 }
 
 /// Ticks counted `n` by regime and phase, totalling `sum` by regime, over
