@@ -77,7 +77,7 @@ Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind
 
 `runtime::isr::on_adc_dma_tc` and `Kernel::on_tick` run, in order:
 
-1. Increment `sample_tick`; name the scan in place in the tick block.
+1. Increment `sample_tick`; publish the scan's shunt and taps in the tick block.
 2. Spare-phase arbitration: boot on the first tick, else the configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)), else a pending thermometer stage on a spare phase.
 3. FAST measure: the window the previous command drove, published in the tick block.
 4. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)).
@@ -331,7 +331,7 @@ Kernel-side channels (full map and priority ladder in [transport sec 2](osc-serv
 
 ### 7.2 ADC scans land in the tick block
 
-DMA1 CH1 writes both scans of each PWM period into the tick block, laid out in scan order so the crest scan's slots are the published fields ([protocol sec 5.6](osc-native-protocol.md#56-telemetry-stream-tel-bursts)). The tick names the terminal taps in place, moves the trough samples out of the next scan's way and stamps `sample_tick`; it copies no sensor frame. Bus reads and TEL rows copy from the same block.
+DMA1 CH1 writes both scans of each PWM period into the tick block, laid out in scan order so the crest scan's slots from `pos` on are the published fields ([protocol sec 5.6](osc-native-protocol.md#56-telemetry-stream-tel-bursts)). The terminal taps land in sample order, so the scans' shunt and tap slots are unnamed: the tick moves the trough samples out of the next scan's way, copies the crest's shunt, writes each tap under its terminal's name and stamps `sample_tick`. A bus read never sees a tap under the other terminal's name. Bus reads and TEL rows copy from the same block.
 
 ### 7.3 The two-chunk TEL row
 

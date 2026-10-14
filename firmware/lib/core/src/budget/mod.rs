@@ -99,17 +99,19 @@ pub const REFRESH: u32 = 613;
 
 /// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
 /// predate it, by regime and phase: the scan landed by the ADC DMA (the
-/// trough's copies and the taps named in place, where the bodies copied
-/// the frame), the publish (the held current, the differential, the duty
-/// and the tick flags) and the TEL gate. E: each phase's plain tick over
-/// the same tick of the image the rows were measured on, priced on the
-/// release image with the fetch model (as [`TEL_POLL`]), per drive arm
-/// (Closed; the dearer of Brake and Off for Open), plus 10%; a phase that
-/// got cheaper, PUBLISH with its dropped duplicates, is not credited. The
-/// release image prices under every row.
+/// trough's copies, the crest's shunt copy and the taps named by terminal,
+/// where the bodies copied the frame), the publish (the held current, the
+/// differential, the duty and the tick flags) and the TEL gate. E: each
+/// phase's plain tick over the same tick of the image the rows were
+/// measured on, priced on the release image with the fetch model (as
+/// [`TEL_POLL`]), per drive arm (Closed; the dearer of Brake and Off for
+/// Open), plus 10%; a phase that got cheaper, PUBLISH with its dropped
+/// duplicates, is not credited. The crest's shunt copy, two 4-byte
+/// instructions (6), is 7 in every cell. The release image prices under
+/// every row.
 pub const TICK_PUBLISH: [[u32; PHASES]; 2] = [
-    [2, 31, 11, 0, 8, 21, 11, 0, 6, 9],
-    [5, 58, 35, 25, 18, 28, 38, 0, 32, 36],
+    [9, 38, 18, 7, 15, 28, 18, 7, 13, 16],
+    [12, 65, 42, 32, 25, 35, 45, 7, 39, 43],
 ];
 
 /// Code layout on top of every kernel row, maximum and mean: one source

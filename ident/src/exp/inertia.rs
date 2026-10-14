@@ -926,7 +926,7 @@ mod tests {
     /// The goal of every step burst, in order.
     fn stream_goals(log: &[String]) -> Vec<i32> {
         log.iter()
-            .filter_map(|l| l.strip_prefix("stream 3015 0x238+2,0x240+8 goal_duty "))
+            .filter_map(|l| l.strip_prefix("stream 3015 0x238+2,0x246+8 goal_duty "))
             .map(|v| v.parse().unwrap())
             .collect()
     }

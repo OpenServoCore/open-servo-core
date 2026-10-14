@@ -147,11 +147,11 @@ const fn one(first: Reg, last: Reg) -> Chunks {
     Chunks::one(c.addr, c.len)
 }
 
-/// The raw capture: current_raw, vmotor_a, vmotor_b, pos, then duty and
+/// The raw capture: pos, then current_raw, vmotor_a, vmotor_b, duty and
 /// current_trough.
 pub const TEL_RAW: Chunks = Chunks::two(
-    span(telemetry::CURRENT_RAW, telemetry::POS),
-    span(telemetry::DUTY_TICKS, telemetry::CURRENT_TROUGH),
+    span(telemetry::POS, telemetry::POS),
+    span(telemetry::CURRENT_RAW, telemetry::CURRENT_TROUGH),
 );
 
 /// The ladder and step captures: pos, then duty, the held current and
@@ -161,17 +161,14 @@ pub const TEL_LADDER: Chunks = Chunks::two(
     span(telemetry::DUTY_TICKS, telemetry::VDIFF_COUNTS),
 );
 
-/// The R/L capture: current_raw, vmotor_a, vmotor_b, then vbus_raw and
-/// duty (ntc_raw riding along).
-pub const TEL_RL: Chunks = Chunks::two(
-    span(telemetry::CURRENT_RAW, telemetry::VMOTOR_B),
-    span(telemetry::VBUS_RAW, telemetry::DUTY_TICKS),
-);
+/// The R/L capture: vbus_raw, current_raw, vmotor_a, vmotor_b and duty
+/// (ntc_raw riding along).
+pub const TEL_RL: Chunks = one(telemetry::VBUS_RAW, telemetry::DUTY_TICKS);
 
 /// The pot alone.
 pub const TEL_POS: Chunks = one(telemetry::POS, telemetry::POS);
 
-/// A row's chunks as `addr+len` joined by `,`: `0x232+6,0x23c+6`.
+/// A row's chunks as `addr+len` joined by `,`: `0x238+2,0x246+8`.
 pub fn chunks_text(chunks: &Chunks) -> String {
     let parts: Vec<String> = chunks
         .0
@@ -398,8 +395,7 @@ mod tests {
                 0
             },
             sample_tick: i as u32,
-            _scan_trough: [0x0900 + i; 7],
-            _rsvd_align: 0,
+            _scan: [0x0900 + i; 10],
         };
         (tick, 1800 + i)
     }
@@ -490,7 +486,7 @@ mod tests {
         assert!(has(TEL_RAW, &raw));
         assert_eq!(
             (TEL_RAW, TEL_RAW.row_bytes()),
-            (Chunks::two(Chunk::new(0x232, 8), Chunk::new(0x240, 4)), 12)
+            (Chunks::two(Chunk::new(0x238, 2), Chunk::new(0x240, 10)), 12)
         );
         assert!(has(
             TEL_LADDER,
@@ -498,14 +494,11 @@ mod tests {
         ));
         assert_eq!(
             TEL_LADDER,
-            Chunks::two(Chunk::new(0x238, 2), Chunk::new(0x240, 8))
+            Chunks::two(Chunk::new(0x238, 2), Chunk::new(0x246, 8))
         );
         let rl = [DUTY_TICKS, CURRENT_RAW, VMOTOR_A, VMOTOR_B, VBUS_RAW];
         assert!(has(TEL_RL, &rl));
-        assert_eq!(
-            (TEL_RL, TEL_RL.row_bytes()),
-            (Chunks::two(Chunk::new(0x232, 6), Chunk::new(0x23C, 6)), 12)
-        );
+        assert_eq!((TEL_RL, TEL_RL.row_bytes()), (Chunks::one(0x23C, 12), 12));
         assert_eq!(TEL_POS, Chunks::one(0x238, 2));
     }
 
@@ -513,7 +506,7 @@ mod tests {
     /// for field, the bytes core's table holds at the chunks' addresses.
     #[test]
     fn every_preset_round_trips_the_core_table() {
-        let with_vbus = Chunks::two(Chunk::new(0x240, 8), span(t::VBUS_COUNTS, t::VBUS_COUNTS));
+        let with_vbus = Chunks::two(Chunk::new(0x246, 8), span(t::VBUS_COUNTS, t::VBUS_COUNTS));
         let flags = Chunks::two(Chunk::new(0x238, 4), span(t::TICK_FLAGS, t::TICK_FLAGS));
         for chunks in PRESETS.into_iter().chain([with_vbus, flags]) {
             for floor in [0, 300] {
@@ -542,7 +535,7 @@ mod tests {
         assert!(window_valid(1, 0));
         // row 0's 293 is over a 160 floor and its flags agree; with the
         // flags in the row, a 300 floor does not overrule them
-        let flags = Chunks::two(Chunk::new(0x240, 2), span(t::TICK_FLAGS, t::TICK_FLAGS));
+        let flags = Chunks::two(Chunk::new(0x246, 2), span(t::TICK_FLAGS, t::TICK_FLAGS));
         let p = payload(flags, 0, true, 0, 1);
         assert!(decode(flags, 300, &p)[0].window_valid);
         let p = payload(TEL_RAW, 0, true, 0, 1);
@@ -554,10 +547,10 @@ mod tests {
 
     #[test]
     fn stream_golden_six_raw_fields() {
-        // the default six at row 0 of sample: raw 0x100, va 0xA00, vb
-        // 0xB00, pos 0x100, then duty 293 and trough 0xB00
+        // the default six at row 0 of sample: pos 0x100, then raw 0x100, va
+        // 0xA00, vb 0xB00, duty 293 and trough 0xB00
         let p = [
-            0x00, 0x00, 0x30, 0x12, 0x00, 0x01, 0x00, 0x0A, 0x00, 0x0B, 0x00, 0x01, 0x25, 0x01,
+            0x00, 0x00, 0x30, 0x12, 0x00, 0x01, 0x00, 0x01, 0x00, 0x0A, 0x00, 0x0B, 0x25, 0x01,
             0x00, 0x0B,
         ];
         assert_eq!(p[4..], row(TEL_RAW, 0)[..]);

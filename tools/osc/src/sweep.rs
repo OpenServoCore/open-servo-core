@@ -250,10 +250,10 @@ pub struct Args {
     #[arg(long)]
     guard_hi: Option<u16>,
     /// TEL row: table chunks as addr+len, at most two, comma-joined (hex
-    /// ok). Default = the raw six: raw current, vmotor_a, vmotor_b, pos,
+    /// ok). Default = the raw six: pos, raw current, vmotor_a, vmotor_b,
     /// applied duty, trough - measurements only, kernel conclusions (vdiff,
     /// vbus, the held current) stay out of raw captures.
-    #[arg(long, default_value = "0x232+8,0x240+4")]
+    #[arg(long, default_value = "0x238+2,0x240+10")]
     tel_chunks: String,
     /// Attempts per rung before the sweep gives up. A rung is captured as one
     /// burst, so a dropped frame anywhere in it corrupts that rung alone -

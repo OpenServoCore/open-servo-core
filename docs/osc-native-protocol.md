@@ -679,49 +679,47 @@ chunk's offset in the row plus its offset in the chunk
 encoding from the table.
 
 What a row means is when it was copied. osc-servo keeps a tick block
-in TELEMETRY (`0x224..0x254`). The ADC's DMA lands both scans of every
-PWM period at its front: the trough scan in reserved bytes
-(`0x224..0x232`), the crest scan from `current_raw` to `ntc_raw` in
-scan order. The tick interrupt then names the terminal taps in place,
-copies the trough's shunt and taps out of the next scan's way, and
-stamps `sample_tick`; the kernel writes its conclusions on the window
-the previous command drove, and both chunks are copied. The next scans
-land mid-tick (the trough) and near the tick's end (the crest), after
-the copies, so every row holds one tick's tick block. A chunk over the
-medium-rate registers (the estimates) carries them as last published,
-up to one tick old. Host-written regions copy with per-field
-consistency only. A bus read of the tick block follows the same
-per-field rule, with one exception: for about 6 us of each period, from
-the next crest scan's taps landing to the next tick naming them,
-`vmotor_a` and `vmotor_b` hold the taps in sample order, the high side
-and then the low side's late sample, so under reverse drive the two
-read swapped. A host that needs the taps reads them from a row; a
-polled read of the motor voltage reads `vdiff_counts`, the kernel's
-drive-window differential, which holds still for the whole period.
+in TELEMETRY (`0x224..0x258`). The ADC's DMA lands both scans of every
+PWM period at its front: the trough scan and the crest scan's shunt and
+taps in reserved bytes (`0x224..0x238`), the crest scan from `pos` to
+`ntc_raw` on its fields. The tick interrupt then copies the trough's
+shunt and taps out of the next scan's way, copies the crest's shunt,
+writes each tap under its terminal's name, and stamps `sample_tick`;
+the kernel writes its conclusions on the window the previous command
+drove, and both chunks are copied. The next scans land mid-tick (the
+trough) and near the tick's end (the crest), after the copies, so every
+row holds one tick's tick block. A chunk over the medium-rate registers
+(the estimates) carries them as last published, up to one tick old.
+Host-written regions copy with per-field consistency only, and a bus
+read of the tick block follows the same rule: each field holds one
+tick's value under its own name, and two fields may come from adjacent
+ticks (`pos` to `ntc_raw` change when the next crest scan lands, the
+rest when the next tick writes them). The DMA writes the terminal taps
+in sample order, high side first, so no named field lies in its way.
 
 | addr  | name              | width | notes                                                       |
 | ----- | ----------------- | ----- | ----------------------------------------------------------- |
-| 0x232 | `current_raw`     | u16   | the shunt at the counter peak |
-| 0x234 | `vmotor_a`        | u16   | |
-| 0x236 | `vmotor_b`        | u16   | |
 | 0x238 | `pos`             | u16   | raw pot |
 | 0x23A | `vcal`            | u16   | |
 | 0x23C | `vbus_raw`        | u16   | |
 | 0x23E | `ntc_raw`         | u16   | |
-| 0x240 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
-| 0x242 | `current_trough`  | u16   | |
-| 0x244 | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; held through windows the shunt cannot read, 0 from the first tick nothing drives |
-| 0x246 | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
-| 0x248 | `vmotor_a_trough` | u16   | |
-| 0x24A | `vmotor_b_trough` | u16   | |
-| 0x24C | `tick_flags`      | u16   | bit 0 the shunt read the window, bit 1 a fault is latched, bit 2 the terminal taps read the window |
-| 0x250 | `sample_tick`     | u32   | the tick's count |
+| 0x240 | `current_raw`     | u16   | the shunt at the counter peak |
+| 0x242 | `vmotor_a`        | u16   | |
+| 0x244 | `vmotor_b`        | u16   | |
+| 0x246 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
+| 0x248 | `current_trough`  | u16   | |
+| 0x24A | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; held through windows the shunt cannot read, 0 from the first tick nothing drives |
+| 0x24C | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
+| 0x24E | `vmotor_a_trough` | u16   | |
+| 0x250 | `vmotor_b_trough` | u16   | |
+| 0x252 | `tick_flags`      | u16   | bit 0 the shunt read the window, bit 1 a fault is latched, bit 2 the terminal taps read the window |
+| 0x254 | `sample_tick`     | u32   | the tick's count |
 
-Common rows are two chunks: the six raw fields (`0x232` 8 B, current to
-`pos`, and `0x240` 4 B, duty and trough), identification's four
-(`0x238` 2 B, `pos`, and `0x240` 8 B, duty to differential with the
-trough riding along), the R/L set (`0x232` 6 B, current and taps, and
-`0x23C` 6 B, rail to duty with the NTC riding along). Whether a row's
+Common rows fit 12 B in at most two chunks: the six raw fields (`0x238`
+2 B, `pos`, and `0x240` 10 B, current to trough), identification's four
+(`0x238` 2 B, `pos`, and `0x246` 8 B, duty to differential with the
+trough riding along), the R/L set (`0x23C` 12 B, rail to duty with the
+NTC riding along). Whether a row's
 current is a fresh window is a pure function of its duty:
 `duty_ticks != 0` and `|duty_ticks| >= i_window_min_ticks` (CALIB), the
 kernel's own window rule (`tick_flags` bit 0 says the same for a row

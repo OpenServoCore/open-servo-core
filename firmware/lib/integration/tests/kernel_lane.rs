@@ -475,13 +475,9 @@ fn write_at(addr: u16, data: &[u8]) -> Vec<u8> {
     instruction(ID, Opcode::Write, 0, &p)
 }
 
-/// The six default fields, current_raw to pos and duty to current_trough:
-/// 12 B over two chunks, the longest row, a 202 B frame per 800 us batch
-/// at 3M.
-const SIX: Chunks = Chunks::two(
-    Chunk::new(tick::CURRENT_RAW, 8),
-    Chunk::new(tick::DUTY_TICKS, 4),
-);
+/// The six default fields, pos and current_raw to current_trough: 12 B
+/// over two chunks, the longest row, a 202 B frame per 800 us batch at 3M.
+const SIX: Chunks = Chunks::two(Chunk::new(tick::POS, 2), Chunk::new(tick::CURRENT_RAW, 10));
 /// The ident four: pos, then duty to vdiff (current_trough riding along).
 const IDENT: Chunks = Chunks::two(Chunk::new(tick::POS, 2), Chunk::new(tick::DUTY_TICKS, 8));
 /// The held current and differential with the duty, and the rail

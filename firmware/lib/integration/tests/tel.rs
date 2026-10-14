@@ -34,8 +34,8 @@ mod support;
 
 const ID5: u8 = 5;
 const ID6: u8 = 6;
-/// The crest scan's shunt, taps and pos: one 8 B chunk.
-const ROW: Chunks = Chunks::one(tick::CURRENT_RAW, 8);
+/// The crest scan's pos to ntc_raw: one 8 B chunk.
+const ROW: Chunks = Chunks::one(tick::POS, 8);
 /// The start rule's lead for `ROW`'s 8 B rows at 3M: a full frame breaks
 /// after this row has landed (`osc_servo_drivers::tel`), and arms a tick
 /// later.

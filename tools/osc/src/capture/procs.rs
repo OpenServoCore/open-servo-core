@@ -229,10 +229,10 @@ mod tests {
         let bad = DEFAULT.replace("\"30@20\"", "\"30@\"");
         let e = format!("{:#}", Procedure::parse(&bad).unwrap_err());
         assert!(e.contains("bad ms"), "{e}");
-        let bad = DEFAULT.replace("\"0x232+8,0x240+4\"", "\"0x233+8,0x240+4\"");
+        let bad = DEFAULT.replace("\"0x238+2,0x240+10\"", "\"0x239+2,0x240+10\"");
         let e = format!("{:#}", Procedure::parse(&bad).unwrap_err());
         assert!(e.contains("not a row"), "{e}");
-        let old = DEFAULT.replace("tel_chunks = \"0x232+8,0x240+4\"", "tel_mask = 0x1cd");
+        let old = DEFAULT.replace("tel_chunks = \"0x238+2,0x240+10\"", "tel_mask = 0x1cd");
         assert!(Procedure::parse(&old).is_err(), "a mask is no row");
     }
 

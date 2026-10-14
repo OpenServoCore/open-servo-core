@@ -60,7 +60,7 @@ use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, MODE, TORQUE_ENABLE};
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::estimates::THETA_HAT_Q16;
-use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, DUTY_TICKS, POS, SAMPLE_TICK};
+use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, POS, SAMPLE_TICK};
 use osc_servo_core::regions::telemetry_ext::addr::health::{
     STACK_FREE_MIN, TEL_DROP_COUNT, TICK_LOST_COUNT, TICK_OVER_COUNT,
 };
@@ -74,9 +74,9 @@ const STEP_HOLD: Duration = Duration::from_millis(400);
 const WINDOW: Duration = Duration::from_secs(10);
 const STEP_WINDOW: Duration = Duration::from_secs(20);
 const CENTRE_SETTLE: Duration = Duration::from_millis(500);
-/// The bench soaks' six raw fields, `current_raw..=pos` and
-/// `duty_ticks..=current_trough`: 12 B rows.
-const SIX_FIELDS: Chunks = Chunks::two(Chunk::new(CURRENT_RAW, 8), Chunk::new(DUTY_TICKS, 4));
+/// The bench soaks' six raw fields, `pos` and
+/// `current_raw..=current_trough`: 12 B rows.
+const SIX_FIELDS: Chunks = Chunks::two(Chunk::new(POS, 2), Chunk::new(CURRENT_RAW, 10));
 const TEL_ROWS: u16 = 4000;
 const TEL_BURSTS: u32 = 10;
 /// A burst's wire time with its drops, and margin.
