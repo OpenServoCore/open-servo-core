@@ -11,8 +11,8 @@ use osc_client::cyclic::{Cycle, Group, Telemetry};
 use osc_client::nusb::NusbPipe;
 use osc_client::{Id, ResultCode};
 use osc_protocol::table;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 
-const GOAL_VELOCITY: u16 = 392; // V006 map
 const PROFILE_SLOT0: u16 = 0x280; // protocol sec 5.2 pin
 
 /// Span word encoding, protocol sec 5.2: `[addr:10][count:6]`.
@@ -37,12 +37,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let telemetry = match mode.as_str() {
         "span" => Telemetry::Span {
             ids: ids.clone(),
-            addr: GOAL_VELOCITY,
+            addr: GOAL_POSITION,
             count: 4,
         },
         "profile" => {
             let words = [
-                span_word(GOAL_VELOCITY, 4),
+                span_word(GOAL_POSITION, 4),
                 span_word(table::FAULT_FLAGS, 2),
             ];
             let mut spans = Vec::new();
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let cycle = Cycle::new(
         vec![Group {
-            addr: GOAL_VELOCITY,
+            addr: GOAL_POSITION,
             count: 4,
             ids: ids.clone(),
         }],

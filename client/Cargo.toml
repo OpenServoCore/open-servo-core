@@ -30,6 +30,9 @@ osc-servo-core  = { path = "../firmware/lib/core", optional = true }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 
+[dev-dependencies]
+osc-servo-core = { path = "../firmware/lib/core" }
+
 # The guard timer has no thread to fall back on in a browser.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }

@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use bench::cli::{Connect, gate_fail_rate};
 use bench::edges::BStamp;
 use bench::osc::{build_instruction, gread_uniform_payload, gwrite_uniform_payload};
-use bench::run::Stats;
+use bench::run::{BURST_VALUES, Stats, burst_goal_base, goal_rails};
 use bench::wire::Wire;
 use clap::Parser;
 use osc_protocol::crc::osc_crc;
@@ -189,9 +189,15 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let mut client = args.conn.wire()?;
     let bit_ticks = client.bit_ticks();
+    let mut rails = i32::MIN..=i32::MAX;
+    for &id in &args.ids {
+        let r = goal_rails(&mut client, id)?;
+        rails = *rails.start().max(r.start())..=*rails.end().min(r.end());
+    }
+    let base = burst_goal_base(&rails, 0)?;
 
     // Warmup: prime the chip and flush stale stamps before measuring.
-    let _ = run_cycle(&mut client, &args, 0, bit_ticks);
+    let _ = run_cycle(&mut client, &args, base, bit_ticks);
 
     let n_gaps = args.ids.len().saturating_sub(1);
     let mut slot0 = Vec::new();
@@ -199,7 +205,7 @@ fn main() -> Result<()> {
     let mut totals = Vec::new();
     let mut fail = 0u32;
     for i in 0..args.count {
-        let value = (i % 1000) as i32 + 1;
+        let value = base + (i % BURST_VALUES as u32) as i32 + 1;
         match run_cycle(&mut client, &args, value, bit_ticks) {
             Ok((s0, g, total)) => {
                 slot0.push(s0);
