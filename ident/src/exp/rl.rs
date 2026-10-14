@@ -51,7 +51,7 @@ use crate::fitmath::{linear_ls, median, origin_ls, quantile};
 use crate::frame::{TEL_RL, TelBurst, TelFrame, TelemetrySnapshot, counts_q15};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
-use crate::units::{self, SenseParams};
+use crate::units::{self, BiasNode, SenseParams};
 
 const Q15: f64 = 32767.0;
 
@@ -76,6 +76,9 @@ pub struct Scales {
     pub v_rail_per_count: f64,
     pub adc_lsb_v: f64,
     pub shunt_ohm: f64,
+    /// The taps' bias node under drive; None without a published bias
+    /// divider, and one terminal then reads against the rest bias.
+    pub bias: Option<BiasNode>,
 }
 
 impl Scales {
@@ -88,9 +91,17 @@ impl Scales {
             v_rail_per_count: units::div_volts_per_count(sense, vbus_div_top, vbus_div_bot),
             adc_lsb_v: units::adc_lsb_v(sense),
             shunt_ohm: sense.shunt_r_mohm as f64 / 1000.0,
+            bias: None,
         };
         (sc.amps_per_count > 0.0 && sc.v_term_per_count > 0.0 && sc.v_rail_per_count > 0.0)
             .then_some(sc)
+    }
+
+    /// The servo's bias divider, ohms (CALIB `vmotor_bias_top_ohm` /
+    /// `vmotor_bias_bot_ohm`).
+    pub fn with_bias(mut self, sense: &SenseParams, top_ohm: u16, bot_ohm: u16) -> Self {
+        self.bias = BiasNode::new(sense, top_ohm, bot_ohm);
+        self
     }
 
     /// Ohms -> the control table's vcounts per ccount.

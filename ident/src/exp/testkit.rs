@@ -78,18 +78,19 @@ pub fn mg90_2s() -> Vec<Capture> {
     .collect()
 }
 
-/// Board D as fitted: 60 mohm shunt at G 15, 6k8/3k3 terminal taps, the
-/// 15k/10k rail tap.
+/// Board D as fitted: 60 mohm shunt at G 15, 6k8/3k3 terminal taps.
+pub const BOARD_D_SENSE: crate::units::SenseParams = crate::units::SenseParams {
+    shunt_r_mohm: 60,
+    gain_milli: 15_000,
+    vmotor_div_top: 6_800,
+    vmotor_div_bot: 3_300,
+    vdd_mv: 3_300,
+    tick_hz: 20_100,
+};
+
+/// [`BOARD_D_SENSE`] with the 15k/10k rail tap.
 pub fn board_d_scales() -> crate::exp::rl::Scales {
-    let s = crate::units::SenseParams {
-        shunt_r_mohm: 60,
-        gain_milli: 15_000,
-        vmotor_div_top: 6_800,
-        vmotor_div_bot: 3_300,
-        vdd_mv: 3_300,
-        tick_hz: 20_100,
-    };
-    crate::exp::rl::Scales::from_sense(&s, 15_000, 10_000).expect("board D scales")
+    crate::exp::rl::Scales::from_sense(&BOARD_D_SENSE, 15_000, 10_000).expect("board D scales")
 }
 
 /// The bench MG90 as the fake models it on a rail of `vbus`: 4.9 ohm, the
@@ -1121,6 +1122,11 @@ pub struct SynthBurst {
     pub tap_us: f64,
     /// Terminal divider bias node, raw counts.
     pub vb: f64,
+    /// The bias node's source impedance, ohms, behind
+    /// [`crate::units::BIAS_CAP_F`] and loaded by both terminal legs of
+    /// `leg_ohm` each; 0 is a stiff node.
+    pub bias_zs_ohm: f64,
+    pub leg_ohm: f64,
     /// Tap B's code over tap A's with the winding at rest, counts: the two
     /// dividers never match.
     pub split: f64,
@@ -1176,6 +1182,8 @@ impl SynthBurst {
             settle_us: 0.9,
             tap_us: 0.33,
             vb: 779.0,
+            bias_zs_ohm: 0.0,
+            leg_ohm: 10_100.0,
             split: 0.0,
             noise_counts: 2.0,
             amps_per_count: lsb / (15.0 * 0.060),
@@ -1241,9 +1249,9 @@ impl SynthBurst {
         assert_eq!(slots.len(), fl);
 
         let mut pre_arm_rail = self.v_rail;
-        // winding current, rail node, island, amplifier, tap A, tap B
-        let step = |x: f64, st: &mut [f64; 6]| {
-            let [i, vc, isl, m, ta, tb] = st;
+        // winding current, rail node, island, amplifier, tap A, tap B, bias
+        let step = |x: f64, st: &mut [f64; 7]| {
+            let [i, vc, isl, m, ta, tb, vbn] = st;
             let (on, d, _) = phase(x);
             let drive = on && d != 0.0;
             let e = self.emf_v_per_ms * ((x - crest0).max(0.0) * SAMPLE_US * 1e-3);
@@ -1260,7 +1268,7 @@ impl SynthBurst {
             // chopping leg
             let low = self.rds + self.r_low;
             let (hi, lo) = if d == 0.0 {
-                (vb_v, vb_v)
+                (*vbn, *vbn)
             } else if on {
                 (vm + pgnd - *i * self.rds, pgnd + *i * low)
             } else if self.body_diode && *i > 0.0 {
@@ -1284,8 +1292,12 @@ impl SynthBurst {
             let (va, vbv) = if fwd { (hi, lo) } else { (lo, hi) };
             *ta += (va - *ta) * a_tap;
             *tb += (vbv - *tb) * a_tap;
+            if self.bias_zs_ohm > 0.0 {
+                let i_in = (vb_v - *vbn) / self.bias_zs_ohm + (hi + lo - 2.0 * *vbn) / self.leg_ohm;
+                *vbn += i_in / crate::units::BIAS_CAP_F * dt;
+            }
         };
-        let mut st = [0.0, self.v_rail, self.v_rail, self.bias, vb_v, vb_v];
+        let mut st = [0.0, self.v_rail, self.v_rail, self.bias, vb_v, vb_v, vb_v];
         if pre_q15 != 0 {
             let x0 = -(PRIME_PERIODS as f64) * p;
             let n = (PRIME_PERIODS as f64 * p * SUBSTEPS as f64) as usize;
@@ -1306,7 +1318,9 @@ impl SynthBurst {
                 .wrapping_add(1442695040888963407);
             ((lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.noise_counts
         };
-        let tap_code = |v: f64| self.vb + (v - vb_v) / self.v_term_per_count;
+        let tap_code = |v: f64, vbn: f64| {
+            self.vb + (vbn - vb_v) / self.adc_lsb_v + (v - vbn) / self.v_term_per_count
+        };
         let mut samples = Vec::with_capacity(SAMPLES);
         for n in 0..SAMPLES {
             for s in 0..SUBSTEPS {
@@ -1315,8 +1329,8 @@ impl SynthBurst {
             }
             let code = match slots[n % fl] {
                 0 => st[3],
-                CHAN_VMOTOR_A => tap_code(st[4]),
-                CHAN_VMOTOR_B => tap_code(st[5]) + self.split,
+                CHAN_VMOTOR_A => tap_code(st[4], st[6]),
+                CHAN_VMOTOR_B => tap_code(st[5], st[6]) + self.split,
                 _ => st[1] / self.v_rail_per_count,
             };
             samples.push((code + noise()).round().clamp(0.0, 4095.0) as u16);

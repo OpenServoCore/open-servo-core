@@ -650,6 +650,13 @@ pub struct SenseJson {
     pub vbus_div_top_ohm: u16,
     #[serde(default)]
     pub vbus_div_bot_ohm: u16,
+    /// The terminal taps' bias divider; zero on a run recorded before the
+    /// servo published it, and one terminal then reads against the rest
+    /// bias.
+    #[serde(default)]
+    pub vmotor_bias_top_ohm: u16,
+    #[serde(default)]
+    pub vmotor_bias_bot_ohm: u16,
 }
 
 impl SenseJson {
@@ -665,7 +672,13 @@ impl SenseJson {
     }
 
     pub fn scales(&self) -> Option<Scales> {
-        Scales::from_sense(&self.params(), self.vbus_div_top_ohm, self.vbus_div_bot_ohm)
+        Scales::from_sense(&self.params(), self.vbus_div_top_ohm, self.vbus_div_bot_ohm).map(|s| {
+            s.with_bias(
+                &self.params(),
+                self.vmotor_bias_top_ohm,
+                self.vmotor_bias_bot_ohm,
+            )
+        })
     }
 }
 
