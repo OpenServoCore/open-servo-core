@@ -65,6 +65,19 @@ pub fn tel_step(clock: &impl Deadline, from: u32, s: TelStep) {
     }
 }
 
+/// The TEL hook stamped at `from` ends now: its span joins the running
+/// tick's hook time. Every tick, TEL or not.
+#[inline(always)]
+#[allow(unused_variables)]
+pub fn tel_hook(clock: &impl Deadline, from: u32) {
+    // SAFETY: the kernel tick is the record's only writer, bringup aside.
+    #[cfg(feature = "bench-telcost")]
+    unsafe {
+        let h = &raw mut TEL_COST.hook;
+        h.write(h.read().wrapping_add(clock.now().wrapping_sub(from)));
+    }
+}
+
 /// Price a back-to-back stamp pair. Call once, before interrupts run.
 #[inline(always)]
 #[allow(unused_variables)]
@@ -108,6 +121,21 @@ pub fn tel_tick_steps() -> u32 {
         let steps = t.read();
         t.write(0);
         steps
+    }
+    #[cfg(not(feature = "bench-telcost"))]
+    0
+}
+
+/// The running kernel tick's hook time, taken: the tick's end calls it.
+#[inline(always)]
+pub fn tel_tick_hook() -> u32 {
+    #[cfg(feature = "bench-telcost")]
+    // SAFETY: as `tel_tick_steps`.
+    unsafe {
+        let h = &raw mut TEL_COST.hook;
+        let hook = h.read();
+        h.write(0);
+        hook
     }
     #[cfg(not(feature = "bench-telcost"))]
     0
