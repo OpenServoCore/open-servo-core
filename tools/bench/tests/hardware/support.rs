@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 pub use bench::cli::SETTLE_MS;
+use bench::clock::{self, Summary};
 use bench::discover::{self, Found};
 use bench::osc::{
     Exchange, ExchangeError, RESCUE_PULSE_US, StatusFrame, build_read, build_write, parse_exchange,
@@ -221,6 +222,18 @@ impl Bench {
         self.wire
             .train(announce, gap_us, breaks)
             .expect("cal train");
+    }
+
+    /// The servo's clock against the adapter crystal, ppm (+ = fast): the
+    /// reply pitch of `replies` READs of `len` bytes at the current baud.
+    pub fn servo_clock(&mut self, replies: u32, len: u16) -> Summary {
+        let baud = self.wire.current_baud();
+        let fits = clock::servo_truth(&mut self.wire, self.id, baud, 0, len, replies)
+            .expect("clock truth capture");
+        let (ppm, rejects) = clock::readings(&fits);
+        Summary::of(&ppm).unwrap_or_else(|| {
+            panic!("clock truth: {rejects} of {replies} replies gave no reading")
+        })
     }
 
     /// Raw zero-gap burst, no reply parsing - traffic, not an exchange.

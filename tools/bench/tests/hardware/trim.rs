@@ -6,7 +6,7 @@
 //!   declares a shorter gap than the adapter's crystal actually paces,
 //!   every gap reads long by the same ratio, and the servo trims as if its
 //!   own clock were fast. The truthful trains that follow must pull the
-//!   total back - the closed-loop proof DES cannot give (the sim fakes
+//!   clock back - the closed-loop proof DES cannot give (the sim fakes
 //!   the chip adapter; on silicon an inverted HSITRIM mapping railed the
 //!   fleet in max-step clamps while every DES trim test stayed green).
 //! - Host detune: the host moves one BRR step off nominal. Traffic at
@@ -41,6 +41,15 @@ const TOTAL_MAX: i32 = 15;
 /// rail at STEPS_MAX per train, one train to identify the step effect, one
 /// to confirm.
 const ANCHOR_TRAINS_MAX: u32 = (TOTAL_MAX as u32).div_ceil(STEPS_MAX as u32) + 3;
+/// Clock truth (bench `clock`): replies per reading, and each reply's
+/// READ length - 240 chars per pitch fit.
+const TRUTH_REPLIES: u32 = 16;
+const TRUTH_LEN: u16 = 240;
+/// The coarsest trim step and the CAL ruler's per-train noise, ppm: the
+/// step effect the trim loop self-measured across bench chips (1.4-3.2k
+/// ppm/step) and the ruler noise it was sized against (drivers `trim`).
+const STEP_PPM_MAX: f64 = 3_200.0;
+const RULER_NOISE_PPM: f64 = 260.0;
 
 fn read_trim(b: &mut Bench) -> i32 {
     let status = b.status_ok(&build_read(b.id(), TRIM_STEPS, 1));
@@ -93,18 +102,39 @@ fn converge(b: &mut Bench, mut send: impl FnMut(&mut Bench)) -> (Option<i32>, u3
 fn lying_train_trims_and_truth_pulls_back() {
     let mut b = bench();
     let (start, _) = anchor(&mut b);
+    let start_clock = b.servo_clock(TRUTH_REPLIES, TRUTH_LEN);
 
     train(&mut b, LIE_GAP_US);
     let lied = read_trim(&mut b);
     assert_eq!(lied - start, STEPS_MAX, "the lie clamps at +STEPS_MAX");
 
-    train(&mut b, GAP_US);
-    train(&mut b, GAP_US);
-    let back = read_trim(&mut b);
-    assert!(
-        (back - start).abs() <= 1,
-        "truth pulls the trim back: start {start}, back {back}"
+    // Two truth trains can stop mid-correction: the lie leaves the trim
+    // STEPS_MAX out, and the next step effects are measured over one or
+    // two codes, so a pair can overshoot by two. Converge instead; a trim
+    // that never settles dithers between neighbours, and the clock still
+    // judges it.
+    let mut codes = vec![lied];
+    let (_, trains) = converge(&mut b, |b| {
+        train(b, GAP_US);
+        codes.push(read_trim(b));
+    });
+    let back = codes[codes.len() - 1];
+    let back_clock = b.servo_clock(TRUTH_REPLIES, TRUTH_LEN);
+
+    // A converged trim holds the clock within half a step plus the ruler's
+    // noise of the crystal (round-to-nearest is the deadband), so two
+    // converged clocks differ by at most one step plus twice that noise,
+    // and each truth reading adds its own 95% half-width. The code is no
+    // judge: step effects are nonuniform, so codes that differ can hold the
+    // same clock.
+    let tol = STEP_PPM_MAX + 2.0 * RULER_NOISE_PPM + start_clock.half95() + back_clock.half95();
+    let moved = back_clock.mean - start_clock.mean;
+    println!(
+        "clock start {:.0} ppm, back {:.0} ppm, moved {moved:.0} ppm, tolerance {tol:.0} ppm; \
+         trim codes start {start}, per train {codes:?}, back {back} after {trains} truth trains",
+        start_clock.mean, back_clock.mean,
     );
+    assert!(moved.abs() <= tol, "truth pulls the clock back");
 }
 
 /// The rate the detune step is defined against.
