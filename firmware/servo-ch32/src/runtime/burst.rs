@@ -31,9 +31,9 @@ use osc_servo_core::regions::{ControlTable, Mode};
 use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
 
 use crate::cfg::chip;
-use crate::control::sensors::scan;
 use crate::hal::clocks::HCLK_HZ;
 use crate::hal::{adc, delay_cycles, dma, timer};
+use crate::providers::sensors::scan;
 use crate::runtime::statics::KERNEL;
 
 const CH: dma::Channel = dma::Channel::CH1;

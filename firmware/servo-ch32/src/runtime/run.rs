@@ -6,9 +6,9 @@ use osc_servo_core::{BootMode, RegionStorageRaw};
 use osc_servo_drivers::traits::Monotonic as _;
 
 use crate::cfg::{BoardConfig, Precomputed, chip};
-use crate::control::Ch32ControlIo;
 use crate::hal::{flash, gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
+use crate::runtime::control_io::Ch32ControlIo;
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]
@@ -149,7 +149,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // Shunt-burst page copy: republishes one page of the frozen capture
         // into the BURST window. Main-loop side on purpose -- the copy is
         // ~120 words and has no business inside a 20 kHz ISR.
-        crate::control::burst::poll_page(&crate::runtime::statics::SHARED);
+        crate::runtime::burst::poll_page(&crate::runtime::statics::SHARED);
 
         // Data job (core `data_state`): the stamp checkpoint a covered or
         // stamp write posts and the verdict a LUT COMMIT posts, ~0.6 ms of

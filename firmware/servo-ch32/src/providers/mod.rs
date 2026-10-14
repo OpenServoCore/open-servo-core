@@ -10,6 +10,8 @@ pub mod crc;
 pub mod deadline;
 pub mod digital_out;
 pub mod monotonic;
+pub mod motor;
 pub mod ring;
+pub mod sensors;
 pub mod tx_wire;
 pub mod usart_baud;

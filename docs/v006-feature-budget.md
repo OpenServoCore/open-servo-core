@@ -143,18 +143,18 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 | 9,606 | `__qingke_rt_DMA1_CHANNEL1` (the whole kernel tick, inlined) |
 | 7,596 | `runtime::run::__run` (main loop) |
 | 5,366 | `BusDispatcher::dispatch` |
-| 1,920 | `control::burst::BURST_BUF` (.bss) |
+| 1,920 | `runtime::burst::BURST_BUF` (.bss) |
 | 1,896 | `.L_MergedGlobals.128` (.bss: KERNEL, RING, TEL_CHANNEL, SESSION, small statics) |
 | 1,680 | `bus::decode::decode` |
 | 1,572 | `runtime::statics::SHARED` (.bss) |
 | 1,342 | `ServoBus::route_frame` |
-| 1,144 | `control::burst::handshake` |
+| 1,144 | `runtime::burst::handshake` |
 | 1,048 | `ServoBus::drive_framer` |
 | 870 | `ServoBus::route_chain` |
 | 854 | `__qingke_rt_USART1` |
 | 800 | `ServoBus::verify` |
 | 704 | `ConfigStore::wipe` |
-| 694 | `control::burst::on_dma_event` |
+| 694 | `runtime::burst::on_dma_event` |
 | 686 | `runtime::statics::install` |
 | 664 | `config_store::program` |
 | 650 | `control_table::rules::check_cmp` |

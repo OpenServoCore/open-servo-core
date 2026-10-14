@@ -239,7 +239,7 @@ pub const ENTRY_EXIT: u32 = 80;
 pub const ENTRY: u32 = 37;
 
 /// The next scans land in the tick block this long after the scan TC that
-/// starts a tick, each at its first slot (`control::sensors::scan` on the
+/// starts a tick, each at its first slot (`providers::sensors::scan` on the
 /// chip asserts the geometry): the trough scan half a period on, the crest
 /// scan a period on, each less the crest scan's length.
 pub const NEXT_TROUGH: u32 = 888;

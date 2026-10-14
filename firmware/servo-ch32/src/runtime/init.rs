@@ -1,7 +1,6 @@
 use ch32_metapac::{adc::vals::Extsel, dma::vals::Dir};
 use osc_servo_core::{CalibSense, CalibSenseExt, ConfigDefaults};
 
-use crate::control::sensors::scan::{self, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
 use crate::hal::{
     adc, afio, delay_ms, dma, esig,
     gpio::{self, PinMode},
@@ -12,6 +11,7 @@ use crate::providers::break_wake::BreakWake;
 use crate::providers::config_store;
 use crate::providers::crc::Crc;
 use crate::providers::ring::RxRing;
+use crate::providers::sensors::scan::{self, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
 use crate::runtime::Drivers;
 use crate::runtime::statics::SHARED;
 
