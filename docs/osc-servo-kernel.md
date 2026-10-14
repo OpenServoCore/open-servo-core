@@ -59,7 +59,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 6 | SLOW | the slow block when due; the thermometer's finish one period later |
 | 7 | PUBLISH | estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit; otherwise a thermometer install |
-| 9 | SPARE_B | NTC (board thermistor) read before a SLOW tick; derate after a finish |
+| 9 | SPARE_B | NTC (board thermistor) read before a SLOW tick; derate after a finish; else the drive direction check while the wiring is unproven |
 
 Module layout:
 
@@ -78,7 +78,7 @@ Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind
 `runtime::isr::on_adc_dma_tc` and `Kernel::on_tick` run, in order:
 
 1. Increment `sample_tick`; publish the scan's shunt and taps in the tick block.
-2. Spare-phase arbitration: boot on the first tick, else the configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)), else a pending thermometer stage on a spare phase.
+2. Spare-phase arbitration: boot on the first tick, else the configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)), else a pending thermometer stage on a spare phase, else on SPARE_B the drive direction check while the wiring is unproven: its plain check, or its stage (`DRIVE_STAGE`), never on a thermometer stage's tick.
 3. FAST measure: the window the previous command drove, published in the tick block.
 4. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)).
 5. The medium phase.
@@ -96,10 +96,11 @@ The next trough scan lands mid-period and the next crest scan near the period's 
 | --- | --- | --- |
 | Configuration take | first SPARE_A after a commit | owns the phase; a thermometer stage there waits a period |
 | SLOW block | SLOW phase, every `DECIM_SLOW` periods | stages one period apart, on SLOW and the spare phases; a displaced stage waits on its pending bit |
+| Drive direction stage | SPARE_B, while the wiring is unproven | never on a thermometer stage's or a take's tick; holds no TX lane (`the_drive_stage_never_shares_a_tick_with_a_thermometer_stage`, `the_drive_stage_stays_inside_the_spare_b_envelope`) |
 | Tick-load close | PUBLISH (`HEALTH_CLOSE_PHASE`) | never on a stage or take phase (`health_close_lands_only_on_publish_while_streaming`) |
 | TEL lane step | end of tick | at most one per tick; none on a head, bank or stage tick |
 
-Arbitration is the first `match` in `on_tick`: boot, then the take, then the thermometer.
+Arbitration is the first `match` in `on_tick`: boot, then the take, then the thermometer, then the drive direction check.
 
 > **Two rare events share a tick only where the budget table prices the combination.**
 
@@ -172,7 +173,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | Rows | Scope |
 | --- | --- |
 | `KERNEL`, `KERNEL_MEAN`, `TICK_PUBLISH` | plain tick body by regime (Open, Closed) and phase, maximum and mean |
-| `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `SLOW_CLOSE`, `THERM_INSTALL`, `THERM_SIDE`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
+| `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `SLOW_CLOSE`, `THERM_INSTALL`, `THERM_SIDE`, `DRIVE_STAGE`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |

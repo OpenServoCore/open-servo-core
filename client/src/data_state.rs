@@ -44,6 +44,9 @@ pub mod fault {
     pub const UNDER_VOLT: u8 = 6;
     /// An enable refused by the data state.
     pub const DATA: u8 = 7;
+    /// The shaft turned against the drive: the motor is wired the other
+    /// way round from `drive_polarity`. Under the `data` fault bit.
+    pub const DRIVE_REVERSED: u8 = 8;
 
     pub fn name(code: u8) -> Option<&'static str> {
         Some(match code {
@@ -55,6 +58,7 @@ pub mod fault {
             SENSOR => "sensor",
             UNDER_VOLT => "under_volt",
             DATA => "data",
+            DRIVE_REVERSED => "drive_reversed",
             _ => return None,
         })
     }
@@ -306,6 +310,7 @@ mod tests {
         assert_eq!(fault::SENSOR, fwf::CODE_SENSOR);
         assert_eq!(fault::UNDER_VOLT, fwf::CODE_UNDER_VOLT);
         assert_eq!(fault::DATA, fwf::CODE_DATA);
+        assert_eq!(fault::DRIVE_REVERSED, fwf::CODE_DRIVE_REVERSED);
         for flags in 0..=u8::MAX {
             for (mode, closed) in [
                 (osc_servo_core::Mode::OpenLoop, false),

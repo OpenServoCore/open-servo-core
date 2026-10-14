@@ -29,6 +29,7 @@ hot=(
     WindingTherm::install_reference
     TrajGen::step_position
     DutyLimiter::step
+    Medium::drive_stage
     __qingke_rt_DMA1_CHANNEL1
     __qingke_rt_TIM2
     __qingke_rt_USART1

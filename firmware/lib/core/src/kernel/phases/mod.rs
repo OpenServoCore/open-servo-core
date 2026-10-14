@@ -20,7 +20,7 @@ mod velocity;
 
 pub(in crate::kernel) use control::Control;
 
-use self::loops::faults::Detectors;
+use self::loops::faults::{Detectors, DriveCheck};
 use self::loops::limits::{IBand, LimitState};
 use self::loops::trajectory::TrajGen;
 use self::loops::velocity::VelocityLoop;
@@ -78,6 +78,7 @@ pub(in crate::kernel) struct Medium {
     permit_ticks: u8,
     permit_gen: u8,
     det: Detectors,
+    pub(in crate::kernel) drive: DriveCheck,
     te_prev: bool,
     run_prev: bool,
     mode_prev: Mode,
@@ -115,6 +116,7 @@ impl Medium {
             permit_ticks: 0,
             permit_gen: 0,
             det: Detectors::new(),
+            drive: DriveCheck::new(),
             te_prev: false,
             run_prev: false,
             mode_prev: Mode::OpenLoop,

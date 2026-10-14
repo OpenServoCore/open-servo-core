@@ -8,6 +8,7 @@
 
 use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
 use crate::estimator::thermal::stage;
+use crate::kernel::phases::loops::faults::stage_due;
 use crate::kernel::{ProbeTags, phase};
 use crate::tel::STREAM_SAMPLES_MAX;
 
@@ -24,6 +25,9 @@ impl Events {
             close: before.slow_finish && after.therm & stage::INSTALL != 0,
             install: ran & stage::INSTALL != 0,
             side: ran & (stage::NTC | stage::DERATE | stage::COLD) != 0,
+            drive: before.phase == phase::SPARE_B
+                && stage_due(before.drive)
+                && after.drive != before.drive,
             ..Self::default()
         }
     }
@@ -271,6 +275,8 @@ pub struct KernelProbe {
     pub close: Load,
     pub install: Load,
     pub side: Load,
+    /// The drive direction check's stages on phase SPARE_B.
+    pub drive: Load,
 }
 
 impl KernelProbe {
@@ -286,6 +292,7 @@ impl KernelProbe {
             slow_finish: false,
             therm: 0,
             closed: false,
+            drive: 0,
         },
         banks: 0,
         tick: [[Tally::ZERO; PHASES]; 2],
@@ -300,6 +307,7 @@ impl KernelProbe {
         close: Load::ZERO,
         install: Load::ZERO,
         side: Load::ZERO,
+        drive: Load::ZERO,
     };
 
     pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
@@ -329,6 +337,7 @@ impl KernelProbe {
             && a.config_seq == b.config_seq
             && a.therm == b.therm
             && a.closed == b.closed
+            && a.drive == b.drive
             && !b.slow_due
             && !b.slow_finish
             && !a.slow_due
@@ -435,6 +444,8 @@ impl KernelProbe {
             self.install.add(body);
         } else if ev.side {
             self.side.add(body);
+        } else if ev.drive {
+            self.drive.add(body);
         } else if ev.health {
             max16(&mut self.health_max);
         } else if ev.bank {
@@ -501,7 +512,8 @@ impl KernelProbe {
         let entries = r.word();
         let halts = r.word();
         let [phase, config_seq, booted, slow_due] = r.word().to_le_bytes();
-        let [slow_finish, therm, closed, banks] = r.word().to_le_bytes();
+        let [slow_finish, therm, closed, drive] = r.word().to_le_bytes();
+        let [banks, ..] = r.word().to_le_bytes();
         Some(Self {
             busy,
             entries,
@@ -514,6 +526,7 @@ impl KernelProbe {
                 slow_finish: slow_finish != 0,
                 therm,
                 closed: closed != 0,
+                drive,
             },
             banks,
             tick: core::array::from_fn(|_| {
@@ -536,6 +549,7 @@ impl KernelProbe {
             close: r.load(),
             install: r.load(),
             side: r.load(),
+            drive: r.load(),
         })
     }
 }
@@ -825,7 +839,8 @@ impl TelTally {
         hook: u32,
         boot: bool,
     ) {
-        let apart = ev.refresh || ev.close || ev.slow || ev.finish || ev.install || ev.side;
+        let apart =
+            ev.refresh || ev.close || ev.slow || ev.finish || ev.install || ev.side || ev.drive;
         if boot || body > HALT_TICKS || apart || ev.health {
             return;
         }
@@ -1091,6 +1106,8 @@ pub enum Component {
     Close,
     Install,
     Side,
+    /// The drive direction check's stage.
+    Drive,
     /// The TEL ticks' mean over the same regime's plain ticks' (mean only).
     TelRow(Regime),
     Body(Body),
@@ -1200,11 +1217,13 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     let stages = [
         (Component::Install, k.install, crate::kernel::phase::SPARE_A),
         (Component::Side, k.side, crate::kernel::phase::SPARE_B),
+        (Component::Drive, k.drive, crate::kernel::phase::SPARE_B),
     ];
     for (c, l, p) in stages {
         let ev = Events {
             install: c == Component::Install,
             side: c == Component::Side,
+            drive: c == Component::Drive,
             ..carried
         };
         let budget = super::kernel_tick(Regime::Closed, p as usize, ev);

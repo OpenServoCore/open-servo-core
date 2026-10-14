@@ -94,7 +94,9 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// the host is silent through one. E: 557, the take and the bound it calls
 /// on the release disassembly with the fetch model (load/store 3.25, ALU 2,
 /// mul 10, taken transfer 6, call and return 12 HCLK; 84 loads and stores,
-/// 353, and the bound's worst path, 204), plus 10%.
+/// 353, and the bound's worst path, 204), plus 10%. The drive direction
+/// check's `drive_polarity` compare adds 11.25, 15.75 on a change: 573,
+/// inside the row.
 pub const REFRESH: u32 = 613;
 
 /// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
@@ -222,6 +224,19 @@ pub const SLOW_CLOSE: u32 = 363;
 /// since [`kernel_tick`] stacks the TEL row on it.
 pub const THERM_INSTALL: u32 = 585;
 pub const THERM_SIDE: u32 = 639;
+
+/// The drive direction check's stage on phase SPARE_B, on top of its row:
+/// a leg's end against the pot, its verdict or an anchor, while the wiring
+/// is unproven, on a SPARE_B no thermometer stage takes. Above both its E
+/// and its M: E, the dearest, a leg's end through the position table,
+/// priced on the release disassembly with the fetch model as [`REFRESH`]
+/// at 193 over the plain tick (the verdict that latches 181, an anchor
+/// 120), plus 10%, 212; M 219, the bench's two runs. It stays inside the
+/// thermometer's stage there, so the SPARE_B envelope is the same. The
+/// plain check rides the SPARE_B row: 9.25 proven, at most 40.5 unproven.
+pub const DRIVE_STAGE: u32 = 231;
+
+const _: () = assert!(DRIVE_STAGE <= THERM_SIDE);
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
@@ -423,6 +438,9 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     if ev.side {
         t += THERM_SIDE;
     }
+    if ev.drive {
+        t += DRIVE_STAGE;
+    }
     if ev.tel {
         // The lane leaves a banking tick be (its gate is under the poll),
         // and a stage tick, so the dearest TEL tick is the bank's or a lane
@@ -452,6 +470,8 @@ pub struct Events {
     /// The thermometer's stages on phases SPARE_A and SPARE_B.
     pub install: bool,
     pub side: bool,
+    /// The drive direction check's stage on phase SPARE_B.
+    pub drive: bool,
     /// The tick-load counters closed a window.
     pub health: bool,
 }
