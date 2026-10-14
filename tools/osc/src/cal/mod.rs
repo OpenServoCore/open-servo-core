@@ -61,7 +61,7 @@ use osc_ident::units::{self, SenseParams};
 
 use crate::capture::envelope;
 use crate::rig::Bus;
-use crate::rig::centre::{centre_on, drive as drive_on, jam_check};
+use crate::rig::centre::{centre_on, drive as drive_on, gear_class_of, jam_check};
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{Pump, write_reg};
 use crate::rig::servo::{Servo, Wire, guard};
@@ -313,7 +313,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         stops: r,
         tel,
         ccw_end,
-    } = find_stops(&mut Wire::new(&mut c, id), &out, lim, stop_lim, sc, fs, ccw)?;
+    } = find_stops(&mut Wire::new(&mut c, id), &out, lim, gears, sc, fs, ccw)?;
     let EndstopResult {
         pos_min_phys,
         pos_max_phys,
@@ -733,13 +733,15 @@ fn find_stops<S: Servo>(
     s: &mut S,
     out: &OutDir,
     lim: ServoLimits,
-    stop_lim: ServoLimits,
+    gears: Gears,
     sc: Scales,
     tick_hz: f64,
     ccw: Ccw,
 ) -> Result<Found> {
+    let stop_lim = stop_hold(lim, gears);
     let mut cal = Cal {
         lim,
+        gears,
         stop_lim: stop_lim.i_lim,
         sc,
         tick_hz,
@@ -796,7 +798,9 @@ fn find_stops<S: Servo>(
 
 struct Cal<'a> {
     lim: ServoLimits,
-    /// The current limit the stops are planned under, counts.
+    /// The gear train, and the current limit the stops are planned under,
+    /// counts.
+    gears: Gears,
     stop_lim: u16,
     sc: Scales,
     tick_hz: f64,
@@ -843,7 +847,8 @@ impl Cal<'_> {
                 check_abort("bias", exp.abort())?;
             }
             Stage::JamCheck => {
-                let exp = jam_check(s, &self.lim, &self.sc, self.params())?;
+                let class = gear_class_of(self.gears.class());
+                let exp = jam_check(s, &self.lim, &self.sc, self.params(), class)?;
                 self.polarity = exp.polarity();
                 run.nudged(exp.moved_at());
             }
@@ -1830,7 +1835,7 @@ mod tests {
                 &mut b,
                 &out,
                 lim,
-                stop_hold(lim, Gears::Metal),
+                Gears::Metal,
                 sc,
                 sense.tick_hz as f64,
                 Ccw::new(&args, None).unwrap(),

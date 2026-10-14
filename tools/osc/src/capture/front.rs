@@ -23,7 +23,7 @@ use super::envelope::Envelope;
 use super::verdict::Abort;
 use super::{Rule, Supply};
 use crate::rig::battery;
-use crate::rig::centre::jam_check;
+use crate::rig::centre::{gear_class, jam_check};
 use crate::rig::limits::{self, Stall};
 use crate::rig::pump::read_snapshot;
 use crate::rig::servo::Servo;
@@ -230,7 +230,8 @@ impl Front {
     /// The jam check as `osc cal` runs it, on `s`. The duty it moved the
     /// shaft at plans the drives by the winding R the servo carries.
     pub(crate) fn jam_check<S: Servo>(&self, s: &mut S) -> Result<Proved> {
-        let exp = jam_check(s, &self.lim, &self.sc, self.params())?;
+        let class = gear_class(s)?;
+        let exp = jam_check(s, &self.lim, &self.sc, self.params(), class)?;
         let Some(moved) = exp.moved_at() else {
             bail!("the jam check never saw the shaft move, so nothing drives it");
         };

@@ -4,6 +4,7 @@
 //! A blocked shaft ends either, torque off.
 
 use anyhow::{Result, bail};
+use osc_client::calib::GearClass as Stored;
 use osc_ident::exp::centre::{Centre, CentreCfg};
 use osc_ident::exp::jam::{self, JamCfg, JamCheck};
 use osc_ident::exp::rl::Scales;
@@ -38,24 +39,33 @@ pub(crate) fn centre_on(
     Ok(exp)
 }
 
-/// The servo's gear class, which sets the most current the jam check may
-/// press a stop with. The calibration block's gear class reads in here
-/// once the table carries it; until then every servo reads unknown.
-pub(crate) fn gear_class<S: Servo>(_s: &mut S) -> Result<GearClass> {
-    Ok(GearClass::Unknown)
+/// The gear class the servo holds, which sets the most current the jam
+/// check may press a stop with: unknown on one `osc cal` never ran on.
+pub(crate) fn gear_class<S: Servo>(s: &mut S) -> Result<GearClass> {
+    let id = s.id();
+    let d = crate::state::descriptor(s.client(), id)?;
+    Ok(gear_class_of(s.client().gear_class(id, &d)?))
 }
 
-/// The jam check on `s`, by the servo's limits, scales and gear class,
-/// under the `drive_polarity` in `params`: the check, the polarity it left
-/// in RAM. Any end but mid travel is an error, the stored polarity written
+pub(crate) fn gear_class_of(stored: Stored) -> GearClass {
+    match stored {
+        Stored::Unknown => GearClass::Unknown,
+        Stored::Plastic => GearClass::Plastic,
+        Stored::Metal => GearClass::Metal,
+    }
+}
+
+/// The jam check on `s`, by the servo's limits, scales and `class`, under
+/// the `drive_polarity` in `params`: the check, the polarity it left in
+/// RAM. Any end but mid travel is an error, the stored polarity written
 /// back.
 pub(crate) fn jam_check<S: Servo>(
     s: &mut S,
     lim: &ServoLimits,
     sc: &Scales,
     params: RigParams,
+    class: GearClass,
 ) -> Result<JamCheck> {
-    let class = gear_class(s)?;
     let cfg = JamCfg::for_servo(lim, sc, class);
     let ma = |i: f64| cfg.ma(i).round();
     println!(
@@ -110,7 +120,7 @@ mod tests {
     use super::*;
     use crate::capture::Supply;
     use crate::rig::blocked;
-    use crate::rig::servo::bench::Bench;
+    use crate::rig::servo::bench::{self, Bench};
     use osc_ident::exp::testkit::board_d_scales;
 
     /// The bench MG90 at `pos` under the stored `drive_polarity` 1, its
@@ -145,7 +155,21 @@ mod tests {
     }
 
     fn check(b: &mut Bench) -> Result<JamCheck> {
-        jam_check(b, &lim(), &board_d_scales(), params())
+        let class = gear_class(b)?;
+        jam_check(b, &lim(), &board_d_scales(), params(), class)
+    }
+
+    /// The class the servo holds: the bench table's, seeded calibrated, is
+    /// plastic; then whatever `osc cal` writes, unknown included.
+    #[test]
+    fn the_gear_class_is_the_servos() {
+        let mut b = bench_at(2029.0, true);
+        assert_eq!(gear_class(&mut b).unwrap(), GearClass::Plastic);
+        let id = b.id();
+        for (byte, class) in [(2, GearClass::Metal), (0, GearClass::Unknown)] {
+            bench::set(&mut b.c, id, osc_ident::regs::calib::GEAR_CLASS, byte);
+            assert_eq!(gear_class(&mut b).unwrap(), class);
+        }
     }
 
     /// Under the low soft limit with the motor reversed: the first pulse

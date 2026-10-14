@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::capture::envelope;
 use crate::rig::Bus;
-use crate::rig::centre::jam_check;
+use crate::rig::centre::{gear_class, jam_check};
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
 use crate::rig::servo::{Servo, Wire};
@@ -666,7 +666,8 @@ fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result
 fn jam(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<Option<f64>> {
     let d = drive(cli)?;
     let mut s = Wire::new(c, id);
-    let exp = jam_check(&mut s, &d.lim, &d.sc, rig(cli)?)?;
+    let class = gear_class(&mut s)?;
+    let exp = jam_check(&mut s, &d.lim, &d.sc, rig(cli)?, class)?;
     d.polarity.set(exp.polarity());
     Ok(exp.moved_at())
 }
