@@ -477,6 +477,46 @@ impl ServoLimits {
     }
 }
 
+/// The gear train's material, which bounds what a stop may take: the
+/// calibration's gear class. `Unknown` is a servo `osc cal` never ran on,
+/// held to plastic's limits.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GearClass {
+    Unknown,
+    Plastic,
+    Metal,
+}
+
+impl GearClass {
+    /// The most current a stop may hold for as long as it likes, mA: a
+    /// plastic train held 0.33 A on both stops, an MG90's metal train
+    /// 0.52 A.
+    pub fn hold_ma(self) -> f64 {
+        match self {
+            GearClass::Metal => 500.0,
+            GearClass::Plastic | GearClass::Unknown => 300.0,
+        }
+    }
+
+    /// The longest a check may press a stop in all, ms: arrivals and long
+    /// presses strip plastic teeth; a metal train slips its output gear
+    /// later.
+    pub fn press_budget_ms(self) -> f64 {
+        match self {
+            GearClass::Metal => 500.0,
+            GearClass::Plastic | GearClass::Unknown => 250.0,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GearClass::Unknown => "unknown",
+            GearClass::Plastic => "plastic",
+            GearClass::Metal => "metal",
+        }
+    }
+}
+
 /// The most the jam check applies while the shaft has not moved, mV: 25%
 /// at 7.9 V, 45% at 4.39 V. Under the window floor a stall draws floor x
 /// rail / R; from the floor up the firmware limiter holds the limit and
