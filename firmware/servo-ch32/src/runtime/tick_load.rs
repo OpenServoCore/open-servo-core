@@ -1,9 +1,10 @@
 //! Kernel tick load, overruns and lost ticks from SysTick stamps (HCLK)
-//! taken at the tick interrupt's entry and exit. Pure arithmetic:
-//! `runtime::isr` stamps, keeps the one `TickLoad` and publishes into
-//! TELEMETRY `health`: the counters every 20 ticks, the mean every 4000.
+//! taken at the tick interrupt's entry and exit. `runtime::isr` stamps and
+//! keeps the one `TickLoad`; each closed window publishes into TELEMETRY
+//! `health`: the counters every 20 ticks, the mean every 4000.
 
 use osc_servo_core::kernel::{HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, HEALTH_LOST_MAX};
+use osc_servo_core::{RegionStorageRaw, Shared};
 
 use crate::cfg::chip;
 use crate::hal::clocks::HCLK_HZ;
@@ -61,6 +62,31 @@ pub struct Window {
     /// The mean share of the long window's ticks, on the close that ends
     /// them.
     pub mean_q15: Option<u16>,
+}
+
+impl Window {
+    /// Only the tick vector may call this.
+    #[inline(always)]
+    pub fn publish(&self, shared: &Shared) {
+        // SAFETY: table storage is 'static; the health block's tick fields
+        // have this vector as their only chip-side writer. The counters are
+        // stored only on a change, so a host clear races a store only when
+        // one is due.
+        unsafe {
+            let h = &raw mut (*shared.table.region_ptr()).telemetry_ext.health;
+            if let Some(mean) = self.mean_q15 {
+                (&raw mut (*h).tick_load_mean_q15).write_volatile(mean);
+            }
+            if self.over != 0 {
+                let over = &raw mut (*h).tick_over_count;
+                over.write_volatile(over.read_volatile().wrapping_add(self.over));
+            }
+            if self.lost != 0 {
+                let lost = &raw mut (*h).tick_lost_count;
+                lost.write_volatile(lost.read_volatile().wrapping_add(self.lost));
+            }
+        }
+    }
 }
 
 pub struct TickLoad {
@@ -157,6 +183,7 @@ mod tests {
 
     use std::vec::Vec;
 
+    use osc_servo_core::RegionStorage;
     use osc_servo_core::budget::PHASES;
     use osc_servo_core::kernel::health_close_at;
 
@@ -335,5 +362,38 @@ mod tests {
         assert!(closes.iter().all(publish), "{closes:?}");
         assert!(closes.iter().all(|&t| health_close_at(t as u64)));
         assert_eq!(closes.len(), 200 / N);
+    }
+
+    /// A window adds its counts to the health counters, and stores the
+    /// mean only on the close that carries one.
+    #[test]
+    fn a_window_adds_its_counts_and_stores_a_carried_mean() {
+        let shared = Shared::new();
+        shared.table.with_mut(|t| {
+            let h = &mut t.telemetry_ext.health;
+            h.tick_over_count = 3;
+            h.tick_lost_count = u16::MAX;
+            h.tick_load_mean_q15 = 7;
+        });
+        let health = |s: &Shared| {
+            s.table.with(|t| {
+                let h = &t.telemetry_ext.health;
+                (h.tick_over_count, h.tick_lost_count, h.tick_load_mean_q15)
+            })
+        };
+        Window {
+            over: 2,
+            lost: 2,
+            mean_q15: None,
+        }
+        .publish(&shared);
+        assert_eq!(health(&shared), (5, 1, 7));
+        Window {
+            over: 0,
+            lost: 0,
+            mean_q15: Some(9000),
+        }
+        .publish(&shared);
+        assert_eq!(health(&shared), (5, 1, 9000));
     }
 }
