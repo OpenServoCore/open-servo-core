@@ -122,7 +122,6 @@ impl ClockDiscipline {
     /// Drain a completed CAL measurement through the trim loop.
     pub fn poll(&mut self) -> Option<i8> {
         let (err, span) = self.measured.take()?;
-        crate::bench::trim_probe(|p| p.poll_cal += 1);
         self.trim.on_cal(err, span)
     }
 }

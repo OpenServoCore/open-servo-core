@@ -71,6 +71,11 @@ hot=(
     GwritePerTarget::find
 )
 
+# The bench image's budget probe, checked where the image carries it.
+bench_hot=(
+    KernelProbe::event_tick
+)
+
 elf="${1:-firmware/boards/osc-dev-v006/target/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app}"
 if [[ ! -f "$elf" ]]; then
   echo "error: ELF not found: $elf" >&2
@@ -92,6 +97,10 @@ fi
 syms="$("$nm" -C --defined-only "$elf" \
   | awk '$2 ~ /^[tT]$/ { a = $1; $1 = $2 = ""; sub(/^ +/, ""); print a, $0 }' \
   | perl -pe '1 while s/(\w)<[^<>]*>/$1/ || s/::<[^<>]*>//; s/ <(.*)>::/ $1::/')"
+
+if grep -q ' KERNEL_PROBE$' <<<"$("$nm" --defined-only "$elf")"; then
+  hot+=("${bench_hot[@]}")
+fi
 
 fail=0
 for f in "${hot[@]}"; do

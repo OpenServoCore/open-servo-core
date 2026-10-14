@@ -498,9 +498,7 @@ self-measured, CAL to CAL over the steps applied between (chip steps are
 nonuniform, 1.4-3.2k ppm; sanity-banded 0.8-4k). The total is applied via
 HSITRIM between frames and mirrored read-only at
 `telemetry.clock.trim_steps`. Wire format and rules are normative in
-protocol sec 9.3. Bench counters (`TrimProbe`, `--features bench`): CAL
-trains drained, trim decisions with their last reading, and break
-services whose resolver drive hit its per-wake frame bound. DES:
+protocol sec 9.3. DES:
 `tests/trim.rs` - trains converge/reject/watchdog, every mark served
 U(0, 60) us late reads within 0.1 step (`cal_ruler_ignores_wake_lag`),
 traffic stamps never reach the ruler

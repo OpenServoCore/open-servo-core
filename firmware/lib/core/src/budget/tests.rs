@@ -1,9 +1,9 @@
 use super::probe::{
     BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, TelCost, TelReport,
-    TelStep, TelTally, Windows, rows,
+    TelStep, TelTally, WindowProbe, Windows, rows,
 };
 use super::*;
-use crate::kernel::{HEALTH_CLOSE_TICKS, health_close_at, health_close_lands, phase};
+use crate::kernel::{HEALTH_CLOSE_TICKS, ProbeTags, health_close_at, health_close_lands, phase};
 
 const PLAIN: Events = Events {
     refresh: false,
@@ -18,11 +18,20 @@ const PLAIN: Events = Events {
 };
 const OPEN: Regime = Regime::Open;
 
-/// A kernel tick on the grid: tick `n` entered `n` periods in.
-fn tick(k: &mut KernelProbe, n: u32, body: u32, phase: usize, r: Regime, ev: Events) {
+/// A kernel tick on the grid: tick `n` entered `n` periods in; its regime
+/// when it booked.
+fn tick(
+    k: &mut KernelProbe,
+    n: u32,
+    body: u32,
+    phase: usize,
+    r: Regime,
+    ev: Events,
+) -> Option<Regime> {
     let entry = n * TICK_PERIOD;
-    k.tick(entry, body, phase, r, ev, n == 0);
-    k.ended(entry + body, entry + body);
+    let booked = k.book(body, phase, r, ev, n == 0);
+    k.ended(entry, entry + body);
+    booked
 }
 
 fn words<T>(t: &T) -> &[u32] {
@@ -32,28 +41,53 @@ fn words<T>(t: &T) -> &[u32] {
     }
 }
 
+/// [`tick`] with the window record fed beside it.
+fn both(
+    k: &mut KernelProbe,
+    w: &mut WindowProbe,
+    n: u32,
+    body: u32,
+    phase: usize,
+    r: Regime,
+    ev: Events,
+) {
+    let booked = tick(k, n, body, phase, r, ev);
+    w.tick(n * TICK_PERIOD, body, booked);
+    w.ended(n * TICK_PERIOD + body);
+}
+
 #[test]
 fn kernel_ticks_book_by_what_they_carried() {
     let mut k = KernelProbe::ZERO;
+    let mut w = WindowProbe::ZERO;
     let closed = Regime::Closed;
-    tick(&mut k, 0, 1000, 0, OPEN, PLAIN);
-    tick(&mut k, 1, 1100, 1, OPEN, PLAIN);
-    tick(&mut k, 2, 1500, 2, OPEN, Events { tel: true, ..PLAIN });
+    both(&mut k, &mut w, 0, 1000, 0, OPEN, PLAIN);
+    both(&mut k, &mut w, 1, 1100, 1, OPEN, PLAIN);
+    both(
+        &mut k,
+        &mut w,
+        2,
+        1500,
+        2,
+        OPEN,
+        Events { tel: true, ..PLAIN },
+    );
     let bank = Events {
         tel: true,
         bank: true,
         ..PLAIN
     };
-    tick(&mut k, 3, 1700, 3, OPEN, bank);
+    both(&mut k, &mut w, 3, 1700, 3, OPEN, bank);
     let refresh = Events {
         refresh: true,
         ..PLAIN
     };
-    tick(&mut k, 4, 2000, 8, OPEN, refresh);
-    tick(&mut k, 5, HALT_TICKS + 1, 4, OPEN, PLAIN);
-    tick(&mut k, 6, LONG_TICKS, 1, closed, PLAIN);
-    tick(
+    both(&mut k, &mut w, 4, 2000, 8, OPEN, refresh);
+    both(&mut k, &mut w, 5, HALT_TICKS + 1, 4, OPEN, PLAIN);
+    both(&mut k, &mut w, 6, LONG_TICKS, 1, closed, PLAIN);
+    both(
         &mut k,
+        &mut w,
         7,
         1900,
         6,
@@ -68,17 +102,17 @@ fn kernel_ticks_book_by_what_they_carried() {
         close: true,
         ..PLAIN
     };
-    tick(&mut k, 8, 2200, 6, closed, close);
+    both(&mut k, &mut w, 8, 2200, 6, closed, close);
     let install = Events {
         install: true,
         ..PLAIN
     };
-    tick(&mut k, 9, 1600, 8, closed, install);
+    both(&mut k, &mut w, 9, 1600, 8, closed, install);
     let side = Events {
         side: true,
         ..PLAIN
     };
-    tick(&mut k, 10, 1700, 9, closed, side);
+    both(&mut k, &mut w, 10, 1700, 9, closed, side);
     assert_eq!(k.load(OPEN, 0), Load::ZERO, "the boot tick books nothing");
     let one = |b| Load {
         n: 1,
@@ -100,8 +134,8 @@ fn kernel_ticks_book_by_what_they_carried() {
         Load::ZERO,
         "the stages stay off the plain rows"
     );
-    assert_eq!((k.halts, k.long), (1, [3, 5]));
-    tick(&mut k, 11, 1800, 8, OPEN, refresh);
+    assert_eq!((k.halts, w.long), (1, [3, 5]));
+    both(&mut k, &mut w, 11, 1800, 8, OPEN, refresh);
     assert_eq!(
         k.refresh,
         Load {
@@ -114,7 +148,7 @@ fn kernel_ticks_book_by_what_they_carried() {
         finish: true,
         ..PLAIN
     };
-    tick(&mut k, 12, 1750, 6, closed, finish);
+    both(&mut k, &mut w, 12, 1750, 6, closed, finish);
     assert_eq!(k.finish, one(1750));
     let bodies = 1000
         + 1100
@@ -138,18 +172,18 @@ fn kernel_ticks_book_by_what_they_carried() {
 /// and its predecessor's end.
 #[test]
 fn entry_lateness_is_measured_from_the_grid_and_the_last_end() {
-    let mut k = KernelProbe::ZERO;
-    k.tick(0, 900, 0, OPEN, PLAIN, true);
-    k.ended(900, 900);
-    k.tick(TICK_PERIOD + 70, 900, 1, OPEN, PLAIN, false);
-    k.ended(TICK_PERIOD + 970, TICK_PERIOD + 970);
-    assert_eq!(k.late_max, 70);
+    let mut w = WindowProbe::ZERO;
+    w.tick(0, 900, None);
+    w.ended(900);
+    w.tick(TICK_PERIOD + 70, 900, Some(OPEN));
+    w.ended(TICK_PERIOD + 970);
+    assert_eq!(w.late_max, 70);
     let over = 3 * TICK_PERIOD;
-    k.tick(2 * TICK_PERIOD + 70, over, 2, OPEN, PLAIN, false);
+    w.tick(2 * TICK_PERIOD + 70, over, Some(OPEN));
     let end = 5 * TICK_PERIOD + 70;
-    k.ended(end, end);
-    k.tick(end + ENTRY_EXIT + 10, 900, 3, OPEN, PLAIN, false);
-    assert_eq!(k.late_max, 70, "a tick the last one overran is not late");
+    w.ended(end);
+    w.tick(end + ENTRY_EXIT + 10, 900, Some(OPEN));
+    assert_eq!(w.late_max, 70, "a tick the last one overran is not late");
 }
 
 #[test]
@@ -182,8 +216,8 @@ fn a_bus_body_nets_out_each_kernel_vector_with_its_entry_and_exit() {
     let mut k = KernelProbe::ZERO;
     tick(&mut k, 0, 900, 0, OPEN, PLAIN);
     let (at, kernel, entries) = (TICK_PERIOD - 300, k.busy, k.entries);
-    k.tick(TICK_PERIOD, 1500, 1, OPEN, PLAIN, false);
-    k.ended(TICK_PERIOD + 1500, TICK_PERIOD + 1530);
+    k.book(1500, 1, OPEN, PLAIN, false);
+    k.ended(TICK_PERIOD, TICK_PERIOD + 1530);
     k.other(200);
     let wall = 2 * TICK_PERIOD - at;
     let net = wall - k.busy.wrapping_sub(kernel);
@@ -289,12 +323,28 @@ fn dumps_decode_field_for_field() {
         Regime::Closed,
         Events { tel: true, ..PLAIN },
     );
+    let after = ProbeTags {
+        phase: 3,
+        config_seq: 7,
+        booted: true,
+        slow_due: true,
+        slow_finish: false,
+        therm: 2,
+        closed: true,
+    };
+    k.tick(2000, || after, true, 9, false);
     assert_eq!(KernelProbe::from_words(words(&k)), Some(k));
+    let mut w = WindowProbe::ZERO;
+    for n in 0..30 {
+        w.tick(n * TICK_PERIOD + n, 1000 + 7 * n, Some(Regime::Closed));
+        w.ended(n * TICK_PERIOD + 1500);
+    }
+    assert_eq!(WindowProbe::from_words(words(&w)), Some(w));
+    assert_eq!(WindowProbe::from_words(&[0; 3]), None);
     let mut b = BusProbe::ZERO;
     b.mark_break();
     b.body(77, 900, 4, Body::BreakWake);
-    b.breaks = 5;
-    b.rises = 2;
+    b.body(66, 70, 0, Body::TxDone);
     assert_eq!(BusProbe::from_words(words(&b)), Some(b));
     assert_eq!(BusProbe::from_words(&[0; 3]), None);
 }
@@ -501,6 +551,21 @@ fn gamma_is_the_heaviest_run_of_k_ticks() {
     let bodies = (0..50u32).map(|t| if t == 30 { 2000 } else { 100 + t });
     let all: heapless::Vec<u32, 50> = bodies.clone().collect();
     for b in bodies {
+        w.add(b);
+    }
+    for (j, k) in WINDOW_TICKS.into_iter().enumerate() {
+        let best = all.windows(k).map(|s| s.iter().sum::<u32>()).max();
+        assert_eq!(Some(w.gamma[j]), best, "k = {k}");
+    }
+}
+
+/// Many laps of the ring, the running total wrapping its 16 bits about
+/// every 40 ticks: each gamma(k) is still the heaviest run of k bodies.
+#[test]
+fn gamma_holds_across_laps_and_a_wrapping_total() {
+    let mut w = Windows::ZERO;
+    let all: heapless::Vec<u32, 2000> = (0..2000u32).map(|t| 1200 + (t * 7919) % 1300).collect();
+    for &b in &all {
         w.add(b);
     }
     for (j, k) in WINDOW_TICKS.into_iter().enumerate() {

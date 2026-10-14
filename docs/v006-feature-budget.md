@@ -10,7 +10,7 @@ Short answer: everything fits. Flash is not the limit (6.7 KB left). CPU is not 
 |---|---|---|---|---|
 | Flash (app region) | 58,112 B | 51,428 B | 6,684 B (11.5%) | The chip has 62 KB, but CONFIG A/B (1 KB), CALIB (4 KB) and META (256 B) are carved out of it. tinyboot lives in system flash. |
 | RAM, static (.data + .bss) | 8,192 B | 5,896 B | 2,296 B stack region | .data 252 B, .bss 5,644 B; `_ebss` = 0x20001708 |
-| RAM growth before the link fails | 2,296 - 1,536 B | - | 760 B | `osc-config.x` asserts at least 1,536 B above .bss. With `--features bench` the probes take 668 B of it. |
+| RAM growth before the link fails | 2,296 - 1,536 B | - | 760 B | `osc-config.x` asserts at least 1,536 B above .bss. With `--features bench` the probes take 528 B of it, with `bench-window` 648 B. |
 | Stack | 2,296 B region | ~1.25 KB measured high water (earlier image) | ~1.05 KB free at rest if the high water holds | Static worst nesting ~1.05 KB (frame sums below), so ~1.2 KB static margin |
 | CPU, kernel at 20 kHz | 50 us per tick | 31-35% with torque off, ~60% driving at 20% duty | 65-69% with torque off | Measured (tick_load_mean_q15). Fast tick ~13 us idle, ~20 us driving while streaming. |
 | CPU, transport | per host frame | 80-160 us per own frame in the bus ISRs | - | Below the kernel: no tick lost; the frame's latency stretches by 1 / (1 - U) |
@@ -71,7 +71,8 @@ Columns:
 | .rodata (CRC table 512, control-table rule and jump tables, constants 1,276) | 1,788 | - | - | - |
 | .data load image + `.tb_version` | 252 + 2 | (in RAM) | - | - |
 | **Total** | **51,428** | **5,896** | | |
-| `--features bench` (budget probe, trim counters) | +2,552 | +668 (KERNEL_PROBE 536, BUS_PROBE 100, TRIM_PROBE 28, TEL bank count 4) | a masked stamp at each ISR body's ends and a record update after the measured span (S: 100-130 instructions per bus body) | flag (measured by a build diff) |
+| `--features bench` (budget probe) | +2,448 | +528 (KERNEL_PROBE 440, BUS_PROBE 84, TEL bank count 4) | a masked stamp at each bus body's ends and a record update after the measured span (S: 100-130 instructions per bus body); after each tick's exit stamp the per-class rows' update, event ticks out of line (E: ~4.0 us a tick, fetch-model emulation) | flag (measured by a build diff) |
+| `--features bench-window` (adds gamma(k), long ticks, entry lateness) | +2,848 | +648 (WINDOW_PROBE 120 on top) | the window record's update beside the rows' (E: ~7.3 us a tick in all) | flag (measured by a build diff) |
 
 The two biggest RAM consumers are the shunt burst buffer (1,920 B, 23% of RAM, used only during identification) and the control table (1,024 B). The kernel state (636 B), the position table (514 B) and the RX ring (512 B) come next.
 
@@ -180,7 +181,7 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 
 ## Method
 
-- Build: `scripts/build-image.sh --bench <rev> osc-dev-v006`, which builds the release app and the `--features bench` app from one fixed path (the README's Firmware section says why the path matters).
+- Build: `scripts/build-image.sh --bench <rev> osc-dev-v006`, which builds the release app and the `--features bench` app from one fixed path (the README's Firmware section says why the path matters); add `--window` for the `bench-window` app when a run needs gamma(k), the long ticks or the entry lateness.
 - Sections: `llvm-size -A`. Symbols: `llvm-nm -S --size-sort -C`.
 - Flash per module: a pyelftools script walks every CU's line program, drops sequences garbage-collected to address 0, and assigns each 2-byte slot to its innermost project file. If that file is core/std, compiler-builtins or the `math`/`bytes` helpers, the slot goes to the deepest `DW_TAG_inlined_subroutine` call site (or subprogram) that is project code. 48,910 of the 49,386 B of code carry line info. Each estimator and loop file counts to its own row; the phase files (`kernel/phases/*.rs` except `fast.rs`), the scheduler, the config snapshot and the fault latch count to the kernel skeleton.
 - RAM: `llvm-nm` addresses for the statics and the DWARF struct layout for their members (`Shared`, `Kernel<..>`, `ServoBus<..>`, `Session`, `TelChannel`, `Cells`).

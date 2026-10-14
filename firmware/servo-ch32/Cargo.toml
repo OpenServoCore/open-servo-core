@@ -38,4 +38,7 @@ rt           = ["ch32-metapac/rt"]
 bench        = ["osc-servo-drivers/bench"]
 # The TEL step measurement image: TEL tallies in place of the bus record.
 bench-telcost = ["bench", "osc-servo-drivers/bench-telcost"]
+# The uncommon tick instruments beside the bench record: gamma(k), long
+# ticks, entry lateness.
+bench-window = ["bench"]
 defmt        = ["dep:defmt", "osc-servo-core/defmt", "osc-servo-drivers/defmt", "osc-log/defmt"]

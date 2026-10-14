@@ -21,7 +21,6 @@ use crate::cfg::chip;
 use crate::hal::clocks::TIM_CLK_HZ;
 use crate::hal::timer::tim2;
 use crate::hal::{afio, dma, gpio, rcc};
-use crate::probe::bus_probe;
 
 /// The overflow point in quarter bit-times: 38 = 9.5. The open-drain rise
 /// t_r lengthens every low: a `0x00` data byte, 9(1+d) + t_r, must stay
@@ -78,15 +77,11 @@ impl BreakWake {
         let pin = chip::BUS_USART_MAPPING.tx_pin();
         if gpio::is_low(pin) {
             tim2::park();
-            bus_probe(|p| p.parks += 1);
             if !gpio::is_low(pin) {
                 tim2::rise();
-                bus_probe(|p| p.rises += 1);
             }
         }
-        let fresh = tim2::rose(f);
-        bus_probe(|p| if fresh { p.breaks += 1 } else { p.refires += 1 });
-        fresh
+        tim2::rose(f)
     }
 
     /// Retune the overflow point to a new rate; rides every BRR write.

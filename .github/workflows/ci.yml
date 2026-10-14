@@ -77,6 +77,8 @@ jobs:
         run: cargo check --features ch32v006x8x6,bench
       - name: cargo check --features bench-telcost
         run: cargo check --features ch32v006x8x6,bench-telcost
+      - name: cargo check --features bench-window
+        run: cargo check --features ch32v006x8x6,bench-window
 
   osc-dev-v006-cross-build:
     name: cross-build (boards/osc-dev-v006)
@@ -118,6 +120,17 @@ jobs:
       - name: no mem* calls gate (bench image)
         working-directory: ${{ github.workspace }}
         run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/bench/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: cargo build --release (window image)
+        run: CARGO_TARGET_DIR=target/window cargo build --release -p osc-dev-v006-app --features osc-dev-v006-app/bench-window
+      - name: no soft div/mod/mul gate (window image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-soft-arith.sh firmware/boards/osc-dev-v006/target/window/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: no mem* calls gate (window image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/window/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: hot callees 4-byte aligned gate (window image)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/window/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
 
   host-ch32-build-test:
     name: build + test (firmware/host-ch32)

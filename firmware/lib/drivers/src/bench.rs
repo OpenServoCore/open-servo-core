@@ -10,55 +10,6 @@ pub use osc_servo_core::budget::probe::TelStep;
 
 use crate::traits::bus::Deadline;
 
-/// Clock-trim counters: CAL decisions, and the resolver's per-wake bound.
-///
-/// Wire format for the debug-link dump: 7 little-endian 32-bit words in
-/// field order, 28 bytes; the four `tw_*` fields are signed (`struct`
-/// format `<3I4i`).
-#[repr(C)]
-pub struct TrimProbe {
-    /// Break services whose resolver drive hit its per-wake frame bound:
-    /// the ladder lagged the wire by more than `FRAMES_PER_WAKE` frames.
-    pub bound_hits: u32,
-    /// Completed CAL trains drained by `poll_clock_trim`.
-    pub poll_cal: u32,
-    /// `TrimLoop` decisions and the latest measurement, effect estimate,
-    /// applied steps, and running total.
-    pub windows: u32,
-    pub tw_ppm: i32,
-    pub tw_effect: i32,
-    pub tw_applied: i32,
-    pub tw_total: i32,
-}
-
-impl TrimProbe {
-    pub const ZERO: Self = Self {
-        bound_hits: 0,
-        poll_cal: 0,
-        windows: 0,
-        tw_ppm: 0,
-        tw_effect: 0,
-        tw_applied: 0,
-        tw_total: 0,
-    };
-}
-
-#[cfg(all(feature = "bench", not(feature = "bench-telcost")))]
-#[unsafe(no_mangle)]
-pub static mut TRIM_PROBE: TrimProbe = TrimProbe::ZERO;
-
-/// Run `f` over the trim probe -- a no-op without the `bench` feature.
-#[inline(always)]
-#[allow(unused_variables)]
-pub fn trim_probe(f: impl FnOnce(&mut TrimProbe)) {
-    // SAFETY: single-hart; every writer runs at the one transport priority
-    // (the bus level), so accesses never interleave. The debug link only reads.
-    #[cfg(all(feature = "bench", not(feature = "bench-telcost")))]
-    unsafe {
-        f(&mut *core::ptr::addr_of_mut!(TRIM_PROBE));
-    }
-}
-
 #[cfg(feature = "bench")]
 static mut TEL_BANKS: u32 = 0;
 

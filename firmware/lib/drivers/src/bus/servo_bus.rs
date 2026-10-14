@@ -257,8 +257,7 @@ impl<P: Providers> ServoBus<P> {
     /// Returns false while this wake's byte has not rung: the caller
     /// re-inspects one byte-time on.
     fn serve_break<D: Dispatch>(&mut self, d: &mut D) -> bool {
-        let drained = self.drive_framer(d);
-        crate::bench::trim_probe(|p| p.bound_hits += (!drained) as u32);
+        self.drive_framer(d);
         let ringed = self
             .framer
             .break_ringed(self.ring.bytes(), self.ring.cursor());

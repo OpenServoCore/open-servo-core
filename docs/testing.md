@@ -490,9 +490,11 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   ticks book by drive arm (Closed when the tick's arm or the one before it
   ran the current loop), TEL and banking ticks too, a tick that closed a
   tick-load window apart from all of these, and SLOW-due ticks, SLOW finish ticks and a thermal close as events. Each
-  window prints (and with `BUDGET_OUT` saves) its rows in ticks and us,
-  gamma(k) for k = 2, 4, 10, 20, the ticks of 30 us or more by arm, the
-  longest entry lateness and its raw records as it ends; a red run names the
+  window prints (and with `BUDGET_OUT` saves) its rows in ticks and us and
+  its raw records as it ends; the window image (`scripts/build-image.sh
+  --window`, `--features bench-window`) adds gamma(k) for k = 2, 4, 10, 20,
+  the ticks of 30 us or more by arm and the longest entry lateness, which
+  the standard bench image skips and says so; a red run names the
   window, the component, the measured ticks and us, and the budget. "hold
   raw pos" (a goal from raw `pos`) is report-only. "seated" runs only when
   `BUDGET_WINDOWS` names it: with the horn clamped at mid travel it holds a
