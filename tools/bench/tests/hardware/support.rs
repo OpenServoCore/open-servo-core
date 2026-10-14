@@ -9,7 +9,9 @@
 
 use std::env;
 use std::ops::RangeInclusive;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -28,12 +30,24 @@ use osc_client::{DEFAULT_GUARD, StreamReply};
 use osc_protocol::build;
 use osc_protocol::tel::{CHUNKS_MAX, Chunks};
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
+use osc_servo_core::Mode;
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
 use osc_servo_core::regions::config::addr::pos_phys::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
-use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::control::addr::lifecycle::{
+    GOAL_DUTY, GOAL_POSITION, MODE, TORQUE_ENABLE,
+};
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
+use osc_servo_core::regions::telemetry::addr::tick::POS;
 
 const _: () = assert!(CHUNK0_ADDR + 4 * CHUNKS_MAX as u16 == TEL_COUNT);
+
+/// The drive check's open-loop pulse: 12% duty for 200 ms from rest moves
+/// a healthy servo hundreds of counts, and pulsed toward mid travel it
+/// stays clear of both stops; under 20 counts is no motion.
+const DRIVE_CHECK_DUTY_Q15: i16 = 3932;
+const DRIVE_CHECK_PULSE: Duration = Duration::from_millis(200);
+const DRIVE_CHECK_SETTLE: Duration = Duration::from_millis(300);
+const DRIVE_CHECK_MIN_COUNTS: i32 = 20;
 
 pub struct Bench {
     wire: Wire,
@@ -48,6 +62,9 @@ pub struct Bench {
     home_baud: u32,
     /// Exchanges run through the engine rather than [`Wire::send_frame`].
     engine_frames: u64,
+    /// The drive direction was checked this run (see
+    /// [`Bench::require_forward_drive`]).
+    drive_checked: bool,
 }
 
 static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
@@ -77,6 +94,7 @@ static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
         goal_rails,
         home_baud,
         engine_frames: 0,
+        drive_checked: false,
     })
 });
 
@@ -88,6 +106,49 @@ pub fn bench() -> MutexGuard<'static, Bench> {
 }
 
 impl Bench {
+    /// Panics unless duty moves the position its own way (+duty counts
+    /// up), once per run, before any test closes a loop: swapped motor leads or a wrong `drive_polarity`
+    /// turn every closed loop into a runaway into a stop. One open-loop
+    /// pulse from rest toward mid travel, torque off after; a reversed
+    /// pulse is never repeated.
+    pub fn require_forward_drive(&mut self) {
+        if self.drive_checked {
+            return;
+        }
+        let id = self.id;
+        let from = self.pos();
+        let sign = if from <= self.goal_mid() { 1 } else { -1 };
+        let pulse = (sign as i16) * DRIVE_CHECK_DUTY_Q15;
+        let to = catch_unwind(AssertUnwindSafe(|| {
+            self.status_ok(&build_write(id, MODE, &[Mode::OpenLoop as u8]));
+            self.status_ok(&build_write(id, GOAL_DUTY, &0i16.to_le_bytes()));
+            self.status_ok(&build_write(id, TORQUE_ENABLE, &[1]));
+            self.status_ok(&build_write(id, GOAL_DUTY, &pulse.to_le_bytes()));
+            sleep(DRIVE_CHECK_PULSE);
+            self.pos()
+        }));
+        let _ = self.xfer(&build_write(id, GOAL_DUTY, &0i16.to_le_bytes()));
+        let _ = self.xfer(&build_write(id, TORQUE_ENABLE, &[0]));
+        sleep(DRIVE_CHECK_SETTLE);
+        let to = to.unwrap_or_else(|e| resume_unwind(e));
+        let moved = sign * (to - from);
+        assert!(
+            moved > -DRIVE_CHECK_MIN_COUNTS,
+            "drive reversed: duty {pulse} moved pos {from} -> {to}; motor leads swapped or \
+             drive_polarity wrong (osc cal relearns it)"
+        );
+        assert!(
+            moved >= DRIVE_CHECK_MIN_COUNTS,
+            "drive did not move: duty {pulse} moved pos {from} -> {to}; rail, motor or stop?"
+        );
+        self.drive_checked = true;
+    }
+
+    fn pos(&mut self) -> i32 {
+        let p = self.status_ok(&build_read(self.id, POS, 2)).payload;
+        i32::from(u16::from_le_bytes([p[0], p[1]]))
+    }
+
     /// The servo id under test.
     pub fn id(&self) -> u8 {
         self.id
