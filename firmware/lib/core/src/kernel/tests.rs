@@ -6,6 +6,7 @@
 use super::phases::fast;
 use super::phases::loops::{duty_limit, faults, limits};
 use super::*;
+use crate::budget::Events;
 use crate::estimator::{OmegaSource, bemf, bias, window};
 use crate::math::q_mul;
 use crate::pos_lut;
@@ -2362,7 +2363,8 @@ impl TelStream for HoldTel {
 /// The kernel holds the TX lane on every tick that runs a SLOW stage (due
 /// or finish) or a thermometer stage (an install or a side, each consuming
 /// its pending bit) and on no other: never a configuration take's tick, never a
-/// plain one. A tracked seat runs every stage, an install included.
+/// plain one. A tracked seat runs every stage, an install included. The
+/// stages are the budget probe's (`Events::between` on the tags).
 #[test]
 fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
     let sh = Shared::new();
@@ -2387,16 +2389,8 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
         let before = k.probe_tags();
         k.tel.held = false;
         k.on_scan(hot, &sh);
-        let after = k.probe_tags();
-        let spare = matches!(before.phase, phase::SPARE_A | phase::SPARE_B);
-        let stage = spare && before.therm != after.therm;
-        let kind = [
-            before.slow_due,
-            before.slow_finish,
-            stage && before.phase == phase::SPARE_A,
-            stage && before.phase == phase::SPARE_B,
-            before.config_seq != after.config_seq,
-        ];
+        let ev = Events::between(before, k.probe_tags());
+        let kind = [ev.slow, ev.finish, ev.install, ev.side, ev.refresh];
         for (n, &hit) in seen.iter_mut().zip(&kind) {
             *n += hit as u32;
         }
