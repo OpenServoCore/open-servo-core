@@ -576,6 +576,13 @@ reciprocal), then one multiply-shift per sample - the same arithmetic
 discipline the servo itself uses. Divides sit at configuration edges,
 never in the per-sample path.
 
+A bias node that divider legs return to is published as its own divider
+(`vmotor_bias_top_ohm` / `vmotor_bias_bot_ohm`, beside the boot-measured
+`vmotor_bias_counts`). Leg current moves that node under drive: a
+terminal difference cancels the move, a single-terminal reading does
+not, so a host converting one terminal absolutely corrects the bias from
+the legs.
+
 Durations the kernel times are counts as well: `stall_time_ticks` and
 `pos_error_time_ticks` (u32) are kernel ticks at CALIB `tick_hz`, and a
 host converts milliseconds with it.

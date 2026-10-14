@@ -86,9 +86,12 @@ pub struct CalibKinematics {
 }
 
 /// Supply-sense and thermistor board data (protocol sec 5.5): the direct
-/// rail divider legs, the NTC pull-up / R25 / beta, and the nominal
+/// rail divider legs, the NTC pull-up / R25 / beta, the nominal
 /// motor-terminal divider bias (the boot-measured value publishes in
-/// telemetry). RO: install re-stamps every board fact after the overlay.
+/// telemetry), and the VDD divider that makes that bias: terminal leg
+/// current moves the bias node under drive, and a host reading one terminal
+/// absolutely corrects for it from these legs. RO: install re-stamps every
+/// board fact after the overlay.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibSenseExt {
@@ -108,6 +111,10 @@ pub struct CalibSenseExt {
     /// so a host can estimate the pack voltage from `vbus_raw`.
     #[ct_field(access = ro)]
     pub rail_drop_mv: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_bias_top_ohm: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_bias_bot_ohm: u16,
 }
 
 /// Winding thermometer model, host-written per motor family (MG90 on the
@@ -172,5 +179,5 @@ pub struct CalibRegs {
     pub sense_ext: CalibSenseExt,
     pub pwm: CalibPwm,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 180],
+    pub _rsvd_tail: [u8; 176],
 }

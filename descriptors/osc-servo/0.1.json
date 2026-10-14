@@ -699,8 +699,22 @@
       "kind": "uint"
     },
     {
-      "name": "pwm_period_ticks",
+      "name": "vmotor_bias_top_ohm",
       "addr": 202,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vmotor_bias_bot_ohm",
+      "addr": 204,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "pwm_period_ticks",
+      "addr": 206,
       "width": 2,
       "access": "ro",
       "kind": "uint"

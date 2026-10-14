@@ -393,7 +393,9 @@ mod tests {
         assert_eq!(stamp::PLANT_STAMP, 0x0AA);
         assert_eq!(sense::SHUNT_R_MOHM, 0x0AC);
         assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C8);
-        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CA);
+        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CA);
+        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0CC);
+        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CE);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()

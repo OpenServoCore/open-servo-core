@@ -848,6 +848,8 @@ mod tests {
                 ntc_beta: 0,
                 vmotor_bias_nom_counts: 0,
                 rail_drop_mv: 0,
+                vmotor_bias_top_ohm: 0,
+                vmotor_bias_bot_ohm: 0,
             },
             0,
         );

@@ -60,8 +60,11 @@ fn main() -> ! {
                 r25_ohm: 10_000,
                 beta: 3950,
             },
-            // VB from 3V3 through 430 / 100: 4095 x 100 / 530.
-            vmotor_bias_nom_counts: 773,
+            // VB: 3V3 -430- VB -100- GND.
+            vmotor_bias: Divider {
+                top_ohm: 430,
+                bot_ohm: 100,
+            },
             // SS54 OR-ing Schottkys (Dp1, Dp2) between the supply inputs and
             // VSYS.
             rail_drop_mv: 250,

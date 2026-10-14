@@ -91,8 +91,11 @@ pub mod calib {
     pub const NTC_BETA: Reg = reg(0x00c4, 2);
     pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x00c6, 2);
     pub const RAIL_DROP_MV: Reg = reg(0x00c8, 2);
+    /// The VDD divider making the terminal taps' bias node. RO.
+    pub const VMOTOR_BIAS_TOP_OHM: Reg = reg(0x00ca, 2);
+    pub const VMOTOR_BIAS_BOT_OHM: Reg = reg(0x00cc, 2);
     /// The PWM period, compare counts: TEL `duty_counts`' full scale. RO.
-    pub const PWM_PERIOD_TICKS: Reg = reg(0x00ca, 2);
+    pub const PWM_PERIOD_TICKS: Reg = reg(0x00ce, 2);
 }
 
 pub mod control {
@@ -269,6 +272,8 @@ pub const ALL: &[(&str, Reg)] = &[
     ("ntc_beta", calib::NTC_BETA),
     ("vmotor_bias_nom_counts", calib::VMOTOR_BIAS_NOM_COUNTS),
     ("rail_drop_mv", calib::RAIL_DROP_MV),
+    ("vmotor_bias_top_ohm", calib::VMOTOR_BIAS_TOP_OHM),
+    ("vmotor_bias_bot_ohm", calib::VMOTOR_BIAS_BOT_OHM),
     ("torque_enable", control::TORQUE_ENABLE),
     ("stall_permit", control::STALL_PERMIT),
     ("mode", control::MODE),

@@ -419,6 +419,12 @@ mod tests {
     }
 
     #[test]
+    fn bias_nominal_is_vdd_through_the_bias_divider_at_any_vdd() {
+        assert_eq!(vmotor_counts(3300, 430, 100, 3300), 773);
+        assert_eq!(vmotor_counts(3280, 430, 100, 3280), 773);
+    }
+
+    #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {
         let d = CurrentDefaults::from_sense(33, 15_000, 3300);
         assert_eq!(d.current_limit_counts, 307);
