@@ -59,6 +59,7 @@ use super::rl::{Gate, Scales};
 use super::winding::{EDGE_GUARD_US, RDS_ON_OHM, TAP_CLEAR_US};
 use crate::burst::{CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, HCLK_MHZ, SAMPLE_US};
 use crate::fitmath::{linear_ls, median};
+use crate::units::Leg;
 
 /// Model time step, microseconds.
 pub const DT_US: f64 = 0.25;
@@ -693,8 +694,17 @@ fn prepare(raw: &Raw, width_us: f64, period_us: f64, sc: &Scales) -> Option<Prep
     let mut lo = Vec::new();
     match &raw.taps {
         None => {
+            // The driven terminal alone reads against the bias node, which
+            // its leg current pulls up from the coast level behind the step.
+            let (mut vb, mut t) = (raw.pre_tap, wins[0].0);
             for &(a, b, hi) in &wins {
-                phases.push(((a, b), sc.terminal_volts(hi, raw.pre_tap), true));
+                if let Some(node) = sc.bias {
+                    let legs = [Leg::Tap(hi), Leg::Volts(0.0)];
+                    let to = node.steady(raw.pre_tap, width_us / period_us, &legs);
+                    vb = node.settle(vb, to, (a + b) / 2.0 - t);
+                    t = (a + b) / 2.0;
+                }
+                phases.push(((a, b), sc.terminal_volts(hi, vb), true));
             }
         }
         Some([hi, idle]) => {
@@ -1858,6 +1868,35 @@ mod tests {
         assert_eq!(run.half_blind, 16);
         let bias = run.at_limit.unwrap().v_over_i_ohm / truth - 1.0;
         assert!(bias.abs() < 0.035, "V/I {bias:+} of the plant's");
+    }
+
+    /// The driven terminal alone read through a bias node its leg current
+    /// moves (the rev 2A 430 / 100 divider behind board D's taps): with the
+    /// divider in the scales R reads the stiff-node plant's within 0.05%;
+    /// without it, 0.26% high.
+    #[test]
+    fn the_driven_terminal_reads_through_the_moving_bias_node() {
+        use crate::burst::Chans;
+        use crate::exp::testkit::{BOARD_D_SENSE, SynthBurst};
+        let pack = SynthBurst {
+            v_rail: 7.2,
+            ..SynthBurst::board_d().with_bridge()
+        };
+        let node = SynthBurst {
+            bias_zs_ohm: 430.0 * 100.0 / 530.0,
+            ..pack.clone()
+        };
+        let r = |plant: &SynthBurst, sc: &Scales| {
+            let caps = plant_run(plant, Chans::Driven, RUNGS);
+            let run = fit_run(&rest(&caps), sc, &WaveCfg::default()).expect("a waveform fit");
+            run.fit.r_ohm
+        };
+        let truth = r(&pack, &board_d_scales());
+        let fixed = r(&node, &board_d_scales().with_bias(&BOARD_D_SENSE, 430, 100)) / truth - 1.0;
+        let naive = r(&node, &board_d_scales()) / truth - 1.0;
+        println!("R over the stiff node's: corrected {fixed:+.5}, uncorrected {naive:+.5}");
+        assert!(fixed.abs() < 0.0005, "corrected {fixed:+}");
+        assert!(naive > 0.0015, "uncorrected {naive:+}");
     }
 
     /// A rest-to-step run on a synthetic plant at two duties, both signs,

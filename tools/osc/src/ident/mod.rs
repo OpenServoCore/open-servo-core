@@ -695,6 +695,8 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
         vdd_mv: snapshot::read_u16(c, id, calib::VDD_MV)?,
         vbus_div_top_ohm: snapshot::read_u16(c, id, calib::VBUS_DIV_TOP_OHM)?,
         vbus_div_bot_ohm: snapshot::read_u16(c, id, calib::VBUS_DIV_BOT_OHM)?,
+        vmotor_bias_top_ohm: snapshot::read_u16(c, id, calib::VMOTOR_BIAS_TOP_OHM)?,
+        vmotor_bias_bot_ohm: snapshot::read_u16(c, id, calib::VMOTOR_BIAS_BOT_OHM)?,
     })
 }
 
@@ -2287,6 +2289,8 @@ mod tests {
                 vdd_mv: 3_300,
                 vbus_div_top_ohm: 15_000,
                 vbus_div_bot_ohm: 10_000,
+                vmotor_bias_top_ohm: 0,
+                vmotor_bias_bot_ohm: 0,
             }),
             ..Default::default()
         }

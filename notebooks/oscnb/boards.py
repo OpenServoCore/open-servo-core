@@ -15,6 +15,8 @@ edit a number here to silence that error, fix the entry or the selection.
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from .servos import Measured
 
 
@@ -43,6 +45,8 @@ class Board:
     floor_i_ticks: int = 160
     floor_v_ticks: int = 160
     floors_verified: bool = False
+    # VB bias capacitance, uF (BOM nominal): with the node it sets VB's low pass
+    bias_cap_uf: float = 0.0
     measured: dict = field(default_factory=dict)
     notes: str = ""
 
@@ -105,6 +109,35 @@ class Board:
         read zero: it reads (r-1)/r * VB, about 520 counts on a biased board."""
         r = self.div_ratio
         return (r * tap_counts - (r - 1) * vb_counts) * self.v_adc_per_count
+
+    def vb_steady(self, vb0_counts, duty, tap_a_counts, tap_b_counts):
+        """VB, counts, under slow-decay drive at ON fraction `duty` (the measured ON
+        width where known) with both terminals' crest taps. vb0 is the node with no
+        leg current: the parked taps' mean where the capture has a torque-off rest,
+        else the boot `vmotor_bias_counts`. The two legs inject into VB's
+        source impedance, so a single terminal read against vb0 carries (r - 1) x
+        the move; vA - vB cancels it."""
+        zs = self.bias_top * self.bias_bot / (self.bias_top + self.bias_bot)
+        leg = self.vmotor_div_top + self.vmotor_div_bot
+        c_t, c_v, k = zs / self.vmotor_div_bot, zs / leg, self.vmotor_div_bot / leg
+        return (vb0_counts + c_t * duty * (tap_a_counts + tap_b_counts)) / (
+            1 + 2 * c_v + 2 * c_t * duty * (1 - k))
+
+    def vb_live(self, vb0_counts, duty, tap_a_counts, tap_b_counts):
+        """`vb_steady` per tick through VB's low pass (bias_cap_uf against the
+        node), from vb0 at the first tick: the VB to pass to `term_v` for a
+        tick-rate stream."""
+        zs = self.bias_top * self.bias_bot / (self.bias_top + self.bias_bot)
+        node = 1 / (1 / zs + 2 / (self.vmotor_div_top + self.vmotor_div_bot))
+        alpha = 1 - np.exp(-1 / (self.tick_hz * node * self.bias_cap_uf * 1e-6))
+        target = np.broadcast_to(
+            self.vb_steady(vb0_counts, duty, np.asarray(tap_a_counts, float),
+                           np.asarray(tap_b_counts, float)), np.shape(tap_a_counts))
+        out, v = np.empty(len(target)), float(vb0_counts)
+        for n, t in enumerate(target):
+            v += alpha * (t - v)
+            out[n] = v
+        return out
 
     def diff_v(self, tap_a_counts, tap_b_counts):
         """Terminal-to-terminal volts. Bias free by construction (single VB
@@ -228,6 +261,7 @@ BOARDS = {
         vmotor_div_bot=1_600,
         bias_top=430,
         bias_bot=100,
+        bias_cap_uf=10.1,
         vbus_div_top=6_400,
         vbus_div_bot=1_600,
         floor_i_ticks=64,

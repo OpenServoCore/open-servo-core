@@ -27,6 +27,7 @@ use super::inductance::{CaptureFit, PairR, charge};
 use super::rl::Scales;
 use crate::burst::{CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, nominal_cadence};
 use crate::fitmath::{linear_ls, lstsq, median};
+use crate::units::Leg;
 
 /// DRV8212P RDS(on) per FET, typical at 27 C (SLVSFZ0A sec 7.5 gives no
 /// min or max). Only ever the estimate for a drop no channel sees.
@@ -215,12 +216,12 @@ fn spans_mean(
     f: &CaptureFit,
     slot: usize,
     spans: &[(f64, f64)],
-    conv: impl Fn(f64) -> f64,
+    conv: impl Fn(usize, f64) -> f64,
 ) -> Option<f64> {
     let v: Vec<f64> = spans
         .iter()
         .flat_map(|&s| slot_samples(cap, f, slot, s))
-        .map(|(_, c)| conv(c))
+        .map(|(r, c)| conv(r, c))
         .collect();
     (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
 }
@@ -311,15 +312,53 @@ pub fn capture_volts(
     }
     let vbv = vb.unwrap_or(0.0);
     let (off_hi, off_lo) = (z_hi.map_or(0.0, |z| z - vbv), z_lo.map_or(0.0, |z| z - vbv));
-    let tap_hi = |c: f64| sc.terminal_volts(c - off_hi, vbv);
-    let tap_lo = |c: f64| sc.terminal_volts(c - off_lo, vbv);
-    let rail_v = |c: f64| c * sc.v_rail_per_count;
-    let hi_is_tap = matches!(route, Some(Route::Terminals | Route::DrivenTap));
-    let lo_is_tap = matches!(route, Some(Route::Terminals | Route::RailIdleTap));
     let edge = edges(f)?;
     // Settled ON span of window k and settled OFF span after it.
     let on_span = |k: usize| (edge[k].0 + TAP_CLEAR_US, edge[k].1 - EDGE_GUARD_US);
     let off_span = |k: usize| (edge[k].1 + TAP_CLEAR_US, edge[k + 1].0 - EDGE_GUARD_US);
+    // A one-terminal route reads against the bias node, which leg current
+    // moves under drive: the pre-step level (the coast zero from rest), then
+    // the step's settled level through the node's low pass.
+    let live = match route {
+        Some(Route::DrivenTap | Route::RailIdleTap) => sc.bias,
+        _ => None,
+    };
+    let bias_step = live.and_then(|node| {
+        let ons: Vec<(f64, f64)> = (0..f.cb.len()).map(on_span).collect();
+        let on = |slot: Option<usize>| {
+            let s = slot?;
+            median(
+                &ons.iter()
+                    .flat_map(|&w| slot_samples(cap, f, s, w))
+                    .map(|(_, c)| c)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let i = f.cb.iter().map(|w| w.level_a).sum::<f64>() / f.cb.len() as f64;
+        let low = Leg::Volts(i * (RDS_ON_OHM + sc.shunt_ohm));
+        let legs = match route {
+            Some(Route::DrivenTap) => [Leg::Tap(on(hi_tap)? - off_hi), low],
+            _ => [
+                Leg::Volts(on(rail)? * sc.v_rail_per_count - i * RDS_ON_OHM),
+                Leg::Tap(on(lo_tap)? - off_lo),
+            ],
+        };
+        let pre = match f.from_rest {
+            true => vbv,
+            false => node.steady(vbv, f.duty_pre, &legs),
+        };
+        Some((node, pre, node.steady(vbv, f.duty, &legs)))
+    });
+    let t_step = cap.meta.step_index as f64 * f.raw_us;
+    let vb_at = |r: usize| match bias_step {
+        Some((node, pre, post)) => node.settle(pre, post, r as f64 * f.raw_us - t_step),
+        None => vbv,
+    };
+    let tap_hi = |r: usize, c: f64| sc.terminal_volts(c - off_hi, vb_at(r));
+    let tap_lo = |r: usize, c: f64| sc.terminal_volts(c - off_lo, vb_at(r));
+    let rail_v = |_: usize, c: f64| c * sc.v_rail_per_count;
+    let hi_is_tap = matches!(route, Some(Route::Terminals | Route::DrivenTap));
+    let lo_is_tap = matches!(route, Some(Route::Terminals | Route::RailIdleTap));
     // The high side as sampled, before any drop correction.
     let hi_raw_on = |span: &[(f64, f64)]| -> Option<f64> {
         match route {
@@ -446,7 +485,13 @@ pub fn capture_volts(
     let mut spans = Vec::new();
     let abs_ok = !hi_is_tap || vb.is_some();
     let hi_slot = if hi_is_tap { hi_tap } else { rail };
-    let hi_conv = |c: f64| if hi_is_tap { tap_hi(c) } else { rail_v(c) };
+    let hi_conv = |r: usize, c: f64| {
+        if hi_is_tap {
+            tap_hi(r, c)
+        } else {
+            rail_v(r, c)
+        }
+    };
     if let (Some(_), Some(slot), true) = (route, hi_slot, abs_ok) {
         for (k, w) in f.cb.iter().enumerate() {
             let i = w.level_a;
@@ -455,7 +500,7 @@ pub fn capture_volts(
             if s.is_empty() {
                 continue;
             }
-            let vs: Vec<f64> = s.iter().map(|(_, c)| hi_conv(*c)).collect();
+            let vs: Vec<f64> = s.iter().map(|(r, c)| hi_conv(*r, *c)).collect();
             let m = vs.iter().sum::<f64>() / vs.len() as f64;
             hi_on.push((i, m));
             spans.push(span.1 - span.0);
@@ -466,7 +511,7 @@ pub fn capture_volts(
                 off.extend(
                     slot_samples(cap, f, slot, off_span(k))
                         .iter()
-                        .map(|(_, c)| tap_hi(*c)),
+                        .map(|(r, c)| tap_hi(*r, *c)),
                 );
             }
         }
@@ -488,7 +533,7 @@ pub fn capture_volts(
                         (c - period_us / 2.0, c + period_us / 2.0 - f.raw_us),
                     )
                 })
-                .map(|(_, c)| tap_hi(c))
+                .map(|(r, c)| tap_hi(r, c))
                 .collect();
             let on = median(&hi_on.iter().map(|p| p.1).collect::<Vec<_>>());
             match (all.is_empty(), on, median(&off)) {
@@ -718,8 +763,8 @@ fn diagnose(caps: &[(&CaptureFit, CaptureVolts)]) -> VoltDiag {
 
 #[cfg(test)]
 mod tests {
-    use super::super::inductance::{FitCfg, InductanceResult, fit_captures};
-    use super::super::testkit::SynthBurst;
+    use super::super::inductance::{FitCfg, InductanceResult, fit_capture, fit_captures};
+    use super::super::testkit::{BOARD_D_SENSE, SynthBurst};
     use super::*;
     use crate::burst::Chans;
     use crate::units::SenseParams;
@@ -928,6 +973,47 @@ mod tests {
                 assert_eq!(d.body_diode, diode, "{chans:?} diode {diode}");
             }
         }
+    }
+
+    /// One terminal read absolutely through a bias node that leg current
+    /// moves: the rev 2A bias divider (430 / 100) behind board D's taps. The
+    /// driven-tap route reads the ON terminal the stiff-node plant does once
+    /// the scales carry the divider, and reads high by (1 - k) / k of the
+    /// node's move without it.
+    #[test]
+    fn the_driven_tap_reads_through_the_moving_bias_node() {
+        let q = (80 * 32767 / 100) as i16;
+        let at = |plant: SynthBurst, sc: &Scales| {
+            let p = SynthBurst {
+                chans: Chans::Driven.for_step(q, plant.drive_polarity),
+                ..plant
+            };
+            let cap = p.capture(q, 0);
+            let f = fit_capture(&cap, sc, &FitCfg::default()).expect("fit");
+            let v = capture_volts(&cap, &f, sc, true, &TapZeros::default()).expect("volts");
+            assert_eq!(v.route, Some(Route::DrivenTap));
+            let n = v.hi_on.len();
+            v.hi_on[n - 5..].iter().map(|w| w.1).sum::<f64>() / 5.0
+        };
+        let pack = SynthBurst {
+            v_rail: 7.3,
+            ..winding()
+        };
+        let node = SynthBurst {
+            bias_zs_ohm: 430.0 * 100.0 / 530.0,
+            ..pack.clone()
+        };
+        let truth = at(pack, &scales());
+        let fixed = at(node.clone(), &scales().with_bias(&BOARD_D_SENSE, 430, 100));
+        let naive = at(node, &scales());
+        println!(
+            "ON terminal: stiff node {truth:.4} V, corrected {fixed:.4}, uncorrected {naive:.4}"
+        );
+        assert!(
+            (fixed - truth).abs() < 0.003,
+            "corrected {fixed} against {truth}"
+        );
+        assert!(naive - truth > 0.015, "uncorrected {naive} against {truth}");
     }
 
     #[test]
