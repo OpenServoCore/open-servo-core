@@ -855,7 +855,7 @@ impl Cal<'_> {
                         .with_stops(s),
                     None => self.params(),
                 };
-                let cfg = order::centre_cfg(*duty, *cap, false);
+                let cfg = order::centre_cfg(*duty, *cap);
                 centre_on(|e| drive_on(s, e), cfg, p, "centring")?;
             }
             Stage::Burst { rungs, pre, seek } => {

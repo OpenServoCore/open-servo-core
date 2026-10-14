@@ -1432,15 +1432,15 @@ mod tests {
     }
 
     /// A rung that ends over the abort leaves the servo's current reading
-    /// there: torque off it repeats it, and so does the jam check's first
-    /// drive, 9.5% under the window floor. Judged over the floor, the jam
-    /// check frees the shaft and reaches mid travel; judged at every
+    /// there: torque off it repeats it, and so does a centring's first
+    /// drive, 9.5% under the window floor. Judged over the floor, the
+    /// centring frees the shaft and reaches mid travel; judged at every
     /// nonzero duty, it aborts the free shaft on the stale reading.
     #[test]
     fn a_stale_current_under_the_floor_is_no_abort() {
         let after_a_rung = || {
             let mut s = bench_mg90(3204);
-            s.pos = 2029.0;
+            s.pos = 1400.0;
             s.current_limit = None;
             s.jam = Some(s.pos);
             let mut rung = Script(
@@ -1468,7 +1468,7 @@ mod tests {
         let mut s = after_a_rung();
         let p = bench().with_floor(s.floor_q15 as u16);
         let run = seen(
-            Centre::new(crate::run::centre_cfg(0.0952, 0.253, true), &p),
+            Centre::new(crate::run::centre_cfg(0.0952, 0.253), &p),
             p.without_pos_guard(),
             &mut s,
         );
@@ -1479,7 +1479,7 @@ mod tests {
             && o.i_mean_counts > 350));
         assert!(run.exp.into_inner().arrived());
 
-        let run = jam_check(&mut after_a_rung());
+        let run = centring(&mut after_a_rung());
         assert!(
             matches!(run.exp.abort(), Some(AbortReason::Overcurrent { i_mean }) if i_mean > 350),
             "{:?}",
@@ -1527,12 +1527,12 @@ mod tests {
 
     const SOFT: (i32, i32) = (432, 3626);
 
-    /// The jam check as the run starts it on the bench servo's 2S rail:
-    /// from the bootstrap duty, capped at 2 V.
-    fn jam_check(servo: &mut FakeServo) -> Seen<Guarded<Centre>> {
+    /// A centring as the run starts one on the bench servo's 2S rail with
+    /// nothing measured: from the bootstrap duty, capped at 2 V.
+    fn centring(servo: &mut FakeServo) -> Seen<Guarded<Centre>> {
         let p = bench();
         seen(
-            Centre::new(crate::run::centre_cfg(0.0952, 0.253, true), &p),
+            Centre::new(crate::run::centre_cfg(0.0952, 0.253), &p),
             p.without_pos_guard(),
             servo,
         )
@@ -1572,8 +1572,8 @@ mod tests {
     }
 
     /// The firmware's verdict without the fold: the current limit governing
-    /// a shaft that a whole watch window found still. The jam check, a
-    /// ladder rung and the stop finder each take it as blocked at once, no
+    /// a shaft that a whole watch window found still. A centring, a ladder
+    /// rung and the stop finder each take it as blocked at once, no
     /// raise tried and no fold ever shown; the limit governing a moving
     /// shaft, or a still shaft the limit does not govern, is no verdict.
     #[test]
@@ -1597,12 +1597,12 @@ mod tests {
         // 9.5 and 12% sit under the window floor, 14.5% stalls at 262
         // counts inside the limit: all raised. 17% is the first the limit
         // governs, and the last; the cap is 25.3%.
-        let mut s = locked(2029.0, 2029.0);
-        let run = jam_check(&mut s);
+        let mut s = locked(1400.0, 1400.0);
+        let run = centring(&mut s);
         assert_eq!(
             run.exp.abort(),
             Some(AbortReason::Blocked {
-                pos: 2029,
+                pos: 1400,
                 moved: 0
             })
         );
@@ -1654,7 +1654,7 @@ mod tests {
 
     /// A governed climb moves. Every rung of the bench ladder climbs on the
     /// limit, dozens of reads governed, and none is taken for a blocked
-    /// shaft, at either stall setting; nor is a jam check whose shaft the
+    /// shaft, at either stall setting; nor is a centring whose shaft the
     /// limit governs as it moves, nor a climb a heavy load holds on the
     /// limit for good, which declines the ladder instead.
     #[test]
@@ -1677,10 +1677,10 @@ mod tests {
         // a 15% breakaway and a load that holds the moving shaft on the
         // limit: 14.5% stays put, 17% moves half a count a ms, governed
         let mut s = bench_mg90(3204);
-        s.pos = 2029.0;
+        s.pos = 1400.0;
         s.breakaway_q15 = 4915;
         s.fv = 0.3;
-        let run = jam_check(&mut s);
+        let run = centring(&mut s);
         assert_eq!(run.exp.abort(), None);
         assert!(run.exp.into_inner().arrived());
         assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
@@ -1699,15 +1699,15 @@ mod tests {
 
     /// The bench servo's saved stall settings fold nothing, and the verdict
     /// shows for a MEDIUM tick per trip, which no poll catches. A blocked
-    /// drive still ends, on the limit governing a still shaft: the jam check
+    /// drive still ends, on the limit governing a still shaft: a centring
     /// at the first duty the limit governs, a ladder rung on its first still
     /// window - never waiting for the fold.
     #[test]
     fn inert_stall_settings_still_end_a_blocked_drive() {
         let mut s = bench_mg90_saved(3204);
-        s.pos = 2029.0;
-        s.jam = Some(2029.0);
-        let run = jam_check(&mut s);
+        s.pos = 1400.0;
+        s.jam = Some(1400.0);
+        let run = centring(&mut s);
         assert!(matches!(run.exp.abort(), Some(AbortReason::Blocked { .. })));
         assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
         assert!(

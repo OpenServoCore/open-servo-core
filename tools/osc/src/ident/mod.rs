@@ -679,7 +679,7 @@ fn centre_outside_the_run(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result
         Some(r) => DutyPlan::new(&d.lim, r, None).seek,
         None => d.lim.bootstrap_duty(d.sc.r_vpc(CLASS_R_MIN)),
     };
-    centre(cli, c, id, order::centre_cfg(duty, duty, false))
+    centre(cli, c, id, order::centre_cfg(duty, duty))
 }
 
 fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
@@ -915,7 +915,7 @@ fn run_rl(
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("toggle", exp.abort())?;
     println!("[centring] to mid travel at {}", pct(plan.seek));
-    centre(cli, c, id, order::centre_cfg(plan.seek, plan.seek, false))?;
+    centre(cli, c, id, order::centre_cfg(plan.seek, plan.seek))?;
     let exp = exp.into_inner();
     csvio::write_rl_segments(out, exp.segments())?;
     // The planner's notes are the only account of a run that captured
@@ -1624,7 +1624,7 @@ impl Recorded {
             Stage::JamCheck => run.nudged(jam(cli, c, id)?),
             Stage::Centre { duty, cap } => {
                 println!("[centring] to mid travel at {}", pct(*duty));
-                centre(cli, c, id, order::centre_cfg(*duty, *cap, false))?;
+                centre(cli, c, id, order::centre_cfg(*duty, *cap))?;
             }
             Stage::Burst { rungs, pre, seek } => {
                 let explicit = asked_rungs(cli, run.rail_mv())?;

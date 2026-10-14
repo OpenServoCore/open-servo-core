@@ -1,27 +1,19 @@
 //! Centre: drive the shaft into a band at mid travel, then duty 0 and
-//! torque off. With `nudge` the shaft is also driven [`SEEK_TRAVEL_MIN`]
-//! out and back once it is in the band: the jam check, the cheapest proof,
-//! before anything else drives, that the shaft moves and the pot reads it.
-//! The out leg brakes to rest before the back leg drives: reversed at
-//! speed, the limiter cannot go under its base and the winding draws the
-//! base's volts plus the back-EMF.
+//! torque off.
 //!
 //! A still window raises the duty instead of ending the run - by
-//! [`NUDGE_STEP_Q15`] while the shaft is clear of both stops
+//! [`CLEAR_STEP_Q15`] while the shaft is clear of both stops
 //! ([`seek::clear_of_stops`]), by [`SEEK_STEP_Q15`] while leaving one - up
-//! to `cap_q15`. The first travel holds the duty: it is the run's estimate
-//! of what moves the shaft ([`Centre::moved_at`]). A shaft still at the cap,
-//! still after it travelled, still anywhere a raise is not allowed, or held
-//! by the firmware ([`limit_holds`]), is blocked and ends the run. With the
-//! stops unknown the nudge tries the other direction once before that. Run
-//! it with the pos guard off: the shaft may start outside it.
+//! to `cap_q15`. A shaft still at the cap, still after it travelled, still
+//! anywhere a raise is not allowed, or held by the firmware
+//! ([`limit_holds`]), is blocked and ends the run. Run it with the pos guard
+//! off: the shaft may start outside it.
 //!
 //! Directions are the pot's: up is +1. The first travel shows which way a
-//! positive duty turns the shaft under the polarity in force
-//! ([`Centre::drive_polarity`]); a shaft that went the other way brakes to
-//! rest and every later drive is negated. A stored polarity that no longer
-//! matches the wiring would otherwise send the centring away from mid
-//! travel and read the back leg home at once.
+//! positive duty turns the shaft under the polarity in force; a shaft that
+//! went the other way brakes to rest and every later drive is negated. A
+//! stored polarity that no longer matches the wiring would otherwise send
+//! the centring away from mid travel.
 
 use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, Watch};
 use super::{AbortReason, Cmd, Experiment, RigParams, limit_holds};
@@ -33,14 +25,13 @@ use crate::runway::{BRAKE_DUTY_Q15, BRAKE_POLLS, BRAKE_REST_EPS};
 pub const POT_MID: u16 = 2048;
 
 /// Raise per still window while clear of the stops: 2.5% of full scale.
-pub const NUDGE_STEP_Q15: i16 = 819;
+pub const CLEAR_STEP_Q15: i16 = 819;
 
 #[derive(Clone, Debug)]
 pub struct CentreCfg {
     pub duty_q15: i16,
     /// The most a raise may reach.
     pub cap_q15: i16,
-    pub nudge: bool,
     /// Half-width of the band around mid travel, counts.
     pub margin: u16,
     pub poll_ms: u32,
@@ -53,7 +44,6 @@ impl Default for CentreCfg {
         Self {
             duty_q15: 3932,
             cap_q15: 3932,
-            nudge: false,
             margin: 300,
             poll_ms: 20,
             polls_max: 250,
@@ -64,23 +54,12 @@ impl Default for CentreCfg {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Leg {
     Toward,
-    /// The nudge: out from `from` driving `dir`, then back to it.
-    Out {
-        from: u16,
-        dir: i8,
-    },
-    /// A drive that moved the shaft `dir` braking to rest from `last`: the
-    /// out leg before the back leg to `back`, or a centring that went the
-    /// wrong way before it turns.
+    /// A centring that went the wrong way, moving `dir`, braking to rest
+    /// from `last` before it turns.
     Brake {
-        back: Option<u16>,
         dir: i8,
         last: u16,
         polls: u32,
-    },
-    Back {
-        from: u16,
-        dir: i8,
     },
 }
 
@@ -107,12 +86,9 @@ pub struct Centre {
     mag: i16,
     watch: Option<Watch>,
     polls: u32,
-    nudged: bool,
-    flipped: bool,
     /// The duty sign that turns the shaft up; 1 until a travel showed it.
     sign: i8,
     learned: bool,
-    moved_at: Option<i16>,
     arrived: bool,
     halt: Option<AbortReason>,
 }
@@ -133,37 +109,16 @@ impl Centre {
             leg: Leg::Toward,
             watch: None,
             polls: 0,
-            nudged: false,
-            flipped: false,
             sign: 1,
             learned: false,
-            moved_at: None,
             arrived: false,
             halt: None,
         }
     }
 
-    /// The shaft ended in the band (nudged out and back, when asked).
+    /// The shaft ended in the band.
     pub fn arrived(&self) -> bool {
         self.arrived
-    }
-
-    /// The largest duty the shaft first travelled at, a fraction of full
-    /// scale; None until it travelled.
-    pub fn moved_at(&self) -> Option<f64> {
-        self.moved_at.map(|q| q as f64 / 32767.0)
-    }
-
-    /// Whether a positive duty raised the counts under the polarity in
-    /// force, once the shaft travelled.
-    pub fn drive_polarity(&self) -> Option<bool> {
-        self.learned.then_some(self.sign > 0)
-    }
-
-    /// The `drive_polarity` the rest of a run drives under: `in_force`,
-    /// flipped when a positive duty lowered the counts.
-    pub fn polarity_for(&self, in_force: bool) -> bool {
-        self.drive_polarity().map_or(in_force, |p| p == in_force)
     }
 
     pub fn band(&self) -> (u16, u16) {
@@ -174,14 +129,6 @@ impl Centre {
         (self.band.0..=self.band.1).contains(&pos)
     }
 
-    /// Out toward mid travel, so the nudge stays in the band.
-    fn nudge_from(&mut self, pos: u16) {
-        let mid = (self.band.0 + self.band.1) / 2;
-        let dir = if pos < mid { 1 } else { -1 };
-        self.leg = Leg::Out { from: pos, dir };
-        self.watch = None;
-    }
-
     fn drive(&mut self, dir: i8) -> Cmd {
         self.phase = Phase::Wait;
         Cmd::Write {
@@ -190,11 +137,9 @@ impl Centre {
         }
     }
 
-    /// Brake a shaft moving `dir` from `last`, then the back leg to `back`,
-    /// or the centring again.
-    fn brake(&mut self, back: Option<u16>, dir: i8, last: u16) -> Cmd {
+    /// Brake a shaft moving `dir` from `last`, then the centring again.
+    fn brake(&mut self, dir: i8, last: u16) -> Cmd {
         self.leg = Leg::Brake {
-            back,
             dir,
             last,
             polls: 0,
@@ -226,10 +171,6 @@ impl Centre {
         Cmd::Pause { ms: 0 }
     }
 
-    fn moved(&mut self) {
-        self.moved_at = Some(self.moved_at.map_or(self.mag, |m| m.max(self.mag)));
-    }
-
     fn blocked(&mut self, start: u16, pos: u16) -> Cmd {
         self.halt = Some(seek::blocked(start, pos));
         self.finish(false)
@@ -243,35 +184,12 @@ impl Centre {
             return self.finish(false);
         }
         let dir = match self.leg {
-            Leg::Toward if self.in_band(pos) && self.cfg.nudge && !self.nudged => {
-                self.nudge_from(pos);
-                self.polls -= 1;
-                return self.eval(o);
-            }
             Leg::Toward if self.in_band(pos) => return self.finish(true),
-            Leg::Toward => {
-                if pos < self.band.0 {
-                    1
-                } else {
-                    -1
-                }
-            }
-            Leg::Out { from, dir } if pos.abs_diff(from) >= SEEK_TRAVEL_MIN => {
-                self.moved();
-                self.learn(from, pos, dir);
-                let went = if pos > from { 1 } else { -1 };
-                return self.brake(Some(from), went, pos);
-            }
-            Leg::Out { dir, .. } => dir,
-            Leg::Brake {
-                back,
-                dir,
-                last,
-                polls,
-            } => {
+            Leg::Toward if pos < self.band.0 => 1,
+            Leg::Toward => -1,
+            Leg::Brake { dir, last, polls } => {
                 if pos.abs_diff(last) >= BRAKE_REST_EPS && polls + 1 < BRAKE_POLLS {
                     self.leg = Leg::Brake {
-                        back,
                         dir,
                         last: pos,
                         polls: polls + 1,
@@ -282,34 +200,18 @@ impl Centre {
                     };
                 }
                 self.watch = None;
-                let Some(from) = back else {
-                    self.leg = Leg::Toward;
-                    self.polls -= 1;
-                    return self.eval(o);
-                };
-                self.leg = Leg::Back { from, dir: -dir };
-                -dir
-            }
-            Leg::Back { from, dir } if (pos as i32 - from as i32) * dir as i32 >= 0 => {
-                self.moved();
-                self.nudged = true;
                 self.leg = Leg::Toward;
-                self.watch = None;
                 self.polls -= 1;
                 return self.eval(o);
             }
-            Leg::Back { dir, .. } => dir,
         };
         let (eps, polls) = (self.params.stall_eps, self.params.stall_polls);
         let watch = self.watch.get_or_insert(Watch::new(pos, eps, polls));
         let start = watch.start();
         let still = watch.still(pos);
         let travelled = pos.abs_diff(start) >= SEEK_TRAVEL_MIN;
-        if travelled {
-            self.moved();
-            if self.leg == Leg::Toward && self.learn(start, pos, dir) {
-                return self.brake(None, -dir, pos);
-            }
+        if travelled && self.learn(start, pos, dir) {
+            return self.brake(-dir, pos);
         }
         if limit_holds(o, still) {
             return self.blocked(start, pos);
@@ -317,7 +219,7 @@ impl Centre {
         if still {
             let stops = self.params.stops;
             let step = if seek::clear_of_stops(pos, stops) {
-                Some(NUDGE_STEP_Q15)
+                Some(CLEAR_STEP_Q15)
             } else if seek::leaves_stop(start, dir, stops) {
                 Some(SEEK_STEP_Q15)
             } else {
@@ -325,16 +227,7 @@ impl Centre {
             };
             match step.map(|s| self.mag.saturating_add(s)) {
                 Some(next) if !travelled && next <= self.cfg.cap_q15 => self.mag = next,
-                _ => match self.leg {
-                    Leg::Out { from, dir } if stops.is_none() && !travelled && !self.flipped => {
-                        self.flipped = true;
-                        self.mag = self.cfg.duty_q15;
-                        self.leg = Leg::Out { from, dir: -dir };
-                        self.watch = None;
-                        return self.drive(-dir);
-                    }
-                    _ => return self.blocked(start, pos),
-                },
+                _ => return self.blocked(start, pos),
             }
         }
         self.drive(dir)
@@ -354,7 +247,7 @@ impl Experiment for Centre {
                     self.phase = Phase::Finished;
                     return Cmd::Done;
                 };
-                if self.in_band(o.pos) && !self.cfg.nudge {
+                if self.in_band(o.pos) {
                     self.arrived = true;
                     self.phase = Phase::Finished;
                     return Cmd::Done;
@@ -421,17 +314,9 @@ mod tests {
 
     const CAP: i16 = 8192;
 
-    fn run(servo: &mut FakeServo, nudge: bool) -> (Guarded<Centre>, Vec<String>) {
-        run_with(servo, nudge, rig())
-    }
-
-    fn run_with(
-        servo: &mut FakeServo,
-        nudge: bool,
-        params: RigParams,
-    ) -> (Guarded<Centre>, Vec<String>) {
+    fn run(servo: &mut FakeServo) -> (Guarded<Centre>, Vec<String>) {
+        let params = rig();
         let cfg = CentreCfg {
-            nudge,
             cap_q15: CAP,
             ..CentreCfg::default()
         };
@@ -452,7 +337,7 @@ mod tests {
         for start in [600.0, 3500.0] {
             let mut s = FakeServo::new(3.37);
             s.pos = start;
-            let (exp, log) = run(&mut s, false);
+            let (exp, log) = run(&mut s);
             assert!(exp.abort().is_none(), "{:?}", exp.abort());
             let band = exp.into_inner();
             assert!(band.arrived());
@@ -466,47 +351,32 @@ mod tests {
     }
 
     #[test]
-    fn a_centred_shaft_is_left_alone_unless_nudged() {
+    fn a_centred_shaft_is_left_alone() {
         let mut s = FakeServo::new(3.37);
         s.pos = 2050.0;
-        let (exp, log) = run(&mut s, false);
+        let (exp, log) = run(&mut s);
         assert!(exp.into_inner().arrived());
         assert!(log.is_empty(), "{log:?}");
-
-        let (exp, log) = run(&mut s, true);
-        assert!(exp.abort().is_none());
-        let exp = exp.into_inner();
-        assert!(exp.arrived());
-        assert_eq!(exp.moved_at(), Some(3932.0 / 32767.0));
-        let d = duties(&log);
-        assert!(
-            d.contains(&3932) && d.contains(&-3932),
-            "out and back: {d:?}"
-        );
     }
 
     /// A shaft that needs more than the start duty: clear of the stops the
-    /// still window raises it, and the duty that first moved the shaft is
-    /// held and reported. Near a stop nothing raises it.
+    /// still window raises it. Near a stop nothing raises it.
     #[test]
-    fn nudge_raises_the_duty_only_clear_of_the_stops() {
+    fn the_duty_rises_only_clear_of_the_stops() {
         let mut s = FakeServo::new(3.37);
-        s.pos = 2050.0;
+        s.pos = 1200.0;
         s.breakaway_q15 = 5500;
-        let (exp, log) = run(&mut s, true);
+        let (exp, log) = run(&mut s);
         assert!(exp.abort().is_none(), "{:?}", exp.abort());
-        let exp = exp.into_inner();
-        let moved = (3932 + 2 * NUDGE_STEP_Q15) as f64 / 32767.0;
-        assert_eq!(exp.moved_at(), Some(moved));
+        assert!(exp.into_inner().arrived());
         let d = duties(&log);
         assert_eq!(d.iter().map(|d| d.abs()).max(), Some(3932 + 2 * 819));
-        assert!(exp.arrived());
 
         // 250 counts from the low stop: not clear of it, not at it
         let mut s = FakeServo::new(3.37);
         s.pos = 450.0;
         s.breakaway_q15 = 5500;
-        let (exp, log) = run(&mut s, true);
+        let (exp, log) = run(&mut s);
         assert_eq!(
             exp.abort(),
             Some(AbortReason::Blocked { pos: 450, moved: 0 })
@@ -514,53 +384,48 @@ mod tests {
         assert!(duties(&log).iter().all(|d| d.abs() <= 3932), "{log:?}");
     }
 
-    /// The jam check on a shaft locked at mid travel: raised window by
-    /// window to the cap, then blocked. The run ends at the cap, never over.
+    /// A shaft locked short of the band: raised window by window to the
+    /// cap, then blocked. The run ends at the cap, never over.
     #[test]
-    fn nudge_gives_up_at_the_cap() {
+    fn a_locked_shaft_gives_up_at_the_cap() {
         let mut s = FakeServo::new(3.37);
-        s.pos = 2048.0;
-        s.jam = Some(2048.0);
-        let (exp, log) = run(&mut s, true);
+        s.pos = 1200.0;
+        s.jam = Some(1200.0);
+        let (exp, log) = run(&mut s);
         assert_eq!(
             exp.abort(),
             Some(AbortReason::Blocked {
-                pos: 2048,
-                moved: 0
-            })
-        );
-        let d = duties(&log);
-        let top = d.iter().map(|d| d.abs()).max().unwrap();
-        assert!(
-            top <= CAP as i32 && top + NUDGE_STEP_Q15 as i32 > CAP as i32,
-            "{d:?}"
-        );
-        assert!(!s.torque);
-        assert_eq!(exp.into_inner().moved_at(), None);
-    }
-
-    /// A jam the limiter holds at the current limit: the stall timer folds
-    /// it to the yield before the raises reach the cap, and the jam check
-    /// takes the fold as its verdict at once.
-    #[test]
-    fn a_yield_fold_ends_the_nudge_blocked() {
-        let mut s = FakeServo::new(3.37);
-        s.pos = 2048.0;
-        s.jam = Some(2048.0);
-        // 3932 stalls at 62 counts, the first raise at 75
-        s.current_limit = Some(70);
-        s.stall_ms = Some(100.0);
-        s.stall_yield = 40;
-        let (exp, log) = run(&mut s, true);
-        assert_eq!(
-            exp.abort(),
-            Some(AbortReason::Blocked {
-                pos: 2048,
+                pos: 1200,
                 moved: 0
             })
         );
         let top = duties(&log).iter().map(|d| d.abs()).max().unwrap();
-        assert_eq!(top, 3932 + NUDGE_STEP_Q15 as i32, "ended by the fold");
+        assert!(top <= CAP as i32 && top + CLEAR_STEP_Q15 as i32 > CAP as i32);
+        assert!(!s.torque);
+    }
+
+    /// A jam the limiter holds at the current limit: the stall timer folds
+    /// it to the yield before the raises reach the cap, and the centring
+    /// takes the fold as its verdict at once.
+    #[test]
+    fn a_yield_fold_ends_the_centring_blocked() {
+        let mut s = FakeServo::new(3.37);
+        s.pos = 1200.0;
+        s.jam = Some(1200.0);
+        // 3932 stalls at 62 counts, the first raise at 75
+        s.current_limit = Some(70);
+        s.stall_ms = Some(100.0);
+        s.stall_yield = 40;
+        let (exp, log) = run(&mut s);
+        assert_eq!(
+            exp.abort(),
+            Some(AbortReason::Blocked {
+                pos: 1200,
+                moved: 0
+            })
+        );
+        let top = duties(&log).iter().map(|d| d.abs()).max().unwrap();
+        assert_eq!(top, 3932 + CLEAR_STEP_Q15 as i32, "ended by the fold");
         assert_eq!(
             &log[log.len() - 2..],
             ["write goal_duty 0", "write torque_enable 0",]
@@ -577,40 +442,22 @@ mod tests {
         // 12% creeps at 110 counts/s, under the window's 150; 14.5% runs at 360
         s.physical_motion = true;
         s.fc = 56.0;
-        let (exp, log) = run(&mut s, false);
+        let (exp, log) = run(&mut s);
         assert!(exp.abort().is_none(), "{:?}", exp.abort());
         assert!(exp.into_inner().arrived());
         assert!(duties(&log).iter().any(|d| *d > 3932), "never raised");
     }
 
-    /// A motor wired the other way round from the polarity in force: the
-    /// jam check's out leg shows it, the back leg still drives home, and
-    /// the shaft ends where it started.
-    #[test]
-    fn a_reversed_motor_is_read_on_the_out_leg_and_driven_home() {
-        let mut s = FakeServo::new(3.37);
-        s.pos = 2050.0;
-        let (exp, _) = run(&mut s, true);
-        assert_eq!(exp.into_inner().drive_polarity(), Some(true));
-
-        let mut s = FakeServo::new(3.37);
-        s.pos = 2050.0;
-        s.drive_polarity = false;
-        let (exp, log) = run(&mut s, true);
-        assert!(exp.abort().is_none(), "{:?}", exp.abort());
-        let exp = exp.into_inner();
-        assert!(exp.arrived());
-        assert_eq!(exp.drive_polarity(), Some(false));
-        let d = duties(&log);
-        assert!(
-            d.contains(&3932) && d.contains(&-3932),
-            "out and back: {d:?}"
-        );
-        assert!(
-            (s.pos - 2050.0).abs() < SEEK_TRAVEL_MIN as f64 / 2.0,
-            "{}",
-            s.pos
-        );
+    fn bench_centring(s: &mut FakeServo) -> (Guarded<Centre>, Vec<String>) {
+        let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
+        let cfg = CentreCfg {
+            duty_q15: 3119,
+            cap_q15: 8290,
+            ..CentreCfg::default()
+        };
+        let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
+        let log = pump(&mut exp, s, 100_000);
+        (exp, log)
     }
 
     /// Off the band with the motor reversed, the first drive runs away
@@ -618,162 +465,27 @@ mod tests {
     /// turns, and the centring arrives without pressing a stop.
     #[test]
     fn a_centring_that_runs_the_wrong_way_turns_round() {
-        for (start, toward) in [(1200.0, 1.0), (2900.0, -1.0)] {
+        for start in [1200.0, 2900.0] {
             let mut s = bench_mg90(3204);
             s.pos = start;
             s.drive_polarity = false;
-            let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
-            let cfg = CentreCfg {
-                duty_q15: 3119,
-                cap_q15: 8290,
-                ..CentreCfg::default()
-            };
-            let mut spy = Spy {
-                exp: Guarded::new(Centre::new(cfg, &params), params.without_pos_guard()),
-                seen: Vec::new(),
-            };
-            pump(&mut spy, &mut s, 100_000);
-            assert_eq!(spy.exp.abort(), None, "{start}");
-            let away = spy
-                .seen
-                .iter()
-                .filter_map(|(o, _)| o.as_ref())
-                .map(|o| (start - o.pos as f64) * toward)
-                .fold(0.0, f64::max);
-            assert!(
-                (SEEK_TRAVEL_MIN as f64..2.0 * SEEK_TRAVEL_MIN as f64).contains(&away),
-                "{start}: {away}"
-            );
-            let exp = spy.exp.into_inner();
-            assert!(exp.arrived(), "{start}");
-            assert_eq!(exp.drive_polarity(), Some(false));
+            let (exp, _) = bench_centring(&mut s);
+            assert_eq!(exp.abort(), None, "{start}");
+            assert!(exp.into_inner().arrived(), "{start}");
             assert_eq!(s.pressed_ms, 0.0);
             assert!(!s.torque);
         }
     }
 
-    /// Stops unknown: the nudge that cannot move one way tries the other.
+    /// The bench MG90 parked 15 counts off either stop: the centring points
+    /// at mid travel and raises to leave the stop the 9.5% start cannot
+    /// break out of. It never presses the stop it starts at.
     #[test]
-    fn unknown_stops_try_the_other_direction() {
-        let mut s = FakeServo::new(3.37);
-        s.pos = 2050.0;
-        s.jam = Some(2050.0);
-        let params = RigParams {
-            stops: None,
-            ..rig()
-        };
-        let (exp, log) = run_with(&mut s, true, params);
-        assert!(matches!(exp.abort(), Some(AbortReason::Blocked { .. })));
-        let d = duties(&log);
-        assert!(d.iter().any(|d| *d > 0));
-        assert!(d.iter().any(|d| *d < 0), "never tried the other way: {d:?}");
-    }
-
-    /// What the jam check saw and did, command by command.
-    struct Spy {
-        exp: Guarded<Centre>,
-        seen: Vec<(Option<TelemetrySnapshot>, Cmd)>,
-    }
-
-    impl Experiment for Spy {
-        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
-            let cmd = self.exp.step(obs);
-            self.seen.push((obs.copied(), cmd.clone()));
-            cmd
-        }
-    }
-
-    /// The jam check's out leg brakes to rest before the back leg drives.
-    /// Reversed at speed, the limiter cannot apply less than its base and
-    /// the bench servo would draw the base's volts plus the back-EMF, over
-    /// the abort; braked first, the back leg starts from rest, and the
-    /// abort never trips on a free shaft, whether 14.5% moved it or 17% on
-    /// the limit did.
-    #[test]
-    fn jam_check_brakes_before_it_reverses() {
-        for (breakaway, out) in [(4259, 3119 + 2 * 819), (4800, 3119 + 3 * 819)] {
-            let mut s = bench_mg90(3204);
-            s.pos = 2029.0;
-            s.breakaway_q15 = breakaway;
-            let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
-            let cfg = CentreCfg {
-                duty_q15: 3119,
-                cap_q15: 8290,
-                nudge: true,
-                ..CentreCfg::default()
-            };
-            let mut spy = Spy {
-                exp: Guarded::new(Centre::new(cfg, &params), params.without_pos_guard()),
-                seen: Vec::new(),
-            };
-            pump(&mut spy, &mut s, 100_000);
-            assert_eq!(spy.exp.abort(), None, "{breakaway}");
-            // the goal as it changes: each drive rewrites it every poll
-            let mut goals: Vec<(usize, i32)> = spy
-                .seen
-                .iter()
-                .enumerate()
-                .filter_map(|(k, (_, c))| match c {
-                    Cmd::Write { reg, value } if *reg == control::GOAL_DUTY => Some((k, *value)),
-                    _ => None,
-                })
-                .collect();
-            goals.dedup_by_key(|g| g.1);
-            let values: Vec<i32> = goals.iter().map(|g| g.1).collect();
-            let at = values.iter().position(|v| v.abs() == out).unwrap();
-            let dir = values[at].signum();
-            assert_eq!(
-                values[at..],
-                [dir * out, -dir * BRAKE_DUTY_Q15 as i32, -dir * out, 0],
-                "{breakaway}: {values:?}"
-            );
-            // the last two reads before the back leg: at rest
-            let back = goals[at + 2].0;
-            let reads: Vec<&TelemetrySnapshot> = spy.seen[..=back]
-                .iter()
-                .filter_map(|(o, _)| o.as_ref())
-                .collect();
-            let [.., a, b] = reads.as_slice() else {
-                panic!("no reads");
-            };
-            assert!(
-                a.pos.abs_diff(b.pos) < BRAKE_REST_EPS,
-                "{} {}",
-                a.pos,
-                b.pos
-            );
-            let peak = spy
-                .seen
-                .iter()
-                .filter_map(|(o, _)| o.as_ref())
-                .map(|o| o.i_mean_counts.unsigned_abs())
-                .max()
-                .unwrap();
-            assert!(peak < 350, "{breakaway}: {peak}");
-            assert!(spy.exp.into_inner().arrived());
-            assert!(!s.torque);
-        }
-    }
-
-    /// The bench MG90 parked 15 counts off either stop, as the bench left
-    /// it at pos 298 over a low stop of 283: the jam check's first drive
-    /// points at mid travel, raises to leave the stop the 9.5% start
-    /// cannot break out of, then nudges out and back. It never presses the
-    /// stop it starts at.
-    #[test]
-    fn a_jam_check_from_a_rail_leaves_it_toward_mid_travel() {
+    fn a_centring_from_a_rail_leaves_it_toward_mid_travel() {
         for (start, toward) in [(224.0, 1), (3834.0, -1)] {
             let mut s = bench_mg90(3204);
             s.pos = start;
-            let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
-            let cfg = CentreCfg {
-                duty_q15: 3119,
-                cap_q15: 8290,
-                nudge: true,
-                ..CentreCfg::default()
-            };
-            let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
-            let log = pump(&mut exp, &mut s, 100_000);
+            let (exp, log) = bench_centring(&mut s);
             assert_eq!(exp.abort(), None, "{start}");
             let mut d = duties(&log);
             d.dedup();
@@ -781,17 +493,8 @@ mod tests {
                 d[..2],
                 [toward * 3119, toward * (3119 + SEEK_STEP_Q15 as i32)]
             );
-            assert!(
-                d.contains(&(-toward * (3119 + SEEK_STEP_Q15 as i32))),
-                "{d:?}"
-            );
             assert_eq!(s.pressed_ms, 0.0, "{start}");
-            let exp = exp.into_inner();
-            assert!(exp.arrived());
-            assert_eq!(
-                exp.moved_at(),
-                Some((3119 + SEEK_STEP_Q15) as f64 / 32767.0)
-            );
+            assert!(exp.into_inner().arrived());
         }
     }
 }

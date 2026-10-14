@@ -607,11 +607,10 @@ fn fractions(q15: &[i16]) -> Vec<f64> {
 }
 
 /// The centring as a stage names it.
-pub fn centre_cfg(duty: f64, cap: f64, nudge: bool) -> CentreCfg {
+pub fn centre_cfg(duty: f64, cap: f64) -> CentreCfg {
     CentreCfg {
         duty_q15: q15_floor(duty),
         cap_q15: q15_floor(cap),
-        nudge,
         ..CentreCfg::default()
     }
 }
@@ -1184,7 +1183,7 @@ mod tests {
                     abort.map_or(Ended::Done, Ended::Aborted)
                 }
                 Stage::Centre { duty, cap } => {
-                    let exp = Centre::new(centre_cfg(*duty, *cap, false), &params);
+                    let exp = Centre::new(centre_cfg(*duty, *cap), &params);
                     self.go(exp, params.without_pos_guard()).1
                 }
                 Stage::Burst { rungs, pre, seek } => {

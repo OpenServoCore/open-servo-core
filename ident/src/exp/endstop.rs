@@ -16,8 +16,8 @@
 //!
 //! A rest that is no stop is a sticky spot. With the stops known that is a
 //! rest more than [`STOP_TOL`] from both; with them unknown, a rest short
-//! of the travel. Clear of the stops ([`seek::clear_of_stops`]) the jam
-//! check's rule applies there: the duty rises by [`NUDGE_STEP_Q15`] per
+//! of the travel. Clear of the stops ([`seek::clear_of_stops`]) the
+//! centring's rule applies there: the duty rises by [`CLEAR_STEP_Q15`] per
 //! still window up to the cap, and the approach resumes at the raised duty.
 //! Anywhere else, at the cap, or held by the firmware ([`limit_holds`]),
 //! the shaft is blocked and the run ends.
@@ -27,7 +27,7 @@
 //! stops must bracket where the shaft started with a real span between
 //! them ([`EndstopResult::refusal`]).
 
-use super::centre::NUDGE_STEP_Q15;
+use super::centre::CLEAR_STEP_Q15;
 use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STOP_TOL, Watch};
 use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams, limit_holds};
 use crate::frame::TelemetrySnapshot;
@@ -253,7 +253,7 @@ impl Endstop {
             self.enter(Leg::Hold { dir });
             return self.drive(dir as i32 * self.cfg.seat_q15 as i32);
         }
-        let next = self.approach.saturating_add(NUDGE_STEP_Q15);
+        let next = self.approach.saturating_add(CLEAR_STEP_Q15);
         if !limit_holds(o, true)
             && seek::clear_of_stops(pos, self.stops)
             && next <= self.cfg.cap_q15
