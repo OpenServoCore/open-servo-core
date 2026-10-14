@@ -36,6 +36,9 @@ pub struct Precomputed {
     pub current_defaults: CurrentDefaults,
     pub burst_v_max_counts: u16,
     pub v_undervolt_counts: u16,
+    pub vmotor_bias_nom_counts: u16,
+    pub vmotor_bias_top_ohm: u16,
+    pub vmotor_bias_bot_ohm: u16,
 }
 
 impl Precomputed {
@@ -44,9 +47,10 @@ impl Precomputed {
         // Const-eval quotients per the KernelTiming field docs; the divides
         // fold at compile time so no soft-div symbol ever links.
         let med_hz = chip::MOTOR_PWM_FREQ_HZ / DECIM_MED as u32;
-        let (rail, term) = (
+        let (rail, term, bias) = (
             &cfg.calibration.vbus_divider,
             &cfg.calibration.vmotor_divider,
+            &cfg.calibration.vmotor_bias,
         );
         let vbus_scale_q15 = ((rail.top_ohm + rail.bot_ohm) as u64 * term.bot_ohm as u64 * 32768
             / (rail.bot_ohm as u64 * (term.top_ohm + term.bot_ohm) as u64))
@@ -84,6 +88,22 @@ impl Precomputed {
                 term.bot_ohm,
                 cfg.calibration.vdd_mv,
             ),
+            vmotor_bias_nom_counts: vmotor_counts(
+                cfg.calibration.vdd_mv,
+                bias.top_ohm,
+                bias.bot_ohm,
+                cfg.calibration.vdd_mv,
+            ),
+            vmotor_bias_top_ohm: ohm16(bias.top_ohm),
+            vmotor_bias_bot_ohm: ohm16(bias.bot_ohm),
         }
+    }
+}
+
+const fn ohm16(ohm: u32) -> u16 {
+    if ohm > u16::MAX as u32 {
+        u16::MAX
+    } else {
+        ohm as u16
     }
 }

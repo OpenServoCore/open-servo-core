@@ -50,6 +50,8 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
     ntc_beta: 3950,
     vmotor_bias_nom_counts: 773,
     rail_drop_mv: 250,
+    vmotor_bias_top_ohm: 430,
+    vmotor_bias_bot_ohm: 100,
 };
 
 /// Board travel the config defaults seed (the v006 pot's 12-bit span): what

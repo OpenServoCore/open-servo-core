@@ -65,7 +65,7 @@ pub fn bringup(
     // stale saved image.
     SHARED.table.seed_calib_sense(
         &calib_sense(wiring, calibration),
-        &calib_sense_ext(calibration),
+        &calib_sense_ext(calibration, pre),
         pre.pwm_arr,
     );
     SHARED.seed_uid(esig::uid());
@@ -81,7 +81,7 @@ pub fn bringup(
         .seed_current_bias(measure_current_bias(&wiring.current_sense));
     SHARED.table.seed_vmotor_bias(measure_vmotor_bias(
         &wiring.sensors,
-        calibration.vmotor_bias_nom_counts,
+        pre.vmotor_bias_nom_counts,
     ));
 
     // SysTick drives both `Monotonic` (LED blinker) and the transport
@@ -145,15 +145,17 @@ fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
     }
 }
 
-fn calib_sense_ext(cal: &Calibration) -> CalibSenseExt {
+fn calib_sense_ext(cal: &Calibration, pre: &Precomputed) -> CalibSenseExt {
     CalibSenseExt {
         vbus_div_top_ohm: cal.vbus_divider.top_ohm.min(u16::MAX as u32) as u16,
         vbus_div_bot_ohm: cal.vbus_divider.bot_ohm.min(u16::MAX as u32) as u16,
         ntc_pullup_ohm: cal.ntc.pullup_ohm.min(u16::MAX as u32) as u16,
         ntc_r25_ohm: cal.ntc.r25_ohm.min(u16::MAX as u32) as u16,
         ntc_beta: cal.ntc.beta,
-        vmotor_bias_nom_counts: cal.vmotor_bias_nom_counts,
+        vmotor_bias_nom_counts: pre.vmotor_bias_nom_counts,
         rail_drop_mv: cal.rail_drop_mv,
+        vmotor_bias_top_ohm: pre.vmotor_bias_top_ohm,
+        vmotor_bias_bot_ohm: pre.vmotor_bias_bot_ohm,
     }
 }
 

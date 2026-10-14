@@ -84,9 +84,10 @@ pub struct Calibration {
     /// Direct supply-rail divider (`vbus_raw`).
     pub vbus_divider: Divider,
     pub ntc: Ntc,
-    /// Nominal bias both motor-terminal dividers return to, ADC counts; the
-    /// fallback when the boot measurement's two taps disagree.
-    pub vmotor_bias_nom_counts: u16,
+    /// VDD divider making the bias both motor-terminal dividers return to;
+    /// its ratio is the nominal bias, the fallback when the boot
+    /// measurement's two taps disagree.
+    pub vmotor_bias: Divider,
     /// Supply connector -> VSYS drop across the input diode at rest, mV.
     pub rail_drop_mv: u16,
     /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
