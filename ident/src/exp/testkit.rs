@@ -94,6 +94,12 @@ pub fn board_d_scales() -> crate::exp::rl::Scales {
     crate::exp::rl::Scales::from_sense(&BOARD_D_SENSE, 15_000, 10_000).expect("board D scales")
 }
 
+/// The bench MG90's scales: 3204 vcounts are 7.9 V, and the fake's `r` of
+/// 7270/4096 vcounts per ccount is its 4.87 ohm winding.
+pub const BENCH_MV_PER_VCOUNT: f64 = 7900.0 / 3204.0;
+pub const BENCH_R_OHM: f64 = 4.87;
+pub const BENCH_MA_PER_CCOUNT: f64 = 7270.0 / 4096.0 * BENCH_MV_PER_VCOUNT / BENCH_R_OHM;
+
 /// The bench MG90 as the fake models it on a rail of `vbus`: 4.9 ohm, the
 /// firmware limiter at 280 counts above a 13.3% window floor, a 13%
 /// breakaway and the measured b, between its stops 209..3849 and soft
@@ -194,6 +200,14 @@ pub struct FakeServo {
     pub f_med: f64,
     /// Static friction: no motion from rest below this |duty| (0 = none).
     pub breakaway_q15: i16,
+    /// Static friction as a torque, ccounts (dynamic model): no motion from
+    /// rest while the drive current is under it, on any rail.
+    pub breakaway_i: f64,
+    /// Output backlash, counts (dynamic model): the motor side travels this
+    /// far on a reversal before the output, which the pot reads, moves.
+    pub backlash: f64,
+    /// Where the motor side sits in the backlash, counts off the output.
+    lash_at: f64,
     /// Reported pos gains +80 counts inside this zone (slip artifact).
     pub glitch_zone: Option<(f64, f64)>,
     /// A nonlinear pot: `pos` is the true position and the raw reading is
@@ -223,6 +237,8 @@ pub struct FakeServo {
     /// unless the stall permit is live (and honored). Outbound is the
     /// duty's sign, whichever way the motor turns.
     pub soft: Option<(f64, f64)>,
+    /// Goal writes under torque that the soft endstop zeroed as written.
+    pub refused_goals: Vec<i16>,
     /// The kernel's drive direction check, its OpenLoop rule: from the
     /// torque enable until a leg of travel the duty's way proves the wiring,
     /// two legs against the duty past a soft limit latch `drive_reversed`.
@@ -252,6 +268,10 @@ pub struct FakeServo {
     t_ceil: f64,
     /// A locked shaft: travel stops at this position and never leaves it.
     pub jam: Option<f64>,
+    /// A pot that reads this raw count wherever the shaft is.
+    pub pot_dead: Option<u16>,
+    /// An open winding: no current flows and nothing turns.
+    pub open: bool,
     /// A sticky stretch of travel, `(lo, hi, extra)`: the dynamic model's
     /// friction there is `extra` ccounts over `fc`, from rest and moving.
     pub sticky: Option<(f64, f64, f64)>,
@@ -275,8 +295,15 @@ pub struct FakeServo {
     /// Dynamic-model substeps owed to the clock, a fraction of one.
     sub_carry: f64,
     /// Time the applied duty spent pushing the shaft into the end it sits
-    /// at, ms.
+    /// at, ms, the most current it drew doing so, ccounts, and the fastest
+    /// the shaft arrived at an end, counts/s (dynamic model).
     pub pressed_ms: f64,
+    pub press_i_max: f64,
+    pub impact_cps_max: f64,
+    /// The first watch after a goal change reads this much over the
+    /// current: the host's first poll after a step.
+    pub step_over_read: f64,
+    over_read_due: bool,
     /// The last window-valid current, which the window repeats at rest
     /// and, under the limiter, under the floor.
     i_valid: f64,
@@ -318,6 +345,9 @@ impl FakeServo {
             b: 0.1,
             f_med: TICK_HZ / 10.0,
             breakaway_q15: 0,
+            breakaway_i: 0.0,
+            backlash: 0.0,
+            lash_at: 0.0,
             glitch_zone: None,
             pot: None,
             pos: 2400.0,
@@ -331,6 +361,7 @@ impl FakeServo {
             fault_after_bursts: None,
             bursts: 0,
             soft: None,
+            refused_goals: Vec::new(),
             drive_check: false,
             drive_proven: false,
             drive_anchor: 0.0,
@@ -345,6 +376,8 @@ impl FakeServo {
             ceil0: 0.0,
             t_ceil: 0.0,
             jam: None,
+            pot_dead: None,
+            open: false,
             sticky: None,
             load: 0.0,
             stall_ms: None,
@@ -357,6 +390,10 @@ impl FakeServo {
             last_arm: f64::NEG_INFINITY,
             sub_carry: 0.0,
             pressed_ms: 0.0,
+            press_i_max: 0.0,
+            impact_cps_max: 0.0,
+            step_over_read: 1.0,
+            over_read_due: false,
             i_valid: 0.0,
             torque: false,
             duty: 0,
@@ -392,6 +429,9 @@ impl FakeServo {
     /// of the converter's own on top: the count whose linearization lands
     /// nearest it, found by bisection over the monotone table.
     fn read_pot(&self, counts: f64, noise: f64) -> u16 {
+        if let Some(raw) = self.pot_dead {
+            return raw;
+        }
         let raw = match &self.pot {
             None => counts,
             Some(_) => self.raw_of(counts) as f64,
@@ -567,14 +607,18 @@ impl FakeServo {
 
     /// The firmware's `limit_flags`: bit 0 the current holds the duty under
     /// the goal, bit 1 the stall timer folded the limit (or tripped within
-    /// the last MEDIUM tick), bit 2 the endstop blocks, bit 3 the permit is
-    /// live.
+    /// the last MEDIUM tick), bit 2 a soft limit closed one side of the band,
+    /// whichever way the duty points, bit 3 the permit is live.
     pub fn limit_flags(&self) -> u8 {
         let driving = self.torque && self.duty != 0;
         let mut f = 0;
-        if driving && self.endstop_blocks() {
+        let walled = self
+            .soft
+            .is_some_and(|(lo, hi)| self.pos <= lo || self.pos >= hi);
+        if walled && !self.permit_live() {
             f |= 4;
-        } else if driving && self.govern().1 {
+        }
+        if driving && !self.endstop_blocks() && self.govern().1 {
             f |= 1;
         }
         if self.folded || self.t_ms - self.tripped_at < self.medium_ms() {
@@ -602,6 +646,15 @@ impl FakeServo {
     fn pressing(&self) -> bool {
         let out = self.applied() as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
         (self.pos <= self.ends.0 && out < 0.0) || (self.pos >= self.ends.1 && out > 0.0)
+    }
+
+    /// Book `ms` of pressing an end, and its current, when the drive is.
+    fn press(&mut self, ms: f64) {
+        if self.pressing() {
+            self.pressed_ms += ms;
+            let i = self.i_at(self.applied()).abs();
+            self.press_i_max = self.press_i_max.max(i);
+        }
     }
 
     /// The current, not the slew, holds the goal back on a still shaft.
@@ -747,7 +800,7 @@ impl FakeServo {
     /// is added.
     fn i_dyn(&self) -> f64 {
         let duty = self.applied();
-        if duty == 0 {
+        if duty == 0 || self.open {
             return 0.0;
         }
         let v = duty as f64 / 32767.0 * self.vbus;
@@ -765,7 +818,7 @@ impl FakeServo {
     /// need no extra term - their (v - ke*omega)/r IS the winding current
     /// at every instant.
     fn i_at(&self, duty: i16) -> f64 {
-        if duty == 0 {
+        if duty == 0 || self.open {
             return 0.0;
         }
         let v = duty as f64 / 32767.0 * self.vbus;
@@ -806,8 +859,12 @@ impl FakeServo {
                 self.floor_q15 as f64
             };
             self.reset_ceiling(from);
+            self.over_read_due |= goal != self.duty;
             self.duty = goal;
             self.t_duty_change = self.t_ms;
+            if self.torque && self.endstop_blocks() {
+                self.refused_goals.push(goal);
+            }
         } else if reg == control::TEL_COUNT {
             self.tel_count = value as u16;
         } else if reg == config::DRIVE_POLARITY {
@@ -849,7 +906,9 @@ impl FakeServo {
         };
         let fric = if w != 0.0 {
             fc * w.signum() + self.fv * w
-        } else if i.abs() > fc && self.applied().unsigned_abs() >= self.breakaway_q15 as u16 {
+        } else if i.abs() > fc.max(self.breakaway_i)
+            && self.applied().unsigned_abs() >= self.breakaway_q15 as u16
+        {
             fc * i.signum()
         } else {
             i // no net torque below stiction: alpha = 0
@@ -866,11 +925,23 @@ impl FakeServo {
         } else {
             w2
         };
-        self.pos = self.travel(self.pos + self.omega_dyn * dt);
-        if (self.pos <= self.ends.0 && self.omega_dyn < 0.0)
-            || (self.pos >= self.ends.1 && self.omega_dyn > 0.0)
-            || self.at_jam()
-        {
+        // the output follows the motor side once it has crossed the lash
+        let h = self.backlash / 2.0;
+        let motor = self.pos + self.lash_at + self.omega_dyn * dt;
+        let want = if motor > self.pos + h {
+            motor - h
+        } else if motor < self.pos - h {
+            motor + h
+        } else {
+            self.pos
+        };
+        let out = self.travel(want);
+        self.lash_at = (motor - out).clamp(-h, h);
+        self.pos = out;
+        if out != want && (want - out) * self.omega_dyn > 0.0 {
+            if w != 0.0 && (out <= self.ends.0 || out >= self.ends.1) {
+                self.impact_cps_max = self.impact_cps_max.max(self.omega_dyn.abs());
+            }
             self.omega_dyn = 0.0;
         }
     }
@@ -894,9 +965,7 @@ impl FakeServo {
         }
         let from = self.t_ms;
         self.advance_plant(ms);
-        if self.pressing() {
-            self.pressed_ms += self.t_ms - from;
-        }
+        self.press(self.t_ms - from);
         self.stall_timer(from);
         self.check_drive();
     }
@@ -937,9 +1006,7 @@ impl FakeServo {
         for k in 0..samples {
             self.tick(dt);
             self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
-            if self.pressing() {
-                self.pressed_ms += dt * 1000.0;
-            }
+            self.press(dt * 1000.0);
             if !chunks.valid() {
                 continue;
             }
@@ -1025,19 +1092,23 @@ impl FakeServo {
     pub fn watch(&mut self, rows: u16, sink: &mut Vec<TelFrame>) -> bool {
         let dt = 1.0 / (self.f_med * 10.0);
         let t0 = self.t_ms;
+        let over = if self.over_read_due {
+            self.step_over_read
+        } else {
+            1.0
+        };
+        self.over_read_due = false;
         for k in 0..rows as u64 {
             self.tick(dt);
             self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
-            if self.pressing() {
-                self.pressed_ms += dt * 1000.0;
-            }
+            self.press(dt * 1000.0);
             let (i, vdiff) = self.sensed();
             let noise = self.noise();
             let pos = self.read_pot(self.pos, noise);
             sink.push(TelFrame {
                 tick: k,
                 pos: Some(pos),
-                current: Some(i.round() as i16),
+                current: Some((i * over).round() as i16),
                 vdiff: Some(vdiff.round() as i16),
                 duty_counts: Some(duty_counts(self.applied(), PWM_PERIOD_TICKS)),
                 ..Default::default()
@@ -1489,7 +1560,11 @@ impl Bus {
 
 /// Drive an experiment against the fake servo on the bench bus
 /// ([`pump_on`]).
-pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -> Vec<String> {
+pub fn pump<E: Experiment + ?Sized>(
+    exp: &mut E,
+    servo: &mut FakeServo,
+    max_steps: u32,
+) -> Vec<String> {
     pump_on(exp, servo, max_steps, Bus::BENCH)
 }
 
@@ -1512,7 +1587,7 @@ fn charge_write(servo: &mut FakeServo, lease: &mut PermitLease, bus: &Bus, reg: 
 /// rewrites it on the wall clock, pauses sliced so none outlasts a refresh.
 /// A burst arm the servo refuses ends the run the way the CLI's does: the
 /// error, then its guard's writes.
-pub fn pump_on<E: Experiment>(
+pub fn pump_on<E: Experiment + ?Sized>(
     exp: &mut E,
     servo: &mut FakeServo,
     max_steps: u32,
@@ -2153,5 +2228,127 @@ mod tests {
 
     fn q15(p: i32) -> i16 {
         pct(p) as i16
+    }
+
+    /// Breakaway as a torque: the shaft starts at the same current on a
+    /// 3.7 V and an 8.4 V rail, so at less than half the duty on the
+    /// higher one.
+    #[test]
+    fn fake_breaks_away_at_a_current() {
+        for vbus in [1500.0, 3407.0] {
+            let mut s = bench_mg90(vbus as u16);
+            s.breakaway_q15 = 0;
+            s.breakaway_i = 222.0;
+            s.pos = 2000.0;
+            let r = s.r;
+            let duty = |i: f64| (i * r / vbus * 32767.0) as i32;
+            s.write(control::TORQUE_ENABLE, 1);
+            s.write(control::GOAL_DUTY, duty(212.0));
+            s.advance(100);
+            assert_eq!(s.pos, 2000.0, "{vbus}: under the breakaway");
+            s.write(control::GOAL_DUTY, duty(232.0));
+            s.advance(100);
+            assert!(s.pos > 2010.0, "{vbus}: over it");
+        }
+    }
+
+    /// A reversal turns the motor side through the lash before the pot
+    /// sees the output move: the current sags with the pot still.
+    #[test]
+    fn fake_backlash_hides_the_motor_turning() {
+        let mut s = bench_mg90(3204);
+        s.backlash = 20.0;
+        s.pos = 2000.0;
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(18));
+        s.advance(60);
+        let top = s.pos;
+        assert!(top > 2020.0);
+        s.write(control::GOAL_DUTY, 0);
+        s.advance(200);
+        let rest = s.pos;
+        s.write(control::GOAL_DUTY, -pct(18));
+        s.advance(3);
+        assert_eq!(s.pos, rest, "the motor side takes up the lash first");
+        let ohmic = 0.18 * 3204.0 / s.r;
+        assert!(
+            s.sensed().0.abs() < 0.9 * ohmic,
+            "turning: the current sags"
+        );
+        s.advance(60);
+        assert!(s.pos < rest - 10.0, "then the output follows");
+    }
+
+    /// A dead pot reads one count wherever the shaft turns; an open winding
+    /// draws nothing and turns nothing.
+    #[test]
+    fn fake_dead_pot_and_open_motor() {
+        let mut s = bench_mg90(3204);
+        s.pos = 2000.0;
+        s.pot_dead = Some(1234);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(18));
+        s.advance(100);
+        assert!(s.pos > 2050.0);
+        assert_eq!(s.read().pos, 1234);
+        assert_eq!(s.watch_folded(WINDOW_TICKS).pos, Some((1234, 1234)));
+
+        let mut s = bench_mg90(3204);
+        s.pos = 2000.0;
+        s.open = true;
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(30));
+        s.advance(100);
+        assert_eq!(s.pos, 2000.0);
+        assert_eq!(s.watch_folded(WINDOW_TICKS).windows[0].window.i_mean, 0);
+    }
+
+    /// Driven into an end the fake books the speed it arrived at, the time
+    /// it pressed and the most current it pressed with; the first watch
+    /// after a goal change reads over, the next does not.
+    #[test]
+    fn fake_books_the_impact_and_the_press() {
+        let mut s = bench_mg90(3204);
+        s.step_over_read = 1.3;
+        s.soft = None;
+        s.current_limit = None;
+        s.pos = 3800.0;
+        s.jam = Some(3800.0);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(18));
+        let first = s.watch_folded(400).windows[24].window.i_mean as f64;
+        let second = s.watch_folded(400).windows[24].window.i_mean as f64;
+        assert!((first / second - 1.3).abs() < 0.01, "{first} {second}");
+        assert_eq!(s.pressed_ms, 0.0, "a jam is no end");
+
+        s.jam = None;
+        s.advance(300);
+        assert_eq!(s.pos, 3849.0);
+        let steady = (0.2079 * 18.0 - 0.831) * 1000.0;
+        assert!(s.impact_cps_max > 500.0 && s.impact_cps_max < steady);
+        let ohmic = 0.18 * 3204.0 / s.r;
+        assert!((s.press_i_max / ohmic - 1.0).abs() < 0.01);
+        assert!(s.pressed_ms > 250.0);
+    }
+
+    /// The endstop flag says a soft limit closed one side of the band,
+    /// whichever way the duty points, and a goal written that way is
+    /// booked refused; a live permit opens it.
+    #[test]
+    fn fake_endstop_flag_is_the_band() {
+        let mut s = bench_mg90(3204);
+        s.pos = 400.0;
+        assert_eq!(s.limit_flags() & 4, 4, "torque off");
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(15));
+        assert_eq!(s.limit_flags() & 4, 4, "inbound");
+        assert!(s.refused_goals.is_empty());
+        s.write(control::GOAL_DUTY, -pct(15));
+        assert_eq!(s.refused_goals, [-pct(15) as i16]);
+        s.write(control::STALL_PERMIT, 1);
+        assert_eq!(s.limit_flags() & 4, 0);
+        s.pos = 2000.0;
+        s.write(control::STALL_PERMIT, 0);
+        assert_eq!(s.limit_flags() & 4, 0);
     }
 }
