@@ -13,9 +13,8 @@ use clap::Parser;
 use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 
-/// goal_position: the rule-heavy hot-loop register (see tool-burst).
-const GOAL_POSITION_ADDR: u16 = 0x0184;
 const GOAL_LEN: u16 = 4;
 const BCAST: u8 = 0xFE;
 const BREAK: u8 = 0x00;
@@ -123,7 +122,7 @@ fn cycle_frames(args: &Args, value: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
         BCAST,
         Opcode::Gread,
         0,
-        &gread_uniform_payload(GOAL_POSITION_ADDR, GOAL_LEN, &args.ids),
+        &gread_uniform_payload(GOAL_POSITION, GOAL_LEN, &args.ids),
     );
     if args.hot {
         let data = value.to_le_bytes();
@@ -132,7 +131,7 @@ fn cycle_frames(args: &Args, value: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
             BCAST,
             Opcode::Gwrite,
             Inst::FLAG_HOLD,
-            &gwrite_uniform_payload(GOAL_POSITION_ADDR, &entries),
+            &gwrite_uniform_payload(GOAL_POSITION, &entries),
         );
         let commit = build_instruction(BCAST, Opcode::Commit, 0, &[]);
         (vec![gwrite, commit, gread.clone()], gread)
