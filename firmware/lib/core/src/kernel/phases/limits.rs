@@ -1,10 +1,11 @@
-use super::Medium;
 use super::fast::Fast;
 use super::loops::faults::{self, FaultLatch};
 use super::loops::limits;
+use super::{Medium, pos_q4};
 use crate::Shared;
 use crate::kernel::config::KernelConfig;
 use crate::math::q_mul_u;
+use crate::pos_lut::GRID_SHIFT;
 use crate::regions::control::Mode;
 
 /// Stall permit lease in SLOW ticks: 63 x 16 ms = 1.008 s from the grant.
@@ -70,5 +71,41 @@ impl Medium {
             | (self.limits.stalled() as u8 * limits::flag::YIELD)
             | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
             | (permit as u8 * limits::flag::PERMIT);
+    }
+
+    /// The observer's position, linearized Q4 counts: filtered, so the pot's
+    /// noise times a steep table's gain does not end legs.
+    #[inline(always)]
+    pub(in crate::kernel) fn theta_q4(&self) -> i32 {
+        self.fusion.theta_q16() >> (16 - GRID_SHIFT)
+    }
+
+    /// The drive direction check's stage (`DriveCheck::stage`): a leg's
+    /// end, its verdict or an anchor, booked on top of the SPARE_B row
+    /// (`budget::DRIVE_STAGE`). The closed loops' direction is their
+    /// velocity command: on a reversed motor the duty flips sign every few
+    /// periods as the velocity source swaps between the back-EMF and the
+    /// pot, which disagree.
+    #[inline(never)]
+    #[rustc_align(4)]
+    pub(in crate::kernel) fn drive_stage(
+        &mut self,
+        shared: &Shared,
+        duty_q15: i16,
+        faults: &mut FaultLatch,
+    ) {
+        let closed = matches!(self.ctl.life.mode, Mode::Velocity | Mode::Position);
+        let omega_ref = self.omega_ref_q16;
+        let band = self.i_band;
+        let lut_live = self.ctl.lut_live;
+        if self.drive.stage(
+            self.theta_q4(),
+            || pos_q4(shared, lut_live, shared.frame().pos()) as i32,
+            || if closed { omega_ref } else { duty_q15 as i32 },
+            closed,
+            [band.lo == 0, band.hi == 0],
+        ) {
+            faults.raise(faults::BIT_DATA, faults::CODE_DRIVE_REVERSED);
+        }
     }
 }

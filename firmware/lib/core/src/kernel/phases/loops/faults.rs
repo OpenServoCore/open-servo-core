@@ -4,6 +4,7 @@
 //! still-present condition re-latches through the normal detectors.
 
 use crate::kernel::DECIM_MED;
+use crate::pos_lut::GRID_SHIFT;
 
 pub const BIT_OVER_CURRENT: u8 = 1 << 0;
 pub const BIT_OVER_TEMP: u8 = 1 << 1;
@@ -11,12 +12,17 @@ pub const BIT_STALL: u8 = 1 << 2;
 pub const BIT_POSITION_ERROR: u8 = 1 << 3;
 pub const BIT_SENSOR: u8 = 1 << 4;
 pub const BIT_UNDER_VOLT: u8 = 1 << 5;
-/// Closed loop refused on the data state (`data_state` module): raised at
-/// entry while `data_flags` names a reason, and every tick a Velocity or
-/// Position loop runs on a zero Ke. Raised on use, never on state alone.
+/// The stored set does not describe this servo. `CODE_DATA`: closed loop
+/// refused on the data state (`data_state` module), raised at entry while
+/// `data_flags` names a reason, and every tick a Velocity or Position loop
+/// runs on a zero Ke; raised on use, never on state alone.
+/// `CODE_DRIVE_REVERSED`: the shaft turned against the drive
+/// ([`DriveCheck`]), a motor wired the other way round from
+/// `drive_polarity`.
 pub const BIT_DATA: u8 = 1 << 6;
 
-/// `fault_code` values: bit index + 1, 0 = no fault since the last ack.
+/// `fault_code` values: bit index + 1, then the kinds that share a bit;
+/// 0 = no fault since the last ack.
 pub const CODE_NONE: u8 = 0;
 pub const CODE_OVER_CURRENT: u8 = 1;
 pub const CODE_OVER_TEMP: u8 = 2;
@@ -25,6 +31,7 @@ pub const CODE_POSITION_ERROR: u8 = 4;
 pub const CODE_SENSOR: u8 = 5;
 pub const CODE_UNDER_VOLT: u8 = 6;
 pub const CODE_DATA: u8 = 7;
+pub const CODE_DRIVE_REVERSED: u8 = 8;
 
 /// Latched mask + the LATEST newly-latched kind (`fault_code`). Re-raising
 /// an already-set bit does not touch the code, so a persisting first fault
@@ -171,6 +178,168 @@ impl Default for Detectors {
     }
 }
 
+/// One leg of the drive direction check, linearized counts: about 1 deg
+/// on the bench MG90, clear of the gear lash and the pot noise. A leg the
+/// drive's way proves the wiring; two in a row against it, 40 counts, are
+/// a reversed motor where a load cannot explain them. Two legs sit past the
+/// sag of a load at the current limit on twice the bench inertia, which
+/// trips legs of 16 (DES `gravity_sag_at_the_limit_never_reads_reversed`).
+pub const DRIVE_LEG_COUNTS: u16 = 20;
+const LEG_Q4: u32 = (DRIVE_LEG_COUNTS as u32) << GRID_SHIFT;
+
+/// `DriveCheck::state`: the wiring is proven under `DriveCheck::polarity`
+/// (0, the test a proven servo pays).
+const PROVEN: u8 = 0;
+/// Holding the position against the anchor.
+const TRACK: u8 = 1;
+/// The stages, each one check: a leg ended, its end to confirm.
+const LEG_END: u8 = 2;
+/// A leg confirmed, to judge.
+const JUDGE: u8 = 3;
+/// Anchor at the position.
+const ANCHOR: u8 = 4;
+
+/// Whether a check in `state` runs a stage (`DriveCheck::stage`).
+pub const fn stage_due(state: u8) -> bool {
+    state >= LEG_END
+}
+
+/// The drive direction check, once per medium period while the wiring is
+/// unproven. A plain check holds the observer's position against an
+/// anchor: an idle drive (zero duty) drags the anchor along, a driven shaft
+/// ends a leg once it is `DRIVE_LEG_COUNTS` away. The stages follow, a check
+/// each: the leg's end counts only where the pot agrees with the observer,
+/// whose model walks its position off a locked rotor, and the next leg
+/// starts a leg on; then the leg is judged against the drive's direction. A
+/// leg the drive's way proves the wiring under the present `drive_polarity`.
+/// A leg against it after another is a reversed motor where a load cannot
+/// explain it: under a closed loop, whose reference holds against any load
+/// it can win, or at a soft limit with the drive pointing back in.
+pub struct DriveCheck {
+    state: u8,
+    /// `drive_polarity` at the last configuration.
+    polarity: bool,
+    /// The last leg's direction, -1 or 1.
+    leg: i8,
+    /// The last leg ran against the drive.
+    against: bool,
+    /// Linearized Q4 counts.
+    anchor: i32,
+}
+
+impl DriveCheck {
+    pub const fn new() -> Self {
+        Self {
+            state: ANCHOR,
+            polarity: false,
+            leg: 0,
+            against: false,
+            anchor: 0,
+        }
+    }
+
+    pub fn unproven(&self) -> bool {
+        self.state != PROVEN
+    }
+
+    /// The budget probe's tag: a check in this state runs a stage when
+    /// [`stage_due`], and every stage leaves it.
+    pub fn state(&self) -> u8 {
+        self.state
+    }
+
+    /// A configuration under `polarity`: a wiring proven under another is
+    /// unproven again.
+    pub fn take(&mut self, polarity: bool) {
+        if self.polarity != polarity {
+            self.polarity = polarity;
+            self.state = ANCHOR;
+        }
+    }
+
+    /// The drive changed hands (torque, a fault, a mode): travel counts
+    /// afresh.
+    pub fn restart(&mut self) {
+        if self.state != PROVEN {
+            self.state = ANCHOR;
+        }
+    }
+
+    /// The plain check, unproven: `pos_q4` the position, linearized Q4,
+    /// against the anchor under `duty_q15` the applied duty. Whether a
+    /// stage is due instead (`stage`).
+    #[inline(always)]
+    pub fn check(&mut self, pos_q4: i32, duty_q15: i16) -> bool {
+        if self.state != TRACK {
+            return true;
+        }
+        if duty_q15 == 0 {
+            self.anchor = pos_q4;
+            self.against = false;
+        } else if ((pos_q4 - self.anchor + LEG_Q4 as i32 - 1) as u32) >= 2 * LEG_Q4 - 1 {
+            // |travel| >= LEG_Q4 in one compare
+            self.state = LEG_END;
+        }
+        false
+    }
+
+    /// A stage: `pos_q4` as `check`; `pot_q4` the pot, linearized Q4;
+    /// `drive` the drive's direction by its sign (the closed loops'
+    /// velocity command, else the duty); `closed` a closed loop drives;
+    /// `walled` the band's sides closed, `[lo, hi]` (`IBand`). Whether the
+    /// wiring is reversed.
+    #[inline(always)]
+    pub fn stage(
+        &mut self,
+        pos_q4: i32,
+        pot_q4: impl FnOnce() -> i32,
+        drive: impl FnOnce() -> i32,
+        closed: bool,
+        walled: [bool; 2],
+    ) -> bool {
+        match self.state {
+            LEG_END => {
+                self.state = TRACK;
+                if (pot_q4() - pos_q4).unsigned_abs() >= LEG_Q4 {
+                    self.anchor = pos_q4;
+                    return false;
+                }
+                let up = pos_q4 > self.anchor;
+                self.leg = if up { 1 } else { -1 };
+                self.anchor += if up { LEG_Q4 as i32 } else { -(LEG_Q4 as i32) };
+                self.state = JUDGE;
+                false
+            }
+            JUDGE => {
+                self.state = TRACK;
+                let s = drive();
+                let along = if self.leg < 0 { -s } else { s };
+                if along > 0 {
+                    self.state = PROVEN;
+                    return false;
+                }
+                let against = along < 0;
+                let reversed =
+                    against && self.against && (closed || walled[(self.leg > 0) as usize]);
+                self.against = against;
+                reversed
+            }
+            _ => {
+                self.state = TRACK;
+                self.anchor = pos_q4;
+                self.against = false;
+                false
+            }
+        }
+    }
+}
+
+impl Default for DriveCheck {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +414,151 @@ mod tests {
             assert!(!d.pos_err_sample(true, trip));
         }
         assert!(d.pos_err_sample(true, trip));
+    }
+
+    const LEG: i32 = DRIVE_LEG_COUNTS as i32;
+    /// The band's closed sides past soft limits at 500 and 3500, `[lo, hi]`.
+    fn walls(pos: i32) -> [bool; 2] {
+        [pos <= 500, pos >= 3500]
+    }
+
+    fn q4(counts: i32) -> i32 {
+        counts << GRID_SHIFT
+    }
+
+    /// One check as the kernel runs it.
+    fn check(c: &mut DriveCheck, pos: i32, duty: i16, sign: i32, closed: bool) -> bool {
+        c.unproven()
+            && c.check(q4(pos), duty)
+            && c.stage(q4(pos), || q4(pos), || sign, closed, walls(pos))
+    }
+
+    /// A check under `drive_polarity` 1, anchored at `at`.
+    fn started(at: i32) -> DriveCheck {
+        let mut c = DriveCheck::new();
+        c.take(true);
+        assert!(!check(&mut c, at, 1000, 0, true));
+        c
+    }
+
+    /// The position walks `per` a check from `from` under a driven duty and
+    /// a drive of `sign`; the verdict, the legs judged and the position at
+    /// the verdict.
+    fn walk(
+        c: &mut DriveCheck,
+        sign: i32,
+        from: i32,
+        per: i32,
+        ticks: i32,
+        closed: bool,
+    ) -> (bool, u32, i32) {
+        let mut legs = 0;
+        for n in 0..=ticks {
+            let pos = from + n * per;
+            legs += (c.state == JUDGE) as u32;
+            if check(c, pos, 1000, sign, closed) {
+                return (true, legs, pos);
+            }
+            if !c.unproven() {
+                break;
+            }
+        }
+        (false, legs, from + ticks * per)
+    }
+
+    #[test]
+    fn a_leg_the_drive_way_proves_the_wiring() {
+        for sign in [1, -1] {
+            let mut c = started(2000);
+            assert_eq!(walk(&mut c, sign, 2000, sign, LEG - 1, true).1, 0);
+            assert!(c.unproven());
+            assert_eq!(
+                walk(&mut c, sign, 2000 + sign * (LEG - 1), sign, 3, true).1,
+                1
+            );
+            assert!(!c.unproven());
+        }
+    }
+
+    #[test]
+    fn two_legs_against_a_closed_loop_are_reversed() {
+        for sign in [1, -1] {
+            let mut c = started(2000);
+            let (reversed, legs, at) = walk(&mut c, sign, 2000, -sign, 3 * LEG, true);
+            assert!(reversed && legs == 2, "{legs}");
+            // a leg ends at LEG; its end and its verdict take a check each
+            assert_eq!((at - 2000) * -sign, 2 * LEG + 2);
+            let mut c = started(2000);
+            let (reversed, legs, at) = walk(&mut c, sign, 2000, -7 * sign, 20, true);
+            assert!(reversed && legs == 2, "{legs}");
+            assert_eq!((at - 2000) * -sign, 56, "legs of 20 at 7 a check");
+            assert!(c.unproven());
+        }
+    }
+
+    #[test]
+    fn an_open_drive_pushed_back_mid_travel_is_not_judged() {
+        let mut c = started(2000);
+        let (reversed, legs, _) = walk(&mut c, 1, 2000, -1, 400, false);
+        assert!(!reversed && legs >= 19, "{legs}");
+        assert!(c.unproven());
+    }
+
+    /// At a soft limit an open drive pointing back in that loses ground is
+    /// reversed within a leg past it; pointing out, travel against it is
+    /// the shaft coming back.
+    #[test]
+    fn an_open_drive_losing_ground_at_a_wall_is_reversed() {
+        let mut c = started(600);
+        let (reversed, _, at) = walk(&mut c, 1, 600, -1, 200, false);
+        assert!(reversed && (500 - LEG..=500).contains(&at), "{at}");
+        let mut c = started(3400);
+        let (reversed, _, at) = walk(&mut c, -1, 3400, 1, 200, false);
+        assert!(reversed && (3500..=3500 + LEG).contains(&at), "{at}");
+        let mut c = started(3700);
+        assert!(!walk(&mut c, 1, 3700, -1, 100, false).0);
+        let mut c = started(300);
+        assert!(!walk(&mut c, -1, 300, 1, 100, false).0);
+    }
+
+    #[test]
+    fn an_idle_drive_a_restart_or_no_drive_counts_afresh() {
+        let mut c = started(2000);
+        assert_eq!(walk(&mut c, 1, 2000, -1, LEG + 2, true).1, 1);
+        assert!(!check(&mut c, 1977, 0, 1, true));
+        assert!(!walk(&mut c, 1, 1977, -1, LEG + 2, true).0);
+        let mut c = started(2000);
+        assert_eq!(walk(&mut c, 1, 2000, -1, LEG + 2, true).1, 1);
+        c.restart();
+        assert!(!walk(&mut c, 1, 1977, -1, LEG + 3, true).0);
+        let mut c = started(2000);
+        assert_eq!(walk(&mut c, 1, 2000, -1, LEG + 2, true).1, 1);
+        assert!(!walk(&mut c, 0, 1977, -1, LEG + 3, true).0);
+    }
+
+    #[test]
+    fn a_new_polarity_unproves_a_proven_wiring() {
+        let mut c = started(2000);
+        walk(&mut c, 1, 2000, 1, LEG + 2, true);
+        assert!(!c.unproven());
+        c.restart();
+        c.take(true);
+        assert!(!c.unproven());
+        c.take(false);
+        assert!(c.unproven());
+    }
+
+    /// The observer walking off a still pot ends no leg.
+    #[test]
+    fn a_position_the_pot_disagrees_with_ends_no_leg() {
+        let mut c = started(2000);
+        for n in 0..=100 {
+            let pos = 2000 + n;
+            assert!(
+                !c.check(q4(pos), 1000) || !c.stage(q4(pos), || q4(2000), || -1, true, walls(pos))
+            );
+        }
+        assert!(c.unproven());
+        assert!(c.state == TRACK || c.state == LEG_END);
     }
 }

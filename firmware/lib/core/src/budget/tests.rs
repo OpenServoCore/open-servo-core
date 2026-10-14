@@ -14,6 +14,7 @@ const PLAIN: Events = Events {
     close: false,
     install: false,
     side: false,
+    drive: false,
     health: false,
 };
 const OPEN: Regime = Regime::Open;
@@ -166,6 +167,65 @@ fn kernel_ticks_book_by_what_they_carried() {
         + 1750;
     assert_eq!((k.busy, k.entries), (bodies + 13 * ENTRY_EXIT, 13));
     assert_eq!(k.drove(), Regime::Closed);
+}
+
+/// The drive direction check's stage books apart from the plain SPARE_B
+/// row: a SPARE_B tick that left a stage state. A crossing that enters
+/// one, an edge on another phase and a SPARE_B a thermometer stage took
+/// book plain.
+#[test]
+fn a_drive_stage_books_apart_from_its_tags() {
+    use crate::kernel::phases::loops::faults::stage_due;
+    let (track, leg_end, judge) = (1, 2, 3);
+    assert!(!stage_due(track) && stage_due(leg_end) && stage_due(judge));
+    let tags = |phase, drive| ProbeTags {
+        phase,
+        booted: true,
+        drive,
+        ..ProbeTags::default()
+    };
+    let ran = |b, a| Events::between(b, a).drive;
+    assert!(ran(tags(phase::SPARE_B, leg_end), tags(0, judge)));
+    assert!(ran(tags(phase::SPARE_B, judge), tags(0, track)));
+    assert!(!ran(tags(phase::SPARE_B, track), tags(0, leg_end)));
+    assert!(!ran(tags(phase::SPARE_B, judge), tags(0, judge)));
+    assert!(!ran(
+        tags(phase::CONTROL, judge),
+        tags(phase::CONTROL + 1, 4)
+    ));
+    let mut k = KernelProbe::ZERO;
+    let mut w = WindowProbe::ZERO;
+    both(&mut k, &mut w, 0, 1000, 0, OPEN, PLAIN);
+    let drive = Events {
+        drive: true,
+        ..PLAIN
+    };
+    both(
+        &mut k,
+        &mut w,
+        1,
+        1300,
+        phase::SPARE_B as usize,
+        OPEN,
+        drive,
+    );
+    assert_eq!((k.drive.n, k.drive.max), (1, 1300));
+    assert_eq!(k.load(OPEN, phase::SPARE_B as usize), Load::ZERO);
+}
+
+/// The drive direction check's stage stays inside the thermometer's stage
+/// on SPARE_B, alone or under a TEL row and its bank: the phase's worst
+/// tick is the thermometer's, as before the check.
+#[test]
+fn the_drive_stage_keeps_the_spare_b_envelope() {
+    let tel = Events { tel: true, ..PLAIN };
+    for r in Regime::ALL {
+        for c in [PLAIN, tel, Events { bank: true, ..tel }] {
+            let drive = kernel_tick(r, phase::SPARE_B as usize, Events { drive: true, ..c });
+            let side = kernel_tick(r, phase::SPARE_B as usize, Events { side: true, ..c });
+            assert!(drive <= side, "{r:?} {c:?}: {drive} over {side}");
+        }
+    }
 }
 
 /// Lateness counts only what held the tick off past both its grid slot
@@ -331,6 +391,7 @@ fn dumps_decode_field_for_field() {
         slow_finish: false,
         therm: 2,
         closed: true,
+        drive: 3,
     };
     k.tick(2000, || after, true, 9, false);
     assert_eq!(KernelProbe::from_words(words(&k)), Some(k));

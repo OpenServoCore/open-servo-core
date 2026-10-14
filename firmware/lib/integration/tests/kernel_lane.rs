@@ -171,6 +171,7 @@ const NONE: Events = Events {
     close: false,
     install: false,
     side: false,
+    drive: false,
     health: false,
 };
 
@@ -246,11 +247,11 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{
-        ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, THERM_INSTALL, THERM_SIDE,
-        TROUGH_DONE,
+        DRIVE_STAGE, ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH,
+        THERM_INSTALL, THERM_SIDE, TROUGH_DONE,
     };
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
-    let ahead = [REFRESH, THERM_INSTALL, THERM_SIDE]
+    let ahead = [REFRESH, THERM_INSTALL, THERM_SIDE, DRIVE_STAGE]
         .into_iter()
         .max()
         .unwrap_or(0);

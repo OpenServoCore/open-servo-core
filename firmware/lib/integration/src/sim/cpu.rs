@@ -186,7 +186,8 @@ pub struct TelCosts {
 /// with the catch-up when a tick was lost since the last one. A
 /// configuration take runs on phase SPARE_A when the servo's count is
 /// even and new, in place of an install there, which waits a period; it
-/// holds no lane.
+/// holds no lane. The drive direction check's stage runs on every SPARE_B
+/// the thermometer leaves, as an unproven servo's could, and holds no lane.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub refresh: u64,
@@ -194,6 +195,7 @@ pub struct KernelEvents {
     pub finish: u64,
     pub install: u64,
     pub side: u64,
+    pub drive: u64,
     pub health_close: u64,
     pub catch_up: u64,
 }
@@ -222,6 +224,7 @@ impl KernelLane {
                 finish: budget::SLOW_FINISH.max(budget::SLOW_CLOSE) as u64,
                 install: budget::THERM_INSTALL as u64,
                 side: budget::THERM_SIDE as u64,
+                drive: budget::DRIVE_STAGE as u64,
                 health_close: budget::HEALTH_CLOSE as u64,
                 catch_up: budget::CATCH_UP as u64,
             },
@@ -242,7 +245,7 @@ impl KernelLane {
         let at = |p: u8, extra: u64| phases.get(p as usize).map_or(0, |b| b + extra);
         let events = at(phase::SLOW, ev.slow_due[r].max(ev.finish))
             .max(at(phase::SPARE_A, ev.install.max(ev.refresh)))
-            .max(at(phase::SPARE_B, ev.side));
+            .max(at(phase::SPARE_B, ev.side.max(ev.drive)));
         let longest = phases.iter().copied().max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
@@ -633,6 +636,9 @@ impl Cpu {
         k.stage = stage.is_some();
         k.therm = matches!(k.phase as u8, phase::SPARE_A | phase::SPARE_B) && k.stage;
         cost += stage.unwrap_or(0);
+        if k.phase == phase::SPARE_B as usize && !k.stage {
+            cost += ev.drive;
+        }
         if take {
             cost += ev.refresh;
             k.config_taken = k.config_seq;
@@ -785,7 +791,7 @@ mod tests {
     use crate::plant::{BIAS, kernel, seed, vbus_raw};
 
     /// One bit per stage: a body's cost names the stages the lane charged.
-    const COSTS: [u64; 5] = [1, 2, 4, 8, 16];
+    const COSTS: [u64; 6] = [1, 2, 4, 8, 16, 32];
     static FREE: [u64; PHASES] = [0; PHASES];
 
     fn write_config(sh: &Shared, f: impl FnOnce(&mut osc_servo_core::ControlTable)) {
@@ -836,8 +842,9 @@ mod tests {
 
     /// The lane charges each stage on the tick the kernel runs it: every
     /// stage `Events::between` reads off a real kernel's tags (due, finish,
-    /// install, side, configuration take) lands on a tick the lane charges
-    /// it, and the SLOW block's due and finish on exactly the lane's.
+    /// install, side, configuration take, the drive direction check's)
+    /// lands on a tick the lane charges it, and the SLOW block's due and
+    /// finish on exactly the lane's.
     #[test]
     fn the_lane_charges_each_stage_on_the_kernels_tick() {
         let sh = Shared::new();
@@ -847,7 +854,7 @@ mod tests {
         while !k.probe_tags().slow_due {
             k.on_scan(f, &sh);
         }
-        let [slow, finish, install, side, refresh] = COSTS;
+        let [slow, finish, install, side, refresh, drive] = COSTS;
         let mut cpu = Cpu::default();
         cpu.start_kernel(
             KernelLane {
@@ -862,6 +869,7 @@ mod tests {
                     finish,
                     install,
                     side,
+                    drive,
                     health_close: 0,
                     catch_up: 0,
                 },
@@ -873,7 +881,7 @@ mod tests {
             lane_tick(&mut cpu, &mut now, sh.config_seq());
         }
         let ticks = 400 * DECIM_SLOW as u32 * DECIM_MED as u32;
-        let mut seen = [0u32; 5];
+        let mut seen = [0u32; 6];
         for t in 0..ticks {
             if t == ticks / 2 {
                 write_config(&sh, |_| {});
@@ -882,14 +890,57 @@ mod tests {
             let before = k.probe_tags();
             k.on_scan(f, &sh);
             let ev = Events::between(before, k.probe_tags());
-            let ran = [ev.slow, ev.finish, ev.install, ev.side, ev.refresh];
+            let ran = [
+                ev.slow, ev.finish, ev.install, ev.side, ev.refresh, ev.drive,
+            ];
             let charged = COSTS.map(|c| body & c != 0);
             assert_eq!(ran[..2], charged[..2], "tick {t}");
+            assert!(
+                !charged[5] || !(charged[2] || charged[3] || charged[4]),
+                "tick {t}: the drive stage stacked, {charged:?}"
+            );
             for (n, (&r, &c)) in seen.iter_mut().zip(ran.iter().zip(&charged)) {
                 assert!(!r || c, "tick {t}: ran {ran:?}, charged {charged:?}");
                 *n += r as u32;
             }
         }
         assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+    }
+
+    /// The drive direction check's stage stays inside the thermometer's on
+    /// SPARE_B: at budget, charged on every SPARE_B the thermometer leaves,
+    /// it leaves each motion's dearest SPARE_B body and the bus wall where
+    /// the thermometer's stage puts them.
+    #[test]
+    fn the_drive_stage_stays_inside_the_spare_b_envelope() {
+        for motion in [Motion::Quiet, Motion::Hold, Motion::Moving] {
+            let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
+            let bare = KernelLane {
+                events: KernelEvents {
+                    drive: 0,
+                    ..lane.events
+                },
+                ..lane
+            };
+            let spare_b = |lane: KernelLane| {
+                let mut cpu = Cpu::default();
+                cpu.start_kernel(lane, u64::MAX);
+                let mut now = 0;
+                let (mut max, mut sum) = (0, 0);
+                for t in 0..4 * DECIM_SLOW as usize * PHASES {
+                    let body = lane_tick(&mut cpu, &mut now, 0);
+                    if t % PHASES == phase::SPARE_B as usize {
+                        max = body.max(max);
+                        sum += body;
+                    }
+                }
+                (max, sum)
+            };
+            let (with, without) = (spare_b(lane), spare_b(bare));
+            assert!(with.1 > without.1, "{motion:?}: never charged");
+            assert_eq!(with.0, without.0, "{motion:?}");
+            let bus = budget::frame(budget::Frame::ConfigWrite) as u64;
+            assert_eq!(lane.wall(bus), bare.wall(bus), "{motion:?}");
+        }
     }
 }

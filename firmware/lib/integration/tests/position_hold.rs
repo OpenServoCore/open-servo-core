@@ -14,60 +14,22 @@
 //! speed. Friction alone stops it inside the band only below
 //! `coast_stop_cps`.
 
-use osc_integration::plant::{BIAS, FakeIo, kernel, lut_live, seed, vbus_raw};
+use osc_integration::mg90::{self, B, FC, Mg90, Rng, TICK_HZ};
+use osc_integration::plant::{FakeIo, kernel};
 use osc_servo_core::kernel::phases::loops::limits::flag;
-use osc_servo_core::pos_lut::{GRID, POINTS};
-use osc_servo_core::regions::config::ms_ticks;
-use osc_servo_core::{
-    ControlTable, Kernel, MotorCmd, RegionStorage, SensorFrame, Shared, StallResponse,
-};
+use osc_servo_core::pos_lut::POINTS;
+use osc_servo_core::{ControlTable, Kernel, MotorCmd, RegionStorage, Shared, StallResponse};
 
-/// 7.1 V in vmotor-tap counts.
-const VBUS: f64 = 2880.0;
-const R: f64 = 1.775;
-const KE: f64 = 0.14162;
-/// c/s per FAST tick per current count.
-const B: f64 = 0.03083;
-const FC: f64 = 53.19;
-const FV: f64 = 0.005135;
-/// L/R = 0.87 mH / 4.89 ohm, in FAST ticks.
-const TAU_E: f64 = 3.56;
-const TICK_HZ: f64 = 20_000.0;
-const SIGMA_RAW: f64 = 1.2;
-const LASH: f64 = 5.7;
-/// Amplitude and period, linearized counts.
-const RESIDUAL: (f64, f64) = (5.0, 60.0);
 const DEADBAND: u16 = 12;
 const CENTER: i32 = 2050;
 /// Per goal: the move, the settle, and the judged tail.
 const HOLD_TICKS: u32 = 16_000;
 const TAIL_TICKS: u32 = 6_000;
-const ARR: u32 = 1200;
 
 /// Entering at one edge, the speed Coulomb friction alone sheds across the
 /// band: v^2 = 2 x (B x FC) x 2 x deadband.
 fn coast_stop_cps() -> f64 {
     (2.0 * B * TICK_HZ * FC * 2.0 * DEADBAND as f64).sqrt()
-}
-
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-
-    fn unit(&mut self) -> f64 {
-        ((self.next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
-    }
-
-    fn gauss(&mut self) -> f64 {
-        let (u, v) = (self.unit(), self.unit());
-        (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
-    }
 }
 
 /// Local gain 1.25 over raw 1600..2592, easing back to the identity by 3600.
@@ -104,157 +66,17 @@ fn steepest() -> [i16; POINTS] {
     ramp(106, 118, 190, 48)
 }
 
-/// The table's inverse: the raw count it maps onto `lin`.
-fn raw_of(lut: &[i16; POINTS], lin: f64) -> f64 {
-    let at = |k: usize| (k * GRID) as f64 + lut[k] as f64;
-    let k = (0..POINTS - 1)
-        .find(|&k| at(k + 1) > lin)
-        .unwrap_or(POINTS - 2);
-    (k * GRID) as f64 + GRID as f64 * (lin - at(k)) / (at(k + 1) - at(k))
-}
-
-/// Rotor and pot shaft in linearized counts, the pot riding the rotor
-/// through the lash.
-struct Mg90 {
-    rotor: f64,
-    out: f64,
-    omega: f64,
-    i: f64,
-    rng: Rng,
-    lut: [i16; POINTS],
-}
-
-impl Mg90 {
-    fn new(lin: f64, lut: [i16; POINTS], seed: u64) -> Self {
-        Self {
-            rotor: lin,
-            out: lin,
-            omega: 0.0,
-            i: 0.0,
-            rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
-            lut,
-        }
-    }
-
-    /// The linearized position the kernel reads, noise aside.
-    fn sensed(&self) -> f64 {
-        self.out - RESIDUAL.0 * (std::f64::consts::TAU * self.out / RESIDUAL.1).sin()
-    }
-
-    /// One FAST tick under `cmd`, with the chip's mapping: a zero width
-    /// coasts, Brake shorts the winding, Coast and Disabled open it.
-    fn step(&mut self, cmd: Option<MotorCmd>) -> SensorFrame {
-        let volts = match cmd {
-            Some(MotorCmd::Drive { ticks, reverse, .. }) => (ticks != 0).then(|| {
-                let v = ticks as f64 / ARR as f64 * VBUS;
-                if reverse { -v } else { v }
-            }),
-            Some(MotorCmd::Brake) => Some(0.0),
-            _ => None,
-        };
-        self.i = match volts {
-            Some(v) => self.i + ((v - KE * self.omega) / R - self.i) * (1.0 - (-1.0 / TAU_E).exp()),
-            None => 0.0,
-        };
-        if self.omega != 0.0 || self.i.abs() > FC {
-            let dir = if self.omega != 0.0 {
-                self.omega.signum()
-            } else {
-                self.i.signum()
-            };
-            let next = self.omega + B * (self.i - FC * dir - FV * self.omega);
-            // friction stops a coasting rotor, it never reverses it
-            self.omega = if self.omega != 0.0 && next.signum() != self.omega.signum() {
-                0.0
-            } else {
-                next
-            };
-        }
-        self.rotor += self.omega / TICK_HZ;
-        self.out = self
-            .out
-            .clamp(self.rotor - LASH / 2.0, self.rotor + LASH / 2.0);
-        let raw = raw_of(&self.lut, self.sensed()) + SIGMA_RAW * self.rng.gauss();
-        let fwd = !matches!(cmd, Some(MotorCmd::Drive { reverse: true, .. }));
-        let (sample, va, vb) = if fwd {
-            (self.i, VBUS as u16, 0)
-        } else {
-            (-self.i, 0, VBUS as u16)
-        };
-        SensorFrame {
-            pos: raw.round().clamp(0.0, 4095.0) as u16,
-            current: (BIAS as f64 + sample).round().clamp(0.0, 4095.0) as u16,
-            current_trough: BIAS,
-            vmotor_a: va,
-            vmotor_a_trough: va,
-            vmotor_b: vb,
-            vmotor_b_trough: vb,
-            vcal: 1200,
-            vbus_raw: vbus_raw(VBUS as u16),
-            ntc_raw: 2048,
-        }
-    }
-
-    /// What the rail supplies: the winding current over the on fraction.
-    fn supply(&self, cmd: Option<MotorCmd>) -> f64 {
-        match cmd {
-            Some(MotorCmd::Drive { ticks, .. }) => (self.i * ticks as f64 / ARR as f64).abs(),
-            _ => 0.0,
-        }
-    }
-}
-
-/// The bench MG90's saved set, identified in linearized counts, then `cfg`.
-/// One departure: the profile asks for 20 counts/s per medium tick where
-/// the bench saved 15. Under the 280-count limit the shaft cannot follow
-/// that, so it trails into the deceleration, which is the fast arrival
-/// these tests exist for. At the saved 15, with the current command three
-/// ticks behind its sample, the sweep holds 3 fast arrivals, too few to
-/// cover the case.
+/// The bench MG90's saved set, then `cfg`. One departure: the profile
+/// asks for 20 counts/s per medium tick where the bench saved 15. Under the
+/// 280-count limit the shaft cannot follow that, so it trails into the
+/// deceleration, which is the fast arrival these tests exist for. At the
+/// saved 15, with the current command three ticks behind its sample, the
+/// sweep holds 3 fast arrivals, too few to cover the case.
 fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
-    let sh = Shared::new();
-    seed(&sh);
-    sh.table.with_mut(|t| {
-        let c = &mut t.config;
-        c.loop_current.i_kp_q88 = 508;
-        c.loop_current.i_ki_q412 = 2284;
-        c.loop_current.i_kaw_q412 = 4568;
-        c.loop_velocity.v_kp_q88 = 522;
-        c.loop_velocity.v_ki_q412 = 1312;
-        c.loop_velocity.v_kaw_q412 = 2624;
-        c.loop_velocity.j_ff_q88 = 831;
-        c.loop_position.p_kp_q88 = 40212;
-        c.loop_position.pos_deadband_counts = DEADBAND;
-        c.loop_position.velocity_limit_cps = 1500;
-        c.loop_position.accel_limit_q88 = 5120;
-        c.limits.current_limit_counts = 280;
-        c.limits.stall_response = StallResponse::Yield;
-        c.limits.stall_time_ticks = ms_ticks(500);
-        c.limits.stall_yield_counts = 168;
-        c.limits.stall_release_counts = 84;
-        c.limits.stall_tau_trip_counts = 2182;
-        c.limits.oc_trip_counts = 1843;
-        c.limits.oc_trip_ticks = 8;
-        c.limits.openloop_zero_brake = false;
-        c.thermal.v_undervolt_counts = 1200;
-        c.fusion.l1_q016 = 8640;
-        c.fusion.l2_q88 = 3180;
-        c.fusion.l3_q88 = 81;
-        c.fault_cfg.pos_error_counts = 400;
-        let cal = &mut t.calib;
-        cal.sense.i_window_min_ticks = 160;
-        cal.sense.v_window_min_ticks = 160;
-        cal.motor.r_q12 = 7270;
-        cal.motor.ke_vpc_q = 580;
-        cal.motor.recip_ke_q = 7228;
-        cal.motor.b_i_q313 = 2524;
-        cal.motor.fric_fc_counts = 53;
-        cal.motor.fric_fv_q016 = 336;
-        cal.winding.r0_q12 = 7270;
-    });
-    sh.table.with_mut(cfg);
-    lut_live(&sh, lut);
-    sh
+    mg90::rig(lut, |t| {
+        t.config.loop_position.accel_limit_q88 = 20 << 8;
+        cfg(t);
+    })
 }
 
 /// A start and `n` goals after it, alternating about the center: steps of
@@ -263,7 +85,7 @@ fn goals(seed: u64, n: usize) -> Vec<i32> {
     let mut rng = Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
     (0..=n)
         .map(|k| {
-            let half = 150 + (rng.next() % 76) as i32;
+            let half = 150 + (rng.next_u64() % 76) as i32;
             if k % 2 == 0 {
                 CENTER - half
             } else {

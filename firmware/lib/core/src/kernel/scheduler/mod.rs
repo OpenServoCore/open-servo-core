@@ -113,7 +113,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     }
 
     /// The configuration, whole, then the thermometer's bound at it and the
-    /// terminal floor at the OpenLoop decay. The rail clamp follows
+    /// terminal floor at the OpenLoop decay; a new `drive_polarity`
+    /// unproves the drive direction check. The rail clamp follows
     /// `duty_max_q15` at the next RAIL phase. The kernel preempts the bus, so
     /// no commit store lands inside the tick: at an even count the span is
     /// one committed set. At an odd one (the first tick only) the next even
@@ -125,6 +126,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // the count load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
         self.cfg.take(shared);
+        self.medium.drive.take(self.cfg.limits.drive_polarity);
         self.medium.thermal.bound(&self.cfg.therm);
         let v_floor = self.cfg.v_floor_q15[self.cfg.limits.openloop_decay as usize];
         let p = shared.table.region_ptr();
@@ -196,7 +198,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // bit, as it does through the SLOW finish's period: one slow-rate
         // stage per period keeps them from bunching on one TEL batch. A stage
         // tick holds the TX lane; a take does not, as one can run every
-        // period.
+        // period. The drive direction check takes a SPARE_B no thermometer
+        // stage does, and its own stage runs there too, so the two never
+        // share a tick; it holds no lane.
         match phase {
             phase::CONTROL if !self.booted => self.boot(shared),
             phase::SPARE_A if config_due(shared.config_seq(), self.config_seq) => {
@@ -210,6 +214,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     .spare(phase, shared.frame().ntc_raw(), &self.cfg);
                 if ran {
                     self.tel.hold();
+                }
+            }
+            phase::SPARE_B if self.medium.drive.unproven() => {
+                let duty = self.fast.duty_q15();
+                if self.medium.drive.check(self.medium.theta_q4(), duty) {
+                    core::hint::cold_path();
+                    self.medium.drive_stage(shared, duty, &mut self.faults);
                 }
             }
             _ => {}

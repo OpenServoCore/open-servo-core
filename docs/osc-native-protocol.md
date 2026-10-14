@@ -832,6 +832,7 @@ newly-latched kind (`fault_code`, `0x221`):
 | 4   | 5    | `sensor`         |
 | 5   | 6    | `under_volt`     |
 | 6   | 7    | `data`           |
+| 6   | 8    | `drive_reversed` |
 
 Any set bit forces the drive off; the `torque_enable` 0 to 1 edge is the
 only acknowledgement, and a still-present condition re-latches at once.
@@ -846,6 +847,32 @@ stall timer runs off the duty ceiling (sec 5.8), so with
 `stall_response` at its boot value of Fault, an OpenLoop drive held
 against a stop or a jam for longer than `stall_time_ticks` latches it
 unless a stall permit is live.
+
+`drive_reversed` shares the `data` bit, since the stored
+`drive_polarity` does not describe the servo, and latches when the shaft
+turns against the drive: a motor wired the other way round, which would
+also turn the soft-limit walls the wrong way. From boot, and again after
+a write that changes `drive_polarity`, the kernel follows the observer's
+position (`theta_hat_q16`) in legs of 20 counts, about 1 degree on the
+bench MG90, once per medium period while torque is on: an idle drive
+(zero duty) drags the start of the leg along. A leg's end counts the
+next period only where the pot agrees with the observer to within a leg,
+and is judged the period after against the drive's direction, the
+position loop's or the profile's in Position and Velocity, the applied
+duty in OpenLoop and Current. A leg the drive's way proves the wiring,
+and the check stops until the next boot or polarity change. Two legs in
+a row against it, 40 counts, latch the fault: in Position and Velocity
+anywhere, in OpenLoop and Current only at a soft limit with the drive
+pointing back in, within about a leg past it, since a load may overpower
+an open drive mid travel (DES
+`a_reversed_motor_faults_in_the_closed_loops_within_three_legs`,
+`a_reversed_open_drive_faults_at_the_soft_limit`). A latch leaves the
+wiring unproven, so the next enable checks again; `osc cal` learns the
+polarity. A sag the loop wins does not latch it, up to a load at the
+current limit (DES `gravity_sag_at_the_limit_never_reads_reversed`).
+Before a first move has proven the wiring, a load the limit cannot hold,
+or a push that drives a closed loop back two legs, reads the same as a
+reversed motor and latches it.
 
 **Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
