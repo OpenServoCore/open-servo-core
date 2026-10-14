@@ -10,6 +10,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking;
+pub mod calib;
 mod client;
 pub mod common;
 pub mod cyclic;

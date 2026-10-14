@@ -48,7 +48,8 @@
       "raw_max",
       "angle_min_cdeg",
       "angle_max_cdeg",
-      "gear_ratio_centi"
+      "gear_ratio_centi",
+      "gear_class"
     ],
     "pos_lut_points": 256
   },
@@ -717,6 +718,13 @@
       "addr": 206,
       "width": 2,
       "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "gear_class",
+      "addr": 208,
+      "width": 1,
+      "access": "rw",
       "kind": "uint"
     },
     {

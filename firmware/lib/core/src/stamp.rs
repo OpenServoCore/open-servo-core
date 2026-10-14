@@ -29,7 +29,7 @@ pub const TAG: &str = "osc-plant-1";
 pub const UNSTAMPED: u16 = 0;
 
 /// The covered fields, in table order.
-pub const COVERED_NAMES: [&str; 39] = [
+pub const COVERED_NAMES: [&str; 40] = [
     "pos_min_phys_counts",
     "pos_max_phys_counts",
     "pos_min_soft_counts",
@@ -69,6 +69,7 @@ pub const COVERED_NAMES: [&str; 39] = [
     "angle_min_cdeg",
     "angle_max_cdeg",
     "gear_ratio_centi",
+    "gear_class",
 ];
 
 /// One covered byte span of the table.
@@ -237,7 +238,7 @@ mod tests {
             assert!(w[0].addr + w[0].width <= w[1].addr, "table order");
         }
         let hashed: u16 = COVERED.iter().map(|s| s.width).sum();
-        assert_eq!(hashed, 85);
+        assert_eq!(hashed, 86);
         let last = COVERED[COVERED.len() - 1];
         assert!(last.addr + last.width <= CALIB_BASE_ADDR + CALIB_REGION_SIZE);
         assert!(!covers(PLANT_STAMP, 2), "the stamp does not cover itself");

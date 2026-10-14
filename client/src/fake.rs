@@ -35,6 +35,8 @@ pub mod seed {
     pub const ANGLE_MIN_CDEG: i16 = 0;
     pub const ANGLE_MAX_CDEG: i16 = 20200;
     pub const GEAR_RATIO_CENTI: u16 = 25464;
+    /// The calibrated servo is an SG90: a plastic train.
+    pub const GEAR_CLASS: u8 = 1;
     pub const POS_MIN_PHYS_COUNTS: i32 = 5;
     pub const POS_MAX_PHYS_COUNTS: i32 = 4095;
     pub const POS_MIN_SOFT_COUNTS: i32 = 228;
@@ -195,6 +197,7 @@ impl FakePipe {
             t.calib.kinematics.angle_min_cdeg = seed::ANGLE_MIN_CDEG;
             t.calib.kinematics.angle_max_cdeg = seed::ANGLE_MAX_CDEG;
             t.calib.kinematics.gear_ratio_centi = seed::GEAR_RATIO_CENTI;
+            t.calib.gear.gear_class = seed::GEAR_CLASS;
             t.calib.motor.r_q12 = seed::R_Q12;
             t.calib.motor.recip_ke_q = seed::RECIP_KE_Q;
             t.calib.motor.b_i_q313 = seed::B_I_Q313;

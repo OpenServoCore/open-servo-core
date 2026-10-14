@@ -6,6 +6,7 @@ use std::time::Duration;
 use futures_lite::future::block_on;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
+use crate::calib::{self, GearClass};
 use crate::client::{Chain, Ping, Reply, StreamReply};
 use crate::common::{self, Health, Identity};
 use crate::cyclic::Cycle;
@@ -213,6 +214,10 @@ impl<P: Pipe> Client<P> {
 
     pub fn data_state(&mut self, id: Id, d: &Descriptor) -> Result<DataState, Error> {
         block_on(data_state::read(&mut self.0, id, d))
+    }
+
+    pub fn gear_class(&mut self, id: Id, d: &Descriptor) -> Result<GearClass, Error> {
+        block_on(calib::gear_class(&mut self.0, id, d))
     }
 
     /// The stamp of the set the servo holds now.

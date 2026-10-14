@@ -17,6 +17,7 @@ mod sweep;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use osc_client::blocking::Client;
+use osc_client::calib::GearClass;
 use osc_client::mgmt::Uid;
 use osc_client::nusb::NusbPipe;
 use osc_client::record::{self, Diag};
@@ -580,6 +581,11 @@ fn status(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     );
     let d = state::descriptor(c, id)?;
     state::report(c, id, &d)?;
+    match c.gear_class(id, &d) {
+        Ok(g) => println!("      gears {}", g.name()),
+        Err(osc_client::Error::Descriptor(_)) => {}
+        Err(e) => return Err(e.into()),
+    }
     println!("{}", health_line(c, id, &d)?);
     Ok(())
 }
@@ -735,12 +741,15 @@ fn dump(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor) -> Result<
     }
     for f in &d.fields {
         let bytes = &table[f.addr as usize..f.end() as usize];
+        let mut value = descriptor::decode(f, bytes)?;
+        if let ("gear_class", [b]) = (f.name.as_str(), bytes) {
+            value = format!("{value} ({})", GearClass::from_byte(*b).name());
+        }
         println!(
-            "{:#06x}  {:<28} {:<2}  {}",
+            "{:#06x}  {:<28} {:<2}  {value}",
             f.addr,
             f.name,
             f.access.as_str(),
-            descriptor::decode(f, bytes)?,
         );
     }
     Ok(())
