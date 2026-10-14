@@ -112,7 +112,7 @@ pub(crate) fn jam_check<S: Servo>(
     }
     if let Some(m) = exp.moved_at() {
         println!(
-            "  the shaft moves at {:.1}%; a pulse moved it {} counts at most",
+            "  the shaft moves at {:.1}%; a pulse and its rest moved it {} counts at most",
             m * 100.0,
             exp.pulse_travel_max()
         );
