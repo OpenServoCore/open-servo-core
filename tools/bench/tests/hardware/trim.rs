@@ -108,9 +108,17 @@ fn lying_train_trims_and_truth_pulls_back() {
     let lied = read_trim(&mut b);
     assert_eq!(lied - start, STEPS_MAX, "the lie clamps at +STEPS_MAX");
 
-    train(&mut b, GAP_US);
-    train(&mut b, GAP_US);
-    let back = read_trim(&mut b);
+    // Two truth trains can stop mid-correction: the lie leaves the trim
+    // STEPS_MAX out, and the next step effects are measured over one or
+    // two codes, so a pair can overshoot by two. Converge instead; a trim
+    // that never settles dithers between neighbours, and the clock still
+    // judges it.
+    let mut codes = vec![lied];
+    let (_, trains) = converge(&mut b, |b| {
+        train(b, GAP_US);
+        codes.push(read_trim(b));
+    });
+    let back = codes[codes.len() - 1];
     let back_clock = b.servo_clock(TRUTH_REPLIES, TRUTH_LEN);
 
     // A converged trim holds the clock within half a step plus the ruler's
@@ -123,7 +131,7 @@ fn lying_train_trims_and_truth_pulls_back() {
     let moved = back_clock.mean - start_clock.mean;
     println!(
         "clock start {:.0} ppm, back {:.0} ppm, moved {moved:.0} ppm, tolerance {tol:.0} ppm; \
-         trim codes start {start}, lied {lied}, back {back}",
+         trim codes start {start}, per train {codes:?}, back {back} after {trains} truth trains",
         start_clock.mean, back_clock.mean,
     );
     assert!(moved.abs() <= tol, "truth pulls the clock back");
