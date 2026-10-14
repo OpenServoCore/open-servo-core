@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use super::grade::Report;
 use crate::descriptor;
+use crate::rig::Bus;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct WriteArgs {
@@ -41,9 +42,9 @@ struct Servo {
     d: Descriptor,
 }
 
-fn open(baud: String, id: u8) -> Result<Servo> {
-    let mut c = crate::rig::connect(&baud)?;
+fn open(bus: Bus, id: u8) -> Result<Servo> {
     let id = Id::new(id);
+    let mut c = crate::rig::connect(&bus, &[id])?;
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
     Ok(Servo { c, id, d })
@@ -150,11 +151,11 @@ fn explain(lut: &GridLut, stops: (u16, u16)) -> Option<String> {
     }
 }
 
-pub(crate) fn write(a: &WriteArgs, baud: String, id: u8) -> Result<()> {
+pub(crate) fn write(a: &WriteArgs, bus: Bus, id: u8) -> Result<()> {
     let img = super::load(&a.image)?;
     let lut = super::on_grid(&img, &a.image)?;
     println!("image: {}", super::describe(&img, &a.image));
-    let mut s = open(baud, id)?;
+    let mut s = open(bus, id)?;
     let stops = s.stops()?;
     println!("servo stops {}..{}", stops.0, stops.1);
     if stops != (img.raw_min, img.raw_max) {
@@ -200,8 +201,8 @@ struct Shown {
     points: Vec<i16>,
 }
 
-pub(crate) fn show(a: &ShowArgs, baud: String, id: u8) -> Result<()> {
-    let mut s = open(baud, id)?;
+pub(crate) fn show(a: &ShowArgs, bus: Bus, id: u8) -> Result<()> {
+    let mut s = open(bus, id)?;
     let stops = s.stops()?;
     let lut = s.lut()?;
     let report = Report::new(&grid(&lut), stops);
@@ -233,8 +234,8 @@ pub(crate) fn show(a: &ShowArgs, baud: String, id: u8) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn grade(baud: String, id: u8, json: bool) -> Result<()> {
-    let mut s = open(baud, id)?;
+pub(crate) fn grade(bus: Bus, id: u8, json: bool) -> Result<()> {
+    let mut s = open(bus, id)?;
     let stops = s.stops()?;
     let lut = s.lut()?;
     let report = Report::new(&grid(&lut), stops);
@@ -247,8 +248,8 @@ pub(crate) fn grade(baud: String, id: u8, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn clear(baud: String, id: u8) -> Result<()> {
-    let mut s = open(baud, id)?;
+pub(crate) fn clear(bus: Bus, id: u8) -> Result<()> {
+    let mut s = open(bus, id)?;
     match s.c.clear_pos_lut(s.id, &s.d) {
         Ok(()) => {}
         Err(Error::Lut(e)) => bail!("id {}: {e}", s.id.as_byte()),

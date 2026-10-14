@@ -16,6 +16,8 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use osc_ident::lut::{GridLut, Image};
 
+use crate::rig::Bus;
+
 /// `osc lut` args. `build` and `grade <image>` need no bus; the rest take
 /// the top-level `--baud`/`--id`.
 #[derive(clap::Args, Debug)]
@@ -56,7 +58,7 @@ pub(crate) struct GradeArgs {
     json: bool,
 }
 
-pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     match &args.cmd {
         LutCmd::Build(a) => build::run(a),
         LutCmd::Grade(a) => match &a.image {
@@ -72,11 +74,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 }
                 Ok(())
             }
-            None => servo::grade(baud, id, a.json),
+            None => servo::grade(bus, id, a.json),
         },
-        LutCmd::Write(a) => servo::write(a, baud, id),
-        LutCmd::Show(a) => servo::show(a, baud, id),
-        LutCmd::Clear => servo::clear(baud, id),
+        LutCmd::Write(a) => servo::write(a, bus, id),
+        LutCmd::Show(a) => servo::show(a, bus, id),
+        LutCmd::Clear => servo::clear(bus, id),
     }
 }
 

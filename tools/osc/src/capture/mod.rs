@@ -23,6 +23,7 @@ use anyhow::Result;
 use clap::{Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
+use crate::rig::Bus;
 use crate::sweep::Step;
 
 /// `osc capture` args. `--baud`/`--id` come from the top-level osc globals.
@@ -138,11 +139,11 @@ pub(crate) const RUNG_TRIES: u32 = 3;
 pub(crate) const WINDOW_MS: u32 = 150;
 
 /// Entry from the top-level `osc capture` dispatch.
-pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     match &args.cmd {
-        CaptureCmd::Pilot(a) => pilot::run(a, baud, id),
+        CaptureCmd::Pilot(a) => pilot::run(a, bus, id),
         CaptureCmd::Plan(a) => print_plan(a),
-        CaptureCmd::Session(a) => run::run(a, baud, id),
+        CaptureCmd::Session(a) => run::run(a, bus, id),
         CaptureCmd::Check(a) => check::run(a),
     }
 }

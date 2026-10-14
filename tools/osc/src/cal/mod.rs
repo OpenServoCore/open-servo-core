@@ -55,6 +55,7 @@ use osc_ident::sources;
 use osc_ident::units::{self, SenseParams};
 
 use crate::capture::envelope;
+use crate::rig::Bus;
 use crate::rig::centre::{adopt_polarity, centre};
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{Pump, with_guard, write_reg};
@@ -120,10 +121,10 @@ pub struct Args {
 }
 
 /// Entry from the top-level `osc cal` dispatch.
-pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     crate::rig::pump::install_ctrlc();
-    let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
+    let mut c = crate::rig::connect(&bus, &[id])?;
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
     crate::rig::pump::admit_watch(&mut c, id)?;

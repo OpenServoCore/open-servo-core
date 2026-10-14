@@ -203,6 +203,10 @@ impl<P: Pipe> Client<P> {
         block_on(common::clear_counters(&mut self.0, id))
     }
 
+    pub fn sync_response_deadline(&mut self, ids: &[Id], us: u16) -> Result<Vec<(Id, u16)>, Error> {
+        block_on(common::sync_response_deadline(&mut self.0, ids, us))
+    }
+
     pub fn read_span(&mut self, id: Id, lo: u16, hi: u16) -> Result<Vec<u8>, Error> {
         block_on(self.0.read_span(id, lo, hi))
     }

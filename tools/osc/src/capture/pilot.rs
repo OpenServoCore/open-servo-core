@@ -39,6 +39,7 @@ use super::front::{self, Front, Proved};
 use super::procs::{CoastBlock, Procedure};
 use super::verdict::{dropped, load_held, settled};
 use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS as SEEK_SETTLE_MS, Supply, WINDOW_MS};
+use crate::rig::Bus;
 use crate::rig::park::park;
 use crate::rig::pump;
 use crate::rig::servo::{Servo, Wire, guard};
@@ -102,7 +103,7 @@ const COAST_MARGIN: f64 = 0.1;
 const DIRS: [Dir; 2] = [Dir::Fwd, Dir::Rev];
 
 /// Entry from `osc capture pilot`.
-pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
+pub(crate) fn run(a: &Args, bus: Bus, id: u8) -> Result<()> {
     pump::install_ctrlc();
     let root = match &a.root {
         Some(r) => r.clone(),
@@ -110,8 +111,8 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     };
     let dir = super::dataset_dir(&root, &a.servo, a.supply);
     let (procedure, _) = Procedure::load()?;
-    let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
+    let mut c = crate::rig::connect(&bus, &[id])?;
     // Nothing has moved yet, so a refusal here leaves the horn where it is.
     let front = front::read(&mut c, id, a.supply)?;
     let fw = c.identity(id)?.fw;

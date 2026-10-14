@@ -64,6 +64,32 @@ pub async fn clear_counters<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(), Er
     c.write(id, table::CRC_FAIL_COUNT, &[0u8; 8]).await
 }
 
+/// Make `us` the bus's RESPONSE_DEADLINE: the engine mirror, then each of
+/// `ids`, written only where it differs, since any config write marks the
+/// servo dirty (protocol sec 9.4). Returns the servos rewritten, with the
+/// value each held.
+pub async fn sync_response_deadline<P: Pipe>(
+    c: &mut Client<P>,
+    ids: &[Id],
+    us: u16,
+) -> Result<Vec<(Id, u16)>, Error> {
+    c.set_response_deadline(us).await?;
+    let mut rewritten = Vec::new();
+    for &id in ids {
+        let b = c.read(id, table::RESPONSE_DEADLINE_US, 2).await?;
+        let [lo, hi, ..] = b[..] else {
+            return Err(short("response deadline"));
+        };
+        let held = u16::from_le_bytes([lo, hi]);
+        if held != us {
+            c.write(id, table::RESPONSE_DEADLINE_US, &us.to_le_bytes())
+                .await?;
+            rewritten.push((id, held));
+        }
+    }
+    Ok(rewritten)
+}
+
 fn short(what: &str) -> Error {
     Error::Link(LinkError::Desync(format!("short {what} payload")))
 }
