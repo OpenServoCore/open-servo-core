@@ -25,8 +25,8 @@ use osc_protocol::wire::UID_LEN;
 
 use crate::descriptor::Descriptor;
 use crate::types::{
-    Alive, BaudRate, DataState, Found, Health, Identity, LinkInfo, Ping, PosLut, Rails,
-    StampVerdict, TelBurst, TelChunk, tel_chunks,
+    Alive, BaudRate, DataState, DeadlineRewrite, Found, Health, Identity, LinkInfo, Ping, PosLut,
+    Rails, StampVerdict, TelBurst, TelChunk, tel_chunks,
 };
 #[cfg(feature = "fake")]
 use crate::types::{FakeServo, Track};
@@ -305,6 +305,23 @@ impl OscClient {
         }))
     }
 
+    /// Make `us` the bus's response deadline: the adapter mirror, then each
+    /// of `ids` that holds another value; resolves to the servos rewritten.
+    #[wasm_bindgen(js_name = syncResponseDeadline, unchecked_return_type = "DeadlineRewrite[]")]
+    pub async fn sync_response_deadline(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "number[]")] ids: Vec<u8>,
+        us: u16,
+    ) -> Result<JsValue, JsError> {
+        let ids: Vec<Id> = ids.into_iter().map(Id::new).collect();
+        let rewritten = cmd!(self, |c| common::sync_response_deadline(c, &ids, us)
+            .await?);
+        list(rewritten.iter().map(|&(id, held)| DeadlineRewrite {
+            id: id.as_byte(),
+            held,
+        }))
+    }
+
     pub async fn save(&self, id: u8) -> Result<(), JsError> {
         cmd!(self, |c| mgmt::save(c, Id::new(id)).await?);
         Ok(())
@@ -373,6 +390,7 @@ impl OscClient {
                 track: None,
                 virgin: false,
                 therm: Default::default(),
+                response_deadline_us: None,
             })
             .collect();
         Self::fake_fleet(fleet).await
@@ -383,8 +401,9 @@ impl OscClient {
     /// telemetry registers show captured data instead of the synthetic
     /// ramp; columns must be non-empty and equal in length), `virgin`
     /// for a factory-fresh servo that has never been calibrated,
-    /// identified or saved, and `therm` ("on", "off" or "derating") for a
-    /// calibrated servo's winding thermometer.
+    /// identified or saved, `therm` ("on", "off" or "derating") for a
+    /// calibrated servo's winding thermometer, and `responseDeadlineUs` for
+    /// a servo holding another deadline than the protocol default.
     #[wasm_bindgen(js_name = fakeWithTracks)]
     pub async fn fake_with_tracks(
         #[wasm_bindgen(unchecked_param_type = "FakeServo[]")] fleet: JsValue,
@@ -414,6 +433,10 @@ impl OscClient {
             }
             if let Some(track) = s.track {
                 pipe.set_track(i, track_rows(track)?);
+            }
+            if let Some(us) = s.response_deadline_us {
+                pipe.sim_mut()
+                    .servo_table_mut(i, |t| t.config.common.response_deadline_us = us);
             }
         }
         let c = Client::connect(pipe).await?;

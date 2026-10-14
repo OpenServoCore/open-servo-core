@@ -128,6 +128,14 @@ pub struct Alive {
     pub alive: bool,
 }
 
+/// A servo `syncResponseDeadline` rewrote, with the value it held.
+#[derive(Debug, Clone, Copy, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadlineRewrite {
+    pub id: u8,
+    pub held: u16,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct Ping {
@@ -401,7 +409,8 @@ pub struct Track {
 /// One `fakeWithTracks` roster entry: a servo id, optionally playing a
 /// track back, optionally factory-fresh (never calibrated, identified or
 /// saved: every `data_flags` reason set) instead of stamped, optionally
-/// with its winding thermometer off or pinned in the derate band.
+/// with its winding thermometer off or pinned in the derate band or
+/// holding another response deadline.
 #[cfg(feature = "fake")]
 #[derive(Debug, Clone, Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
@@ -416,6 +425,10 @@ pub struct FakeServo {
     #[tsify(optional, type = "\"on\" | \"off\" | \"derating\"")]
     #[serde(default)]
     pub therm: osc_client::fake::Therm,
+    /// The response deadline the servo holds at connect, in RAM only
+    /// (default the protocol's).
+    #[tsify(optional)]
+    pub response_deadline_us: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]

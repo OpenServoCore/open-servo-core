@@ -72,6 +72,12 @@ pub fn pos_lut_state_name(state: u8) -> Option<String> {
     osc_client::pos_lut::state::name(state).map(String::from)
 }
 
+/// The protocol default response deadline (protocol sec 7), us.
+#[wasm_bindgen(js_name = defaultResponseDeadlineUs)]
+pub fn default_response_deadline_us() -> u16 {
+    osc_protocol::wire::DEFAULT_RESPONSE_DEADLINE_US
+}
+
 /// The longest TEL row, bytes (protocol sec 5.6).
 #[wasm_bindgen(js_name = telRowBytesMax)]
 pub fn tel_row_bytes_max() -> u32 {
