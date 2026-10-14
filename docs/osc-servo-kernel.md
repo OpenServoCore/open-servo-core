@@ -358,6 +358,8 @@ SPI1 is the CRC engine ([protocol sec 3.2](osc-native-protocol.md#32-osc-crc-16)
 
 ## 8. Code shape on a fetch-bound chip
 
+The facts behind these rules, the layout traps and how to measure a change are in [v006-performance.md](v006-performance.md).
+
 ### 8.1 The fetch model
 
 Flash is fetched one aligned 4-byte word per 3 HCLK at 48 MHz, with no cache. Every taken branch, call and return restarts the fetch; a branch not taken costs its bytes. Budget E rows are priced with this model.
