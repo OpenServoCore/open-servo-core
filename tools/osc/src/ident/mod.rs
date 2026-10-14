@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::capture::envelope;
 use crate::rig::Bus;
-use crate::rig::centre::adopt_polarity;
+use crate::rig::centre::jam_check;
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
 use crate::rig::servo::{Servo, Wire};
@@ -652,24 +652,20 @@ fn pct(duty: f64) -> String {
 /// Into the band at mid travel ([`Centre`]); a blocked shaft ends the run.
 /// The duty the shaft first travelled at, when it travelled.
 fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result<Option<f64>> {
-    let what = if cfg.nudge {
-        "the jam check"
-    } else {
-        "centring"
-    };
-    let nudge = cfg.nudge;
     let params = rig(cli)?;
+    if cfg.nudge {
+        let d = drive(cli)?;
+        let mut s = Wire::new(c, id);
+        let (exp, polarity) = jam_check(&mut s, cfg, params, d.polarity.get())?;
+        d.polarity.set(polarity);
+        return Ok(exp.moved_at());
+    }
     let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut exp))?;
-    check_abort(what, exp.abort())?;
+    check_abort("centring", exp.abort())?;
     let exp = exp.into_inner();
     if !exp.arrived() {
         bail!("centring did not reach mid travel in 5 s (gear slipping?)");
-    }
-    if nudge {
-        let d = drive(cli)?;
-        d.polarity
-            .set(adopt_polarity(c, id, &exp, d.polarity.get())?);
     }
     Ok(exp.moved_at())
 }
