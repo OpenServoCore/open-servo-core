@@ -608,6 +608,10 @@ servo scales it by the table's local gain at the present position. The
 table itself is calibration data like the primitives above: stored on
 the servo, exported to the host, never converted on the way.
 
+The angle map (`angle_min_cdeg` at `raw_min`, `angle_max_cdeg` at
+`raw_max`) may descend: degrees are counterclockwise-positive facing the
+horn (ROS REP 103), while counts follow the pot.
+
 ### 5.6 Telemetry stream (TEL bursts)
 
 High-rate telemetry rides the bus as a bounded burst of status frames
