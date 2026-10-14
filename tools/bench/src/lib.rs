@@ -5,6 +5,7 @@
 //! reads a bench image's budget probe over the debug link.
 
 pub mod cli;
+pub mod clock;
 pub mod discover;
 pub mod edges;
 pub mod osc;
