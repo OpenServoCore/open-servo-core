@@ -15,8 +15,9 @@ pub enum Channel {
     IN5 = 5,
     IN6 = 6,
     IN7 = 7,
-    // IN8 is unused on v006 (no external bonding on this package).
-    /// IN10 = "Vcal" per datasheet block diagram. SMP lives in SAMPTR1.
+    // IN8 is VREFINT, the 1.2 V internal reference (RM sec 9.2.2); not scanned.
+    /// IN10 = "Vcal" per datasheet block diagram, about VDD/2: it tracks the
+    /// ADC reference, so it cannot see a VDD change. SMP lives in SAMPTR1.
     Vcal = 10,
 }
 
