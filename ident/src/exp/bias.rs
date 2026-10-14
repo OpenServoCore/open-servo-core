@@ -80,6 +80,15 @@ pub struct BiasResult {
     pub warnings: Vec<String>,
 }
 
+/// Pot travel from `from` to `to`, counts, less [`CARRY_BAND`] for each
+/// carry between them: a still shaft on one reads either side of the codes
+/// the converter skips there.
+pub fn travel_off_carries(from: u16, to: u16) -> u16 {
+    let (lo, hi) = (from.min(to), from.max(to));
+    let carries = CARRIES.into_iter().filter(|c| lo < *c && *c <= hi).count() as u16;
+    (hi - lo).saturating_sub(carries * CARRY_BAND)
+}
+
 /// The carry `raw` rests within [`CARRY_BAND`] of.
 fn carry_at(raw: u16) -> Option<u16> {
     CARRIES.into_iter().find(|c| raw.abs_diff(*c) <= CARRY_BAND)

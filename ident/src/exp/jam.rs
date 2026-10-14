@@ -35,6 +35,7 @@
 
 use std::collections::VecDeque;
 
+use super::bias::travel_off_carries;
 use super::centre::POT_MID;
 use super::sag::{self, Felt};
 use super::seek::{self, SEEK_TRAVEL_MIN};
@@ -64,7 +65,8 @@ pub const DEAD_PULSES: u32 = 2;
 pub const PULSE_POLLS: u32 = 2;
 pub const REST_POLLS: u32 = 2;
 pub const STILL_REST_POLLS: u32 = 1;
-/// A shaft that moves at zero this many polls on is turned by a load.
+/// A shaft that moves at zero this many polls on, and has gone over
+/// [`MOVED_COUNTS`] since its least rest, is turned by a load.
 pub const REST_POLLS_MAX: u32 = 10;
 /// The fastest a drive may run before the direction is proven, and after,
 /// counts/s: torque off coasts the shaft about 23 counts per count/ms, and
@@ -243,7 +245,7 @@ impl core::fmt::Display for Pulse {
             write!(f, " of {i:.0}")?;
         }
         write!(f, ", {}", self.seen.name())?;
-        let crept = self.travel().unsigned_abs() > STILL_COUNTS as u32;
+        let crept = travel_off_carries(self.from, self.to) > STILL_COUNTS;
         if matches!(self.seen, Seen::Felt(_)) && crept {
             write!(f, ", crept")?;
         } else if self.seen == Seen::Felt(Felt::Turning) {
@@ -266,11 +268,13 @@ enum Next {
 
 #[derive(Copy, Clone, Debug)]
 enum Leg {
-    /// Zero duty for `least` polls and until the shaft rests, then `then`.
+    /// Zero duty for `least` polls and until the shaft rests, then `then`;
+    /// `settled` is the `least`-th read.
     Rest {
         polls: u32,
         least: u32,
         last: u16,
+        settled: u16,
         then: Next,
     },
     /// A pulse of `sign` from `from`; `at` is the last read's
@@ -377,6 +381,7 @@ impl JamCheck {
                 polls: 0,
                 least: REST_POLLS,
                 last: 0,
+                settled: 0,
                 then: Next::Toward,
             },
             writes: VecDeque::new(),
@@ -569,6 +574,7 @@ impl JamCheck {
             polls: 0,
             least,
             last: pos,
+            settled: pos,
             then,
         };
         self.phase = Phase::Wait;
@@ -586,21 +592,26 @@ impl JamCheck {
                 polls,
                 least,
                 last,
+                settled,
                 then,
             } => {
                 let polls = polls + 1;
+                let settled = if polls <= least { o.pos } else { settled };
                 let moving = o.pos.abs_diff(last) > self.params.stall_eps;
                 if polls < least || (moving && polls < REST_POLLS_MAX) {
                     self.leg = Leg::Rest {
                         polls,
                         least,
                         last: o.pos,
+                        settled,
                         then,
                     };
                     return self.wait();
                 }
-                if moving {
-                    return self.halt(seek::blocked(last, o.pos));
+                // A read flipping across a carry moves every poll and nets
+                // nothing; a load turns the shaft one way.
+                if moving && o.pos.abs_diff(settled) > MOVED_COUNTS {
+                    return self.halt(seek::blocked(settled, o.pos));
                 }
                 self.travel_max = self.travel_max.max(o.pos.abs_diff(self.from));
                 self.next(o, then)
@@ -680,7 +691,7 @@ impl JamCheck {
         };
         let ms = self.servo_ms(self.t0, o);
         let turned = matches!(seen, Seen::Moved(_) | Seen::Felt(Felt::Turning))
-            || moved.unsigned_abs() > STILL_COUNTS as u32;
+            || travel_off_carries(from, o.pos) > STILL_COUNTS;
         self.closed = if turned { sign } else { 0 };
         self.pulses.push(Pulse {
             mv: self.cfg.mv(self.v),
@@ -747,7 +758,7 @@ impl JamCheck {
             return Ok(Next::Toward);
         }
         if let Seen::Felt(felt) = seen {
-            if pos.abs_diff(self.from) > STILL_COUNTS {
+            if travel_off_carries(self.from, pos) > STILL_COUNTS {
                 return self.raise(pos);
             }
             if felt == Felt::Turning {
@@ -1477,6 +1488,75 @@ mod tests {
                 let (o, _) = run_with(&c, Bus::BENCH.with_stall(read, 600.0), |_, _| {});
                 assert_eq!(o.end, End::Arrived, "{class:?} read {read}: {o:?}");
                 assert!(o.polarity_ok && o.pressed_ms == 0.0, "{o:?}");
+            }
+        }
+    }
+
+    /// The codes the bench board's converter never reads at its mid-scale
+    /// carry, over its polled reads.
+    const MID_CARRY_SKIPPED: (u16, u16) = (2047, 2050);
+
+    /// A shaft resting on the converter's mid-scale carry reads either side
+    /// of the skipped codes, a read flipping 5 counts every poll at zero:
+    /// no load turns it. From the carry itself, and from starts whose first
+    /// moving pulse coasts onto it, the bench MG90 at 5 V arrives with the
+    /// polarity right.
+    #[test]
+    fn a_rest_on_the_converters_carry_is_no_load() {
+        let starts = std::iter::once(2048.5).chain((1990..=2030).map(f64::from));
+        let mut wrong = Vec::new();
+        for class in CLASSES {
+            for along in [true, false] {
+                for at in starts.clone() {
+                    let c = Case {
+                        class,
+                        vbus_v: 5.0,
+                        ..case(at as u16, along, Fault::None)
+                    };
+                    let (o, _) = run_with(&c, Bus::BENCH, |s, _| {
+                        s.pos = at;
+                        s.skipped = Some(MID_CARRY_SKIPPED);
+                        s.pos_alternate = true;
+                    });
+                    if o.end != End::Arrived || !o.polarity_ok {
+                        wrong.push((at, class, along, o.end));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    /// Each read at the mid-scale carry lands either side of the skipped
+    /// codes at random: a still pulse whose reads straddle them has not
+    /// crept, and each rung below the one that moves is tried both ways.
+    #[test]
+    fn a_still_pulse_across_the_carry_has_not_crept() {
+        for class in CLASSES {
+            for along in [true, false] {
+                let c = Case {
+                    class,
+                    vbus_v: 5.0,
+                    ..case(2048, along, Fault::None)
+                };
+                let (o, _) = run_with(&c, Bus::BENCH, |s, _| {
+                    s.pos = 2048.5;
+                    s.skipped = Some(MID_CARRY_SKIPPED);
+                    s.pos_noise = 1.0;
+                });
+                assert_eq!(o.end, End::Arrived, "{c:?}: {o:?}");
+                let still: Vec<_> = o
+                    .pulses
+                    .iter()
+                    .filter(|p| matches!(p.seen, Seen::Felt(_)))
+                    .collect();
+                let (lo, hi) = MID_CARRY_SKIPPED;
+                let across = |p: &&Pulse| p.from.min(p.to) < lo && p.from.max(p.to) > hi;
+                assert!(still.iter().any(across), "{:#?}", o.pulses);
+                for p in &still {
+                    let ways = still.iter().filter(|q| q.mv == p.mv && q.sign != p.sign);
+                    assert!(ways.count() > 0, "{c:?}: {:#?}", o.pulses);
+                }
             }
         }
     }

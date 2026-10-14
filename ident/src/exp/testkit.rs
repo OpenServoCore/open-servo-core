@@ -226,6 +226,12 @@ pub struct FakeServo {
     pub drive_polarity: bool,
     /// Width of the uniform noise the pot's converter adds, raw counts.
     pub pos_noise: f64,
+    /// Raw codes the converter never reads: a read inside snaps to the
+    /// nearer code outside.
+    pub skipped: Option<(u16, u16)>,
+    /// Each read lands half a code either side of the last: a 1-code swing.
+    pub pos_alternate: bool,
+    alternate_up: bool,
     pub fault_at_ms: Option<f64>,
     /// The Ke the servo carries from an earlier identification, the
     /// firmware's `omega_bemf_cps` divides by; None reads 0, a virgin
@@ -360,6 +366,9 @@ impl FakeServo {
             give: [(0.0, 0.0); 2],
             drive_polarity: true,
             pos_noise: 0.0,
+            skipped: None,
+            pos_alternate: false,
+            alternate_up: false,
             fault_at_ms: None,
             ke_stored: None,
             ticks_lost_per_txn: TICKS_LOST_PER_TRANSACTION,
@@ -428,7 +437,12 @@ impl FakeServo {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         // uniform in [-0.5, 0.5) scaled by pos_noise
-        ((self.lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.pos_noise
+        let uniform = ((self.lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.pos_noise;
+        if !self.pos_alternate {
+            return uniform;
+        }
+        self.alternate_up = !self.alternate_up;
+        uniform + if self.alternate_up { 0.5 } else { -0.5 }
     }
 
     /// The raw count the pot reads at a true position, `noise` raw counts
@@ -442,7 +456,17 @@ impl FakeServo {
             None => counts,
             Some(_) => self.raw_of(counts) as f64,
         };
-        (raw + noise).round().clamp(0.0, 4095.0) as u16
+        let raw = (raw + noise).round().clamp(0.0, 4095.0) as u16;
+        match self.skipped {
+            Some((lo, hi)) if (lo..=hi).contains(&raw) => {
+                if raw - lo < hi - raw {
+                    lo - 1
+                } else {
+                    hi + 1
+                }
+            }
+            _ => raw,
+        }
     }
 
     fn raw_of(&self, counts: f64) -> u16 {
