@@ -54,29 +54,21 @@ pub struct TelemetryMode {
 }
 
 /// One control tick (protocol sec 5.6). The chip's ADC DMA lands both scans
-/// of each PWM period at the front: the trough scan in `_scan_trough`, the
-/// crest scan from `current_raw` to `ntc_raw` in scan-slot order. The tick
-/// ISR names the terminal taps in place (`vmotor_a`, `vmotor_b`), copies the
-/// trough's shunt and taps out of the next scan's way and stamps
-/// `sample_tick`; the kernel writes its conclusions on the window the scan
-/// measured, and the TEL row is copied. The next scans land mid-tick and
-/// late in it (`budget::NEXT_TROUGH`, `budget::NEXT_CREST`), after every
-/// read of this one, so inside the tick every field is this tick's; from
-/// the next crest scan's taps to the next tick, `vmotor_a` and `vmotor_b`
-/// hold that scan's high side and the low side's late sample.
-/// Counts-domain throughout.
+/// of each PWM period at the front: the trough scan and the crest scan's
+/// shunt and taps in `_scan`, the crest's `pos` to `ntc_raw` on their
+/// fields. The DMA writes the taps in sample order, so no published name
+/// lies in its way: the tick ISR copies the crest's shunt and the trough's
+/// out, writes each tap under its terminal's name and stamps `sample_tick`;
+/// the kernel writes its conclusions on the window the scan measured, and
+/// the TEL row is copied. The next scans land mid-tick and late in it
+/// (`budget::NEXT_TROUGH`, `budget::NEXT_CREST`), after every read of this
+/// one, so inside the tick every field is this tick's. Counts-domain
+/// throughout.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Block)]
 pub struct TelemetryTick {
     #[ct_field(skip)]
-    pub _scan_trough: [u16; 7],
-    /// The shunt at the counter peak.
-    #[ct_field(access = ro)]
-    pub current_raw: u16,
-    #[ct_field(access = ro)]
-    pub vmotor_a: u16,
-    #[ct_field(access = ro)]
-    pub vmotor_b: u16,
+    pub _scan: [u16; 10],
     #[ct_field(access = ro)]
     pub pos: u16,
     #[ct_field(access = ro)]
@@ -87,6 +79,13 @@ pub struct TelemetryTick {
     /// NTC divider tap.
     #[ct_field(access = ro)]
     pub ntc_raw: u16,
+    /// The shunt at the counter peak.
+    #[ct_field(access = ro)]
+    pub current_raw: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_a: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_b: u16,
     /// The PWM compare width the window measured was driven at, negative
     /// in reverse; full scale is CALIB `pwm_period_ticks`.
     #[ct_field(access = ro)]
@@ -110,8 +109,6 @@ pub struct TelemetryTick {
     /// latched, the terminal window was read.
     #[ct_field(access = ro)]
     pub tick_flags: u16,
-    #[ct_field(skip)]
-    pub _rsvd_align: u16,
     #[ct_field(access = ro)]
     pub sample_tick: u32,
 }
@@ -208,6 +205,6 @@ pub struct TelemetryRegs {
     pub estimates: TelemetryEstimates,
     pub refs: TelemetryRefs,
     #[ct_section(skip)]
-    pub _rsvd_ident: [u8; 12],
+    pub _rsvd_ident: [u8; 8],
     pub limits: TelemetryLimits,
 }

@@ -1218,7 +1218,7 @@ mod wire {
 /// ahead of the count; the tick block's kernel fields.
 const CHUNK0_ADDR: u16 = 0x1E2;
 const TEL_COUNT: u16 = 0x1EA;
-const TICK: u16 = 0x240;
+const TICK: u16 = 0x246;
 /// Duty, trough, held current and differential.
 const IDENT: Chunks = Chunks::one(TICK, 8);
 const BURST_WINDOW: Duration = Duration::from_millis(50);
@@ -1446,7 +1446,7 @@ fn tel_frame_span(chunks: Chunks, count: u16, seq: usize) -> (u64, u64, u64, u64
 
 /// Rows of every width a burst streams, one chunk and two.
 fn row_widths() -> [Chunks; 8] {
-    let vbus = 0x262;
+    let vbus = 0x266;
     [
         Chunks::one(TICK, 2),
         Chunks::one(TICK, 4),

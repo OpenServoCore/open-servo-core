@@ -7,7 +7,8 @@
 //! TRGO at CNT=0 before CEN=1 so the trough scan lands at offset 0 and the peak
 //! scan lands at `ADC_SCAN_LEN`. Slot indices within a scan reflect the
 //! configured RSQR sequence. The DMA lands both straight in the table's tick
-//! block (`TelemetryTick`), the peak scan's slots on their fields.
+//! block (`TelemetryTick`): the trough scan and the peak scan's shunt and taps
+//! on unnamed halfwords, the peak scan's slots from `pos` on their fields.
 //!
 //! Budget at ADCCLK 24 MHz (TCONV = aperture + 12.5, RM sec 9.3; every slot
 //! runs `SampleTime::CYCLES15` = a 13.5-cycle aperture, apertures in
@@ -102,22 +103,28 @@ const _: () = {
     assert!(NEXT_TROUGH == TICK_PERIOD / 2 - SCAN_TICKS as u32 + first as u32);
 };
 
-/// The tick block's front holds the DMA buffer; each peak slot lands on its
-/// field, the taps on `vmotor_a`/`vmotor_b` in sample order until the frame
-/// maps them.
+/// The tick block's front holds the DMA buffer: the trough scan and the peak
+/// scan's slots ahead of `pos` in `_scan`, each later peak slot on its field.
+/// The taps land in sample order, so every field the frame writes lies past
+/// the DMA's span and a reader never sees a tap under the other's name.
 const _: () = {
     type T = TelemetryTick;
     const fn peak(idx: usize) -> usize {
         (SCAN_PEAK_OFFSET + idx) * size_of::<u16>()
     }
-    assert!(offset_of!(T, _scan_trough) == 0);
-    assert!(offset_of!(T, current_raw) == peak(SCAN_IDX_SHUNT_POST));
-    assert!(offset_of!(T, vmotor_a) == peak(SCAN_IDX_TAP_HIGH));
-    assert!(offset_of!(T, vmotor_b) == peak(SCAN_IDX_TAP_LOW));
+    const SPAN: usize = ADC_DMA_BUF_LEN * size_of::<u16>();
+    assert!(offset_of!(T, _scan) == 0);
     assert!(offset_of!(T, pos) == peak(SCAN_IDX_POS));
     assert!(offset_of!(T, vcal) == peak(SCAN_IDX_VCAL));
     assert!(offset_of!(T, vbus_raw) == peak(SCAN_IDX_VBUS));
     assert!(offset_of!(T, ntc_raw) == peak(SCAN_IDX_NTC));
+    assert!(peak(SCAN_IDX_NTC) + size_of::<u16>() == SPAN);
+    assert!(offset_of!(T, current_raw) >= SPAN);
+    assert!(offset_of!(T, vmotor_a) >= SPAN);
+    assert!(offset_of!(T, vmotor_b) >= SPAN);
+    assert!(offset_of!(T, current_trough) >= SPAN);
+    assert!(offset_of!(T, vmotor_a_trough) >= SPAN);
+    assert!(offset_of!(T, vmotor_b_trough) >= SPAN);
 };
 
 /// HIGH, not VERYHIGH: RX (CH5) alone owns the top so an inbound byte's drain
@@ -297,10 +304,23 @@ pub(crate) fn arm_dma() {
 #[inline(always)]
 pub(super) fn trough_slot(tick: *const TelemetryTick, idx: usize) -> u16 {
     debug_assert!(idx < ADC_SCAN_LEN);
-    // SAFETY: `tick` is the table's tick block; `idx` lies inside the
-    // trough slots; the DMA writes them, so the read is volatile.
+    scan_slot(tick, idx)
+}
+
+/// Slot `idx` of the peak scan as the DMA landed it, for the slots ahead of
+/// `pos`.
+#[inline(always)]
+pub(super) fn peak_slot(tick: *const TelemetryTick, idx: usize) -> u16 {
+    debug_assert!(idx < SCAN_IDX_POS);
+    scan_slot(tick, SCAN_PEAK_OFFSET + idx)
+}
+
+#[inline(always)]
+fn scan_slot(tick: *const TelemetryTick, idx: usize) -> u16 {
+    // SAFETY: `tick` is the table's tick block; `idx` lies inside `_scan`
+    // (callers); the DMA writes it, so the read is volatile.
     unsafe {
-        (&raw const (*tick)._scan_trough)
+        (&raw const (*tick)._scan)
             .cast::<u16>()
             .add(idx)
             .read_volatile()

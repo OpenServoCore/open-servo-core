@@ -487,21 +487,23 @@ mod tests {
 
     /// TELEMETRY behind the sec 5.4 common block and the mode bytes: the
     /// tick block first, 4-aligned, the ADC's two scans at its front in
-    /// slot order, then the medium-rate blocks; health, the taps' floor and
-    /// the thermometer in TELEMETRY-EXT. The common row sets are each at
-    /// most two chunks of 12 B: the ident four (pos, then duty to vdiff), the
-    /// default six (current_raw to pos, then duty and current_trough), the
-    /// R/L set (current_raw to vmotor_b, then vbus_raw to duty).
+    /// slot order, the published shunt and taps behind them, then the
+    /// medium-rate blocks; health, the taps' floor and the thermometer in
+    /// TELEMETRY-EXT. The common row sets are each at most two chunks of
+    /// 12 B: the ident four (pos, then duty to vdiff), the default six (pos,
+    /// then current_raw to current_trough), the R/L set (vbus_raw to duty).
     #[test]
     fn telemetry_lands_the_scans_at_the_tick_block_front() {
         use super::telemetry::addr::{estimates, limits, refs, tick};
         use super::telemetry_ext::addr::{health, limits_ext, therm};
-        assert_eq!(tick::CURRENT_RAW, 0x224 + 14);
         assert_eq!(
-            [tick::VMOTOR_A, tick::VMOTOR_B, tick::POS, tick::VCAL],
-            [0x234, 0x236, 0x238, 0x23A]
+            [tick::POS, tick::VCAL, tick::VBUS_RAW, tick::NTC_RAW],
+            [0x224 + 20, 0x23A, 0x23C, 0x23E]
         );
-        assert_eq!([tick::VBUS_RAW, tick::NTC_RAW], [0x23C, 0x23E]);
+        assert_eq!(
+            [tick::CURRENT_RAW, tick::VMOTOR_A, tick::VMOTOR_B],
+            [0x240, 0x242, 0x244]
+        );
         assert_eq!(
             [
                 tick::DUTY_TICKS,
@@ -509,7 +511,7 @@ mod tests {
                 tick::I_TICK_COUNTS,
                 tick::VDIFF_COUNTS
             ],
-            [0x240, 0x242, 0x244, 0x246]
+            [0x246, 0x248, 0x24A, 0x24C]
         );
         assert_eq!(
             [
@@ -517,13 +519,13 @@ mod tests {
                 tick::VMOTOR_B_TROUGH,
                 tick::TICK_FLAGS
             ],
-            [0x248, 0x24A, 0x24C]
+            [0x24E, 0x250, 0x252]
         );
-        assert_eq!(tick::SAMPLE_TICK, 0x250);
-        assert_eq!(estimates::THETA_HAT_Q16, 0x254);
-        assert_eq!(estimates::R_HAT_Q12, 0x266);
-        assert_eq!(refs::CURRENT_BIAS_COUNTS, 0x268);
-        assert_eq!(refs::ENC_B, 0x26E);
+        assert_eq!(tick::SAMPLE_TICK, 0x254);
+        assert_eq!(estimates::THETA_HAT_Q16, 0x258);
+        assert_eq!(estimates::R_HAT_Q12, 0x26A);
+        assert_eq!(refs::CURRENT_BIAS_COUNTS, 0x26C);
+        assert_eq!(refs::ENC_B, 0x272);
         assert_eq!(limits::LIMIT_FLAGS, 0x27C);
         assert_eq!(limits::WINDOW_FLOOR_Q15, 0x27E);
         assert_eq!(super::TELEMETRY_EXT_BASE_ADDR, 0x3C0);

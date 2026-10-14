@@ -962,27 +962,6 @@
       "kind": "uint"
     },
     {
-      "name": "current_raw",
-      "addr": 562,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "vmotor_a",
-      "addr": 564,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "vmotor_b",
-      "addr": 566,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
       "name": "pos",
       "addr": 568,
       "width": 2,
@@ -1011,141 +990,162 @@
       "kind": "uint"
     },
     {
-      "name": "duty_ticks",
+      "name": "current_raw",
       "addr": 576,
       "width": 2,
       "access": "ro",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "current_trough",
+      "name": "vmotor_a",
       "addr": 578,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "i_tick_counts",
+      "name": "vmotor_b",
       "addr": 580,
       "width": 2,
       "access": "ro",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "vdiff_counts",
+      "name": "duty_ticks",
       "addr": 582,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "vmotor_a_trough",
+      "name": "current_trough",
       "addr": 584,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "vmotor_b_trough",
+      "name": "i_tick_counts",
       "addr": 586,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vdiff_counts",
+      "addr": 588,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vmotor_a_trough",
+      "addr": 590,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vmotor_b_trough",
+      "addr": 592,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "tick_flags",
-      "addr": 588,
+      "addr": 594,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "sample_tick",
-      "addr": 592,
+      "addr": 596,
       "width": 4,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "theta_hat_q16",
-      "addr": 596,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "omega_hat_cps",
       "addr": 600,
       "width": 4,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "tau_d_counts",
+      "name": "omega_hat_cps",
       "addr": 604,
-      "width": 2,
+      "width": 4,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "i_lim_counts",
-      "addr": 606,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "t_winding_cc",
+      "name": "tau_d_counts",
       "addr": 608,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "vbus_counts",
+      "name": "i_lim_counts",
       "addr": 610,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "omega_bemf_cps",
+      "name": "t_winding_cc",
       "addr": 612,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "r_hat_q12",
+      "name": "vbus_counts",
       "addr": 614,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "current_bias_counts",
+      "name": "omega_bemf_cps",
       "addr": 616,
       "width": 2,
       "access": "ro",
-      "kind": "uint"
+      "kind": "int"
     },
     {
-      "name": "vmotor_bias_counts",
+      "name": "r_hat_q12",
       "addr": 618,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "enc_a",
+      "name": "current_bias_counts",
       "addr": 620,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "enc_b",
+      "name": "vmotor_bias_counts",
       "addr": 622,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "enc_a",
+      "addr": 624,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "enc_b",
+      "addr": 626,
       "width": 2,
       "access": "ro",
       "kind": "uint"

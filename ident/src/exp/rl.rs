@@ -1769,7 +1769,7 @@ mod tests {
         assert!(!log.contains(&"OVERRUN".to_string()));
         assert!(
             log.iter()
-                .any(|l| l.starts_with("stream 8 0x232+6,0x23c+6 goal_duty")),
+                .any(|l| l.starts_with("stream 8 0x23c+12 goal_duty")),
             "toggles arm 8 periods"
         );
         let exp = exp.into_inner();

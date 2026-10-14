@@ -12,12 +12,9 @@ use osc_servo_core::{RegionStorage, RegionStorageRaw, TelStream, TelemetryTick};
 use crate::bench::TelStep;
 use crate::traits::bus::TxWire;
 
-/// The six default fields, current_raw to pos and duty to current_trough:
-/// 12 B over two chunks.
-const SIX: Chunks = Chunks::two(
-    Chunk::new(tick::CURRENT_RAW, 8),
-    Chunk::new(tick::DUTY_TICKS, 4),
-);
+/// The six default fields, pos and current_raw to current_trough: 12 B over
+/// two chunks.
+const SIX: Chunks = Chunks::two(Chunk::new(tick::POS, 2), Chunk::new(tick::CURRENT_RAW, 10));
 /// Duty to vdiff and the rail estimate: 10 B over two chunks.
 const IDENT_RAIL: Chunks = Chunks::two(
     Chunk::new(tick::DUTY_TICKS, 8),
