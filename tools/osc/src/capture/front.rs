@@ -11,12 +11,10 @@ use anyhow::{Context, Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::pipe::Pipe;
-use osc_ident::exp::centre::Centre;
+use osc_ident::exp::RigParams;
 use osc_ident::exp::rl::Scales;
-use osc_ident::exp::{Guarded, RigParams};
 use osc_ident::limits::{CLASS_R_MIN, DutyPlan, ServoLimits, pct_floor, q15_floor};
 use osc_ident::regs::calib;
-use osc_ident::run::{self as order, Run};
 use osc_ident::runway;
 use osc_ident::units::SenseParams;
 use serde_json::{Value, json};
@@ -25,9 +23,10 @@ use super::envelope::Envelope;
 use super::verdict::Abort;
 use super::{Rule, Supply};
 use crate::rig::battery;
-use crate::rig::centre::centre_on;
+use crate::rig::centre::jam_check;
 use crate::rig::limits::{self, Stall};
 use crate::rig::pump::read_snapshot;
+use crate::rig::servo::Servo;
 use crate::rig::snapshot::read_u16;
 use crate::sweep::{self, Decay, pct_q15};
 
@@ -215,10 +214,12 @@ impl Front {
     }
 
     /// The rig the jam check runs in: the guard inside the soft limits, the
-    /// abort a quarter over the current limit, the stops `osc cal` found.
+    /// abort a quarter over the current limit, the stops `osc cal` found,
+    /// the stored polarity.
     pub(crate) fn params(&self) -> RigParams {
         let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default())
-            .with_floor(self.lim.window_floor_q15);
+            .with_floor(self.lim.window_floor_q15)
+            .with_polarity(self.lim.drive_polarity);
         if self.lim.raw.0 < self.lim.raw.1 {
             p.with_stops(self.lim.raw)
         } else {
@@ -226,24 +227,11 @@ impl Front {
         }
     }
 
-    /// The jam check as `osc cal` runs it, pumped by `pump`: out and back at
-    /// mid travel from the class-safe duty, raised while the shaft does not
-    /// move. The duty it moved at plans the drives by the winding R the
-    /// servo carries.
-    pub(crate) fn jam_check(
-        &self,
-        pump: impl FnOnce(&mut Guarded<Centre>) -> Result<()>,
-    ) -> Result<Proved> {
-        let run = Run::new(self.lim, &self.sc);
-        let (from, cap) = (run.bootstrap(), run.nudge_cap());
-        println!(
-            "[jam check] out and back at mid travel from {}, raised up to {} while the shaft \
-             does not move",
-            pct(from),
-            pct(cap)
-        );
-        let cfg = order::centre_cfg(from, cap, true);
-        let Some(moved) = centre_on(pump, cfg, self.params(), "the jam check")?.moved_at() else {
+    /// The jam check as `osc cal` runs it, on `s`. The duty it moved the
+    /// shaft at plans the drives by the winding R the servo carries.
+    pub(crate) fn jam_check<S: Servo>(&self, s: &mut S) -> Result<Proved> {
+        let exp = jam_check(s, &self.lim, &self.sc, self.params())?;
+        let Some(moved) = exp.moved_at() else {
             bail!("the jam check never saw the shaft move, so nothing drives it");
         };
         let proved = Proved {

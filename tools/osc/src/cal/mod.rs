@@ -842,27 +842,12 @@ impl Cal<'_> {
                 drive(s, self.out, &mut exp, None)?;
                 check_abort("bias", exp.abort())?;
             }
-            Stage::Centre {
-                duty,
-                cap,
-                nudge: true,
-            } => {
-                println!(
-                    "[jam check] out and back at mid travel from {}, raised up to {} while the \
-                     shaft does not move",
-                    pct(*duty),
-                    pct(*cap)
-                );
-                let cfg = order::centre_cfg(*duty, *cap, true);
-                let (exp, polarity) = jam_check(s, cfg, self.params(), self.polarity)?;
-                self.polarity = polarity;
-                let moved = exp.moved_at();
-                if let Some(m) = moved {
-                    println!("  the shaft moves at {}", pct(m));
-                }
-                run.nudged(moved);
+            Stage::JamCheck => {
+                let exp = jam_check(s, &self.lim, &self.sc, self.params())?;
+                self.polarity = exp.polarity();
+                run.nudged(exp.moved_at());
             }
-            Stage::Centre { duty, cap, .. } => {
+            Stage::Centre { duty, cap } => {
                 println!("[centring] back to mid travel at {}", pct(*duty));
                 let p = match self.found() {
                     Some(s) => RigParams::new(Some(s), self.lim.abort_default())

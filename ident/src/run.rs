@@ -4,8 +4,9 @@
 //! first stage that aborts ends the run - a blocked shaft stays blocked for
 //! every stage after it.
 //!
-//! The jam check comes first: it proves the shaft free, raising its duty
-//! while nothing moves, and the duty that moved it seeds every later seek.
+//! The jam check comes first ([`crate::exp::jam`]): it proves the shaft
+//! free and reads the drive direction, and the duty that moved it seeds
+//! every later seek.
 //! Winding R and L come next, from free-shaft bursts at mid travel inside
 //! [`BurstAllowance`]: a burst is too short to load the train and too short
 //! for the limiter to see, so it is bounded by the volts it applies, not by
@@ -72,13 +73,14 @@ const Q15: f64 = 32767.0;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stage {
     Bias,
+    /// The jam check ([`crate::exp::jam`]), its knobs the driver's: the
+    /// servo's scales and gear class.
+    JamCheck,
     /// Into the band at mid travel from `duty`, raising up to `cap` while
-    /// nothing moves; `nudge` also drives the shaft out and back once it is
-    /// there, the jam check.
+    /// nothing moves.
     Centre {
         duty: f64,
         cap: f64,
-        nudge: bool,
     },
     /// Free-shaft bursts from rest at mid travel at the two `rungs`, the
     /// from-a-hold control stepping from `pre`; `seek` brings the shaft back
@@ -131,6 +133,7 @@ impl Stage {
     pub fn name(&self) -> &'static str {
         match self {
             Stage::Bias => "bias",
+            Stage::JamCheck => "jam check",
             Stage::Centre { .. } => "centring",
             Stage::Burst { .. } => "burst",
             Stage::Resistance { .. } => "resistance",
@@ -190,7 +193,7 @@ pub enum Over {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Step {
     Bias,
-    Nudge,
+    JamCheck,
     Burst,
     Resistance,
     Breakaway,
@@ -206,7 +209,7 @@ enum Step {
 /// there.
 const ORDER: [Step; 10] = [
     Step::Bias,
-    Step::Nudge,
+    Step::JamCheck,
     Step::Burst,
     Step::Park,
     Step::Breakaway,
@@ -219,13 +222,13 @@ const ORDER: [Step; 10] = [
 
 /// The anchor alone, on a servo that carries its winding: the jam check,
 /// the anchor, and back to mid travel.
-const ANCHOR_ONLY_ORDER: [Step; 3] = [Step::Nudge, Step::Anchor, Step::Park];
+const ANCHOR_ONLY_ORDER: [Step; 3] = [Step::JamCheck, Step::Anchor, Step::Park];
 
 /// Cal: the jam check and the burst at mid travel, the stops, the traverse
 /// from the low end, and back to mid travel.
 const CAL_ORDER: [Step; 6] = [
     Step::Bias,
-    Step::Nudge,
+    Step::JamCheck,
     Step::Burst,
     Step::Stops,
     Step::Traverse,
@@ -397,11 +400,7 @@ impl Run {
         let boot = self.bootstrap;
         let stage = match (step, self.plan) {
             (Step::Bias, _) => Stage::Bias,
-            (Step::Nudge, _) => Stage::Centre {
-                duty: boot,
-                cap: self.nudge_cap(),
-                nudge: true,
-            },
+            (Step::JamCheck, _) => Stage::JamCheck,
             (Step::Burst, _) => {
                 let Some(moved) = self.free else {
                     return self.end(Over::Unproven);
@@ -455,7 +454,6 @@ impl Run {
                 Some((approach, _, cap)) => Stage::Centre {
                     duty: approach,
                     cap,
-                    nudge: false,
                 },
                 None => return self.end(Over::Unproven),
             },
@@ -463,7 +461,6 @@ impl Run {
             (Step::Park, None) => Stage::Centre {
                 duty: boot,
                 cap: self.nudge_cap(),
-                nudge: false,
             },
             // the anchor alone plans from the winding the servo carries
             (Step::Anchor, None) => match self.stored {
@@ -491,7 +488,6 @@ impl Run {
             (Step::Park, Some(p)) => Stage::Centre {
                 duty: p.seek,
                 cap: p.stop_cap,
-                nudge: false,
             },
         };
         self.at = Some(stage.name());
@@ -714,12 +710,14 @@ mod tests {
     use crate::exp::endstop::{Endstop, EndstopResult};
     use crate::exp::inductance::{FitCfg, Inductance, fit_captures};
     use crate::exp::inertia::Inertia;
+    use crate::exp::jam::{self, JamCfg, JamCheck};
     use crate::exp::ladder::{Ladder, LadderResult};
     use crate::exp::resistance::Resistance;
     use crate::exp::sweep::{Captured, Sweep};
     use crate::exp::testkit::{Bus, FakeServo, TICK_HZ, bench_mg90, pump_on};
     use crate::exp::{Experiment, Guarded, Permitted, RigParams};
     use crate::fits::InertiaPriors;
+    use crate::limits::GearClass;
     use crate::runway::Runway;
     use crate::sources;
     use crate::units::SenseParams;
@@ -772,7 +770,7 @@ mod tests {
         while let Some(s) = run.next_stage() {
             seen.push(s.name());
             match s {
-                Stage::Centre { nudge: true, .. } => run.nudged(Some(0.12)),
+                Stage::JamCheck => run.nudged(Some(0.12)),
                 Stage::Burst { .. } | Stage::Resistance { .. } => run.measured(R),
                 _ => {}
             }
@@ -783,7 +781,7 @@ mod tests {
 
     const ORDER_NAMES: [&str; 10] = [
         "bias",
-        "centring",
+        "jam check",
         "burst",
         "centring",
         "breakaway",
@@ -907,7 +905,7 @@ mod tests {
             Stage::Burst { .. } | Stage::Resistance { .. } => Ended::Declined,
             _ => Ended::Done,
         };
-        let closed = ["bias", "centring", "burst", "centring"];
+        let closed = ["bias", "jam check", "burst", "centring"];
         let mut r = run(RAIL_2S);
         assert_eq!(stages(&mut r, declined), closed);
         assert_eq!(r.over(), Some(Over::Declined("burst")));
@@ -919,7 +917,7 @@ mod tests {
         let mut r = run(RAIL_USB).with_stall_ladder();
         assert_eq!(
             stages(&mut r, declined),
-            ["bias", "centring", "burst", "resistance", "centring"]
+            ["bias", "jam check", "burst", "resistance", "centring"]
         );
         assert_eq!(r.over(), Some(Over::ResistanceDeclined));
 
@@ -935,7 +933,7 @@ mod tests {
         });
         assert_eq!(
             &seen[..5],
-            ["bias", "centring", "burst", "resistance", "centring"]
+            ["bias", "jam check", "burst", "resistance", "centring"]
         );
         assert_eq!(&seen[5..], &ORDER_NAMES[4..]);
         assert_eq!(r.over(), None);
@@ -1024,13 +1022,10 @@ mod tests {
     /// No burst arms before the jam check proved the shaft free, and none
     /// on a rail the volts cap leaves no pair on.
     #[test]
-    fn burst_waits_for_the_nudge() {
+    fn burst_waits_for_the_jam_check() {
         let mut r = run(RAIL_2S);
         assert_eq!(r.next_stage(), Some(Stage::Bias));
-        assert!(matches!(
-            r.next_stage(),
-            Some(Stage::Centre { nudge: true, .. })
-        ));
+        assert_eq!(r.next_stage(), Some(Stage::JamCheck));
         r.nudged(None);
         r.ended(Ended::Done);
         assert_eq!(r.next_stage(), None);
@@ -1108,8 +1103,6 @@ mod tests {
         virgin: bool,
         /// The `drive_polarity` in force.
         polarity: bool,
-        /// Drive by the stored polarity whatever the jam check read.
-        trust_stored: bool,
         anchor: Option<AnchorResult>,
     }
 
@@ -1133,7 +1126,6 @@ mod tests {
                 captured: None,
                 virgin: false,
                 polarity: true,
-                trust_stored: false,
                 anchor: None,
             }
         }
@@ -1175,20 +1167,25 @@ mod tests {
                     let exp = Bias::new(cfg, &params);
                     self.go(exp, params.without_pos_guard()).1
                 }
-                Stage::Centre { duty, cap, nudge } => {
-                    let exp = Centre::new(centre_cfg(*duty, *cap, *nudge), &params);
-                    let (exp, how) = self.go(exp, params.without_pos_guard());
-                    if *nudge {
-                        self.moved = exp.moved_at();
-                        run.nudged(exp.moved_at());
-                        let polarity = exp.polarity_for(self.polarity);
-                        if polarity != self.polarity && !self.trust_stored {
-                            self.servo
-                                .write(crate::regs::config::DRIVE_POLARITY, polarity as i32);
-                            self.polarity = polarity;
-                        }
-                    }
-                    how
+                Stage::JamCheck => {
+                    let cfg = JamCfg::for_servo(&lim, &scales(), GearClass::Metal);
+                    let (servo, bus, log) = (&mut *self.servo, self.bus, &mut self.log);
+                    let pumped = jam::drive(JamCheck::new(cfg, &params), &params, |e| {
+                        log.extend(pump_on(e, servo, 4_000_000, bus));
+                        Ok::<(), std::convert::Infallible>(())
+                    });
+                    let (exp, abort) = match pumped {
+                        Ok(r) => r,
+                        Err(never) => match never {},
+                    };
+                    self.moved = exp.moved_at();
+                    run.nudged(exp.moved_at());
+                    self.polarity = exp.polarity();
+                    abort.map_or(Ended::Done, Ended::Aborted)
+                }
+                Stage::Centre { duty, cap } => {
+                    let exp = Centre::new(centre_cfg(*duty, *cap, false), &params);
+                    self.go(exp, params.without_pos_guard()).1
                 }
                 Stage::Burst { rungs, pre, seek } => {
                     let cfg = burst_cfg(rungs, *pre, *seek, base);
@@ -1346,14 +1343,14 @@ mod tests {
             }
             Ended::Done
         });
-        assert_eq!(seen, ["centring", "anchor", "centring"]);
+        assert_eq!(seen, ["jam check", "anchor", "centring"]);
         assert_eq!(r.over(), None);
         let plan = DutyPlan::new(&limits(RAIL_2S), R, Some(0.12));
         assert_eq!(anchor, Some((plan.seek, plan.stop_cap)));
 
         let mut r = Run::for_anchor(limits(RAIL_2S), &scales());
         let seen = stages(&mut r, |_| Ended::Done);
-        assert_eq!(seen, ["centring"]);
+        assert_eq!(seen, ["jam check"]);
         assert_eq!(r.over(), Some(Over::Declined("anchor")));
     }
 
@@ -1370,7 +1367,7 @@ mod tests {
         rig.run(&mut run);
         assert_eq!(run.over(), None, "{:?}", run.over());
         let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
-        assert_eq!(names, ["centring", "anchor", "centring"]);
+        assert_eq!(names, ["jam check", "anchor", "centring"]);
         let a = rig.anchor.expect("the anchor read");
         assert!((a.r_vpc / R - 1.0).abs() < 0.02, "R {} of {R}", a.r_vpc);
         assert!(a.i_counts <= LIM as f64 * 1.05, "hold at {}", a.i_counts);
@@ -1533,7 +1530,7 @@ mod tests {
             let mut base = None;
             while let Some(s) = run.next_stage() {
                 match s {
-                    Stage::Centre { nudge: true, .. } => run.nudged(Some(0.12)),
+                    Stage::JamCheck => run.nudged(Some(0.12)),
                     Stage::Burst { .. } => run.measured(R),
                     Stage::Breakaway { .. } => run.broke_away(Some(0.08)),
                     Stage::Inertia { seek, base: b } => {
@@ -1555,9 +1552,9 @@ mod tests {
     }
 
     /// A virgin servo whose shaft needs more than the class-safe duty: the
-    /// jam check raises until it moves, then the burst measures R.
+    /// jam check moves it over that, then the burst measures R.
     #[test]
-    fn virgin_run_escalates_the_nudge_and_measures_r() {
+    fn virgin_run_moves_over_the_class_safe_duty_and_measures_r() {
         let mut servo = bench_servo(RAIL_2S);
         servo.pos = 2100.0;
         let mut run = run(RAIL_2S);
@@ -1591,16 +1588,10 @@ mod tests {
         let mut rig = Rig::new(&mut servo, RAIL_2S);
         rig.run(&mut run);
         let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
-        assert_eq!(names, ["bias", "centring"]);
+        assert_eq!(names, ["bias", "jam check"]);
         assert_eq!(
             run.aborted(),
-            Some((
-                "centring",
-                AbortReason::Blocked {
-                    pos: 2048,
-                    moved: 0
-                }
-            ))
+            Some(("jam check", AbortReason::Stiff { pos: 2048, ma: 251 }))
         );
         let log = rig.log;
         assert!(drives(&log).iter().all(|d| *d <= cap));
@@ -1612,7 +1603,14 @@ mod tests {
         assert!(!servo.torque && !servo.permit_live());
     }
 
-    const CAL_NAMES: [&str; 6] = ["bias", "centring", "burst", "stops", "traverse", "centring"];
+    const CAL_NAMES: [&str; 6] = [
+        "bias",
+        "jam check",
+        "burst",
+        "stops",
+        "traverse",
+        "centring",
+    ];
 
     fn cal(vbus: u16) -> Run {
         Run::for_cal(limits(vbus), &scales())
@@ -1634,7 +1632,7 @@ mod tests {
             seen.push(s.name());
             let h = how(&s);
             match s {
-                Stage::Centre { nudge: true, .. } => run.nudged(Some(0.12)),
+                Stage::JamCheck => run.nudged(Some(0.12)),
                 Stage::Burst { .. } if h == Ended::Done => run.measured(R),
                 _ => {}
             }
@@ -1666,7 +1664,7 @@ mod tests {
         let mut r = cal(3800);
         assert_eq!(
             cal_stages(&mut r, done),
-            ["bias", "centring", "stops", "traverse", "centring"]
+            ["bias", "jam check", "stops", "traverse", "centring"]
         );
         assert_eq!((r.over(), r.plan()), (None, None));
 
@@ -1675,7 +1673,7 @@ mod tests {
             Stage::Stops { .. } => Ended::Declined,
             _ => Ended::Done,
         });
-        assert_eq!(seen, ["bias", "centring", "burst", "stops", "centring"]);
+        assert_eq!(seen, ["bias", "jam check", "burst", "stops", "centring"]);
         assert_eq!(r.over(), Some(Over::Declined("stops")));
 
         let mut r = cal(RAIL_2S);
@@ -1710,7 +1708,7 @@ mod tests {
             let mut stops = None;
             while let Some(s) = r.next_stage() {
                 match s {
-                    Stage::Centre { nudge: true, .. } => r.nudged(Some(0.13)),
+                    Stage::JamCheck => r.nudged(Some(0.13)),
                     Stage::Burst { .. } => r.measured(R),
                     Stage::Stops {
                         approach,
@@ -1734,14 +1732,14 @@ mod tests {
     /// A normal cal on the bench servo, both rails, re-calibrating a servo
     /// whose stops are known: the jam check moves the shaft, the burst
     /// measures R, and each stop is approached at the duty that moved it
-    /// plus the seek margin, capped at the stall-safe duty: on 2S the jam
-    /// check's 14.5% plus 2% is over the cap the measured R allows, on USB
-    /// 17.1% plus 2% is under it. The stall permit is held only while the
-    /// stops are found; the run captures the ripple and ends at mid travel
-    /// with torque off.
+    /// plus the seek margin, capped at the stall-safe duty: its 13% breakaway
+    /// gives at the shunt floor's 13.3% on either rail, and 15.3% is under
+    /// the cap the measured R allows on both. The stall permit is held only
+    /// while the stops are found; the run captures the ripple and ends at
+    /// mid travel with torque off.
     #[test]
     fn cal_approaches_at_the_duty_that_moved() {
-        for (vbus, moved, capped) in [(RAIL_2S, 0.1452, true), (RAIL_USB, 0.1713, false)] {
+        for (vbus, moved, capped) in [(RAIL_2S, 0.1329, false), (RAIL_USB, 0.1329, false)] {
             let mut servo = bench_servo(vbus);
             servo.pos = 2600.0;
             let mut run = cal(vbus);
@@ -1773,11 +1771,10 @@ mod tests {
     }
 
     /// The motor plugged in the other way round from the stored
-    /// drive_polarity, each free burst kicking the shaft on. Trusted, the
-    /// burst's seeks back to mid travel drive away from it and the run
-    /// leaves the travel guard; read by the jam check,
-    /// the flipped polarity drives the run, cal's and the default one's
-    /// alike, and cal's stops agree with it.
+    /// drive_polarity, each free burst kicking the shaft on: the jam check
+    /// reads it and flips the polarity in RAM, the flipped polarity drives
+    /// the run, cal's and the default one's alike, and cal's stops agree
+    /// with it.
     #[test]
     fn the_run_drives_by_the_direction_the_jam_check_read() {
         let reversed = || {
@@ -1787,21 +1784,6 @@ mod tests {
             s.burst_kick = 120.0;
             s
         };
-        for mut trusted in [cal(RAIL_2S), run(RAIL_2S)] {
-            let mut servo = reversed();
-            let mut rig = Rig::new(&mut servo, RAIL_2S);
-            rig.trust_stored = true;
-            rig.run(&mut trusted);
-            assert!(
-                matches!(
-                    trusted.aborted(),
-                    Some(("burst", AbortReason::PosGuard { .. }))
-                ),
-                "{:?}",
-                trusted.over()
-            );
-        }
-
         let mut servo = reversed();
         let mut c = cal(RAIL_2S);
         let mut rig = Rig::new(&mut servo, RAIL_2S);
@@ -1876,32 +1858,48 @@ mod tests {
         }
     }
 
-    /// A shaft that sticks until 15% on 2S: the jam check's raise past
-    /// 14.5% moves it at 17%, whose stall draws 307 counts, over the
-    /// 280-count limit. Once R is known cal refuses, before anything drives
-    /// at a stop, and nothing holds the permit.
+    /// A shaft that sticks until 16% on 2S, whose stall draws 296 counts,
+    /// over the 280-count limit: the jam check raises to the limit and ends
+    /// stiff before anything drives at a stop, and nothing holds the
+    /// permit. A duty that moved the shaft and stalls over the limit by the
+    /// R the burst measured is refused the same way, before the stops.
     #[test]
     fn cal_refuses_when_breakaway_is_over_the_limit() {
         let mut servo = bench_servo(RAIL_2S);
         servo.pos = 2600.0;
-        servo.breakaway_q15 = 4915;
+        servo.breakaway_q15 = 5243;
         let mut run = cal(RAIL_2S);
         let mut rig = Rig::new(&mut servo, RAIL_2S);
         rig.run(&mut run);
         let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
-        assert_eq!(names, CAL_NAMES[..3]);
-        let Some(Over::BreakawayOverLimit { need }) = run.over() else {
-            panic!("{:?}", run.over());
+        assert_eq!(names, CAL_NAMES[..2]);
+        assert!(
+            matches!(
+                run.aborted(),
+                Some(("jam check", AbortReason::Stiff { ma: 251, .. }))
+            ),
+            "{:?}",
+            run.over()
+        );
+        assert!(!rig.log.iter().any(|l| l.starts_with("write stall_permit")));
+        assert_eq!(servo.pressed_ms, 0.0);
+        assert!(!servo.torque);
+
+        let mut r = cal(RAIL_2S);
+        while let Some(s) = r.next_stage() {
+            match s {
+                Stage::JamCheck => r.nudged(Some(0.1702)),
+                Stage::Burst { .. } => r.measured(R),
+                _ => {}
+            }
+            r.ended(Ended::Done);
+        }
+        let Some(Over::BreakawayOverLimit { need }) = r.over() else {
+            panic!("{:?}", r.over());
         };
-        let m = rig.moved.unwrap();
-        let r = run.plan().expect("R from the burst").r_vpc;
-        assert!((m - 0.1702).abs() < 5e-4, "moved at {m}");
-        let stall = crate::limits::stall_counts(m, r, RAIL_2S as f64);
-        assert!((need - stall).abs() < 1e-9 && need > LIM as f64, "{need}");
-        // by the true 4.9 ohm: 307 counts
         let lim = limits(RAIL_2S);
         let why = Refusal::BreakawayOverLimit {
-            need: crate::limits::stall_counts(m, R, RAIL_2S as f64),
+            need,
             i_lim: lim.i_lim,
             ma: lim.ma(),
         };
@@ -1910,10 +1908,6 @@ mod tests {
             "this servo needs about 275 mA to start moving, over its current limit of 251 mA: \
              raise the limit or free the mechanism"
         );
-        assert!(!rig.log.iter().any(|l| l.starts_with("write stall_permit")));
-        assert_eq!(servo.pressed_ms, 0.0);
-        assert!(!servo.torque);
-        assert!((servo.pos - 2029.0).abs() <= 310.0, "ends at {}", servo.pos);
     }
 
     /// The burst declines, so R is unknown: cal takes the stops without it,
@@ -1957,13 +1951,13 @@ mod tests {
         let mut rig = Rig::new(&mut servo, RAIL_2S);
         rig.run(&mut run);
         let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
-        assert_eq!(names, ["bias", "centring"]);
+        assert_eq!(names, ["bias", "jam check"]);
         let (stage, reason) = run.aborted().expect("aborted");
-        assert_eq!(stage, "centring");
+        assert_eq!(stage, "jam check");
         assert_eq!(
             reason.to_string(),
-            "the shaft is blocked or the position sensor is not reading (pos 2048, moved 0 \
-             counts)"
+            "the shaft did not move either way at up to 251 mA (pos 2048): it is jammed, or \
+             stiffer than the probe current allows"
         );
         let controls =
             crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::TEL_COUNT.addr;
@@ -2058,7 +2052,7 @@ mod tests {
         assert_eq!(run.reused(), None);
         assert_eq!(
             &names(&rig)[..4],
-            ["bias", "centring", "burst", "resistance"]
+            ["bias", "jam check", "burst", "resistance"]
         );
         let r = run.plan().expect("planned").r_vpc;
         assert!((r / R - 1.0).abs() < 0.02, "R {r}");
@@ -2098,7 +2092,7 @@ mod tests {
             let mut rig = Rig::new(&mut servo, RAIL_2S);
             rig.decline_burst = true;
             rig.run(&mut run);
-            assert_eq!(names(&rig), ["bias", "centring", "burst", "centring"]);
+            assert_eq!(names(&rig), ["bias", "jam check", "burst", "centring"]);
             if ladder {
                 assert!(matches!(run.over(), Some(Over::NoLadderRoom { .. })));
             } else {
@@ -2169,15 +2163,11 @@ mod tests {
                     run.finish();
                 }
             }
-            assert_eq!(names(&rig), ["bias", "centring", "burst", "centring"]);
+            assert_eq!(names(&rig), ["bias", "jam check", "burst", "centring"]);
             let top = drives(rig.span(3, 4)).into_iter().fold(0.0, f64::max);
             match (w, run.plan()) {
                 (None, None) => {
-                    let want = Stage::Centre {
-                        duty: boot,
-                        cap,
-                        nudge: false,
-                    };
+                    let want = Stage::Centre { duty: boot, cap };
                     assert_eq!(closing, Some(want));
                     assert!(top <= cap + 1e-9, "{top} over {cap}");
                     assert_eq!(run.over(), Some(Over::Declined("burst")));
@@ -2186,7 +2176,6 @@ mod tests {
                     let want = Stage::Centre {
                         duty: p.seek,
                         cap: p.stop_cap,
-                        nudge: false,
                     };
                     assert_eq!(closing, Some(want));
                     assert!(top <= p.stop_cap + 1e-9, "{top} over {}", p.stop_cap);

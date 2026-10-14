@@ -38,14 +38,23 @@ impl std::fmt::Display for Aborted {
         {
             write!(f, ", {name}")?;
         }
-        if let AbortReason::Blocked { .. } = self.reason {
-            write!(
-                f,
-                "; a blocked shaft cannot be centred, so torque is off and the shaft stays \
-                 where it stopped"
-            )?;
-        }
-        Ok(())
+        let what = match self.reason {
+            AbortReason::Blocked { .. } => "",
+            AbortReason::Stiff { .. } => {
+                ": turn the horn by hand to feel for a jam, and if it rests at an end stop turn \
+                 it toward mid travel and run again"
+            }
+            AbortReason::SensorDead { .. } => {
+                ": check the pot's wiring, and for a stripped output gear"
+            }
+            AbortReason::MotorOpen { .. } => ": check the motor's leads and their solder joints",
+            _ => return Ok(()),
+        };
+        write!(
+            f,
+            "; a blocked shaft cannot be centred, so torque is off and the shaft stays where it \
+             stopped{what}"
+        )
     }
 }
 
@@ -61,8 +70,15 @@ pub(crate) fn check_abort(what: &'static str, abort: Option<AbortReason>) -> Res
 
 /// The error is a blocked shaft: nothing may drive it again.
 pub(crate) fn blocked(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<Aborted>()
-        .is_some_and(|a| matches!(a.reason, AbortReason::Blocked { .. }))
+    e.downcast_ref::<Aborted>().is_some_and(|a| {
+        matches!(
+            a.reason,
+            AbortReason::Blocked { .. }
+                | AbortReason::Stiff { .. }
+                | AbortReason::SensorDead { .. }
+                | AbortReason::MotorOpen { .. }
+        )
+    })
 }
 
 /// The bus every verb connects to: its rate and the host's
