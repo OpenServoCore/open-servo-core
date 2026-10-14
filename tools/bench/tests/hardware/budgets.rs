@@ -163,6 +163,8 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     let fast = b.home_baud();
     let id = b.id();
     let mid = b.goal_mid();
+    // Its open-loop pulse would book as the first holding window's ticks.
+    b.require_forward_drive();
 
     f.window(&mut b, "quiet", Gate::Budget, false, &[], |_, _| {
         sleep(WINDOW)
@@ -649,7 +651,6 @@ fn write(b: &mut Bench, addr: u16, data: &[u8]) {
 }
 
 fn hold_at(b: &mut Bench, goal: i32) {
-    b.require_forward_drive();
     write(b, MODE, &[Mode::Position as u8]);
     write(b, GOAL_POSITION, &goal.to_le_bytes());
     write(b, TORQUE_ENABLE, &[1]);
