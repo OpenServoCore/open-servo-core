@@ -272,6 +272,30 @@ fn a_reversed_motor_at_the_bench_limits_latches_and_brakes() {
     );
 }
 
+/// A reversed loop held 10 ms at mid at the bench limits, then stepped
+/// toward the way it drifted, should latch in every seed. Some creep to the
+/// goal under the dithering duty instead and prove the wiring.
+#[test]
+#[ignore = "a slow leg cannot show a reversed motor under a closed loop: friction and the dithering duty let it creep along the reference"]
+fn a_reversed_motor_stepped_toward_its_drift_latches() {
+    for mode in [Mode::Position, Mode::Velocity] {
+        for seed in 1..=2 * SEEDS {
+            let mut s = Servo::new(seed, MID, mode, bench_limits);
+            s.p.swapped = true;
+            let from = s.pos();
+            s.control(|c| c.torque_enable = true);
+            s.run(10 * MS);
+            let dir = if s.pos() < from { -1 } else { 1 };
+            s.control(|c| {
+                c.goal_position = MID as i32 + 200 * dir;
+                c.goal_velocity = 4000 * dir;
+            });
+            s.until(1000 * MS, |s| s.reversed())
+                .unwrap_or_else(|| panic!("{mode:?} seed {seed}: drifted {dir}, never latched"));
+        }
+    }
+}
+
 /// The winding short holds from the latch through torque off, and the
 /// torque_enable 0 to 1 ack releases it with the latch.
 #[test]

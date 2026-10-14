@@ -885,7 +885,13 @@ it, up to a load at the current limit (DES
 `gravity_sag_at_the_limit_never_reads_reversed`).
 Before a first move has proven the wiring, a load the limit cannot hold,
 or a push that drives a closed loop back two legs, reads the same as a
-reversed motor and latches it.
+reversed motor and latches it. One case slips through: a reversed motor
+that holds, drifts, and is then stepped toward its drift can creep to the
+goal and prove the wiring, since at low speed friction and the closed
+loop's dithering duty leave a slow leg unable to show which way the motor
+turns (DES `a_reversed_motor_stepped_toward_its_drift_latches`, ignored).
+The host's direction nudge before it closes a loop (`osc cal`, `osc
+ident`, the bench harness) catches leads swapped at assembly.
 
 **Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
