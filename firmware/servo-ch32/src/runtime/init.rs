@@ -31,6 +31,13 @@ const BIAS_SAMPLES: u32 = 1 << BIAS_SHIFT;
 /// stands in.
 const VMOTOR_BIAS_AGREE_COUNTS: u16 = 64;
 
+/// VB charges through Cb1 (0.82 ms) from a VDD that is still rising this
+/// soon after reset on a slow supply, so a pair is kept only once a re-read
+/// one step later agrees with it.
+const VMOTOR_BIAS_STEP_MS: u32 = 2;
+const VMOTOR_BIAS_STEPS: u32 = 32;
+const VMOTOR_BIAS_SETTLED_COUNTS: u16 = 1;
+
 pub fn bringup(
     wiring: &BoardWiring,
     calibration: &Calibration,
@@ -256,19 +263,39 @@ fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
 
 /// Terminal-divider bias: with the driver parked both terminals float, so
 /// each tap reads the bias directly. The taps must agree within
-/// `VMOTOR_BIAS_AGREE_COUNTS`, else the board nominal stands in.
+/// `VMOTOR_BIAS_AGREE_COUNTS` and the pair must have settled, else the
+/// board nominal stands in.
 fn measure_vmotor_bias(s: &AdcPins, nominal: u16) -> u16 {
-    let a = measure_rest(s.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
-    let b = measure_rest(s.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
-    match (a, b) {
-        (Some(a), Some(b)) if a.abs_diff(b) <= VMOTOR_BIAS_AGREE_COUNTS => {
-            ((a as u32 + b as u32) >> 1) as u16
+    settled_bias(
+        || {
+            let a = measure_rest(s.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME)?;
+            let b = measure_rest(s.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME)?;
+            (a.abs_diff(b) <= VMOTOR_BIAS_AGREE_COUNTS).then(|| ((a as u32 + b as u32) >> 1) as u16)
+        },
+        || delay_ms(VMOTOR_BIAS_STEP_MS),
+        nominal,
+    )
+}
+
+/// The first `read` that agrees with the one a `wait` before it.
+fn settled_bias(
+    mut read: impl FnMut() -> Option<u16>,
+    mut wait: impl FnMut(),
+    nominal: u16,
+) -> u16 {
+    let mut last = read();
+    for _ in 0..VMOTOR_BIAS_STEPS {
+        wait();
+        let next = read();
+        if let (Some(p), Some(n)) = (last, next)
+            && p.abs_diff(n) <= VMOTOR_BIAS_SETTLED_COUNTS
+        {
+            return n;
         }
-        _ => {
-            crate::log::debug!("vmotor bias: taps disagree, nominal {}", nominal);
-            nominal
-        }
+        last = next;
     }
+    crate::log::debug!("vmotor bias: unsettled, nominal {}", nominal);
+    nominal
 }
 
 fn configure_adc_dma_scan(w: &BoardWiring) {
@@ -362,4 +389,42 @@ fn start_center_aligned_pwm(psc: u16, arr: u16) {
     timer::enable_main_output();
     timer::force_update_event();
     timer::start();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// VB still charging at boot (a 4.5 V supply ramp read 740 against a
+    /// parked 771): the first pair is not kept, the settled one is.
+    #[test]
+    fn a_charging_bias_is_read_once_it_settles() {
+        let mut seq = [740u16, 763, 769, 771, 771].into_iter();
+        let mut waits = 0;
+        let got = settled_bias(|| seq.next(), || waits += 1, 773);
+        assert_eq!(got, 771);
+        assert_eq!(waits, 4);
+    }
+
+    #[test]
+    fn a_settled_bias_costs_one_step() {
+        let mut waits = 0;
+        assert_eq!(settled_bias(|| Some(770), || waits += 1, 773), 770);
+        assert_eq!(waits, 1);
+    }
+
+    #[test]
+    fn a_bias_that_never_settles_or_never_reads_falls_back_to_nominal() {
+        let mut v = 600u16;
+        let rising = settled_bias(
+            || {
+                v += 2;
+                Some(v)
+            },
+            || {},
+            773,
+        );
+        assert_eq!(rising, 773);
+        assert_eq!(settled_bias(|| None, || {}, 773), 773);
+    }
 }
