@@ -3,11 +3,14 @@ use super::table::{DECIM_SLOW, phase};
 use crate::kernel::phases::fast;
 use crate::traits::{ControlIo, TelStream};
 
-/// What the budget probe reads around a tick: before it, the medium phase
-/// it runs, whether the boot tick has run and which SLOW stage it runs; on
-/// either side, the count the configuration was taken at (a take moves it),
-/// the thermometer's pending stages and whether the drive arm is Closed.
-#[derive(Copy, Clone)]
+/// What the budget probe reads of the kernel between ticks: the medium
+/// phase the next tick runs, the count the configuration was taken at (a
+/// take moves it), whether the boot tick has run, which SLOW stage the
+/// next tick runs, the thermometer's pending stages and whether the drive
+/// arm is Closed. Only the kernel tick moves any of it, so the tags after
+/// one tick are the tags before the next.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct ProbeTags {
     pub phase: u8,
     pub config_seq: u8,
@@ -20,7 +23,7 @@ pub struct ProbeTags {
 }
 
 impl<I: ControlIo, T: TelStream> Kernel<I, T> {
-    /// The kernel as the budget probe tags the tick around it.
+    /// The kernel as the budget probe tags the tick after it.
     pub fn probe_tags(&self) -> ProbeTags {
         ProbeTags {
             phase: self.phase,

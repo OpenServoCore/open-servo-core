@@ -26,3 +26,5 @@ defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-servo-ch32/defmt"]
 bench   = ["osc-servo-ch32/bench"]
 # TEL cost per step, no bus record (scripts/build-image.sh --telcost).
 bench-telcost = ["bench", "osc-servo-ch32/bench-telcost"]
+# gamma(k), long ticks and entry lateness (scripts/build-image.sh --window).
+bench-window = ["bench", "osc-servo-ch32/bench-window"]

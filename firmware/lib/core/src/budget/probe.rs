@@ -1,7 +1,10 @@
 //! The budget probe's records and their check. A bench build keeps one
-//! [`KernelProbe`] (written only by the kernel tick) and one [`BusProbe`]
-//! (written only at the bus level); the hardware test decodes both from a
-//! debug-link dump and holds them against the table.
+//! [`KernelProbe`] (written only by the kernel vector, after each tick's
+//! exit stamp) and one [`BusProbe`] (written only at the bus level); the
+//! hardware test decodes both from a debug-link dump and holds them against
+//! the table. A `bench-window` build adds a [`WindowProbe`] beside them:
+//! gamma(k), the long ticks and the entry lateness, which only some runs
+//! read.
 
 use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
 use crate::estimator::thermal::stage;
@@ -31,10 +34,6 @@ impl Events {
 pub const HALT_TICKS: u32 = 1000 * TICKS_PER_US;
 
 const _: () = assert!(HALT_TICKS <= u16::MAX as u32);
-
-/// Kernel body histogram: 5 us bins, the last one open.
-pub const HIST_BIN: u32 = 5 * TICKS_PER_US;
-pub const HIST_BINS: usize = 16;
 
 /// Bodies of one component: count, total and longest, HCLK ticks.
 #[repr(C)]
@@ -75,57 +74,180 @@ pub struct Tally {
 
 impl Tally {
     pub const ZERO: Self = Self { n: 0, sum: 0 };
+
+    #[inline(always)]
+    pub fn add(&mut self, d: u32) {
+        self.n = self.n.wrapping_add(1);
+        self.sum = self.sum.wrapping_add(d);
+    }
+
+    /// Host-side: it divides.
+    pub fn mean(&self) -> u32 {
+        self.sum.checked_div(self.n).unwrap_or(0)
+    }
 }
 
 const RING: usize = WINDOW_TICKS[WINDOW_TICKS.len() - 1];
 const K: usize = WINDOW_TICKS.len();
 
+const _: () = {
+    let mut j = 0;
+    while j < K {
+        assert!(WINDOW_TICKS[j] >= 1 && WINDOW_TICKS[j] <= RING);
+        j += 1;
+    }
+};
+
 /// gamma(k), k in [`WINDOW_TICKS`]: the most the bodies of k consecutive
-/// ticks took, HCLK ticks.
+/// booked ticks took, HCLK ticks. Exact while k consecutive bodies sum
+/// under 2^16 ticks (1.36 ms): a kernel that far behind drops ticks.
 #[repr(C)]
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Windows {
-    ring: [u16; RING],
+    /// The running total of the bodies, mod 2^16, after each of the last
+    /// `RING` ticks, held twice over (slot `i` and `i + RING`) so every
+    /// lookback is a fixed offset from `at`, the slot the next tick takes.
+    ring: [u16; 2 * RING],
     at: u32,
-    sum: [u32; K],
     pub gamma: [u32; K],
 }
 
 impl Windows {
     pub const ZERO: Self = Self {
-        ring: [0; RING],
+        ring: [0; 2 * RING],
         at: 0,
-        sum: [0; K],
         gamma: [0; K],
     };
 
-    /// The next tick's body (a halt never reaches here: it fits u16).
+    /// The next booked tick's body (under [`HALT_TICKS`], so 16 bits).
     #[inline(always)]
     pub fn add(&mut self, body: u32) {
-        let body = body.min(u16::MAX as u32);
-        let at = self.at as usize;
-        for (j, k) in WINDOW_TICKS.into_iter().enumerate() {
-            let out = if at >= k { at - k } else { at + RING - k };
-            let old = self.ring.get(out).copied().unwrap_or(0) as u32;
-            if let (Some(s), Some(g)) = (self.sum.get_mut(j), self.gamma.get_mut(j)) {
-                *s = s.wrapping_add(body).wrapping_sub(old);
-                *g = (*g).max(*s);
+        let at = if (self.at as usize) < RING {
+            self.at as usize
+        } else {
+            core::hint::cold_path();
+            0
+        };
+        let total = self.ring[at + RING - 1].wrapping_add(body as u16);
+        for (g, k) in self.gamma.iter_mut().zip(WINDOW_TICKS) {
+            let s = total.wrapping_sub(self.ring[at + RING - k]) as u32;
+            if s > *g {
+                core::hint::cold_path();
+                *g = s;
             }
         }
-        if let Some(r) = self.ring.get_mut(at) {
-            *r = body as u16;
-        }
+        self.ring[at] = total;
+        self.ring[at + RING] = total;
         self.at = if at + 1 < RING { at as u32 + 1 } else { 0 };
     }
 }
 
-/// A tick this long counts toward [`KernelProbe::long`]: the hold windows'
+impl Default for Windows {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+/// A tick this long counts toward [`WindowProbe::long`]: the hold windows'
 /// maxima sit above it, the parked ticks below.
 pub const LONG_TICKS: u32 = 30 * TICKS_PER_US;
 
+/// The kernel ticks' uncommon instruments (`bench-window`): gamma(k), the
+/// long ticks and the entry lateness. Fed every kernel tick after
+/// [`KernelProbe::tick`] and every vector's last stamp.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct WindowProbe {
+    last_entry: u32,
+    last_end: u32,
+    /// Entry stamp to the later of the grid slot (last entry + one period)
+    /// and the last tick's end plus [`super::ENTRY_EXIT`]: the most another
+    /// context held the tick off.
+    pub late_max: u32,
+    /// Ticks of at least [`LONG_TICKS`], by regime.
+    pub long: [u32; 2],
+    pub windows: Windows,
+}
+
+impl WindowProbe {
+    pub const ZERO: Self = Self {
+        last_entry: 0,
+        last_end: 0,
+        late_max: 0,
+        long: [0; 2],
+        windows: Windows::ZERO,
+    };
+
+    pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
+
+    /// The tick entered at `entry`, `body` ticks long; `booked`: its regime
+    /// when [`KernelProbe::tick`] booked it (neither the boot tick nor a
+    /// halt).
+    #[inline(always)]
+    pub fn tick(&mut self, entry: u32, body: u32, booked: Option<Regime>) {
+        let due = self.last_entry.wrapping_add(super::TICK_PERIOD);
+        let free = self.last_end.wrapping_add(super::ENTRY_EXIT);
+        let slot = if (free.wrapping_sub(due) as i32) > 0 {
+            free
+        } else {
+            due
+        };
+        let late = entry.wrapping_sub(slot);
+        self.last_entry = entry;
+        let Some(r) = booked else {
+            return;
+        };
+        if late < HALT_TICKS && late > self.late_max {
+            core::hint::cold_path();
+            self.late_max = late;
+        }
+        if let Some(n) = self.long.get_mut(r as usize) {
+            *n = n.wrapping_add((body >= LONG_TICKS) as u32);
+        }
+        self.windows.add(body);
+    }
+
+    /// The vector's last stamp, `end`.
+    #[inline(always)]
+    pub fn ended(&mut self, end: u32) {
+        self.last_end = end;
+    }
+
+    /// Decode a dump, little-endian words in field order.
+    pub fn from_words(w: &[u32]) -> Option<Self> {
+        if w.len() != Self::WORDS {
+            return None;
+        }
+        let mut r = Words(w);
+        Some(Self {
+            last_entry: r.word(),
+            last_end: r.word(),
+            late_max: r.word(),
+            long: core::array::from_fn(|_| r.word()),
+            windows: Windows {
+                ring: r.halves(),
+                at: r.word(),
+                gamma: core::array::from_fn(|_| r.word()),
+            },
+        })
+    }
+}
+
+/// The kernel ticks of a window. The fields every tick touches lead, so
+/// the update reaches them at short offsets.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct KernelProbe {
+    /// Every kernel vector so far, with its interrupt entry and exit: what a
+    /// bus body subtracts.
+    pub busy: u32,
+    /// Kernel vectors entered so far: what a bus body counts as nested.
+    pub entries: u32,
+    pub halts: u32,
+    /// The kernel's tags at the last tick's end, the next tick's before,
+    /// and the TEL batches banked by then, mod 2^8 (one a tick at most).
+    before: ProbeTags,
+    banks: u8,
     /// Ticks with no event, by regime and phase, and the longest of each:
     /// [`Self::load`].
     pub tick: [[Tally; PHASES]; 2],
@@ -138,7 +260,7 @@ pub struct KernelProbe {
     /// whatever TEL work it also carried; no TEL or plain row holds one.
     pub health_max: [[u16; PHASES]; 2],
     /// TEL ticks that banked nothing, by regime, all phases.
-    pub tel: [Load; 2],
+    pub tel: [Tally; 2],
     /// Ticks that took the configuration.
     pub refresh: Load,
     /// The SLOW block's due ticks by regime, its finish ticks, and the
@@ -149,82 +271,156 @@ pub struct KernelProbe {
     pub close: Load,
     pub install: Load,
     pub side: Load,
-    /// Ticks of at least [`LONG_TICKS`], by regime.
-    pub long: [u32; 2],
-    pub windows: Windows,
-    /// Entry stamp to the later of the grid slot (last entry + one period)
-    /// and the last tick's end plus [`super::ENTRY_EXIT`]: the most another
-    /// context held the tick off.
-    pub late_max: u32,
-    pub halts: u32,
-    /// Every kernel vector so far, with its interrupt entry and exit: what a
-    /// bus body subtracts.
-    pub busy: u32,
-    /// Kernel vectors entered so far: what a bus body counts as nested.
-    pub entries: u32,
-    last_entry: u32,
-    last_end: u32,
 }
 
 impl KernelProbe {
     pub const ZERO: Self = Self {
+        busy: 0,
+        entries: 0,
+        halts: 0,
+        before: ProbeTags {
+            phase: 0,
+            config_seq: 0,
+            booted: false,
+            slow_due: false,
+            slow_finish: false,
+            therm: 0,
+            closed: false,
+        },
+        banks: 0,
         tick: [[Tally::ZERO; PHASES]; 2],
         tick_max: [[0; PHASES]; 2],
         tel_max: [[0; PHASES]; 2],
         bank_max: [[0; PHASES]; 2],
         health_max: [[0; PHASES]; 2],
-        tel: [Load::ZERO; 2],
+        tel: [Tally::ZERO; 2],
         refresh: Load::ZERO,
         slow: [Load::ZERO; 2],
         finish: Load::ZERO,
         close: Load::ZERO,
         install: Load::ZERO,
         side: Load::ZERO,
-        long: [0; 2],
-        windows: Windows::ZERO,
-        late_max: 0,
-        halts: 0,
-        busy: 0,
-        entries: 0,
-        last_entry: 0,
-        last_end: 0,
     };
 
     pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
 
-    /// One kernel tick entered at `entry`, `body` ticks long, that ran
-    /// `phase` in `regime` and carried `ev`. The boot tick counts toward
-    /// `busy` only.
+    /// One kernel tick, `body` ticks from its entry stamp to its exit
+    /// stamp, that left the kernel at `after()`; `tel`: the TEL channel streams;
+    /// `banks`: the TEL batches banked so far; `health`: the tick-load
+    /// counters closed a window. Its regime when the tick booked (neither
+    /// the boot tick nor a halt). A tick whose tags held still, with no SLOW
+    /// stage on it or on the next tick, books as a plain or TEL tick in
+    /// line, reading only the tags it compares; any other goes through
+    /// [`Self::event_tick`].
     #[inline(always)]
-    pub fn tick(&mut self, entry: u32, body: u32, phase: usize, r: Regime, ev: Events, boot: bool) {
-        self.busy = self.busy.wrapping_add(body);
-        let due = self.last_entry.wrapping_add(super::TICK_PERIOD);
-        let free = self.last_end.wrapping_add(super::ENTRY_EXIT);
-        let slot = if (free.wrapping_sub(due) as i32) > 0 {
-            free
+    pub fn tick(
+        &mut self,
+        body: u32,
+        after: impl Fn() -> ProbeTags,
+        tel: bool,
+        banks: u32,
+        health: bool,
+    ) -> Option<Regime> {
+        let b = self.before;
+        let a = after();
+        if b.booted
+            && !health
+            && banks as u8 == self.banks
+            && a.config_seq == b.config_seq
+            && a.therm == b.therm
+            && a.closed == b.closed
+            && !b.slow_due
+            && !b.slow_finish
+            && !a.slow_due
+            && !a.slow_finish
+        {
+            self.before.phase = a.phase;
+            let r = if b.closed {
+                Regime::Closed
+            } else {
+                Regime::Open
+            };
+            let ev = Events {
+                tel,
+                ..Events::default()
+            };
+            self.book(body, b.phase as usize, r, ev, false)
         } else {
-            due
+            core::hint::cold_path();
+            self.event_tick(body, after(), tel, banks, health)
+        }
+    }
+
+    /// [`Self::tick`]'s events: what the tick carried between the carried
+    /// tags and `after`, and its regime, phase and whether it booted.
+    pub fn events(
+        &self,
+        after: ProbeTags,
+        tel: bool,
+        banks: u32,
+        health: bool,
+    ) -> (Events, Regime, usize, bool) {
+        let b = self.before;
+        let ev = Events {
+            tel,
+            bank: banks as u8 != self.banks,
+            health,
+            ..Events::between(b, after)
         };
-        let late = entry.wrapping_sub(slot);
-        self.last_entry = entry;
+        let r = if b.closed || after.closed {
+            Regime::Closed
+        } else {
+            Regime::Open
+        };
+        (ev, r, b.phase as usize, !b.booted)
+    }
+
+    #[inline(never)]
+    #[rustc_align(4)]
+    fn event_tick(
+        &mut self,
+        body: u32,
+        after: ProbeTags,
+        tel: bool,
+        banks: u32,
+        health: bool,
+    ) -> Option<Regime> {
+        let (ev, r, phase, boot) = self.events(after, tel, banks, health);
+        self.before = after;
+        self.banks = banks as u8;
+        self.book(body, phase, r, ev, boot)
+    }
+
+    /// One kernel tick, `body` ticks long, that ran `phase` in `regime` and
+    /// carried `ev`; its regime when it booked. The boot tick and a halt
+    /// book nothing.
+    #[inline(always)]
+    pub fn book(
+        &mut self,
+        body: u32,
+        phase: usize,
+        regime: Regime,
+        ev: Events,
+        boot: bool,
+    ) -> Option<Regime> {
         if boot {
-            return;
+            return None;
         }
         if body > HALT_TICKS {
+            core::hint::cold_path();
             self.halts = self.halts.wrapping_add(1);
-            return;
+            return None;
         }
-        if late < HALT_TICKS {
-            self.late_max = self.late_max.max(late);
-        }
-        self.windows.add(body);
         let body16 = body as u16;
-        let r = r as usize;
-        if body >= LONG_TICKS
-            && let Some(n) = self.long.get_mut(r)
-        {
-            *n = n.wrapping_add(1);
-        }
+        let r = regime as usize;
+        let max16 = |m: &mut [[u16; PHASES]; 2]| {
+            if let Some(m) = m.get_mut(r).and_then(|m| m.get_mut(phase))
+                && body16 > *m
+            {
+                core::hint::cold_path();
+                *m = body16;
+            }
+        };
         if ev.refresh {
             self.refresh.add(body);
         } else if ev.close {
@@ -240,28 +436,21 @@ impl KernelProbe {
         } else if ev.side {
             self.side.add(body);
         } else if ev.health {
-            if let Some(m) = self.health_max.get_mut(r).and_then(|m| m.get_mut(phase)) {
-                *m = (*m).max(body16);
-            }
+            max16(&mut self.health_max);
         } else if ev.bank {
-            if let Some(m) = self.bank_max.get_mut(r).and_then(|m| m.get_mut(phase)) {
-                *m = (*m).max(body16);
-            }
+            max16(&mut self.bank_max);
         } else if ev.tel {
-            if let Some(l) = self.tel.get_mut(r) {
-                l.add(body);
+            if let Some(t) = self.tel.get_mut(r) {
+                t.add(body);
             }
-            if let Some(m) = self.tel_max.get_mut(r).and_then(|m| m.get_mut(phase)) {
-                *m = (*m).max(body16);
+            max16(&mut self.tel_max);
+        } else {
+            if let Some(t) = self.tick.get_mut(r).and_then(|t| t.get_mut(phase)) {
+                t.add(body);
             }
-        } else if let (Some(t), Some(m)) = (
-            self.tick.get_mut(r).and_then(|t| t.get_mut(phase)),
-            self.tick_max.get_mut(r).and_then(|m| m.get_mut(phase)),
-        ) {
-            t.n = t.n.wrapping_add(1);
-            t.sum = t.sum.wrapping_add(body);
-            *m = (*m).max(body16);
+            max16(&mut self.tick_max);
         }
+        Some(regime)
     }
 
     /// The plain ticks of `r` at `phase`.
@@ -276,13 +465,12 @@ impl KernelProbe {
         }
     }
 
-    /// The tick's vector reached its last stamp at `end`, `exit` its exit
-    /// stamp: the probe's own update, and the vector's entry and exit, run
-    /// inside any bus body it preempted.
+    /// The tick's vector, entered at `entry`, reached its last stamp at
+    /// `end`: its time with the probe's own update, and the vector's entry
+    /// and exit, run inside any bus body it preempted.
     #[inline(always)]
-    pub fn ended(&mut self, exit: u32, end: u32) {
-        self.other(end.wrapping_sub(exit));
-        self.last_end = end;
+    pub fn ended(&mut self, entry: u32, end: u32) {
+        self.other(end.wrapping_sub(entry));
     }
 
     /// A body on the kernel's vector that is not a tick (shunt burst events),
@@ -309,7 +497,25 @@ impl KernelProbe {
             return None;
         }
         let mut r = Words(w);
+        let busy = r.word();
+        let entries = r.word();
+        let halts = r.word();
+        let [phase, config_seq, booted, slow_due] = r.word().to_le_bytes();
+        let [slow_finish, therm, closed, banks] = r.word().to_le_bytes();
         Some(Self {
+            busy,
+            entries,
+            halts,
+            before: ProbeTags {
+                phase,
+                config_seq,
+                booted: booted != 0,
+                slow_due: slow_due != 0,
+                slow_finish: slow_finish != 0,
+                therm,
+                closed: closed != 0,
+            },
+            banks,
             tick: core::array::from_fn(|_| {
                 core::array::from_fn(|_| Tally {
                     n: r.word(),
@@ -320,27 +526,29 @@ impl KernelProbe {
             tel_max: core::array::from_fn(|_| r.halves()),
             bank_max: core::array::from_fn(|_| r.halves()),
             health_max: core::array::from_fn(|_| r.halves()),
-            tel: core::array::from_fn(|_| r.load()),
+            tel: core::array::from_fn(|_| Tally {
+                n: r.word(),
+                sum: r.word(),
+            }),
             refresh: r.load(),
             slow: core::array::from_fn(|_| r.load()),
             finish: r.load(),
             close: r.load(),
             install: r.load(),
             side: r.load(),
-            long: core::array::from_fn(|_| r.word()),
-            windows: Windows {
-                ring: r.halves(),
-                at: r.word(),
-                sum: core::array::from_fn(|_| r.word()),
-                gamma: core::array::from_fn(|_| r.word()),
-            },
-            late_max: r.word(),
-            halts: r.word(),
-            busy: r.word(),
-            entries: r.word(),
-            last_entry: r.word(),
-            last_end: r.word(),
         })
+    }
+}
+
+#[cfg(test)]
+impl KernelProbe {
+    /// The record less the tags it carries between ticks.
+    pub(crate) fn booked(&self) -> Self {
+        Self {
+            before: Self::ZERO.before,
+            banks: 0,
+            ..*self
+        }
     }
 }
 
@@ -357,13 +565,6 @@ pub struct BusProbe {
     /// window's last frame closes at [`Self::closed`].
     pub host: Load,
     pub halts: u32,
-    /// Break-wake overflows: breaks, and a parked low's re-fires.
-    pub breaks: u32,
-    pub refires: u32,
-    /// Overflows that found the line still low, and of those, the ones whose
-    /// rising edge landed between the pin read and the park.
-    pub parks: u32,
-    pub rises: u32,
     acc: u32,
     /// [`SAW_BREAK`] and [`SAW_DISPATCH`] for the running body.
     flags: u32,
@@ -379,10 +580,6 @@ impl BusProbe {
         nested: [0; Body::ALL.len()],
         host: Load::ZERO,
         halts: 0,
-        breaks: 0,
-        refires: 0,
-        parks: 0,
-        rises: 0,
         acc: 0,
         flags: 0,
     };
@@ -464,10 +661,6 @@ impl BusProbe {
             nested: core::array::from_fn(|_| r.word()),
             host: r.load(),
             halts: r.word(),
-            breaks: r.word(),
-            refires: r.word(),
-            parks: r.word(),
-            rises: r.word(),
             acc: r.word(),
             flags: r.word(),
         })

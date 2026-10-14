@@ -18,8 +18,10 @@
 //! `seated` runs only when `BUDGET_WINDOWS` names it: it needs the horn
 //! clamped at mid travel, and holds a goal past the clamp so the
 //! thermometer tracks a seat.
-//! Kernel ticks book by drive arm; each window also prints gamma(k), the
-//! long ticks by arm and the entry lateness. A bus body reports its net
+//! Kernel ticks book by drive arm. A window image (`--features
+//! bench-window`, `scripts/build-image.sh --window`) also prints gamma(k),
+//! the long ticks by arm and the entry lateness; the standard bench image
+//! skips those lines and says so. A bus body reports its net
 //! time (the kernel vectors inside it subtracted), which the table judges,
 //! and for its longest one the wall time and the kernel vectors nested.
 //! A report-only window is never held to the table.
@@ -49,7 +51,7 @@ use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
 use osc_servo_core::budget::probe::{
-    Component, KernelProbe, LONG_TICKS, Row, Scenario, TelReport, TelStep, rows, us,
+    Component, LONG_TICKS, Row, Scenario, TelReport, TelStep, WindowProbe, rows, us,
 };
 use osc_servo_core::budget::{Frame, Regime, TICKS_PER_US, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
@@ -413,10 +415,7 @@ impl Fill {
             w.counters,
             w.stack_free_min
         );
-        for (kt, g) in WINDOW_TICKS.into_iter().zip(k.windows.gamma) {
-            let _ = writeln!(text, "  gamma({kt:>2})            {}", ticks(g));
-        }
-        long_ticks(&mut text, k);
+        window_lines(&mut text, w.snap.windows.as_ref());
         rows(k, bus, &s, |r| {
             if r.n == 0 && r.max == 0 {
                 return;
@@ -429,6 +428,9 @@ impl Fill {
         });
         let _ = writeln!(text, "  kernel words {:08x?}", w.snap.kernel_words);
         let _ = writeln!(text, "  bus words {:08x?}", w.snap.bus_words);
+        if w.snap.windows.is_some() {
+            let _ = writeln!(text, "  window words {:08x?}", w.snap.window_words);
+        }
         self.emit(w, &text);
     }
 
@@ -510,7 +512,7 @@ impl Fill {
                 self.failed.push(format!("{}: {l}", w.name));
             }
         }
-        long_ticks(&mut text, k);
+        window_lines(&mut text, w.snap.windows.as_ref());
         let _ = writeln!(text, "  kernel words {:08x?}", w.snap.kernel_words);
         let _ = writeln!(text, "  TEL tally words {:08x?}", tel.tally_words);
         let _ = writeln!(text, "  TEL step words {:08x?}", tel.cost_words);
@@ -529,16 +531,28 @@ impl Fill {
     }
 }
 
-/// The long ticks by arm and the entry lateness.
-fn long_ticks(text: &mut String, k: &KernelProbe) {
-    let [open, closed] = k.long;
+/// gamma(k), the long ticks by arm and the entry lateness, from a window
+/// image's record.
+fn window_lines(text: &mut String, w: Option<&WindowProbe>) {
+    let Some(w) = w else {
+        let _ = writeln!(
+            text,
+            "  gamma(k), long ticks, entry lateness: skipped (no window record; \
+             build with scripts/build-image.sh --window)"
+        );
+        return;
+    };
+    for (kt, g) in WINDOW_TICKS.into_iter().zip(w.windows.gamma) {
+        let _ = writeln!(text, "  gamma({kt:>2})            {}", ticks(g));
+    }
+    let [open, closed] = w.long;
     let share = 100.0 * closed as f32 / (open + closed).max(1) as f32;
     let _ = writeln!(
         text,
         "  ticks >= {:.0} us: Open {open}, Closed {closed} ({share:.1}% Closed)",
         us(LONG_TICKS)
     );
-    let _ = writeln!(text, "  entry lateness max  {}", ticks(k.late_max));
+    let _ = writeln!(text, "  entry lateness max  {}", ticks(w.late_max));
 }
 
 /// `BUDGET_WINDOWS` names the window.

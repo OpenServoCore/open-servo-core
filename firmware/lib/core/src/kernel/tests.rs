@@ -2400,6 +2400,89 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
     assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
 }
 
+/// The bench probe books each tick from the tags it carried from the tick
+/// before (`KernelProbe::tick`) exactly as from tags read on either side of
+/// the body: every stage, take, drive-arm change, TEL bank, window close
+/// and halt included.
+#[test]
+fn the_probe_books_from_carried_tags_as_from_tags_around_the_body() {
+    use crate::budget::probe::{HALT_TICKS, KernelProbe};
+    use crate::budget::{Regime, TICK_PERIOD};
+    let sh = Shared::new();
+    seed(&sh);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        HoldTel::default(),
+        TIMING,
+    );
+    let hot = frame(2000, BIAS + 400);
+    let mut around = KernelProbe::ZERO;
+    let mut carried = KernelProbe::ZERO;
+    let mut banks = 0u32;
+    let mut events = [0u32; 9];
+    let ticks = BASE_FAST_TICKS + 2000;
+    for t in 0..ticks {
+        match t {
+            1000 => sh.table.with_mut(|c| {
+                c.control.lifecycle.mode = Mode::Velocity;
+                c.control.lifecycle.goal_velocity = 1000;
+            }),
+            1500 => sh
+                .table
+                .with_mut(|c| c.control.lifecycle.mode = Mode::OpenLoop),
+            _ if t == ticks / 2 => write_config(&sh, |_| {}),
+            _ => {}
+        }
+        let entry = t * TICK_PERIOD;
+        let body = match t % 997 {
+            0 => HALT_TICKS + 1,
+            n => 600 + n,
+        };
+        let tel = t % 3000 < 1000;
+        let was = banks;
+        banks += (tel && t % 16 == 0) as u32;
+        let health = t % 20 == 7;
+        let before = k.probe_tags();
+        k.on_scan(hot, &sh);
+        let after = k.probe_tags();
+        let ev = Events {
+            tel,
+            bank: banks != was,
+            health,
+            ..Events::between(before, after)
+        };
+        let kinds = [
+            ev.slow,
+            ev.finish,
+            ev.close,
+            ev.install,
+            ev.side,
+            ev.refresh,
+            ev.bank,
+            ev.health,
+            before.closed != after.closed,
+        ];
+        for (n, &hit) in events.iter_mut().zip(&kinds) {
+            *n += hit as u32;
+        }
+        let r = if before.closed || after.closed {
+            Regime::Closed
+        } else {
+            Regime::Open
+        };
+        around.book(body, before.phase as usize, r, ev, !before.booted);
+        around.ended(entry, entry + body);
+        carried.tick(body, || after, tel, banks, health);
+        carried.ended(entry, entry + body);
+    }
+    assert!(events.iter().all(|&n| n > 0), "{events:?}");
+    assert_eq!(carried.booked(), around.booked());
+}
+
 /// The row's first chunk is taken at `on_publish`: the tick block is whole by
 /// then - this scan's frame, the stamp the ISR published, and the
 /// conclusions on the window the previous command drove - and nothing in

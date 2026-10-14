@@ -2,7 +2,7 @@
 #
 # Build the flash images of one commit from one canonical path.
 #
-#   scripts/build-image.sh [--bench] [--telcost] <rev> [board...]
+#   scripts/build-image.sh [--bench] [--telcost] [--window] <rev> [board...]
 #
 # Cargo hashes the absolute path of every path dependency outside the
 # workspace root into crate metadata. The hash lands in symbol names, and
@@ -12,19 +12,22 @@
 #
 # Boards: osc-dev-v006 (app + boot), osc-adapter-wchlinke; default all.
 # --bench adds the osc-dev-v006 app built with the bench feature;
-# --telcost adds it built with bench-telcost (osc-dev-v006-app-telcost).
+# --telcost adds it built with bench-telcost (osc-dev-v006-app-telcost);
+# --window adds it built with bench-window (osc-dev-v006-app-window).
 # Images land in $OSC_BUILD_ROOT/out/<rev>/ as <image>.elf, .bin and .sha1;
 # each prints as `<board> <image> <sha1>`.
 set -euo pipefail
 
-usage() { echo "usage: $0 [--bench] [--telcost] <rev> [osc-dev-v006|osc-adapter-wchlinke ...]" >&2; exit 2; }
+usage() { echo "usage: $0 [--bench] [--telcost] [--window] <rev> [osc-dev-v006|osc-adapter-wchlinke ...]" >&2; exit 2; }
 
 bench=0
 telcost=0
+window=0
 while :; do
     case ${1:-} in
         --bench) bench=1; shift ;;
         --telcost) telcost=1; shift ;;
+        --window) window=1; shift ;;
         *) break ;;
     esac
 done
@@ -84,6 +87,10 @@ for board in "${boards[@]}"; do
             if [ $telcost = 1 ]; then
                 build "$board" osc-dev-v006-app osc-dev-v006-app-telcost $t \
                     -p osc-dev-v006-app --features osc-dev-v006-app/bench-telcost
+            fi
+            if [ $window = 1 ]; then
+                build "$board" osc-dev-v006-app osc-dev-v006-app-window $t \
+                    -p osc-dev-v006-app --features osc-dev-v006-app/bench-window
             fi
             ;;
         osc-adapter-wchlinke)

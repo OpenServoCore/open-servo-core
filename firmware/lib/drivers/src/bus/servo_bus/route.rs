@@ -18,10 +18,9 @@ impl<P: Providers> ServoBus<P> {
     /// involvement; the frontier arms a deadline and returns. Bounded per
     /// wake -- past the bound the framer
     /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
-    /// are never starved by a deep backlog; `false` then, `true` once the
-    /// ring is drained to the frontier.
+    /// are never starved by a deep backlog.
     #[rustc_align(4)]
-    pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) -> bool {
+    pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
         for _ in 0..super::FRAMES_PER_WAKE {
             // Own TX holds the one CRC engine until its release, and a frame
             // the ladder hands over may need a verdict: the ladder waits, and
@@ -30,7 +29,7 @@ impl<P: Providers> ServoBus<P> {
             // lane to a TEL burst.
             if self.tx.streaming() {
                 self.framer_at = None;
-                return true;
+                return;
             }
             // Cursor before clock: a preemption between the reads then
             // projects from a late `now`, never an early one (DES pin
@@ -64,16 +63,16 @@ impl<P: Providers> ServoBus<P> {
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
-                    return true;
+                    return;
                 }
                 FramerOut::Wait(t) => {
                     self.framer_at = Some(t);
-                    return true;
+                    return;
                 }
                 FramerOut::Covered { span, end_due } => {
                     self.framer_at = Some(end_due);
                     self.route_frame(span, false, d);
-                    return true;
+                    return;
                 }
                 FramerOut::Frame(span) => {
                     self.on_frame_end(span, d);
@@ -81,7 +80,6 @@ impl<P: Providers> ServoBus<P> {
             }
         }
         self.framer_at = Some(self.deadline.now());
-        false
     }
 
     #[rustc_align(4)]

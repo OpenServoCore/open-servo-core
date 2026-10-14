@@ -113,13 +113,6 @@ impl TrimLoop {
         let steps = if ppm < 0 { -mag } else { mag };
         let total = (self.total as i32 + steps).clamp(-TOTAL_MAX, TOTAL_MAX);
         let applied = total - self.total as i32;
-        crate::bench::trim_probe(|p| {
-            p.windows += 1;
-            p.tw_ppm = ppm;
-            p.tw_effect = self.step_ppm;
-            p.tw_applied = applied;
-            p.tw_total = total;
-        });
         if applied == 0 {
             return None;
         }

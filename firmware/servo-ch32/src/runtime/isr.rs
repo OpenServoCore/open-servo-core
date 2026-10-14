@@ -97,7 +97,7 @@ pub fn on_adc_dma_tc() {
     }
     DMA1.ifcr().write(|w| w.set_tcif(0, true));
 
-    let (tags, after) = unsafe {
+    unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
         let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.tick.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
@@ -108,10 +108,8 @@ pub fn on_adc_dma_tc() {
             let (sensors, _motor) = kernel.io.parts();
             sensors.land(&SHARED);
         }
-        let tags = crate::probe::tick_before(kernel.probe_tags());
         kernel.on_tick(&SHARED);
-        (tags, kernel.probe_tags())
-    };
+    }
 
     // Trailing on purpose: the burst handshake must never displace a kernel
     // tick, and a launch wants the scan TC's slack ahead of the next trigger.
@@ -125,7 +123,7 @@ pub fn on_adc_dma_tc() {
         w.publish(&SHARED);
     }
 
-    crate::probe::kernel_exit(entry, tags, after, health);
+    crate::probe::kernel_exit(entry, health);
 }
 
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow

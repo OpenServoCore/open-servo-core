@@ -2,29 +2,34 @@
 //! records (servo-ch32 `probe`, `--features bench`), found by symbol in the
 //! flashed ELF and read off the running chip with `wlink dump`. The
 //! `bench-telcost` image carries `TEL_TALLY` and `TEL_COST` in place of
-//! `BUS_PROBE`; the symbols present name the layout. A dump can
-//! halt the hart (and costs the kernel 16 ticks): read between windows only,
-//! and check the servo still runs after.
+//! `BUS_PROBE`; a `bench-window` image adds `WINDOW_PROBE` to either. The
+//! symbols present name the layout. A dump can halt the hart (and costs the
+//! kernel 16 ticks): read between windows only, and check the servo still
+//! runs after.
 
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use osc_servo_core::budget::probe::{BusProbe, KernelProbe, TelCost, TelTally};
+use osc_servo_core::budget::probe::{BusProbe, KernelProbe, TelCost, TelTally, WindowProbe};
 
 pub const KERNEL_SYMBOL: &str = "KERNEL_PROBE";
 pub const BUS_SYMBOL: &str = "BUS_PROBE";
+pub const WINDOW_SYMBOL: &str = "WINDOW_PROBE";
 pub const TEL_TALLY_SYMBOL: &str = "TEL_TALLY";
 pub const TEL_COST_SYMBOL: &str = "TEL_COST";
 
 /// One read of the records: decoded, the bus record's last frame closed,
-/// and the words as dumped. A bench image has `bus`, a telcost image `tel`.
+/// and the words as dumped. A bench image has `bus`, a telcost image `tel`,
+/// a window image `windows`.
 #[derive(Debug)]
 pub struct Snapshot {
     pub kernel: KernelProbe,
     pub bus: Option<BusProbe>,
+    pub windows: Option<WindowProbe>,
     pub tel: Option<TelSnapshot>,
     pub kernel_words: Vec<u32>,
     pub bus_words: Vec<u32>,
+    pub window_words: Vec<u32>,
     /// The `wlink dump`s the read took: each one halts the hart.
     pub dumps: u16,
 }
@@ -41,6 +46,7 @@ pub struct TelSnapshot {
 #[derive(Copy, Clone, Debug)]
 pub struct Reader {
     kernel: u32,
+    windows: Option<u32>,
     layout: Layout,
 }
 
@@ -53,7 +59,7 @@ enum Layout {
 impl Reader {
     /// Locate the records in `elf`, checking each size against the layout
     /// this build decodes: `BUS_PROBE` makes a bench image, `TEL_COST` and
-    /// `TEL_TALLY` a telcost one.
+    /// `TEL_TALLY` a telcost one; `WINDOW_PROBE` may join either.
     pub fn from_elf(elf: &[u8]) -> Result<Self> {
         let at = |name: &str, words: usize| -> Result<Option<u32>> {
             let Some((addr, size)) = symbol(elf, name)? else {
@@ -69,6 +75,7 @@ impl Reader {
         let kernel = at(KERNEL_SYMBOL, KernelProbe::WORDS)?
             .with_context(|| format!("{KERNEL_SYMBOL} missing: not a bench image"))?;
         let bus = at(BUS_SYMBOL, BusProbe::WORDS)?;
+        let windows = at(WINDOW_SYMBOL, WindowProbe::WORDS)?;
         let tally = at(TEL_TALLY_SYMBOL, TelTally::WORDS)?;
         let cost = at(TEL_COST_SYMBOL, TelCost::WORDS)?;
         let layout = match (bus, tally, cost) {
@@ -79,7 +86,16 @@ impl Reader {
                  ({TEL_TALLY_SYMBOL} and {TEL_COST_SYMBOL})"
             ),
         };
-        Ok(Self { kernel, layout })
+        Ok(Self {
+            kernel,
+            windows,
+            layout,
+        })
+    }
+
+    /// The image carries the window record (`bench-window`).
+    pub fn windowed(&self) -> bool {
+        self.windows.is_some()
     }
 
     /// The image carries the TEL step records, and no bus record.
@@ -95,6 +111,14 @@ impl Reader {
         };
         let kernel_words = record(self.kernel, KernelProbe::WORDS)?;
         let kernel = KernelProbe::from_words(&kernel_words).context("kernel record")?;
+        let window_words = match self.windows {
+            Some(addr) => record(addr, WindowProbe::WORDS)?,
+            None => Vec::new(),
+        };
+        let windows = match self.windows {
+            Some(_) => Some(WindowProbe::from_words(&window_words).context("window record")?),
+            None => None,
+        };
         let mut snap = match self.layout {
             Layout::Bench { bus } => {
                 let bus_words = record(bus, BusProbe::WORDS)?;
@@ -105,9 +129,11 @@ impl Reader {
                             .context("bus record")?
                             .closed(),
                     ),
+                    windows,
                     tel: None,
                     kernel_words,
                     bus_words,
+                    window_words,
                     dumps: 0,
                 }
             }
@@ -117,6 +143,7 @@ impl Reader {
                 Snapshot {
                     kernel,
                     bus: None,
+                    windows,
                     tel: Some(TelSnapshot {
                         tally: TelTally::from_words(&tally_words).context("TEL tally")?,
                         cost: TelCost::from_words(&cost_words).context("TEL step record")?,
@@ -125,6 +152,7 @@ impl Reader {
                     }),
                     kernel_words,
                     bus_words: Vec::new(),
+                    window_words,
                     dumps: 0,
                 }
             }
@@ -322,7 +350,16 @@ mod tests {
         assert!(Reader::from_elf(&e).is_err());
         let b = 4 * BusProbe::WORDS as u32;
         let e = elf(&[("BUS_PROBE", 0x100, b), ("KERNEL_PROBE", 0x200, k)]);
-        assert!(Reader::from_elf(&e).is_ok_and(|r| !r.telcost()));
+        assert!(Reader::from_elf(&e).is_ok_and(|r| !r.telcost() && !r.windowed()));
+        let w = 4 * WindowProbe::WORDS as u32;
+        let mut windowed = vec![("BUS_PROBE", 0x100, b), ("KERNEL_PROBE", 0x200, k)];
+        windowed.push(("WINDOW_PROBE", 0x400, w));
+        assert!(Reader::from_elf(&elf(&windowed)).is_ok_and(|r| r.windowed()));
+        windowed[2].2 = 8;
+        assert!(
+            Reader::from_elf(&elf(&windowed)).is_err(),
+            "a stale window record"
+        );
     }
 
     #[test]

@@ -1,18 +1,20 @@
 //! Bench-only budget probe (`--features bench`): every kernel tick and every
-//! bus vector body, in HCLK ticks, into the two `budget::probe` records the
+//! bus vector body, in HCLK ticks, into the `budget::probe` records the
 //! hardware test `budgets` dumps by symbol (`nm` the ELF) and holds against
 //! the budget table. Call sites stay unconditional and compile to nothing
 //! without the feature. The `bench-telcost` image trades the bus record for
 //! the TEL tallies beside the drivers' TEL step record: there the bus
-//! probes compile to nothing.
+//! probes compile to nothing. `bench-window` adds the window record.
 
 use osc_servo_core::budget::probe::BusProbe;
+#[cfg(feature = "bench")]
+use osc_servo_core::budget::probe::KernelProbe;
 #[cfg(feature = "bench-telcost")]
 use osc_servo_core::budget::probe::TelTally;
+#[cfg(feature = "bench-window")]
+use osc_servo_core::budget::probe::WindowProbe;
 use osc_servo_core::budget::{self, Body};
-#[cfg(feature = "bench")]
-use osc_servo_core::budget::{Events, Regime, probe::KernelProbe};
-use osc_servo_core::kernel::{ProbeTags, TICK_HZ};
+use osc_servo_core::kernel::TICK_HZ;
 
 #[cfg(feature = "bench")]
 use crate::hal::systick;
@@ -28,9 +30,18 @@ pub static mut KERNEL_PROBE: KernelProbe = KernelProbe::ZERO;
 #[unsafe(no_mangle)]
 pub static mut BUS_PROBE: BusProbe = BusProbe::ZERO;
 
+#[cfg(feature = "bench-window")]
+#[unsafe(no_mangle)]
+pub static mut WINDOW_PROBE: WindowProbe = WindowProbe::ZERO;
+
 #[cfg(feature = "bench-telcost")]
 #[unsafe(no_mangle)]
 pub static mut TEL_TALLY: TelTally = TelTally::ZERO;
+
+/// TEL arms picked up as of the last tick's end, mod 2^8 (one a tick at
+/// most).
+#[cfg(feature = "bench-telcost")]
+static mut TEL_PICKUPS: u8 = 0;
 
 /// Run `f` over the bus record; a no-op without the `bench` feature.
 #[inline(always)]
@@ -93,64 +104,48 @@ pub fn bus_exit(entry: BusStamp, b: Body) {
     }
 }
 
-/// A kernel tick's tags from before its body.
-#[derive(Copy, Clone)]
-#[allow(dead_code)]
-pub struct TickTags {
-    tags: ProbeTags,
-    banks: u32,
-    #[cfg(feature = "bench-telcost")]
-    pickups: u32,
-}
-
-/// From `Kernel::probe_tags` ahead of `on_tick`.
-#[inline(always)]
-pub fn tick_before(tags: ProbeTags) -> TickTags {
-    TickTags {
-        tags,
-        banks: osc_servo_drivers::bench::tel_banks(),
-        #[cfg(feature = "bench-telcost")]
-        pickups: osc_servo_drivers::bench::tel_pickups(),
-    }
-}
-
-/// The kernel tick that began at `entry` ends now. `after`: the kernel's
-/// tags after the body; `health`: the tick-load counters closed a window.
+/// The kernel tick that entered at `entry` reached its exit stamp now;
+/// `health`: the tick-load counters closed a window. The record is updated
+/// after the exit stamp, so none of it lands in the tick's body.
 #[inline(always)]
 #[allow(unused_variables)]
-pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, health: bool) {
+pub fn kernel_exit(entry: u32, health: bool) {
     #[cfg(feature = "bench")]
     {
         let exit = systick::ticks();
-        let b = before.tags;
-        let ev = Events {
-            tel: crate::runtime::statics::TEL_CHANNEL.active(),
-            bank: osc_servo_drivers::bench::tel_banks() != before.banks,
-            health,
-            ..Events::between(b, after)
-        };
-        let r = if b.closed || after.closed {
-            Regime::Closed
-        } else {
-            Regime::Open
-        };
+        // SAFETY: the kernel vector, after the tick: the kernel's only
+        // writer, which never preempts itself.
+        let kernel = unsafe { (*crate::runtime::statics::KERNEL.get()).assume_init_ref() };
+        let tel = crate::runtime::statics::TEL_CHANNEL.active();
+        let banks = osc_servo_drivers::bench::tel_banks();
         // SAFETY: the kernel vector is this record's only writer and never
         // preempts itself.
         let k = unsafe { &mut *core::ptr::addr_of_mut!(KERNEL_PROBE) };
         let body = exit.wrapping_sub(entry);
-        k.tick(entry, body, b.phase as usize, r, ev, !b.booted);
         #[cfg(feature = "bench-telcost")]
         {
             use osc_servo_drivers::bench as tel;
-            let first = tel::tel_pickups() != before.pickups;
+            let (ev, r, phase, boot) = k.events(kernel.probe_tags(), tel, banks, health);
+            let pickups = tel::tel_pickups() as u8;
+            // SAFETY: as KERNEL_PROBE; pickups happen only inside a tick.
+            let first = pickups != unsafe { core::ptr::replace(&raw mut TEL_PICKUPS, pickups) };
             let steps = tel::tel_tick_steps();
             let steps = tel::tel_stamping().then_some(steps);
             // SAFETY: as KERNEL_PROBE.
             let t = unsafe { &mut *core::ptr::addr_of_mut!(TEL_TALLY) };
-            t.tick(body, b.phase as usize, r, ev, first, steps, !b.booted);
+            t.tick(body, phase, r, ev, first, steps, boot);
         }
+        let booked = k.tick(body, || kernel.probe_tags(), tel, banks, health);
+        #[cfg(feature = "bench-window")]
+        // SAFETY: as KERNEL_PROBE.
+        let w = unsafe { &mut *core::ptr::addr_of_mut!(WINDOW_PROBE) };
+        #[cfg(feature = "bench-window")]
+        w.tick(entry, body, booked);
         // The update itself runs inside any bus body this tick preempted.
-        k.ended(exit, systick::ticks());
+        let end = systick::ticks();
+        k.ended(entry, end);
+        #[cfg(feature = "bench-window")]
+        w.ended(end);
     }
 }
 
