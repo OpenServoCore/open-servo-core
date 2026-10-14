@@ -19,6 +19,7 @@ use osc_client::nusb::NusbPipe;
 use osc_client::{Error, Id};
 use osc_protocol::table;
 use osc_protocol::wire::BaudRate;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 
 fn ids(args: &[String]) -> Result<Vec<Id>, Box<dyn std::error::Error>> {
     let out: Result<Vec<u8>, _> = args.iter().map(|a| a.parse::<u8>()).collect();
@@ -129,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let targets = ids(&rest[1..])?;
             let mut bad = 0u32;
             for i in 0..n {
-                let chain = c.gread(&targets, 392, 4)?; // GOAL_VELOCITY, V006 map
+                let chain = c.gread(&targets, GOAL_POSITION, 4)?;
                 let clean = chain.timeout_slot.is_none()
                     && chain.statuses.len() == targets.len()
                     && chain
