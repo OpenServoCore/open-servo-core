@@ -21,6 +21,7 @@ use osc_ident::regs::control;
 use osc_protocol::table::CONFIG_COMMON_END;
 
 use crate::descriptor;
+use crate::rig::Bus;
 
 /// The servo's descriptor (built-ins plus the operator's overrides, picked
 /// by one identity read), owned so callers keep no registry around.
@@ -204,9 +205,9 @@ pub(crate) struct RecoverArgs {
     yes: bool,
 }
 
-pub(crate) fn recover(args: &RecoverArgs, baud: String, id: u8) -> Result<()> {
-    let mut c = crate::rig::connect(&baud)?;
+pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
     let mut id = Id::new(id);
+    let mut c = crate::rig::connect(&bus, &[id])?;
     let d = descriptor(&mut c, id)?;
     let s = c.data_state(id, &d)?;
     println!("id {}:", id.as_byte());

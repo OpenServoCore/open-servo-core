@@ -33,9 +33,8 @@ use osc_protocol::wire::UID_LEN;
     about = "Operate an osc-native servo bus through the osc-adapter."
 )]
 struct Cli {
-    /// Wire baud, or `auto` to find the bus by ENUM probe.
-    #[arg(short, long, global = true, default_value = "auto")]
-    baud: String,
+    #[command(flatten)]
+    bus: rig::Bus,
     /// Servo id for the unicast verbs.
     #[arg(short, long, global = true, default_value_t = 1)]
     id: u8,
@@ -97,13 +96,6 @@ enum Cmd {
         /// Target baud.
         to: String,
         /// Servos to migrate; defaults to --id.
-        #[arg(long, value_delimiter = ',')]
-        ids: Vec<u8>,
-    },
-    /// Write the fleet RESPONSE_DEADLINE register + the engine's mirror.
-    Deadline {
-        us: u16,
-        /// Servos to write; defaults to --id.
         #[arg(long, value_delimiter = ',')]
         ids: Vec<u8>,
     },
@@ -267,6 +259,22 @@ enum ProfileCmd {
     },
 }
 
+impl Cmd {
+    /// The servos a bus verb addresses by id; the broadcast verbs address
+    /// none.
+    fn targets(&self, id: u8) -> Vec<Id> {
+        match self {
+            Cmd::Baud { ids, .. }
+            | Cmd::Syntonize { ids, .. }
+            | Cmd::Clear { ids }
+            | Cmd::Gread { ids, .. }
+            | Cmd::Gwrite { ids, .. } => ids_or_default(ids, id),
+            Cmd::Enum { .. } | Cmd::Assign { .. } | Cmd::Commit => Vec::new(),
+            _ => vec![Id::new(id)],
+        }
+    }
+}
+
 fn on_off(s: &str) -> Result<bool, String> {
     match s {
         "on" => Ok(true),
@@ -414,22 +422,13 @@ fn connect() -> Result<Client<NusbPipe>> {
     Ok(Client::connect(NusbPipe::open()?)?)
 }
 
-/// Connect for the bus verbs: fixed baud, or `auto` via ENUM probe.
 fn connect_bus(cli: &Cli) -> Result<Client<NusbPipe>> {
-    let mut c = connect()?;
-    match cli.baud.as_str() {
-        "auto" => match c.find_bus_baud()? {
-            Some(rate) => println!("bus at {} baud", rate.as_hz()),
-            None => bail!("no servo bus found at any supported baud"),
-        },
-        s => c.host_baud(parse_rate(s)?)?,
-    }
-    Ok(c)
+    rig::connect(&cli.bus, &cli.cmd.targets(cli.id))
 }
 
 fn discover(cli: &Cli) -> Result<()> {
     let mut c = connect()?;
-    let rates: Vec<BaudRate> = match cli.baud.as_str() {
+    let rates: Vec<BaudRate> = match cli.bus.baud.as_str() {
         "auto" => vec![
             BaudRate::B500000,
             BaudRate::B1000000,
@@ -788,21 +787,6 @@ fn main() -> Result<()> {
             &ids_or_default(ids, cli.id),
             parse_rate(to)?,
         ),
-        Cmd::Deadline { us, ids } => {
-            let mut c = connect_bus(&cli)?;
-            state::check_each(&mut c, &ids_or_default(ids, cli.id))?;
-            for &id in &ids_or_default(ids, cli.id) {
-                c.write(
-                    id,
-                    osc_protocol::table::RESPONSE_DEADLINE_US,
-                    &us.to_le_bytes(),
-                )?;
-                println!("id {}: response_deadline_us = {us}", id.as_byte());
-            }
-            c.set_response_deadline(*us)?;
-            println!("engine mirror set");
-            Ok(())
-        }
         Cmd::Save => save(&mut connect_bus(&cli)?, id),
         Cmd::Stamp { save } => state::stamp(&mut connect_bus(&cli)?, id, *save),
         Cmd::Factory => {
@@ -815,7 +799,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Recover(args) => state::recover(args, cli.baud.clone(), cli.id),
+        Cmd::Recover(args) => state::recover(args, cli.bus.clone(), cli.id),
         Cmd::Reboot => {
             let mut c = connect_bus(&cli)?;
             state::check(&mut c, id)?;
@@ -991,12 +975,12 @@ fn main() -> Result<()> {
             state::warn(&mut c, id, &d)?;
             dump(&mut c, id, &d)
         }
-        Cmd::Ident(args) => ident::run(args, cli.baud.clone(), cli.id),
-        Cmd::Cal(args) => cal::run(args, cli.baud.clone(), cli.id),
+        Cmd::Ident(args) => ident::run(args, cli.bus.clone(), cli.id),
+        Cmd::Cal(args) => cal::run(args, cli.bus.clone(), cli.id),
         Cmd::CalReplay(a) => cal::replay::run(a),
-        Cmd::Sweep(args) => sweep::run(args, cli.baud.clone(), cli.id),
-        Cmd::Capture(args) => capture::run(args, cli.baud.clone(), cli.id),
-        Cmd::Lut(args) => lut::run(args, cli.baud.clone(), cli.id),
+        Cmd::Sweep(args) => sweep::run(args, cli.bus.clone(), cli.id),
+        Cmd::Capture(args) => capture::run(args, cli.bus.clone(), cli.id),
+        Cmd::Lut(args) => lut::run(args, cli.bus.clone(), cli.id),
     }
 }
 

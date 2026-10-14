@@ -24,7 +24,7 @@ use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
 use osc_protocol::tel::{Chunk, Chunks};
-use osc_protocol::wire::UID_LEN;
+use osc_protocol::wire::{DEFAULT_RESPONSE_DEADLINE_US, UID_LEN};
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
 use osc_servo_core::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
 use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
@@ -436,6 +436,67 @@ fn clear_counters_zeroes_both_in_one_write() {
     c.clear_counters(Id::new(5)).expect("clear");
     let h = c.health(Id::new(5)).expect("health");
     assert_eq!((h.crc_fail_count, h.framing_drop_count), (0, 0));
+}
+
+fn sim_now_us(c: &mut Client<FakePipe>) -> u64 {
+    c.pipe_mut().sim_mut().now_us()
+}
+
+#[test]
+fn deadline_sync_writes_a_differing_servo_once() {
+    let mut c = fleet(&[5]);
+    c.pipe_mut()
+        .sim_mut()
+        .servo_table_mut(0, |t| t.config.common.response_deadline_us = 400);
+    let before = c.pipe_mut().sim_mut().dispatched(0);
+    let rewritten = c
+        .sync_response_deadline(&[Id::new(5)], DEFAULT_RESPONSE_DEADLINE_US)
+        .expect("sync");
+    assert_eq!(rewritten, vec![(Id::new(5), 400)]);
+    assert_eq!(
+        c.pipe_mut().sim_mut().dispatched(0) - before,
+        2,
+        "one READ, one WRITE"
+    );
+    assert_eq!(
+        read_u16(&mut c, Id::new(5), table::RESPONSE_DEADLINE_US),
+        DEFAULT_RESPONSE_DEADLINE_US
+    );
+    assert!(c.health(Id::new(5)).expect("health").config_dirty);
+}
+
+#[test]
+fn deadline_sync_leaves_a_matching_servo_clean() {
+    let mut c = fleet(&[5]);
+    let before = c.pipe_mut().sim_mut().dispatched(0);
+    let rewritten = c
+        .sync_response_deadline(&[Id::new(5)], DEFAULT_RESPONSE_DEADLINE_US)
+        .expect("sync");
+    assert!(rewritten.is_empty());
+    assert_eq!(
+        c.pipe_mut().sim_mut().dispatched(0) - before,
+        1,
+        "the READ only"
+    );
+    assert!(!c.health(Id::new(5)).expect("health").config_dirty);
+}
+
+#[test]
+fn deadline_sync_sets_the_engine_mirror_with_no_servo_listed() {
+    const STRETCHED_US: u16 = 5_000;
+    let mut c = fleet(&[5]);
+    let timeout_us = |c: &mut Client<FakePipe>| {
+        let t0 = sim_now_us(c);
+        assert!(matches!(c.ping(Id::new(9)), Err(Error::Timeout { .. })));
+        sim_now_us(c) - t0
+    };
+    assert!(timeout_us(&mut c) < STRETCHED_US as u64);
+    assert!(
+        c.sync_response_deadline(&[], STRETCHED_US)
+            .expect("sync")
+            .is_empty()
+    );
+    assert!(timeout_us(&mut c) >= STRETCHED_US as u64);
 }
 
 // --- data state and the plant stamp ---

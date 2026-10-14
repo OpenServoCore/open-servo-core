@@ -53,6 +53,7 @@ use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_E
 use osc_protocol::tel::Chunks;
 
 use crate::descriptor;
+use crate::rig::Bus;
 use crate::rig::limits::Stall;
 use crate::rig::park::park;
 use crate::rig::plant::Snapshot;
@@ -971,10 +972,10 @@ fn land_rows_dropped(
 }
 
 /// Entry from the top-level `osc sweep` dispatch.
-pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     pump::install_ctrlc();
-    let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
+    let mut c = crate::rig::connect(&bus, &[id])?;
     crate::state::check(&mut c, id)?;
     let lim = crate::rig::limits::read(&mut c, id)?;
     let plan = crate::rig::limits::plan(&mut c, id, &lim)?;

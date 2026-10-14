@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::capture::envelope;
+use crate::rig::Bus;
 use crate::rig::centre::adopt_polarity;
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
@@ -179,11 +180,11 @@ impl From<BurstStops> for Stops {
     }
 }
 
-/// Runner context: the ident args plus the resolved bus baud, threaded
+/// Runner context: the ident args plus the bus, threaded
 /// through every experiment fn (the runners predate the arg-group split and
 /// still read `cli.field`).
 struct Ctx {
-    baud: String,
+    bus: Bus,
     out: PathBuf,
     guard: (Option<u16>, Option<u16>),
     slip: Option<(u16, u16)>,
@@ -369,9 +370,9 @@ enum Cmd {
 
 /// Entry from the top-level `osc ident` dispatch. `baud`/`id` are the osc
 /// globals; `args` carries the ident-scoped flags and subcommand.
-pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     let mut cli = Ctx {
-        baud,
+        bus,
         out: args.out.clone().unwrap_or_else(|| DEFAULT_OUT.into()),
         guard: (args.guard_lo, args.guard_hi),
         slip: args.slip_lo.zip(args.slip_hi),
@@ -401,8 +402,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     if let Cmd::Synth { file } = &args.cmd {
         return synth_file(&cli, id, file, args.out.as_deref());
     }
-    let mut c = crate::rig::connect(&cli.baud)?;
     let id = Id::new(id);
+    let mut c = crate::rig::connect(&cli.bus, &[id])?;
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
     if drives(&args.cmd) {
@@ -2124,7 +2125,7 @@ fn synth_file(cli: &Ctx, id: u8, file: &Path, out: Option<&Path>) -> Result<()> 
     }
     let mut sense = f.sense;
     if pj.l_cd <= 0.0 && sense.is_none() {
-        let mut c = crate::rig::connect(&cli.baud)?;
+        let mut c = crate::rig::connect(&cli.bus, &[Id::new(id)])?;
         sense = Some(read_sense(&mut c, Id::new(id))?);
     }
     let (plant, t) = synth_plant(&pj, sense.as_ref(), &targets(cli))?;
@@ -2196,7 +2197,10 @@ mod tests {
 
     fn ctx(out: PathBuf) -> Ctx {
         Ctx {
-            baud: "auto".into(),
+            bus: Bus {
+                baud: "auto".into(),
+                deadline: osc_protocol::wire::DEFAULT_RESPONSE_DEADLINE_US,
+            },
             out,
             guard: (None, None),
             slip: None,

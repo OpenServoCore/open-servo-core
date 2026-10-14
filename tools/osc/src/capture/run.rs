@@ -26,6 +26,7 @@ use super::procs::Procedure;
 use super::store::{Capture, CaptureMeta, Decl, PosLutFile, Store};
 use super::verdict::{Verdict, verdict};
 use super::{RULE, RUNG_TRIES, SETTLE_MS, Supply, WINDOW_MS};
+use crate::rig::Bus;
 use crate::rig::battery::{self, read_pack_mv};
 use crate::rig::plant::{self, Snapshot};
 use crate::rig::pump::{self, STOP};
@@ -74,7 +75,7 @@ const RETRY_REST: Duration = Duration::from_secs(5);
 const REBOOT_WAIT: Duration = Duration::from_secs(3);
 
 /// Entry from `osc capture session`.
-pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
+pub(crate) fn run(a: &Args, bus: Bus, id: u8) -> Result<()> {
     let root = match &a.root {
         Some(r) => r.clone(),
         None => super::default_root()?,
@@ -139,8 +140,8 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
 
     pump::install_ctrlc();
     let id = Id::new(id);
-    let s = Wire::new(crate::rig::connect(&baud)?, id);
-    let mut connect = || crate::rig::connect(&baud).map(|c| Wire::new(c, id));
+    let s = Wire::new(crate::rig::connect(&bus, &[id])?, id);
+    let mut connect = || crate::rig::connect(&bus, &[id]).map(|c| Wire::new(c, id));
     let ctx = Ctx {
         servo: &a.servo,
         p: &p,
