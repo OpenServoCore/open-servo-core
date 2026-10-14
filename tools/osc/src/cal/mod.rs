@@ -56,9 +56,10 @@ use osc_ident::units::{self, SenseParams};
 
 use crate::capture::envelope;
 use crate::rig::Bus;
-use crate::rig::centre::{adopt_polarity, centre};
+use crate::rig::centre::{centre, jam_check};
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{Pump, with_guard, write_reg};
+use crate::rig::servo::Wire;
 use crate::rig::snapshot::{self, read_u16};
 use crate::rig::{Aborted, check_abort};
 
@@ -645,12 +646,13 @@ impl Cal<'_> {
                     pct(*cap)
                 );
                 let cfg = order::centre_cfg(*duty, *cap, true);
-                let exp = centre(c, id, cfg, self.params(), "the jam check")?;
+                let mut s = Wire::new(&mut *c, id);
+                let (exp, polarity) = jam_check(&mut s, cfg, self.params(), self.polarity)?;
+                self.polarity = polarity;
                 let moved = exp.moved_at();
                 if let Some(m) = moved {
                     println!("  the shaft moves at {}", pct(m));
                 }
-                self.polarity = adopt_polarity(c, id, &exp, self.polarity)?;
                 run.nudged(moved);
             }
             Stage::Centre { duty, cap, .. } => {

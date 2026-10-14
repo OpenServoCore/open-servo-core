@@ -16,6 +16,7 @@ pub(crate) mod snapshot;
 use anyhow::{Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
+use osc_client::data_state::fault;
 use osc_client::nusb::NusbPipe;
 use osc_ident::exp::AbortReason;
 use osc_protocol::wire::DEFAULT_RESPONSE_DEADLINE_US;
@@ -32,6 +33,11 @@ pub(crate) struct Aborted {
 impl std::fmt::Display for Aborted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} aborted: {}", self.what, self.reason)?;
+        if let AbortReason::Fault { code, .. } = self.reason
+            && let Some(name) = fault::name(code)
+        {
+            write!(f, ", {name}")?;
+        }
         if let AbortReason::Blocked { .. } = self.reason {
             write!(
                 f,

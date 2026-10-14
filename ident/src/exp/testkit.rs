@@ -40,6 +40,7 @@ use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, config, control};
 use crate::window::{WATCH_BURST_MS, WINDOW_TICKS, Watch, Windows, watch_rows};
 use osc_protocol::tel::{self, Chunks};
+use osc_servo_core::kernel::phases::loops::faults;
 
 /// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
 pub const TICK_HZ: f64 = 20_100.0;
@@ -219,8 +220,18 @@ pub struct FakeServo {
     pub fault_after_bursts: Option<u32>,
     pub bursts: u32,
     /// The kernel's soft endstop: outbound duty at or past a limit is zeroed
-    /// unless the stall permit is live (and honored).
+    /// unless the stall permit is live (and honored). Outbound is the
+    /// duty's sign, whichever way the motor turns.
     pub soft: Option<(f64, f64)>,
+    /// The kernel's drive direction check, its OpenLoop rule: from the
+    /// torque enable until a leg of travel the duty's way proves the wiring,
+    /// two legs against the duty past a soft limit latch `drive_reversed`.
+    /// False never checks.
+    pub drive_check: bool,
+    drive_proven: bool,
+    drive_anchor: f64,
+    /// `drive_reversed` latched: no drive until the next torque enable.
+    pub reversed: bool,
     /// The permit as last written; [`FakeServo::permit_live`] says whether
     /// it is granted.
     pub permit: bool,
@@ -320,6 +331,10 @@ impl FakeServo {
             fault_after_bursts: None,
             bursts: 0,
             soft: None,
+            drive_check: false,
+            drive_proven: false,
+            drive_anchor: 0.0,
+            reversed: false,
             permit: false,
             honors_permit: true,
             lease_ms: None,
@@ -431,17 +446,40 @@ impl FakeServo {
     }
 
     fn endstop_blocks(&self) -> bool {
-        let out = self.duty as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
+        let out = self.duty;
         self.soft
-            .is_some_and(|(lo, hi)| (self.pos <= lo && out < 0.0) || (self.pos >= hi && out > 0.0))
+            .is_some_and(|(lo, hi)| (self.pos <= lo && out < 0) || (self.pos >= hi && out > 0))
             && !(self.permit_live() && self.honors_permit)
+    }
+
+    /// One drive direction check on the plant as it stands.
+    fn check_drive(&mut self) {
+        if !self.drive_check || self.drive_proven || self.reversed || !self.torque {
+            return;
+        }
+        let duty = self.applied();
+        if duty == 0 {
+            self.drive_anchor = self.pos;
+            return;
+        }
+        let leg = faults::DRIVE_LEG_COUNTS as f64;
+        let along = (self.pos - self.drive_anchor) * duty.signum() as f64;
+        let walled = self.soft.is_some_and(|(lo, hi)| {
+            if self.pos < self.drive_anchor {
+                self.pos <= lo
+            } else {
+                self.pos >= hi
+            }
+        });
+        self.drive_proven = along >= leg;
+        self.reversed = along <= -2.0 * leg && walled;
     }
 
     /// The duty the bridge actually sees: zero with torque off, zero driving
     /// outward at a soft limit the permit does not open, and the governed
     /// duty under the limiter.
     fn applied(&self) -> i16 {
-        if !self.torque || self.endstop_blocks() {
+        if !self.torque || self.reversed || self.endstop_blocks() {
             0
         } else {
             self.govern().0
@@ -750,6 +788,8 @@ impl FakeServo {
             let on = value != 0;
             if on && !self.torque {
                 self.reset_ceiling(self.floor_q15 as f64);
+                self.reversed = false;
+                self.drive_anchor = self.pos;
             }
             if !on {
                 self.folded = false;
@@ -777,6 +817,7 @@ impl FakeServo {
             if on != self.burst.drive_polarity {
                 self.drive_polarity = !self.drive_polarity;
                 self.burst.drive_polarity = on;
+                self.drive_proven = false;
             }
         } else if reg == control::STALL_PERMIT {
             self.permit = value != 0;
@@ -857,6 +898,7 @@ impl FakeServo {
             self.pressed_ms += self.t_ms - from;
         }
         self.stall_timer(from);
+        self.check_drive();
     }
 
     fn advance_plant(&mut self, ms: f64) {
@@ -1003,12 +1045,14 @@ impl FakeServo {
         }
         self.ticks += rows as f64;
         self.stall_timer(t0);
+        self.check_drive();
         self.faulted()
     }
 
     fn faulted(&self) -> bool {
         matches!(self.fault_at_ms, Some(at) if self.t_ms >= at)
             || matches!(self.fault_after_bursts, Some(n) if self.bursts >= n)
+            || self.reversed
     }
 
     /// One watch of `rows` folded, as the pump makes it, without the bus
@@ -1039,7 +1083,13 @@ impl FakeServo {
         let duty = self.applied();
         let driving = duty != 0;
         let (i, _) = self.sensed();
-        let fault = self.faulted();
+        let (fault_flags, fault_code) = if self.reversed {
+            (faults::BIT_DATA, faults::CODE_DRIVE_REVERSED)
+        } else if self.faulted() {
+            (faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT)
+        } else {
+            (0, 0)
+        };
         let glitch = match self.glitch_zone {
             Some((lo, hi)) if (lo..=hi).contains(&self.pos) => 80.0,
             _ => 0.0,
@@ -1057,8 +1107,8 @@ impl FakeServo {
             host_ms: self.t_ms,
             omega_bemf_cps: omega_bemf.round().clamp(-32768.0, 32767.0) as i16,
             sample_tick: self.ticks as u64 as u32,
-            fault_flags: if fault { 32 } else { 0 },
-            fault_code: if fault { 6 } else { 0 },
+            fault_flags,
+            fault_code,
             pos,
             current_raw: (512.0 + if driving { i } else { 0.0 }).round() as u16,
             current_bias_counts: 512,
