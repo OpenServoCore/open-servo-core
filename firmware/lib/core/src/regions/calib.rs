@@ -148,10 +148,19 @@ pub struct CalibPwm {
     pub pwm_period_ticks: u16,
 }
 
+/// The gear train's material, host-written by cal for hosts to pick limits
+/// from (a stop hold's current); firmware never reads it. 0 = unknown, the
+/// state of a servo never calibrated; 1 = plastic, 2 = metal.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibGear {
+    pub gear_class: u8,
+}
+
 /// The plant stamp (`stamp` module): the host's CRC over the identified and
 /// calibrated set plus the effective position table, 0 = never stamped.
 /// Firmware recomputes it at every checkpoint; a mismatch is
-/// `STAMP_MISMATCH`. Sits right after the host-written blocks so one WRITE
+/// `STAMP_MISMATCH`. Sits right after the blocks a fit writes so one WRITE
 /// can carry the whole identified set and its stamp.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
@@ -178,6 +187,7 @@ pub struct CalibRegs {
     pub sense: CalibSense,
     pub sense_ext: CalibSenseExt,
     pub pwm: CalibPwm,
+    pub gear: CalibGear,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 176],
+    pub _rsvd_tail: [u8; 175],
 }

@@ -96,6 +96,8 @@ pub mod calib {
     pub const VMOTOR_BIAS_BOT_OHM: Reg = reg(0x00cc, 2);
     /// The PWM period, compare counts: TEL `duty_counts`' full scale. RO.
     pub const PWM_PERIOD_TICKS: Reg = reg(0x00ce, 2);
+    /// The gear train's material: 0 unknown, 1 plastic, 2 metal.
+    pub const GEAR_CLASS: Reg = reg(0x00d0, 1);
 }
 
 pub mod control {
@@ -251,6 +253,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("vdd_mv", calib::VDD_MV),
     ("tick_hz", calib::TICK_HZ),
     ("pwm_period_ticks", calib::PWM_PERIOD_TICKS),
+    ("gear_class", calib::GEAR_CLASS),
     ("i_window_min_ticks", calib::I_WINDOW_MIN_TICKS),
     ("v_window_min_ticks", calib::V_WINDOW_MIN_TICKS),
     ("r0_q12", calib::R0_Q12),

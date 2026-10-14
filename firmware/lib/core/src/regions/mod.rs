@@ -29,8 +29,8 @@ pub mod telemetry_ext;
 
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
-    CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
-    CalibStamp, CalibThermal, CalibWinding,
+    CalibGear, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense,
+    CalibSenseExt, CalibStamp, CalibThermal, CalibWinding,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
@@ -376,11 +376,12 @@ mod tests {
 
     /// Pins the CALIB layout: the kernel's blocks at the region front, then
     /// the rest of the host-written blocks contiguous through the stamp, the
-    /// RO board facts behind them.
+    /// RO board facts behind them; the gear class took the first reserved
+    /// byte after those, so nothing before it moved.
     #[test]
     fn calib_layout_keeps_the_host_written_blocks_contiguous() {
         use super::calib::addr::{
-            kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, stamp, thermal, winding,
+            gear, kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, stamp, thermal, winding,
         };
         assert_eq!(motor::R_Q12, super::CALIB_BASE_ADDR);
         assert_eq!(motor::KE_VPC_Q, 0x08A);
@@ -396,6 +397,7 @@ mod tests {
         assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CA);
         assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0CC);
         assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CE);
+        assert_eq!(gear::GEAR_CLASS, 0x0D0);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
@@ -404,6 +406,7 @@ mod tests {
         };
         assert!(rw(motor::R_Q12, stamp::PLANT_STAMP + 2));
         assert!(!rw(sense::SHUNT_R_MOHM, pwm::PWM_PERIOD_TICKS + 2));
+        assert!(rw(gear::GEAR_CLASS, gear::GEAR_CLASS + 1));
     }
 
     /// `boot_mode` is an ABI pin: the burst block appends after

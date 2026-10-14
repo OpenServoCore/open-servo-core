@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use osc_client::blocking::Client;
+use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
 use osc_client::data_state::{
@@ -324,6 +325,11 @@ fn factory_wipes_the_seeded_calibration_like_hardware() {
         read_u16(&mut c, id, GEAR_RATIO_CENTI),
         seed::GEAR_RATIO_CENTI
     );
+    let d = descriptor();
+    assert_eq!(
+        c.gear_class(id, &d).expect("gear class"),
+        GearClass::Plastic
+    );
     assert_eq!(
         read_i32(&mut c, id, POS_MAX_SOFT_COUNTS),
         seed::POS_MAX_SOFT_COUNTS
@@ -340,6 +346,10 @@ fn factory_wipes_the_seeded_calibration_like_hardware() {
     assert_eq!(read_u16(&mut c, id, RAW_MAX), 0, "CALIB is wiped");
     assert_eq!(read_u16(&mut c, id, ANGLE_MAX_CDEG), 0);
     assert_eq!(read_u16(&mut c, id, GEAR_RATIO_CENTI), 0);
+    assert_eq!(
+        c.gear_class(id, &d).expect("gear class"),
+        GearClass::Unknown
+    );
     assert_eq!(
         read_i32(&mut c, id, POS_MAX_SOFT_COUNTS),
         DEFAULT_POS_MAX_SOFT_COUNTS,
@@ -585,7 +595,7 @@ fn host_stamp_is_the_firmwares_over_the_same_table() {
     let mut c = Client::connect(pipe).expect("connect");
     let id = Id::new(1);
     let stamp = d.stamp().expect("recipe");
-    assert_eq!(stamp.covered().len(), 39);
+    assert_eq!(stamp.covered().len(), 40);
 
     let check = |c: &mut Client<FakePipe>, case: &str| {
         let host = c.plant_stamp(id, &d).expect("host stamp");
