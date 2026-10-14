@@ -1,13 +1,14 @@
-//! `osc cal` - the calibration orchestrator: find the mechanical end-stops
-//! and the drive polarity (applied at once), confirm the real-world angle
-//! range with the operator, print the count->unit report, then write the
-//! limits + pot stops + angle endpoints + gear, stamp the set and persist
-//! with MGMT SAVE.
+//! `osc cal` - the calibration orchestrator: take the gear train's
+//! material, find the mechanical end-stops and the drive polarity (applied
+//! at once), confirm the real-world angle range with the operator, print
+//! the count->unit report, then write the limits + pot stops + angle
+//! endpoints + gear ratio and class, stamp the set and persist with MGMT
+//! SAVE.
 //!
 //! The stops are found gently, in the order osc-ident's `Run::for_cal`
 //! names: the jam check and a burst for winding R at mid travel, then each
-//! stop approached at one duty whose stall the current limit holds and
-//! read seated at half the limit. A servo that needs more than its limit to
+//! stop approached at one duty whose stall the gear train's stop-hold
+//! limit holds and read seated at half that limit. A servo that needs more than its limit to
 //! start moving is refused before anything drives at a stop; a burst that
 //! measures no R leaves the stops to the duty that moved the shaft. A
 //! refusal or an abort writes nothing to config, calib or the position
@@ -29,9 +30,11 @@ pub mod replay;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use clap::ValueEnum;
 use dialoguer::{Confirm, Input};
 use osc_client::Id;
 use osc_client::blocking::Client;
+use osc_client::calib::GearClass;
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
@@ -86,6 +89,43 @@ const DEFAULT_TRAVEL_DEG: f64 = 180.0;
 /// (about 224).
 const SOFT_MARGIN_FRAC: f64 = 0.0625;
 
+/// The current a stall against a stop may draw, mA, by gear train: plastic
+/// teeth strip under a held stall (an SG90 train holds 0.33 A healthy and
+/// slips at 0.18 A once damaged); a metal MG90 train holds 0.52 A at a stop.
+const STOP_HOLD_PLASTIC_MA: f64 = 300.0;
+const STOP_HOLD_METAL_MA: f64 = 500.0;
+
+/// The gear train cal writes: plastic or metal, never unknown.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Gears {
+    Plastic,
+    Metal,
+}
+
+impl Gears {
+    fn of(class: GearClass) -> Option<Self> {
+        match class {
+            GearClass::Plastic => Some(Gears::Plastic),
+            GearClass::Metal => Some(Gears::Metal),
+            GearClass::Unknown => None,
+        }
+    }
+
+    fn class(self) -> GearClass {
+        match self {
+            Gears::Plastic => GearClass::Plastic,
+            Gears::Metal => GearClass::Metal,
+        }
+    }
+
+    fn stop_hold_ma(self) -> f64 {
+        match self {
+            Gears::Plastic => STOP_HOLD_PLASTIC_MA,
+            Gears::Metal => STOP_HOLD_METAL_MA,
+        }
+    }
+}
+
 /// `osc cal` args: output dir plus the headless overrides. `--baud`/`--id`
 /// come from the top-level osc globals.
 #[derive(clap::Args, Debug)]
@@ -112,6 +152,10 @@ pub struct Args {
     /// Known gear ratio (motor rev per output rev); unset leaves it 0.
     #[arg(long)]
     gear_ratio: Option<f64>,
+    /// The gear train's material; required with --yes on a servo whose
+    /// class is unknown.
+    #[arg(long, value_enum)]
+    gears: Option<Gears>,
     /// Assume yes: never prompt. Required values must come from flags.
     #[arg(long)]
     yes: bool,
@@ -145,6 +189,14 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         eprintln!("warning: ke_vpc_q is 0 - run `osc ident` first for the torque report");
     }
 
+    let gears = gears(args, c.gear_class(id, &d)?)?;
+    let stop_lim = stop_hold(lim, gears);
+    println!(
+        "gear train {}: stops held under {}",
+        gears.class().name(),
+        lim.ma().of(stop_lim.i_lim as f64)
+    );
+
     // Safety gate before any motion: both mechanical ends get driven.
     if !args.yes {
         println!("cal drives the servo into BOTH mechanical end-stops.");
@@ -155,7 +207,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     }
 
     let out = OutDir::create(args.out.as_deref().unwrap_or(Path::new("./cal-out")))?;
-    let Found { stops: r, tel } = find_stops(&mut c, id, &out, lim, sc, fs)?;
+    let Found { stops: r, tel } = find_stops(&mut c, id, &out, lim, stop_lim, sc, fs)?;
     let EndstopResult {
         pos_min_phys,
         pos_max_phys,
@@ -273,8 +325,38 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         soft: (soft_min_count, soft_max_count),
         angle_cdeg: (angle_min_cdeg as i32, angle_max_cdeg as i32),
         gear_ratio_centi,
+        gears,
     };
     write_calibration(&mut c, id, &d, &set, !args.no_save)
+}
+
+/// The gear train: `--gears`, else the class the servo holds. Under
+/// `--yes` an unknown class with no flag refuses; interactively the
+/// operator is asked, the known class the default.
+fn gears(args: &Args, stored: GearClass) -> Result<Gears> {
+    let known = args.gears.or(Gears::of(stored));
+    if args.yes {
+        return known
+            .context("--yes needs --gears plastic|metal: the servo's gear class is unknown");
+    }
+    let mut prompt = Input::<String>::new()
+        .with_prompt("Gear train: plastic or metal?")
+        .validate_with(|s: &String| Gears::from_str(s, true).map(|_| ()));
+    if let Some(g) = known {
+        prompt = prompt.default(g.class().name().into());
+    }
+    Gears::from_str(&prompt.interact_text()?, true).map_err(anyhow::Error::msg)
+}
+
+/// The limits cal's run plans under: the servo's, the current limit
+/// lowered to the gear train's stop hold through the sense scale, never
+/// raised past the servo's own.
+fn stop_hold(lim: ServoLimits, gears: Gears) -> ServoLimits {
+    let counts = gears.stop_hold_ma() / 1000.0 / lim.amps_per_count;
+    ServoLimits {
+        i_lim: counts.floor().min(lim.i_lim as f64) as u16,
+        ..lim
+    }
 }
 
 /// What cal writes once the operator accepts it.
@@ -284,6 +366,7 @@ struct Calibration {
     soft: (i32, i32),
     angle_cdeg: (i32, i32),
     gear_ratio_centi: u16,
+    gears: Gears,
 }
 
 /// Write the calibration, re-COMMIT a LIVE position table against the stops
@@ -295,7 +378,7 @@ fn write_calibration<P: Pipe>(
     set: &Calibration,
     save: bool,
 ) -> Result<()> {
-    let writes: [(Reg, i32); 9] = [
+    let writes: [(Reg, i32); 10] = [
         (config::POS_MIN_PHYS_COUNTS, set.phys.0),
         (config::POS_MAX_PHYS_COUNTS, set.phys.1),
         (config::POS_MIN_SOFT_COUNTS, set.soft.0),
@@ -305,6 +388,7 @@ fn write_calibration<P: Pipe>(
         (calib::ANGLE_MIN_CDEG, set.angle_cdeg.0),
         (calib::ANGLE_MAX_CDEG, set.angle_cdeg.1),
         (calib::GEAR_RATIO_CENTI, set.gear_ratio_centi as i32),
+        (calib::GEAR_CLASS, set.gears.class().byte() as i32),
     ];
     for (reg, value) in writes {
         write_reg(c, id, reg, value)?;
@@ -534,11 +618,13 @@ fn find_stops(
     id: Id,
     out: &OutDir,
     lim: ServoLimits,
+    stop_lim: ServoLimits,
     sc: Scales,
     tick_hz: f64,
 ) -> Result<Found> {
     let mut cal = Cal {
         lim,
+        stop_lim: stop_lim.i_lim,
         sc,
         tick_hz,
         out,
@@ -548,7 +634,7 @@ fn find_stops(
         refused: None,
         tel: Vec::new(),
     };
-    let mut run = Run::for_cal(lim, &sc);
+    let mut run = Run::for_cal(stop_lim, &sc);
     while let Some(stage) = run.next_stage() {
         match cal.stage(&stage, &mut run, c, id) {
             Ok(how) => run.ended(how),
@@ -566,7 +652,7 @@ fn find_stops(
             "{}",
             Refusal::BreakawayOverLimit {
                 need,
-                i_lim: lim.i_lim,
+                i_lim: stop_lim.i_lim,
                 ma: lim.ma(),
             }
         ),
@@ -588,6 +674,8 @@ fn find_stops(
 
 struct Cal<'a> {
     lim: ServoLimits,
+    /// The current limit the stops are planned under, counts.
+    stop_lim: u16,
     sc: Scales,
     tick_hz: f64,
     out: &'a OutDir,
@@ -738,10 +826,10 @@ impl Cal<'_> {
         match run.plan() {
             Some(_) => println!(
                 "[stops] each stop approached at {}, then held at {} while it is read: half the \
-                 current limit of {}; stall permit held",
+                 stop-hold limit of {}; stall permit held",
                 pct(approach),
                 pct(seat),
-                ma.of(self.lim.i_lim as f64)
+                ma.of(self.stop_lim as f64)
             ),
             None => println!(
                 "[stops] taken without winding R: each stop approached at {}, the duty that \
@@ -1281,6 +1369,7 @@ mod tests {
             soft_angle_min: None,
             soft_angle_max: None,
             gear_ratio: Some(308.05),
+            gears: None,
             yes: true,
             no_save: false,
         }
@@ -1428,6 +1517,7 @@ mod tests {
                 soft: (lo + 223, 3626),
                 angle_cdeg: (0, 18420),
                 gear_ratio_centi: 30805,
+                gears: Gears::Metal,
             };
             write_calibration(&mut c, id, &d, &set, true).unwrap();
             assert_eq!(c.pos_lut_state(id, &d).unwrap(), state, "{lo}");
@@ -1445,6 +1535,7 @@ mod tests {
                 (calib::ANGLE_MIN_CDEG, 0),
                 (calib::ANGLE_MAX_CDEG, 18420),
                 (calib::GEAR_RATIO_CENTI, 30805),
+                (calib::GEAR_CLASS, 2),
             ] {
                 assert_eq!(read(&mut c, id, reg), want, "{lo}: {reg:?}");
             }
@@ -1475,6 +1566,7 @@ mod tests {
             soft: (474, 3588),
             angle_cdeg: (0, 18774),
             gear_ratio_centi: 30805,
+            gears: Gears::Metal,
         };
         assert_ne!(saved, [251, 3588, 251, 30805]);
         write_calibration(&mut c, id, &d, &set, false).unwrap();
@@ -1483,6 +1575,87 @@ mod tests {
         c.reboot(id).unwrap();
         let back: Vec<i32> = regs.iter().map(|&r| read(&mut c, id, r)).collect();
         assert_eq!(back, saved);
+    }
+
+    /// A servo never calibrated holds no gear class: `--yes` refuses
+    /// without `--gears`, before anything drives. The class cal writes is
+    /// stamped and saved with the set, so the next `--yes` cal reads it
+    /// back and needs no flag.
+    #[test]
+    fn an_unknown_gear_class_needs_the_flag_and_cal_saves_the_class() {
+        use osc_client::BaudRate;
+        use osc_client::data_state::STAMP_MISMATCH;
+        use osc_client::fake::FakePipe;
+
+        let d = Descriptor::parse(DESCRIPTOR).unwrap();
+        let pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        let mut c = Client::connect(pipe).unwrap();
+        let id = Id::new(1);
+        let stored = c.gear_class(id, &d).unwrap();
+        assert_eq!(stored, GearClass::Unknown);
+        let headless = travel_flags(Some(0.0), Some(183.5));
+        let err = gears(&headless, stored).unwrap_err().to_string();
+        assert!(err.contains("--gears"), "{err}");
+        let flagged = Args {
+            gears: Some(Gears::Plastic),
+            ..travel_flags(Some(0.0), Some(183.5))
+        };
+        assert_eq!(gears(&flagged, stored).unwrap(), Gears::Plastic);
+
+        let set = Calibration {
+            phys: (251, 3811),
+            soft: (474, 3588),
+            angle_cdeg: (0, 18774),
+            gear_ratio_centi: 23473,
+            gears: Gears::Plastic,
+        };
+        write_calibration(&mut c, id, &d, &set, true).unwrap();
+        c.reboot(id).unwrap();
+        let flags = c.data_state(id, &d).unwrap().flags;
+        assert_eq!(flags & STAMP_MISMATCH, 0, "stamped and saved");
+        let stored = c.gear_class(id, &d).unwrap();
+        assert_eq!(stored, GearClass::Plastic);
+        assert_eq!(gears(&headless, stored).unwrap(), Gears::Plastic);
+        let metal = Args {
+            gears: Some(Gears::Metal),
+            ..travel_flags(Some(0.0), Some(183.5))
+        };
+        assert_eq!(
+            gears(&metal, stored).unwrap(),
+            Gears::Metal,
+            "the flag wins"
+        );
+    }
+
+    /// The stops plan under the gear train's stop hold, converted through
+    /// the dev board's sense scale (60 mOhm, x14.884, 3.3 V: 1108 counts
+    /// per A): on the 500 mA class default, plastic seats under 300 mA and
+    /// metal under 500 mA, the approach cap stalling at that limit and the
+    /// seat at half of it. A servo limit under the class's stays the
+    /// servo's.
+    #[test]
+    fn the_stops_plan_under_the_gear_trains_stop_hold() {
+        use osc_ident::limits::DutyPlan;
+
+        let (mut c, id) = crate::rig::servo::bench::table(1961);
+        let servo = crate::rig::limits::read(&mut c, id).unwrap();
+        let apc = servo.amps_per_count;
+        assert_eq!((1.0 / apc) as u32, 1108);
+        let lim = ServoLimits {
+            i_lim: (0.5 / apc) as u16,
+            ..servo
+        };
+        let r = 2.0;
+        for (gears, want) in [(Gears::Plastic, 332), (Gears::Metal, 554)] {
+            let stop = stop_hold(lim, gears);
+            assert_eq!(stop.i_lim, want, "{gears:?}");
+            assert!(stop.i_lim as f64 * apc * 1000.0 <= gears.stop_hold_ma());
+            let plan = DutyPlan::new(&stop, r, None);
+            assert!((plan.stall(plan.stop_cap) - want as f64).abs() < 1e-6);
+            assert!((plan.stall(plan.hold) - want as f64 / 2.0).abs() < 1e-6);
+        }
+        assert_eq!(stop_hold(servo, Gears::Metal).i_lim, 280, "never raised");
+        assert_eq!(stop_hold(servo, Gears::Plastic).i_lim, 280);
     }
 
     /// The traverse on the bench servo the way cal drives it: a servo that
