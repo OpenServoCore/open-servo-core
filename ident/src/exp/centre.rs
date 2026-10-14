@@ -30,7 +30,7 @@ use crate::regs::control;
 use crate::runway::{BRAKE_DUTY_Q15, BRAKE_POLLS, BRAKE_REST_EPS};
 
 /// Mid travel with no soft guard configured: the pot's own midpoint.
-const POT_MID: u16 = 2048;
+pub const POT_MID: u16 = 2048;
 
 /// Raise per still window while clear of the stops: 2.5% of full scale.
 pub const NUDGE_STEP_Q15: i16 = 819;

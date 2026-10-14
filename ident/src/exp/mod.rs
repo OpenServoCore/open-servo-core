@@ -236,6 +236,13 @@ pub enum AbortReason {
     /// A seek came to rest short of anywhere it could stop: jammed, or the
     /// pot is not reading. `moved` is the travel since the seek started.
     Blocked { pos: u16, moved: u16 },
+    /// The jam check drove the shaft each way up to `ma` and it never
+    /// moved: jammed, or stiffer than the gears' probe current.
+    Stiff { pos: u16, ma: u16 },
+    /// The motor turned both ways and the pot did not move.
+    SensorDead { pos: u16 },
+    /// No current flows into the motor at the jam check's backstop.
+    MotorOpen { pos: u16 },
     /// The servo dropped `rows` TEL rows from a burst.
     RowsDropped { rows: u16 },
 }
@@ -261,6 +268,20 @@ impl core::fmt::Display for AbortReason {
                 f,
                 "the shaft is blocked or the position sensor is not reading (pos {pos}, moved \
                  {moved} counts)"
+            ),
+            AbortReason::Stiff { pos, ma } => write!(
+                f,
+                "the shaft did not move either way at up to {ma} mA (pos {pos}): it is jammed, or \
+                 stiffer than the probe current allows"
+            ),
+            AbortReason::SensorDead { pos } => write!(
+                f,
+                "the motor turns but the position sensor does not move (pos {pos}): the pot is not \
+                 reading, or the output gear slips"
+            ),
+            AbortReason::MotorOpen { pos } => write!(
+                f,
+                "no current flows into the motor (pos {pos}): a motor lead or the winding is open"
             ),
             AbortReason::RowsDropped { rows } => write!(
                 f,
@@ -534,6 +555,10 @@ pub const LIMIT_GOVERNING: u8 = 1 << 0;
 /// `limit_flags` bit 1: the stall timer folded the limit to the yield. A
 /// drive that sees it is held against something it cannot move.
 pub const LIMIT_YIELD_FOLDED: u8 = 1 << 1;
+
+/// `limit_flags` bit 2: a soft limit closed one side of the band, the low
+/// side under mid travel, whichever way the duty points.
+pub const LIMIT_ENDSTOP: u8 = 1 << 2;
 
 /// The firmware says the drive is held against something it cannot move:
 /// the stall fold, or the current limit governing a shaft that a whole
