@@ -1167,7 +1167,8 @@ mod tests {
                     self.go(exp, params.without_pos_guard()).1
                 }
                 Stage::JamCheck => {
-                    let cfg = JamCfg::for_servo(&lim, &scales(), GearClass::Metal);
+                    let tick_hz = self.servo.tick_hz();
+                    let cfg = JamCfg::for_servo(&lim, &scales(), GearClass::Metal, tick_hz);
                     let (servo, bus, log) = (&mut *self.servo, self.bus, &mut self.log);
                     let pumped = jam::drive(JamCheck::new(cfg, &params), &params, |e| {
                         log.extend(pump_on(e, servo, 4_000_000, bus));

@@ -848,7 +848,7 @@ impl Cal<'_> {
             }
             Stage::JamCheck => {
                 let class = gear_class_of(self.gears.class());
-                let exp = jam_check(s, &self.lim, &self.sc, self.params(), class)?;
+                let exp = jam_check(s, &self.lim, &self.sc, self.params(), class, Some(self.out))?;
                 self.polarity = exp.polarity();
                 run.nudged(exp.moved_at());
             }

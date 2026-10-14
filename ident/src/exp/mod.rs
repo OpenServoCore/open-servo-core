@@ -239,6 +239,11 @@ pub enum AbortReason {
     /// The jam check drove the shaft each way up to `ma` and it never
     /// moved: jammed, or stiffer than the gears' probe current.
     Stiff { pos: u16, ma: u16 },
+    /// The jam check, near a stop past a soft limit where the endstop
+    /// allows one way only, drove the shaft up to `ma` that way and it did
+    /// not move: that way may press the stop, so the direction is
+    /// unproven.
+    AtStop { pos: u16, ma: u16 },
     /// The motor turned both ways and the pot did not move.
     SensorDead { pos: u16 },
     /// No current flows into the motor at the jam check's backstop.
@@ -273,6 +278,12 @@ impl core::fmt::Display for AbortReason {
                 f,
                 "the shaft did not move either way at up to {ma} mA (pos {pos}): it is jammed, or \
                  stiffer than the probe current allows"
+            ),
+            AbortReason::AtStop { pos, ma } => write!(
+                f,
+                "the shaft rests against an end stop and did not move at up to {ma} mA (pos \
+                 {pos}): the one way the endstop allows may press the stop, so which way the \
+                 motor turns is unproven"
             ),
             AbortReason::SensorDead { pos } => write!(
                 f,

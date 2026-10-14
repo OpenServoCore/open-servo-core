@@ -216,6 +216,11 @@ pub struct FakeServo {
     /// True position, counts.
     pub pos: f64,
     pub ends: (f64, f64),
+    /// Each stop's give (dynamic model), low then high: first contact this
+    /// many counts inside `ends`, and counts the stopper yields per ccount
+    /// the motor pushes into it. The train is not back-drivable: a yielded
+    /// stopper holds the shaft where the push left it.
+    pub give: [(f64, f64); 2],
     /// Wiring convention: false inverts duty's effect on motion, so the
     /// endstop experiment must infer the flipped drive_polarity.
     pub drive_polarity: bool,
@@ -352,6 +357,7 @@ impl FakeServo {
             pot: None,
             pos: 2400.0,
             ends: (200.0, 4000.0),
+            give: [(0.0, 0.0); 2],
             drive_polarity: true,
             pos_noise: 0.0,
             fault_at_ms: None,
@@ -645,7 +651,28 @@ impl FakeServo {
 
     fn pressing(&self) -> bool {
         let out = self.applied() as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
-        (self.pos <= self.ends.0 && out < 0.0) || (self.pos >= self.ends.1 && out > 0.0)
+        let (lo, hi) = self.contact();
+        (self.pos <= lo && out < 0.0) || (self.pos >= hi && out > 0.0)
+    }
+
+    /// Where each stop's first contact is.
+    pub fn contact(&self) -> (f64, f64) {
+        (self.ends.0 + self.give[0].0, self.ends.1 - self.give[1].0)
+    }
+
+    /// How far the shaft may go each way under a push of `i` ccounts, up
+    /// positive: into a stop's give as far as the push yields it, never
+    /// back out of it.
+    fn reach(&self, i: f64) -> (f64, f64) {
+        let (lo, hi) = self.contact();
+        (
+            (lo - self.give[0].1 * (-i).max(0.0))
+                .min(self.pos)
+                .max(self.ends.0),
+            (hi + self.give[1].1 * i.max(0.0))
+                .max(self.pos)
+                .min(self.ends.1),
+        )
     }
 
     /// Book `ms` of pressing an end, and its current, when the drive is.
@@ -759,7 +786,11 @@ impl FakeServo {
     /// Where travel toward `to` ends: at the stops, or at the jam when it
     /// lies on the way.
     fn travel(&self, to: f64) -> f64 {
-        let to = to.clamp(self.ends.0, self.ends.1);
+        self.travel_in(to, self.ends)
+    }
+
+    fn travel_in(&self, to: f64, ends: (f64, f64)) -> f64 {
+        let to = to.clamp(ends.0, ends.1);
         match self.jam {
             Some(j) if (self.pos - j) * (to - j) <= 0.0 => j,
             _ => to,
@@ -935,11 +966,12 @@ impl FakeServo {
         } else {
             self.pos
         };
-        let out = self.travel(want);
+        let out = self.travel_in(want, self.reach(i));
         self.lash_at = (motor - out).clamp(-h, h);
         self.pos = out;
         if out != want && (want - out) * self.omega_dyn > 0.0 {
-            if w != 0.0 && (out <= self.ends.0 || out >= self.ends.1) {
+            let (lo, hi) = self.contact();
+            if w != 0.0 && (out <= lo || out >= hi) {
                 self.impact_cps_max = self.impact_cps_max.max(self.omega_dyn.abs());
             }
             self.omega_dyn = 0.0;
@@ -1512,6 +1544,10 @@ pub struct Bus {
     /// Seeds which reads are slow: [`SLOW_READS_PCT`] in a hundred take
     /// [`SLOW_READ_MS`] more.
     pub slow_reads: Option<u64>,
+    /// The host stalls this many ms before its n-th read, counted from 1:
+    /// the servo runs on through it, the drive applied and its ticks
+    /// counting.
+    pub stall: Option<(u32, f64)>,
 }
 
 pub const SLOW_READS_PCT: u64 = 3;
@@ -1531,6 +1567,7 @@ impl Bus {
         write_ms: 1.7,
         pause_scale: 1.2,
         slow_reads: None,
+        stall: None,
     };
 
     /// Every transaction instant: only for a pin about the experiment's
@@ -1540,6 +1577,7 @@ impl Bus {
         write_ms: 0.0,
         pause_scale: 1.0,
         slow_reads: None,
+        stall: None,
     };
 
     /// A snapshot every `ms`: the bench ladder read one every 1.9 ms.
@@ -1553,6 +1591,13 @@ impl Bus {
     pub fn with_slow_reads(self, seed: u64) -> Self {
         Self {
             slow_reads: Some(seed),
+            ..self
+        }
+    }
+
+    pub fn with_stall(self, read: u32, ms: f64) -> Self {
+        Self {
+            stall: Some((read, ms)),
             ..self
         }
     }
@@ -1598,6 +1643,7 @@ pub fn pump_on<E: Experiment + ?Sized>(
     let mut windows = Windows::new(PWM_PERIOD_TICKS);
     let mut lease = PermitLease::default();
     let mut lcg = bus.slow_reads.unwrap_or(0);
+    let mut reads = 0;
     let keep = |lease: &mut PermitLease, servo: &mut FakeServo, log: &mut Vec<String>| {
         if lease.due(servo.t_ms) {
             charge_write(servo, lease, &bus, control::STALL_PERMIT, 1);
@@ -1611,6 +1657,12 @@ pub fn pump_on<E: Experiment + ?Sized>(
                 log.push(format!("write {} {}", reg_name(reg), value));
             }
             Cmd::Read => {
+                reads += 1;
+                if let Some((n, ms)) = bus.stall
+                    && n == reads
+                {
+                    servo.advance_ms(ms);
+                }
                 let mut ms = bus.read_ms;
                 if bus.slow_reads.is_some() {
                     lcg = lcg

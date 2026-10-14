@@ -350,7 +350,8 @@ Stops and stillness (`exp/seek.rs`):
 The jam check (`exp/jam.rs`, `exp/sag.rs`):
 
 - `knobs_in_physical_units` - plastic probes to 225 mA and holds 300,
-  metal 375 and 500, both capped at the servo's limit; a rung is 200 mV
+  metal 375 and 500; near a stop past a soft limit plastic keeps 225 and
+  metal probes to 250; all capped at the servo's limit; a rung is 200 mV
   on every rail.
 - `felt_from_the_early_windows` - with no R stored, a locked rotor reads
   stalled, a turning one sagged and an open winding dead against the
@@ -363,16 +364,29 @@ The jam check (`exp/jam.rs`, `exp/sag.rs`):
   written, one RAM flip, mid travel without pressing the stop.
 - `a_latch_is_acknowledged_at_rest_and_resumed_once` - a drive_reversed
   latch: rest, one flip, goal 0 then torque on, never a second flip.
-- `reversed_at_a_stop_ends_stiff_inside_the_budget` - reversed within a
-  dozen counts of a stop past its soft limit ends stiff inside the
-  class's press budget and hold; further off it arrives.
+- `reversed_in_a_stoppers_give_ends_at_the_stop` - the test stops yield
+  90 counts an amp (low, first contact 30 counts out from the press
+  depth) and 40 (high, 20 out); reversed 2 to 15 counts inside first
+  contact the check ends at the stop with the stored polarity kept, or
+  arrives with it right only where the give at 250 mA can show a dozen
+  counts; no press over 250 mA; two dozen counts out it arrives.
+- `a_creep_and_a_lash_crossing_are_not_a_dead_pot` - the bench's run 31
+  plant (4.7 V, rungs 0.25/0.45/0.65 V, 45 mA running friction, lash 15
+  to 45 counts): a creep under a dozen counts raises a rung and a
+  turning pulse after a reversal is repeated; it arrives.
+- `a_dead_pot_by_the_lash_ends_at_the_sensor` - the same plant with its
+  pot dead ends at the sensor on turning pulses that repeat the way
+  before.
+- `a_host_stall_mid_travel_is_no_verdict` - a 600 ms host stall inside
+  a still pulse at mid travel, plastic and metal: no press, it arrives.
 - `the_sweep_holds_on_a_virgin_servo` - starts 250..3830 every 10
   counts, both wirings, 3.7 to 8.4 V, 120/200/300 mA breakaways, plastic
   and metal, and a jam, a dead pot and an open winding every 250 counts:
-  each arrives with the polarity right or ends stiff or blocked, a jam
-  stiff within 2 s, a dead pot at the sensor, an open winding at the
-  motor; no press past the class's budget or over its hold, no arrival
-  over 3 counts/ms, no refused duty written. Prints its table.
+  each arrives with the polarity right or ends stiff, blocked or at a
+  stop, a jam stiff or at a stop within 2 s, a dead pot at the sensor,
+  an open winding at the motor; no press past the class's budget or over
+  250 mA (3% over from a creeping pulse's projection), no arrival over 3
+  counts/ms, no refused duty written. Prints its table.
 - `the_sweep_holds_with_the_stored_r` - the same every 50 counts with
   the winding R stored.
 

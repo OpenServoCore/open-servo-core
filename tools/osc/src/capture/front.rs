@@ -231,7 +231,7 @@ impl Front {
     /// shaft at plans the drives by the winding R the servo carries.
     pub(crate) fn jam_check<S: Servo>(&self, s: &mut S) -> Result<Proved> {
         let class = gear_class(s)?;
-        let exp = jam_check(s, &self.lim, &self.sc, self.params(), class)?;
+        let exp = jam_check(s, &self.lim, &self.sc, self.params(), class, None)?;
         let Some(moved) = exp.moved_at() else {
             bail!("the jam check never saw the shaft move, so nothing drives it");
         };

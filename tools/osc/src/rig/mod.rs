@@ -44,6 +44,13 @@ impl std::fmt::Display for Aborted {
                 ": turn the horn by hand to feel for a jam, and if it rests at an end stop turn \
                  it toward mid travel and run again"
             }
+            AbortReason::AtStop { .. } => {
+                return write!(
+                    f,
+                    "; torque is off and the shaft stays where it stopped: move the horn toward \
+                     mid travel by hand and run again"
+                );
+            }
             AbortReason::SensorDead { .. } => {
                 ": check the pot's wiring, and for a stripped output gear"
             }
@@ -75,6 +82,7 @@ pub(crate) fn blocked(e: &anyhow::Error) -> bool {
             a.reason,
             AbortReason::Blocked { .. }
                 | AbortReason::Stiff { .. }
+                | AbortReason::AtStop { .. }
                 | AbortReason::SensorDead { .. }
                 | AbortReason::MotorOpen { .. }
         )

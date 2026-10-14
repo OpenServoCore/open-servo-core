@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use osc_ident::burst::{self, Capture};
 use osc_ident::exp::WindowSample;
+use osc_ident::exp::jam::Pulse;
 use osc_ident::exp::ladder::RungSummary;
 use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
@@ -204,6 +205,33 @@ pub(crate) fn read_dwell_samples(dir: &Path) -> Result<Vec<DwellSample>> {
         });
     }
     Ok(out)
+}
+
+/// The jam check's pulses, kept with the run for an offline look.
+pub(crate) fn write_jam_pulses(dir: &OutDir, pulses: &[Pulse]) -> Result<()> {
+    let mut w = dir.file("jam_pulses.csv")?;
+    writeln!(
+        w,
+        "rung_mv,sign,duty_q15,from,to,late_ma,ohmic_ma,seen,repeat,servo_ms,host_ms"
+    )?;
+    for p in pulses {
+        let ohmic = p.ohmic_ma.map(|i| format!("{i:.1}")).unwrap_or_default();
+        writeln!(
+            w,
+            "{:.1},{},{},{},{},{:.1},{ohmic},{},{},{:.2},{:.1}",
+            p.mv,
+            p.sign,
+            p.duty_q15,
+            p.from,
+            p.to,
+            p.late_ma,
+            p.seen.name(),
+            p.repeat as u8,
+            p.ms,
+            p.host_ms
+        )?;
+    }
+    Ok(())
 }
 
 /// The anchor hold's windows, kept with the run for an offline look.

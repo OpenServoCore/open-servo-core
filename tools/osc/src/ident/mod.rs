@@ -661,13 +661,13 @@ fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result
     Ok(())
 }
 
-/// The jam check ([`jam_check`]), its polarity the one the run drives
-/// under from here: the duty the shaft first moved at.
-fn jam(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<Option<f64>> {
+/// The jam check ([`jam_check`]), recorded in `out`, its polarity the one
+/// the run drives under from here: the duty the shaft first moved at.
+fn jam(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, out: &csvio::OutDir) -> Result<Option<f64>> {
     let d = drive(cli)?;
     let mut s = Wire::new(c, id);
     let class = gear_class(&mut s)?;
-    let exp = jam_check(&mut s, &d.lim, &d.sc, rig(cli)?, class)?;
+    let exp = jam_check(&mut s, &d.lim, &d.sc, rig(cli)?, class, Some(out))?;
     d.polarity.set(exp.polarity());
     Ok(exp.moved_at())
 }
@@ -894,8 +894,8 @@ fn run_rl(
     sense: &SenseJson,
 ) -> Result<RlResult> {
     let d = drive(cli)?;
-    let moved =
-        jam(cli, c, id)?.context("the jam check never saw the shaft move, so no toggle may run")?;
+    let moved = jam(cli, c, id, out)?
+        .context("the jam check never saw the shaft move, so no toggle may run")?;
     let plan = d.lim.stall_plan(d.sc.r_vpc(CLASS_R_MIN), Some(moved));
     println!(
         "[toggle] winding R/L: chained duty toggles on the free shaft at mid travel, the \
@@ -1622,7 +1622,7 @@ impl Recorded {
         let out = &self.out;
         match stage {
             Stage::Bias => self.bias = Some(run_bias(cli, c, id, out, run.jog())?),
-            Stage::JamCheck => run.nudged(jam(cli, c, id)?),
+            Stage::JamCheck => run.nudged(jam(cli, c, id, out)?),
             Stage::Centre { duty, cap } => {
                 println!("[centring] to mid travel at {}", pct(*duty));
                 centre(cli, c, id, order::centre_cfg(*duty, *cap))?;

@@ -13,6 +13,7 @@ use osc_ident::limits::{GearClass, ServoLimits};
 use osc_ident::regs::config;
 
 use super::check_abort;
+use super::csvio::{self, OutDir, SnapshotLog};
 use super::pump::Pump;
 use super::servo::{Servo, guard};
 
@@ -58,15 +59,21 @@ pub(crate) fn gear_class_of(stored: Stored) -> GearClass {
 /// The jam check on `s`, by the servo's limits, scales and `class`, under
 /// the `drive_polarity` in `params`: the check, the polarity it left in
 /// RAM. Any end but mid travel is an error, the stored polarity written
-/// back.
+/// back. Every pulse is printed and, with `out`, recorded there with
+/// every read.
 pub(crate) fn jam_check<S: Servo>(
     s: &mut S,
     lim: &ServoLimits,
     sc: &Scales,
     params: RigParams,
     class: GearClass,
+    out: Option<&OutDir>,
 ) -> Result<JamCheck> {
-    let cfg = JamCfg::for_servo(lim, sc, class);
+    let tick_hz = s.tick_hz()?;
+    if tick_hz <= 0.0 {
+        bail!("the servo publishes no tick rate, and the jam check times its pulses by it");
+    }
+    let cfg = JamCfg::for_servo(lim, sc, class, tick_hz);
     let ma = |i: f64| cfg.ma(i).round();
     println!(
         "[jam check] short pulses each way from the current sensor's floor, {:.0} mV higher a \
@@ -79,7 +86,18 @@ pub(crate) fn jam_check<S: Servo>(
         println!("  gear class unknown (servo not calibrated): probing at plastic limits");
     }
     let stored = params.drive_polarity;
-    let (exp, abort) = jam::drive(JamCheck::new(cfg, &params), &params, |e| drive(s, e))?;
+    let mut log = out
+        .map(|o| SnapshotLog::create(o, "jam_snapshots.csv"))
+        .transpose()?;
+    let (exp, abort) = jam::drive(JamCheck::new(cfg, &params), &params, |e| {
+        guard(s, |s| Pump::on(s, log.as_mut()).run(e))
+    })?;
+    for p in exp.pulses() {
+        println!("  {p}");
+    }
+    if let Some(o) = out {
+        csvio::write_jam_pulses(o, exp.pulses())?;
+    }
     let ended = check_abort("the jam check", abort).and_then(|()| {
         if !exp.arrived() {
             bail!("the jam check did not reach mid travel (gear slipping?)");
@@ -156,7 +174,7 @@ mod tests {
 
     fn check(b: &mut Bench) -> Result<JamCheck> {
         let class = gear_class(b)?;
-        jam_check(b, &lim(), &board_d_scales(), params(), class)
+        jam_check(b, &lim(), &board_d_scales(), params(), class, None)
     }
 
     /// The class the servo holds: the bench table's, seeded calibrated, is

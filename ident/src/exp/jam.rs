@@ -9,10 +9,17 @@
 //! the polarity, and the next pulse, the other way, confirms it by moving
 //! the other way or stalling. A pulse the endstop would refuse is never
 //! written, and one it refuses mid-way tells nothing. A pulse the pot sees
-//! still is felt ([`sag::feel`]): the ladder ends stiff once the next rung
-//! would stall over the probe's cap or press a stop past the class's
-//! budget, at the motor when nothing flows by the backstop, and at the pot
-//! when the motor turns and the pot does not.
+//! still is felt ([`sag::feel`]); one that crept over [`STILL_COUNTS`]
+//! raises a rung. The ladder ends stiff once the next rung would stall
+//! over the probe's cap or press a stop past the class's budget, at the
+//! motor when nothing flows by the backstop, and at the pot after
+//! [`DEAD_PULSES`] pulses the motor turned and the pot did not, each the
+//! way the one before went: a reversal crosses the gear lash, so a turning
+//! pulse after one is repeated before it counts. Near a stop past a soft
+//! limit, where the endstop allows one way only, that way may press the
+//! stop: the cap is [`STOP_PROBE_MA`] and a still shaft there ends at the
+//! stop, the direction unproven. Pulses are timed on the servo's clock: a host stall
+//! lengthens the drive itself, and only a press counts against the budget.
 //!
 //! The polarity a pulse shows goes to the servo at once, in RAM: past a
 //! soft limit the endstop judges a duty by its sign, and only the true
@@ -41,13 +48,19 @@ use crate::regs::{Reg, config, control};
 use crate::window::Watch;
 use osc_servo_core::kernel::phases::loops::faults;
 
-/// Pot travel a pulse must make to count as moved: four times a poll's 3
-/// counts of noise.
-pub const MOVED_COUNTS: u16 = 12;
+/// Pot travel a pulse may make and still count as still: a poll's noise.
+pub const STILL_COUNTS: u16 = 3;
+/// Pot travel a pulse must make to count as moved.
+pub const MOVED_COUNTS: u16 = 4 * STILL_COUNTS;
+/// Turning pulses with the pot still, each repeating the way the one
+/// before went, that end the check at the sensor.
+pub const DEAD_PULSES: u32 = 2;
 /// A pulse, and the least rest after one, in polls: 40 and 40 ms asked, a
 /// pulse 55 ms on the bus with its reads, under the 60 ms a press may
 /// last. Its first poll reads the early windows, its second the sag. After
-/// a pulse the pot saw still nothing coasts, and one poll at zero will do.
+/// a pulse that did not turn the motor nothing coasts, and one poll at
+/// zero will do; a turning rotor the pot cannot see coasts on, and the
+/// next pulse's early windows must not start on it.
 pub const PULSE_POLLS: u32 = 2;
 pub const REST_POLLS: u32 = 2;
 pub const STILL_REST_POLLS: u32 = 1;
@@ -69,6 +82,11 @@ pub const PROBE_MAX_MV: f64 = 2500.0;
 /// 160 mA).
 pub const PROBE_OF_HOLD: f64 = 0.75;
 
+/// The probe's current cap near a stop past a soft limit, mA: the bench
+/// MG90 seats its stops at about this, and its low stopper took a set at
+/// 320.
+pub const STOP_PROBE_MA: f64 = 250.0;
+
 /// Under this a drive draws nothing, mA: an open winding reads only the
 /// shunt's noise, a few mA, and the class's windings (3 to 7 ohm) draw
 /// over 70 mA at the lowest rung of a 3.7 V rail.
@@ -82,14 +100,18 @@ pub struct JamCfg {
     /// The rung step and the backstop, vcounts.
     pub step: f64,
     pub v_max: f64,
-    /// The probe's cap and the stop hold, both at most the servo's limit,
-    /// and the open-winding floor: ccounts.
+    /// The probe's cap, its cap near a stop past a soft limit and the stop
+    /// hold, all at most the servo's limit, and the open-winding floor:
+    /// ccounts.
     pub i_probe: f64,
+    pub i_stop: f64,
     pub i_hold: f64,
     pub i_open: f64,
     /// Winding R, vcounts per ccount, when the servo carries one.
     pub r_vpc: Option<f64>,
     pub press_budget_ms: f64,
+    /// The servo's fast tick rate, Hz: `sample_tick` is its clock.
+    pub tick_hz: f64,
     pub poll_ms: u32,
     /// Half-width of the band around mid travel the check ends in, counts.
     pub margin: u16,
@@ -105,32 +127,37 @@ impl JamCfg {
         ma_per_ccount: f64,
         i_lim: u16,
         r_vpc: Option<f64>,
+        tick_hz: f64,
     ) -> Self {
         let ccounts = |ma: f64| (ma / ma_per_ccount).min(i_lim as f64);
+        let i_probe = ccounts(PROBE_OF_HOLD * class.hold_ma());
         Self {
             class,
             mv_per_vcount,
             ma_per_ccount,
             step: PROBE_STEP_MV / mv_per_vcount,
             v_max: PROBE_MAX_MV / mv_per_vcount,
-            i_probe: ccounts(PROBE_OF_HOLD * class.hold_ma()),
+            i_probe,
+            i_stop: ccounts(STOP_PROBE_MA).min(i_probe),
             i_hold: ccounts(class.hold_ma()),
             i_open: OPEN_MA / ma_per_ccount,
             r_vpc,
             press_budget_ms: class.press_budget_ms(),
+            tick_hz,
             poll_ms: 20,
             margin: 300,
             polls_max: 400,
         }
     }
 
-    pub fn for_servo(lim: &ServoLimits, sc: &Scales, class: GearClass) -> Self {
+    pub fn for_servo(lim: &ServoLimits, sc: &Scales, class: GearClass, tick_hz: f64) -> Self {
         Self::new(
             class,
             sc.v_term_per_count * 1000.0,
             sc.amps_per_count * 1000.0,
             lim.i_lim,
             lim.r_vpc(),
+            tick_hz,
         )
     }
 
@@ -145,12 +172,90 @@ impl JamCfg {
 
 /// What one pulse showed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Seen {
+pub enum Seen {
     /// The pot moved, this way.
     Moved(i8),
     Felt(Felt),
     /// The endstop zeroed it.
     Refused,
+}
+
+impl Seen {
+    pub fn name(self) -> &'static str {
+        match self {
+            Seen::Moved(d) if d > 0 => "moved up",
+            Seen::Moved(_) => "moved down",
+            Seen::Felt(Felt::Stalled) => "stalled",
+            Seen::Felt(Felt::Turning) => "turning",
+            Seen::Felt(Felt::Dead) => "no current",
+            Seen::Felt(Felt::Unclear) => "unclear",
+            Seen::Refused => "refused",
+        }
+    }
+}
+
+/// One probe pulse.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Pulse {
+    /// The rung, mV, and the duty written, q15: none when refused.
+    pub mv: f64,
+    pub duty_q15: i32,
+    pub sign: i8,
+    /// The pot where it started and where the verdict read it.
+    pub from: u16,
+    pub to: u16,
+    /// The last watch's current, and the stall current by the stored R:
+    /// mA.
+    pub late_ma: f64,
+    pub ohmic_ma: Option<f64>,
+    pub seen: Seen,
+    /// The pulse before it turned the motor this way: no lash to cross.
+    pub repeat: bool,
+    /// Its length on the servo's clock and on the host's, ms.
+    pub ms: f64,
+    pub host_ms: f64,
+}
+
+impl Pulse {
+    /// Pot travel between the start and the verdict, counts.
+    pub fn travel(&self) -> i32 {
+        self.to as i32 - self.from as i32
+    }
+}
+
+impl core::fmt::Display for Pulse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let way = if self.sign > 0 { '+' } else { '-' };
+        write!(f, "{:.0} mV {way}", self.mv)?;
+        if self.seen == Seen::Refused {
+            return write!(f, ", refused at pos {}", self.from);
+        }
+        write!(
+            f,
+            " ({:.1}%), pos {} -> {} ({:+}), late {:.0} mA",
+            self.duty_q15.unsigned_abs() as f64 / 32767.0 * 100.0,
+            self.from,
+            self.to,
+            self.travel(),
+            self.late_ma
+        )?;
+        if let Some(i) = self.ohmic_ma {
+            write!(f, " of {i:.0}")?;
+        }
+        write!(f, ", {}", self.seen.name())?;
+        let crept = self.travel().unsigned_abs() > STILL_COUNTS as u32;
+        if matches!(self.seen, Seen::Felt(_)) && crept {
+            write!(f, ", crept")?;
+        } else if self.seen == Seen::Felt(Felt::Turning) {
+            let lash = if self.repeat {
+                "counted"
+            } else {
+                "repeat next"
+            };
+            write!(f, ", {lash}")?;
+        }
+        write!(f, ", {:.0} ms ({:.0} on the host)", self.ms, self.host_ms)
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -168,17 +273,18 @@ enum Leg {
         last: u16,
         then: Next,
     },
-    /// A pulse of `sign` from `from`; `at` is the last read's time and pos.
+    /// A pulse of `sign` from `from`; `at` is the last read's
+    /// `sample_tick` and pos.
     Pulse {
         sign: i8,
         from: u16,
         polls: u32,
-        at: (f64, u16),
+        at: (u32, u16),
     },
     Toward {
         from: u16,
         dir: i8,
-        at: (f64, u16),
+        at: (u32, u16),
     },
 }
 
@@ -207,6 +313,13 @@ pub struct JamCheck {
     flips: u32,
     /// The latch's flip waits for the next moving pulse to bear it out.
     after_latch: bool,
+    /// The way the last pulse written turned the motor, 0 when it may not
+    /// have or after a flip, and whether this one goes the same way.
+    closed: i8,
+    repeat: bool,
+    /// The last read was past a soft limit and near a stop: the endstop
+    /// walls one way and the other may press the stop.
+    at_wall: bool,
     /// The first rung and this one, vcounts, and what each sign's pulse
     /// at it showed.
     v0: f64,
@@ -222,20 +335,23 @@ pub struct JamCheck {
     early: Option<f64>,
     late: Option<f64>,
     /// Over every still pulse: stall counts per vcount, the most current,
-    /// how many were felt and how many drew nothing.
+    /// how many were felt and how many drew nothing; and the turning
+    /// pulses that count toward [`DEAD_PULSES`].
     ohm: Option<f64>,
     i_still: f64,
     felt: u32,
     dead: u32,
     turning: u32,
     /// Time pressed, by the longest still pulse of each rung at a stop (at
-    /// any, the stops unknown), the longest of this one, and the longest
-    /// pulse yet: ms, measured.
+    /// any, the stops unknown), and the longest of this one: ms on the
+    /// servo's clock.
     press_ms: f64,
     rung_press: f64,
-    pulse_ms: f64,
-    /// When the pulse started, host ms.
-    t0: f64,
+    /// When the pulse started, `sample_tick` and host ms, and its duty.
+    t0: u32,
+    duty: i32,
+    host_t0: f64,
+    pulses: Vec<Pulse>,
     /// Where the pulse started, and the most a pulse moved the shaft by
     /// the end of its rest, counts.
     from: u16,
@@ -269,6 +385,9 @@ impl JamCheck {
             polarity: params.drive_polarity,
             flips: 0,
             after_latch: false,
+            closed: 0,
+            repeat: false,
+            at_wall: false,
             v0: 0.0,
             v: 0.0,
             rung: [None; 2],
@@ -285,8 +404,10 @@ impl JamCheck {
             turning: 0,
             press_ms: 0.0,
             rung_press: 0.0,
-            pulse_ms: 0.0,
-            t0: 0.0,
+            t0: 0,
+            duty: 0,
+            host_t0: 0.0,
+            pulses: Vec::new(),
             from: 0,
             travel_max: 0,
             arrived: false,
@@ -327,6 +448,11 @@ impl JamCheck {
         self.travel_max
     }
 
+    /// Every probe pulse, refused ones included, in order.
+    pub fn pulses(&self) -> &[Pulse] {
+        &self.pulses
+    }
+
     /// The servo latched drive_reversed and the shaft came to rest at
     /// `pos`, torque off: go on, once, flipped and acknowledged. False once
     /// the polarity flipped before.
@@ -348,6 +474,13 @@ impl JamCheck {
         true
     }
 
+    /// Within [`seek::STOP_TOL`] of a stop, or anywhere with them unknown.
+    fn near_stop(&self, pos: u16) -> bool {
+        self.params
+            .stops
+            .is_none_or(|(lo, hi)| pos.abs_diff(lo).min(pos.abs_diff(hi)) <= seek::STOP_TOL)
+    }
+
     fn in_band(&self, pos: u16) -> bool {
         (self.band.0..=self.band.1).contains(&pos)
     }
@@ -362,21 +495,39 @@ impl JamCheck {
     }
 
     /// Drive `sign` at the rung's volts; nothing on a rail that reads 0.
-    fn goal(&mut self, sign: i8) {
+    /// The duty written, q15.
+    fn goal(&mut self, sign: i8) -> i32 {
         let q15 = if self.vbus > 0.0 {
             (self.v / self.vbus * 32767.0).round().min(32767.0)
         } else {
             0.0
         };
-        self.writes
-            .push_back((control::GOAL_DUTY, sign as i32 * q15 as i32));
+        let duty = sign as i32 * q15 as i32;
+        self.writes.push_back((control::GOAL_DUTY, duty));
+        duty
     }
 
     fn flip(&mut self) {
         self.polarity = !self.polarity;
         self.flips += 1;
+        self.closed = 0;
         self.writes
             .push_back((config::DRIVE_POLARITY, self.polarity as i32));
+    }
+
+    /// Ms on the servo's clock since `tick`.
+    fn servo_ms(&self, tick: u32, o: &TelemetrySnapshot) -> f64 {
+        o.sample_tick.wrapping_sub(tick) as f64 * 1000.0 / self.cfg.tick_hz
+    }
+
+    /// Counts/s between the read at `at` and `o`.
+    fn speed(&self, o: &TelemetrySnapshot, at: (u32, u16)) -> f64 {
+        let ms = self.servo_ms(at.0, o);
+        if ms > 0.0 {
+            o.pos.abs_diff(at.1) as f64 * 1000.0 / ms
+        } else {
+            0.0
+        }
     }
 
     /// The volts a stall draws `i` at: by the stored R, else scaled from
@@ -429,6 +580,7 @@ impl JamCheck {
             return self.finish(false);
         }
         self.vbus = o.vbus_counts as f64;
+        self.at_wall = o.limit_flags & LIMIT_ENDSTOP != 0 && self.near_stop(o.pos);
         match self.leg {
             Leg::Rest {
                 polls,
@@ -470,19 +622,33 @@ impl JamCheck {
             Next::Pulse(sign) => sign,
         };
         if self.walled(sign, o) {
+            self.pulses.push(Pulse {
+                mv: self.cfg.mv(self.v),
+                duty_q15: 0,
+                sign,
+                from: o.pos,
+                to: o.pos,
+                late_ma: 0.0,
+                ohmic_ma: None,
+                seen: Seen::Refused,
+                repeat: false,
+                ms: 0.0,
+                host_ms: 0.0,
+            });
             return match self.after(sign, Seen::Refused, o.pos) {
                 Ok(then) => self.next(o, then),
                 Err(why) => self.halt(why),
             };
         }
-        self.goal(sign);
-        (self.from, self.t0) = (o.pos, o.host_ms);
+        self.duty = self.goal(sign);
+        self.repeat = self.closed == sign;
+        (self.from, self.t0, self.host_t0) = (o.pos, o.sample_tick, o.host_ms);
         (self.watches, self.early, self.late) = (0, None, None);
         self.leg = Leg::Pulse {
             sign,
             from: o.pos,
             polls: 0,
-            at: (o.host_ms, o.pos),
+            at: (o.sample_tick, o.pos),
         };
         self.wait()
     }
@@ -493,49 +659,57 @@ impl JamCheck {
         sign: i8,
         from: u16,
         polls: u32,
-        at: (f64, u16),
+        at: (u32, u16),
     ) -> Cmd {
         let moved = o.pos as i32 - from as i32;
+        let late = self.late.unwrap_or(o.i_mean_counts.unsigned_abs() as f64);
         let seen = if moved.unsigned_abs() >= MOVED_COUNTS as u32 {
             Seen::Moved(moved.signum() as i8)
         } else if self.walled(sign, o) {
             Seen::Refused
         } else if polls >= PULSE_POLLS {
-            Seen::Felt(self.feel(o))
+            Seen::Felt(self.feel(o, late))
         } else {
             self.leg = Leg::Pulse {
                 sign,
                 from,
                 polls,
-                at: (o.host_ms, o.pos),
+                at: (o.sample_tick, o.pos),
             };
             return self.wait();
         };
-        let ms = o.host_ms - self.t0;
-        self.pulse_ms = self.pulse_ms.max(ms);
-        let at_stop = self
-            .params
-            .stops
-            .is_none_or(|(lo, hi)| o.pos.abs_diff(lo).min(o.pos.abs_diff(hi)) <= seek::STOP_TOL);
-        if matches!(seen, Seen::Felt(_)) && at_stop {
+        let ms = self.servo_ms(self.t0, o);
+        let turned = matches!(seen, Seen::Moved(_) | Seen::Felt(Felt::Turning))
+            || moved.unsigned_abs() > STILL_COUNTS as u32;
+        self.closed = if turned { sign } else { 0 };
+        self.pulses.push(Pulse {
+            mv: self.cfg.mv(self.v),
+            duty_q15: self.duty,
+            sign,
+            from,
+            to: o.pos,
+            late_ma: self.cfg.ma(late),
+            ohmic_ma: self.cfg.r_vpc.map(|r| self.cfg.ma(self.v / r)),
+            seen,
+            repeat: self.repeat,
+            ms,
+            host_ms: o.host_ms - self.host_t0,
+        });
+        if matches!(seen, Seen::Felt(_)) && self.near_stop(o.pos) {
             self.rung_press = self.rung_press.max(ms);
         }
         let then = match self.after(sign, seen, o.pos) {
             Ok(then) => then,
             Err(why) => return self.halt(why),
         };
-        if speed(o, at) > PROBE_CPS_MAX {
+        if self.speed(o, at) > PROBE_CPS_MAX {
             self.v = (self.v - self.cfg.step).max(self.v0);
         }
-        let least = match seen {
-            Seen::Felt(_) => STILL_REST_POLLS,
-            _ => REST_POLLS,
-        };
+        let least = if turned { REST_POLLS } else { STILL_REST_POLLS };
         self.rest(o.pos, least, then)
     }
 
-    fn feel(&mut self, o: &TelemetrySnapshot) -> Felt {
-        let late = self.late.unwrap_or(o.i_mean_counts.unsigned_abs() as f64);
+    fn feel(&mut self, o: &TelemetrySnapshot, late: f64) -> Felt {
         let ohmic = self.cfg.r_vpc.map(|r| self.v / r);
         let pinned = o.limit_flags & LIMIT_GOVERNING != 0;
         let felt = sag::feel(late, self.early, ohmic, pinned, self.cfg.i_open);
@@ -544,8 +718,7 @@ impl JamCheck {
         match felt {
             Felt::Stalled => self.ohm = Some(self.ohm.unwrap_or(0.0).max(late / self.v)),
             Felt::Dead => self.dead += 1,
-            Felt::Turning => self.turning += 1,
-            Felt::Unclear => {}
+            Felt::Turning | Felt::Unclear => {}
         }
         felt
     }
@@ -573,8 +746,19 @@ impl JamCheck {
         if self.along.is_some() {
             return Ok(Next::Toward);
         }
-        if self.turning >= 2 {
-            return Err(AbortReason::SensorDead { pos });
+        if let Seen::Felt(felt) = seen {
+            if pos.abs_diff(self.from) > STILL_COUNTS {
+                return self.raise(pos);
+            }
+            if felt == Felt::Turning {
+                if !self.repeat {
+                    return Ok(Next::Pulse(sign));
+                }
+                self.turning += 1;
+                if self.turning >= DEAD_PULSES {
+                    return Err(AbortReason::SensorDead { pos });
+                }
+            }
         }
         if self.rung[(sign < 0) as usize].is_none() {
             return Ok(Next::Pulse(-sign));
@@ -582,13 +766,20 @@ impl JamCheck {
         self.raise(pos)
     }
 
-    /// Both ways tried at this rung: the next one, or the ladder's end.
+    /// Both ways tried at this rung, or a creep: the next one, or the
+    /// ladder's end. The next rung presses a stop about as long as this
+    /// one did.
     fn raise(&mut self, pos: u16) -> Result<Next, AbortReason> {
-        self.press_ms += self.rung_press;
-        self.rung_press = 0.0;
-        let top = self.volts_for(self.cfg.i_probe).min(self.cfg.v_max);
+        let pressed = std::mem::take(&mut self.rung_press);
+        self.press_ms += pressed;
+        let cap = if self.at_wall {
+            self.cfg.i_stop
+        } else {
+            self.cfg.i_probe
+        };
+        let top = self.volts_for(cap).min(self.cfg.v_max);
         let v = (self.v + self.cfg.step).min(top);
-        if v <= self.v || self.press_ms + self.pulse_ms > self.cfg.press_budget_ms {
+        if v <= self.v || self.press_ms + pressed > self.cfg.press_budget_ms {
             if self.turning > 0 {
                 return Err(AbortReason::SensorDead { pos });
             }
@@ -596,7 +787,11 @@ impl JamCheck {
                 return Err(AbortReason::MotorOpen { pos });
             }
             let ma = self.cfg.ma(self.i_still).round().min(u16::MAX as f64) as u16;
-            return Err(AbortReason::Stiff { pos, ma });
+            return Err(if self.at_wall {
+                AbortReason::AtStop { pos, ma }
+            } else {
+                AbortReason::Stiff { pos, ma }
+            });
         }
         self.v = v;
         self.rung = [None; 2];
@@ -615,12 +810,12 @@ impl JamCheck {
         self.leg = Leg::Toward {
             from: o.pos,
             dir,
-            at: (o.host_ms, o.pos),
+            at: (o.sample_tick, o.pos),
         };
         self.wait()
     }
 
-    fn toward(&mut self, o: &TelemetrySnapshot, from: u16, dir: i8, at: (f64, u16)) -> Cmd {
+    fn toward(&mut self, o: &TelemetrySnapshot, from: u16, dir: i8, at: (u32, u16)) -> Cmd {
         let went = (o.pos as i32 - from as i32) * dir as i32;
         if went <= -(MOVED_COUNTS as i32) {
             return self.halt(seek::blocked(from, o.pos));
@@ -636,7 +831,7 @@ impl JamCheck {
         let floor = self.moved_v.unwrap_or(self.v0);
         let v = if still {
             self.v + self.cfg.step
-        } else if speed(o, at) > PROVEN_CPS_MAX {
+        } else if self.speed(o, at) > PROVEN_CPS_MAX {
             (self.v - self.cfg.step).max(floor)
         } else {
             self.v
@@ -658,7 +853,7 @@ impl JamCheck {
         self.leg = Leg::Toward {
             from,
             dir,
-            at: (o.host_ms, o.pos),
+            at: (o.sample_tick, o.pos),
         };
         self.wait()
     }
@@ -739,15 +934,6 @@ impl Experiment for Settle {
     }
 }
 
-/// Counts/s between the read at `at` and `o`.
-fn speed(o: &TelemetrySnapshot, at: (f64, u16)) -> f64 {
-    let dt = o.host_ms - at.0;
-    if dt <= 0.0 {
-        return 0.0;
-    }
-    o.pos.abs_diff(at.1) as f64 * 1000.0 / dt
-}
-
 impl Experiment for JamCheck {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
         if let Some((reg, value)) = self.writes.pop_front() {
@@ -812,37 +998,47 @@ impl Experiment for JamCheck {
 #[cfg(test)]
 mod tests {
     use super::super::testkit::{
-        BENCH_MA_PER_CCOUNT, BENCH_MV_PER_VCOUNT, FakeServo, bench_mg90, pump,
+        BENCH_MA_PER_CCOUNT, BENCH_MV_PER_VCOUNT, Bus, FakeServo, TICK_HZ, bench_mg90, pump_on,
     };
     use super::*;
 
     /// The bench MG90's scales, its 500 mA limit: plastic probes to 225 mA
-    /// and holds 300, metal 375 and 500; a lower limit caps both; a rung is
-    /// 200 mV on every rail.
+    /// and holds 300, metal 375 and 500; near a stop past a soft limit
+    /// plastic keeps its 225 and metal probes to 250; a lower limit caps
+    /// them all; a rung is 200 mV on every rail.
     #[test]
     fn knobs_in_physical_units() {
         let lim = (500.0 / BENCH_MA_PER_CCOUNT) as u16;
-        let cfg = |class| JamCfg::new(class, BENCH_MV_PER_VCOUNT, BENCH_MA_PER_CCOUNT, lim, None);
+        let new = |class, lim| {
+            JamCfg::new(
+                class,
+                BENCH_MV_PER_VCOUNT,
+                BENCH_MA_PER_CCOUNT,
+                lim,
+                None,
+                TICK_HZ,
+            )
+        };
         let ma = |c: &JamCfg, i: f64| c.ma(i).round();
-        let p = cfg(GearClass::Plastic);
-        assert_eq!((ma(&p, p.i_probe), ma(&p, p.i_hold)), (225.0, 300.0));
+        let p = new(GearClass::Plastic, lim);
+        assert_eq!(
+            (ma(&p, p.i_probe), ma(&p, p.i_stop), ma(&p, p.i_hold)),
+            (225.0, 225.0, 300.0)
+        );
         assert_eq!(p.press_budget_ms, 250.0);
-        let u = cfg(GearClass::Unknown);
+        let u = new(GearClass::Unknown, lim);
         assert_eq!((u.i_probe, u.i_hold), (p.i_probe, p.i_hold));
-        let m = cfg(GearClass::Metal);
-        assert_eq!((ma(&m, m.i_probe), ma(&m, m.i_hold)), (375.0, 500.0));
+        let m = new(GearClass::Metal, lim);
+        assert_eq!(
+            (ma(&m, m.i_probe), ma(&m, m.i_stop), ma(&m, m.i_hold)),
+            (375.0, 250.0, 500.0)
+        );
         assert_eq!(
             (m.mv(m.step).round(), m.mv(m.v_max).round()),
             (200.0, 2500.0)
         );
-        let low = JamCfg::new(
-            GearClass::Metal,
-            BENCH_MV_PER_VCOUNT,
-            BENCH_MA_PER_CCOUNT,
-            280,
-            None,
-        );
-        assert_eq!((low.i_probe, low.i_hold), (280.0, 280.0));
+        let low = new(GearClass::Metal, 200);
+        assert_eq!((low.i_probe, low.i_stop, low.i_hold), (200.0, 200.0, 200.0));
     }
 
     pub(super) mod sweep {
@@ -854,6 +1050,11 @@ mod tests {
         pub const SOFT: (f64, f64) = (432.0, 3626.0);
         pub const LIMIT_MA: f64 = 500.0;
         pub const LASH: f64 = 10.0;
+        /// The stoppers: first contact this many counts out from the press
+        /// depth, and how far each yields, counts an amp. The bench MG90's
+        /// low stop yields about 95 counts an amp, its high one 48.
+        pub const GIVE_COUNTS: (f64, f64) = (30.0, 20.0);
+        pub const GIVE_PER_A: (f64, f64) = (90.0, 40.0);
 
         #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         pub enum Fault {
@@ -879,6 +1080,7 @@ mod tests {
             Arrived,
             Stiff,
             Blocked,
+            AtStop,
             Sensor,
             Open,
             Other(String),
@@ -894,9 +1096,12 @@ mod tests {
             /// Goals the endstop zeroed as written that were no brake.
             pub refused: usize,
             pub polarity_ok: bool,
+            /// The polarity the check ended with is the stored one.
+            pub kept: bool,
             pub torque_off: bool,
             pub travel: u16,
             pub latched: bool,
+            pub pulses: Vec<Pulse>,
         }
 
         pub fn servo(c: &Case) -> FakeServo {
@@ -911,6 +1116,11 @@ mod tests {
             s.current_limit = Some((LIMIT_MA / BENCH_MA_PER_CCOUNT) as u16);
             s.step_over_read = 1.3;
             s.backlash = LASH;
+            let per_ccount = |per_a: f64| per_a * BENCH_MA_PER_CCOUNT / 1000.0;
+            s.give = [
+                (GIVE_COUNTS.0, per_ccount(GIVE_PER_A.0)),
+                (GIVE_COUNTS.1, per_ccount(GIVE_PER_A.1)),
+            ];
             match c.fault {
                 Fault::None => {}
                 Fault::Jam => s.jam = Some(s.pos),
@@ -930,7 +1140,14 @@ mod tests {
         pub fn cfg(c: &Case, s: &FakeServo) -> JamCfg {
             let lim = s.current_limit.unwrap_or(u16::MAX);
             let r = c.r_stored.then_some(s.r);
-            JamCfg::new(c.class, BENCH_MV_PER_VCOUNT, BENCH_MA_PER_CCOUNT, lim, r)
+            JamCfg::new(
+                c.class,
+                BENCH_MV_PER_VCOUNT,
+                BENCH_MA_PER_CCOUNT,
+                lim,
+                r,
+                s.tick_hz(),
+            )
         }
 
         pub fn run(c: &Case) -> Outcome {
@@ -939,15 +1156,27 @@ mod tests {
 
         /// [`run`], and every command the check sent.
         pub fn run_logged(c: &Case) -> (Outcome, Vec<String>) {
+            run_with(c, Bus::BENCH, |_, _| {})
+        }
+
+        /// [`run_logged`] over `bus`, the servo and the rig as `tweak`
+        /// leaves them.
+        pub fn run_with(
+            c: &Case,
+            bus: Bus,
+            tweak: impl FnOnce(&mut FakeServo, &mut RigParams),
+        ) -> (Outcome, Vec<String>) {
             let mut s = servo(c);
             let mut log = Vec::new();
-            let p = params();
+            let mut p = params();
+            tweak(&mut s, &mut p);
             let t0 = s.t_ms;
             let exp = JamCheck::new(cfg(c, &s), &p);
+            let stored = p.drive_polarity;
             let mut rounds = 0;
             let pumped = drive(exp, &p, |e| {
                 rounds += 1;
-                log.extend(pump(e, &mut s, 100_000));
+                log.extend(pump_on(e, &mut s, 100_000, bus));
                 Ok::<(), std::convert::Infallible>(())
             });
             let (exp, abort) = match pumped {
@@ -959,6 +1188,7 @@ mod tests {
                 None => End::Other("not arrived".into()),
                 Some(AbortReason::Stiff { .. }) => End::Stiff,
                 Some(AbortReason::Blocked { .. }) => End::Blocked,
+                Some(AbortReason::AtStop { .. }) => End::AtStop,
                 Some(AbortReason::SensorDead { .. }) => End::Sensor,
                 Some(AbortReason::MotorOpen { .. }) => End::Open,
                 Some(other) => End::Other(format!("{other:?}")),
@@ -972,18 +1202,25 @@ mod tests {
                 pressed_ms: s.pressed_ms,
                 refused: s.refused_goals.iter().filter(|g| !brake(g)).count(),
                 polarity_ok: exp.polarity() == c.along,
+                kept: exp.polarity() == stored,
                 torque_off: !s.torque,
                 travel: exp.pulse_travel_max(),
                 latched: rounds > 1,
+                pulses: exp.pulses().to_vec(),
             };
             (o, log)
         }
 
+        /// A press projected from a creeping pulse, whose current reads its
+        /// stall current low by the back-EMF, lands this much over the cap.
+        pub const CREEP_OVER: f64 = 1.03;
+
         /// What the brief holds every case to: a free shaft arrives with
-        /// the polarity right, or ends stiff or blocked; a jam ends stiff
-        /// in 2 s, a dead pot at the sensor, an open winding at the motor.
-        /// Nothing presses past the class's budget or over its hold, arrives
-        /// over 3 counts/ms, or writes a duty the endstop refuses.
+        /// the polarity right, or ends stiff, blocked or at a stop; a jam
+        /// ends stiff or at a stop in 2 s, a dead pot at the sensor, or
+        /// pressing, an open winding at the motor. Nothing presses past the
+        /// class's budget or over the cap near a stop, arrives over 3
+        /// counts/ms, or writes a duty the endstop refuses.
         pub fn check(c: &Case, o: &Outcome) -> Result<(), String> {
             let fail = |why: &str| Err(format!("{why}: {c:?} -> {o:?}"));
             if !o.torque_off {
@@ -995,18 +1232,19 @@ mod tests {
             if o.impact_cpms > PROBE_CPS_MAX / 1000.0 {
                 return fail("impact");
             }
-            if o.pressed_ms > c.class.press_budget_ms() || o.press_ma > c.class.hold_ma() {
+            if o.pressed_ms > c.class.press_budget_ms() || o.press_ma > STOP_PROBE_MA * CREEP_OVER {
                 return fail("press");
             }
             let ok = match c.fault {
                 Fault::None => match o.end {
                     End::Arrived => o.polarity_ok,
-                    End::Stiff | End::Blocked => true,
+                    End::Stiff | End::Blocked | End::AtStop => true,
                     _ => false,
                 },
-                Fault::Jam => o.end == End::Stiff && o.ms <= 2000.0,
+                Fault::Jam => matches!(o.end, End::Stiff | End::AtStop) && o.ms <= 2000.0,
                 Fault::DeadPot => {
-                    o.end == End::Sensor || (o.end == End::Stiff && o.pressed_ms > 0.0)
+                    o.end == End::Sensor
+                        || (matches!(o.end, End::Stiff | End::AtStop) && o.pressed_ms > 0.0)
                 }
                 Fault::Open => o.end == End::Open,
             };
@@ -1120,28 +1358,125 @@ mod tests {
         assert!(free.travel < 80, "{free:?}");
     }
 
-    /// Reversed and resting within a dozen counts of a stop past its soft
-    /// limit, the only pulse the endstop allows presses the stop and the pot
-    /// cannot show which way the motor turns: the check ends stiff, inside
-    /// the class's press budget and hold. From a dozen counts off it
-    /// arrives.
+    /// Reversed and resting in a stopper's give, 2 to 15 counts in from
+    /// first contact, the only pulse the endstop allows presses the stop.
+    /// Where the give at the cap is under a dozen counts the pot cannot
+    /// show the way: the check ends at the stop, the stored polarity kept.
+    /// Nearer first contact the give may show it, and the check arrives
+    /// with the polarity right. No press goes over the cap or past the
+    /// class's budget. Two dozen counts out from first contact it arrives.
     #[test]
-    fn reversed_at_a_stop_ends_stiff_inside_the_budget() {
+    fn reversed_in_a_stoppers_give_ends_at_the_stop() {
+        let s = servo(&case(2029, true, Fault::None));
+        let (lo, hi) = s.contact();
+        let gives = |end: usize| s.give[end].1 * STOP_PROBE_MA / BENCH_MA_PER_CCOUNT;
+        let unproven = |start: u16| {
+            let into = if start < STOPS.1 / 2 {
+                gives(0) - (lo - start as f64)
+            } else {
+                gives(1) - (start as f64 - hi)
+            };
+            into < MOVED_COUNTS as f64
+        };
+        let (lo, hi) = (lo as u16, hi as u16);
         for class in CLASSES {
-            for vbus_v in [3.7, 8.4] {
-                for start in (232..=256).step_by(3).chain((3826..=3849).step_by(3)) {
-                    let c = Case {
-                        vbus_v,
-                        class,
-                        ..case(start, false, Fault::None)
-                    };
-                    let o = run(&c);
+            for vbus_v in RAILS {
+                let at = |start| Case {
+                    vbus_v,
+                    class,
+                    ..case(start, false, Fault::None)
+                };
+                for start in (2..=15).step_by(3).flat_map(|d| [lo - d, hi + d]) {
+                    let (c, o) = (at(start), run(&at(start)));
                     check(&c, &o).unwrap();
-                    let off = start.abs_diff(STOPS.0).min(start.abs_diff(STOPS.1));
-                    if off >= 2 * MOVED_COUNTS {
-                        assert_eq!(o.end, End::Arrived, "{c:?}");
-                    }
+                    let ok = match o.end {
+                        End::AtStop => o.kept,
+                        End::Arrived => o.polarity_ok && !unproven(start),
+                        _ => false,
+                    };
+                    assert!(ok, "{c:?} -> {o:?}");
                 }
+                for start in [lo + 2 * MOVED_COUNTS, hi - 2 * MOVED_COUNTS] {
+                    let (c, o) = (at(start), run(&at(start)));
+                    check(&c, &o).unwrap();
+                    assert_eq!(o.end, End::Arrived, "{c:?} -> {o:?}");
+                }
+            }
+        }
+    }
+
+    /// Run 31 on the bench MG90 at 4.7 V: the floor at 5.3% puts the rungs
+    /// at 0.25, 0.45 and 0.65 V, the shaft breaks away between the first
+    /// two and runs on 45 mA, so a turning rotor sags under 0.6; the lash
+    /// is 15 to 45 counts.
+    const RUN31_LASH: [f64; 4] = [15.0, 25.0, 35.0, 45.0];
+
+    fn run31(start: u16, fault: Fault) -> Case {
+        Case {
+            start,
+            vbus_v: 4.7,
+            breakaway_ma: 80.0,
+            r_stored: true,
+            ..case(start, true, fault)
+        }
+    }
+
+    fn run31_plant(lash: f64) -> impl FnOnce(&mut FakeServo, &mut RigParams) {
+        move |s, p| {
+            s.floor_q15 = 1734;
+            p.window_floor_q15 = 1734;
+            s.backlash = lash;
+            s.fc = 45.0 / BENCH_MA_PER_CCOUNT;
+            s.fv = 0.0;
+        }
+    }
+
+    /// A rung creeps under a dozen counts and the pulse back spends itself
+    /// in the lash: neither is a dead pot, and the check arrives.
+    #[test]
+    fn a_creep_and_a_lash_crossing_are_not_a_dead_pot() {
+        for lash in RUN31_LASH {
+            for start in [1992, 2029, 2400] {
+                let (o, _) = run_with(&run31(start, Fault::None), Bus::BENCH, run31_plant(lash));
+                assert_eq!(o.end, End::Arrived, "lash {lash} {start}: {o:?}");
+                assert!(o.polarity_ok, "{o:?}");
+            }
+        }
+    }
+
+    /// The same plant with its pot dead still ends at the sensor, on
+    /// turning pulses that repeat the way before.
+    #[test]
+    fn a_dead_pot_by_the_lash_ends_at_the_sensor() {
+        for lash in RUN31_LASH {
+            let (o, _) = run_with(&run31(2029, Fault::DeadPot), Bus::BENCH, run31_plant(lash));
+            assert_eq!(o.end, End::Sensor, "lash {lash}: {o:?}");
+            let turning = Seen::Felt(Felt::Turning);
+            let counted = o
+                .pulses
+                .iter()
+                .filter(|p| p.repeat && p.seen == turning)
+                .count();
+            assert!(counted >= DEAD_PULSES as usize, "{:#?}", o.pulses);
+        }
+    }
+
+    /// The host stalls 600 ms inside a still pulse at mid travel, metal and
+    /// plastic, at 5 V where the shaft moves at the third rung: the drive
+    /// ran that long, but pressed nothing, and the check goes on to mid
+    /// travel.
+    #[test]
+    fn a_host_stall_mid_travel_is_no_verdict() {
+        for class in CLASSES {
+            for read in [4, 5, 8, 9] {
+                let c = Case {
+                    class,
+                    vbus_v: 5.0,
+                    ..case(2029, true, Fault::None)
+                };
+                let (o, _) = run_with(&c, Bus::BENCH.with_stall(read, 600.0), |_, _| {});
+                assert_eq!(o.end, End::Arrived, "{class:?} read {read}: {o:?}");
+                assert!(o.polarity_ok && o.pressed_ms == 0.0, "{o:?}");
             }
         }
     }
