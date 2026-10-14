@@ -21,9 +21,7 @@ use bench::discover::{self, Found};
 use bench::osc::{
     Exchange, ExchangeError, RESCUE_PULSE_US, StatusFrame, build_read, build_write, parse_exchange,
 };
-use bench::run::{
-    BURST_VALUES, BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer,
-};
+use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
 use bench::wire::Wire;
 use bench::{BOOT_BAUD, RESCUE_BAUD, SUPPORTED_BAUDS};
 use osc_client::{DEFAULT_GUARD, StreamReply};
@@ -32,7 +30,6 @@ use osc_protocol::tel::{CHUNKS_MAX, Chunks};
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::Mode;
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
-use osc_servo_core::regions::config::addr::pos_phys::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
 use osc_servo_core::regions::control::addr::lifecycle::{
     GOAL_DUTY, GOAL_POSITION, MODE, TORQUE_ENABLE,
 };
@@ -82,8 +79,7 @@ static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
     // on), and a freshly powered fleet needs its boot time.
     wire.client().set_rails(true, true).expect("rails on");
     std::thread::sleep(Duration::from_millis(300));
-    let goal_rails =
-        read_i32(&mut wire, id, POS_MIN_PHYS_COUNTS)..=read_i32(&mut wire, id, POS_MAX_PHYS_COUNTS);
+    let goal_rails = bench::run::goal_rails(&mut wire, id).expect("goal rails");
     let [idx] = setup_read(&mut wire, id, BAUD_RATE_IDX);
     let home_baud = *SUPPORTED_BAUDS
         .get(usize::from(idx))
@@ -201,17 +197,9 @@ impl Bench {
         Ok(r?)
     }
 
-    /// Offset that keeps the burst value schedule (sentinel 0, then
-    /// `1..=BURST_VALUES`) inside the goal rails, with `dip` counts of room
-    /// below each value for a flood counting up to it.
+    /// [`bench::run::burst_goal_base`] on this servo's rails.
     pub fn burst_goal_base(&self, dip: i32) -> i32 {
-        let base = self.goal_rails.start() + dip;
-        assert!(
-            base + BURST_VALUES <= *self.goal_rails.end(),
-            "goal rails {:?} too narrow for the burst schedule",
-            self.goal_rails
-        );
-        base
+        bench::run::burst_goal_base(&self.goal_rails, dip).expect("burst goal base")
     }
 
     /// Put GOAL_POSITION back after a burst. The boot goal (0) sits outside a
@@ -410,10 +398,6 @@ fn setup_read<const N: usize>(wire: &mut Wire, id: u8, addr: u16) -> [u8; N] {
     ex.status.payload[..]
         .try_into()
         .unwrap_or_else(|_| panic!("setup read of {addr:#06x}: {N}-byte payload"))
-}
-
-fn read_i32(wire: &mut Wire, id: u8, addr: u16) -> i32 {
-    i32::from_le_bytes(setup_read(wire, id, addr))
 }
 
 /// Index of `baud` in the supported set, for the `baud_rate_idx` register.
