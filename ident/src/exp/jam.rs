@@ -1016,7 +1016,41 @@ mod tests {
             Ok(())
         }
 
+        pub const RAILS: [f64; 4] = [3.7, 5.0, 6.75, 8.4];
+        pub const BREAKAWAYS: [f64; 3] = [120.0, 200.0, 300.0];
         pub const CLASSES: [GearClass; 2] = [GearClass::Plastic, GearClass::Metal];
+
+        pub fn cases(step: usize, faults: usize, r_stored: bool) -> Vec<Case> {
+            let mut v = Vec::new();
+            for along in [true, false] {
+                for vbus_v in RAILS {
+                    for class in CLASSES {
+                        let mut add = |start, breakaway_ma, fault| {
+                            v.push(Case {
+                                start,
+                                along,
+                                vbus_v,
+                                breakaway_ma,
+                                class,
+                                fault,
+                                r_stored,
+                            })
+                        };
+                        for breakaway in BREAKAWAYS {
+                            for start in (250..=3830).step_by(step) {
+                                add(start, breakaway, Fault::None);
+                            }
+                        }
+                        for fault in [Fault::Jam, Fault::DeadPot, Fault::Open] {
+                            for start in (250..=3830).step_by(faults) {
+                                add(start, 200.0, fault);
+                            }
+                        }
+                    }
+                }
+            }
+            v
+        }
     }
 
     use sweep::*;
@@ -1110,5 +1144,118 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every case on `threads` threads, in order.
+    fn run_all(cases: &[Case]) -> Vec<Outcome> {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+        let chunk = cases.len().div_ceil(threads).max(1);
+        std::thread::scope(|sc| {
+            let parts: Vec<_> = cases
+                .chunks(chunk)
+                .map(|part| sc.spawn(|| part.iter().map(run).collect::<Vec<_>>()))
+                .collect();
+            parts
+                .into_iter()
+                .flat_map(|h| h.join().expect("sweep thread"))
+                .collect()
+        })
+    }
+
+    /// The table a sweep prints: one row a wiring, rail, class and
+    /// breakaway or fault.
+    fn table(cases: &[Case], outs: &[Outcome]) -> String {
+        use std::collections::BTreeMap;
+        use std::fmt::Write;
+        #[derive(Default)]
+        struct Row {
+            n: u32,
+            ends: BTreeMap<String, u32>,
+            ms: f64,
+            impact: f64,
+            pressed: f64,
+            press_ma: f64,
+            travel: u16,
+            latched: u32,
+        }
+        let mut rows: BTreeMap<String, Row> = BTreeMap::new();
+        for (c, o) in cases.iter().zip(outs) {
+            let what = match c.fault {
+                Fault::None => format!("{:>3.0} mA", c.breakaway_ma),
+                f => format!("{f:?}"),
+            };
+            let key = format!(
+                "{} | {:>4.2} V | {:<7} | {what:<7}",
+                if c.along { "normal  " } else { "reversed" },
+                c.vbus_v,
+                c.class.name()
+            );
+            let r = rows.entry(key).or_default();
+            r.n += 1;
+            *r.ends.entry(format!("{:?}", o.end)).or_default() += 1;
+            r.ms = r.ms.max(o.ms);
+            r.impact = r.impact.max(o.impact_cpms);
+            r.pressed = r.pressed.max(o.pressed_ms);
+            r.press_ma = r.press_ma.max(o.press_ma);
+            r.travel = r.travel.max(o.travel);
+            r.latched += o.latched as u32;
+        }
+        let mut t = String::from(
+            "wiring | rail | class | case | n | ends | max ms | max impact c/ms | max press ms \
+             | max press mA | max pulse travel | latches\n",
+        );
+        for (k, r) in rows {
+            let ends: Vec<String> = r.ends.iter().map(|(e, n)| format!("{e} {n}")).collect();
+            let _ = writeln!(
+                t,
+                "{k} | {} | {} | {:.0} | {:.2} | {:.0} | {:.0} | {} | {}",
+                r.n,
+                ends.join(", "),
+                r.ms,
+                r.impact,
+                r.pressed,
+                r.press_ma,
+                r.travel,
+                r.latched
+            );
+        }
+        t
+    }
+
+    fn sweep(step: usize, faults: usize, r_stored: bool) {
+        let cases = cases(step, faults, r_stored);
+        let outs = run_all(&cases);
+        println!("{}", table(&cases, &outs));
+        let fails: Vec<String> = cases
+            .iter()
+            .zip(&outs)
+            .filter_map(|(c, o)| check(c, o).err())
+            .collect();
+        assert!(
+            fails.is_empty(),
+            "{} of {}: {:#?}",
+            fails.len(),
+            cases.len(),
+            &fails[..fails.len().min(5)]
+        );
+    }
+
+    /// Starts 250..3830 every 10 counts, both wirings, rails 3.7 to 8.4 V,
+    /// breakaways 120, 200 and 300 mA, plastic and metal, on a virgin servo
+    /// (no R stored), and a jam, a dead pot and an open winding every 250
+    /// counts: each arrives with the polarity right or ends stiff or
+    /// blocked, faults end at their verdict, nothing presses past the
+    /// class's budget or over its hold, arrives at a stop over 3 counts/ms,
+    /// or writes a duty the endstop refuses.
+    #[test]
+    fn the_sweep_holds_on_a_virgin_servo() {
+        sweep(10, 250, false);
+    }
+
+    /// The same with the winding R stored, the ohmic reference in place of
+    /// the early windows: every 50 counts.
+    #[test]
+    fn the_sweep_holds_with_the_stored_r() {
+        sweep(50, 250, true);
     }
 }
