@@ -25,10 +25,8 @@ use bench::run::{
 };
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 
-/// goal_position (see tool-write): the rule-heavy hot-loop register --
-/// its soft-limit rules make commit the representative worst-case work.
-const GOAL_POSITION_ADDR: u16 = 0x0184;
 const BCAST: u8 = 0xFE;
 /// goal_position width (i32), the GREAD/READ span these cycles read back.
 const GOAL_LEN: u16 = 4;
@@ -87,7 +85,9 @@ struct Args {
 /// `--plain` paths delegate to the shared scenario builders (also driven by the
 /// bench test); the rest are tool-only forensic isolations.
 fn cycle_for(args: &Args, value: i32) -> BurstCycle {
-    let addr = GOAL_POSITION_ADDR;
+    // The rule-heavy hot-loop register: its soft-limit rules make commit the
+    // representative worst-case work.
+    let addr = GOAL_POSITION;
     let id = args.target.id;
     if args.plain {
         plain_flood_cycle(id, addr, args.writes, value)
