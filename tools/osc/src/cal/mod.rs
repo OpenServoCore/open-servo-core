@@ -1,9 +1,12 @@
 //! `osc cal` - the calibration orchestrator: take the gear train's
 //! material, find the mechanical end-stops and the drive polarity (applied
-//! at once), confirm the real-world angle range with the operator, print
-//! the count->unit report, then write the limits + pot stops + angle
-//! endpoints + gear ratio and class, stamp the set and persist with MGMT
-//! SAVE.
+//! at once), ask at a stop which count end is the most-counterclockwise,
+//! confirm the real-world angle range with the operator, print the
+//! count->unit report, then write the limits, pot stops, angle endpoints,
+//! gear ratio and class, stamp the set and persist with MGMT SAVE.
+//! Degrees rise counterclockwise facing the horn, so the angle map
+//! descends on a pot whose counts rise clockwise; the counts stay the
+//! pot's.
 //!
 //! The stops are found gently, in the order osc-ident's `Run::for_cal`
 //! names: the jam check and a burst for winding R at mid travel, then each
@@ -36,7 +39,6 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::calib::GearClass;
 use osc_client::descriptor::Descriptor;
-use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_client::pos_lut;
 use osc_ident::exp::bias::{Bias, BiasCfg};
@@ -59,10 +61,10 @@ use osc_ident::units::{self, SenseParams};
 
 use crate::capture::envelope;
 use crate::rig::Bus;
-use crate::rig::centre::{centre, jam_check};
+use crate::rig::centre::{centre_on, drive as drive_on, jam_check};
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
-use crate::rig::pump::{Pump, with_guard, write_reg};
-use crate::rig::servo::Wire;
+use crate::rig::pump::{Pump, write_reg};
+use crate::rig::servo::{Servo, Wire, guard};
 use crate::rig::snapshot::{self, read_u16};
 use crate::rig::{Aborted, check_abort};
 
@@ -126,6 +128,94 @@ impl Gears {
     }
 }
 
+/// The count end of the pot at the horn's most-counterclockwise stop,
+/// facing the horn. Degrees rise counterclockwise (ROS REP 103), so the
+/// angle map descends when this is the low end; counts follow the pot.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CcwEnd {
+    Low,
+    High,
+}
+
+impl CcwEnd {
+    /// What a calibrated angle map says, None while it is unset.
+    fn of(angle_min_cdeg: i16, angle_max_cdeg: i16) -> Option<Self> {
+        match angle_max_cdeg.cmp(&angle_min_cdeg) {
+            std::cmp::Ordering::Greater => Some(CcwEnd::High),
+            std::cmp::Ordering::Less => Some(CcwEnd::Low),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            CcwEnd::Low => CcwEnd::High,
+            CcwEnd::High => CcwEnd::Low,
+        }
+    }
+
+    /// The count end nearer `pos`, between the stops `lo` and `hi`.
+    fn nearer(pos: u16, (lo, hi): (i32, i32)) -> Self {
+        let pos = pos as i32;
+        if pos - lo < hi - pos {
+            CcwEnd::Low
+        } else {
+            CcwEnd::High
+        }
+    }
+
+    /// The angles at the low and the high count stop, from the angles at
+    /// the most-clockwise and most-counterclockwise stops.
+    fn rail_angles(self, cw_deg: f64, ccw_deg: f64) -> (f64, f64) {
+        match self {
+            CcwEnd::High => (cw_deg, ccw_deg),
+            CcwEnd::Low => (ccw_deg, cw_deg),
+        }
+    }
+}
+
+/// How cal settles the counterclockwise end once it rests at a stop: the
+/// operator says, or under `--yes` the flag, else the servo's angle map.
+#[derive(Copy, Clone, Debug)]
+struct Ccw {
+    known: Option<CcwEnd>,
+    ask: bool,
+}
+
+impl Ccw {
+    /// Refuses `--yes` with nothing to settle it before anything drives.
+    fn new(args: &Args, stored: Option<CcwEnd>) -> Result<Self> {
+        let known = args.ccw_end.or(stored);
+        if args.yes && known.is_none() {
+            bail!(
+                "--yes needs --ccw-end low|high: the servo's angle map does not say which count \
+                 end is the most-counterclockwise"
+            );
+        }
+        Ok(Self {
+            known,
+            ask: !args.yes,
+        })
+    }
+
+    /// The counterclockwise end, the shaft at rest at `pos` beside one of
+    /// `stops`.
+    fn settle(&self, pos: u16, stops: (i32, i32)) -> Result<CcwEnd> {
+        let at = CcwEnd::nearer(pos, stops);
+        if !self.ask {
+            return self
+                .known
+                .context("the most-counterclockwise end is not known");
+        }
+        let mut prompt = Confirm::new()
+            .with_prompt("Is the horn at its most-counterclockwise end? (facing the horn)");
+        if let Some(k) = self.known {
+            prompt = prompt.default(k == at);
+        }
+        Ok(if prompt.interact()? { at } else { at.other() })
+    }
+}
+
 /// `osc cal` args: output dir plus the headless overrides. `--baud`/`--id`
 /// come from the top-level osc globals.
 #[derive(clap::Args, Debug)]
@@ -134,19 +224,20 @@ pub struct Args {
     /// the traverse (default ./cal-out).
     #[arg(long)]
     out: Option<std::path::PathBuf>,
-    /// Real angle (deg) at the min-count rail.
+    /// Real angle (deg) at the most-clockwise stop, facing the horn.
     #[arg(long)]
     phys_angle_min: Option<f64>,
-    /// Real angle (deg) at the max-count rail. With --gear-ratio, a check on
-    /// the travel the gear derives: cal writes nothing past 10% apart.
+    /// Real angle (deg) at the most-counterclockwise stop. With
+    /// --gear-ratio, a check on the travel the gear derives: cal writes
+    /// nothing past 10% apart.
     #[arg(long)]
     phys_angle_max: Option<f64>,
     /// App-facing working-range min (deg); defaults to 6.25% of the travel
-    /// in from the min-count stop, room for the firmware to brake there.
+    /// in from the most-clockwise stop, room for the firmware to brake there.
     #[arg(long)]
     soft_angle_min: Option<f64>,
     /// App-facing working-range max (deg); defaults to 6.25% of the travel
-    /// in from the max-count stop, room for the firmware to brake there.
+    /// in from the most-counterclockwise stop.
     #[arg(long)]
     soft_angle_max: Option<f64>,
     /// Known gear ratio (motor rev per output rev); unset leaves it 0.
@@ -156,6 +247,10 @@ pub struct Args {
     /// class is unknown.
     #[arg(long, value_enum)]
     gears: Option<Gears>,
+    /// The pot's count end at the horn's most-counterclockwise stop, facing
+    /// the horn; required with --yes unless the servo's angle map says.
+    #[arg(long, value_enum)]
+    ccw_end: Option<CcwEnd>,
     /// Assume yes: never prompt. Required values must come from flags.
     #[arg(long)]
     yes: bool,
@@ -190,6 +285,13 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     }
 
     let gears = gears(args, c.gear_class(id, &d)?)?;
+    let ccw = Ccw::new(
+        args,
+        CcwEnd::of(
+            read_u16(&mut c, id, calib::ANGLE_MIN_CDEG)? as i16,
+            read_u16(&mut c, id, calib::ANGLE_MAX_CDEG)? as i16,
+        ),
+    )?;
     let stop_lim = stop_hold(lim, gears);
     println!(
         "gear train {}: stops held under {}",
@@ -207,7 +309,11 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     }
 
     let out = OutDir::create(args.out.as_deref().unwrap_or(Path::new("./cal-out")))?;
-    let Found { stops: r, tel } = find_stops(&mut c, id, &out, lim, stop_lim, sc, fs)?;
+    let Found {
+        stops: r,
+        tel,
+        ccw_end,
+    } = find_stops(&mut Wire::new(&mut c, id), &out, lim, stop_lim, sc, fs, ccw)?;
     let EndstopResult {
         pos_min_phys,
         pos_max_phys,
@@ -252,7 +358,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     // Resolve the anchor: gear is preferred, travel is the fallback. --yes stays
     // headless through the pure resolve_anchor; interactively the operator
     // anchors on the gear first (enter 0 to switch to a travel angle instead).
-    let (phys_min, phys_max, gear_ratio_centi) = if args.yes {
+    let (phys_cw, phys_ccw, gear_ratio_centi) = if args.yes {
         let (lo, hi, gear) = resolve_anchor(
             mrf,
             args.gear_ratio,
@@ -265,8 +371,9 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         resolve_anchor_interactive(args, mrf, coverage)?
     };
 
-    let (soft_min_deg, soft_max_deg) = soft_angles(args, phys_min, phys_max)?;
-    let (angle_min_cdeg, angle_max_cdeg) = angle_endpoints(phys_min, phys_max);
+    let (soft_min_deg, soft_max_deg) = soft_angles(args, phys_cw, phys_ccw)?;
+    let (at_min, at_max) = ccw_end.rail_angles(phys_cw, phys_ccw);
+    let (angle_min_cdeg, angle_max_cdeg) = angle_endpoints(at_min, at_max);
     let dpc = kinematics::deg_per_count(angle_min_cdeg, angle_max_cdeg, pos_min_phys, pos_max_phys);
 
     // gear-mesh slip check on the SAME sweep: pot must advance in fixed
@@ -288,11 +395,14 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         }
     }
 
-    // soft angle -> phys count via the linear phys map, clamped to the rails
-    let soft_min_count =
-        soft_to_count(soft_min_deg, phys_min, phys_max, pos_min_phys, pos_max_phys);
-    let soft_max_count =
-        soft_to_count(soft_max_deg, phys_min, phys_max, pos_min_phys, pos_max_phys);
+    // soft angle -> phys count via the linear phys map, clamped to the rails;
+    // a descending map puts the larger angle on the lower count
+    let soft_counts = [soft_min_deg, soft_max_deg]
+        .map(|deg| soft_to_count(deg, at_min, at_max, pos_min_phys, pos_max_phys));
+    let (soft_min_count, soft_max_count) = (
+        soft_counts[0].min(soft_counts[1]),
+        soft_counts[0].max(soft_counts[1]),
+    );
 
     let kin = KinematicsResult {
         angle_min_cdeg,
@@ -304,7 +414,12 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
 
     println!("deg/count {dpc:.6}");
     println!(
-        "phys angle {phys_min:.2}..{phys_max:.2} deg, soft angle {soft_min_deg:.2}..{soft_max_deg:.2} deg"
+        "phys angle {phys_cw:.2} deg clockwise..{phys_ccw:.2} deg counterclockwise, the \
+         counterclockwise end at the {} counts; soft angle {soft_min_deg:.2}..{soft_max_deg:.2} deg",
+        match ccw_end {
+            CcwEnd::Low => "low",
+            CcwEnd::High => "high",
+        }
     );
     println!("soft counts {soft_min_count}..{soft_max_count}");
 
@@ -585,7 +700,7 @@ fn longest_contiguous_run(s: &[(u64, u16, f64)]) -> Option<(usize, usize)> {
     (best_hi - best_lo >= 2).then_some((best_lo, best_hi))
 }
 
-fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
+fn read_sense<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<SenseParams> {
     Ok(SenseParams {
         shunt_r_mohm: read_u16(c, id, calib::SHUNT_R_MOHM)?,
         gain_milli: read_u16(c, id, calib::GAIN_MILLI)?,
@@ -604,6 +719,7 @@ fn pct(duty: f64) -> String {
 struct Found {
     stops: EndstopResult,
     tel: Vec<TelFrame>,
+    ccw_end: CcwEnd,
 }
 
 /// Cal's run, in the order osc-ident's [`Run::for_cal`] names: bias, the
@@ -613,14 +729,14 @@ struct Found {
 /// and the position table only the drive polarity is written here: when
 /// the jam check sees the motor turn against it, and once both stops are
 /// found.
-fn find_stops(
-    c: &mut Client<NusbPipe>,
-    id: Id,
+fn find_stops<S: Servo>(
+    s: &mut S,
     out: &OutDir,
     lim: ServoLimits,
     stop_lim: ServoLimits,
     sc: Scales,
     tick_hz: f64,
+    ccw: Ccw,
 ) -> Result<Found> {
     let mut cal = Cal {
         lim,
@@ -633,10 +749,12 @@ fn find_stops(
         stops: None,
         refused: None,
         tel: Vec::new(),
+        ccw,
+        ccw_end: None,
     };
     let mut run = Run::for_cal(stop_lim, &sc);
     while let Some(stage) = run.next_stage() {
-        match cal.stage(&stage, &mut run, c, id) {
+        match cal.stage(&stage, &mut run, s) {
             Ok(how) => run.ended(how),
             Err(e) => {
                 if let Some(a) = e.downcast_ref::<Aborted>() {
@@ -666,9 +784,13 @@ fn find_stops(
         Some(other) => bail!("cal ended early ({other:?}); no writes"),
     }
     let stops = cal.stops.context("cal found no stops; no writes")?;
+    let ccw_end = cal
+        .ccw_end
+        .context("the counterclockwise end was not settled; no writes")?;
     Ok(Found {
         stops,
         tel: cal.tel,
+        ccw_end,
     })
 }
 
@@ -687,6 +809,10 @@ struct Cal<'a> {
     /// Why the stops found are no stops.
     refused: Option<String>,
     tel: Vec<TelFrame>,
+    ccw: Ccw,
+    /// The count end at the most-counterclockwise stop, once settled at a
+    /// stop.
+    ccw_end: Option<CcwEnd>,
 }
 
 impl Cal<'_> {
@@ -707,19 +833,13 @@ impl Cal<'_> {
             .map(|r| (r.pos_min_phys as u16, r.pos_max_phys as u16))
     }
 
-    fn stage(
-        &mut self,
-        stage: &Stage,
-        run: &mut Run,
-        c: &mut Client<NusbPipe>,
-        id: Id,
-    ) -> Result<Ended> {
+    fn stage<S: Servo>(&mut self, stage: &Stage, run: &mut Run, s: &mut S) -> Result<Ended> {
         match stage {
             Stage::Bias => {
                 println!("[bias] torque off: the current zero and the position noise");
                 let p = self.params().without_pos_guard();
                 let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &p), p);
-                drive(c, id, self.out, &mut exp, None)?;
+                drive(s, self.out, &mut exp, None)?;
                 check_abort("bias", exp.abort())?;
             }
             Stage::Centre {
@@ -734,8 +854,7 @@ impl Cal<'_> {
                     pct(*cap)
                 );
                 let cfg = order::centre_cfg(*duty, *cap, true);
-                let mut s = Wire::new(&mut *c, id);
-                let (exp, polarity) = jam_check(&mut s, cfg, self.params(), self.polarity)?;
+                let (exp, polarity) = jam_check(s, cfg, self.params(), self.polarity)?;
                 self.polarity = polarity;
                 let moved = exp.moved_at();
                 if let Some(m) = moved {
@@ -752,7 +871,7 @@ impl Cal<'_> {
                     None => self.params(),
                 };
                 let cfg = order::centre_cfg(*duty, *cap, false);
-                centre(c, id, cfg, p, "centring")?;
+                centre_on(|e| drive_on(s, e), cfg, p, "centring")?;
             }
             Stage::Burst { rungs, pre, seek } => {
                 let base = InductanceCfg {
@@ -771,7 +890,7 @@ impl Cal<'_> {
                 );
                 let p = self.params();
                 let mut exp = Guarded::new(Inductance::new(cfg, &p, self.sc), p);
-                drive(c, id, self.out, &mut exp, None)?;
+                drive(s, self.out, &mut exp, None)?;
                 check_abort("the burst", exp.abort())?;
                 let exp = exp.into_inner();
                 for w in exp.warnings() {
@@ -802,8 +921,8 @@ impl Cal<'_> {
                 approach,
                 seat,
                 cap,
-            } => return self.stops(run, c, id, (*approach, *seat, *cap)),
-            Stage::Traverse { seek } => return self.traverse(run, c, id, *seek),
+            } => return self.stops(run, s, (*approach, *seat, *cap)),
+            Stage::Traverse { seek } => return self.traverse(run, s, *seek),
             Stage::Resistance { .. }
             | Stage::Breakaway { .. }
             | Stage::Ladder { .. }
@@ -815,11 +934,10 @@ impl Cal<'_> {
 
     /// Both stops, approached at one duty and read seated at half the
     /// limit, stall permit held; then the polarity they show.
-    fn stops(
+    fn stops<S: Servo>(
         &mut self,
         run: &Run,
-        c: &mut Client<NusbPipe>,
-        id: Id,
+        s: &mut S,
         (approach, seat, cap): (f64, f64, f64),
     ) -> Result<Ended> {
         let ma = self.lim.ma();
@@ -842,7 +960,7 @@ impl Cal<'_> {
         let p = self.params().without_pos_guard();
         let exp = Endstop::new(order::endstop_cfg(approach, seat, cap), &p);
         let mut exp = Guarded::new(Permitted::new(exp), p);
-        drive(c, id, self.out, &mut exp, Some("endstop_snapshots.csv"))?;
+        drive(s, self.out, &mut exp, Some("endstop_snapshots.csv"))?;
         check_abort("the stop approach", exp.abort())?;
         let exp = exp.into_inner().into_inner();
         if exp.approach() > approach + 1e-4 {
@@ -875,22 +993,18 @@ impl Cal<'_> {
         // and the value is the physical truth whether or not the rest is
         // accepted.
         if polarity != self.polarity {
-            write_reg(c, id, config::DRIVE_POLARITY, polarity as i32)?;
+            s.write(config::DRIVE_POLARITY, polarity as i32)?;
             self.polarity = polarity;
         }
+        let rest = s.snapshot()?.pos;
+        self.ccw_end = Some(self.ccw.settle(rest, (r.pos_min_phys, r.pos_max_phys))?);
         self.stops = Some(r);
         Ok(Ended::Done)
     }
 
     /// The ripple traverse inside the stops just found, on the runway rule.
     /// The decoded frames land in sweep_tel.csv - cal-replay's input.
-    fn traverse(
-        &mut self,
-        run: &Run,
-        c: &mut Client<NusbPipe>,
-        id: Id,
-        seek: f64,
-    ) -> Result<Ended> {
+    fn traverse<S: Servo>(&mut self, run: &Run, s: &mut S, seek: f64) -> Result<Ended> {
         let Some(stops) = self.found() else {
             return Ok(Ended::Declined);
         };
@@ -929,7 +1043,7 @@ impl Cal<'_> {
             .with_floor(self.lim.window_floor_q15)
             .with_stops(stops);
         let mut exp = Guarded::new(Sweep::new(cfg, &p, runway), p);
-        let tel = drive(c, id, self.out, &mut exp, None)?;
+        let tel = drive(s, self.out, &mut exp, None)?;
         check_abort("the traverse", exp.abort())?;
         let exp = exp.into_inner();
         csvio::write_tel_frames(self.out, "sweep_tel.csv", &tel)?;
@@ -957,16 +1071,15 @@ impl Cal<'_> {
 
 /// Pump `exp` to its end and park the servo safe however it ends: the TEL
 /// frames it streamed. `log` names a snapshot CSV in `out`.
-fn drive(
-    c: &mut Client<NusbPipe>,
-    id: Id,
+fn drive<S: Servo>(
+    s: &mut S,
     out: &OutDir,
     exp: &mut dyn Experiment,
     log: Option<&str>,
 ) -> Result<Vec<TelFrame>> {
     let mut log = log.map(|n| SnapshotLog::create(out, n)).transpose()?;
-    with_guard(c, id, |c| {
-        let mut pump = Pump::new(c, id, log.as_mut());
+    guard(s, |s| {
+        let mut pump = Pump::on(s, log.as_mut());
         pump.run(exp)?;
         Ok(std::mem::take(&mut pump.tel))
     })
@@ -985,11 +1098,11 @@ fn phys_angles(args: &Args) -> Result<(f64, f64)> {
         return Ok((min, max));
     }
     let min = input_f64(
-        "phys angle at min rail (deg)",
+        "angle at the most-clockwise stop (deg)",
         args.phys_angle_min.unwrap_or(0.0),
     )?;
     let max = input_f64(
-        "phys angle at max rail (deg)",
+        "angle at the most-counterclockwise stop (deg)",
         args.phys_angle_max.unwrap_or(DEFAULT_TRAVEL_DEG),
     )?;
     Ok((min, max))
@@ -1115,7 +1228,7 @@ fn resolve_anchor_interactive(
     {
         let travel = kinematics::travel_deg_from_gear(m, gear);
         let angle_min = input_f64(
-            "phys angle at min rail (deg)",
+            "angle at the most-clockwise stop (deg)",
             args.phys_angle_min.unwrap_or(0.0),
         )?;
         println!("derived travel {travel:.1} deg from gear {gear:.2}");
@@ -1370,6 +1483,7 @@ mod tests {
             soft_angle_max: None,
             gear_ratio: Some(308.05),
             gears: None,
+            ccw_end: None,
             yes: true,
             no_save: false,
         }
@@ -1656,6 +1770,110 @@ mod tests {
         }
         assert_eq!(stop_hold(servo, Gears::Metal).i_lim, 280, "never raised");
         assert_eq!(stop_hold(servo, Gears::Plastic).i_lim, 280);
+    }
+
+    /// `--yes` takes the counterclockwise end from the flag, else from the
+    /// servo's angle map, and refuses before anything drives with neither;
+    /// at a stop the headless run settles on it whichever stop it rests at.
+    #[test]
+    fn the_ccw_end_comes_from_the_flag_or_the_angle_map() {
+        let flags = travel_flags(None, None);
+        let err = Ccw::new(&flags, None).unwrap_err().to_string();
+        assert!(err.contains("--ccw-end"), "{err}");
+        let stored = Ccw::new(&flags, CcwEnd::of(18000, 0)).unwrap();
+        assert_eq!(stored.settle(250, (232, 3849)).unwrap(), CcwEnd::Low);
+        assert_eq!(stored.settle(3800, (232, 3849)).unwrap(), CcwEnd::Low);
+        let flagged = Args {
+            ccw_end: Some(CcwEnd::High),
+            ..travel_flags(None, None)
+        };
+        let ccw = Ccw::new(&flagged, CcwEnd::of(18000, 0)).unwrap();
+        assert_eq!(
+            ccw.settle(250, (232, 3849)).unwrap(),
+            CcwEnd::High,
+            "the flag wins"
+        );
+        assert_eq!(CcwEnd::of(0, 18000), Some(CcwEnd::High));
+        assert_eq!(CcwEnd::of(0, 0), None, "an unset map says nothing");
+        assert_eq!(CcwEnd::nearer(300, (232, 3849)), CcwEnd::Low);
+        assert_eq!(CcwEnd::nearer(3700, (232, 3849)), CcwEnd::High);
+    }
+
+    /// Cal on the bench servo for every way its pot and motor can be wired:
+    /// the counts stay the pot's, rising whichever way the pot runs, the
+    /// drive polarity is learned against them, and the angle map makes a
+    /// positive degree step counterclockwise. A swapped pot runs its counts
+    /// clockwise, so its counterclockwise end is the low one. The run stays
+    /// inside every guard with the kernel's drive check on (an abort fails
+    /// it), and the soft limits land inside the stops.
+    #[test]
+    fn every_wiring_calibrates_degrees_counterclockwise_positive() {
+        use crate::rig::servo::bench::Bench;
+
+        for (pot_swapped, motor_swapped) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let case = format!("pot swapped {pot_swapped}, motor swapped {motor_swapped}");
+            let mut b = Bench::mg90(crate::capture::Supply::TwoS);
+            // a positive duty raises the counts unless one of the two is swapped
+            b.servo.drive_polarity = pot_swapped == motor_swapped;
+            b.servo.drive_check = true;
+            let ccw_end = if pot_swapped {
+                CcwEnd::Low
+            } else {
+                CcwEnd::High
+            };
+            let id = b.id();
+            let lim = crate::rig::limits::read(&mut b.c, id).unwrap();
+            let sense = read_sense(&mut b.c, id).unwrap();
+            let sc = Scales::from_sense(
+                &sense,
+                read_u16(&mut b.c, id, calib::VBUS_DIV_TOP_OHM).unwrap(),
+                read_u16(&mut b.c, id, calib::VBUS_DIV_BOT_OHM).unwrap(),
+            )
+            .unwrap();
+            let args = Args {
+                ccw_end: Some(ccw_end),
+                ..travel_flags(Some(0.0), Some(180.0))
+            };
+            let dir = std::env::temp_dir().join(format!(
+                "osc-cal-wiring-{}-{pot_swapped}-{motor_swapped}",
+                std::process::id()
+            ));
+            let out = OutDir::create(&dir).unwrap();
+            let found = find_stops(
+                &mut b,
+                &out,
+                lim,
+                stop_hold(lim, Gears::Metal),
+                sc,
+                sense.tick_hz as f64,
+                Ccw::new(&args, None).unwrap(),
+            )
+            .unwrap_or_else(|e| panic!("{case}: {e:#}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            assert_eq!(found.ccw_end, ccw_end, "{case}");
+            assert!(
+                b.servo.drive_polarity,
+                "{case}: a positive duty raises the counts"
+            );
+            let (lo, hi) = (found.stops.pos_min_phys, found.stops.pos_max_phys);
+            assert!(lo < hi, "{case}: counts rise with the pot");
+
+            let (at_min, at_max) = ccw_end.rail_angles(0.0, 180.0);
+            let (amin, amax) = angle_endpoints(at_min, at_max);
+            let dpc = kinematics::deg_per_count(amin, amax, lo, hi);
+            // counts per degree, then which way the shaft turns: the pot's
+            // counts rise counterclockwise unless its ends are swapped
+            let counts = 1.0 / dpc;
+            let ccw_turn = if pot_swapped { -counts } else { counts };
+            assert!(ccw_turn > 0.0, "{case}: +1 deg moves {counts:.2} counts");
+            let soft = [10.0, 170.0].map(|deg| soft_to_count(deg, at_min, at_max, lo, hi));
+            assert!(
+                soft.iter().all(|&c| lo < c && c < hi),
+                "{case}: soft {soft:?}"
+            );
+        }
     }
 
     /// The traverse on the bench servo the way cal drives it: a servo that

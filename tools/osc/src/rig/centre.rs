@@ -5,33 +5,18 @@
 //! ([`jam_check`]).
 
 use anyhow::{Result, bail};
-use osc_client::Id;
-use osc_client::blocking::Client;
 use osc_client::data_state::fault;
-use osc_client::nusb::NusbPipe;
 use osc_ident::exp::centre::{Centre, CentreCfg};
 use osc_ident::exp::{AbortReason, Experiment, Guarded, RigParams};
 use osc_ident::regs::{config, control};
 
 use super::pump::Pump;
-use super::servo::{Servo, Wire, guard};
+use super::servo::{Servo, guard};
 use super::{Aborted, check_abort};
 
 /// Pump `exp` to its end on the servo, parked safe however it ends.
 pub(crate) fn drive<S: Servo>(s: &mut S, exp: &mut dyn Experiment) -> Result<()> {
     guard(s, |s| Pump::on(s, None).run(exp))
-}
-
-/// [`centre_on`] on the servo.
-pub(crate) fn centre(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    cfg: CentreCfg,
-    params: RigParams,
-    what: &'static str,
-) -> Result<Centre> {
-    let mut s = Wire::new(c, id);
-    centre_on(|exp| drive(&mut s, exp), cfg, params, what)
 }
 
 /// The centring pumped by `pump`, ended. A blocked shaft is an abort; a
