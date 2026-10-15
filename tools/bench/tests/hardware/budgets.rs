@@ -13,8 +13,9 @@
 //! --nocapture`; `BUDGET_WINDOWS` (comma-separated names, e.g. `tel still,tel
 //! stepping`) runs only those windows; `BUDGET_OUT` names a directory that
 //! receives each window's report and raw records as the window ends.
-//! Drives the motor: holds and 600-count steps about the rail middle, each
-//! drive ending centred with torque off; the last window ends rebooted.
+//! Drives the motor: holds, 600-count steps and an OpenLoop sweep about the
+//! rail middle, each drive ending centred with torque off; the last window
+//! ends rebooted.
 //! `seated` runs only when `BUDGET_WINDOWS` names it: it needs the horn
 //! clamped at mid travel, and holds a goal past the clamp so the
 //! thermometer tracks a seat.
@@ -41,7 +42,7 @@ use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bench::osc::{
     REBOOT_SETTLE_MS, build_instruction, build_ping, build_read, build_reboot, build_write,
@@ -54,14 +55,16 @@ use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
 use osc_servo_core::budget::probe::{
-    Component, LONG_TICKS, Row, Scenario, TEL_PER_TICK_NOISE, TelReport, TelStep, WindowProbe,
-    rows, us,
+    Component, KernelProbe, LONG_TICKS, Row, Scenario, TEL_PER_TICK_NOISE, TelReport, TelStep,
+    WindowProbe, rows, us,
 };
-use osc_servo_core::budget::{Frame, Regime, TICKS_PER_US, WINDOW_TICKS};
+use osc_servo_core::budget::{Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
 use osc_servo_core::kernel::HEALTH_LOST_MAX;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
-use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, MODE, TORQUE_ENABLE};
+use osc_servo_core::regions::control::addr::lifecycle::{
+    GOAL_DUTY, GOAL_POSITION, MODE, TORQUE_ENABLE,
+};
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::estimates::THETA_HAT_Q16;
 use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, POS, SAMPLE_TICK};
@@ -71,7 +74,7 @@ use osc_servo_core::regions::telemetry_ext::addr::health::{
 use osc_servo_core::regions::telemetry_ext::addr::therm::THERM_FLAGS;
 use serial_test::serial;
 
-use crate::support::{Bench, bench};
+use crate::support::{Bench, DRIVE_CHECK_DUTY_Q15, bench};
 
 const STEP_COUNTS: i32 = 600;
 const STEP_HOLD: Duration = Duration::from_millis(400);
@@ -217,6 +220,12 @@ fn kernel_and_bus_stay_inside_their_budgets() {
             }
         })
     });
+    let openloop = f.window(&mut b, "openloop", Gate::Budget, false, &writes, |b, _| {
+        driven(b, |b| openloop_sweep(b, mid))
+    });
+    if let Some(k) = openloop {
+        f.ran_mostly("openloop", &k, Regime::OpenLoop);
+    }
     f.window(
         &mut b,
         "tel still",
@@ -319,9 +328,9 @@ fn kernel_and_bus_stay_inside_their_budgets() {
 
 impl Fill {
     /// Reboot (zeroing the probe), run `run`, read the probe and the health
-    /// block, and report the window at once. A panic inside `run` fails the
-    /// window and the run goes on to the next one. Skipped when
-    /// `BUDGET_WINDOWS` leaves the window out.
+    /// block, and report the window at once; its kernel record. A panic
+    /// inside `run` fails the window and the run goes on to the next one.
+    /// Skipped when `BUDGET_WINDOWS` leaves the window out.
     fn window(
         &mut self,
         b: &mut Bench,
@@ -330,9 +339,9 @@ impl Fill {
         tel: bool,
         frames: &[(Frame, u32)],
         run: impl FnOnce(&mut Bench, &mut Vec<String>),
-    ) {
+    ) -> Option<KernelProbe> {
         if env::var_os("BUDGET_WINDOWS").is_some() && !named(name) {
-            return;
+            return None;
         }
         reboot(b);
         let from = b.frames_sent();
@@ -386,6 +395,19 @@ impl Fill {
             self.report_tel(&w);
         } else {
             self.report(&w);
+        }
+        Some(w.snap.kernel)
+    }
+
+    /// Most of the window's plain ticks booked `r`: it drove the arm it
+    /// measures.
+    fn ran_mostly(&mut self, name: &str, k: &KernelProbe, r: Regime) {
+        let n = Regime::ALL.map(|r| (0..PHASES).map(|p| k.load(r, p).n).sum::<u32>());
+        if 2 * n[r as usize] <= n.iter().sum() {
+            self.failed.push(format!(
+                "{name}: plain ticks {n:?} by {:?}, want most {r:?}",
+                Regime::ALL
+            ));
         }
     }
 
@@ -464,7 +486,7 @@ impl Fill {
                 ticks(l.max)
             );
         }
-        for r in Regime::ALL {
+        for r in Regime::EVENT_ROWS {
             let first = t.first[r as usize];
             if let Some(m) = TelReport::tel_row(k, t, r) {
                 let _ = writeln!(text, "  {r:?} TEL row, phase-matched  mean {}", fticks(m));
@@ -665,6 +687,40 @@ fn step_goal(mid: i32, k: u32) -> i32 {
     }
 }
 
+/// Pot travel that counts as motion, and how long the sweep may see none.
+const STALL_COUNTS: u32 = 12;
+const STALL_GIVE_UP: Duration = Duration::from_millis(400);
+
+/// OpenLoop at the drive check's duty for a window, reversed each time the
+/// shaft passes `STEP_COUNTS` from `mid`, then held at `mid`.
+fn openloop_sweep(b: &mut Bench, mid: i32) {
+    write(b, GOAL_DUTY, &0i16.to_le_bytes());
+    write(b, MODE, &[Mode::OpenLoop as u8]);
+    write(b, TORQUE_ENABLE, &[1]);
+    let end = Instant::now() + WINDOW;
+    let mut duty = DRIVE_CHECK_DUTY_Q15;
+    write(b, GOAL_DUTY, &duty.to_le_bytes());
+    // A shaft that stops moving is stalled: never hold the duty on it.
+    let (mut last, mut moved_at) = (present(b), Instant::now());
+    while Instant::now() < end {
+        let pos = present(b);
+        if pos.abs_diff(last) >= STALL_COUNTS {
+            (last, moved_at) = (pos, Instant::now());
+        }
+        assert!(
+            moved_at.elapsed() < STALL_GIVE_UP,
+            "openloop sweep: no motion for {STALL_GIVE_UP:?} at pos {pos}"
+        );
+        if i32::from(duty.signum()) * (pos - mid) >= STEP_COUNTS {
+            duty = -duty;
+            write(b, GOAL_DUTY, &duty.to_le_bytes());
+        }
+    }
+    write(b, GOAL_DUTY, &0i16.to_le_bytes());
+    write(b, GOAL_POSITION, &mid.to_le_bytes());
+    write(b, MODE, &[Mode::Position as u8]);
+}
+
 /// Run a drive, then centre and drop torque whatever happened in it.
 fn driven(b: &mut Bench, drive: impl FnOnce(&mut Bench)) {
     let r = catch_unwind(AssertUnwindSafe(|| drive(b)));
@@ -747,7 +803,7 @@ fn line(r: &Row) -> String {
         c => format!("{c:?}"),
     };
     let mut s = format!(
-        "{name:<25} n {:>7}  max {} / budget {}",
+        "{name:<27} n {:>7}  max {} / budget {}",
         r.n,
         ticks(r.max),
         ticks(r.budget)
@@ -760,6 +816,9 @@ fn line(r: &Row) -> String {
         if r.mean_budget != 0 {
             s += &format!(" / {}", ticks(r.mean_budget));
         }
+    }
+    if r.saturated() {
+        s += "  saturated";
     }
     if r.over() {
         s += "  OVER";

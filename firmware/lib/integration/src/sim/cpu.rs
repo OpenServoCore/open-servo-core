@@ -13,7 +13,7 @@
 //! test `budgets` holds the chip to, each with its interrupt entry and exit.
 
 use osc_servo_core::budget::probe::{BusProbe, Windows};
-use osc_servo_core::budget::{self, Body, Frame, PHASES, Regime};
+use osc_servo_core::budget::{self, Body, EVENT_REGIMES, Frame, PHASES, REGIMES, Regime};
 use osc_servo_core::kernel::{self, DECIM_SLOW, phase};
 
 use super::core::TICKS_PER_US;
@@ -25,15 +25,15 @@ const _: () = assert!(TICKS_PER_US == budget::TICKS_PER_US as u64);
 
 /// Kernel tick bodies at budget by regime and phase, the tick block's work
 /// and layout included.
-pub static KERNEL_AT_BUDGET: [[u64; PHASES]; 2] = kernel_bodies(false);
+pub static KERNEL_AT_BUDGET: [[u64; PHASES]; REGIMES] = kernel_bodies(false);
 
 /// The lowest body the typical lane draws: a uniform draw from here to the
 /// budget has the mean budget for its mean, or more where the maximum sits
 /// over twice the mean (the floor stops at zero).
-pub static KERNEL_FLOOR: [[u64; PHASES]; 2] = kernel_bodies(true);
+pub static KERNEL_FLOOR: [[u64; PHASES]; REGIMES] = kernel_bodies(true);
 
-const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; 2] {
-    let mut t = [[0; PHASES]; 2];
+const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; REGIMES] {
+    let mut t = [[0; PHASES]; REGIMES];
     let mut r = 0;
     while r < t.len() {
         let mut p = 0;
@@ -143,7 +143,8 @@ pub enum Motion {
     /// Closed for [`budget::HOLD_APPROACH_TICKS`] after the lane starts or
     /// the goal moves, then Open.
     Hold,
-    /// Stepping or tracking: Closed.
+    /// Stepping, tracking or an OpenLoop drive, which the lane cannot tell
+    /// apart: per phase the dearer of Closed and OpenLoop.
     Moving,
 }
 
@@ -153,10 +154,10 @@ pub struct KernelLane {
     pub level: KernelLevel,
     pub motion: Motion,
     /// Body per phase by regime, HCLK ticks.
-    pub phases: [&'static [u64]; 2],
+    pub phases: [&'static [u64]; REGIMES],
     /// Each body drawn uniformly from this floor up to its phase cost,
     /// seeded; `None` runs every body at its phase cost.
-    pub floor: Option<([&'static [u64]; 2], u64)>,
+    pub floor: Option<([&'static [u64]; REGIMES], u64)>,
     pub tel: TelCosts,
     pub events: KernelEvents,
 }
@@ -177,7 +178,7 @@ pub struct TelCosts {
 }
 
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
-/// block's due stage on phase SLOW every DECIM_SLOW periods (by regime) and
+/// block's due stage on phase SLOW every DECIM_SLOW periods (by event row) and
 /// its finish on the next period's, the thermometer's stages around them
 /// (an install on phase SPARE_A of the period after the finish,
 /// SPARE_B then and before the due stage), each holding the TX lane as
@@ -191,7 +192,7 @@ pub struct TelCosts {
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub refresh: u64,
-    pub slow_due: [u64; 2],
+    pub slow_due: [u64; EVENT_REGIMES],
     pub finish: u64,
     pub install: u64,
     pub side: u64,
@@ -235,26 +236,37 @@ impl KernelLane {
     /// lane above the bus: every scan in the span preempts it, the first
     /// with the longest body (any phase with its events and a close), so
     /// `(bus + longest) / (1 - U)`, U the share of a medium period of the
-    /// lane's heavier regime, a close in every period (TEL off).
+    /// lane's heavier regime at each phase, a close in every period (TEL
+    /// off).
     pub fn wall(&self, bus: u64) -> u64 {
-        let r = self.heavier() as usize;
-        let phases = self.phases[r];
+        let n = self.phases[Regime::Open as usize].len();
+        let body = |p: usize| {
+            self.phases[self.heavier(p) as usize]
+                .get(p)
+                .copied()
+                .unwrap_or(0)
+        };
         let ev = &self.events;
-        let busy = phases.iter().sum::<u64>() + ev.health_close;
-        let span = phases.len() as u64 * KERNEL_PERIOD;
-        let at = |p: u8, extra: u64| phases.get(p as usize).map_or(0, |b| b + extra);
-        let events = at(phase::SLOW, ev.slow_due[r].max(ev.finish))
+        let busy = (0..n).map(body).sum::<u64>() + ev.health_close;
+        let span = n as u64 * KERNEL_PERIOD;
+        let at = |p: u8, extra: u64| body(p as usize) + extra;
+        let slow_due = ev.slow_due[self.heavier(phase::SLOW as usize).event_row() as usize];
+        let events = at(phase::SLOW, slow_due.max(ev.finish))
             .max(at(phase::SPARE_A, ev.install.max(ev.refresh)))
             .max(at(phase::SPARE_B, ev.side.max(ev.drive)));
-        let longest = phases.iter().copied().max().unwrap_or(0).max(events);
+        let longest = (0..n).map(body).max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
     }
 
-    fn heavier(&self) -> Regime {
+    /// The regime `motion` charges at phase `p`, a hold before it parks.
+    fn heavier(&self, p: usize) -> Regime {
+        let at = |r: Regime| self.phases[r as usize].get(p).copied().unwrap_or(0);
         match self.motion {
             Motion::Quiet => Regime::Open,
-            Motion::Hold | Motion::Moving => Regime::Closed,
+            Motion::Hold => Regime::Closed,
+            Motion::Moving if at(Regime::OpenLoop) > at(Regime::Closed) => Regime::OpenLoop,
+            Motion::Moving => Regime::Closed,
         }
     }
 
@@ -599,9 +611,8 @@ impl Cpu {
         k.stats.entry_latency_sum += latency;
         let approach = budget::HOLD_APPROACH_TICKS as u64;
         k.regime = match k.lane.motion {
-            Motion::Quiet => Regime::Open,
             Motion::Hold if tick - k.goal_at >= approach => Regime::Open,
-            Motion::Hold | Motion::Moving => Regime::Closed,
+            _ => k.lane.heavier(k.phase),
         };
         k.stats.closed += (k.regime == Regime::Closed) as u64;
         let r = k.regime as usize;
@@ -624,7 +635,7 @@ impl Cpu {
                 k.install_owed |= at == 2;
                 None
             }
-            phase::SLOW if at == 0 => Some(ev.slow_due[r]),
+            phase::SLOW if at == 0 => Some(ev.slow_due[k.regime.event_row() as usize]),
             phase::SLOW if at == 1 => Some(ev.finish),
             phase::SPARE_A if at == 2 || k.install_owed => {
                 k.install_owed = false;
@@ -860,12 +871,12 @@ mod tests {
             KernelLane {
                 level: KernelLevel::AboveBus,
                 motion: Motion::Quiet,
-                phases: [&FREE, &FREE],
+                phases: [&FREE; REGIMES],
                 floor: None,
                 tel: TelCosts::default(),
                 events: KernelEvents {
                     refresh,
-                    slow_due: [slow; 2],
+                    slow_due: [slow; EVENT_REGIMES],
                     finish,
                     install,
                     side,
@@ -905,6 +916,47 @@ mod tests {
             }
         }
         assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+    }
+
+    /// An OpenLoop drive books on the OpenLoop rows: past the boot tick,
+    /// every tick of a running OpenLoop drive.
+    #[test]
+    fn an_openloop_drive_books_on_the_openloop_rows() {
+        use osc_servo_core::budget::probe::KernelProbe;
+        let sh = Shared::new();
+        seed(&sh);
+        let f = hot_seat(&sh);
+        let mut k = kernel();
+        let mut probe = KernelProbe::ZERO;
+        let mut booked = [0u32; REGIMES];
+        let ticks = 4 * DECIM_SLOW as u32 * DECIM_MED as u32;
+        for t in 0..ticks {
+            k.on_scan(f, &sh);
+            let r = probe.tick(600 + t % 100, || k.probe_tags(), false, 0, false);
+            if let Some(r) = r {
+                booked[r as usize] += 1;
+            }
+        }
+        assert_eq!(booked, [0, 0, ticks - 1]);
+    }
+
+    /// A moving lane cannot tell stepping from an OpenLoop drive: at budget
+    /// it charges each phase the dearer of the Closed and OpenLoop rows.
+    #[test]
+    fn a_moving_lane_charges_the_dearer_driven_row_at_each_phase() {
+        let lane = KernelLane {
+            events: KernelEvents::default(),
+            ..KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving)
+        };
+        let mut cpu = Cpu::default();
+        cpu.start_kernel(lane, u64::MAX);
+        let mut now = 0;
+        let [closed, openloop] =
+            [Regime::Closed, Regime::OpenLoop].map(|r| KERNEL_AT_BUDGET[r as usize]);
+        for p in 0..PHASES {
+            let body = lane_tick(&mut cpu, &mut now, 0);
+            assert_eq!(body, closed[p].max(openloop[p]), "phase {p}");
+        }
     }
 
     /// The drive direction check's stage stays inside the thermometer's on

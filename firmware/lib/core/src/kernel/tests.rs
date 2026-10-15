@@ -2406,8 +2406,8 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
 /// and halt included.
 #[test]
 fn the_probe_books_from_carried_tags_as_from_tags_around_the_body() {
+    use crate::budget::TICK_PERIOD;
     use crate::budget::probe::{HALT_TICKS, KernelProbe};
-    use crate::budget::{Regime, TICK_PERIOD};
     let sh = Shared::new();
     seed(&sh);
     seed_thermometer(&sh, RIG_R_COLD_Q12);
@@ -2464,16 +2464,12 @@ fn the_probe_books_from_carried_tags_as_from_tags_around_the_body() {
             ev.refresh,
             ev.bank,
             ev.health,
-            before.closed != after.closed,
+            before.regime != after.regime,
         ];
         for (n, &hit) in events.iter_mut().zip(&kinds) {
             *n += hit as u32;
         }
-        let r = if before.closed || after.closed {
-            Regime::Closed
-        } else {
-            Regime::Open
-        };
+        let r = before.regime.booked(after.regime);
         around.book(body, before.phase as usize, r, ev, !before.booted);
         around.ended(entry, entry + body);
         carried.tick(body, || after, tel, banks, health);
