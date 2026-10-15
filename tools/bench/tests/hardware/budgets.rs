@@ -673,6 +673,10 @@ fn step_goal(mid: i32, k: u32) -> i32 {
 
 /// OpenLoop at the drive check's duty for a window, reversed each time the
 /// shaft passes `STEP_COUNTS` from `mid`, then held at `mid`.
+/// Pot travel that counts as motion, and how long the sweep may see none.
+const STALL_COUNTS: u32 = 12;
+const STALL_GIVE_UP: Duration = Duration::from_millis(400);
+
 fn openloop_sweep(b: &mut Bench, mid: i32) {
     write(b, GOAL_DUTY, &0i16.to_le_bytes());
     write(b, MODE, &[Mode::OpenLoop as u8]);
@@ -680,8 +684,18 @@ fn openloop_sweep(b: &mut Bench, mid: i32) {
     let end = Instant::now() + WINDOW;
     let mut duty = DRIVE_CHECK_DUTY_Q15;
     write(b, GOAL_DUTY, &duty.to_le_bytes());
+    // A shaft that stops moving is stalled: never hold the duty on it.
+    let (mut last, mut moved_at) = (present(b), Instant::now());
     while Instant::now() < end {
-        if i32::from(duty.signum()) * (present(b) - mid) >= STEP_COUNTS {
+        let pos = present(b);
+        if pos.abs_diff(last) >= STALL_COUNTS {
+            (last, moved_at) = (pos, Instant::now());
+        }
+        assert!(
+            moved_at.elapsed() < STALL_GIVE_UP,
+            "openloop sweep: no motion for {STALL_GIVE_UP:?} at pos {pos}"
+        );
+        if i32::from(duty.signum()) * (pos - mid) >= STEP_COUNTS {
             duty = -duty;
             write(b, GOAL_DUTY, &duty.to_le_bytes());
         }
