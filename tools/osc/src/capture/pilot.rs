@@ -43,7 +43,7 @@ use crate::rig::Bus;
 use crate::rig::park::park;
 use crate::rig::pump;
 use crate::rig::servo::{Servo, Wire, guard};
-use crate::rig::{battery, blocked, centre};
+use crate::rig::{battery, blocked};
 use crate::sweep::{self, BAND_HALF, Cfg, Decay, Dirs, Recording, Segment, Step, feeds, pct_q15};
 
 /// `osc capture pilot` args.
@@ -187,7 +187,7 @@ fn measure_all<S: Servo>(
             margin(&lim, d)
         );
     }
-    let p_ok = front.jam_check(|exp| centre::drive(s, exp))?;
+    let p_ok = front.jam_check(s)?;
     *proved = Some(p_ok);
     let rig = Rig {
         lim,

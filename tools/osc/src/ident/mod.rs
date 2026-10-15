@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::capture::envelope;
 use crate::rig::Bus;
-use crate::rig::centre::jam_check;
+use crate::rig::centre::{gear_class, jam_check};
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
 use crate::rig::servo::{Servo, Wire};
@@ -650,23 +650,25 @@ fn pct(duty: f64) -> String {
 }
 
 /// Into the band at mid travel ([`Centre`]); a blocked shaft ends the run.
-/// The duty the shaft first travelled at, when it travelled.
-fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result<Option<f64>> {
+fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result<()> {
     let params = rig(cli)?;
-    if cfg.nudge {
-        let d = drive(cli)?;
-        let mut s = Wire::new(c, id);
-        let (exp, polarity) = jam_check(&mut s, cfg, params, d.polarity.get())?;
-        d.polarity.set(polarity);
-        return Ok(exp.moved_at());
-    }
     let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut exp))?;
     check_abort("centring", exp.abort())?;
-    let exp = exp.into_inner();
-    if !exp.arrived() {
+    if !exp.into_inner().arrived() {
         bail!("centring did not reach mid travel in 5 s (gear slipping?)");
     }
+    Ok(())
+}
+
+/// The jam check ([`jam_check`]), recorded in `out`, its polarity the one
+/// the run drives under from here: the duty the shaft first moved at.
+fn jam(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, out: &csvio::OutDir) -> Result<Option<f64>> {
+    let d = drive(cli)?;
+    let mut s = Wire::new(c, id);
+    let class = gear_class(&mut s)?;
+    let exp = jam_check(&mut s, &d.lim, &d.sc, rig(cli)?, class, Some(out))?;
+    d.polarity.set(exp.polarity());
     Ok(exp.moved_at())
 }
 
@@ -678,7 +680,7 @@ fn centre_outside_the_run(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result
         Some(r) => DutyPlan::new(&d.lim, r, None).seek,
         None => d.lim.bootstrap_duty(d.sc.r_vpc(CLASS_R_MIN)),
     };
-    centre(cli, c, id, order::centre_cfg(duty, duty, false)).map(|_| ())
+    centre(cli, c, id, order::centre_cfg(duty, duty))
 }
 
 fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
@@ -892,15 +894,7 @@ fn run_rl(
     sense: &SenseJson,
 ) -> Result<RlResult> {
     let d = drive(cli)?;
-    let front = Run::new(d.lim, &d.sc);
-    println!(
-        "[centring] the jam check: out and back at mid travel from {}, raised up to {} while \
-         the shaft does not move",
-        pct(front.bootstrap()),
-        pct(front.nudge_cap())
-    );
-    let cfg = order::centre_cfg(front.bootstrap(), front.nudge_cap(), true);
-    let moved = centre(cli, c, id, cfg)?
+    let moved = jam(cli, c, id, out)?
         .context("the jam check never saw the shaft move, so no toggle may run")?;
     let plan = d.lim.stall_plan(d.sc.r_vpc(CLASS_R_MIN), Some(moved));
     println!(
@@ -922,7 +916,7 @@ fn run_rl(
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("toggle", exp.abort())?;
     println!("[centring] to mid travel at {}", pct(plan.seek));
-    centre(cli, c, id, order::centre_cfg(plan.seek, plan.seek, false))?;
+    centre(cli, c, id, order::centre_cfg(plan.seek, plan.seek))?;
     let exp = exp.into_inner();
     csvio::write_rl_segments(out, exp.segments())?;
     // The planner's notes are the only account of a run that captured
@@ -1628,22 +1622,10 @@ impl Recorded {
         let out = &self.out;
         match stage {
             Stage::Bias => self.bias = Some(run_bias(cli, c, id, out, run.jog())?),
-            Stage::Centre { duty, cap, nudge } if *nudge => {
-                println!(
-                    "[centring] the jam check: out and back at mid travel from {}, raised up to \
-                     {} while the shaft does not move",
-                    pct(*duty),
-                    pct(*cap)
-                );
-                let moved = centre(cli, c, id, order::centre_cfg(*duty, *cap, *nudge))?;
-                if let Some(m) = moved {
-                    println!("  the shaft moves at {}", pct(m));
-                }
-                run.nudged(moved);
-            }
-            Stage::Centre { duty, cap, nudge } => {
+            Stage::JamCheck => run.nudged(jam(cli, c, id, out)?),
+            Stage::Centre { duty, cap } => {
                 println!("[centring] to mid travel at {}", pct(*duty));
-                centre(cli, c, id, order::centre_cfg(*duty, *cap, *nudge))?;
+                centre(cli, c, id, order::centre_cfg(*duty, *cap))?;
             }
             Stage::Burst { rungs, pre, seek } => {
                 let explicit = asked_rungs(cli, run.rail_mv())?;

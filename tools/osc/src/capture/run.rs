@@ -31,7 +31,7 @@ use crate::rig::battery::{self, read_pack_mv};
 use crate::rig::plant::{self, Snapshot};
 use crate::rig::pump::{self, STOP};
 use crate::rig::servo::{Servo, Wire, guard};
-use crate::rig::{blocked, centre, park};
+use crate::rig::{blocked, park};
 use crate::sweep::{self, Cfg, Dirs};
 
 /// `osc capture session` args.
@@ -1006,7 +1006,7 @@ fn prove<S: Servo>(s: &mut S, ctx: &Ctx) -> Result<(Front, Proved)> {
     let id = s.id();
     let front = front::read(s.client(), id, ctx.supply)?;
     front.check_envelope(ctx.env, &ctx.env_path)?;
-    let proved = front.jam_check(|exp| centre::drive(s, exp))?;
+    let proved = front.jam_check(s)?;
     Ok((front, proved))
 }
 
@@ -1016,10 +1016,12 @@ mod tests {
     use crate::capture::envelope;
     use crate::capture::store::fixture::tmp;
     use crate::capture::verdict::expected_segments;
+    use crate::rig::servo::bench::Bench;
     use crate::sweep::{Decay, Step};
     use osc_client::ResultCode;
     use osc_ident::exp::AbortReason;
-    use osc_ident::exp::testkit::{FakeServo, bench_mg90, pump};
+    use osc_ident::exp::jam::PROBE_STEP_MV;
+    use osc_ident::exp::testkit::{FakeServo, bench_mg90};
     use osc_ident::limits::{CLASS_R_MIN, ServoLimits, q15_floor};
     use osc_ident::regs::control;
 
@@ -1268,27 +1270,26 @@ mod tests {
         s
     }
 
-    fn jam_check(front: &Front, s: &mut FakeServo) -> Result<Proved> {
-        front.jam_check(|exp| {
-            pump(exp, s, 100_000);
-            Ok(())
-        })
+    /// The bench servo at mid travel on 2S, in-process: the bus, its table
+    /// and the test servo.
+    fn bench() -> Bench {
+        Bench::mg90(Supply::TwoS)
     }
 
-    /// The jam check on the bench servo starts at the class-safe 9.5% and
-    /// raises by 2.5% while the shaft stays still: its breakaway, 13%, gives
-    /// at 14.5%. Every seek, its breakout ceiling and the park drive by that:
-    /// 2% over it, capped at the 15.5% whose stall draws the limit - 15%
-    /// in whole percent - by the stored 7270; under the cap by a winding
-    /// of 9065, 16% with a ceiling of 19%.
+    /// The jam check on the bench servo pulses from the shunt floor's 13.3%
+    /// up by 200 mV, 2.5% on 2S: its breakaway, 13%, gives at the floor.
+    /// Every seek, its breakout ceiling and the park drive by that: 2% over
+    /// it, capped at the 15.5% whose stall draws the limit - 15% in whole
+    /// percent - by the stored 7270; under the cap by a winding of 9065, 15%
+    /// with a ceiling of 19%.
     #[test]
     fn seeks_drive_at_the_duty_that_moved_the_shaft() {
         let front = front::bench();
-        let mut s = mg90();
-        let breakaway = s.breakaway_q15 as f64 / 32767.0;
-        let p = jam_check(&front, &mut s).unwrap();
-        assert!(!s.torque, "the jam check ends torque off");
-        let step = osc_ident::exp::centre::NUDGE_STEP_Q15 as f64 / 32767.0;
+        let mut b = bench();
+        let breakaway = b.servo.breakaway_q15 as f64 / 32767.0;
+        let p = front.jam_check(&mut b).unwrap();
+        assert!(!b.servo.torque, "the jam check ends torque off");
+        let step = PROBE_STEP_MV / (3204.0 * front.sc.v_term_per_count * 1000.0);
         assert!(
             p.moved >= breakaway && p.moved - step < breakaway,
             "moved at {}",
@@ -1326,17 +1327,17 @@ mod tests {
             },
             ..front
         };
-        let p = jam_check(&wound, &mut mg90()).unwrap();
+        let p = wound.jam_check(&mut bench()).unwrap();
         assert!(p.plan.seek < p.plan.stop_cap);
-        assert_eq!((p.seek_pct(), p.cap_pct()), (16, 19));
+        assert_eq!((p.seek_pct(), p.cap_pct()), (15, 19));
         let c = cfg(
             &session,
             &env,
             &plan::expand(&session, &env, 1).unwrap()[0],
             &p,
         );
-        assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (16, 19));
-        assert_eq!(end_park(None, Some(&p)), Some(5242));
+        assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (15, 19));
+        assert_eq!(end_park(None, Some(&p)), Some(4915));
     }
 
     /// The 60% grid rung at its window: under the limit it is what the pilot
@@ -1391,7 +1392,6 @@ mod tests {
     #[test]
     fn session_completes_a_capture_on_the_bench_fixture() {
         use crate::capture::{front, pilot};
-        use crate::rig::servo::bench::Bench;
         let mut b = Bench::mg90(Supply::TwoS);
         let id = b.id();
         let fw = b.c.identity(id).unwrap().fw;
@@ -1448,25 +1448,25 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A shaft locked at mid travel: the jam check raises until the limit
-    /// holds a still shaft and calls it blocked, torque off. Nothing retries
-    /// it, nothing parks it, and the run exits 4; a seek that finds it
-    /// blocked mid capture ends the run the same way.
+    /// A shaft locked at mid travel: the jam check raises to the probe's
+    /// cap and calls it stiff, torque off. Nothing retries it, nothing parks
+    /// it, and the run exits 4; a seek that finds it blocked mid capture
+    /// ends the run the same way.
     #[test]
     fn a_blocked_shaft_ends_the_session_unparked() {
-        let mut s = mg90();
-        s.jam = Some(2029.0);
-        let e = jam_check(&front::bench(), &mut s).unwrap_err();
+        let mut b = bench();
+        b.servo.jam = Some(2029.0);
+        let e = front::bench().jam_check(&mut b).unwrap_err();
         assert!(blocked(&e), "{e:#}");
-        assert!(!s.torque && !s.permit_live());
-        assert_eq!(s.pos, 2029.0);
+        assert!(!b.servo.torque && !b.servo.permit_live());
+        assert_eq!(b.servo.pos, 2029.0);
 
         let o = outcome_of(&e);
         let Outcome::Blocked(why) = &o else {
             panic!("{o:?}");
         };
         assert!(
-            why.starts_with("the jam check aborted: the shaft is blocked"),
+            why.starts_with("the jam check aborted: the shaft did not move either way"),
             "{why}"
         );
         let mut t = Tries::default();

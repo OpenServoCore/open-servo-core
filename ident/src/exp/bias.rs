@@ -22,8 +22,10 @@ use crate::regs::control;
 /// A rest this close to a carry, counts, is moved off it.
 pub const CARRY_BAND: u16 = 8;
 
-/// The ADC's quarter-scale carries, raw counts.
-const CARRIES: [u16; 3] = [1024, 2048, 3072];
+/// The ADC's quarter-scale carries, raw counts, each with the width of the
+/// codes it skips: 1024..=1032, 2047..=2050, 3065..=3071, counted over
+/// V006 polled and TEL pot reads.
+const CARRIES: [(u16, u16); 3] = [(1024, 9), (2048, 4), (3072, 7)];
 
 const JOG_POLL_MS: u32 = 10;
 const JOG_POLLS: u32 = 30;
@@ -80,9 +82,24 @@ pub struct BiasResult {
     pub warnings: Vec<String>,
 }
 
+/// Pot travel from `from` to `to`, counts, less the codes skipped at each
+/// carry between them: a still shaft on one reads either side of them.
+pub fn travel_off_carries(from: u16, to: u16) -> u16 {
+    let (lo, hi) = (from.min(to), from.max(to));
+    let skipped: u16 = CARRIES
+        .into_iter()
+        .filter(|(c, _)| lo < *c && *c <= hi)
+        .map(|(_, w)| w)
+        .sum();
+    (hi - lo).saturating_sub(skipped)
+}
+
 /// The carry `raw` rests within [`CARRY_BAND`] of.
 fn carry_at(raw: u16) -> Option<u16> {
-    CARRIES.into_iter().find(|c| raw.abs_diff(*c) <= CARRY_BAND)
+    CARRIES
+        .into_iter()
+        .map(|(c, _)| c)
+        .find(|c| raw.abs_diff(*c) <= CARRY_BAND)
 }
 
 enum Phase {
@@ -429,5 +446,15 @@ mod tests {
         let (r, log) = run(false, 0);
         assert!(!log.iter().any(|l| l.starts_with("write goal_duty 5")));
         assert!(r.warnings[0].ends_with("and nothing jogged it off: the rest noise may read wide"));
+    }
+
+    /// A still shaft reading across each carry's skipped codes travels the
+    /// one code it moved, at every carry.
+    #[test]
+    fn a_read_across_each_carrys_skipped_codes_travels_one_count() {
+        assert_eq!(travel_off_carries(1023, 1033), 1);
+        assert_eq!(travel_off_carries(2051, 2046), 1);
+        assert_eq!(travel_off_carries(3064, 3072), 1);
+        assert_eq!(travel_off_carries(1000, 3100), 2100 - 9 - 4 - 7);
     }
 }

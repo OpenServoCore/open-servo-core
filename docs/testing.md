@@ -266,8 +266,8 @@ The run order and cal's sequence (`run.rs`):
 - `default_run_never_stalls_a_stop` - the whole default run on both
   rails, and on a rail too high for the burst, never presses a stop and
   never writes the permit.
-- `burst_waits_for_the_nudge` - no burst before the jam check moved the
-  shaft, and none at 9.4 V.
+- `burst_waits_for_the_jam_check` - no burst before the jam check moved
+  the shaft, and none at 9.4 V.
 - `nudge_cap_is_two_volts_on_the_rail` - class-safe start 9.5% and cap
   25.3% on 2S, 17.1% and 45.6% on USB.
 - `burst_cfg_is_the_allowance` - 25/40% from rest, the from-a-hold
@@ -280,12 +280,12 @@ The run order and cal's sequence (`run.rs`):
   it, every stall-safe drive stays at or under the stop cap.
 - `bench_inertia_base_and_steps` - seek 10%, base 15%, steps to 19.5,
   21.8 and 24.1% on 2S and 23.2, 27.3 and 31.5% on USB.
-- `virgin_run_escalates_the_nudge_and_measures_r` - a shaft that needs
-  more than the class-safe duty is raised until it moves, then the
-  burst measures R.
+- `virgin_run_moves_over_the_class_safe_duty_and_measures_r` - a shaft
+  that needs more than the class-safe duty moves in the jam check, then
+  the burst measures R.
 - `a_mid_travel_jam_ends_the_run_at_the_first_seek` - a locked shaft
-  ends the run in the jam check, at or under its cap, with no burst and
-  no stream.
+  ends the run in the jam check, stiff at the 251 mA limit, with no
+  burst and no stream.
 - `the_stop_ladder_runs_only_on_request` - a declined burst ends the
   run unless asked; asked, on 2S at 280 it refuses for want of room,
   on USB it runs in the burst's place.
@@ -301,17 +301,18 @@ The run order and cal's sequence (`run.rs`):
 - `cal_duties_on_the_bench_servo` - a shaft that moved at 13%
   approaches at 15% on both rails and seats at 7.76% on 2S and 14.0%
   on USB, half the limit.
-- `cal_approaches_at_the_duty_that_moved` - moved at 14.5% on 2S, the
-  approach is capped at the stop cap; at 17.1% on USB it is 19.1%; the
+- `cal_approaches_at_the_duty_that_moved` - moved at the shunt floor's
+  13.3% on both rails, the approach is 15.3%, under the stop cap; the
   permit is held only while the stops are found.
 - `cal_finds_the_stops_on_a_virgin_servo` - no stops or soft limits
   known: the same run finds 209 and 3849 and ends at mid travel.
 - `cal_never_escalates_toward_a_stop` - toward a stop only the approach
   duty, the seat duty and 0 are ever written; the traverse's first pass
   and the closing centring run at the approach duty.
-- `cal_refuses_when_breakaway_is_over_the_limit` - moved at 17% on 2S,
-  307 counts over 280: refused before any stop drive, no permit
-  written.
+- `cal_refuses_when_breakaway_is_over_the_limit` - a 16% breakaway on
+  2S ends the jam check stiff at the limit, before any stop drive, no
+  permit written; a moving duty whose stall by the measured R is over
+  the limit is refused before the stops.
 - `cal_without_r_seats_at_the_class_half_duty` - the burst declined:
   approach at the moving duty, seat at 4.76% on 2S.
 - `cal_on_a_jammed_shaft_writes_nothing` - a locked shaft ends cal in
@@ -346,22 +347,65 @@ Stops and stillness (`exp/seek.rs`):
 - `stillness_is_net_travel_over_a_window` - jitter is not travel, and a
   turn inside a window is not a rest.
 
-The jam check (`exp/centre.rs`):
+The jam check (`exp/jam.rs`, `exp/sag.rs`):
 
-- `a_centred_shaft_is_left_alone_unless_nudged` - a centred shaft gets
-  no write; with the check asked for it goes out and back at the start
-  duty.
-- `nudge_raises_the_duty_only_clear_of_the_stops` - raised 2.5% per
-  still window at mid travel and held at first travel; 250 counts from
-  a stop it is blocked, never raised.
-- `nudge_gives_up_at_the_cap` - a locked shaft is raised to the cap,
-  never over, and ends blocked.
-- `a_yield_fold_ends_the_nudge_blocked` - the firmware's stall fold is
-  the verdict at once.
+- `knobs_in_physical_units` - plastic probes to 225 mA and holds 300,
+  metal 375 and 500; near a stop past a soft limit plastic keeps 225 and
+  metal probes to 250; all capped at the servo's limit; a rung is 200 mV
+  on every rail.
+- `felt_from_the_early_windows` - with no R stored, a locked rotor reads
+  stalled, a turning one sagged and an open winding dead against the
+  first watch's early windows, the first over-reading 1.3x; against the
+  second poll the turning one would read stalled.
+- `the_stored_r_needs_no_allowance` - against the ohmic current the
+  stall ratio is 0.8, against the early windows 0.8 / 1.3.
+- `a_reversal_past_a_soft_limit_is_flipped_in_ram` - reversed under the
+  low soft limit, one pulse reads it, the refused pulse back is never
+  written, one RAM flip, mid travel without pressing the stop.
+- `a_latch_is_acknowledged_at_rest_and_resumed_once` - a drive_reversed
+  latch: rest, one flip, goal 0 then torque on, never a second flip.
+- `reversed_in_a_stoppers_give_ends_at_the_stop` - the test stops yield
+  90 counts an amp (low, first contact 30 counts out from the press
+  depth) and 40 (high, 20 out); reversed 2 to 15 counts inside first
+  contact the check ends at the stop with the stored polarity kept, or
+  arrives with it right only where the give at 250 mA can show a dozen
+  counts; no press over 250 mA; two dozen counts out it arrives.
+- `a_creep_and_a_lash_crossing_are_not_a_dead_pot` - the bench's run 31
+  plant (4.7 V, rungs 0.25/0.45/0.65 V, 45 mA running friction, lash 15
+  to 45 counts): a creep under a dozen counts raises a rung and a
+  turning pulse after a reversal is repeated; it arrives.
+- `a_dead_pot_by_the_lash_ends_at_the_sensor` - the same plant with its
+  pot dead ends at the sensor on turning pulses that repeat the way
+  before.
+- `a_host_stall_mid_travel_is_no_verdict` - a 600 ms host stall inside
+  a still pulse at mid travel, plastic and metal: no press, it arrives.
+- `the_sweep_holds_on_a_virgin_servo` - starts 250..3830 every 10
+  counts, both wirings, 3.7 to 8.4 V, 120/200/300 mA breakaways, plastic
+  and metal, and a jam, a dead pot and an open winding every 250 counts:
+  each arrives with the polarity right or ends stiff, blocked or at a
+  stop, a jam stiff or at a stop within 2 s, a dead pot at the sensor,
+  an open winding at the motor; no press past the class's budget or over
+  250 mA (3% over from a creeping pulse's projection), no arrival over 3
+  counts/ms, no refused duty written. Prints its table.
+- `the_sweep_holds_with_the_stored_r` - the same every 50 counts with
+  the winding R stored.
+
+The centring (`exp/centre.rs`):
+
+- `a_centred_shaft_is_left_alone` - a centred shaft gets no write.
+- `the_duty_rises_only_clear_of_the_stops` - raised 2.5% per still
+  window clear of the stops; 250 counts from a stop it is blocked, never
+  raised.
+- `a_locked_shaft_gives_up_at_the_cap` - raised to the cap, never over,
+  and blocked.
+- `a_yield_fold_ends_the_centring_blocked` - the firmware's stall fold
+  is the verdict at once.
 - `slow_seek_is_raised_not_blocked` - a shaft creeping under the
   stillness speed gets a raise, not a verdict.
-- `unknown_stops_try_the_other_direction` - with no stops known, a
-  still check tries the other way once.
+- `a_centring_that_runs_the_wrong_way_turns_round` - reversed, the first
+  travel reads it and the centring brakes, turns and arrives.
+- `a_centring_from_a_rail_leaves_it_toward_mid_travel` - 15 counts off a
+  stop it raises to leave it, never pressing it.
 
 Cal's stop finder (`exp/endstop.rs`):
 

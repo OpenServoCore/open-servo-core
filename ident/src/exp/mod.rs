@@ -42,9 +42,11 @@ pub mod endstop;
 pub mod held;
 pub mod inductance;
 pub mod inertia;
+pub mod jam;
 pub mod ladder;
 pub mod resistance;
 pub mod rl;
+pub mod sag;
 pub mod seek;
 pub mod sweep;
 pub mod verify;
@@ -234,6 +236,18 @@ pub enum AbortReason {
     /// A seek came to rest short of anywhere it could stop: jammed, or the
     /// pot is not reading. `moved` is the travel since the seek started.
     Blocked { pos: u16, moved: u16 },
+    /// The jam check drove the shaft each way up to `ma` and it never
+    /// moved: jammed, or stiffer than the gears' probe current.
+    Stiff { pos: u16, ma: u16 },
+    /// The jam check, near a stop past a soft limit where the endstop
+    /// allows one way only, drove the shaft up to `ma` that way and it did
+    /// not move: that way may press the stop, so the direction is
+    /// unproven.
+    AtStop { pos: u16, ma: u16 },
+    /// The motor turned both ways and the pot did not move.
+    SensorDead { pos: u16 },
+    /// No current flows into the motor at the jam check's backstop.
+    MotorOpen { pos: u16 },
     /// The servo dropped `rows` TEL rows from a burst.
     RowsDropped { rows: u16 },
 }
@@ -259,6 +273,26 @@ impl core::fmt::Display for AbortReason {
                 f,
                 "the shaft is blocked or the position sensor is not reading (pos {pos}, moved \
                  {moved} counts)"
+            ),
+            AbortReason::Stiff { pos, ma } => write!(
+                f,
+                "the shaft did not move either way at up to {ma} mA (pos {pos}): it is jammed, or \
+                 stiffer than the probe current allows"
+            ),
+            AbortReason::AtStop { pos, ma } => write!(
+                f,
+                "the shaft rests against an end stop and did not move at up to {ma} mA (pos \
+                 {pos}): the one way the endstop allows may press the stop, so which way the \
+                 motor turns is unproven"
+            ),
+            AbortReason::SensorDead { pos } => write!(
+                f,
+                "the motor turns but the position sensor does not move (pos {pos}): the pot is not \
+                 reading, or the output gear slips"
+            ),
+            AbortReason::MotorOpen { pos } => write!(
+                f,
+                "no current flows into the motor (pos {pos}): a motor lead or the winding is open"
             ),
             AbortReason::RowsDropped { rows } => write!(
                 f,
@@ -532,6 +566,10 @@ pub const LIMIT_GOVERNING: u8 = 1 << 0;
 /// `limit_flags` bit 1: the stall timer folded the limit to the yield. A
 /// drive that sees it is held against something it cannot move.
 pub const LIMIT_YIELD_FOLDED: u8 = 1 << 1;
+
+/// `limit_flags` bit 2: a soft limit closed one side of the band, the low
+/// side under mid travel, whichever way the duty points.
+pub const LIMIT_ENDSTOP: u8 = 1 << 2;
 
 /// The firmware says the drive is held against something it cannot move:
 /// the stall fold, or the current limit governing a shaft that a whole
@@ -1405,15 +1443,15 @@ mod tests {
     }
 
     /// A rung that ends over the abort leaves the servo's current reading
-    /// there: torque off it repeats it, and so does the jam check's first
-    /// drive, 9.5% under the window floor. Judged over the floor, the jam
-    /// check frees the shaft and reaches mid travel; judged at every
+    /// there: torque off it repeats it, and so does a centring's first
+    /// drive, 9.5% under the window floor. Judged over the floor, the
+    /// centring frees the shaft and reaches mid travel; judged at every
     /// nonzero duty, it aborts the free shaft on the stale reading.
     #[test]
     fn a_stale_current_under_the_floor_is_no_abort() {
         let after_a_rung = || {
             let mut s = bench_mg90(3204);
-            s.pos = 2029.0;
+            s.pos = 1400.0;
             s.current_limit = None;
             s.jam = Some(s.pos);
             let mut rung = Script(
@@ -1441,7 +1479,7 @@ mod tests {
         let mut s = after_a_rung();
         let p = bench().with_floor(s.floor_q15 as u16);
         let run = seen(
-            Centre::new(crate::run::centre_cfg(0.0952, 0.253, true), &p),
+            Centre::new(crate::run::centre_cfg(0.0952, 0.253), &p),
             p.without_pos_guard(),
             &mut s,
         );
@@ -1452,7 +1490,7 @@ mod tests {
             && o.i_mean_counts > 350));
         assert!(run.exp.into_inner().arrived());
 
-        let run = jam_check(&mut after_a_rung());
+        let run = centring(&mut after_a_rung());
         assert!(
             matches!(run.exp.abort(), Some(AbortReason::Overcurrent { i_mean }) if i_mean > 350),
             "{:?}",
@@ -1500,12 +1538,12 @@ mod tests {
 
     const SOFT: (i32, i32) = (432, 3626);
 
-    /// The jam check as the run starts it on the bench servo's 2S rail:
-    /// from the bootstrap duty, capped at 2 V.
-    fn jam_check(servo: &mut FakeServo) -> Seen<Guarded<Centre>> {
+    /// A centring as the run starts one on the bench servo's 2S rail with
+    /// nothing measured: from the bootstrap duty, capped at 2 V.
+    fn centring(servo: &mut FakeServo) -> Seen<Guarded<Centre>> {
         let p = bench();
         seen(
-            Centre::new(crate::run::centre_cfg(0.0952, 0.253, true), &p),
+            Centre::new(crate::run::centre_cfg(0.0952, 0.253), &p),
             p.without_pos_guard(),
             servo,
         )
@@ -1545,8 +1583,8 @@ mod tests {
     }
 
     /// The firmware's verdict without the fold: the current limit governing
-    /// a shaft that a whole watch window found still. The jam check, a
-    /// ladder rung and the stop finder each take it as blocked at once, no
+    /// a shaft that a whole watch window found still. A centring, a ladder
+    /// rung and the stop finder each take it as blocked at once, no
     /// raise tried and no fold ever shown; the limit governing a moving
     /// shaft, or a still shaft the limit does not govern, is no verdict.
     #[test]
@@ -1570,12 +1608,12 @@ mod tests {
         // 9.5 and 12% sit under the window floor, 14.5% stalls at 262
         // counts inside the limit: all raised. 17% is the first the limit
         // governs, and the last; the cap is 25.3%.
-        let mut s = locked(2029.0, 2029.0);
-        let run = jam_check(&mut s);
+        let mut s = locked(1400.0, 1400.0);
+        let run = centring(&mut s);
         assert_eq!(
             run.exp.abort(),
             Some(AbortReason::Blocked {
-                pos: 2029,
+                pos: 1400,
                 moved: 0
             })
         );
@@ -1627,7 +1665,7 @@ mod tests {
 
     /// A governed climb moves. Every rung of the bench ladder climbs on the
     /// limit, dozens of reads governed, and none is taken for a blocked
-    /// shaft, at either stall setting; nor is a jam check whose shaft the
+    /// shaft, at either stall setting; nor is a centring whose shaft the
     /// limit governs as it moves, nor a climb a heavy load holds on the
     /// limit for good, which declines the ladder instead.
     #[test]
@@ -1650,10 +1688,10 @@ mod tests {
         // a 15% breakaway and a load that holds the moving shaft on the
         // limit: 14.5% stays put, 17% moves half a count a ms, governed
         let mut s = bench_mg90(3204);
-        s.pos = 2029.0;
+        s.pos = 1400.0;
         s.breakaway_q15 = 4915;
         s.fv = 0.3;
-        let run = jam_check(&mut s);
+        let run = centring(&mut s);
         assert_eq!(run.exp.abort(), None);
         assert!(run.exp.into_inner().arrived());
         assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
@@ -1672,15 +1710,15 @@ mod tests {
 
     /// The bench servo's saved stall settings fold nothing, and the verdict
     /// shows for a MEDIUM tick per trip, which no poll catches. A blocked
-    /// drive still ends, on the limit governing a still shaft: the jam check
+    /// drive still ends, on the limit governing a still shaft: a centring
     /// at the first duty the limit governs, a ladder rung on its first still
     /// window - never waiting for the fold.
     #[test]
     fn inert_stall_settings_still_end_a_blocked_drive() {
         let mut s = bench_mg90_saved(3204);
-        s.pos = 2029.0;
-        s.jam = Some(2029.0);
-        let run = jam_check(&mut s);
+        s.pos = 1400.0;
+        s.jam = Some(1400.0);
+        let run = centring(&mut s);
         assert!(matches!(run.exp.abort(), Some(AbortReason::Blocked { .. })));
         assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
         assert!(
