@@ -27,7 +27,8 @@ budget (every body at its maximum, every injected backlog at the worst the
 table allows): the sim is a bound. The typical lane (bodies drawn below their
 maxima at the bench-held mean budgets) is a forecast for reports and gates
 nothing. The kernel rows go by drive arm: a host hold charges the Closed rows
-for the measured approach after its goal moves, then the Open rows.
+for the measured approach after its goal moves, then the Open rows; an
+OpenLoop drive charges the Closed rows.
 
 ## Running
 
@@ -483,12 +484,13 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
 - **budgets** (`budgets.rs`, `--ignored`) - needs the bench image
   (`scripts/build-image.sh --bench`) flashed, `BENCH_ELF` naming its ELF
   and `wlink` on the probe. Quiet, hold (with and
-  without an approach move), stepping, six-field TEL still and stepping, and
+  without an approach move), stepping, an OpenLoop sweep, six-field TEL still
+  and stepping, and
   each polled frame type at 3M and 1M run in their own window, opened by a
   reboot; the budget probe's maxima and means must stay inside
   `osc_servo_core::budget`, and every frame the host sent must book. Kernel
   ticks book by drive arm (Closed when the tick's arm or the one before it
-  ran the current loop), TEL and banking ticks too, a tick that closed a
+  ran the current loop or OpenLoop), TEL and banking ticks too, a tick that closed a
   tick-load window apart from all of these, and SLOW-due ticks, SLOW finish ticks and a thermal close as events. Each
   window prints (and with `BUDGET_OUT` saves) its rows in ticks and us and
   its raw records as it ends; the window image (`scripts/build-image.sh

@@ -13,8 +13,9 @@
 //! --nocapture`; `BUDGET_WINDOWS` (comma-separated names, e.g. `tel still,tel
 //! stepping`) runs only those windows; `BUDGET_OUT` names a directory that
 //! receives each window's report and raw records as the window ends.
-//! Drives the motor: holds and 600-count steps about the rail middle, each
-//! drive ending centred with torque off; the last window ends rebooted.
+//! Drives the motor: holds, 600-count steps and an OpenLoop sweep about the
+//! rail middle, each drive ending centred with torque off; the last window
+//! ends rebooted.
 //! `seated` runs only when `BUDGET_WINDOWS` names it: it needs the horn
 //! clamped at mid travel, and holds a goal past the clamp so the
 //! thermometer tracks a seat.
@@ -41,7 +42,7 @@ use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bench::osc::{
     REBOOT_SETTLE_MS, build_instruction, build_ping, build_read, build_reboot, build_write,
@@ -61,7 +62,9 @@ use osc_servo_core::budget::{Frame, Regime, TICKS_PER_US, WINDOW_TICKS};
 use osc_servo_core::estimator::thermal::flag;
 use osc_servo_core::kernel::HEALTH_LOST_MAX;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
-use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, MODE, TORQUE_ENABLE};
+use osc_servo_core::regions::control::addr::lifecycle::{
+    GOAL_DUTY, GOAL_POSITION, MODE, TORQUE_ENABLE,
+};
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::estimates::THETA_HAT_Q16;
 use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, POS, SAMPLE_TICK};
@@ -71,7 +74,7 @@ use osc_servo_core::regions::telemetry_ext::addr::health::{
 use osc_servo_core::regions::telemetry_ext::addr::therm::THERM_FLAGS;
 use serial_test::serial;
 
-use crate::support::{Bench, bench};
+use crate::support::{Bench, DRIVE_CHECK_DUTY_Q15, bench};
 
 const STEP_COUNTS: i32 = 600;
 const STEP_HOLD: Duration = Duration::from_millis(400);
@@ -216,6 +219,9 @@ fn kernel_and_bus_stay_inside_their_budgets() {
                 sleep(STEP_HOLD);
             }
         })
+    });
+    f.window(&mut b, "openloop", Gate::Budget, false, &writes, |b, _| {
+        driven(b, |b| openloop_sweep(b, mid))
     });
     f.window(
         &mut b,
@@ -663,6 +669,26 @@ fn step_goal(mid: i32, k: u32) -> i32 {
     } else {
         mid - STEP_COUNTS
     }
+}
+
+/// OpenLoop at the drive check's duty for a window, reversed each time the
+/// shaft passes `STEP_COUNTS` from `mid`, then held at `mid`.
+fn openloop_sweep(b: &mut Bench, mid: i32) {
+    write(b, GOAL_DUTY, &0i16.to_le_bytes());
+    write(b, MODE, &[Mode::OpenLoop as u8]);
+    write(b, TORQUE_ENABLE, &[1]);
+    let end = Instant::now() + WINDOW;
+    let mut duty = DRIVE_CHECK_DUTY_Q15;
+    write(b, GOAL_DUTY, &duty.to_le_bytes());
+    while Instant::now() < end {
+        if i32::from(duty.signum()) * (present(b) - mid) >= STEP_COUNTS {
+            duty = -duty;
+            write(b, GOAL_DUTY, &duty.to_le_bytes());
+        }
+    }
+    write(b, GOAL_DUTY, &0i16.to_le_bytes());
+    write(b, GOAL_POSITION, &mid.to_le_bytes());
+    write(b, MODE, &[Mode::Position as u8]);
 }
 
 /// Run a drive, then centre and drop torque whatever happened in it.

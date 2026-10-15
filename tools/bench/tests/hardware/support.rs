@@ -41,7 +41,7 @@ const _: () = assert!(CHUNK0_ADDR + 4 * CHUNKS_MAX as u16 == TEL_COUNT);
 /// The drive check's open-loop pulse: 12% duty for 200 ms from rest moves
 /// a healthy servo hundreds of counts, and pulsed toward mid travel it
 /// stays clear of both stops; under 20 counts is no motion.
-const DRIVE_CHECK_DUTY_Q15: i16 = 3932;
+pub const DRIVE_CHECK_DUTY_Q15: i16 = 3932;
 const DRIVE_CHECK_PULSE: Duration = Duration::from_millis(200);
 const DRIVE_CHECK_SETTLE: Duration = Duration::from_millis(300);
 const DRIVE_CHECK_MIN_COUNTS: i32 = 20;

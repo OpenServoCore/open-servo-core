@@ -46,9 +46,11 @@ pub const TICK_PERIOD: u32 = CLOCK_HZ / TICK_HZ;
 pub const PHASES: usize = DECIM_MED as usize;
 
 /// The drive arm a tick ran: the closed current loop is the work that sets
-/// the budget. Off, Brake, Coast and OpenLoop share the open rows. A tick
-/// counts as Closed when its arm or the previous tick's was: the first
-/// parked tick measures the last driven window.
+/// the budget. Off, Brake and Coast share the open rows; OpenLoop books
+/// Closed, since at speed it runs over the open rows (phase 1 up to 1611
+/// on the probe) and inside the closed ones. A tick counts as Closed when
+/// its arm or the previous tick's was: the first parked tick measures the
+/// last driven window.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Regime {
     Open,

@@ -143,7 +143,7 @@ pub enum Motion {
     /// Closed for [`budget::HOLD_APPROACH_TICKS`] after the lane starts or
     /// the goal moves, then Open.
     Hold,
-    /// Stepping or tracking: Closed.
+    /// Stepping, tracking or an OpenLoop drive: Closed.
     Moving,
 }
 
@@ -905,6 +905,29 @@ mod tests {
             }
         }
         assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+    }
+
+    /// An OpenLoop drive books on the Closed rows, the ones the lane
+    /// charges a moving servo at: past the boot tick, every tick of a
+    /// running OpenLoop drive.
+    #[test]
+    fn an_openloop_drive_books_on_the_closed_rows() {
+        use osc_servo_core::budget::probe::KernelProbe;
+        let sh = Shared::new();
+        seed(&sh);
+        let f = hot_seat(&sh);
+        let mut k = kernel();
+        let mut probe = KernelProbe::ZERO;
+        let mut booked = [0u32; 2];
+        for t in 0..4 * DECIM_SLOW as u32 * DECIM_MED as u32 {
+            k.on_scan(f, &sh);
+            let r = probe.tick(600 + t % 100, || k.probe_tags(), false, 0, false);
+            if let Some(r) = r {
+                booked[r as usize] += 1;
+            }
+        }
+        assert_eq!(booked[Regime::Open as usize], 0, "{booked:?}");
+        assert!(booked[Regime::Closed as usize] > 0, "{booked:?}");
     }
 
     /// The drive direction check's stage stays inside the thermometer's on
