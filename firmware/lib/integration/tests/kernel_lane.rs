@@ -74,7 +74,7 @@ fn kernel_lane_below_bus_reproduces_bench_loss(
     let lane = KernelLane {
         level: KernelLevel::BelowBus,
         motion: Motion::Quiet,
-        phases: [phases, phases],
+        phases: [phases; budget::REGIMES],
         floor: None,
         tel: TelCosts::default(),
         events: KernelEvents::default(),
@@ -105,16 +105,23 @@ fn kernel_on_top_loses_no_tick_under_polling(
     assert!(st.bus_stretch > 0, "the lane preempted no bus body: {st:?}");
 }
 
-/// A Closed tick at budget carrying `ev` on `phase`, with the health close
-/// where it can land and interrupt entry and exit.
+/// The drive arms a moving servo may run.
+const DRIVEN: [Regime; 2] = [Regime::Closed, Regime::OpenLoop];
+
+/// A driven tick at budget carrying `ev` on `phase`, the dearer of
+/// [`DRIVEN`], with the health close where it can land and interrupt entry
+/// and exit.
 fn event_tick(phase: u8, ev: Events) -> u32 {
-    let health = kernel::health_close_lands(phase as usize);
-    budget::kernel_tick(Regime::Closed, phase as usize, Events { health, ..ev })
-        + budget::ENTRY_EXIT
+    let ev = Events {
+        health: kernel::health_close_lands(phase as usize),
+        ..ev
+    };
+    let tick = DRIVEN.map(|r| budget::kernel_tick(r, phase as usize, ev));
+    tick.into_iter().max().unwrap_or(0) + budget::ENTRY_EXIT
 }
 
 /// A seated reference close, staged: the SLOW finish that freezes the
-/// window, the install, the side work after it, each Closed at budget, and
+/// window, the install, the side work after it, each driven at budget, and
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
@@ -190,8 +197,8 @@ const SLOW_STAGES: [Events; 3] = [
     },
 ];
 
-/// The SLOW stages while six fields stream and step, Closed at budget,
-/// with a bank on the tick.
+/// The SLOW stages while six fields stream and the servo drives, at
+/// budget, with a bank on the tick.
 #[test]
 fn slow_stages_fit_at_budget_while_streaming() {
     for stage in SLOW_STAGES {
@@ -209,7 +216,7 @@ fn slow_stages_fit_at_budget_while_streaming() {
     }
 }
 
-/// Every phase's plain tick while a burst streams, Closed at budget: the
+/// Every phase's plain tick while a burst streams, driven at budget: the
 /// TEL row and a bank or the TX lane's dearest step, with the health close
 /// where it can land and interrupt entry and exit.
 #[test]
@@ -278,22 +285,24 @@ fn slow_tick(r: Regime, stage: Events, c: Events) -> u32 {
     budget::kernel_tick(r, phase::SLOW as usize, ev)
 }
 
-/// Closed, the SLOW block never sets the period's longest tick: each stage
-/// on the SLOW phase, carrying what any tick may carry, is no longer than
-/// the heaviest other phase carrying the same. So wherever the plain
-/// Closed phases fit, the SLOW ticks fit too.
+/// Driven, the SLOW block never sets the period's longest tick: in each
+/// driven arm, each stage on the SLOW phase, carrying what any tick may
+/// carry, is no longer than the heaviest other phase carrying the same. So
+/// wherever the plain driven phases fit, the SLOW ticks fit too.
 #[test]
-fn slow_stages_never_set_the_closed_tick_max_at_budget() {
-    let closed = Regime::Closed;
-    for c in carried() {
+fn slow_stages_never_set_a_driven_tick_max_at_budget() {
+    for (r, c) in DRIVEN.into_iter().flat_map(|r| carried().map(|c| (r, c))) {
         let heaviest = (0..PHASES)
             .filter(|&p| p != phase::SLOW as usize)
-            .map(|p| budget::kernel_tick(closed, p, c))
+            .map(|p| budget::kernel_tick(r, p, c))
             .max()
             .unwrap_or(0);
         for stage in SLOW_STAGES {
-            let t = slow_tick(closed, stage, c);
-            assert!(t <= heaviest, "{stage:?} on {c:?}: {t} over {heaviest}");
+            let t = slow_tick(r, stage, c);
+            assert!(
+                t <= heaviest,
+                "{r:?} {stage:?} on {c:?}: {t} over {heaviest}"
+            );
         }
     }
 }

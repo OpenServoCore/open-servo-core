@@ -6,7 +6,9 @@
 //! gamma(k), the long ticks and the entry lateness, which only some runs
 //! read.
 
-use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
+use super::{
+    Body, CLOCK_HZ, EVENT_REGIMES, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS,
+};
 use crate::estimator::thermal::stage;
 use crate::kernel::phases::loops::faults::stage_due;
 use crate::kernel::{ProbeTags, phase};
@@ -168,8 +170,8 @@ pub struct WindowProbe {
     /// and the last tick's end plus [`super::ENTRY_EXIT`]: the most another
     /// context held the tick off.
     pub late_max: u32,
-    /// Ticks of at least [`LONG_TICKS`], by regime.
-    pub long: [u32; 2],
+    /// Ticks of at least [`LONG_TICKS`], by event row.
+    pub long: [u32; EVENT_REGIMES],
     pub windows: Windows,
 }
 
@@ -178,7 +180,7 @@ impl WindowProbe {
         last_entry: 0,
         last_end: 0,
         late_max: 0,
-        long: [0; 2],
+        long: [0; EVENT_REGIMES],
         windows: Windows::ZERO,
     };
 
@@ -205,7 +207,7 @@ impl WindowProbe {
             core::hint::cold_path();
             self.late_max = late;
         }
-        if let Some(n) = self.long.get_mut(r as usize) {
+        if let Some(n) = self.long.get_mut(r.event_row() as usize) {
             *n = n.wrapping_add((body >= LONG_TICKS) as u32);
         }
         self.windows.add(body);
@@ -237,6 +239,55 @@ impl WindowProbe {
     }
 }
 
+/// Plain ticks of one regime by phase, narrow: a phase's count stops at
+/// `u16::MAX` and its total with it, so the mean stays exact over the
+/// bodies counted; the longest keeps moving.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct NarrowLoad {
+    pub n: [u16; PHASES],
+    pub max: [u16; PHASES],
+    pub sum: [u32; PHASES],
+}
+
+impl NarrowLoad {
+    pub const ZERO: Self = Self {
+        n: [0; PHASES],
+        max: [0; PHASES],
+        sum: [0; PHASES],
+    };
+
+    /// A body under [`HALT_TICKS`] at `phase`.
+    #[inline(always)]
+    pub fn add(&mut self, phase: usize, body: u16) {
+        if let (Some(n), Some(sum), Some(m)) = (
+            self.n.get_mut(phase),
+            self.sum.get_mut(phase),
+            self.max.get_mut(phase),
+        ) {
+            if *n < u16::MAX {
+                *n += 1;
+                *sum = sum.wrapping_add(body.into());
+            }
+            if body > *m {
+                core::hint::cold_path();
+                *m = body;
+            }
+        }
+    }
+
+    pub fn load(&self, phase: usize) -> Load {
+        Load {
+            n: self.n.get(phase).map_or(0, |&n| n.into()),
+            sum: self.sum.get(phase).copied().unwrap_or(0),
+            max: self.max.get(phase).map_or(0, |&m| m.into()),
+        }
+    }
+}
+
+/// The count at which a [`NarrowLoad`] phase stops.
+pub const NARROW_N_MAX: u32 = u16::MAX as u32;
+
 /// The kernel ticks of a window. The fields every tick touches lead, so
 /// the update reaches them at short offsets.
 #[repr(C)]
@@ -252,25 +303,26 @@ pub struct KernelProbe {
     /// and the TEL batches banked by then, mod 2^8 (one a tick at most).
     before: ProbeTags,
     banks: u8,
-    /// Ticks with no event, by regime and phase, and the longest of each:
-    /// [`Self::load`].
-    pub tick: [[Tally; PHASES]; 2],
-    pub tick_max: [[u16; PHASES]; 2],
-    /// Longest TEL tick that banked nothing, by regime and phase.
-    pub tel_max: [[u16; PHASES]; 2],
-    /// Longest banking tick, by regime and phase.
-    pub bank_max: [[u16; PHASES]; 2],
-    /// Longest tick that closed a tick-load window, by regime and phase,
+    /// Ticks with no event, by event row and phase, and the longest of
+    /// each, OpenLoop's narrow: [`Self::load`].
+    pub tick: [[Tally; PHASES]; EVENT_REGIMES],
+    pub tick_max: [[u16; PHASES]; EVENT_REGIMES],
+    pub openloop: NarrowLoad,
+    /// Longest TEL tick that banked nothing, by event row and phase.
+    pub tel_max: [[u16; PHASES]; EVENT_REGIMES],
+    /// Longest banking tick, by event row and phase.
+    pub bank_max: [[u16; PHASES]; EVENT_REGIMES],
+    /// Longest tick that closed a tick-load window, by event row and phase,
     /// whatever TEL work it also carried; no TEL or plain row holds one.
-    pub health_max: [[u16; PHASES]; 2],
-    /// TEL ticks that banked nothing, by regime, all phases.
-    pub tel: [Tally; 2],
+    pub health_max: [[u16; PHASES]; EVENT_REGIMES],
+    /// TEL ticks that banked nothing, by event row, all phases.
+    pub tel: [Tally; EVENT_REGIMES],
     /// Ticks that took the configuration.
     pub refresh: Load,
-    /// The SLOW block's due ticks by regime, its finish ticks, and the
+    /// The SLOW block's due ticks by event row, its finish ticks, and the
     /// finishes that froze a thermal reference window; the thermometer's
     /// stages on phases SPARE_A and SPARE_B.
-    pub slow: [Load; 2],
+    pub slow: [Load; EVENT_REGIMES],
     pub finish: Load,
     pub close: Load,
     pub install: Load,
@@ -291,18 +343,19 @@ impl KernelProbe {
             slow_due: false,
             slow_finish: false,
             therm: 0,
-            closed: false,
+            regime: Regime::Open,
             drive: 0,
         },
         banks: 0,
-        tick: [[Tally::ZERO; PHASES]; 2],
-        tick_max: [[0; PHASES]; 2],
-        tel_max: [[0; PHASES]; 2],
-        bank_max: [[0; PHASES]; 2],
-        health_max: [[0; PHASES]; 2],
-        tel: [Tally::ZERO; 2],
+        tick: [[Tally::ZERO; PHASES]; EVENT_REGIMES],
+        tick_max: [[0; PHASES]; EVENT_REGIMES],
+        openloop: NarrowLoad::ZERO,
+        tel_max: [[0; PHASES]; EVENT_REGIMES],
+        bank_max: [[0; PHASES]; EVENT_REGIMES],
+        health_max: [[0; PHASES]; EVENT_REGIMES],
+        tel: [Tally::ZERO; EVENT_REGIMES],
         refresh: Load::ZERO,
-        slow: [Load::ZERO; 2],
+        slow: [Load::ZERO; EVENT_REGIMES],
         finish: Load::ZERO,
         close: Load::ZERO,
         install: Load::ZERO,
@@ -336,7 +389,7 @@ impl KernelProbe {
             && banks as u8 == self.banks
             && a.config_seq == b.config_seq
             && a.therm == b.therm
-            && a.closed == b.closed
+            && a.regime == b.regime
             && a.drive == b.drive
             && !b.slow_due
             && !b.slow_finish
@@ -344,16 +397,11 @@ impl KernelProbe {
             && !a.slow_finish
         {
             self.before.phase = a.phase;
-            let r = if b.closed {
-                Regime::Closed
-            } else {
-                Regime::Open
-            };
             let ev = Events {
                 tel,
                 ..Events::default()
             };
-            self.book(body, b.phase as usize, r, ev, false)
+            self.book(body, b.phase as usize, b.regime, ev, false)
         } else {
             core::hint::cold_path();
             self.event_tick(body, after(), tel, banks, health)
@@ -376,12 +424,12 @@ impl KernelProbe {
             health,
             ..Events::between(b, after)
         };
-        let r = if b.closed || after.closed {
-            Regime::Closed
-        } else {
-            Regime::Open
-        };
-        (ev, r, b.phase as usize, !b.booted)
+        (
+            ev,
+            b.regime.booked(after.regime),
+            b.phase as usize,
+            !b.booted,
+        )
     }
 
     #[inline(never)]
@@ -421,8 +469,8 @@ impl KernelProbe {
             return None;
         }
         let body16 = body as u16;
-        let r = regime as usize;
-        let max16 = |m: &mut [[u16; PHASES]; 2]| {
+        let r = regime.event_row() as usize;
+        let max16 = |m: &mut [[u16; PHASES]; EVENT_REGIMES]| {
             if let Some(m) = m.get_mut(r).and_then(|m| m.get_mut(phase))
                 && body16 > *m
             {
@@ -455,17 +503,27 @@ impl KernelProbe {
                 t.add(body);
             }
             max16(&mut self.tel_max);
+        } else if regime == Regime::OpenLoop {
+            self.openloop.add(phase, body16);
         } else {
             if let Some(t) = self.tick.get_mut(r).and_then(|t| t.get_mut(phase)) {
                 t.add(body);
             }
-            max16(&mut self.tick_max);
+            if let Some(m) = self.tick_max.get_mut(r).and_then(|m| m.get_mut(phase))
+                && body16 > *m
+            {
+                core::hint::cold_path();
+                *m = body16;
+            }
         }
         Some(regime)
     }
 
     /// The plain ticks of `r` at `phase`.
     pub fn load(&self, r: Regime, phase: usize) -> Load {
+        if r == Regime::OpenLoop {
+            return self.openloop.load(phase);
+        }
         let r = r as usize;
         let t = self.tick.get(r).and_then(|t| t.get(phase));
         let max = self.tick_max.get(r).and_then(|m| m.get(phase));
@@ -492,14 +550,31 @@ impl KernelProbe {
         self.entries = self.entries.wrapping_add(1);
     }
 
-    /// The regime the window's TEL and event ticks are held to: Closed once
-    /// any tick drove.
+    /// The event row the window's TEL and event ticks are held to: Closed
+    /// once any tick drove.
     pub fn drove(&self) -> Regime {
-        if self.slow[1].n != 0 || self.tick[1].iter().any(|t| t.n != 0) {
+        let closed = Regime::Closed as usize;
+        let driven = [Regime::Closed, Regime::OpenLoop]
+            .into_iter()
+            .any(|r| (0..PHASES).any(|p| self.load(r, p).n != 0));
+        if driven || self.slow[closed].n != 0 {
             Regime::Closed
         } else {
             Regime::Open
         }
+    }
+
+    /// The plain ticks at `phase` of every regime that books on event row
+    /// `r`: what that row's TEL ticks are matched against.
+    pub fn plain(&self, r: Regime, phase: usize) -> Tally {
+        Regime::ALL
+            .into_iter()
+            .filter(|q| q.event_row() == r)
+            .map(|q| self.load(q, phase))
+            .fold(Tally::ZERO, |a, t| Tally {
+                n: a.n.wrapping_add(t.n),
+                sum: a.sum.wrapping_add(t.sum),
+            })
     }
 
     /// Decode a dump, little-endian words in field order.
@@ -512,7 +587,7 @@ impl KernelProbe {
         let entries = r.word();
         let halts = r.word();
         let [phase, config_seq, booted, slow_due] = r.word().to_le_bytes();
-        let [slow_finish, therm, closed, drive] = r.word().to_le_bytes();
+        let [slow_finish, therm, regime, drive] = r.word().to_le_bytes();
         let [banks, ..] = r.word().to_le_bytes();
         Some(Self {
             busy,
@@ -525,7 +600,7 @@ impl KernelProbe {
                 slow_due: slow_due != 0,
                 slow_finish: slow_finish != 0,
                 therm,
-                closed: closed != 0,
+                regime: *Regime::ALL.get(usize::from(regime))?,
                 drive,
             },
             banks,
@@ -536,6 +611,11 @@ impl KernelProbe {
                 })
             }),
             tick_max: core::array::from_fn(|_| r.halves()),
+            openloop: NarrowLoad {
+                n: r.halves(),
+                max: r.halves(),
+                sum: core::array::from_fn(|_| r.word()),
+            },
             tel_max: core::array::from_fn(|_| r.halves()),
             bank_max: core::array::from_fn(|_| r.halves()),
             health_max: core::array::from_fn(|_| r.halves()),
@@ -795,28 +875,28 @@ impl TelCost {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TelTally {
-    pub tel_n: [[u16; PHASES]; 2],
-    pub bank_n: [[u16; PHASES]; 2],
-    pub tel_sum: [u32; 2],
-    pub bank_sum: [u32; 2],
-    pub first: [Load; 2],
+    pub tel_n: [[u16; PHASES]; EVENT_REGIMES],
+    pub bank_n: [[u16; PHASES]; EVENT_REGIMES],
+    pub tel_sum: [u32; EVENT_REGIMES],
+    pub bank_sum: [u32; EVENT_REGIMES],
+    pub first: [Load; EVENT_REGIMES],
     pub tel_steps: Tally,
     pub bank_steps: Tally,
-    pub hook_plain: [Tally; 2],
+    pub hook_plain: [Tally; EVENT_REGIMES],
     pub hook_tel: u32,
     pub hook_bank: u32,
 }
 
 impl TelTally {
     pub const ZERO: Self = Self {
-        tel_n: [[0; PHASES]; 2],
-        bank_n: [[0; PHASES]; 2],
-        tel_sum: [0; 2],
-        bank_sum: [0; 2],
-        first: [Load::ZERO; 2],
+        tel_n: [[0; PHASES]; EVENT_REGIMES],
+        bank_n: [[0; PHASES]; EVENT_REGIMES],
+        tel_sum: [0; EVENT_REGIMES],
+        bank_sum: [0; EVENT_REGIMES],
+        first: [Load::ZERO; EVENT_REGIMES],
         tel_steps: Tally::ZERO,
         bank_steps: Tally::ZERO,
-        hook_plain: [Tally::ZERO; 2],
+        hook_plain: [Tally::ZERO; EVENT_REGIMES],
         hook_tel: 0,
         hook_bank: 0,
     };
@@ -844,7 +924,7 @@ impl TelTally {
         if boot || body > HALT_TICKS || apart || ev.health {
             return;
         }
-        let r = r as usize;
+        let r = r.event_row() as usize;
         if !(ev.bank || ev.tel) {
             if let Some(p) = self.hook_plain.get_mut(r) {
                 p.add(hook);
@@ -1000,16 +1080,20 @@ impl TelReport {
     /// The unstamped TEL ticks of `r` over its plain ticks, phase by phase:
     /// the [`Component::TelRow`] mean with each phase's own plain mean.
     pub fn tel_row(k: &KernelProbe, t: &TelTally, r: Regime) -> Option<f32> {
-        let i = r as usize;
-        let mut sum = [0; 2];
+        let i = r.event_row() as usize;
+        let mut sum = [0; EVENT_REGIMES];
         sum[i] = u64::from(t.tel_sum[i]);
-        matched(k, &t.tel_n, sum, Some(r)).map(|(e, _)| e)
+        matched(k, &t.tel_n, sum, Some(r.event_row())).map(|(e, _)| e)
     }
 }
 
 /// Ticks counted `n` by regime and phase with `sum` hook time in all, over
 /// the plain ticks' hook time of each one's regime, per tick.
-fn hooked(n: &[[u16; PHASES]; 2], sum: u32, plain: &[Tally; 2]) -> Option<f32> {
+fn hooked(
+    n: &[[u16; PHASES]; EVENT_REGIMES],
+    sum: u32,
+    plain: &[Tally; EVENT_REGIMES],
+) -> Option<f32> {
     let (mut count, mut base) = (0u64, 0f64);
     for (n, p) in n.iter().zip(plain) {
         let c = n.iter().map(|&c| u64::from(c)).sum::<u64>();
@@ -1029,23 +1113,23 @@ fn hooked(n: &[[u16; PHASES]; 2], sum: u32, plain: &[Tally; 2]) -> Option<f32> {
 /// the plain ticks' mean of each one's regime and phase; and their count.
 fn matched(
     k: &KernelProbe,
-    n: &[[u16; PHASES]; 2],
-    sum: [u64; 2],
+    n: &[[u16; PHASES]; EVENT_REGIMES],
+    sum: [u64; EVENT_REGIMES],
     only: Option<Regime>,
 ) -> Option<(f32, u32)> {
     let (mut count, mut total, mut plain) = (0u64, 0u64, 0f64);
-    for r in Regime::ALL {
+    for r in Regime::EVENT_ROWS {
         if only.is_some_and(|o| o != r) {
             continue;
         }
         let i = r as usize;
         total += sum[i];
-        for p in 0..PHASES {
-            let c = u64::from(n[i][p]);
+        for (p, &c) in n[i].iter().enumerate() {
+            let c = u64::from(c);
             if c == 0 {
                 continue;
             }
-            let t = k.tick[i][p];
+            let t = k.plain(r, p);
             if t.n == 0 {
                 return None;
             }
@@ -1132,6 +1216,12 @@ pub struct Row {
 }
 
 impl Row {
+    /// An OpenLoop plain row whose count stopped: its mean covers the first
+    /// [`NARROW_N_MAX`] bodies.
+    pub fn saturated(&self) -> bool {
+        matches!(self.component, Component::Tick(Regime::OpenLoop, _)) && self.n >= NARROW_N_MAX
+    }
+
     pub fn over(&self) -> bool {
         self.max > self.budget || self.mean_over()
     }
@@ -1164,10 +1254,10 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         health: true,
         ..carried
     };
-    for r in Regime::ALL {
+    for r in Regime::EVENT_ROWS {
         let i = r as usize;
         for p in 0..PHASES {
-            let at = |m: &[[u16; PHASES]; 2]| m[i][p].into();
+            let at = |m: &[[u16; PHASES]; EVENT_REGIMES]| m[i][p].into();
             let tick = |ev| super::kernel_tick(r, p, ev);
             f(max_row(Component::TelTick(r, p), at(&k.tel_max), tick(tel)));
             f(max_row(
@@ -1194,7 +1284,7 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         ..carried
     };
     let p = crate::kernel::phase::SLOW as usize;
-    for (r, l) in Regime::ALL.into_iter().zip(k.slow) {
+    for (r, l) in Regime::EVENT_ROWS.into_iter().zip(k.slow) {
         f(load_row(
             Component::Slow(r),
             l,
@@ -1229,10 +1319,12 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         let budget = super::kernel_tick(Regime::Closed, p as usize, ev);
         f(load_row(c, l, budget, 0));
     }
-    for (r, (plain, tel)) in Regime::ALL.into_iter().zip(k.tick.iter().zip(k.tel)) {
-        let (n, sum) = plain.iter().fold((0u64, 0u64), |(n, sum), l| {
-            (n + l.n as u64, sum + l.sum as u64)
-        });
+    for (r, tel) in Regime::EVENT_ROWS.into_iter().zip(k.tel) {
+        let (n, sum) = (0..PHASES)
+            .map(|p| k.plain(r, p))
+            .fold((0u64, 0u64), |(n, sum), l| {
+                (n + l.n as u64, sum + l.sum as u64)
+            });
         let plain_mean = sum.checked_div(n).unwrap_or(0) as u32;
         f(Row {
             component: Component::TelRow(r),

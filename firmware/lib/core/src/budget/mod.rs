@@ -46,20 +46,48 @@ pub const TICK_PERIOD: u32 = CLOCK_HZ / TICK_HZ;
 pub const PHASES: usize = DECIM_MED as usize;
 
 /// The drive arm a tick ran: the closed current loop is the work that sets
-/// the budget. Off, Brake and Coast share the open rows; OpenLoop books
-/// Closed, since at speed it runs over the open rows (phase 1 up to 1611
-/// on the probe) and inside the closed ones. A tick counts as Closed when
-/// its arm or the previous tick's was: the first parked tick measures the
-/// last driven window.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// the budget. Off, Brake and Coast share the open rows; OpenLoop has its
+/// own, over the open rows on every phase and over the closed means on
+/// some. A tick books its own arm or the previous tick's
+/// ([`Regime::booked`]): the first parked tick measures the last driven
+/// window. Event, TEL, bank and gamma(k) rows fold OpenLoop into Closed
+/// ([`Regime::event_row`]).
+#[repr(u8)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub enum Regime {
+    #[default]
     Open,
     Closed,
+    OpenLoop,
 }
 
 impl Regime {
-    pub const ALL: [Regime; 2] = [Regime::Open, Regime::Closed];
+    pub const ALL: [Regime; 3] = [Regime::Open, Regime::Closed, Regime::OpenLoop];
+    pub const EVENT_ROWS: [Regime; 2] = [Regime::Open, Regime::Closed];
+
+    /// The row a tick of this regime books and is budgeted on when it
+    /// carries an event, a TEL row or a bank.
+    pub const fn event_row(self) -> Regime {
+        match self {
+            Regime::OpenLoop => Regime::Closed,
+            r => r,
+        }
+    }
+
+    /// The regime of a tick between arms `self` and `other`: Closed over
+    /// OpenLoop over Open. A tick between Closed and OpenLoop is a mode
+    /// change, and the closed loop sets the budget.
+    pub const fn booked(self, other: Regime) -> Regime {
+        match (self, other) {
+            (Regime::Closed, _) | (_, Regime::Closed) => Regime::Closed,
+            (Regime::OpenLoop, _) | (_, Regime::OpenLoop) => Regime::OpenLoop,
+            _ => Regime::Open,
+        }
+    }
 }
+
+pub const REGIMES: usize = Regime::ALL.len();
+pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 
 /// Kernel tick body with no event on it, per regime and phase: the longest
 /// a window may show.
@@ -68,21 +96,26 @@ impl Regime {
 /// Open over the quiet, hold, parked hold and stepping windows' Open ticks,
 /// Closed over the same windows' Closed ticks. Open phases 0, 5 and 7, M:
 /// r3-refill, every gated window's Open ticks, 3 runs, less
-/// [`TICK_PUBLISH`]. Phase SLOW off its due period is a plain tick; the due
-/// body is [`SLOW_DUE`].
-pub const KERNEL: [[u32; PHASES]; 2] = [
+/// [`TICK_PUBLISH`]. OpenLoop, M: the openloop window's OpenLoop ticks, 3
+/// runs, the tick block's work in the row. Phase SLOW off its due period is
+/// a plain tick; the due body is [`SLOW_DUE`].
+pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
+    [1317, 1675, 1182, 1452, 1155, 1446, 1140, 1251, 1119, 1101],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean of the same windows, Closed from
 /// the stepping windows. Open phases 0 and 7, M: r3-refill, every gated
-/// window's largest Open mean, 3 runs, less [`TICK_PUBLISH`].
-pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
+/// window's largest Open mean, 3 runs, less [`TICK_PUBLISH`]. OpenLoop,
+/// M: the openloop window's largest OpenLoop mean, 3 runs, at most the
+/// maximum's row (phases 3 and 5: the bodies barely vary).
+pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
     [781, 1062, 867, 915, 622, 951, 611, 782, 578, 566],
     [1234, 1528, 1495, 1307, 1454, 1367, 994, 1175, 956, 948],
+    [1312, 1600, 1172, 1452, 1144, 1446, 1117, 1245, 1091, 1078],
 ];
 
 /// A window's mean is judged only over this many bodies.
@@ -112,10 +145,11 @@ pub const REFRESH: u32 = 613;
 /// Open), plus 10%; a phase that got cheaper, PUBLISH with its dropped
 /// duplicates, is not credited. The crest's shunt copy, two 4-byte
 /// instructions (6), is 7 in every cell. The release image prices under
-/// every row.
-pub const TICK_PUBLISH: [[u32; PHASES]; 2] = [
+/// every row. OpenLoop's rows were measured with the block: none.
+pub const TICK_PUBLISH: [[u32; PHASES]; REGIMES] = [
     [9, 38, 18, 7, 15, 28, 18, 7, 13, 16],
     [12, 65, 42, 32, 25, 35, 45, 7, 39, 43],
+    [0; PHASES],
 ];
 
 /// Code layout on top of every kernel row, maximum and mean: one source
@@ -203,7 +237,7 @@ pub const TEL_LANE_MEAN: u32 = 124;
 /// regime. E: the dearest path, a tracked seat (any drive that holds
 /// current), priced at 405 over the plain tick, plus 10%; no window has run
 /// it (r3-refill measured at most Open 252, Closed 351).
-pub const SLOW_DUE: [u32; 2] = [446, 446];
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [446, 446];
 
 /// The second stage on the next period's SLOW phase: the thermometer's
 /// temperature, its seat rules and overtemperature. E: a tracked seat,
@@ -421,7 +455,7 @@ pub const fn spin_extra(baud_hz: u32) -> u32 {
 /// Kernel tick budget: the base for `regime` and `phase`, with the events
 /// the tick carried.
 pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
-    let r = regime as usize;
+    let r = regime.event_row() as usize;
     let mut t = tick_body(regime, phase);
     if ev.refresh {
         t += REFRESH;

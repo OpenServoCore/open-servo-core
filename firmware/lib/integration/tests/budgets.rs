@@ -240,10 +240,10 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
     assert_eq!(sim.kernel_stats(s).closed, 2 * approach);
 }
 
-/// The configuration take's tick while stepping, Closed at budget: phase
-/// SPARE_A carrying the take (the thermometer's stage there waits a
-/// period), with the health close where it can land and interrupt entry and
-/// exit. It carries no TEL row: a burst's start waits out a pending take
+/// The configuration take's tick while driven, Closed or OpenLoop at
+/// budget: phase SPARE_A carrying the take (the thermometer's stage there
+/// waits a period), with the health close where it can land and interrupt
+/// entry and exit. It carries no TEL row: a burst's start waits out a pending take
 /// (DES `a_burst_never_streams_through_a_config_take`).
 #[test]
 fn the_take_tick_fits_at_budget_without_tel() {
@@ -253,6 +253,8 @@ fn the_take_tick_fits_at_budget_without_tel() {
         health: kernel::health_close_lands(p),
         ..Events::default()
     };
-    let t = budget::kernel_tick(Regime::Closed, p, ev) + ENTRY_EXIT;
+    let [closed, openloop] =
+        [Regime::Closed, Regime::OpenLoop].map(|r| budget::kernel_tick(r, p, ev));
+    let t = closed.max(openloop) + ENTRY_EXIT;
     assert!(t <= TICK_PERIOD, "{t} > {TICK_PERIOD}");
 }

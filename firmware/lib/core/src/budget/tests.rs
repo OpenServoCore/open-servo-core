@@ -1,6 +1,7 @@
 use super::probe::{
-    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, Scenario, TEL_PER_TICK_NOISE,
-    Tally, TelCost, TelReport, TelStep, TelTally, WindowProbe, Windows, rows,
+    BusProbe, Component, HALT_TICKS, KernelProbe, LONG_TICKS, Load, NARROW_N_MAX, NarrowLoad,
+    Scenario, TEL_PER_TICK_NOISE, Tally, TelCost, TelReport, TelStep, TelTally, WindowProbe,
+    Windows, rows,
 };
 use super::*;
 use crate::kernel::{HEALTH_CLOSE_TICKS, ProbeTags, health_close_at, health_close_lands, phase};
@@ -167,6 +168,113 @@ fn kernel_ticks_book_by_what_they_carried() {
         + 1750;
     assert_eq!((k.busy, k.entries), (bodies + 13 * ENTRY_EXIT, 13));
     assert_eq!(k.drove(), Regime::Closed);
+}
+
+/// A tick books the arm it ran or the one before it, Closed over OpenLoop
+/// over Open, carried in its tags or read around it; a window that drove
+/// either way holds its event ticks to the Closed row.
+#[test]
+fn a_tick_books_closed_over_openloop_over_open() {
+    use Regime::{Closed, Open, OpenLoop};
+    let tags = |regime| ProbeTags {
+        booted: true,
+        regime,
+        ..ProbeTags::default()
+    };
+    let mut k = KernelProbe::ZERO;
+    let booked = |k: &mut KernelProbe, r| k.tick(1000, || tags(r), false, 0, false);
+    assert_eq!(booked(&mut k, Open), None, "the boot tick");
+    let arms = [OpenLoop, OpenLoop, Closed, OpenLoop, Open, Open];
+    let got = arms.map(|r| booked(&mut k, r));
+    let want = [OpenLoop, OpenLoop, Closed, Closed, OpenLoop, Open].map(Some);
+    assert_eq!(got, want);
+    assert_eq!(k.drove(), Closed);
+    let mut k = KernelProbe::ZERO;
+    for r in [Open, OpenLoop, OpenLoop, Open] {
+        booked(&mut k, r);
+    }
+    assert_eq!(k.drove(), Closed);
+    for (a, b) in Regime::ALL
+        .into_iter()
+        .flat_map(|a| Regime::ALL.map(|b| (a, b)))
+    {
+        assert_eq!(a.booked(b), b.booked(a), "{a:?} {b:?}");
+    }
+}
+
+/// An OpenLoop phase's count stops at [`NARROW_N_MAX`] and its total with
+/// it, so its mean stays exact over the bodies counted; its longest keeps
+/// moving, and the report marks the row saturated.
+#[test]
+fn an_openloop_count_saturates_with_its_sum() {
+    let p = 3;
+    let mut l = NarrowLoad::ZERO;
+    for _ in 0..NARROW_N_MAX {
+        l.add(p, 1000);
+    }
+    let full = l.load(p);
+    assert_eq!(
+        (full.n, full.sum, full.max),
+        (NARROW_N_MAX, NARROW_N_MAX * 1000, 1000)
+    );
+    l.add(p, 1200);
+    let after = l.load(p);
+    assert_eq!((after.n, after.sum, after.max), (full.n, full.sum, 1200));
+    assert_eq!(after.mean(), 1000);
+    let mut k = KernelProbe::ZERO;
+    k.openloop = l;
+    let s = Scenario {
+        tel: false,
+        frames: &[],
+    };
+    let mut saturated = heapless::Vec::<Component, 4>::new();
+    rows(&k, &BusProbe::ZERO, &s, |r| {
+        if r.saturated() {
+            let _ = saturated.push(r.component);
+        }
+    });
+    assert_eq!(saturated, [Component::Tick(Regime::OpenLoop, p)]);
+}
+
+/// An OpenLoop tick books its plain body on its own row and anything it
+/// carries on Closed's: a TEL row, a bank, a close, a SLOW stage, and the
+/// window record's long ticks.
+#[test]
+fn openloop_events_fold_into_the_closed_rows() {
+    let ol = Regime::OpenLoop;
+    let (closed, p) = (Regime::Closed as usize, 2);
+    let mut k = KernelProbe::ZERO;
+    let mut w = WindowProbe::ZERO;
+    let tel = Events { tel: true, ..PLAIN };
+    both(&mut k, &mut w, 0, 1000, p, ol, PLAIN);
+    both(&mut k, &mut w, 1, 1100, p, ol, PLAIN);
+    both(&mut k, &mut w, 2, 1200, p, ol, tel);
+    both(&mut k, &mut w, 3, 1300, p, ol, Events { bank: true, ..tel });
+    let health = Events {
+        health: true,
+        ..PLAIN
+    };
+    both(&mut k, &mut w, 4, 1400, p, ol, health);
+    let slow = Events {
+        slow: true,
+        ..PLAIN
+    };
+    both(&mut k, &mut w, 5, LONG_TICKS, 6, ol, slow);
+    assert_eq!(k.load(ol, p).max, 1100);
+    assert_eq!(k.load(Regime::Closed, p), Load::ZERO);
+    let at = |m: [[u16; PHASES]; 2]| m[closed][p];
+    assert_eq!(
+        (at(k.tel_max), at(k.bank_max), at(k.health_max)),
+        (1200, 1300, 1400)
+    );
+    assert_eq!(
+        (k.tel[closed].n, k.slow[closed].n, w.long[closed]),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        kernel_tick(ol, 6, slow) - tick_body(ol, 6),
+        SLOW_DUE[closed]
+    );
 }
 
 /// The drive direction check's stage books apart from the plain SPARE_B
@@ -383,6 +491,7 @@ fn dumps_decode_field_for_field() {
         Regime::Closed,
         Events { tel: true, ..PLAIN },
     );
+    tick(&mut k, 31, 2222, 4, Regime::OpenLoop, PLAIN);
     let after = ProbeTags {
         phase: 3,
         config_seq: 7,
@@ -390,11 +499,14 @@ fn dumps_decode_field_for_field() {
         slow_due: true,
         slow_finish: false,
         therm: 2,
-        closed: true,
+        regime: Regime::OpenLoop,
         drive: 3,
     };
     k.tick(2000, || after, true, 9, false);
     assert_eq!(KernelProbe::from_words(words(&k)), Some(k));
+    let mut bad = words(&k).to_vec();
+    bad[4] |= 0xff << 16;
+    assert_eq!(KernelProbe::from_words(&bad), None, "no such regime");
     let mut w = WindowProbe::ZERO;
     for n in 0..30 {
         w.tick(n * TICK_PERIOD + n, 1000 + 7 * n, Some(Regime::Closed));
@@ -472,8 +584,11 @@ fn a_window_mean_over_its_budget_flags_once_judged() {
 #[test]
 fn kernel_budgets_rise_with_the_regime() {
     for p in 0..PHASES {
-        let [open, closed] = Regime::ALL.map(|r| kernel_tick(r, p, PLAIN));
-        assert!(open <= closed, "phase {p}: {open} {closed}");
+        let [open, closed, openloop] = Regime::ALL.map(|r| kernel_tick(r, p, PLAIN));
+        assert!(
+            open <= closed && open <= openloop,
+            "phase {p}: {open} {closed} {openloop}"
+        );
         for r in Regime::ALL {
             let (mean, max) = (KERNEL_MEAN[r as usize][p], KERNEL[r as usize][p]);
             assert!(mean <= max, "{r:?} phase {p}: {mean} {max}");
@@ -944,7 +1059,7 @@ fn telcost_window(steps: u32, glue: u32, outside: u32) -> (KernelProbe, TelTally
         t.tick(body, p, r, ev, false, steps, hook, false);
         n += 1;
     };
-    for r in Regime::ALL {
+    for r in Regime::EVENT_ROWS {
         let hook = plain_hook[r as usize];
         let plain = |p: usize| 1000 + 100 * p as u32 + 300 * r as u32;
         for p in 0..PHASES {

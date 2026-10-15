@@ -54,7 +54,7 @@ fn watch(baud: BaudRate, motion: Motion, rows: u16, k: u64) -> (usize, u16) {
     (got, sim.tel_drops(s))
 }
 
-/// Parked or OpenLoop: a 2 ms poll's watch, a 10 ms one, a 250 ms one.
+/// Parked: a 2 ms poll's watch, a 10 ms one, a 250 ms one.
 #[rstest]
 fn an_open_watch_streams_whole_at_budget(#[values(32, 192, 4992)] rows: u16) {
     for k in 0..STARTS {
@@ -66,10 +66,10 @@ fn an_open_watch_streams_whole_at_budget(#[values(32, 192, 4992)] rows: u16) {
     }
 }
 
-/// A closed loop at budget: a 2 ms poll's watch and a 250 ms one, the
-/// longest a pause streams.
+/// Driven at budget, the current loop or OpenLoop: a 2 ms poll's watch and
+/// a 250 ms one, the longest a pause streams.
 #[rstest]
-fn a_closed_watch_streams_whole_at_budget(
+fn a_driven_watch_streams_whole_at_budget(
     #[values(Motion::Hold, Motion::Moving)] motion: Motion,
     #[values(32, 4992)] rows: u16,
 ) {
