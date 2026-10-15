@@ -545,6 +545,27 @@ impl JamCheck {
         }
     }
 
+    /// The probe's cap, or its cap near a stop past a soft limit.
+    fn cap(&self) -> f64 {
+        if self.at_wall {
+            self.cfg.i_stop
+        } else {
+            self.cfg.i_probe
+        }
+    }
+
+    /// The most volts a pulse or the drive may apply: the cap's stall.
+    fn top(&self) -> f64 {
+        self.volts_for(self.cap()).min(self.cfg.v_max)
+    }
+
+    /// Some volts are known to stall under the cap: an R stored or a pulse
+    /// felt stalled. Without one the drive never climbs past the volts the
+    /// shaft moved at.
+    fn bounded(&self) -> bool {
+        self.volts_for(self.cap()).is_finite()
+    }
+
     fn wait(&mut self) -> Cmd {
         self.phase = Phase::Wait;
         self.step(None)
@@ -783,13 +804,7 @@ impl JamCheck {
     fn raise(&mut self, pos: u16) -> Result<Next, AbortReason> {
         let pressed = std::mem::take(&mut self.rung_press);
         self.press_ms += pressed;
-        let cap = if self.at_wall {
-            self.cfg.i_stop
-        } else {
-            self.cfg.i_probe
-        };
-        let top = self.volts_for(cap).min(self.cfg.v_max);
-        let v = (self.v + self.cfg.step).min(top);
+        let v = (self.v + self.cfg.step).min(self.top());
         if v <= self.v || self.press_ms + pressed > self.cfg.press_budget_ms {
             if self.turning > 0 {
                 return Err(AbortReason::SensorDead { pos });
@@ -814,7 +829,12 @@ impl JamCheck {
             self.flip();
         }
         let dir = self.toward_mid(o.pos);
-        self.v = self.moved_v.unwrap_or(self.v) + self.cfg.step;
+        let moved = self.moved_v.unwrap_or(self.v);
+        self.v = if self.bounded() {
+            (moved + self.cfg.step).min(self.top())
+        } else {
+            moved
+        };
         self.goal(dir);
         let (eps, polls) = (self.params.stall_eps, self.params.stall_polls);
         self.still = Some(seek::Watch::new(o.pos, eps, polls));
@@ -853,7 +873,7 @@ impl JamCheck {
                 Some(r) => v / r,
                 None => late * v / self.v,
             };
-            if stall > self.cfg.i_hold {
+            if stall > self.cap() || v > self.top() || !self.bounded() {
                 return self.halt(seek::blocked(from, o.pos));
             }
         }
@@ -1104,6 +1124,8 @@ mod tests {
             pub impact_cpms: f64,
             pub press_ma: f64,
             pub pressed_ms: f64,
+            /// The most current the check drew anywhere, mA.
+            pub i_ma: f64,
             /// Goals the endstop zeroed as written that were no brake.
             pub refused: usize,
             pub polarity_ok: bool,
@@ -1211,6 +1233,7 @@ mod tests {
                 impact_cpms: s.impact_cps_max / 1000.0,
                 press_ma: s.press_i_max * BENCH_MA_PER_CCOUNT,
                 pressed_ms: s.pressed_ms,
+                i_ma: s.i_max * BENCH_MA_PER_CCOUNT,
                 refused: s.refused_goals.iter().filter(|g| !brake(g)).count(),
                 polarity_ok: exp.polarity() == c.along,
                 kept: exp.polarity() == stored,
@@ -1421,6 +1444,41 @@ mod tests {
     /// two and runs on 45 mA, so a turning rotor sags under 0.6; the lash
     /// is 15 to 45 counts.
     const RUN31_LASH: [f64; 4] = [15.0, 25.0, 35.0, 45.0];
+
+    /// Held by hand: the shaft gives 20 counts each way on a spring, then
+    /// blocks hard. The pulses prove the direction on the give; the drive
+    /// toward mid travel then climbs no higher than the probe's cap.
+    #[test]
+    fn a_jam_after_the_direction_is_proven_stays_under_the_cap() {
+        const GIVE: f64 = 20.0;
+        const GIVE_PER_A: f64 = 150.0;
+        for class in CLASSES {
+            for vbus_v in [5.0, 7.4] {
+                for r_stored in [false, true] {
+                    let c = Case {
+                        vbus_v,
+                        class,
+                        r_stored,
+                        ..case(1000, true, Fault::None)
+                    };
+                    let (o, _) = run_with(&c, Bus::BENCH, |s, _| {
+                        s.ends = (s.pos - GIVE, s.pos + GIVE);
+                        let per_ccount = GIVE_PER_A * BENCH_MA_PER_CCOUNT / 1000.0;
+                        s.give = [(GIVE, per_ccount); 2];
+                    });
+                    let cap = cfg(&c, &servo(&c)).ma(cfg(&c, &servo(&c)).i_probe);
+                    assert!(o.pulses.iter().any(|p| matches!(p.seen, Seen::Moved(_))));
+                    assert!(matches!(o.end, End::Blocked | End::Stiff), "{c:?} -> {o:?}");
+                    assert!(o.kept && o.polarity_ok && o.torque_off, "{c:?} -> {o:?}");
+                    assert!(
+                        o.i_ma <= cap * CREEP_OVER,
+                        "{} mA over {cap} mA: {c:?}",
+                        o.i_ma
+                    );
+                }
+            }
+        }
+    }
 
     fn run31(start: u16, fault: Fault) -> Case {
         Case {

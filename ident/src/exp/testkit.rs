@@ -307,10 +307,12 @@ pub struct FakeServo {
     sub_carry: f64,
     /// Time the applied duty spent pushing the shaft into the end it sits
     /// at, ms, the most current it drew doing so, ccounts, and the fastest
-    /// the shaft arrived at an end, counts/s (dynamic model).
+    /// the shaft arrived at an end, counts/s (dynamic model); and the most
+    /// current any drive drew, ccounts.
     pub pressed_ms: f64,
     pub press_i_max: f64,
     pub impact_cps_max: f64,
+    pub i_max: f64,
     /// The first watch after a goal change reads this much over the
     /// current: the host's first poll after a step.
     pub step_over_read: f64,
@@ -407,6 +409,7 @@ impl FakeServo {
             pressed_ms: 0.0,
             press_i_max: 0.0,
             impact_cps_max: 0.0,
+            i_max: 0.0,
             step_over_read: 1.0,
             over_read_due: false,
             i_valid: 0.0,
@@ -701,9 +704,10 @@ impl FakeServo {
 
     /// Book `ms` of pressing an end, and its current, when the drive is.
     fn press(&mut self, ms: f64) {
+        let i = self.i_at(self.applied()).abs();
+        self.i_max = self.i_max.max(i);
         if self.pressing() {
             self.pressed_ms += ms;
-            let i = self.i_at(self.applied()).abs();
             self.press_i_max = self.press_i_max.max(i);
         }
     }
