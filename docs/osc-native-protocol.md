@@ -738,12 +738,13 @@ reach it in that window, and whatever a host sends there is lost, along
 with any burst frame it collides with (a CRC fail and a `stream_seq`
 hole). A host waits for LAST, or for its own timeout, before it speaks
 again; the first instruction after LAST is served normally, a fresh
-re-arm included. The window is bounded by `tel_count`, at most one
-second of control ticks: osc-servo's field rule caps it at 20000
-(`max` in the descriptor), and a longer write rejects as a validation
-error. An arm parks while a shunt burst is armed, capturing or committed
-and not yet judged (osc-servo, sec 5.8): the two share the ADC, and a
-shunt arm in turn refuses while `tel_count` is nonzero.
+re-arm included. The window is bounded by `tel_count`: any count the
+u16 holds arms, about 3.3 s of control ticks at osc-servo's 20 kHz. A
+drive under a long burst is bounded by the servo's own limits (soft
+limits, stall timer, current limit), not by the host. An arm parks
+while a shunt burst is armed, capturing or committed and not yet judged
+(osc-servo, sec 5.8): the two share the ADC, and a shunt arm in turn
+refuses while `tel_count` is nonzero.
 
 Integrity is the point: a corrupted burst frame fails CRC and is
 dropped whole by the host framer - it can never decode as plausible

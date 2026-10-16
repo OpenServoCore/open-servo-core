@@ -903,8 +903,7 @@
       "addr": 490,
       "width": 2,
       "access": "rw",
-      "kind": "uint",
-      "max": 20000
+      "kind": "uint"
     },
     {
       "name": "fault_flags",
