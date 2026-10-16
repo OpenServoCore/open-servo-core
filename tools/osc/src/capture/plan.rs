@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::envelope::{Envelope, Grid};
 use super::pilot::{chain_name, chains_of};
 use super::procs::{Blocks, Procedure};
-use crate::sweep::{Decay, Step};
+use crate::sweep::{Decay, Step, parse_step};
 
 /// Where one block landed in a recording's schedule.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -130,10 +130,24 @@ fn block_steps(
                     pass.top_pct
                 ));
             }
+            let still: Vec<String> = b
+                .grid
+                .duties
+                .iter()
+                .filter(|d| pass.below_breakaway.contains(d))
+                .map(|d| d.to_string())
+                .collect();
+            if !still.is_empty() {
+                dropped.push(format!(
+                    "grid: {}% dropped, below breakaway: the pilot saw the shaft stay still both \
+                     ways",
+                    still.join(", ")
+                ));
+            }
             b.grid
                 .duties
                 .iter()
-                .filter(|&&d| d <= pass.top_pct)
+                .filter(|&&d| d <= pass.top_pct && !pass.below_breakaway.contains(&d))
                 .map(|&d| {
                     pass.rungs
                         .iter()
@@ -189,7 +203,7 @@ fn block_steps(
         }
         "step" => ran(env, "step", &b.step.steps, dropped)?,
         "reversal" => ran(env, "reversal", &b.reversal.steps, dropped)?,
-        "ends" => ran(env, "ends", &b.ends.steps, dropped)?,
+        "ends" => ends(env, &b.ends.duties, dropped)?,
         "breakaway" => b
             .breakaway
             .duties
@@ -227,6 +241,37 @@ fn ran(
             None => bail!(
                 "the {block} chain {name} never ran on the pilot: run `osc capture pilot` again"
             ),
+        }
+    }
+    Ok(kept)
+}
+
+/// The ends block's drives: each duty at the window the pilot derived and
+/// ran it at both ways. A duty the pilot refused is dropped, one it never
+/// saw refuses the plan.
+fn ends(env: &Envelope, duties: &[u8], dropped: &mut Vec<String>) -> Result<Vec<Step>> {
+    let duty = |chain: &str| match parse_step(chain) {
+        Ok(Step::Drive(pct, _)) => Some(pct),
+        _ => chain.parse().ok(),
+    };
+    let mut kept = Vec::new();
+    for &d in duties {
+        let of = |block: &str, chain: &str| block == "ends" && duty(chain) == Some(d);
+        if let Some(c) = env.chains.iter().find(|c| of(&c.block, &c.chain)) {
+            match parse_step(&c.chain) {
+                Ok(step @ Step::Drive(_, Some(_))) => kept.push(step),
+                _ => bail!("the ends chain {} is no drive with a window", c.chain),
+            }
+            continue;
+        }
+        match env.refused_chains.iter().find(|c| of(&c.block, &c.chain)) {
+            Some(r) => dropped.push(format!(
+                "ends: {d}% dropped, the pilot refused it: {}",
+                r.why
+            )),
+            None => {
+                bail!("the ends duty {d}% never ran on the pilot: run `osc capture pilot` again")
+            }
         }
     }
     Ok(kept)
@@ -300,12 +345,13 @@ mod tests {
         }
         let slow = &expand(&p, &env, 1).unwrap()[0];
         let counts: Vec<usize> = slow.blocks.iter().map(|b| b.count).collect();
-        assert_eq!(counts, [11, 12, 10, 4, 18, 2]);
+        assert_eq!(counts, [9, 12, 10, 4, 18, 2]);
     }
 
     /// The grid runs to the highest duty the pilot kept both ways, 55% on
-    /// the bench servo, each rung at the window it measured; a lower top
-    /// drops the duties over it.
+    /// the bench servo, each rung at the window it measured; the duties it
+    /// found below breakaway are dropped, never run without a window, and a
+    /// lower top drops the duties over it.
     #[test]
     fn grid_duties_stop_at_the_envelope_top() {
         let (p, mut env) = (default(), mg90());
@@ -320,14 +366,18 @@ mod tests {
         assert_eq!(
             grid(&env),
             [
-                "5@1500", "10@1500", "15@1064", "20@735", "25@571", "30@471", "35@406", "40@361",
-                "45@329", "50@305", "55@286"
+                "15@1064", "20@735", "25@571", "30@471", "35@406", "40@361", "45@329", "50@305",
+                "55@286"
             ]
+        );
+        assert_eq!(
+            expand(&p, &env, 1).unwrap()[0].dropped[1],
+            "grid: 5, 10% dropped, below breakaway: the pilot saw the shaft stay still both ways"
         );
         env.grid.top_pct = 40;
         env.grid.rungs.retain(|r| r.pct <= 40);
         assert_eq!(grid(&env).last().unwrap(), "40@361");
-        assert_eq!(grid(&env).len(), 8);
+        assert_eq!(grid(&env).len(), 6);
     }
 
     #[test]
@@ -406,9 +456,34 @@ mod tests {
         let step = &slow.blocks[2];
         assert_eq!((step.name.as_str(), step.count), ("step", 8));
 
+        // an ends duty runs at the window the pilot derived for it, matched
+        // by duty
+        let slow = &expand(&p, &mg90(), 1).unwrap()[0];
+        let ends = slow.blocks.iter().find(|b| b.name == "ends").unwrap();
+        let steps: Vec<String> = slow.schedule[ends.first..ends.first + ends.count]
+            .iter()
+            .map(Step::to_string)
+            .collect();
+        assert_eq!(steps, ["15@1554", "20@1072"]);
         let mut env = mg90();
-        env.chains.retain(|c| c.block != "ends");
-        assert!(err(&p, &env).contains("the ends chain 15@1277 never ran"));
+        env.chains.retain(|c| c.chain != "15@1554");
+        assert_eq!(
+            err(&p, &env),
+            "recording slow: the ends duty 15% never ran on the pilot: run `osc capture pilot` \
+             again"
+        );
+        env.refused_chains.push(ChainRefused {
+            block: "ends".into(),
+            chain: "15@3296".into(),
+            predicted: 3520,
+            why: "its 3296 ms step is over the 3277 ms one burst of this servo holds".into(),
+        });
+        let slow = &expand(&p, &env, 1).unwrap()[0];
+        assert_eq!(
+            slow.dropped.last().unwrap(),
+            "ends: 15% dropped, the pilot refused it: its 3296 ms step is over the 3277 ms one \
+             burst of this servo holds"
+        );
 
         let edited = Procedure::parse(&include_str!("session.toml").replace(
             "steps = [\"20@60\", \"then:-20@60\", \"then:20@60\", \"brake:200\"]",
@@ -425,7 +500,7 @@ mod tests {
         );
     }
 
-    /// The bench servo's envelope while its pilot kept only 5 to 20%: the
+    /// The bench servo's envelope while its pilot kept only 15 and 20%: the
     /// 25% reverse rung never held its goal, the coast ladder topped at 20%,
     /// and it refused a 40% reversal. The plan drops the grid and coast
     /// duties over 20% and says why, keeps every chain the pilot ran, and
@@ -462,6 +537,8 @@ mod tests {
                 "grid: 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100% dropped, \
                  over 20%, the highest duty the pilot kept both ways: rev 25% did not hold its \
                  goal duty for 60 ms past the settle in 109 ms",
+                "grid: 5, 10% dropped, below breakaway: the pilot saw the shaft stay still both \
+                 ways",
                 "coast: 30, 40, 60, 80% dropped, over 20%, the highest duty the pilot's coast \
                  ladder kept"
             ]
@@ -471,13 +548,13 @@ mod tests {
             ["grid", "coast", "step", "reversal", "breakaway", "ends"]
         );
         let counts: Vec<usize> = slow.blocks.iter().map(|b| b.count).collect();
-        assert_eq!(counts, [4, 4, 10, 4, 18, 2]);
+        assert_eq!(counts, [2, 4, 10, 4, 18, 2]);
         let grid: Vec<String> = fast.schedule.iter().map(Step::to_string).collect();
-        assert_eq!(grid, ["5@1500", "10@1500", "15@1064", "20@735"]);
+        assert_eq!(grid, ["15@1064", "20@735"]);
 
         // a block with nothing left is left out, and the plan says so
         env.chains.retain(|c| c.block != "ends");
-        for chain in ["15@1277", "20@897"] {
+        for chain in ["15", "20@1072"] {
             env.refused_chains.push(ChainRefused {
                 block: "ends".into(),
                 chain: chain.into(),
@@ -516,7 +593,7 @@ mod tests {
         }
         let plans = expand(&p, &env, 1).unwrap();
         let grid: Vec<String> = plans[1].schedule.iter().map(Step::to_string).collect();
-        assert_eq!(grid.len(), 9);
+        assert_eq!(grid.len(), 7);
         assert_eq!(grid.last().unwrap(), "45@319");
         let slow = &plans[0];
         assert_eq!(

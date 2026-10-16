@@ -96,8 +96,10 @@ steps = ["20@60", "then:-20@60", "then:20@60", "brake:200"]
 duties = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 window_ms = 200
 
-# End to end: one drive from the start band into the far soft limit, where the
-# firmware brakes it. The pilot runs each only when its braked stop from the
-# duty's speed fits between the soft limit and the stop beyond it.
+# End to end: one drive per duty from the start band into the far soft limit,
+# where the firmware brakes it. osc capture pilot sizes each window from what it
+# measured: the duty's climb, then the crossing at its fitted steady speed. It
+# runs a duty only when that window fits one TEL burst of the servo and its
+# braked stop fits between the soft limit and the stop beyond it.
 [block.ends]
-steps = ["15@1277", "20@897"]
+duties = [15, 20]

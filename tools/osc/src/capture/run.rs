@@ -1250,7 +1250,7 @@ mod tests {
         assert!(!c.stall && !c.static_load);
         assert_eq!(
             expected_segments(c.baseline_ms > 0, c.dirs.signs().len(), c.steps.len()),
-            23
+            19
         );
     }
 

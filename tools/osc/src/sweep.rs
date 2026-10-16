@@ -387,8 +387,37 @@ pub(crate) fn pct_q15(pct: u8) -> i16 {
     (pct as i32 * 32767 / 100) as i16
 }
 
-pub(crate) fn samples_of_ms(ms: u32) -> u16 {
-    ms.saturating_mul(20).min(u16::MAX as u32) as u16
+/// Rows of a `ms` burst on a servo ticking at `tick_hz`.
+pub(crate) fn samples_of_ms(ms: u32, tick_hz: f64) -> u32 {
+    (ms as f64 * tick_hz / 1000.0).round() as u32
+}
+
+/// A seek's poll cadence, and its bound: 500 polls, 10 s.
+const SEEK_POLL_MS: u32 = 20;
+const SEEK_POLLS: u32 = 500;
+
+/// Zero the duty and wait for the shaft to rest by the seek's stillness
+/// rule ([`Watch`]): a seek judges its direction from the band distance,
+/// and a shaft still coasting from the drive before reads as its own.
+/// Err when it never rests within the seek's bound.
+fn rest_before_seek<S: Servo>(s: &mut S, lease: &mut Lease) -> Result<()> {
+    s.write(control::GOAL_DUTY, 0)?;
+    let mut pos = check_fault(s)?;
+    let mut watch = Watch::new(pos, STALL_EPS, STALL_POLLS);
+    for _ in 0..SEEK_POLLS {
+        check_stop()?;
+        lease.keep(s)?;
+        s.sleep(SEEK_POLL_MS);
+        pos = check_fault(s)?;
+        if watch.still(pos) {
+            return Ok(());
+        }
+    }
+    bail!(
+        "the shaft never came to rest in {} s with the duty at 0 (pos {pos}): a seek cannot \
+         tell its own travel from a coast",
+        SEEK_POLLS * SEEK_POLL_MS / 1000
+    )
 }
 
 fn check_stop() -> Result<()> {
@@ -410,10 +439,11 @@ fn check_fault<S: Servo>(s: &mut S) -> Result<u16> {
     Ok(o.pos)
 }
 
-/// Open-loop bang-bang seek into [lo, hi], 20 ms cadence, ctrl-c aware.
-/// Bails on a fault or on the band distance growing (reversed polarity);
-/// aborts on a shaft that comes to rest short of the band; leaves duty 0
-/// and torque ON (the rung drives next).
+/// Open-loop bang-bang seek into [lo, hi], 20 ms cadence, ctrl-c aware,
+/// from a shaft at rest ([`rest_before_seek`]). Bails on a fault or on the
+/// band distance growing (reversed polarity); aborts on a shaft that comes
+/// to rest short of the band; leaves duty 0 and torque ON (the rung drives
+/// next).
 fn seek_band<S: Servo>(
     s: &mut S,
     lease: &mut Lease,
@@ -422,6 +452,7 @@ fn seek_band<S: Servo>(
     cap: i32,
     stops: Option<(u16, u16)>,
 ) -> Result<()> {
+    rest_before_seek(s, lease)?;
     s.write(control::MODE, 0)?;
     lease.torque_on(s)?;
     // Distance to the band, not envelope membership: a seek may legally
@@ -435,7 +466,7 @@ fn seek_band<S: Servo>(
     // nothing to hit. A shaft at rest anywhere else is blocked.
     let mut mag = duty_q15 as i32;
     let mut watch: Option<Watch> = None;
-    for _ in 0..500 {
+    for _ in 0..SEEK_POLLS {
         check_stop()?;
         lease.keep(s)?;
         let pos = check_fault(s)?;
@@ -468,7 +499,7 @@ fn seek_band<S: Servo>(
             mag = next;
         }
         s.write(control::GOAL_DUTY, dir as i32 * mag)?;
-        s.sleep(20);
+        s.sleep(SEEK_POLL_MS);
     }
     s.write(control::GOAL_DUTY, 0)?;
     bail!("seek did not reach {lo}..{hi} in 10 s (gear slipping?)")
@@ -502,11 +533,11 @@ fn seek_stop<S: Servo>(
     let mut duty = duty_q15 as i32;
     let start = check_fault(s)?;
     let mut watch = Watch::new(start, STALL_EPS, STALL_POLLS);
-    for _ in 0..500 {
+    for _ in 0..SEEK_POLLS {
         check_stop()?;
         lease.keep(s)?;
         s.write(control::GOAL_DUTY, dir as i32 * duty)?;
-        s.sleep(20);
+        s.sleep(SEEK_POLL_MS);
         let pos = check_fault(s)?;
         if !watch.still(pos) {
             continue;
@@ -775,6 +806,7 @@ fn chains<S: Servo>(
 ) -> Result<Vec<Segment>> {
     let chunks = cfg.tel_chunks;
     let pwm_period_ticks = s.pwm_period_ticks()?;
+    let tick_hz = s.tick_hz()?;
     let seek_duty = pct_q15(cfg.seek_duty_pct);
     let seek_cap = pct_q15(cfg.seek_cap_pct) as i32;
     let mut segments = Vec::new();
@@ -795,7 +827,7 @@ fn chains<S: Servo>(
             seek_band(s, &mut lease, (1750, 2350), seek_duty, seek_cap, cfg.stops)?;
         }
         lease.write(s, control::TORQUE_ENABLE, 0)?;
-        let (frames, st) = s.stream(samples_of_ms(cfg.baseline_ms), None, chunks)?;
+        let (frames, st) = s.stream(samples_of_ms(cfg.baseline_ms, tick_hz), None, chunks)?;
         println!(
             "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
             st.frames, st.samples, st.holes, st.garble, st.laps
@@ -889,7 +921,7 @@ fn chains<S: Servo>(
                     if cfg.decay == Decay::Fast {
                         s.write(regs.decay, Decay::Fast as i32)?;
                     }
-                    let samples = samples_of_ms(ms);
+                    let samples = samples_of_ms(ms, tick_hz);
                     lease.keep(s)?;
                     lease.check_stream(samples)?;
                     let (frames, st) =
@@ -1038,10 +1070,11 @@ mod tests {
     }
 
     #[test]
-    fn window_sizes_at_20_ticks_per_ms_and_caps_at_u16() {
-        assert_eq!(samples_of_ms(150), 3000);
-        assert_eq!(samples_of_ms(1000), 20000);
-        assert_eq!(samples_of_ms(10_000), u16::MAX);
+    fn window_sizes_at_the_servos_tick_rate() {
+        assert_eq!(samples_of_ms(150, 20_000.0), 3000);
+        assert_eq!(samples_of_ms(1000, 20_000.0), 20000);
+        assert_eq!(samples_of_ms(1000, 12_500.0), 12500);
+        assert_eq!(samples_of_ms(10_000, 20_000.0), 200_000, "never saturates");
     }
 
     #[test]
@@ -1341,5 +1374,54 @@ mod tests {
             }
             std::fs::remove_dir_all(&out).unwrap();
         }
+    }
+
+    /// A shaft let go at speed coasting up the pot, away from the low start
+    /// band: the bench servo, and one with a fifth of its plant gain, whose
+    /// coast runs on past the seek's reversed-polarity guard unless the
+    /// seek first waits for it to rest. Both reach the band.
+    #[test]
+    fn a_seek_waits_for_a_coasting_shaft_to_rest() {
+        for (gain, pct, ms, from) in [(1.0, 60u8, 150u32, 1500.0), (0.2, 100, 300, 600.0)] {
+            let mut b = crate::rig::servo::bench::Bench::mg90(crate::capture::Supply::TwoS);
+            b.servo.b *= gain;
+            b.servo.pos = from;
+            b.write(control::MODE, 0).unwrap();
+            b.write(control::TORQUE_ENABLE, 1).unwrap();
+            b.write(control::GOAL_DUTY, pct_q15(pct) as i32).unwrap();
+            b.sleep(ms);
+            b.write(control::GOAL_DUTY, 0).unwrap();
+            let band = start_band(1, 532, 3526);
+            let seek = pct_q15(15);
+            seek_band(
+                &mut b,
+                &mut Lease::new(false),
+                band,
+                seek,
+                seek as i32,
+                Some((232, 3849)),
+            )
+            .unwrap();
+            let pos = b.snapshot().unwrap().pos;
+            assert!((band.0..=band.1).contains(&pos), "gain {gain}: {pos}");
+        }
+    }
+
+    /// A shaft that never reads still, here a pot swinging 200 counts a
+    /// read, ends the wait at its bound with the duty at 0.
+    #[test]
+    fn a_shaft_that_never_rests_ends_the_wait() {
+        let mut b = crate::rig::servo::bench::Bench::mg90(crate::capture::Supply::TwoS);
+        b.servo.pos_noise = 400.0;
+        let t = b.now_ms();
+        let e = rest_before_seek(&mut b, &mut Lease::new(false))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            e.starts_with("the shaft never came to rest in 10 s with the duty at 0"),
+            "{e}"
+        );
+        assert!(b.now_ms() - t >= (SEEK_POLLS * SEEK_POLL_MS) as f64);
     }
 }

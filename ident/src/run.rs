@@ -1517,14 +1517,15 @@ mod tests {
     }
 
     /// The bench MG90's inertia steps as planned: limit 280, 4.9 ohm, a
-    /// shaft that breaks away at 8%. Seeks at 10%, the base at 15%, and a
-    /// base drawing 80 counts leaves 9.1% of room on 2S: steps to 19.5,
-    /// 21.8 and 24.1%. On USB the same room is 16.4%.
+    /// shaft the jam check moved at 12% from rest that the ramp breaks away
+    /// at 8%. Seeks at 14%, over the jam check's duty, the base at 19%, and a
+    /// base drawing 80 counts leaves 9.1% of room on 2S: steps to 23.6,
+    /// 25.9 and 28.1%. On USB the same room is 16.4%.
     #[test]
     fn bench_inertia_base_and_steps() {
         for (vbus, want) in [
-            (RAIL_2S, [0.1955, 0.2183, 0.2410]),
-            (RAIL_USB, [0.2322, 0.2733, 0.3145]),
+            (RAIL_2S, [0.2357, 0.2585, 0.2814]),
+            (RAIL_USB, [0.2722, 0.3133, 0.3545]),
         ] {
             let mut run = run(vbus);
             let mut base = None;
@@ -1534,7 +1535,7 @@ mod tests {
                     Stage::Burst { .. } => run.measured(R),
                     Stage::Breakaway { .. } => run.broke_away(Some(0.08)),
                     Stage::Inertia { seek, base: b } => {
-                        assert!((seek - 0.10).abs() < 1e-12);
+                        assert!((seek - 0.14).abs() < 1e-12);
                         base = Some(b);
                     }
                     _ => {}
@@ -1542,8 +1543,8 @@ mod tests {
                 run.ended(Ended::Done);
             }
             let base = base.expect("an inertia stage");
-            assert!((base - 0.15).abs() < 1e-12);
-            let cfg = inertia_cfg(0.10, base, InertiaCfg::new(TICK_HZ));
+            assert!((base - 0.19).abs() < 1e-12, "{base}");
+            let cfg = inertia_cfg(0.14, base, InertiaCfg::new(TICK_HZ));
             let steps = cfg.step_duties(&run.plan().unwrap(), 80.0);
             for (got, want) in steps.iter().zip(want) {
                 assert!((got - want).abs() < 5e-4, "{vbus}: {steps:?}");

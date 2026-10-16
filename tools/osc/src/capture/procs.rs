@@ -57,7 +57,7 @@ pub(crate) struct Blocks {
     pub(crate) step: Steps,
     pub(crate) reversal: Steps,
     pub(crate) breakaway: Ladder,
-    pub(crate) ends: Steps,
+    pub(crate) ends: Ends,
 }
 
 impl Blocks {
@@ -82,6 +82,13 @@ pub(crate) struct CoastBlock {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Steps {
     pub(crate) steps: Vec<Step>,
+}
+
+/// One drive per duty, each at the window the pilot derived for it.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Ends {
+    pub(crate) duties: Vec<u8>,
 }
 
 /// One rung per duty, all at one window.
