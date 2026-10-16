@@ -29,7 +29,9 @@ const HEADER: &str = "\
 # runway, cut to what still fits it. A duty is kept once it also ran both
 # ways at that window, judged as a session judges a grid rung, and its
 # braked stop fit as above; grid.refused is the first duty that was not,
-# and why. v_ss: counts/ms = slope x duty_pct + intercept over the rungs
+# and why; grid.below_breakaway the duties that left the shaft still both
+# ways, skipped, with no window. No window runs longer than one TEL burst
+# of the servo. v_ss: counts/ms = slope x duty_pct + intercept over the rungs
 # that moved. coast: the ladder climbed the coast
 # block's duties, each driven to its goal and 20 ms on (drive_ms), then
 # coast_ms, both ways, while its predicted travel x (1 + margin) fit the room
@@ -38,7 +40,8 @@ const HEADER: &str = "\
 # (travel to the coast's first sample), coast, travel = lead + coast, and the
 # peak's distance inside soft. chains: every other chain the session drives,
 # run both ways, its excursion from the start and the peak's distance inside
-# soft; refused_chains did not fit. fast: the grid ladder again under fast
+# soft; an ends chain is its duty at the window the pilot derived from the
+# climb and v_ss fit; refused_chains did not fit. fast: the grid ladder again under fast
 # decay, for a recording that drives under it.
 ";
 
@@ -151,12 +154,15 @@ impl<T> PerDir<T> {
     }
 }
 
-/// The grid ladder: every duty it kept, and the first it did not.
+/// The grid ladder: every duty it kept, the duties that left the shaft
+/// still both ways, and the first it did not keep.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Grid {
     /// The highest duty kept both ways; 0 when none was.
     pub(crate) top_pct: u8,
     pub(crate) rungs: Vec<GridRung>,
+    #[serde(default)]
+    pub(crate) below_breakaway: Vec<u8>,
     pub(crate) refused: Option<LadderRefused>,
 }
 
@@ -433,13 +439,11 @@ pub(crate) fn civil_date(secs: u64) -> String {
 }
 
 /// The bench MG90 on 2S under its 280-count limit as the pilot measures it
-/// on the test servo: per grid duty the climb (t_goal ms, travel), v_ss, the
+/// on the test servo: still at 5 and 10%, and per grid duty above the climb (t_goal ms, travel), v_ss, the
 /// braked stop and the window, the coast ladder and every chain.
 #[cfg(test)]
 pub(super) fn mg90() -> Envelope {
-    const GRID: [(u8, u32, f64, u16, f64, u16, u32); 11] = [
-        (5, 150, 0.0, 0, 0.0, 0, 1500),
-        (10, 150, 0.0, 0, 0.0, 0, 1500),
+    const GRID: [(u8, u32, f64, u16, f64, u16, u32); 9] = [
         (15, 150, 2.9, 0, 2.255, 25, 1064),
         (20, 194, 14.85, 11, 3.307, 41, 735),
         (25, 155, 26.65, 35, 4.328, 58, 571),
@@ -471,6 +475,7 @@ pub(super) fn mg90() -> Envelope {
     let grid = Grid {
         top_pct: 55,
         rungs,
+        below_breakaway: vec![5, 10],
         refused: Some(LadderRefused {
             pct: 60,
             dir: Dir::Rev,
@@ -571,8 +576,8 @@ pub(super) fn mg90() -> Envelope {
                 398,
                 2669,
             ),
-            chain("ends", "15@1277", 2940, 2877, 152),
-            chain("ends", "20@897", 3044, 2910, 157),
+            chain("ends", "15@1554", 3564, 3121, -51),
+            chain("ends", "20@1072", 3619, 3239, -101),
         ],
         refused_chains: Vec::new(),
         fast: Some(grid),
@@ -593,8 +598,9 @@ mod tests {
         assert!(text.starts_with("# osc capture pilot envelope."));
         assert!(text.contains("supply = \"2s\""));
         assert!(text.contains("rule = \"limit\"\ncurrent_limit_counts = 280\nrail_mv = 7899\n"));
-        assert!(text.contains("\n[windows_ms]\n5 = 1500\n"));
-        assert!(text.contains("\n[[grid.rungs]]\npct = 5\nwindow_ms = 1500\n"));
+        assert!(text.contains("\n[windows_ms]\n15 = 1064\n"));
+        assert!(text.contains("\n[[grid.rungs]]\npct = 15\nwindow_ms = 1064\n"));
+        assert!(text.contains("\nbelow_breakaway = [5, 10]\n"));
         assert!(text.contains(
             "\n[[coast.ladder]]\npct = 20\ndrive_ms = 35\n\n[coast.ladder.fwd]\nentry = 2.206\n"
         ));

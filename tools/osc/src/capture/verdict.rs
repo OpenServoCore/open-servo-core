@@ -465,9 +465,11 @@ pub(super) mod bench {
         }]
     }
 
-    /// `cfg` recorded on the bench servo on 2S, `set` shaping it first.
+    /// `cfg` recorded on the bench servo on 2S, its burst running the whole
+    /// tel_count range, `set` shaping it first.
     pub(crate) fn record(cfg: &Cfg, set: impl FnOnce(&mut Bench)) -> Recording {
         let mut b = Bench::mg90(Supply::TwoS);
+        b.cap.rows = u16::MAX;
         set(&mut b);
         crate::sweep::record(&mut b, cfg, |_| Ok(())).unwrap()
     }

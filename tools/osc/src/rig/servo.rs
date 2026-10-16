@@ -15,7 +15,7 @@ use osc_ident::regs::{Reg, calib, control, telemetry};
 use osc_protocol::tel::Chunks;
 
 use super::pump::{
-    BurstStats, admit_watch, exchange_tel_burst, read_stamped, watch_rows_on, write_reg,
+    BurstCap, BurstStats, admit_watch, exchange_tel_burst, read_stamped, watch_rows_on, write_reg,
 };
 use super::snapshot::read_u16;
 
@@ -58,6 +58,9 @@ pub(crate) trait Servo {
         Ok(read_u16(self.client(), id, calib::TICK_HZ)? as f64)
     }
 
+    /// The longest TEL burst the servo arms ([`BurstCap`]).
+    fn burst_cap(&mut self) -> Result<BurstCap>;
+
     /// The PWM period the servo's TEL duty counts are of.
     fn pwm_period_ticks(&mut self) -> Result<u16> {
         let id = self.id();
@@ -69,13 +72,15 @@ pub(crate) trait Servo {
 
     /// [`Servo::burst`], its stats carrying the rows the servo dropped from
     /// it: `tel_drop_count` after it less before it. Firmware without the
-    /// health block reads 0 there, so it drops none.
+    /// health block reads 0 there, so it drops none. A burst over the
+    /// servo's cap is refused before anything is sent.
     fn stream(
         &mut self,
-        samples: u16,
+        samples: u32,
         goal: Option<(Reg, i32)>,
         chunks: Chunks,
     ) -> Result<(Vec<TelFrame>, BurstStats)> {
+        let samples = self.burst_cap()?.check(samples)?;
         let id = self.id();
         let before = read_u16(self.client(), id, telemetry::TEL_DROP_COUNT)?;
         let (frames, mut stats) = self.burst(samples, goal, chunks)?;
@@ -132,6 +137,10 @@ impl<S: Servo + ?Sized> Servo for &mut S {
     fn tick_hz(&mut self) -> Result<f64> {
         (**self).tick_hz()
     }
+
+    fn burst_cap(&mut self) -> Result<BurstCap> {
+        (**self).burst_cap()
+    }
 }
 
 /// A client, owned or borrowed.
@@ -159,6 +168,7 @@ pub(crate) struct Wire<C> {
     c: C,
     id: Id,
     t0: Instant,
+    cap: Option<BurstCap>,
 }
 
 impl<C: AsClient> Wire<C> {
@@ -167,6 +177,7 @@ impl<C: AsClient> Wire<C> {
             c,
             id,
             t0: Instant::now(),
+            cap: None,
         }
     }
 }
@@ -205,6 +216,17 @@ impl<C: AsClient> Servo for Wire<C> {
 
     fn sleep(&mut self, ms: u32) {
         std::thread::sleep(Duration::from_millis(ms as u64));
+    }
+
+    /// Read once, at the first burst.
+    fn burst_cap(&mut self) -> Result<BurstCap> {
+        if let Some(cap) = self.cap {
+            return Ok(cap);
+        }
+        let d = crate::state::descriptor(self.c.get(), self.id)?;
+        let cap = BurstCap::of(&d, self.tick_hz()?)?;
+        self.cap = Some(cap);
+        Ok(cap)
     }
 
     /// No admission read: the run's first watch admitted the line.
@@ -319,6 +341,7 @@ pub(crate) mod bench {
         /// The breakaway and current limit a fast decay write set aside.
         slow: Option<(i16, Option<u16>)>,
         decay: u16,
+        pub(crate) cap: BurstCap,
     }
 
     impl Bench {
@@ -335,6 +358,7 @@ pub(crate) mod bench {
             servo.pos = 2029.0;
             // the tick rate the table declares
             servo.f_med = 2000.0;
+            let cap = BurstCap::of(&d, servo.tick_hz()).unwrap();
             Self {
                 c,
                 id,
@@ -345,6 +369,7 @@ pub(crate) mod bench {
                 fast_breakaway_q15: None,
                 slow: None,
                 decay,
+                cap,
             }
         }
 
@@ -413,6 +438,10 @@ pub(crate) mod bench {
 
         fn tick_hz(&mut self) -> Result<f64> {
             Ok(self.servo.tick_hz())
+        }
+
+        fn burst_cap(&mut self) -> Result<BurstCap> {
+            Ok(self.cap)
         }
 
         /// The rows the test servo drops land in the table's
@@ -499,5 +528,67 @@ mod tests {
             read_u16(&mut b.c, id, telemetry::TEL_DROP_COUNT).unwrap(),
             1
         );
+    }
+
+    /// The cap is the descriptor's `tel_count` max, else the field's whole
+    /// range, timed by the servo's own tick rate.
+    #[test]
+    fn the_burst_cap_comes_from_the_descriptor_and_the_tick_rate() {
+        let reg = crate::descriptor::load_builtins().unwrap();
+        let mut d = reg.iter().next().unwrap().clone();
+        let mut set = |max: Option<i64>| {
+            for f in d.fields.iter_mut().filter(|f| f.name == "tel_count") {
+                f.max = max;
+            }
+            d.clone()
+        };
+        let cap = BurstCap::of(&set(Some(20_000)), 20_000.0).unwrap();
+        assert_eq!((cap.rows, cap.ms()), (20_000, 1000.0));
+        assert_eq!(
+            BurstCap::of(&set(Some(20_000)), 10_000.0).unwrap().ms(),
+            2000.0
+        );
+        assert_eq!(BurstCap::of(&set(Some(5000)), 20_000.0).unwrap().rows, 5000);
+        assert_eq!(BurstCap::of(&set(None), 20_000.0).unwrap().rows, u16::MAX);
+        assert!(BurstCap::of(&set(Some(0)), 20_000.0).is_err());
+        assert!(BurstCap::of(&set(None), 0.0).is_err());
+    }
+
+    /// A burst over the servo's cap is refused before anything is sent,
+    /// in rows and ms, on servos of more than one cap and tick rate; one
+    /// at the cap streams.
+    #[test]
+    fn a_burst_over_the_cap_is_refused_before_the_arm() {
+        for (rows, tick_hz) in [(20_000, 20_000.0), (4000, 10_000.0)] {
+            let mut b = Bench::mg90(Supply::TwoS);
+            b.cap = BurstCap { rows, tick_hz };
+            let t = b.servo.t_ms;
+            let over = rows as u32 + 1;
+            let e = b.stream(over, None, TEL_RAW).err().unwrap().to_string();
+            let ms = |n: u32| format!("{:.0}", n as f64 * 1000.0 / tick_hz);
+            assert_eq!(
+                e,
+                format!(
+                    "a TEL burst of {} rows ({} ms) is over the {rows} rows ({} ms) the servo \
+                     arms at most (its tel_count max at {tick_hz:.0} Hz): refused before the arm",
+                    over,
+                    ms(over),
+                    ms(rows.into())
+                )
+            );
+            assert_eq!(b.servo.t_ms, t, "nothing streamed");
+            assert!(b.stream(400, None, TEL_RAW).is_ok());
+        }
+
+        // on the wire the cap is read off the servo's own descriptor, and
+        // the arm never goes out
+        let (mut c, id) = bench::table(1961);
+        let mut w = Wire::new(&mut c, id);
+        let cap = w.burst_cap().unwrap();
+        let over = cap.rows as u32 + 1;
+        let e = w.stream(over, None, TEL_RAW).err().unwrap().to_string();
+        assert!(e.starts_with(&format!("a TEL burst of {over} rows")), "{e}");
+        assert_eq!(read_u16(&mut c, id, control::TEL_COUNT).unwrap(), 0);
+        assert_eq!(read_u16(&mut c, id, control::CHUNK0_ADDR).unwrap(), 0);
     }
 }

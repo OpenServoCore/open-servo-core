@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;
+use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_client::{BaudRate, Id, Inst, Opcode, Outcome, ResultCode};
@@ -136,7 +137,7 @@ impl Lease {
     }
 
     /// Refuse a TEL burst the held permit would lapse inside.
-    pub(crate) fn check_stream(&self, samples: u16) -> Result<()> {
+    pub(crate) fn check_stream(&self, samples: u32) -> Result<()> {
         self.state
             .check_stream(stream_span(samples).as_millis() as u32)?;
         Ok(())
@@ -144,14 +145,60 @@ impl Lease {
 }
 
 /// The sampled span of a TEL burst: one sample per 50 us fast tick.
-fn stream_span(samples: u16) -> Duration {
+fn stream_span(samples: u32) -> Duration {
     Duration::from_micros(samples as u64 * 50)
 }
 
 /// Whole-burst window: the sampled span plus wire/turnaround margin. The
 /// client pipe guard must sit above it (see exchange_stream).
 fn stream_window(samples: u16) -> Duration {
-    stream_span(samples) * 5 / 4 + Duration::from_millis(250)
+    stream_span(samples.into()) * 5 / 4 + Duration::from_millis(250)
+}
+
+/// The longest TEL burst the servo arms: its descriptor's `tel_count` max,
+/// else the field's whole range, one row per fast tick at `tick_hz`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct BurstCap {
+    pub(crate) rows: u16,
+    pub(crate) tick_hz: f64,
+}
+
+impl BurstCap {
+    pub(crate) fn of(d: &Descriptor, tick_hz: f64) -> Result<Self> {
+        let f = crate::descriptor::field(d, "tel_count")?;
+        let range = u64::MAX >> (64 - 8 * u32::from(f.width.clamp(1, 8)));
+        let rows = f
+            .max
+            .map_or(Some(range), |m| u64::try_from(m).ok())
+            .map_or(0, |m| m.min(u16::MAX as u64) as u16);
+        if rows == 0 {
+            bail!("the descriptor's tel_count max {:?} arms no burst", f.max);
+        }
+        if tick_hz <= 0.0 {
+            bail!("the servo publishes no tick rate, and a burst's rows time by it");
+        }
+        Ok(Self { rows, tick_hz })
+    }
+
+    pub(crate) fn ms(&self) -> f64 {
+        self.rows as f64 * 1000.0 / self.tick_hz
+    }
+
+    /// `samples` as one burst's rows, refused before anything is sent when
+    /// over the cap: the servo answers that arm with Validation.
+    pub(crate) fn check(&self, samples: u32) -> Result<u16> {
+        match u16::try_from(samples) {
+            Ok(n) if n <= self.rows => Ok(n),
+            _ => bail!(
+                "a TEL burst of {samples} rows ({:.0} ms) is over the {} rows ({:.0} ms) the servo \
+                 arms at most (its tel_count max at {:.0} Hz): refused before the arm",
+                samples as f64 * 1000.0 / self.tick_hz,
+                self.rows,
+                self.ms(),
+                self.tick_hz
+            ),
+        }
+    }
 }
 
 /// Per-burst evidence for the diag line.
@@ -638,8 +685,8 @@ impl<'a, S: Servo> Pump<'a, S> {
                     goal,
                     chunks,
                 } => {
-                    self.lease.check_stream(samples)?;
-                    let (frames, st) = s.stream(samples, goal, chunks)?;
+                    self.lease.check_stream(samples.into())?;
+                    let (frames, st) = s.stream(samples.into(), goal, chunks)?;
                     eprintln!(
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
                         st.frames, st.samples, st.holes, st.garble, st.laps
@@ -998,7 +1045,10 @@ mod tests {
         assert!(l.check_stream(15_000).is_ok(), "750 ms");
         assert!(l.check_stream(15_020).is_err());
         l.state.wrote(control::TORQUE_ENABLE, 0, 0.0);
-        assert!(l.check_stream(u16::MAX).is_ok(), "torque off holds nothing");
+        assert!(
+            l.check_stream(u16::MAX.into()).is_ok(),
+            "torque off holds nothing"
+        );
     }
 
     #[test]

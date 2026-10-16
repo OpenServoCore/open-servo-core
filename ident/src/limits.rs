@@ -608,6 +608,8 @@ pub struct DutyPlan {
     pub r_vpc: f64,
     i_lim: f64,
     vbus: f64,
+    /// The duty the jam check moved the shaft at, from rest; 0 without one.
+    moved_at: f64,
 }
 
 impl DutyPlan {
@@ -626,13 +628,16 @@ impl DutyPlan {
             r_vpc,
             i_lim: i,
             vbus: v,
+            moved_at: moved_at.unwrap_or(0.0),
         }
     }
 
-    /// `breakaway`: the larger of the two directions' breakaway duties.
+    /// `breakaway`: the larger of the two directions' breakaway duties. A
+    /// seek starts from rest, so it never drops under the duty the jam
+    /// check moved the shaft at from rest.
     pub fn with_breakaway(self, breakaway: f64) -> Self {
         Self {
-            seek: (breakaway + Self::SEEK_MARGIN).min(self.stop_cap),
+            seek: (breakaway.max(self.moved_at) + Self::SEEK_MARGIN).min(self.stop_cap),
             ..self
         }
     }
@@ -793,12 +798,24 @@ mod tests {
         // the bench servo on 2S, a shaft the jam check moved at 12%
         let plan = DutyPlan::new(&mg90(), r, Some(0.12));
         assert!((plan.seek - 0.14).abs() < 1e-12);
-        let plan = plan.with_breakaway(0.08);
-        assert!((plan.seek - 0.10).abs() < 1e-12);
         assert!((plan.stop_cap - 0.1551).abs() < 1e-3);
         assert!((plan.hold - 0.0776).abs() < 1e-3);
         // a step over a base drawing 80 counts: 9.1%
         assert!((plan.step_run(80.0) - 0.0910).abs() < 1e-3);
+    }
+
+    /// The bench servo's ramp read 8% where the jam check needed 13.8%
+    /// from rest: a lower ramp breakaway keeps the seek over the jam
+    /// check's duty, a higher one raises it, and the cap still bounds it.
+    #[test]
+    fn a_lower_breakaway_never_lowers_the_seek_under_the_jam_check() {
+        let r = 7270.0 / 4096.0;
+        let jam = DutyPlan::new(&mg90(), r, Some(0.12));
+        assert!((jam.with_breakaway(0.08).seek - 0.14).abs() < 1e-12);
+        assert!((jam.with_breakaway(0.13).seek - 0.15).abs() < 1e-12);
+        assert_eq!(jam.with_breakaway(0.9).seek, jam.stop_cap);
+        let none = DutyPlan::new(&mg90(), r, None);
+        assert!((none.with_breakaway(0.08).seek - 0.10).abs() < 1e-12);
     }
 
     /// A telemetry read as the servo serves it, from `fault_flags` through

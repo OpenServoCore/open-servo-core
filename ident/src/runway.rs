@@ -412,8 +412,6 @@ impl Runway {
 pub const SETTLE_MS: f64 = 40.0;
 /// The least steady time a rung's window keeps past the settle, ms.
 pub const STEADY_MIN_MS: f64 = 60.0;
-/// The longest window a rung streams, ms.
-pub const WINDOW_MAX_MS: f64 = 1500.0;
 
 /// A governed climb as a stream read it: from the goal write to the first
 /// sample whose applied duty equals the goal.
@@ -495,15 +493,15 @@ pub fn settled_ticks(
 
 /// A rung's window: its climb, then the longer of the settle plus the
 /// least steady time and the time at `v_ss` to cross what the climb left
-/// of `span`; at most [`WINDOW_MAX_MS`].
-pub fn window_ms(climb: &Climb, v_ss: f64, span: f64) -> f64 {
+/// of `span`; at most `max_ms`, the longest burst the servo arms.
+pub fn window_ms(climb: &Climb, v_ss: f64, span: f64, max_ms: f64) -> f64 {
     let left = (span - climb.travel).max(0.0);
     let cross = if v_ss > 0.0 {
         left / v_ss
     } else {
         f64::INFINITY
     };
-    (climb.ms + cross.max(SETTLE_MS + STEADY_MIN_MS)).min(WINDOW_MAX_MS)
+    (climb.ms + cross.max(SETTLE_MS + STEADY_MIN_MS)).min(max_ms)
 }
 
 /// A rung abandoned by its host runs on at the goal until the firmware
@@ -831,7 +829,7 @@ mod tests {
 
     /// The window runs the measured climb, then long enough at speed to
     /// cross what is left of the span, never under the settle and the
-    /// least steady time, never over the cap.
+    /// least steady time, never over the servo's burst cap.
     #[test]
     fn window_covers_the_climb_and_the_tail() {
         let c = Climb {
@@ -841,7 +839,9 @@ mod tests {
         };
         // 0.8 of the bench runway, 11.6 counts/ms at 60%
         let span = 0.8 * 2994.0;
-        let w = window_ms(&c, 11.6, span);
+        // one second of rows, the servo's burst cap at 20 kHz
+        let cap = 1000.0;
+        let w = window_ms(&c, 11.6, span, cap);
         assert!((w - (156.0 + (span - 966.0) / 11.6)).abs() < 1e-9, "{w}");
         // a climb that crossed the span keeps the settle and the steady part
         let far = Climb {
@@ -849,17 +849,19 @@ mod tests {
             ..c
         };
         assert_eq!(
-            window_ms(&far, 11.6, span),
+            window_ms(&far, 11.6, span, cap),
             156.0 + SETTLE_MS + STEADY_MIN_MS
         );
-        // a slow rung caps
-        assert_eq!(window_ms(&c, 0.5, span), WINDOW_MAX_MS);
-        assert_eq!(window_ms(&c, 0.0, span), WINDOW_MAX_MS);
+        // a slow rung caps at the servo's burst, whatever it is
+        assert_eq!(window_ms(&c, 0.5, span, cap), cap);
+        assert_eq!(window_ms(&c, 0.0, span, cap), cap);
+        assert_eq!(window_ms(&c, 0.5, span, 2500.0), 2500.0);
+        assert_eq!(window_ms(&c, 0.0, span, f64::INFINITY), f64::INFINITY);
         // the measured climbs of the bench servo, each covered by its window
         for pct in [20, 40, 60] {
             let (frames, hz) = rung(pct, 300.0);
             let c = climb(&frames, pct_q15(pct), P, hz).unwrap();
-            let w = window_ms(&c, 0.2079 * pct as f64 - 0.831, span);
+            let w = window_ms(&c, 0.2079 * pct as f64 - 0.831, span, cap);
             assert!(w >= c.ms + SETTLE_MS + STEADY_MIN_MS, "{pct}%: {w} ms");
         }
     }
