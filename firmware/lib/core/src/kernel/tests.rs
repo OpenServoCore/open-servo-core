@@ -2280,6 +2280,56 @@ fn openloop_endstop_zeroes_outbound_duty() {
     assert_eq!(k.faults.mask(), 0);
 }
 
+/// An open-loop push held at the soft wall is not a stall: the endstop
+/// closed that side of the band, so the duty limiter holds a zero ceiling
+/// with no current flowing, and the stall timer never runs there.
+#[test]
+fn openloop_held_at_the_soft_wall_never_stalls() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+        t.config.pos_soft.pos_max_soft_counts = 3000;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+        t.config.limits.stall_response = StallResponse::Fault;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(2800);
+    // to the wall, then held there for ten stall windows
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert!(
+        plant.pos() >= 3000,
+        "never reached the wall: {}",
+        plant.pos()
+    );
+    run_plant(&mut k, &sh, &mut plant, 10 * ms_ticks(50));
+    assert_eq!(k.faults.mask(), 0, "the wall tripped the stall timer");
+    assert_eq!(k.fast.duty_q15, 0);
+}
+
+/// The same push pinned by the current limit mid travel is a stall.
+#[test]
+fn openloop_pinned_mid_travel_still_stalls() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 30000;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+        t.config.limits.stall_response = StallResponse::Fault;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(2000);
+    plant.frozen = true;
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert_eq!(k.faults.mask(), faults::BIT_STALL);
+    sh.table
+        .with(|t| assert_eq!(t.telemetry.mode.fault_code, faults::CODE_STALL));
+}
+
 #[test]
 fn position_step_survives_tick_deletion() {
     let sh = Shared::new();
