@@ -294,7 +294,7 @@ impl Sweep {
             return self.blocked(from, o.pos);
         }
         let v = self.speed().unwrap_or(0.0);
-        let stop = self.runway.stop(v).unwrap_or(0.0);
+        let stop = self.runway.stop(-1, v).unwrap_or(0.0);
         let lead = v * self.gap().unwrap_or(0.0);
         if self.seeking && o.pos as f64 - lead - stop <= target {
             return self.brake(-1, o.pos, v, After::Run);
@@ -343,7 +343,8 @@ impl Sweep {
         if b.after == After::Run {
             self.runway.ran(self.cfg.seek_duty_q15 as f64 / Q15, b.v);
         }
-        self.runway.stopped(b.v, o.pos.abs_diff(b.from) as f64);
+        let dir = if o.pos >= b.from { 1 } else { -1 };
+        self.runway.stopped(dir, b.v, o.pos.abs_diff(b.from) as f64);
         self.rest = Some(o.pos);
         self.phase = Phase::Rest(b.after);
         Cmd::Write {
@@ -462,7 +463,7 @@ impl Sweep {
             return self.blocked(from, o.pos);
         };
         let v_now = v_read.unwrap_or(r.v).max(need.v);
-        let stop = self.runway.stop(v_now).unwrap_or(need.stop);
+        let stop = self.runway.stop(1, v_now).unwrap_or(need.stop);
         let end = self.runway.brake_at(1, stop);
         let lead = v_now * r.cadence;
         if o.pos as f64 + lead >= end {
@@ -492,7 +493,7 @@ impl Sweep {
         let v = v.max(r.need.v);
         let end = self
             .runway
-            .brake_at(1, self.runway.stop(v).unwrap_or(r.need.stop));
+            .brake_at(1, self.runway.stop(1, v).unwrap_or(r.need.stop));
         let travel = (end - pos as f64 - v * r.cadence) * CAPTURE_SHARE;
         let ms = travel / v;
         if !ms.is_finite() || ms < SPEED_SPAN_MS {

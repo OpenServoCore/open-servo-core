@@ -675,7 +675,7 @@ impl Ladder {
         }
         let target = self.runway.start(self.dir()) as f64;
         let v = self.speed().unwrap_or(0.0);
-        let stop = self.runway.stop(v).unwrap_or(0.0);
+        let stop = self.runway.stop(motion, v).unwrap_or(0.0);
         let ahead = o.pos as f64 + motion as f64 * (self.lead(v) + stop);
         let arrived = if motion > 0 {
             ahead >= target
@@ -718,7 +718,8 @@ impl Ladder {
             if b.seek {
                 self.runway.ran(self.cfg.seek_duty_q15 as f64 / Q15, b.v);
             }
-            self.runway.stopped(b.v, o.pos.abs_diff(b.from) as f64);
+            let dir = if o.pos >= b.from { 1 } else { -1 };
+            self.runway.stopped(dir, b.v, o.pos.abs_diff(b.from) as f64);
         }
         self.rest_pos = Some(o.pos);
         self.phase = Phase::Rest(b.after);
@@ -794,7 +795,10 @@ impl Ladder {
             self.stalled_note = true;
             done = true;
         }
-        let stop = self.runway.stop(need.v.max(v_now)).unwrap_or(need.stop);
+        let stop = self
+            .runway
+            .stop(dir, need.v.max(v_now))
+            .unwrap_or(need.stop);
         let end = self.runway.brake_at(dir, stop);
         let ahead = o.pos as f64 + dir as f64 * self.lead(v_now);
         done |= if dir > 0 { ahead >= end } else { ahead <= end };
@@ -2029,9 +2033,9 @@ mod tests {
 
     /// Sized by the pilot envelope at the bench bus's cadence: the envelope
     /// gives the speed, but a braked stop is not its coast - three to five
-    /// times shorter - so each rung is sized by the stops the run braked:
-    /// the first on the seek's stop scaled up, under the coast, the rest on
-    /// the rungs' own, under half of it. Every rung to 55% fits and runs
+    /// times shorter - so each rung is sized by the stops the run braked
+    /// the same way: the first each way on a slower stop scaled up, under
+    /// the coast, the rest on the rungs' own, under half of it. Every rung to 55% fits and runs
     /// both ways, the top one at over twice the bottom one's speed: the
     /// ladder is not narrow.
     #[test]
@@ -2054,7 +2058,7 @@ mod tests {
             let env = mg90_2s();
             for (k, (duty, n)) in exp.sized().iter().enumerate() {
                 let coast = env.coast(n.v);
-                let under = if k == 0 { coast } else { coast / 2.0 };
+                let under = if k < 2 { coast } else { coast / 2.0 };
                 assert!(
                     n.stop < under,
                     "{vbus} {duty}: sized on a stop of {:.0}, coast {coast:.0}",

@@ -572,8 +572,8 @@ impl Inertia {
             (Some(p), Some(t)) if o.host_ms > t => p.abs_diff(o.pos) as f64 / (o.host_ms - t),
             _ => 0.0,
         };
-        let stop = self.runway.stop(v).unwrap_or(0.0);
         let motion = -self.dir();
+        let stop = self.runway.stop(motion, v).unwrap_or(0.0);
         let target = self.runway.start(self.dir()) as f64;
         self.reached(o.pos, motion, target - motion as f64 * stop)
     }
@@ -905,7 +905,7 @@ mod tests {
         let mut r = Runway::new(params.pos_guard.unwrap()).with_accel(60.0);
         r.ran(0.26, v_fake(0.26));
         r.ran(0.64, v_fake(0.64));
-        r.stopped(v_fake(0.64), 500.0);
+        r.stopped(1, v_fake(0.64), 500.0);
         r
     }
 
@@ -1429,7 +1429,7 @@ mod tests {
         for c in &exp.captures {
             let d = c.goal_q15.signum() as i8;
             let v = exp.runway.speed(d, c.goal_q15 as f64 / 32767.0).unwrap();
-            let end = exp.runway.brake_at(d, exp.runway.stop(v).unwrap());
+            let end = exp.runway.brake_at(d, exp.runway.stop(d, v).unwrap());
             let far = c
                 .tel
                 .iter()
@@ -1514,14 +1514,15 @@ mod tests {
     }
 
     /// Inertia on the bench servo after the ladder that sized its runway,
-    /// at the bench bus's cadence with a seeded slow read: a drive brakes
-    /// late and comes to rest past the inset guard it planned on, inside
-    /// the soft limits. That is no abort - inertia aborts on the soft
-    /// limits, as the ladder does - and every step is captured. Aborting on
-    /// the guard, the same run would have ended there.
+    /// planned on a guard inset from the ladder's and starting past it,
+    /// inside the soft limits, where a late brake leaves the shaft. That is
+    /// no abort - inertia aborts on the soft limits, as the ladder does - and
+    /// every step is captured. Aborting on the guard, the same run would
+    /// have ended there.
     #[test]
-    fn a_late_inertia_brake_is_not_an_abort() {
+    fn inertia_started_past_its_guard_is_not_an_abort() {
         const GUARD: (u16, u16) = (532, 3526);
+        const INSET: (u16, u16) = (GUARD.0 + 150, GUARD.1 - 150);
         let lim = crate::limits::ServoLimits {
             i_lim: 280,
             stall_yield: 168,
@@ -1538,6 +1539,7 @@ mod tests {
         };
         let plan = DutyPlan::new(&lim, 7270.0 / 4096.0, Some(0.145));
         let params = RigParams::new(Some(GUARD), 350).with_stops((209, 3849));
+        let inset = RigParams::new(Some(INSET), 350).with_stops((209, 3849));
         let bus = Bus::BENCH.with_slow_reads(2);
         let run = |aborts: RigParams| {
             let mut servo = bench_mg90(3204);
@@ -1550,30 +1552,31 @@ mod tests {
             let mut g = Guarded::new(ladder, params.abort_at_soft(lim.soft));
             pump_on(&mut g, &mut servo, 4_000_000, bus);
             assert_eq!(g.abort(), None);
-            let runway = g.into_inner().runway().clone();
+            let runway = g.into_inner().runway().clone().with_guard(INSET);
+            servo.pos = (INSET.0 - 50) as f64;
             let base = plan.seek + BASE_OVER_SEEK;
             let cfg = crate::run::inertia_cfg(plan.seek, base, InertiaCfg::new(TICK_HZ));
             let mut s = Positions {
-                exp: Guarded::new(Inertia::new(cfg, plan, runway, &params), aborts),
+                exp: Guarded::new(Inertia::new(cfg, plan, runway, &inset), aborts),
                 seen: Vec::new(),
             };
             pump_on(&mut s, &mut servo, 4_000_000, bus);
             assert!(!servo.torque);
             s
         };
-        let s = run(params.abort_at_soft(lim.soft));
+        let s = run(inset.abort_at_soft(lim.soft));
         assert_eq!(s.exp.abort(), None);
         let past: Vec<u16> = s
             .seen
             .iter()
             .copied()
-            .filter(|p| !(GUARD.0..=GUARD.1).contains(p))
+            .filter(|p| !(INSET.0..=INSET.1).contains(p))
             .collect();
         assert!(!past.is_empty(), "nothing landed past the guard");
         assert!(past.iter().all(|p| (432..=3626).contains(p)), "{past:?}");
         assert_eq!(s.exp.into_inner().captures.len(), 6);
 
-        let s = run(params);
+        let s = run(inset);
         assert!(matches!(s.exp.abort(), Some(AbortReason::PosGuard { .. })));
     }
 }
