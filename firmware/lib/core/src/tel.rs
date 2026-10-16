@@ -10,12 +10,6 @@ use osc_protocol::wire::{self, LAW_BREAK_BIT_TIMES};
 /// burst's last frame may carry fewer).
 pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
 
-/// The longest burst a `tel_count` write arms: one second of control
-/// ticks. The host is silent for the whole burst (protocol sec 5.6).
-pub const BURST_ROWS_MAX: u16 = crate::kernel::TICK_HZ as u16;
-
-const _: () = assert!(crate::kernel::TICK_HZ <= u16::MAX as u32);
-
 pub const STREAM_HDR: usize = wire::STREAM_HDR;
 
 /// Ticks of a batch a frame leaves its TX lane besides its wire time: the

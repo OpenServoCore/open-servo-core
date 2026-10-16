@@ -1827,20 +1827,19 @@ fn tel_count_reads_zero_after_an_arm_with_an_odd_chunk() {
     assert_eq!(tel_count(shared), 0);
 }
 
-/// The count is capped at one second of ticks: a longer write is a rule
-/// reject and lends nothing.
+/// Any count the field holds arms: the longest burst acks and lends.
 #[test]
-fn tel_count_over_the_cap_rejects() {
-    use osc_servo_core::tel::BURST_ROWS_MAX;
+fn tel_count_arms_up_to_the_field_max() {
     let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
+    let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
     let lane = tel_split(&h, &mut bus, &shared.table);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
-    let arm = arm_bytes(POS_ROW, BURST_ROWS_MAX + 1);
+    let arm = arm_bytes(POS_ROW, u16::MAX);
     write_at(&mut bus, &h, &mut d, 0, CHUNK0_ADDR, &arm, 100, 1000);
-    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Validation));
-    assert!(!lane.active());
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
+    assert!(lane.active());
+    assert_eq!(tel_count(shared), u16::MAX);
 }

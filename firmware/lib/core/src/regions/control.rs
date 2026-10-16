@@ -123,9 +123,10 @@ pub struct ControlTel {
     /// A committed nonzero write streams that many samples (one per fast
     /// tick, batched 16 per `Stream` frame), then stops and releases the
     /// line; 0 is disarmed. Composes with HOLD/COMMIT so a goal write and
-    /// the arm apply in the same instant. At most one second of ticks: the
-    /// host is silent for the whole burst.
-    #[ct_field(le = crate::tel::BURST_ROWS_MAX, hook = on_tel_count_write)]
+    /// the arm apply in the same instant. Any count the field holds arms: the
+    /// host is silent for the whole burst, and the kernel's own limits bound
+    /// the drive under it.
+    #[ct_field(hook = on_tel_count_write)]
     pub tel_count: u16,
 }
 
