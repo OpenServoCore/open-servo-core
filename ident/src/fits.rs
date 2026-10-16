@@ -44,22 +44,30 @@ pub struct KeFit {
 /// every duty.
 pub const KE_FLAT_TOL: f64 = 0.03;
 
-/// Origin LS of (v - R*i) vs omega, both directions, walked up from the two
-/// slowest rungs: each faster rung joins while its own Ke sits within
-/// [`KE_FLAT_TOL`] of the fit so far, and the first one that does not ends
-/// the band. Volts per speed the plant needs beyond the drive model above
-/// the knee are reported, never fitted.
+/// Points the walk starts from: the two slowest duties, both ways. Two
+/// points are one rung pair, and the slowest pair carries the largest
+/// share of R*i, so its own Ke reads a few percent off the band's and a
+/// band seeded from it alone ends at the next rung.
+pub const KE_SEED: usize = 4;
+
+/// Origin LS of (v - R*i) vs omega, both directions, walked up from the
+/// [`KE_SEED`] slowest points: each faster rung joins unless its own Ke
+/// sits more than [`KE_FLAT_TOL`] over the fit so far, and the first one
+/// that does ends the band. Only an excess is a knee: a rung needing less
+/// volts per speed than the slower ones is the slow end's R*i error, not
+/// the plant leaving the drive model. Volts per speed the plant needs
+/// beyond the drive model above the knee are reported, never fitted.
 pub fn ke_fit(rungs: &[RungPoint], r_vpc: f64) -> Option<KeFit> {
     let mut xy: Vec<(f64, f64)> = rungs
         .iter()
         .map(|p| (p.omega.abs(), (p.v - r_vpc * p.i) * p.omega.signum()))
         .collect();
     xy.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut n = 2.min(xy.len());
+    let mut n = KE_SEED.min(xy.len());
     while n < xy.len() {
         let f = origin_ls(&xy[..n])?;
         let (w, e) = xy[n];
-        if f.slope <= 0.0 || w <= 0.0 || ((e / w - f.slope) / f.slope).abs() > KE_FLAT_TOL {
+        if f.slope <= 0.0 || w <= 0.0 || (e / w - f.slope) / f.slope > KE_FLAT_TOL {
             break;
         }
         n += 1;
@@ -525,5 +533,38 @@ mod ke_tests {
             .unwrap()
             .slope;
         assert!((all - 0.0900).abs() < 0.0005, "{all}");
+    }
+
+    /// The regreased MG90 on rev 2A board A (ident run 1792130269,
+    /// rungs.csv), R from the stop ladder (1.0406 vcounts/ccount). The
+    /// slowest pair's own Ke reads 0.1052 and 0.0957 and every faster rung
+    /// 3-8% under their fit: a band seeded from that pair alone ended at
+    /// the next rung and took Ke 0.0998 from two points. The rungs under
+    /// the slowest pair's Ke join; the 64% fwd rung, 5.6% over, is the knee.
+    #[test]
+    fn rungs_under_the_slow_pair_join_the_band() {
+        let pts = [
+            (3290.342969, 104.777778, 455.158167),
+            (-3639.501342, -102.739865, -455.280203),
+            (4777.968261, 112.771186, 577.237119),
+            (-4883.627391, -110.356164, -577.370411),
+            (6073.547454, 117.294118, 699.524706),
+            (-6216.328423, -119.381818, -699.430303),
+            (7551.431095, 121.328358, 820.942687),
+            (-7445.883171, -127.461538, -820.951958),
+            (8682.474680, 122.663934, 960.958197),
+            (-8878.125743, -127.692308, -960.469231),
+            (9927.152757, 125.245614, 1118.007018),
+            (-10429.022202, -133.648649, -1116.903784),
+        ]
+        .map(|(omega, i, v)| RungPoint { omega, i, v });
+        let f = ke_fit(&pts, 1.0406).unwrap();
+        assert!((f.ke_vpc - 0.0942).abs() < 0.0005, "{}", f.ke_vpc);
+        assert_eq!((f.n, f.left_out), (10, 2));
+        assert!(
+            f.excess_top > 0.05 && f.excess_top < 0.06,
+            "{}",
+            f.excess_top
+        );
     }
 }
