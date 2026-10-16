@@ -427,7 +427,7 @@ fn grid_rung<S: Servo>(
                 if v_ss > V_SS_MIN {
                     rw.climbed(climb.accel);
                     rw.ran(pct as f64 / 100.0, v_ss);
-                    rw.stopped(v_ss, stop);
+                    rw.stopped(sign, v_ss, stop);
                 }
                 return Ok(Ok(Ran {
                     ms: window,
@@ -977,7 +977,7 @@ fn chains<S: Servo>(
         let predicted = DIRS
             .into_iter()
             .zip(runways)
-            .map(|(d, rw)| excursion(&chain, v_ss.of(d), &coasts, rw))
+            .map(|(d, rw)| excursion(&chain, v_ss.of(d), &coasts, rw, d))
             .collect::<Option<Vec<f64>>>();
         let why = match &predicted {
             None => Some("nothing the pilot measured predicts it".to_string()),
@@ -1051,7 +1051,7 @@ fn judge_chain(
     for (k, d) in DIRS.into_iter().enumerate() {
         let v = top_speed(chain, v_ss.of(d));
         let m = margin(&rig.lim, d);
-        match runways[k].stop(v) {
+        match runways[k].stop(sign(d), v) {
             Some(stop) if dead_host_fits(stop, m) => {}
             Some(stop) => {
                 return Some(format!(
@@ -1132,7 +1132,13 @@ fn top_speed(chain: &[Step], fit: &Fit) -> f64 {
 /// then how it ends - a coast by the coasts measured, a brake by the braked
 /// stops - from the fastest speed it reached. None when nothing measured
 /// predicts the end.
-fn excursion(chain: &[Step], fit: &Fit, coasts: &runway::Envelope, rw: &Runway) -> Option<f64> {
+fn excursion(
+    chain: &[Step],
+    fit: &Fit,
+    coasts: &runway::Envelope,
+    rw: &Runway,
+    d: Dir,
+) -> Option<f64> {
     let mut travel = 0.0;
     for step in chain {
         let (pct, ms) = match *step {
@@ -1147,7 +1153,7 @@ fn excursion(chain: &[Step], fit: &Fit, coasts: &runway::Envelope, rw: &Runway) 
     let end = match chain.last() {
         Some(Step::Coast(_)) if !coasts.coast.is_empty() => coasts.coast(v),
         Some(Step::Coast(_)) => return None,
-        _ => rw.stop(v)?,
+        _ => rw.stop(sign(d), v)?,
     };
     Some(travel + end)
 }
@@ -1911,7 +1917,7 @@ mod tests {
         rw.ran(0.50, 9.54);
         rw.ran(0.55, 10.58);
         rw.climbed(80.0);
-        rw.stopped(10.58, 171.0);
+        rw.stopped(1, 10.58, 171.0);
         let w = first_window(&rw, &rig, Dir::Fwd, 60, SETTLE_MS + STEADY_MIN_MS, false).unwrap();
         assert_eq!(w, 292);
         assert_eq!(
@@ -1927,7 +1933,7 @@ mod tests {
         short.ran(0.50, 9.54);
         short.ran(0.55, 10.58);
         short.climbed(80.0);
-        short.stopped(10.58, 171.0);
+        short.stopped(1, 10.58, 171.0);
         let why = sized(&short, &rig, Dir::Fwd, 60, 292, false).unwrap_err();
         assert!(why.starts_with("fwd 60% in 292 ms needs "), "{why}");
         assert!(
@@ -2457,7 +2463,7 @@ mod tests {
         let fit = mg90_2s_v_ss().fwd;
         let mut rw = Runway::new((532, 3526));
         rw.ran(0.2, 3.3);
-        rw.stopped(3.3, 40.0);
+        rw.stopped(1, 3.3, 40.0);
         let none = runway::Envelope {
             coast: Vec::new(),
             ..envelope_with_coasts()
@@ -2465,15 +2471,15 @@ mod tests {
         let chain = &chains_of(&p.block.reversal.steps)[0];
         // three 60 ms legs at v(20) = 3.373, each with the 10 ms gap, then
         // the braked stop from that speed
-        let e = excursion(chain, &fit, &none, &rw).unwrap();
+        let e = excursion(chain, &fit, &none, &rw, Dir::Fwd).unwrap();
         let v = fit.at(20);
-        let stop = rw.stop(v).unwrap();
+        let stop = rw.stop(1, v).unwrap();
         assert!((e - (3.0 * v * 70.0 + stop)).abs() < 1e-9, "{e}");
         // a coast ending needs a measured coast
         let step = &chains_of(&p.block.step.steps)[0];
-        assert_eq!(excursion(step, &fit, &none, &rw), None);
+        assert_eq!(excursion(step, &fit, &none, &rw, Dir::Fwd), None);
         let coasts = envelope_with_coasts();
-        let e = excursion(step, &fit, &coasts, &rw).unwrap();
+        let e = excursion(step, &fit, &coasts, &rw, Dir::Fwd).unwrap();
         let v = fit.at(30);
         assert!((e - (v * 30.0 + coasts.coast(v))).abs() < 1e-9, "{e}");
     }

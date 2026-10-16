@@ -14,8 +14,9 @@
 //! supply ([`Envelope::check`]); otherwise the run sizes itself from what it
 //! measured: the line through the last two measured speeds (one point
 //! scales in proportion to duty). The stop is always the run's own: the
-//! last braked stop scaled by speed squared (in proportion below it) - an
-//! envelope's stops only stand in until the run has braked once. The climb
+//! last braked stop the same way, scaled by speed squared (in proportion
+//! below it) - the other way's only until this way has braked, an
+//! envelope's only until the run has braked once. The climb
 //! is the acceleration of the last governed climb. Positions are raw pot
 //! counts, speeds counts/ms, accelerations counts/ms per s, times ms.
 //! Nothing here reads a clock or a file: the envelope arrives as data.
@@ -271,8 +272,10 @@ pub struct Runway {
     accel: f64,
     /// (duty, steady speed) measured, oldest first.
     speeds: Vec<(f64, f64)>,
-    /// The last braked stop: (speed at the brake, distance).
-    stop: Option<(f64, f64)>,
+    /// The last braked stop each way, [up, down]: (speed at the brake,
+    /// distance). A train brakes unevenly - the MG90 on rev 2A board A
+    /// stops 15-40% longer down than up from the same duty.
+    stops: [Option<(f64, f64)>; 2],
 }
 
 impl Runway {
@@ -282,8 +285,14 @@ impl Runway {
             envelope: None,
             accel: ACCEL_PRIOR,
             speeds: Vec::new(),
-            stop: None,
+            stops: [None; 2],
         }
+    }
+
+    /// The same measurements, planned on `guard`.
+    #[cfg(test)]
+    pub(crate) fn with_guard(self, guard: (u16, u16)) -> Self {
+        Self { guard, ..self }
     }
 
     /// A known plant's governed climb in place of [`ACCEL_PRIOR`].
@@ -363,15 +372,18 @@ impl Runway {
         Some(line.max(floor))
     }
 
-    /// The stop from `v`: the last braked stop scaled by speed squared - in
-    /// proportion under the speed it was braked from. A braked stop grows
-    /// faster than speed but slower than its square (the winding's brake is
-    /// viscous, friction a constant), so each scaling over-predicts on its
-    /// side. Before the run has braked, the envelope's stops from the speed.
-    /// Envelopes that carry coasts - three to five times a braked stop -
-    /// only brake early.
-    pub fn stop(&self, v: f64) -> Option<f64> {
-        let Some((v0, d0)) = self.stop else {
+    /// The stop of sign `dir` from `v`: the last braked stop that way scaled
+    /// by speed squared - in proportion under the speed it was braked from.
+    /// A braked stop grows faster than speed but slower than its square (the
+    /// winding's brake is viscous, friction a constant), so each scaling
+    /// over-predicts on its side. Before the run has braked that way, the
+    /// other way's stop; before it has braked at all, the envelope's stops
+    /// from the speed. Envelopes that carry coasts - three to five times a
+    /// braked stop - only brake early.
+    pub fn stop(&self, dir: i8, v: f64) -> Option<f64> {
+        let [up, down] = self.stops;
+        let last = if dir > 0 { up.or(down) } else { down.or(up) };
+        let Some((v0, d0)) = last else {
             return self.envelope.as_ref().map(|env| env.coast(v));
         };
         let k = if v0 > 0.0 { v / v0 } else { 1.0 };
@@ -382,7 +394,7 @@ impl Runway {
     /// windows take `steady_ms`; None until a speed and a stop are known.
     pub fn plan(&self, dir: i8, duty: f64, steady_ms: f64) -> Option<Need> {
         let v = self.speed(dir, duty)?;
-        Some(need(v, self.accel, steady_ms, self.stop(v)?))
+        Some(need(v, self.accel, steady_ms, self.stop(dir, v)?))
     }
 
     /// A drive at `duty` settled at `v`.
@@ -399,10 +411,10 @@ impl Runway {
         }
     }
 
-    /// A brake from `v` stopped in `dist`.
-    pub fn stopped(&mut self, v: f64, dist: f64) {
+    /// A brake of sign `dir` from `v` stopped in `dist`.
+    pub fn stopped(&mut self, dir: i8, v: f64, dist: f64) {
         if v > 0.0 && dist.is_finite() {
-            self.stop = Some((v, dist.max(0.0)));
+            self.stops[usize::from(dir < 0)] = Some((v, dist.max(0.0)));
         }
     }
 }
@@ -638,18 +650,36 @@ mod tests {
         assert_eq!(Supply::of_rail(12600.0), None);
     }
 
+    /// Board A's regreased MG90 stops longer down than up: its ident ladder
+    /// braked +33% in 98-112 counts and -33% in 114-118, so a down rung sized
+    /// from the up rung's stop braked onto the guard (628 under a 650 guard
+    /// at -40%). Each way keeps its own stop once it has braked; until then
+    /// it borrows the other's.
+    #[test]
+    fn each_way_brakes_by_its_own_stop() {
+        let mut r = Runway::new(GUARD);
+        r.stopped(1, 7.6, 99.0);
+        assert!((r.stop(-1, 7.6).unwrap() - 99.0).abs() < 1e-9, "borrowed");
+        r.stopped(-1, 6.7, 114.0);
+        r.stopped(1, 10.6, 140.0);
+        let down = r.stop(-1, 7.4).unwrap();
+        assert!((down - 114.0 * (7.4 / 6.7) * (7.4 / 6.7)).abs() < 1e-9);
+        assert!(down > r.stop(1, 7.4).unwrap(), "{down}");
+        assert!((r.stop(1, 10.6).unwrap() - 140.0).abs() < 1e-9);
+    }
+
     #[test]
     fn self_sizing_follows_the_measured_rungs() {
         let mut r = Runway::new(GUARD);
         assert_eq!(r.plan(1, 0.26, STEADY_MS), None, "nothing measured");
         // the seek: 2 counts/ms at 15%, braked in 40 counts
         r.ran(0.15, 2.0);
-        r.stopped(2.0, 40.0);
+        r.stopped(1, 2.0, 40.0);
         let v = r.speed(1, 0.30).unwrap();
         assert!((v - 4.0).abs() < 1e-9, "one point scales in proportion");
-        assert!((r.stop(4.0).unwrap() - 160.0).abs() < 1e-9);
+        assert!((r.stop(1, 4.0).unwrap() - 160.0).abs() < 1e-9);
         assert!(
-            (r.stop(1.0).unwrap() - 20.0).abs() < 1e-9,
+            (r.stop(1, 1.0).unwrap() - 20.0).abs() < 1e-9,
             "under it: linear"
         );
         let n = r.plan(1, 0.30, STEADY_MS).unwrap();
@@ -880,7 +910,7 @@ mod tests {
             r.ran(pct as f64 / 100.0, 0.2079 * pct as f64 - 0.831);
         }
         // a 60% brake as the model stops it: 183 counts from 11.6 counts/ms
-        r.stopped(11.6, 183.0);
+        r.stopped(1, 11.6, 183.0);
         let room = r.room();
         let fit = r.plan(1, 0.60, STEADY_MS).unwrap();
         assert!(fits(&fit, room), "60% needs {:.0} of {room}", fit.total());

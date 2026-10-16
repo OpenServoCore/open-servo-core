@@ -675,7 +675,7 @@ impl Ladder {
         }
         let target = self.runway.start(self.dir()) as f64;
         let v = self.speed().unwrap_or(0.0);
-        let stop = self.runway.stop(v).unwrap_or(0.0);
+        let stop = self.runway.stop(motion, v).unwrap_or(0.0);
         let ahead = o.pos as f64 + motion as f64 * (self.lead(v) + stop);
         let arrived = if motion > 0 {
             ahead >= target
@@ -718,7 +718,8 @@ impl Ladder {
             if b.seek {
                 self.runway.ran(self.cfg.seek_duty_q15 as f64 / Q15, b.v);
             }
-            self.runway.stopped(b.v, o.pos.abs_diff(b.from) as f64);
+            let dir = if o.pos >= b.from { 1 } else { -1 };
+            self.runway.stopped(dir, b.v, o.pos.abs_diff(b.from) as f64);
         }
         self.rest_pos = Some(o.pos);
         self.phase = Phase::Rest(b.after);
@@ -788,19 +789,25 @@ impl Ladder {
                 return self.off();
             }
             self.declined = Some(Declined::Heavy { duty_q15: duty });
-            self.close_rung();
+            let _ = self.close_rung();
             return self.brake(dir, o.pos, v_now, false, After::Finish);
         } else if !climbing && still {
             self.stalled_note = true;
             done = true;
         }
-        let stop = self.runway.stop(need.v.max(v_now)).unwrap_or(need.stop);
+        let stop = self
+            .runway
+            .stop(dir, need.v.max(v_now))
+            .unwrap_or(need.stop);
         let end = self.runway.brake_at(dir, stop);
         let ahead = o.pos as f64 + dir as f64 * self.lead(v_now);
         done |= if dir > 0 { ahead >= end } else { ahead <= end };
         if done {
-            self.close_rung();
-            return self.brake(dir, o.pos, v_now, false, After::Next);
+            // the stop is scaled by the speed it is recorded with: the rung's
+            // steady speed, as the runway sizes by, never the last few polls,
+            // which read the pot's local gain (0.6-1.5x along a cheap track)
+            let v = self.close_rung().unwrap_or(need.v);
+            return self.brake(dir, o.pos, v, false, After::Next);
         }
         self.phase = Phase::RungRead;
         Cmd::Pause {
@@ -809,8 +816,9 @@ impl Ladder {
     }
 
     /// Reduce the finished sweep into a rung summary; a used rung's speed
-    /// sizes the next.
-    fn close_rung(&mut self) {
+    /// sizes the next and is returned.
+    fn close_rung(&mut self) -> Option<f64> {
+        let mut steady_v = None;
         let duty = self.duty();
         let climb = core::mem::take(&mut self.climb);
         if let [first, .., last] = climb.t.as_slice()
@@ -855,6 +863,7 @@ impl Ladder {
                     if let Some(v) = st.raw_v {
                         self.runway.ran(duty as f64 / Q15, v);
                         self.rung_measured = true;
+                        steady_v = Some(v);
                     }
                 }
                 Err((why, windows)) => {
@@ -870,6 +879,7 @@ impl Ladder {
         self.sweep_samples.clear();
         self.stalled_note = false;
         self.rung = None;
+        steady_v
     }
 
     /// The ladder as the fit would take it: enough rungs, run both ways,
@@ -2029,9 +2039,9 @@ mod tests {
 
     /// Sized by the pilot envelope at the bench bus's cadence: the envelope
     /// gives the speed, but a braked stop is not its coast - three to five
-    /// times shorter - so each rung is sized by the stops the run braked:
-    /// the first on the seek's stop scaled up, under the coast, the rest on
-    /// the rungs' own, under half of it. Every rung to 55% fits and runs
+    /// times shorter - so each rung is sized by the stops the run braked
+    /// the same way: the first each way on a slower stop scaled up, under
+    /// the coast, the rest on the rungs' own, under half of it. Every rung to 55% fits and runs
     /// both ways, the top one at over twice the bottom one's speed: the
     /// ladder is not narrow.
     #[test]
@@ -2054,7 +2064,7 @@ mod tests {
             let env = mg90_2s();
             for (k, (duty, n)) in exp.sized().iter().enumerate() {
                 let coast = env.coast(n.v);
-                let under = if k == 0 { coast } else { coast / 2.0 };
+                let under = if k < 2 { coast } else { coast / 2.0 };
                 assert!(
                     n.stop < under,
                     "{vbus} {duty}: sized on a stop of {:.0}, coast {coast:.0}",
@@ -2071,5 +2081,91 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A pot whose local gain ripples 0.55-1.45x over `period` raw counts
+    /// at `phase`, identity near the bench stops.
+    fn rippled_pot(period: f64, phase: f64) -> crate::lut::GridLut {
+        let mut lut = crate::lut::GridLut::IDENTITY;
+        let (lo, hi) = (14usize, 240usize);
+        let amp = 0.45 * period / core::f64::consts::TAU;
+        for (k, c) in lut.points.iter_mut().enumerate().take(hi).skip(lo + 1) {
+            let raw = (k * 16) as f64;
+            let taper = ((k - lo).min(hi - k) as f64 / 4.0).min(1.0);
+            *c = (taper * amp * (core::f64::consts::TAU * raw / period + phase).sin()).round()
+                as i16;
+        }
+        lut
+    }
+
+    /// Each rung's brake in `seen`: its sign and where the shaft came to rest.
+    fn rung_rests(seen: &[TelemetrySnapshot]) -> Vec<(i8, u16)> {
+        let mut out = Vec::new();
+        let mut k = 1;
+        while k < seen.len() {
+            let (a, b) = (&seen[k - 1], &seen[k]);
+            if a.duty_ticks.unsigned_abs() >= 300 && b.duty_ticks.unsigned_abs() <= 5 {
+                let sign: i8 = if a.duty_ticks > 0 { 1 } else { -1 };
+                let mut rest = b.pos;
+                while k < seen.len() && seen[k].duty_ticks.unsigned_abs() <= 5 {
+                    rest = if sign > 0 {
+                        rest.max(seen[k].pos)
+                    } else {
+                        rest.min(seen[k].pos)
+                    };
+                    k += 1;
+                }
+                out.push((sign, rest));
+            } else {
+                k += 1;
+            }
+        }
+        out
+    }
+
+    /// A cheap pot's raw gain ripples along its track, so a speed read over
+    /// the last few polls before a brake runs up to 1.5x the rotor's: a stop
+    /// recorded against it scales short and the next rung brakes onto the
+    /// guard (the regreased MG90 on rev 2A board A, 627 under a 650 guard).
+    /// Recorded against the rung's steady speed, every rung's rest lands
+    /// inside the guard, over 16 ripple periods and phases.
+    #[test]
+    fn rung_stops_land_inside_the_guard_on_a_rippled_pot() {
+        let mut past = Vec::new();
+        for seed in 0..16u64 {
+            let pot = rippled_pot(120.0 + 10.0 * (seed % 8) as f64, seed as f64 * 0.7);
+            let mut servo = bench_mg90(3204);
+            servo.pos = 2029.0;
+            servo.pot = Some(pot);
+            let params = RigParams {
+                pot: Pot::live(pot),
+                ..bench()
+            };
+            let mut s = Spy {
+                exp: Guarded::new(
+                    Ladder::new(bench_cfg(), &params, Runway::new(GUARD)),
+                    params.abort_at_soft(SOFT),
+                ),
+                seen: Vec::new(),
+            };
+            pump_on(&mut s, &mut servo, 4_000_000, Bus::BENCH);
+            let rests = rung_rests(&s.seen);
+            assert!(
+                rests.len() >= 10,
+                "seed {seed}: {} rung brakes",
+                rests.len()
+            );
+            for (sign, rest) in rests {
+                let inside = if sign > 0 {
+                    rest <= GUARD.1
+                } else {
+                    rest >= GUARD.0
+                };
+                if !inside {
+                    past.push((seed, sign, rest));
+                }
+            }
+        }
+        assert!(past.is_empty(), "rests past the guard: {past:?}");
     }
 }

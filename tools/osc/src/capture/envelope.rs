@@ -659,10 +659,10 @@ mod tests {
         let mut rw = runway::Runway::new((532, 3526));
         rw.size_by(mg90().runway(), Some(runway::Supply::TwoS), (232, 3849))
             .unwrap();
-        let stop = rw.stop(10.58).unwrap();
+        let stop = rw.stop(1, 10.58).unwrap();
         assert!((160.0..180.0).contains(&stop), "{stop}");
         let c = mg90().coast.ladder[2].fwd;
-        let stop = rw.stop(c.entry).unwrap();
+        let stop = rw.stop(1, c.entry).unwrap();
         assert!(c.coast as f64 > 3.0 * stop, "{} against {stop}", c.coast);
     }
 
