@@ -53,7 +53,9 @@ impl DutyLimiter {
                 .saturating_sub(lim)
                 .min((u16::MAX >> DOWN_SHIFT) as u32);
             self.ceil_q15 = self.ceil_q15.saturating_sub((over << DOWN_SHIFT) as u16);
-            self.pinned |= self.ceil_q15 < goal_mag;
+            // a zero limit (a soft wall's closed side) passes no current to
+            // pin against, as a closed loop's zero band never pins
+            self.pinned |= lim != 0 && self.ceil_q15 < goal_mag;
         }
         self.ceil_q15 = self.ceil_q15.min(goal_mag);
         if self.ceil_q15 < floor_q15 {
@@ -195,5 +197,17 @@ mod tests {
         l.step(GOAL, LIM + 1, LIM, FLOOR, FLOOR);
         assert!(l.take_pinned());
         assert!(!l.take_pinned(), "take clears");
+    }
+
+    #[test]
+    fn zero_limit_never_pins() {
+        let mut l = at_floor();
+        for _ in 0..10 {
+            l.step(GOAL, 50, 0, FLOOR, FLOOR);
+        }
+        assert!(
+            !l.take_pinned(),
+            "a closed side holds no current to pin against"
+        );
     }
 }
