@@ -2817,7 +2817,8 @@ mod tests {
         // Ke pairs with r_q12's R in the back-EMF estimate
         let l = p.ladder.expect("a ladder");
         let pts = csvio::read_rung_points(&dir).unwrap();
-        assert_eq!(l.ke_vpc, fits::ke_fit(&pts, plant.r_vpc).unwrap().ke_vpc);
+        // the rung points come back from their CSV text, so the last bit may differ
+        assert!((l.ke_vpc - fits::ke_fit(&pts, plant.r_vpc).unwrap().ke_vpc).abs() < 1e-12);
         // the inertia fit's back-EMF damping is Ke over the loop's R
         let priors = |r_vpc: f64| InertiaPriors {
             r_vpc,
