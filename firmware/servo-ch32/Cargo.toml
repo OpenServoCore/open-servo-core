@@ -23,6 +23,8 @@ defmt            = { version = "1", optional = true }
 # builds (clippy, unit tests) use portable-atomic's native x86 path.
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 portable-atomic = { version = "1", default-features = false, features = ["unsafe-assume-single-core"] }
+# Boot confirmation against the board's tinyboot META page.
+tinyboot-ch32   = { version = "0.6.0", default-features = false }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }
@@ -32,7 +34,7 @@ ch32-metapac = { version = "0.1.2", default-features = false, features = ["metad
 
 [features]
 default      = ["ch32v006x8x6"]
-ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
+ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6", "tinyboot-ch32/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 # Forward the drivers' probe counters (crate::bench pattern).
 bench        = ["osc-servo-drivers/bench"]
