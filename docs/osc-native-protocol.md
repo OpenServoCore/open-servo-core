@@ -1633,6 +1633,29 @@ defaults, the position table at the identity. It shares SAVE's torque
 gate, and a failed wipe nacks `hardware` without rebooting. It is the only
 exit from `CONFIG_CORRUPT`.
 
+### 9.6 Firmware update
+
+The servo's bootloader is [tinyboot](https://github.com/OpenServoCore/tinyboot),
+built addressable: it holds no id and stays silent until a host selects it
+by the chip's unique id. App servos never frame its traffic, and nothing
+else uses the bus while it runs.
+
+- Entry: `MGMT REBOOT` with boot mode `Bootloader` (sec 9.5). The ack
+  drains at the old rate, then the servo resets into the bootloader.
+- Rate: the bootloader runs at the baud stored in its metadata page. The
+  app stores the bus rate there after bringup, and the live rate again on a
+  reboot into the bootloader, so a baud changed without a reboot or a rescue
+  floor (sec 9.1) carries over. A flash write happens only when the rate
+  changed. A board with only the bootloader, which never ran the app, comes
+  up at 0.5 M.
+- Exit: the host resets the bootloader into the app once the image is
+  written and verified. A new image boots on trial: its first bringup
+  confirms it, and one that never confirms falls back to the bootloader
+  once its trials run out.
+- Compatibility: the boot and app images carry the board's compat key
+  (`osc-dev-v006`), and the bootloader refuses an image built for another
+  board.
+
 ## 10. V006 resource map
 
 | resource            | use                                               |

@@ -34,8 +34,9 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let io = Ch32ControlIo::new(cfg, pre);
     crate::runtime::statics::install(io, pre.kernel_timing);
     // Bringup done, no IRQ live yet: the META page erase stalls nothing.
+    // SAFETY: pre-IRQ, so the bus reach-in is single-context.
     #[cfg(target_arch = "riscv32")]
-    crate::runtime::boot::confirm();
+    crate::runtime::boot::confirm(unsafe { crate::runtime::Drivers::bus() }.rate());
     crate::runtime::isr::install_irqs();
     // Last-published transport counters: the table gets DELTAS, so a host
     // zero-write (the rw clear contract, `TelemetryCommon`) sticks instead
@@ -174,7 +175,15 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         let reboot: Option<BootMode> =
             pfic::mask_bus(|| unsafe { crate::runtime::Drivers::bus() }.take_reboot());
         if let Some(mode) = reboot {
-            flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
+            let bootloader = matches!(mode, BootMode::Bootloader);
+            // The host follows the servo into its bootloader at the live
+            // rate, a rescue floor included (protocol sec 9.6).
+            #[cfg(target_arch = "riscv32")]
+            if bootloader {
+                let baud = pfic::mask_bus(|| unsafe { crate::runtime::Drivers::bus() }.rate());
+                crate::runtime::boot::store_baud(baud);
+            }
+            flash::set_boot_mode(bootloader);
             pfic::software_reset();
         }
 
