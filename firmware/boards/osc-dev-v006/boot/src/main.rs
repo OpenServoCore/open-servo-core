@@ -4,7 +4,7 @@
 use panic_halt as _;
 use tinyboot_ch32_rt as _;
 
-tinyboot_ch32::boot::boot_version!();
+tinyboot_ch32::boot::boot_version!(compat = "osc-dev-v006");
 
 use tinyboot_ch32::boot::prelude::*;
 use tinyboot_ch32::pac::{
@@ -31,15 +31,22 @@ fn init_48mhz_hsi_pll() {
 fn main() -> ! {
     init_48mhz_hsi_pll();
 
-    // HDSEL single wire on PC0 (tinyboot's `half-duplex`). Safe on the
-    // shared wire only with tinyboot's HDSEL-before-TE + open-drain park
-    // order; anything else latches the TX output LOW and idles push-pull, a
-    // hard-low bus jam for every boot window.
+    // HDSEL single wire on PC0, open-drain like the app (servo-ch32 init):
+    // the servo only pulls low, the host pull-up holds mark. 500k until a
+    // host stores another rate in META. Addressable by chip uid, so servos
+    // sharing the bus update one at a time. A 240-byte payload keeps a frame
+    // at 252 B: the WCH-LinkE serial bridge drops bytes from 3M bursts over
+    // 256 B.
     let transport = Usart::new(&UsartConfig {
-        baud: BaudRate::B3000000,
+        baud: BaudRate::B500000,
         pclk: 48_000_000,
         mapping: UsartMapping::Usart1Remap3,
-        tx_en: None,
+        wire: HalfDuplex { drive: OpenDrain },
+        tx_en: NoTxEn,
     });
-    tinyboot_ch32::boot::run(transport, BootCtl::new());
+    tinyboot_ch32::boot::run_with_payload::<240>(
+        transport,
+        BootCtl::new(),
+        Addressable::new(chip_uid),
+    );
 }
