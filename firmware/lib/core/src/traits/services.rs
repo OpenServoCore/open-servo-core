@@ -1,8 +1,9 @@
 use osc_protocol::FrameBytes;
+pub use osc_protocol::frame::Reboot;
 use osc_protocol::wire::{MgmtOp, ResultCode};
 
+use crate::BaudRate;
 use crate::tel::Chunks;
-use crate::{BaudRate, BootMode};
 
 /// Reply-side runtime failure. Overflow is a sizing bug (reply exceeds the
 /// bus's staging buffer); Busy means a previous reply is still draining.
@@ -110,7 +111,7 @@ pub trait Reply {
     /// its lend dropped, or its LAST frame out (protocol sec 5.6).
     fn tel_arm(&mut self, chunks: Chunks, count: u16);
     /// Deferred reboot, honored after any in-flight TX drains.
-    fn stage_reboot(&mut self, mode: BootMode);
+    fn stage_reboot(&mut self, reboot: Reboot);
     /// MGMT CAL accepted (sec 9.3): the bus measures the announced break train
     /// against its own clock and trims the oscillator from it.
     fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8);

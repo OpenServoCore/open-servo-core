@@ -7,7 +7,7 @@ use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::regions::CONTROL_BASE_ADDR;
 use osc_servo_core::regions::config::addr::common::ID as ID_ADDR;
-use osc_servo_core::{BaudRate, Dispatch, RegionStorage, Session, Shared};
+use osc_servo_core::{BaudRate, Dispatch, Reboot, RegionStorage, Session, Shared};
 
 use crate::bus::RESCUE_LOW_US;
 use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
@@ -1143,14 +1143,18 @@ fn commit_and_reboot_paths() {
     // MGMT REBOOT (unicast) acks then stages a reboot honored on poll --
     // withheld while the ack drains (a reset mid-frame truncates the ack on
     // the wire; bench-caught), taken once the TX released.
-    let frame = instruction(ID, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8]);
+    let payload = [MgmtOp::Reboot as u8, Reboot::MODE_BOOTLOADER, 3];
+    let frame = instruction(ID, Opcode::Mgmt, 0, &payload);
     deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
     fire(&mut bus, &h, &mut d);
     let (_, inst, _) = last_reply(&h.wire);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert!(bus.take_reboot().is_none(), "withheld while the ack drains");
     drain_tx(&mut bus, &h);
-    assert!(bus.take_reboot().is_some());
+    assert_eq!(
+        bus.take_reboot(),
+        Some(Reboot::Bootloader(BaudRate::B3000000))
+    );
     assert!(bus.take_reboot().is_none());
 }
 

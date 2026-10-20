@@ -16,7 +16,7 @@ use crate::regions::{
     PROFILE_REGION_SIZE,
 };
 use crate::tel::{Chunk, Chunks};
-use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
+use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reboot, Reply, Request, RequestCtx, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
 
@@ -145,8 +145,8 @@ impl Dispatch for Dispatcher<'_> {
                 reply.begin_clock_cal(gap_us, gaps);
                 Dispatched::Done
             }
-            Request::Mgmt { op, .. } => {
-                self.mgmt(alert, &ctx, op, reply);
+            Request::Mgmt { op, args } => {
+                self.mgmt(alert, &ctx, op, args, reply);
                 Dispatched::Done
             }
             Request::Unsupported => {
@@ -542,15 +542,18 @@ impl Dispatcher<'_> {
         Self::ack(alert, ctx, Ok(()), reply);
     }
 
-    fn mgmt<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, op: MgmtOp, reply: &mut R) {
+    fn mgmt<R: Reply>(
+        &mut self,
+        alert: bool,
+        ctx: &RequestCtx,
+        op: MgmtOp,
+        args: FrameBytes,
+        reply: &mut R,
+    ) {
         match op {
             MgmtOp::Save => self.save(alert, ctx, reply),
             MgmtOp::Factory => self.factory(alert, ctx, reply),
-            MgmtOp::Reboot => {
-                Self::ack(alert, ctx, Ok(()), reply);
-                let mode = self.shared.table.with(|t| t.control.system.boot_mode);
-                reply.stage_reboot(mode);
-            }
+            MgmtOp::Reboot => self.reboot(alert, ctx, args, reply),
             // ENUM/ASSIGN/CAL decode to dedicated Request variants; one
             // arriving Mgmt-wrapped is answered like any unknown op.
             MgmtOp::Enum | MgmtOp::Assign | MgmtOp::Cal => {
@@ -622,6 +625,17 @@ impl Dispatcher<'_> {
         })
     }
 
+    /// sec 9.5 REBOOT: the mode, and the bootloader's rate (sec 9.6), are
+    /// required args; without them the REBOOT nacks `range` and the servo
+    /// stays up.
+    fn reboot<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, args: FrameBytes, reply: &mut R) {
+        let Some(reboot) = Reboot::parse(args) else {
+            return Self::ack_code(alert, ctx, ResultCode::Range, reply);
+        };
+        Self::ack(alert, ctx, Ok(()), reply);
+        reply.stage_reboot(reboot);
+    }
+
     /// sec 9.5 FACTORY: wipe both saved slots, ack, then stage the reboot that
     /// re-seeds board defaults -- the erased store IS the factory state.
     /// Same torque gate as SAVE (erase is the same stall class, and it ends
@@ -638,8 +652,8 @@ impl Dispatcher<'_> {
         match wiped {
             Ok(()) => {
                 Self::ack(alert, ctx, Ok(()), reply);
-                let mode = self.shared.table.with(|t| t.control.system.boot_mode);
-                reply.stage_reboot(mode);
+                // FACTORY takes no args: it always comes back as the app.
+                reply.stage_reboot(Reboot::App);
             }
             Err(StoreError) => Self::ack_code(alert, ctx, ResultCode::Hardware, reply),
         }

@@ -170,6 +170,10 @@ impl<P: Pipe> Client<P> {
         block_on(mgmt::reboot(&mut self.0, id))
     }
 
+    pub fn reboot_bootloader(&mut self, id: Id, baud: BaudRate) -> Result<(), Error> {
+        block_on(mgmt::reboot_bootloader(&mut self.0, id, baud))
+    }
+
     pub fn factory(&mut self, id: Id) -> Result<(), Error> {
         block_on(mgmt::factory(&mut self.0, id))
     }

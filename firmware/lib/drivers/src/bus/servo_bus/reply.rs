@@ -3,7 +3,7 @@
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::tel::{self, Chunks};
 use osc_servo_core::traits::{Reply, SendError, Status};
-use osc_servo_core::{BaudRate, BootMode};
+use osc_servo_core::{BaudRate, Reboot};
 
 use super::super::tx::TxEngine;
 use super::ServoBus;
@@ -21,7 +21,7 @@ pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pub(super) id: &'a mut u8,
     pub(super) pending_id: &'a mut Option<u8>,
     pub(super) pending_baud: &'a mut Option<BaudRate>,
-    pub(super) pending_reboot: &'a mut Option<BootMode>,
+    pub(super) pending_reboot: &'a mut Option<Reboot>,
     pub(super) pending_cal: &'a mut Option<(u16, u8)>,
     pub(super) response_deadline_us: &'a mut u16,
     pub(super) tel: &'a mut Option<TelPost>,
@@ -142,8 +142,8 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
         }
     }
 
-    fn stage_reboot(&mut self, mode: BootMode) {
-        *self.pending_reboot = Some(mode);
+    fn stage_reboot(&mut self, reboot: Reboot) {
+        *self.pending_reboot = Some(reboot);
     }
 
     fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8) {

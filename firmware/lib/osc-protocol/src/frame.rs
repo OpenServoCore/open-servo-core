@@ -3,7 +3,7 @@
 //! chip owns the ring and its cursor; these borrow into it.
 
 use crate::bytes::FrameBytes;
-use crate::wire::{self, Id, Inst, MgmtOp};
+use crate::wire::{self, BaudRate, Id, Inst, MgmtOp};
 
 /// Why a header cannot be dispatched. Frame-level rejects (sec 5.3 layer 1): the
 /// frame is dropped, no reply.
@@ -189,6 +189,31 @@ pub fn uid_prefix_matches(uid: &[u8; wire::UID_LEN], prefix_len: u8, prefix: Fra
         left = left.saturating_sub(8);
         (u ^ p) & mask == 0
     })
+}
+
+/// MGMT REBOOT args: `mode(1)`, then for the bootloader the `baud(1)` index
+/// it runs at (sec 9.5, sec 9.6). Both are required, so a host always names
+/// where the servo goes and at what rate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Reboot {
+    App,
+    Bootloader(BaudRate),
+}
+
+impl Reboot {
+    pub const MODE_APP: u8 = 0;
+    pub const MODE_BOOTLOADER: u8 = 1;
+
+    #[inline]
+    pub fn parse(args: FrameBytes<'_>) -> Option<Reboot> {
+        match (args.len(), args.u8_at(0)?) {
+            (1, Self::MODE_APP) => Some(Reboot::App),
+            (2, Self::MODE_BOOTLOADER) => {
+                Some(Reboot::Bootloader(BaudRate::from_idx(args.u8_at(1)?)?))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// MGMT ASSIGN args: `uid(16)`, `new_id(1)` (sec 9.2); the UID borrowed

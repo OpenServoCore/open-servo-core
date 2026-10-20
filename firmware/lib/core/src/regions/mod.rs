@@ -37,7 +37,7 @@ pub use config::{
     ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys, ConfigPosSoft, ConfigRegs,
     ConfigThermal, ConfigThermalExt, StallResponse,
 };
-pub use control::{BootMode, ControlBurst, ControlLifecycle, ControlRegs, ControlSystem, Mode};
+pub use control::{ControlBurst, ControlLifecycle, ControlRegs, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
     TelemetryCommon, TelemetryEstimates, TelemetryMode, TelemetryRefs, TelemetryRegs, TelemetryTick,
@@ -409,13 +409,12 @@ mod tests {
         assert!(rw(gear::GEAR_CLASS, gear::GEAR_CLASS + 1));
     }
 
-    /// `boot_mode` is an ABI pin: the burst block appends after
-    /// `ControlSystem`, and its explicit alignment byte keeps `ControlBurst`
-    /// two-byte aligned without repr(C) inserting invisible padding.
+    /// The burst block is an ABI pin: it stays put behind the two reserved
+    /// bytes `boot_mode` left, two-byte aligned without repr(C) inserting
+    /// invisible padding.
     #[test]
-    fn control_burst_appends_without_moving_boot_mode() {
-        use super::control::addr::{burst, system};
-        assert_eq!(system::BOOT_MODE, 0x194);
+    fn control_burst_stays_behind_the_reserved_system_bytes() {
+        use super::control::addr::burst;
         assert_eq!(burst::DUTY_Q15, 0x196);
         assert_eq!(burst::ARM, 0x198);
         assert_eq!(burst::PAGE, 0x199);

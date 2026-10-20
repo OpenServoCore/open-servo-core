@@ -2,11 +2,11 @@
 //! the `BoardConfig` literal at compile time, calls into bringup, confirms the
 //! boot, installs the kernel + IRQs, and enters the main loop.
 
-use osc_servo_core::{BootMode, RegionStorageRaw};
+use osc_servo_core::RegionStorageRaw;
 use osc_servo_drivers::traits::Monotonic as _;
 
 use crate::cfg::{BoardConfig, Precomputed, chip};
-use crate::hal::{flash, gpio, pfic, rcc};
+use crate::hal::{gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
 use crate::runtime::control_io::Ch32ControlIo;
 
@@ -34,9 +34,8 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let io = Ch32ControlIo::new(cfg, pre);
     crate::runtime::statics::install(io, pre.kernel_timing);
     // Bringup done, no IRQ live yet: the META page erase stalls nothing.
-    // SAFETY: pre-IRQ, so the bus reach-in is single-context.
     #[cfg(target_arch = "riscv32")]
-    crate::runtime::boot::confirm(unsafe { crate::runtime::Drivers::bus() }.rate());
+    crate::runtime::boot::confirm();
     crate::runtime::isr::install_irqs();
     // Last-published transport counters: the table gets DELTAS, so a host
     // zero-write (the rw clear contract, `TelemetryCommon`) sticks instead
@@ -172,19 +171,11 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // transport ISRs, so masking the bus level is what makes this
         // main-loop reach-in non-aliasing. Flash writes stay out of the ISR
         // bodies -- the stall is lethal under a live control loop.
-        let reboot: Option<BootMode> =
-            pfic::mask_bus(|| unsafe { crate::runtime::Drivers::bus() }.take_reboot());
-        if let Some(mode) = reboot {
-            let bootloader = matches!(mode, BootMode::Bootloader);
-            // The host follows the servo into its bootloader at the live
-            // rate, a rescue floor included (protocol sec 9.6).
-            #[cfg(target_arch = "riscv32")]
-            if bootloader {
-                let baud = pfic::mask_bus(|| unsafe { crate::runtime::Drivers::bus() }.rate());
-                crate::runtime::boot::store_baud(baud);
-            }
-            flash::set_boot_mode(bootloader);
-            pfic::software_reset();
+        #[cfg(target_arch = "riscv32")]
+        if let Some(reboot) =
+            pfic::mask_bus(|| unsafe { crate::runtime::Drivers::bus() }.take_reboot())
+        {
+            crate::runtime::boot::reboot(reboot);
         }
 
         // Rescue sampler (protocol sec 9.1). The break detector wakes once

@@ -113,7 +113,11 @@ enum Cmd {
     /// Wipe both saved slots; the servo reboots itself to board defaults.
     Factory,
     /// Ack, then reset once the ack has drained.
-    Reboot,
+    Reboot {
+        /// Reset into the bootloader instead, which then runs at this rate.
+        #[arg(long, value_name = "BAUD")]
+        bootloader: Option<String>,
+    },
     /// Recover a servo whose data state refuses closed loop: report it,
     /// FACTORY-reset a CONFIG_CORRUPT one (the only exit from that state)
     /// and, with --from, restore a saved table, restamp and SAVE.
@@ -809,14 +813,27 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Recover(args) => state::recover(args, cli.bus.clone(), cli.id),
-        Cmd::Reboot => {
+        Cmd::Reboot { bootloader } => {
             let mut c = connect_bus(&cli)?;
             state::check(&mut c, id)?;
-            c.reboot(id)?;
-            println!(
-                "id {}: rebooting (back at its configured baud)",
-                id.as_byte()
-            );
+            match bootloader {
+                None => {
+                    c.reboot(id)?;
+                    println!(
+                        "id {}: rebooting (back at its configured baud)",
+                        id.as_byte()
+                    );
+                }
+                Some(rate) => {
+                    let rate = parse_rate(rate)?;
+                    c.reboot_bootloader(id, rate)?;
+                    println!(
+                        "id {}: rebooting into the bootloader at {} baud",
+                        id.as_byte(),
+                        rate.as_hz()
+                    );
+                }
+            }
             Ok(())
         }
         Cmd::Syntonize {

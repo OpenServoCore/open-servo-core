@@ -7,11 +7,11 @@ use osc_integration::sim::{
     HandlerCost, Sim, Source, WireFrame, assert_valid, instruction, status,
 };
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode};
-use osc_servo_core::BaudRate;
 use osc_servo_core::regions::PROFILE_BASE_ADDR;
 use osc_servo_core::regions::config::addr::common::{BAUD_RATE_IDX, ID};
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::profile::span_word;
+use osc_servo_core::{BaudRate, Reboot};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -244,13 +244,28 @@ fn mgmt_reboot_acks_then_surfaces(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    sim.host_send(&instruction(ID5, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8]));
+    let payload = [MgmtOp::Reboot as u8, Reboot::MODE_BOOTLOADER, baud_idx];
+    sim.host_send(&instruction(ID5, Opcode::Mgmt, 0, &payload));
     let frames = sim.run();
 
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert!(payload.is_empty());
-    assert!(sim.take_reboot(s).is_some());
+    let baud = BaudRate::from_idx(baud_idx).unwrap();
+    assert_eq!(sim.take_reboot(s), Some(Reboot::Bootloader(baud)));
+}
+
+#[apply(matrix)]
+fn mgmt_reboot_without_its_mode_nacks_range_and_stays_up(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    sim.host_send(&instruction(ID5, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8]));
+    let frames = sim.run();
+
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Range));
+    assert_eq!(sim.take_reboot(s), None);
 }
 
 #[apply(matrix)]

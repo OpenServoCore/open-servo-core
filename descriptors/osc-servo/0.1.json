@@ -795,23 +795,6 @@
       "kind": "int"
     },
     {
-      "name": "boot_mode",
-      "addr": 404,
-      "width": 1,
-      "access": "rw",
-      "kind": "enum",
-      "variants": [
-        {
-          "name": "App",
-          "value": 0
-        },
-        {
-          "name": "Bootloader",
-          "value": 1
-        }
-      ]
-    },
-    {
       "name": "duty_q15",
       "addr": 406,
       "width": 2,

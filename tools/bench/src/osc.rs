@@ -13,7 +13,7 @@
 //! end of its stop bit (1 start + 8 data + 1 stop = 10 bit-times).
 
 use osc_protocol::crc::osc_crc;
-use osc_protocol::frame::Header;
+use osc_protocol::frame::{Header, Reboot};
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::table::{PROFILE_SPANS_PER_SLOT, profile_slot_addr, profile_span_word};
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
@@ -117,9 +117,15 @@ pub fn build_factory(id: u8) -> Vec<u8> {
     build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Factory as u8])
 }
 
-/// MGMT REBOOT (protocol sec 9.5): acks first, then resets once the ack has drained.
+/// MGMT REBOOT into the app (protocol sec 9.5): acks first, then resets once
+/// the ack has drained.
 pub fn build_reboot(id: u8) -> Vec<u8> {
-    build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8])
+    build_instruction(
+        id,
+        Opcode::Mgmt,
+        0,
+        &[MgmtOp::Reboot as u8, Reboot::MODE_APP],
+    )
 }
 
 /// WRITE: `addr(2)` little-endian then the data bytes (mirrors `WriteReq`).

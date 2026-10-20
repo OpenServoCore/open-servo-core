@@ -14,7 +14,7 @@ use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{
-    BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
+    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults, Reboot,
     RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
@@ -343,7 +343,7 @@ impl SimServo {
         self.bus.on_tx_complete();
     }
 
-    pub fn take_reboot(&mut self) -> Option<BootMode> {
+    pub fn take_reboot(&mut self) -> Option<Reboot> {
         self.bus.take_reboot()
     }
 

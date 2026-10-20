@@ -1624,8 +1624,17 @@ chose, with torque provably off.
 
 ### 9.5 Reboot / factory
 
-`MGMT REBOOT`, `MGMT FACTORY` - conventional semantics (as in DXL);
-payload details live with the implementation. FACTORY erases every slot
+`MGMT REBOOT`, `MGMT FACTORY` - conventional semantics (as in DXL).
+REBOOT names where the servo goes, with no default:
+
+| args              | effect                                           |
+| ----------------- | ------------------------------------------------ |
+| `0`               | reset into the app                               |
+| `1 baud_idx`      | reset into the bootloader at that rate (sec 9.6) |
+
+`baud_idx` uses the `baud_rate_idx` encoding (sec 2). Any other args nack
+`range` and the servo stays up. The ack drains at the old rate before the
+reset. FACTORY takes no args and always comes back as the app. FACTORY erases every slot
 of both saved images (config and calib with its tables, sec 9.4), not
 just the live table, then stages the reboot: the erased store is the
 factory state, and the servo comes back *virgin* (sec 5.7) on board
@@ -1640,14 +1649,15 @@ built addressable: it holds no id and stays silent until a host selects it
 by the chip's unique id. App servos never frame its traffic, and nothing
 else uses the bus while it runs.
 
-- Entry: `MGMT REBOOT` with boot mode `Bootloader` (sec 9.5). The ack
-  drains at the old rate, then the servo resets into the bootloader.
+- Entry: `MGMT REBOOT 1 baud_idx` (sec 9.5). The host always names the
+  bootloader's rate, so it can pick a slower one where the wiring is
+  unknown, as in a field update.
 - Rate: the bootloader runs at the baud stored in its metadata page. The
-  app stores the bus rate there after bringup, and the live rate again on a
-  reboot into the bootloader, so a baud changed without a reboot or a rescue
-  floor (sec 9.1) carries over. A flash write happens only when the rate
-  changed. A board with only the bootloader, which never ran the app, comes
-  up at 0.5 M.
+  REBOOT stores the named rate there first, a flash write only when it
+  changed. A servo that falls back to its bootloader on its own, after a
+  power cut mid-update or an image that never confirms, comes up at the
+  rate the last update named. A board with only the bootloader comes up at
+  0.5 M.
 - Exit: the host resets the bootloader into the app once the image is
   written and verified. A new image boots on trial: its first bringup
   confirms it, and one that never confirms falls back to the bootloader

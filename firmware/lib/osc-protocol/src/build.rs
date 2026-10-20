@@ -10,6 +10,7 @@
 //! refuses to build. Semantic validity -- id ranges, table addressing --
 //! stays the responder's verdict, reachable on the wire by construction.
 
+use crate::frame::Reboot;
 use crate::group::{GreadProfileTarget, GreadTarget};
 use crate::wire::{self, Id, MgmtOp};
 
@@ -180,8 +181,7 @@ impl<'a> GwritePerTarget<'a> {
     }
 }
 
-/// Bare MGMT payload: `sub-op(1)`, no args (SAVE / REBOOT / FACTORY, sec 9.4,
-/// sec 9.5).
+/// Bare MGMT payload: `sub-op(1)`, no args (SAVE / FACTORY, sec 9.4, sec 9.5).
 #[inline]
 pub fn mgmt(dst: &mut [u8], op: MgmtOp) -> Option<usize> {
     if cap(dst) < 1 {
@@ -205,6 +205,27 @@ pub fn mgmt_enum(dst: &mut [u8], prefix_len: u8, prefix: &[u8; wire::UID_LEN]) -
     dst[0] = MgmtOp::Enum as u8;
     dst[1] = prefix_len;
     dst[2..total].copy_from_slice(&prefix[..n]);
+    Some(total)
+}
+
+/// MGMT REBOOT: `sub-op(1) mode(1)`, plus `baud(1)` into the bootloader
+/// (sec 9.5, sec 9.6).
+pub fn mgmt_reboot(dst: &mut [u8], reboot: Reboot) -> Option<usize> {
+    let total = match reboot {
+        Reboot::App => 2,
+        Reboot::Bootloader(_) => 3,
+    };
+    if cap(dst) < total {
+        return None;
+    }
+    dst[0] = MgmtOp::Reboot as u8;
+    match reboot {
+        Reboot::App => dst[1] = Reboot::MODE_APP,
+        Reboot::Bootloader(baud) => {
+            dst[1] = Reboot::MODE_BOOTLOADER;
+            dst[2] = baud.as_idx();
+        }
+    }
     Some(total)
 }
 
@@ -239,6 +260,7 @@ mod tests {
     use crate::bytes::FrameBytes;
     use crate::frame::{AssignReq, CalReq, EnumReq, MgmtReq, ProfileReq, ReadReq, WriteReq};
     use crate::group;
+    use crate::wire::BaudRate;
 
     fn fb(b: &[u8]) -> FrameBytes<'_> {
         FrameBytes::from(b)
@@ -389,6 +411,25 @@ mod tests {
         assert_eq!((c.gap_us, c.gaps), (400, 8));
         assert_eq!(mgmt_cal(&mut b, 0, 8), None);
         assert_eq!(mgmt_cal(&mut b, 400, 0), None);
+
+        for r in [Reboot::App, Reboot::Bootloader(BaudRate::B2000000)] {
+            let n = mgmt_reboot(&mut b, r).unwrap();
+            let m = MgmtReq::parse(fb(&b[..n])).unwrap();
+            assert_eq!(m.op, MgmtOp::Reboot);
+            assert_eq!(Reboot::parse(m.args), Some(r));
+        }
+    }
+
+    #[test]
+    fn reboot_args_name_the_mode_and_the_bootloader_rate() {
+        assert_eq!(Reboot::parse(fb(&[0])), Some(Reboot::App));
+        assert_eq!(
+            Reboot::parse(fb(&[1, 3])),
+            Some(Reboot::Bootloader(BaudRate::B3000000))
+        );
+        for bad in [&[][..], &[1], &[1, 4], &[0, 0], &[2, 0], &[1, 3, 0]] {
+            assert_eq!(Reboot::parse(fb(bad)), None, "{bad:?}");
+        }
     }
 
     #[test]
