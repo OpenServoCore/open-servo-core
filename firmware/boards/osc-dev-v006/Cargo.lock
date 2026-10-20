@@ -423,6 +423,7 @@ dependencies = [
  "osc-servo-drivers",
  "portable-atomic",
  "riscv 0.12.1",
+ "tinyboot-ch32",
 ]
 
 [[package]]
@@ -824,9 +825,9 @@ dependencies = [
 
 [[package]]
 name = "tinyboot-protocol"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6fbc5b8c0d4b9205433a1c921b7411aad79fd2e38a5bc14d98bf3186b83f1a"
+checksum = "22b83d4e4e98fba7904122755a6487f91e1ba07a03a6dd80e866aedecbd4bfb8"
 dependencies = [
  "bitflags 2.11.1",
  "embedded-io",

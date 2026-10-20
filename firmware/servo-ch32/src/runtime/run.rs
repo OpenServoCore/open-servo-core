@@ -1,6 +1,6 @@
 //! Top-level program entry. `run!` is the board binary's main: it validates
-//! the `BoardConfig` literal at compile time, calls into bringup, installs
-//! the kernel + IRQs, and enters the main loop.
+//! the `BoardConfig` literal at compile time, calls into bringup, confirms the
+//! boot, installs the kernel + IRQs, and enters the main loop.
 
 use osc_servo_core::{BootMode, RegionStorageRaw};
 use osc_servo_drivers::traits::Monotonic as _;
@@ -33,6 +33,9 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let mut stack = crate::runtime::stack::paint();
     let io = Ch32ControlIo::new(cfg, pre);
     crate::runtime::statics::install(io, pre.kernel_timing);
+    // Bringup done, no IRQ live yet: the META page erase stalls nothing.
+    #[cfg(target_arch = "riscv32")]
+    crate::runtime::boot::confirm();
     crate::runtime::isr::install_irqs();
     // Last-published transport counters: the table gets DELTAS, so a host
     // zero-write (the rw clear contract, `TelemetryCommon`) sticks instead

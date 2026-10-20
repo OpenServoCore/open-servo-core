@@ -1,3 +1,5 @@
+#[cfg(target_arch = "riscv32")]
+mod boot;
 pub mod burst;
 pub mod control_io;
 #[cfg(feature = "defmt")]
