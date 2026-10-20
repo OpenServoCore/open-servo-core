@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 resolver = "2"
 members  = ["boot", "app"]
@@ -13,8 +15,23 @@ debug         = 2
 debug-assertions = false
 
 # Bootloader is flash-size-bound and only runs once at startup; size beats speed.
+# The tinyboot crates are mostly bootloader code; the app only confirms the boot.
 [profile.dev.package.osc-dev-v006-boot]
 opt-level = "z"
+
+[profile.dev.package.tinyboot-ch32]
+opt-level = "z"
+
+[profile.dev.package.tinyboot-core]
+opt-level = "z"
+
+[profile.dev.package.tinyboot-protocol]
+opt-level = "z"
+
+# Every block a predecessor does not fall into starts 4-aligned (v006-performance.md).
+# Fat LTO codegens in the binary crate, so this covers the whole app image.
+[profile.dev.package.osc-dev-v006-app]
+rustflags = ["-C", "llvm-args=-align-all-nofallthru-blocks=2"]
 
 [profile.release]
 opt-level     = 3
@@ -25,3 +42,17 @@ debug         = 2
 
 [profile.release.package.osc-dev-v006-boot]
 opt-level = "z"
+
+[profile.release.package.tinyboot-ch32]
+opt-level = "z"
+
+[profile.release.package.tinyboot-core]
+opt-level = "z"
+
+[profile.release.package.tinyboot-protocol]
+opt-level = "z"
+
+# Every block a predecessor does not fall into starts 4-aligned (v006-performance.md).
+# Fat LTO codegens in the binary crate, so this covers the whole app image.
+[profile.release.package.osc-dev-v006-app]
+rustflags = ["-C", "llvm-args=-align-all-nofallthru-blocks=2"]

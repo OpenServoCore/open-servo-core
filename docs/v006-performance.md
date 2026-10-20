@@ -43,7 +43,7 @@ A transfer into a target at 2 mod 4 spends the first half of its first fetched w
 
 ### 2.1 Block alignment
 
-The board builds with `-C llvm-args=-align-all-nofallthru-blocks=2` ([`firmware/boards/osc-dev-v006/.cargo/config.toml`](../firmware/boards/osc-dev-v006/.cargo/config.toml)). The value is a power of two: every basic block that its layout predecessor does not fall into starts at 0 mod 4. The padding costs flash. The flag does not touch function entries.
+The board app builds with `-C llvm-args=-align-all-nofallthru-blocks=2` (the `osc-dev-v006-app` profile in [`firmware/boards/osc-dev-v006/Cargo.toml`](../firmware/boards/osc-dev-v006/Cargo.toml); the bootloader builds without it). The value is a power of two: every basic block that its layout predecessor does not fall into starts at 0 mod 4. The padding costs flash. The flag does not touch function entries.
 
 ### 2.2 Function entries
 

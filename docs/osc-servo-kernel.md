@@ -380,7 +380,7 @@ Flash is fetched one aligned 4-byte word per 3 HCLK at 48 MHz, with no cache. Ev
 
 > **Every out-of-line hot function carries `#[rustc_align(4)]` and is listed in `scripts/check-hot-align.sh`.**
 
-Hot means the tick interrupt and its callees, the bus vector bodies, the bus frame path and the TEL lane. The pin applies whether or not the function is aligned today; new hot code adds the attribute and the script entry in the same change. The board builds with `-align-all-nofallthru-blocks=2` (`firmware/boards/osc-dev-v006/.cargo/config.toml`), which does not cover function entries. The four interrupt bodies share one `.trap.rust` section and each carries its own pin.
+Hot means the tick interrupt and its callees, the bus vector bodies, the bus frame path and the TEL lane. The pin applies whether or not the function is aligned today; new hot code adds the attribute and the script entry in the same change. The board app builds with `-align-all-nofallthru-blocks=2` (the `osc-dev-v006-app` profile in `firmware/boards/osc-dev-v006/Cargo.toml`), which does not cover function entries. The four interrupt bodies share one `.trap.rust` section and each carries its own pin.
 
 ### 8.4 Guards
 
