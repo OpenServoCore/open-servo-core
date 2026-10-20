@@ -14,14 +14,6 @@ pub enum Mode {
     Position = 3,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
-#[repr(u8)]
-pub enum BootMode {
-    #[default]
-    App = 0,
-    Bootloader = 1,
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, Default, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
@@ -58,14 +50,6 @@ pub struct ControlLifecycle {
     pub goal_current: i16,
     #[ct_field(skip)]
     pub _rsvd_tail: u16,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct ControlSystem {
-    pub boot_mode: BootMode,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
 }
 
 /// Shunt-burst request. `arm` is level, not an edge: 1 asks for a capture, 0
@@ -139,7 +123,10 @@ pub struct ControlTel {
 )]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
-    pub system: ControlSystem,
+    // Was `boot_mode`, now a MGMT REBOOT arg (protocol sec 9.5); kept so
+    // the burst block keeps its addresses.
+    #[ct_section(skip)]
+    pub _rsvd_system: [u8; 2],
     pub burst: ControlBurst,
     pub pos_lut: ControlPosLut,
     #[ct_section(skip)]

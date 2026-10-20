@@ -12,8 +12,8 @@ use crate::regions::CONTROL_BASE_ADDR;
 use crate::regions::config::BaudRate;
 use crate::services::bus::Dispatcher;
 use crate::tel::{Chunk, Chunks};
-use crate::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
-use crate::{BootMode, RegionStorage, Shared, StagedWrites};
+use crate::traits::{Dispatch, Dispatched, Reboot, Reply, Request, RequestCtx, SendError, Status};
+use crate::{RegionStorage, Shared, StagedWrites};
 
 /// One recorded `send_status` call.
 struct Sent {
@@ -33,7 +33,7 @@ struct FakeReply {
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
     tel_arm: Option<(Chunks, u16)>,
-    reboot: Option<BootMode>,
+    reboot: Option<Reboot>,
     clock_cal: Option<(u16, u8)>,
 }
 
@@ -117,8 +117,8 @@ impl Reply for FakeReply {
         self.tel_arm = Some((chunks, count));
     }
 
-    fn stage_reboot(&mut self, mode: BootMode) {
-        self.reboot = Some(mode);
+    fn stage_reboot(&mut self, reboot: Reboot) {
+        self.reboot = Some(reboot);
     }
 
     fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8) {
@@ -549,39 +549,51 @@ fn commit_silent_when_may_reply_false() {
 
 // --- Mgmt -----------------------------------------------------------------
 
+fn reboot_req(args: &[u8]) -> Request<'_> {
+    Request::Mgmt {
+        op: MgmtOp::Reboot,
+        args: FrameBytes::from(args),
+    }
+}
+
 #[test]
-fn mgmt_reboot_acks_and_stages_boot_mode() {
+fn mgmt_reboot_acks_and_stages_the_app() {
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
-    let reply = go(
-        &shared,
-        &mut staged,
-        Request::Mgmt {
-            op: MgmtOp::Reboot,
-            args: FrameBytes::from(&[][..]),
-        },
-        true,
-    );
+    let reply = go(&shared, &mut staged, reboot_req(&[Reboot::MODE_APP]), true);
     assert_eq!(reply.last().result, ResultCode::Ok);
     assert!(reply.last().data.is_empty());
-    assert_eq!(reply.reboot, Some(BootMode::App));
+    assert_eq!(reply.reboot, Some(Reboot::App));
 }
 
 #[test]
 fn mgmt_reboot_stages_without_ack_when_silent() {
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
-    let reply = go(
-        &shared,
-        &mut staged,
-        Request::Mgmt {
-            op: MgmtOp::Reboot,
-            args: FrameBytes::from(&[][..]),
-        },
-        false,
-    );
+    let reply = go(&shared, &mut staged, reboot_req(&[Reboot::MODE_APP]), false);
     assert_eq!(reply.count(), 0);
-    assert_eq!(reply.reboot, Some(BootMode::App));
+    assert_eq!(reply.reboot, Some(Reboot::App));
+}
+
+#[test]
+fn mgmt_reboot_into_the_bootloader_stages_the_named_rate() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let args = [Reboot::MODE_BOOTLOADER, BaudRate::B1000000.as_idx()];
+    let reply = go(&shared, &mut staged, reboot_req(&args), true);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(reply.reboot, Some(Reboot::Bootloader(BaudRate::B1000000)));
+}
+
+#[test]
+fn mgmt_reboot_without_its_args_nacks_range_and_stays_up() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    for args in [&[][..], &[1], &[1, 4], &[2, 0], &[0, 0]] {
+        let reply = go(&shared, &mut staged, reboot_req(args), true);
+        assert_eq!(reply.last().result, ResultCode::Range, "args {args:?}");
+        assert_eq!(reply.reboot, None, "args {args:?}");
+    }
 }
 
 #[test]
@@ -799,7 +811,7 @@ fn factory_wipes_acks_and_stages_reboot() {
     let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Factory), true);
     assert_eq!(reply.last().result, ResultCode::Ok);
     assert_eq!(STORE.wipes.load(Ordering::Relaxed), 1);
-    assert_eq!(reply.reboot, Some(BootMode::App));
+    assert_eq!(reply.reboot, Some(Reboot::App));
 }
 
 #[test]

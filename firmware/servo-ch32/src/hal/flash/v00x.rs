@@ -100,13 +100,3 @@ pub fn write(addr: u32, segs: &[&[u8]]) {
     FLASH.ctlr().write(|_| {});
     lock();
 }
-
-pub fn boot_mode() -> bool {
-    FLASH.statr().read().boot_mode()
-}
-
-pub fn set_boot_mode(mode: bool) {
-    FLASH.boot_modekeyp().write(|w| w.set_modekeyr(KEY1));
-    FLASH.boot_modekeyp().write(|w| w.set_modekeyr(KEY2));
-    FLASH.statr().modify(|w| w.set_boot_mode(mode));
-}

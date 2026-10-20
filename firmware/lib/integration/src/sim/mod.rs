@@ -29,7 +29,7 @@ use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::telemetry::tick_flag;
 use osc_servo_core::tel::STREAM_SAMPLES_MAX;
-use osc_servo_core::{BaudRate, BootMode, ControlTable, TelemetryTick};
+use osc_servo_core::{BaudRate, ControlTable, Reboot, TelemetryTick};
 use osc_servo_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
@@ -509,7 +509,7 @@ impl Sim {
         self.servos[i].poll_clock_trim()
     }
 
-    pub fn take_reboot(&mut self, i: usize) -> Option<BootMode> {
+    pub fn take_reboot(&mut self, i: usize) -> Option<Reboot> {
         self.servos[i].take_reboot()
     }
 

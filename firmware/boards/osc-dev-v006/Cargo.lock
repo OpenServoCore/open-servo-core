@@ -812,9 +812,9 @@ checksum = "883604800ee4be7884b4a2bf9fc4c9731f4c09791852a7474c52a9ac4e8a6bb7"
 
 [[package]]
 name = "tinyboot-core"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b8f84302f56beeea2edb744e81c20027e36047ff527dee95c934b489dd9cf3d"
+checksum = "0929e36084bb31efe540615b1f5ea68769fe0a44b1342718f6425a9688866c09"
 dependencies = [
  "critical-section",
  "embedded-io",

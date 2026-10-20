@@ -54,18 +54,17 @@ pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults, CurrentDefaults};
 pub use regions::{
-    BootMode, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense,
-    CalibSenseExt, CalibStamp, CalibThermal, CalibWinding, ConfigCommon, ConfigFaultCfg,
-    ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity,
-    ConfigPosPhys, ConfigPosSoft, ConfigRegs, ConfigThermal, ConfigThermalExt, ControlLifecycle,
-    ControlRegs, ControlSystem, ControlTable, ControlTableCell, Mode, StallResponse,
-    TelemetryCommon, TelemetryEstimates, TelemetryMode, TelemetryRefs, TelemetryRegs,
-    TelemetryTick,
+    CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
+    CalibStamp, CalibThermal, CalibWinding, ConfigCommon, ConfigFaultCfg, ConfigFusion,
+    ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys,
+    ConfigPosSoft, ConfigRegs, ConfigThermal, ConfigThermalExt, ControlLifecycle, ControlRegs,
+    ControlTable, ControlTableCell, Mode, StallResponse, TelemetryCommon, TelemetryEstimates,
+    TelemetryMode, TelemetryRefs, TelemetryRegs, TelemetryTick,
 };
 pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
 pub use traits::{
-    Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reply, Request,
-    RequestCtx, SendError, Sensors, Status, TelStream,
+    Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reboot, Reply,
+    Request, RequestCtx, SendError, Sensors, Status, TelStream,
 };

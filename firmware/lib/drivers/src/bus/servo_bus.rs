@@ -6,7 +6,7 @@
 
 use osc_protocol::wire::Opcode;
 use osc_servo_core::traits::Dispatch;
-use osc_servo_core::{BaudRate, BootMode};
+use osc_servo_core::{BaudRate, Reboot};
 
 use super::chain::Chain;
 use super::clock::ClockDiscipline;
@@ -72,7 +72,7 @@ pub struct ServoBus<P: Providers> {
     response_deadline_us: u16,
     pending_id: Option<u8>,
     pending_baud: Option<BaudRate>,
-    pending_reboot: Option<BootMode>,
+    pending_reboot: Option<Reboot>,
     crc_fails: u32,
     // The one frame dispatched ahead of its CRC verdict (sec 4: the spine).
     // Backpressure bounds it to one: a pending frame IS the frontier, so the
@@ -363,17 +363,11 @@ impl<P: Providers> ServoBus<P> {
     /// draining (a reset mid-ack truncates the frame on the wire; bench-
     /// caught), honored on the first poll after the TX released. A silent
     /// (NOREPLY/broadcast) reboot stages no ack and takes immediately.
-    pub fn take_reboot(&mut self) -> Option<BootMode> {
+    pub fn take_reboot(&mut self) -> Option<Reboot> {
         if self.tx.busy() {
             return None;
         }
         self.pending_reboot.take()
-    }
-
-    /// The rate the bus runs at now: the configured one, or the rescue
-    /// floor after a rescue break (sec 9.1).
-    pub fn rate(&self) -> BaudRate {
-        self.rate
     }
 
     pub fn diag(&self) -> LinkDiag {
