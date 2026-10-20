@@ -12,6 +12,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bare-metal"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5deb64efa5bd81e31fcd1938615a6d98c82eafcbcd787162b6f63b91d6bac5b3"
+dependencies = [
+ "rustc_version",
+]
+
+[[package]]
 name = "bbqueue"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27,6 +36,12 @@ name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
+
+[[package]]
+name = "bitfield"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46afbd2983a5d5a7bd740ccb198caf5b82f45c40c09c0eed36052d91cb92e719"
 
 [[package]]
 name = "bitflags"
@@ -64,10 +79,12 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "ch32-metapac"
-version = "0.1.0"
-source = "git+https://github.com/ch32-rs/ch32-metapac#0f256a6c14a1f54e0898e3b42e1116db9f64ad97"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7dc7dd8cf8ab9b6ab9dda79f7d2b3f974acee4111634792ca713c45f801699d"
 dependencies = [
- "riscv 0.12.1",
+ "cortex-m",
+ "riscv 0.16.1",
  "vcell",
 ]
 
@@ -103,6 +120,32 @@ checksum = "688d7fbb8092b8de775ef2536f36c8c31f2bc4006ece2e8d8ad2d17d00ce0a2a"
 dependencies = [
  "loom",
  "tracing",
+]
+
+[[package]]
+name = "cortex-m"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "844b9697e922c99847eed515c6eb6d101e7ce62ff556fcaec243798291427ee8"
+dependencies = [
+ "bare-metal",
+ "bitfield",
+ "cortex-m-macros",
+ "critical-section",
+ "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0",
+ "volatile-register",
+]
+
+[[package]]
+name = "cortex-m-macros"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d1922be58519ad40368fc4ca595a2cefa51a7abf947be3b0c90586dc7dbd0e2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -151,6 +194,16 @@ checksum = "c0f73a4a4a91609e977ae3b7bd831ffa292edfd42ad140a3244a61d805b0e05e"
 dependencies = [
  "critical-section",
  "defmt",
+]
+
+[[package]]
+name = "embedded-hal"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35949884794ad573cf46071e41c9b60efb0cb311e3ca01f7af807af1debc66ff"
+dependencies = [
+ "nb 0.1.3",
+ "void",
 ]
 
 [[package]]
@@ -295,6 +348,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24e0cc5e2c585acbd15c5ce911dff71e1f4d5313f43345873311c4f5efd741cc"
 
 [[package]]
+name = "nb"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "801d31da0513b6ec5214e9bf433a77966320625a37860f910be265be6e18d06f"
+dependencies = [
+ "nb 1.1.0",
+]
+
+[[package]]
+name = "nb"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -395,6 +463,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
 name = "pin-project"
 version = "1.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -483,19 +557,21 @@ dependencies = [
 
 [[package]]
 name = "qingke"
-version = "0.7.0"
-source = "git+https://github.com/ch32-rs/qingke.git?branch=main#fbe3a515e80184ffc3cff016f071a4d67fa7a6dc"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd545170e96cc2e30a74a55d87ff5b8590e30be767a58667a739294b5abeeed3"
 dependencies = [
  "bit_field",
  "cfg-if",
  "critical-section",
- "riscv 0.15.0",
+ "riscv 0.16.1",
 ]
 
 [[package]]
 name = "qingke-rt"
-version = "0.7.0"
-source = "git+https://github.com/ch32-rs/qingke.git?branch=main#fbe3a515e80184ffc3cff016f071a4d67fa7a6dc"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6305ff7b029967b80fb002dbf3b18ce2e9e280d1d22c062aaca1efa4267c1e8a"
 dependencies = [
  "qingke",
  "qingke-rt-macros",
@@ -503,8 +579,9 @@ dependencies = [
 
 [[package]]
 name = "qingke-rt-macros"
-version = "0.7.0"
-source = "git+https://github.com/ch32-rs/qingke.git?branch=main#fbe3a515e80184ffc3cff016f071a4d67fa7a6dc"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53a2e9d30b28ec19a50d929bd23a641ed8f1c32fad94d7592f2d6f5deab240ca"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -545,7 +622,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ea8ff73d3720bdd0a97925f0bf79ad2744b6da8ff36be3840c48ac81191d7a7"
 dependencies = [
  "critical-section",
- "embedded-hal",
+ "embedded-hal 1.0.0",
  "paste",
  "riscv-macros 0.1.0",
  "riscv-pac",
@@ -553,15 +630,15 @@ dependencies = [
 
 [[package]]
 name = "riscv"
-version = "0.15.0"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b05cfa3f7b30c84536a9025150d44d26b8e1cc20ddf436448d74cd9591eefb25"
+checksum = "e42cdafa0aa3f0f956b7993cace26de5dafff7bb4f2c5b1dcb2c3723f4267a4f"
 dependencies = [
  "critical-section",
- "embedded-hal",
- "paste",
- "riscv-macros 0.3.0",
- "riscv-pac",
+ "embedded-hal 1.0.0",
+ "pastey",
+ "riscv-macros 0.4.1",
+ "riscv-types",
 ]
 
 [[package]]
@@ -577,9 +654,9 @@ dependencies = [
 
 [[package]]
 name = "riscv-macros"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d323d13972c1b104aa036bc692cd08b822c8bbf23d79a27c526095856499799"
+checksum = "6ad9f6dda08d90d091bc0743967cab369b8fe39ea74b26783ba2ca5c0ce39e86"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -593,6 +670,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
 
 [[package]]
+name = "riscv-types"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3f2ad9f15a07f4a0e1677124f9120ce7e83ab7e1ca7186af0ca9da529b62e80"
+
+[[package]]
+name = "rustc_version"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
+dependencies = [
+ "semver",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -603,6 +695,21 @@ name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
+name = "semver"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
+dependencies = [
+ "semver-parser",
+]
+
+[[package]]
+name = "semver-parser"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "sharded-slab"
@@ -684,12 +791,13 @@ dependencies = [
 
 [[package]]
 name = "tinyboot-ch32"
-version = "0.5.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.5.0#40df74498a10718ff724d5ac7bc32bbeb54dc677"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a410289d0d8bd391e05f4086f6c97cebc1589c8283e0f1c1bf6fd99988e05b31"
 dependencies = [
  "ch32-metapac",
  "critical-section",
- "embedded-hal",
+ "embedded-hal 1.0.0",
  "embedded-io",
  "embedded-storage",
  "tinyboot-core",
@@ -703,8 +811,9 @@ checksum = "883604800ee4be7884b4a2bf9fc4c9731f4c09791852a7474c52a9ac4e8a6bb7"
 
 [[package]]
 name = "tinyboot-core"
-version = "0.4.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.5.0#40df74498a10718ff724d5ac7bc32bbeb54dc677"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b04624e845c91d625c3ac01b07f5fe0c9015d925ba32242560c7637a3dbdc7"
 dependencies = [
  "critical-section",
  "embedded-io",
@@ -716,7 +825,8 @@ dependencies = [
 [[package]]
 name = "tinyboot-protocol"
 version = "0.4.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.5.0#40df74498a10718ff724d5ac7bc32bbeb54dc677"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b6fbc5b8c0d4b9205433a1c921b7411aad79fd2e38a5bc14d98bf3186b83f1a"
 dependencies = [
  "bitflags 2.11.1",
  "embedded-io",
@@ -807,6 +917,21 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "void"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
+
+[[package]]
+name = "volatile-register"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de437e2a6208b014ab52972a27e59b33fa2920d3e00fe05026167a1c509d19cc"
+dependencies = [
+ "vcell",
+]
 
 [[package]]
 name = "windows-link"
