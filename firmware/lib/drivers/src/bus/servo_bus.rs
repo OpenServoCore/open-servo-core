@@ -370,6 +370,12 @@ impl<P: Providers> ServoBus<P> {
         self.pending_reboot.take()
     }
 
+    /// The rate the bus runs at now: the configured one, or the rescue
+    /// floor after a rescue break (sec 9.1).
+    pub fn rate(&self) -> BaudRate {
+        self.rate
+    }
+
     pub fn diag(&self) -> LinkDiag {
         LinkDiag {
             crc_fail_count: self.crc_fails,
