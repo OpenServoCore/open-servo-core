@@ -55,7 +55,9 @@ pub trait TxWire {
     /// Drive the line dominant and hold it (rescue pulse, protocol sec 9.1);
     /// ends at [`release`](Self::release). The engine times the pulse.
     fn hold_low(&mut self);
-    /// Release the wire: TX off, receiver back on, a held low ended.
+    /// Release the wire: TX off, receiver back on, a held low ended. Legal
+    /// mid-span: the span is cut short, though the characters already in
+    /// the UART still leave.
     fn release(&mut self);
 }
 

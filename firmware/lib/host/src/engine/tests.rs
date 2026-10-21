@@ -306,6 +306,150 @@ fn garble_is_evidence_and_paces_the_next_exchange() {
 }
 
 #[test]
+fn pacing_waits_for_ring_silence_and_drops_what_it_heard() {
+    let mut r = rig();
+    let (id, inst) = ping(5);
+    exchange(&mut r, id, inst, &[]);
+    r.ring.feed(&[0xAA]);
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+    let _ = expect_done(&mut r);
+
+    r.wire.clear();
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    // A late reply lands mid-quiet: the quiet restarts from it.
+    r.clock.advance(500);
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[9]));
+    assert!(r.bus.poll().is_none());
+    r.clock.advance(400);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty(), "900 us in, 400 us of silence");
+    r.clock.advance(241);
+    assert!(r.bus.poll().is_none());
+    assert_eq!(r.wire.log()[0], WireOp::Claim, "640 us of silence -> TX");
+
+    // The late reply was dropped at TX: only the real one is collected.
+    r.bus.on_tx_complete();
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[1]));
+    match r.bus.poll() {
+        Some(Event::Status { payload, .. }) => assert_eq!(payload.segments().0, &[1]),
+        other => panic!("expected Status, got {other:?}"),
+    }
+    assert_eq!(expect_done(&mut r).evidence.statuses, 1);
+}
+
+#[test]
+fn cancel_mid_await_keeps_the_old_reply_window_quiet() {
+    let mut r = rig();
+    let (id, inst) = ping(5);
+    exchange(&mut r, id, inst, &[]);
+    let window = r.bus.window_for(&Shape::derive(id, inst, &[]).unwrap());
+    r.bus.cancel();
+    assert!(!r.bus.busy());
+
+    r.wire.clear();
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    // The servo may answer up to its deadline: no frame before the old
+    // window ends, though the horizon alone is long past.
+    r.clock.advance(window - 1);
+    assert!(r.bus.poll().is_none());
+    assert!(
+        r.wire.log().is_empty(),
+        "the old reply window is still open"
+    );
+    // Its late reply lands: nobody's, and the quiet re-arms by the window,
+    // as the await would have.
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
+    assert!(r.bus.poll().is_none(), "the old reply is nobody's");
+    r.clock.advance(window - 1);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty());
+    r.clock.advance(2);
+    assert!(r.bus.poll().is_none());
+    assert_eq!(r.wire.log()[0], WireOp::Claim);
+}
+
+#[test]
+fn cancel_mid_stream_holds_the_bus_to_the_burst_window() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 50_000);
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+    r.clock.advance(1_000);
+    r.bus.cancel();
+
+    r.wire.clear();
+    let (id, inst) = ping(5);
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    // Burst frames ms apart: silence between them never opens the bus.
+    for _ in 0..4 {
+        r.clock.advance(10_000);
+        r.ring
+            .frame(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+        assert!(r.bus.poll().is_none());
+        assert!(r.wire.log().is_empty(), "inside the burst window");
+    }
+    r.clock.advance(8_999);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty(), "the burst window has 1 us left");
+    r.clock.advance(1);
+    assert!(r.bus.poll().is_none());
+    assert_eq!(r.wire.log()[0], WireOp::Claim, "the burst window ended");
+}
+
+#[test]
+fn cancel_mid_transmit_releases_the_wire() {
+    let mut r = rig();
+    let (id, inst) = ping(5);
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    r.bus.cancel();
+    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+    // The cut frame's TC changes nothing.
+    r.bus.on_tx_complete();
+    assert!(r.bus.poll().is_none());
+    assert!(!r.bus.busy());
+}
+
+#[test]
+fn cancel_when_idle_costs_no_quiet() {
+    let mut r = rig();
+    r.bus.cancel();
+    let (id, inst) = ping(5);
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    assert_eq!(r.wire.log()[0], WireOp::Claim);
+}
+
+#[test]
 fn trailing_energy_is_flagged() {
     let mut r = rig();
     let mut p = [0u8; 24];
@@ -849,6 +993,28 @@ mod wire {
             })
             .unwrap();
         assert!(r.wire.log().is_empty(), "paced after the rate change");
+    }
+
+    #[test]
+    fn cancel_returns_a_detuned_uart_to_the_rescue_rate() {
+        let mut r = rig();
+        r.bus.wire_baud(993_103).unwrap();
+        let _ = expect_wire_done(&mut r);
+        assert_eq!(r.bus.bps(), 993_103);
+        r.bus.cancel();
+        assert_eq!(r.bus.bps(), 500_000);
+        assert_eq!(r.baud.applied().last(), Some(&BaudRate::B500000));
+    }
+
+    #[test]
+    fn cancel_mid_pulse_ends_the_low_hold() {
+        let mut r = rig();
+        r.bus.wire_pulse_low(5_000).unwrap();
+        r.bus.cancel();
+        assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+        r.clock.advance(5_000);
+        assert!(r.bus.poll().is_none(), "no WireDone for a cancelled pulse");
+        assert!(!r.bus.busy());
     }
 
     #[test]

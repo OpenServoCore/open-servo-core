@@ -303,13 +303,15 @@ impl Sim {
         self.run();
     }
 
-    /// A new host session on the pipe (the adapter's USB bus reset or
-    /// SET_CONFIGURATION): undelivered records drop and the server resets
-    /// its session, as the chip's main loop does (panics if no link).
+    /// A new host session on the pipe (the adapter's USB bus reset,
+    /// SET_CONFIGURATION or OPEN_SESSION): undelivered records drop and the
+    /// server resets its session, as the chip's main loop does (panics if
+    /// no link).
     pub fn link_reopen(&mut self) {
+        let h = self.host.as_mut().expect("host attached");
         let rig = self.link.as_mut().expect("link attached");
         rig.out.0.clear();
-        rig.server.reset_session();
+        rig.server.reset_session(&mut h.bus);
     }
 
     /// Drain the outbound record byte stream (panics if no link).

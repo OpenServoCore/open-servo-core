@@ -50,9 +50,6 @@ pub struct LinkServer {
     /// The seq owning the engine's outstanding command or wire op: one
     /// wire owner at a time (the engine's Busy rule), so one slot serves.
     active: Option<u16>,
-    /// The engine's outstanding op belongs to a closed session: it runs to
-    /// its own terminal (the bus stays owned until then), unrecorded.
-    orphaned: bool,
     adapter: AdapterState,
     out: [u8; OUT_CAP],
 }
@@ -69,7 +66,6 @@ impl LinkServer {
             rx: [0; RX_CAP],
             rx_len: 0,
             active: None,
-            orphaned: false,
             adapter: AdapterState {
                 req: None,
                 rails: record::RAILS_BOOT_STATE,
@@ -98,13 +94,15 @@ impl LinkServer {
         self.adapter.req.take()
     }
 
-    /// A new host session opened on the pipe: drop the half-parsed inbound
-    /// record and orphan the outstanding op. The carrier drops its own
-    /// unsent bytes. Adapter state (rails, diag, uptime) and the engine's
-    /// fleet-facing state are the bus's, not the session's, and persist.
-    pub fn reset_session(&mut self) {
+    /// A new host session opened on the pipe (link sec 2): drop the
+    /// half-parsed inbound record and cancel the outstanding op, so the new
+    /// session finds the bus free. The carrier drops its own unsent bytes.
+    /// Adapter state (rails, diag, uptime) and the engine's fleet-facing
+    /// state are the bus's, not the session's, and persist.
+    pub fn reset_session<P: Providers>(&mut self, bus: &mut HostBus<P>) {
         self.rx_len = 0;
-        self.orphaned |= self.active.take().is_some();
+        self.active = None;
+        bus.cancel();
     }
 
     /// Feed bytes as the pipe delivered them (any framing); complete
@@ -137,10 +135,6 @@ impl LinkServer {
     pub fn pump<P: Providers>(&mut self, bus: &mut HostBus<P>, sink: &mut impl RecordSink) {
         loop {
             match bus.poll() {
-                Some(Event::Status { .. }) if self.orphaned => {}
-                Some(Event::Done(_) | Event::WireDone { .. }) if self.orphaned => {
-                    self.orphaned = false;
-                }
                 Some(Event::Status {
                     slot,
                     id,
@@ -565,7 +559,7 @@ mod tests {
         let mut r = rig();
         let bytes = submit_ping(7, 5);
         r.server.on_pipe(&bytes[..3], &mut r.bus, &mut r.sink);
-        r.server.reset_session();
+        r.server.reset_session(&mut r.bus);
         r.server
             .on_pipe(&rec(&[REC_HELLO]), &mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 1);
@@ -574,31 +568,39 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_exchange_runs_out_unrecorded_then_frees_the_bus() {
+    fn new_session_cancels_the_exchange_and_frees_the_bus() {
         let mut r = rig();
         r.server
             .on_pipe(&submit_ping(0x1234, 5), &mut r.bus, &mut r.sink);
-        r.server.reset_session();
-        // The bus stays owned until the old op's own terminal.
+        r.bus.on_tx_complete();
+        r.server.reset_session(&mut r.bus);
+        // The old reply lands after the cancel: nobody collects it.
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+        assert!(r.sink.0.is_empty(), "old STATUS + TERMINAL never recorded");
+
+        // The bus is free at once; the new frame waits out the quiet.
         r.server
             .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
-        let rej = r.sink.0.last().unwrap();
-        assert_eq!(rej[2], REC_REJECTED);
-        assert_eq!(u16::from_le_bytes([rej[3], rej[4]]), 0);
-        assert_eq!(rej[5], REASON_BUSY);
-
+        assert!(r.sink.0.is_empty(), "accepted, no rejection");
+        let claims = |r: &crate::testutil::link::Rig| {
+            r.wire
+                .log()
+                .iter()
+                .filter(|op| **op == WireOp::Claim)
+                .count()
+        };
+        assert_eq!(claims(&r), 1, "paced: no frame yet");
+        // Past the old reply's re-armed window.
+        r.clock.advance(3_000);
+        r.server.pump(&mut r.bus, &mut r.sink);
+        assert_eq!(claims(&r), 2, "frame sent after the quiet");
         r.bus.on_tx_complete();
         r.ring.frame(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
         r.server.pump(&mut r.bus, &mut r.sink);
-        assert_eq!(r.sink.0.len(), 1, "old STATUS + TERMINAL dropped");
-
-        r.server
-            .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
-        r.clock.advance(1_000);
-        r.bus.on_tx_complete();
-        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
-        r.server.pump(&mut r.bus, &mut r.sink);
-        let seqs: Vec<(u8, u16)> = r.sink.0[1..]
+        let seqs: Vec<(u8, u16)> = r
+            .sink
+            .0
             .iter()
             .map(|x| (x[2], u16::from_le_bytes([x[3], x[4]])))
             .collect();
@@ -606,7 +608,21 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_burst_drains_to_its_last_frame_unrecorded() {
+    fn new_session_cuts_a_frame_still_on_the_wire() {
+        let mut r = rig();
+        r.server
+            .on_pipe(&submit_ping(1, 5), &mut r.bus, &mut r.sink);
+        r.server.reset_session(&mut r.bus);
+        assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+        // The cut frame's TC lands late and changes nothing.
+        r.bus.on_tx_complete();
+        r.server.pump(&mut r.bus, &mut r.sink);
+        assert!(r.sink.0.is_empty());
+        assert!(!r.bus.busy());
+    }
+
+    #[test]
+    fn new_session_cancels_a_burst_mid_stream() {
         let mut r = rig();
         let mut p = [0u8; 8];
         let n = osc_protocol::build::write(&mut p, 0x0192, &[2, 0]).unwrap();
@@ -620,17 +636,13 @@ mod tests {
         r.server.pump(&mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 1, "the arm's ack reached the old session");
 
-        // Bus reset then SET_CONFIGURATION: two resets, one orphan.
-        r.server.reset_session();
-        r.server.reset_session();
+        // Bus reset then SET_CONFIGURATION: two resets, one cancel.
+        r.server.reset_session(&mut r.bus);
+        r.server.reset_session(&mut r.bus);
         r.ring
             .frame(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
         r.server.pump(&mut r.bus, &mut r.sink);
-        r.ring
-            .frame(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
-        r.server.pump(&mut r.bus, &mut r.sink);
-        assert_eq!(r.sink.0.len(), 1, "burst frames + terminal dropped");
-
+        assert_eq!(r.sink.0.len(), 1, "burst frames never recorded");
         r.server
             .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 1, "accepted: the bus is free");
@@ -642,7 +654,7 @@ mod tests {
         r.server
             .on_pipe(&rec(&[REC_SET_RAILS, 0b01]), &mut r.bus, &mut r.sink);
         r.server.take_adapter_request();
-        r.server.reset_session();
+        r.server.reset_session(&mut r.bus);
         r.server
             .on_pipe(&rec(&[REC_SET_RAILS, 0, 0]), &mut r.bus, &mut r.sink);
         assert_eq!(*r.sink.0.last().unwrap(), vec![2, 0, REC_RAILS_ACK, 0b01]);

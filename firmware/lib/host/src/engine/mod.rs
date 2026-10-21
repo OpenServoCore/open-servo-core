@@ -137,7 +137,8 @@ pub enum Event<'a> {
 
 enum State {
     Idle,
-    /// Post-garble / post-baud enforced silence before the TX (sec 3.4).
+    /// Enforced bus silence before the TX (sec 3.4): after garble, a
+    /// rate change or a cancel.
     Pacing,
     /// Frame armed on the wire; waiting for the chip's `on_tx_complete`.
     Transmitting,
@@ -183,9 +184,19 @@ pub struct HostBus<P: Providers> {
     /// The active Exchange's derived plan; `None` outside one.
     plan: Option<Shape>,
     rate: BaudRate,
+    /// The UART's actual rate: `rate`'s, or an instrument detune's raw
+    /// divisor (timing state then rides the nearest catalog `rate`).
+    bps: u32,
     response_deadline_us: u16,
-    /// Enforced-quiet end after garble evidence / a baud change.
+    /// Enforced-quiet end after garble evidence / a baud change / a
+    /// cancel; `None` once reached. Quiet means ring silence (sec 3.4):
+    /// bytes received since `quiet_mark` restart it.
     pace_until: Option<u32>,
+    quiet_mark: u32,
+    /// A cancelled exchange's reply window: while its replies may still
+    /// come, each received byte restarts the quiet by this much, as the
+    /// await would have re-armed. 0 outside a cancel.
+    rearm: u32,
     /// Current state's deadline tick (window end, pulse end, train slot).
     deadline_at: u32,
     /// Await re-arm span: any wire progress pushes the window out by this.
@@ -217,8 +228,11 @@ impl<P: Providers> HostBus<P> {
             state: State::Idle,
             plan: None,
             rate,
+            bps: rate.as_hz(),
             response_deadline_us: wire::DEFAULT_RESPONSE_DEADLINE_US,
             pace_until: None,
+            quiet_mark: 0,
+            rearm: 0,
             deadline_at: 0,
             window: 0,
             got: 0,
@@ -230,8 +244,79 @@ impl<P: Providers> HostBus<P> {
     }
 
     /// One outstanding op ever, an unconsumed terminal included.
-    fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         !matches!(self.state, State::Idle) || self.pending_done.is_some() || self.wire.busy()
+    }
+
+    /// The UART's rate, raw bps (an instrument detune's off-catalog rate
+    /// included).
+    pub fn bps(&self) -> u32 {
+        self.bps
+    }
+
+    pub fn response_deadline_us(&self) -> u16 {
+        self.response_deadline_us
+    }
+
+    /// Abandon the outstanding op for a new link session (link sec 2): stop
+    /// driving the wire, mid-span if need be, and drop its unconsumed
+    /// events. The next frame waits until whatever the old exchange still
+    /// draws from the bus has landed: the rest of its reply window, then a
+    /// starve horizon of silence. An off-catalog UART rate returns to the
+    /// rescue rate.
+    pub fn cancel(&mut self) {
+        let was_busy = self.busy();
+        let now = self.deadline.now();
+        // A cut frame may still have left whole (the UART drains what it
+        // holds), so a transmitting exchange is owed its replies too.
+        let drain = match (&self.state, self.plan) {
+            (_, Some(plan)) if matches!(plan.replies, Replies::None) => None,
+            (State::Awaiting, Some(plan)) => Some((self.deadline_at, plan)),
+            (State::Transmitting, Some(plan)) => {
+                let tx = self.buf.frame().len() as u32 * self.byte_ticks();
+                Some((now.wrapping_add(tx + self.window_for(&plan)), plan))
+            }
+            _ => None,
+        };
+        let rearm = match drain {
+            Some((_, plan)) if !matches!(plan.replies, Replies::Stream { .. }) => {
+                self.window_for(&plan)
+            }
+            _ => 0,
+        };
+        if matches!(
+            self.state,
+            State::Transmitting | State::Training { .. } | State::RescueHold | State::Wire
+        ) {
+            self.tx.release();
+        }
+        if !matches!(self.state, State::Idle) {
+            self.deadline.cancel();
+        }
+        self.state = State::Idle;
+        self.plan = None;
+        self.pending_done = None;
+        self.evidence = WireEvidence::default();
+        self.wire.cancel();
+        if self.bps != self.rate.as_hz() {
+            self.set_rate(BaudRate::RESCUE);
+        } else if was_busy {
+            self.pace();
+        }
+        if let Some((end, _)) = drain {
+            self.rearm = rearm;
+            if self.pace_until.is_none_or(|until| tick_reached(end, until)) {
+                self.pace_until = Some(end);
+            }
+        }
+    }
+
+    /// Catalog rate change: apply, then pace (sec 3.4).
+    fn set_rate(&mut self, rate: BaudRate) {
+        self.baud.apply(rate);
+        self.rate = rate;
+        self.bps = rate.as_hz();
+        self.pace();
     }
 
     pub fn submit(&mut self, cmd: Command<'_>) -> Result<(), SubmitError> {
@@ -245,9 +330,7 @@ impl<P: Providers> HostBus<P> {
                 self.finish(Outcome::Complete);
             }
             Command::HostBaud(rate) => {
-                self.baud.apply(rate);
-                self.rate = rate;
-                self.pace();
+                self.set_rate(rate);
                 self.finish(Outcome::Complete);
             }
             Command::Rescue => {
@@ -291,15 +374,13 @@ impl<P: Providers> HostBus<P> {
         self.buf.finish(payload.len() as u8);
         self.buf.seal();
         self.plan = Some(plan);
-        // Quiet-bus bootstrap: drop anything unconsumed before the
-        // TX window opens (host-side analog of the servo's rule).
-        self.framer.resync(self.ring.written(), self.ring.marked());
-        match self.pace_until.take() {
-            Some(until) if !tick_reached(self.deadline.now(), until) => {
+        self.track_quiet(self.deadline.now());
+        match self.pace_until {
+            Some(until) => {
                 self.state = State::Pacing;
                 self.arm(until);
             }
-            _ => self.start_tx(),
+            None => self.start_tx(),
         }
         Ok(())
     }
@@ -382,18 +463,20 @@ impl<P: Providers> HostBus<P> {
         }
         let now = self.deadline.now();
         match self.state {
-            State::Idle | State::Transmitting | State::Training { .. } => {}
+            State::Idle => self.track_quiet(now),
+            State::Transmitting | State::Training { .. } => {}
             State::Pacing => {
-                if tick_reached(now, self.deadline_at) {
-                    self.start_tx();
+                self.track_quiet(now);
+                match self.pace_until {
+                    None => self.start_tx(),
+                    Some(until) if until != self.deadline_at => self.arm(until),
+                    Some(_) => {}
                 }
             }
             State::RescueHold => {
                 if tick_reached(now, self.deadline_at) {
                     self.tx.release();
-                    self.baud.apply(BaudRate::RESCUE);
-                    self.rate = BaudRate::RESCUE;
-                    self.pace();
+                    self.set_rate(BaudRate::RESCUE);
                     self.finish(Outcome::Sent);
                 }
             }
@@ -454,6 +537,7 @@ impl<P: Providers> HostBus<P> {
                         }
                         if self.evidence.garble > 0 {
                             self.pace_until = Some(pace_at);
+                            self.quiet_mark = written;
                         }
                         self.pending_done = Some(Terminal {
                             outcome: Outcome::Complete,
@@ -538,6 +622,9 @@ impl<P: Providers> HostBus<P> {
     }
 
     fn start_tx(&mut self) {
+        // Quiet-bus bootstrap: drop anything unconsumed before the TX
+        // window opens (host-side analog of the servo's rule).
+        self.framer.resync(self.ring.written(), self.ring.marked());
         self.tx.claim();
         self.tx.send_break();
         self.tx.send(&self.buf.frame()[1..]);
@@ -561,8 +648,31 @@ impl<P: Providers> HostBus<P> {
 
     /// One starve horizon of enforced bus silence at the current rate.
     fn pace(&mut self) {
-        let quiet = wire::STARVE_HORIZON_BYTE_TIMES * self.byte_ticks();
-        self.pace_until = Some(self.deadline.now().wrapping_add(quiet));
+        self.pace_until = Some(self.deadline.now().wrapping_add(self.horizon()));
+        self.quiet_mark = self.ring.written();
+    }
+
+    /// Advance the quiet: bytes received since the last look restart it
+    /// (sec 3.4 counts silence), and it ends once reached.
+    fn track_quiet(&mut self, now: u32) {
+        let Some(until) = self.pace_until else {
+            return;
+        };
+        let written = self.ring.written();
+        if written != self.quiet_mark {
+            self.quiet_mark = written;
+            let fresh = now.wrapping_add(self.horizon().max(self.rearm));
+            if tick_reached(fresh, until) {
+                self.pace_until = Some(fresh);
+            }
+        } else if tick_reached(now, until) {
+            self.pace_until = None;
+            self.rearm = 0;
+        }
+    }
+
+    fn horizon(&self) -> u32 {
+        wire::STARVE_HORIZON_BYTE_TIMES * self.byte_ticks()
     }
 
     fn arm(&mut self, at: u32) {

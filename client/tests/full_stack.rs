@@ -1296,7 +1296,7 @@ fn tel_arm_below_three_megabaud_streams_nothing() {
 }
 
 #[test]
-fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
+fn reopen_mid_burst_cancels_it_and_the_next_frame_waits_for_quiet() {
     let mut c = tel_fleet();
     write_chunks(&mut c, IDENT);
     let mut pipe = c.into_pipe();
@@ -1315,8 +1315,8 @@ fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
     pipe.sim_mut().link_send(&out);
     pipe.reopen();
 
-    // The next session starts clean: INFO first, and its seq 0 is refused
-    // busy while the orphan still owns the bus.
+    // The next session starts clean: INFO first, and its seq 0 is
+    // accepted at once, the cancelled burst no longer owning the bus.
     let mut s = Session::new();
     let mut out = Vec::new();
     Session::encode_hello(&mut out);
@@ -1329,28 +1329,36 @@ fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
         },
     );
     pipe.sim_mut().link_send(&out);
-    s.on_bytes(&pipe.sim_mut().link_recv());
-    assert!(matches!(s.next_record(), Ok(Some(Record::Info(_)))));
-    assert_eq!(
-        s.next_record(),
-        Ok(Some(Record::Rejected {
-            seq: ping,
-            reason: osc_client::record::REASON_BUSY
-        }))
-    );
-
-    // The orphan plays out on the wire, unrecorded.
     let frames = pipe.sim_mut().run();
-    let burst = frames
+
+    // The servo still streams what the arm asked for; the ping waits out
+    // the burst plus a starve horizon of silence instead of colliding.
+    let burst: Vec<_> = frames
         .iter()
         .filter(|f| matches!(f.from, Source::Servo(_)))
         .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
-        .count();
-    assert_eq!(burst, 3, "40 samples = 16 + 16 + 8");
-    assert!(pipe.sim_mut().link_recv().is_empty());
+        .collect();
+    assert_eq!(burst.len(), 3, "40 samples = 16 + 16 + 8");
+    assert!(frames.iter().all(|f| !f.collided));
+    let ping_at = frames
+        .iter()
+        .filter(|f| matches!(f.from, Source::Host))
+        .map(|f| f.at)
+        .max()
+        .expect("the ping went out");
+    assert!(ping_at > burst.last().unwrap().end, "ping after the burst");
 
-    let mut c = Client::connect(pipe).expect("connect");
-    c.ping(Id::new(5)).expect("the bus is free");
+    s.on_bytes(&pipe.sim_mut().link_recv());
+    assert!(matches!(s.next_record(), Ok(Some(Record::Info(_)))));
+    assert!(matches!(
+        s.next_record(),
+        Ok(Some(Record::Status { seq, .. })) if seq == ping
+    ));
+    assert!(matches!(
+        s.next_record(),
+        Ok(Some(Record::Terminal { seq, outcome: Outcome::Complete, .. })) if seq == ping
+    ));
+    assert_eq!(s.next_record(), Ok(None), "no burst frame leaked");
 }
 
 #[test]

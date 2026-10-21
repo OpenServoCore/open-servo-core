@@ -21,6 +21,8 @@ impl<P: Providers> Wire<P> {
     pub(super) fn take_done(&mut self) -> Option<u32> {
         None
     }
+
+    pub(super) fn cancel(&mut self) {}
 }
 
 impl<P: Providers> HostBus<P> {

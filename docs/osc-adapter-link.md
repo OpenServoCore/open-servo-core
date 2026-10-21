@@ -35,10 +35,12 @@ event (sec 8.2 for USB) and ends when the next one opens. Opening a session:
 
 - drops every record the adapter had not yet delivered and any request it
   had only partly received;
-- cancels a bus request still running: the adapter stops collecting
-  replies, reports nothing, and keeps the wire quiet for 64 byte-times
-  (protocol sec 3.4) before the next frame, so whatever the old exchange
-  still draws from the bus lands in silence;
+- cancels a bus request still running: the adapter stops driving the wire
+  and collecting replies, and reports nothing. The new session's first bus
+  request is accepted at once, but its frame waits until whatever the old
+  exchange still draws from the bus has landed: the rest of the old reply
+  window, re-armed by each byte as the old await would have, then 64
+  byte-times of silence (protocol sec 3.4);
 - returns the bus to osc mode (sec 5), at its current rate when that is an
   osc rate, else at 500000.
 
