@@ -5,6 +5,7 @@
 //! osc-client -- every choreography lives in the library. Wire measurement is
 //! the bench `tool-*` binaries' job, not this tool's.
 
+mod boot;
 mod cal;
 mod capture;
 mod descriptor;
@@ -64,6 +65,35 @@ enum Cmd {
     },
     /// Hand the adapter to the WCH bootloader (4348:55e0, wlink-iap).
     Bootloader,
+    /// Install a firmware image on the roster servos in one session with
+    /// each in its bootloader; one reset ends it. Bootloaders with no app
+    /// are left to `osc boot`.
+    Flash(boot::FlashArgs),
+    /// Firmware update one step at a time: check, enter, list, flash, reset.
+    ///
+    /// Preferred procedure for a firmware update:
+    ///
+    ///   1. Rest the robot: every servo goes limp.
+    ///   2. `osc boot check` prints each servo's rate; bring any odd one
+    ///      to the common rate with `osc baud`.
+    ///   3. `osc boot enter --rate R`
+    ///   4. `osc boot check` exits 0: every servo is in its bootloader.
+    ///   5. `osc boot list --rate R`
+    ///   6. `osc boot flash <bin> --rate R <uid>...` for each image.
+    ///   7. `osc boot reset --rate R`
+    ///   8. `osc discover` shows every servo again; confirm the versions
+    ///      (`osc ping`).
+    ///
+    /// For a single image on a fleet of one board type, `osc flash <bin>
+    /// --rate R` runs steps 3 to 8 in one go. Bootloaders with no app
+    /// (fresh boards, a failed install) take the steps above.
+    #[command(verbatim_doc_comment)]
+    Boot {
+        #[command(subcommand)]
+        cmd: boot::BootCmd,
+    },
+    /// One raw tinyboot exchange at --rate, the bus back in osc mode after.
+    Tb(boot::TbArgs),
     /// Enumerate every servo (id + UID) -- all supported bauds, or just --baud.
     Discover,
     /// Rescue-pulse the bus to 0.5 M and enumerate whoever answers.
@@ -815,6 +845,9 @@ fn main() -> Result<()> {
             println!("adapter resets to the WCH bootloader (4348:55e0); use wlink-iap");
             Ok(())
         }
+        Cmd::Flash(a) => boot::flash(a, &cli.bus),
+        Cmd::Boot { cmd } => boot::boot(cmd, &cli.bus),
+        Cmd::Tb(a) => boot::tb(a),
         Cmd::Discover => discover(&cli),
         Cmd::Rescue { set_baud, save } => rescue(set_baud.as_deref(), *save),
         Cmd::Enum { prefix_len, prefix } => {

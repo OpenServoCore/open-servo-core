@@ -7,7 +7,10 @@ use futures_lite::future::block_on;
 use osc_host::engine::TbExpect;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
-use crate::boot::{self, BootInfo, Image, Progress, Report, ResetFlags, Selected, WriteFlags};
+use crate::boot::{
+    self, BootDevice, BootInfo, Chosen, Device, Image, Progress, Report, ResetFlags, Selected,
+    WriteFlags,
+};
 use crate::calib::{self, GearClass};
 use crate::client::{Chain, Ping, Reply, StreamReply, TbReply};
 use crate::common::{self, Health, Identity};
@@ -259,10 +262,31 @@ impl<P: Pipe> Client<P> {
         block_on(boot::install(&mut self.0, uid, image, progress))
     }
 
+    pub fn boot_apps(&mut self) -> Result<Vec<(BaudRate, Found)>, Error> {
+        block_on(boot::apps(&mut self.0))
+    }
+
+    pub fn boot_enter(&mut self, rate: BaudRate) -> Result<Vec<Found>, Error> {
+        block_on(boot::enter(&mut self.0, rate))
+    }
+
+    pub fn boot_list(&mut self) -> Result<Vec<BootDevice>, Error> {
+        block_on(boot::list(&mut self.0))
+    }
+
+    pub fn boot_confirm(
+        &mut self,
+        waiting: &[Found],
+        installed: &[Vec<u8>],
+        version: u16,
+    ) -> Result<Vec<Device>, Error> {
+        block_on(boot::confirm(&mut self.0, waiting, installed, version))
+    }
+
     pub fn boot_update(
         &mut self,
         image: &Image,
-        chosen: &[Vec<u8>],
+        chosen: &Chosen,
         rate: BaudRate,
         progress: impl FnMut(Progress<'_>),
     ) -> Result<Report, Error> {

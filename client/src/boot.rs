@@ -8,12 +8,15 @@ use std::time::Duration;
 
 use osc_host::engine::{Outcome, TbExpect};
 use tinyboot_protocol::crc::{CRC_INIT, crc16};
-use tinyboot_protocol::{COMPAT_UNSET, Cmd, EraseData, InfoData, VerifyData};
+use tinyboot_protocol::{COMPAT_UNSET, EraseData, InfoData, VerifyData};
 
-pub use tinyboot_protocol::{BaudRate, ResetFlags, Status, WriteFlags};
+pub use tinyboot_protocol::{BaudRate, Cmd, ResetFlags, Status, WriteFlags, unpack_version};
 
 mod update;
-pub use update::{Device, Fate, Phase, Progress, Report, update};
+pub use update::{
+    BootDevice, CHIP_UID, Chosen, Device, Fate, Phase, Progress, Report, apps, confirm, enter,
+    list, update,
+};
 
 use crate::client::{Client, TbFrame, TbReply, desync_msg};
 use crate::error::{Error, LinkError, RejectReason};
@@ -360,14 +363,7 @@ pub async fn install<P: Pipe>(
     image: &Image,
     mut progress: impl FnMut(u32, u32),
 ) -> Result<(), Error> {
-    if uid.is_empty() || uid.len() as u64 > MAX_UID {
-        return Err(Error::Link(LinkError::Rejected(RejectReason::BadPayload)));
-    }
-    let s = select(c, 0, uid, (uid.len() * 8) as u8).await?;
-    if s.garble != 0 || s.ids.as_slice() != [uid] {
-        return Err(InstallError::NoDevice.into());
-    }
-
+    select_one(c, uid).await?;
     let info = info(c).await?;
     if info.erase_size == 0 {
         return Err(MALFORMED);
@@ -429,6 +425,18 @@ pub async fn install<P: Pipe>(
     Ok(())
 }
 
+/// Select the device whose full id is `uid` and no other.
+async fn select_one<P: Pipe>(c: &mut Client<P>, uid: &[u8]) -> Result<(), Error> {
+    if uid.is_empty() || uid.len() as u64 > MAX_UID {
+        return Err(Error::Link(LinkError::Rejected(RejectReason::BadPayload)));
+    }
+    let s = select(c, 0, uid, (uid.len() * 8) as u8).await?;
+    if s.garble != 0 || s.ids.as_slice() != [uid] {
+        return Err(InstallError::NoDevice.into());
+    }
+    Ok(())
+}
+
 async fn one<P: Pipe>(
     c: &mut Client<P>,
     window: Duration,
@@ -480,7 +488,8 @@ fn check(f: &TbFrame, cmd: Cmd, addr: u32) -> Result<&[u8], Error> {
     }
 }
 
-fn status(b: u8) -> Option<Status> {
+/// A reply's status byte, `None` outside the protocol's codes.
+pub fn status(b: u8) -> Option<Status> {
     Some(match b {
         0x00 => Status::Request,
         0x01 => Status::Ok,
