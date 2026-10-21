@@ -6,12 +6,10 @@
 //! and the one-owner rule -- a wire op and a command reject each other as
 //! Busy through the same State machine.
 
-use osc_protocol::wire::BaudRate;
-
 use crate::traits::{Deadline, Providers, TxWire, UsartBaud, tick_reached};
 
 use super::shape::InvalidReason;
-use super::{HostBus, State, SubmitError};
+use super::{HostBus, MIN_BPS, State, SubmitError};
 
 /// Raw TX staging bound (burst streams included).
 pub const WIRE_CAP: usize = 640;
@@ -156,16 +154,14 @@ impl<P: Providers> HostBus<P> {
     }
 
     /// Arbitrary host UART rate, divisor-raw (off-catalog detunes are the
-    /// trim suite's host-detune probe). The engine's own timing state
-    /// tracks the nearest catalog rate; sec 3.4 pacing arms as for any
+    /// trim suite's host-detune probe); sec 3.4 pacing arms as for any
     /// rate change. Completes immediately.
     pub fn wire_baud(&mut self, bps: u32) -> Result<(), SubmitError> {
         self.wire_ready()?;
-        if bps == 0 {
+        if bps < MIN_BPS {
             return Err(SubmitError::Invalid(InvalidReason::BadPayload));
         }
         self.baud.apply_raw(bps);
-        self.rate = nearest_rate(bps);
         self.bps = bps;
         self.pace();
         self.wire.pending_done = Some(self.deadline.now());
@@ -283,18 +279,4 @@ impl<P: Providers> HostBus<P> {
         self.state = State::Idle;
         self.wire.pending_done = Some(self.deadline.now());
     }
-}
-
-/// The catalog rate nearest `bps` -- the engine's timing-state stand-in
-/// while the UART runs an off-catalog divisor.
-fn nearest_rate(bps: u32) -> BaudRate {
-    [
-        BaudRate::B500000,
-        BaudRate::B1000000,
-        BaudRate::B2000000,
-        BaudRate::B3000000,
-    ]
-    .into_iter()
-    .min_by_key(|r| r.as_hz().abs_diff(bps))
-    .unwrap_or(BaudRate::B1000000)
 }

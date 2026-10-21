@@ -104,9 +104,9 @@ impl Session {
                 self.request(out, rec::OSC_EXCHANGE, &body)
             }
             Command::Rescue => self.request(out, rec::OSC_RESCUE, &[]),
-            Command::HostBaud(rate) => {
+            Command::HostBaud { bps } => {
                 let mut body = vec![rec::MODE_OSC];
-                body.extend_from_slice(&rate.as_hz().to_le_bytes());
+                body.extend_from_slice(&bps.to_le_bytes());
                 self.request(out, rec::SET_BUS, &body)
             }
             Command::SetResponseDeadline { us } => {
@@ -284,7 +284,12 @@ mod tests {
         let mut s = Session::new();
         let mut out = Vec::new();
         let a = s.encode_get_info(&mut out);
-        let b = s.encode_submit(&mut out, &Command::HostBaud(BaudRate::B2000000));
+        let b = s.encode_submit(
+            &mut out,
+            &Command::HostBaud {
+                bps: BaudRate::B2000000.as_hz(),
+            },
+        );
         let c = s.encode_submit(
             &mut out,
             &Command::Exchange {

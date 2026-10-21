@@ -242,7 +242,6 @@ impl UsartBaud for HostUsart {
         self.0.apply(baud);
     }
 
-    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32) {
         // The sim's waveform machinery is catalog-rate-quantized; an
         // off-catalog divisor models as the nearest rate (sub-percent

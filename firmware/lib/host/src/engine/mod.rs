@@ -60,9 +60,11 @@ pub enum Command<'a> {
     /// UART drops to 0.5M in the same verb -- rescued servos are at the
     /// rescue rate by definition, so there is no way to half-do it.
     Rescue,
-    /// Host-side UART rate only. Servo-first ordering is the client
-    /// choreography's job (write the fleet's baud registers, then this).
-    HostBaud(BaudRate),
+    /// Host-side UART rate only, any rate (an osc catalog rate takes the
+    /// provider's exact divisor). Servo-first ordering is the client
+    /// choreography's job (write the fleet's baud registers, then this);
+    /// which rates are legal is the link server's.
+    HostBaud { bps: u32 },
     /// Engine-held copy of the fleet's RESPONSE_DEADLINE register.
     SetResponseDeadline { us: u16 },
 }
@@ -171,6 +173,9 @@ const SLOW_OP_EXTRA_US: u32 = 50_000;
 /// `host_waits_for_a_reclaim_counted_from_readiness` from the servo's
 /// budget table.
 pub const CHAIN_READY_LAG_US: u32 = 5_000;
+/// The slowest rate the engine times, the tinyboot catalog's floor; below
+/// it the byte-time arithmetic leaves u32.
+pub const MIN_BPS: u32 = 9_600;
 /// TX scratch: the largest legal frame (258 ring bytes) plus alignment.
 type TxBuf = FrameBuf<264>;
 
@@ -184,9 +189,7 @@ pub struct HostBus<P: Providers> {
     state: State,
     /// The active Exchange's derived plan; `None` outside one.
     plan: Option<Shape>,
-    rate: BaudRate,
-    /// The UART's actual rate: `rate`'s, or an instrument detune's raw
-    /// divisor (timing state then rides the nearest catalog `rate`).
+    /// The UART's rate; every byte-time derives from it.
     bps: u32,
     response_deadline_us: u16,
     /// Enforced-quiet end after garble evidence / a baud change / a
@@ -228,7 +231,6 @@ impl<P: Providers> HostBus<P> {
             buf: TxBuf::new(),
             state: State::Idle,
             plan: None,
-            rate,
             bps: rate.as_hz(),
             response_deadline_us: wire::DEFAULT_RESPONSE_DEADLINE_US,
             pace_until: None,
@@ -249,8 +251,7 @@ impl<P: Providers> HostBus<P> {
         !matches!(self.state, State::Idle) || self.pending_done.is_some() || self.wire.busy()
     }
 
-    /// The UART's rate, raw bps (an instrument detune's off-catalog rate
-    /// included).
+    /// The UART's rate, raw bps (off-catalog rates included).
     pub fn bps(&self) -> u32 {
         self.bps
     }
@@ -263,8 +264,8 @@ impl<P: Providers> HostBus<P> {
     /// driving the wire, mid-span if need be, and drop its unconsumed
     /// events. The next frame waits until whatever the old exchange still
     /// draws from the bus has landed: the rest of its reply window, then a
-    /// starve horizon of silence. An off-catalog UART rate returns to the
-    /// rescue rate.
+    /// starve horizon of silence. A UART left at a non-osc rate returns to
+    /// the rescue rate.
     pub fn cancel(&mut self) {
         let was_busy = self.busy();
         let now = self.deadline.now();
@@ -299,8 +300,8 @@ impl<P: Providers> HostBus<P> {
         self.pending_done = None;
         self.evidence = WireEvidence::default();
         self.wire.cancel();
-        if self.bps != self.rate.as_hz() {
-            self.set_rate(BaudRate::RESCUE);
+        if BaudRate::from_hz(self.bps).is_none() {
+            self.set_bps(BaudRate::RESCUE.as_hz());
         } else if was_busy {
             self.pace();
         }
@@ -312,11 +313,14 @@ impl<P: Providers> HostBus<P> {
         }
     }
 
-    /// Catalog rate change: apply, then pace (sec 3.4).
-    fn set_rate(&mut self, rate: BaudRate) {
-        self.baud.apply(rate);
-        self.rate = rate;
-        self.bps = rate.as_hz();
+    /// Rate change: apply, then pace (sec 3.4). An osc rate keeps the
+    /// provider's exact divisor; any other rate rounds one.
+    fn set_bps(&mut self, bps: u32) {
+        match BaudRate::from_hz(bps) {
+            Some(rate) => self.baud.apply(rate),
+            None => self.baud.apply_raw(bps),
+        }
+        self.bps = bps;
         self.pace();
     }
 
@@ -330,8 +334,11 @@ impl<P: Providers> HostBus<P> {
                 self.response_deadline_us = us;
                 self.finish(Outcome::Complete);
             }
-            Command::HostBaud(rate) => {
-                self.set_rate(rate);
+            Command::HostBaud { bps } => {
+                if bps < MIN_BPS {
+                    return Err(SubmitError::Invalid(InvalidReason::BadPayload));
+                }
+                self.set_bps(bps);
                 self.finish(Outcome::Complete);
             }
             Command::Rescue => {
@@ -477,7 +484,7 @@ impl<P: Providers> HostBus<P> {
             State::RescueHold => {
                 if tick_reached(now, self.deadline_at) {
                     self.tx.release();
-                    self.set_rate(BaudRate::RESCUE);
+                    self.set_bps(BaudRate::RESCUE.as_hz());
                     self.finish(Outcome::Sent);
                 }
             }
@@ -709,9 +716,10 @@ impl<P: Providers> HostBus<P> {
         w
     }
 
-    /// Ticks per 10-bit character at the current rate. Exact for every
-    /// operational baud; `TICKS_PER_US` up to ~420 stays inside u32.
+    /// Ticks per 10-bit character at the current rate. Exact at the osc
+    /// rates, rounded up elsewhere so a quiet or window never shortens;
+    /// `TICKS_PER_US` up to ~420 stays inside u32.
     fn byte_ticks(&self) -> u32 {
-        P::Deadline::TICKS_PER_US * 10_000_000 / self.rate.as_hz()
+        (P::Deadline::TICKS_PER_US * 10_000_000).div_ceil(self.bps)
     }
 }

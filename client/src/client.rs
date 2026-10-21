@@ -469,7 +469,7 @@ impl<P: Pipe> Client<P> {
         let mut out = Vec::new();
         let tag = self
             .session
-            .encode_submit(&mut out, &Command::HostBaud(rate));
+            .encode_submit(&mut out, &Command::HostBaud { bps: rate.as_hz() });
         match self.request_done(&out, tag).await?[..] {
             [rec::MODE_OSC, b0, b1, b2, b3]
                 if u32::from_le_bytes([b0, b1, b2, b3]) == rate.as_hz() =>
