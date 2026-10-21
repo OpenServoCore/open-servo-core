@@ -2,8 +2,8 @@
 //! broadcast ENUM. A UART has no bit arbitration (a servo does not
 //! hear its own TX), so simultaneous ENUM responses arrive as garbage - and
 //! garbage IS the collision signal that drives the descent. Probes ride
-//! the adapter's engine (SUBMIT), whose terminal evidence (statuses,
-//! garble, trailing energy) is the collision verdict -- the ring counts
+//! the adapter's engine (OSC_EXCHANGE), whose exchange result (frames,
+//! garble, trailing energy) is the collision verdict: the ring counts
 //! everything, where a decoded-capture view can lose unanchorable junk.
 
 use std::time::Duration;

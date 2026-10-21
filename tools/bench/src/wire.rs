@@ -1,7 +1,8 @@
 //! The bench's wire transport: the osc-adapter as instrument. Raw
 //! break-framed TX, arbitrary-rate host UART, break trains, and
-//! hardware-timestamped edge capture decoded into [`BStamp`]s -- the
-//! adapter's 0x6x record family through osc-client's blocking facade.
+//! hardware-timestamped edge capture decoded into [`BStamp`]s: the
+//! adapter's instrument kinds (link sec 9) through osc-client's blocking
+//! facade.
 //! Engine-shaped traffic (ENUM walks, rails) rides [`Wire::client`].
 
 use std::time::{Duration, Instant};
@@ -33,7 +34,7 @@ impl Wire {
     /// Claim the adapter (VID/PID autodetect) and put the bus at `baud`.
     pub fn connect(baud: u32) -> Result<Self> {
         let mut client =
-            Client::connect(NusbPipe::open()?).context("osc-adapter HELLO handshake")?;
+            Client::connect(NusbPipe::open()?).context("osc-adapter GET_INFO handshake")?;
         let ticks_per_us = client.info().ticks_per_us;
         client.wire_baud(BOOT_BAUD)?;
         let mut wire = Self {

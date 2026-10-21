@@ -75,7 +75,7 @@ pub struct OscClient {
 
 #[wasm_bindgen]
 impl OscClient {
-    /// Open, configure and claim the device, then HELLO.
+    /// Open, configure and claim the device, then GET_INFO.
     pub async fn connect(device: UsbDevice) -> Result<OscClient, JsError> {
         let pipe = WebUsbPipe::open(device).await?;
         let c = Client::connect(pipe).await?;
@@ -377,7 +377,7 @@ impl OscClient {
 #[cfg(feature = "fake")]
 #[wasm_bindgen]
 impl OscClient {
-    /// A fleet of `ids` on a simulated bus, already HELLOed. No hardware,
+    /// A fleet of `ids` on a simulated bus, already past GET_INFO. No hardware,
     /// no user gesture; each servo's UID is derived from its id, and every
     /// servo boots calibrated, identified and stamped (`dataState` clean).
     pub async fn fake(

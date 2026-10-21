@@ -74,11 +74,63 @@ fn read_i32(c: &mut Client<FakePipe>, id: Id, addr: u16) -> i32 {
 
 #[test]
 fn connect_reports_link_info() {
+    use osc_host::link::record as rec;
     let c = fleet(&[1]);
-    assert_eq!(c.info().version, osc_host::link::record::LINK_VERSION);
-    assert!(c.info().ticks_per_us > 0);
-    // A chip-less adapter has nothing to report, but the tail is present.
-    assert_eq!(c.info().diag, Some(Default::default()));
+    let info = c.info();
+    assert!(info.ticks_per_us > 0);
+    // The sim stands in for a LinkE.
+    let instrument = if cfg!(feature = "bench") {
+        rec::FEATURE_INSTRUMENT
+    } else {
+        0
+    };
+    assert_eq!(
+        info.features,
+        rec::FEATURE_RAILS | rec::FEATURE_ADAPTER_IAP | instrument
+    );
+    assert_eq!(info.max_request as usize, rec::MAX_REQUEST);
+    assert_eq!(info.max_response as usize, rec::MAX_RESPONSE);
+    assert_eq!(info.max_tb_payload, 0);
+    assert_eq!(info.mode, rec::MODE_OSC);
+    assert_eq!(info.bps, 1_000_000);
+    assert_eq!(info.deadline_us, 1000);
+    // A chip-less adapter has nothing to report.
+    assert_eq!(info.diag, Default::default());
+}
+
+#[test]
+fn adapter_errors_surface_as_their_reject_reason() {
+    let mut c = fleet(&[5]);
+    // An ERROR on the active seq names its code; the session stays in step.
+    let read = Inst::instruction(Opcode::Read, 0);
+    assert_eq!(
+        c.exchange(Id::new(5), read, &[1]).unwrap_err(),
+        Error::Link(LinkError::Rejected(RejectReason::BadPayload))
+    );
+    let status = Inst::status(ResultCode::Ok, false);
+    assert_eq!(
+        c.exchange(Id::new(5), status, &[]).unwrap_err(),
+        Error::Link(LinkError::Rejected(RejectReason::BadInst))
+    );
+    c.ping(Id::new(5)).expect("still in step");
+
+    // A framing breach answers on no seq; the client surfaces it as the
+    // adapter refusing its request, and only a new session recovers.
+    let mut pipe = c.into_pipe();
+    pipe.sim_mut().link_send(&[1, 0]);
+    assert_eq!(
+        Client::connect(pipe).err(),
+        Some(Error::Link(LinkError::Rejected(RejectReason::Framing)))
+    );
+}
+
+#[test]
+fn a_new_session_recovers_from_a_framing_breach() {
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[5]);
+    pipe.sim_mut().link_send(&[0xFF, 0xFF]);
+    pipe.reopen();
+    let mut c = Client::connect(pipe).expect("connect");
+    c.ping(Id::new(5)).expect("ping");
 }
 
 #[test]
@@ -1175,7 +1227,7 @@ mod wire {
     fn empty_wire_send_is_rejected_by_the_adapter() {
         let mut c = fleet(&[5]);
         // A bare break never raises TC, so the engine refuses to wedge on it --
-        // pinned here as the round-trip REJECTED path.
+        // pinned here as the round-trip ERROR path.
         let err = c.wire_send(&[]).unwrap_err();
         assert_eq!(
             err,
@@ -1315,11 +1367,11 @@ fn reopen_mid_burst_cancels_it_and_the_next_frame_waits_for_quiet() {
     pipe.sim_mut().link_send(&out);
     pipe.reopen();
 
-    // The next session starts clean: INFO first, and its seq 0 is
+    // The next session starts clean: INFO first, and its bus request is
     // accepted at once, the cancelled burst no longer owning the bus.
     let mut s = Session::new();
     let mut out = Vec::new();
-    Session::encode_hello(&mut out);
+    let info = s.encode_get_info(&mut out);
     let ping = s.encode_submit(
         &mut out,
         &EngineCommand::Exchange {
@@ -1349,15 +1401,22 @@ fn reopen_mid_burst_cancels_it_and_the_next_frame_waits_for_quiet() {
     assert!(ping_at > burst.last().unwrap().end, "ping after the burst");
 
     s.on_bytes(&pipe.sim_mut().link_recv());
-    assert!(matches!(s.next_record(), Ok(Some(Record::Info(_)))));
     assert!(matches!(
         s.next_record(),
-        Ok(Some(Record::Status { seq, .. })) if seq == ping
+        Ok(Some(Record::Done { seq, kind, .. })) if (seq, kind) == (info.seq, info.kind)
     ));
     assert!(matches!(
         s.next_record(),
-        Ok(Some(Record::Terminal { seq, outcome: Outcome::Complete, .. })) if seq == ping
+        Ok(Some(Record::Frame { seq, .. })) if seq == ping.seq
     ));
+    let Ok(Some(Record::Done { seq, kind, result })) = s.next_record() else {
+        panic!("the ping's DONE");
+    };
+    assert_eq!((seq, kind), (ping.seq, ping.kind));
+    assert_eq!(
+        osc_host::link::record::ExchangeResult::parse(&result).map(|x| x.outcome),
+        Some(Outcome::Complete)
+    );
     assert_eq!(s.next_record(), Ok(None), "no burst frame leaked");
 }
 

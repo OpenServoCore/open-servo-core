@@ -58,23 +58,36 @@ pub struct Diag {
     pub uptime_ms: u32,
 }
 
+/// The adapter's INFO (link sec 4.1).
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkInfo {
-    pub version: u8,
+    /// Feature bits: 0 instrument, 1 rails, 2 adapter IAP, 3 tinyboot.
+    pub features: u16,
     pub ticks_per_us: u32,
-    /// Absent from a pre-v3 adapter.
-    #[tsify(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diag: Option<Diag>,
+    pub max_request: u16,
+    pub max_response: u16,
+    pub max_tb_payload: u16,
+    /// Bus mode: 0 osc, 1 tinyboot.
+    pub mode: u8,
+    pub bps: u32,
+    pub deadline_us: u16,
+    pub diag: Diag,
 }
 
 impl From<osc_client::session::LinkInfo> for LinkInfo {
     fn from(i: osc_client::session::LinkInfo) -> Self {
+        let d = i.diag;
         LinkInfo {
-            version: i.version,
+            features: i.features,
             ticks_per_us: i.ticks_per_us,
-            diag: i.diag.map(|d| Diag {
+            max_request: i.max_request,
+            max_response: i.max_response,
+            max_tb_payload: i.max_tb_payload,
+            mode: i.mode,
+            bps: i.bps,
+            deadline_us: i.deadline_us,
+            diag: Diag {
                 reset: d.reset,
                 phase: d.phase,
                 crash_seq: d.crash_seq,
@@ -84,7 +97,7 @@ impl From<osc_client::session::LinkInfo> for LinkInfo {
                 hse_fail: d.hse_fail,
                 resets: d.resets,
                 uptime_ms: d.uptime_ms,
-            }),
+            },
         }
     }
 }

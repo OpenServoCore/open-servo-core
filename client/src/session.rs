@@ -1,72 +1,31 @@
 //! Sans-io session: record framing over the pipe's byte stream, both
-//! directions. Encoders reuse `osc_host::link::record`'s vocabulary (the
-//! wire truth); this module owns the decode direction the adapter never
-//! needs. Window is 1 by engine contract -- the seq exists to make any
-//! adapter/pipe disagreement loud, and lets a future queued adapter widen
-//! the window without an API break.
+//! directions (link sec 3). Encoders reuse `osc_host::link::record`'s
+//! vocabulary (the wire truth); this module owns the decode direction the
+//! adapter never needs. One bus request is outstanding at a time by link
+//! contract; the seq makes any adapter/pipe disagreement loud.
 
-use osc_host::engine::{Command, Outcome};
+use osc_host::engine::Command;
 use osc_host::link::record as rec;
-use osc_protocol::wire::Inst;
 
 use crate::error::LinkError;
 
+/// GET_INFO's result (link sec 4.1).
+pub use osc_host::link::record::Info as LinkInfo;
+
+/// What an encoder sent: the seq its responses carry and the kind its
+/// DONE must echo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LinkInfo {
-    pub version: u8,
-    pub ticks_per_us: u32,
-    /// Adapter diagnostics tail; `None` from a pre-v3 adapter.
-    pub diag: Option<rec::Diag>,
+pub struct Tag {
+    pub seq: u16,
+    pub kind: u8,
 }
 
-/// One decoded adapter->client record.
+/// One decoded response record (link sec 3.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
-    Info(LinkInfo),
-    Status {
-        seq: u16,
-        slot: u8,
-        id: u8,
-        inst: Inst,
-        payload: Vec<u8>,
-    },
-    Terminal {
-        seq: u16,
-        outcome: Outcome,
-        tick: u32,
-        statuses: u16,
-        garble: u16,
-        trailing: bool,
-        laps: u16,
-    },
-    Rejected {
-        seq: u16,
-        reason: u8,
-    },
-    BootloaderAck,
-    RailsAck {
-        state: u8,
-    },
-    /// A wire instrument op (send/burst/pulse) released the wire.
-    #[cfg(feature = "bench")]
-    WireDone {
-        seq: u16,
-        tick: u32,
-    },
-    /// One edge drain: capture-order ticks (engine domain low 16 bits),
-    /// `now` = the 32-bit drain moment (the unwrap's anchor floor).
-    #[cfg(feature = "bench")]
-    Edges {
-        overflow: bool,
-        now: u32,
-        falls: Vec<u16>,
-        rises: Vec<u16>,
-    },
-    #[cfg(feature = "bench")]
-    CaptureAck,
-    Unknown {
-        rtype: u8,
-    },
+    Frame { seq: u16, slot: u8, bytes: Vec<u8> },
+    Done { seq: u16, kind: u8, result: Vec<u8> },
+    Error { seq: u16, kind: u8, code: u8 },
 }
 
 pub struct Session {
@@ -88,45 +47,46 @@ impl Session {
         }
     }
 
-    fn alloc_seq(&mut self) -> u16 {
+    /// Append one request record onto `out`, under a fresh seq.
+    fn request(&mut self, out: &mut Vec<u8>, kind: u8, body: &[u8]) -> Tag {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         if self.next_seq == rec::SEQ_NONE {
             self.next_seq = 0;
         }
-        seq
-    }
-
-    /// Length-prefix one record body (type + payload) onto `out`.
-    fn frame(out: &mut Vec<u8>, body: &[u8]) {
-        out.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        out.extend_from_slice(&((rec::HEADER - 2 + body.len()) as u16).to_le_bytes());
+        out.push(kind);
+        out.extend_from_slice(&seq.to_le_bytes());
         out.extend_from_slice(body);
+        Tag { seq, kind }
     }
 
-    pub fn encode_hello(out: &mut Vec<u8>) {
-        Self::frame(out, &[rec::REC_HELLO]);
+    pub fn encode_get_info(&mut self, out: &mut Vec<u8>) -> Tag {
+        self.request(out, rec::GET_INFO, &[])
     }
 
-    pub fn encode_enter_bootloader(out: &mut Vec<u8>) {
-        Self::frame(out, &[rec::REC_ENTER_BOOTLOADER]);
+    pub fn encode_adapter_iap(&mut self, out: &mut Vec<u8>) -> Tag {
+        self.request(out, rec::ADAPTER_IAP, &[])
     }
 
     /// `mask` selects which rails the state byte applies to (bit0 = 3V3,
     /// bit1 = 5V); mask 0 reads the state back without driving anything.
-    pub fn encode_set_rails(out: &mut Vec<u8>, state: u8, mask: u8) {
-        Self::frame(out, &[rec::REC_SET_RAILS, state, mask]);
+    pub fn encode_rails(&mut self, out: &mut Vec<u8>, state: u8, mask: u8) -> Tag {
+        self.request(out, rec::RAILS, &[state, mask])
     }
 
-    /// Encode a SUBMIT; returns the seq that will tag its answer.
-    pub fn encode_submit(&mut self, out: &mut Vec<u8>, cmd: &Command<'_>) -> u16 {
-        let seq = self.alloc_seq();
-        let mut body = vec![rec::REC_SUBMIT, seq as u8, (seq >> 8) as u8];
+    /// Encode an engine command as its bus request.
+    pub fn encode_submit(&mut self, out: &mut Vec<u8>, cmd: &Command<'_>) -> Tag {
+        let exchange = |flags: u8, id: u8, inst: u8, window_us: u32, payload: &[u8]| {
+            let mut body = vec![flags, id, inst];
+            body.extend_from_slice(&window_us.to_le_bytes());
+            body.extend_from_slice(payload);
+            body
+        };
         match cmd {
             Command::Exchange { id, inst, payload } => {
-                body.push(rec::VERB_EXCHANGE);
-                body.push(id.as_byte());
-                body.push(inst.0);
-                body.extend_from_slice(payload);
+                let body = exchange(0, id.as_byte(), inst.0, 0, payload);
+                self.request(out, rec::OSC_EXCHANGE, &body)
             }
             Command::ExchangeStream {
                 id,
@@ -134,24 +94,25 @@ impl Session {
                 payload,
                 window_us,
             } => {
-                body.push(rec::VERB_EXCHANGE_STREAM);
-                body.push(id.as_byte());
-                body.push(inst.0);
-                body.extend_from_slice(&window_us.to_le_bytes());
-                body.extend_from_slice(payload);
+                let body = exchange(
+                    rec::EXCHANGE_STREAM,
+                    id.as_byte(),
+                    inst.0,
+                    *window_us,
+                    payload,
+                );
+                self.request(out, rec::OSC_EXCHANGE, &body)
             }
-            Command::Rescue => body.push(rec::VERB_RESCUE),
+            Command::Rescue => self.request(out, rec::OSC_RESCUE, &[]),
             Command::HostBaud(rate) => {
-                body.push(rec::VERB_HOST_BAUD);
-                body.push(rate.as_idx());
+                let mut body = vec![rec::MODE_OSC];
+                body.extend_from_slice(&rate.as_hz().to_le_bytes());
+                self.request(out, rec::SET_BUS, &body)
             }
             Command::SetResponseDeadline { us } => {
-                body.push(rec::VERB_SET_RESPONSE_DEADLINE);
-                body.extend_from_slice(&us.to_le_bytes());
+                self.request(out, rec::OSC_DEADLINE, &us.to_le_bytes())
             }
         }
-        Self::frame(out, &body);
-        seq
     }
 
     /// Feed a delivered chunk into the reassembly buffer.
@@ -165,7 +126,7 @@ impl Session {
             return Ok(None);
         }
         let len = u16::from_le_bytes([self.rx[0], self.rx[1]]) as usize;
-        if len == 0 {
+        if len < rec::HEADER - 2 {
             return Err(LinkError::Malformed);
         }
         if self.rx.len() < 2 + len {
@@ -177,22 +138,20 @@ impl Session {
     }
 }
 
-/// The 0x6x instrument family, `bench` only.
+/// The instrument kinds (link sec 9), `bench` only.
 #[cfg(feature = "bench")]
 impl Session {
-    /// Encode a raw wire send (instrument family: engine validation
-    /// deliberately bypassed); returns the seq its WIRE_DONE will carry.
-    pub fn encode_wire_send(&mut self, out: &mut Vec<u8>, bytes: &[u8]) -> u16 {
-        self.encode_wire_op(out, rec::REC_WIRE_SEND, bytes)
+    pub fn encode_wire_send(&mut self, out: &mut Vec<u8>, bytes: &[u8]) -> Tag {
+        self.request(out, rec::WIRE_SEND, bytes)
     }
 
     /// Encode a wire burst; `stream` is the `[len(1) bytes]+` frame train.
-    pub fn encode_wire_burst(&mut self, out: &mut Vec<u8>, stream: &[u8]) -> u16 {
-        self.encode_wire_op(out, rec::REC_WIRE_BURST, stream)
+    pub fn encode_wire_burst(&mut self, out: &mut Vec<u8>, stream: &[u8]) -> Tag {
+        self.request(out, rec::WIRE_BURST, stream)
     }
 
-    pub fn encode_wire_pulse(&mut self, out: &mut Vec<u8>, us: u16) -> u16 {
-        self.encode_wire_op(out, rec::REC_WIRE_PULSE, &us.to_le_bytes())
+    pub fn encode_wire_pulse(&mut self, out: &mut Vec<u8>, us: u16) -> Tag {
+        self.request(out, rec::WIRE_PULSE, &us.to_le_bytes())
     }
 
     /// Encode a break train: announce frame + `breaks` bare law breaks
@@ -203,118 +162,41 @@ impl Session {
         announce: &[u8],
         gap_us: u16,
         breaks: u8,
-    ) -> u16 {
+    ) -> Tag {
         let mut body = gap_us.to_le_bytes().to_vec();
         body.push(breaks);
         body.extend_from_slice(announce);
-        self.encode_wire_op(out, rec::REC_WIRE_TRAIN, &body)
+        self.request(out, rec::WIRE_TRAIN, &body)
     }
 
-    pub fn encode_wire_baud(&mut self, out: &mut Vec<u8>, bps: u32) -> u16 {
-        self.encode_wire_op(out, rec::REC_WIRE_BAUD, &bps.to_le_bytes())
+    pub fn encode_wire_baud(&mut self, out: &mut Vec<u8>, bps: u32) -> Tag {
+        self.request(out, rec::WIRE_BAUD, &bps.to_le_bytes())
     }
 
-    fn encode_wire_op(&mut self, out: &mut Vec<u8>, rtype: u8, body: &[u8]) -> u16 {
-        let seq = self.alloc_seq();
-        let mut rec = vec![rtype, seq as u8, (seq >> 8) as u8];
-        rec.extend_from_slice(body);
-        Self::frame(out, &rec);
-        seq
+    pub fn encode_edge_drain(&mut self, out: &mut Vec<u8>, max: u8) -> Tag {
+        self.request(out, rec::EDGE_DRAIN, &[max])
     }
 
-    pub fn encode_edge_drain(out: &mut Vec<u8>, max: u8) {
-        Self::frame(out, &[rec::REC_EDGE_DRAIN, max]);
-    }
-
-    pub fn encode_capture_reset(out: &mut Vec<u8>) {
-        Self::frame(out, &[rec::REC_CAPTURE_RESET]);
+    pub fn encode_capture_reset(&mut self, out: &mut Vec<u8>) -> Tag {
+        self.request(out, rec::CAPTURE_RESET, &[])
     }
 }
 
-fn decode(body: &[u8]) -> Result<Record, LinkError> {
-    let field = |range: std::ops::Range<usize>| -> Result<&[u8], LinkError> {
-        body.get(range).ok_or(LinkError::Malformed)
-    };
-    let seq =
-        || -> Result<u16, LinkError> { Ok(u16::from_le_bytes(field(1..3)?.try_into().unwrap())) };
-    Ok(match body[0] {
-        rec::REC_INFO => Record::Info(LinkInfo {
-            version: *body.get(1).ok_or(LinkError::Malformed)?,
-            ticks_per_us: u32::from_le_bytes(field(2..6)?.try_into().unwrap()),
-            diag: body.get(6..6 + rec::DIAG_LEN).map(|d| {
-                let word = |at: usize| u32::from_le_bytes(d[at..at + 4].try_into().unwrap());
-                rec::Diag {
-                    reset: d[0],
-                    phase: d[1],
-                    crash_seq: word(2),
-                    mcause: word(6),
-                    mepc: word(10),
-                    mtval: word(14),
-                    hse_fail: word(18),
-                    resets: word(22),
-                    uptime_ms: word(26),
-                }
-            }),
-        }),
-        rec::REC_STATUS => Record::Status {
-            seq: seq()?,
-            slot: *body.get(3).ok_or(LinkError::Malformed)?,
-            id: *body.get(4).ok_or(LinkError::Malformed)?,
-            inst: Inst(*body.get(5).ok_or(LinkError::Malformed)?),
-            payload: body[6..].to_vec(),
+/// `r` is everything after `len`, at least kind and seq.
+fn decode(r: &[u8]) -> Result<Record, LinkError> {
+    let seq = u16::from_le_bytes([r[1], r[2]]);
+    Ok(match (r[0], &r[rec::HEADER - 2..]) {
+        (rec::FRAME, [slot, bytes @ ..]) => Record::Frame {
+            seq,
+            slot: *slot,
+            bytes: bytes.to_vec(),
         },
-        rec::REC_TERMINAL => {
-            let outcome = match *body.get(3).ok_or(LinkError::Malformed)? {
-                rec::OUTCOME_SENT => Outcome::Sent,
-                rec::OUTCOME_COMPLETE => Outcome::Complete,
-                rec::OUTCOME_TIMEOUT => Outcome::Timeout {
-                    slot: *body.get(4).ok_or(LinkError::Malformed)?,
-                },
-                _ => return Err(LinkError::Malformed),
-            };
-            Record::Terminal {
-                seq: seq()?,
-                outcome,
-                tick: u32::from_le_bytes(field(5..9)?.try_into().unwrap()),
-                statuses: u16::from_le_bytes(field(9..11)?.try_into().unwrap()),
-                garble: u16::from_le_bytes(field(11..13)?.try_into().unwrap()),
-                trailing: *body.get(13).ok_or(LinkError::Malformed)?
-                    & rec::FLAG_GARBLE_AFTER_LAST_FRAME
-                    != 0,
-                laps: u16::from_le_bytes(field(14..16)?.try_into().unwrap()),
-            }
-        }
-        rec::REC_REJECTED => Record::Rejected {
-            seq: seq()?,
-            reason: *body.get(3).ok_or(LinkError::Malformed)?,
+        (rec::DONE, [kind, result @ ..]) => Record::Done {
+            seq,
+            kind: *kind,
+            result: result.to_vec(),
         },
-        rec::REC_BOOTLOADER_ACK => Record::BootloaderAck,
-        rec::REC_RAILS_ACK => Record::RailsAck {
-            state: *body.get(1).ok_or(LinkError::Malformed)?,
-        },
-        #[cfg(feature = "bench")]
-        rec::REC_WIRE_DONE => Record::WireDone {
-            seq: seq()?,
-            tick: u32::from_le_bytes(field(3..7)?.try_into().unwrap()),
-        },
-        #[cfg(feature = "bench")]
-        rec::REC_EDGES => {
-            let fall_n = *body.get(6).ok_or(LinkError::Malformed)? as usize;
-            let rise_n = *body.get(7).ok_or(LinkError::Malformed)? as usize;
-            let ticks = field(8..8 + 2 * (fall_n + rise_n))?;
-            let tick = |i: usize| u16::from_le_bytes([ticks[2 * i], ticks[2 * i + 1]]);
-            Record::Edges {
-                overflow: body[1] & 1 != 0,
-                now: u32::from_le_bytes(field(2..6)?.try_into().unwrap()),
-                falls: (0..fall_n).map(tick).collect(),
-                rises: (fall_n..fall_n + rise_n).map(tick).collect(),
-            }
-        }
-        #[cfg(feature = "bench")]
-        rec::REC_CAPTURE_ACK => Record::CaptureAck,
-        rec::REC_UNKNOWN => Record::Unknown {
-            rtype: *body.get(1).ok_or(LinkError::Malformed)?,
-        },
+        (rec::ERROR, &[kind, code]) => Record::Error { seq, kind, code },
         _ => return Err(LinkError::Malformed),
     })
 }
@@ -325,50 +207,122 @@ pub use osc_host::engine::Command as EngineCommand;
 
 #[cfg(test)]
 mod tests {
+    use osc_host::engine::Outcome;
+    use osc_host::link::record::ExchangeResult;
+    use osc_protocol::wire::{BaudRate, Id, Inst, Opcode};
+
     use super::*;
 
-    #[test]
-    fn info_diag_round_trips() {
-        let diag = rec::Diag {
-            reset: rec::RESET_IWDG,
-            phase: rec::PHASE_PUMP,
-            crash_seq: 3,
-            mcause: 5,
-            mepc: 0x2a1c,
-            mtval: 0x2000_4000,
-            hse_fail: 1,
-            resets: 4,
-            uptime_ms: 3_733_000,
-        };
-        let mut buf = [0u8; 64];
+    fn decode_one(bytes: &[u8]) -> Result<Option<Record>, LinkError> {
         let mut s = Session::new();
-        s.on_bytes(rec::info(&mut buf, 18, &diag));
-        let Some(Record::Info(info)) = s.next_record().expect("decodes") else {
-            panic!("not an INFO record");
-        };
-        assert_eq!(info.version, rec::LINK_VERSION);
-        assert_eq!(info.ticks_per_us, 18);
-        assert_eq!(info.diag, Some(diag));
+        s.on_bytes(bytes);
+        s.next_record()
     }
 
     #[test]
-    fn terminal_laps_round_trip() {
-        let t = osc_host::engine::Terminal {
-            outcome: Outcome::Complete,
-            tick: 7,
-            evidence: osc_host::engine::WireEvidence {
-                statuses: 12,
-                garble: 188,
-                garble_after_last_frame: false,
-                laps: 2,
-            },
-        };
+    fn responses_decode() {
         let mut buf = [0u8; 64];
-        let mut s = Session::new();
-        s.on_bytes(rec::terminal(&mut buf, 9, &t));
-        let Some(Record::Terminal { garble, laps, .. }) = s.next_record().expect("decodes") else {
-            panic!("not a TERMINAL record");
+        let r = ExchangeResult {
+            outcome: Outcome::Timeout { slot: 1 },
+            tick: 7,
+            frames: 12,
+            garble: 188,
+            trailing: true,
+            laps: 2,
         };
-        assert_eq!((garble, laps), (188, 2));
+        let done = rec::done(&mut buf, 9, rec::OSC_EXCHANGE, |d| r.write(d)).to_vec();
+        let Ok(Some(Record::Done { seq, kind, result })) = decode_one(&done) else {
+            panic!("not a DONE");
+        };
+        assert_eq!((seq, kind), (9, rec::OSC_EXCHANGE));
+        assert_eq!(ExchangeResult::parse(&result), Some(r));
+
+        let frame = rec::osc_frame(&mut buf, 3, 2, 5, 0x80, (&[1], &[2])).to_vec();
+        assert_eq!(
+            decode_one(&frame),
+            Ok(Some(Record::Frame {
+                seq: 3,
+                slot: 2,
+                bytes: vec![5, 0x80, 1, 2]
+            }))
+        );
+
+        let error = rec::error(&mut buf, 4, rec::SET_BUS, rec::ERR_BAD_RATE).to_vec();
+        assert_eq!(
+            decode_one(&error),
+            Ok(Some(Record::Error {
+                seq: 4,
+                kind: rec::SET_BUS,
+                code: rec::ERR_BAD_RATE
+            }))
+        );
+    }
+
+    #[test]
+    fn decode_is_strict() {
+        for bad in [
+            // A request kind.
+            &[3, 0, rec::GET_INFO, 0, 0][..],
+            // An unassigned response kind.
+            &[3, 0, 0x83, 0, 0],
+            // DONE without its kind, FRAME without its slot.
+            &[3, 0, rec::DONE, 0, 0],
+            &[3, 0, rec::FRAME, 0, 0],
+            // ERROR short and long.
+            &[4, 0, rec::ERROR, 0, 0, 1],
+            &[6, 0, rec::ERROR, 0, 0, 1, 2, 3],
+            // `len` with no room for kind and seq.
+            &[2, 0, rec::DONE, 0],
+        ] {
+            assert_eq!(decode_one(bad), Err(LinkError::Malformed), "{bad:?}");
+        }
+        assert_eq!(decode_one(&[9, 0, rec::DONE]), Ok(None), "partial");
+    }
+
+    #[test]
+    fn encoders_tag_and_frame_each_request() {
+        let mut s = Session::new();
+        let mut out = Vec::new();
+        let a = s.encode_get_info(&mut out);
+        let b = s.encode_submit(&mut out, &Command::HostBaud(BaudRate::B2000000));
+        let c = s.encode_submit(
+            &mut out,
+            &Command::Exchange {
+                id: Id::new(5),
+                inst: Inst::instruction(Opcode::Ping, 0),
+                payload: &[],
+            },
+        );
+        assert_eq!(
+            [a, b, c],
+            [
+                Tag {
+                    seq: 0,
+                    kind: rec::GET_INFO
+                },
+                Tag {
+                    seq: 1,
+                    kind: rec::SET_BUS
+                },
+                Tag {
+                    seq: 2,
+                    kind: rec::OSC_EXCHANGE
+                },
+            ]
+        );
+        let ping = Inst::instruction(Opcode::Ping, 0).0;
+        let mut want = vec![3, 0, rec::GET_INFO, 0, 0];
+        want.extend_from_slice(&[8, 0, rec::SET_BUS, 1, 0, rec::MODE_OSC, 0x80, 0x84, 0x1E, 0]);
+        want.extend_from_slice(&[10, 0, rec::OSC_EXCHANGE, 2, 0, 0, 5, ping, 0, 0, 0, 0]);
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn seq_skips_seq_none() {
+        let mut s = Session::new();
+        s.next_seq = rec::SEQ_NONE - 1;
+        let mut out = Vec::new();
+        assert_eq!(s.encode_get_info(&mut out).seq, rec::SEQ_NONE - 1);
+        assert_eq!(s.encode_get_info(&mut out).seq, 0);
     }
 }

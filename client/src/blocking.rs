@@ -303,7 +303,7 @@ impl<P: Pipe> Client<P> {
         block_on(self.0.wire_train(announce, gap_us, breaks))
     }
 
-    pub fn wire_baud(&mut self, bps: u32) -> Result<u32, Error> {
+    pub fn wire_baud(&mut self, bps: u32) -> Result<(), Error> {
         block_on(self.0.wire_baud(bps))
     }
 
