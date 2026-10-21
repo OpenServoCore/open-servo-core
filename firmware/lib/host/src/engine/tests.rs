@@ -888,6 +888,373 @@ fn stream_refuses_chain_and_collect_carriers() {
     assert!(r.wire.log().is_empty(), "refused before the wire");
 }
 
+/// Submit a TbExchange with a fixed header around `data`.
+fn tb_submit(
+    r: &mut Rig,
+    data: &[u8],
+    expect: TbExpect,
+    window_us: u32,
+) -> Result<(), SubmitError> {
+    r.bus.submit(Command::TbExchange {
+        cmd: 3,
+        addr: 0x0008_0400,
+        flags: 0x01,
+        data,
+        expect,
+        window_us,
+    })
+}
+
+/// Submit a TbExchange and drive its TX out.
+fn tb_exchange(r: &mut Rig, expect: TbExpect, window_us: u32) {
+    tb_submit(r, &[1, 2, 3], expect, window_us).expect("valid tb exchange");
+    r.bus.on_tx_complete();
+}
+
+/// A sealed tinyboot frame as it lands on the wire.
+fn tb_wire(cmd: u8, status: u8, addr: u32, flags: u8, data: &[u8]) -> Vec<u8> {
+    let a = addr.to_le_bytes();
+    let n = (data.len() as u16).to_le_bytes();
+    let mut f = vec![0xAA, 0x55, cmd, status, a[0], a[1], a[2], flags, n[0], n[1]];
+    f.extend_from_slice(data);
+    let crc = tb_framer::tb_crc(0xFFFF, &f);
+    f.extend_from_slice(&crc.to_le_bytes());
+    f
+}
+
+fn tb_reply(cmd: u8, data: &[u8]) -> Vec<u8> {
+    tb_wire(cmd, 1, 0x0012_3456, 0x80, data)
+}
+
+/// `(slot, cmd, status, addr, flags, data)`.
+fn expect_tb_frame(r: &mut Rig) -> (u8, u8, u8, u32, u8, Vec<u8>) {
+    match r.bus.poll() {
+        Some(Event::TbFrame {
+            slot,
+            cmd,
+            status,
+            addr,
+            flags,
+            data,
+        }) => (slot, cmd, status, addr, flags, data.bytes().collect()),
+        other => panic!("expected TbFrame, got {other:?}"),
+    }
+}
+
+#[test]
+fn tb_exchange_sends_the_sealed_frame_with_no_break() {
+    let mut r = rig();
+    tb_submit(&mut r, &[0xDE, 0xAD, 0xBE], TbExpect::One, 5_000).unwrap();
+    let mut frame = vec![
+        0xAA, 0x55, 3, 0x00, 0x00, 0x04, 0x08, 0x01, 3, 0, 0xDE, 0xAD, 0xBE,
+    ];
+    let crc = tb_framer::tb_crc(0xFFFF, &frame);
+    frame.extend_from_slice(&crc.to_le_bytes());
+    assert_eq!(r.wire.log(), vec![WireOp::Claim, WireOp::Send(frame)]);
+
+    r.bus.on_tx_complete();
+    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+    assert!(!r.wire.log().contains(&WireOp::Break));
+    assert!(r.bus.poll().is_none(), "awaiting the reply");
+}
+
+#[test]
+fn tb_expect_none_is_sent_at_tx_end() {
+    let mut r = rig();
+    tb_submit(&mut r, &[1], TbExpect::None, 0).unwrap();
+    assert!(r.bus.poll().is_none(), "in flight until TC");
+    r.bus.on_tx_complete();
+    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Sent);
+    assert!(!r.bus.busy());
+}
+
+#[test]
+fn tb_expect_one_completes_on_the_first_clean_reply() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::One, 5_000);
+    r.ring
+        .feed(&tb_wire(3, 2, 0x0008_0400, 0x40, &[9, 8, 7, 6]));
+
+    assert_eq!(
+        expect_tb_frame(&mut r),
+        (0, 3, 2, 0x0008_0400, 0x40, vec![9, 8, 7, 6])
+    );
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 1);
+    assert_eq!(t.evidence.garble, 0);
+    assert!(!r.bus.busy());
+}
+
+#[test]
+fn tb_expect_one_times_out_at_the_fixed_window() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::One, 1_000);
+
+    // Garble mid-window: evidence, never a re-arm.
+    r.clock.advance(600);
+    r.ring.feed(&[0x12, 0x34]);
+    assert!(r.bus.poll().is_none());
+    r.clock.advance(399);
+    assert!(r.bus.poll().is_none(), "1 us of the window left");
+    r.clock.advance(1);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Timeout { slot: 0 });
+    assert_eq!(t.evidence.statuses, 0);
+    assert_eq!(t.evidence.garble, 2);
+}
+
+#[test]
+fn tb_collect_gathers_every_reply_until_the_window_ends() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::Collect, 2_000);
+
+    r.clock.advance(300);
+    r.ring.feed(&tb_reply(4, &[0xA1; 12]));
+    assert_eq!(expect_tb_frame(&mut r).0, 0);
+    assert!(r.bus.poll().is_none(), "collect keeps the window running");
+    r.clock.advance(300);
+    r.ring.feed(&tb_reply(4, &[0xB2; 12]));
+    let (slot, _, _, _, _, data) = expect_tb_frame(&mut r);
+    assert_eq!((slot, data), (1, vec![0xB2; 12]));
+    assert!(r.bus.poll().is_none());
+
+    r.clock.advance(1_399);
+    assert!(r.bus.poll().is_none(), "1 us of the window left");
+    r.clock.advance(1);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 2);
+    assert_eq!(t.evidence.garble, 0);
+}
+
+#[test]
+fn tb_collect_counts_a_collision_as_garble() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::Collect, 2_000);
+
+    // Two 24-byte Select replies 3 byte-times apart, wire-ANDed.
+    let a = tb_reply(4, &[0xA1; 12]);
+    let b = tb_reply(4, &[0x5E; 12]);
+    let k = 3;
+    let mut wire = a.clone();
+    wire.extend_from_slice(&[0xFF; 3]);
+    for (i, &byte) in b.iter().enumerate() {
+        wire[i + k] &= byte;
+    }
+    r.ring.feed(&wire);
+    assert!(r.bus.poll().is_none(), "no clean frame");
+
+    r.clock.advance(2_000);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 0);
+    assert_eq!(usize::from(t.evidence.garble), wire.len());
+}
+
+#[test]
+fn tb_partial_reply_at_the_window_end_folds_into_garble() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::One, 1_000);
+    r.ring.feed(&tb_reply(4, &[1, 2, 3, 4])[..8]);
+    assert!(r.bus.poll().is_none(), "a header still landing");
+
+    r.clock.advance(1_000);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Timeout { slot: 0 });
+    assert_eq!(t.evidence.garble, 8);
+    assert!(t.evidence.garble_after_last_frame);
+}
+
+#[test]
+fn tb_submit_rejects_bad_bodies() {
+    let mut r = rig();
+    let long = [0u8; MAX_TB_PAYLOAD + 1];
+    let bad = |reason| Err(SubmitError::Invalid(reason));
+    assert_eq!(
+        tb_submit(&mut r, &long, TbExpect::One, 1_000),
+        bad(InvalidReason::TooLong)
+    );
+    assert_eq!(
+        r.bus.submit(Command::TbExchange {
+            cmd: 3,
+            addr: 0x0100_0000,
+            flags: 0,
+            data: &[],
+            expect: TbExpect::One,
+            window_us: 1_000,
+        }),
+        bad(InvalidReason::BadPayload),
+        "addr over 24 bits"
+    );
+    for (expect, window_us) in [
+        (TbExpect::None, 1),
+        (TbExpect::One, 0),
+        (TbExpect::Collect, 0),
+    ] {
+        assert_eq!(
+            tb_submit(&mut r, &[1], expect, window_us),
+            bad(InvalidReason::BadPayload),
+            "{expect:?} with window {window_us}"
+        );
+    }
+    assert!(r.wire.log().is_empty(), "refused before the wire");
+
+    // The largest legal data fills the TX scratch exactly.
+    let max = [0u8; MAX_TB_PAYLOAD];
+    tb_submit(&mut r, &max, TbExpect::None, 0).unwrap();
+    match &r.wire.log()[1] {
+        WireOp::Send(f) => assert_eq!(f.len(), TX_LEN),
+        other => panic!("expected Send, got {other:?}"),
+    }
+}
+
+#[test]
+fn tb_cancel_mid_await_keeps_the_fixed_window_quiet() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::One, 2_000);
+    r.clock.advance(500);
+    r.bus.cancel();
+    assert!(!r.bus.busy());
+
+    r.wire.clear();
+    let (id, inst) = ping(5);
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    // The device may answer until the old window ends, though the horizon
+    // alone is long past.
+    r.clock.advance(999);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty(), "the old window is still open");
+    // Its late reply lands: nobody's, and it restarts only the starve
+    // horizon (640 us at 1M), never the fixed window.
+    r.clock.advance(1);
+    r.ring.feed(&tb_reply(3, &[1]));
+    assert!(r.bus.poll().is_none(), "the old reply is nobody's");
+    r.clock.advance(639);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty(), "1 us of the horizon left");
+    r.clock.advance(1);
+    assert!(r.bus.poll().is_none());
+    assert_eq!(r.wire.log()[0], WireOp::Claim);
+}
+
+#[test]
+fn tb_exchange_waits_out_pacing() {
+    let mut r = rig();
+    tb_exchange(&mut r, TbExpect::One, 5_000);
+    r.ring.feed(&[0x01, 0x02]);
+    r.ring.feed(&tb_reply(3, &[]));
+    let _ = expect_tb_frame(&mut r);
+    assert_eq!(expect_done(&mut r).evidence.garble, 2);
+
+    r.wire.clear();
+    tb_submit(&mut r, &[1], TbExpect::One, 5_000).unwrap();
+    assert!(r.bus.poll().is_none());
+    r.clock.advance(639);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty(), "paced: 1 us of the horizon left");
+    r.clock.advance(1);
+    assert!(r.bus.poll().is_none());
+    let log = r.wire.log();
+    assert_eq!(log[0], WireOp::Claim, "horizon elapsed -> TX");
+    assert!(matches!(log[1], WireOp::Send(_)), "no break");
+}
+
+/// The largest window whose ticks the deadline compare can still see.
+const MAX_WINDOW_US: u32 = u32::MAX / 2 / FakeDeadline::TICKS_PER_US;
+
+#[test]
+fn tb_window_past_the_tick_horizon_is_refused() {
+    let mut r = rig();
+    for expect in [TbExpect::One, TbExpect::Collect] {
+        assert_eq!(
+            tb_submit(&mut r, &[1], expect, MAX_WINDOW_US + 1),
+            Err(SubmitError::Invalid(InvalidReason::BadPayload)),
+            "{expect:?}"
+        );
+    }
+    assert_eq!(
+        tb_submit(&mut r, &[1], TbExpect::One, u32::MAX),
+        Err(SubmitError::Invalid(InvalidReason::BadPayload))
+    );
+    assert!(r.wire.log().is_empty(), "refused before the wire");
+
+    tb_exchange(&mut r, TbExpect::One, MAX_WINDOW_US);
+    r.clock.advance(MAX_WINDOW_US - 1);
+    assert!(r.bus.poll().is_none(), "the window still runs");
+    r.clock.advance(1);
+    assert_eq!(expect_done(&mut r).outcome, Outcome::Timeout { slot: 0 });
+}
+
+#[test]
+fn stream_window_past_the_tick_horizon_is_refused() {
+    let mut r = rig();
+    let mut p = [0u8; 8];
+    let n = build::write(&mut p, 0x0192, &[2, 0]).unwrap();
+    for window_us in [MAX_WINDOW_US + 1, u32::MAX] {
+        assert_eq!(
+            r.bus.submit(Command::ExchangeStream {
+                id: Id::new(5),
+                inst: Inst::instruction(Opcode::Write, 0),
+                payload: &p[..n],
+                window_us,
+            }),
+            Err(SubmitError::Invalid(InvalidReason::BadPayload)),
+            "{window_us}"
+        );
+    }
+    assert!(r.wire.log().is_empty(), "refused before the wire");
+
+    arm_stream(&mut r, Id::new(5), MAX_WINDOW_US);
+    r.clock.advance(MAX_WINDOW_US - 1);
+    assert!(r.bus.poll().is_none(), "the window still runs");
+    r.clock.advance(1);
+    assert_eq!(expect_done(&mut r).outcome, Outcome::Timeout { slot: 0 });
+}
+
+#[test]
+fn osc_and_tinyboot_exchanges_alternate_cleanly() {
+    let mut r = rig();
+    let (id, inst) = ping(5);
+    let osc_round = |r: &mut Rig, data: u8| {
+        r.wire.clear();
+        exchange(r, id, inst, &[]);
+        assert_eq!(r.wire.log()[1], WireOp::Break, "osc frames ride a break");
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[data]));
+        match r.bus.poll() {
+            Some(Event::Status { slot, payload, .. }) => {
+                assert_eq!((slot, payload.segments().0), (0, &[data][..]))
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+        let t = expect_done(r);
+        assert_eq!(t.outcome, Outcome::Complete);
+        assert_eq!((t.evidence.statuses, t.evidence.garble), (1, 0));
+    };
+
+    osc_round(&mut r, 0x11);
+
+    r.wire.clear();
+    tb_exchange(&mut r, TbExpect::One, 5_000);
+    assert!(!r.wire.log().contains(&WireOp::Break));
+    r.ring.feed(&tb_reply(3, &[0x22]));
+    let (slot, cmd, _, _, _, data) = expect_tb_frame(&mut r);
+    assert_eq!((slot, cmd, data), (0, 3, vec![0x22]));
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!((t.evidence.statuses, t.evidence.garble), (1, 0));
+
+    osc_round(&mut r, 0x33);
+}
+
 #[cfg(feature = "bench")]
 mod wire {
     use super::*;

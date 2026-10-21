@@ -98,7 +98,7 @@ The correlation rule: every request draws exactly one `DONE` or one
 
 | Code | Name | Meaning |
 |---|---|---|
-| `0x00` | `MALFORMED` | The body does not parse: short, extra bytes, a reserved bit set. |
+| `0x00` | `MALFORMED` | The body does not parse: short, extra bytes, a reserved bit set, a window past sec 3.4's limit. |
 | `0x01` | `UNKNOWN_KIND` | No such request kind. |
 | `0x02` | `UNSUPPORTED` | The kind exists, but this adapter lacks the feature (INFO `features`). |
 | `0x03` | `WRONG_MODE` | The kind is not valid in the bus's current mode (sec 5). |
@@ -123,6 +123,10 @@ the pipe until the next session opens. The client must open a new session.
 Times in results are raw adapter ticks, a free-running `u32` that wraps.
 INFO reports `ticks_per_us` once, so records never convert. A tick in a
 result names a moment; the difference of two ticks is a span.
+
+A `window_us` in a request spans less than 2^31 ticks: the adapter tells
+a deadline from a moment already past by the half of the tick range ahead
+of it. A longer window answers `MALFORMED`.
 
 ## 4. Adapter requests (`0x0_`)
 

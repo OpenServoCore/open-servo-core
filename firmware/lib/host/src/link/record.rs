@@ -7,7 +7,7 @@
 //! FRAMEs first. Both directions' codecs live here: the adapter builds,
 //! clients parse, from one definition.
 
-use crate::engine::{Outcome, Terminal};
+use crate::engine::{MAX_TB_PAYLOAD, Outcome, Terminal};
 
 /// USB carrier, not a record (link sec 8.2): vendor OUT control request on
 /// EP0 (bmRequestType `0x41`, interface 0, no data) that opens a session.
@@ -82,6 +82,8 @@ pub const MAX_REQUEST: usize = 512;
 pub const MAX_RESPONSE: usize = 300;
 /// `len(2) kind(1) seq(2)`.
 pub const HEADER: usize = 5;
+// A tinyboot FRAME at the largest data fits a response.
+const _: () = assert!(HEADER + 1 + 6 + MAX_TB_PAYLOAD <= MAX_RESPONSE);
 /// Largest WIRE_BURST frame train: a whole request less its header.
 pub const WIRE_BURST_STREAM_MAX: usize = MAX_REQUEST - HEADER;
 /// Per-polarity entry cap on one edge drain (keeps the result inside the
@@ -347,6 +349,28 @@ pub fn osc_frame<'a>(
     sealed(dst, FRAME, seq, 3 + a.len() + b.len())
 }
 
+/// A tinyboot FRAME (link sec 7.1): `slot(1) cmd(1) status(1) addr(3 LE)
+/// flags(1) data`.
+#[allow(clippy::too_many_arguments)]
+pub fn tb_frame<'a>(
+    dst: &'a mut [u8],
+    seq: u16,
+    slot: u8,
+    cmd: u8,
+    status: u8,
+    addr: u32,
+    flags: u8,
+    data: (&[u8], &[u8]),
+) -> &'a [u8] {
+    let [a0, a1, a2, _] = addr.to_le_bytes();
+    dst[HEADER..HEADER + 7].copy_from_slice(&[slot, cmd, status, a0, a1, a2, flags]);
+    let at = HEADER + 7;
+    let (a, b) = data;
+    dst[at..at + a.len()].copy_from_slice(a);
+    dst[at + a.len()..at + a.len() + b.len()].copy_from_slice(b);
+    sealed(dst, FRAME, seq, 7 + a.len() + b.len())
+}
+
 /// EDGE_DRAIN's result: `flags(1: bit0 overflow) now(4) fall_n(1)
 /// rise_n(1) falls(fall_n x 2) rises(rise_n x 2)`. Edge ticks are the
 /// adapter tick's low 16 bits, each ring chronological; `now` is the
@@ -474,6 +498,17 @@ mod tests {
         assert_eq!(
             osc_frame(&mut buf, 7, 0, 5, 0x80, (&[1, 2], &[3])),
             [9, 0, FRAME, 7, 0, 0, 5, 0x80, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn tb_frame_lays_out_the_tinyboot_body() {
+        let mut buf = [0u8; 32];
+        assert_eq!(
+            tb_frame(&mut buf, 7, 1, 3, 2, 0x0008_0400, 0x80, (&[0xDE], &[0xAD])),
+            [
+                12, 0, FRAME, 7, 0, 1, 3, 2, 0x00, 0x04, 0x08, 0x80, 0xDE, 0xAD
+            ]
         );
     }
 }

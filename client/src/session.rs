@@ -4,7 +4,7 @@
 //! adapter never needs. One bus request is outstanding at a time by link
 //! contract; the seq makes any adapter/pipe disagreement loud.
 
-use osc_host::engine::Command;
+use osc_host::engine::{Command, TbExpect};
 use osc_host::link::record as rec;
 
 use crate::error::LinkError;
@@ -111,6 +111,27 @@ impl Session {
             }
             Command::SetResponseDeadline { us } => {
                 self.request(out, rec::OSC_DEADLINE, &us.to_le_bytes())
+            }
+            Command::TbExchange {
+                cmd,
+                addr,
+                flags,
+                data,
+                expect,
+                window_us,
+            } => {
+                let expect = match expect {
+                    TbExpect::None => rec::EXPECT_NONE,
+                    TbExpect::One => rec::EXPECT_ONE,
+                    TbExpect::Collect => rec::EXPECT_COLLECT,
+                };
+                let mut body = vec![expect];
+                body.extend_from_slice(&window_us.to_le_bytes());
+                body.push(*cmd);
+                body.extend_from_slice(&addr.to_le_bytes()[..3]);
+                body.push(*flags);
+                body.extend_from_slice(data);
+                self.request(out, rec::TB_EXCHANGE, &body)
             }
         }
     }
@@ -320,6 +341,46 @@ mod tests {
         want.extend_from_slice(&[8, 0, rec::SET_BUS, 1, 0, rec::MODE_OSC, 0x80, 0x84, 0x1E, 0]);
         want.extend_from_slice(&[10, 0, rec::OSC_EXCHANGE, 2, 0, 0, 5, ping, 0, 0, 0, 0]);
         assert_eq!(out, want);
+    }
+
+    #[test]
+    fn tb_exchange_encodes_the_link_body() {
+        let mut s = Session::new();
+        let mut out = Vec::new();
+        let t = s.encode_submit(
+            &mut out,
+            &Command::TbExchange {
+                cmd: 3,
+                addr: 0x0008_0400,
+                flags: 0x01,
+                data: &[0xDE, 0xAD],
+                expect: TbExpect::Collect,
+                window_us: 0x0001_0203,
+            },
+        );
+        assert_eq!(t.kind, rec::TB_EXCHANGE);
+        assert_eq!(
+            out,
+            [
+                15,
+                0,
+                rec::TB_EXCHANGE,
+                0,
+                0,
+                rec::EXPECT_COLLECT,
+                0x03,
+                0x02,
+                0x01,
+                0x00,
+                3,
+                0x00,
+                0x04,
+                0x08,
+                0x01,
+                0xDE,
+                0xAD
+            ]
+        );
     }
 
     #[test]
