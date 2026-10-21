@@ -40,6 +40,7 @@ elif [ -n "${BENCH_FORCE:-}" ] \
   # #[serial] already serialises the shared adapter; --test-threads=1 is belt
   # and suspenders. A longer soak: BENCH_BURST_CYCLES=25000.
   ( cd tools/bench && cargo test --test hardware -- --test-threads=1 )
+  ( cd tools/bench && cargo test --test usb_session -- --test-threads=1 )
 else
   echo "  no osc-adapter detected (set BENCH_FORCE=1 to force); skipping gear 3"
 fi

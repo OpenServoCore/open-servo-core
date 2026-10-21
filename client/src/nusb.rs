@@ -1,9 +1,12 @@
 //! USB bulk backend over nusb (pure rust, no libusb): the osc-adapter's
 //! vendor device, IF0, 1209:0001.
 
-use nusb::transfer::{Queue, RequestBuffer, TransferError};
+use std::time::Duration;
 
-use crate::pipe::{PID, Pipe, PipeError, VID};
+use nusb::transfer::{Control, ControlType, Queue, Recipient, RequestBuffer, TransferError};
+use osc_host::link::record::USB_REQ_OPEN_SESSION;
+
+use crate::pipe::{OLD_ADAPTER, PID, Pipe, PipeError, VID};
 
 const EP_OUT: u8 = 0x01;
 const EP_IN: u8 = 0x81;
@@ -36,6 +39,7 @@ impl NusbPipe {
             .set_configuration(1)
             .map_err(|e| io(format!("set_configuration(1): {e}")))?;
         let interface = device.claim_interface(0).map_err(|e| io(e.to_string()))?;
+        open_session(&interface)?;
         let mut rx = interface.bulk_in_queue(EP_IN);
         while rx.pending() < IN_DEPTH {
             rx.submit(RequestBuffer::new(IN_CAP));
@@ -58,6 +62,22 @@ impl Pipe for NusbPipe {
         let done = self.rx.next_complete().await;
         self.rx.submit(RequestBuffer::new(IN_CAP));
         done.into_result().map_err(|e| transfer_error(EP_IN, e))
+    }
+}
+
+/// Before any bulk traffic: a previous client may have left records queued.
+fn open_session(interface: &nusb::Interface) -> Result<(), PipeError> {
+    let control = Control {
+        control_type: ControlType::Vendor,
+        recipient: Recipient::Interface,
+        request: USB_REQ_OPEN_SESSION,
+        value: 0,
+        index: 0,
+    };
+    match interface.control_out_blocking(control, &[], Duration::from_secs(1)) {
+        Ok(_) => Ok(()),
+        Err(TransferError::Stall) => Err(PipeError::Io(OLD_ADAPTER.into())),
+        Err(e) => Err(transfer_error(0, e)),
     }
 }
 

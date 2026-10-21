@@ -2,8 +2,9 @@
 //! (EP1 OUT = pipe bytes in, EP1 IN = records out). No interrupt vector --
 //! the main loop calls [`UsbDevice::poll`] and the controller's `int_busy`
 //! auto-NAK holds the host off while a flag waits for service. No class
-//! machinery: descriptors, SET_ADDRESS/SET_CONFIGURATION, and raw bulk
-//! bytes are the whole surface (the link layer owns framing).
+//! machinery: descriptors, SET_ADDRESS/SET_CONFIGURATION, the vendor
+//! OPEN_SESSION request, and raw bulk bytes are the whole surface (the link
+//! layer owns framing).
 //!
 //! Identity: 1209:0001 = pid.codes' testing PID, pre-release only; the
 //! permanent-PID switch must bump bcdDevice (Windows caches MS OS
@@ -13,6 +14,7 @@
 use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::usbhs::vals::{EpRxResponse, EpTog, EpTxResponse, SpeedType, UsbToken};
+use osc_host::link::record::USB_REQ_OPEN_SESSION;
 
 use crate::hal::usbhs::{dregs, regs};
 
@@ -164,8 +166,7 @@ pub struct UsbDevice {
     tx_tog: bool,
     rx_tog: bool,
     rx_pending: Option<usize>,
-    /// A bus reset or SET_CONFIGURATION since the last take: every client
-    /// open configures, so either one means a new host session.
+    /// A bus reset, SET_CONFIGURATION or OPEN_SESSION since the last take.
     new_session: bool,
     stage: [u8; 256],
     serial: [u8; 24],
@@ -389,6 +390,10 @@ impl UsbDevice {
             }
             // MS OS 2.0 descriptor set request
             (0xC0, MS_VENDOR_CODE) if index == 7 => Some(ms_os_desc(&mut self.stage)),
+            (0x41, USB_REQ_OPEN_SESSION) if self.configured && index == 0 => {
+                self.open_session();
+                Some(0)
+            }
             _ => None,
         };
 
@@ -559,6 +564,21 @@ impl UsbDevice {
         self.rx_pending = None;
         self.new_session = true;
         self.configured = true;
+    }
+
+    /// Drop the bulk pair's in-flight packets. Both toggles stay: the host
+    /// keeps its own across a reopen, and an IN packet never ACKed never
+    /// advanced ours.
+    fn open_session(&mut self) {
+        let d = dregs();
+        d.ep_tx_ctrl(1)
+            .modify(|w| w.set_mask_uep_t_res(EpTxResponse::NAK));
+        self.tx_busy = false;
+        if self.rx_pending.take().is_some() {
+            d.ep_rx_ctrl(1)
+                .modify(|w| w.set_mask_uep_r_res(EpRxResponse::ACK));
+        }
+        self.new_session = true;
     }
 
     fn on_ep1_transfer(&mut self, token: UsbToken, tog_ok: bool) {

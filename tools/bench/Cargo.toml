@@ -22,7 +22,16 @@ clap         = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 serial_test = "3"
+# usb_session claims the adapter below the client's open path.
+futures-lite  = "2"
+futures-timer = "3"
+nusb          = "0.1"
+osc-host      = { path = "../../firmware/lib/host" }
 
 [[test]]
 name = "hardware"
 path = "tests/hardware/mod.rs"
+
+[[test]]
+name = "usb_session"
+path = "tests/usb_session.rs"

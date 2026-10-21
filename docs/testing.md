@@ -50,6 +50,7 @@ The gears map to plain cargo invocations if you want to run one directly:
 ( cd firmware/lib && cargo test --workspace )            # gear 1 + 2
 ( cd tools/bench  && cargo test --lib )                  # gear 1 (bench units)
 ( cd tools/bench  && cargo test --test hardware -- --test-threads=1 )   # gear 3
+( cd tools/bench  && cargo test --test usb_session -- --test-threads=1 ) # gear 3, adapter sessions
 ```
 
 ## Torque limit pins

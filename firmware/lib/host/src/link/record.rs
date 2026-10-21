@@ -20,6 +20,15 @@ use crate::engine::{Outcome, Terminal};
 /// adapter->client `0x68..=0x6F`) -- rails, raw wire verbs, edge-capture
 /// drains. Unconditional in every build; deliberate protocol-breaking
 /// lives only here, never in SUBMIT (whose Shape validation stands).
+/// USB carrier, not a record: vendor OUT control request on EP0
+/// (bmRequestType `0x41`, interface 0, no data) that opens a host session.
+/// The client sends it on every open before HELLO; the adapter drops the
+/// previous session's unsent records and half-received record. A carrier
+/// signal rather than SET_CONFIGURATION, which WebUSB skips when the
+/// configuration is already active, and rather than a record, because the
+/// pipe it would ride may still hold the old session's bytes.
+pub const USB_REQ_OPEN_SESSION: u8 = 0x01;
+
 pub const REC_HELLO: u8 = 0x00;
 pub const REC_SUBMIT: u8 = 0x01;
 /// Hand the adapter to the resident bootloader (the mandatory
