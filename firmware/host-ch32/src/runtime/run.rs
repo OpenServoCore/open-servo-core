@@ -102,6 +102,7 @@ pub fn run() -> ! {
     let mut server = LinkServer::new();
     server.set_diag(crash::diag());
     let mut txq = TxQueue::new();
+    let mut zlp_owed = false;
     // Latched out once reached: a bare tick comparison would re-fire every
     // half wrap (~119 s) of the tick domain and strobe the idle LED.
     let mut led_until: Option<u32> = None;
@@ -114,6 +115,7 @@ pub fn run() -> ! {
         // would lead the new session's stream with a hole.
         if usb.take_new_session() {
             txq.clear();
+            zlp_owed = false;
             Drivers::with_bus(|bus| server.reset_session(bus));
         }
         // Keep the edge-capture and RX-ring lap accounting honest (main-loop
@@ -137,7 +139,7 @@ pub fn run() -> ! {
         match server.take_adapter_request() {
             Some(AdapterRequest::EnterBootloader) => {
                 crash::phase(PHASE_ADAPTER_REQ);
-                flush_pipe(&mut usb, &mut txq);
+                flush_pipe(&mut usb, &mut txq, zlp_owed);
                 iap::enter_bootloader();
             }
             Some(AdapterRequest::SetRails { v3v3, v5 }) => {
@@ -153,12 +155,9 @@ pub fn run() -> ! {
             Drivers::with_bus(|bus| server.pump(bus, &mut txq));
         }
 
-        if usb.tx_ready() && !txq.is_empty() {
+        if usb.tx_ready() && (!txq.is_empty() || zlp_owed) {
             crash::phase(PHASE_USB_TX);
-            let mut pkt = [0u8; 512];
-            let mps = usb.mps().min(pkt.len());
-            let n = txq.pop_into(&mut pkt[..mps]);
-            usb.tx(&pkt[..n]);
+            zlp_owed = send_packet(&mut usb, &mut txq);
             led_until = Some(systick::ticks().wrapping_add(LED_PULSE_US * systick::TICKS_PER_US));
         }
 
@@ -171,21 +170,35 @@ pub fn run() -> ! {
     }
 }
 
+/// One IN packet off the queue; returns whether the burst still owes a
+/// zero-length packet.
+fn send_packet(usb: &mut UsbDevice, txq: &mut TxQueue) -> bool {
+    let mut pkt = [0u8; 512];
+    let mps = usb.mps().min(pkt.len());
+    let n = txq.pop_into(&mut pkt[..mps]);
+    usb.tx(&pkt[..n]);
+    owes_zlp(n, mps, txq.is_empty())
+}
+
+/// Every burst ends in a short packet (link sec 8.1): a host read only
+/// completes on one, so a burst that ends on a full packet sits unread
+/// until the next record arrives unless a zero-length packet follows.
+fn owes_zlp(sent: usize, mps: usize, drained: bool) -> bool {
+    sent == mps && drained
+}
+
 /// Drain the queued records (the bootloader ack among them) out the IN
 /// endpoint, bounded -- then the port is allowed to die.
-fn flush_pipe(usb: &mut UsbDevice, txq: &mut TxQueue) {
+fn flush_pipe(usb: &mut UsbDevice, txq: &mut TxQueue, mut zlp_owed: bool) {
     let start = systick::ticks();
     let bound = FLUSH_BOUND_US.saturating_mul(systick::TICKS_PER_US);
     while systick::ticks().wrapping_sub(start) < bound {
         usb.poll();
         if usb.tx_ready() {
-            if txq.is_empty() {
+            if txq.is_empty() && !zlp_owed {
                 return;
             }
-            let mut pkt = [0u8; 512];
-            let mps = usb.mps().min(pkt.len());
-            let n = txq.pop_into(&mut pkt[..mps]);
-            usb.tx(&pkt[..n]);
+            zlp_owed = send_packet(usb, txq);
         }
     }
 }
@@ -230,6 +243,14 @@ mod tests {
             out.extend_from_slice(&pkt[..n]);
         }
         out
+    }
+
+    #[test]
+    fn only_a_burst_ending_on_a_full_packet_owes_a_zlp() {
+        assert!(owes_zlp(512, 512, true));
+        assert!(!owes_zlp(512, 512, false), "the burst goes on");
+        assert!(!owes_zlp(511, 512, true), "already short");
+        assert!(!owes_zlp(0, 512, true), "the zlp itself");
     }
 
     #[test]
