@@ -113,6 +113,8 @@ struct Seed {
     /// are the part of CALIB a FACTORY wipe cannot move.
     sense: CalibSense,
     sense_ext: CalibSenseExt,
+    /// The image a bootloader update left; `None` the build's own.
+    firmware_version: Option<u16>,
 }
 
 impl SimServo {
@@ -141,6 +143,7 @@ impl SimServo {
             handles: handles.clone(),
             sense: DEV_V006_SENSE,
             sense_ext: DEV_V006_SENSE_EXT,
+            firmware_version: None,
         };
         let (shared, bus, lane, tel) = Self::bringup(&seed, [id; 16]);
         let servo = Box::new(SimServo {
@@ -210,6 +213,11 @@ impl SimServo {
         shared
             .table
             .seed_identity(osc_protocol::models::MODEL_OSC_SERVO, 1);
+        if let Some(v) = seed.firmware_version {
+            shared
+                .table
+                .with_mut(|t| t.config.common.firmware_version = v);
+        }
 
         // The table is the comms authority (registry `Drivers::install` does
         // the same read on the chip).
@@ -283,6 +291,11 @@ impl SimServo {
         self.bus = bus;
         self.lane = lane;
         self.tel = tel;
+    }
+
+    /// Report `v` as the firmware version from the next bringup on.
+    pub fn set_firmware_version(&mut self, v: Option<u16>) {
+        self.seed.firmware_version = v;
     }
 
     /// Replace the board sense facts and power-cycle onto them: install

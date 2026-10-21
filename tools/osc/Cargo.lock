@@ -764,6 +764,7 @@ dependencies = [
  "osc-protocol",
  "osc-servo-core",
  "osc-servo-drivers",
+ "tinyboot-protocol",
 ]
 
 [[package]]

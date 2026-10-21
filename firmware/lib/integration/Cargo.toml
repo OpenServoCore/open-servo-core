@@ -10,6 +10,7 @@ osc-servo-drivers  = { workspace = true, features = ["log"] }
 osc-host     = { workspace = true }
 osc-protocol = { workspace = true, features = ["software-crc"] }
 control-table.workspace = true
+tinyboot-protocol = "0.5.1"
 log = "0.4"
 
 [features]

@@ -8,6 +8,7 @@
 //! See the module docs of `core`, `cpu`, `providers`, and `servo` for the
 //! moving parts.
 
+pub mod boot;
 mod core;
 mod cpu;
 mod host;
@@ -32,6 +33,7 @@ use osc_servo_core::tel::STREAM_SAMPLES_MAX;
 use osc_servo_core::{BaudRate, ControlTable, Reboot, TelemetryTick};
 use osc_servo_drivers::bus::LinkDiag;
 
+use self::boot::{BootTx, FakeBoot};
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
 use self::cpu::{Cpu, KERNEL_PERIOD, Vector};
 use self::providers::Handles;
@@ -100,6 +102,8 @@ pub struct Sim {
     #[allow(clippy::vec_box)]
     servos: Vec<Box<SimServo>>,
     handles: Vec<Handles>,
+    /// Per-servo tinyboot bootloaders; an active one has stopped the app.
+    boots: Vec<FakeBoot>,
     cpus: Vec<Cpu>,
     /// Per-servo cross-baud reception machines (see `resample`): fed
     /// whenever a wire event's rate differs from the receiver's.
@@ -200,6 +204,7 @@ impl Sim {
             core: Rc::new(RefCell::new(Core::new())),
             servos: Vec::new(),
             handles: Vec::new(),
+            boots: Vec::new(),
             cpus: Vec::new(),
             cross: Vec::new(),
             tels: Vec::new(),
@@ -360,6 +365,7 @@ impl Sim {
         );
         self.servos.push(servo);
         self.handles.push(handles);
+        self.boots.push(FakeBoot::default());
         self.cpus.push(Cpu::default());
         self.cross.push(CrossRx::new(self.rate));
         self.tels.push(TelPump {
@@ -560,6 +566,68 @@ impl Sim {
 
     pub fn servo_uid(&self, i: usize) -> [u8; 16] {
         self.servos[i].uid()
+    }
+
+    /// Servo `i` is a bootloader-only board: empty app, erased META, so it
+    /// waits in its bootloader at 0.5 M (protocol sec 9.6).
+    pub fn start_in_bootloader(&mut self, i: usize) {
+        self.boots[i].wipe();
+        self.enter_boot(i);
+    }
+
+    pub fn in_bootloader(&self, i: usize) -> bool {
+        self.boots[i].active()
+    }
+
+    /// Servo `i` acks its next bootloader REBOOT and stays in its app.
+    pub fn ignore_next_boot_reboot(&mut self, i: usize) {
+        self.boots[i].ignore_reboot = true;
+    }
+
+    /// Servo `i`'s bootloader answers its next `cmd` with `status`, the
+    /// work undone.
+    pub fn fail_next_boot(
+        &mut self,
+        i: usize,
+        cmd: tinyboot_protocol::Cmd,
+        status: tinyboot_protocol::Status,
+    ) {
+        self.boots[i].fail_next = Some((cmd, status));
+    }
+
+    /// Power servo `i` off and on: tinyboot hands off to a valid app unless
+    /// an update is underway, else it waits in its bootloader.
+    pub fn power_cycle(&mut self, i: usize) {
+        if self.boots[i].hands_off() {
+            self.restart_app(i);
+        } else {
+            self.enter_boot(i);
+        }
+    }
+
+    /// Drain the replies servo `i`'s bootloader sent.
+    pub fn boot_log(&mut self, i: usize) -> Vec<BootTx> {
+        std::mem::take(&mut self.boots[i].log)
+    }
+
+    /// Host bytes with no break (a tinyboot frame), after the host's prior
+    /// traffic.
+    pub fn host_send_raw(&mut self, bytes: &[u8]) {
+        let start = self.host_free_at.max(self.core.borrow().now());
+        let baud = self.rate;
+        let bt = byte_ticks(baud);
+        let end = start + bytes.len() as u64 * bt;
+        let mut c = self.core.borrow_mut();
+        c.claim(Talker::Host, start, end);
+        for (k, &byte) in bytes.iter().enumerate() {
+            let talker = Talker::Host;
+            c.schedule(
+                Event::WireData { talker, byte, baud },
+                start + (k as u64 + 1) * bt,
+            );
+        }
+        drop(c);
+        self.host_free_at = end;
     }
 
     /// Queue a host frame starting when the wire is free of host traffic.
@@ -875,7 +943,18 @@ impl Sim {
             }
             Event::KernelTail { servo } => self.kernel_tail(servo),
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
-            Event::BreakByte { servo } => self.handles[servo].ring.push(0x00),
+            Event::BreakByte { servo } => {
+                if !self.boots[servo].active() {
+                    self.handles[servo].ring.push(0x00);
+                }
+            }
+            Event::BootReset { servo, app } => {
+                if app && self.boots[servo].hands_off() {
+                    self.restart_app(servo);
+                } else {
+                    self.enter_boot(servo);
+                }
+            }
             Event::PulseWake => self.deliver_pulse_wake(),
             Event::HostCompare { generation } => {
                 if let Some(h) = self.host.as_mut()
@@ -912,7 +991,7 @@ impl Sim {
         }
         let now = self.core.borrow().now();
         for j in 0..self.servos.len() {
-            if !self.cpus[j].busy(now) {
+            if !self.cpus[j].busy(now) && !self.boots[j].active() {
                 self.servos[j].poll_data_job();
             }
         }
@@ -926,22 +1005,82 @@ impl Sim {
         }
         let now = self.core.borrow().now();
         for j in 0..self.servos.len() {
-            if self.cpus[j].busy(now) || self.servos[j].take_reboot().is_none() {
+            if self.cpus[j].busy(now) || self.boots[j].active() {
                 continue;
             }
-            self.servos[j].reboot();
-            // The burst died with the old driver: park the pump and retire
-            // its scheduled ticks by epoch. A track outlives the reboot (it
-            // is the rig's stimulus, not servo state) but must re-image,
-            // since the rebuilt table lost the mirrored row.
-            let t = &mut self.tels[j];
-            t.running = false;
-            t.epoch += 1;
-            t.n = 0;
-            if let Some(track) = t.track.as_mut() {
-                track.mirrored = None;
+            match self.servos[j].take_reboot() {
+                None => {}
+                Some(Reboot::Bootloader(_)) if self.boots[j].ignore_reboot => {
+                    self.boots[j].ignore_reboot = false;
+                }
+                Some(Reboot::Bootloader(rate)) => {
+                    self.boots[j].store_baud(rate);
+                    self.enter_boot(j);
+                }
+                Some(Reboot::App) => {
+                    self.servos[j].reboot();
+                    self.park(j);
+                }
             }
-            self.cross[j] = CrossRx::new(self.rate);
+        }
+    }
+
+    fn park(&mut self, j: usize) {
+        // The burst died with the old driver: park the pump and retire its
+        // scheduled ticks by epoch. A track outlives the reboot (it is the
+        // rig's stimulus, not servo state) but must re-image, since the
+        // rebuilt table lost the mirrored row.
+        let t = &mut self.tels[j];
+        t.running = false;
+        t.epoch += 1;
+        t.n = 0;
+        if let Some(track) = t.track.as_mut() {
+            track.mirrored = None;
+        }
+        self.cross[j] = CrossRx::new(self.rate);
+    }
+
+    /// Stop servo `j`'s app; its bootloader takes the wire at the META
+    /// rate.
+    fn enter_boot(&mut self, j: usize) {
+        let rate = self.boots[j].enter();
+        self.handles[j].baud.apply(rate);
+        self.park(j);
+    }
+
+    /// Servo `j`'s app comes up on the image its bootloader holds.
+    fn restart_app(&mut self, j: usize) {
+        self.boots[j].leave();
+        let v = self.boots[j].app_version();
+        self.servos[j].set_firmware_version(v);
+        self.servos[j].reboot();
+        self.park(j);
+    }
+
+    /// One byte servo `j` received: its app's ring, or its bootloader.
+    fn ring_byte(&mut self, j: usize, b: u8) {
+        if !self.boots[j].active() {
+            self.handles[j].ring.push(b);
+            return;
+        }
+        let now = self.core.borrow().now();
+        let uid = self.servos[j].uid();
+        let Some(r) = self.boots[j].on_byte(b, now, &uid[..boot::UID_LEN]) else {
+            return;
+        };
+        let (talker, baud) = (Talker::Servo(j), self.boots[j].rate());
+        let bt = byte_ticks(baud);
+        let end = r.start + r.bytes.len() as u64 * bt;
+        let mut c = self.core.borrow_mut();
+        c.claim(talker, r.start, end);
+        for (k, &byte) in r.bytes.iter().enumerate() {
+            c.schedule(
+                Event::WireData { talker, byte, baud },
+                r.start + (k as u64 + 1) * bt,
+            );
+        }
+        if let Some(app) = r.reset {
+            c.schedule(Event::BootReset { servo: j, app }, end);
         }
     }
 
@@ -950,7 +1089,7 @@ impl Sim {
     fn tel_pump(&mut self) {
         let now = self.core.borrow().now();
         for j in 0..self.servos.len() {
-            if !self.servos[j].tel_active() || self.servos[j].tel_idle() {
+            if self.boots[j].active() || !self.servos[j].tel_active() || self.servos[j].tel_idle() {
                 self.tels[j].running = false;
                 continue;
             }
@@ -1119,8 +1258,8 @@ impl Sim {
                 Some(osc_host::engine::Event::WireDone { tick }) => {
                     h.events.push(HostEvent::WireDone { tick })
                 }
-                // The sim's servos speak osc only; nothing submits a
-                // tinyboot exchange here.
+                // Tinyboot replies reach a client through the link server
+                // above; the harness events carry osc only.
                 Some(osc_host::engine::Event::TbFrame { .. }) => {}
                 None => return,
             }
@@ -1131,6 +1270,9 @@ impl Sim {
     /// or others wait: pended vectors arbitrate by priority at the CPU's
     /// next free instant.
     fn deliver(&mut self, j: usize, v: Vector) {
+        if self.boots[j].active() {
+            return;
+        }
         let now = self.core.borrow().now();
         if self.cpus[j].busy(now) || self.cpus[j].any_pend() {
             self.cpus[j].pend(v);
@@ -1304,7 +1446,7 @@ impl Sim {
             }
             let rx = self.handles[j].baud.current();
             if rx == baud {
-                self.handles[j].ring.push(byte);
+                self.ring_byte(j, byte);
             } else {
                 // Wrong-rate reception goes through the waveform model: a
                 // slower talker's characters multiply and its low runs can
@@ -1323,7 +1465,7 @@ impl Sim {
     fn cross_deliver(&mut self, j: usize, out: Vec<RxOut>) {
         for o in out {
             match o {
-                RxOut::Byte(b) => self.handles[j].ring.push(b),
+                RxOut::Byte(b) => self.ring_byte(j, b),
                 // A resampled batch rings in order, so its break byte lands
                 // at the wake's own tick, still after the wake.
                 RxOut::Break => self.wake_on_break(j, 0),
@@ -1335,6 +1477,10 @@ impl Sim {
     /// and wake, in the configured [`BreakWake`] order, the byte `lead`
     /// ticks behind the wake under [`BreakWake::BeforeByte`].
     fn wake_on_break(&mut self, j: usize, lead: u64) {
+        if self.boots[j].active() {
+            self.ring_byte(j, 0x00);
+            return;
+        }
         let now = self.core.borrow().now();
         let h = &self.handles[j];
         h.stamps.latch(h.deadline.local_u64(now) as u16);
@@ -1423,8 +1569,8 @@ impl Sim {
             let now = c.now();
             c.append_byte(byte, now);
         }
-        for h in &self.handles {
-            h.ring.push(byte);
+        for j in 0..self.servos.len() {
+            self.ring_byte(j, byte);
         }
         if let Some(h) = &self.host {
             h.ring.push(byte);
@@ -1468,6 +1614,9 @@ impl Sim {
     /// chip's main-loop critical section.
     fn sample_line(&mut self, pump: bool) {
         for j in 0..self.servos.len() {
+            if self.boots[j].active() {
+                continue;
+            }
             let low = self.core.borrow().line_low(j);
             self.servos[j].sample_rescue(low);
         }
