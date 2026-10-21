@@ -86,11 +86,14 @@ fn connect_reports_link_info() {
     };
     assert_eq!(
         info.features,
-        rec::FEATURE_RAILS | rec::FEATURE_ADAPTER_IAP | instrument
+        rec::FEATURE_RAILS | rec::FEATURE_ADAPTER_IAP | rec::FEATURE_TINYBOOT | instrument
     );
     assert_eq!(info.max_request as usize, rec::MAX_REQUEST);
     assert_eq!(info.max_response as usize, rec::MAX_RESPONSE);
-    assert_eq!(info.max_tb_payload, 0);
+    assert_eq!(
+        info.max_tb_payload as usize,
+        osc_host::engine::MAX_TB_PAYLOAD
+    );
     assert_eq!(info.mode, rec::MODE_OSC);
     assert_eq!(info.bps, 1_000_000);
     assert_eq!(info.deadline_us, 1000);

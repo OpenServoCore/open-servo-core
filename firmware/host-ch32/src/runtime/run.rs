@@ -3,8 +3,8 @@
 //! every main-loop touch of the bus sits inside `Drivers::with_bus`.
 
 use osc_host::link::record::{
-    FEATURE_ADAPTER_IAP, FEATURE_RAILS, PHASE_ADAPTER_REQ, PHASE_PIPE, PHASE_PUMP, PHASE_USB_POLL,
-    PHASE_USB_TX,
+    FEATURE_ADAPTER_IAP, FEATURE_RAILS, FEATURE_TINYBOOT, PHASE_ADAPTER_REQ, PHASE_PIPE,
+    PHASE_PUMP, PHASE_USB_POLL, PHASE_USB_TX,
 };
 use osc_host::link::{AdapterRequest, LinkServer, RecordSink};
 use osc_host::traits::tick_reached;
@@ -100,7 +100,7 @@ pub fn run() -> ! {
     }
 
     let mut usb = UsbDevice::new();
-    let mut server = LinkServer::new(FEATURE_RAILS | FEATURE_ADAPTER_IAP);
+    let mut server = LinkServer::new(FEATURE_RAILS | FEATURE_ADAPTER_IAP | FEATURE_TINYBOOT);
     server.set_diag(crash::diag());
     let mut txq = TxQueue::new();
     let mut zlp_owed = false;
