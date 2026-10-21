@@ -17,9 +17,10 @@ use osc_client::descriptor::{Descriptor, Kind, Value, encode};
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
-use osc_client::session::{EngineCommand, Record, Session};
+use osc_client::session::{EngineCommand, LinkInfo, Record, Session};
 use osc_client::{
-    BaudRate, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode, StreamReply,
+    BaudRate, BusMode, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode,
+    StreamReply, TbExpect,
 };
 use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
@@ -438,6 +439,109 @@ fn rails_masked_sets_compose_and_read_back() {
     assert_eq!(c.set_rail_3v3(false).expect("3v3 off"), (false, false));
     assert_eq!(c.set_rail_5v(true).expect("5v on"), (false, true));
     assert_eq!(c.rails().expect("readback"), (false, true));
+}
+
+/// GET_INFO sent beside the client's own session, so its answer is the
+/// adapter's view rather than the client's cached copy.
+fn fresh_info(c: &mut Client<FakePipe>) -> LinkInfo {
+    let mut s = Session::new();
+    let mut out = Vec::new();
+    s.encode_get_info(&mut out);
+    let sim = c.pipe_mut().sim_mut();
+    sim.link_send(&out);
+    sim.run();
+    s.on_bytes(&sim.link_recv());
+    let Ok(Some(Record::Done { result, .. })) = s.next_record() else {
+        panic!("no INFO");
+    };
+    LinkInfo::parse(&result).expect("INFO parses")
+}
+
+const WRONG_MODE: Error = Error::Link(LinkError::Rejected(RejectReason::WrongMode));
+const TB_WINDOW: Duration = Duration::from_millis(5);
+
+#[test]
+fn set_bus_moves_the_bus_to_tinyboot_and_back() {
+    use osc_host::link::record as rec;
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    assert_eq!((c.info().mode, c.info().bps), (rec::MODE_TINYBOOT, 115_200));
+    let fresh = fresh_info(&mut c);
+    assert_eq!((fresh.mode, fresh.bps), (rec::MODE_TINYBOOT, 115_200));
+
+    c.set_bus(BusMode::Osc, 2_000_000).expect("back to osc");
+    assert_eq!((c.info().mode, c.info().bps), (rec::MODE_OSC, 2_000_000));
+    let fresh = fresh_info(&mut c);
+    assert_eq!((fresh.mode, fresh.bps), (rec::MODE_OSC, 2_000_000));
+}
+
+#[test]
+fn tinyboot_mode_refuses_osc_exchanges() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    assert_eq!(c.ping(Id::new(1)).unwrap_err(), WRONG_MODE);
+}
+
+#[test]
+fn osc_mode_refuses_tb_exchange() {
+    let mut c = fleet(&[1]);
+    assert_eq!(
+        c.tb_exchange(TbExpect::Collect, TB_WINDOW, 0, 0, 0, &[])
+            .unwrap_err(),
+        WRONG_MODE
+    );
+}
+
+#[test]
+fn tb_collect_with_no_device_completes_empty() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    let r = c
+        .tb_exchange(TbExpect::Collect, TB_WINDOW, 0, 0, 0, &[])
+        .expect("collect");
+    assert_eq!(r.outcome, Outcome::Complete);
+    assert!(r.frames.is_empty());
+    assert_eq!(r.garble, 0);
+}
+
+#[test]
+fn tb_expect_one_with_no_device_times_out() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    let r = c
+        .tb_exchange(TbExpect::One, TB_WINDOW, 0, 0, 0, &[])
+        .expect("one");
+    assert!(matches!(r.outcome, Outcome::Timeout { .. }), "{r:?}");
+    assert!(r.frames.is_empty());
+}
+
+#[test]
+fn tb_expect_none_is_sent() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    let r = c
+        .tb_exchange(
+            TbExpect::None,
+            Duration::ZERO,
+            3,
+            0x0008_0400,
+            0x01,
+            &[0xDE, 0xAD],
+        )
+        .expect("none");
+    assert_eq!(r.outcome, Outcome::Sent);
+    assert!(r.frames.is_empty());
+}
+
+#[test]
+fn reconnect_returns_the_bus_to_osc() {
+    use osc_host::link::record as rec;
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    let mut pipe = c.into_pipe();
+    pipe.reopen();
+    let c = Client::connect(pipe).expect("reconnect");
+    assert_eq!((c.info().mode, c.info().bps), (rec::MODE_OSC, 500_000));
 }
 
 #[test]

@@ -6,14 +6,14 @@
 use std::time::Duration;
 
 use futures_lite::future;
-use osc_host::engine::{Command, Outcome};
+use osc_host::engine::{Command, Outcome, TbExpect};
 use osc_host::link::record::{self as rec, ExchangeResult};
 use osc_protocol::build;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode};
 
 use crate::error::{Error, LinkError, RejectReason};
 use crate::pipe::{Pipe, PipeError};
-use crate::session::{LinkInfo, Record, Session, Tag};
+use crate::session::{BusMode, LinkInfo, Record, Session, Tag};
 
 /// One decoded status frame: the responder's verdict plus payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +65,45 @@ pub struct StreamReply {
     pub garble: u16,
     pub trailing: bool,
     /// See [`Reply::laps`].
+    pub laps: u16,
+}
+
+/// One clean tinyboot reply (link sec 7.1), sync word, length and CRC
+/// stripped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TbFrame {
+    pub slot: u8,
+    pub cmd: u8,
+    pub status: u8,
+    pub addr: u32,
+    pub flags: u8,
+    pub data: Vec<u8>,
+}
+
+impl TbFrame {
+    fn parse(slot: u8, frame: &[u8]) -> Result<Self, Error> {
+        match *frame {
+            [cmd, status, a0, a1, a2, flags, ref data @ ..] => Ok(Self {
+                slot,
+                cmd,
+                status,
+                addr: u32::from_le_bytes([a0, a1, a2, 0]),
+                flags,
+                data: data.to_vec(),
+            }),
+            _ => Err(Error::Link(LinkError::Malformed)),
+        }
+    }
+}
+
+/// The digest of one TB_EXCHANGE: its clean replies plus its terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TbReply {
+    pub frames: Vec<TbFrame>,
+    pub outcome: Outcome,
+    pub tick: u32,
+    pub garble: u16,
+    pub trailing: bool,
     pub laps: u16,
 }
 
@@ -466,21 +505,66 @@ impl<P: Pipe> Client<P> {
     /// Host-side UART rate only (SET_BUS in osc mode); servo-first
     /// ordering is [`crate::mgmt::set_baud`]'s job.
     pub async fn host_baud(&mut self, rate: BaudRate) -> Result<(), Error> {
+        self.set_bus(BusMode::Osc, rate.as_hz()).await
+    }
+
+    /// SET_BUS (link sec 5): the bus mode and the adapter's rate, together.
+    pub async fn set_bus(&mut self, mode: BusMode, bps: u32) -> Result<(), Error> {
         let mut out = Vec::new();
-        let tag = self
-            .session
-            .encode_submit(&mut out, &Command::HostBaud { bps: rate.as_hz() });
+        let tag = self.session.encode_set_bus(&mut out, mode, bps);
         match self.request_done(&out, tag).await?[..] {
-            [rec::MODE_OSC, b0, b1, b2, b3]
-                if u32::from_le_bytes([b0, b1, b2, b3]) == rate.as_hz() =>
+            [m, b0, b1, b2, b3]
+                if m == mode.byte() && u32::from_le_bytes([b0, b1, b2, b3]) == bps =>
             {
+                self.info.mode = m;
+                self.info.bps = bps;
                 Ok(())
             }
             ref other => Err(desync_msg(format!(
-                "SET_BUS to {} bps answered {other:?}",
-                rate.as_hz()
+                "SET_BUS to {mode:?} at {bps} bps answered {other:?}"
             ))),
         }
+    }
+
+    /// One tinyboot frame, sent with no break (link sec 7). `window` is the
+    /// whole reply allowance in whole microseconds, saturating; zero for
+    /// [`TbExpect::None`]. The pipe guard must exceed it.
+    pub async fn tb_exchange(
+        &mut self,
+        expect: TbExpect,
+        window: Duration,
+        cmd: u8,
+        addr: u32,
+        flags: u8,
+        data: &[u8],
+    ) -> Result<TbReply, Error> {
+        let window_us = u32::try_from(window.as_micros()).unwrap_or(u32::MAX);
+        let mut out = Vec::new();
+        let tag = self.session.encode_submit(
+            &mut out,
+            &Command::TbExchange {
+                cmd,
+                addr,
+                flags,
+                data,
+                expect,
+                window_us,
+            },
+        );
+        let (frames, result) = self.request(&out, tag).await?;
+        let frames = frames
+            .into_iter()
+            .map(|(slot, frame)| TbFrame::parse(slot, &frame))
+            .collect::<Result<Vec<_>, _>>()?;
+        let x = ExchangeResult::parse(&result).ok_or(LinkError::Malformed)?;
+        Ok(TbReply {
+            frames,
+            outcome: x.outcome,
+            tick: x.tick,
+            garble: x.garble,
+            trailing: x.trailing,
+            laps: x.laps,
+        })
     }
 
     /// The adapter's copy of the fleet's RESPONSE_DEADLINE register.
@@ -556,4 +640,36 @@ pub(crate) fn desync(expected: &str, got: &Record) -> Error {
 
 pub(crate) fn desync_msg(msg: String) -> Error {
     Error::Link(LinkError::Desync(msg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tb_frame_parses_the_link_body() {
+        assert_eq!(
+            TbFrame::parse(2, &[3, 1, 0x00, 0x04, 0x08, 0x01, 0xDE, 0xAD]),
+            Ok(TbFrame {
+                slot: 2,
+                cmd: 3,
+                status: 1,
+                addr: 0x0008_0400,
+                flags: 0x01,
+                data: vec![0xDE, 0xAD],
+            })
+        );
+        assert_eq!(
+            TbFrame::parse(0, &[3, 1, 0, 0, 0, 0]).map(|f| f.data),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn tb_frame_shorter_than_its_header_is_malformed() {
+        assert_eq!(
+            TbFrame::parse(0, &[3, 1, 0, 0, 0]),
+            Err(Error::Link(LinkError::Malformed))
+        );
+    }
 }

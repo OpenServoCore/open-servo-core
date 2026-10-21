@@ -4,10 +4,11 @@
 use std::time::Duration;
 
 use futures_lite::future::block_on;
+use osc_host::engine::TbExpect;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
 use crate::calib::{self, GearClass};
-use crate::client::{Chain, Ping, Reply, StreamReply};
+use crate::client::{Chain, Ping, Reply, StreamReply, TbReply};
 use crate::common::{self, Health, Identity};
 use crate::cyclic::Cycle;
 use crate::data_state::{self, DataState};
@@ -16,7 +17,7 @@ use crate::error::Error;
 use crate::mgmt::{self, CalTrace, Found, Uid};
 use crate::pipe::Pipe;
 use crate::pos_lut::{self, PosLut};
-use crate::session::LinkInfo;
+use crate::session::{BusMode, LinkInfo};
 use crate::stamp::{self, Verdict};
 #[cfg(feature = "bench")]
 use crate::wire::EdgeDrain;
@@ -116,6 +117,22 @@ impl<P: Pipe> Client<P> {
 
     pub fn host_baud(&mut self, rate: BaudRate) -> Result<(), Error> {
         block_on(self.0.host_baud(rate))
+    }
+
+    pub fn set_bus(&mut self, mode: BusMode, bps: u32) -> Result<(), Error> {
+        block_on(self.0.set_bus(mode, bps))
+    }
+
+    pub fn tb_exchange(
+        &mut self,
+        expect: TbExpect,
+        window: Duration,
+        cmd: u8,
+        addr: u32,
+        flags: u8,
+        data: &[u8],
+    ) -> Result<TbReply, Error> {
+        block_on(self.0.tb_exchange(expect, window, cmd, addr, flags, data))
     }
 
     pub fn set_response_deadline(&mut self, us: u16) -> Result<(), Error> {

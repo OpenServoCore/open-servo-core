@@ -12,6 +12,22 @@ use crate::error::LinkError;
 /// GET_INFO's result (link sec 4.1).
 pub use osc_host::link::record::Info as LinkInfo;
 
+/// The bus mode SET_BUS names (link sec 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusMode {
+    Osc,
+    Tinyboot,
+}
+
+impl BusMode {
+    pub fn byte(self) -> u8 {
+        match self {
+            BusMode::Osc => rec::MODE_OSC,
+            BusMode::Tinyboot => rec::MODE_TINYBOOT,
+        }
+    }
+}
+
 /// What an encoder sent: the seq its responses carry and the kind its
 /// DONE must echo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +91,12 @@ impl Session {
         self.request(out, rec::RAILS, &[state, mask])
     }
 
+    pub fn encode_set_bus(&mut self, out: &mut Vec<u8>, mode: BusMode, bps: u32) -> Tag {
+        let mut body = vec![mode.byte()];
+        body.extend_from_slice(&bps.to_le_bytes());
+        self.request(out, rec::SET_BUS, &body)
+    }
+
     /// Encode an engine command as its bus request.
     pub fn encode_submit(&mut self, out: &mut Vec<u8>, cmd: &Command<'_>) -> Tag {
         let exchange = |flags: u8, id: u8, inst: u8, window_us: u32, payload: &[u8]| {
@@ -104,11 +126,7 @@ impl Session {
                 self.request(out, rec::OSC_EXCHANGE, &body)
             }
             Command::Rescue => self.request(out, rec::OSC_RESCUE, &[]),
-            Command::HostBaud { bps } => {
-                let mut body = vec![rec::MODE_OSC];
-                body.extend_from_slice(&bps.to_le_bytes());
-                self.request(out, rec::SET_BUS, &body)
-            }
+            Command::HostBaud { bps } => self.encode_set_bus(out, BusMode::Osc, *bps),
             Command::SetResponseDeadline { us } => {
                 self.request(out, rec::OSC_DEADLINE, &us.to_le_bytes())
             }
@@ -379,6 +397,40 @@ mod tests {
                 0x01,
                 0xDE,
                 0xAD
+            ]
+        );
+    }
+
+    #[test]
+    fn set_bus_encodes_mode_and_bps() {
+        let mut s = Session::new();
+        let mut out = Vec::new();
+        let a = s.encode_set_bus(&mut out, BusMode::Tinyboot, 115_200);
+        let b = s.encode_set_bus(&mut out, BusMode::Osc, 3_000_000);
+        assert_eq!((a.kind, b.kind), (rec::SET_BUS, rec::SET_BUS));
+        assert_eq!(
+            out,
+            [
+                8,
+                0,
+                rec::SET_BUS,
+                0,
+                0,
+                rec::MODE_TINYBOOT,
+                0x00,
+                0xC2,
+                0x01,
+                0x00,
+                8,
+                0,
+                rec::SET_BUS,
+                1,
+                0,
+                rec::MODE_OSC,
+                0xC0,
+                0xC6,
+                0x2D,
+                0x00
             ]
         );
     }
