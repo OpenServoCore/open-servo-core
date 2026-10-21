@@ -29,6 +29,7 @@ pub use wireop::WIRE_CAP;
 mod wireop;
 use framer::{Framer, Step};
 use shape::{InvalidReason, Replies, Shape};
+use tb_framer::{TbFramer, TbStep};
 
 pub use framer::Frame;
 
@@ -67,6 +68,31 @@ pub enum Command<'a> {
     HostBaud { bps: u32 },
     /// Engine-held copy of the fleet's RESPONSE_DEADLINE register.
     SetResponseDeadline { us: u16 },
+    /// One tinyboot frame, sent with no break (link sec 7): the engine adds
+    /// the sync word, the request status, the length and the CRC. `cmd` is
+    /// never read. `window_us` is the client's whole reply allowance, one
+    /// fixed window that nothing re-arms; 0 exactly when `expect` is
+    /// [`TbExpect::None`].
+    TbExchange {
+        cmd: u8,
+        addr: u32,
+        flags: u8,
+        data: &'a [u8],
+        expect: TbExpect,
+        window_us: u32,
+    },
+}
+
+/// The replies a [`Command::TbExchange`] draws (link sec 7).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TbExpect {
+    /// [`Outcome::Sent`] once the frame has left the wire.
+    None,
+    /// [`Outcome::Complete`] at the first clean reply, else
+    /// [`Outcome::Timeout`] at the window end.
+    One,
+    /// Every clean reply until the window ends, then [`Outcome::Complete`].
+    Collect,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -130,6 +156,15 @@ pub enum Event<'a> {
         inst: Inst,
         payload: FrameBytes<'a>,
     },
+    /// A clean tinyboot reply (link sec 7.1); `slot` is its arrival index.
+    TbFrame {
+        slot: u8,
+        cmd: u8,
+        status: u8,
+        addr: u32,
+        flags: u8,
+        data: FrameBytes<'a>,
+    },
     Done(Terminal),
     /// An instrument wire op (raw send / burst / pulse) finished; `tick` is
     /// the wire-release moment. Never emitted without `bench`.
@@ -176,8 +211,29 @@ pub const CHAIN_READY_LAG_US: u32 = 5_000;
 /// The slowest rate the engine times, the tinyboot catalog's floor; below
 /// it the byte-time arithmetic leaves u32.
 pub const MIN_BPS: u32 = 9_600;
+const TX_LEN: usize = 264;
 /// TX scratch: the largest legal frame (258 ring bytes) plus alignment.
-type TxBuf = FrameBuf<264>;
+type TxBuf = FrameBuf<TX_LEN>;
+/// Largest tinyboot data the engine sends or accepts: the TX scratch less
+/// the frame overhead.
+pub const MAX_TB_PAYLOAD: usize = TX_LEN - tb_framer::OVERHEAD;
+
+/// Whether a client window fits: the deadline compare sees half the tick
+/// range ahead.
+pub const fn window_fits<D: Deadline>(window_us: u32) -> bool {
+    match window_us.checked_mul(D::TICKS_PER_US) {
+        Some(ticks) => ticks <= u32::MAX / 2,
+        None => false,
+    }
+}
+
+/// The active TbExchange's plan.
+#[derive(Copy, Clone)]
+struct TbPlan {
+    expect: TbExpect,
+    /// The fixed reply window, ticks.
+    window: u32,
+}
 
 pub struct HostBus<P: Providers> {
     ring: P::Ring,
@@ -185,10 +241,15 @@ pub struct HostBus<P: Providers> {
     tx: P::Tx,
     baud: P::Baud,
     framer: Framer,
+    tb_framer: TbFramer,
     buf: TxBuf,
     state: State,
     /// The active Exchange's derived plan; `None` outside one.
     plan: Option<Shape>,
+    /// The active TbExchange's plan; `None` outside one.
+    tb: Option<TbPlan>,
+    /// The TbExchange frame's length in `buf`, from offset 0.
+    tb_len: u16,
     /// The UART's rate; every byte-time derives from it.
     bps: u32,
     response_deadline_us: u16,
@@ -228,9 +289,12 @@ impl<P: Providers> HostBus<P> {
             tx,
             baud,
             framer: Framer::new(),
+            tb_framer: TbFramer::new(),
             buf: TxBuf::new(),
             state: State::Idle,
             plan: None,
+            tb: None,
+            tb_len: 0,
             bps: rate.as_hz(),
             response_deadline_us: wire::DEFAULT_RESPONSE_DEADLINE_US,
             pace_until: None,
@@ -271,20 +335,22 @@ impl<P: Providers> HostBus<P> {
         let now = self.deadline.now();
         // A cut frame may still have left whole (the UART drains what it
         // holds), so a transmitting exchange is owed its replies too.
-        let drain = match (&self.state, self.plan) {
-            (_, Some(plan)) if matches!(plan.replies, Replies::None) => None,
-            (State::Awaiting, Some(plan)) => Some((self.deadline_at, plan)),
-            (State::Transmitting, Some(plan)) => {
+        // A stream or tinyboot window is fixed: no byte re-arms its drain.
+        let drain = match (&self.state, self.plan, self.tb) {
+            (_, Some(plan), _) if matches!(plan.replies, Replies::None) => None,
+            (_, _, Some(tb)) if matches!(tb.expect, TbExpect::None) => None,
+            (State::Awaiting, Some(plan), _) => Some((self.deadline_at, self.rearm_for(&plan))),
+            (State::Awaiting, _, Some(_)) => Some((self.deadline_at, 0)),
+            (State::Transmitting, Some(plan), _) => {
                 let tx = self.buf.frame().len() as u32 * self.byte_ticks();
-                Some((now.wrapping_add(tx + self.window_for(&plan)), plan))
+                let end = now.wrapping_add(tx + self.window_for(&plan));
+                Some((end, self.rearm_for(&plan)))
+            }
+            (State::Transmitting, _, Some(tb)) => {
+                let tx = self.tb_len as u32 * self.byte_ticks();
+                Some((now.wrapping_add(tx + tb.window), 0))
             }
             _ => None,
-        };
-        let rearm = match drain {
-            Some((_, plan)) if !matches!(plan.replies, Replies::Stream { .. }) => {
-                self.window_for(&plan)
-            }
-            _ => 0,
         };
         if matches!(
             self.state,
@@ -297,6 +363,7 @@ impl<P: Providers> HostBus<P> {
         }
         self.state = State::Idle;
         self.plan = None;
+        self.tb = None;
         self.pending_done = None;
         self.evidence = WireEvidence::default();
         self.wire.cancel();
@@ -305,7 +372,7 @@ impl<P: Providers> HostBus<P> {
         } else if was_busy {
             self.pace();
         }
-        if let Some((end, _)) = drain {
+        if let Some((end, rearm)) = drain {
             self.rearm = rearm;
             if self.pace_until.is_none_or(|until| tick_reached(end, until)) {
                 self.pace_until = Some(end);
@@ -362,6 +429,16 @@ impl<P: Providers> HostBus<P> {
             } => {
                 self.start_exchange(id, inst, payload, Some(window_us))?;
             }
+            Command::TbExchange {
+                cmd,
+                addr,
+                flags,
+                data,
+                expect,
+                window_us,
+            } => {
+                self.start_tb(cmd, addr, flags, data, expect, window_us)?;
+            }
         }
         Ok(())
     }
@@ -375,6 +452,7 @@ impl<P: Providers> HostBus<P> {
     ) -> Result<(), SubmitError> {
         let mut plan = Shape::derive(id, inst, payload).map_err(SubmitError::Invalid)?;
         if let Some(us) = stream_window_us {
+            Self::window_ticks(us)?;
             plan = plan.stream(us).map_err(SubmitError::Invalid)?;
         }
         self.buf.start(id, inst);
@@ -382,6 +460,65 @@ impl<P: Providers> HostBus<P> {
         self.buf.finish(payload.len() as u8);
         self.buf.seal();
         self.plan = Some(plan);
+        self.gate_tx();
+        Ok(())
+    }
+
+    /// Seal the tinyboot frame in the TX scratch (link sec 7):
+    /// `AA 55 cmd 00 addr(3) flags len(2) data crc(2)`, all LE.
+    fn start_tb(
+        &mut self,
+        cmd: u8,
+        addr: u32,
+        flags: u8,
+        data: &[u8],
+        expect: TbExpect,
+        window_us: u32,
+    ) -> Result<(), SubmitError> {
+        if data.len() > MAX_TB_PAYLOAD {
+            return Err(SubmitError::Invalid(InvalidReason::TooLong));
+        }
+        if addr > 0xFF_FFFF || (matches!(expect, TbExpect::None) != (window_us == 0)) {
+            return Err(SubmitError::Invalid(InvalidReason::BadPayload));
+        }
+        let window = Self::window_ticks(window_us)?;
+        let b = self.buf.bytes_mut();
+        let [a0, a1, a2, _] = addr.to_le_bytes();
+        let [n0, n1] = (data.len() as u16).to_le_bytes();
+        let [s0, s1] = tb_framer::SYNC;
+        b[..tb_framer::HEADER].copy_from_slice(&[
+            s0,
+            s1,
+            cmd,
+            tb_framer::STATUS_REQUEST,
+            a0,
+            a1,
+            a2,
+            flags,
+            n0,
+            n1,
+        ]);
+        let end = tb_framer::HEADER + data.len();
+        b[tb_framer::HEADER..end].copy_from_slice(data);
+        let crc = tb_framer::tb_crc(0xFFFF, &b[..end]);
+        b[end..end + 2].copy_from_slice(&crc.to_le_bytes());
+        self.tb_len = (end + 2) as u16;
+        self.tb = Some(TbPlan { expect, window });
+        self.gate_tx();
+        Ok(())
+    }
+
+    /// A client window in ticks; one that does not [`window_fits`] is
+    /// refused.
+    fn window_ticks(window_us: u32) -> Result<u32, SubmitError> {
+        if !window_fits::<P::Deadline>(window_us) {
+            return Err(SubmitError::Invalid(InvalidReason::BadPayload));
+        }
+        Ok(window_us * P::Deadline::TICKS_PER_US)
+    }
+
+    /// TX now, or pace first (sec 3.4).
+    fn gate_tx(&mut self) {
         self.track_quiet(self.deadline.now());
         match self.pace_until {
             Some(until) => {
@@ -390,7 +527,6 @@ impl<P: Providers> HostBus<P> {
             }
             None => self.start_tx(),
         }
-        Ok(())
     }
 
     /// Chip TC ISR: the armed frame span drained (never fired for bare
@@ -401,6 +537,17 @@ impl<P: Providers> HostBus<P> {
             return;
         }
         if !matches!(self.state, State::Transmitting) {
+            return;
+        }
+        if let Some(tb) = self.tb {
+            self.tx.release();
+            if matches!(tb.expect, TbExpect::None) {
+                self.finish(Outcome::Sent);
+            } else {
+                self.got = 0;
+                self.state = State::Awaiting;
+                self.arm(self.deadline.now().wrapping_add(tb.window));
+            }
             return;
         }
         let Some(plan) = self.plan else {
@@ -489,6 +636,7 @@ impl<P: Providers> HostBus<P> {
                 }
             }
             State::Wire => self.wire_poll(now),
+            State::Awaiting if self.tb.is_some() => return self.poll_tb_await(now),
             State::Awaiting => return self.poll_await(now),
         }
         if let Some(tick) = self.wire.take_done() {
@@ -629,13 +777,89 @@ impl<P: Providers> HostBus<P> {
         self.pending_done.take().map(Event::Done)
     }
 
+    /// The tinyboot await: one fixed window, never re-armed by frames,
+    /// garble or byte progress (link sec 7).
+    fn poll_tb_await(&mut self, now: u32) -> Option<Event<'_>> {
+        let tb = self.tb?;
+        // Coordinates only, materialized after every mutation (as
+        // `poll_await`).
+        let mut emit: Option<(u8, u8, u32, u8, usize, usize)> = None;
+        loop {
+            let written = self.ring.written();
+            match self
+                .tb_framer
+                .step(self.ring.bytes(), written, MAX_TB_PAYLOAD as u16)
+            {
+                TbStep::Frame(f) => {
+                    let (cmd, status, addr, flags) = (f.cmd, f.status, f.addr, f.flags);
+                    let (pos, len) = (f.data_pos, f.data.len());
+                    self.got = self.got.wrapping_add(1);
+                    self.evidence.statuses = self.evidence.statuses.saturating_add(1);
+                    self.evidence.garble_after_last_frame = false;
+                    emit = Some((cmd, status, addr, flags, pos, len));
+                    if matches!(tb.expect, TbExpect::One) {
+                        self.deadline.cancel();
+                        self.fold_tb_unresolved(written);
+                        self.finish(Outcome::Complete);
+                    }
+                    break;
+                }
+                TbStep::Garble(n) => {
+                    self.evidence.garble = self.evidence.garble.saturating_add(n);
+                    self.evidence.garble_after_last_frame = true;
+                }
+                TbStep::Lapped(n) => {
+                    self.evidence.laps = self.evidence.laps.saturating_add(n);
+                }
+                TbStep::Partial | TbStep::Idle => break,
+            }
+        }
+        if let Some((cmd, status, addr, flags, pos, len)) = emit {
+            return Some(Event::TbFrame {
+                slot: self.got.wrapping_sub(1),
+                cmd,
+                status,
+                addr,
+                flags,
+                data: framer::payload_view(self.ring.bytes(), pos, len),
+            });
+        }
+        if tick_reached(now, self.deadline_at) {
+            self.deadline.cancel();
+            self.fold_tb_unresolved(self.ring.written());
+            let outcome = match tb.expect {
+                TbExpect::Collect => Outcome::Complete,
+                _ => Outcome::Timeout { slot: 0 },
+            };
+            self.finish(outcome);
+        }
+        self.pending_done.take().map(Event::Done)
+    }
+
+    /// Ring content no verdict consumed by terminal time is evidence, not
+    /// silence (as the osc await's horizon fold).
+    fn fold_tb_unresolved(&mut self, written: u32) {
+        let left = self.tb_framer.unresolved(written);
+        if left > 0 {
+            self.evidence.garble = self.evidence.garble.saturating_add(left);
+            self.evidence.garble_after_last_frame = true;
+        }
+    }
+
     fn start_tx(&mut self) {
         // Quiet-bus bootstrap: drop anything unconsumed before the TX
         // window opens (host-side analog of the servo's rule).
-        self.framer.resync(self.ring.written(), self.ring.marked());
-        self.tx.claim();
-        self.tx.send_break();
-        self.tx.send(&self.buf.frame()[1..]);
+        if self.tb.is_some() {
+            // tinyboot frames carry no break (link sec 7).
+            self.tb_framer.resync(self.ring.written());
+            self.tx.claim();
+            self.tx.send(&self.buf.bytes()[..self.tb_len as usize]);
+        } else {
+            self.framer.resync(self.ring.written(), self.ring.marked());
+            self.tx.claim();
+            self.tx.send_break();
+            self.tx.send(&self.buf.frame()[1..]);
+        }
         self.state = State::Transmitting;
     }
 
@@ -652,6 +876,7 @@ impl<P: Providers> HostBus<P> {
         });
         self.state = State::Idle;
         self.plan = None;
+        self.tb = None;
     }
 
     /// One starve horizon of enforced bus silence at the current rate.
@@ -714,6 +939,16 @@ impl<P: Providers> HostBus<P> {
             w += SLOW_OP_EXTRA_US * t;
         }
         w
+    }
+
+    /// A cancelled exchange's quiet re-arm: its await's window, unless the
+    /// window is fixed.
+    fn rearm_for(&self, plan: &Shape) -> u32 {
+        if matches!(plan.replies, Replies::Stream { .. }) {
+            0
+        } else {
+            self.window_for(plan)
+        }
     }
 
     /// Ticks per 10-bit character at the current rate. Exact at the osc

@@ -1117,6 +1117,9 @@ impl Sim {
                 Some(osc_host::engine::Event::WireDone { tick }) => {
                     h.events.push(HostEvent::WireDone { tick })
                 }
+                // The sim's servos speak osc only; nothing submits a
+                // tinyboot exchange here.
+                Some(osc_host::engine::Event::TbFrame { .. }) => {}
                 None => return,
             }
         }

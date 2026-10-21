@@ -6,7 +6,7 @@
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
 use crate::engine::shape::InvalidReason;
-use crate::engine::{Command, Event, HostBus, SubmitError};
+use crate::engine::{Command, Event, HostBus, SubmitError, window_fits};
 use crate::traits::{Deadline, Providers};
 
 use super::record::{self as rec, ExchangeResult, HEADER, Info, KIND_NONE, SEQ_NONE};
@@ -164,6 +164,26 @@ impl LinkServer {
                         payload.segments(),
                     ));
                 }
+                Some(Event::TbFrame {
+                    slot,
+                    cmd,
+                    status,
+                    addr,
+                    flags,
+                    data,
+                }) => {
+                    let seq = c.active.map_or(SEQ_NONE, |a| a.seq);
+                    sink.record(rec::tb_frame(
+                        &mut c.out,
+                        seq,
+                        slot,
+                        cmd,
+                        status,
+                        addr,
+                        flags,
+                        data.segments(),
+                    ));
+                }
                 Some(Event::Done(t)) => {
                     let a = c.take_active();
                     let bps = bus.bps();
@@ -265,7 +285,7 @@ enum Req<'a> {
 }
 
 /// Parse a body exactly; `Err` carries the ERROR code.
-fn parse(kind: u8, body: &[u8]) -> Result<Req<'_>, u8> {
+fn parse<D: Deadline>(kind: u8, body: &[u8]) -> Result<Req<'_>, u8> {
     const RAIL_BITS: u8 = 0b11;
     let malformed = Err(rec::ERR_MALFORMED);
     match (kind, body) {
@@ -285,12 +305,14 @@ fn parse(kind: u8, body: &[u8]) -> Result<Req<'_>, u8> {
             let window_us = u32::from_le_bytes([w0, w1, w2, w3]);
             let (id, inst) = (Id::new(id), Inst(inst));
             match flags {
-                rec::EXCHANGE_STREAM => Ok(Req::Engine(Command::ExchangeStream {
-                    id,
-                    inst,
-                    payload,
-                    window_us,
-                })),
+                rec::EXCHANGE_STREAM if window_fits::<D>(window_us) => {
+                    Ok(Req::Engine(Command::ExchangeStream {
+                        id,
+                        inst,
+                        payload,
+                        window_us,
+                    }))
+                }
                 0 if window_us == 0 => Ok(Req::Engine(Command::Exchange { id, inst, payload })),
                 _ => malformed,
             }
@@ -336,7 +358,7 @@ impl Core {
             }
             return;
         }
-        let req = match parse(kind, body) {
+        let req = match parse::<P::Deadline>(kind, body) {
             Ok(req) => req,
             Err(code) => return self.error(seq, kind, code, sink),
         };
@@ -421,7 +443,7 @@ mod tests {
     use super::super::record::*;
     use super::*;
     use crate::testutil::link::{Resp, ping, req, rig, stream_arm};
-    use crate::testutil::{WireOp, sealed_status};
+    use crate::testutil::{FakeDeadline, WireOp, sealed_status};
 
     /// The adapter's chip features as the rig's server holds them.
     const CHIP: u16 = FEATURE_RAILS | FEATURE_ADAPTER_IAP;
@@ -664,6 +686,31 @@ mod tests {
             })
             .collect();
         assert_eq!(codes, [ERR_BAD_PAYLOAD, ERR_TOO_LONG]);
+    }
+
+    #[test]
+    fn stream_window_past_the_tick_horizon_is_malformed() {
+        let max = u32::MAX / 2 / FakeDeadline::TICKS_PER_US;
+        let mut r = rig();
+        r.send(&stream_arm(1, max + 1));
+        r.send(&stream_arm(2, max));
+        // Busy now: MALFORMED still wins.
+        r.send(&stream_arm(3, max + 1));
+        r.send(&stream_arm(4, max));
+        let err = |seq, code| Resp::Error {
+            seq,
+            kind: OSC_EXCHANGE,
+            code,
+        };
+        assert_eq!(
+            r.take(),
+            [
+                err(1, ERR_MALFORMED),
+                err(3, ERR_MALFORMED),
+                err(4, ERR_BUSY)
+            ]
+        );
+        assert_eq!(claims(&r), 1, "only the fitting window reached the wire");
     }
 
     #[test]
