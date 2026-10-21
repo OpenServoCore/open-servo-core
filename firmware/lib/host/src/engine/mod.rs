@@ -11,6 +11,7 @@
 
 pub mod framer;
 pub mod shape;
+pub mod tb_framer;
 
 #[cfg(test)]
 mod tests;
