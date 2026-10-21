@@ -12,6 +12,9 @@ use tinyboot_protocol::{COMPAT_UNSET, Cmd, EraseData, InfoData, VerifyData};
 
 pub use tinyboot_protocol::{BaudRate, ResetFlags, Status, WriteFlags};
 
+mod update;
+pub use update::{Device, Fate, Phase, Progress, Report, update};
+
 use crate::client::{Client, TbFrame, TbReply, desync_msg};
 use crate::error::{Error, LinkError, RejectReason};
 use crate::pipe::Pipe;
@@ -187,6 +190,37 @@ pub async fn reset<P: Pipe>(
     let window = reset_window(c.info().bps, flags);
     let f = one(c, window, Cmd::Reset, addr, flags.bits(), &[]).await?;
     check(&f, Cmd::Reset, addr).map(drop)
+}
+
+/// Select every device, then reset them all to the app at once, so no app
+/// hears a tinyboot byte after its own reset. The replies collide and none
+/// is read. A device mid-update or with no app refuses and keeps waiting
+/// (tinyboot-core 0.6.2).
+pub async fn reset_all<P: Pipe>(c: &mut Client<P>) -> Result<(), Error> {
+    let bps = c.info().bps;
+    let (seed, bits) = (0, 0);
+    let window = select_window(bps, 0);
+    c.tb_exchange(
+        TbExpect::Collect,
+        window,
+        Cmd::Select as u8,
+        0,
+        0,
+        &[seed, bits],
+    )
+    .await?;
+    let flags = ResetFlags::empty();
+    let window = reset_window(bps, flags);
+    c.tb_exchange(
+        TbExpect::Collect,
+        window,
+        Cmd::Reset as u8,
+        0,
+        flags.bits(),
+        &[],
+    )
+    .await
+    .map(drop)
 }
 
 /// A raw `.bin` app image. Its last six bytes are the tail tinyboot reads,

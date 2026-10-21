@@ -186,11 +186,14 @@ impl TxWire for HostWire {
 
     fn send(&mut self, span: &[u8]) {
         // The break heads this frame -- one record, no bare flush.
-        self.bare_break.take();
+        let framed = self.bare_break.take().is_some();
         let baud = self.baud.current();
         let bt = byte_ticks(baud);
         let mut c = self.core.borrow_mut();
         let start = self.tx_cursor.get().max(c.now());
+        if !framed {
+            c.last_breakless_tx = Some(start + span.len() as u64 * bt);
+        }
         for (k, &b) in span.iter().enumerate() {
             c.schedule(
                 Event::WireData {

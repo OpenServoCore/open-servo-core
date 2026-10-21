@@ -128,6 +128,8 @@ pub struct Sim {
     link: Option<LinkRig>,
     /// Run the main loop's reboot poll (see [`Self::set_self_reboot`]).
     self_reboot: bool,
+    /// When a bootloader first handed off to its app, sim ticks.
+    first_app_reset: Option<u64>,
     /// Run the main loop's data-job poll (see [`Self::set_data_jobs`]).
     data_jobs: bool,
     /// Wake order of every break (see [`Self::set_break_wake`]).
@@ -215,6 +217,7 @@ impl Sim {
             host_stall_until: 0,
             link: None,
             self_reboot: false,
+            first_app_reset: None,
             data_jobs: true,
             break_wake: BreakWake::BeforeByte,
             alternate_after: false,
@@ -579,9 +582,10 @@ impl Sim {
         self.boots[i].active()
     }
 
-    /// Servo `i` acks its next bootloader REBOOT and stays in its app.
+    /// Servo `i` acks its next bootloader REBOOT and stays in its app;
+    /// each call ignores one more.
     pub fn ignore_next_boot_reboot(&mut self, i: usize) {
-        self.boots[i].ignore_reboot = true;
+        self.boots[i].ignore_reboots += 1;
     }
 
     /// Servo `i`'s bootloader answers its next `cmd` with `status`, the
@@ -605,6 +609,12 @@ impl Sim {
         }
     }
 
+    /// When a bootloader Reset first brought up an app, and when the host's
+    /// last breakless byte (a tinyboot frame) ended, sim ticks.
+    pub fn tinyboot_handoff(&self) -> (Option<u64>, Option<u64>) {
+        (self.first_app_reset, self.core.borrow().last_breakless_tx)
+    }
+
     /// Drain the replies servo `i`'s bootloader sent.
     pub fn boot_log(&mut self, i: usize) -> Vec<BootTx> {
         std::mem::take(&mut self.boots[i].log)
@@ -619,6 +629,7 @@ impl Sim {
         let end = start + bytes.len() as u64 * bt;
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, end);
+        c.last_breakless_tx = Some(end);
         for (k, &byte) in bytes.iter().enumerate() {
             let talker = Talker::Host;
             c.schedule(
@@ -950,6 +961,8 @@ impl Sim {
             }
             Event::BootReset { servo, app } => {
                 if app && self.boots[servo].hands_off() {
+                    let now = self.core.borrow().now();
+                    self.first_app_reset.get_or_insert(now);
                     self.restart_app(servo);
                 } else {
                     self.enter_boot(servo);
@@ -1010,8 +1023,8 @@ impl Sim {
             }
             match self.servos[j].take_reboot() {
                 None => {}
-                Some(Reboot::Bootloader(_)) if self.boots[j].ignore_reboot => {
-                    self.boots[j].ignore_reboot = false;
+                Some(Reboot::Bootloader(_)) if self.boots[j].ignore_reboots > 0 => {
+                    self.boots[j].ignore_reboots -= 1;
                 }
                 Some(Reboot::Bootloader(rate)) => {
                     self.boots[j].store_baud(rate);

@@ -90,7 +90,8 @@ pub struct FakeBoot {
     /// Address of the next sequential write; `None` after a flush.
     next: Option<u32>,
     busy_until: u64,
-    pub ignore_reboot: bool,
+    /// Bootloader REBOOTs left to ack and ignore.
+    pub ignore_reboots: u8,
     pub fail_next: Option<(Cmd, Status)>,
     pub log: Vec<BootTx>,
 }
@@ -111,7 +112,7 @@ impl Default for FakeBoot {
             page: Vec::new(),
             next: None,
             busy_until: 0,
-            ignore_reboot: false,
+            ignore_reboots: 0,
             fail_next: None,
             log: Vec::new(),
         }
@@ -387,9 +388,11 @@ impl FakeBoot {
             _ => {
                 let flags = ResetFlags::from_bits_truncate(flags);
                 let to_app = !flags.contains(ResetFlags::BOOTLOADER);
-                // A reset to the app skips META's check on chips that hand
-                // off by run mode, so a half-written image would run.
-                if state == BootState::Updating && to_app {
+                // tinyboot-core 0.6.2: a reset to the app skips META's
+                // check on chips that hand off by run mode, so a
+                // half-written image would run and an erased first word
+                // would hang the chip.
+                if to_app && (state == BootState::Updating || self.flash[..4] == [0xFF; 4]) {
                     return fail(Status::Unsupported);
                 }
                 let mut work = 0;
