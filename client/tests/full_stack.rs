@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use osc_client::blocking::Client;
 use osc_client::boot::{
-    BootInfo, Device, Fate, Image, InstallError, Phase, Progress, Report, ResetFlags, Selected,
-    Status, WriteFlags,
+    BootInfo, Chosen, Device, Fate, Image, InstallError, Phase, Progress, Report, ResetFlags,
+    Selected, Status, WriteFlags,
 };
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
@@ -894,8 +894,8 @@ fn assert_no_tinyboot_after_handoff(c: &mut Client<FakePipe>) {
     );
 }
 
-fn update(c: &mut Client<FakePipe>, img: &Image, chosen: &[Vec<u8>]) -> Report {
-    c.boot_update(img, chosen, BaudRate::B500000, |_| {})
+fn update(c: &mut Client<FakePipe>, img: &Image, chosen: Chosen) -> Report {
+    c.boot_update(img, &chosen, BaudRate::B500000, |_| {})
         .expect("update")
 }
 
@@ -909,7 +909,7 @@ fn update_installs_the_chosen_and_returns_the_fleet() {
     let report = c
         .boot_update(
             &image(1002, BOARD, v),
-            &[a.clone(), b.clone()],
+            &Chosen::Ids(vec![Id::new(1), Id::new(2)]),
             BaudRate::B500000,
             |p| match p {
                 Progress::Phase(p) => phases.push(p),
@@ -929,36 +929,121 @@ fn update_installs_the_chosen_and_returns_the_fleet() {
                 dev(&a, Some(1), Fate::Confirmed),
                 dev(&b, Some(2), Fate::Confirmed),
             ],
-            stayed_app: vec![],
         }
     );
     use Phase::*;
-    assert_eq!(phases, [Roster, Reboot, Walk, Install, Reset, Confirm]);
+    assert_eq!(phases, [Enter, Walk, Install, Reset, Confirm]);
     assert_eq!(done, [(a, 1002), (b, 1002)]);
     assert_no_tinyboot_after_handoff(&mut c);
     assert_eq!(c.info().bps, 1_000_000);
     assert_eq!(fws(&mut c, &[1, 2, 3]), [v, v, old]);
 }
 
-/// The board comes up on its factory id, so its version is left to the
-/// id assignment that follows.
+/// A bootloader off the roster belongs to the step commands: the session
+/// reports it and leaves it waiting.
 #[test]
-fn update_installs_a_bootloader_only_board_by_id() {
+fn update_leaves_a_bootloader_off_the_roster_waiting() {
     let mut c = fleet(&[1, 2, 3]);
     c.pipe_mut().sim_mut().start_in_bootloader(2);
     let v = tinyboot_protocol::pack_version(1, 2, 3);
     let uids: Vec<Vec<u8>> = (0..3).map(|i| chip_uid(&mut c, i)).collect();
-    let report = update(&mut c, &image(1002, BOARD, v), &uids);
+    let report = update(&mut c, &image(1002, BOARD, v), Chosen::All);
+    assert_eq!(
+        report.devices,
+        [
+            dev(&uids[2], None, Fate::Waiting),
+            dev(&uids[0], Some(1), Fate::Confirmed),
+            dev(&uids[1], Some(2), Fate::Confirmed),
+        ]
+    );
+    assert!(c.pipe_mut().sim_mut().in_bootloader(2));
+    assert_eq!(fws(&mut c, &[1, 2]), [v, v]);
+}
+
+#[test]
+fn update_installs_only_the_chosen_ids() {
+    let mut c = fleet(&[1, 2, 3]);
+    let old = fws(&mut c, &[2])[0];
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    let uids: Vec<Vec<u8>> = (0..3).map(|i| chip_uid(&mut c, i)).collect();
+    let report = update(
+        &mut c,
+        &image(1002, BOARD, v),
+        Chosen::Ids(vec![Id::new(1), Id::new(3)]),
+    );
     assert_eq!(
         report.devices,
         [
             dev(&uids[0], Some(1), Fate::Confirmed),
-            dev(&uids[1], Some(2), Fate::Confirmed),
-            dev(&uids[2], None, Fate::Unconfirmed(None)),
+            dev(&uids[2], Some(3), Fate::Confirmed),
         ]
     );
-    assert!(!c.pipe_mut().sim_mut().in_bootloader(2));
-    assert_eq!(fws(&mut c, &[1, 2, 3]), [v, v, v]);
+    assert_no_tinyboot_after_handoff(&mut c);
+    assert_eq!(fws(&mut c, &[1, 2, 3]), [v, old, v]);
+}
+
+/// `apps` finds each app at its own rate and puts the bus rate back; a
+/// servo off the bus rate is out of `enter`'s reach, and `apps` still
+/// shows it.
+#[test]
+fn apps_finds_each_app_at_its_own_rate() {
+    let mut c = fleet(&[1, 2]);
+    let roster = c.set_baud(&[Id::new(2)], BaudRate::B3000000);
+    assert!(roster.expect("migrate").iter().all(|&(_, alive)| alive));
+    c.host_baud(BaudRate::B1000000).expect("host baud");
+    let found = |c: &mut Client<FakePipe>, i: usize| Found {
+        uid: Uid(c.pipe_mut().sim_mut().servo_uid(i)),
+        id: Id::new(i as u8 + 1),
+    };
+    let odd = (BaudRate::B3000000, found(&mut c, 1));
+    let both = vec![(BaudRate::B1000000, found(&mut c, 0)), odd];
+    assert_eq!(c.boot_apps().expect("apps"), both);
+    assert_eq!(c.info().bps, 1_000_000, "the sweep puts the rate back");
+
+    c.boot_enter(BaudRate::B500000).expect("enter");
+    assert!(c.pipe_mut().sim_mut().in_bootloader(0));
+    assert_eq!(c.boot_apps().expect("apps"), [odd]);
+}
+
+/// The step commands' path for a fresh board: enter, list, install the
+/// one with no app by its tinyboot id, reset.
+#[test]
+fn boot_steps_by_hand_install_a_bootloader_only_board() {
+    let mut c = fleet(&[1, 2]);
+    let old = fws(&mut c, &[1])[0];
+    let (servo, board) = (chip_uid(&mut c, 0), chip_uid(&mut c, 1));
+    let board_uid = Uid(c.pipe_mut().sim_mut().servo_uid(1));
+    c.pipe_mut().sim_mut().start_in_bootloader(1);
+
+    let roster = c.boot_enter(BaudRate::B500000).expect("enter");
+    assert_eq!(
+        roster.iter().map(|f| f.id).collect::<Vec<_>>(),
+        [Id::new(1)]
+    );
+
+    c.set_bus(BusMode::Tinyboot, 500_000).expect("to tinyboot");
+    let listed = c.boot_list().expect("list");
+    let mut want = [servo.clone(), board.clone()];
+    want.sort();
+    assert_eq!(
+        listed.iter().map(|d| &d.uid).collect::<Vec<_>>(),
+        [&want[0], &want[1]]
+    );
+    let info = |uid: &[u8]| listed.iter().find(|d| d.uid == uid).expect("listed").info;
+    assert_eq!(info(&board).app_version, 0xFFFF, "no app");
+
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    c.boot_install(&board, &image(1002, BOARD, v), |_, _| {})
+        .expect("install");
+    c.boot_reset_all().expect("reset");
+    c.set_bus(BusMode::Osc, 1_000_000).expect("to osc");
+    c.pause(Duration::from_millis(200));
+
+    let found = c.discover().expect("discover");
+    let id_of = |uid: &Uid| found.iter().find(|f| &f.uid == uid).expect("back").id;
+    assert_eq!(c.ping(id_of(&board_uid)).expect("ping").fw, v);
+    assert_eq!(fws(&mut c, &[1]), [old]);
+    assert!((0..2).all(|i| !c.pipe_mut().sim_mut().in_bootloader(i)));
 }
 
 #[test]
@@ -968,7 +1053,7 @@ fn update_records_a_failed_install_and_goes_on() {
     let sim = c.pipe_mut().sim_mut();
     sim.fail_next_boot(1, tinyboot_protocol::Cmd::Write, Status::WriteError);
     let v = tinyboot_protocol::pack_version(1, 2, 3);
-    let report = update(&mut c, &image(1002, BOARD, v), &uids);
+    let report = update(&mut c, &image(1002, BOARD, v), Chosen::All);
     assert_eq!(
         report.devices,
         [
@@ -988,36 +1073,15 @@ fn update_records_a_failed_install_and_goes_on() {
 }
 
 #[test]
-fn update_aborts_when_a_servo_stays_an_app() {
-    let mut c = fleet(&[1, 2, 3]);
-    let old = fws(&mut c, &[1, 2, 3]);
-    let uids: Vec<Vec<u8>> = (0..3).map(|i| chip_uid(&mut c, i)).collect();
-    let sim = c.pipe_mut().sim_mut();
-    sim.ignore_next_boot_reboot(1);
-    sim.ignore_next_boot_reboot(1);
-    let stayed = Found {
-        uid: Uid(sim.servo_uid(1)),
-        id: Id::new(2),
-    };
-    let report = update(&mut c, &image(1002, BOARD, 7), &uids);
-    assert_eq!(
-        report,
-        Report {
-            devices: vec![],
-            stayed_app: vec![stayed],
-        }
-    );
-    assert_no_tinyboot_after_handoff(&mut c);
-    assert!((0..3).all(|i| !c.pipe_mut().sim_mut().in_bootloader(i)));
-    assert_eq!(fws(&mut c, &[1, 2, 3]), old, "nothing installed");
-}
-
-#[test]
 fn update_reports_a_chosen_id_nobody_has() {
     let mut c = fleet(&[1, 2]);
     let old = fws(&mut c, &[1, 2]);
-    let report = update(&mut c, &image(1002, BOARD, 7), &[vec![0x77; 12]]);
-    assert_eq!(report.devices, [dev(&[0x77; 12], None, Fate::NotFound)]);
+    let report = update(
+        &mut c,
+        &image(1002, BOARD, 7),
+        Chosen::Ids(vec![Id::new(7)]),
+    );
+    assert_eq!(report.devices, [dev(&[], Some(7), Fate::NotFound)]);
     assert!((0..2).all(|i| !c.pipe_mut().sim_mut().in_bootloader(i)));
     assert_eq!(fws(&mut c, &[1, 2]), old);
 }
