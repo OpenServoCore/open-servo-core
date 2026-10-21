@@ -73,10 +73,14 @@ pub async fn select<P: Pipe>(
 }
 
 /// Every device's id, sorted bytewise as sent: a depth-first walk of
-/// `select` prefixes that splits wherever more than one device answers. On
-/// a clean bus it costs `3S + 2 - N` probes for `N` devices, `S` the
-/// prefixes two or more ids share. The walk leaves the selection to its
-/// last probe: select by full id before any other command.
+/// `select` prefixes that splits wherever more than one device answers. A
+/// lone reply short of its whole id is confirmed by both one-bit children
+/// (protocol sec 9.2): the device answers alone under its own and nothing
+/// answers under the other, else the prefix splits. On a clean bus it
+/// costs `3S + 2 + 2N - 3W` probes for `N` devices, `S` the prefixes two
+/// or more ids share, `W` the ids found by their whole length, which need
+/// no confirm. The walk leaves the selection to its last probe: select
+/// by full id before any other command.
 pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Vec<u8>>, Error> {
     const FULL: u8 = (MAX_UID * 8) as u8;
     const FULL_DEPTH_RETRIES: usize = 3;
@@ -98,16 +102,36 @@ pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Vec<u8>>, Error>
                 p = probe(c, &mut seed, &prefix, bits).await?;
             }
         }
-        match p {
-            Probe::Empty => {}
-            Probe::One(id) => found.push(id),
-            Probe::Many if bits < FULL => {
-                let mut one = prefix;
-                one[bits as usize / 8] |= 1 << (bits % 8);
-                stack.push((bits + 1, one));
-                stack.push((bits + 1, prefix));
+        let mut one = prefix;
+        if bits < FULL {
+            one[bits as usize / 8] |= 1 << (bits % 8);
+        }
+        let split = match p {
+            Probe::Empty => false,
+            // A prefix as long as the id selects that device alone.
+            Probe::One(id) if usize::from(bits) >= id.len().min(MAX_UID as usize) * 8 => {
+                found.push(id);
+                false
             }
-            Probe::Many => {}
+            Probe::One(id) => {
+                let set = id[bits as usize / 8] >> (bits % 8) & 1 == 1;
+                let (own, other) = if set { (one, prefix) } else { (prefix, one) };
+                let mine = probe(c, &mut seed, &own, bits + 1).await?;
+                let mut rest = probe(c, &mut seed, &other, bits + 1).await?;
+                if rest == Probe::Empty {
+                    rest = probe(c, &mut seed, &other, bits + 1).await?;
+                }
+                let alone = rest == Probe::Empty && matches!(&mine, Probe::One(m) if *m == id);
+                if alone {
+                    found.push(id);
+                }
+                !alone
+            }
+            Probe::Many => bits < FULL,
+        };
+        if split {
+            stack.push((bits + 1, one));
+            stack.push((bits + 1, prefix));
         }
     }
     found.sort();

@@ -90,6 +90,13 @@ pub struct FakeBoot {
     /// Address of the next sequential write; `None` after a flush.
     next: Option<u32>,
     busy_until: u64,
+    /// The last reply's first start bit; `busy_until` is its end.
+    tx_start: u64,
+    /// Ignore the next clean request.
+    deaf: bool,
+    /// A reply that overlaps another device's reply leaves the device deaf
+    /// to the next request it hears.
+    pub deaf_after_collision: bool,
     /// Bootloader REBOOTs left to ack and ignore.
     pub ignore_reboots: u8,
     pub fail_next: Option<(Cmd, Status)>,
@@ -112,6 +119,9 @@ impl Default for FakeBoot {
             page: Vec::new(),
             next: None,
             busy_until: 0,
+            tx_start: 0,
+            deaf: false,
+            deaf_after_collision: false,
             ignore_reboots: 0,
             fail_next: None,
             log: Vec::new(),
@@ -150,6 +160,7 @@ impl FakeBoot {
             .unwrap_or(BaudRate::B500000);
         self.active = true;
         self.selected = false;
+        self.deaf = false;
         self.rx.clear();
         self.page.clear();
         self.next = None;
@@ -220,6 +231,9 @@ impl FakeBoot {
         {
             return None;
         }
+        if std::mem::take(&mut self.deaf) {
+            return None;
+        }
         let (status, data, ticks, reset) = self.handle(&req[2..10], &req[10..body], uid)?;
         let ns = (body as u64 + 10 + data.len() as u64) * CRC_NS_PER_BYTE;
         let start = now + ticks + ns * TICKS_PER_US / 1000;
@@ -227,6 +241,7 @@ impl FakeBoot {
         head.copy_from_slice(&req[2..10]);
         head[1] = status as u8;
         let bytes = encode(&head, &data);
+        self.tx_start = start;
         self.busy_until = start + bytes.len() as u64 * byte_ticks(self.rate);
         self.log.push(BootTx {
             request_end: now,
@@ -238,6 +253,16 @@ impl FakeBoot {
             bytes,
             reset,
         })
+    }
+
+    /// Whether this bootloader's last reply overlaps `[start, end)`.
+    pub fn overlaps(&self, start: u64, end: u64) -> bool {
+        self.active && self.tx_start < end && start < self.busy_until
+    }
+
+    /// Its reply overlapped another device's.
+    pub fn collided(&mut self) {
+        self.deaf |= self.deaf_after_collision;
     }
 
     /// One clean request: `head` is `cmd status addr(3) flags len(2)`.
