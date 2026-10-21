@@ -32,9 +32,12 @@ pub mod nusb;
 #[cfg(all(feature = "webusb", target_arch = "wasm32"))]
 pub mod webusb;
 
-pub use client::{Chain, Client, DEFAULT_GUARD, Ping, Reply, Status, StreamReply};
+pub use client::{
+    Chain, Client, DEFAULT_GUARD, Ping, Reply, Status, StreamReply, TbFrame, TbReply,
+};
 pub use error::{Error, LinkError, RejectReason};
+pub use session::BusMode;
 
-pub use osc_host::engine::Outcome;
+pub use osc_host::engine::{Outcome, TbExpect};
 pub use osc_host::link::record;
 pub use osc_protocol::wire::{BaudRate, Id, Inst, MgmtOp, Opcode, ResultCode};
