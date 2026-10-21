@@ -6,11 +6,12 @@
 use std::fmt;
 
 use osc_protocol::wire::ResultCode;
+use tinyboot_protocol::Status as BootStatus;
 
 use crate::pipe::PipeError;
 use crate::pos_lut::LutError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     Pipe(PipeError),
     Link(LinkError),
@@ -21,12 +22,18 @@ pub enum Error {
     },
     /// Instruction-level rejection from the servo.
     Servo(ResultCode),
+    /// A tinyboot reply whose status is not `Ok`.
+    Boot(BootStatus),
     /// The descriptor cannot name what the call needs (a field, the stamp
     /// recipe): the servo was never asked.
     Descriptor(String),
     /// A position table write that did not go live.
     Lut(LutError),
 }
+
+// tinyboot's `Status` is a fieldless enum without `Eq`; its `PartialEq` is
+// already total.
+impl Eq for Error {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkError {
@@ -88,6 +95,7 @@ impl fmt::Display for Error {
             Error::Link(LinkError::Malformed) => write!(f, "malformed record"),
             Error::Timeout { slot } => write!(f, "no reply (slot {slot})"),
             Error::Servo(code) => write!(f, "servo answered {code:?}"),
+            Error::Boot(s) => write!(f, "bootloader answered {s:?}"),
             Error::Descriptor(m) => write!(f, "descriptor: {m}"),
             Error::Lut(e) => write!(f, "{e}"),
         }

@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use osc_client::blocking::Client;
+use osc_client::boot::Selected;
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
@@ -545,6 +546,26 @@ fn tb_addr_past_24_bits_is_refused_unsent() {
     );
     c.tb_exchange(TbExpect::None, Duration::ZERO, 3, 0x00FF_FFFF, 0, &[])
         .expect("24-bit addr");
+}
+
+#[test]
+fn boot_info_with_no_device_times_out() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 500_000).expect("to tinyboot");
+    assert_eq!(c.boot_info().unwrap_err(), Error::Timeout { slot: 0 });
+}
+
+#[test]
+fn boot_select_with_no_device_finds_none() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 500_000).expect("to tinyboot");
+    assert_eq!(
+        c.boot_select(0, &[], 0).expect("select"),
+        Selected {
+            ids: vec![],
+            garble: 0,
+        }
+    );
 }
 
 #[test]

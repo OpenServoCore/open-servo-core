@@ -7,6 +7,7 @@ use futures_lite::future::block_on;
 use osc_host::engine::TbExpect;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
+use crate::boot::{self, BootInfo, ResetFlags, Selected, WriteFlags};
 use crate::calib::{self, GearClass};
 use crate::client::{Chain, Ping, Reply, StreamReply, TbReply};
 use crate::common::{self, Health, Identity};
@@ -211,6 +212,34 @@ impl<P: Pipe> Client<P> {
         gaps: u8,
     ) -> Result<Vec<CalTrace>, Error> {
         block_on(mgmt::cal_verify(&mut self.0, ids, trains, gap_us, gaps))
+    }
+
+    pub fn boot_select(&mut self, seed: u8, prefix: &[u8], bits: u8) -> Result<Selected, Error> {
+        block_on(boot::select(&mut self.0, seed, prefix, bits))
+    }
+
+    pub fn boot_info(&mut self) -> Result<BootInfo, Error> {
+        block_on(boot::info(&mut self.0))
+    }
+
+    pub fn boot_erase(&mut self, addr: u32, byte_count: u16) -> Result<(), Error> {
+        block_on(boot::erase(&mut self.0, addr, byte_count))
+    }
+
+    pub fn boot_write(&mut self, addr: u32, data: &[u8], flags: WriteFlags) -> Result<(), Error> {
+        block_on(boot::write(&mut self.0, addr, data, flags))
+    }
+
+    pub fn boot_verify(&mut self, app_size: u32) -> Result<u16, Error> {
+        block_on(boot::verify(&mut self.0, app_size))
+    }
+
+    pub fn boot_reset(
+        &mut self,
+        flags: ResetFlags,
+        baud: Option<boot::BaudRate>,
+    ) -> Result<(), Error> {
+        block_on(boot::reset(&mut self.0, flags, baud))
     }
 
     pub fn identity(&mut self, id: Id) -> Result<Identity, Error> {

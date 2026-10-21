@@ -81,7 +81,7 @@ pub struct TbFrame {
 }
 
 impl TbFrame {
-    fn parse(slot: u8, frame: &[u8]) -> Result<Self, Error> {
+    pub(crate) fn parse(slot: u8, frame: &[u8]) -> Result<Self, Error> {
         match *frame {
             [cmd, status, a0, a1, a2, flags, ref data @ ..] => Ok(Self {
                 slot,
