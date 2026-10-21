@@ -3,10 +3,12 @@
 //! addresses the fleet; every other command reaches only the device the
 //! last `select` left selected.
 
+use std::fmt;
 use std::time::Duration;
 
 use osc_host::engine::{Outcome, TbExpect};
-use tinyboot_protocol::{Cmd, EraseData, InfoData, VerifyData};
+use tinyboot_protocol::crc::{CRC_INIT, crc16};
+use tinyboot_protocol::{COMPAT_UNSET, Cmd, EraseData, InfoData, VerifyData};
 
 pub use tinyboot_protocol::{BaudRate, ResetFlags, Status, WriteFlags};
 
@@ -185,6 +187,212 @@ pub async fn reset<P: Pipe>(
     let window = reset_window(c.info().bps, flags);
     let f = one(c, window, Cmd::Reset, addr, flags.bits(), &[]).await?;
     check(&f, Cmd::Reset, addr).map(drop)
+}
+
+/// A raw `.bin` app image. Its last six bytes are the tail tinyboot reads,
+/// `[compat u32, version u16]` little-endian, starting word-aligned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    bytes: Vec<u8>,
+    compat: u32,
+    version: u16,
+}
+
+const TAIL: usize = 6;
+
+impl Image {
+    pub fn parse(bytes: Vec<u8>) -> Result<Image, ImageError> {
+        let n = bytes.len();
+        if bytes.starts_with(b"\x7FELF") {
+            return Err(ImageError::Elf);
+        }
+        if n < TAIL {
+            return Err(ImageError::TooShort { len: n });
+        }
+        // The device reads its key at a word: a misaligned tail would pass
+        // the host's compat check and be refused at Verify, after the erase.
+        if n % 4 != 2 {
+            return Err(ImageError::Misaligned { len: n });
+        }
+        let tail = &bytes[n - TAIL..];
+        let compat = u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]);
+        let version = u16::from_le_bytes([tail[4], tail[5]]);
+        Ok(Image {
+            bytes,
+            compat,
+            version,
+        })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn compat(&self) -> u32 {
+        self.compat
+    }
+
+    /// Packed 5.5.6 (`tinyboot_protocol::unpack_version`).
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageError {
+    /// An ELF file: the `.bin` objcopy makes from it is the image.
+    Elf,
+    TooShort {
+        len: usize,
+    },
+    /// Not 2 bytes past a word, so no tinyboot tail.
+    Misaligned {
+        len: usize,
+    },
+}
+
+impl fmt::Display for ImageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImageError::Elf => write!(f, "an ELF file; pass the .bin"),
+            ImageError::TooShort { len } => {
+                write!(f, "{len} bytes cannot hold the {TAIL}-byte image tail")
+            }
+            ImageError::Misaligned { len } => {
+                write!(f, "{len} bytes is not 2 past a word: no tinyboot tail")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ImageError {}
+
+/// Why [`install`] stopped, short of a device status ([`Error::Boot`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallError {
+    /// No clean `select` reply carrying the id: nobody answered, or the
+    /// reply was garbled.
+    NoDevice,
+    Incompatible {
+        image: u32,
+        device: u32,
+    },
+    TooLarge {
+        size: u32,
+        capacity: u32,
+    },
+    CrcMismatch {
+        image: u16,
+        device: u16,
+    },
+}
+
+impl fmt::Display for InstallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InstallError::NoDevice => write!(f, "no device answered its id"),
+            InstallError::Incompatible { image, device } => write!(
+                f,
+                "image compat key {image:#010X} is not the device's {device:#010X}"
+            ),
+            InstallError::TooLarge { size, capacity } => write!(
+                f,
+                "image of {size} bytes does not fit the device's {capacity}"
+            ),
+            InstallError::CrcMismatch { image, device } => write!(
+                f,
+                "device CRC {device:#06X} is not the image's {image:#06X}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InstallError {}
+
+impl From<InstallError> for Error {
+    fn from(e: InstallError) -> Self {
+        Error::Install(e)
+    }
+}
+
+/// Install `image` on the waiting device whose full id is `uid`: select
+/// it, refuse a foreign or oversized image before any erase, erase the
+/// pages the image covers, write, verify. No reset and no retry: the
+/// session owns both. `progress(written, total)` runs after each acked
+/// write, in image bytes. The selection is left on `uid`.
+pub async fn install<P: Pipe>(
+    c: &mut Client<P>,
+    uid: &[u8],
+    image: &Image,
+    mut progress: impl FnMut(u32, u32),
+) -> Result<(), Error> {
+    if uid.is_empty() || uid.len() as u64 > MAX_UID {
+        return Err(Error::Link(LinkError::Rejected(RejectReason::BadPayload)));
+    }
+    let s = select(c, 0, uid, (uid.len() * 8) as u8).await?;
+    if s.garble != 0 || s.ids.as_slice() != [uid] {
+        return Err(InstallError::NoDevice.into());
+    }
+
+    let info = info(c).await?;
+    if info.erase_size == 0 {
+        return Err(MALFORMED);
+    }
+    if info.compat != COMPAT_UNSET && image.compat != info.compat {
+        return Err(InstallError::Incompatible {
+            image: image.compat,
+            device: info.compat,
+        }
+        .into());
+    }
+    let bytes = image.bytes();
+    let size = bytes.len() as u32;
+    // Writes go out in whole words, the last padded with 0xFF.
+    let padded = size.next_multiple_of(4);
+    let erase_size = u32::from(info.erase_size);
+    let erase_len = padded.next_multiple_of(erase_size);
+    if erase_len > info.capacity {
+        return Err(InstallError::TooLarge {
+            size,
+            capacity: info.capacity,
+        }
+        .into());
+    }
+
+    let span = u32::from(u16::MAX) / erase_size * erase_size;
+    for addr in (0..erase_len).step_by(span as usize) {
+        erase(c, addr, (erase_len - addr).min(span) as u16).await?;
+    }
+
+    let chunk = u32::from(info.max_payload.min(c.info().max_tb_payload)) & !3;
+    if chunk == 0 {
+        return Err(MALFORMED);
+    }
+    let mut buf = Vec::with_capacity(chunk as usize);
+    for addr in (0..padded).step_by(chunk as usize) {
+        let end = (addr + chunk).min(padded);
+        buf.clear();
+        buf.extend_from_slice(&bytes[addr as usize..end.min(size) as usize]);
+        buf.resize((end - addr) as usize, 0xFF);
+        let flags = if end == padded {
+            WriteFlags::FLUSH
+        } else {
+            WriteFlags::empty()
+        };
+        write(c, addr, &buf, flags).await?;
+        progress(end.min(size), size);
+    }
+
+    let want = crc16(CRC_INIT, bytes);
+    let got = verify(c, size).await?;
+    if got != want {
+        return Err(InstallError::CrcMismatch {
+            image: want,
+            device: got,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 async fn one<P: Pipe>(
@@ -548,6 +756,39 @@ mod tests {
             selected(reply(vec![f], Outcome::Complete, 0)),
             Err(MALFORMED)
         );
+    }
+
+    #[test]
+    fn image_reads_the_tail() {
+        let mut bytes = vec![0x11; 20];
+        bytes.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+        bytes.extend_from_slice(&0x0A41u16.to_le_bytes());
+        let img = Image::parse(bytes.clone()).expect("image");
+        assert_eq!(
+            (img.compat(), img.version(), img.bytes()),
+            (0x1234_5678, 0x0A41, &bytes[..])
+        );
+        assert_eq!(
+            Image::parse(vec![0xFF; 6]).map(|i| (i.compat(), i.version())),
+            Ok((COMPAT_UNSET, 0xFFFF))
+        );
+    }
+
+    #[test]
+    fn image_refuses_an_elf_a_short_file_and_a_misaligned_tail() {
+        let mut elf = b"\x7FELF".to_vec();
+        elf.resize(26, 0);
+        assert_eq!(Image::parse(elf), Err(ImageError::Elf));
+        assert_eq!(
+            Image::parse(vec![0; 5]),
+            Err(ImageError::TooShort { len: 5 })
+        );
+        for len in [24, 25, 27] {
+            assert_eq!(
+                Image::parse(vec![0; len]),
+                Err(ImageError::Misaligned { len })
+            );
+        }
     }
 
     const K500: u32 = 500_000;

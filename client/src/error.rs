@@ -8,6 +8,7 @@ use std::fmt;
 use osc_protocol::wire::ResultCode;
 use tinyboot_protocol::Status as BootStatus;
 
+use crate::boot::InstallError;
 use crate::pipe::PipeError;
 use crate::pos_lut::LutError;
 
@@ -29,6 +30,8 @@ pub enum Error {
     Descriptor(String),
     /// A position table write that did not go live.
     Lut(LutError),
+    /// A firmware install the host stopped.
+    Install(InstallError),
 }
 
 // tinyboot's `Status` is a fieldless enum without `Eq`; its `PartialEq` is
@@ -98,6 +101,7 @@ impl fmt::Display for Error {
             Error::Boot(s) => write!(f, "bootloader answered {s:?}"),
             Error::Descriptor(m) => write!(f, "descriptor: {m}"),
             Error::Lut(e) => write!(f, "{e}"),
+            Error::Install(e) => write!(f, "{e}"),
         }
     }
 }

@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use osc_client::blocking::Client;
-use osc_client::boot::{BootInfo, ResetFlags, Selected, Status, WriteFlags};
+use osc_client::boot::{BootInfo, Image, InstallError, ResetFlags, Selected, Status, WriteFlags};
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
@@ -694,6 +694,97 @@ fn boot_refuses_a_foreign_image_and_a_reset_mid_update() {
     assert_eq!(
         c.boot_reset(ResetFlags::empty(), None).unwrap_err(),
         Error::Boot(Status::Unsupported)
+    );
+}
+
+const BOARD: &str = "osc-dev-v006";
+
+/// `len` bytes for the fake bootloader, parsed.
+fn image(len: usize, compat: &str, version: u16) -> Image {
+    Image::parse(boot_image(len, compat, version)).expect("image")
+}
+
+/// The app version device `uid`'s Info reports.
+fn app_version(c: &mut Client<Counted>, uid: &[u8]) -> u16 {
+    let bits = (uid.len() * 8) as u8;
+    c.boot_select(0, uid, bits).expect("select");
+    c.boot_info().expect("info").app_version
+}
+
+/// Five writes over four pages: the target holds the image and boots it,
+/// its neighbour still waits with an empty app.
+#[test]
+fn boot_install_writes_one_device_and_leaves_the_other() {
+    let (a, b) = ([1; UID_LEN], [3; UID_LEN]);
+    let mut c = boot_fleet(&[a, b]);
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    let img = image(1002, BOARD, v);
+    let mut seen = Vec::new();
+    c.boot_install(&a[..12], &img, |w, t| seen.push((w, t)))
+        .expect("install");
+    assert_eq!(seen, [240, 480, 720, 960, 1002].map(|w| (w, 1002)).to_vec());
+    assert_eq!(app_version(&mut c, &b[..12]), 0xFFFF, "untouched");
+    assert_eq!(app_version(&mut c, &a[..12]), v);
+
+    c.boot_reset(ResetFlags::empty(), None).expect("to app");
+    c.set_bus(BusMode::Osc, 1_000_000).expect("to osc");
+    assert_eq!(c.ping(Id::new(1)).expect("ping").fw, v);
+    assert!(c.pipe_mut().pipe.sim_mut().in_bootloader(1));
+}
+
+/// A foreign or oversized image is refused before the erase: the device
+/// still holds its verified app, which an erase would have dropped.
+#[test]
+fn boot_install_refuses_a_foreign_or_oversized_image_unerased() {
+    let uid = [0x42; UID_LEN];
+    let mut c = boot_fleet(&[uid]);
+    let v = tinyboot_protocol::pack_version(1, 0, 0);
+    c.boot_install(&uid[..12], &image(26, BOARD, v), |_, _| {})
+        .expect("install");
+
+    let foreign = image(26, "another-board", 2);
+    assert_eq!(
+        c.boot_install(&uid[..12], &foreign, |_, _| panic!("written")),
+        Err(Error::Install(InstallError::Incompatible {
+            image: tinyboot_protocol::compat_key("another-board"),
+            device: tinyboot_protocol::compat_key(BOARD),
+        }))
+    );
+    assert_eq!(app_version(&mut c, &uid[..12]), v);
+
+    let huge = image(58_114, BOARD, 2);
+    assert_eq!(
+        c.boot_install(&uid[..12], &huge, |_, _| panic!("written")),
+        Err(Error::Install(InstallError::TooLarge {
+            size: 58_114,
+            capacity: 58_112,
+        }))
+    );
+    assert_eq!(app_version(&mut c, &uid[..12]), v);
+}
+
+#[test]
+fn boot_install_returns_the_device_status() {
+    let uid = [0x42; UID_LEN];
+    let mut c = boot_fleet(&[uid]);
+    let img = image(1002, BOARD, 1);
+    for cmd in [tinyboot_protocol::Cmd::Erase, tinyboot_protocol::Cmd::Write] {
+        let sim = c.pipe_mut().pipe.sim_mut();
+        sim.fail_next_boot(0, cmd, Status::WriteError);
+        assert_eq!(
+            c.boot_install(&uid[..12], &img, |_, _| {}),
+            Err(Error::Boot(Status::WriteError)),
+            "{cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn boot_install_on_an_absent_id_finds_no_device() {
+    let mut c = boot_fleet(&[[0x42; UID_LEN]]);
+    assert_eq!(
+        c.boot_install(&[0x43; 12], &image(26, BOARD, 1), |_, _| {}),
+        Err(Error::Install(InstallError::NoDevice))
     );
 }
 
