@@ -17,6 +17,7 @@ use osc_client::data_state::{
 use osc_client::descriptor::{Descriptor, Kind, Value, encode};
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, seed};
 use osc_client::mgmt::{Found, Uid};
+use osc_client::pipe::{Pipe, PipeError};
 use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
 use osc_client::session::{EngineCommand, LinkInfo, Record, Session};
 use osc_client::{
@@ -576,11 +577,33 @@ fn boot_image(len: usize, compat: &str, version: u16) -> Vec<u8> {
     img
 }
 
+/// The fake adapter, counting the records the client sends.
+struct Counted {
+    pipe: FakePipe,
+    sends: usize,
+}
+
+impl Pipe for Counted {
+    async fn send(&mut self, bytes: &[u8]) -> Result<(), PipeError> {
+        self.sends += 1;
+        self.pipe.send(bytes).await
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>, PipeError> {
+        self.pipe.recv().await
+    }
+
+    async fn pause(&mut self, d: Duration) {
+        self.pipe.pause(d).await
+    }
+}
+
 /// Servos `uids` wait in their bootloaders, the bus in tinyboot at 0.5 M.
-fn boot_fleet(uids: &[[u8; UID_LEN]]) -> Client<FakePipe> {
+fn boot_fleet(uids: &[[u8; UID_LEN]]) -> Client<Counted> {
     let ids: Vec<u8> = (1..=uids.len() as u8).collect();
-    let mut c = fleet(&ids);
-    let sim = c.pipe_mut().sim_mut();
+    let pipe = FakePipe::new(BaudRate::B1000000, &ids);
+    let mut c = Client::connect(Counted { pipe, sends: 0 }).expect("connect");
+    let sim = c.pipe_mut().pipe.sim_mut();
     for (i, &uid) in uids.iter().enumerate() {
         sim.seed_servo_uid(i, uid);
         sim.start_in_bootloader(i);
@@ -672,6 +695,79 @@ fn boot_refuses_a_foreign_image_and_a_reset_mid_update() {
         c.boot_reset(ResetFlags::empty(), None).unwrap_err(),
         Error::Boot(Status::Unsupported)
     );
+}
+
+#[test]
+fn boot_discover_on_an_empty_bus_finds_nothing() {
+    let mut c = boot_fleet(&[]);
+    assert_eq!(c.boot_discover().expect("discover"), Vec::<Vec<u8>>::new());
+}
+
+#[test]
+fn boot_discover_finds_one_device() {
+    let uid = [0x42; UID_LEN];
+    let mut c = boot_fleet(&[uid]);
+    assert_eq!(
+        c.boot_discover().expect("discover"),
+        vec![uid[..12].to_vec()]
+    );
+}
+
+/// The prefixes two or more ids share, the empty one included: the walk's
+/// collisions.
+fn shared_prefixes(ids: &[&[u8]]) -> usize {
+    let bit = |id: &[u8], k: usize| id[k / 8] >> (k % 8) & 1;
+    (0..=ids[0].len() * 8)
+        .map(|len| {
+            let mut keys: Vec<Vec<u8>> = ids
+                .iter()
+                .map(|id| (0..len).map(|k| bit(id, k)).collect())
+                .collect();
+            keys.sort();
+            keys.chunk_by(|a, b| a == b)
+                .filter(|run| run.len() > 1)
+                .count()
+        })
+        .sum()
+}
+
+/// Seven devices: `a` and `b` share slot 0 for seed 0 and garble, `c` and
+/// `d` answer clean in slots 4 and 14; `e` and `f` share 95 bits, `e` and
+/// `g` 40. On a clean bus the walk is a full binary tree over the `S`
+/// shared prefixes: each collides and splits, `N` leaves find an id, the
+/// other `S + 1 - N` stay empty for two probes each, `3S + 2 - N` in all.
+#[test]
+fn boot_discover_walks_a_fleet_in_the_fewest_probes() {
+    let mut e = [0x42; UID_LEN];
+    e[12..].fill(0);
+    let (mut f, mut g) = (e, e);
+    f[11] ^= 0x80;
+    g[5] ^= 0x01;
+    let uids = [
+        [5; UID_LEN],
+        [8; UID_LEN],
+        [1; UID_LEN],
+        [3; UID_LEN],
+        e,
+        f,
+        g,
+    ];
+    let mut c = boot_fleet(&uids);
+    let mut want: Vec<Vec<u8>> = uids.iter().map(|u| u[..12].to_vec()).collect();
+    want.sort();
+
+    let root = c.boot_select(0, &[], 0).expect("select");
+    assert!(root.garble > 0, "{root:?}");
+    assert!(
+        root.ids.contains(&want[0]) && root.ids.contains(&want[1]),
+        "{root:?}"
+    );
+
+    c.pipe_mut().sends = 0;
+    assert_eq!(c.boot_discover().expect("discover"), want);
+    let ids: Vec<&[u8]> = want.iter().map(Vec::as_slice).collect();
+    let shared = shared_prefixes(&ids);
+    assert_eq!(c.pipe_mut().sends, 3 * shared + 2 - ids.len());
 }
 
 #[test]
