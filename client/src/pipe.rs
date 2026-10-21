@@ -9,6 +9,11 @@ use std::time::Duration;
 pub const VID: u16 = 0x1209;
 pub const PID: u16 = 0x0001;
 
+/// A stalled OPEN_SESSION request: the adapter firmware predates it.
+#[cfg(any(feature = "nusb", feature = "webusb"))]
+pub(crate) const OLD_ADAPTER: &str =
+    "the adapter refused OPEN_SESSION: its firmware is too old, reflash it";
+
 pub trait Pipe {
     /// Deliver bytes in order, whole.
     fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<(), PipeError>>;

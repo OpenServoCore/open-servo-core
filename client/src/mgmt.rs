@@ -212,6 +212,9 @@ pub async fn bus_present<P: Pipe>(c: &mut Client<P>) -> Result<bool, Error> {
     ))
 }
 
+// TODO: the first unicast after this sweep sometimes gets no reply
+// (`osc ping` at 3M: about 1 run in 20, with or without OPEN_SESSION); root
+// cause open.
 /// Find the bus rate by ENUM probe: the 1M protocol default first, then the
 /// remaining rates ascending. Leaves the host at the found rate (at the last
 /// probed rate when nothing answered).

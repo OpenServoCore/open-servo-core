@@ -10,7 +10,9 @@ use js_sys::Promise;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::pipe::{PID, Pipe, PipeError, VID};
+use osc_host::link::record::USB_REQ_OPEN_SESSION;
+
+use crate::pipe::{OLD_ADAPTER, PID, Pipe, PipeError, VID};
 
 // WebUSB takes the endpoint number and derives the address from the
 // method (transferIn: `endpointNumber | 0x80`), so IN 0x81 is endpoint 1.
@@ -30,6 +32,8 @@ extern "C" {
     fn select_configuration(this: &UsbDevice, v: u8) -> Promise;
     #[wasm_bindgen(method, js_name = claimInterface)]
     fn claim_interface(this: &UsbDevice, n: u8) -> Promise;
+    #[wasm_bindgen(method, js_name = controlTransferOut)]
+    fn control_transfer_out(this: &UsbDevice, setup: &JsValue) -> Promise;
     #[wasm_bindgen(method, js_name = transferIn)]
     fn transfer_in(this: &UsbDevice, ep: u8, len: u32) -> Promise;
     #[wasm_bindgen(method, js_name = transferOut)]
@@ -79,6 +83,31 @@ pub async fn request_device() -> Result<UsbDevice, PipeError> {
     Ok(dev.unchecked_into())
 }
 
+/// Before any bulk traffic: a previous page may have left records queued,
+/// and `selectConfiguration` sends nothing when the configuration is
+/// already active.
+async fn open_session(device: &UsbDevice) -> Result<(), PipeError> {
+    let setup = js_sys::Object::new();
+    for (k, v) in [
+        ("requestType", JsValue::from("vendor")),
+        ("recipient", "interface".into()),
+        ("request", USB_REQ_OPEN_SESSION.into()),
+        ("value", 0.into()),
+        ("index", 0.into()),
+    ] {
+        js_sys::Reflect::set(&setup, &k.into(), &v).map_err(js_err)?;
+    }
+    let res = settle(device.control_transfer_out(&setup)).await?;
+    match res
+        .unchecked_into::<UsbOutTransferResult>()
+        .status()
+        .as_str()
+    {
+        "stall" => Err(PipeError::Io(OLD_ADAPTER.into())),
+        s => check(s.to_string()),
+    }
+}
+
 pub struct WebUsbPipe {
     device: UsbDevice,
     // Dropping a JsFuture does not cancel the transfer; the browser would
@@ -93,6 +122,7 @@ impl WebUsbPipe {
         settle(device.open()).await?;
         settle(device.select_configuration(1)).await?;
         settle(device.claim_interface(0)).await?;
+        open_session(&device).await?;
         Ok(Self {
             device,
             pending: None,
