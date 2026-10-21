@@ -278,7 +278,9 @@ impl Sim {
         self.link = Some(LinkRig {
             // Stands in for a LinkE: queued adapter requests go unserved.
             server: osc_host::link::LinkServer::new(
-                osc_host::link::record::FEATURE_RAILS | osc_host::link::record::FEATURE_ADAPTER_IAP,
+                osc_host::link::record::FEATURE_RAILS
+                    | osc_host::link::record::FEATURE_ADAPTER_IAP
+                    | osc_host::link::record::FEATURE_TINYBOOT,
             ),
             out: RecordLog(Vec::new()),
         });

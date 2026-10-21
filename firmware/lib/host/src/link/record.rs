@@ -66,6 +66,12 @@ pub const FEATURE_TINYBOOT: u16 = 1 << 3;
 pub const MODE_OSC: u8 = 0;
 pub const MODE_TINYBOOT: u8 = 1;
 
+/// tinyboot-protocol's rate catalog: the tinyboot-mode rates (link sec 5).
+pub const TB_RATES: [u32; 14] = [
+    9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1_000_000, 1_500_000,
+    2_000_000, 2_500_000, 3_000_000,
+];
+
 /// OSC_EXCHANGE `flags` bit 0: collect a servo telemetry burst.
 pub const EXCHANGE_STREAM: u8 = 1 << 0;
 
