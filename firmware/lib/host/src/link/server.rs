@@ -382,7 +382,13 @@ impl Core {
                 sink.record(rec::done(&mut self.out, seq, kind, |_| 0));
             }
             Req::SetBus { bps } => match BaudRate::from_hz(bps) {
-                Some(rate) => self.submit(seq, kind, Command::HostBaud(rate), bus, sink),
+                Some(rate) => self.submit(
+                    seq,
+                    kind,
+                    Command::HostBaud { bps: rate.as_hz() },
+                    bus,
+                    sink,
+                ),
                 None => self.error(seq, kind, rec::ERR_BAD_RATE, sink),
             },
             Req::Engine(cmd) => self.submit(seq, kind, cmd, bus, sink),

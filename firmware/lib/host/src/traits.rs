@@ -65,10 +65,8 @@ pub trait TxWire {
 /// the sec 9.1 floor the rescue verb drops to.
 pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
-    /// Arbitrary rate, instrument-only: off-catalog divisors (the trim
-    /// suite's host-detune probe). The engine's own
-    /// timing state stays on the nearest catalog rate.
-    #[cfg(feature = "bench")]
+    /// Any rate; the provider rounds its divisor. Carries the tinyboot
+    /// catalog rates and the instrument's off-catalog detunes alike.
     fn apply_raw(&mut self, bps: u32);
 }
 

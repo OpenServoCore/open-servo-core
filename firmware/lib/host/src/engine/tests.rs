@@ -583,10 +583,97 @@ fn rescue_pulses_then_drops_to_the_rescue_rate() {
 #[test]
 fn host_baud_applies_and_completes() {
     let mut r = rig();
-    r.bus.submit(Command::HostBaud(BaudRate::B3000000)).unwrap();
+    r.bus
+        .submit(Command::HostBaud {
+            bps: BaudRate::B3000000.as_hz(),
+        })
+        .unwrap();
     assert_eq!(r.baud.applied(), vec![BaudRate::B3000000]);
     let t = expect_done(&mut r);
     assert_eq!(t.outcome, Outcome::Complete);
+}
+
+/// Ticks per 10-bit character at `bps` on the fake clock.
+fn byte_ticks_at(bps: u32) -> u32 {
+    (FakeDeadline::TICKS_PER_US * 10_000_000).div_ceil(bps)
+}
+
+fn host_baud(r: &mut Rig, bps: u32) {
+    r.bus.submit(Command::HostBaud { bps }).unwrap();
+    assert_eq!(expect_done(r).outcome, Outcome::Complete);
+}
+
+#[test]
+fn host_baud_to_a_non_osc_rate_applies_raw_and_paces_at_it() {
+    let mut r = rig();
+    host_baud(&mut r, 115_200);
+    assert_eq!(r.baud.applied_raw(), vec![115_200]);
+    assert!(r.baud.applied().is_empty());
+    assert_eq!(r.bus.bps(), 115_200);
+
+    let horizon = osc_protocol::wire::STARVE_HORIZON_BYTE_TIMES * byte_ticks_at(115_200);
+    let (id, inst) = ping(5);
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    r.clock.advance(horizon - 1);
+    assert!(r.bus.poll().is_none());
+    assert!(r.wire.log().is_empty(), "paced at 115200's byte-time");
+    r.clock.advance(1);
+    assert!(r.bus.poll().is_none());
+    assert_eq!(r.wire.log()[0], WireOp::Claim, "horizon elapsed -> TX");
+}
+
+#[test]
+fn host_baud_below_the_floor_is_refused() {
+    let mut r = rig();
+    for bps in [0, MIN_BPS - 1] {
+        assert_eq!(
+            r.bus.submit(Command::HostBaud { bps }),
+            Err(SubmitError::Invalid(InvalidReason::BadPayload))
+        );
+    }
+    assert!(r.baud.applied_raw().is_empty());
+    host_baud(&mut r, MIN_BPS);
+    assert_eq!(r.baud.applied_raw(), vec![MIN_BPS]);
+}
+
+#[test]
+fn byte_ticks_round_up_off_the_osc_rates() {
+    let mut r = rig();
+    // 1e7 / 921600 = 10.85 ticks at 1 tick/us.
+    host_baud(&mut r, 921_600);
+    assert_eq!(r.bus.byte_ticks(), 11);
+}
+
+#[test]
+fn cancel_returns_a_non_osc_rate_to_the_rescue_rate() {
+    let mut r = rig();
+    host_baud(&mut r, 115_200);
+    r.bus.cancel();
+    assert_eq!(r.baud.applied(), vec![BaudRate::B500000]);
+    assert_eq!(r.bus.bps(), 500_000);
+}
+
+#[test]
+fn byte_time_follows_bps() {
+    let mut r = rig();
+    let (id, inst) = ping(5);
+    let plan = Shape::derive(id, inst, &[]).unwrap();
+    host_baud(&mut r, 500_000);
+    let at_500k = r.bus.window_for(&plan);
+    host_baud(&mut r, 115_200);
+    let at_115k = r.bus.window_for(&plan);
+
+    let bytes = plan.reply_footprint as u32 + WINDOW_MARGIN_BYTES;
+    assert_eq!(
+        at_115k - at_500k,
+        bytes * (byte_ticks_at(115_200) - byte_ticks_at(500_000))
+    );
 }
 
 #[test]
@@ -982,8 +1069,7 @@ mod wire {
         assert_eq!(r.baud.applied_raw(), vec![993_103]);
         let _ = expect_wire_done(&mut r);
 
-        // Off-catalog rates park the engine's timing state on the nearest
-        // catalog rate, and the change paces like any baud change.
+        // The change paces like any baud change.
         let (id, inst) = ping(5);
         r.bus
             .submit(Command::Exchange {
@@ -1023,5 +1109,19 @@ mod wire {
         assert!(matches!(r.bus.wire_baud(0), Err(SubmitError::Invalid(_))));
         r.bus.wire_send(&[0x55]).unwrap();
         assert_eq!(r.bus.wire_baud(1_000_000), Err(SubmitError::Busy));
+    }
+
+    #[test]
+    fn wire_baud_below_the_floor_is_refused() {
+        let mut r = rig();
+        for bps in [0, MIN_BPS - 1] {
+            assert_eq!(
+                r.bus.wire_baud(bps),
+                Err(SubmitError::Invalid(InvalidReason::BadPayload))
+            );
+        }
+        assert!(r.baud.applied_raw().is_empty());
+        r.bus.wire_baud(MIN_BPS).unwrap();
+        assert_eq!(r.baud.applied_raw(), vec![MIN_BPS]);
     }
 }

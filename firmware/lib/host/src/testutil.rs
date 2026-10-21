@@ -169,13 +169,16 @@ impl traits::TxWire for FakeWire {
 #[derive(Clone, Default)]
 pub struct FakeBaud {
     applied: Rc<RefCell<Vec<BaudRate>>>,
-    #[cfg(feature = "bench")]
     raw: Rc<RefCell<Vec<u32>>>,
 }
 
 impl FakeBaud {
     pub fn applied(&self) -> Vec<BaudRate> {
         self.applied.borrow().clone()
+    }
+
+    pub fn applied_raw(&self) -> Vec<u32> {
+        self.raw.borrow().clone()
     }
 }
 
@@ -184,7 +187,6 @@ impl traits::UsartBaud for FakeBaud {
         self.applied.borrow_mut().push(baud);
     }
 
-    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32) {
         self.raw.borrow_mut().push(bps);
     }
@@ -213,13 +215,7 @@ pub fn sealed_status(id: u8, result: ResultCode, payload: &[u8]) -> Vec<u8> {
 pub mod bench {
     use std::vec::Vec;
 
-    use super::{FakeBaud, traits};
-
-    impl FakeBaud {
-        pub fn applied_raw(&self) -> Vec<u32> {
-            self.raw.borrow().clone()
-        }
-    }
+    use super::traits;
 
     /// Preloadable edge-capture fake, reached through `HostBus::edges`:
     /// tests stage ticks, drains pop in order.
