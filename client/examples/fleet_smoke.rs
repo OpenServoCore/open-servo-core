@@ -11,8 +11,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut c = Client::connect(NusbPipe::open()?)?;
     let info = c.info();
     println!(
-        "INFO: link v{}, {} ticks/us",
-        info.version, info.ticks_per_us
+        "INFO: {} ticks/us, bus at {} bps",
+        info.ticks_per_us, info.bps
     );
 
     let mut fleet = Vec::new();

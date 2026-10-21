@@ -279,10 +279,13 @@ pub mod link {
     use std::vec;
     use std::vec::Vec;
 
+    use osc_protocol::build;
     use osc_protocol::wire::{BaudRate, Inst, Opcode};
 
     use crate::engine::HostBus;
-    use crate::link::record::{REC_SUBMIT, VERB_EXCHANGE};
+    use crate::link::record::{
+        DONE, ERROR, EXCHANGE_STREAM, FEATURE_ADAPTER_IAP, FEATURE_RAILS, FRAME, OSC_EXCHANGE,
+    };
     use crate::link::{LinkServer, RecordSink};
 
     use super::{FakeBaud, FakeDeadline, FakeRing, FakeWire, TestProviders};
@@ -296,17 +299,70 @@ pub mod link {
         }
     }
 
+    /// One response record, decoded for assertions.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Resp {
+        Frame { seq: u16, slot: u8, bytes: Vec<u8> },
+        Done { seq: u16, kind: u8, result: Vec<u8> },
+        Error { seq: u16, kind: u8, code: u8 },
+    }
+
+    impl Resp {
+        /// Panics unless `r` is exactly one well-formed response.
+        pub fn parse(r: &[u8]) -> Self {
+            let len = u16::from_le_bytes([r[0], r[1]]) as usize;
+            assert_eq!(len + 2, r.len(), "len covers the record");
+            let seq = u16::from_le_bytes([r[3], r[4]]);
+            match r[2] {
+                FRAME => Resp::Frame {
+                    seq,
+                    slot: r[5],
+                    bytes: r[6..].to_vec(),
+                },
+                DONE => Resp::Done {
+                    seq,
+                    kind: r[5],
+                    result: r[6..].to_vec(),
+                },
+                ERROR => {
+                    assert_eq!(r.len(), 7, "ERROR is kind + code");
+                    Resp::Error {
+                        seq,
+                        kind: r[5],
+                        code: r[6],
+                    }
+                }
+                other => panic!("response kind {other:#04x}"),
+            }
+        }
+    }
+
     pub struct Rig {
         pub server: LinkServer,
         pub bus: HostBus<TestProviders>,
         pub ring: FakeRing,
         pub clock: FakeDeadline,
         pub wire: FakeWire,
-        #[cfg(feature = "bench")]
         pub baud: FakeBaud,
         pub sink: Sink,
     }
 
+    impl Rig {
+        pub fn send(&mut self, bytes: &[u8]) {
+            self.server.on_pipe(bytes, &mut self.bus, &mut self.sink);
+        }
+
+        pub fn pump(&mut self) {
+            self.server.pump(&mut self.bus, &mut self.sink);
+        }
+
+        /// Every response recorded since the last take.
+        pub fn take(&mut self) -> Vec<Resp> {
+            self.sink.0.drain(..).map(|r| Resp::parse(&r)).collect()
+        }
+    }
+
+    /// A server with the chip adapter's features (rails, adapter IAP).
     pub fn rig() -> Rig {
         let ring = FakeRing::new();
         let clock = FakeDeadline::new();
@@ -320,33 +376,38 @@ pub mod link {
             BaudRate::B1000000,
         );
         Rig {
-            server: LinkServer::new(),
+            server: LinkServer::new(FEATURE_RAILS | FEATURE_ADAPTER_IAP),
             bus,
             ring,
             clock,
             wire,
-            #[cfg(feature = "bench")]
             baud,
             sink: Sink::default(),
         }
     }
 
-    /// Length-prefix a type+body into pipe bytes.
-    pub fn rec(body: &[u8]) -> Vec<u8> {
-        let mut v = vec![body.len() as u8, (body.len() >> 8) as u8];
+    /// One request record: `len(2) kind(1) seq(2) body`.
+    pub fn req(kind: u8, seq: u16, body: &[u8]) -> Vec<u8> {
+        let len = 3 + body.len() as u16;
+        let mut v = len.to_le_bytes().to_vec();
+        v.push(kind);
+        v.extend_from_slice(&seq.to_le_bytes());
         v.extend_from_slice(body);
         v
     }
 
-    pub fn submit_ping(seq: u16, id: u8) -> Vec<u8> {
+    pub fn ping(seq: u16, id: u8) -> Vec<u8> {
         let inst = Inst::instruction(Opcode::Ping, 0);
-        rec(&[
-            REC_SUBMIT,
-            seq as u8,
-            (seq >> 8) as u8,
-            VERB_EXCHANGE,
-            id,
-            inst.0,
-        ])
+        req(OSC_EXCHANGE, seq, &[0, id, inst.0, 0, 0, 0, 0])
+    }
+
+    /// A STREAM exchange to servo 5 arming a burst with a WRITE.
+    pub fn stream_arm(seq: u16, window_us: u32) -> Vec<u8> {
+        let mut p = [0u8; 8];
+        let n = build::write(&mut p, 0x0192, &[2, 0]).unwrap();
+        let mut body = vec![EXCHANGE_STREAM, 5, Inst::instruction(Opcode::Write, 0).0];
+        body.extend_from_slice(&window_us.to_le_bytes());
+        body.extend_from_slice(&p[..n]);
+        req(OSC_EXCHANGE, seq, &body)
     }
 }

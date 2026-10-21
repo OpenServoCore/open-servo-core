@@ -1,150 +1,104 @@
-//! Pipe record formats: the adapter <-> client vocabulary over a reliable
-//! ordered byte pipe. USB bulk is the first carrier, not the definition --
-//! records are length-prefixed (`len(2 LE)` covering `type(1) + body`), so
-//! carrier transfer boundaries carry no meaning and the format ports to any
-//! ordered pipe.
-//!
-//! Contract (host-band settled decisions): each SUBMIT names a client
-//! `seq`; exactly one REJECTED-or-TERMINAL answers it; STATUS records
-//! stream before their terminal, `(seq, slot)`-tagged. NOREPLY commands
-//! still terminate ("sent at tick"). Ticks are raw engine ticks; INFO
-//! advertises the tick rate once instead of converting per record.
+//! Link records (link sec 3): the adapter <-> client vocabulary over a
+//! reliable ordered byte pipe. Every record, either direction, is
+//! `len(2 LE) kind(1) seq(2 LE) body`, `len` counting every byte after
+//! itself, so carrier transfer boundaries carry no meaning. Requests use
+//! kinds `0x00..=0x7F`, responses `0x80..=0xFF`; every request draws
+//! exactly one DONE or one ERROR on its `seq`, a bus exchange streaming
+//! FRAMEs first. Both directions' codecs live here: the adapter builds,
+//! clients parse, from one definition.
 
-use crate::engine::shape::InvalidReason;
 use crate::engine::{Outcome, Terminal};
 
-/// Record type bytes. `0x00..=0x3F` client->adapter, `0x80..=0xBF`
-/// adapter->client. Reserved families: `0x40..=0x4F` firmware update
-/// (client->adapter `0x40..=0x47`, adapter->client `0x48..=0x4F`) and
-/// `0x60..=0x6F` the instrument family (client->adapter `0x60..=0x67`,
-/// adapter->client `0x68..=0x6F`) -- rails, raw wire verbs, edge-capture
-/// drains. Unconditional in every build; deliberate protocol-breaking
-/// lives only here, never in SUBMIT (whose Shape validation stands).
-/// USB carrier, not a record: vendor OUT control request on EP0
-/// (bmRequestType `0x41`, interface 0, no data) that opens a host session.
-/// The client sends it on every open before HELLO; the adapter drops the
-/// previous session's unsent records and half-received record. A carrier
-/// signal rather than SET_CONFIGURATION, which WebUSB skips when the
-/// configuration is already active, and rather than a record, because the
-/// pipe it would ride may still hold the old session's bytes.
+/// USB carrier, not a record (link sec 8.2): vendor OUT control request on
+/// EP0 (bmRequestType `0x41`, interface 0, no data) that opens a session.
+/// A carrier signal rather than SET_CONFIGURATION, which WebUSB skips when
+/// the configuration is already active, and rather than a record, because
+/// the pipe it would ride may still hold the old session's bytes.
 pub const USB_REQ_OPEN_SESSION: u8 = 0x01;
 
-pub const REC_HELLO: u8 = 0x00;
-pub const REC_SUBMIT: u8 = 0x01;
-/// Hand the adapter to the resident bootloader (the mandatory
-/// revert-to-stock path, wlink-iap flow). No seq, never refused; quiescing
-/// the bus first is the client's job. The server acks, then the chip drains
-/// the queued [`AdapterRequest`](crate::link::AdapterRequest), flushes the
-/// pipe, disarms the loader, and resets -- the ack is the last record the
-/// port delivers.
-pub const REC_ENTER_BOOTLOADER: u8 = 0x40;
-/// Bench family: drive the adapter's DUT power rails. Body:
-/// `state(1) [mask(1)]` -- bit0 = 3V3, bit1 = 5V; only masked bits apply
-/// (absent mask = both, wire-compatible with the mask-less form; mask 0 =
-/// pure readback). The server keeps the state mirror (it is the rails'
-/// only writer, seeded from [`RAILS_BOOT_STATE`]); the chip applies the
-/// composed absolute state. Answered by [`REC_RAILS_ACK`] carrying it.
-pub const REC_SET_RAILS: u8 = 0x60;
-/// Rails state out of adapter boot: both ON (the pins provider asserts
-/// them before anything else) -- a bare adapter powers its bus.
-pub const RAILS_BOOT_STATE: u8 = 0b11;
-/// Instrument raw TX: one law break + the body's raw bytes, engine command
-/// pipeline bypassed (no Shape validation -- malformed frames are the
-/// point). Body: `seq(2 LE) bytes(1..)`. Answered by [`REC_WIRE_DONE`] at
-/// wire release, or REJECTED (busy while a SUBMIT command or another wire
-/// op is outstanding, and vice versa -- one wire owner at a time).
-pub const REC_WIRE_SEND: u8 = 0x61;
-/// Instrument burst: length-prefixed frames fired back-to-back, each
-/// break-framed, chained on TC (gap = one TC service, under a character
-/// time at every operational baud). Body: `seq(2 LE) [len(1) bytes]+`.
-pub const REC_WIRE_BURST: u8 = 0x62;
-/// Instrument dominant-low pulse of arbitrary width (the engine's rescue
-/// verb owns the protocol-shaped pulse; this is the sweepable one).
-/// Body: `seq(2 LE) us(2 LE)`.
-pub const REC_WIRE_PULSE: u8 = 0x63;
-/// Drain captured wire edges (both polarities, capture order). Body:
-/// `max(1)` = per-ring entry cap, clamped to [`DRAIN_MAX`]. Answered by
-/// [`REC_EDGES`]. Consumer-paced: drain at least every few ms of wire
-/// activity or the overflow flag goes up (and stays, sticky).
-pub const REC_EDGE_DRAIN: u8 = 0x64;
-/// Drop undrained captures + the overflow flag. Answered by
-/// [`REC_CAPTURE_ACK`].
-pub const REC_CAPTURE_RESET: u8 = 0x65;
-/// Instrument break train: announce frame + bare law breaks on the
-/// engine's deadline grid, the gap DECOUPLED from the announce payload (a
-/// lying announce is the trim suite's clock-offset injector; the engine's
-/// own CAL path always paces what it announces). Body:
-/// `seq(2 LE) gap_us(2 LE) breaks(1) announce(1..)`. Answered by
-/// [`REC_WIRE_DONE`] after the last break.
-pub const REC_WIRE_TRAIN: u8 = 0x66;
-/// Instrument host UART rate, raw bps: off-catalog divisors allowed (the
-/// trim suite's host-detune probe). Body:
-/// `seq(2 LE) bps(4 LE)`. Answered by [`REC_WIRE_DONE`] immediately.
-pub const REC_WIRE_BAUD: u8 = 0x67;
-pub const REC_INFO: u8 = 0x80;
-pub const REC_STATUS: u8 = 0x81;
-pub const REC_TERMINAL: u8 = 0x82;
-pub const REC_REJECTED: u8 = 0x83;
-/// Adapter's answer to a record type it does not serve.
-pub const REC_UNKNOWN: u8 = 0x84;
-pub const REC_BOOTLOADER_ACK: u8 = 0x48;
-pub const REC_RAILS_ACK: u8 = 0x68;
-/// A wire op (send/burst/pulse) finished. Body: `seq(2 LE) tick(4 LE)` --
-/// the wire-release engine tick.
-pub const REC_WIRE_DONE: u8 = 0x69;
-/// Edge drain reply. Body: `flags(1: bit0 overflow) now(4 LE)
-/// fall_n(1) rise_n(1) falls(fall_n x u16 LE) rises(rise_n x u16 LE)`.
-/// Edge ticks are the engine tick domain's low 16 bits, ring-ordered
-/// (chronological); `now` is the 32-bit drain moment. The client merges
-/// the rings by alternation and chains every tick off one monotone
-/// anchor, using `now` only as the anchor floor on empty drains -- so a
-/// drain serviced late never aliases its batch.
-pub const REC_EDGES: u8 = 0x6C;
-pub const REC_CAPTURE_ACK: u8 = 0x6D;
+// Request kinds (link sec 4 to 9).
+pub const GET_INFO: u8 = 0x00;
+pub const RAILS: u8 = 0x01;
+pub const ADAPTER_IAP: u8 = 0x02;
+pub const SET_BUS: u8 = 0x10;
+pub const OSC_EXCHANGE: u8 = 0x20;
+pub const OSC_RESCUE: u8 = 0x21;
+pub const OSC_DEADLINE: u8 = 0x22;
+pub const TB_EXCHANGE: u8 = 0x30;
+pub const WIRE_SEND: u8 = 0x60;
+pub const WIRE_BURST: u8 = 0x61;
+pub const WIRE_PULSE: u8 = 0x62;
+pub const WIRE_TRAIN: u8 = 0x63;
+pub const WIRE_BAUD: u8 = 0x64;
+pub const EDGE_DRAIN: u8 = 0x65;
+pub const CAPTURE_RESET: u8 = 0x66;
 
-/// Largest record the adapter accepts, `type(1) + body` after the length
-/// prefix: comfortably past an EXCHANGE with a 252 B payload. A longer one
-/// drops the half-parsed buffer and answers REC_UNKNOWN 0xFF; its tail then
-/// parses as fresh records, so the pipe stays desynced until a new session.
-pub const RECORD_MAX: usize = 510;
-/// Largest [`REC_WIRE_BURST`] frame train: [`RECORD_MAX`] less the type and
-/// seq bytes.
-pub const WIRE_BURST_STREAM_MAX: usize = RECORD_MAX - 3;
+// Response kinds (link sec 3.2).
+pub const FRAME: u8 = 0x80;
+pub const DONE: u8 = 0x81;
+pub const ERROR: u8 = 0x82;
 
-/// Per-ring entry cap on one edge drain (keeps the reply inside the
-/// outbound scratch; the BBATCH-style polled-drain precedent).
+// ERROR codes (link sec 3.2).
+pub const ERR_MALFORMED: u8 = 0x00;
+pub const ERR_UNKNOWN_KIND: u8 = 0x01;
+pub const ERR_UNSUPPORTED: u8 = 0x02;
+pub const ERR_WRONG_MODE: u8 = 0x03;
+pub const ERR_BUSY: u8 = 0x04;
+pub const ERR_BAD_RATE: u8 = 0x05;
+pub const ERR_BAD_ID: u8 = 0x06;
+pub const ERR_BAD_INST: u8 = 0x07;
+pub const ERR_BAD_PAYLOAD: u8 = 0x08;
+pub const ERR_TOO_LONG: u8 = 0x09;
+pub const ERR_FRAMING: u8 = 0x0A;
+
+/// The `seq` of a response no request owns (link sec 3.3).
+pub const SEQ_NONE: u16 = 0xFFFF;
+/// The echoed kind of a response no request owns.
+pub const KIND_NONE: u8 = 0xFF;
+
+// INFO `features` bits (link sec 4.1).
+pub const FEATURE_INSTRUMENT: u16 = 1 << 0;
+pub const FEATURE_RAILS: u16 = 1 << 1;
+pub const FEATURE_ADAPTER_IAP: u16 = 1 << 2;
+pub const FEATURE_TINYBOOT: u16 = 1 << 3;
+
+// Bus modes (link sec 5).
+pub const MODE_OSC: u8 = 0;
+pub const MODE_TINYBOOT: u8 = 1;
+
+/// OSC_EXCHANGE `flags` bit 0: collect a servo telemetry burst.
+pub const EXCHANGE_STREAM: u8 = 1 << 0;
+
+// TB_EXCHANGE `expect` (link sec 7).
+pub const EXPECT_NONE: u8 = 0;
+pub const EXPECT_ONE: u8 = 1;
+pub const EXPECT_COLLECT: u8 = 2;
+
+/// Largest request the adapter accepts, `len` included: comfortably past
+/// an OSC_EXCHANGE with a 252-byte payload.
+pub const MAX_REQUEST: usize = 512;
+/// Largest response the adapter sends, `len` included: a FRAME carrying a
+/// full osc status, an edge drain at its cap.
+pub const MAX_RESPONSE: usize = 300;
+/// `len(2) kind(1) seq(2)`.
+pub const HEADER: usize = 5;
+/// Largest WIRE_BURST frame train: a whole request less its header.
+pub const WIRE_BURST_STREAM_MAX: usize = MAX_REQUEST - HEADER;
+/// Per-polarity entry cap on one edge drain (keeps the result inside the
+/// largest response).
 pub const DRAIN_MAX: usize = 64;
 
-/// SUBMIT verb byte (body: `seq(2 LE) verb(1) args`).
-pub const VERB_EXCHANGE: u8 = 0x00; // args: id(1) inst(1) payload(rest)
-pub const VERB_RESCUE: u8 = 0x01; // no args
-pub const VERB_HOST_BAUD: u8 = 0x02; // args: rate idx(1)
-pub const VERB_SET_RESPONSE_DEADLINE: u8 = 0x03; // args: us(2 LE)
-/// Stream-tagged Exchange (TEL burst carrier): after the arm's own ack the
-/// engine keeps collecting status frames until the LAST-flagged one, inside
-/// one `window_us`-wide await window.
-pub const VERB_EXCHANGE_STREAM: u8 = 0x04; // args: id(1) inst(1) window_us(4 LE) payload(rest)
-
-/// REJECTED reason byte.
-pub const REASON_BAD_ID: u8 = 0x00;
-pub const REASON_BAD_INST: u8 = 0x01;
-pub const REASON_BAD_PAYLOAD: u8 = 0x02;
-pub const REASON_TOO_LONG: u8 = 0x03;
-pub const REASON_BUSY: u8 = 0x04;
-/// SUBMIT body itself did not parse (short, bad verb, bad args).
-pub const REASON_MALFORMED: u8 = 0x05;
-
-/// TERMINAL outcome byte.
+// Exchange result outcomes (link sec 6.2).
 pub const OUTCOME_SENT: u8 = 0x00;
 pub const OUTCOME_COMPLETE: u8 = 0x01;
 pub const OUTCOME_TIMEOUT: u8 = 0x02;
 
-/// TERMINAL flags byte.
+/// Exchange result `flags` bit 0: garble after the last clean frame.
 pub const FLAG_GARBLE_AFTER_LAST_FRAME: u8 = 1 << 0;
 
-/// v2: INFO carries the adapter diagnostics tail ([`Diag`]). v3: the tail
-/// grows `resets` and `uptime_ms`. v4: TERMINAL grows `laps`.
-pub const LINK_VERSION: u8 = 4;
+/// Rails state out of adapter boot: both ON (the pins provider asserts
+/// them before anything else), so a bare adapter powers its bus.
+pub const RAILS_BOOT_STATE: u8 = 0b11;
 
 /// INFO `reset` byte: the chip's reset-cause flags, read and cleared at
 /// adapter boot (so each boot reports only the resets since the last).
@@ -167,11 +121,11 @@ pub const PHASE_PUMP: u8 = 5;
 pub const PHASE_USB_TX: u8 = 6;
 pub const PHASE_HSE_FAIL: u8 = 7;
 
-/// Adapter diagnostics, the INFO tail: `reset(1) phase(1) crash_seq(4 LE)
-/// mcause(4 LE) mepc(4 LE) mtval(4 LE) hse_fail(4 LE) resets(4 LE)
-/// uptime_ms(4 LE)`. The crash fields describe the last synchronous
-/// exception the adapter trapped (persist across resets until the next
-/// exception overwrites them; `crash_seq` counts them, 0 = none on record);
+/// Adapter diagnostics, the INFO tail: `reset(1) phase(1) crash_seq(4)
+/// mcause(4) mepc(4) mtval(4) hse_fail(4) resets(4) uptime_ms(4)`. The
+/// crash fields describe the last synchronous exception the adapter
+/// trapped (they persist across resets until the next exception
+/// overwrites them; `crash_seq` counts them, 0 = none on record);
 /// `hse_fail` counts crystal-start failures; `resets` counts resets since
 /// the last power-on. `uptime_ms` is live, stamped per INFO (wraps at ~49
 /// days): shorter than the time since a USB drop means the adapter
@@ -192,103 +146,190 @@ pub struct Diag {
 /// Byte length of the INFO tail.
 pub const DIAG_LEN: usize = 30;
 
-/// The `seq` a record carries when no command owns it (a status or
-/// terminal surfacing outside any active seq -- a server invariant breach
-/// made visible rather than silent).
-pub const SEQ_NONE: u16 = 0xFFFF;
+/// GET_INFO's result (link sec 4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Info {
+    pub features: u16,
+    pub ticks_per_us: u32,
+    pub max_request: u16,
+    pub max_response: u16,
+    pub max_tb_payload: u16,
+    pub mode: u8,
+    pub bps: u32,
+    pub deadline_us: u16,
+    pub diag: Diag,
+}
 
-pub fn reason_code(r: InvalidReason) -> u8 {
-    match r {
-        InvalidReason::BadId => REASON_BAD_ID,
-        InvalidReason::BadInst => REASON_BAD_INST,
-        InvalidReason::BadPayload => REASON_BAD_PAYLOAD,
-        InvalidReason::TooLong => REASON_TOO_LONG,
+/// Byte length of the INFO result.
+pub const INFO_LEN: usize = 19 + DIAG_LEN;
+
+impl Info {
+    pub fn write(&self, dst: &mut [u8]) -> usize {
+        let mut w = Writer(dst, 0);
+        w.u16(self.features);
+        w.u32(self.ticks_per_us);
+        w.u16(self.max_request);
+        w.u16(self.max_response);
+        w.u16(self.max_tb_payload);
+        w.u8(self.mode);
+        w.u32(self.bps);
+        w.u16(self.deadline_us);
+        let d = &self.diag;
+        w.u8(d.reset);
+        w.u8(d.phase);
+        for v in [
+            d.crash_seq,
+            d.mcause,
+            d.mepc,
+            d.mtval,
+            d.hse_fail,
+            d.resets,
+            d.uptime_ms,
+        ] {
+            w.u32(v);
+        }
+        w.1
+    }
+
+    /// `None` unless `src` is exactly one INFO result.
+    pub fn parse(src: &[u8]) -> Option<Self> {
+        if src.len() != INFO_LEN {
+            return None;
+        }
+        let mut r = Reader(src, 0);
+        Some(Self {
+            features: r.u16(),
+            ticks_per_us: r.u32(),
+            max_request: r.u16(),
+            max_response: r.u16(),
+            max_tb_payload: r.u16(),
+            mode: r.u8(),
+            bps: r.u32(),
+            deadline_us: r.u16(),
+            diag: Diag {
+                reset: r.u8(),
+                phase: r.u8(),
+                crash_seq: r.u32(),
+                mcause: r.u32(),
+                mepc: r.u32(),
+                mtval: r.u32(),
+                hse_fail: r.u32(),
+                resets: r.u32(),
+                uptime_ms: r.u32(),
+            },
+        })
     }
 }
 
-/// Prefix `dst` with the record length and return the full record span:
-/// `body_len` counts type + body bytes already written at `dst[2..]`.
-fn sealed(dst: &mut [u8], body_len: usize) -> &[u8] {
-    dst[..2].copy_from_slice(&(body_len as u16).to_le_bytes());
-    &dst[..2 + body_len]
+/// An exchange's result (link sec 6.2): `outcome(1) slot(1) tick(4)
+/// frames(2) garble(2) flags(1) laps(2)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExchangeResult {
+    pub outcome: Outcome,
+    pub tick: u32,
+    pub frames: u16,
+    pub garble: u16,
+    /// Garble after the last clean frame.
+    pub trailing: bool,
+    pub laps: u16,
 }
 
-/// INFO: `version(1) ticks_per_us(4 LE)` + the [`Diag`] tail.
-pub fn info<'a>(dst: &'a mut [u8], ticks_per_us: u32, diag: &Diag) -> &'a [u8] {
-    dst[2] = REC_INFO;
-    dst[3] = LINK_VERSION;
-    dst[4..8].copy_from_slice(&ticks_per_us.to_le_bytes());
-    dst[8] = diag.reset;
-    dst[9] = diag.phase;
-    dst[10..14].copy_from_slice(&diag.crash_seq.to_le_bytes());
-    dst[14..18].copy_from_slice(&diag.mcause.to_le_bytes());
-    dst[18..22].copy_from_slice(&diag.mepc.to_le_bytes());
-    dst[22..26].copy_from_slice(&diag.mtval.to_le_bytes());
-    dst[26..30].copy_from_slice(&diag.hse_fail.to_le_bytes());
-    dst[30..34].copy_from_slice(&diag.resets.to_le_bytes());
-    dst[34..38].copy_from_slice(&diag.uptime_ms.to_le_bytes());
-    sealed(dst, 6 + DIAG_LEN)
-}
+pub const EXCHANGE_LEN: usize = 13;
 
-pub fn rejected(dst: &mut [u8], seq: u16, reason: u8) -> &[u8] {
-    dst[2] = REC_REJECTED;
-    dst[3..5].copy_from_slice(&seq.to_le_bytes());
-    dst[5] = reason;
-    sealed(dst, 4)
-}
-
-pub fn unknown(dst: &mut [u8], rtype: u8) -> &[u8] {
-    dst[2] = REC_UNKNOWN;
-    dst[3] = rtype;
-    sealed(dst, 2)
-}
-
-pub fn bootloader_ack(dst: &mut [u8]) -> &[u8] {
-    dst[2] = REC_BOOTLOADER_ACK;
-    sealed(dst, 1)
-}
-
-pub fn rails_ack(dst: &mut [u8], state: u8) -> &[u8] {
-    dst[2] = REC_RAILS_ACK;
-    dst[3] = state;
-    sealed(dst, 2)
-}
-
-pub fn wire_done(dst: &mut [u8], seq: u16, tick: u32) -> &[u8] {
-    dst[2] = REC_WIRE_DONE;
-    dst[3..5].copy_from_slice(&seq.to_le_bytes());
-    dst[5..9].copy_from_slice(&tick.to_le_bytes());
-    sealed(dst, 7)
-}
-
-pub fn edges<'a>(
-    dst: &'a mut [u8],
-    overflow: bool,
-    now: u32,
-    falls: &[u16],
-    rises: &[u16],
-) -> &'a [u8] {
-    dst[2] = REC_EDGES;
-    dst[3] = overflow as u8;
-    dst[4..8].copy_from_slice(&now.to_le_bytes());
-    dst[8] = falls.len() as u8;
-    dst[9] = rises.len() as u8;
-    let mut at = 10;
-    for &t in falls.iter().chain(rises) {
-        dst[at..at + 2].copy_from_slice(&t.to_le_bytes());
-        at += 2;
+impl ExchangeResult {
+    pub fn of(t: &Terminal) -> Self {
+        Self {
+            outcome: t.outcome,
+            tick: t.tick,
+            frames: t.evidence.statuses,
+            garble: t.evidence.garble,
+            trailing: t.evidence.garble_after_last_frame,
+            laps: t.evidence.laps,
+        }
     }
-    sealed(dst, at - 2)
+
+    pub fn write(&self, dst: &mut [u8]) -> usize {
+        let (outcome, slot) = match self.outcome {
+            Outcome::Sent => (OUTCOME_SENT, 0),
+            Outcome::Complete => (OUTCOME_COMPLETE, 0),
+            Outcome::Timeout { slot } => (OUTCOME_TIMEOUT, slot),
+        };
+        let mut w = Writer(dst, 0);
+        w.u8(outcome);
+        w.u8(slot);
+        w.u32(self.tick);
+        w.u16(self.frames);
+        w.u16(self.garble);
+        w.u8(if self.trailing {
+            FLAG_GARBLE_AFTER_LAST_FRAME
+        } else {
+            0
+        });
+        w.u16(self.laps);
+        w.1
+    }
+
+    /// `None` unless `src` is exactly one exchange result.
+    pub fn parse(src: &[u8]) -> Option<Self> {
+        if src.len() != EXCHANGE_LEN {
+            return None;
+        }
+        let mut r = Reader(src, 0);
+        let outcome = r.u8();
+        let slot = r.u8();
+        let outcome = match outcome {
+            OUTCOME_SENT => Outcome::Sent,
+            OUTCOME_COMPLETE => Outcome::Complete,
+            OUTCOME_TIMEOUT => Outcome::Timeout { slot },
+            _ => return None,
+        };
+        Some(Self {
+            outcome,
+            tick: r.u32(),
+            frames: r.u16(),
+            garble: r.u16(),
+            trailing: r.u8() & FLAG_GARBLE_AFTER_LAST_FRAME != 0,
+            laps: r.u16(),
+        })
+    }
 }
 
-pub fn capture_ack(dst: &mut [u8]) -> &[u8] {
-    dst[2] = REC_CAPTURE_ACK;
-    sealed(dst, 1)
+/// Seal a response whose body (after the header) is `body_len` bytes.
+fn sealed(dst: &mut [u8], kind: u8, seq: u16, body_len: usize) -> &[u8] {
+    let len = HEADER - 2 + body_len;
+    dst[..2].copy_from_slice(&(len as u16).to_le_bytes());
+    dst[2] = kind;
+    dst[3..5].copy_from_slice(&seq.to_le_bytes());
+    &dst[..2 + len]
 }
 
-/// STATUS: `seq(2) slot(1) id(1) inst(1) payload`. The payload arrives as
-/// the ring view's two segments.
-pub fn status<'a>(
+/// DONE echoing `req`, its result written by `result` into the slice it is
+/// handed (returning the length).
+pub fn done(dst: &mut [u8], seq: u16, req: u8, result: impl FnOnce(&mut [u8]) -> usize) -> &[u8] {
+    dst[HEADER] = req;
+    let n = result(&mut dst[HEADER + 1..]);
+    sealed(dst, DONE, seq, 1 + n)
+}
+
+pub fn error(dst: &mut [u8], seq: u16, req: u8, code: u8) -> &[u8] {
+    dst[HEADER] = req;
+    dst[HEADER + 1] = code;
+    sealed(dst, ERROR, seq, 2)
+}
+
+/// FRAME: `slot(1) frame`, the frame arriving as the ring view's two
+/// segments.
+pub fn frame<'a>(dst: &'a mut [u8], seq: u16, slot: u8, frame: (&[u8], &[u8])) -> &'a [u8] {
+    dst[HEADER] = slot;
+    let at = HEADER + 1;
+    let (a, b) = frame;
+    dst[at..at + a.len()].copy_from_slice(a);
+    dst[at + a.len()..at + a.len() + b.len()].copy_from_slice(b);
+    sealed(dst, FRAME, seq, 1 + a.len() + b.len())
+}
+
+/// An osc FRAME: `slot(1) id(1) inst(1) payload`.
+pub fn osc_frame<'a>(
     dst: &'a mut [u8],
     seq: u16,
     slot: u8,
@@ -296,37 +337,143 @@ pub fn status<'a>(
     inst: u8,
     payload: (&[u8], &[u8]),
 ) -> &'a [u8] {
-    dst[2] = REC_STATUS;
-    dst[3..5].copy_from_slice(&seq.to_le_bytes());
-    dst[5] = slot;
-    dst[6] = id;
-    dst[7] = inst;
-    let n = payload.0.len();
-    dst[8..8 + n].copy_from_slice(payload.0);
-    dst[8 + n..8 + n + payload.1.len()].copy_from_slice(payload.1);
-    sealed(dst, 6 + n + payload.1.len())
+    dst[HEADER] = slot;
+    dst[HEADER + 1] = id;
+    dst[HEADER + 2] = inst;
+    let at = HEADER + 3;
+    let (a, b) = payload;
+    dst[at..at + a.len()].copy_from_slice(a);
+    dst[at + a.len()..at + a.len() + b.len()].copy_from_slice(b);
+    sealed(dst, FRAME, seq, 3 + a.len() + b.len())
 }
 
-/// TERMINAL: `seq(2) outcome(1) slot(1) tick(4 LE) statuses(2 LE)
-/// garble(2 LE) flags(1) laps(2 LE)`.
-pub fn terminal<'a>(dst: &'a mut [u8], seq: u16, t: &Terminal) -> &'a [u8] {
-    let (outcome, slot) = match t.outcome {
-        Outcome::Sent => (OUTCOME_SENT, 0),
-        Outcome::Complete => (OUTCOME_COMPLETE, 0),
-        Outcome::Timeout { slot } => (OUTCOME_TIMEOUT, slot),
-    };
-    dst[2] = REC_TERMINAL;
-    dst[3..5].copy_from_slice(&seq.to_le_bytes());
-    dst[5] = outcome;
-    dst[6] = slot;
-    dst[7..11].copy_from_slice(&t.tick.to_le_bytes());
-    dst[11..13].copy_from_slice(&t.evidence.statuses.to_le_bytes());
-    dst[13..15].copy_from_slice(&t.evidence.garble.to_le_bytes());
-    dst[15] = if t.evidence.garble_after_last_frame {
-        FLAG_GARBLE_AFTER_LAST_FRAME
-    } else {
-        0
-    };
-    dst[16..18].copy_from_slice(&t.evidence.laps.to_le_bytes());
-    sealed(dst, 16)
+/// EDGE_DRAIN's result: `flags(1: bit0 overflow) now(4) fall_n(1)
+/// rise_n(1) falls(fall_n x 2) rises(rise_n x 2)`. Edge ticks are the
+/// adapter tick's low 16 bits, each ring chronological; `now` is the
+/// drain's 32-bit tick.
+pub fn write_edges(
+    dst: &mut [u8],
+    overflow: bool,
+    now: u32,
+    falls: &[u16],
+    rises: &[u16],
+) -> usize {
+    let mut w = Writer(dst, 0);
+    w.u8(overflow as u8);
+    w.u32(now);
+    w.u8(falls.len() as u8);
+    w.u8(rises.len() as u8);
+    for &t in falls.iter().chain(rises) {
+        w.u16(t);
+    }
+    w.1
+}
+
+struct Writer<'a>(&'a mut [u8], usize);
+
+impl Writer<'_> {
+    fn bytes(&mut self, b: &[u8]) {
+        self.0[self.1..self.1 + b.len()].copy_from_slice(b);
+        self.1 += b.len();
+    }
+    fn u8(&mut self, v: u8) {
+        self.bytes(&[v]);
+    }
+    fn u16(&mut self, v: u16) {
+        self.bytes(&v.to_le_bytes());
+    }
+    fn u32(&mut self, v: u32) {
+        self.bytes(&v.to_le_bytes());
+    }
+}
+
+/// Reads a span whose length the caller checked.
+struct Reader<'a>(&'a [u8], usize);
+
+impl Reader<'_> {
+    fn take<const N: usize>(&mut self) -> [u8; N] {
+        let mut b = [0; N];
+        b.copy_from_slice(&self.0[self.1..self.1 + N]);
+        self.1 += N;
+        b
+    }
+    fn u8(&mut self) -> u8 {
+        self.take::<1>()[0]
+    }
+    fn u16(&mut self) -> u16 {
+        u16::from_le_bytes(self.take())
+    }
+    fn u32(&mut self) -> u32 {
+        u32::from_le_bytes(self.take())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_round_trips() {
+        let info = Info {
+            features: FEATURE_RAILS | FEATURE_INSTRUMENT,
+            ticks_per_us: 18,
+            max_request: MAX_REQUEST as u16,
+            max_response: MAX_RESPONSE as u16,
+            max_tb_payload: 240,
+            mode: MODE_TINYBOOT,
+            bps: 500_000,
+            deadline_us: 1000,
+            diag: Diag {
+                reset: RESET_IWDG,
+                phase: PHASE_PUMP,
+                crash_seq: 3,
+                mcause: 5,
+                mepc: 0x2a1c,
+                mtval: 0x2000_4000,
+                hse_fail: 1,
+                resets: 4,
+                uptime_ms: 3_733_000,
+            },
+        };
+        let mut buf = [0u8; INFO_LEN];
+        assert_eq!(info.write(&mut buf), INFO_LEN);
+        assert_eq!(Info::parse(&buf), Some(info));
+        assert_eq!(Info::parse(&buf[1..]), None);
+    }
+
+    #[test]
+    fn exchange_result_round_trips() {
+        let r = ExchangeResult {
+            outcome: Outcome::Timeout { slot: 2 },
+            tick: 7,
+            frames: 12,
+            garble: 188,
+            trailing: true,
+            laps: 2,
+        };
+        let mut buf = [0u8; EXCHANGE_LEN];
+        assert_eq!(r.write(&mut buf), EXCHANGE_LEN);
+        assert_eq!(buf[..2], [OUTCOME_TIMEOUT, 2]);
+        assert_eq!(ExchangeResult::parse(&buf), Some(r));
+    }
+
+    #[test]
+    fn responses_carry_the_envelope() {
+        let mut buf = [0u8; 32];
+        assert_eq!(
+            error(&mut buf, 0x1234, OSC_EXCHANGE, ERR_BUSY),
+            [5, 0, ERROR, 0x34, 0x12, OSC_EXCHANGE, ERR_BUSY]
+        );
+        assert_eq!(
+            done(&mut buf, 7, RAILS, |r| {
+                r[0] = 0b01;
+                1
+            }),
+            [5, 0, DONE, 7, 0, RAILS, 0b01]
+        );
+        assert_eq!(
+            osc_frame(&mut buf, 7, 0, 5, 0x80, (&[1, 2], &[3])),
+            [9, 0, FRAME, 7, 0, 0, 5, 0x80, 1, 2, 3]
+        );
+    }
 }

@@ -1,9 +1,9 @@
-//! The wire instrument: raw TX verbs plus hardware-timestamped edge
-//! capture, the adapter's 0x6x record family. Deliberate protocol-breaking
-//! lives here and only here -- the SUBMIT surface stays valid-by-
-//! construction, these verbs bypass the engine's shape validation on
-//! purpose (malformed frames are the point of an instrument). One wire
-//! owner at a time: a wire op while a command is outstanding answers
+//! The wire instrument: raw TX ops plus hardware-timestamped edge capture,
+//! the adapter's instrument kinds (link sec 9). Deliberate protocol-
+//! breaking lives here and only here: OSC_EXCHANGE stays valid-by-
+//! construction, these ops bypass the adapter's shape validation on
+//! purpose (malformed frames are the point of an instrument). Wire ops are
+//! bus requests: one while an exchange is outstanding answers
 //! `Rejected(Busy)`, and vice versa.
 //!
 //! Capture is continuous from adapter boot, consumer-paced: drain at least
@@ -11,20 +11,20 @@
 //! Edge ticks arrive as the engine domain's low 16 bits, one chronological
 //! ring per polarity. The rings merge by alternation (wire edges strictly
 //! alternate) and compose onto ONE monotone anchor chain: each tick places
-//! at the first u32 at or after its predecessor -- exact for arbitrarily
+//! at the first u32 at or after its predecessor - exact for arbitrarily
 //! late drains. Unwrapping against the drain moment instead would alias
 //! any batch older than a u16 wrap (~3.6 ms at 18 MHz) by whole wraps;
 //! multi-ms host scheduling stalls hit that in long suite runs and
 //! scrambled ~0.2% of zero-gap burst decodes. Absolute placement across a
 //! quiet stretch stays exact as long as some EMPTY drain lands within a
-//! wrap of it -- empty drains lift the anchor along `now`.
+//! wrap of it - empty drains lift the anchor along `now`.
 
 use osc_host::link::record as rec;
 
-use crate::client::{Client, desync};
+use crate::client::Client;
 use crate::error::{Error, LinkError, RejectReason};
 use crate::pipe::Pipe;
-use crate::session::{Record, Session};
+use crate::session::Tag;
 
 /// Line level after a captured edge: `Low` is a falling edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub struct WireEdge {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeDrain {
     pub edges: Vec<WireEdge>,
-    /// A capture ring lapped undrained since the last reset -- ticks before
+    /// A capture ring lapped undrained since the last reset: ticks before
     /// this drain are untrustworthy. Sticky until [`Client::reset_capture`].
     pub overflow: bool,
     /// The 32-bit engine tick at the drain (the unwrap's anchor floor).
@@ -53,20 +53,19 @@ pub struct EdgeDrain {
 }
 
 impl<P: Pipe> Client<P> {
-    /// One law break plus `bytes` verbatim -- no validation, any shape.
+    /// One law break plus `bytes` verbatim: no validation, any shape.
     /// Returns the wire-release tick.
     pub async fn wire_send(&mut self, bytes: &[u8]) -> Result<u32, Error> {
         let mut out = Vec::new();
-        let seq = self.session.encode_wire_send(&mut out, bytes);
-        self.pipe.send(&out).await?;
-        self.await_wire_done(seq).await
+        let tag = self.session.encode_wire_send(&mut out, bytes);
+        self.await_release(&out, tag).await
     }
 
     /// Break-framed frames back-to-back at bus pace (inter-frame gap under
     /// a character time). Frames must each be 1..=255 bytes and the train
-    /// must fit [`rec::WIRE_BURST_STREAM_MAX`] -- the length-prefix format
-    /// cannot carry more and an over-long record desyncs the pipe, so that
-    /// much is checked here; everything else the adapter validates.
+    /// must fit [`rec::WIRE_BURST_STREAM_MAX`]: the length-prefix format
+    /// cannot carry more and an over-long request is a framing breach, so
+    /// that much is checked here; everything else the adapter validates.
     pub async fn wire_burst(&mut self, frames: &[&[u8]]) -> Result<u32, Error> {
         let mut stream = Vec::new();
         for f in frames {
@@ -80,24 +79,22 @@ impl<P: Pipe> Client<P> {
             return Err(Error::Link(LinkError::Rejected(RejectReason::Malformed)));
         }
         let mut out = Vec::new();
-        let seq = self.session.encode_wire_burst(&mut out, &stream);
-        self.pipe.send(&out).await?;
-        self.await_wire_done(seq).await
+        let tag = self.session.encode_wire_burst(&mut out, &stream);
+        self.await_release(&out, tag).await
     }
 
     /// Hold the wire dominant-low for `us`, any width. A pulse >= the
     /// rescue floor (protocol sec 9.1, 300 us) on a powered fleet IS a
-    /// rescue declaration -- every servo drops to the rescue baud.
+    /// rescue declaration: every servo drops to the rescue baud.
     pub async fn wire_pulse_low(&mut self, us: u16) -> Result<u32, Error> {
         let mut out = Vec::new();
-        let seq = self.session.encode_wire_pulse(&mut out, us);
-        self.pipe.send(&out).await?;
-        self.await_wire_done(seq).await
+        let tag = self.session.encode_wire_pulse(&mut out, us);
+        self.await_release(&out, tag).await
     }
 
     /// `announce` as a break-framed frame, then `breaks` bare law breaks
     /// spaced `gap_us` apart on the adapter's crystal grid. The gap is
-    /// deliberately decoupled from the announce payload -- a lying CAL
+    /// deliberately decoupled from the announce payload: a lying CAL
     /// announce injects a known clock-offset reading (protocol sec 9.3
     /// trains through the engine always pace what they announce).
     pub async fn wire_train(
@@ -107,67 +104,71 @@ impl<P: Pipe> Client<P> {
         breaks: u8,
     ) -> Result<u32, Error> {
         let mut out = Vec::new();
-        let seq = self
+        let tag = self
             .session
             .encode_wire_train(&mut out, announce, gap_us, breaks);
-        self.pipe.send(&out).await?;
-        self.await_wire_done(seq).await
+        self.await_release(&out, tag).await
     }
 
-    /// Arbitrary host UART rate, raw bps -- off-catalog divisors allowed
-    /// (the trim suite's host-detune probe). Catalog
-    /// rate changes belong to [`Client::host_baud`].
-    pub async fn wire_baud(&mut self, bps: u32) -> Result<u32, Error> {
+    /// Arbitrary host UART rate, raw bps: off-catalog divisors allowed
+    /// (the trim suite's host-detune probe). Catalog rate changes belong
+    /// to [`Client::host_baud`].
+    pub async fn wire_baud(&mut self, bps: u32) -> Result<(), Error> {
         let mut out = Vec::new();
-        let seq = self.session.encode_wire_baud(&mut out, bps);
-        self.pipe.send(&out).await?;
-        self.await_wire_done(seq).await
+        let tag = self.session.encode_wire_baud(&mut out, bps);
+        self.request_empty(&out, tag).await
     }
 
     /// One capture drain (up to the adapter's per-polarity cap; loop until
     /// empty to exhaust a backlog).
     pub async fn drain_edges(&mut self) -> Result<EdgeDrain, Error> {
         let mut out = Vec::new();
-        Session::encode_edge_drain(&mut out, u8::MAX);
-        self.pipe.send(&out).await?;
-        match self.next_record().await? {
-            Record::Edges {
-                overflow,
-                now,
-                falls,
-                rises,
-            } => Ok(EdgeDrain {
-                edges: unwrap_drain(&mut self.anchor, now, &falls, &rises),
-                overflow,
-                now,
-            }),
-            other => Err(desync("EDGES", &other)),
-        }
+        let tag = self.session.encode_edge_drain(&mut out, u8::MAX);
+        let result = self.request_done(&out, tag).await?;
+        let (overflow, now, falls, rises) =
+            parse_edges(&result).ok_or(Error::Link(LinkError::Malformed))?;
+        Ok(EdgeDrain {
+            edges: unwrap_drain(&mut self.anchor, now, &falls, &rises),
+            overflow,
+            now,
+        })
     }
 
     /// Drop undrained captures and the sticky overflow flag.
     pub async fn reset_capture(&mut self) -> Result<(), Error> {
         let mut out = Vec::new();
-        Session::encode_capture_reset(&mut out);
-        self.pipe.send(&out).await?;
-        match self.next_record().await? {
-            Record::CaptureAck => {
-                self.anchor = EdgeAnchor::default();
-                Ok(())
-            }
-            other => Err(desync("CAPTURE ack", &other)),
-        }
+        let tag = self.session.encode_capture_reset(&mut out);
+        self.request_empty(&out, tag).await?;
+        self.anchor = EdgeAnchor::default();
+        Ok(())
     }
 
-    async fn await_wire_done(&mut self, seq: u16) -> Result<u32, Error> {
-        match self.next_record().await? {
-            Record::WireDone { seq: s, tick } if s == seq => Ok(tick),
-            Record::Rejected { seq: s, reason } if s == seq => Err(Error::Link(
-                LinkError::Rejected(RejectReason::from_byte(reason)),
-            )),
-            other => Err(desync("WIRE_DONE", &other)),
+    /// A wire op's DONE: the tick the adapter released the wire.
+    async fn await_release(&mut self, out: &[u8], tag: Tag) -> Result<u32, Error> {
+        match self.request_done(out, tag).await?[..] {
+            [t0, t1, t2, t3] => Ok(u32::from_le_bytes([t0, t1, t2, t3])),
+            _ => Err(Error::Link(LinkError::Malformed)),
         }
     }
+}
+
+/// EDGE_DRAIN's result: `flags(1) now(4) fall_n(1) rise_n(1) falls rises`
+/// (link sec 9), exactly.
+fn parse_edges(r: &[u8]) -> Option<(bool, u32, Vec<u16>, Vec<u16>)> {
+    let [flags, n0, n1, n2, n3, fall_n, rise_n, ref ticks @ ..] = r[..] else {
+        return None;
+    };
+    let (fall_n, rise_n) = (fall_n as usize, rise_n as usize);
+    if ticks.len() != 2 * (fall_n + rise_n) {
+        return None;
+    }
+    let tick = |i: usize| u16::from_le_bytes([ticks[2 * i], ticks[2 * i + 1]]);
+    Some((
+        flags & 1 != 0,
+        u32::from_le_bytes([n0, n1, n2, n3]),
+        (0..fall_n).map(tick).collect(),
+        (fall_n..fall_n + rise_n).map(tick).collect(),
+    ))
 }
 
 /// The single unwrap chain over the merged edge stream, cleared by

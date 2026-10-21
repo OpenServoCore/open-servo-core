@@ -276,7 +276,10 @@ impl Sim {
         assert!(self.host.is_some(), "attach_link needs an attached host");
         assert!(self.link.is_none(), "link already attached");
         self.link = Some(LinkRig {
-            server: osc_host::link::LinkServer::new(),
+            // Stands in for a LinkE: queued adapter requests go unserved.
+            server: osc_host::link::LinkServer::new(
+                osc_host::link::record::FEATURE_RAILS | osc_host::link::record::FEATURE_ADAPTER_IAP,
+            ),
             out: RecordLog(Vec::new()),
         });
     }

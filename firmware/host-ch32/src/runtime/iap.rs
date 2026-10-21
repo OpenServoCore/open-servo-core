@@ -16,7 +16,7 @@ const SIG_PAGE: u32 = 0x0803_7F00;
 const SIG_OFFSET: usize = 0x08;
 const SIG_DISARMED: [u8; 6] = [b'@', b'W', b'C', b'H', 0xFF, 0xA5];
 
-/// Disarm and reset. The caller has already flushed the pipe -- the ack
+/// Disarm and reset. The caller has already flushed the pipe: the DONE
 /// record is the last thing the port delivered.
 pub fn enter_bootloader() -> ! {
     critical_section::with(|_| {

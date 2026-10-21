@@ -17,7 +17,7 @@ use futures_timer::Delay;
 use nusb::Interface;
 use nusb::transfer::{Control, ControlType, Recipient, RequestBuffer, TransferError};
 use osc_client::pipe::{PID, VID};
-use osc_client::record::{REC_SUBMIT, USB_REQ_OPEN_SESSION};
+use osc_client::record::{GET_INFO, OSC_EXCHANGE, USB_REQ_OPEN_SESSION};
 use osc_client::session::{Record, Session};
 use osc_client::{Id, Inst, Opcode};
 use osc_host::engine::Command;
@@ -66,9 +66,9 @@ fn send(i: &Interface, bytes: Vec<u8>) {
         .expect("bulk OUT");
 }
 
-fn hello(i: &Interface) {
+fn get_info(i: &Interface) {
     let mut out = Vec::new();
-    Session::encode_hello(&mut out);
+    Session::new().encode_get_info(&mut out);
     send(i, out);
 }
 
@@ -96,7 +96,7 @@ fn records(i: &Interface) -> Vec<Record> {
     out
 }
 
-/// A session that queues a PING's replies and an INFO, then closes
+/// A session that queues a PING's responses and an INFO, then closes
 /// without reading them.
 fn abandon_with_replies_queued() {
     let i = claim();
@@ -111,13 +111,13 @@ fn abandon_with_replies_queued() {
             payload: &[],
         },
     );
-    Session::encode_hello(&mut out);
+    session.encode_get_info(&mut out);
     send(&i, out);
     sleep(Duration::from_millis(50));
 }
 
 fn only_info(records: &[Record]) -> bool {
-    matches!(records, [Record::Info(_)])
+    matches!(records, [Record::Done { kind: GET_INFO, .. }])
 }
 
 /// The control for the tests below: without OPEN_SESSION the old records
@@ -127,7 +127,7 @@ fn only_info(records: &[Record]) -> bool {
 fn a_reopen_without_open_session_inherits_the_old_records() {
     abandon_with_replies_queued();
     let i = claim();
-    hello(&i);
+    get_info(&i);
     let got = records(&i);
     assert!(
         got.len() > 1,
@@ -141,7 +141,7 @@ fn open_session_drops_the_old_sessions_records() {
     abandon_with_replies_queued();
     let i = claim();
     open_session(&i).expect("OPEN_SESSION");
-    hello(&i);
+    get_info(&i);
     let got = records(&i);
     assert!(only_info(&got), "expected INFO alone, got {got:?}");
 }
@@ -152,25 +152,25 @@ fn open_session_drops_a_half_received_record() {
     {
         let i = claim();
         open_session(&i).expect("OPEN_SESSION");
-        // A SUBMIT whose length promises 10 bytes, cut after 3.
-        send(&i, vec![10, 0, REC_SUBMIT, 0, 0]);
+        // An OSC_EXCHANGE whose length promises 10 bytes, cut after 3.
+        send(&i, vec![10, 0, OSC_EXCHANGE, 0, 0]);
     }
     let i = claim();
     open_session(&i).expect("OPEN_SESSION");
-    hello(&i);
+    get_info(&i);
     let got = records(&i);
     assert!(only_info(&got), "expected INFO alone, got {got:?}");
 }
 
 /// The client's own open path sends the request and the adapter accepts
 /// it. A rails readback, not a PING: its reply needs no servo at the
-/// adapter's current baud, and a stale TERMINAL ahead of it is a desync.
+/// adapter's current baud, and a stale DONE ahead of it is a desync.
 #[serial]
 #[test]
 fn client_open_sends_open_session() {
     abandon_with_replies_queued();
     let pipe = osc_client::nusb::NusbPipe::open().expect("open with OPEN_SESSION");
-    let mut c = osc_client::blocking::Client::connect(pipe).expect("HELLO answered by INFO");
+    let mut c = osc_client::blocking::Client::connect(pipe).expect("GET_INFO answered");
     c.rails()
         .expect("rails readback after an abandoned session");
 }

@@ -21,6 +21,7 @@ use osc_client::calib::GearClass;
 use osc_client::mgmt::Uid;
 use osc_client::nusb::NusbPipe;
 use osc_client::record::{self, Diag};
+use osc_client::session::LinkInfo;
 use osc_client::{BaudRate, Id, Inst, Opcode, ResultCode};
 use osc_protocol::build;
 use osc_protocol::table::{
@@ -295,6 +296,43 @@ fn print_rails((v3v3, v5): (bool, bool)) -> Result<()> {
         if v5 { "on" } else { "off" },
     );
     Ok(())
+}
+
+fn print_info(info: &LinkInfo) {
+    const FEATURES: [(u16, &str); 4] = [
+        (record::FEATURE_INSTRUMENT, "instrument"),
+        (record::FEATURE_RAILS, "rails"),
+        (record::FEATURE_ADAPTER_IAP, "adapter-iap"),
+        (record::FEATURE_TINYBOOT, "tinyboot"),
+    ];
+    let mut names: Vec<String> = FEATURES
+        .iter()
+        .filter(|(bit, _)| info.features & bit != 0)
+        .map(|(_, name)| name.to_string())
+        .collect();
+    let known = FEATURES.iter().fold(0, |m, (bit, _)| m | bit);
+    if info.features & !known != 0 {
+        names.push(format!("{:#06x}", info.features & !known));
+    }
+    if names.is_empty() {
+        names.push("none".into());
+    }
+    let mode = match info.mode {
+        record::MODE_OSC => "osc".to_string(),
+        record::MODE_TINYBOOT => "tinyboot".to_string(),
+        other => format!("{other:#04x}"),
+    };
+    println!("osc-adapter: {} ticks/us", info.ticks_per_us);
+    println!("features: {}", names.join(" "));
+    println!(
+        "limits: request {} B, response {} B, tinyboot payload {} B",
+        info.max_request, info.max_response, info.max_tb_payload
+    );
+    println!(
+        "bus: {mode} at {} bps, response deadline {} us",
+        info.bps, info.deadline_us
+    );
+    print_diag(&info.diag);
 }
 
 fn print_diag(d: &Diag) {
@@ -765,14 +803,7 @@ fn main() -> Result<()> {
     match &cli.cmd {
         Cmd::Info => {
             let c = connect()?;
-            let info = c.info();
-            println!(
-                "osc-adapter: link v{}, {} ticks/us",
-                info.version, info.ticks_per_us
-            );
-            if let Some(d) = info.diag {
-                print_diag(&d);
-            }
+            print_info(&c.info());
             Ok(())
         }
         Cmd::Rails => print_rails(connect()?.rails()?),

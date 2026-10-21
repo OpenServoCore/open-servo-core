@@ -3,7 +3,8 @@
 //! every main-loop touch of the bus sits inside `Drivers::with_bus`.
 
 use osc_host::link::record::{
-    PHASE_ADAPTER_REQ, PHASE_PIPE, PHASE_PUMP, PHASE_USB_POLL, PHASE_USB_TX,
+    FEATURE_ADAPTER_IAP, FEATURE_RAILS, PHASE_ADAPTER_REQ, PHASE_PIPE, PHASE_PUMP, PHASE_USB_POLL,
+    PHASE_USB_TX,
 };
 use osc_host::link::{AdapterRequest, LinkServer, RecordSink};
 use osc_host::traits::tick_reached;
@@ -24,7 +25,7 @@ const TXQ_CAP: usize = 4096;
 const PUMP_HEADROOM: usize = 2048;
 
 /// Pipe flush bound before the bootloader reset: a host that stops reading
-/// after requesting the bootloader forfeits its ack. The longest bounded
+/// after requesting the bootloader forfeits its DONE. The longest bounded
 /// stall on the main loop; the watchdog period derives from it.
 pub(crate) const FLUSH_BOUND_US: u32 = 100_000;
 
@@ -99,7 +100,7 @@ pub fn run() -> ! {
     }
 
     let mut usb = UsbDevice::new();
-    let mut server = LinkServer::new();
+    let mut server = LinkServer::new(FEATURE_RAILS | FEATURE_ADAPTER_IAP);
     server.set_diag(crash::diag());
     let mut txq = TxQueue::new();
     let mut zlp_owed = false;
@@ -187,7 +188,7 @@ fn owes_zlp(sent: usize, mps: usize, drained: bool) -> bool {
     sent == mps && drained
 }
 
-/// Drain the queued records (the bootloader ack among them) out the IN
+/// Drain the queued records (the ADAPTER_IAP DONE among them) out the IN
 /// endpoint, bounded -- then the port is allowed to die.
 fn flush_pipe(usb: &mut UsbDevice, txq: &mut TxQueue, mut zlp_owed: bool) {
     let start = systick::ticks();

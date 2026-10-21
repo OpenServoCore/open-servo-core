@@ -7,12 +7,13 @@ use std::time::Duration;
 
 use futures_lite::future;
 use osc_host::engine::{Command, Outcome};
+use osc_host::link::record::{self as rec, ExchangeResult};
 use osc_protocol::build;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode};
 
 use crate::error::{Error, LinkError, RejectReason};
 use crate::pipe::{Pipe, PipeError};
-use crate::session::{LinkInfo, Record, Session};
+use crate::session::{LinkInfo, Record, Session, Tag};
 
 /// One decoded status frame: the responder's verdict plus payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub struct Status {
 pub struct Reply {
     pub statuses: Vec<Status>,
     pub outcome: Outcome,
-    /// Engine tick at the terminal; [`Client::ticks`] converts.
+    /// Adapter tick at the DONE; [`Client::ticks`] converts.
     pub tick: u32,
     /// Ring bytes that anchored no clean status during the await.
     pub garble: u16,
@@ -99,7 +100,8 @@ pub struct Client<P: Pipe> {
 }
 
 impl<P: Pipe> Client<P> {
-    /// HELLO -> INFO handshake; the INFO advertises the terminal tick rate.
+    /// The session's first request is GET_INFO (link sec 2); its INFO
+    /// carries the tick rate results are counted in.
     pub async fn connect(pipe: P) -> Result<Self, Error> {
         let mut c = Self {
             pipe,
@@ -107,22 +109,16 @@ impl<P: Pipe> Client<P> {
             #[cfg(feature = "bench")]
             anchor: Default::default(),
             info: LinkInfo {
-                version: 0,
                 ticks_per_us: 1,
-                diag: None,
+                ..Default::default()
             },
             guard: DEFAULT_GUARD,
         };
         let mut out = Vec::new();
-        Session::encode_hello(&mut out);
-        c.pipe.send(&out).await?;
-        match c.next_record().await? {
-            Record::Info(info) => {
-                c.info = info;
-                Ok(c)
-            }
-            other => Err(desync("INFO", &other)),
-        }
+        let tag = c.session.encode_get_info(&mut out);
+        let result = c.request_done(&out, tag).await?;
+        c.info = LinkInfo::parse(&result).ok_or(LinkError::Malformed)?;
+        Ok(c)
     }
 
     pub fn info(&self) -> LinkInfo {
@@ -174,73 +170,87 @@ impl<P: Pipe> Client<P> {
         }
     }
 
-    /// Send one encoded SUBMIT and gather its statuses up to the terminal.
-    async fn collect(&mut self, out: &[u8], seq: u16) -> Result<(Vec<Status>, Closed), Error> {
+    /// Send one encoded request and gather it to its DONE: the FRAMEs on
+    /// its seq (as `slot, frame`), then the DONE's result. An ERROR on the
+    /// seq, or the framing ERROR no seq owns, is the adapter refusing it.
+    pub(crate) async fn request(
+        &mut self,
+        out: &[u8],
+        tag: Tag,
+    ) -> Result<(Vec<(u8, Vec<u8>)>, Vec<u8>), Error> {
         self.pipe.send(out).await?;
-        let mut statuses = Vec::new();
+        let mut frames = Vec::new();
         loop {
             match self.next_record().await? {
-                Record::Status {
-                    seq: s,
-                    slot,
-                    id,
-                    inst,
-                    payload,
-                } if s == seq => statuses.push(Status {
-                    slot,
-                    id,
-                    result: inst.result(),
-                    alert: inst.alert(),
-                    payload,
-                }),
-                Record::Terminal {
-                    seq: s,
-                    outcome,
-                    tick,
-                    statuses: counted,
-                    garble,
-                    trailing,
-                    laps,
-                } if s == seq => {
-                    return Ok((
-                        statuses,
-                        Closed {
-                            outcome,
-                            tick,
-                            statuses: counted,
-                            garble,
-                            trailing,
-                            laps,
-                        },
-                    ));
+                Record::Frame { seq, slot, bytes } if seq == tag.seq => frames.push((slot, bytes)),
+                Record::Done { seq, kind, result } if seq == tag.seq && kind == tag.kind => {
+                    return Ok((frames, result));
                 }
-                Record::Rejected { seq: s, reason } if s == seq => {
+                Record::Error { seq, kind, code }
+                    if (seq, kind) == (tag.seq, tag.kind)
+                        || (seq, kind) == (rec::SEQ_NONE, rec::KIND_NONE) =>
+                {
                     return Err(Error::Link(LinkError::Rejected(RejectReason::from_byte(
-                        reason,
+                        code,
                     ))));
                 }
-                other => return Err(desync("a record on the active seq", &other)),
+                other => return Err(desync(&format!("a response to {tag:?}"), &other)),
             }
         }
     }
 
-    /// Submit one engine command and collect its full answer.
-    pub async fn submit(&mut self, cmd: Command<'_>) -> Result<Reply, Error> {
+    /// [`Self::request`] for a kind that streams no FRAMEs.
+    pub(crate) async fn request_done(&mut self, out: &[u8], tag: Tag) -> Result<Vec<u8>, Error> {
+        match self.request(out, tag).await? {
+            (frames, result) if frames.is_empty() => Ok(result),
+            (frames, _) => Err(desync_msg(format!(
+                "{} FRAMEs ahead of a DONE that owes none",
+                frames.len()
+            ))),
+        }
+    }
+
+    /// Run one exchange-shaped command (OSC_EXCHANGE, OSC_RESCUE) to its
+    /// DONE.
+    async fn run_exchange(
+        &mut self,
+        cmd: Command<'_>,
+    ) -> Result<(Vec<Status>, ExchangeResult), Error> {
         let mut out = Vec::new();
-        let seq = self.session.encode_submit(&mut out, &cmd);
-        let (statuses, t) = self.collect(&out, seq).await?;
-        Ok(Reply {
-            statuses,
-            outcome: t.outcome,
-            tick: t.tick,
-            garble: t.garble,
-            trailing: t.trailing,
-            laps: t.laps,
-        })
+        let tag = self.session.encode_submit(&mut out, &cmd);
+        let (frames, result) = self.request(&out, tag).await?;
+        let statuses = frames
+            .into_iter()
+            .map(|(slot, frame)| match frame[..] {
+                [id, inst, ..] => {
+                    let inst = Inst(inst);
+                    Ok(Status {
+                        slot,
+                        id,
+                        result: inst.result(),
+                        alert: inst.alert(),
+                        payload: frame[2..].to_vec(),
+                    })
+                }
+                _ => Err(Error::Link(LinkError::Malformed)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let x = ExchangeResult::parse(&result).ok_or(LinkError::Malformed)?;
+        Ok((statuses, x))
     }
 
     pub async fn exchange(&mut self, id: Id, inst: Inst, payload: &[u8]) -> Result<Reply, Error> {
-        self.submit(Command::Exchange { id, inst, payload }).await
+        let (statuses, x) = self
+            .run_exchange(Command::Exchange { id, inst, payload })
+            .await?;
+        Ok(Reply {
+            statuses,
+            outcome: x.outcome,
+            tick: x.tick,
+            garble: x.garble,
+            trailing: x.trailing,
+            laps: x.laps,
+        })
     }
 
     /// Stream-tagged exchange (TEL burst carrier): submit `inst`, then keep
@@ -256,27 +266,24 @@ impl<P: Pipe> Client<P> {
         window: Duration,
     ) -> Result<StreamReply, Error> {
         let window_us = u32::try_from(window.as_micros()).unwrap_or(u32::MAX);
-        let mut out = Vec::new();
-        let seq = self.session.encode_submit(
-            &mut out,
-            &Command::ExchangeStream {
+        let (mut statuses, t) = self
+            .run_exchange(Command::ExchangeStream {
                 id,
                 inst,
                 payload,
                 window_us,
-            },
-        );
-        let (mut collected, t) = self.collect(&out, seq).await?;
-        let ack = match collected.first() {
-            Some(s) if s.result != Some(ResultCode::Stream) => Some(collected.remove(0)),
+            })
+            .await?;
+        let ack = match statuses.first() {
+            Some(s) if s.result != Some(ResultCode::Stream) => Some(statuses.remove(0)),
             _ => None,
         };
         Ok(StreamReply {
             ack,
-            frames: collected,
+            frames: statuses,
             outcome: t.outcome,
             tick: t.tick,
-            statuses: t.statuses,
+            statuses: t.frames,
             garble: t.garble,
             trailing: t.trailing,
             laps: t.laps,
@@ -452,25 +459,41 @@ impl<P: Pipe> Client<P> {
 
     /// Rescue pulse; the host UART lands at 0.5M with the rescued fleet.
     pub async fn rescue(&mut self) -> Result<(), Error> {
-        self.submit(Command::Rescue).await?;
+        self.run_exchange(Command::Rescue).await?;
         Ok(())
     }
 
-    /// Host-side UART rate only -- servo-first ordering is
-    /// [`crate::mgmt::set_baud`]'s job.
+    /// Host-side UART rate only (SET_BUS in osc mode); servo-first
+    /// ordering is [`crate::mgmt::set_baud`]'s job.
     pub async fn host_baud(&mut self, rate: BaudRate) -> Result<(), Error> {
-        self.submit(Command::HostBaud(rate)).await?;
-        Ok(())
+        let mut out = Vec::new();
+        let tag = self
+            .session
+            .encode_submit(&mut out, &Command::HostBaud(rate));
+        match self.request_done(&out, tag).await?[..] {
+            [rec::MODE_OSC, b0, b1, b2, b3]
+                if u32::from_le_bytes([b0, b1, b2, b3]) == rate.as_hz() =>
+            {
+                Ok(())
+            }
+            ref other => Err(desync_msg(format!(
+                "SET_BUS to {} bps answered {other:?}",
+                rate.as_hz()
+            ))),
+        }
     }
 
-    /// The engine's mirrored copy of the fleet's RESPONSE_DEADLINE register.
+    /// The adapter's copy of the fleet's RESPONSE_DEADLINE register.
     pub async fn set_response_deadline(&mut self, us: u16) -> Result<(), Error> {
-        self.submit(Command::SetResponseDeadline { us }).await?;
-        Ok(())
+        let mut out = Vec::new();
+        let tag = self
+            .session
+            .encode_submit(&mut out, &Command::SetResponseDeadline { us });
+        self.request_empty(&out, tag).await
     }
 
-    /// Drive both DUT power rails (absolute state); returns the acked
-    /// `(3V3, 5V)` state.
+    /// Drive both DUT power rails (absolute state); returns the rails'
+    /// `(3V3, 5V)` state after the change.
     pub async fn set_rails(&mut self, v3v3: bool, v5: bool) -> Result<(bool, bool), Error> {
         self.rails_op(v3v3 as u8 | (v5 as u8) << 1, 0b11).await
     }
@@ -492,35 +515,29 @@ impl<P: Pipe> Client<P> {
 
     async fn rails_op(&mut self, state: u8, mask: u8) -> Result<(bool, bool), Error> {
         let mut out = Vec::new();
-        Session::encode_set_rails(&mut out, state, mask);
-        self.pipe.send(&out).await?;
-        match self.next_record().await? {
-            Record::RailsAck { state } => Ok((state & 1 != 0, state & 2 != 0)),
-            other => Err(desync("RAILS ack", &other)),
+        let tag = self.session.encode_rails(&mut out, state, mask);
+        match self.request_done(&out, tag).await?[..] {
+            [state] => Ok((state & 1 != 0, state & 2 != 0)),
+            _ => Err(Error::Link(LinkError::Malformed)),
         }
     }
 
-    /// Hand the adapter to its resident bootloader; the ack is the last
-    /// record this pipe delivers.
+    /// Hand the adapter to its resident bootloader; the DONE is the last
+    /// record this session delivers.
     pub async fn enter_bootloader(&mut self) -> Result<(), Error> {
         let mut out = Vec::new();
-        Session::encode_enter_bootloader(&mut out);
-        self.pipe.send(&out).await?;
-        match self.next_record().await? {
-            Record::BootloaderAck => Ok(()),
-            other => Err(desync("BOOTLOADER ack", &other)),
+        let tag = self.session.encode_adapter_iap(&mut out);
+        self.request_empty(&out, tag).await
+    }
+
+    /// [`Self::request_done`] for a kind whose DONE carries no result.
+    pub(crate) async fn request_empty(&mut self, out: &[u8], tag: Tag) -> Result<(), Error> {
+        if self.request_done(out, tag).await?.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Link(LinkError::Malformed))
         }
     }
-}
-
-/// A command's terminal, digested off the record.
-struct Closed {
-    outcome: Outcome,
-    tick: u32,
-    statuses: u16,
-    garble: u16,
-    trailing: bool,
-    laps: u16,
 }
 
 fn chain_digest(reply: Reply) -> Chain {

@@ -85,6 +85,17 @@ impl BaudRate {
         }
     }
 
+    /// `None` unless `hz` is a catalog rate exactly.
+    pub const fn from_hz(hz: u32) -> Option<Self> {
+        match hz {
+            500_000 => Some(BaudRate::B500000),
+            1_000_000 => Some(BaudRate::B1000000),
+            2_000_000 => Some(BaudRate::B2000000),
+            3_000_000 => Some(BaudRate::B3000000),
+            _ => None,
+        }
+    }
+
     pub const fn from_idx(idx: u8) -> Option<Self> {
         match idx {
             0 => Some(BaudRate::B500000),
@@ -371,6 +382,16 @@ pub const fn covered_len(len: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn baud_from_hz_takes_catalog_rates_only() {
+        for idx in 0..4 {
+            let rate = BaudRate::from_idx(idx).unwrap();
+            assert_eq!(BaudRate::from_hz(rate.as_hz()), Some(rate));
+        }
+        assert_eq!(BaudRate::from_hz(993_103), None);
+        assert_eq!(BaudRate::from_hz(0), None);
+    }
 
     #[test]
     fn id_classification() {
