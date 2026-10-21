@@ -8,8 +8,11 @@
 //! All protocol timing lives in the adapter's engine; the only clock here is
 //! a coarse pipe guard that catches an unplugged adapter.
 
+#![deny(unsafe_code)]
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking;
+pub mod boot;
 pub mod calib;
 mod client;
 pub mod common;
