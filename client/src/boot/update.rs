@@ -24,7 +24,7 @@ pub const CHIP_UID: usize = 12;
 /// stored image, at most the osc-dev-v006 APP region (boot memory.x), then
 /// servo-ch32 bringup's waits, at most 65 ms (runtime/init.rs:
 /// `OPA_SETTLE_MS` plus `VMOTOR_BIAS_STEPS` x `VMOTOR_BIAS_STEP_MS`).
-const APP_UP: Duration =
+pub const APP_UP: Duration =
     Duration::from_micros(MARGIN * (APP_REGION * CRC_NS_PER_BYTE + BRINGUP_NS).div_ceil(1_000));
 const APP_REGION: u64 = 58_112;
 const BRINGUP_NS: u64 = 65_000_000;

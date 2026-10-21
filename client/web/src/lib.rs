@@ -10,9 +10,14 @@
 //! shipped package carries it; each servo's UID is derived from its id, so
 //! the same roster always discovers the same UIDs.
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod boot;
 #[cfg(target_arch = "wasm32")]
 mod client;
 mod descriptor;
+#[cfg(feature = "fake")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod fake;
 mod types;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod uid;
@@ -47,6 +52,14 @@ pub fn unpack_version(fw: u16) -> Result<Ts<Version>, JsError> {
 fn version(fw: u16) -> Version {
     let (major, minor, patch) = osc_protocol::version::unpack_version(fw);
     Version(major, minor, patch)
+}
+
+/// A `.bin`'s tinyboot tail (compatibility key, version, size), or why
+/// it has none.
+#[wasm_bindgen(js_name = parseImage)]
+pub fn parse_image(bytes: &[u8]) -> Result<Ts<ImageCheck>, JsError> {
+    let check = ImageCheck::from(osc_client::boot::Image::parse(bytes.to_vec()));
+    Ok(check.into_ts()?)
 }
 
 /// The reasons set in a `data_flags` byte, most urgent first.

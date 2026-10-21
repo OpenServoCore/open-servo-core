@@ -14,14 +14,41 @@ pub fn parse(s: &str) -> Result<Uid, String> {
         return Err(format!("uid is {} hex chars, got {}", UID_LEN * 2, b.len()));
     }
     let mut uid = [0u8; UID_LEN];
-    for (i, pair) in b.chunks(2).enumerate() {
-        let byte = match (nibble(pair[0]), nibble(pair[1])) {
-            (Some(hi), Some(lo)) => hi << 4 | lo,
-            _ => return Err(format!("uid: not hex at char {}", i * 2)),
-        };
-        uid[UID_LEN - 1 - i] = byte;
-    }
+    uid.copy_from_slice(&le_bytes(s, "uid")?);
     Ok(Uid(uid))
+}
+
+/// A tinyboot id as the device sends it (least significant byte first) in
+/// the same text form: a servo's is its UID's last 24 chars.
+pub fn boot_to_hex(id: &[u8]) -> String {
+    id.iter().rev().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn boot_parse(s: &str) -> Result<Vec<u8>, String> {
+    let n = s.len();
+    if n == 0 || n % 2 != 0 || n > UID_LEN * 2 {
+        return Err(format!(
+            "boot uid is an even 2 to {} hex chars, got {n}",
+            UID_LEN * 2
+        ));
+    }
+    le_bytes(s, "boot uid")
+}
+
+/// An even run of hex pairs, most significant first, as bytes least
+/// significant first.
+fn le_bytes(s: &str, what: &str) -> Result<Vec<u8>, String> {
+    let mut out = s
+        .as_bytes()
+        .chunks(2)
+        .enumerate()
+        .map(|(i, pair)| match (nibble(pair[0]), nibble(pair[1])) {
+            (Some(hi), Some(lo)) => Ok(hi << 4 | lo),
+            _ => Err(format!("{what}: not hex at char {}", i * 2)),
+        })
+        .collect::<Result<Vec<u8>, String>>()?;
+    out.reverse();
+    Ok(out)
 }
 
 fn nibble(c: u8) -> Option<u8> {
@@ -57,5 +84,22 @@ mod tests {
         assert!(parse(&format!("+f{}", "0".repeat(30))).is_err());
         assert!(parse(&format!("zz{}", "0".repeat(30))).is_err());
         assert!(parse(&format!("\u{e9}{}", "0".repeat(30))).is_err());
+    }
+
+    #[test]
+    fn boot_uid_is_the_uid_tail() {
+        let mut raw = [0u8; UID_LEN];
+        raw[0] = 0x01;
+        raw[11] = 0xAB;
+        raw[15] = 0xF0;
+        let full = to_hex(&Uid(raw));
+        let boot = boot_to_hex(&raw[..12]);
+        assert_eq!(boot, "ab0000000000000000000001");
+        assert!(full.ends_with(&boot));
+        assert_eq!(boot_parse(&boot), Ok(raw[..12].to_vec()));
+        assert_eq!(boot_parse(&full), Ok(raw.to_vec()));
+        for bad in ["", "abc", "zz", &"0".repeat(34)] {
+            assert!(boot_parse(bad).is_err(), "{bad:?}");
+        }
     }
 }

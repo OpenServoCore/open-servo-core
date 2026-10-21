@@ -8,6 +8,7 @@
 use std::cell::{RefCell, RefMut};
 use std::time::Duration;
 
+use osc_client::boot::Image;
 use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
@@ -19,17 +20,15 @@ use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "fake")]
-use osc_client::fake::{FakePipe, TelSample, TelemetryTick, duty_counts, tick_flag};
-#[cfg(feature = "fake")]
-use osc_protocol::wire::UID_LEN;
+use osc_client::fake::FakePipe;
 
 use crate::descriptor::Descriptor;
-use crate::types::{
-    Alive, BaudRate, DataState, DeadlineRewrite, Found, Health, Identity, LinkInfo, Ping, PosLut,
-    Rails, StampVerdict, TelBurst, TelChunk, tel_chunks,
-};
 #[cfg(feature = "fake")]
-use crate::types::{FakeServo, Track};
+use crate::types::FakeServo;
+use crate::types::{
+    Alive, BaudRate, BootRow, DataState, DeadlineRewrite, Found, Health, Identity, InstallVerdict,
+    LinkInfo, Ping, PosLut, Rails, StampVerdict, TelBurst, TelChunk, tel_chunks,
+};
 
 /// Floor under `setGuard`: below this the watchdog would fire inside a
 /// healthy exchange and every command would look like a dead adapter.
@@ -369,6 +368,65 @@ impl OscClient {
         let out = cmd!(self, |c| burst(c, id, (first.addr, &arm), window).await?);
         Ok(out.into_ts()?)
     }
+
+    /// Every roster servo at the bus rate to its bootloader at `rate`;
+    /// resolves to the roster. The bus must be in osc mode and stays there.
+    /// A servo whose reboot did not land stays in its app and is missing
+    /// from `bootList`.
+    #[wasm_bindgen(js_name = bootEnter, unchecked_return_type = "Found[]")]
+    pub async fn boot_enter(&self, rate: Ts<BaudRate>) -> Result<JsValue, JsError> {
+        let rate: BaudRate = rate.to_rust()?;
+        let roster = cmd!(self, |c| crate::boot::enter(c, rate).await?);
+        list(roster.into_iter())
+    }
+
+    /// The bus to tinyboot at `rate`, then every waiting bootloader with
+    /// its Info, by uid. The bus stays in tinyboot mode for `bootInstall`
+    /// and `bootResetAll`.
+    #[wasm_bindgen(js_name = bootList)]
+    pub async fn boot_list(&self, rate: Ts<BaudRate>) -> Result<Vec<Ts<BootRow>>, JsError> {
+        let rate: BaudRate = rate.to_rust()?;
+        let rows = cmd!(self, |c| crate::boot::list(c, rate).await?);
+        Ok(rows
+            .iter()
+            .map(BootRow::into_ts)
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// Install a `.bin` on the bootloader `uid` (a `BootRow.uid`): refused
+    /// unerased when foreign or too large, else erase, write, verify; no
+    /// reset. `onProgress(written, total)` runs after each acked write, in
+    /// image bytes. Resolves to the device's verdict.
+    #[wasm_bindgen(js_name = bootInstall)]
+    pub async fn boot_install(
+        &self,
+        uid: &str,
+        image: &[u8],
+        #[wasm_bindgen(
+            js_name = onProgress,
+            unchecked_param_type = "(written: number, total: number) => void"
+        )]
+        on_progress: &js_sys::Function,
+    ) -> Result<Ts<InstallVerdict>, JsError> {
+        let uid = crate::uid::boot_parse(uid).map_err(|e| JsError::new(&e))?;
+        let image = Image::parse(image.to_vec())?;
+        // A throwing callback cannot stop a write in flight; it is ignored.
+        let progress = |written: u32, total: u32| {
+            let _ = on_progress.call2(&JsValue::NULL, &written.into(), &total.into());
+        };
+        let v = cmd!(self, |c| crate::boot::install(c, &uid, &image, progress)
+            .await?);
+        Ok(v.into_ts()?)
+    }
+
+    /// Every bootloader back to its app at once, then the bus to osc at
+    /// `rate`; resolves once the apps are up, so `discover` finds them.
+    #[wasm_bindgen(js_name = bootResetAll)]
+    pub async fn boot_reset_all(&self, rate: Ts<BaudRate>) -> Result<(), JsError> {
+        let rate: BaudRate = rate.to_rust()?;
+        cmd!(self, |c| crate::boot::reset_all(c, rate).await?);
+        Ok(())
+    }
 }
 
 /// The simulated adapter: the production link server and servo stacks over
@@ -387,10 +445,7 @@ impl OscClient {
             .into_iter()
             .map(|id| FakeServo {
                 id,
-                track: None,
-                virgin: false,
-                therm: Default::default(),
-                response_deadline_us: None,
+                ..Default::default()
             })
             .collect();
         Self::fake_fleet(fleet).await
@@ -402,8 +457,11 @@ impl OscClient {
     /// ramp; columns must be non-empty and equal in length), `virgin`
     /// for a factory-fresh servo that has never been calibrated,
     /// identified or saved, `therm` ("on", "off" or "derating") for a
-    /// calibrated servo's winding thermometer, and `responseDeadlineUs` for
-    /// a servo holding another deadline than the protocol default.
+    /// calibrated servo's winding thermometer, `responseDeadlineUs` for
+    /// a servo holding another deadline than the protocol default,
+    /// `bootloader` for a board that carries only its bootloader, and
+    /// `failNext` ("erase" or "write") for a bootloader that fails its next
+    /// such command.
     #[wasm_bindgen(js_name = fakeWithTracks)]
     pub async fn fake_with_tracks(
         #[wasm_bindgen(unchecked_param_type = "FakeServo[]")] fleet: JsValue,
@@ -412,105 +470,13 @@ impl OscClient {
     }
 
     async fn fake_fleet(fleet: Vec<FakeServo>) -> Result<OscClient, JsError> {
-        if fleet.is_empty() {
-            return Err(JsError::new("fake: the fleet needs at least one id"));
-        }
-        let ids: Vec<u8> = fleet.iter().map(|s| s.id).collect();
-        for (i, id) in ids.iter().enumerate() {
-            if ids[..i].contains(id) {
-                return Err(JsError::new(&format!("fake: duplicate id {id}")));
-            }
-        }
-        // The rate a servo leaves the factory at, so the fleet answers
-        // before any migration.
-        let mut pipe = FakePipe::new(osc_client::BaudRate::B1000000, &ids);
-        for (i, s) in fleet.into_iter().enumerate() {
-            pipe.sim_mut().seed_servo_uid(i, uid(s.id));
-            if s.virgin {
-                pipe.seed_board(i);
-            } else {
-                pipe.seed_calibrated_with(i, s.therm);
-            }
-            if let Some(track) = s.track {
-                pipe.set_track(i, track_rows(track)?);
-            }
-            if let Some(us) = s.response_deadline_us {
-                pipe.sim_mut()
-                    .servo_table_mut(i, |t| t.config.common.response_deadline_us = us);
-            }
-        }
+        let pipe = crate::fake::pipe(fleet).map_err(|e| JsError::new(&e))?;
         let c = Client::connect(pipe).await?;
         Ok(OscClient {
             info: c.info(),
             inner: RefCell::new(Some(Backend::Fake(Box::new(c)))),
         })
     }
-}
-
-/// Columnar track to the sim's row form.
-#[cfg(feature = "fake")]
-fn track_rows(t: Track) -> Result<Vec<TelSample>, JsError> {
-    let n = t.pos.len();
-    if n == 0 {
-        return Err(JsError::new("fakeWithTracks: empty track"));
-    }
-    let lens = [
-        t.current.len(),
-        t.current_trough.len(),
-        t.duty_q15.len(),
-        t.vdiff.len(),
-        t.vbus.len(),
-        t.current_raw.len(),
-        t.vmotor_a.len(),
-        t.vmotor_b.len(),
-        t.vbus_raw.len(),
-        t.ntc_raw.len(),
-        t.window_valid.len(),
-    ];
-    if lens.iter().any(|&l| l != n) {
-        return Err(JsError::new(
-            "fakeWithTracks: track columns differ in length",
-        ));
-    }
-    Ok((0..n)
-        .map(|i| TelSample {
-            tick: TelemetryTick {
-                i_tick_counts: t.current[i],
-                vdiff_counts: t.vdiff[i],
-                duty_ticks: duty_counts(t.duty_q15[i]),
-                pos: t.pos[i],
-                current_trough: t.current_trough[i],
-                current_raw: t.current_raw[i],
-                vmotor_a: t.vmotor_a[i],
-                vmotor_b: t.vmotor_b[i],
-                vbus_raw: t.vbus_raw[i],
-                ntc_raw: t.ntc_raw[i],
-                tick_flags: if t.window_valid[i] != 0 {
-                    tick_flag::I_VALID
-                } else {
-                    0
-                },
-                ..Default::default()
-            },
-            vbus_counts: t.vbus[i],
-        })
-        .collect())
-}
-
-/// splitmix64 over the id: the same roster always discovers the same UIDs,
-/// and they carry a real part's entropy rather than a run of zeros.
-#[cfg(feature = "fake")]
-fn uid(id: u8) -> [u8; UID_LEN] {
-    let mut s = 0x05C0_DE00_0000_0000 | id as u64;
-    let mut out = [0u8; UID_LEN];
-    for w in out.chunks_mut(8) {
-        s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = s;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        w.copy_from_slice(&(z ^ (z >> 31)).to_le_bytes());
-    }
-    out
 }
 
 /// The burst choreography, written once for every backend.

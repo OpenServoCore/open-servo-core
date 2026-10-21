@@ -133,6 +133,154 @@ impl From<&osc_client::mgmt::Found> for Found {
     }
 }
 
+/// One device `bootList` found waiting in its bootloader.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Tsify)]
+#[tsify(missing_as_null)]
+#[serde(rename_all = "camelCase")]
+pub struct BootRow {
+    /// The tinyboot id as hex, most significant byte first: a servo's is
+    /// the last 24 chars of its `Found.uid`.
+    pub uid: String,
+    /// The compatibility key an image must carry to install.
+    pub compat: u32,
+    /// Null when the device reports no app.
+    pub app_version: Option<Version>,
+    pub boot_version: Version,
+    /// App region, bytes.
+    pub capacity: u32,
+}
+
+impl From<&osc_client::boot::BootDevice> for BootRow {
+    fn from(d: &osc_client::boot::BootDevice) -> Self {
+        let i = d.info;
+        BootRow {
+            uid: crate::uid::boot_to_hex(&d.uid),
+            compat: i.compat,
+            app_version: (i.app_version != 0xFFFF).then(|| boot_version(i.app_version)),
+            boot_version: boot_version(i.boot_version),
+            capacity: i.capacity,
+        }
+    }
+}
+
+/// A packed 5.5.6 tinyboot version.
+fn boot_version(v: u16) -> Version {
+    let (major, minor, patch) = osc_client::boot::unpack_version(v);
+    Version(major, minor, patch)
+}
+
+/// `parseImage`'s verdict on a `.bin`: its tail's compatibility key and
+/// version, or why it carries no tinyboot tail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ImageCheck {
+    Ok {
+        compat: u32,
+        version: Version,
+        size: u32,
+    },
+    /// An ELF file: the `.bin` objcopy makes from it is the image.
+    Elf,
+    TooShort {
+        len: u32,
+    },
+    /// Not 2 bytes past a word.
+    Misaligned {
+        len: u32,
+    },
+}
+
+impl From<Result<osc_client::boot::Image, osc_client::boot::ImageError>> for ImageCheck {
+    fn from(r: Result<osc_client::boot::Image, osc_client::boot::ImageError>) -> Self {
+        use osc_client::boot::ImageError;
+        match r {
+            Ok(i) => ImageCheck::Ok {
+                compat: i.compat(),
+                version: boot_version(i.version()),
+                size: i.bytes().len() as u32,
+            },
+            Err(ImageError::Elf) => ImageCheck::Elf,
+            Err(ImageError::TooShort { len }) => ImageCheck::TooShort { len: len as u32 },
+            Err(ImageError::Misaligned { len }) => ImageCheck::Misaligned { len: len as u32 },
+        }
+    }
+}
+
+/// `bootInstall`'s verdict on the device. A broken link or a device that
+/// stops answering rejects instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum InstallVerdict {
+    Installed,
+    /// No clean answer to the id: absent, or the reply garbled.
+    NoDevice,
+    /// The image's key is not the device's; nothing erased.
+    Incompatible {
+        image: u32,
+        device: u32,
+    },
+    /// Image bytes over the app region's; nothing erased.
+    TooLarge {
+        size: u32,
+        capacity: u32,
+    },
+    /// The device's CRC over what it wrote is not the image's.
+    CrcMismatch {
+        image: u16,
+        device: u16,
+    },
+    /// The device refused a command. Past the erase it waits in its
+    /// bootloader for another install.
+    Status {
+        status: BootStatus,
+    },
+}
+
+impl From<osc_client::boot::InstallError> for InstallVerdict {
+    fn from(e: osc_client::boot::InstallError) -> Self {
+        use osc_client::boot::InstallError as E;
+        match e {
+            E::NoDevice => InstallVerdict::NoDevice,
+            E::Incompatible { image, device } => InstallVerdict::Incompatible { image, device },
+            E::TooLarge { size, capacity } => InstallVerdict::TooLarge { size, capacity },
+            E::CrcMismatch { image, device } => InstallVerdict::CrcMismatch { image, device },
+        }
+    }
+}
+
+/// A tinyboot reply status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub enum BootStatus {
+    Request,
+    Ok,
+    /// A flash erase or write failed.
+    WriteError,
+    CrcMismatch,
+    AddrOutOfBounds,
+    /// Not valid in the device's state.
+    Unsupported,
+    PayloadOverflow,
+    /// The image's key is not the bootloader's.
+    Incompatible,
+}
+
+impl From<osc_client::boot::Status> for BootStatus {
+    fn from(s: osc_client::boot::Status) -> Self {
+        use osc_client::boot::Status as S;
+        match s {
+            S::Request => BootStatus::Request,
+            S::Ok => BootStatus::Ok,
+            S::WriteError => BootStatus::WriteError,
+            S::CrcMismatch => BootStatus::CrcMismatch,
+            S::AddrOutOfBounds => BootStatus::AddrOutOfBounds,
+            S::Unsupported => BootStatus::Unsupported,
+            S::PayloadOverflow => BootStatus::PayloadOverflow,
+            S::Incompatible => BootStatus::Incompatible,
+        }
+    }
+}
+
 /// One ping-sweep verdict (the roster `setBaud` reports).
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
@@ -423,9 +571,10 @@ pub struct Track {
 /// track back, optionally factory-fresh (never calibrated, identified or
 /// saved: every `data_flags` reason set) instead of stamped, optionally
 /// with its winding thermometer off or pinned in the derate band or
-/// holding another response deadline.
+/// holding another response deadline, optionally a board that carries
+/// only its bootloader or one whose next erase or write fails.
 #[cfg(feature = "fake")]
-#[derive(Debug, Clone, Deserialize, Tsify)]
+#[derive(Debug, Clone, Default, Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct FakeServo {
     pub id: u8,
@@ -442,6 +591,23 @@ pub struct FakeServo {
     /// (default the protocol's).
     #[tsify(optional)]
     pub response_deadline_us: Option<u16>,
+    /// No app: the board waits in its bootloader at the 0.5 M default and
+    /// no osc id answers until an install. Its app then answers at `id`.
+    #[tsify(optional)]
+    #[serde(default)]
+    pub bootloader: bool,
+    /// Its bootloader answers the next such command `writeError`, the
+    /// work undone.
+    #[tsify(optional)]
+    pub fail_next: Option<FakeFail>,
+}
+
+#[cfg(feature = "fake")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Tsify)]
+#[serde(rename_all = "lowercase")]
+pub enum FakeFail {
+    Erase,
+    Write,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]
