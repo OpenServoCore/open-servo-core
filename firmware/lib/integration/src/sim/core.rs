@@ -143,6 +143,8 @@ pub enum Event {
     HostTxDone,
     /// The adapter's break-detector service: mark the last ringed byte.
     HostMark,
+    /// A servo's bootloader reply left: it resets, toward the app if `app`.
+    BootReset { servo: usize, app: bool },
 }
 
 struct Scheduled {
