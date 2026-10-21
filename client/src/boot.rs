@@ -14,8 +14,8 @@ pub use tinyboot_protocol::{BaudRate, Cmd, ResetFlags, Status, WriteFlags, unpac
 
 mod update;
 pub use update::{
-    BootDevice, CHIP_UID, Chosen, Device, Fate, Phase, Progress, Report, apps, confirm, enter,
-    list, update,
+    APP_UP, BootDevice, CHIP_UID, Chosen, Device, Fate, Phase, Progress, Report, apps, confirm,
+    enter, list, update,
 };
 
 use crate::client::{Client, TbFrame, TbReply, desync_msg};

@@ -435,6 +435,8 @@ dependencies = [
 name = "osc-client-web"
 version = "0.1.0"
 dependencies = [
+ "futures-lite",
+ "js-sys",
  "osc-client",
  "osc-protocol",
  "serde",

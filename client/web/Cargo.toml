@@ -26,4 +26,8 @@ wasm-bindgen         = "0.2"
 # Async exports expand to a future_to_promise call; the crate is a no-op
 # elsewhere.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys               = "0.3"
 wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+futures-lite = "2"
