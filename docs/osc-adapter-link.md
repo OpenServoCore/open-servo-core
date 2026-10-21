@@ -213,16 +213,24 @@ What each mode accepts:
 The mode is the adapter's receive framer and its promise about the wire.
 In osc mode every frame follows a break and replies are break-framed. In
 tinyboot mode the adapter never puts a break or a pulse on the wire, and
-replies are found by their sync word (sec 7.1). The rest of the fleet
-shares the wire with the servo being updated: its app servos frame only
-after a break (transport sec 7), so breakless tinyboot traffic never wakes
-them, and an unselected bootloader never speaks. The mode keeps that true
-whatever the client sends, which is why the wire ops, which all start with
-a break, are `WRONG_MODE` in tinyboot mode.
+replies are found by their sync word (sec 7.1). The mode keeps the wire
+tinyboot-only whatever the client sends, which is why the wire ops, which
+all start with a break, are `WRONG_MODE` in tinyboot mode.
+
+Tinyboot mode assumes no osc app is listening: the host moves every servo
+on the wire to its bootloader before the first `TB_EXCHANGE` and resets
+them all to their apps after the last. An app servo frames only after a
+break (transport sec 7), but breakless bytes still land in its receive
+ring, and its framer can park on them at the next break, so its next reply
+comes late by whole starve horizons (protocol sec 3.4). A tinyboot rate
+below the app's holds lows long enough to fire its break detector, and at
+19200 and below a `0x00` is long enough to read as a rescue pulse
+(protocol sec 9.1). Every bootloader on the wire is addressable and silent until
+selected, so the whole fleet can wait in tinyboot together.
 
 A new session returns the bus to osc mode (sec 2). A client that dies
-mid-update leaves no adapter stuck in tinyboot mode; the servo waits in its
-bootloader for the next session to find it.
+mid-update leaves no adapter stuck in tinyboot mode; the servos wait in
+their bootloaders for the next session to find them.
 
 ## 6. osc requests (`0x2_`)
 
