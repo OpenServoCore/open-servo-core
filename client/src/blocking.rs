@@ -218,6 +218,10 @@ impl<P: Pipe> Client<P> {
         block_on(boot::select(&mut self.0, seed, prefix, bits))
     }
 
+    pub fn boot_discover(&mut self) -> Result<Vec<Vec<u8>>, Error> {
+        block_on(boot::discover(&mut self.0))
+    }
+
     pub fn boot_info(&mut self) -> Result<BootInfo, Error> {
         block_on(boot::info(&mut self.0))
     }

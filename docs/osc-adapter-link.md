@@ -343,9 +343,11 @@ no device sends one, and the adapter does not hear its own (its receiver
 is off while it transmits), so such a frame is another talker on the wire.
 
 The exchange result is the osc one (sec 6.2): `frames` counts tinyboot
-frames. The Select walk reads any garble at all as a collision: two
-replies are each 24 bytes and start at most 15 byte-times apart, so they
-always overlap, and a collision shows as no clean frame and some garble.
+frames. A device waits its Select slot in its own units, not byte-times
+(the V006 bootloader's unit is about 96 bit-times), so replies in slots
+far enough apart arrive as separate clean frames and replies in near
+slots overlap into garble. The Select walk reads more than one frame, or
+any garble at all, as a collision.
 
 ## 8. USB carrier
 

@@ -64,6 +64,73 @@ pub async fn select<P: Pipe>(
     selected(r)
 }
 
+/// Every device's id, sorted bytewise as sent: a depth-first walk of
+/// `select` prefixes that splits wherever more than one device answers. On
+/// a clean bus it costs `3S + 2 - N` probes for `N` devices, `S` the
+/// prefixes two or more ids share. The walk leaves the selection to its
+/// last probe: select by full id before any other command.
+pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Vec<u8>>, Error> {
+    const FULL: u8 = (MAX_UID * 8) as u8;
+    const FULL_DEPTH_RETRIES: usize = 3;
+    let mut seed = 0;
+    let mut found = Vec::new();
+    let mut stack = vec![(0u8, [0u8; MAX_UID as usize])];
+    while let Some((bits, prefix)) = stack.pop() {
+        let mut p = probe(c, &mut seed, &prefix, bits).await?;
+        if p == Probe::Empty {
+            p = probe(c, &mut seed, &prefix, bits).await?;
+        }
+        if bits == FULL {
+            // Ids are unique, so at most one device matches a full-depth
+            // prefix: a collision here is noise. Retry, then skip the leaf.
+            for _ in 0..FULL_DEPTH_RETRIES {
+                if p != Probe::Many {
+                    break;
+                }
+                p = probe(c, &mut seed, &prefix, bits).await?;
+            }
+        }
+        match p {
+            Probe::Empty => {}
+            Probe::One(id) => found.push(id),
+            Probe::Many if bits < FULL => {
+                let mut one = prefix;
+                one[bits as usize / 8] |= 1 << (bits % 8);
+                stack.push((bits + 1, one));
+                stack.push((bits + 1, prefix));
+            }
+            Probe::Many => {}
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+#[derive(PartialEq)]
+enum Probe {
+    Empty,
+    /// One clean reply and no garble: its CRC checked, the id as sent.
+    One(Vec<u8>),
+    /// More than one reply, or any garble.
+    Many,
+}
+
+/// A `select` on its own seed, so slot draws re-roll probe to probe.
+async fn probe<P: Pipe>(
+    c: &mut Client<P>,
+    seed: &mut u8,
+    prefix: &[u8],
+    bits: u8,
+) -> Result<Probe, Error> {
+    let s = select(c, *seed, prefix, bits).await?;
+    *seed = seed.wrapping_add(1);
+    Ok(match (s.ids.as_slice(), s.garble) {
+        ([], 0) => Probe::Empty,
+        ([id], 0) => Probe::One(id.clone()),
+        _ => Probe::Many,
+    })
+}
+
 pub async fn info<P: Pipe>(c: &mut Client<P>) -> Result<BootInfo, Error> {
     let window = info_window(c.info().bps);
     let f = one(c, window, Cmd::Info, 0, 0, &[]).await?;
