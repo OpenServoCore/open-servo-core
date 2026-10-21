@@ -187,6 +187,20 @@ fn verify_checks_compat_and_reset_to_app_waits_for_it() {
     assert!(sim.in_bootloader(0));
 }
 
+/// tinyboot-core 0.6.2: an erased app region would hang the chip, so a
+/// reset to it is refused and the board keeps waiting.
+#[test]
+fn reset_to_an_erased_app_is_refused() {
+    let mut sim = rig();
+    select(&mut sim);
+    let reset = one(&mut sim, Cmd::Reset, 0, 0, &[]).0;
+    assert_eq!(reset, Status::Unsupported as u8, "no app");
+    assert!(sim.in_bootloader(0));
+    let to_boot = ResetFlags::BOOTLOADER.bits();
+    assert_eq!(one(&mut sim, Cmd::Reset, 0, to_boot, &[]).0, OK);
+    assert!(sim.in_bootloader(0));
+}
+
 #[test]
 fn hooks_fail_power_cycle_and_ignore() {
     let mut sim = rig();
@@ -204,13 +218,17 @@ fn hooks_fail_power_cycle_and_ignore() {
     sim.add_servo(2);
     sim.set_self_reboot(true);
     sim.ignore_next_boot_reboot(1);
+    sim.ignore_next_boot_reboot(1);
     let to_boot = [MgmtOp::Reboot as u8, Reboot::MODE_BOOTLOADER, 0];
-    for id in [1, 2] {
+    for id in [1, 2, 2] {
         sim.host_send(&instruction(id, Opcode::Mgmt, 0, &to_boot));
         sim.run();
     }
     assert!(sim.in_bootloader(0));
-    assert!(!sim.in_bootloader(1), "ignored");
+    assert!(!sim.in_bootloader(1), "ignored twice");
+    sim.host_send(&instruction(2, Opcode::Mgmt, 0, &to_boot));
+    sim.run();
+    assert!(sim.in_bootloader(1), "the third is honored");
     sim.power_cycle(0);
     assert!(!sim.in_bootloader(0), "the factory app boots");
 }

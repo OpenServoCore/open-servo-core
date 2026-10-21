@@ -7,7 +7,10 @@
 use std::time::Duration;
 
 use osc_client::blocking::Client;
-use osc_client::boot::{BootInfo, Image, InstallError, ResetFlags, Selected, Status, WriteFlags};
+use osc_client::boot::{
+    BootInfo, Device, Fate, Image, InstallError, Phase, Progress, Report, ResetFlags, Selected,
+    Status, WriteFlags,
+};
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
@@ -859,6 +862,164 @@ fn boot_discover_walks_a_fleet_in_the_fewest_probes() {
     let ids: Vec<&[u8]> = want.iter().map(Vec::as_slice).collect();
     let shared = shared_prefixes(&ids);
     assert_eq!(c.pipe_mut().sends, 3 * shared + 2 - ids.len());
+}
+
+/// Servo `i`'s tinyboot id: its ESIG, the osc UID's first 12 bytes.
+fn chip_uid(c: &mut Client<FakePipe>, i: usize) -> Vec<u8> {
+    c.pipe_mut().sim_mut().servo_uid(i)[..12].to_vec()
+}
+
+fn dev(uid: &[u8], id: Option<u8>, fate: Fate) -> Device {
+    Device {
+        uid: uid.to_vec(),
+        id: id.map(Id::new),
+        fate,
+    }
+}
+
+fn fws(c: &mut Client<FakePipe>, ids: &[u8]) -> Vec<u16> {
+    ids.iter()
+        .map(|&id| c.ping(Id::new(id)).expect("ping").fw)
+        .collect()
+}
+
+/// The host sent no tinyboot byte after the first bootloader handed off to
+/// its app: no app heard one.
+fn assert_no_tinyboot_after_handoff(c: &mut Client<FakePipe>) {
+    let (handoff, tinyboot) = c.pipe_mut().sim_mut().tinyboot_handoff();
+    let (handoff, tinyboot) = (handoff.expect("a hand-off"), tinyboot.expect("tinyboot"));
+    assert!(
+        tinyboot <= handoff,
+        "tinyboot until {tinyboot}, hand-off at {handoff}"
+    );
+}
+
+fn update(c: &mut Client<FakePipe>, img: &Image, chosen: &[Vec<u8>]) -> Report {
+    c.boot_update(img, chosen, BaudRate::B500000, |_| {})
+        .expect("update")
+}
+
+#[test]
+fn update_installs_the_chosen_and_returns_the_fleet() {
+    let mut c = fleet(&[1, 2, 3]);
+    let old = fws(&mut c, &[3])[0];
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    let (a, b) = (chip_uid(&mut c, 0), chip_uid(&mut c, 1));
+    let (mut phases, mut done) = (Vec::new(), Vec::new());
+    let report = c
+        .boot_update(
+            &image(1002, BOARD, v),
+            &[a.clone(), b.clone()],
+            BaudRate::B500000,
+            |p| match p {
+                Progress::Phase(p) => phases.push(p),
+                Progress::Bytes {
+                    uid,
+                    written,
+                    total,
+                } if written == total => done.push((uid.to_vec(), total)),
+                Progress::Bytes { .. } => {}
+            },
+        )
+        .expect("update");
+    assert_eq!(
+        report,
+        Report {
+            devices: vec![
+                dev(&a, Some(1), Fate::Confirmed),
+                dev(&b, Some(2), Fate::Confirmed),
+            ],
+            stayed_app: vec![],
+        }
+    );
+    use Phase::*;
+    assert_eq!(phases, [Roster, Reboot, Walk, Install, Reset, Confirm]);
+    assert_eq!(done, [(a, 1002), (b, 1002)]);
+    assert_no_tinyboot_after_handoff(&mut c);
+    assert_eq!(c.info().bps, 1_000_000);
+    assert_eq!(fws(&mut c, &[1, 2, 3]), [v, v, old]);
+}
+
+/// The board comes up on its factory id, so its version is left to the
+/// id assignment that follows.
+#[test]
+fn update_installs_a_bootloader_only_board_by_id() {
+    let mut c = fleet(&[1, 2, 3]);
+    c.pipe_mut().sim_mut().start_in_bootloader(2);
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    let uids: Vec<Vec<u8>> = (0..3).map(|i| chip_uid(&mut c, i)).collect();
+    let report = update(&mut c, &image(1002, BOARD, v), &uids);
+    assert_eq!(
+        report.devices,
+        [
+            dev(&uids[0], Some(1), Fate::Confirmed),
+            dev(&uids[1], Some(2), Fate::Confirmed),
+            dev(&uids[2], None, Fate::Unconfirmed(None)),
+        ]
+    );
+    assert!(!c.pipe_mut().sim_mut().in_bootloader(2));
+    assert_eq!(fws(&mut c, &[1, 2, 3]), [v, v, v]);
+}
+
+#[test]
+fn update_records_a_failed_install_and_goes_on() {
+    let mut c = fleet(&[1, 2, 3]);
+    let uids: Vec<Vec<u8>> = (0..3).map(|i| chip_uid(&mut c, i)).collect();
+    let sim = c.pipe_mut().sim_mut();
+    sim.fail_next_boot(1, tinyboot_protocol::Cmd::Write, Status::WriteError);
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    let report = update(&mut c, &image(1002, BOARD, v), &uids);
+    assert_eq!(
+        report.devices,
+        [
+            dev(
+                &uids[1],
+                Some(2),
+                Fate::Failed(Error::Boot(Status::WriteError))
+            ),
+            dev(&uids[0], Some(1), Fate::Confirmed),
+            dev(&uids[2], Some(3), Fate::Confirmed),
+        ]
+    );
+    assert_eq!(fws(&mut c, &[1, 3]), [v, v]);
+    let sim = c.pipe_mut().sim_mut();
+    sim.power_cycle(1);
+    assert!(sim.in_bootloader(1), "waits mid-update");
+}
+
+#[test]
+fn update_aborts_when_a_servo_stays_an_app() {
+    let mut c = fleet(&[1, 2, 3]);
+    let old = fws(&mut c, &[1, 2, 3]);
+    let uids: Vec<Vec<u8>> = (0..3).map(|i| chip_uid(&mut c, i)).collect();
+    let sim = c.pipe_mut().sim_mut();
+    sim.ignore_next_boot_reboot(1);
+    sim.ignore_next_boot_reboot(1);
+    let stayed = Found {
+        uid: Uid(sim.servo_uid(1)),
+        id: Id::new(2),
+    };
+    let report = update(&mut c, &image(1002, BOARD, 7), &uids);
+    assert_eq!(
+        report,
+        Report {
+            devices: vec![],
+            stayed_app: vec![stayed],
+        }
+    );
+    assert_no_tinyboot_after_handoff(&mut c);
+    assert!((0..3).all(|i| !c.pipe_mut().sim_mut().in_bootloader(i)));
+    assert_eq!(fws(&mut c, &[1, 2, 3]), old, "nothing installed");
+}
+
+#[test]
+fn update_reports_a_chosen_id_nobody_has() {
+    let mut c = fleet(&[1, 2]);
+    let old = fws(&mut c, &[1, 2]);
+    let report = update(&mut c, &image(1002, BOARD, 7), &[vec![0x77; 12]]);
+    assert_eq!(report.devices, [dev(&[0x77; 12], None, Fate::NotFound)]);
+    assert!((0..2).all(|i| !c.pipe_mut().sim_mut().in_bootloader(i)));
+    assert_eq!(fws(&mut c, &[1, 2]), old);
 }
 
 #[test]

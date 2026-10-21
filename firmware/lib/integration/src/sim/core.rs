@@ -194,6 +194,8 @@ pub struct Core {
     held: Option<(u64, u64)>,
     pending: Option<PendingFrame>,
     recorded: Vec<WireFrame>,
+    /// The end of the host's last byte sent with no break ahead of it.
+    pub last_breakless_tx: Option<u64>,
 }
 
 impl Core {
@@ -207,6 +209,7 @@ impl Core {
             held: None,
             pending: None,
             recorded: Vec::new(),
+            last_breakless_tx: None,
         }
     }
 

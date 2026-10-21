@@ -7,7 +7,7 @@ use futures_lite::future::block_on;
 use osc_host::engine::TbExpect;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
-use crate::boot::{self, BootInfo, Image, ResetFlags, Selected, WriteFlags};
+use crate::boot::{self, BootInfo, Image, Progress, Report, ResetFlags, Selected, WriteFlags};
 use crate::calib::{self, GearClass};
 use crate::client::{Chain, Ping, Reply, StreamReply, TbReply};
 use crate::common::{self, Health, Identity};
@@ -246,6 +246,10 @@ impl<P: Pipe> Client<P> {
         block_on(boot::reset(&mut self.0, flags, baud))
     }
 
+    pub fn boot_reset_all(&mut self) -> Result<(), Error> {
+        block_on(boot::reset_all(&mut self.0))
+    }
+
     pub fn boot_install(
         &mut self,
         uid: &[u8],
@@ -253,6 +257,16 @@ impl<P: Pipe> Client<P> {
         progress: impl FnMut(u32, u32),
     ) -> Result<(), Error> {
         block_on(boot::install(&mut self.0, uid, image, progress))
+    }
+
+    pub fn boot_update(
+        &mut self,
+        image: &Image,
+        chosen: &[Vec<u8>],
+        rate: BaudRate,
+        progress: impl FnMut(Progress<'_>),
+    ) -> Result<Report, Error> {
+        block_on(boot::update(&mut self.0, image, chosen, rate, progress))
     }
 
     pub fn identity(&mut self, id: Id) -> Result<Identity, Error> {
