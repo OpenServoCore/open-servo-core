@@ -11,7 +11,7 @@ bench = false
 
 [dependencies]
 osc-servo-ch32      = { path = "../../../servo-ch32", default-features = false, features = ["ch32v006x8x6", "rt"] }
-tinyboot-ch32 = { version = "0.7.0", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
+tinyboot-ch32 = { version = "0.7.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
 qingke        = { version = "0.8.2", features = ["v2c", "critical-section-impl"] }
 qingke-rt     = { version = "0.8.2", features = ["v2c"] }
 panic-halt    = "1"

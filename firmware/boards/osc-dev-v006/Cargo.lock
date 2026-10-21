@@ -792,9 +792,9 @@ dependencies = [
 
 [[package]]
 name = "tinyboot-ch32"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bc5d83f12fd4cb37f15232405f19492821de5691d1f655fe1de8b644a93008d"
+checksum = "98a6e77470ccbe7e9b2269d6ef9bfa96fd71853bd0591de88418f26f045160ac"
 dependencies = [
  "ch32-metapac",
  "critical-section",
@@ -812,9 +812,9 @@ checksum = "883604800ee4be7884b4a2bf9fc4c9731f4c09791852a7474c52a9ac4e8a6bb7"
 
 [[package]]
 name = "tinyboot-core"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0929e36084bb31efe540615b1f5ea68769fe0a44b1342718f6425a9688866c09"
+checksum = "36aea148d537cd875707e82ac4d09332f297525f9953c668d603716fda2f25ca"
 dependencies = [
  "critical-section",
  "embedded-io",
