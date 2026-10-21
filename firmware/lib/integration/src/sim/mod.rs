@@ -588,6 +588,12 @@ impl Sim {
         self.boots[i].ignore_reboots += 1;
     }
 
+    /// Servo `i`'s bootloader ignores the next request it hears after its
+    /// reply overlaps another bootloader's.
+    pub fn boot_deaf_after_collision(&mut self, i: usize) {
+        self.boots[i].deaf_after_collision = true;
+    }
+
     /// Servo `i`'s bootloader answers its next `cmd` with `status`, the
     /// work undone.
     pub fn fail_next_boot(
@@ -1084,6 +1090,12 @@ impl Sim {
         let (talker, baud) = (Talker::Servo(j), self.boots[j].rate());
         let bt = byte_ticks(baud);
         let end = r.start + r.bytes.len() as u64 * bt;
+        for k in 0..self.boots.len() {
+            if k != j && self.boots[k].overlaps(r.start, end) {
+                self.boots[k].collided();
+                self.boots[j].collided();
+            }
+        }
         let mut c = self.core.borrow_mut();
         c.claim(talker, r.start, end);
         for (k, &byte) in r.bytes.iter().enumerate() {

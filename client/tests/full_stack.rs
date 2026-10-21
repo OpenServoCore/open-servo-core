@@ -825,11 +825,28 @@ fn shared_prefixes(ids: &[&[u8]]) -> usize {
         .sum()
 }
 
+/// The ids that share all but their last bit with another: the walk finds
+/// them by their whole length.
+fn whole_length(ids: &[&[u8]]) -> usize {
+    let bit = |id: &[u8], k: usize| id[k / 8] >> (k % 8) & 1;
+    let common = |a: &[u8], b: &[u8]| {
+        (0..a.len() * 8)
+            .take_while(|&k| bit(a, k) == bit(b, k))
+            .count()
+    };
+    ids.iter()
+        .filter(|a| ids.iter().any(|b| common(a, b) + 1 == a.len() * 8))
+        .count()
+}
+
 /// Seven devices: `a` and `b` share slot 0 for seed 0 and garble, `c` and
 /// `d` answer clean in slots 4 and 14; `e` and `f` share 95 bits, `e` and
 /// `g` 40. On a clean bus the walk is a full binary tree over the `S`
 /// shared prefixes: each collides and splits, `N` leaves find an id, the
-/// other `S + 1 - N` stay empty for two probes each, `3S + 2 - N` in all.
+/// other `S + 1 - N` stay empty for two probes each, `3S + 2 - N`. Every
+/// leaf but the `W` found by their whole length (`e` and `f`) costs three
+/// confirm probes more: its own child answers, the other stays empty
+/// twice.
 #[test]
 fn boot_discover_walks_a_fleet_in_the_fewest_probes() {
     let mut e = [0x42; UID_LEN];
@@ -861,7 +878,41 @@ fn boot_discover_walks_a_fleet_in_the_fewest_probes() {
     assert_eq!(c.boot_discover().expect("discover"), want);
     let ids: Vec<&[u8]> = want.iter().map(Vec::as_slice).collect();
     let shared = shared_prefixes(&ids);
-    assert_eq!(c.pipe_mut().sends, 3 * shared + 2 - ids.len());
+    let whole = whole_length(&ids);
+    assert_eq!(whole, 2);
+    assert_eq!(
+        c.pipe_mut().sends,
+        3 * shared + 2 + 2 * ids.len() - 3 * whole
+    );
+}
+
+/// `v` and `w` share 18 bits, `x` the first 17. The probe of those 17 bits
+/// draws all three, `v`'s reply overlapping another, so a `v` deaf after a
+/// collision misses the next probe, of the 18 bits, and `w` answers it
+/// alone. The confirm of that lone reply hears `v` under the other child.
+#[test]
+fn boot_discover_confirms_a_lone_reply_past_a_deaf_device() {
+    let mut v = [0u8; UID_LEN];
+    v[3..11].fill(0x5A);
+    let (mut w, mut x) = (v, v);
+    w[2] = 0b100;
+    w[11] = 0x33;
+    x[2] = 0b010;
+    x[11] = 0x77;
+    let mut want: Vec<Vec<u8>> = [v, w, x].iter().map(|u| u[..12].to_vec()).collect();
+    want.sort();
+
+    let mut c = boot_fleet(&[v, w, x]);
+    c.pipe_mut().pipe.sim_mut().boot_deaf_after_collision(0);
+    assert_eq!(c.boot_discover().expect("discover"), want);
+    let sim = c.pipe_mut().pipe.sim_mut();
+    let mut heard = |i| -> Vec<u64> { sim.boot_log(i).iter().map(|t| t.request_end).collect() };
+    let (heard_v, heard_w) = (heard(0), heard(1));
+    assert!(heard_v.contains(&heard_w[17]), "v answers the 17-bit probe");
+    assert!(!heard_v.contains(&heard_w[18]), "v misses the 18-bit probe");
+
+    let mut c = boot_fleet(&[v, w, x]);
+    assert_eq!(c.boot_discover().expect("discover"), want);
 }
 
 /// Servo `i`'s tinyboot id: its ESIG, the osc UID's first 12 bytes.
