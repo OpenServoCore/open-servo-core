@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use osc_client::blocking::Client;
-use osc_client::boot::Selected;
+use osc_client::boot::{BootInfo, ResetFlags, Selected, Status, WriteFlags};
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
@@ -565,6 +565,112 @@ fn boot_select_with_no_device_finds_none() {
             ids: vec![],
             garble: 0,
         }
+    );
+}
+
+/// An image for the fake bootloader, its tail `[compat, version]`.
+fn boot_image(len: usize, compat: &str, version: u16) -> Vec<u8> {
+    let mut img: Vec<u8> = (0..len).map(|i| (i * 7) as u8).collect();
+    img[len - 6..len - 2].copy_from_slice(&tinyboot_protocol::compat_key(compat).to_le_bytes());
+    img[len - 2..].copy_from_slice(&version.to_le_bytes());
+    img
+}
+
+/// Servos `uids` wait in their bootloaders, the bus in tinyboot at 0.5 M.
+fn boot_fleet(uids: &[[u8; UID_LEN]]) -> Client<FakePipe> {
+    let ids: Vec<u8> = (1..=uids.len() as u8).collect();
+    let mut c = fleet(&ids);
+    let sim = c.pipe_mut().sim_mut();
+    for (i, &uid) in uids.iter().enumerate() {
+        sim.seed_servo_uid(i, uid);
+        sim.start_in_bootloader(i);
+    }
+    c.set_bus(BusMode::Tinyboot, 500_000).expect("to tinyboot");
+    c
+}
+
+#[test]
+fn firmware_update_round_trip() {
+    let id = Id::new(1);
+    let mut c = fleet(&[1]);
+    c.reboot_bootloader(id, BaudRate::B500000)
+        .expect("to bootloader");
+    c.set_bus(BusMode::Tinyboot, 500_000).expect("to tinyboot");
+    let esig = c.pipe_mut().sim_mut().servo_uid(0)[..12].to_vec();
+    assert_eq!(
+        c.boot_select(0, &esig, 96).expect("select"),
+        Selected {
+            ids: vec![esig],
+            garble: 0,
+        }
+    );
+    assert_eq!(
+        c.boot_info().expect("info"),
+        BootInfo {
+            capacity: 58_112,
+            erase_size: 256,
+            boot_version: tinyboot_protocol::pack_version(0, 1, 0),
+            app_version: 0xFFFF,
+            mode: 0,
+            boot_baud: tinyboot_protocol::BaudRate::B500000 as u8,
+            compat: tinyboot_protocol::compat_key("osc-dev-v006"),
+            max_payload: 240,
+        }
+    );
+
+    let v = tinyboot_protocol::pack_version(1, 2, 3);
+    let img = boot_image(298, "osc-dev-v006", v);
+    c.boot_erase(0, 512).expect("erase");
+    c.boot_write(0, &img[..240], WriteFlags::empty())
+        .expect("write");
+    c.boot_write(240, &img[240..], WriteFlags::FLUSH)
+        .expect("flush");
+    let crc = tinyboot_protocol::crc::crc16(tinyboot_protocol::crc::CRC_INIT, &img);
+    assert_eq!(c.boot_verify(298).expect("verify"), crc);
+    c.boot_reset(ResetFlags::empty(), None).expect("to app");
+
+    c.set_bus(BusMode::Osc, 1_000_000).expect("to osc");
+    assert_eq!(c.ping(id).expect("ping").fw, v);
+}
+
+/// Slots 4 and 14 for seed 0 (`crc16(esig) & 15`): the replies stand ten
+/// units of 96 bit-times apart, clean.
+#[test]
+fn boot_select_hears_two_devices_in_their_slots() {
+    let (a, b) = ([1; UID_LEN], [3; UID_LEN]);
+    let mut c = boot_fleet(&[a, b]);
+    assert_eq!(
+        c.boot_select(0, &[], 0).expect("select"),
+        Selected {
+            ids: vec![a[..12].to_vec(), b[..12].to_vec()],
+            garble: 0,
+        }
+    );
+}
+
+/// Both draw slot 0 for seed 0: one span of colliding energy.
+#[test]
+fn boot_select_same_slot_garbles() {
+    let mut c = boot_fleet(&[[5; UID_LEN], [8; UID_LEN]]);
+    let sel = c.boot_select(0, &[], 0).expect("select");
+    assert!(sel.ids.is_empty() && sel.garble > 0, "{sel:?}");
+}
+
+#[test]
+fn boot_refuses_a_foreign_image_and_a_reset_mid_update() {
+    let uid = [0x42; UID_LEN];
+    let mut c = boot_fleet(&[uid]);
+    c.boot_select(0, &uid[..12], 96).expect("select");
+    let img = boot_image(26, "another-board", 1);
+    c.boot_erase(0, 256).expect("erase");
+    c.boot_write(0, &img, WriteFlags::FLUSH).expect("write");
+    assert_eq!(
+        c.boot_verify(26).unwrap_err(),
+        Error::Boot(Status::Incompatible)
+    );
+    assert_eq!(
+        c.boot_reset(ResetFlags::empty(), None).unwrap_err(),
+        Error::Boot(Status::Unsupported)
     );
 }
 
