@@ -114,7 +114,7 @@ pub fn run() -> ! {
         // would lead the new session's stream with a hole.
         if usb.take_new_session() {
             txq.clear();
-            server.reset_session();
+            Drivers::with_bus(|bus| server.reset_session(bus));
         }
         // Keep the edge-capture and RX-ring lap accounting honest (main-loop
         // cadence is their sampling clock; the pump gate below may keep the

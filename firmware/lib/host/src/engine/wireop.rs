@@ -75,6 +75,12 @@ impl<P: Providers> Wire<P> {
     pub(super) fn take_done(&mut self) -> Option<u32> {
         self.pending_done.take()
     }
+
+    /// Forget the op the engine just abandoned.
+    pub(super) fn cancel(&mut self) {
+        self.train = None;
+        self.pending_done = None;
+    }
 }
 
 impl<P: Providers> HostBus<P> {
@@ -160,6 +166,7 @@ impl<P: Providers> HostBus<P> {
         }
         self.baud.apply_raw(bps);
         self.rate = nearest_rate(bps);
+        self.bps = bps;
         self.pace();
         self.wire.pending_done = Some(self.deadline.now());
         Ok(())
