@@ -499,6 +499,7 @@ impl<P: Pipe> Client<P> {
     /// Rescue pulse; the host UART lands at 0.5M with the rescued fleet.
     pub async fn rescue(&mut self) -> Result<(), Error> {
         self.run_exchange(Command::Rescue).await?;
+        self.info.bps = BaudRate::RESCUE.as_hz();
         Ok(())
     }
 
@@ -528,7 +529,8 @@ impl<P: Pipe> Client<P> {
 
     /// One tinyboot frame, sent with no break (link sec 7). `window` is the
     /// whole reply allowance in whole microseconds, saturating; zero for
-    /// [`TbExpect::None`]. The pipe guard must exceed it.
+    /// [`TbExpect::None`]. The pipe guard must exceed it. `addr` is 24 bits
+    /// on the wire; a wider one is refused as `MALFORMED`, never truncated.
     pub async fn tb_exchange(
         &mut self,
         expect: TbExpect,
@@ -538,6 +540,9 @@ impl<P: Pipe> Client<P> {
         flags: u8,
         data: &[u8],
     ) -> Result<TbReply, Error> {
+        if addr > 0xFF_FFFF {
+            return Err(Error::Link(LinkError::Rejected(RejectReason::Malformed)));
+        }
         let window_us = u32::try_from(window.as_micros()).unwrap_or(u32::MAX);
         let mut out = Vec::new();
         let tag = self.session.encode_submit(

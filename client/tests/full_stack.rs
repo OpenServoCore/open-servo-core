@@ -236,6 +236,7 @@ fn rescue_reunites_at_the_rescue_rate() {
     let mut c = fleet(&[5]);
     let roster = c.rescue_sweep(&[Id::new(5)]).expect("rescue sweep");
     assert_eq!(roster, vec![(Id::new(5), true)]);
+    assert_eq!(c.info().bps, BaudRate::RESCUE.as_hz());
 }
 
 #[test]
@@ -531,6 +532,19 @@ fn tb_expect_none_is_sent() {
         .expect("none");
     assert_eq!(r.outcome, Outcome::Sent);
     assert!(r.frames.is_empty());
+}
+
+#[test]
+fn tb_addr_past_24_bits_is_refused_unsent() {
+    let mut c = fleet(&[1]);
+    c.set_bus(BusMode::Tinyboot, 115_200).expect("to tinyboot");
+    assert_eq!(
+        c.tb_exchange(TbExpect::None, Duration::ZERO, 3, 0x0100_0000, 0, &[])
+            .unwrap_err(),
+        Error::Link(LinkError::Rejected(RejectReason::Malformed))
+    );
+    c.tb_exchange(TbExpect::None, Duration::ZERO, 3, 0x00FF_FFFF, 0, &[])
+        .expect("24-bit addr");
 }
 
 #[test]
