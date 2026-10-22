@@ -98,3 +98,8 @@ where a comparison needs it.
   the inductance, the resistance in rotation, and breakaway. Dataset
   `mg90-a__dev-v006-2A__dps__bare-motor`; loaders `oscnb.staticsweep` and
   `oscnb.meterlog`.
+- `21-i2t-winding-estimate`: the I2t heat plus the board NTC as the winding
+  estimate that replaces the resistance thermometer, replayed over the heating
+  holds of the thermometer and heating datasets, its two constants fitted for an
+  NTC on the can and on a board in room air, and graded against the winding read
+  through its own copper. Replay `oscnb.i2t`.
