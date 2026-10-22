@@ -374,12 +374,15 @@ pub const fn body(b: Body) -> u32 {
 ///
 /// M: r3-refill, each body's largest window mean (at least
 /// [`MEAN_MIN_BODIES`] bodies), the same spin rule, 3 runs: BreakWake 756
-/// (arm10), TxDone 243 (stepping, the goal WRITE), Deadline 4496 (the goal
-/// WRITE).
+/// (arm10), Deadline 4496 (the goal WRITE). TxDone 261 (ping 1M) on a
+/// build-image.sh image: cargo hashes the path of every path dependency
+/// into the crate metadata, so the release layout links the ISR bodies in
+/// another function order than a checkout build, and the checkout's 243
+/// (stepping) does not transfer.
 pub const fn body_mean(b: Body) -> u32 {
     match b {
         Body::BreakWake => 794,
-        Body::TxDone => 256,
+        Body::TxDone => 275,
         Body::Deadline => 4721,
     }
 }
