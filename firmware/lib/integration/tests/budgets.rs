@@ -12,9 +12,9 @@ use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
-    self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, LAYOUT, PHASES,
-    Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TEL_ROW, TICK_PERIOD,
-    TICK_PUBLISH, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, LAYOUT, LIMIT_SPLIT,
+    PHASES, Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TEL_ROW,
+    TICK_PERIOD, TICK_PUBLISH, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
 use osc_servo_core::kernel::{self, DECIM_SLOW, TICK_HZ, phase};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
@@ -141,7 +141,7 @@ fn the_des_charges_the_budget_table() {
     for r in Regime::ALL {
         let i = r as usize;
         for p in 0..PHASES {
-            let tick = (TICK_PUBLISH[i][p] + LAYOUT) as u64;
+            let tick = (TICK_PUBLISH[i][p] + LIMIT_SPLIT[p] + LAYOUT) as u64;
             assert_eq!(KERNEL_AT_BUDGET[i][p], KERNEL[i][p] as u64 + tick + entry);
             let mean = (KERNEL_FLOOR[i][p] + KERNEL_AT_BUDGET[i][p]) / 2;
             assert!(

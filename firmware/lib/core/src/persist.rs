@@ -56,7 +56,7 @@ pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout change; a mismatched image boots
 /// `ImageState::Stale` (board defaults stand, closed loop gated) rather
 /// than migrating.
-pub const IMAGE_VERSION: u8 = 6;
+pub const IMAGE_VERSION: u8 = 7;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
@@ -560,6 +560,7 @@ mod tests {
             },
             &CurrentDefaults::from_sense(33, 15_000, 3300),
             1200,
+            1300,
         );
     }
 

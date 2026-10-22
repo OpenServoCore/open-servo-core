@@ -734,7 +734,7 @@ pub(crate) fn drive(
     m.insert("rule".into(), crate::capture::RULE.as_str().into());
     m.insert("current_limit_counts".into(), lim.i_lim.into());
     m.insert("window_floor_q15".into(), lim.window_floor_q15.into());
-    m.insert("stall_yield_counts".into(), lim.stall_yield.into());
+    m.insert("i_cont_counts".into(), lim.i_cont.into());
     m.insert("stall_release_counts".into(), stall.release.into());
     m.insert("stall_time_ticks".into(), stall.time_ticks.into());
     m.insert("stall_response".into(), stall.response().into());
@@ -1153,7 +1153,7 @@ mod tests {
     fn mg90() -> ServoLimits {
         ServoLimits {
             i_lim: 280,
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             soft: (432, 3626),
             phys: (209, 3849),

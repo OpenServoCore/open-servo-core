@@ -6,7 +6,8 @@
 use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
-use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW, LimitState};
+use osc_servo_core::kernel::phases::loops::limits::{FoldIn, LimitState, i_cont_or_cap};
+use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW};
 use osc_servo_core::{ControlTable, stamp};
 
 use crate::pipe::{Pipe, PipeError};
@@ -125,11 +126,13 @@ impl Winding {
             _ => (UNSET_CC, flag::UNSET),
         };
         let mut limits = LimitState::new();
+        let mut lim = lim;
+        lim.i_cont_counts = i_cont_or_cap(&lim);
         limits.update_derate(t_cc, &lim, &therm);
-        limits.fold(false, 0, 0, 0, false, &lim, &t.config.pos_soft);
+        let fold = limits.fold(&FoldIn::default(), &lim, &t.config.pos_soft);
         t.telemetry.tick.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
-        t.telemetry.estimates.i_lim_counts = limits.i_lim_counts();
+        t.telemetry.estimates.i_lim_counts = fold.band.lim();
         t.telemetry_ext.therm.t_ntc_cc = t_ntc.unwrap_or(0);
         t.telemetry_ext.therm.therm_flags = flags;
     }

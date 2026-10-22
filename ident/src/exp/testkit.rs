@@ -18,7 +18,7 @@
 //! write of true with torque on, extended by a rewrite, dropped by torque
 //! off, false, or the lease running out. With `stall_ms` set the stall
 //! timer runs too: a limiter that holds the goal back on a still shaft that
-//! long folds the limit to `stall_yield`, and the fold releases once the
+//! long folds the limit to `i_cont`, and the fold releases once the
 //! disturbance estimate falls under `stall_release`; one that would release
 //! at once shows the verdict for a single MEDIUM tick.
 //!
@@ -127,7 +127,7 @@ pub fn bench_mg90(vbus: u16) -> FakeServo {
     s.current_limit = Some(280);
     s.transient_gain = 1.0;
     s.stall_ms = Some(500.0);
-    s.stall_yield = 168;
+    s.i_cont = 168;
     s.stall_release = 84;
     s
 }
@@ -140,7 +140,7 @@ pub fn bench_mg90(vbus: u16) -> FakeServo {
 pub fn bench_mg90_saved(vbus: u16) -> FakeServo {
     let mut s = bench_mg90(vbus);
     s.stall_ms = Some(570.0);
-    s.stall_yield = 545;
+    s.i_cont = 545;
     s.stall_release = 273;
     s
 }
@@ -291,7 +291,7 @@ pub struct FakeServo {
     pub load: f64,
     /// The stall timer, ms; None never folds.
     pub stall_ms: Option<f64>,
-    pub stall_yield: u16,
+    pub i_cont: u16,
     /// The fold holds while the disturbance estimate reads this or more;
     /// 0 holds it until torque off.
     pub stall_release: u16,
@@ -398,7 +398,7 @@ impl FakeServo {
             sticky: None,
             load: 0.0,
             stall_ms: None,
-            stall_yield: 0,
+            i_cont: 0,
             stall_release: 0,
             pinned_at: None,
             folded: false,
@@ -571,13 +571,8 @@ impl FakeServo {
 
     /// The limit in force: the current limit, or the yield once folded.
     fn limit(&self) -> Option<u16> {
-        self.current_limit.map(|l| {
-            if self.folded {
-                l.min(self.stall_yield)
-            } else {
-                l
-            }
-        })
+        self.current_limit
+            .map(|l| if self.folded { l.min(self.i_cont) } else { l })
     }
 
     /// The duty the limiter applies for the goal, and whether the current,
@@ -2214,7 +2209,7 @@ mod tests {
         let mut s = FakeServo::new(3.37);
         s.current_limit = Some(150);
         s.stall_ms = Some(500.0);
-        s.stall_yield = 90;
+        s.i_cont = 90;
         s.jam = Some(s.pos);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct(64));

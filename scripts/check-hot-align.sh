@@ -39,6 +39,7 @@ hot=(
     WindingTherm::reference
     WindingTherm::cold_check
     math::recip_div
+    limits::floor_log2
     ServoBus::drive_framer
     ServoBus::route_frame
     ServoBus::route_chain

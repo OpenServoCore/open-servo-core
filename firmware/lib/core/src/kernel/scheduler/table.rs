@@ -96,7 +96,7 @@ impl Medium {
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
             phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
-            phase::SLOW => return self.slow(m, cfg, faults),
+            phase::SLOW => return self.slow(m, fast.i_meas_last(), cfg, faults),
             phase::PUBLISH => self.publish(shared, faults, fast),
             _ => {}
         }

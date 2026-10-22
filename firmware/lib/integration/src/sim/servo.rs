@@ -9,7 +9,9 @@ use osc_servo_core::TelStream;
 use osc_servo_core::TelemetryTick;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
-use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
+use osc_servo_core::regions::config::{
+    DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
+};
 
 use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
@@ -190,6 +192,14 @@ impl SimServo {
                 seed.sense.vmotor_div_top as u32,
                 seed.sense.vmotor_div_bot as u32,
                 seed.sense.vdd_mv,
+            ),
+            rail_fold_q8(
+                DEFAULT_RAIL_SOURCE_MOHM,
+                seed.sense.shunt_r_mohm,
+                seed.sense.gain_milli,
+                seed.sense.vdd_mv,
+                seed.sense.vmotor_div_top as u32,
+                seed.sense.vmotor_div_bot as u32,
             ),
         );
         if let Some(store) = seed.store {

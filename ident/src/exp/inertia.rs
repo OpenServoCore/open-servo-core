@@ -879,7 +879,7 @@ mod tests {
     fn plan(i_lim: u16) -> DutyPlan {
         let lim = crate::limits::ServoLimits {
             i_lim,
-            stall_yield: i_lim / 2,
+            i_cont: i_lim / 2,
             tau_trip: i_lim,
             soft: (200, 4000),
             phys: (200, 4000),
@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(bursts.len(), 6);
         let lim = crate::limits::ServoLimits {
             i_lim: 280,
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             soft: (432, 3626),
             phys: (209, 3849),
@@ -1383,7 +1383,7 @@ mod tests {
         servo.jam = Some(350.0);
         servo.current_limit = Some(120);
         servo.stall_ms = Some(20.0);
-        servo.stall_yield = 60;
+        servo.i_cont = 60;
         let params = crate::exp::testkit::rig();
         let cfg = InertiaCfg {
             base_polls: 20,
@@ -1525,7 +1525,7 @@ mod tests {
         const INSET: (u16, u16) = (GUARD.0 + 150, GUARD.1 - 150);
         let lim = crate::limits::ServoLimits {
             i_lim: 280,
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             soft: (432, 3626),
             phys: (209, 3849),

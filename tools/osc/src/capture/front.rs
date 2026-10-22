@@ -157,26 +157,26 @@ impl Front {
         Ok(())
     }
 
-    /// Why a held stall would stay at the current limit: the stall timer
-    /// folds to a yield that is no lower, or lets go of the fold before a
-    /// stall held at the yield reads under the release. A timer that
-    /// latches a fault instead always acts.
+    /// Why a held stall would stay at the current limit: the press never
+    /// triggers over a continuous current at or over the limit, or the fold
+    /// lets go before the current held at it reads under the release. A
+    /// timer that latches a fault instead always acts.
     fn inert(&self) -> Option<String> {
         if !self.stall.folds {
             return None;
         }
         let ma = self.lim.ma();
-        let (y, l, r) = (self.lim.stall_yield, self.lim.i_lim, self.stall.release);
+        let (y, l, r) = (self.lim.i_cont, self.lim.i_lim, self.stall.release);
         if y >= l {
             return Some(format!(
-                "stall yield {} is not under the current limit {}",
+                "continuous current {} is not under the current limit {}",
                 ma.of(y as f64),
                 ma.of(l as f64)
             ));
         }
         if r >= y {
             return Some(format!(
-                "stall release {} is not under the stall yield {}",
+                "stall release {} is not under the continuous current {}",
                 ma.of(r as f64),
                 ma.of(y as f64)
             ));
@@ -309,7 +309,7 @@ pub(super) fn bench() -> Front {
     Front {
         lim: ServoLimits {
             i_lim: 280,
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             soft: (432, 3626),
             phys: (232, 3849),
@@ -363,30 +363,30 @@ mod tests {
         );
     }
 
-    /// The bench servo's saved stall settings, yield 545 and release 273
-    /// over its 280 limit: a stall held there never backs off. A release
-    /// over the yield lets every fold go at once. A stall that latches a
-    /// fault acts whatever the yield.
+    /// The bench servo's saved stall settings, a continuous current of 545
+    /// and a release of 273 over its 280 limit: a press there never trips.
+    /// A release over the continuous current lets every fold go at once. A
+    /// stall that latches a fault acts whatever the settings.
     #[test]
     fn an_inert_stall_response_is_refused() {
         let (mut c, id) = servo(1961);
-        set(&mut c, id, config::STALL_YIELD_COUNTS, 545);
+        set(&mut c, id, config::I_CONT_COUNTS, 545);
         set(&mut c, id, config::STALL_RELEASE_COUNTS, 273);
         assert_eq!(
             refusal(&mut c, id, Supply::TwoS),
-            "the servo's stall settings cannot fold a stall (stall yield 545 counts (492 mA) is \
-             not under the current limit 280 counts (253 mA)): a capture runs unattended, set \
-             them first"
+            "the servo's stall settings cannot fold a stall (continuous current 545 counts \
+             (492 mA) is not under the current limit 280 counts (253 mA)): a capture runs \
+             unattended, set them first"
         );
-        set(&mut c, id, config::STALL_YIELD_COUNTS, 168);
+        set(&mut c, id, config::I_CONT_COUNTS, 168);
         set(&mut c, id, config::STALL_RELEASE_COUNTS, 200);
         assert_eq!(
             refusal(&mut c, id, Supply::TwoS),
             "the servo's stall settings cannot fold a stall (stall release 200 counts (180 mA) \
-             is not under the stall yield 168 counts (152 mA)): a capture runs unattended, set \
-             them first"
+             is not under the continuous current 168 counts (152 mA)): a capture runs \
+             unattended, set them first"
         );
-        set(&mut c, id, config::STALL_YIELD_COUNTS, 545);
+        set(&mut c, id, config::I_CONT_COUNTS, 545);
         set(&mut c, id, config::STALL_RESPONSE, 0);
         let f = read(&mut c, id, Supply::TwoS).unwrap();
         assert!(!f.stall.folds);

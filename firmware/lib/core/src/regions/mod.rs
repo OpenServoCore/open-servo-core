@@ -81,12 +81,15 @@ impl ControlTableCell {
     /// Soft limits init to physical limits per control-table doc.
     /// Caller must be sole writer (install-time, pre-IRQ).
     /// `v_undervolt_counts` is `config::DEFAULT_V_UNDERVOLT_MV` through the
-    /// board's terminal divider (`config::vmotor_counts`).
+    /// board's terminal divider (`config::vmotor_counts`), `rail_fold_q8`
+    /// `config::DEFAULT_RAIL_SOURCE_MOHM` through both chains
+    /// (`config::rail_fold_q8`).
     pub fn seed_config_defaults(
         &self,
         defaults: &ConfigDefaults,
         current: &CurrentDefaults,
         v_undervolt_counts: u16,
+        rail_fold_q8: u16,
     ) {
         crate::log::debug!(
             "seed CONFIG: phys=[{}, {}] counts  id={}  baud_idx={}",
@@ -120,11 +123,12 @@ impl ControlTableCell {
             cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
             cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
             cfg.limits.stall_time_ticks = config::DEFAULT_STALL_TIME_TICKS;
-            cfg.limits.stall_yield_counts = current.stall_yield_counts;
+            cfg.limits.i_cont_counts = current.i_cont_counts;
             cfg.limits.stall_release_counts = current.stall_release_counts;
-            cfg.limits.stall_tau_trip_counts = current.stall_tau_trip_counts;
+            cfg.limits.stall_tau_trip_counts = config::STALL_TAU_TRIP_OFF;
             cfg.limits.oc_trip_counts = current.oc_trip_counts;
             cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
+            cfg.limits.thermal_tau_ms = config::DEFAULT_THERMAL_TAU_MS;
             cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
             cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
@@ -136,6 +140,7 @@ impl ControlTableCell {
             cfg.fault_cfg.pos_error_time_ticks = config::DEFAULT_POS_ERROR_TIME_TICKS;
             cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
             cfg.fault_cfg.sensor_bad_count = config::DEFAULT_SENSOR_BAD_COUNT;
+            cfg.fault_cfg.rail_fold_q8 = rail_fold_q8;
         });
     }
 

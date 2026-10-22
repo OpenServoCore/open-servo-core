@@ -1046,8 +1046,9 @@ identity runs and the stamp reports the loss as `STAMP_MISMATCH` (DES
 ### 5.8 Limits and the stall permit (osc-servo)
 
 Every drive mode clamps against the same current band (control-theory
-"Limits"): the current limit, the thermal derate, the stall fold and the
-directional endstop. The closed loops clamp their current reference;
+"Limits"): the peak cap, the I2t budget, the thermal derate, the rail
+fold and `goal_current`, then the press fold and the directional
+endstop. The closed loops clamp their current reference;
 OpenLoop, which has none, holds a duty ceiling against the band from
 the shunt alone, so a host-written `goal_duty` is a request the servo
 may refuse to apply in full. Three registers let a host take part: a
@@ -1059,9 +1060,9 @@ descriptor carries the addresses.
 **Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
 the motor stall on purpose, which calibration needs to seat a hard
 stop and identification's stop routes, when asked for, need to measure
-the winding. It drops the stall trip (timer and collision check) and
-the endstop, and nothing else: the
-current limit and the thermal derate still compose. The byte is the
+the winding. It drops the detectors (the press timer and the collision
+check) and the endstop, and nothing else: the peak cap, the I2t budget,
+the thermal derate and the rail fold still compose. The byte is the
 host's *request*; the *grant* is a lease the servo keeps:
 
 - A committed write whose span covers the byte, leaving it true while
@@ -1099,15 +1100,24 @@ every medium tick (2 kHz), torque on or off.
 | bit | name      | set while                                                                                                                                                            |
 | --- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0   | `CEILING` | the command sat at the current ceiling: in OpenLoop the duty ceiling held under the goal by the current, in the closed loops the current reference at `i_lim_counts` |
-| 1   | `YIELD`   | the stall verdict folded the limit to `stall_yield_counts`                                                                                                           |
+| 1   | `YIELD`   | the press or collision verdict folded the limit to `i_cont_counts`                                                                                                   |
 | 2   | `ENDSTOP` | exactly one side of the band is closed: a soft limit forbids current in one direction (a zero limit closes both and does not set it)                                 |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
+| 4   | `I2T`     | the I2t budget binds before the press fold, under the cap                                                                                                            |
+| 5   | `DERATE`  | the thermometer's derate binds before the press fold, under the cap                                                                                                    |
+| 6   | `RAIL`    | the rail fold binds before the press fold, under the cap                                                                                                                       |
+| 7   | `GOAL`    | `goal_current` binds before the press fold, under the cap                                                                                                                      |
 
-Bit 0 is the same pin the stall timer counts, so a bit 0 that stays set
-on a still shaft is a stall in progress. The permit drops the fold and
-the endstop, so bit 3 never appears with bits 1 or 2 (unit
-`limit_flags_name_the_governor`). The flags are a polled register; a TEL
-row may carry them, as any table field, at medium rate.
+Bits 4 to 7 name the ceiling that binds before the press fold: none of
+them set means the peak cap does, and a tie sets each term at the
+minimum. The press trigger is the held current over `i_cont_counts` on
+a still shaft, not bit 0, so bit 0 alone on a still shaft under
+`i_cont_counts` is a hold the loop is content with. The permit drops
+the fold and the endstop, so bit 3 never appears with bits 1 or 2, and
+it drops no ceiling, so it does appear with bits 4 to 7 (units
+`limit_flags_name_the_governor`, `permit_does_not_lift_the_i2t_fold`).
+The flags are a polled register; a TEL row may carry them, as any table
+field, at medium rate.
 
 **Window floor.** `window_floor_q15` (u16, RO, `0x27E` in TELEMETRY,
 a Q15 duty magnitude) is the smallest duty whose drive window the shunt
@@ -1229,13 +1239,13 @@ reference for any host that drives OpenLoop (control-theory "Open Loop
 Under the Same Band" has the planning behind it):
 
 - Before any drive it reads what it plans against:
-  `current_limit_counts`, `stall_yield_counts`,
+  `current_limit_counts`, `i_cont_counts`,
   `stall_tau_trip_counts`, the soft and physical position limits,
   `raw_min` and `raw_max`, `r_q12`, the shunt and amplifier constants
   that turn counts into amps, one telemetry read for `vbus_counts`
   and `window_floor_q15`, and `window_v_floor_q15`. A current floor of
-  0 refuses every drive; a stall
-  yield not under the limit, or a collision trip over twice it, is
+  0 refuses every drive; a continuous current not under the limit, or
+  a collision trip over twice it (the boot value, off, excepted), is
   warned about. Identification also refuses soft limits that span the
   whole pot (a servo `osc cal` never ran on) and an abort threshold
   more than a quarter over the limit.

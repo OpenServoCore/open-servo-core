@@ -281,7 +281,7 @@ pub(crate) mod bench {
         for (reg, v) in [
             (config::CURRENT_LIMIT_COUNTS, 280),
             (config::STALL_RESPONSE, 1),
-            (config::STALL_YIELD_COUNTS, 168),
+            (config::I_CONT_COUNTS, 168),
             (config::STALL_RELEASE_COUNTS, 84),
             (config::POS_MIN_PHYS_COUNTS, 232),
             (config::POS_MAX_PHYS_COUNTS, 3849),

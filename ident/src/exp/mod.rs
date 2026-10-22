@@ -1365,7 +1365,7 @@ mod tests {
     fn abort_default_clears_a_held_stall() {
         let lim = crate::limits::ServoLimits {
             i_lim: 280,
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             soft: (432, 3626),
             phys: (209, 3849),

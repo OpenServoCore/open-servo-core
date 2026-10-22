@@ -9,12 +9,14 @@ use crate::math::q_mul;
 impl Medium {
     /// SLOW, every DECIM_SLOW periods, in two stages a period apart, so
     /// neither sets the period's longest tick: on the due tick the permit
-    /// lease, undervoltage and the thermometer's step on this tick's
-    /// window; on the next period's SLOW phase its temperature and
-    /// overtemperature. Whether a stage ran.
+    /// lease, undervoltage, the I2t heat on the held current `i_held` and
+    /// the thermometer's step on this tick's window; on the next period's
+    /// SLOW phase its temperature and overtemperature and the I2t ceiling.
+    /// Whether a stage ran.
     pub(in crate::kernel) fn slow(
         &mut self,
         m: &Measured,
+        i_held: i16,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
     ) -> bool {
@@ -29,12 +31,13 @@ impl Medium {
             return false;
         }
         self.slow_periods = 0;
-        self.slow_due(m, cfg, faults);
+        self.slow_due(m, i_held, cfg, faults);
         true
     }
 
-    fn slow_due(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
+    fn slow_due(&mut self, m: &Measured, i_held: i16, cfg: &KernelConfig, faults: &mut FaultLatch) {
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
+        self.limits.heat(i_held, cfg.tau_shift());
         // v_mean needs the taps' window valid (bemf RECIP_ARR contract)
         let v_mean = m.vdiff.map(|vdiff| {
             q_mul(
@@ -62,6 +65,7 @@ impl Medium {
 
     fn slow_finish(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch) {
         let t_cc = self.thermal.finish(&cfg.therm);
+        self.limits.update_i2t(&cfg.limits, cfg.i_cont_log2());
         // the fold reads the derate from the next period's LIMITS on, so it
         // waits for SPARE_B; UNSET_CC sits under every threshold: no
         // derate, no cutoff

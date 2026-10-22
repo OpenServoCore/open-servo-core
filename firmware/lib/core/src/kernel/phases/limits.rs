@@ -23,7 +23,7 @@ impl Medium {
         let life = &self.ctl.life;
         // pinned = last command sat at a nonzero ceiling, in OpenLoop the
         // duty ceiling held under the goal
-        let prev_lim = self.limits.i_lim_counts();
+        let prev_lim = self.i_band.lim();
         let pinned = if life.mode == Mode::OpenLoop {
             fast.take_pinned()
         } else {
@@ -38,12 +38,23 @@ impl Medium {
             self.permit_ticks = 0;
         }
         let permit = life.stall_permit && self.permit_ticks != 0;
-        let band = self.limits.fold(
-            pinned,
-            self.fusion.omega_q16().unsigned_abs() >> 16,
-            self.fusion.tau_d_counts().unsigned_abs(),
-            self.fusion.theta_q16() >> 16,
-            permit,
+        // the goal caps the closed loops' demand; in Current mode it is the
+        // reference, and OpenLoop's knob is its duty (a reference left
+        // behind by a Current-mode run must not cap a tool's drive)
+        let goal_abs = if matches!(life.mode, Mode::Velocity | Mode::Position) {
+            life.goal_current.unsigned_abs()
+        } else {
+            0
+        };
+        let limits::Fold { band, terms } = self.limits.fold(
+            &limits::FoldIn {
+                i_held_abs: fast.i_meas_last().unsigned_abs() as u32,
+                omega_hat_abs_cps: self.fusion.omega_q16().unsigned_abs() >> 16,
+                tau_d_abs_counts: self.fusion.tau_d_counts().unsigned_abs(),
+                theta_hat_counts: self.fusion.theta_q16() >> 16,
+                stall_permit: permit,
+                goal_abs,
+            },
             &cfg.limits,
             &cfg.pos_soft,
         );
@@ -59,7 +70,8 @@ impl Medium {
             } else {
                 band.lo
             };
-            let v = q_mul_u(lim.unsigned_abs(), r_q12 as u32, 12);
+            // Both factors fit u16, so the product fits u32.
+            let v = (lim.unsigned_abs() * r_q12 as u32) >> 12;
             q_mul_u(v, self.vbus.recip_q15(), 15).min(cfg.ol_floor_q15 as u32) as u16
         };
         if self.run && self.limits.stall_fault_pending() {
@@ -70,7 +82,8 @@ impl Medium {
         self.limit_flags = (pinned as u8 * limits::flag::CEILING)
             | (self.limits.stalled() as u8 * limits::flag::YIELD)
             | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
-            | (permit as u8 * limits::flag::PERMIT);
+            | (permit as u8 * limits::flag::PERMIT)
+            | terms;
     }
 
     /// The observer's position, linearized Q4 counts: filtered, so the pot's

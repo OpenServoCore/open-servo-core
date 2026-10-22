@@ -41,7 +41,7 @@ Columns:
 | Fusion (pot) observer | 666 | 12 | S: 197 ins, 10 muls (5 widening per the fusion plan) | MEDIUM (OBSERVER) | core (the only source under the floor) |
 | Trajectory + position loop | 968 | ~20 | S: 141 ins inline + `step_position` 550 B out of line | MEDIUM (TRAJECTORY) | core |
 | Velocity loop | 578 | 4 | S: 175 ins, 8 muls | MEDIUM (VELOCITY) | core |
-| Limits, stall, endstops, derate, detectors | 362 | ~30 | S: 103 ins, 1 mul | MEDIUM (LIMITS) | core |
+| Limits: five-term min (cap, I2t, derate, rail, goal), press and collision detectors, endstops | 776 LIMITS body | 16 | S: LIMITS 248 ins, 3 muls (193 ins, 5 muls before); E: +140 HCLK including headroom. I2t heat +15 ins at SLOW due, ceiling +29 ins at finish; rail fold +17 ins at RAIL. E additions: 50, 79, 59 HCLK respectively. | MEDIUM (LIMITS, RAIL), SLOW | core |
 | Rail estimator (vbus) | 130 | 16 | S: 41 ins, 2 muls | MEDIUM (RAIL) | core |
 | Winding thermometer | 2,868 | 104 | S: 535 ins, 14 muls inline + 1,172 B out of line, ~0 averaged | SLOW | runtime (gated by the `rtherm_*` thresholds), module |
 | Shunt burst (ident) | 1,014 | 1,932 | 0 at rest; the kernel stops for ~1.04 ms per burst | on request | runtime, module (identification needs it) |

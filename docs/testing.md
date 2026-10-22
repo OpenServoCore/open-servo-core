@@ -139,8 +139,10 @@ The lease and the flags (`core/src/kernel/tests.rs`,
 - `permit_written_with_torque_off_never_grants` - a request written
   under torque off grants nothing once torque comes back on.
 - `limit_flags_name_the_governor` - each bit alone: ceiling in OpenLoop,
-  yield after a Current-mode stall, endstop past a soft wall, permit
-  with the endstop dropped.
+  yield after a Current-mode press over `i_cont`, endstop past a soft
+  wall, permit with the endstop dropped, the goal capping a Velocity
+  drive and not an OpenLoop one, the I2t budget binding after a long
+  hold over `i_cont`, the rail fold binding on a sag into its band.
 - `permit_write_bumps_the_generation_only_when_set` - only a committed
   true with torque on grants; a torque-off request, false, a span that
   misses the byte and a staged HOLD write do not, and one span over
@@ -166,7 +168,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   1000 counts/s is over 1.1x the limit only within the first
   millisecond, no fault.
 - `openloop_stall_yields_like_closed_loop` - Yield response: the limit
-  folds to the yield value no sooner than `stall_time_ticks` and within
+  folds to `i_cont_counts` no sooner than `stall_time_ticks` and within
   100 ms after it, and stays folded on every tick of the next second.
 - `openloop_stall_faults_on_the_boot_response` - Fault response: STALL
   latches in the same window and the drive disables.
@@ -174,15 +176,18 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   blind start and a slew to 64% across the travel never trip.
 - `openloop_stall_under_permit_never_trips` - a permit rewritten every
   250 ms holds a locked rotor at the limit for 2 s with no fold and no
-  fault.
+  fault (the I2t budget at its longest constant, out of the way).
+- `permit_does_not_lift_the_i2t_fold` - the same permitted stall over
+  4 s spends the I2t budget: the ceiling folds to `i_cont_counts`, the
+  flags name the budget and the permit and no verdict, no fault.
 - `dead_host_stall_trips_within_the_lease` - one permit write, then
   silence: STALL latches 1.5 to 1.6 s after it.
 - `blind_band_caps_at_i_lim_when_r_is_known` - a limit of 200, under the
   floor's 239-count stall current: most ticks sit under the floor, each
   at a duty stalling at 95 to 100% of the limit, mean within 1.1x.
-- `yield_fold_reaches_the_blind_band` - after a fold to a yield of 168
-  the blind band holds the yield the same way for the whole second
-  after it, mean within 1.2x.
+- `yield_fold_reaches_the_blind_band` - after a fold to an `i_cont` of
+  168 the blind band holds it the same way for the whole second after
+  it, mean within 1.2x.
 - `virgin_blind_band_passes_to_the_window_floor` - with `r_q12` at 0
   the duty never goes under the floor and sits there pinned, at the
   floor's stall current.
@@ -258,8 +263,9 @@ The servo's limits and the stall-safe plan (`limits.rs`):
 - `the_lease_is_held_only_behind_torque_on` - a permit written with
   torque off is not held, a held one is due every 250 ms, torque off
   drops it, and a stream over 750 ms with it held is refused.
-- `stall_settings_above_the_limit_are_warned` - a yield not under the
-  limit and a collision trip over twice it are warned in plain words.
+- `stall_settings_above_the_limit_are_warned` - a continuous current
+  not under the limit and a collision trip over twice it are warned in
+  plain words; the trip's boot value (off) is not.
 
 The run order and cal's sequence (`run.rs`):
 

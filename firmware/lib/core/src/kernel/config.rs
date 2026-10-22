@@ -6,6 +6,7 @@
 //! the first tick.
 
 use super::KernelTiming;
+use super::phases::loops::limits;
 use crate::estimator::{NtcCfg, ThermCfg, window};
 use crate::regions::calib::{CalibMotor, CalibThermal, CalibWinding, addr as calib_addr};
 use crate::regions::config::{
@@ -38,6 +39,9 @@ pub struct KernelConfig {
     pub calib_thermal: CalibThermal,
     /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
     pub ke_unset: bool,
+    /// The I2t leak for `thermal_tau_ms` and `i_cont`'s octave, a nibble
+    /// each (`limits::pack_shifts`): the byte the bool's padding left.
+    i2t_shifts: u8,
     pub i_window_min_ticks: u16,
     /// The terminal floor per decay (`window::v_floors`), indexed by
     /// `DecayMode as usize`.
@@ -97,6 +101,7 @@ impl KernelConfig {
             winding: CalibWinding::new(),
             calib_thermal: CalibThermal::new(),
             ke_unset: true,
+            i2t_shifts: 0,
             i_window_min_ticks: 0,
             v_floor_ticks: [0; 2],
             ol_floor_q15: 0,
@@ -168,6 +173,25 @@ impl KernelConfig {
                 k2_q24: th.ntc_k2_q24,
             },
         };
+        // Finish the thermometer stores before the log calls, so its
+        // inputs need not spill across them. The table keeps the host's 0.
+        self.limits.i_cont_counts = limits::i_cont_or_cap(&self.limits);
+        self.i2t_shifts = limits::pack_shifts(
+            limits::tau_shift(self.limits.thermal_tau_ms),
+            limits::i_cont_log2(self.limits.i_cont_counts),
+        );
+    }
+}
+
+impl KernelConfig {
+    /// The I2t leak shift (`limits::tau_shift`).
+    pub fn tau_shift(&self) -> u8 {
+        self.i2t_shifts >> 4
+    }
+
+    /// `floor(log2(i_cont))` (`limits::i_cont_log2`).
+    pub fn i_cont_log2(&self) -> u8 {
+        self.i2t_shifts & 0xF
     }
 }
 

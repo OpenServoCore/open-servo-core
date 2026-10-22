@@ -415,7 +415,7 @@ mod tests {
         // 3932 stalls at 62 counts, the first raise at 75
         s.current_limit = Some(70);
         s.stall_ms = Some(100.0);
-        s.stall_yield = 40;
+        s.i_cont = 40;
         let (exp, log) = run(&mut s);
         assert_eq!(
             exp.abort(),

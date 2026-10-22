@@ -30,14 +30,23 @@ pub mod config {
     pub const P_KP_Q88: Reg = reg(0x0040, 2);
     pub const POS_DEADBAND_COUNTS: Reg = reg(0x0042, 2);
     pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x0048, 2);
-    /// 0 = a stall latches a fault, 1 = it folds the limit to the yield.
+    /// 0 = a stall latches a fault, 1 = it folds the limit to the
+    /// continuous current.
     pub const STALL_RESPONSE: Reg = reg(0x004a, 1);
     pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
     pub const STALL_TIME_TICKS: Reg = reg(0x004c, 4);
-    pub const STALL_YIELD_COUNTS: Reg = reg(0x0052, 2);
-    /// The fold holds while the disturbance estimate reads this or more.
+    /// The continuous current: the I2t budget folds the ceiling toward it,
+    /// a press over it on a still shaft trips and folds to it; 0 reads as
+    /// the limit.
+    pub const I_CONT_COUNTS: Reg = reg(0x0052, 2);
+    /// The fold holds while the held current reads this or more.
     pub const STALL_RELEASE_COUNTS: Reg = reg(0x0054, 2);
+    /// The collision trip on the disturbance estimate; `u16::MAX` (the boot
+    /// value) trips nothing.
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0056, 2);
+    /// The winding's thermal time constant, ms; the kernel runs the nearest
+    /// power of two of its 16 ms period.
+    pub const THERMAL_TAU_MS: Reg = reg(0x005e, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
     pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0068, 2);
     pub const RTHERM_SEAT_BAND_COUNTS: Reg = reg(0x006a, 2);
@@ -45,6 +54,9 @@ pub mod config {
     pub const L1_Q016: Reg = reg(0x006e, 2);
     pub const L2_Q88: Reg = reg(0x0070, 2);
     pub const L3_Q88: Reg = reg(0x0072, 2);
+    /// The rail fold's slope, counts of ceiling per vcount of rail over
+    /// `V_UNDERVOLT_COUNTS`, Q8; 0 = off.
+    pub const RAIL_FOLD_Q8: Reg = reg(0x007e, 2);
 }
 
 pub mod calib {
@@ -196,9 +208,11 @@ pub mod telemetry {
     pub const R_HAT_Q12: Reg = reg(0x026a, 2);
     pub const CURRENT_BIAS_COUNTS: Reg = reg(0x026c, 2);
     pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x026e, 2);
-    /// Which limit holds the command back: bit 0 the current ceiling, bit 1
-    /// the stall yield fold, bit 2 an endstop, bit 3 the stall permit lease
-    /// is live (core `kernel::phases::loops::limits::flag`).
+    /// What shaped the command: bit 0 the current ceiling, bit 1 the press
+    /// fold, bit 2 an endstop, bit 3 the stall permit lease is live, then
+    /// the term that binds, bit 4 the I2t budget, bit 5 the thermometer's
+    /// derate, bit 6 the rail fold, bit 7 `goal_current` (core
+    /// `kernel::phases::loops::limits::flag`).
     pub const LIMIT_FLAGS: Reg = reg(0x027c, 1);
     /// Smallest duty whose drive window the shunt reads, Q15: where the
     /// OpenLoop ceiling restarts and its blind band begins; 0 = not
@@ -236,9 +250,11 @@ pub const ALL: &[(&str, Reg)] = &[
     ("stall_response", config::STALL_RESPONSE),
     ("drive_polarity", config::DRIVE_POLARITY),
     ("stall_time_ticks", config::STALL_TIME_TICKS),
-    ("stall_yield_counts", config::STALL_YIELD_COUNTS),
+    ("i_cont_counts", config::I_CONT_COUNTS),
     ("stall_release_counts", config::STALL_RELEASE_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
+    ("thermal_tau_ms", config::THERMAL_TAU_MS),
+    ("rail_fold_q8", config::RAIL_FOLD_Q8),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("rtherm_i_min_counts", config::RTHERM_I_MIN_COUNTS),
     ("l1_q016", config::L1_Q016),

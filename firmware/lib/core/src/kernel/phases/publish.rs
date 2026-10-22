@@ -17,7 +17,7 @@ impl Medium {
             (&raw mut (*e).theta_hat_q16).write_volatile(self.fusion.theta_q16());
             (&raw mut (*e).omega_hat_cps).write_volatile(self.omega_hat);
             (&raw mut (*e).tau_d_counts).write_volatile(self.fusion.tau_d_counts());
-            (&raw mut (*e).i_lim_counts).write_volatile(self.limits.i_lim_counts());
+            (&raw mut (*e).i_lim_counts).write_volatile(self.i_band.lim());
             (&raw mut (*e).t_winding_cc).write_volatile(self.thermal.t_cc());
             (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
             (&raw mut (*e).omega_bemf_cps)
