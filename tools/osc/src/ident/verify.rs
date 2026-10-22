@@ -17,6 +17,7 @@ use osc_ident::exp::{AbortReason, Cmd, Experiment, Guarded, Permitted, RigParams
 use osc_ident::frame::{TelBurst, TelemetrySnapshot};
 use osc_ident::limits::ServoLimits;
 use osc_ident::regs::control;
+use osc_ident::trip::{self, Trip, TripRefusal};
 use osc_ident::window::Watch;
 use serde_json::{Value, json};
 
@@ -57,6 +58,15 @@ impl<E: Experiment> Recorded<E> {
             told: Told::default(),
             rows: Vec::new(),
         }
+    }
+
+    /// `tau_d` of every read taken while the servo was told to drive.
+    fn tau_d_driven(&self) -> Vec<i16> {
+        self.rows
+            .iter()
+            .filter(|(t, _)| t.torque != 0)
+            .map(|(_, s)| s.tau_d_counts)
+            .collect()
     }
 
     fn save(&self, out: &OutDir, name: &str, pwm_period_ticks: u16) -> Result<()> {
@@ -117,14 +127,15 @@ impl<E: Experiment> Experiment for Recorded<E> {
 }
 
 /// One check run to its end on `s` under `params`, its reads saved as
-/// `name` before any abort or error is returned.
+/// `name` before any abort or error is returned, with the `tau_d` of its
+/// driven reads.
 fn check<S: Servo, E: Experiment>(
     s: &mut S,
     out: &OutDir,
     name: &str,
     exp: E,
     params: RigParams,
-) -> Result<(E, Option<AbortReason>)> {
+) -> Result<(E, Option<AbortReason>, Vec<i16>)> {
     let period = s.pwm_period_ticks()?;
     let mut g = Guarded::new(Recorded::new(exp), params);
     let ran = guard(s, |s| Pump::on(&mut *s, None).run(&mut g));
@@ -132,7 +143,17 @@ fn check<S: Servo, E: Experiment>(
     let rec = g.into_inner();
     rec.save(out, name, period)?;
     ran?;
-    Ok((rec.exp, abort))
+    let tau_d = rec.tau_d_driven();
+    Ok((rec.exp, abort, tau_d))
+}
+
+/// The collision trip meta.json records: verify velocity's tau_d floor and
+/// the trip over it, or why there is none.
+fn trip_meta(t: &Result<Trip, TripRefusal>) -> Value {
+    match t {
+        Ok(t) => json!({ "floor_counts": t.floor, "n": t.n, "trip_counts": t.trip }),
+        Err(e) => json!({ "refused": e.to_string() }),
+    }
 }
 
 /// The two checks' plans as meta.json records them.
@@ -191,8 +212,10 @@ fn write_meta(out: &OutDir, meta: &Value) -> Result<()> {
 }
 
 /// Both checks on `s`, recorded into `out`: meta.json first, each check's
-/// CSV as it ends, the scores into meta.json once both ran. `between` runs
-/// after each check with the name of the one that ended.
+/// CSV as it ends, the scores and the collision trip into meta.json once
+/// both ran. `between` runs after each check with the name of the one
+/// that ended. The trip comes from verify velocity's rows alone: verify
+/// current stalls against the stops on purpose.
 pub(super) fn run<S: Servo>(
     s: &mut S,
     out: &OutDir,
@@ -201,7 +224,7 @@ pub(super) fn run<S: Servo>(
     current: VerifyCurrentCfg,
     velocity: VerifyVelocityCfg,
     mut between: impl FnMut(&mut S, &'static str) -> Result<()>,
-) -> Result<VerifyResult> {
+) -> Result<(VerifyResult, Result<Trip, TripRefusal>)> {
     let id: Id = s.id();
     let stall = Stall::read(s.client(), id)?;
     let drive = crate::sweep::drive(lim, &stall, current.seek_duty_q15);
@@ -214,21 +237,23 @@ pub(super) fn run<S: Servo>(
     // would zero i_ref at the soft wall, and the permit opens it, as for
     // resistance
     let e5 = Permitted::new(VerifyCurrent::new(current, &params));
-    let (e5, abort) = check(s, out, CURRENT_CSV, e5, params.without_pos_guard())?;
+    let (e5, abort, _) = check(s, out, CURRENT_CSV, e5, params.without_pos_guard())?;
     check_abort(VERIFY_CURRENT, abort)?;
     let cur = e5.into_inner().result();
     between(s, VERIFY_CURRENT)?;
 
     let e6 = VerifyVelocity::new(velocity, &params);
-    let (e6, abort) = check(s, out, VELOCITY_CSV, e6, params)?;
+    let (e6, abort, tau_d) = check(s, out, VELOCITY_CSV, e6, params)?;
     check_abort("verify velocity", abort)?;
     let vel = e6.result();
     between(s, "verify velocity")?;
 
     let v = VerifyResult::assemble(Some(cur), Some(vel));
+    let t = trip::trip(tau_d);
     meta["result"] = scores(&v);
+    meta["trip"] = trip_meta(&t);
     write_meta(out, &meta)?;
-    Ok(v)
+    Ok((v, t))
 }
 
 #[cfg(test)]
@@ -238,12 +263,15 @@ mod tests {
     use crate::rig::servo::bench::Bench;
 
     /// The bench MG90 on USB through both checks: the run's dir holds
-    /// meta.json with the servo, the plans and the scores, and one CSV per
-    /// check whose rows carry the goals they were read under - the current
-    /// check's steps into the stops, the velocity check's legs.
+    /// meta.json with the servo, the plans, the scores and the collision
+    /// trip, and one CSV per check whose rows carry the goals they were
+    /// read under - the current check's steps into the stops, the velocity
+    /// check's legs. The trip is the margin over the velocity legs' tau_d,
+    /// not the stop presses' (hundreds of counts on this servo).
     #[test]
     fn a_verify_run_leaves_its_recording() {
         let mut b = Bench::mg90(Supply::Usb);
+        b.servo.tau_d_moving = 40.0;
         let id = b.id();
         // the table's rail is 2S, where verify current has no room
         let lim = ServoLimits {
@@ -260,19 +288,23 @@ mod tests {
         let base = std::env::temp_dir().join(format!("osc-verify-{}", std::process::id()));
         let out = OutDir::create(&base).unwrap();
         let mut ended = Vec::new();
-        let v = run(&mut b, &out, &lim, params, current, velocity, |b, done| {
+        let (v, t) = run(&mut b, &out, &lim, params, current, velocity, |b, done| {
             ended.push(done);
             b.servo.pos = 2029.0;
             Ok(())
         })
         .unwrap();
         assert_eq!(ended, [VERIFY_CURRENT, "verify velocity"]);
+        let t = t.unwrap();
+        assert_eq!((t.floor, t.trip), (40, 80));
+        assert!(t.n >= trip::TRIP_MIN_ROWS, "{}", t.n);
 
         let meta: Value =
             serde_json::from_str(&std::fs::read_to_string(out.0.join(META)).unwrap()).unwrap();
         assert_eq!(meta["verify"]["current"]["steps_counts"], json!(steps));
         assert_eq!(meta["verify"]["velocity"]["legs_cps"], json!([600, 1200]));
         assert_eq!(meta["result"]["pass"], json!(v.pass));
+        assert_eq!(meta["trip"]["trip_counts"], json!(80));
         assert!(meta["tick_hz"].is_u64() && meta["drive"]["current_limit_counts"] == 280);
         // the build's commit, never a lookup in whatever repo the run starts in
         assert_eq!(meta["host_git_sha"], crate::sweep::HOST_GIT_SHA);

@@ -142,13 +142,7 @@ pub(crate) fn commit<P: Pipe>(
     }
     println!("stamped {stamp:#06x}");
     if save {
-        match c.save(id) {
-            Ok(()) => println!("saved"),
-            Err(Error::Servo(ResultCode::Access)) => {
-                bail!("SAVE needs torque disabled (protocol sec 9.4)")
-            }
-            Err(e) => return Err(e.into()),
-        }
+        mgmt_save(c, id)?;
     } else if s.flags & SAVE_CLEARS != 0 {
         println!(
             "not saved: {} stands until SAVE (osc stamp --save, or osc save)",
@@ -161,6 +155,18 @@ pub(crate) fn commit<P: Pipe>(
         Some(msg) => println!("data state {}: {msg}", s.names()),
     }
     Ok(s)
+}
+
+/// MGMT SAVE, torque already off.
+pub(crate) fn mgmt_save<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
+    match c.save(id) {
+        Ok(()) => println!("saved"),
+        Err(Error::Servo(ResultCode::Access)) => {
+            bail!("SAVE needs torque disabled (protocol sec 9.4)")
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 /// `osc stamp`: bless the set the servo holds now, after deliberate manual
