@@ -248,12 +248,15 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown -p osc-client-web -- -D warnings
       - name: cargo test (osc-client-web helpers, native)
         run: cargo test -p osc-client-web
+      # A pinned release tarball: the wasm-pack action's "latest" is an
+      # unauthenticated API lookup that falls back to v0.9.1 (binaryen
+      # version_78, MVP-only wasm-opt) when rate-limited, and its install
+      # renames across filesystems, which the runner image refuses (EXDEV).
       - name: Install wasm-pack
-        uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          # "latest" is an unauthenticated API lookup that falls back to
-          # v0.9.1 (binaryen version_78, MVP-only wasm-opt) when rate-limited.
-          version: v0.15.0
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz | tar xz -C "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack" "$HOME/.cargo/bin/wasm-pack"
+          wasm-pack --version
       - name: wasm-pack build (osc-client-web, generated .d.ts must build)
         working-directory: client/web
         run: wasm-pack build --target web --out-dir pkg
