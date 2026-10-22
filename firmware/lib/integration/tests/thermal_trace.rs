@@ -63,6 +63,9 @@ fn seed_thermometer(sh: &Shared) {
         t.config.thermal.derate_start_cc = 3500;
         t.config.thermal.cutoff_cc = 6500;
         t.config.thermal.recover_cc = 4000;
+        // the hold sits over the continuous rating: the I2t budget and the
+        // press are not under test
+        t.config.limits.i_cont_counts = 0;
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;

@@ -6,8 +6,8 @@ use crate::kernel::config::KernelConfig;
 use crate::regions::control::Mode;
 
 impl Medium {
-    /// RAIL: the rail estimate on this tick's tap, the sensor screen and
-    /// the position error timer.
+    /// RAIL: the rail estimate on this tick's tap and its fold, the sensor
+    /// screen and the position error timer.
     pub(in crate::kernel) fn rail(
         &mut self,
         frame: Frame<'_>,
@@ -21,6 +21,11 @@ impl Medium {
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
         cmd.prepare_rail(cfg);
+        self.limits.update_rail(
+            cmd.vbus_counts,
+            cfg.thermal.v_undervolt_counts,
+            fault_cfg.rail_fold_q8,
+        );
         // raw-pot sanity screen runs in every mode, torque-off included
         if self.det.sensor_sample(
             frame.pos(),

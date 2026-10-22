@@ -1571,7 +1571,7 @@ mod tests {
     fn plan(i_lim: u16, r: f64, vbus: u16, moved: f64) -> DutyPlan {
         let lim = crate::limits::ServoLimits {
             i_lim,
-            stall_yield: i_lim / 2,
+            i_cont: i_lim / 2,
             tau_trip: i_lim,
             soft: (432, 3626),
             phys: (209, 3849),

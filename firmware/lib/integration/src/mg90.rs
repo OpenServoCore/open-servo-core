@@ -189,7 +189,7 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         c.limits.current_limit_counts = 280;
         c.limits.stall_response = StallResponse::Yield;
         c.limits.stall_time_ticks = ms_ticks(500);
-        c.limits.stall_yield_counts = 168;
+        c.limits.i_cont_counts = 168;
         c.limits.stall_release_counts = 84;
         c.limits.stall_tau_trip_counts = 2182;
         c.limits.oc_trip_counts = 1843;

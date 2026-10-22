@@ -136,10 +136,13 @@ pub const DEFAULT_ACCEL_LIMIT_Q88: u16 = 3840;
 // backstop; identification refines it from the measured sigma_theta.
 pub const DEFAULT_POS_DEADBAND_COUNTS: u16 = 12;
 
-/// Current ceiling, stall policy, overcurrent trip window.
+/// The hard peak cap, the continuous rating and its time constant, the
+/// stall policy, the overcurrent trip window.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigLimits {
+    /// The hard peak cap: the motor's nameplate stall current, which the
+    /// train is rated to deliver. Nothing composes over it.
     pub current_limit_counts: u16,
     pub stall_response: StallResponse,
     /// false = the wiring is reversed: the kernel negates its motor output so
@@ -148,9 +151,15 @@ pub struct ConfigLimits {
     /// Kernel ticks (`CalibSense.tick_hz`).
     pub stall_time_ticks: u32,
     pub stall_omega_max_cps: u16,
-    pub stall_yield_counts: u16,
+    /// The continuous current: what the winding holds at its maximum
+    /// temperature. The I2t budget folds the ceiling toward it, the press
+    /// detector triggers over it and folds to it. 0 reads as the cap: no
+    /// budget, the press at the cap.
+    pub i_cont_counts: u16,
+    /// The press fold lets go once the held current reads under this.
     pub stall_release_counts: u16,
-    /// Collision trip: |tau_d| above this is model-unexplained torque.
+    /// Collision trip: |tau_d| above this is model-unexplained torque;
+    /// `u16::MAX` trips nothing.
     pub stall_tau_trip_counts: u16,
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
@@ -158,25 +167,32 @@ pub struct ConfigLimits {
     /// true = Brake at zero commanded duty in OpenLoop (default coast).
     pub openloop_zero_brake: bool,
     #[ct_field(skip)]
-    pub _rsvd_align: [u8; 3],
+    pub _rsvd_align: u8,
+    /// The winding's thermal time constant: the I2t budget's leak. The
+    /// kernel runs it at the nearest power of two of its 16 ms period
+    /// (`kernel::phases::loops::limits::tau_shift`), 16 ms to 65.5 s.
+    pub thermal_tau_ms: u16,
 }
 
-// Class limits: an unconfigured servo boots on a limit that keeps a micro
-// servo usable while bounding the torque its gear train takes. The limit and
-// the collision trip sit at 500 mA. The stall fold stays under the ~0.30 A
-// of static stall at which micro-class teeth and plastic end stops show
-// damage, since a folded stall holds there while the blockage lasts; its
-// release sits below the fold, or a held stall unfolds. Host-tunable per
-// servo: a plastic train such as the SG90's gets a lower limit from its
-// host. Current thresholds are physical (mA) and reach the table in counts
-// through `CurrentDefaults::from_sense`.
+// Boot limits until the host supplies nameplate and thermal values.
+// The maxon A-max 12 data sheet gives 59.5 K/W winding to ambient and
+// a 5.03 s winding constant (source linked in control-theory). At a 60 K
+// rise, an assumed 5 ohm winding would hold about 0.45 A in free air.
+// The 250 mA default leaves unmeasured enclosure margin; the host must
+// replace it with the actual motor's rating. The leak uses the octave
+// below that reference constant, so a burst spends its budget sooner.
+// Release stays below the fold so a held press does not unfold.
 pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 500;
+pub const DEFAULT_I_CONT_MA: u16 = 250;
+pub const DEFAULT_THERMAL_TAU_MS: u16 = 4096;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_TICKS: u32 = ms_ticks(500);
-pub const DEFAULT_STALL_YIELD_MA: u16 = 180;
 pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
-pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 500;
+/// The collision trip boots off: identification sets it from the measured
+/// tau_d noise floor. A copy of the limit tripped the first free run under
+/// a low limit.
+pub const STALL_TAU_TRIP_OFF: u16 = u16::MAX;
 // Copper and shunt guard, not a gear-train limit: 2.2 A sits above any
 // micro-class stall on 2S (2.1 A) and below where the osc-dev-v006 chain
 // saturates (~2.3 A over its 1.10 V reference on 60 mOhm, the amplifier
@@ -252,7 +268,8 @@ pub const DEFAULT_L1_Q016: u16 = 16384;
 pub const DEFAULT_L2_Q88: u16 = 1024;
 pub const DEFAULT_L3_Q88: u16 = 128;
 
-/// Fault thresholds: position-error window, sensor-delta screen.
+/// Fault thresholds: position-error window, sensor-delta screen, and the
+/// rail fold ahead of the undervolt fault.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigFaultCfg {
@@ -262,8 +279,21 @@ pub struct ConfigFaultCfg {
     pub sensor_delta_max: u16,
     pub sensor_bad_count: u8,
     #[ct_field(skip)]
-    pub _rsvd_align: [u8; 3],
+    pub _rsvd_align: u8,
+    /// The rail fold: the ceiling is this many counts per vcount the rail
+    /// sits over `v_undervolt_counts`, Q8, so it reaches the cap
+    /// `cap / slope` vcounts above the floor and zero at the floor, where
+    /// the fault latches, and a sagging source folds the torque instead of
+    /// browning out. The slope is the source admittance a stall must not
+    /// sag the rail through; 0 = off.
+    pub rail_fold_q8: u16,
 }
+
+// The source a stall may sag the rail through: about 0.8 ohm, what a USB
+// lead and its connectors add, so the 500 mA class cap folds over the
+// 400 mV above the floor; a pack's floor and source are per-product
+// tuning, written by the host. Reaches the chip through `rail_fold_q8`.
+pub const DEFAULT_RAIL_SOURCE_MOHM: u32 = 800;
 
 // Wide screens so healthy motion never trips; tighten per application.
 pub const DEFAULT_POS_ERROR_COUNTS: u16 = 400;
@@ -311,9 +341,8 @@ pub struct ConfigDefaults {
 #[derive(Copy, Clone, Debug)]
 pub struct CurrentDefaults {
     pub current_limit_counts: u16,
-    pub stall_yield_counts: u16,
+    pub i_cont_counts: u16,
     pub stall_release_counts: u16,
-    pub stall_tau_trip_counts: u16,
     pub oc_trip_counts: u16,
     pub rtherm_i_min_counts: u16,
 }
@@ -327,20 +356,9 @@ impl CurrentDefaults {
                 gain_milli,
                 vdd_mv,
             ),
-            stall_yield_counts: current_counts(
-                DEFAULT_STALL_YIELD_MA,
-                shunt_r_mohm,
-                gain_milli,
-                vdd_mv,
-            ),
+            i_cont_counts: current_counts(DEFAULT_I_CONT_MA, shunt_r_mohm, gain_milli, vdd_mv),
             stall_release_counts: current_counts(
                 DEFAULT_STALL_RELEASE_MA,
-                shunt_r_mohm,
-                gain_milli,
-                vdd_mv,
-            ),
-            stall_tau_trip_counts: current_counts(
-                DEFAULT_STALL_TAU_TRIP_MA,
                 shunt_r_mohm,
                 gain_milli,
                 vdd_mv,
@@ -381,6 +399,33 @@ pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv:
     }
 }
 
+/// The rail fold's slope for a source of `z_mohm`, counts per vcount in
+/// Q8: the shunt chain's counts per amp over the terminal tap's vcounts
+/// per volt, over the source. 1430 on the osc-dev-v006 board (1108.5
+/// counts/A, 248.3 vcounts/V) at 800 mOhm. Const-eval only.
+pub const fn rail_fold_q8(
+    z_mohm: u32,
+    shunt_r_mohm: u16,
+    gain_milli: u16,
+    vdd_mv: u16,
+    div_top_ohm: u32,
+    div_bot_ohm: u32,
+) -> u16 {
+    let counts_per_amp = current_counts(1000, shunt_r_mohm, gain_milli, vdd_mv) as u64;
+    let vcounts_per_volt = vmotor_counts(1000, div_top_ohm, div_bot_ohm, vdd_mv) as u64;
+    let den = vcounts_per_volt * z_mohm as u64;
+    if den == 0 {
+        return 0;
+    }
+    let num = counts_per_amp * 1000 * 256;
+    let slope = (num + den / 2) / den;
+    if slope > u16::MAX as u64 {
+        u16::MAX
+    } else {
+        slope as u16
+    }
+}
+
 /// vcounts = mV x 4096 x bot / ((top + bot) x VDD), rounded: the rail as the
 /// motor-terminal tap reads it, the unit `vbus_counts` publishes. 794 for
 /// the 3200 mV burst cap on the osc-dev-v006 6K4/1K6 taps (4.028 mV/count).
@@ -407,6 +452,19 @@ mod tests {
     }
 
     #[test]
+    fn rail_fold_slope_follows_both_chains() {
+        assert_eq!(
+            rail_fold_q8(DEFAULT_RAIL_SOURCE_MOHM, 60, 14_884, 3300, 6_400, 1_600),
+            1430
+        );
+        // 500 mA x 0.8 ohm: the cap, 554 counts, 99 vcounts (400 mV) over
+        // the floor
+        assert_eq!((554u32 << 8) / 1430, 99);
+        assert_eq!(rail_fold_q8(0, 60, 14_884, 3300, 6_400, 1_600), 0);
+        assert_eq!(rail_fold_q8(1, 60, 14_884, 3300, 6_400, 1_600), u16::MAX);
+    }
+
+    #[test]
     fn undervolt_floor_in_vcounts_follows_the_terminal_divider() {
         assert_eq!(
             vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 6_400, 1_600, 3300),
@@ -428,9 +486,8 @@ mod tests {
     fn arm_b_rig_reproduces_the_count_seeds() {
         let d = CurrentDefaults::from_sense(33, 15_000, 3300);
         assert_eq!(d.current_limit_counts, 307);
-        assert_eq!(d.stall_yield_counts, 111);
+        assert_eq!(d.i_cont_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
-        assert_eq!(d.stall_tau_trip_counts, 307);
         assert_eq!(d.oc_trip_counts, 1352);
         assert_eq!(d.rtherm_i_min_counts, 92);
     }

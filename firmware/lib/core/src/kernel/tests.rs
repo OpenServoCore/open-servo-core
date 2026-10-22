@@ -98,18 +98,21 @@ fn seed(shared: &Shared) {
         c.limits.drive_polarity = true;
         c.limits.stall_omega_max_cps = 500;
         c.limits.stall_time_ticks = ms_ticks(50);
-        c.limits.stall_yield_counts = 300;
+        c.limits.i_cont_counts = 300;
         c.limits.stall_release_counts = 150;
         c.limits.stall_tau_trip_counts = 1200;
         c.limits.oc_trip_counts = 2400;
         c.limits.oc_trip_ticks = 4;
         c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = false;
+        c.limits.thermal_tau_ms = 4096;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
         c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
         c.thermal.rtherm_i_min_counts = 300;
+        // 1200 counts over 200 vcounts: 6 counts per vcount
+        c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
         // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
@@ -507,8 +510,9 @@ fn limit_flags_name_the_governor() {
     }
     assert!(k.fast.duty_q15 < 8000, "governed");
 
-    // yield: Current mode pinned at the limit on a still shaft folds, then
-    // a goal under the fold leaves only the fold standing
+    // yield: Current mode at the limit, the held current over i_cont on a
+    // still shaft, folds; then a goal under the fold leaves only the fold
+    // standing (the held current stays over the release)
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
@@ -516,19 +520,85 @@ fn limit_flags_name_the_governor() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.goal_current = 1200;
         t.config.limits.stall_release_counts = 0;
+        // the mg90-a observer set: `seed`'s gains ring for over a second
+        // on a held current against a still pot, and the press needs the
+        // observer still for the whole timer
+        t.config.fusion.l1_q016 = 8640;
+        t.config.fusion.l2_q88 = 3180;
+        t.config.fusion.l3_q88 = 84;
+        t.calib.motor.b_i_q313 = 2427;
     });
     let mut k = kernel();
-    for _ in 0..2_000 {
-        k.on_scan(frame(2000, BIAS), &sh);
+    // the timer plus the observer's settle on the held current
+    for _ in 0..8_000 {
+        k.on_scan(frame(2000, BIAS + 400), &sh);
     }
     assert_eq!(limit_flags(&sh), flag::CEILING | flag::YIELD);
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_current = 100);
     for _ in 0..2 * DECIM_MED {
-        k.on_scan(frame(2000, BIAS), &sh);
+        k.on_scan(frame(2000, BIAS + 400), &sh);
     }
     assert_eq!(limit_flags(&sh), flag::YIELD);
     assert_eq!(k.faults.mask(), 0);
+
+    // the terms: the goal caps a Velocity drive and not an OpenLoop one,
+    // the I2t budget a long hold over i_cont, the rail a sag into the
+    // band; each names itself
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_velocity = 1000;
+        t.control.lifecycle.goal_current = -400;
+        t.config.limits.stall_time_ticks = ms_ticks(60000);
+    });
+    let mut k = kernel();
+    for _ in 0..2 * DECIM_MED {
+        k.on_scan(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(limit_flags(&sh) & !flag::CEILING, flag::GOAL);
+    assert_eq!(sh.table.with(|t| t.telemetry.estimates.i_lim_counts), 400);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    settle(&mut k, &sh, frame(2000, BIAS));
+    for _ in 0..2 * DECIM_MED {
+        k.on_scan(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(
+        limit_flags(&sh),
+        0,
+        "a left-behind goal caps no OpenLoop drive"
+    );
+    assert_eq!(sh.table.with(|t| t.telemetry.estimates.i_lim_counts), 1200);
+    // 400 counts held for 156 SLOW periods (2.5 s) against a 300-count
+    // rating on a 4 s constant: the heat sits in the fold's ramp
+    for _ in 0..DECIM_MED as u32 * DECIM_SLOW as u32 * 156 {
+        k.on_scan(frame(2000, BIAS + 400), &sh);
+    }
+    assert_eq!(limit_flags(&sh), flag::I2T);
+    let folded = sh.table.with(|t| t.telemetry.estimates.i_lim_counts);
+    assert!((300..1200).contains(&folded), "folded={folded}");
+    // the rail halfway into the band: the fold under the I2t ceiling
+    let mut sag = frame(2000, BIAS + 400);
+    sag.vbus_raw = vbus_raw(2300);
+    for _ in 0..200 * DECIM_MED as u32 {
+        k.on_scan(sag, &sh);
+    }
+    assert_eq!(limit_flags(&sh), flag::RAIL);
+    let (sagged, vbus) = sh.table.with(|t| {
+        let e = &t.telemetry.estimates;
+        (e.i_lim_counts as i32, e.vbus_counts as i32)
+    });
+    // 1200 counts over the 200-vcount band: 6 counts per vcount over the floor
+    let want = (vbus - 2200) * 6;
+    assert!(
+        (want - 1..=want).contains(&sagged),
+        "sagged={sagged} vbus={vbus}"
+    );
 
     // endstop: at rest past the top soft wall
     let sh = Shared::new();
@@ -1074,6 +1144,9 @@ fn thermometer_without_a_model_reads_the_sentinel_and_never_derates() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
+        // the hold sits over the continuous rating: the I2t budget and the
+        // press are not under test
+        t.config.limits.i_cont_counts = 0;
     });
     let mut k = kernel();
     let hot = frame(2000, BIAS + 400);
@@ -1438,6 +1511,9 @@ fn a_draining_current_is_never_learned_as_zero() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = i16::MAX;
+        // the drive sits over the continuous rating: the press is not
+        // under test
+        t.config.limits.i_cont_counts = 0;
     });
     let mut k = kernel();
     // the slew up passes brake troughs at the zero; at full duty there is
@@ -1916,12 +1992,10 @@ fn hard_wall_stall_yields() {
     let mut plant = Plant::new(500);
     plant.frozen = true;
     // The live observer first books the wall current as tau_d, so the
-    // wind-up is integrator-paced (~230 ms to the full limit); the stall
-    // verdict then folds i_lim to yield, the weaker drive lets tau_d
-    // bleed below release, and the fold opens into another probe. That
-    // probe-the-wall cycle (bench: re-trips through grip-strength dips)
-    // makes any single-phase pin flaky - assert the cycle's invariants
-    // across a run instead.
+    // wind-up is integrator-paced (~230 ms to the full limit); the press
+    // verdict then folds i_lim to i_cont and the fold holds while the
+    // held current sits at it. The observer's settle makes any
+    // single-phase pin flaky - assert the run's invariants instead.
     let mut saw_full = false;
     let mut saw_fold = false;
     for _ in 0..24_000 {
@@ -2674,6 +2748,28 @@ fn a_take_keeps_the_floors_of_the_first_tick() {
     }
     assert_eq!(ol_max(&k), 5000, "the take ran");
     assert_eq!((floors(&k), published()), booted);
+}
+
+#[test]
+fn unset_rating_and_goal_follow_a_committed_cap_change() {
+    use crate::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.config.limits.i_cont_counts = 0;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_current = 0;
+    });
+    let mut k = kernel();
+    for cap in [1200u16, 600, 1800] {
+        crate::services::bus::tests::write_committed(&sh, CURRENT_LIMIT_COUNTS, &cap.to_le_bytes());
+        for _ in 0..2 * DECIM_MED as u32 * DECIM_SLOW as u32 {
+            k.on_scan(frame(2000, BIAS), &sh);
+        }
+        assert_eq!(sh.table.with(|t| t.config.limits.i_cont_counts), 0);
+        assert_eq!(sh.table.with(|t| t.telemetry.estimates.i_lim_counts), cap);
+        assert_eq!(limit_flags(&sh), 0);
+    }
 }
 
 #[test]

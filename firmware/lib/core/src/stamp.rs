@@ -221,7 +221,9 @@ pub fn covers(addr: u16, len: u16) -> bool {
 mod tests {
     use super::*;
     use crate::regions::calib::addr::stamp::PLANT_STAMP;
-    use crate::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
+    use crate::regions::config::addr::limits::{
+        CURRENT_LIMIT_COUNTS, I_CONT_COUNTS, STALL_TAU_TRIP_COUNTS,
+    };
     use crate::regions::{CALIB_BASE_ADDR, CALIB_REGION_SIZE};
 
     #[test]
@@ -243,6 +245,11 @@ mod tests {
         assert!(last.addr + last.width <= CALIB_BASE_ADDR + CALIB_REGION_SIZE);
         assert!(!covers(PLANT_STAMP, 2), "the stamp does not cover itself");
         assert!(!covers(CURRENT_LIMIT_COUNTS, 2), "user safety limit");
+        assert!(!covers(I_CONT_COUNTS, 2), "user continuous rating");
+        assert!(
+            !covers(STALL_TAU_TRIP_COUNTS, 2),
+            "user collision threshold"
+        );
     }
 
     #[test]
@@ -262,6 +269,8 @@ mod tests {
         t.calib.stamp.plant_stamp = empty;
         assert_eq!(compute(&t, None), empty, "the stamp is not covered");
         t.config.limits.current_limit_counts = 1200;
+        t.config.limits.i_cont_counts = 300;
+        t.config.limits.stall_tau_trip_counts = 900;
         assert_eq!(compute(&t, None), empty, "user limits are not covered");
         t.calib.motor.recip_ke_q = 3700;
         let ke = compute(&t, None);

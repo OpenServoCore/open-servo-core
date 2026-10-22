@@ -44,7 +44,7 @@ TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period it triggers two 
 | --- | --- | --- |
 | **FAST** | every tick, `TICK_HZ` = 20 kHz | window measurement, overcurrent trip, back-EMF sums, current loop, motor write |
 | **MEDIUM** | `DECIM_MED` = 10 ticks (2 kHz) | outer loops, estimators, limits, detectors, publishes; one phase per tick |
-| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, winding thermometer; one stage per period |
+| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the I2t heat and ceiling, winding thermometer; one stage per period |
 
 Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 
@@ -55,7 +55,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
 | 3 | LIMITS | limits fold, OpenLoop base duty, stall fault |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land |
-| 5 | RAIL | rail estimate, sensor screen, position error timer |
+| 5 | RAIL | rail estimate and its fold, sensor screen, position error timer |
 | 6 | SLOW | the slow block when due; the thermometer's finish one period later |
 | 7 | PUBLISH | estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit; otherwise a thermometer install |

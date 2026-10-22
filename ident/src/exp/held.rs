@@ -990,7 +990,7 @@ mod tests {
         let plan = |i_lim: u16, vbus: u16| {
             let lim = ServoLimits {
                 i_lim,
-                stall_yield: 168,
+                i_cont: 168,
                 tau_trip: 280,
                 soft: (432, 3626),
                 phys: (209, 3849),

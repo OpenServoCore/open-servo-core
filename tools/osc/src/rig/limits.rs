@@ -29,7 +29,7 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
     let tel = read_snapshot(c, id)?;
     let lim = ServoLimits {
         i_lim: read_u16(c, id, config::CURRENT_LIMIT_COUNTS)?,
-        stall_yield: read_u16(c, id, config::STALL_YIELD_COUNTS)?,
+        i_cont: read_u16(c, id, config::I_CONT_COUNTS)?,
         tau_trip: read_u16(c, id, config::STALL_TAU_TRIP_COUNTS)?,
         soft: (
             read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
@@ -61,7 +61,8 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
 /// once it trips, and when a fold lets go.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Stall {
-    /// A stall folds the limit to the yield; else it latches a fault.
+    /// A stall folds the limit to the continuous current; else it latches
+    /// a fault.
     pub(crate) folds: bool,
     /// Kernel ticks.
     pub(crate) time_ticks: u32,

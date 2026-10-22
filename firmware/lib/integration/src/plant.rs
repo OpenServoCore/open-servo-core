@@ -114,7 +114,7 @@ pub fn seed(shared: &Shared) {
         c.limits.drive_polarity = true;
         c.limits.stall_omega_max_cps = 500;
         c.limits.stall_time_ticks = ms_ticks(50);
-        c.limits.stall_yield_counts = 300;
+        c.limits.i_cont_counts = 300;
         c.limits.stall_release_counts = 150;
         c.limits.stall_tau_trip_counts = 1200;
         // inside the 12-bit span above BIAS: the plant's samples clamp at 4095
@@ -122,11 +122,14 @@ pub fn seed(shared: &Shared) {
         c.limits.oc_trip_ticks = 4;
         c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = true;
+        c.limits.thermal_tau_ms = 4096;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
         c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
         c.thermal.rtherm_i_min_counts = 300;
+        // 1200 counts over 200 vcounts: 6 counts per vcount
+        c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
         c.fusion.l3_q88 = 256;

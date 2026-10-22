@@ -10,6 +10,7 @@ use osc_integration::plant::{
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::phases::loops::duty_limit::UP_Q15;
 use osc_servo_core::kernel::phases::loops::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
+use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
 use osc_servo_core::{
@@ -75,7 +76,7 @@ fn stall_rig(response: StallResponse) -> Shared {
         let l = &mut t.config.limits;
         l.stall_response = response;
         l.stall_time_ticks = ms_ticks(STALL_MS);
-        l.stall_yield_counts = YIELD;
+        l.i_cont_counts = YIELD;
         l.stall_release_counts = RELEASE;
     });
     stamp(&sh);
@@ -374,6 +375,11 @@ fn openloop_slew_never_counts_as_a_stall() {
 fn openloop_stall_under_permit_never_trips() {
     for goal in [GOAL_64, -GOAL_64] {
         let sh = stall_rig(StallResponse::Fault);
+        // the I2t budget is not under test: at the longest constant it
+        // holds the 2 s stall at the limit
+        sh.table
+            .with_mut(|t| t.config.limits.thermal_tau_ms = u16::MAX);
+        stamp(&sh);
         let mut p = RlPlant::new(MID);
         p.locked = true;
         let mut k = start(&sh, &mut p, goal);
@@ -386,6 +392,42 @@ fn openloop_stall_under_permit_never_trips() {
         assert_holds_at_the_limit(&sh, &r, &format!("goal {goal}"));
         assert_eq!(i_lim(&sh), LIM, "goal {goal}");
     }
+}
+
+/// The permit lifts the detectors and nothing else: a permitted stall at
+/// the limit over the continuous rating spends the I2t budget and folds
+/// to `i_cont_counts`, no fault, and the fold names itself.
+#[test]
+fn permit_does_not_lift_the_i2t_fold() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = stall_rig(StallResponse::Fault);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        let mut r = Vec::new();
+        for _ in 0..16 {
+            write_permit(&sh);
+            r.extend(run(&mut k, &sh, &mut p, 250 * MS));
+        }
+        let what = format!("goal {goal}");
+        assert_eq!(i_lim(&sh), YIELD, "{what}");
+        assert_eq!(
+            flags(&sh) & (flag::I2T | flag::PERMIT),
+            flag::I2T | flag::PERMIT,
+            "{what}"
+        );
+        assert_eq!(flags(&sh) & flag::YIELD, 0, "{what}: a fold, not a verdict");
+        // the fold reaches the blind band as the yield fold does
+        let tail = &r[r.len() - 10_000..];
+        assert_blind_band_caps(tail, YIELD, &what);
+        let mn = mean(tail);
+        assert!(mn <= YIELD as i32 * 12 / 10, "{what}: mean {mn}");
+        assert_eq!(faults(&sh), 0, "{what}");
+    }
+}
+
+fn flags(sh: &Shared) -> u8 {
+    sh.table.with(|t| t.telemetry.limits.limit_flags)
 }
 
 #[test]

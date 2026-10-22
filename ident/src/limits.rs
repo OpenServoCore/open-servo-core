@@ -85,8 +85,9 @@ pub fn stall_counts(duty: f64, r_vpc: f64, vbus: f64) -> f64 {
 pub struct ServoLimits {
     /// `current_limit_counts`.
     pub i_lim: u16,
-    /// `stall_yield_counts`: the limit a stall folds back to.
-    pub stall_yield: u16,
+    /// `i_cont_counts`: the continuous current, the press trigger and the
+    /// limit a press folds back to.
+    pub i_cont: u16,
     /// `stall_tau_trip_counts`: the collision trip.
     pub tau_trip: u16,
     pub soft: (i32, i32),
@@ -451,14 +452,15 @@ impl ServoLimits {
         let ma = self.ma();
         let lim = ma.of(self.i_lim as f64);
         let mut w = Vec::new();
-        if self.stall_yield >= self.i_lim {
+        if self.i_cont >= self.i_lim {
             w.push(format!(
-                "the stall yield current, {}, is not below the current limit of {lim}: a stall \
-                 never backs off (set stall_yield_counts under the limit)",
-                ma.of(self.stall_yield as f64)
+                "the continuous current, {}, is not below the current limit of {lim}: a press \
+                 never trips or backs off (set i_cont_counts under the limit)",
+                ma.of(self.i_cont as f64)
             ));
         }
-        if self.tau_trip as u32 > 2 * self.i_lim as u32 {
+        // u16::MAX is the boot value: no trip until identification sets it
+        if self.tau_trip != u16::MAX && self.tau_trip as u32 > 2 * self.i_lim as u32 {
             w.push(format!(
                 "the collision trip, {}, is over twice the current limit of {lim}: a collision \
                  never reaches it (set stall_tau_trip_counts near the limit)",
@@ -710,7 +712,7 @@ mod tests {
     fn mg90() -> ServoLimits {
         ServoLimits {
             i_lim: 280,
-            stall_yield: 545,
+            i_cont: 545,
             tau_trip: 2182,
             soft: (432, 3626),
             phys: (209, 3849),
@@ -1134,24 +1136,31 @@ mod tests {
         assert_eq!(l.check_stream(3000), Ok(()));
     }
 
-    /// The bench MG90's SG90-era yield and trip: both warned about.
+    /// The bench MG90's SG90-era continuous current and trip: both warned
+    /// about; the boot trip value (off) is not.
     #[test]
     fn stall_settings_above_the_limit_are_warned() {
         let w = mg90().warnings(150);
         assert_eq!(w.len(), 2, "{w:?}");
         assert_eq!(
             w[0],
-            "the stall yield current, 545 counts (488 mA), is not below the current limit of \
-             280 counts (251 mA): a stall never backs off (set stall_yield_counts under the \
-             limit)"
+            "the continuous current, 545 counts (488 mA), is not below the current limit of \
+             280 counts (251 mA): a press never trips or backs off (set i_cont_counts under \
+             the limit)"
         );
         assert!(w[1].starts_with("the collision trip, 2182 counts (1953 mA), is over twice"));
         let tidy = ServoLimits {
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             ..mg90()
         };
         assert!(tidy.warnings(150).is_empty());
+        let unset = ServoLimits {
+            i_cont: 168,
+            tau_trip: u16::MAX,
+            ..mg90()
+        };
+        assert!(unset.warnings(150).is_empty());
     }
 
     /// The bench MG90's SAVEd thermometer floor, 545 counts, over its 280
@@ -1159,7 +1168,7 @@ mod tests {
     #[test]
     fn thermometer_floor_over_the_limit_warns() {
         let tidy = ServoLimits {
-            stall_yield: 168,
+            i_cont: 168,
             tau_trip: 280,
             ..mg90()
         };

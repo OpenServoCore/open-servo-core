@@ -20,8 +20,8 @@ pub enum Mode {
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     /// Let the motor stall on purpose: drops the stall trip and the endstop
-    /// band, and NOTHING else - the current limit and the thermal derate
-    /// still compose. Identification pushes into a hard stop to measure R and
+    /// band, and NOTHING else - the peak, I2t, thermometer and rail
+    /// ceilings still compose. Identification pushes into a hard stop to measure R and
     /// L, which is precisely what those two guards exist to prevent, and no
     /// soft-limit value can express it because a stop can sit AT the position
     /// rail. A write of true with torque on grants a lease of about a second
@@ -46,6 +46,8 @@ pub struct ControlLifecycle {
     ))]
     pub goal_position: i32,
     pub goal_velocity: i32,
+    /// Current-mode reference; magnitude cap in Velocity and Position.
+    /// Zero requests no cap in those modes. OpenLoop uses goal_duty.
     #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]
     pub goal_current: i16,
     #[ct_field(skip)]

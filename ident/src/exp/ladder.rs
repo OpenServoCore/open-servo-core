@@ -1873,7 +1873,7 @@ mod tests {
         servo.pos = 600.0;
         servo.jam = Some(610.0);
         servo.stall_ms = Some(20.0);
-        servo.stall_yield = 168;
+        servo.i_cont = 168;
         let s = spy(
             &mut servo,
             Ladder::new(bench_cfg(), &params, sized_by_envelope(GUARD)),

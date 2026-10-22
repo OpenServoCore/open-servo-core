@@ -4,7 +4,10 @@
 
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, TIMING, duty_of, kernel};
 use osc_integration::sim::{DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT};
-use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
+use osc_servo_core::regions::config::{
+    DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, STALL_TAU_TRIP_OFF, rail_fold_q8,
+    vmotor_counts,
+};
 use osc_servo_core::{
     BaudRate, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode, RegionStorage, Shared,
 };
@@ -32,6 +35,14 @@ fn virgin() -> Shared {
             SENSE.vmotor_div_top as u32,
             SENSE.vmotor_div_bot as u32,
             SENSE.vdd_mv,
+        ),
+        rail_fold_q8(
+            DEFAULT_RAIL_SOURCE_MOHM,
+            SENSE.shunt_r_mohm,
+            SENSE.gain_milli,
+            SENSE.vdd_mv,
+            SENSE.vmotor_div_top as u32,
+            SENSE.vmotor_div_bot as u32,
         ),
     );
     sh.table
@@ -71,7 +82,7 @@ fn virgin_openloop_run_never_collision_trips() {
     let sh = virgin();
     assert_eq!(
         sh.table.with(|t| t.config.limits.stall_tau_trip_counts),
-        CLASS_LIM as u16
+        STALL_TAU_TRIP_OFF
     );
     let mut k = kernel();
     let mut p = RlPlant::new(600);

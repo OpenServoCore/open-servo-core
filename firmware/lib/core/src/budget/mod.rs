@@ -98,7 +98,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// r3-refill, every gated window's Open ticks, 3 runs, less
 /// [`TICK_PUBLISH`]. OpenLoop, M: the openloop window's OpenLoop ticks, 3
 /// runs, the tick block's work in the row. Phase SLOW off its due period is
-/// a plain tick; the due body is [`SLOW_DUE`].
+/// a plain tick; the due body is [`SLOW_DUE`]. The limit split's additions
+/// are E, carried separately by [`LIMIT_SPLIT`] pending a probe refill.
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
@@ -124,15 +125,15 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// The configuration take after a write, on top of [`KERNEL`], at most once
 /// per period, at phase SPARE_A and in place of the thermometer's
 /// stage there: the input span's word copy, the Ke belt, the thermometer's
-/// config, its bound and the terminal floor's store. It carries no TEL row:
-/// a burst starts neither on SPARE_A nor while a take is pending, and
-/// the host is silent through one. E: 557, the take and the bound it calls
-/// on the release disassembly with the fetch model (load/store 3.25, ALU 2,
-/// mul 10, taken transfer 6, call and return 12 HCLK; 84 loads and stores,
-/// 353, and the bound's worst path, 204), plus 10%. The drive direction
-/// check's `drive_polarity` compare adds 11.25, 15.75 on a change: 573,
-/// inside the row.
-pub const REFRESH: u32 = 613;
+/// config, its bound, the continuous rating and its leak, and the terminal
+/// floor's store. It carries no TEL row: a burst starts neither on SPARE_A
+/// nor while a take is pending, and the host is silent through one. E:
+/// the take's longest path on matched release disassembly is 544.25
+/// HCLK, including the rating, its two log calls and the drive-polarity
+/// change. The unchanged thermometer bound adds 204, then 10% headroom.
+/// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
+/// 10, taken transfers at 6, and call plus return at 12 HCLK.
+pub const REFRESH: u32 = 824;
 
 /// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
 /// predate it, by regime and phase: the scan landed by the ADC DMA (the
@@ -160,17 +161,25 @@ pub const TICK_PUBLISH: [[u32; PHASES]; REGIMES] = [
 /// [`TICK_PUBLISH`], on mean rows.
 pub const LAYOUT: u32 = 35;
 
+/// E, over the measured LIMITS and RAIL rows, maxima and means. Matched
+/// release builds with each phase out of line, longest executed paths,
+/// priced as REFRESH: LIMITS 450.75 -> 578 HCLK (58 more instructions,
+/// 9 more loads/stores, two fewer multiplies); RAIL 351.25 -> 404.75
+/// (17 more instructions, 6 more loads/stores, one more multiply).
+/// Each delta plus 10%, rounded up; the bench must refill both phases.
+pub const LIMIT_SPLIT: [u32; PHASES] = [0, 0, 0, 140, 0, 59, 0, 0, 0, 0];
+
 /// A plain tick's budget at `regime` and `phase`: its row, the tick
 /// block's work and layout.
 pub const fn tick_body(regime: Regime, phase: usize) -> u32 {
     let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL[r][p] + TICK_PUBLISH[r][p] + LAYOUT
+    KERNEL[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + LAYOUT
 }
 
 /// The same plain ticks' mean over a window.
 pub const fn tick_body_mean(regime: Regime, phase: usize) -> u32 {
     let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + LAYOUT
+    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + LAYOUT
 }
 
 /// Every tick of a TEL burst, on top of [`KERNEL`] and the lane: the row
@@ -232,29 +241,34 @@ pub const fn tel_lane(held: bool) -> u32 {
 pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
-/// DECIM_SLOW periods): the permit lease, undervoltage and the
-/// thermometer's step on the tick's window, on top of the phase's row, per
-/// regime. E: the dearest path, a tracked seat (any drive that holds
-/// current), priced at 405 over the plain tick, plus 10%; no window has run
-/// it (r3-refill measured at most Open 252, Closed 351).
-pub const SLOW_DUE: [u32; EVENT_REGIMES] = [446, 446];
+/// DECIM_SLOW periods): the permit lease, undervoltage, the I2t heat and
+/// the thermometer's step on the tick's window, on top of the phase's
+/// row, per regime. E: the dearest path, a tracked seat (any drive that
+/// holds current), priced at 405 over the plain tick, plus the heat
+/// (`LimitState::heat`: 15 instructions, 3 loads and stores, one
+/// multiply, 46), plus 10%; no window has run it (r3-refill measured at
+/// most Open 252, Closed 351 before the heat).
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
 
 /// The second stage on the next period's SLOW phase: the thermometer's
-/// temperature, its seat rules and overtemperature. E: a tracked seat,
-/// priced at 330 over the plain tick, plus 10%.
-pub const SLOW_FINISH: u32 = 363;
+/// temperature, its seat rules and overtemperature, and the I2t ceiling.
+/// E: the tracked seat's original 330 HCLK plus 71.25 for I2t, then 10%.
+/// Matched out-of-line finish bodies on release disassembly add 23
+/// executed instructions, one load/store and two multiplies on the
+/// longest path (29 instructions in the static body).
+pub const SLOW_FINISH: u32 = 442;
 
 /// The finish that freezes a thermal reference window, in place of
 /// [`SLOW_FINISH`]: at most once per seat, 190 gated SLOW runs after it
-/// opens. E: priced at 330 over the plain tick, plus 10%.
-pub const SLOW_CLOSE: u32 = 363;
+/// opens. The same I2t ceiling runs here, so its E price is the finish's.
+pub const SLOW_CLOSE: u32 = SLOW_FINISH;
 
 /// The thermometer's stages on the spare phases (`kernel::phase`), on top
 /// of their rows. THERM_INSTALL: a frozen window's install the period
 /// after its finish (two reciprocal divides). THERM_SIDE: the NTC the
 /// period before a SLOW tick (a conversion and its bound once a second),
-/// or the derate and a cold check the period after a finish. THERM_INSTALL, E: priced at 531 over the plain
-/// tick, plus 10%; no bench window has run one. THERM_SIDE, M, above its E
+/// or the derate and a cold check the period after a finish. THERM_INSTALL,
+/// E: priced at 531 over the plain tick, plus 10%; no bench window has run one. THERM_SIDE, M, above its E
 /// 631: the stage tick over the window's plain maximum at the phase, 591
 /// (hold); in the TEL windows over the TEL tick's maximum, at most 402,
 /// since [`kernel_tick`] stacks the TEL row on it.

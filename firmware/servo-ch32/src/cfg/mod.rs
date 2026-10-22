@@ -8,7 +8,9 @@ pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::regions::config::{BURST_MAX_MV, DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
+use osc_servo_core::regions::config::{
+    BURST_MAX_MV, DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
+};
 use osc_servo_core::{ConfigDefaults, CurrentDefaults, KernelTiming};
 
 use crate::providers::{break_wake, usart_baud};
@@ -36,6 +38,7 @@ pub struct Precomputed {
     pub current_defaults: CurrentDefaults,
     pub burst_v_max_counts: u16,
     pub v_undervolt_counts: u16,
+    pub rail_fold_q8: u16,
     pub vmotor_bias_nom_counts: u16,
     pub vmotor_bias_top_ohm: u16,
     pub vmotor_bias_bot_ohm: u16,
@@ -87,6 +90,14 @@ impl Precomputed {
                 term.top_ohm,
                 term.bot_ohm,
                 cfg.calibration.vdd_mv,
+            ),
+            rail_fold_q8: rail_fold_q8(
+                DEFAULT_RAIL_SOURCE_MOHM,
+                cfg.calibration.shunt_r_mohm,
+                cfg.wiring.current_sense.gain_milli,
+                cfg.calibration.vdd_mv,
+                term.top_ohm,
+                term.bot_ohm,
             ),
             vmotor_bias_nom_counts: vmotor_counts(
                 cfg.calibration.vdd_mv,
