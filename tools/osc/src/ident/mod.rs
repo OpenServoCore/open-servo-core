@@ -313,8 +313,19 @@ enum Cmd {
     /// reads and the limit at each stop, stall permit held, and is refused
     /// on a supply that leaves no room between the two. Recorded under
     /// <out>/<timestamp>/: meta.json, verify_current.csv,
-    /// verify_velocity.csv.
-    Verify,
+    /// verify_velocity.csv. The velocity legs' tau_d is the collision
+    /// trip's floor (`stall_tau_trip_counts` boots off): the floor and the
+    /// trip over it are printed; --write writes the trip read-back verified
+    /// on a PASS, SAVE with --save. Not under the stamp: tighten by hand
+    /// any time.
+    Verify {
+        /// Write `stall_tau_trip_counts` from the recorded floor on a PASS.
+        #[arg(long)]
+        write: bool,
+        /// Persist with MGMT SAVE after the write.
+        #[arg(long, requires = "write")]
+        save: bool,
+    },
     /// Refit offline from a recorded run directory.
     Fit { dir: PathBuf },
     /// Synthesize gains from a hand-written plant - no run directory.
@@ -361,6 +372,16 @@ enum Cmd {
         /// Persist with MGMT SAVE after the stamp.
         #[arg(long)]
         save: bool,
+        /// The motor's nameplate continuous current, mA, written as
+        /// `i_cont_counts` on the servo's sense scale: the I2t budget's
+        /// rating and the press trigger. Not under the stamp.
+        #[arg(long)]
+        i_cont_ma: Option<u16>,
+        /// The winding's thermal time constant, ms, written as
+        /// `thermal_tau_ms` (the kernel runs the nearest power of two of
+        /// its 16 ms period). Not under the stamp.
+        #[arg(long)]
+        thermal_tau_ms: Option<u16>,
     },
     /// Restore a snapshot.json written by `write`, then restamp.
     Rollback { snapshot: PathBuf },
@@ -537,8 +558,13 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Anchor { save, rested } => run_anchor_alone(cli, &mut c, id, *save, *rested),
-        Cmd::Verify => run_verify(cli, &mut c, id),
-        Cmd::Write { params, save } => {
+        Cmd::Verify { write, save } => run_verify(cli, &mut c, id, *write, *save),
+        Cmd::Write {
+            params,
+            save,
+            i_cont_ma,
+            thermal_tau_ms,
+        } => {
             let p = ParamsFile::load(params)?;
             if p.gains.is_empty() {
                 bail!(
@@ -546,6 +572,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
                     params.display()
                 );
             }
+            let plate = nameplate(&mut c, id, *i_cont_ma, *thermal_tau_ms)?;
             write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
             let snap = params
                 .parent()
@@ -553,6 +580,9 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
                 .join("snapshot.json");
             snapshot::take_snapshot(&mut c, id, &snap)?;
             snapshot::write_gains(&mut c, id, &p.gains)?;
+            if !plate.is_empty() {
+                snapshot::write_gains(&mut c, id, &plate)?;
+            }
             let s = crate::state::commit(&mut c, id, &d, *save)?;
             if data_state::allows(s.flags, true) {
                 println!("next: {}", hold_and_step(&mut c, id)?);
@@ -574,6 +604,50 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         Cmd::Show => snapshot::show(&mut c, id),
         Cmd::Fit { .. } | Cmd::Synth { .. } => unreachable!("handled above"),
     }
+}
+
+/// The nameplate limits `ident write` carries beside the set: the
+/// continuous current on the servo's sense scale and the thermal time
+/// constant as given. Neither is under the plant stamp.
+fn nameplate(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    i_cont_ma: Option<u16>,
+    thermal_tau_ms: Option<u16>,
+) -> Result<Vec<GainJson>> {
+    let mut v = Vec::new();
+    if let Some(ma) = i_cont_ma {
+        let sc = read_sense(c, id)?
+            .scales()
+            .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
+        let counts = ma as f64 / 1000.0 / sc.amps_per_count;
+        let raw = counts.round();
+        if !(1.0..=u16::MAX as f64).contains(&raw) {
+            bail!("--i-cont-ma {ma}: {counts:.0} counts does not fit i_cont_counts");
+        }
+        println!(
+            "  i_cont_counts {raw:.0} ({ma} mA on {:.5} A/count)",
+            sc.amps_per_count
+        );
+        v.push(GainJson {
+            name: "i_cont_counts".into(),
+            physical: ma as f64,
+            raw: raw as u16,
+            quantization_pct: (raw - counts).abs() / counts * 100.0,
+            saturated: false,
+        });
+    }
+    if let Some(ms) = thermal_tau_ms {
+        println!("  thermal_tau_ms {ms}");
+        v.push(GainJson {
+            name: "thermal_tau_ms".into(),
+            physical: ms as f64,
+            raw: ms,
+            quantization_pct: 0.0,
+            saturated: false,
+        });
+    }
+    Ok(v)
 }
 
 /// The first check new gains get: a hold at mid travel and a few steps
@@ -614,7 +688,7 @@ fn drives(cmd: &Cmd) -> bool {
             | Cmd::Ladder
             | Cmd::Inertia
             | Cmd::Anchor { .. }
-            | Cmd::Verify
+            | Cmd::Verify { .. }
     )
 }
 
@@ -1201,7 +1275,7 @@ fn run_inertia(
     Ok(exp.fit(priors, climbs))
 }
 
-fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, write: bool, save: bool) -> Result<()> {
     let params = rig(cli)?;
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
@@ -1223,7 +1297,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let out = csvio::OutDir::create(&cli.out)?;
     let velocity = VerifyVelocityCfg::planned(&plan);
     let mut s = Wire::new(&mut *c, id);
-    let v = verify::run(
+    let (v, t) = verify::run(
         &mut s,
         &out,
         &drv.lim,
@@ -1266,9 +1340,50 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
             l.goal_cps, l.meas_cps, l.err_pct, l.r2, l.n
         );
     }
+    match &t {
+        Ok(t) => println!(
+            "  collision trip: tau_d floor {} counts over {} driven reads of verify velocity, \
+             trip {} (x{})",
+            t.floor,
+            t.n,
+            t.trip,
+            osc_ident::trip::TRIP_MARGIN
+        ),
+        Err(e) => println!("  collision trip: none - {e}"),
+    }
     println!("verify: {}", if v.pass { "PASS" } else { "FAIL" });
     if !v.pass {
+        if write {
+            println!("stall_tau_trip_counts not written: verify failed");
+        }
         std::process::exit(1);
+    }
+    if write {
+        let t = t.map_err(|e| anyhow::anyhow!("stall_tau_trip_counts not written: {e}"))?;
+        write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+        let was = snapshot::read_u16(c, id, config::STALL_TAU_TRIP_COUNTS)?;
+        write_reg(c, id, config::STALL_TAU_TRIP_COUNTS, t.trip as i32)?;
+        let back = snapshot::read_u16(c, id, config::STALL_TAU_TRIP_COUNTS)?;
+        if back != t.trip {
+            bail!("stall_tau_trip_counts: wrote {}, read back {back}", t.trip);
+        }
+        println!(
+            "stall_tau_trip_counts {} (was {}), verified",
+            t.trip,
+            if was == u16::MAX {
+                "off".to_string()
+            } else {
+                was.to_string()
+            }
+        );
+        if save {
+            crate::state::mgmt_save(c, id)?;
+        }
+    } else if let Ok(t) = &t {
+        println!(
+            "next: ident verify --write [--save] writes stall_tau_trip_counts {}",
+            t.trip
+        );
     }
     Ok(())
 }

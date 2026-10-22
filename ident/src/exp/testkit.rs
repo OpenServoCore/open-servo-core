@@ -237,6 +237,10 @@ pub struct FakeServo {
     /// firmware's `omega_bemf_cps` divides by; None reads 0, a virgin
     /// servo's.
     pub ke_stored: Option<f64>,
+    /// What the observer reports as `tau_d_counts` through a driven move,
+    /// counts, signed by the drive: the model error a real observer carries
+    /// on a free shaft. Zero reads like an unset model.
+    pub tau_d_moving: f64,
     /// Kernel ticks one bus transaction costs.
     pub ticks_lost_per_txn: f64,
     /// Kernel ticks run since boot: `sample_tick`.
@@ -373,6 +377,7 @@ impl FakeServo {
             alternate_up: false,
             fault_at_ms: None,
             ke_stored: None,
+            tau_d_moving: 0.0,
             ticks_lost_per_txn: TICKS_LOST_PER_TRANSACTION,
             ticks: 0.0,
             fault_after_bursts: None,
@@ -723,6 +728,20 @@ impl FakeServo {
             return 0.0;
         }
         TAU_D_OF_HELD * self.i_at(duty).abs()
+    }
+
+    /// The reported disturbance: the held stall's, else `tau_d_moving` with
+    /// the drive's sign while the shaft moves under drive.
+    fn tau_d_counts(&self) -> i16 {
+        let duty = self.applied();
+        let t = if duty == 0 {
+            0.0
+        } else if self.omega() == 0.0 {
+            self.tau_d()
+        } else {
+            self.tau_d_moving * duty.signum() as f64
+        };
+        t.round().clamp(-32768.0, 32767.0) as i16
     }
 
     /// Run the stall timer over time that began at `from_ms`. A live permit
@@ -1243,6 +1262,7 @@ impl FakeServo {
             i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
+            tau_d_counts: self.tau_d_counts(),
             ..Default::default()
         }
     }
