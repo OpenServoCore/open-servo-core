@@ -12,7 +12,7 @@ def test_tau_shift_rounds_to_the_nearest_octave_and_caps():
     assert i2t.tau_shift(4.096) == 8                   # the firmware's boot default
     assert i2t.tau_shift(5.0) == 8                     # 312 periods, nearer 256 than 512
     assert i2t.tau_shift(6.5) == 9                     # 406 periods, nearer 512
-    assert i2t.tau_shift(1000.0) == i2t.TAU_SHIFT_MAX
+    assert i2t.tau_shift(65.535) == i2t.TAU_SHIFT_MAX    # the u16 thermal_tau_ms ceiling, 4095 periods
 
 
 def test_heat_is_the_kernels_shifted_ewma():
@@ -22,13 +22,19 @@ def test_heat_is_the_kernels_shifted_ewma():
 
 
 def test_heat_caps_the_square():
-    h = i2t.heat([65535], 0)
+    h = i2t.heat([32767], 0)                          # the largest i16 current the kernel can hold
     assert h[0] == i2t.HEAT_MAX
 
 
 def test_rise_is_heat_times_k_over_q16():
     assert i2t.rise_cc([65536], 1).tolist() == [1]
     assert i2t.rise_cc([76729], i2t.k_q16_of(0.025)).tolist() == [(76729 * 1638) >> 16]
+
+
+def test_rise_saturates_at_i16_max():
+    assert i2t.rise_cc([i2t.HEAT_MAX], 65535).tolist() == [i2t.RISE_MAX]
+    assert i2t.rise_cc([65536], 32767).tolist() == [32767]
+    assert i2t.rise_cc([65536], 32766).tolist() == [32766]
 
 
 def test_ewma_settles_on_its_input_at_one_tau_to_63_percent():

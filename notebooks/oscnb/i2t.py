@@ -16,7 +16,7 @@ resistance from the winding to wherever the NTC sits, times the winding's
 resistance, in the board's current counts.
 
   heat(i_counts, tau_shift)                the heat state, integer, as the kernel keeps it
-  rise_cc(heat, k_q16)                     the rise, integer, as the kernel reads it
+  rise_cc(heat, k_q16)                     the rise, integer, as the kernel reads it (saturates at i16::MAX)
   tau_shift(tau_s)                         the octave for a time constant in s
   tau_s(shift)                             the time constant an octave runs at
   ewma(i2, tau_s, dt)                      the same leak in floats at any time constant
@@ -39,6 +39,7 @@ TAU_SHIFT_MAX = 12              # the longest leak, 2^12 periods = 65.5 s
 HEAT_GUARD = 4                  # guard bits under the heat state
 HEAT_MAX = (2 ** 31 - 1) >> HEAT_GUARD
 Q16 = 65536
+RISE_MAX = 32767                # the rise saturates at i16::MAX centi-C, as the kernel's does
 
 
 def tau_shift(tau_s):
@@ -70,8 +71,9 @@ def heat(i_counts, shift):
 
 
 def rise_cc(heat_counts2, k_q16):
-    """The rise in centi-C the kernel reads from the heat: (heat x k) >> 16."""
-    return (np.asarray(heat_counts2, dtype=np.int64) * int(k_q16)) >> 16
+    """The rise in centi-C the kernel reads from the heat: (heat x k) >> 16,
+    saturated at RISE_MAX (the kernel's `.min(i16::MAX)`)."""
+    return np.minimum((np.asarray(heat_counts2, dtype=np.int64) * int(k_q16)) >> 16, RISE_MAX)
 
 
 def ewma(i2, tau, dt):
