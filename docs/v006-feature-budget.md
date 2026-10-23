@@ -43,7 +43,7 @@ Columns:
 | Velocity loop | 578 | 4 | S: 175 ins, 8 muls | MEDIUM (VELOCITY) | core |
 | Limits: five-term min (cap, I2t, derate, rail, goal), press and collision detectors, endstops | 776 LIMITS body | 16 | S: LIMITS 248 ins, 3 muls (193 ins, 5 muls before); E: +140 HCLK including headroom. I2t heat +15 ins at SLOW due, ceiling +29 ins at finish; rail fold +17 ins at RAIL. E additions: 50, 79, 59 HCLK respectively. | MEDIUM (LIMITS, RAIL), SLOW | core |
 | Rail estimator (vbus) | 130 | 16 | S: 41 ins, 2 muls | MEDIUM (RAIL) | core |
-| Winding thermometer | 2,868 | 104 | S: 535 ins, 14 muls inline + 1,172 B out of line, ~0 averaged | SLOW | runtime (gated by the `rtherm_*` thresholds), module |
+| Winding estimate (board NTC + I2t heat), in place of the winding thermometer | 24 | 6 | S: one multiply and a shift on the SLOW finish, ~0 averaged. The thermometer's row was 2,868 B / 104 B; the band that replaced it measured text -2,844 B and bss -116 B on the release image | SLOW | runtime (`th_rise_q016` = 0), module |
 | Shunt burst (ident) | 1,014 | 1,932 | 0 at rest; the kernel stops for ~1.04 ms per burst | on request | runtime, module (identification needs it) |
 | Position table (`pos_lut`) | 748 | 514 | S: 53 ins, 3 muls per linearization | MEDIUM (OBSERVER) | runtime (`lut_live`) |
 | Fast decay | ~100-150 (E, spread over the fast path, motor write, config) | 0 | a few branches per tick | FAST | runtime (`openloop_decay`) |
@@ -86,7 +86,7 @@ The two biggest CPU consumers are the host-frame service in the bus ISRs (80-160
 | `SHARED.table` | 1,024 | control table, the ADC scans landing in its tick block |
 | `SHARED.pos_lut` | 514 | position table, 257 x i16 |
 | `RING` | 512 | transport RX ring |
-| `KERNEL` | 636 | fast 72, medium 252 (winding thermometer 104), config snapshot 156, command 36, timing 36, TEL lane 48, io 28, latch/phase 8 |
+| `KERNEL` | 538 | fast 72, medium 154 (winding estimate 6), config snapshot 156, command 36, timing 36, TEL lane 48, io 28, latch/phase 8 |
 | `TEL_CHANNEL` | 436 | TEL frame images and arm mailbox |
 | `CELLS` (.data) | 236 | ServoBus 220 (TX engine 40, clock discipline 64, chain 20, framer 16, pending 16, TEL burst 12, misc 52), LED 16 |
 | `crc::SNAPSHOT` | 256 | reply payload span for the SPI CRC engine |
@@ -112,7 +112,6 @@ The same frames as with the bus on top, nested in the other order. That sums to 
 | Item | Flash B | RAM B | CPU | Basis |
 |---|---|---|---|---|
 | Fusion step 4, offset form | ~300-400 | **640** (two rings of 80 x u32 for a 40 ms window) + ~12 state | +2 muls and two ring writes in the OBSERVER phase: <0.1 pt averaged | RAM from the fusion plan; the rest is E |
-| Thermometer fix | ~100-300 | ~8-16 | SLOW rate: ~0 | E |
 | Encoder support | per board | per board | atan2 in software CORDIC costs ~3-5 us per sin/cos: ~0.6-1 pt at the medium rate, 6-10 pts at the fast rate | note only |
 | **Sum** | **~0.4-0.7 KB** | **~670** | **<0.5 pt** | |
 

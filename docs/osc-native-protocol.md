@@ -910,18 +910,18 @@ same way.
 stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
-The covered bytes are the 40 covered fields' own table bytes in table
-order (86 B): the position limits, the loop gains, the deadband,
+The covered bytes are the 39 covered fields' own table bytes in table
+order (84 B): the position limits, the loop gains, the deadband,
 velocity and acceleration limits, drive polarity, the stall speed gate,
 the observer gains and the position-error threshold in CONFIG; the pot
 stops, the motor constants, the friction model, the angle map, the
-winding thermometer's carry step and gain, the board NTC's reference
+winding estimate's rise constant, the board NTC's reference
 point and slope, and the gear class in CALIB. The points are the position table's
 256 host-written calibration points i16 LE (sec below) while
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
 (current, thermal, undervolt, `duty_max_q15`), the raw sensor screen,
-the thermometer's LMS step and cold R, and the RO board facts install re-seeds. `0` is
+cold R, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,
 `pos_lut_points`); the CRC is the sec 3.2 checksum in software, ~600 B
@@ -989,8 +989,8 @@ lin   = ((raw + c[i]) << 4) + (c[i + 1] - c[i]) * f      (u16, Q4)
 so the identity is `raw << 4` exactly and knot `k` lands at
 `raw + c[k]`. Once per medium tick, while `pos_lut_state` reads LIVE, this
 value seeds and innovates the position observer; `theta_hat_q16` and everything that
-reads it (trajectory, position loop, soft limits, the stall speed gate
-and the thermometer's seat band) are in linearized counts. The raw sample stays
+reads it (trajectory, position loop, soft limits and the stall speed
+gate) are in linearized counts. The raw sample stays
 raw for the published `pos` (which a TEL row carries) and the sensor-delta
 screen. The endstop brake and the soft limits trip at the same raw
 counts as before, because the table is the identity outside the stops
@@ -1104,7 +1104,7 @@ every medium tick (2 kHz), torque on or off.
 | 2   | `ENDSTOP` | exactly one side of the band is closed: a soft limit forbids current in one direction (a zero limit closes both and does not set it)                                 |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
 | 4   | `I2T`     | the I2t budget binds before the press fold, under the cap                                                                                                            |
-| 5   | `DERATE`  | the thermometer's derate binds before the press fold, under the cap                                                                                                    |
+| 5   | `DERATE`  | the winding estimate's derate binds before the press fold, under the cap                                                                                             |
 | 6   | `RAIL`    | the rail fold binds before the press fold, under the cap                                                                                                                       |
 | 7   | `GOAL`    | `goal_current` binds before the press fold, under the cap                                                                                                                      |
 
