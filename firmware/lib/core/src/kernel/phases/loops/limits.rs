@@ -1,14 +1,12 @@
 //! i_lim composition (control-theory "Limits"): the current clamp is the one
 //! choke point every command passes through, so all protection lives here,
 //! each term owning one physical quantity. i_lim = min of the peak cap
-//! (`current_limit_counts`, the nameplate stall current), the I2t budget's
-//! ceiling (copper, a one-node winding model on the held current), the
-//! winding estimate's derate (copper, the board NTC plus the rise on the
-//! same heat), the rail fold (a sagging source) and the application's
+//! (`current_limit_counts`, the nameplate stall current), the winding
+//! estimate's derate (copper, the board NTC plus the rise on the two heat
+//! nodes kept here), the rail fold (a sagging source) and the application's
 //! `goal_current`; the press fold to `i_cont_counts` and the directional
 //! endstop come after. `fold` runs at MEDIUM and is compare/min only; the
-//! thermal ceilings are recomputed at the SLOW cadence and cached, the
-//! rail's at RAIL.
+//! derate is recomputed at the SLOW cadence and cached, the rail's at RAIL.
 
 use crate::kernel::{DECIM_MED, DECIM_SLOW, TICK_HZ};
 use crate::math::recip_div;
@@ -16,6 +14,7 @@ use crate::regions::config::{ConfigLimits, ConfigPosSoft, ConfigThermal, StallRe
 
 /// `limit_flags` bits: what shaped the command. A term bit names a term
 /// whose ceiling sits under the cap and is the composed `i_lim_counts`.
+/// Bit 4 is retired and reads 0.
 pub mod flag {
     /// The command sat at the current ceiling: OpenLoop's duty ceiling held
     /// under the goal, or a closed loop's current reference at the band.
@@ -26,8 +25,6 @@ pub mod flag {
     pub const ENDSTOP: u8 = 1 << 2;
     /// The stall permit lease is live.
     pub const PERMIT: u8 = 1 << 3;
-    /// The I2t budget's ceiling binds.
-    pub const I2T: u8 = 1 << 4;
     /// The winding estimate's derate binds.
     pub const DERATE: u8 = 1 << 5;
     /// The rail fold binds.
@@ -36,22 +33,19 @@ pub mod flag {
     pub const GOAL: u8 = 1 << 7;
 }
 
-/// The SLOW period, the I2t update's step.
+/// The SLOW period, the heat update's step.
 pub const SLOW_PERIOD_MS: u32 = 1000 * DECIM_MED as u32 * DECIM_SLOW as u32 / TICK_HZ;
 const _: () = assert!((1000 * DECIM_MED as u32 * DECIM_SLOW as u32).is_multiple_of(TICK_HZ));
 
-/// The longest leak: 2^14 SLOW periods, 262 s.
-pub const TAU_SHIFT_MAX: u32 = 14;
+/// The longest leak: 2^15 SLOW periods, 524 s.
+pub const TAU_SHIFT_MAX: u32 = 15;
 /// Heat state guard bits: at the longest leak a rising heat settles
-/// within 2^(14 - 5) = 512 counts squared under the held square.
+/// within 2^(15 - 5) = 1024 counts squared under the held square.
 const HEAT_GUARD: u32 = 5;
 /// The heat the state can hold: 12-bit shunt codes under a settle gain
 /// under 2.0 square to under this, and the guard keeps it inside i32.
 const HEAT_MAX: u32 = (i32::MAX as u32) >> HEAT_GUARD;
 const _: () = assert!(8190 * 8190 <= HEAT_MAX);
-/// The fold's fraction width: the budget left, under the ramp, is brought
-/// to this many bits before the one u32 multiply.
-const RAMP_Q: u32 = 16;
 /// The rail fold's Q.
 const RAIL_SHIFT: u32 = 8;
 
@@ -87,8 +81,8 @@ pub fn tau_shift(tau_s: u16) -> u8 {
     k.min(TAU_SHIFT_MAX) as u8
 }
 
-/// `i_cont_counts` as the kernel runs it: 0 reads as the cap (no budget,
-/// the press at the cap). The configuration take writes this into the
+/// `i_cont_counts` as the kernel runs it: 0 reads as the cap (the press
+/// at the cap). The configuration take writes this into the
 /// kernel's own copy of the block, so nothing on the tick path tests it.
 pub fn i_cont_or_cap(cfg: &ConfigLimits) -> u16 {
     if cfg.i_cont_counts == 0 {
@@ -97,19 +91,6 @@ pub fn i_cont_or_cap(cfg: &ConfigLimits) -> u16 {
         cfg.i_cont_counts
     }
 }
-
-/// `floor(log2(i_cont))`, the octave the I2t fold's ramp comes from,
-/// derived at the configuration take; at most 15.
-pub fn i_cont_log2(i_cont: u16) -> u8 {
-    floor_log2(i_cont as u32) as u8
-}
-
-/// The two I2t shifts packed in one byte (`KernelConfig::i2t_shifts`): the
-/// leak in the high nibble, `i_cont`'s octave in the low.
-pub const fn pack_shifts(tau_shift: u8, i_cont_log2: u8) -> u8 {
-    tau_shift << 4 | i_cont_log2
-}
-const _: () = assert!(TAU_SHIFT_MAX < 16);
 
 /// The signed current band every command clamps into: `lo <= i_ref <= hi`.
 /// Symmetric `+-i_lim` away from the walls; a soft-limit wall collapses its
@@ -163,11 +144,9 @@ pub struct Fold {
 pub struct LimitState {
     stall_ticks: u32,
     /// EWMAs of the warmed held current squared, counts^2 with
-    /// `HEAT_GUARD` bits: the rotor node (the I2t budget's heat) and the
-    /// body node.
+    /// `HEAT_GUARD` bits: the rotor node and the body node.
     heat_qg: i32,
     heat2_qg: i32,
-    i2t_cache: u16,
     derate_cache: u16,
     rail_cache: u16,
     stalled: bool,
@@ -180,7 +159,6 @@ impl LimitState {
             stall_ticks: 0,
             heat_qg: 0,
             heat2_qg: 0,
-            i2t_cache: u16::MAX,
             derate_cache: u16::MAX,
             rail_cache: u16::MAX,
             stalled: false,
@@ -206,28 +184,6 @@ impl LimitState {
     /// rotor then body.
     pub fn heats(&self) -> [u32; 2] {
         [self.heat_qg, self.heat2_qg].map(|h| (h >> HEAT_GUARD) as u32)
-    }
-
-    /// SLOW-rate: the I2t ceiling. The budget is `i_cont^2`; the cap while
-    /// the heat sits under the knee, then linear to `i_cont` at the budget,
-    /// where a hold at `i_cont` keeps the heat (first order, monotone, no
-    /// overshoot while the leak is slower than a few periods). The ramp is
-    /// a power of two from `i_cont`'s own octave `i_cont_log2`, between an
-    /// eighth and a half of the budget, so the ceiling never chatters at
-    /// the knee.
-    pub fn update_i2t(&mut self, cfg: &ConfigLimits, i_cont_log2: u8) {
-        let (cap, i_cont) = (cfg.current_limit_counts, cfg.i_cont_counts);
-        let budget = i_cont as u32 * i_cont as u32;
-        // 2^(2k) <= budget < 2^(2k + 2): the ramp 2^(2k - 1) sits in
-        // [budget / 8, budget / 2]
-        let ramp_shift = (2 * i_cont_log2 as u32).saturating_sub(1);
-        let heat = (self.heat_qg >> HEAT_GUARD) as u32;
-        // the budget left, at most the ramp (a whole ramp is the cap);
-        // brought under 2^RAMP_Q, its product with the fold's span fits u32
-        let left =
-            budget.saturating_sub(heat).min(1 << ramp_shift) >> ramp_shift.saturating_sub(RAMP_Q);
-        let over = (cap as u32).saturating_sub(i_cont as u32);
-        self.i2t_cache = (i_cont as u32 + ((over * left) >> ramp_shift.min(RAMP_Q))) as u16;
     }
 
     /// SLOW-rate: the winding estimate's derate ceiling. Foldback: full
@@ -263,13 +219,12 @@ impl LimitState {
     }
 
     // Select the flags with each minimum so the detector path need not
-    // keep all four ceilings live. The packed result fits one register.
+    // keep all three ceilings live. The packed result fits one register.
     #[inline(always)]
     fn ceiling(&self, cap: u16, goal_abs: u16) -> u32 {
         let mut lim = cap;
         let mut terms = 0;
         for (ceiling, bit) in [
-            (self.i2t_cache, flag::I2T),
             (self.derate_cache, flag::DERATE),
             (self.rail_cache, flag::RAIL),
             (if goal_abs == 0 { u16::MAX } else { goal_abs }, flag::GOAL),
@@ -463,12 +418,10 @@ mod tests {
         st.update_rail(vbus, cfg.v_undervolt_counts, cfg.rail_fold_q8);
     }
 
-    /// One SLOW period at `i_held`: the heat step on the due tick and the
-    /// I2t ceiling at the finish.
+    /// One SLOW period at `i_held`: the heat step on the due tick.
     fn slow_period(st: &mut LimitState, i_held: i16, cfg: &LimitCfg) {
         let (limits, _, _) = cfg.blocks();
         st.heat(i_held, 0, [tau_shift(limits.thermal_tau_s), 0]);
-        st.update_i2t(&limits, i_cont_log2(limits.i_cont_counts));
     }
 
     const CFG: LimitCfg = LimitCfg {
@@ -517,16 +470,6 @@ mod tests {
     }
 
     #[test]
-    fn shifts_pack_and_the_octave_is_the_floor() {
-        assert_eq!(i_cont_log2(0), 0);
-        assert_eq!(i_cont_log2(1), 0);
-        assert_eq!(i_cont_log2(300), 8);
-        assert_eq!(i_cont_log2(u16::MAX), 15);
-        let s = pack_shifts(12, 15);
-        assert_eq!((s >> 4, s & 0xF), (12, 15));
-    }
-
-    #[test]
     fn tau_shift_rounds_to_the_nearest_octave() {
         assert_eq!(SLOW_PERIOD_MS, 16);
         assert_eq!(tau_shift(0), 0);
@@ -542,7 +485,7 @@ mod tests {
     }
 
     /// At the longest leak the step stays live down to the guard's dead
-    /// band: a hold at 100 counts heats to within 512 counts^2 of its
+    /// band: a hold at 100 counts heats to within 1024 counts^2 of its
     /// square, and rest leaks back to within the same band of 0.
     #[test]
     fn heat_at_the_longest_leak_still_moves() {
@@ -552,13 +495,13 @@ mod tests {
             st.heat(100, 0, [shift, shift]);
         }
         let [h1, h2] = st.heats();
-        assert!(h1 >= 10_000 - 512, "{h1}");
+        assert!(h1 >= 10_000 - 1024, "{h1}");
         assert!(h1 <= 10_000);
         assert_eq!(h2, h1, "the same input on the same leak");
         for _ in 0..20 << TAU_SHIFT_MAX {
             st.heat(0, 0, [shift, shift]);
         }
-        assert!(st.heats()[0] <= 512, "{}", st.heats()[0]);
+        assert!(st.heats()[0] <= 1024, "{}", st.heats()[0]);
     }
 
     /// The warm factor raises the input by the copper's resistance rise:
@@ -758,87 +701,7 @@ mod tests {
         assert!(!st.stalled());
     }
 
-    /// a step to the cap over i_cont runs on the cap for the
-    /// budget, then the ceiling folds toward i_cont without a reversal; at
-    /// rest the budget refills and the ceiling recovers the same way.
-    #[test]
-    fn i2t_burst_folds_monotone_and_recovers() {
-        let cfg = LimitCfg {
-            thermal_tau_s: 1,
-            ..CFG
-        };
-        let mut st = LimitState::new();
-        let mut trace = [0u16; 600];
-        for l in trace.iter_mut() {
-            slow_period(&mut st, 1200, &cfg);
-            *l = free_fold(&mut st, &cfg);
-        }
-        // the knee: 1200^2 reaches 300^2 - 2^15 = 57232 in ~2.7 periods
-        assert!(trace[..2].iter().all(|&l| l == 1200), "{:?}", &trace[..4]);
-        assert!(trace[8] < 1200, "{:?}", &trace[..10]);
-        assert!(trace.windows(2).all(|w| w[1] <= w[0]), "monotone fold");
-        assert_eq!(trace[599], 300, "folds to i_cont, never under");
-        assert_eq!(free(&mut st, &cfg).terms, flag::I2T);
-        // a hold at i_cont keeps the heat at the budget: the ceiling stays
-        for _ in 0..600 {
-            slow_period(&mut st, 300, &cfg);
-            assert_eq!(free_fold(&mut st, &cfg), 300);
-        }
-        // at rest the budget refills: a monotone recovery to the cap
-        for l in trace.iter_mut() {
-            slow_period(&mut st, 0, &cfg);
-            *l = free_fold(&mut st, &cfg);
-        }
-        assert!(trace.windows(2).all(|w| w[1] >= w[0]), "monotone recovery");
-        assert_eq!(trace[599], 1200);
-        assert_eq!(free(&mut st, &cfg).terms, 0);
-    }
-
-    /// The budget's duration at the cap scales with the leak: a 4 s
-    /// constant holds the cap four times as long as a 1 s one.
-    #[test]
-    fn i2t_extreme_currents_keep_the_ceiling_in_range() {
-        for cap in [0, 1, 255, 32768, u16::MAX] {
-            for rating in [0, 1, 256, 8192, u16::MAX] {
-                let cfg = LimitCfg {
-                    current_limit_counts: cap,
-                    i_cont_counts: rating,
-                    thermal_tau_s: 0,
-                    ..CFG
-                };
-                let mut st = LimitState::new();
-                for held in [i16::MIN, i16::MAX, 0] {
-                    slow_period(&mut st, held, &cfg);
-                    let limit = free_fold(&mut st, &cfg);
-                    assert!(limit <= cap, "cap={cap} rating={rating} held={held}");
-                    assert!(limit >= i_cont_or_cap(&cfg.blocks().0).min(cap));
-                    assert!(st.heat_qg >= 0);
-                }
-                assert_eq!(free_fold(&mut st, &cfg), cap, "cold recovery");
-            }
-        }
-    }
-
-    #[test]
-    fn i2t_budget_scales_with_tau() {
-        let at_cap = |tau_s: u16| {
-            let cfg = LimitCfg {
-                thermal_tau_s: tau_s,
-                ..CFG
-            };
-            let mut st = LimitState::new();
-            (0..2000)
-                .take_while(|_| {
-                    slow_period(&mut st, 1200, &cfg);
-                    free_fold(&mut st, &cfg) == 1200
-                })
-                .count()
-        };
-        let (short, long) = (at_cap(1), at_cap(4));
-        assert!(short >= 2 && long >= 4 * short - 1, "{short} vs {long}");
-    }
-
-    /// i_cont 0 reads as the cap: no budget, the press at the cap.
+    /// i_cont 0 reads as the cap: the press at the cap.
     #[test]
     fn i_cont_zero_is_the_cap() {
         let cfg = LimitCfg {
@@ -1099,8 +962,8 @@ mod tests {
 
     /// the permit drops the detectors and the endstop and nothing
     /// else. A permit that also dropped a ceiling would cook a winding or
-    /// brown the rail out, so the cap, the I2t budget, the derate and
-    /// the rail still bind under it.
+    /// brown the rail out, so the cap, the derate and the rail still bind
+    /// under it.
     #[test]
     fn permit_lifts_detectors_never_ceilings() {
         let cfg = LimitCfg {
@@ -1115,12 +978,6 @@ mod tests {
         let mut st = LimitState::new();
         derate(&mut st, CFG.cutoff_cc, &cfg);
         assert_eq!(fold(&mut st, &press, &cfg).band.hi, 0);
-        let mut st = LimitState::new();
-        for _ in 0..600 {
-            slow_period(&mut st, 1200, &cfg);
-        }
-        let f = fold(&mut st, &press, &cfg);
-        assert_eq!((f.band.hi, f.terms), (300, flag::I2T));
         let mut st = LimitState::new();
         rail(&mut st, 800, &cfg);
         assert_eq!(fold(&mut st, &press, &cfg).band.hi, 600);

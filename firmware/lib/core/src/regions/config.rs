@@ -152,9 +152,8 @@ pub struct ConfigLimits {
     pub stall_time_ticks: u32,
     pub stall_omega_max_cps: u16,
     /// The continuous current: what the winding holds at its maximum
-    /// temperature. The I2t budget folds the ceiling toward it, the press
-    /// detector triggers over it and folds to it. 0 reads as the cap: no
-    /// budget, the press at the cap.
+    /// temperature. The press detector triggers over it and folds to it. 0
+    /// reads as the cap: the press at the cap.
     pub i_cont_counts: u16,
     /// The press fold lets go once the held current reads under this.
     pub stall_release_counts: u16,
@@ -168,11 +167,10 @@ pub struct ConfigLimits {
     pub openloop_zero_brake: bool,
     #[ct_field(skip)]
     pub _rsvd_align: u8,
-    /// The winding's thermal time constant in seconds: the I2t budget's
-    /// leak. The kernel runs it at the nearest power of two of its 16 ms
-    /// period (`kernel::phases::loops::limits::tau_shift`), capped at the
-    /// longest leak, 262 s; 0 runs one period (16 ms) and 1 s runs 64
-    /// (1.02 s).
+    /// The rotor heat node's time constant in seconds. The kernel runs it
+    /// at the nearest power of two of its 16 ms period
+    /// (`kernel::phases::loops::limits::tau_shift`), capped at the longest
+    /// leak, 524 s; 0 runs one period (16 ms) and 1 s runs 64 (1.02 s).
     pub thermal_tau_s: u16,
 }
 
@@ -182,7 +180,7 @@ pub struct ConfigLimits {
 // rise, an assumed 5 ohm winding would hold about 0.45 A in free air.
 // The 250 mA default leaves unmeasured enclosure margin; the host must
 // replace it with the actual motor's rating. The leak uses the octave
-// below that reference constant, so a burst spends its budget sooner.
+// below that reference constant, so the estimate rises sooner.
 // Release stays below the fold so a held press does not unfold.
 pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 500;
 pub const DEFAULT_I_CONT_MA: u16 = 250;

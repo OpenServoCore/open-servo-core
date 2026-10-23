@@ -854,7 +854,8 @@ mod tests {
         assert_eq!(tau_shift(66), 12);
         assert_eq!(tau_shift(115), 13);
         assert_eq!(tau_shift(262), 14);
-        assert_eq!(tau_shift(u16::MAX), 14);
+        assert_eq!(tau_shift(524), 15);
+        assert_eq!(tau_shift(u16::MAX), 15);
     }
 
     /// The bench MG90 on the dev board, 4.51 ohm at 21.0 C/W over the NTC.

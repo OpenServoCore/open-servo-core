@@ -142,9 +142,9 @@ pub struct TelemetryEstimates {
     /// Effective current ceiling after limit folds.
     #[ct_field(access = ro)]
     pub i_lim_counts: u16,
-    /// Winding estimate, centi-C: the board NTC plus the rise on the I2t
-    /// heat; `i16::MIN` while no rise constant or NTC curve is set
-    /// (`therm_flags` bit 0).
+    /// Winding estimate, centi-C: the board NTC plus the rise on the two
+    /// heat nodes; `i16::MIN` while no NTC curve is set (`therm_flags` bit
+    /// 0), `i16::MAX` on a railed NTC or a reading outside the band (bit 1).
     #[ct_field(access = ro)]
     pub t_winding_cc: i16,
     #[ct_field(access = ro)]

@@ -6,7 +6,7 @@
 //! `phase`: CONTROL and the edges, fusion, trajectory and position, limits,
 //! velocity, vbus and detectors, slow, publishes); SLOW every DECIM_SLOW
 //! periods inside the medium half in two stages a period apart (undervolt
-//! and the I2t heat on the due tick; the winding estimate, its derate and
+//! and the heats on the due tick; the winding estimate, its derate and
 //! overtemp on the next period's). The schedule itself is one table
 //! (`scheduler::table`); the loops and detectors the phases run live in
 //! `phases::loops`. The medium half leaves the fast half a `Command`. Only

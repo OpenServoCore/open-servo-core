@@ -38,10 +38,9 @@ pub struct KernelConfig {
     pub calib_thermal: CalibThermal,
     /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
     pub ke_unset: bool,
-    /// The rotor leak for `thermal_tau_s` and `i_cont`'s octave, a nibble
-    /// each (`limits::pack_shifts`), and the body leak for
-    /// `thermal_tau2_s`: the bytes the bool's padding left.
-    i2t_shifts: u8,
+    /// The leak shifts for `thermal_tau_s` and `thermal_tau2_s`
+    /// (`limits::tau_shift`): the bytes the bool's padding left.
+    tau_shift: u8,
     tau2_shift: u8,
     pub i_window_min_ticks: u16,
     /// The terminal floor per decay (`window::v_floors`), indexed by
@@ -103,7 +102,7 @@ impl KernelConfig {
             winding: CalibWinding::new(),
             calib_thermal: CalibThermal::new(),
             ke_unset: true,
-            i2t_shifts: 0,
+            tau_shift: 0,
             tau2_shift: 0,
             i_window_min_ticks: 0,
             v_floor_ticks: [0; 2],
@@ -168,28 +167,15 @@ impl KernelConfig {
         // Finish the estimate's stores before the log calls, so its
         // inputs need not spill across them. The table keeps the host's 0.
         self.limits.i_cont_counts = limits::i_cont_or_cap(&self.limits);
-        self.i2t_shifts = limits::pack_shifts(
-            limits::tau_shift(self.limits.thermal_tau_s),
-            limits::i_cont_log2(self.limits.i_cont_counts),
-        );
+        self.tau_shift = limits::tau_shift(self.limits.thermal_tau_s);
         self.tau2_shift = limits::tau_shift(tau2_s);
     }
 }
 
 impl KernelConfig {
-    /// The I2t leak shift, the rotor node's (`limits::tau_shift`).
-    pub fn tau_shift(&self) -> u8 {
-        self.i2t_shifts >> 4
-    }
-
     /// The two leak shifts, rotor then body (`limits::tau_shift`).
     pub fn tau_shifts(&self) -> [u8; 2] {
-        [self.tau_shift(), self.tau2_shift]
-    }
-
-    /// `floor(log2(i_cont))` (`limits::i_cont_log2`).
-    pub fn i_cont_log2(&self) -> u8 {
-        self.i2t_shifts & 0xF
+        [self.tau_shift, self.tau2_shift]
     }
 }
 

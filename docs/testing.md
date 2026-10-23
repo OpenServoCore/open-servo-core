@@ -141,8 +141,8 @@ The lease and the flags (`core/src/kernel/tests.rs`,
 - `limit_flags_name_the_governor` - each bit alone: ceiling in OpenLoop,
   yield after a Current-mode press over `i_cont`, endstop past a soft
   wall, permit with the endstop dropped, the goal capping a Velocity
-  drive and not an OpenLoop one, the I2t budget binding after a long
-  hold over `i_cont`, the rail fold binding on a sag into its band.
+  drive and not an OpenLoop one, a long hold over `i_cont` folding
+  nothing, the rail fold binding on a sag into its band.
 - `permit_write_bumps_the_generation_only_when_set` - only a committed
   true with torque on grants; a torque-off request, false, a span that
   misses the byte and a staged HOLD write do not, and one span over
@@ -176,10 +176,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   blind start and a slew to 64% across the travel never trip.
 - `openloop_stall_under_permit_never_trips` - a permit rewritten every
   250 ms holds a locked rotor at the limit for 2 s with no fold and no
-  fault (the I2t budget at its longest constant, out of the way).
-- `permit_does_not_lift_the_i2t_fold` - the same permitted stall over
-  4 s spends the I2t budget: the ceiling folds to `i_cont_counts`, the
-  flags name the budget and the permit and no verdict, no fault.
+  fault.
 - `dead_host_stall_trips_within_the_lease` - one permit write, then
   silence: STALL latches 1.5 to 1.6 s after it.
 - `blind_band_caps_at_i_lim_when_r_is_known` - a limit of 200, under the

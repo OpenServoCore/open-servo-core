@@ -44,7 +44,8 @@ pub struct TelemetryHealth {
 
 /// Winding estimate state beside `t_winding_cc`: the board NTC as the
 /// kernel converts it (centi-C, the estimate's base) and the flags
-/// (`estimator::thermal::flag`: bit 0 unset; bits 1-7 reserved 0).
+/// (`estimator::thermal::flag`: bit 0 unset, bit 1 NTC fault; bits 2-7
+/// reserved 0).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryTherm {
