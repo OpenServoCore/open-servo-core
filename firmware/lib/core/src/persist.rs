@@ -53,10 +53,10 @@ pub const IMAGE_LEN: usize = HEADER_LEN + CONFIG_LEN + PROFILE_LEN;
 pub const CALIB_IMAGE_LEN: usize = HEADER_LEN + CALIB_LEN + LUT_LEN;
 
 pub const IMAGE_MAGIC: u8 = b'C';
-/// Bump on any CONFIG/PROFILE layout change; a mismatched image boots
+/// Bump on any CONFIG/PROFILE layout or unit change; a mismatched image boots
 /// `ImageState::Stale` (board defaults stand, closed loop gated) rather
 /// than migrating.
-pub const IMAGE_VERSION: u8 = 7;
+pub const IMAGE_VERSION: u8 = 8;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of

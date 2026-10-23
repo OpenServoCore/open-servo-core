@@ -131,10 +131,10 @@ impl Anchor {
     }
 
     /// The rise over the hold ([`thermal::fit_rise`]) on the servo's
-    /// `thermal_tau_ms` and terminal and current scales.
+    /// `thermal_tau_s` and terminal and current scales.
     pub fn fit(
         &self,
-        thermal_tau_ms: u16,
+        thermal_tau_s: u16,
         v_per_count: f64,
         a_per_count: f64,
     ) -> Result<RiseFit, String> {
@@ -143,7 +143,7 @@ impl Anchor {
             &self.polls,
             &self.samples,
             t0,
-            thermal_tau_ms,
+            thermal_tau_s,
             v_per_count,
             a_per_count,
         )
@@ -367,7 +367,7 @@ mod tests {
         };
         let (exp, _, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
-        let f = exp.fit(4096, 4.0e-3, 0.9e-3).expect("a fit");
+        let f = exp.fit(4, 4.0e-3, 0.9e-3).expect("a fit");
         assert!(f.bins >= thermal::MIN_BINS, "{f:?}");
         assert!(f.k.abs() < 1e-3, "{f:?}");
         assert!(f.settled_rise_c.abs() < 0.5, "{f:?}");
@@ -418,6 +418,6 @@ mod tests {
         );
         assert!(exp.samples().is_empty());
         assert!(exp.t0_ms().is_none());
-        assert!(exp.fit(4096, 4.0e-3, 0.9e-3).is_err());
+        assert!(exp.fit(4, 4.0e-3, 0.9e-3).is_err());
     }
 }

@@ -7,18 +7,31 @@ from oscnb import i2t
 
 
 def test_tau_shift_rounds_to_the_nearest_octave_and_caps():
-    assert i2t.tau_shift(0.016) == 0
-    assert i2t.tau_shift(0.064) == 2
-    assert i2t.tau_shift(4.096) == 8                   # the firmware's boot default
-    assert i2t.tau_shift(5.0) == 8                     # 312 periods, nearer 256 than 512
-    assert i2t.tau_shift(6.5) == 9                     # 406 periods, nearer 512
-    assert i2t.tau_shift(65.535) == i2t.TAU_SHIFT_MAX    # the u16 thermal_tau_ms ceiling, 4095 periods
+    assert i2t.TAU_SHIFT_MAX == 14
+    assert i2t.HEAT_GUARD == 5
+    assert i2t.HEAT_MAX == (2 ** 31 - 1) >> 5
+    assert i2t.tau_shift(0) == 0
+    assert i2t.tau_shift(1) == 6                       # 62 periods, nearer 64 than 32
+    assert i2t.tau_shift(4) == 8                       # the firmware's boot default, 250 periods
+    assert i2t.tau_shift(66) == 12
+    assert i2t.tau_shift(115) == 13                    # 7187 periods, nearer 8192 than 4096
+    assert i2t.tau_shift(262) == 14
+    assert i2t.tau_shift(65535) == i2t.TAU_SHIFT_MAX   # the u16 thermal_tau_s ceiling
 
 
 def test_heat_is_the_kernels_shifted_ewma():
     h = i2t.heat([100, 100, 100, 0, 0], 1)
-    # x_qg = 10000 << 4 = 160000; h += (x - h) >> 1
-    assert h.tolist() == [5000, 7500, 8750, 4375, 2187]      # 35000 >> 4 = 2187 (floor)
+    # x_qg = 10000 << 5 = 320000; h += (x - h) >> 1
+    assert h.tolist() == [5000, 7500, 8750, 4375, 2187]      # 70000 >> 5 = 2187 (floor)
+
+
+def test_heat_at_the_longest_leak_still_moves():
+    # the kernel's heat_at_the_longest_leak_still_moves: a hold at 100 counts heats to within
+    # 512 counts^2 of its square, and rest leaks back to within the same band of 0
+    n = 20 << i2t.TAU_SHIFT_MAX
+    h = i2t.heat(np.r_[np.full(n, 100), np.zeros(n, dtype=int)], i2t.TAU_SHIFT_MAX)
+    assert 10_000 - 512 <= h[n - 1] <= 10_000
+    assert h[-1] <= 512
 
 
 def test_heat_caps_the_square():

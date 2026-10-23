@@ -168,10 +168,12 @@ pub struct ConfigLimits {
     pub openloop_zero_brake: bool,
     #[ct_field(skip)]
     pub _rsvd_align: u8,
-    /// The winding's thermal time constant: the I2t budget's leak. The
-    /// kernel runs it at the nearest power of two of its 16 ms period
-    /// (`kernel::phases::loops::limits::tau_shift`), 16 ms to 65.5 s.
-    pub thermal_tau_ms: u16,
+    /// The winding's thermal time constant in seconds: the I2t budget's
+    /// leak. The kernel runs it at the nearest power of two of its 16 ms
+    /// period (`kernel::phases::loops::limits::tau_shift`), capped at the
+    /// longest leak, 262 s; 0 runs one period (16 ms) and 1 s runs 64
+    /// (1.02 s).
+    pub thermal_tau_s: u16,
 }
 
 // Boot limits until the host supplies nameplate and thermal values.
@@ -184,7 +186,7 @@ pub struct ConfigLimits {
 // Release stays below the fold so a held press does not unfold.
 pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 500;
 pub const DEFAULT_I_CONT_MA: u16 = 250;
-pub const DEFAULT_THERMAL_TAU_MS: u16 = 4096;
+pub const DEFAULT_THERMAL_TAU_S: u16 = 4;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_TICKS: u32 = ms_ticks(500);

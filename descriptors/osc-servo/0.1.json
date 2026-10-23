@@ -342,7 +342,7 @@
       "kind": "bool"
     },
     {
-      "name": "thermal_tau_ms",
+      "name": "thermal_tau_s",
       "addr": 94,
       "width": 2,
       "access": "rw",

@@ -10,14 +10,14 @@ proportional to that heat:
   t_winding = t_ntc + k x heat             centi-C, k in Q0.16 centi-C per count^2
 
 `tau_shift` is the leak as a power of two of SLOW periods (the firmware's
-`limits::tau_shift` rounds `thermal_tau_ms` to the nearest octave, at most
-2^12 periods, 65.5 s), and `k` is the user's rise constant: thermal
+`limits::tau_shift` rounds `thermal_tau_s`, a u16 in whole seconds, to the
+nearest octave, at most 2^14 periods, 262 s), and `k` is the user's rise constant: thermal
 resistance from the winding to wherever the NTC sits, times the winding's
 resistance, in the board's current counts.
 
   heat(i_counts, tau_shift)                the heat state, integer, as the kernel keeps it
   rise_cc(heat, k_q16)                     the rise, integer, as the kernel reads it (saturates at i16::MAX)
-  tau_shift(tau_s)                         the octave for a time constant in s
+  tau_shift(tau_s)                         the octave for a thermal_tau_s in whole seconds
   tau_s(shift)                             the time constant an octave runs at
   ewma(i2, tau_s, dt)                      the same leak in floats at any time constant
 
@@ -34,17 +34,22 @@ most positive how far it read warm.
 import numpy as np
 import pandas as pd
 
-SLOW_S = 0.016                  # the kernel's SLOW period
-TAU_SHIFT_MAX = 12              # the longest leak, 2^12 periods = 65.5 s
-HEAT_GUARD = 4                  # guard bits under the heat state
+SLOW_MS = 16                    # the kernel's SLOW period
+SLOW_S = SLOW_MS / 1000
+TAU_SHIFT_MAX = 14              # the longest leak, 2^14 periods = 262 s
+HEAT_GUARD = 5                  # guard bits under the heat state, a 1/32 count^2 quantum
 HEAT_MAX = (2 ** 31 - 1) >> HEAT_GUARD
 Q16 = 65536
 RISE_MAX = 32767                # the rise saturates at i16::MAX centi-C, as the kernel's does
 
 
 def tau_shift(tau_s):
-    """`limits::tau_shift`: the nearest octave of SLOW periods, 0 under two."""
-    periods = int(tau_s / SLOW_S)
+    """`limits::tau_shift`: the nearest octave of SLOW periods, 0 under two.
+
+    Seconds in, as the u16 `thermal_tau_s` holds them: whole seconds, a
+    fraction is dropped. periods = s * 1000 / 16 in integers, rounded up to
+    the next octave only above 1.5 x 2^k periods, capped at TAU_SHIFT_MAX."""
+    periods = int(tau_s) * 1000 // SLOW_MS
     if periods < 2:
         return 0
     k = periods.bit_length() - 1
@@ -60,7 +65,11 @@ def tau_s(shift):
 def heat(i_counts, shift):
     """The heat state after each sample of `i_counts` (one per SLOW period),
     in counts^2, with the kernel's integer arithmetic: the square is capped,
-    carried with HEAT_GUARD extra bits, and the leak is an arithmetic shift."""
+    carried with HEAT_GUARD extra bits, and the leak is an arithmetic shift.
+
+    The state's quantum is 1/32 count^2 (five guard bits). At the longest
+    leak a rising heat settles within 2^(14 - 5) = 512 counts^2 under the
+    held square, and a falling one within 512 of zero."""
     out = np.empty(len(i_counts), dtype=np.int64)
     h = 0
     for n, i in enumerate(np.asarray(i_counts, dtype=np.int64)):

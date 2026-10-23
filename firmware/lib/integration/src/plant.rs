@@ -122,7 +122,7 @@ pub fn seed(shared: &Shared) {
         c.limits.oc_trip_ticks = 4;
         c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = true;
-        c.limits.thermal_tau_ms = 4096;
+        c.limits.thermal_tau_s = 4;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
         c.thermal.recover_cc = 9000;

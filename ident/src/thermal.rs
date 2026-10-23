@@ -1,6 +1,6 @@
 //! The winding estimate's constants (core `estimator::thermal`): the
 //! kernel reads `t = t_ntc + rise x heat`, the heat the I2t EWMA of the held
-//! current squared on `thermal_tau_ms`. The board NTC's counts-to-centi-C
+//! current squared on `thermal_tau_s`. The board NTC's counts-to-centi-C
 //! curve is a board fact, encoded from its beta constants ([`NtcCurve`]).
 //! Two host routes to the rise, `th_rise_q016`: a nameplate thermal
 //! resistance ([`rise_from_rth`]), or a hold's own copper against the
@@ -173,8 +173,8 @@ fn window_r_vpc(w: &WindowSample) -> Option<f64> {
 /// The kernel's heat over the polls: its own integer EWMA of the held
 /// current squared stepped on the SLOW grid, each step holding the last
 /// poll at or before it. Sampled at `at_ms` (ascending).
-pub fn replay_heat(polls: &[HoldPoll], thermal_tau_ms: u16, at_ms: &[f64]) -> Vec<f64> {
-    let shift = tau_shift(thermal_tau_ms);
+pub fn replay_heat(polls: &[HoldPoll], thermal_tau_s: u16, at_ms: &[f64]) -> Vec<f64> {
+    let shift = tau_shift(thermal_tau_s);
     let Some(first) = polls.first() else {
         return vec![0.0; at_ms.len()];
     };
@@ -212,7 +212,7 @@ pub fn fit_rise(
     polls: &[HoldPoll],
     windows: &[WindowSample],
     t0_ms: f64,
-    thermal_tau_ms: u16,
+    thermal_tau_s: u16,
     v_per_count: f64,
     a_per_count: f64,
 ) -> Result<RiseFit, String> {
@@ -270,7 +270,7 @@ pub fn fit_rise(
         ));
     }
     let at: Vec<f64> = bins.iter().map(|b| b.centre_ms).collect();
-    let h = replay_heat(polls, thermal_tau_ms, &at);
+    let h = replay_heat(polls, thermal_tau_s, &at);
     let shh: f64 = h.iter().map(|h| h * h).sum();
     if shh <= 0.0 {
         return Err("the hold carried no heat".into());
@@ -329,12 +329,12 @@ mod tests {
     fn tau_shift_rounds_to_the_nearest_octave() {
         assert_eq!(SLOW_PERIOD_MS, 16);
         assert_eq!(tau_shift(0), 0);
-        assert_eq!(tau_shift(16), 0);
-        assert_eq!(tau_shift(32), 1);
-        assert_eq!(tau_shift(2048), 7);
-        assert_eq!(tau_shift(4000), 8);
-        assert_eq!(tau_shift(4096), 8);
-        assert_eq!(tau_shift(u16::MAX), 12);
+        assert_eq!(tau_shift(1), 6);
+        assert_eq!(tau_shift(4), 8);
+        assert_eq!(tau_shift(66), 12);
+        assert_eq!(tau_shift(115), 13);
+        assert_eq!(tau_shift(262), 14);
+        assert_eq!(tau_shift(u16::MAX), 14);
     }
 
     /// The bench MG90 on the dev board, 4.51 ohm at 21.0 C/W over the NTC.
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn recovers_the_rise_of_a_synthetic_hold() {
         const K_C: f64 = 0.0105;
-        const TAU_MS: u16 = 4096;
+        const TAU_S: u16 = 4;
         const T0: f64 = 0.0;
         const T_NTC0: f64 = 27.5;
         const I: f64 = -270.0;
@@ -375,7 +375,7 @@ mod tests {
             .collect();
         let bins = 470;
         let centres: Vec<f64> = (0..bins).map(|j| T0 + (j as f64 + 0.5) * BIN_MS).collect();
-        let h = replay_heat(&polls, TAU_MS, &centres);
+        let h = replay_heat(&polls, TAU_S, &centres);
         // the NTC climbs on its own; for the first three bins it falls
         // instead by the copper's excess, so R reads R_ref where R_ref is
         // read
@@ -412,7 +412,7 @@ mod tests {
                 }
             })
             .collect();
-        let f = fit_rise(&polls, &windows, T0, TAU_MS, v, a).unwrap();
+        let f = fit_rise(&polls, &windows, T0, TAU_S, v, a).unwrap();
         assert!((f.k - K_C * 100.0).abs() < 1e-9, "{f:?}");
         assert_eq!(f.rise_q016.raw, (K_C * 100.0 * 65536.0).round() as u16);
         assert!(f.residual_sd_c < 1e-9, "{f:?}");
@@ -444,13 +444,13 @@ mod tests {
         let short: Vec<WindowSample> = (0..10).map(|k| w(k as f64 * 500.0)).collect();
         let polls: Vec<HoldPoll> = (-10..10).map(|k| p(k as f64 * 500.0)).collect();
         assert!(
-            fit_rise(&polls, &short, 0.0, 4096, v, a)
+            fit_rise(&polls, &short, 0.0, 4, v, a)
                 .unwrap_err()
                 .contains("bins")
         );
         let late: Vec<HoldPoll> = (0..10).map(|k| p(k as f64 * 500.0)).collect();
         assert!(
-            fit_rise(&late, &short, 0.0, 4096, v, a)
+            fit_rise(&late, &short, 0.0, 4, v, a)
                 .unwrap_err()
                 .contains("before the hold")
         );

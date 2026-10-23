@@ -1,7 +1,7 @@
 //! Winding estimate, SLOW rate (control-theory "The I2t Winding
 //! Estimate"). The board NTC is the base; the winding's excess over it is
 //! the I2t budget's heat, an EWMA of the held current squared on
-//! `thermal_tau_ms` (`kernel::phases::loops::limits`), scaled by one
+//! `thermal_tau_s` (`kernel::phases::loops::limits`), scaled by one
 //! host-written constant: `t = t_ntc + rise x heat`. The rise is the
 //! thermal resistance from the winding to wherever the NTC sits, times
 //! the winding's resistance, in the board's current counts; the host

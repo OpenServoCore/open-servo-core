@@ -44,9 +44,9 @@ pub mod config {
     /// The collision trip on the disturbance estimate; `u16::MAX` (the boot
     /// value) trips nothing.
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0056, 2);
-    /// The winding's thermal time constant, ms; the kernel runs the nearest
+    /// The winding's thermal time constant, s; the kernel runs the nearest
     /// power of two of its 16 ms period.
-    pub const THERMAL_TAU_MS: Reg = reg(0x005e, 2);
+    pub const THERMAL_TAU_S: Reg = reg(0x005e, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
     pub const L1_Q016: Reg = reg(0x006e, 2);
     pub const L2_Q88: Reg = reg(0x0070, 2);
@@ -248,7 +248,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("i_cont_counts", config::I_CONT_COUNTS),
     ("stall_release_counts", config::STALL_RELEASE_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
-    ("thermal_tau_ms", config::THERMAL_TAU_MS),
+    ("thermal_tau_s", config::THERMAL_TAU_S),
     ("rail_fold_q8", config::RAIL_FOLD_Q8),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("l1_q016", config::L1_Q016),

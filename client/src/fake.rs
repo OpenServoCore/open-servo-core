@@ -110,7 +110,7 @@ impl Winding {
         let t_ntc = thermal::ntc_cc(raw, &ntc);
         let (t_cc, flags) = match t_ntc {
             Some(base) if th.th_rise_q016 != 0 => {
-                let tau_s = heat_tau_s(lim.thermal_tau_ms);
+                let tau_s = heat_tau_s(lim.thermal_tau_s);
                 self.heat += (self.i_sq_mean - self.heat) * -(-dt_s / tau_s).exp_m1();
                 let t_cc = if self.forced {
                     (therm.derate_start_cc as i32 + therm.cutoff_cc as i32) / 2
@@ -136,8 +136,8 @@ impl Winding {
 
 /// The kernel heat EWMA's time constant, seconds: `2^tau_shift` SLOW
 /// periods.
-pub fn heat_tau_s(thermal_tau_ms: u16) -> f64 {
-    (1u32 << tau_shift(thermal_tau_ms)) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
+pub fn heat_tau_s(thermal_tau_s: u16) -> f64 {
+    (1u32 << tau_shift(thermal_tau_s)) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
 }
 
 pub struct FakePipe {
