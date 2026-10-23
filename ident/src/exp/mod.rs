@@ -1443,10 +1443,10 @@ mod tests {
     }
 
     /// A rung that ends over the abort leaves the servo's current reading
-    /// there: torque off it repeats it, and so does a centring's first
-    /// drive, 9.5% under the window floor. Judged over the floor, the
-    /// centring frees the shaft and reaches mid travel; judged at every
-    /// nonzero duty, it aborts the free shaft on the stale reading.
+    /// there through a drive in the same direction under the window floor:
+    /// a centring's first drive, 9.5%, repeats it. Judged over the floor,
+    /// the centring frees the shaft and reaches mid travel; judged at
+    /// every nonzero duty, it aborts the free shaft on the stale reading.
     #[test]
     fn a_stale_current_under_the_floor_is_no_abort() {
         let after_a_rung = || {
@@ -1460,18 +1460,23 @@ mod tests {
                     write(control::GOAL_DUTY, 6500),
                     Cmd::Pause { ms: 100 },
                     Cmd::Read,
-                    write(control::GOAL_DUTY, 0),
-                    write(control::TORQUE_ENABLE, 0),
-                    Cmd::Pause { ms: 100 },
-                    Cmd::Read,
                 ],
                 None,
             );
             pump(&mut rung, &mut s, 100);
             s.current_limit = Some(280);
+            let mut under = Script(
+                vec![
+                    write(control::GOAL_DUTY, 3119),
+                    Cmd::Pause { ms: 100 },
+                    Cmd::Read,
+                ],
+                None,
+            );
+            pump(&mut under, &mut s, 100);
             s.jam = None;
-            let o = rung.1.expect("the rest read");
-            assert_eq!(o.duty_mean_counts, 0);
+            let o = under.1.expect("the read under the floor");
+            assert!(o.duty_mean_counts != 0 && o.duty_mean_counts < duty_counts(s.floor_q15, ARR));
             assert!(o.i_mean_counts > 350, "held {}", o.i_mean_counts);
             s
         };

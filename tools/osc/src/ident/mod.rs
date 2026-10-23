@@ -26,6 +26,7 @@ use osc_client::blocking::Client;
 use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_ident::burst::{Capture, Chans};
 use osc_ident::exp::anchor::{Anchor, AnchorCfg, HOLD_MIN_S};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
@@ -291,19 +292,24 @@ enum Cmd {
     /// through the ladder, then inertia.
     Inertia,
     /// The thermal hold on an identified servo: the jam check, a seat at
-    /// the low stop under the stall permit, a hold there at the stall-safe
-    /// cap (the current limit governs it) for --hold-s, then a cool-down
-    /// seated at the stop for --cool-s, duty 0 with torque on and a
-    /// --cool-pulse-ms pulse at the hold's duty every --cool-every-s, then
-    /// back to mid travel with torque off, both confirmed before it
-    /// returns, on every exit. Polled every 20 ms throughout: every poll
-    /// lands in anchor_snapshots.csv with the board NTC, every window in
-    /// anchor.csv. The winding's own R reads the copper's rise over the
-    /// NTC, against R once the hold's current settles. The pulses' decay is
-    /// the copper's own time constant, thermal_tau_s to the second; the
-    /// hold's rise regressed on the kernel's I2t heat replayed at the leak
-    /// it runs for that tau is th_rise_q016. With --save both are written
-    /// read-back verified, stamped, then SAVEd.
+    /// the low stop under the stall permit, a hold there for --hold-s at a
+    /// duty whose stall is planned a fifth under the current limit and
+    /// whose cold current must sit 10% under the current ceiling, then a
+    /// cool-down seated at the stop for --cool-s, duty 0 and torque off, a
+    /// --cool-pulse-ms re-read at the hold's duty every --cool-every-s,
+    /// then back to mid travel with torque off, both confirmed before it
+    /// returns, on every exit. i_cont_counts is raised to the current limit
+    /// for the run, volatile, so the I2t budget never folds the ceiling
+    /// under a re-read, and restored on every exit before anything is
+    /// SAVEd. Polled every 20 ms throughout: every poll lands in
+    /// anchor_snapshots.csv with the board NTC, every window in anchor.csv,
+    /// every re-read's copper in anchor_pulses.csv. The winding's own R
+    /// reads the copper's rise over the NTC against R at the hold's first
+    /// window, at one duty throughout. The re-reads' decay is the copper's
+    /// own time constant, thermal_tau_s to the second; the hold's rise
+    /// regressed on the kernel's I2t heat replayed at the leak it runs for
+    /// that tau is th_rise_q016. With --save both are written read-back
+    /// verified, stamped, then SAVEd.
     Thermal {
         /// The hold at the stop, seconds.
         #[arg(long, default_value_t = 480, value_parser = clap::value_parser!(u32).range(HOLD_MIN_S as i64..))]
@@ -311,13 +317,12 @@ enum Cmd {
         /// The cool-down after the hold, seated at the stop, seconds.
         #[arg(long, default_value_t = 480)]
         cool_s: u32,
-        /// A measurement pulse every this many seconds of the cool-down.
-        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        /// A re-read every this many seconds of the cool-down.
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..))]
         cool_every_s: u32,
-        /// Each measurement pulse, ms: long enough for the current to
-        /// settle, short enough that its heat is a few percent of the
-        /// hold's.
-        #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u32).range(1..))]
+        /// Each re-read at the hold's duty, ms: long enough for the current
+        /// to settle and windows to land.
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u32).range(1..))]
         cool_pulse_ms: u32,
         /// Write thermal_tau_s and th_rise_q016, stamp and SAVE.
         #[arg(long)]
@@ -993,7 +998,63 @@ fn run_hold(
     csvio::write_anchor_samples(out, hold.samples())?;
     ran?;
     check_abort("thermal", abort)?;
-    Ok(hold.fit(sc.v_term_per_count, sc.amps_per_count))
+    let fit = hold.fit(sc.v_term_per_count, sc.amps_per_count);
+    if let Ok(RiseFit { cool: Some(c), .. }) = &fit {
+        csvio::write_anchor_pulses(out, &c.readings)?;
+    }
+    Ok(fit)
+}
+
+/// Run `f` with `i_cont_counts` raised to the current limit, volatile, so
+/// the I2t budget never folds the ceiling under the hold's duty; restored
+/// and read back on every exit `f` returns by. A hard kill skips the
+/// restore, and a reboot drops the volatile write.
+fn with_i_cont_at_limit<P: Pipe, T>(
+    c: &mut Client<P>,
+    id: Id,
+    lim: &ServoLimits,
+    f: impl FnOnce(&mut Client<P>) -> Result<T>,
+) -> Result<T> {
+    let was = snapshot::read_u16(c, id, config::I_CONT_COUNTS)?;
+    let set = |c: &mut Client<P>, v: u16| -> Result<()> {
+        write_reg(c, id, config::I_CONT_COUNTS, v as i32)?;
+        let back = snapshot::read_u16(c, id, config::I_CONT_COUNTS)?;
+        if back != v {
+            bail!("i_cont_counts: wrote {v}, read back {back}");
+        }
+        Ok(())
+    };
+    let ran = set(c, lim.i_lim).and_then(|()| {
+        println!(
+            "i_cont_counts {was} -> {} for the hold (volatile, restored after)",
+            lim.i_lim
+        );
+        f(c)
+    });
+    let restored = set(c, was).with_context(|| format!("i_cont_counts not restored to {was}"));
+    match (ran, restored) {
+        (Ok(t), Ok(())) => Ok(t),
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), Ok(())) => Err(e),
+        (Err(e), Err(r)) => Err(e.context(format!("and {r:#}"))),
+    }
+}
+
+/// Why `--save` refuses a thermal fit: no cool-down fit, or one whose
+/// re-reads scatter around its decay by more than the floor it fits over.
+fn save_refusal(f: &RiseFit) -> Option<String> {
+    match &f.cool {
+        None => Some("the cool-down fitted no time constant".into()),
+        Some(c) if c.residual_sd_c.is_nan() || c.residual_sd_c > thermal::COOL_FLOOR_C => {
+            Some(format!(
+                "the re-reads scatter {:.2} C around the fitted decay, over the {} C floor the fit \
+                 reads over",
+                c.residual_sd_c,
+                thermal::COOL_FLOOR_C
+            ))
+        }
+        Some(_) => None,
+    }
 }
 
 /// Torque off and the shaft in the centring's band, read back: every exit
@@ -1034,16 +1095,19 @@ fn run_thermal(
              the hold; `osc ident run` identifies it first"
         );
     }
-    let rec = match drive_stages(cli, c, id, Until::Thermal, false) {
-        Ok(rec) => rec,
-        Err(e) => {
-            return Err(match park(cli, c, id, true) {
-                Ok(()) => e,
-                Err(p) => e.context(format!("and the park after it failed: {p:#}")),
-            });
-        }
-    };
-    park(cli, c, id, false)?;
+    let rec = with_i_cont_at_limit(c, id, &d.lim, |c| {
+        let rec = match drive_stages(cli, c, id, Until::Thermal, false) {
+            Ok(rec) => rec,
+            Err(e) => {
+                return Err(match park(cli, c, id, true) {
+                    Ok(()) => e,
+                    Err(p) => e.context(format!("and the park after it failed: {p:#}")),
+                });
+            }
+        };
+        park(cli, c, id, false)?;
+        Ok(rec)
+    })?;
     let Some(f) = rec.thermal else {
         bail!(
             "the hold declined: {}; nothing written",
@@ -1053,17 +1117,44 @@ fn run_thermal(
     let a = d.sc.amps_per_count;
     let now = snapshot::read_u16(c, id, config::THERMAL_TAU_S)?;
     println!(
-        "  R_ref        {:.3} ohm over the {:.0} s from {:.0} s into the hold, its current \
-         steady within {:.0} % into the second after",
-        f.r_ref_ohm,
-        thermal::R_REF_MS / 1000.0,
-        f.r_ref_start_ms / 1000.0,
-        thermal::R_REF_TOL * 100.0
+        "  cold current {:.0} counts under a {:.0} counts ceiling: {:.1} % margin (at least {:.0} \
+         %)",
+        f.i_cold_counts,
+        f.ceiling_counts,
+        f.margin() * 100.0,
+        thermal::HOLD_MARGIN * 100.0
     );
-    if let Some(cool) = f.cool {
+    println!(
+        "  R_ref        {:.3} ohm: a line through {} windows over the hold's first {:.0} s at its \
+         duty, read at the first, {:.0} ms into the hold and {:.0} ms before the line's centre; \
+         the copper warms {:.2} C/s along it",
+        f.r_ref_ohm,
+        f.r_ref_windows,
+        thermal::LINE_MS / 1000.0,
+        f.r_ref_start_ms,
+        f.r_ref_extrap_ms,
+        f.r_ref_slope_c_per_s
+    );
+    if let Some(cool) = &f.cool {
+        let mut sd: Vec<f64> = cool.readings.iter().map(|p| p.sd_c).collect();
+        sd.sort_by(f64::total_cmp);
+        let d = cool.dropped;
         println!(
-            "  tau          {:.1} s from {} cool-down pulses over the {} C floor (residual sd \
-             {:.2} C, {:.1} C over the NTC at the hold's end)",
+            "  re-reads     {} read the copper against R_ref, per-pulse sd median {:.3} C, max \
+             {:.3} C; one re-read's i^2 R t is {:.2} % of the hold's",
+            cool.readings.len(),
+            sd.get(sd.len() / 2).copied().unwrap_or(f64::NAN),
+            sd.last().copied().unwrap_or(f64::NAN),
+            cool.pulse_energy * 100.0
+        );
+        println!(
+            "  dropped      {} re-reads with no valid window; windows {} off the hold's duty, {} \
+             under the floors or without current, {} off the seat",
+            d.pulses, d.off_duty, d.unread, d.moved
+        );
+        println!(
+            "  tau          {:.1} s from {} re-reads over the {} C floor (residual sd {:.2} C, \
+             {:.1} C over the NTC at the hold's end)",
             cool.tau_s,
             cool.pulses,
             thermal::COOL_FLOOR_C,
@@ -1114,6 +1205,9 @@ fn run_thermal(
         GainJson::rise(f.rise_q016),
     ];
     if save {
+        if let Some(why) = save_refusal(&f) {
+            bail!("not written: {why}");
+        }
         write_reg(c, id, control::TORQUE_ENABLE, 0)?;
         snapshot::take_snapshot(c, id, &rec.out.0.join("snapshot.json"))?;
         snapshot::write_gains(c, id, &fields)?;
@@ -1741,6 +1835,13 @@ fn drive_stages(
         Some(Over::Unproven) => {
             bail!("the jam check never saw the shaft move, so no burst may run")
         }
+        Some(Over::HoldUnderFloor { hold, floor }) => bail!(
+            "the thermal hold plans {:.1}% duty, its stall a fifth under the current limit on \
+             this supply, under the {:.1}% the servo needs to read the winding: run it on a lower \
+             supply voltage (USB) or raise the current limit",
+            hold * 100.0,
+            floor * 100.0
+        ),
         Some(Over::RailTooHigh { rail_mv }) => bail!(
             "no winding R: on a {:.1} V rail the 3.2 V burst allowance leaves its two rungs \
              under the 10% apart the fit needs, so the run stops here; `osc ident run \
@@ -2044,13 +2145,18 @@ impl Recorded {
                     }
                 }
             }
-            Stage::Thermal { seek, hold } => {
+            Stage::Thermal {
+                seek,
+                hold,
+                floor_q15,
+                settle_ms,
+            } => {
                 let h = &cli.hold;
                 println!(
-                    "[thermal] seek the low stop at {}, hold at {} (the current limit governs) \
-                     for {} s, then cool down seated for {} s, a {} ms pulse at the hold's duty \
-                     every {} s: the winding's own R against the board NTC; pos guard off, stall \
-                     permit held",
+                    "[thermal] seek the low stop at {}, hold at {} (its stall a fifth under the \
+                     current limit) for {} s, then cool down seated for {} s, torque off, a {} ms \
+                     re-read at the hold's duty every {} s: the winding's own R against the board \
+                     NTC; pos guard off, stall permit held",
                     pct(*seek),
                     pct(*hold),
                     h.hold_ms / 1000,
@@ -2058,7 +2164,7 @@ impl Recorded {
                     h.cool_pulse_ms,
                     h.cool_every_ms / 1000
                 );
-                let cfg = order::anchor_cfg(*seek, *hold, *h);
+                let cfg = order::anchor_cfg(*seek, *hold, *floor_q15, *settle_ms, *h);
                 match run_hold(cli, c, id, out, cfg)? {
                     Ok(f) => self.thermal = Some(f),
                     Err(why) => {
@@ -2442,12 +2548,12 @@ fn render_partial(inputs: ReportInputs<'_>) -> String {
 mod tests {
     use super::*;
 
-    /// The defaults cool down for 47 pulses; a cool-down too short for the
-    /// time constant's fit, or a pulse longer than its period, is refused
-    /// before anything drives.
+    /// The defaults re-read 95 times, 500 ms every 5 s; a cool-down too
+    /// short for the time constant's fit, or a re-read longer than its
+    /// period, is refused before anything drives.
     #[test]
     fn the_thermal_flags_land_enough_pulses() {
-        let cfg = thermal_cfg(480, 480, 10, 200).unwrap();
+        let cfg = thermal_cfg(480, 480, 5, 500).unwrap();
         assert_eq!(
             (
                 cfg.hold_ms,
@@ -2455,13 +2561,91 @@ mod tests {
                 cfg.cool_every_ms,
                 cfg.cool_pulse_ms
             ),
-            (480_000, 480_000, 10_000, 200)
+            (480_000, 480_000, 5000, 500)
         );
-        assert_eq!(cfg.cool_pulses(), 47);
+        assert_eq!(cfg.cool_pulses(), 95);
+        let d = AnchorCfg::default();
+        assert_eq!((d.cool_every_ms, d.cool_pulse_ms), (5000, 500));
         let why = thermal_cfg(480, 40, 10, 200).unwrap_err().to_string();
         assert!(why.contains("lands 3 pulses, under the 5"), "{why}");
         let why = thermal_cfg(480, 480, 1, 1000).unwrap_err().to_string();
         assert!(why.contains("does not fit"), "{why}");
+    }
+
+    /// i_cont_counts sits at the current limit while the hold runs and is
+    /// back, read back, after it: on success and on a failed run alike.
+    #[test]
+    fn the_hold_raises_i_cont_and_restores_it_on_every_exit() {
+        let (mut c, id) = crate::rig::servo::bench::table(1961);
+        let lim = crate::rig::limits::read(&mut c, id).unwrap();
+        assert_eq!(lim.i_lim, 280);
+        let read = |c: &mut Client<_>| snapshot::read_u16(c, id, config::I_CONT_COUNTS).unwrap();
+        assert_eq!(read(&mut c), 168);
+        let during = with_i_cont_at_limit(&mut c, id, &lim, |c| Ok(read(c))).unwrap();
+        assert_eq!((during, read(&mut c)), (280, 168));
+        let err = with_i_cont_at_limit(&mut c, id, &lim, |c| -> Result<()> {
+            assert_eq!(read(c), 280);
+            bail!("the hold aborted")
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "the hold aborted");
+        assert_eq!(read(&mut c), 168);
+    }
+
+    /// --save writes nothing without a cool-down fit or with one whose
+    /// re-reads scatter over the floor.
+    #[test]
+    fn save_refuses_a_missing_or_scattered_cool_down() {
+        use osc_ident::thermal::{CoolFit, Dropped};
+        let e = osc_ident::gains::Encoded {
+            physical: 1.0,
+            raw: 1,
+            quantization_pct: 0.0,
+            saturated: false,
+        };
+        let mut f = RiseFit {
+            k: 1.0,
+            rise_q016: e,
+            r_ref_ohm: 4.9,
+            r_ref_start_ms: 10.0,
+            r_ref_windows: 900,
+            r_ref_extrap_ms: 500.0,
+            r_ref_slope_c_per_s: 5.0,
+            i_cold_counts: 450.0,
+            ceiling_counts: 554.0,
+            rth_c_per_w: 30.0,
+            t0_c: 27.0,
+            residual_sd_c: 0.5,
+            settled_rise_c: 10.0,
+            plateau_k: 1.0,
+            plateau_rise_q016: e,
+            estimate_err_c: None,
+            bins: 480,
+            thermal_tau_s: 115,
+            tau_shift: 13,
+            cool: None,
+        };
+        assert!(save_refusal(&f).unwrap().contains("no time constant"));
+        let cool = CoolFit {
+            tau_s: 115.0,
+            pulses: 80,
+            residual_sd_c: 1.2,
+            r_end_c: 10.0,
+            readings: Vec::new(),
+            dropped: Dropped::default(),
+            pulse_energy: 0.001,
+        };
+        f.cool = Some(cool.clone());
+        let why = save_refusal(&f).unwrap();
+        assert!(
+            why.contains("scatter 1.20 C") && why.contains("1 C floor"),
+            "{why}"
+        );
+        f.cool = Some(CoolFit {
+            residual_sd_c: 0.3,
+            ..cool
+        });
+        assert_eq!(save_refusal(&f), None);
     }
 
     /// After a write the owner is sent to a hold and a few steps at mid

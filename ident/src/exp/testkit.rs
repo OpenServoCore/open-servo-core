@@ -221,6 +221,10 @@ pub struct FakeServo {
     /// the motor pushes into it. The train is not back-drivable: a yielded
     /// stopper holds the shaft where the push left it.
     pub give: [(f64, f64); 2],
+    /// The low stop's horn give, the bench MG90's: pushed into it at
+    /// `.0` q15 or more the pot reads `.1` counts further in, and under it
+    /// the horn springs back at once.
+    pub low_give: Option<(u16, f64)>,
     /// Wiring convention: false inverts duty's effect on motion, so the
     /// endstop experiment must infer the flipped drive_polarity.
     pub drive_polarity: bool,
@@ -321,8 +325,9 @@ pub struct FakeServo {
     /// current: the host's first poll after a step.
     pub step_over_read: f64,
     over_read_due: bool,
-    /// The last window-valid current, which the window repeats at rest
-    /// and, under the limiter, under the floor.
+    /// The last window-valid current, which the window repeats under the
+    /// floor while the limiter drives; 0 from the first tick nothing
+    /// drives, as the kernel drops its held current there.
     i_valid: f64,
     pub torque: bool,
     pub duty: i16,
@@ -370,6 +375,7 @@ impl FakeServo {
             pos: 2400.0,
             ends: (200.0, 4000.0),
             give: [(0.0, 0.0); 2],
+            low_give: None,
             drive_polarity: true,
             pos_noise: 0.0,
             skipped: None,
@@ -451,6 +457,18 @@ impl FakeServo {
         }
         self.alternate_up = !self.alternate_up;
         uniform + if self.alternate_up { 0.5 } else { -0.5 }
+    }
+
+    /// The shaft as the pot sees it: [`Self::low_give`] at the low stop.
+    fn shown(&self) -> f64 {
+        match self.low_give {
+            Some((q15, counts))
+                if self.pos <= self.ends.0 && -(self.applied() as i32) >= q15 as i32 =>
+            {
+                self.pos - counts
+            }
+            _ => self.pos,
+        }
     }
 
     /// The raw count the pot reads at a true position, `noise` raw counts
@@ -1110,7 +1128,7 @@ impl FakeServo {
             put(t::I_TICK_COUNTS, i.round() as i16 as u16);
             put(t::VDIFF_COUNTS, vdiff as u16);
             put(t::DUTY_TICKS, duty_counts(duty, PWM_PERIOD_TICKS) as u16);
-            put(t::POS, self.read_pot(self.pos, noise));
+            put(t::POS, self.read_pot(self.shown(), noise));
             put(t::CURRENT_TROUGH, 512);
             // raw terminal fakes: driven side carries the rail, the other
             // sits low; raw current rides a 512-count bias and is a
@@ -1136,9 +1154,9 @@ impl FakeServo {
     }
 
     /// This tick's window current and terminal differential: the current
-    /// held through a window the shunt cannot read, a governed hold
-    /// `hold_ripple` over the band, the first windows after a duty change
-    /// `transient_gain` over.
+    /// held through a window the shunt cannot read, 0 with nothing driven,
+    /// a governed hold `hold_ripple` over the band, the first windows after
+    /// a duty change `transient_gain` over.
     pub fn sensed(&mut self) -> (f64, f64) {
         let duty = self.applied();
         let driving = duty != 0;
@@ -1156,7 +1174,8 @@ impl FakeServo {
             self.i_valid = i;
             (i, self.vbus * duty.signum() as f64)
         } else {
-            (self.i_valid, 0.0)
+            self.i_valid = 0.0;
+            (0.0, 0.0)
         }
     }
 
@@ -1178,7 +1197,7 @@ impl FakeServo {
             self.press(dt * 1000.0);
             let (i, vdiff) = self.sensed();
             let noise = self.noise();
-            let pos = self.read_pot(self.pos, noise);
+            let pos = self.read_pot(self.shown(), noise);
             sink.push(TelFrame {
                 tick: k,
                 pos: Some(pos),
@@ -1240,7 +1259,7 @@ impl FakeServo {
             _ => 0.0,
         };
         let noise = self.noise();
-        let pos = self.read_pot(self.pos + glitch, noise);
+        let pos = self.read_pot(self.shown() + glitch, noise);
         let omega_bemf = match self.ke_stored {
             Some(ke) if driving => {
                 let v = duty as f64 / 32767.0 * self.vbus;
@@ -2446,5 +2465,33 @@ mod tests {
         s.pos = 2000.0;
         s.write(control::STALL_PERMIT, 0);
         assert_eq!(s.limit_flags() & 4, 0);
+    }
+
+    /// The kernel drops its held current from the first tick nothing
+    /// drives: a stalled drive's current reads 0 in the watch and the read
+    /// that follow its duty 0, and again after torque off, while under the
+    /// floor with the limiter driving the window still repeats the last
+    /// current it read.
+    #[test]
+    fn fake_reads_zero_current_at_duty_zero() {
+        let mut s = bench_mg90(3204);
+        s.jam = Some(s.pos);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, -pct(20));
+        let driven = s.watch_folded(WINDOW_TICKS * 4);
+        let i = driven.windows.last().unwrap().window.i_mean;
+        assert!(i < -100, "stalled at {i}");
+        s.write(control::GOAL_DUTY, -pct(3));
+        let blind = s.watch_folded(WINDOW_TICKS);
+        assert_eq!(blind.windows[0].window.i_mean, i, "held under the floor");
+        s.write(control::GOAL_DUTY, 0);
+        let rest = s.watch_folded(WINDOW_TICKS);
+        assert!(rest.windows[0].window.i_mean == 0, "{rest:?}");
+        assert_eq!(s.read().i_tick_counts, 0);
+        s.write(control::GOAL_DUTY, -pct(20));
+        s.watch_folded(WINDOW_TICKS * 4);
+        s.write(control::TORQUE_ENABLE, 0);
+        let off = s.watch_folded(WINDOW_TICKS);
+        assert!(off.windows[0].window.i_mean == 0, "{off:?}");
     }
 }

@@ -6,7 +6,10 @@
 //! resistance ([`rise_from_rth`]), or a hold's own copper against the
 //! replayed heat ([`fit_rise`]). A cool-down after the hold reads the
 //! copper's own time constant for `thermal_tau_s`, and the rise is fitted
-//! at the leak the kernel runs for it ([`fit_thermal`]).
+//! at the leak the kernel runs for it ([`fit_thermal`]). R moves with the
+//! operating point by a few percent across duties, so a copper reading
+//! never takes a ratio across duties: the cool-down re-reads at the hold's
+//! own duty, against the hold's own start.
 
 use osc_servo_core::kernel::phases::loops::limits::{LimitState, SLOW_PERIOD_MS, tau_shift};
 
@@ -118,27 +121,81 @@ pub fn rth_of(k_cc_per_count2: f64, r_ohm: f64, a_per_count: f64) -> f64 {
 }
 
 /// One poll of the hold: host time, the tick block's signed held current,
-/// the board NTC's reading and the kernel's own winding estimate.
+/// the board NTC's reading, the kernel's own winding estimate and the
+/// current ceiling it composed.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct HoldPoll {
     pub t_ms: f64,
     pub i_counts: f64,
     pub t_ntc_cc: f64,
     pub t_winding_cc: f64,
+    pub i_lim_counts: f64,
 }
 
-/// The reference R is the mean window R over this long of the hold, from
-/// the first second its current is steady.
-pub const R_REF_MS: f64 = 2000.0;
-/// Steady: the reference's seconds and the one after them agree on their
-/// mean |i| within this fraction. The I2t fold can pull the current down
-/// over a hold's first seconds, and an R read there is not the R the hold
-/// runs at; a later fold or the copper's slow drift is steady at this
-/// scale.
-pub const R_REF_TOL: f64 = 0.03;
+/// One window of the thermal run, judged as it landed.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ThermWindow {
+    pub w: WindowSample,
+    /// The pot at the window's end: its last row's, else the poll's that
+    /// drained it.
+    pub pos: u16,
+    /// Its applied duty is the duty commanded for it: no slew still
+    /// climbing, no limiter holding it under.
+    pub commanded: bool,
+    /// Its applied duty clears the higher published window floor: the
+    /// firmware's own test for `I_VALID` and `V_VALID` (`window::select`).
+    pub floors: bool,
+    /// The shaft sat within the seat's stillness.
+    pub still: bool,
+}
+
+impl ThermWindow {
+    /// The window reads the winding: over the floors, carrying current,
+    /// the shaft seated.
+    pub fn reads(&self) -> bool {
+        self.floors && self.still && self.w.i != 0.0
+    }
+}
+
+/// A re-read pulse of the cool-down, at the hold's duty: the polls its
+/// duty was written on and off at. Its windows land between the two.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Pulse {
+    pub on_ms: f64,
+    pub off_ms: f64,
+}
+
+/// What [`fit_thermal`] reads: every poll and window of the run, the
+/// cool-down's pulses, where the hold and the cool-down start, and the
+/// electrical settle a pulse's windows wait out.
+#[derive(Copy, Clone, Debug)]
+pub struct Recording<'a> {
+    pub polls: &'a [HoldPoll],
+    pub windows: &'a [ThermWindow],
+    pub pulses: &'a [Pulse],
+    pub t0_ms: f64,
+    pub cool_ms: f64,
+    pub settle_ms: f64,
+}
+
+/// R_ref is a line through the hold's windows at its commanded duty over
+/// this long from the first, read at the first: the bare copper warms
+/// several C in the hold's first second, and a mean over it reads R_ref
+/// warm.
+pub const LINE_MS: f64 = 1000.0;
+/// The fewest windows the line takes.
+pub const LINE_MIN: usize = 3;
 /// The reference lies inside this much of the hold's start, where the
 /// copper still sits at the NTC.
 pub const R_REF_WITHIN_MS: f64 = 10_000.0;
+/// The hold's cold current sits at least this fraction under the current
+/// ceiling: the copper only lowers it from there, so the cool-down's
+/// re-reads at the hold's duty are never chopped.
+pub const HOLD_MARGIN: f64 = 0.10;
+/// The hold's stall is planned at this fraction of the stall-safe cap: the
+/// plan comes from the stored R and the live current varies a few percent
+/// run to run, so the plan sits a margin's width inside the refusal.
+pub const HOLD_TARGET: f64 = 0.80;
 /// The NTC base is its mean over this long before the hold.
 pub const BASE_MS: f64 = 5000.0;
 /// The fit's grid.
@@ -153,8 +210,33 @@ pub const COOL_FLOOR_C: f64 = 1.0;
 /// Pulses over the floor the copper's time constant needs.
 pub const MIN_PULSES: usize = 5;
 
-/// The copper's own time constant, from the cool-down's pulses.
+/// One cool-down pulse's copper.
 #[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CoolPulse {
+    /// Its settled windows' mean time, s into the cool-down.
+    pub t_s: f64,
+    pub windows: usize,
+    /// The copper over the NTC, C.
+    pub rise_c: f64,
+    /// Its windows' scatter, as copper C.
+    pub sd_c: f64,
+}
+
+/// The cool-down's windows the validity filter dropped, by the first
+/// reason each failed, and the pulses left with none.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    pub pulses: usize,
+    /// Applied off the commanded duty: the slew, or the limiter.
+    pub off_duty: usize,
+    /// Under the floors, or no current.
+    pub unread: usize,
+    /// The shaft off its seat.
+    pub moved: usize,
+}
+
+/// The copper's own time constant, from the cool-down's pulses.
+#[derive(Clone, Debug, PartialEq)]
 pub struct CoolFit {
     pub tau_s: f64,
     /// Pulses over [`COOL_FLOOR_C`] the fit ran on.
@@ -163,16 +245,32 @@ pub struct CoolFit {
     pub residual_sd_c: f64,
     /// The fitted decay's rise over the NTC at the hold's end, C.
     pub r_end_c: f64,
+    /// Every cool-down pulse that read the winding, in order.
+    pub readings: Vec<CoolPulse>,
+    pub dropped: Dropped,
+    /// One pulse's i^2 R t over the hold's, the cool-down's mean.
+    pub pulse_energy: f64,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RiseFit {
     /// centi-C per count squared of heat.
     pub k: f64,
     pub rise_q016: Encoded,
     pub r_ref_ohm: f64,
-    /// Where the reference window starts, ms into the hold.
+    /// The first window at the hold's commanded duty, where R_ref is read,
+    /// ms into the hold.
     pub r_ref_start_ms: f64,
+    /// The windows the R_ref line ran through.
+    pub r_ref_windows: usize,
+    /// How far the line reads back from its windows' mean time, ms.
+    pub r_ref_extrap_ms: f64,
+    /// The copper's warming along the line, C/s.
+    pub r_ref_slope_c_per_s: f64,
+    /// The hold's cold current, the line's windows' mean |i|, counts.
+    pub i_cold_counts: f64,
+    /// The current ceiling over the line, counts.
+    pub ceiling_counts: f64,
     /// The C/W the rise implies on this winding and sense scale.
     pub rth_c_per_w: f64,
     /// The NTC base, C.
@@ -205,6 +303,11 @@ impl RiseFit {
     pub fn octave_s(&self) -> f64 {
         (1u32 << self.tau_shift) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
     }
+
+    /// How far the cold current sits under the ceiling, a fraction of it.
+    pub fn margin(&self) -> f64 {
+        1.0 - self.i_cold_counts / self.ceiling_counts
+    }
 }
 
 #[derive(Copy, Clone, Default)]
@@ -228,6 +331,16 @@ fn mean(xs: impl Iterator<Item = f64>) -> Option<f64> {
     let mut a = Acc::default();
     xs.for_each(|x| a.add(x));
     a.mean()
+}
+
+/// The sample standard deviation, 0 for fewer than two.
+fn sd(xs: &[f64]) -> f64 {
+    let n = xs.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let m = xs.iter().sum::<f64>() / n as f64;
+    (xs.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt()
 }
 
 /// A window's R, vcounts per ccount: duty and vdiff carry the drive's
@@ -262,11 +375,76 @@ pub fn replay_heat(polls: &[HoldPoll], thermal_tau_s: u16, at_ms: &[f64]) -> Vec
     out
 }
 
+/// The hold's cold current against the current ceiling.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Cold {
+    /// The first window at the commanded duty, ms on the host's clock.
+    pub first_ms: f64,
+    /// The mean |i| over the [`LINE_MS`] from it, counts.
+    pub i_counts: f64,
+    /// The lowest `i_lim_counts` polled from the hold's start through
+    /// that span.
+    pub ceiling: f64,
+}
+
+/// The hold's cold current from its windows at the commanded duty over the
+/// [`LINE_MS`] from the first of them, once they cover it: refused when it
+/// sits under the ceiling by less than [`HOLD_MARGIN`], or when nothing
+/// read the winding at the command inside [`R_REF_WITHIN_MS`].
+pub fn cold_current(
+    polls: &[HoldPoll],
+    windows: &[ThermWindow],
+    t0_ms: f64,
+) -> Option<Result<Cold, String>> {
+    let from = windows.partition_point(|x| x.w.t_ms < t0_ms);
+    let held = &windows[from..];
+    let last = held.last()?.w.t_ms;
+    let Some(first) = held.iter().find(|x| x.commanded && x.reads()) else {
+        return (last - t0_ms > R_REF_WITHIN_MS).then(|| {
+            Err(format!(
+                "no window of the hold's first {:.0} s read the winding at its commanded duty: \
+                 the limiter held it under the command",
+                R_REF_WITHIN_MS / 1000.0
+            ))
+        });
+    };
+    let first_ms = first.w.t_ms;
+    if last < first_ms + LINE_MS {
+        return None;
+    }
+    let i_counts = mean(
+        held.iter()
+            .take_while(|x| x.w.t_ms < first_ms + LINE_MS)
+            .filter(|x| x.commanded && x.reads())
+            .map(|x| x.w.i.abs()),
+    )?;
+    let ceiling = polls
+        .iter()
+        .filter(|p| p.t_ms >= t0_ms && p.t_ms < first_ms + LINE_MS)
+        .map(|p| p.i_lim_counts)
+        .fold(f64::INFINITY, f64::min);
+    if !ceiling.is_finite() || i_counts > (1.0 - HOLD_MARGIN) * ceiling {
+        return Some(Err(format!(
+            "the hold's cold current {i_counts:.0} counts sits {:.1} % under the {ceiling:.0} \
+             counts current ceiling, inside the {:.0} % margin that keeps a re-read at the hold's \
+             duty from being chopped",
+            (1.0 - i_counts / ceiling) * 100.0,
+            HOLD_MARGIN * 100.0
+        )));
+    }
+    Some(Ok(Cold {
+        first_ms,
+        i_counts,
+        ceiling,
+    }))
+}
+
 /// One second of the hold.
 #[derive(Copy, Clone, Default)]
 struct Second {
     r: Acc,
-    i: Acc,
+    /// i^2 R, counts squared ohm.
+    p: Acc,
     ntc: Acc,
     winding: Acc,
     unset: bool,
@@ -277,7 +455,11 @@ struct Second {
 struct Reference {
     t0_c: f64,
     r_ref: f64,
-    r_ref_start_ms: f64,
+    start_ms: f64,
+    windows: usize,
+    extrap_ms: f64,
+    slope_c_per_s: f64,
+    cold: Cold,
     seconds: Vec<Second>,
 }
 
@@ -286,15 +468,24 @@ impl Reference {
     fn copper(&self, r: f64) -> f64 {
         (r / self.r_ref - 1.0) * (COPPER_ZERO_R_C + self.t0_c)
     }
+
+    /// The hold's i^2 R t, counts squared ohm seconds.
+    fn energy(&self) -> f64 {
+        self.seconds.iter().filter_map(|s| s.p.mean()).sum::<f64>() * BIN_MS / 1000.0
+    }
 }
 
-/// The hold from `t0_ms` to `end_ms` in one-second bins, T_0 the NTC's
-/// mean over the [`BASE_MS`] before it, R_ref the mean window R over the
-/// first [`R_REF_MS`] inside [`R_REF_WITHIN_MS`] whose seconds and the one
-/// after them agree on their mean |i| within [`R_REF_TOL`].
+/// The hold from `t0_ms` to `end_ms` in one-second bins of the windows
+/// that read the winding, T_0 the NTC's mean over the [`BASE_MS`] before
+/// it. R_ref is a line through the windows at the commanded duty over the
+/// [`LINE_MS`] from the first of them, read at that first window, which
+/// lies inside [`R_REF_WITHIN_MS`]; their current sits [`HOLD_MARGIN`]
+/// under the ceiling ([`cold_current`]). The current falls as the copper
+/// warms at the held duty, and the line reads through that: a fold off the
+/// duty and a shaft off its seat are each window's own flags.
 fn reference(
     polls: &[HoldPoll],
-    windows: &[WindowSample],
+    windows: &[ThermWindow],
     t0_ms: f64,
     end_ms: f64,
     r_ohm: impl Fn(&WindowSample) -> Option<f64>,
@@ -307,18 +498,27 @@ fn reference(
     )
     .ok_or("no NTC reading in the 5 s before the hold")?;
     let held = |t: f64| t >= t0_ms && t < end_ms;
-    let last = windows
+    let hold: Vec<ThermWindow> = windows.iter().filter(|x| held(x.w.t_ms)).copied().collect();
+    let cold = cold_current(polls, &hold, t0_ms).unwrap_or_else(|| {
+        Err(format!(
+            "the hold's windows at its commanded duty cover under the {:.0} s its R_ref line \
+             reads",
+            LINE_MS / 1000.0
+        ))
+    })?;
+    let reads: Vec<(&ThermWindow, f64)> = hold
         .iter()
-        .map(|w| w.t_ms)
-        .filter(|t| held(*t))
-        .fold(t0_ms, f64::max);
+        .filter(|x| x.reads())
+        .filter_map(|x| Some((x, r_ohm(&x.w)?)))
+        .collect();
+    let last = reads.iter().map(|x| x.0.w.t_ms).fold(t0_ms, f64::max);
     let n = ((last - t0_ms) / BIN_MS).floor() as usize + 1;
     let bin = |t: f64| ((t - t0_ms) / BIN_MS).floor() as usize;
     let mut seconds = vec![Second::default(); n];
-    for w in windows.iter().filter(|w| held(w.t_ms)) {
-        if let (Some(r), Some(s)) = (r_ohm(w), seconds.get_mut(bin(w.t_ms))) {
-            s.r.add(r);
-            s.i.add(w.i.abs());
+    for (x, r) in &reads {
+        if let Some(s) = seconds.get_mut(bin(x.w.t_ms)) {
+            s.r.add(*r);
+            s.p.add(x.w.i * x.w.i * r);
         }
     }
     for p in polls.iter().filter(|p| held(p.t_ms)) {
@@ -328,44 +528,38 @@ fn reference(
             s.unset |= p.t_winding_cc <= i16::MIN as f64;
         }
     }
-    let span = (R_REF_MS / BIN_MS).round().max(1.0) as usize;
-    let within = (R_REF_WITHIN_MS / BIN_MS).round() as usize;
-    let steady = |w: &[Second]| {
-        let i: Option<Vec<f64>> = w.iter().map(|s| s.i.mean()).collect();
-        i.is_some_and(|i| {
-            let lo = i.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = i.iter().copied().fold(0.0, f64::max);
-            lo > 0.0 && hi - lo <= R_REF_TOL * lo
-        })
-    };
-    let (j, r_ref) = seconds
-        .windows(span + 1)
-        .take(within.saturating_sub(span) + 1)
-        .enumerate()
-        .find(|(_, w)| steady(w))
-        .map(|(j, w)| {
-            let r = w[..span].iter().fold(Acc::default(), |a, s| Acc {
-                s: a.s + s.r.s,
-                n: a.n + s.r.n,
-            });
-            (j, r.mean())
-        })
-        .ok_or_else(|| {
-            format!(
-                "the current never settled in the hold's first {:.0} s: no {:.0} s of it and the \
-                 second after agree within {:.0} %",
-                R_REF_WITHIN_MS / 1000.0,
-                R_REF_MS / 1000.0,
-                R_REF_TOL * 100.0
-            )
-        })?;
-    let r_ref = r_ref
-        .filter(|r| r.is_finite() && *r > 0.0)
-        .ok_or("the reference window reads no R")?;
+    let first = cold.first_ms;
+    let line: Vec<(f64, f64)> = reads
+        .iter()
+        .filter(|x| x.0.commanded && x.0.w.t_ms >= first)
+        .map(|(x, r)| (x.w.t_ms, *r))
+        .take_while(|x| x.0 < first + LINE_MS)
+        .collect();
+    let m = line.len() as f64;
+    let tm = line.iter().map(|x| x.0).sum::<f64>() / m;
+    let rm = line.iter().map(|x| x.1).sum::<f64>() / m;
+    let sxx: f64 = line.iter().map(|x| (x.0 - tm).powi(2)).sum();
+    if line.len() < LINE_MIN || sxx <= 0.0 {
+        return Err(format!(
+            "the hold's first {:.0} s at its commanded duty carried {} windows, under the \
+             {LINE_MIN} its R_ref line needs",
+            LINE_MS / 1000.0,
+            line.len()
+        ));
+    }
+    let slope = line.iter().map(|x| (x.0 - tm) * (x.1 - rm)).sum::<f64>() / sxx;
+    let r_ref = rm + slope * (first - tm);
+    if !(r_ref.is_finite() && r_ref > 0.0) {
+        return Err("the hold's R_ref line reads no R".into());
+    }
     Ok(Reference {
         t0_c,
         r_ref,
-        r_ref_start_ms: j as f64 * BIN_MS,
+        start_ms: first - t0_ms,
+        windows: line.len(),
+        extrap_ms: tm - first,
+        slope_c_per_s: slope * 1000.0 / r_ref * (COPPER_ZERO_R_C + t0_c),
+        cold,
         seconds,
     })
 }
@@ -395,7 +589,7 @@ struct Bin {
 /// board's terminal and current scales.
 pub fn fit_rise(
     polls: &[HoldPoll],
-    windows: &[WindowSample],
+    windows: &[ThermWindow],
     t0_ms: f64,
     end_ms: f64,
     thermal_tau_s: u16,
@@ -473,7 +667,12 @@ fn rise_at(
         k,
         rise_q016: enc(k, 65536.0),
         r_ref_ohm: rf.r_ref,
-        r_ref_start_ms: rf.r_ref_start_ms,
+        r_ref_start_ms: rf.start_ms,
+        r_ref_windows: rf.windows,
+        r_ref_extrap_ms: rf.extrap_ms,
+        r_ref_slope_c_per_s: rf.slope_c_per_s,
+        i_cold_counts: rf.cold.i_counts,
+        ceiling_counts: rf.cold.ceiling,
         rth_c_per_w: rth_of(k, rf.r_ref, a_per_count),
         t0_c: rf.t0_c,
         residual_sd_c,
@@ -488,63 +687,125 @@ fn rise_at(
     })
 }
 
-/// The copper's time constant from the cool-down that starts at `cool_ms`:
-/// each pulse (a run of polls with current) reads the copper's rise over
-/// the NTC `r` from the later half of its windows, and `ln r` against the
-/// time since `cool_ms` is a line of slope `-1 / tau` over the pulses whose
-/// `r` reads over [`COOL_FLOOR_C`]. The pulses' own heat is left out of the
-/// model: it holds the copper up by about the pulse duty cycle of the
-/// hold's rise, which reads tau long by about that fraction.
-fn cool_at(
-    polls: &[HoldPoll],
-    windows: &[WindowSample],
-    rf: &Reference,
-    cool_ms: f64,
-    r_ohm: impl Fn(&WindowSample) -> Option<f64>,
-) -> Result<CoolFit, String> {
-    let cool: Vec<&HoldPoll> = polls.iter().filter(|p| p.t_ms >= cool_ms).collect();
-    let mut runs: Vec<(usize, usize)> = Vec::new();
-    let mut start = None;
-    for (n, p) in cool.iter().enumerate() {
-        match (p.i_counts != 0.0, start) {
-            (true, None) => start = Some(n),
-            (false, Some(s)) => {
-                runs.push((s, n));
-                start = None;
-            }
-            _ => {}
+/// One pulse read: its settled windows' mean time and R, their R scatter,
+/// their mean i^2 R times the pulse's length, and the NTC over it.
+struct PulseRead {
+    t_ms: f64,
+    windows: usize,
+    r: f64,
+    sd_r: f64,
+    energy: f64,
+    ntc_c: f64,
+}
+
+/// The windows of `p` that read the winding at its commanded duty, from
+/// `settle_ms` after the first of them: the current's L/R transient is
+/// over there. Every window the filter drops is counted in `dropped` by
+/// the first reason it failed.
+fn read_pulse(
+    p: &Pulse,
+    rec: &Recording,
+    r_ohm: &impl Fn(&WindowSample) -> Option<f64>,
+    dropped: &mut Dropped,
+) -> Option<PulseRead> {
+    let a = rec.windows.partition_point(|x| x.w.t_ms <= p.on_ms);
+    let z = rec.windows.partition_point(|x| x.w.t_ms <= p.off_ms);
+    let mut kept = Vec::new();
+    for x in &rec.windows[a..z] {
+        if !x.commanded {
+            dropped.off_duty += 1;
+        } else if !(x.floors && x.w.i != 0.0) {
+            dropped.unread += 1;
+        } else if !x.still {
+            dropped.moved += 1;
+        } else {
+            kept.push(x);
         }
     }
-    if let Some(s) = start {
-        runs.push((s, cool.len()));
-    }
-    let pulses: Vec<(f64, f64)> = runs
+    let settled = kept.first()?.w.t_ms + rec.settle_ms;
+    let used: Vec<(f64, f64, f64)> = kept
         .iter()
-        .filter_map(|&(a, z)| {
-            let from = cool[a].t_ms;
-            let to = cool.get(z).map_or(f64::INFINITY, |p| p.t_ms);
-            let rs: Vec<(f64, f64)> = windows
-                .iter()
-                .filter(|w| w.t_ms >= from && w.t_ms < to)
-                .filter_map(|w| Some((w.t_ms, r_ohm(w)?)))
-                .collect();
-            let late = &rs[rs.len() / 2..];
-            let t = mean(late.iter().map(|x| x.0))?;
-            let r = mean(late.iter().map(|x| x.1))?;
-            let ntc = mean(cool[a..z].iter().map(|p| p.t_ntc_cc / 100.0))?;
-            Some(((t - cool_ms) / 1000.0, rf.copper(r) - (ntc - rf.t0_c)))
+        .filter(|x| x.w.t_ms >= settled)
+        .filter_map(|x| Some((x.w.t_ms, r_ohm(&x.w)?, x.w.i)))
+        .collect();
+    let n = used.len() as f64;
+    let rs: Vec<f64> = used.iter().map(|x| x.1).collect();
+    let ntc_c = mean(
+        rec.polls
+            .iter()
+            .filter(|q| q.t_ms >= p.on_ms && q.t_ms <= p.off_ms)
+            .map(|q| q.t_ntc_cc / 100.0),
+    )?;
+    Some(PulseRead {
+        t_ms: mean(used.iter().map(|x| x.0))?,
+        windows: used.len(),
+        r: rs.iter().sum::<f64>() / n,
+        sd_r: sd(&rs),
+        energy: used.iter().map(|x| x.2 * x.2 * x.1).sum::<f64>() / n * (p.off_ms - p.on_ms)
+            / 1000.0,
+        ntc_c,
+    })
+}
+
+/// The copper's time constant from the cool-down that starts at `cool_ms`:
+/// each re-read pulse, at the hold's own duty, reads the copper's rise over
+/// the NTC `r` against the hold's R_ref ([`read_pulse`]), and `ln r`
+/// against the time since `cool_ms` is a line of slope `-1 / tau` over the
+/// pulses whose `r` reads over [`COOL_FLOOR_C`]. The pulses' own heat is
+/// left out of the model: it holds the copper up by about the pulse duty
+/// cycle of the hold's rise, which reads tau long by about that fraction.
+fn cool_at(
+    rec: &Recording,
+    rf: &Reference,
+    r_ohm: &impl Fn(&WindowSample) -> Option<f64>,
+) -> Result<CoolFit, String> {
+    let mut dropped = Dropped::default();
+    let cool: Vec<PulseRead> = rec
+        .pulses
+        .iter()
+        .filter_map(|p| read_pulse(p, rec, r_ohm, &mut dropped))
+        .collect();
+    dropped.pulses = rec.pulses.len() - cool.len();
+    if cool.is_empty() {
+        return Err(if rec.pulses.is_empty() {
+            "the cool-down landed no measurement pulse".into()
+        } else {
+            format!(
+                "none of the cool-down's {} pulses read the winding at the hold's duty: of their \
+                 windows {} ran off it, {} read nothing and {} came off the seat",
+                rec.pulses.len(),
+                dropped.off_duty,
+                dropped.unread,
+                dropped.moved
+            )
+        });
+    }
+    let hold = rf.energy();
+    let pulse_energy = if hold > 0.0 {
+        cool.iter().map(|p| p.energy).sum::<f64>() / cool.len() as f64 / hold
+    } else {
+        f64::NAN
+    };
+    let as_c = |dr: f64| dr / rf.r_ref * (COPPER_ZERO_R_C + rf.t0_c);
+    let readings: Vec<CoolPulse> = cool
+        .iter()
+        .map(|p| CoolPulse {
+            t_s: (p.t_ms - rec.cool_ms) / 1000.0,
+            windows: p.windows,
+            rise_c: rf.copper(p.r) - (p.ntc_c - rf.t0_c),
+            sd_c: as_c(p.sd_r),
         })
         .collect();
-    if pulses.is_empty() {
-        return Err("the cool-down landed no measurement pulse".into());
-    }
-    let over: Vec<(f64, f64)> = pulses
+    let over: Vec<(f64, f64)> = readings
         .iter()
-        .copied()
+        .map(|p| (p.t_s, p.rise_c))
         .filter(|p| p.1 > COOL_FLOOR_C)
         .collect();
     if over.is_empty() {
-        let top = pulses.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        let top = readings
+            .iter()
+            .map(|p| p.rise_c)
+            .fold(f64::NEG_INFINITY, f64::max);
         return Err(format!(
             "the copper's rise over the NTC never read over the {COOL_FLOOR_C} C floor through \
              the cool-down (at most {top:.2} C)"
@@ -555,7 +816,7 @@ fn cool_at(
             "{} of the cool-down's {} pulses read the copper over the {COOL_FLOOR_C} C floor, \
              under the {MIN_PULSES} its time constant needs",
             over.len(),
-            pulses.len()
+            readings.len()
         ));
     }
     let n = over.len() as f64;
@@ -581,28 +842,24 @@ fn cool_at(
         pulses: over.len(),
         residual_sd_c: (ss / (n - 2.0)).sqrt(),
         r_end_c,
+        readings,
+        dropped,
+        pulse_energy,
     })
 }
 
-/// The hold and its cool-down from `cool_ms`: the copper's time constant
-/// from the cool-down ([`cool_at`]), rounded to the second as
-/// `thermal_tau_s`, then the rise over the hold ([`fit_rise`]) on the heat
-/// replayed at the leak the kernel runs for it.
-pub fn fit_thermal(
-    polls: &[HoldPoll],
-    windows: &[WindowSample],
-    t0_ms: f64,
-    cool_ms: f64,
-    v_per_count: f64,
-    a_per_count: f64,
-) -> Result<RiseFit, String> {
+/// The hold and its cool-down: the copper's time constant from the
+/// cool-down ([`cool_at`]), rounded to the second as `thermal_tau_s`, then
+/// the rise over the hold ([`fit_rise`]) on the heat replayed at the leak
+/// the kernel runs for it.
+pub fn fit_thermal(rec: &Recording, v_per_count: f64, a_per_count: f64) -> Result<RiseFit, String> {
     let r_ohm = r_ohm_at(v_per_count, a_per_count)?;
-    let rf = reference(polls, windows, t0_ms, cool_ms, &r_ohm)?;
-    let cool = cool_at(polls, windows, &rf, cool_ms, &r_ohm)?;
+    let rf = reference(rec.polls, rec.windows, rec.t0_ms, rec.cool_ms, &r_ohm)?;
+    let cool = cool_at(rec, &rf, &r_ohm)?;
     let tau_s = cool.tau_s.round().max(1.0).min(u16::MAX as f64) as u16;
     Ok(RiseFit {
         cool: Some(cool),
-        ..rise_at(polls, &rf, t0_ms, tau_s, a_per_count)?
+        ..rise_at(rec.polls, &rf, rec.t0_ms, tau_s, a_per_count)?
     })
 }
 
@@ -645,6 +902,17 @@ mod tests {
         assert_eq!(rise_from_rth(1e9, 4.51, a).raw, u16::MAX);
     }
 
+    /// A window that read the winding at its commanded duty.
+    fn tw(w: WindowSample) -> ThermWindow {
+        ThermWindow {
+            w,
+            pos: 0,
+            commanded: true,
+            floors: true,
+            still: true,
+        }
+    }
+
     /// A hold whose copper rises over the NTC by exactly k x h at each bin
     /// centre, the NTC climbing on its own: the fit reads k back.
     #[test]
@@ -666,6 +934,7 @@ mod tests {
                     i_counts: if t_ms >= T0 { I } else { 0.0 },
                     t_ntc_cc: 0.0,
                     t_winding_cc: 0.0,
+                    i_lim_counts: CEILING,
                 }
             })
             .collect();
@@ -696,18 +965,20 @@ mod tests {
                 }
             })
             .collect();
-        let windows: Vec<WindowSample> = (0..bins)
-            .map(|j| {
-                let x_w = x_n[j] + K_C * h[j];
-                let r = r_ref_vpc * (1.0 + x_w / (COPPER_ZERO_R_C + T_NTC0));
-                WindowSample {
-                    t_ms: centres[j],
-                    i: I,
-                    vdiff: r * I * DUTY.signum() * 32767.0 / DUTY,
-                    duty_q15: DUTY,
-                }
+        let at = |t_ms: f64, x_w: f64| {
+            let r = r_ref_vpc * (1.0 + x_w / (COPPER_ZERO_R_C + T_NTC0));
+            tw(WindowSample {
+                t_ms,
+                i: I,
+                vdiff: r * I * DUTY.signum() * 32767.0 / DUTY,
+                duty_q15: DUTY,
             })
-            .collect();
+        };
+        // the line's first second, then a window a bin
+        let mut windows: Vec<ThermWindow> =
+            (0..10).map(|k| at(T0 + k as f64 * 100.0, 0.0)).collect();
+        windows.extend((0..bins).map(|j| at(centres[j], x_n[j] + K_C * h[j])));
+        windows.sort_by(|a, b| a.w.t_ms.total_cmp(&b.w.t_ms));
         let f = fit_rise(&polls, &windows, T0, f64::INFINITY, TAU_S, v, a).unwrap();
         assert!((f.k - K_C * 100.0).abs() < 1e-9, "{f:?}");
         assert_eq!(f.rise_q016.raw, (K_C * 100.0 * 65536.0).round() as u16);
@@ -725,37 +996,53 @@ mod tests {
 
     const I: f64 = -270.0;
     const DUTY: f64 = -5000.0;
+    /// The current ceiling the hold runs under, counts: 270 sits 32 %
+    /// under it.
+    const CEILING: f64 = 400.0;
     const T_NTC0: f64 = 27.5;
     const POLL_MS: f64 = 20.0;
+    /// A pulse window every this often.
+    const PULSE_WIN_MS: f64 = 5.0;
+    /// The electrical settle a pulse's windows wait out; the first window
+    /// of each pulse reads inside it.
+    const SETTLE_MS: f64 = 3.0;
     /// 40 C over the NTC at 270 counts, centi-C per count squared.
     const K: f64 = 4000.0 / (270.0 * 270.0);
 
-    /// A window at `t_ms` whose R reads the copper `x_w` C over the NTC
-    /// base, on a 1 vcount per ccount R_ref.
-    fn window(t_ms: f64, i: f64, x_w: f64) -> WindowSample {
-        let r = 1.0 + x_w / (COPPER_ZERO_R_C + T_NTC0);
+    /// A window at `t_ms` at duty `duty` whose R, `r0` cold, reads the
+    /// copper `x_w` C over the NTC base.
+    fn window_at(t_ms: f64, i: f64, duty: f64, r0: f64, x_w: f64) -> WindowSample {
+        let r = r0 * (1.0 + x_w / (COPPER_ZERO_R_C + T_NTC0));
         WindowSample {
             t_ms,
             i,
-            vdiff: r * i * DUTY.signum() * 32767.0 / DUTY,
-            duty_q15: DUTY,
+            vdiff: r * i * duty.signum() * 32767.0 / duty,
+            duty_q15: duty,
         }
     }
 
-    /// A synthetic hold from 0 to `hold_ms` at [`I`] times `scale` (`first`
-    /// through its first second) whose copper rises over the NTC by exactly k x h on
-    /// the heat replayed at `tau_s`, one window per second at the bin's
-    /// centre. The NTC sits at its base but for the first four seconds,
-    /// where it falls by the copper's excess so R reads R_ref there. Then
-    /// `cool` = (length, every, pulse ms, tau s): pulses at [`I`] whose
-    /// copper decays from the hold's end on its own tau, a window every
-    /// 5 ms.
+    /// A hold window on a 1 vcount per ccount R_ref.
+    fn window(t_ms: f64, i: f64, x_w: f64) -> WindowSample {
+        window_at(t_ms, i, DUTY, 1.0, x_w)
+    }
+
+    /// A synthetic run: the hold from 0 to `hold_ms` under `ceiling`, whose
+    /// copper rises over
+    /// the NTC by exactly k x h on the heat replayed at `tau_s`, a window
+    /// every 50 ms through its first 5 s and one at each later bin's
+    /// centre. The applied duty is `duty(t)` of the command, the current
+    /// `scale(t)` of [`I`]. The NTC sits at its base but for the hold's
+    /// first four seconds, where it falls by the copper's excess so R reads
+    /// R_ref there. Then `cool` = (length, every, pulse ms, tau s): pulses
+    /// at the hold's duty whose copper decays from the hold's end on its own
+    /// tau, a window every [`PULSE_WIN_MS`].
     struct Synth {
         hold_ms: f64,
         k: f64,
         tau_s: u16,
-        first: f64,
+        duty: fn(f64) -> f64,
         scale: fn(f64) -> f64,
+        ceiling: f64,
         cool: Option<(f64, f64, f64, f64)>,
     }
 
@@ -765,34 +1052,62 @@ mod tests {
                 hold_ms,
                 k: K,
                 tau_s,
-                first: I,
+                duty: |_| 1.0,
                 scale: |_| 1.0,
+                ceiling: CEILING,
                 cool: None,
             }
         }
 
-        fn pulse(&self, t_ms: f64) -> bool {
-            self.cool.is_some_and(|(len, every, pulse, _)| {
-                let e = t_ms - self.hold_ms;
-                let k = (e / every).floor();
-                e >= 0.0 && k >= 1.0 && e - k * every < pulse && k * every + pulse <= len
-            })
+        fn pulses(&self) -> Vec<Pulse> {
+            let mut out = Vec::new();
+            if let Some((len, every, pulse, _)) = self.cool {
+                let mut on = every;
+                while on + pulse <= len {
+                    out.push(Pulse {
+                        on_ms: self.hold_ms + on,
+                        off_ms: self.hold_ms + on + pulse,
+                    });
+                    on += every;
+                }
+            }
+            out
+        }
+
+        fn in_pulse(&self, t_ms: f64) -> bool {
+            self.pulses()
+                .iter()
+                .any(|p| t_ms > p.on_ms && t_ms <= p.off_ms)
         }
 
         fn current(&self, t_ms: f64) -> f64 {
             match t_ms {
-                t if t < 0.0 => 0.0,
-                t if t < 1000.0 => self.first,
-                t if t < self.hold_ms => I * (self.scale)(t),
-                t if self.pulse(t) => I,
+                t if (0.0..self.hold_ms).contains(&t) => I * (self.scale)(t),
+                t if self.in_pulse(t) => I,
                 _ => 0.0,
             }
         }
 
-        fn build(&self) -> (Vec<HoldPoll>, Vec<WindowSample>) {
+        fn recording<'a>(
+            &self,
+            polls: &'a [HoldPoll],
+            windows: &'a [ThermWindow],
+            pulses: &'a [Pulse],
+        ) -> Recording<'a> {
+            Recording {
+                polls,
+                windows,
+                pulses,
+                t0_ms: 0.0,
+                cool_ms: self.hold_ms,
+                settle_ms: SETTLE_MS,
+            }
+        }
+
+        fn build(&self) -> (Vec<HoldPoll>, Vec<ThermWindow>, Vec<Pulse>) {
             let k_c = self.k / 100.0;
             let end = self.hold_ms + self.cool.map_or(0.0, |c| c.0);
-            let mut polls: Vec<HoldPoll> = (-300..=(end / POLL_MS) as i64)
+            let mut polls: Vec<HoldPoll> = (-400..=(end / POLL_MS) as i64)
                 .map(|n| {
                     let t_ms = n as f64 * POLL_MS;
                     HoldPoll {
@@ -800,6 +1115,7 @@ mod tests {
                         i_counts: self.current(t_ms),
                         t_ntc_cc: T_NTC0 * 100.0,
                         t_winding_cc: T_NTC0 * 100.0,
+                        i_lim_counts: self.ceiling,
                     }
                 })
                 .collect();
@@ -812,26 +1128,41 @@ mod tests {
                     p.t_ntc_cc -= k_c * h[j] * 100.0;
                 }
             }
-            let mut windows: Vec<WindowSample> = centres
-                .iter()
-                .zip(&h)
-                .map(|(&t, h)| {
-                    let x_w = if t < 4000.0 { 0.0 } else { k_c * h };
-                    window(t, self.current(t), x_w)
-                })
-                .collect();
-            if let Some((_, _, _, tau)) = self.cool {
-                let r_end = k_c * replay_heat(&polls, self.tau_s, &[self.hold_ms])[0];
-                let mut t = self.hold_ms;
-                while t < end {
-                    if self.pulse(t) {
-                        let x_w = r_end * (-(t - self.hold_ms) / 1000.0 / tau).exp();
-                        windows.push(window(t, I, x_w));
-                    }
-                    t += 5.0;
+            let hold_at = |t: f64| {
+                let j = (t / BIN_MS) as usize;
+                let x_w = if t < 4000.0 { 0.0 } else { k_c * h[j] };
+                let d = (self.duty)(t);
+                ThermWindow {
+                    commanded: d == 1.0,
+                    ..tw(window_at(t, I * (self.scale)(t), DUTY * d, 1.0, x_w))
+                }
+            };
+            let mut windows: Vec<ThermWindow> =
+                (0..100).map(|k| hold_at(k as f64 * 50.0)).collect();
+            windows.extend(
+                centres
+                    .iter()
+                    .filter(|&&t| t >= 5000.0)
+                    .map(|&t| hold_at(t)),
+            );
+            let r_end = k_c * replay_heat(&polls, self.tau_s, &[self.hold_ms])[0];
+            let tau = self.cool.map_or(f64::INFINITY, |c| c.3);
+            for p in self.pulses() {
+                let mut t = p.on_ms + PULSE_WIN_MS;
+                while t <= p.off_ms {
+                    let x_w = r_end * (-(t - self.hold_ms) / 1000.0 / tau).exp();
+                    // the first window reads inside the L/R transient
+                    let r0 = if t == p.on_ms + PULSE_WIN_MS {
+                        0.9
+                    } else {
+                        1.0
+                    };
+                    windows.push(tw(window_at(t, I, DUTY, r0, x_w)));
+                    t += PULSE_WIN_MS;
                 }
             }
-            (polls, windows)
+            windows.sort_by(|a, b| a.w.t_ms.total_cmp(&b.w.t_ms));
+            (polls, windows, self.pulses())
         }
     }
 
@@ -840,17 +1171,18 @@ mod tests {
     }
 
     /// A hold and a cool-down whose copper decays on 115 s: the fit reads
-    /// the tau back and the rise at the octave the kernel runs for it.
+    /// the tau back and the rise at the octave the kernel runs for it, its
+    /// 500 ms re-reads every 5 s against the hold's own R_ref.
     #[test]
     fn a_cool_down_reads_the_copper_tau_and_the_rise_at_its_octave() {
         let (v, a) = scales();
         let s = Synth {
-            cool: Some((480_000.0, 10_000.0, 200.0, 115.0)),
+            cool: Some((480_000.0, 5000.0, 500.0, 115.0)),
             ..Synth::hold(480_000.0, 115)
         };
-        let (polls, windows) = s.build();
-        let f = fit_thermal(&polls, &windows, 0.0, s.hold_ms, v, a).unwrap();
-        let cool = f.cool.expect("a cool-down fit");
+        let (polls, windows, pulses) = s.build();
+        let f = fit_thermal(&s.recording(&polls, &windows, &pulses), v, a).unwrap();
+        let cool = f.cool.clone().expect("a cool-down fit");
         assert!((cool.tau_s - 115.0).abs() < 0.02 * 115.0, "{f:?}");
         assert_eq!((f.thermal_tau_s, f.tau_shift), (115, 13), "{f:?}");
         assert!((f.octave_s() - 131.072).abs() < 1e-9);
@@ -858,40 +1190,222 @@ mod tests {
         assert!((f.plateau_k - K).abs() < 0.02 * K, "{f:?}");
         assert_eq!(f.bins, 480);
         // r_end is ~39 C: the pulses over 1 C run to ~421 s
-        assert!((40..=43).contains(&cool.pulses), "{cool:?}");
+        assert!((82..=86).contains(&cool.pulses), "{}", cool.pulses);
         assert!(cool.residual_sd_c < 0.01, "{cool:?}");
         let r_end = K / 100.0 * replay_heat(&polls, 115, &[s.hold_ms])[0];
         assert!((cool.r_end_c - r_end).abs() < 0.01 * r_end, "{cool:?}");
+        assert_eq!(cool.readings.len(), 95);
+        assert_eq!(cool.dropped, Dropped::default());
+        assert!(
+            cool.readings
+                .iter()
+                .all(|p| p.windows == 99 && p.sd_c < 0.1),
+            "{:?}",
+            cool.readings
+        );
+        // one 500 ms re-read at the hold's current over its 480 s, less the
+        // hold's copper running warmer than the re-reads'
+        let want = 0.5 / 480.0;
+        assert!(
+            (0.85..1.0).contains(&(cool.pulse_energy / want)),
+            "{} of {want}",
+            cool.pulse_energy
+        );
     }
 
-    /// A first second at twice the current reads a different R: the
-    /// reference waits for the current to settle.
+    /// Pulse windows the limiter chopped, that sat under the floors or that
+    /// the shaft moved through, and the first window inside the electrical
+    /// settle, all read a wrong R; the fit drops them, counting each by its
+    /// reason, and reads what the clean pulse reads.
     #[test]
-    fn the_reference_waits_for_the_current_to_settle() {
+    fn a_chopped_pulse_window_is_dropped() {
         let (v, a) = scales();
         let s = Synth {
-            first: 2.0 * I,
+            cool: Some((240_000.0, 5000.0, 500.0, 115.0)),
+            ..Synth::hold(240_000.0, 115)
+        };
+        let (polls, windows, pulses) = s.build();
+        let clean = fit_thermal(&s.recording(&polls, &windows, &pulses), v, a).unwrap();
+        let mut spoilt = windows.clone();
+        let p = pulses[0];
+        for (n, x) in spoilt
+            .iter_mut()
+            .filter(|x| x.w.t_ms > p.on_ms && x.w.t_ms <= p.off_ms)
+            .enumerate()
+        {
+            match n % 6 {
+                1 => x.commanded = false,
+                3 => x.floors = false,
+                5 => x.still = false,
+                _ => continue,
+            }
+            x.w.vdiff *= 0.8;
+            x.w.duty_q15 *= 0.95;
+        }
+        let f = fit_thermal(&s.recording(&polls, &spoilt, &pulses), v, a).unwrap();
+        let (c, f) = (clean.cool.unwrap(), f.cool.unwrap());
+        assert_eq!(c.readings.len(), f.readings.len());
+        let (r0, r1) = (c.readings[0], f.readings[0]);
+        assert!(r1.windows < r0.windows, "{r1:?}");
+        let d = f.dropped;
+        assert_eq!(
+            (d.pulses, d.off_duty, d.unread, d.moved),
+            (0, 17, 17, 16),
+            "{d:?}"
+        );
+        assert!((r1.rise_c - r0.rise_c).abs() < 0.01, "{r0:?} {r1:?}");
+        assert!(
+            (f.tau_s - c.tau_s).abs() < 1e-3 * c.tau_s,
+            "{} {}",
+            f.tau_s,
+            c.tau_s
+        );
+        // with the settle waived the transient's window reads into it
+        let rec = Recording {
+            settle_ms: 0.0,
+            ..s.recording(&polls, &windows, &pulses)
+        };
+        let raw = fit_thermal(&rec, v, a).unwrap().cool.unwrap();
+        assert_eq!(raw.readings[0].windows, r0.windows + 1);
+        assert!(
+            raw.readings[0].sd_c > 10.0 * r0.sd_c.max(1e-3),
+            "{:?}",
+            raw.readings[0]
+        );
+    }
+
+    /// A bare copper node warming 5 C/s from the hold's start: R_ref, the
+    /// line through the first second read at the first window, is the cold
+    /// copper's R within 0.2 C, where a mean over the second reads it 2.5 C
+    /// warm.
+    #[test]
+    fn the_reference_reads_the_copper_cold_under_a_warming_start() {
+        const RATE_C_PER_S: f64 = 5.0;
+        let (v, a) = scales();
+        let polls: Vec<HoldPoll> = (-300..300)
+            .map(|n| HoldPoll {
+                t_ms: n as f64 * POLL_MS,
+                i_counts: I,
+                t_ntc_cc: T_NTC0 * 100.0,
+                t_winding_cc: T_NTC0 * 100.0,
+                i_lim_counts: CEILING,
+            })
+            .collect();
+        let windows: Vec<ThermWindow> = (0..4000)
+            .map(|k| {
+                let t = 2.0 + k as f64;
+                tw(window(t, I, RATE_C_PER_S * t / 1000.0))
+            })
+            .collect();
+        let rf = reference(
+            &polls,
+            &windows,
+            0.0,
+            f64::INFINITY,
+            r_ohm_at(v, a).unwrap(),
+        )
+        .unwrap();
+        let cold = v / a;
+        let off_c = (rf.r_ref / cold - 1.0) * (COPPER_ZERO_R_C + T_NTC0);
+        assert!(
+            off_c.abs() < 0.2,
+            "R_ref reads {off_c:.3} C off the cold copper"
+        );
+        assert!((off_c - RATE_C_PER_S * 0.002).abs() < 1e-6, "{off_c}");
+        assert!(
+            (rf.slope_c_per_s - RATE_C_PER_S).abs() < 0.03,
+            "{}",
+            rf.slope_c_per_s
+        );
+        assert_eq!((rf.start_ms, rf.windows), (2.0, 1000));
+        assert!((rf.extrap_ms - 499.5).abs() < 1e-9, "{}", rf.extrap_ms);
+        let mean_c = windows[..1000]
+            .iter()
+            .map(|x| x.w.t_ms * RATE_C_PER_S / 1000.0)
+            .sum::<f64>()
+            / 1000.0;
+        assert!(mean_c > 2.5, "{mean_c}");
+    }
+
+    /// The limiter's slew holds the first 200 ms under the command and the
+    /// ceiling folds the duty 1.5 s in: both are duty changes, not
+    /// unsteadiness. R_ref is read from the first window at the command,
+    /// the rise from every window.
+    #[test]
+    fn a_fold_in_the_first_seconds_is_a_duty_change_not_unsteadiness() {
+        let (v, a) = scales();
+        let s = Synth {
+            duty: |t| match t {
+                t if t < 200.0 => 0.5,
+                t if t < 1500.0 => 1.0,
+                _ => 0.7,
+            },
+            scale: |t| match t {
+                t if t < 200.0 => 0.5,
+                t if t < 1500.0 => 1.0,
+                _ => 0.7,
+            },
             ..Synth::hold(120_000.0, 4)
         };
-        let (polls, mut windows) = s.build();
-        let first = windows[0];
-        windows[0] = window(first.t_ms, first.i, 0.1 * (COPPER_ZERO_R_C + T_NTC0));
+        let (polls, windows, _) = s.build();
         let f = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 4, v, a).unwrap();
-        assert_eq!(f.r_ref_start_ms, 1000.0, "{f:?}");
+        assert_eq!(f.r_ref_start_ms, 200.0, "{f:?}");
+        assert_eq!(f.r_ref_windows, 20, "{f:?}");
         assert!((f.r_ref_ohm - v / a).abs() < 1e-9 * v / a, "{f:?}");
         assert!((f.k - K).abs() < 0.02 * K, "{f:?}");
     }
 
-    /// A fold a minute into the hold, as a long tau lands it, is steady at
-    /// the reference's scale: the reference stays at the hold's start.
+    /// A hold the limiter governs from its first window never reads the
+    /// winding at its command: no reference, no rise.
+    #[test]
+    fn a_hold_never_at_its_command_is_refused() {
+        let (v, a) = scales();
+        let s = Synth {
+            duty: |_| 0.9,
+            ..Synth::hold(120_000.0, 4)
+        };
+        let (polls, windows, _) = s.build();
+        let why = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 4, v, a).unwrap_err();
+        assert!(why.contains("at its commanded duty"), "{why}");
+    }
+
+    /// A hold whose cold current sits 7 % under the ceiling leaves a
+    /// re-read at its duty no room before the limiter: refused, named.
+    #[test]
+    fn a_hold_inside_the_ceiling_margin_is_refused() {
+        let (v, a) = scales();
+        let s = Synth {
+            ceiling: 290.0,
+            ..Synth::hold(120_000.0, 4)
+        };
+        let (polls, windows, _) = s.build();
+        let why = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 4, v, a).unwrap_err();
+        assert!(
+            why.contains("cold current 270 counts sits 6.9 % under the 290 counts current ceiling"),
+            "{why}"
+        );
+        assert!(why.contains("inside the 10 % margin"), "{why}");
+        let ok = Synth {
+            ceiling: 301.0,
+            ..Synth::hold(120_000.0, 4)
+        };
+        let (polls, windows, _) = ok.build();
+        let f = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 4, v, a).unwrap();
+        assert_eq!((f.i_cold_counts, f.ceiling_counts), (270.0, 301.0));
+        assert!((f.margin() - (1.0 - 270.0 / 301.0)).abs() < 1e-12);
+    }
+
+    /// A fold a minute into the hold, as a long tau lands it, moves the
+    /// duty well after the reference: it stays at the hold's start.
     #[test]
     fn a_late_fold_leaves_the_reference_at_the_start() {
         let (v, a) = scales();
         let s = Synth {
+            duty: |t| if t < 60_000.0 { 1.0 } else { 0.6 },
             scale: |t| if t < 60_000.0 { 1.0 } else { 0.6 },
             ..Synth::hold(240_000.0, 115)
         };
-        let (polls, windows) = s.build();
+        let (polls, windows, _) = s.build();
         let f = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 115, v, a).unwrap();
         assert_eq!(f.r_ref_start_ms, 0.0, "{f:?}");
         assert!((f.r_ref_ohm - v / a).abs() < 1e-9 * v / a, "{f:?}");
@@ -908,27 +1422,52 @@ mod tests {
             scale: |t| 1.0 - 0.004 * 15.0 * (1.0 - (-t / 131_072.0).exp()),
             ..Synth::hold(480_000.0, 115)
         };
-        let (polls, windows) = s.build();
+        let (polls, windows, _) = s.build();
         let f = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 115, v, a).unwrap();
         assert_eq!(f.r_ref_start_ms, 0.0, "{f:?}");
         assert!((f.r_ref_ohm - v / a).abs() < 1e-9 * v / a, "{f:?}");
     }
 
-    /// A current that ramps 5 %/s through the first 12 s never settles
-    /// where the copper still sits at the NTC: no reference, no rise.
+    /// A seated hold whose current falls 6 % over its first 3 s at one
+    /// duty, its copper warming 5 C/s and more: that is the motor being
+    /// measured, not an unsettled current. Accepted, and R_ref reads the
+    /// cold copper within 0.2 C.
     #[test]
-    fn a_current_that_never_settles_early_is_refused() {
+    fn a_current_falling_with_the_warming_copper_is_accepted() {
         let (v, a) = scales();
-        let s = Synth {
-            scale: |t| 1.0 - 0.05 * t.min(12_000.0) / 1000.0,
-            ..Synth::hold(120_000.0, 4)
-        };
-        let (polls, windows) = s.build();
-        let why = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 4, v, a).unwrap_err();
+        let polls: Vec<HoldPoll> = (-300..300)
+            .map(|n| HoldPoll {
+                t_ms: n as f64 * POLL_MS,
+                i_counts: I,
+                t_ntc_cc: T_NTC0 * 100.0,
+                t_winding_cc: T_NTC0 * 100.0,
+                i_lim_counts: CEILING,
+            })
+            .collect();
+        let windows: Vec<ThermWindow> = (0..4000)
+            .map(|k| {
+                let t = 2.0 + k as f64;
+                let fall = 1.0 - 0.02 * t / 1000.0;
+                let x_w = (1.0 / fall - 1.0) * (COPPER_ZERO_R_C + T_NTC0);
+                tw(window_at(t, I * fall, DUTY, 1.0, x_w))
+            })
+            .collect();
+        let at_3s = windows[2998].w.i / windows[0].w.i;
+        assert!((at_3s - 0.94).abs() < 1e-3, "{at_3s}");
+        let rf = reference(
+            &polls,
+            &windows,
+            0.0,
+            f64::INFINITY,
+            r_ohm_at(v, a).unwrap(),
+        )
+        .unwrap();
+        let off_c = (rf.r_ref / (v / a) - 1.0) * (COPPER_ZERO_R_C + T_NTC0);
         assert!(
-            why.contains("the current never settled in the hold's first 10 s"),
-            "{why}"
+            off_c.abs() < 0.2,
+            "R_ref reads {off_c:.3} C off the cold copper"
         );
+        assert!(rf.slope_c_per_s > 5.0, "{}", rf.slope_c_per_s);
     }
 
     /// A copper that follows the replayed heat exactly settles where the
@@ -937,7 +1476,7 @@ mod tests {
     fn the_plateau_reads_the_regression_on_a_copper_that_follows_the_heat() {
         let (v, a) = scales();
         let s = Synth::hold(300_000.0, 66);
-        let (polls, windows) = s.build();
+        let (polls, windows, _) = s.build();
         let f = fit_rise(&polls, &windows, 0.0, f64::INFINITY, 66, v, a).unwrap();
         assert!((f.k - K).abs() < 1e-9 * K, "{f:?}");
         assert!((f.plateau_k - f.k).abs() < 1e-9 * K, "{f:?}");
@@ -948,8 +1487,8 @@ mod tests {
     fn a_cool_down_short_of_pulses_or_rise_is_refused() {
         let (v, a) = scales();
         let fit = |s: &Synth| {
-            let (polls, windows) = s.build();
-            fit_thermal(&polls, &windows, 0.0, s.hold_ms, v, a).unwrap_err()
+            let (polls, windows, pulses) = s.build();
+            fit_thermal(&s.recording(&polls, &windows, &pulses), v, a).unwrap_err()
         };
         let few = Synth {
             cool: Some((40_000.0, 10_000.0, 200.0, 115.0)),
@@ -968,25 +1507,39 @@ mod tests {
         let none = Synth::hold(120_000.0, 115);
         let why = fit(&none);
         assert!(why.contains("no measurement pulse"), "{why}");
+        let chopped = Synth {
+            cool: Some((120_000.0, 10_000.0, 200.0, 115.0)),
+            ..Synth::hold(120_000.0, 115)
+        };
+        let (polls, mut windows, pulses) = chopped.build();
+        for x in windows.iter_mut().filter(|x| x.w.t_ms >= chopped.hold_ms) {
+            x.commanded = false;
+        }
+        let why = fit_thermal(&chopped.recording(&polls, &windows, &pulses), v, a).unwrap_err();
+        assert!(why.contains("none of the cool-down's 11 pulses"), "{why}");
+        assert!(why.contains("440 ran off it"), "{why}");
     }
 
     #[test]
     fn a_short_or_unbased_hold_is_refused() {
         let v = units::volts_per_count(&DEV);
         let a = units::amps_per_count(&DEV);
-        let w = |t_ms| WindowSample {
-            t_ms,
-            i: -270.0,
-            vdiff: -800.0,
-            duty_q15: -5000.0,
+        let w = |t_ms| {
+            tw(WindowSample {
+                t_ms,
+                i: -270.0,
+                vdiff: -800.0,
+                duty_q15: -5000.0,
+            })
         };
         let p = |t_ms| HoldPoll {
             t_ms,
             i_counts: -270.0,
             t_ntc_cc: 2750.0,
             t_winding_cc: 2750.0,
+            i_lim_counts: CEILING,
         };
-        let short: Vec<WindowSample> = (0..10).map(|k| w(k as f64 * 500.0)).collect();
+        let short: Vec<ThermWindow> = (0..50).map(|k| w(k as f64 * 100.0)).collect();
         let polls: Vec<HoldPoll> = (-10..10).map(|k| p(k as f64 * 500.0)).collect();
         assert!(
             fit_rise(&polls, &short, 0.0, f64::INFINITY, 4, v, a)

@@ -17,6 +17,7 @@ use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
 use osc_ident::fits::{Climb, RungPoint, StepSeries};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot, counts_q15};
+use osc_ident::thermal::{CoolPulse, ThermWindow};
 
 pub(crate) struct OutDir(pub(crate) PathBuf);
 
@@ -250,11 +251,34 @@ pub(crate) fn write_jam_pulses(dir: &OutDir, pulses: &[Pulse]) -> Result<()> {
 }
 
 /// The thermal hold's windows, kept with the run for an offline look.
-pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Result<()> {
+/// Every window of the thermal hold, as the run judged it.
+pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[ThermWindow]) -> Result<()> {
     let mut w = dir.file("anchor.csv")?;
-    writeln!(w, "t_ms,i,vdiff,duty_q15")?;
-    for s in samples {
-        writeln!(w, "{},{},{},{}", s.t_ms, s.i, s.vdiff, s.duty_q15)?;
+    writeln!(w, "t_ms,i,vdiff,duty_q15,pos,commanded,floors,still")?;
+    for x in samples {
+        let s = x.w;
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{},{}",
+            s.t_ms,
+            s.i,
+            s.vdiff,
+            s.duty_q15,
+            x.pos,
+            x.commanded as u8,
+            x.floors as u8,
+            x.still as u8
+        )?;
+    }
+    Ok(())
+}
+
+/// Every cool-down re-read's copper.
+pub(crate) fn write_anchor_pulses(dir: &OutDir, pulses: &[CoolPulse]) -> Result<()> {
+    let mut w = dir.file("anchor_pulses.csv")?;
+    writeln!(w, "t_s,windows,rise_c,sd_c")?;
+    for p in pulses {
+        writeln!(w, "{},{},{},{}", p.t_s, p.windows, p.rise_c, p.sd_c)?;
     }
     Ok(())
 }
