@@ -881,6 +881,36 @@ impl GainJson {
     }
 }
 
+/// thermal.json: where `osc ident thermal`'s hold and step-down start,
+/// its last poll, the seek's and the hold's seats, both duties, and the
+/// `thermal_tau_s` the servo carried into the run, beside anchor.csv for
+/// `ident fit`. Times are the host's ms, as anchor.csv's.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct ThermalJson {
+    pub t0_ms: f64,
+    pub cool_ms: Option<f64>,
+    pub end_ms: f64,
+    pub seat: Option<u16>,
+    pub hold_seat: Option<u16>,
+    pub hold_duty_q15: i16,
+    pub cool_duty_q15: i16,
+    pub thermal_tau_s: u16,
+}
+
+impl ThermalJson {
+    pub fn save(&self, path: &Path) -> Result<()> {
+        std::fs::write(path, serde_json::to_string(self)?)
+            .with_context(|| format!("write {}", path.display()))
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        serde_json::from_str(
+            &std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?,
+        )
+        .with_context(|| format!("parse {}", path.display()))
+    }
+}
+
 impl ParamsFile {
     pub fn save(&self, path: &Path) -> Result<()> {
         std::fs::write(path, serde_json::to_string_pretty(self)?)

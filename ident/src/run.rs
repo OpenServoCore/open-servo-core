@@ -47,13 +47,12 @@
 //! The thermal hold runs on a servo already identified
 //! ([`Run::for_thermal`]): the jam check, a seat at the low stop held at
 //! [`thermal::HOLD_TARGET`] of the stall-safe cap at the plan the stored
-//! winding gives, so the cool-down's re-reads at its duty stay under the
-//! ceiling, where the winding's own R is read for minutes
-//! ([`crate::exp::anchor`]), and the closing centring. A hold that declines
-//! changes nothing else.
+//! winding gives, where the winding's own R is read for minutes, then a
+//! step-down to a fraction of that duty ([`crate::exp::anchor`]), and the
+//! closing centring. A hold that declines changes nothing else.
 
 use crate::exp::AbortReason;
-use crate::exp::anchor::{AnchorCfg, PULSE_SETTLE_TAUS};
+use crate::exp::anchor::AnchorCfg;
 use crate::exp::breakaway::BreakawayCfg;
 use crate::exp::centre::CentreCfg;
 use crate::exp::endstop::EndstopCfg;
@@ -111,14 +110,14 @@ pub enum Stage {
         seek: f64,
         base: f64,
     },
-    /// The thermal hold: `seek` to the low stop, `hold` there and at
-    /// every re-read while the winding's R is read; a window reads it over
-    /// `floor_q15`, a re-read's from `settle_ms` in.
+    /// The thermal hold: `seek` to the low stop, `hold` there while the
+    /// winding's R is read, then step down to `cool`; a window reads it
+    /// over `floor_q15`.
     Thermal {
         seek: f64,
         hold: f64,
+        cool: f64,
         floor_q15: i16,
-        settle_ms: f64,
     },
     /// Cal: each stop approached at `approach`, seated at `seat`; a sticky
     /// spot or a leave may raise the duty up to `cap`.
@@ -200,6 +199,13 @@ pub enum Over {
         hold: f64,
         floor: f64,
     },
+    /// The thermal hold's step-down duty, a fraction of full scale, sits
+    /// under the higher window floor: no window of the cool-down would
+    /// read the winding.
+    CoolUnderFloor {
+        duty: f64,
+        floor: f64,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -253,11 +259,11 @@ pub struct Run {
     rail_mv: f64,
     bootstrap: f64,
     class_r_vpc: f64,
-    /// Ohms per vcount per ccount on the servo's scales.
-    ohm_per_vpc: f64,
     stall_ladder: bool,
     cal: bool,
     thermal: bool,
+    /// The thermal hold's step-down, a fraction of its duty.
+    cool_frac: f64,
     /// What an earlier identification left on the servo.
     stored: Option<Winding>,
     /// The servo carries a Ke and friction line.
@@ -283,10 +289,10 @@ impl Run {
             bootstrap: lim.bootstrap_duty(sc.r_vpc(CLASS_R_MIN)),
             rail_mv: lim.vbus as f64 * sc.v_term_per_count * 1000.0,
             class_r_vpc: sc.r_vpc(CLASS_R_MIN),
-            ohm_per_vpc: 1.0 / sc.r_vpc(1.0),
             stall_ladder: false,
             cal: false,
             thermal: false,
+            cool_frac: 0.0,
             stored: None,
             stored_motion: false,
             reused: None,
@@ -342,12 +348,14 @@ impl Run {
     }
 
     /// The thermal hold alone: the jam check, then the hold at the plan
-    /// the stored winding gives ([`Run::with_stored_winding`]), then the
-    /// closing centring. Without a stored winding nothing can plan the
-    /// hold and the run ends.
-    pub fn for_thermal(lim: ServoLimits, sc: &Scales) -> Self {
+    /// the stored winding gives ([`Run::with_stored_winding`]) and its
+    /// step-down to `cool_frac` of the hold's duty, then the closing
+    /// centring. Without a stored winding nothing can plan the hold and the
+    /// run ends.
+    pub fn for_thermal(lim: ServoLimits, sc: &Scales, cool_frac: f64) -> Self {
         Self {
             thermal: true,
+            cool_frac,
             ..Self::new(lim, sc)
         }
     }
@@ -390,14 +398,6 @@ impl Run {
     /// The most the jam check raises to: [`NUDGE_MAX_MV`] on this rail.
     pub fn nudge_cap(&self) -> f64 {
         duty_of_mv(NUDGE_MAX_MV, self.rail_mv).max(self.bootstrap)
-    }
-
-    /// The stored winding's L/R, s; 0 without one.
-    fn tau_e_s(&self) -> f64 {
-        let tau = self
-            .stored
-            .map_or(0.0, |w| w.l_h / (w.r_loop_vpc * self.ohm_per_vpc));
-        if tau.is_finite() { tau.max(0.0) } else { 0.0 }
     }
 
     pub fn rail_mv(&self) -> f64 {
@@ -506,17 +506,19 @@ impl Run {
             },
             (Step::Thermal, Some(p)) => {
                 let (hold, floor_q15) = (p.stop_cap * thermal::HOLD_TARGET, self.lim.vdiff_floor());
+                let floor = floor_q15 as f64 / Q15;
                 if q15_floor(hold) < floor_q15 {
-                    return self.end(Over::HoldUnderFloor {
-                        hold,
-                        floor: floor_q15 as f64 / Q15,
-                    });
+                    return self.end(Over::HoldUnderFloor { hold, floor });
+                }
+                let cool = hold * self.cool_frac;
+                if q15_floor(cool) < floor_q15 {
+                    return self.end(Over::CoolUnderFloor { duty: cool, floor });
                 }
                 Stage::Thermal {
                     seek: p.seek,
                     hold,
+                    cool,
                     floor_q15,
-                    settle_ms: PULSE_SETTLE_TAUS * self.tau_e_s() * 1000.0,
                 }
             }
             (Step::Park, Some(p)) => Stage::Centre {
@@ -676,19 +678,13 @@ pub fn resistance_cfg(seek: f64, rungs: &[f64], base: ResistanceCfg) -> Resistan
     }
 }
 
-/// `base` with a stage's seek, hold, read floor and settle.
-pub fn anchor_cfg(
-    seek: f64,
-    hold: f64,
-    floor_q15: i16,
-    settle_ms: f64,
-    base: AnchorCfg,
-) -> AnchorCfg {
+/// `base` with a stage's seek, hold, step-down and read floor.
+pub fn anchor_cfg(seek: f64, hold: f64, cool: f64, floor_q15: i16, base: AnchorCfg) -> AnchorCfg {
     AnchorCfg {
         seek_duty_q15: q15_floor(seek),
         hold_duty_q15: q15_floor(hold),
+        cool_duty_q15: q15_floor(cool),
         read_floor_q15: floor_q15,
-        pulse_settle_ms: settle_ms,
         ..base
     }
 }
@@ -1301,16 +1297,15 @@ mod tests {
                 Stage::Thermal {
                     seek,
                     hold,
+                    cool,
                     floor_q15,
-                    settle_ms,
                 } => {
                     let base = AnchorCfg {
                         hold_ms: 3000,
                         cool_ms: 3000,
-                        cool_every_ms: 1000,
                         ..AnchorCfg::default()
                     };
-                    let cfg = anchor_cfg(*seek, *hold, *floor_q15, *settle_ms, base);
+                    let cfg = anchor_cfg(*seek, *hold, *cool, *floor_q15, base);
                     let exp = Permitted::new(Anchor::new(cfg, &params));
                     let (exp, how) = self.go(exp, params.without_pos_guard());
                     let exp = exp.into_inner();
@@ -1396,45 +1391,56 @@ mod tests {
 
     /// On its own the thermal hold plans from the winding the servo
     /// carries, the jam check's duty seeding the seek and its hold a fifth
-    /// under the stall-safe cap, its windows read over the higher window
-    /// floor and its re-reads from ten L/R in. On 2S that hold falls under
-    /// the floor and is refused before it drives; a servo that carries no
-    /// winding has nothing to plan the hold with.
+    /// under the stall-safe cap, its step-down the command's fraction of
+    /// that, its windows read over the higher window floor. A step-down
+    /// under the floor is refused before anything drives, and so on 2S is
+    /// the hold itself; a servo that carries no winding has nothing to plan
+    /// the hold with.
     #[test]
     fn the_thermal_hold_plans_from_the_stored_winding() {
-        let mut r =
-            Run::for_thermal(limits(RAIL_USB), &scales()).with_stored_winding(Some(stored(R)));
-        let mut hold = None;
+        let plan = DutyPlan::new(&limits(RAIL_USB), R, Some(0.12));
+        let floor = 4356.0 / Q15;
+        let frac = 0.9;
+        let mut r = Run::for_thermal(limits(RAIL_USB), &scales(), frac)
+            .with_stored_winding(Some(stored(R)));
+        let mut seen_stage = None;
         let seen = stages(&mut r, |s| {
             if let Stage::Thermal {
                 seek,
-                hold: h,
+                hold,
+                cool,
                 floor_q15,
-                settle_ms,
             } = s
             {
-                hold = Some((*seek, *h));
+                seen_stage = Some((*seek, *hold, *cool));
                 assert_eq!(*floor_q15, 4356);
-                // 0.6 mH over 4.9 ohm
-                let tau = 0.6e-3 / (R * scales().v_term_per_count / scales().amps_per_count);
-                assert!(
-                    (settle_ms - 10.0 * tau * 1000.0).abs() < 1e-9,
-                    "{settle_ms}"
-                );
             }
             Ended::Done
         });
         assert_eq!(seen, ["jam check", "thermal", "centring"]);
         assert_eq!(r.over(), None);
-        let plan = DutyPlan::new(&limits(RAIL_USB), R, Some(0.12));
-        assert_eq!(hold, Some((plan.seek, plan.stop_cap * 0.8)));
+        let hold = plan.stop_cap * 0.8;
+        assert_eq!(seen_stage, Some((plan.seek, hold, hold * frac)));
+        assert!(hold * frac > floor);
+
+        let low = floor / hold * 0.99;
+        let mut r =
+            Run::for_thermal(limits(RAIL_USB), &scales(), low).with_stored_winding(Some(stored(R)));
+        let seen = stages(&mut r, |_| Ended::Done);
+        assert_eq!(seen, ["jam check"]);
+        assert_eq!(
+            r.over(),
+            Some(Over::CoolUnderFloor {
+                duty: hold * low,
+                floor
+            })
+        );
 
         let mut r =
-            Run::for_thermal(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
+            Run::for_thermal(limits(RAIL_2S), &scales(), frac).with_stored_winding(Some(stored(R)));
         let seen = stages(&mut r, |_| Ended::Done);
         assert_eq!(seen, ["jam check"]);
         let plan = DutyPlan::new(&limits(RAIL_2S), R, Some(0.12));
-        let floor = 4356.0 / Q15;
         assert!(plan.stop_cap * 0.8 < floor);
         assert_eq!(
             r.over(),
@@ -1444,7 +1450,7 @@ mod tests {
             })
         );
 
-        let mut r = Run::for_thermal(limits(RAIL_2S), &scales());
+        let mut r = Run::for_thermal(limits(RAIL_2S), &scales(), frac);
         let seen = stages(&mut r, |_| Ended::Done);
         assert_eq!(seen, ["jam check"]);
         assert_eq!(r.over(), Some(Over::Declined("thermal")));
@@ -1459,7 +1465,7 @@ mod tests {
         let mut servo = bench_servo(RAIL_USB);
         servo.pos = 2600.0;
         let mut run =
-            Run::for_thermal(limits(RAIL_USB), &scales()).with_stored_winding(Some(stored(R)));
+            Run::for_thermal(limits(RAIL_USB), &scales(), 0.9).with_stored_winding(Some(stored(R)));
         let mut rig = Rig::new(&mut servo, RAIL_USB);
         rig.run(&mut run);
         assert_eq!(run.over(), None, "{:?}", run.over());

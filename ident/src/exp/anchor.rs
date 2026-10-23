@@ -1,53 +1,40 @@
 //! The thermal hold: seek the low stop at the plan's seek duty, seat, hold
 //! there for [`AnchorCfg::hold_ms`] at a duty whose cold current must sit
-//! [`thermal::HOLD_MARGIN`] under the current ceiling, then cool down
-//! seated for [`AnchorCfg::cool_ms`]: duty 0 and torque off, re-read every
-//! [`AnchorCfg::cool_every_ms`] by a [`AnchorCfg::cool_pulse_ms`] pulse at
-//! the hold's own duty, so every copper reading takes its ratio against the
-//! hold's R_ref at one operating point. It polls at a bounded rate
-//! throughout and keeps every poll and every aggregate window, each judged
-//! as it lands ([`ThermWindow`]). Duty x vdiff / i per window is the
-//! winding's own R; [`crate::thermal::fit_thermal`] fits the copper's time
-//! constant from the re-reads and the winding estimate's rise constant
-//! from the hold. A hold whose cold current crowds the ceiling ends at once
+//! [`thermal::HOLD_MARGIN`] under the current ceiling, then step down to
+//! [`AnchorCfg::cool_duty_q15`] for [`AnchorCfg::cool_ms`], torque on and
+//! the rotor never released. It polls at a bounded rate throughout and
+//! keeps every poll and every aggregate window, each judged as it lands
+//! ([`ThermWindow`]). Duty x vdiff / i per window is the winding's own R;
+//! [`crate::thermal::fit_rise`] fits the winding estimate's rise over the
+//! hold at the servo's `thermal_tau_s`. A hold whose cold current crowds the
+//! ceiling ends once its current's floor is read
 //! ([`thermal::cold_current`]). The hold presses the horn further into the
 //! stop than the seek seated it, so a window reads seated against the
-//! hold's own seat ([`Anchor::hold_seat`]). Runs with the pos guard off and the stall
-//! permit held, like the resistance stop ladder; a seek that rests
-//! anywhere but the stop ends the run ([`super::seek::at_stop`]).
+//! hold's own seat ([`Anchor::hold_seat`]), through the cool-down too. Runs
+//! with the pos guard off and the stall permit held, like the resistance
+//! stop ladder; a seek that rests anywhere but the stop ends the run
+//! ([`super::seek::at_stop`]).
 
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowStream, seek};
 use crate::frame::{TelemetrySnapshot, counts_q15, duty_counts};
 use crate::regs::control;
-use crate::thermal::{self, HoldPoll, Pulse, Recording, RiseFit, ThermWindow};
+use crate::thermal::{self, CoolSummary, HoldPoll, RiseFit, ThermWindow};
 use crate::window::Watch;
-
-/// A re-read's windows are read from this many L/R after its first at the
-/// hold's duty: the current is then within e^-10 of settled, under 0.02 C
-/// of copper.
-pub const PULSE_SETTLE_TAUS: f64 = 10.0;
 
 #[derive(Copy, Clone, Debug)]
 pub struct AnchorCfg {
     /// Seek toward the low stop, q15, applied negative.
     pub seek_duty_q15: i16,
-    /// The hold at the stop and every re-read, q15, applied negative.
+    /// The hold at the stop, q15, applied negative.
     pub hold_duty_q15: i16,
+    /// The step-down after the hold, q15, applied negative.
+    pub cool_duty_q15: i16,
     /// The higher published window floor, q15: a window whose applied duty
     /// is under it does not read the winding.
     pub read_floor_q15: i16,
-    /// A re-read's windows wait this long after its first at the hold's
-    /// duty, ms: [`PULSE_SETTLE_TAUS`] of the winding's L/R.
-    pub pulse_settle_ms: f64,
     pub hold_ms: u32,
-    /// The cool-down after the hold, seated; 0 runs none.
+    /// The step-down after the hold; 0 runs none.
     pub cool_ms: u32,
-    /// A re-read starts this often into the cool-down, each ending inside
-    /// it.
-    pub cool_every_ms: u32,
-    /// Each re-read's length: long enough for the current to settle and
-    /// windows to land.
-    pub cool_pulse_ms: u32,
     /// The hold's poll period: the fit bins by the second and the heat
     /// replay holds the last poll, so a fast poll buys nothing.
     pub poll_ms: u32,
@@ -55,30 +42,26 @@ pub struct AnchorCfg {
 }
 
 /// The shortest hold `osc ident thermal` takes, s: the rise fit needs
-/// [`thermal::MIN_BINS`] seconds of it and the heat several of its own
-/// time constants.
+/// [`thermal::MIN_BINS`] seconds of it, R_ref the current's floor through
+/// [`thermal::FLOOR_TO_MS`], and the heat several of its own time
+/// constants.
 pub const HOLD_MIN_S: u32 = 60;
 
-impl AnchorCfg {
-    /// The cool-down's re-reads: one every `cool_every_ms` from its start,
-    /// each ending inside it.
-    pub fn cool_pulses(&self) -> u32 {
-        self.cool_ms.saturating_sub(self.cool_pulse_ms) / self.cool_every_ms.max(1)
-    }
-}
+/// The hold's seat is the median pot over this long of its windows at the
+/// commanded duty, ms.
+pub const SEAT_MS: f64 = 1000.0;
 
 impl Default for AnchorCfg {
     fn default() -> Self {
         Self {
             seek_duty_q15: 3932,
             hold_duty_q15: 5242,
+            // 0.4 of the hold, `osc ident thermal`'s default
+            cool_duty_q15: 2096,
             // dev-v006's terminal floor under Fast decay, 13.3%
             read_floor_q15: 4356,
-            pulse_settle_ms: 2.0,
             hold_ms: 480_000,
-            cool_ms: 480_000,
-            cool_every_ms: 5000,
-            cool_pulse_ms: 500,
+            cool_ms: 960_000,
             poll_ms: 20,
             seek_poll_ms: 30,
         }
@@ -102,13 +85,6 @@ enum Phase {
     Finished,
 }
 
-/// The second of a pair of writes, sent on the next step.
-#[derive(Copy, Clone)]
-enum Then {
-    Goal(i16),
-    Torque(bool),
-}
-
 pub struct Anchor {
     cfg: AnchorCfg,
     stops: Option<(u16, u16)>,
@@ -126,11 +102,8 @@ pub struct Anchor {
     windows: WindowStream,
     samples: Vec<ThermWindow>,
     polls: Vec<HoldPoll>,
-    pulses: Vec<Pulse>,
     t0_ms: Option<f64>,
     cool_ms: Option<f64>,
-    pulse: bool,
-    then: Option<Then>,
     seat: Option<u16>,
     hold_seat: Option<u16>,
     /// The goal duty last written, q15, signed.
@@ -169,11 +142,8 @@ impl Anchor {
             windows: WindowStream::new(params),
             samples: Vec::new(),
             polls: Vec::new(),
-            pulses: Vec::new(),
             t0_ms: None,
             cool_ms: None,
-            pulse: false,
-            then: None,
             seat: None,
             hold_seat: None,
             cmd_q15: 0,
@@ -191,19 +161,14 @@ impl Anchor {
         &self.polls
     }
 
-    /// The cool-down's re-reads.
-    pub fn pulses(&self) -> &[Pulse] {
-        &self.pulses
-    }
-
     /// Where the shaft seated, once it did.
     pub fn seat(&self) -> Option<u16> {
         self.seat
     }
 
     /// Where the hold pressed the shaft: the median pot over its first
-    /// [`thermal::LINE_MS`] at the commanded duty. Every hold window and
-    /// every re-read window is judged seated against it.
+    /// [`SEAT_MS`] at the commanded duty. Every hold and cool-down window
+    /// is judged seated against it.
     pub fn hold_seat(&self) -> Option<u16> {
         self.hold_seat
     }
@@ -214,40 +179,20 @@ impl Anchor {
         self.t0_ms
     }
 
-    /// The cool-down's start: the first poll after its duty 0 write.
+    /// The cool-down's start: the first poll after its step-down write.
     pub fn cool_ms(&self) -> Option<f64> {
         self.cool_ms
     }
 
     /// Why the hold ended early, when its cold current crowded the
-    /// ceiling or never read at the command.
+    /// ceiling, it never settled, or it never read at the command.
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }
 
-    /// The copper's time constant from the cool-down and the rise over the
-    /// hold at it ([`thermal::fit_thermal`]), on the servo's terminal and
-    /// current scales.
-    pub fn fit(&self, v_per_count: f64, a_per_count: f64) -> Result<RiseFit, String> {
-        if let Some(why) = &self.refused {
-            return Err(why.clone());
-        }
-        let t0_ms = self.t0_ms.ok_or("the hold never started")?;
-        let cool_ms = self.cool_ms.ok_or("the hold ran no cool-down")?;
-        let rec = Recording {
-            polls: &self.polls,
-            windows: &self.samples,
-            pulses: &self.pulses,
-            t0_ms,
-            cool_ms,
-            settle_ms: self.cfg.pulse_settle_ms,
-        };
-        thermal::fit_thermal(&rec, v_per_count, a_per_count)
-    }
-
-    /// The rise over the hold alone at a given `thermal_tau_s`
-    /// ([`thermal::fit_rise`]).
-    pub fn fit_at(
+    /// The rise over the hold at the servo's `thermal_tau_s`
+    /// ([`thermal::fit_rise`]), on its terminal and current scales.
+    pub fn fit(
         &self,
         thermal_tau_s: u16,
         v_per_count: f64,
@@ -257,15 +202,22 @@ impl Anchor {
             return Err(why.clone());
         }
         let t0 = self.t0_ms.ok_or("the hold never started")?;
+        let seat = self.hold_seat.ok_or("the hold never seated")?;
         thermal::fit_rise(
             &self.polls,
             &self.samples,
             t0,
             self.cool_ms.unwrap_or(f64::INFINITY),
+            seat,
             thermal_tau_s,
             v_per_count,
             a_per_count,
         )
+    }
+
+    /// The step-down to the run's last poll, once it started.
+    pub fn cool_summary(&self) -> Option<CoolSummary> {
+        thermal::cool_summary(&self.samples, self.cool_ms?, self.polls.last()?.t_ms)
     }
 
     /// Write the goal duty `q15`: every window from here is judged
@@ -313,9 +265,9 @@ impl Anchor {
             .is_some_and(|s| pos.abs_diff(s) <= self.stall_eps)
     }
 
-    /// Once the hold's windows at its commanded duty cover
-    /// [`thermal::LINE_MS`], their median pot is the hold's seat, and every
-    /// hold window so far is judged against it.
+    /// Once the hold's windows at its commanded duty cover [`SEAT_MS`],
+    /// their median pot is the hold's seat, and every hold window so far is
+    /// judged against it.
     fn read_hold_seat(&mut self, t0: f64) {
         if self.hold_seat.is_some() {
             return;
@@ -326,15 +278,12 @@ impl Anchor {
         let Some(first) = held.iter().find(at_duty).map(|x| x.w.t_ms) else {
             return;
         };
-        if held
-            .last()
-            .is_none_or(|x| x.w.t_ms < first + thermal::LINE_MS)
-        {
+        if held.last().is_none_or(|x| x.w.t_ms < first + SEAT_MS) {
             return;
         }
         let mut pos: Vec<u16> = held
             .iter()
-            .take_while(|x| x.w.t_ms < first + thermal::LINE_MS)
+            .take_while(|x| x.w.t_ms < first + SEAT_MS)
             .filter(at_duty)
             .map(|x| x.pos)
             .collect();
@@ -345,14 +294,15 @@ impl Anchor {
         }
     }
 
-    /// Once the hold's first windows at its command cover the R_ref line,
-    /// its cold current against the ceiling; a hold that crowds it, or
-    /// never reads at the command, is refused.
+    /// Once the hold's windows at its command cover the current's floor
+    /// and the R_ref line, its cold current against the ceiling; a hold
+    /// that crowds it, never settles, or never reads at the command is
+    /// refused.
     fn check_cold(&mut self, t0: f64) {
         if self.cold_checked {
             return;
         }
-        match thermal::cold_current(&self.polls, &self.samples, t0) {
+        match thermal::cold_current(&self.polls, &self.samples, t0, self.hold_seat) {
             None => {}
             Some(Ok(_)) => self.cold_checked = true,
             Some(Err(why)) => {
@@ -361,26 +311,10 @@ impl Anchor {
             }
         }
     }
-
-    /// Whether `e` ms into the cool-down falls inside a re-read.
-    fn pulse_at(&self, e: f64) -> bool {
-        let (every, pulse) = (
-            self.cfg.cool_every_ms.max(1) as f64,
-            self.cfg.cool_pulse_ms as f64,
-        );
-        let k = (e / every).floor();
-        k >= 1.0 && k <= self.cfg.cool_pulses() as f64 && e - k * every < pulse
-    }
 }
 
 impl Experiment for Anchor {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
-        if let Some(then) = self.then.take() {
-            return match then {
-                Then::Goal(q15) => self.goal(q15),
-                Then::Torque(on) => Self::torque(on),
-            };
-        }
         match self.phase {
             Phase::ModeWrite => {
                 self.phase = Phase::TorqueOn;
@@ -473,55 +407,28 @@ impl Experiment for Anchor {
             }
             Phase::CoolSet => {
                 self.phase = Phase::CoolRead;
-                // a backstop as the hold's, each re-read's two turns
-                // polling without a pause
-                self.polls_left =
-                    self.cfg.cool_ms / self.cfg.poll_ms.max(1) + 1 + 2 * self.cfg.cool_pulses();
-                self.pulse = false;
-                self.then = Some(Then::Torque(false));
-                self.goal(0)
+                // a backstop as the hold's
+                self.polls_left = self.cfg.cool_ms / self.cfg.poll_ms.max(1) + 1;
+                self.goal(DIR * self.cfg.cool_duty_q15)
             }
             Phase::CoolRead => {
                 self.phase = Phase::CoolEval;
                 Cmd::Read
             }
             Phase::CoolEval => {
-                let (mut over, mut pulse) = (false, self.pulse);
+                let mut over = false;
                 if let Some(o) = obs {
                     self.polls.push(poll(o));
                     self.take_windows(o);
                     let e = o.host_ms - *self.cool_ms.get_or_insert(o.host_ms);
                     over = e >= self.cfg.cool_ms as f64;
-                    pulse = !over && self.pulse_at(e);
-                    if pulse && !self.pulse {
-                        self.pulses.push(Pulse {
-                            on_ms: o.host_ms,
-                            off_ms: o.host_ms,
-                        });
-                    }
-                    if self.pulse
-                        && !pulse
-                        && let Some(p) = self.pulses.last_mut()
-                    {
-                        p.off_ms = o.host_ms;
-                    }
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
-                self.phase = Phase::CoolRead;
                 if over || self.polls_left == 0 {
                     self.phase = Phase::FinishDuty;
                     Cmd::Pause { ms: 0 }
-                } else if pulse != self.pulse {
-                    self.pulse = pulse;
-                    if pulse {
-                        // torque on, the permit after it, then the duty
-                        self.then = Some(Then::Goal(DIR * self.cfg.hold_duty_q15));
-                        Self::torque(true)
-                    } else {
-                        self.then = Some(Then::Torque(false));
-                        self.goal(0)
-                    }
                 } else {
+                    self.phase = Phase::CoolRead;
                     Cmd::Pause {
                         ms: self.cfg.poll_ms,
                     }
@@ -554,7 +461,7 @@ impl Experiment for Anchor {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{FakeServo, bench_mg90, pump, rig};
+    use super::super::testkit::{FakeServo, PWM_PERIOD_TICKS, bench_mg90, pump, rig};
     use super::super::{Guarded, Permitted};
     use super::*;
 
@@ -589,7 +496,6 @@ mod tests {
         AnchorCfg {
             hold_ms: 3000,
             cool_ms: 3000,
-            cool_every_ms: 1000,
             ..AnchorCfg::default()
         }
     }
@@ -599,6 +505,17 @@ mod tests {
     }
 
     use crate::exp::WindowSample;
+
+    /// The writes after the hold's duty, the permit's refreshes left out.
+    fn after_hold(log: &[String], hold_q15: i16) -> Vec<String> {
+        let hold = format!("write goal_duty {}", -(hold_q15 as i32));
+        let at = log.iter().position(|l| *l == hold).expect("a hold");
+        log[at + 1..]
+            .iter()
+            .filter(|l| l.starts_with("write ") && *l != "write stall_permit 1")
+            .cloned()
+            .collect()
+    }
 
     /// Seated at the low stop, the hold runs its time at the bounded poll
     /// rate and keeps the planted R in every window, each judged at the
@@ -659,24 +576,32 @@ mod tests {
     }
 
     /// A hold whose cold current sits under the ceiling by less than the
-    /// margin ends once its first second is read, before the cool-down,
+    /// margin ends once its current's floor is read, before the cool-down,
     /// and the fit names why.
     #[test]
-    fn a_hold_inside_the_ceiling_margin_ends_at_once() {
+    fn a_hold_inside_the_ceiling_margin_ends_once_its_floor_is_read() {
         let mut servo = FakeServo::new(3.37);
         // the hold draws 82 counts, 7 % under 88
         servo.current_limit = Some(88);
-        let (exp, log, abort) = run(&mut servo, short());
+        let cfg = AnchorCfg {
+            hold_ms: 120_000,
+            ..short()
+        };
+        let (exp, log, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
         let why = exp.refused().expect("refused");
         assert!(why.contains("inside the 10 % margin"), "{why}");
         assert!(why.contains("88 counts current ceiling"), "{why}");
+        assert!(why.contains("keeps the I2t fold off the hold"), "{why}");
         let t0 = exp.t0_ms().unwrap();
         let last = exp.polls().last().unwrap().t_ms;
-        assert!(last - t0 < 1500.0, "held {} ms", last - t0);
-        assert!(exp.cool_ms().is_none() && exp.pulses().is_empty());
-        assert_eq!(exp.fit(4.0e-3, 0.9e-3).unwrap_err(), why);
-        assert_eq!(exp.fit_at(4, 4.0e-3, 0.9e-3).unwrap_err(), why);
+        assert!(
+            (thermal::FLOOR_TO_MS..thermal::FLOOR_TO_MS + 1500.0).contains(&(last - t0)),
+            "held {} ms",
+            last - t0
+        );
+        assert!(exp.cool_ms().is_none() && exp.cool_summary().is_none());
+        assert_eq!(exp.fit(4, 4.0e-3, 0.9e-3).unwrap_err(), why);
         let tail: Vec<&String> = log.iter().rev().take(3).collect();
         assert_eq!(*tail[2], "write goal_duty 0");
         assert_eq!(*tail[1], "write torque_enable 0");
@@ -689,80 +614,44 @@ mod tests {
     fn a_winding_that_does_not_warm_reads_no_rise() {
         let mut servo = servo();
         let cfg = AnchorCfg {
-            hold_ms: 40_000,
-            cool_ms: 60_000,
+            hold_ms: HOLD_MIN_S * 1000,
+            cool_ms: 30_000,
             ..AnchorCfg::default()
         };
         let (exp, _, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
-        let f = exp.fit_at(4, 4.0e-3, 0.9e-3).expect("a fit");
+        let f = exp.fit(4, 4.0e-3, 0.9e-3).expect("a fit");
         assert!(f.bins >= thermal::MIN_BINS, "{f:?}");
-        assert!(f.bins <= 41, "the cool-down is not the hold: {f:?}");
+        assert!(f.bins <= 61, "the cool-down is not the hold: {f:?}");
         assert!(f.k.abs() < 1e-3, "{f:?}");
         assert!(f.settled_rise_c.abs() < 0.5, "{f:?}");
         assert!(f.margin() > 0.6, "{f:?}");
-        let why = exp.fit(4.0e-3, 0.9e-3).unwrap_err();
-        assert!(why.contains("never read over"), "{why}");
+        assert!(f.r_ref_settle_ms < thermal::R_REF_WITHIN_MS, "{f:?}");
     }
 
-    /// The default cool-down re-reads for 500 ms every 5 s, each ending
-    /// inside it.
+    /// After the hold the duty steps down to the cool-down's and stays
+    /// there, torque on: one goal write, then nothing until the finish's
+    /// duty 0 and torque off.
     #[test]
-    fn the_default_cool_down_re_reads_every_five_seconds() {
-        let cfg = AnchorCfg::default();
-        assert_eq!((cfg.cool_every_ms, cfg.cool_pulse_ms), (5000, 500));
-        assert_eq!(cfg.cool_pulses(), 95);
-    }
-
-    /// Seated through the cool-down: duty 0 and torque off between
-    /// re-reads at the hold's own duty, each re-read torque on, the permit
-    /// granted again, then the duty; polls at the hold's rate, the
-    /// re-reads' polls carrying current and the gaps' none.
-    #[test]
-    fn the_cool_down_re_reads_seated_at_the_hold_duty() {
+    fn the_cool_down_steps_down_with_torque_on() {
         let mut servo = servo();
         let cfg = AnchorCfg {
             hold_ms: 3000,
             cool_ms: 30_000,
             ..AnchorCfg::default()
         };
-        let hold = -(cfg.hold_duty_q15 as i32);
         let (exp, log, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
-        let writes: Vec<&str> = log
-            .iter()
-            .filter_map(|l| l.strip_prefix("write "))
-            .filter(|l| !l.starts_with("mode"))
-            .collect();
-        // every torque on is followed by the permit at once
-        for (k, w) in writes.iter().enumerate() {
-            if *w == "torque_enable 1" {
-                assert_eq!(writes[k + 1], "stall_permit 1", "{writes:?}");
-            }
-        }
-        let duty: Vec<&str> = writes
-            .iter()
-            .copied()
-            .filter(|w| *w != "stall_permit 1")
-            .collect();
-        let at = |v: i32| format!("goal_duty {v}");
-        let mut want = vec![
-            "torque_enable 1".to_string(),
-            at(-(AnchorCfg::default().seek_duty_q15 as i32)),
-            at(hold),
-            at(0),
-            "torque_enable 0".into(),
-        ];
-        for _ in 0..5 {
-            want.extend([
-                "torque_enable 1".to_string(),
-                at(hold),
-                at(0),
-                "torque_enable 0".into(),
-            ]);
-        }
-        want.extend([at(0), "torque_enable 0".into(), "stall_permit 0".into()]);
-        assert_eq!(duty, want, "{log:?}");
+        assert_eq!(
+            after_hold(&log, cfg.hold_duty_q15),
+            [
+                format!("write goal_duty {}", -(cfg.cool_duty_q15 as i32)),
+                "write goal_duty 0".into(),
+                "write torque_enable 0".into(),
+                "write stall_permit 0".into(),
+            ],
+            "{log:?}"
+        );
         let cool = exp.cool_ms().expect("a cool-down");
         let polls: Vec<&HoldPoll> = exp.polls().iter().filter(|p| p.t_ms >= cool).collect();
         let last = polls.last().unwrap().t_ms;
@@ -775,43 +664,60 @@ mod tests {
             polls.windows(2).all(|w| w[1].t_ms - w[0].t_ms < 60.0),
             "a poll gap in the cool-down"
         );
-        assert_eq!(exp.pulses().len(), 5);
-        for (k, p) in exp.pulses().iter().enumerate() {
-            let start = 5000.0 * (k + 1) as f64;
-            assert!((start..start + 60.0).contains(&(p.on_ms - cool)), "{p:?}");
-            assert!((440.0..=560.0).contains(&(p.off_ms - p.on_ms)), "{p:?}");
-            let on: Vec<&&HoldPoll> = polls
-                .iter()
-                .filter(|q| q.t_ms > p.on_ms && q.t_ms <= p.off_ms)
-                .collect();
-            assert!(on.iter().all(|q| q.i_counts != 0.0), "{p:?}");
-        }
-        let off = polls.iter().filter(|q| {
-            !exp.pulses()
-                .iter()
-                .any(|p| q.t_ms > p.on_ms && q.t_ms <= p.off_ms)
-        });
-        assert!(off.clone().count() > 1000);
-        assert!(off.skip(2).all(|q| q.i_counts == 0.0));
-        let read: Vec<&ThermWindow> = exp
+        let s = exp.cool_summary().expect("a summary");
+        assert!((s.s - (last - cool) / 1000.0).abs() < 1e-9, "{s:?}");
+        assert!(s.windows > 30 * 300, "{s:?}");
+    }
+
+    /// Stepped down to a duty over the window floor, every cool-down window
+    /// past the step reads the winding at the cool-down's commanded duty,
+    /// its current down with the duty and R the hold's.
+    #[test]
+    fn cool_down_windows_read_commanded_at_the_cool_duty() {
+        let mut servo = servo();
+        let cfg = AnchorCfg {
+            hold_duty_q15: 9830,
+            cool_duty_q15: 4915,
+            hold_ms: 3000,
+            cool_ms: 10_000,
+            ..AnchorCfg::default()
+        };
+        let (exp, _, abort) = run(&mut servo, cfg);
+        assert_eq!((abort, exp.refused()), (None, None));
+        let cool = exp.cool_ms().unwrap();
+        let pwm = PWM_PERIOD_TICKS;
+        let applied = |q15: i16| counts_q15(duty_counts(q15, pwm), pwm);
+        let held: Vec<&ThermWindow> = exp
             .samples()
             .iter()
-            .filter(|x| x.w.t_ms >= cool && x.commanded && x.reads())
+            .filter(|x| x.w.t_ms < cool && x.commanded)
             .collect();
-        assert!(read.len() > 5 * 300, "{}", read.len());
-        for x in read {
+        let late: Vec<&ThermWindow> = exp
+            .samples()
+            .iter()
+            .filter(|x| x.w.t_ms >= cool + 100.0)
+            .collect();
+        assert!(late.len() > 10 * 300, "{}", late.len());
+        for x in &late {
+            assert!(x.commanded && x.reads(), "{x:?}");
+            assert_eq!(x.w.duty_q15, applied(-cfg.cool_duty_q15), "{x:?}");
             assert!((r_of(&x.w) - 3.37).abs() < 0.05, "r {}", r_of(&x.w));
-            assert_eq!(x.w.duty_q15.signum(), -1.0);
         }
+        let mean =
+            |xs: &[&ThermWindow]| xs.iter().map(|x| x.w.i.abs()).sum::<f64>() / xs.len() as f64;
+        let ratio = mean(&late) / mean(&held);
+        assert!((ratio - 0.5).abs() < 0.02, "{ratio}");
+        let s = exp.cool_summary().unwrap();
+        assert!(s.read >= late.len(), "{s:?}");
+        assert!((s.i_counts / mean(&held) - 0.5).abs() < 0.02, "{s:?}");
     }
 
     /// The bench horn on D: the seek seats it, the hold presses it 14
-    /// counts further in for the whole hold, and at duty 0 it springs back
-    /// to the seek's seat until each re-read presses it in again. Every
-    /// window is judged against the hold's own seat: every hold window
-    /// after the first second and every re-read window after the settle
-    /// reads still, the relaxed windows and anything 2 x stall_eps off the
-    /// hold's seat do not.
+    /// counts further in for the whole hold, and at the default step-down,
+    /// under the give, it springs back to the seek's seat. Every window is
+    /// judged against the hold's own seat: every hold window after the
+    /// first second reads still, the cool-down's sprung windows and
+    /// anything 2 x stall_eps off the hold's seat do not.
     #[test]
     fn stillness_is_judged_against_the_hold_seat() {
         let mut servo = servo();
@@ -821,7 +727,7 @@ mod tests {
             cool_ms: 30_000,
             ..AnchorCfg::default()
         };
-        let settle = cfg.pulse_settle_ms;
+        assert!(cfg.cool_duty_q15 < 5000 && cfg.hold_duty_q15 >= 5000);
         let (exp, _, abort) = run(&mut servo, cfg);
         assert_eq!((abort, exp.refused()), (None, None));
         let (seat, hold) = (exp.seat().unwrap(), exp.hold_seat().unwrap());
@@ -846,26 +752,13 @@ mod tests {
             held.iter().all(|x| x.still && x.reads()),
             "a hold window off its seat"
         );
-        assert_eq!(exp.pulses().len(), 5);
-        for p in exp.pulses() {
-            let inside: Vec<&ThermWindow> = exp
-                .samples()
-                .iter()
-                .filter(|x| x.w.t_ms > p.on_ms && x.w.t_ms <= p.off_ms)
-                .filter(at_duty)
-                .collect();
-            let from = inside[0].w.t_ms + settle;
-            let settled: Vec<&&ThermWindow> = inside.iter().filter(|x| x.w.t_ms >= from).collect();
-            assert!(settled.len() > 300, "{p:?}");
-            assert!(settled.iter().all(|x| x.still), "{p:?}");
-        }
-        let relaxed: Vec<&ThermWindow> = exp
+        let sprung: Vec<&ThermWindow> = exp
             .samples()
             .iter()
-            .filter(|x| x.w.t_ms >= cool && x.w.duty_q15 == 0.0)
+            .filter(|x| x.w.t_ms >= cool + 100.0)
             .collect();
-        assert!(!relaxed.is_empty());
-        assert!(relaxed.iter().all(|x| x.pos == seat && !x.still));
+        assert!(sprung.len() > 1000, "{}", sprung.len());
+        assert!(sprung.iter().all(|x| x.pos == seat && !x.still));
         let eps = rig().stall_eps;
         assert!(exp.seated(hold + eps) && exp.seated(hold - eps));
         assert!(!exp.seated(hold + 2 * eps) && !exp.seated(hold - 2 * eps));
@@ -942,7 +835,6 @@ mod tests {
         );
         assert!(exp.samples().is_empty());
         assert!(exp.t0_ms().is_none());
-        assert!(exp.fit(4.0e-3, 0.9e-3).is_err());
-        assert!(exp.fit_at(4, 4.0e-3, 0.9e-3).is_err());
+        assert!(exp.fit(4, 4.0e-3, 0.9e-3).is_err());
     }
 }
