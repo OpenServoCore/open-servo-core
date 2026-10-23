@@ -78,8 +78,8 @@ impl Family {
             l.stall_response = response;
             l.stall_time_ticks = ms_ticks(STALL_MS);
             l.stall_tau_trip_counts = u16::MAX;
-            // the budget is not under test here: its longest constant
-            l.thermal_tau_ms = u16::MAX;
+            // the budget is not under test here: a 66 s constant
+            l.thermal_tau_s = 66;
             l.openloop_zero_brake = false;
             t.control.lifecycle.mode = Mode::OpenLoop;
             t.config.fusion.l1_q016 = 8640;

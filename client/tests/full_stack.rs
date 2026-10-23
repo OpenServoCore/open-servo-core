@@ -33,7 +33,7 @@ use osc_protocol::table;
 use osc_protocol::tel::{Chunk, Chunks};
 use osc_protocol::wire::{DEFAULT_RESPONSE_DEADLINE_US, UID_LEN};
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
-use osc_servo_core::regions::config::addr::limits::{CURRENT_LIMIT_COUNTS, THERMAL_TAU_MS};
+use osc_servo_core::regions::config::addr::limits::{CURRENT_LIMIT_COUNTS, THERMAL_TAU_S};
 use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
 use osc_servo_core::regions::telemetry_ext::addr::therm::{T_NTC_CC, THERM_FLAGS};
 
@@ -2386,7 +2386,7 @@ fn fake_winding_rises_on_the_heat_time_constant_toward_rise_x_i_squared() {
     assert!((t0 - t_ntc).abs() <= 1, "boots at the NTC: {t0}");
     assert_eq!(i_lim, limit);
 
-    let tau_s = heat_tau_s(read_u16(&mut c, id, THERMAL_TAU_MS));
+    let tau_s = heat_tau_s(read_u16(&mut c, id, THERMAL_TAU_S));
     c.pause(Duration::from_secs_f64(tau_s));
     let steady = seed::TH_RISE_Q016 as f64 / 65536.0 * (HOLD_COUNTS as f64).powi(2);
     let want = t_ntc as f64 - steady * (-1f64).exp_m1();

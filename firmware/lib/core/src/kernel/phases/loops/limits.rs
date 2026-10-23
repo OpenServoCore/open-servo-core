@@ -40,14 +40,15 @@ pub mod flag {
 pub const SLOW_PERIOD_MS: u32 = 1000 * DECIM_MED as u32 * DECIM_SLOW as u32 / TICK_HZ;
 const _: () = assert!((1000 * DECIM_MED as u32 * DECIM_SLOW as u32).is_multiple_of(TICK_HZ));
 
-/// The longest leak: 2^12 SLOW periods, 65.5 s.
-pub const TAU_SHIFT_MAX: u32 = 12;
-/// Heat state guard bits: the leak's quantum at the longest leak is a
-/// sixteenth of a count squared.
-const HEAT_GUARD: u32 = 4;
+/// The longest leak: 2^14 SLOW periods, 262 s.
+pub const TAU_SHIFT_MAX: u32 = 14;
+/// Heat state guard bits: at the longest leak a rising heat settles
+/// within 2^(14 - 5) = 512 counts squared under the held square.
+const HEAT_GUARD: u32 = 5;
 /// The heat the state can hold: 12-bit shunt codes under a settle gain
 /// under 2.0 square to under this, and the guard keeps it inside i32.
 const HEAT_MAX: u32 = (i32::MAX as u32) >> HEAT_GUARD;
+const _: () = assert!(8190 * 8190 <= HEAT_MAX);
 /// The fold's fraction width: the budget left, under the ramp, is brought
 /// to this many bits before the one u32 multiply.
 const RAMP_Q: u32 = 16;
@@ -71,11 +72,11 @@ fn floor_log2(mut x: u32) -> u32 {
     k
 }
 
-/// The leak shift for `thermal_tau_ms`: the nearest power of two of SLOW
+/// The leak shift for `thermal_tau_s`: the nearest power of two of SLOW
 /// periods, so the EWMA's time constant lands within an octave of the
 /// winding's, 0 (one period) for anything under two.
-pub fn tau_shift(tau_ms: u16) -> u8 {
-    let periods = tau_ms as u32 / SLOW_PERIOD_MS;
+pub fn tau_shift(tau_s: u16) -> u8 {
+    let periods = tau_s as u32 * 1000 / SLOW_PERIOD_MS;
     if periods < 2 {
         return 0;
     }
@@ -386,7 +387,7 @@ mod tests {
         i_cont_counts: u16,
         stall_release_counts: u16,
         stall_tau_trip_counts: u16,
-        thermal_tau_ms: u16,
+        thermal_tau_s: u16,
         derate_start_cc: i16,
         cutoff_cc: i16,
         v_undervolt_counts: u16,
@@ -405,7 +406,7 @@ mod tests {
                 i_cont_counts: self.i_cont_counts,
                 stall_release_counts: self.stall_release_counts,
                 stall_tau_trip_counts: self.stall_tau_trip_counts,
-                thermal_tau_ms: self.thermal_tau_ms,
+                thermal_tau_s: self.thermal_tau_s,
                 ..ConfigLimits::new()
             };
             limits.i_cont_counts = i_cont_or_cap(&limits);
@@ -455,7 +456,7 @@ mod tests {
     /// I2t ceiling at the finish.
     fn slow_period(st: &mut LimitState, i_held: i16, cfg: &LimitCfg) {
         let (limits, _, _) = cfg.blocks();
-        st.heat(i_held, tau_shift(limits.thermal_tau_ms));
+        st.heat(i_held, tau_shift(limits.thermal_tau_s));
         st.update_i2t(&limits, i_cont_log2(limits.i_cont_counts));
     }
 
@@ -467,7 +468,7 @@ mod tests {
         i_cont_counts: 300,
         stall_release_counts: 150,
         stall_tau_trip_counts: 1200,
-        thermal_tau_ms: 2048,
+        thermal_tau_s: 2,
         derate_start_cc: 8000,
         cutoff_cc: 10000,
         v_undervolt_counts: 700,
@@ -518,13 +519,33 @@ mod tests {
     fn tau_shift_rounds_to_the_nearest_octave() {
         assert_eq!(SLOW_PERIOD_MS, 16);
         assert_eq!(tau_shift(0), 0);
-        assert_eq!(tau_shift(16), 0);
-        assert_eq!(tau_shift(32), 1);
-        assert_eq!(tau_shift(2048), 7);
-        // 4000 ms is 250 periods, nearer 256 than 128
-        assert_eq!(tau_shift(4000), 8);
-        assert_eq!(tau_shift(4096), 8);
+        // 1 s is 62 periods, nearer 64 than 32
+        assert_eq!(tau_shift(1), 6);
+        // 4 s is 250 periods, nearer 256 than 128
+        assert_eq!(tau_shift(4), 8);
+        assert_eq!(tau_shift(66), 12);
+        // 115 s is 7187 periods, nearer 8192 than 4096
+        assert_eq!(tau_shift(115), 13);
+        assert_eq!(tau_shift(262), 14);
         assert_eq!(tau_shift(u16::MAX), TAU_SHIFT_MAX as u8);
+    }
+
+    /// At the longest leak the step stays live down to the guard's dead
+    /// band: a hold at 100 counts heats to within 512 counts^2 of its
+    /// square, and rest leaks back to within the same band of 0.
+    #[test]
+    fn heat_at_the_longest_leak_still_moves() {
+        let shift = TAU_SHIFT_MAX as u8;
+        let mut st = LimitState::new();
+        for _ in 0..20 << TAU_SHIFT_MAX {
+            st.heat(100, shift);
+        }
+        assert!(st.heat_counts2() >= 10_000 - 512, "{}", st.heat_counts2());
+        assert!(st.heat_counts2() <= 10_000);
+        for _ in 0..20 << TAU_SHIFT_MAX {
+            st.heat(0, shift);
+        }
+        assert!(st.heat_counts2() <= 512, "{}", st.heat_counts2());
     }
 
     #[test]
@@ -713,7 +734,7 @@ mod tests {
     #[test]
     fn i2t_burst_folds_monotone_and_recovers() {
         let cfg = LimitCfg {
-            thermal_tau_ms: 1024,
+            thermal_tau_s: 1,
             ..CFG
         };
         let mut st = LimitState::new();
@@ -752,7 +773,7 @@ mod tests {
                 let cfg = LimitCfg {
                     current_limit_counts: cap,
                     i_cont_counts: rating,
-                    thermal_tau_ms: 16,
+                    thermal_tau_s: 0,
                     ..CFG
                 };
                 let mut st = LimitState::new();
@@ -770,9 +791,9 @@ mod tests {
 
     #[test]
     fn i2t_budget_scales_with_tau() {
-        let at_cap = |tau_ms: u16| {
+        let at_cap = |tau_s: u16| {
             let cfg = LimitCfg {
-                thermal_tau_ms: tau_ms,
+                thermal_tau_s: tau_s,
                 ..CFG
             };
             let mut st = LimitState::new();
@@ -783,7 +804,7 @@ mod tests {
                 })
                 .count()
         };
-        let (short, long) = (at_cap(1024), at_cap(4096));
+        let (short, long) = (at_cap(1), at_cap(4));
         assert!(short >= 2 && long >= 4 * short - 1, "{short} vs {long}");
     }
 
@@ -1053,7 +1074,7 @@ mod tests {
     #[test]
     fn permit_lifts_detectors_never_ceilings() {
         let cfg = LimitCfg {
-            thermal_tau_ms: 1024,
+            thermal_tau_s: 1,
             ..CFG
         };
         let press = FoldIn {

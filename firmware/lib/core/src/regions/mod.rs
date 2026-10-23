@@ -128,7 +128,7 @@ impl ControlTableCell {
             cfg.limits.stall_tau_trip_counts = config::STALL_TAU_TRIP_OFF;
             cfg.limits.oc_trip_counts = current.oc_trip_counts;
             cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
-            cfg.limits.thermal_tau_ms = config::DEFAULT_THERMAL_TAU_MS;
+            cfg.limits.thermal_tau_s = config::DEFAULT_THERMAL_TAU_S;
             cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
             cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;

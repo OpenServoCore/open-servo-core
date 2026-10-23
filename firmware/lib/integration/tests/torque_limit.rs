@@ -375,10 +375,9 @@ fn openloop_slew_never_counts_as_a_stall() {
 fn openloop_stall_under_permit_never_trips() {
     for goal in [GOAL_64, -GOAL_64] {
         let sh = stall_rig(StallResponse::Fault);
-        // the I2t budget is not under test: at the longest constant it
-        // holds the 2 s stall at the limit
-        sh.table
-            .with_mut(|t| t.config.limits.thermal_tau_ms = u16::MAX);
+        // the I2t budget is not under test: at a 66 s constant it holds
+        // the 2 s stall at the limit
+        sh.table.with_mut(|t| t.config.limits.thermal_tau_s = 66);
         stamp(&sh);
         let mut p = RlPlant::new(MID);
         p.locked = true;

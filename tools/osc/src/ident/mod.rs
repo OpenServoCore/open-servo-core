@@ -379,11 +379,11 @@ enum Cmd {
         /// rating and the press trigger. Not under the stamp.
         #[arg(long)]
         i_cont_ma: Option<u16>,
-        /// The winding's thermal time constant, ms, written as
-        /// `thermal_tau_ms` (the kernel runs the nearest power of two of
-        /// its 16 ms period). Not under the stamp.
-        #[arg(long)]
-        thermal_tau_ms: Option<u16>,
+        /// The winding's thermal time constant, s, written as
+        /// `thermal_tau_s` (the kernel runs the nearest power of two of
+        /// its 16 ms period, at most 262 s). Not under the stamp.
+        #[arg(long, value_name = "S")]
+        thermal_tau_s: Option<u16>,
         /// The winding's nameplate thermal resistance to the board NTC,
         /// C/W, written as `th_rise_q016` with the set's winding R on the
         /// servo's sense scale; absent leaves the servo's rise as it is.
@@ -574,7 +574,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
             params,
             save,
             i_cont_ma,
-            thermal_tau_ms,
+            thermal_tau_s,
             rth_cw,
         } => {
             let p = ParamsFile::load(params)?;
@@ -590,7 +590,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
                 .find(|g| g.name == "r_q12")
                 .map(|g| g.raw as f64 / 4096.0)
                 .filter(|r| *r > 0.0);
-            let plate = nameplate(&mut c, id, *i_cont_ma, *thermal_tau_ms, *rth_cw, r_vpc)?;
+            let plate = nameplate(&mut c, id, *i_cont_ma, *thermal_tau_s, *rth_cw, r_vpc)?;
             write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
             let snap = params
                 .parent()
@@ -633,7 +633,7 @@ fn nameplate(
     c: &mut Client<NusbPipe>,
     id: Id,
     i_cont_ma: Option<u16>,
-    thermal_tau_ms: Option<u16>,
+    thermal_tau_s: Option<u16>,
     rth_cw: Option<f64>,
     r_vpc: Option<f64>,
 ) -> Result<Vec<GainJson>> {
@@ -710,12 +710,12 @@ fn nameplate(
             saturated: false,
         });
     }
-    if let Some(ms) = thermal_tau_ms {
-        println!("  thermal_tau_ms {ms}");
+    if let Some(s) = thermal_tau_s {
+        println!("  thermal_tau_s {s}");
         v.push(GainJson {
-            name: "thermal_tau_ms".into(),
-            physical: ms as f64,
-            raw: ms,
+            name: "thermal_tau_s".into(),
+            physical: s as f64,
+            raw: s,
             quantization_pct: 0.0,
             saturated: false,
         });
@@ -932,7 +932,7 @@ fn run_resistance(
 /// The thermal hold: seated at the low stop with the permit held for the
 /// hold's time, every poll with the board NTC in anchor_snapshots.csv and
 /// every window in anchor.csv, then the rise fit over them on the servo's
-/// `thermal_tau_ms`.
+/// `thermal_tau_s`.
 fn run_hold(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
@@ -952,8 +952,8 @@ fn run_hold(
     csvio::write_anchor_samples(out, hold.samples())?;
     ran?;
     check_abort("thermal", abort)?;
-    let tau_ms = snapshot::read_u16(c, id, config::THERMAL_TAU_MS)?;
-    Ok(hold.fit(tau_ms, sc.v_term_per_count, sc.amps_per_count))
+    let tau_s = snapshot::read_u16(c, id, config::THERMAL_TAU_S)?;
+    Ok(hold.fit(tau_s, sc.v_term_per_count, sc.amps_per_count))
 }
 
 /// Torque off and the shaft in the centring's band, read back: every exit

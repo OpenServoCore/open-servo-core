@@ -38,7 +38,7 @@ pub struct KernelConfig {
     pub calib_thermal: CalibThermal,
     /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
     pub ke_unset: bool,
-    /// The I2t leak for `thermal_tau_ms` and `i_cont`'s octave, a nibble
+    /// The I2t leak for `thermal_tau_s` and `i_cont`'s octave, a nibble
     /// each (`limits::pack_shifts`): the byte the bool's padding left.
     i2t_shifts: u8,
     pub i_window_min_ticks: u16,
@@ -162,7 +162,7 @@ impl KernelConfig {
         // inputs need not spill across them. The table keeps the host's 0.
         self.limits.i_cont_counts = limits::i_cont_or_cap(&self.limits);
         self.i2t_shifts = limits::pack_shifts(
-            limits::tau_shift(self.limits.thermal_tau_ms),
+            limits::tau_shift(self.limits.thermal_tau_s),
             limits::i_cont_log2(self.limits.i_cont_counts),
         );
     }
