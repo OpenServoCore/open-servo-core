@@ -400,7 +400,7 @@ enum Cmd {
         i_cont_ma: Option<u16>,
         /// The winding's thermal time constant, s, written as
         /// `thermal_tau_s` (the kernel runs the nearest power of two of
-        /// its 16 ms period, at most 262 s). Not under the stamp.
+        /// its 16 ms period, at most 524 s). Not under the stamp.
         #[arg(long, value_name = "S")]
         thermal_tau_s: Option<u16>,
         /// The winding's nameplate thermal resistance to the board NTC,

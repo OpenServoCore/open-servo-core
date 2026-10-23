@@ -19,8 +19,14 @@
 //! under 1 / alpha = 254 C, which the derate takes the current down long
 //! before.
 //!
-//! No gain at all or no NTC curve is UNSET: `t` reads [`UNSET_CC`], which
-//! sits under every derate threshold, and the flag says so.
+//! No NTC curve is UNSET: `t` reads [`UNSET_CC`], which sits under every
+//! derate threshold, and the flag says so. A curve with no gain reads the
+//! NTC alone. The NTC itself is checked every time: a raw count within
+//! [`NTC_RAIL_COUNTS`] of a rail (an open or shorted divider, curve or
+//! not) or a converted temperature outside the band (a wrong curve) is
+//! NTC_FAULT, and `t` reads [`NTC_FAULT_CC`], over every cutoff, so the
+//! derate goes to zero and the overtemperature fault latches on the same
+//! finish, at boot before anything drives.
 
 use crate::math::q_mul;
 
@@ -53,14 +59,28 @@ pub struct NtcCfg {
 
 /// `therm_flags` bits.
 pub mod flag {
-    /// No rise constant or no NTC curve: `t_winding_cc` reads the sentinel.
+    /// No NTC curve: `t_winding_cc` reads the sentinel.
     pub const UNSET: u8 = 1 << 0;
+    /// The NTC reads a rail or its curve a temperature outside the band:
+    /// `t_winding_cc` reads [`super::NTC_FAULT_CC`].
+    pub const NTC_FAULT: u8 = 1 << 1;
 }
 
 /// `t_winding_cc` while UNSET.
 pub const UNSET_CC: i16 = i16::MIN;
+/// `t_winding_cc` while NTC_FAULT: over every cutoff.
+pub const NTC_FAULT_CC: i16 = i16::MAX;
 
 const ADC_FULL: u32 = 4096;
+/// A raw count this close to a rail is an open or shorted divider, never
+/// a temperature: the sense chain's noise is about 2 counts, and on a
+/// 10K/10K/3950 divider 8 counts from a rail is already past 180 C and
+/// under -90 C.
+const NTC_RAIL_COUNTS: u16 = 8;
+/// The temperatures a converted NTC may read, centi-C: outside them the
+/// curve is wrong.
+const NTC_BAND_LO_CC: i16 = -4000;
+const NTC_BAND_HI_CC: i16 = 15_000;
 
 /// Copper's resistance rise per centi-C, 0.00393 per C, Q26.
 const ALPHA_Q26: u32 = 2637;
@@ -122,24 +142,30 @@ impl WindingTherm {
         }
     }
 
-    /// SLOW-rate: the NTC conversion and the estimate from the two heats
-    /// (`LimitState::heats`); the temperature, [`UNSET_CC`] without a
-    /// model.
+    /// SLOW-rate: the NTC check and conversion and the estimate from the
+    /// two heats (`LimitState::heats`); the temperature, [`UNSET_CC`]
+    /// without a curve, [`NTC_FAULT_CC`] on a railed NTC or a reading
+    /// outside the band.
     pub fn update(&mut self, ntc_raw: u16, heat: [u32; 2], cfg: &ThermCfg) -> i16 {
         let ntc = ntc_cc(ntc_raw, &cfg.ntc);
-        if let Some(t) = ntc {
+        let railed = ntc_raw <= NTC_RAIL_COUNTS || ntc_raw >= ADC_FULL as u16 - 1 - NTC_RAIL_COUNTS;
+        if let Some(t) = ntc.filter(|_| !railed) {
             self.t_ntc_cc = t;
         }
-        (self.t_cc, self.rise_cc) = match ntc {
-            Some(t) if cfg.rise_q016 != 0 || cfg.rise2_q016 != 0 => {
-                self.flags = 0;
+        (self.t_cc, self.rise_cc, self.flags) = match ntc {
+            _ if railed => (NTC_FAULT_CC, 0, flag::NTC_FAULT),
+            None => (UNSET_CC, 0, flag::UNSET),
+            Some(t) if !(NTC_BAND_LO_CC..=NTC_BAND_HI_CC).contains(&t) => {
+                (NTC_FAULT_CC, 0, flag::NTC_FAULT)
+            }
+            Some(t) => {
                 let rise = (rise_cc(heat[0], cfg.rise_q016) + rise_cc(heat[1], cfg.rise2_q016))
                     .min(i16::MAX as i32);
-                ((t as i32 + rise).min(i16::MAX as i32) as i16, rise as u16)
-            }
-            _ => {
-                self.flags = flag::UNSET;
-                (UNSET_CC, 0)
+                (
+                    (t as i32 + rise).min(i16::MAX as i32) as i16,
+                    rise as u16,
+                    0,
+                )
             }
         };
         self.t_cc
@@ -314,27 +340,76 @@ mod tests {
         assert_eq!(th.warm_q16(), 38627);
     }
 
-    /// No rise constant, or no NTC curve, or an NTC at a rail: the sentinel,
-    /// the flag, and the last good NTC reading stays published.
+    /// No NTC curve: the sentinel, the flag; a curve with no gain reads
+    /// the NTC alone; the last good NTC reading stays published.
     #[test]
-    fn unset_reads_the_sentinel_and_never_a_temperature() {
+    fn unset_reads_the_sentinel_and_a_curve_without_a_gain_reads_the_ntc() {
         let mut th = WindingTherm::new();
         assert_eq!(th.t_cc(), UNSET_CC);
         assert_eq!(th.flags(), flag::UNSET);
-        let no_rise = ThermCfg {
-            rise_q016: 0,
-            ..CFG
-        };
-        assert_eq!(th.update(RAW_25, [76729; 2], &no_rise), UNSET_CC);
-        assert_eq!((th.t_ntc_cc(), th.flags()), (2500, flag::UNSET));
         let no_curve = ThermCfg {
             ntc: NtcCfg::default(),
             ..CFG
         };
         assert_eq!(th.update(RAW_25, [76729; 2], &no_curve), UNSET_CC);
+        assert_eq!((th.t_ntc_cc(), th.flags()), (0, flag::UNSET));
+        let no_rise = ThermCfg {
+            rise_q016: 0,
+            ..CFG
+        };
+        assert_eq!(th.update(RAW_25, [76729; 2], &no_rise), 2500);
+        assert_eq!((th.t_ntc_cc(), th.flags(), th.warm_q16()), (2500, 0, 0));
         assert_eq!(th.update(RAW_25, [76729, 0], &CFG), 3722);
-        assert_eq!(th.update(0, [76729, 0], &CFG), UNSET_CC, "an NTC at a rail");
+        assert_eq!(th.update(RAW_25, [76729; 2], &no_curve), UNSET_CC);
         assert_eq!(th.t_ntc_cc(), 2500, "the last conversion stands");
-        assert_eq!(th.flags(), flag::UNSET);
+        assert_eq!(th.warm_q16(), 0, "UNSET feeds nothing back");
+    }
+
+    /// An NTC within 8 counts of either rail is an open or shorted
+    /// divider, curve or not: the fault value over every cutoff, the flag,
+    /// nothing fed back, the last good reading kept; 9 counts in the curve
+    /// reads.
+    #[test]
+    fn a_railed_ntc_reads_the_fault_value_with_or_without_a_curve() {
+        let mut th = WindingTherm::new();
+        th.update(RAW_25, [76729, 0], &CFG);
+        for raw in [0, 1, 8, 4087, 4094, 4095] {
+            assert_eq!(th.update(raw, [76729, 0], &CFG), NTC_FAULT_CC, "{raw}");
+            assert_eq!((th.flags(), th.warm_q16()), (flag::NTC_FAULT, 0), "{raw}");
+        }
+        assert_eq!(th.t_ntc_cc(), 2500, "the last conversion stands");
+        let no_curve = ThermCfg {
+            ntc: NtcCfg::default(),
+            ..CFG
+        };
+        assert_eq!(th.update(0, [0; 2], &no_curve), NTC_FAULT_CC);
+        assert_eq!(th.flags(), flag::NTC_FAULT);
+        assert_ne!(th.update(9, [0; 2], &CFG), NTC_FAULT_CC);
+        assert_ne!(th.update(4086, [0; 2], &CFG), NTC_FAULT_CC);
+        assert_eq!(th.flags(), 0);
+    }
+
+    /// A curve that reads outside -40..150 C is a wrong curve: the fault
+    /// value, not a temperature.
+    #[test]
+    fn a_reading_outside_the_band_is_a_wrong_curve() {
+        let steep = ThermCfg {
+            ntc: NtcCfg {
+                k1_q88: NTC.k1_q88 * 8,
+                ..NTC
+            },
+            ..CFG
+        };
+        let mut th = WindingTherm::new();
+        assert_eq!(th.update(RAW_25, [0; 2], &steep), 2500);
+        assert_eq!(th.update(1000, [0; 2], &steep), NTC_FAULT_CC, "hot side");
+        assert_eq!(th.flags(), flag::NTC_FAULT);
+        assert_eq!(th.update(3500, [0; 2], &steep), NTC_FAULT_CC, "cold side");
+        assert_ne!(
+            th.update(3500, [0; 2], &CFG),
+            NTC_FAULT_CC,
+            "the right curve reads it"
+        );
+        assert_eq!(th.flags(), 0);
     }
 }

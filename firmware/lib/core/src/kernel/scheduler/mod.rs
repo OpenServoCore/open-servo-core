@@ -149,8 +149,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.cmd.prepare_rail(&self.cfg);
     }
 
-    /// First tick: the configuration, then the observer and the bias
-    /// tracker seeded at the boot measurement.
+    /// First tick: the configuration, then the observer, the winding
+    /// estimate and the bias tracker seeded at the boot measurement.
     fn boot(&mut self, shared: &Shared) {
         let frame = shared.frame();
         self.configure(shared);
@@ -159,6 +159,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             phases::pos_q4(shared, ctl.lut_live, frame.pos()),
             frame.ntc_raw(),
             &self.cfg,
+            &mut self.faults,
         );
         let p = shared.table.region_ptr();
         // SAFETY: same volatile read contract; install stamped the boot rest

@@ -44,7 +44,7 @@ TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period it triggers two 
 | --- | --- | --- |
 | **FAST** | every tick, `TICK_HZ` = 20 kHz | window measurement, overcurrent trip, back-EMF sums, current loop, motor write |
 | **MEDIUM** | `DECIM_MED` = 10 ticks (2 kHz) | outer loops, estimators, limits, detectors, publishes; one phase per tick |
-| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the I2t heat; then the I2t ceiling, the winding estimate, its derate and overtemperature; one stage per period |
+| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the two heats; then the winding estimate, its derate and overtemperature; one stage per period |
 
 Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 
