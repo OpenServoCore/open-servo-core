@@ -20,7 +20,7 @@ mod velocity;
 
 pub(in crate::kernel) use control::Control;
 
-use self::loops::faults::{Detectors, DriveCheck};
+use self::loops::faults::{Detectors, DriveCheck, FaultLatch};
 use self::loops::limits::{IBand, LimitState};
 use self::loops::trajectory::TrajGen;
 use self::loops::velocity::VelocityLoop;
@@ -127,9 +127,10 @@ impl Medium {
     }
 
     /// First tick: the observer starts at the measurement, the winding
-    /// estimate at the NTC ahead of the first SLOW tick.
-    pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig) {
+    /// estimate at the NTC ahead of the first SLOW tick, its fault with
+    /// it, so a failed NTC never drives.
+    pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig, faults: &mut FaultLatch) {
         self.fusion.seed(pos_q4);
-        self.thermal.update(ntc_raw, [0; 2], &cfg.therm);
+        self.estimate(ntc_raw, cfg, faults);
     }
 }

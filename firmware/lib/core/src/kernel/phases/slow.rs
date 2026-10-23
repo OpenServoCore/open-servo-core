@@ -8,8 +8,8 @@ impl Medium {
     /// neither sets the period's longest tick: on the due tick the permit
     /// lease, undervoltage and the two heats on the held current `i_held`
     /// warmed by the last estimate; on the next period's SLOW phase the
-    /// I2t ceiling, the winding estimate from the NTC and the heats, its
-    /// derate and overtemperature.
+    /// winding estimate from the NTC and the heats, its derate and
+    /// overtemperature.
     /// Whether a stage ran.
     pub(in crate::kernel) fn slow(
         &mut self,
@@ -21,7 +21,7 @@ impl Medium {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
             if self.slow_periods == 1 {
-                self.slow_finish(ntc_raw, cfg, faults);
+                self.estimate(ntc_raw, cfg, faults);
                 return true;
             }
             return false;
@@ -42,12 +42,15 @@ impl Medium {
         }
     }
 
-    fn slow_finish(&mut self, ntc_raw: u16, cfg: &KernelConfig, faults: &mut FaultLatch) {
-        self.limits.update_i2t(&cfg.limits, cfg.i_cont_log2());
+    /// The winding estimate on the NTC and the heats, its derate and the
+    /// overtemperature fault; the seed runs it too, so a failed NTC faults
+    /// before the first drive.
+    pub(super) fn estimate(&mut self, ntc_raw: u16, cfg: &KernelConfig, faults: &mut FaultLatch) {
         let t_cc = self
             .thermal
             .update(ntc_raw, self.limits.heats(), &cfg.therm);
-        // UNSET_CC sits under every threshold: no derate, no cutoff
+        // UNSET_CC sits under every threshold: no derate, no cutoff;
+        // NTC_FAULT_CC over every one
         self.limits.update_derate(t_cc, &cfg.limits, &cfg.thermal);
         if t_cc >= cfg.thermal.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);

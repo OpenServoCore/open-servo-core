@@ -238,16 +238,16 @@ pub const fn tel_lane(held: bool) -> u32 {
 pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
-/// DECIM_SLOW periods): the permit lease, undervoltage and the I2t heat,
+/// DECIM_SLOW periods): the permit lease, undervoltage and the two heats,
 /// on top of the phase's row, per regime. E, an upper bound kept from a
 /// dearer earlier body (405 over the plain tick, plus the heat's 46, plus
 /// 10%); the bench re-prices it.
 pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
 
-/// The second stage on the next period's SLOW phase: the I2t ceiling's
-/// fold, the NTC's quadratic, the rise multiply, the derate's reciprocal
-/// divide and the cutoff fault. E, an upper bound kept from a dearer
-/// earlier body (330 plus the I2t ceiling's 71.25, plus 10%); the bench
+/// The second stage on the next period's SLOW phase: the NTC's check and
+/// quadratic, the two rise multiplies, the derate's reciprocal divide and
+/// the cutoff fault. E, an upper bound kept from a dearer earlier body
+/// (330 plus a since-deleted ceiling's 71.25, plus 10%); the bench
 /// re-prices it.
 pub const SLOW_FINISH: u32 = 442;
 
