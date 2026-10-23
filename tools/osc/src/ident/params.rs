@@ -856,6 +856,17 @@ impl GainJson {
         Self::of(&[("th_rise_q016", e)]).remove(0)
     }
 
+    /// The heat's time constant, s, as given.
+    pub fn thermal_tau(s: u16) -> Self {
+        Self {
+            name: "thermal_tau_s".into(),
+            physical: s as f64,
+            raw: s,
+            quantization_pct: 0.0,
+            saturated: false,
+        }
+    }
+
     fn of(fields: &[(&str, Encoded)]) -> Vec<Self> {
         fields
             .iter()

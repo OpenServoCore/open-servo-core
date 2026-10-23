@@ -1258,6 +1258,8 @@ mod tests {
                 Stage::Thermal { seek, hold } => {
                     let base = AnchorCfg {
                         hold_ms: 3000,
+                        cool_ms: 3000,
+                        cool_every_ms: 1000,
                         ..AnchorCfg::default()
                     };
                     let cfg = anchor_cfg(*seek, *hold, base);
@@ -1265,16 +1267,17 @@ mod tests {
                     let (exp, how) = self.go(exp, params.without_pos_guard());
                     let exp = exp.into_inner();
                     if let Some(t0) = exp.t0_ms() {
+                        let cool = exp.cool_ms().unwrap_or(f64::INFINITY);
                         let r = exp
                             .samples()
                             .iter()
-                            .filter(|w| w.i != 0.0)
+                            .filter(|w| w.i != 0.0 && w.t_ms < cool)
                             .map(|w| (w.duty_q15 * w.vdiff / Q15) / (w.i * w.duty_q15.signum()))
                             .collect();
                         let i = exp
                             .polls()
                             .iter()
-                            .filter(|p| p.t_ms >= t0 + 1000.0)
+                            .filter(|p| p.t_ms >= t0 + 1000.0 && p.t_ms < cool)
                             .map(|p| p.i_counts.abs())
                             .collect();
                         self.thermal = Some((r, i));
