@@ -38,9 +38,11 @@ pub struct KernelConfig {
     pub calib_thermal: CalibThermal,
     /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
     pub ke_unset: bool,
-    /// The I2t leak for `thermal_tau_s` and `i_cont`'s octave, a nibble
-    /// each (`limits::pack_shifts`): the byte the bool's padding left.
+    /// The rotor leak for `thermal_tau_s` and `i_cont`'s octave, a nibble
+    /// each (`limits::pack_shifts`), and the body leak for
+    /// `thermal_tau2_s`: the bytes the bool's padding left.
     i2t_shifts: u8,
+    tau2_shift: u8,
     pub i_window_min_ticks: u16,
     /// The terminal floor per decay (`window::v_floors`), indexed by
     /// `DecayMode as usize`.
@@ -102,6 +104,7 @@ impl KernelConfig {
             calib_thermal: CalibThermal::new(),
             ke_unset: true,
             i2t_shifts: 0,
+            tau2_shift: 0,
             i_window_min_ticks: 0,
             v_floor_ticks: [0; 2],
             ol_floor_q15: 0,
@@ -149,8 +152,12 @@ impl KernelConfig {
         }
         self.ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
         let th = &self.calib_thermal;
+        // a body node needs both its words: a tau alone is a gain of 0, a
+        // gain alone would ride a one-period leak
+        let tau2_s = self.thermal.thermal_tau2_s;
         self.therm = ThermCfg {
             rise_q016: th.th_rise_q016,
+            rise2_q016: if tau2_s == 0 { 0 } else { th.th_rise2_q016 },
             ntc: NtcCfg {
                 raw_ref: th.ntc_raw_ref,
                 t_ref_cc: th.ntc_t_ref_cc,
@@ -165,13 +172,19 @@ impl KernelConfig {
             limits::tau_shift(self.limits.thermal_tau_s),
             limits::i_cont_log2(self.limits.i_cont_counts),
         );
+        self.tau2_shift = limits::tau_shift(tau2_s);
     }
 }
 
 impl KernelConfig {
-    /// The I2t leak shift (`limits::tau_shift`).
+    /// The I2t leak shift, the rotor node's (`limits::tau_shift`).
     pub fn tau_shift(&self) -> u8 {
         self.i2t_shifts >> 4
+    }
+
+    /// The two leak shifts, rotor then body (`limits::tau_shift`).
+    pub fn tau_shifts(&self) -> [u8; 2] {
+        [self.tau_shift(), self.tau2_shift]
     }
 
     /// `floor(log2(i_cont))` (`limits::i_cont_log2`).

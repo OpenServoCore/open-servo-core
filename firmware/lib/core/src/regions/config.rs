@@ -208,8 +208,9 @@ pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 // `vmotor_counts`.
 pub const BURST_MAX_MV: u16 = 3200;
 
-/// Thermal derate/cutoff on the winding estimate, undervolt floor. The
-/// reserved word held the retired resistance thermometer's current gate.
+/// Thermal derate/cutoff on the winding estimate, undervolt floor, and
+/// the body node's leak: `thermal_tau2_s` in seconds to the nearest
+/// octave of the SLOW period like `thermal_tau_s`, 0 = no body node.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
@@ -219,8 +220,7 @@ pub struct ConfigThermal {
     #[ct_field(lt = &addr::thermal::CUTOFF_CC)]
     pub recover_cc: i16,
     pub v_undervolt_counts: u16,
-    #[ct_field(skip)]
-    pub _rsvd: u16,
+    pub thermal_tau2_s: u16,
 }
 
 // 80C derate onset / 100C cutoff / 90C recover.

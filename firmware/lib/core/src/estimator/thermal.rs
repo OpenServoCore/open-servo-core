@@ -1,16 +1,25 @@
 //! Winding estimate, SLOW rate (control-theory "The I2t Winding
 //! Estimate"). The board NTC is the base; the winding's excess over it is
-//! the I2t budget's heat, an EWMA of the held current squared on
-//! `thermal_tau_s` (`kernel::phases::loops::limits`), scaled by one
-//! host-written constant: `t = t_ntc + rise x heat`. The rise is the
-//! thermal resistance from the winding to wherever the NTC sits, times
-//! the winding's resistance, in the board's current counts; the host
-//! derives it from a hold on the servo at hand or a nameplate K/W. With
-//! the NTC on the can the heat carries the fast node alone; on a board in
-//! room air it carries the whole motor with one leak, and the estimate is
-//! a protection number, never a thermometer.
+//! two heat nodes on one input, each an EWMA of the held current squared
+//! on its own leak (`kernel::phases::loops::limits`), scaled by a
+//! host-written gain each: `t = t_ntc + rise x heat + rise2 x heat2`. The
+//! rotor node (`thermal_tau_s`, `th_rise_q016`) is the copper and iron
+//! over the can, tens of seconds; the body node (`thermal_tau2_s`,
+//! `th_rise2_q016`) the can and case into wherever the NTC sits, hundreds.
+//! A gain is a thermal resistance times the winding's resistance in the
+//! board's current counts; the host fits both from a hold and a step-down
+//! on the servo at hand. With the NTC on the can the body gain goes to 0
+//! and the rotor node alone rides on the NTC. The estimate is a protection
+//! number, never a thermometer.
 //!
-//! A zero rise or no NTC curve is UNSET: `t` reads [`UNSET_CC`], which
+//! The heat input follows the warm copper: the square is raised by the
+//! resistance's fractional rise over cold, alpha x the last published
+//! excess ([`warm_q16`]), so a hold at one current heats as the copper
+//! does. The feedback has a fixed point while the open-loop rise sits
+//! under 1 / alpha = 254 C, which the derate takes the current down long
+//! before.
+//!
+//! No gain at all or no NTC curve is UNSET: `t` reads [`UNSET_CC`], which
 //! sits under every derate threshold, and the flag says so.
 
 use crate::math::q_mul;
@@ -18,9 +27,12 @@ use crate::math::q_mul;
 /// What the estimate reads from CALIB (kernel config take).
 #[derive(Copy, Clone, Default)]
 pub struct ThermCfg {
-    /// Winding rise over the NTC per count squared of heat, centi-C,
-    /// Q0.16; 0 = no estimate.
+    /// Rotor rise over the NTC per count squared of its heat, centi-C,
+    /// Q0.16.
     pub rise_q016: u16,
+    /// Body rise over the NTC per count squared of its heat, centi-C,
+    /// Q0.16; 0 = no body node.
+    pub rise2_q016: u16,
     pub ntc: NtcCfg,
 }
 
@@ -50,6 +62,20 @@ pub const UNSET_CC: i16 = i16::MIN;
 
 const ADC_FULL: u32 = 4096;
 
+/// Copper's resistance rise per centi-C, 0.00393 per C, Q26.
+const ALPHA_Q26: u32 = 2637;
+/// The rise fed back into the heat input stops here, 150 C over the NTC:
+/// the fault tripped long before, and the bound keeps the warm factor
+/// under 2^16 so its product with the square fits u32 (`limits::heat`).
+const RISE_FEEDBACK_MAX_CC: u16 = 15_000;
+const _: () = assert!((RISE_FEEDBACK_MAX_CC as u32 * ALPHA_Q26) >> 10 < 1 << 16);
+
+/// The heat input's warm factor for a rise over the NTC: the copper's
+/// fractional resistance rise over cold, Q0.16, at most 38627.
+pub fn warm_q16(rise_cc: u16) -> u32 {
+    (rise_cc.min(RISE_FEEDBACK_MAX_CC) as u32 * ALPHA_Q26) >> 10
+}
+
 /// Board NTC counts to centi-C through the host's quadratic; None at the
 /// rails or without a curve.
 pub fn ntc_cc(raw: u16, ntc: &NtcCfg) -> Option<i16> {
@@ -75,6 +101,8 @@ pub fn rise_cc(heat: u32, rise_q016: u16) -> i32 {
 pub struct WindingTherm {
     t_cc: i16,
     t_ntc_cc: i16,
+    /// The last published excess over the NTC, the heat input's feedback.
+    rise_cc: u16,
     flags: u8,
 }
 
@@ -89,29 +117,38 @@ impl WindingTherm {
         Self {
             t_cc: UNSET_CC,
             t_ntc_cc: 0,
+            rise_cc: 0,
             flags: flag::UNSET,
         }
     }
 
-    /// SLOW-rate: the NTC conversion and the estimate from the I2t heat
-    /// (`LimitState::heat_counts2`); the temperature, [`UNSET_CC`] without
-    /// a model.
-    pub fn update(&mut self, ntc_raw: u16, heat: u32, cfg: &ThermCfg) -> i16 {
+    /// SLOW-rate: the NTC conversion and the estimate from the two heats
+    /// (`LimitState::heats`); the temperature, [`UNSET_CC`] without a
+    /// model.
+    pub fn update(&mut self, ntc_raw: u16, heat: [u32; 2], cfg: &ThermCfg) -> i16 {
         let ntc = ntc_cc(ntc_raw, &cfg.ntc);
         if let Some(t) = ntc {
             self.t_ntc_cc = t;
         }
-        self.t_cc = match ntc {
-            Some(t) if cfg.rise_q016 != 0 => {
+        (self.t_cc, self.rise_cc) = match ntc {
+            Some(t) if cfg.rise_q016 != 0 || cfg.rise2_q016 != 0 => {
                 self.flags = 0;
-                (t as i32 + rise_cc(heat, cfg.rise_q016)).min(i16::MAX as i32) as i16
+                let rise = (rise_cc(heat[0], cfg.rise_q016) + rise_cc(heat[1], cfg.rise2_q016))
+                    .min(i16::MAX as i32);
+                ((t as i32 + rise).min(i16::MAX as i32) as i16, rise as u16)
             }
             _ => {
                 self.flags = flag::UNSET;
-                UNSET_CC
+                (UNSET_CC, 0)
             }
         };
         self.t_cc
+    }
+
+    /// The heat input's warm factor on the last published excess
+    /// ([`warm_q16`]); 0 while UNSET.
+    pub fn warm_q16(&self) -> u32 {
+        warm_q16(self.rise_cc)
     }
 
     pub fn t_cc(&self) -> i16 {
@@ -165,6 +202,7 @@ mod tests {
     /// centi-C per count squared (notebook 21).
     pub(crate) const CFG: ThermCfg = ThermCfg {
         rise_q016: 1044,
+        rise2_q016: 0,
         ntc: NTC,
     };
     /// Counts at 25.00 C for a 10K/10K divider.
@@ -212,20 +250,68 @@ mod tests {
     #[test]
     fn the_estimate_is_the_ntc_plus_the_rise_on_the_heat() {
         let mut th = WindingTherm::new();
-        assert_eq!(th.update(RAW_25, 0, &CFG), 2500);
-        assert_eq!(th.update(RAW_25, 277 * 277, &CFG), 2500 + 1222);
+        assert_eq!(th.update(RAW_25, [0; 2], &CFG), 2500);
+        assert_eq!(th.update(RAW_25, [277 * 277, 0], &CFG), 2500 + 1222);
         assert_eq!((th.t_ntc_cc(), th.flags()), (2500, 0));
         assert_eq!(rise_cc(76729, 1044), 1222);
         assert_eq!(rise_cc(1 << 16, 1), 1);
     }
 
+    /// Both nodes add their gain on their own heat, and the body node
+    /// alone is a model: the step-down's candidate pair on board D (706
+    /// rotor, 825 body) at the 554-count cap settled reads 33.1 + 38.6 C
+    /// over the board.
+    #[test]
+    fn the_body_node_adds_its_own_gain_on_its_own_heat() {
+        let two = ThermCfg {
+            rise_q016: 706,
+            rise2_q016: 825,
+            ..CFG
+        };
+        let mut th = WindingTherm::new();
+        let sq = 554 * 554;
+        assert_eq!(th.update(RAW_25, [sq, sq], &two), 2500 + 3306 + 3863);
+        assert_eq!(th.update(RAW_25, [sq, 0], &two), 2500 + 3306);
+        assert_eq!(th.update(RAW_25, [0, sq], &two), 2500 + 3863);
+        let body_only = ThermCfg {
+            rise_q016: 0,
+            ..two
+        };
+        assert_eq!(th.update(RAW_25, [sq, sq], &body_only), 2500 + 3863);
+        assert_eq!(th.flags(), 0);
+    }
+
+    /// The warm factor is the copper's fractional resistance rise on the
+    /// last published excess: 0.393 % per C, 0 while UNSET, bounded at
+    /// 150 C over so its product with any square fits u32.
+    #[test]
+    fn the_warm_factor_follows_the_published_excess_and_is_bounded() {
+        assert_eq!(warm_q16(0), 0);
+        assert_eq!(warm_q16(1000), 2575, "10 C: 3.93 % is 2575 in Q0.16");
+        assert_eq!(warm_q16(2548), 6561);
+        assert_eq!(warm_q16(RISE_FEEDBACK_MAX_CC), 38627);
+        assert_eq!(warm_q16(i16::MAX as u16), 38627);
+        let mut th = WindingTherm::new();
+        assert_eq!(th.warm_q16(), 0);
+        th.update(RAW_25, [277 * 277, 0], &CFG);
+        assert_eq!(th.warm_q16(), warm_q16(1222));
+        th.update(0, [277 * 277, 0], &CFG);
+        assert_eq!(th.warm_q16(), 0, "UNSET feeds nothing back");
+    }
+
     /// The rise saturates at the sentinel's far end instead of wrapping,
-    /// and so does the sum.
+    /// and so do the two nodes' sum and the sum with the NTC.
     #[test]
     fn the_estimate_saturates() {
         let mut th = WindingTherm::new();
         assert_eq!(rise_cc(u32::MAX, u16::MAX), i16::MAX as i32);
-        assert_eq!(th.update(RAW_25, u32::MAX, &CFG), i16::MAX);
+        assert_eq!(th.update(RAW_25, [u32::MAX, 0], &CFG), i16::MAX);
+        let two = ThermCfg {
+            rise2_q016: u16::MAX,
+            ..CFG
+        };
+        assert_eq!(th.update(RAW_25, [u32::MAX, u32::MAX], &two), i16::MAX);
+        assert_eq!(th.warm_q16(), 38627);
     }
 
     /// No rise constant, or no NTC curve, or an NTC at a rail: the sentinel,
@@ -239,15 +325,15 @@ mod tests {
             rise_q016: 0,
             ..CFG
         };
-        assert_eq!(th.update(RAW_25, 76729, &no_rise), UNSET_CC);
+        assert_eq!(th.update(RAW_25, [76729; 2], &no_rise), UNSET_CC);
         assert_eq!((th.t_ntc_cc(), th.flags()), (2500, flag::UNSET));
         let no_curve = ThermCfg {
             ntc: NtcCfg::default(),
             ..CFG
         };
-        assert_eq!(th.update(RAW_25, 76729, &no_curve), UNSET_CC);
-        assert_eq!(th.update(RAW_25, 76729, &CFG), 3722);
-        assert_eq!(th.update(0, 76729, &CFG), UNSET_CC, "an NTC at a rail");
+        assert_eq!(th.update(RAW_25, [76729; 2], &no_curve), UNSET_CC);
+        assert_eq!(th.update(RAW_25, [76729, 0], &CFG), 3722);
+        assert_eq!(th.update(0, [76729, 0], &CFG), UNSET_CC, "an NTC at a rail");
         assert_eq!(th.t_ntc_cc(), 2500, "the last conversion stands");
         assert_eq!(th.flags(), flag::UNSET);
     }
