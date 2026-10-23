@@ -1,6 +1,6 @@
-//! The tick: one `on_tick` per PWM period, the spare phases' arbitration
-//! between a configuration take and the thermometer's stages, the lane
-//! holds, and the hand-off between the halves.
+//! The tick: one `on_tick` per PWM period, the spare phases' configuration
+//! take and drive direction check, the lane holds, and the hand-off between
+//! the halves.
 
 mod probe;
 pub mod table;
@@ -112,9 +112,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
-    /// The configuration, whole, then the thermometer's bound at it and the
-    /// terminal floor at the OpenLoop decay; a new `drive_polarity`
-    /// unproves the drive direction check. The rail clamp follows
+    /// The configuration, whole, then the terminal floor at the OpenLoop
+    /// decay; a new `drive_polarity` unproves the drive direction check. The rail clamp follows
     /// `duty_max_q15` at the next RAIL phase. The kernel preempts the bus, so
     /// no commit store lands inside the tick: at an even count the span is
     /// one committed set. At an odd one (the first tick only) the next even
@@ -127,7 +126,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         compiler_fence(Ordering::Acquire);
         self.cfg.take(shared);
         self.medium.drive.take(self.cfg.limits.drive_polarity);
-        self.medium.thermal.bound(&self.cfg.therm);
         let v_floor = self.cfg.v_floor_q15[self.cfg.limits.openloop_decay as usize];
         let p = shared.table.region_ptr();
         // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
@@ -193,28 +191,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     pub fn on_tick(&mut self, shared: &Shared) {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
-        // Arm order is the spare phases' priority: a configuration take owns
-        // its tick, and the thermometer's stage waits a period on its pending
-        // bit, as it does through the SLOW finish's period: one slow-rate
-        // stage per period keeps them from bunching on one TEL batch. A stage
-        // tick holds the TX lane; a take does not, as one can run every
-        // period. The drive direction check takes a SPARE_B no thermometer
-        // stage does, and its own stage runs there too, so the two never
-        // share a tick; it holds no lane.
+        // A take holds no TX lane, as one can run every period. The drive
+        // direction check's stage runs on its own SPARE_B and holds no lane
+        // either.
         match phase {
             phase::CONTROL if !self.booted => self.boot(shared),
             phase::SPARE_A if config_due(shared.config_seq(), self.config_seq) => {
                 self.take_config(shared)
-            }
-            phase::SPARE_A | phase::SPARE_B
-                if self.medium.thermal.pending() != 0 && self.medium.slow_periods != 1 =>
-            {
-                let ran = self
-                    .medium
-                    .spare(phase, shared.frame().ntc_raw(), &self.cfg);
-                if ran {
-                    self.tel.hold();
-                }
             }
             phase::SPARE_B if self.medium.drive.unproven() => {
                 let duty = self.fast.duty_q15();
@@ -232,7 +215,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
         let staged = self.medium.step(
             phase,
-            &meas,
             &self.cfg,
             shared,
             &mut self.faults,

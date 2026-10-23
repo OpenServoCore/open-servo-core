@@ -179,23 +179,18 @@ pub struct TelCosts {
 
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
 /// block's due stage on phase SLOW every DECIM_SLOW periods (by event row) and
-/// its finish on the next period's, the thermometer's stages around them
-/// (an install on phase SPARE_A of the period after the finish,
-/// SPARE_B then and before the due stage), each holding the TX lane as
-/// the kernel does, and the tick-load close where the chip's count lands
-/// it ([`kernel::health_close_at`], the lane's first tick the boot tick),
-/// with the catch-up when a tick was lost since the last one. A
-/// configuration take runs on phase SPARE_A when the servo's count is
-/// even and new, in place of an install there, which waits a period; it
-/// holds no lane. The drive direction check's stage runs on every SPARE_B
-/// the thermometer leaves, as an unproven servo's could, and holds no lane.
+/// its finish on the next period's, each holding the TX lane as the kernel
+/// does, and the tick-load close where the chip's count lands it
+/// ([`kernel::health_close_at`], the lane's first tick the boot tick), with
+/// the catch-up when a tick was lost since the last one. A configuration
+/// take runs on phase SPARE_A when the servo's count is even and new; it
+/// holds no lane. The drive direction check's stage runs on every SPARE_B,
+/// as an unproven servo's could, and holds no lane.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub refresh: u64,
     pub slow_due: [u64; EVENT_REGIMES],
     pub finish: u64,
-    pub install: u64,
-    pub side: u64,
     pub drive: u64,
     pub health_close: u64,
     pub catch_up: u64,
@@ -222,9 +217,7 @@ impl KernelLane {
             events: KernelEvents {
                 refresh: budget::REFRESH as u64,
                 slow_due: budget::SLOW_DUE.map(u64::from),
-                finish: budget::SLOW_FINISH.max(budget::SLOW_CLOSE) as u64,
-                install: budget::THERM_INSTALL as u64,
-                side: budget::THERM_SIDE as u64,
+                finish: budget::SLOW_FINISH as u64,
                 drive: budget::DRIVE_STAGE as u64,
                 health_close: budget::HEALTH_CLOSE as u64,
                 catch_up: budget::CATCH_UP as u64,
@@ -252,8 +245,8 @@ impl KernelLane {
         let at = |p: u8, extra: u64| body(p as usize) + extra;
         let slow_due = ev.slow_due[self.heavier(phase::SLOW as usize).event_row() as usize];
         let events = at(phase::SLOW, slow_due.max(ev.finish))
-            .max(at(phase::SPARE_A, ev.install.max(ev.refresh)))
-            .max(at(phase::SPARE_B, ev.side.max(ev.drive)));
+            .max(at(phase::SPARE_A, ev.refresh))
+            .max(at(phase::SPARE_B, ev.drive));
         let longest = (0..n).map(body).max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
@@ -298,13 +291,11 @@ pub struct KernelStats {
     pub entry_latency_sum: u64,
     /// Ticks the kernel added to the bus bodies it preempted.
     pub bus_stretch: u64,
-    /// Bodies longer than one period, the chip's `tick_over_count`, and of
-    /// those the ones a thermometer stage carried.
+    /// Bodies longer than one period, the chip's `tick_over_count`.
     pub over: u64,
-    pub therm_over: u64,
     /// Ticks charged on the Closed rows.
     pub closed: u64,
-    /// TEL ticks that ran a SLOW or thermometer stage, and of those the
+    /// TEL ticks that ran a SLOW stage, and of those the
     /// ones the TX lane took a step on.
     pub stage_tel: u64,
     pub stage_steps: u64,
@@ -335,16 +326,13 @@ struct Kernel {
     goal_at: u64,
     lost_at_close: u64,
     regime: Regime,
-    /// The running body runs a SLOW or thermometer stage, and which.
+    /// The running body runs a SLOW stage.
     stage: bool,
-    therm: bool,
     /// The servo's configuration count as the next tick reads it, the one
     /// the last take saw, and the tick a set not yet taken was committed at.
     config_seq: u8,
     config_taken: u8,
     config_new_at: Option<u64>,
-    /// A take had SPARE_A when the install was due.
-    install_owed: bool,
     /// The running body holds a burst's start (its phase is the take's, or
     /// a take is pending), and ran the take.
     hold_start: bool,
@@ -541,11 +529,9 @@ impl Cpu {
             lost_at_close: 0,
             regime: Regime::Open,
             stage: false,
-            therm: false,
             config_seq: 0,
             config_taken: 0,
             config_new_at: None,
-            install_owed: false,
             hold_start: false,
             took: false,
             body: 0,
@@ -595,7 +581,6 @@ impl Cpu {
         k.pend_at = None;
         if k.run_until - k.entered > KERNEL_PERIOD {
             k.stats.over += 1;
-            k.stats.therm_over += k.therm as u64;
         }
         let tick = k.stats.entries;
         if tick > 0 {
@@ -625,29 +610,18 @@ impl Cpu {
             cost = lo + k.rng % (cost - lo + 1);
         }
         let ev = k.lane.events;
-        let slow = DECIM_SLOW as u64;
-        let at = k.periods % slow;
-        let install = k.phase == phase::SPARE_A as usize;
-        let take = install && k.config_seq & 1 == 0 && k.config_seq != k.config_taken;
+        let at = k.periods % DECIM_SLOW as u64;
+        let spare_a = k.phase == phase::SPARE_A as usize;
+        let take = spare_a && k.config_seq & 1 == 0 && k.config_seq != k.config_taken;
         k.took = take;
         let stage = match k.phase as u8 {
-            phase::SPARE_A if take => {
-                k.install_owed |= at == 2;
-                None
-            }
             phase::SLOW if at == 0 => Some(ev.slow_due[k.regime.event_row() as usize]),
             phase::SLOW if at == 1 => Some(ev.finish),
-            phase::SPARE_A if at == 2 || k.install_owed => {
-                k.install_owed = false;
-                Some(ev.install)
-            }
-            phase::SPARE_B if at == 2 || at == slow - 1 => Some(ev.side),
             _ => None,
         };
         k.stage = stage.is_some();
-        k.therm = matches!(k.phase as u8, phase::SPARE_A | phase::SPARE_B) && k.stage;
         cost += stage.unwrap_or(0);
-        if k.phase == phase::SPARE_B as usize && !k.stage {
+        if k.phase == phase::SPARE_B as usize {
             cost += ev.drive;
         }
         if take {
@@ -659,7 +633,7 @@ impl Cpu {
             }
         }
         // the kernel's start rule, asked after the take
-        k.hold_start = install || k.config_seq != k.config_taken;
+        k.hold_start = spare_a || k.config_seq != k.config_taken;
         if kernel::health_close_at(tick) {
             k.stats.closes[k.phase] += 1;
             cost += ev.health_close;
@@ -692,8 +666,7 @@ impl Cpu {
         self.kernel.as_ref().map(|k| k.lane.tel).unwrap_or_default()
     }
 
-    /// The running kernel body runs a SLOW or thermometer stage: the TX
-    /// lane holds.
+    /// The running kernel body runs a SLOW stage: the TX lane holds.
     pub fn kernel_holds(&self) -> bool {
         self.kernel.as_ref().is_some_and(|k| k.stage)
     }
@@ -802,7 +775,7 @@ mod tests {
     use crate::plant::{BIAS, kernel, seed, vbus_raw};
 
     /// One bit per stage: a body's cost names the stages the lane charged.
-    const COSTS: [u64; 6] = [1, 2, 4, 8, 16, 32];
+    const COSTS: [u64; 4] = [1, 2, 4, 8];
     static FREE: [u64; PHASES] = [0; PHASES];
 
     fn write_config(sh: &Shared, f: impl FnOnce(&mut osc_servo_core::ControlTable)) {
@@ -811,14 +784,10 @@ mod tests {
         sh.config_commit_end();
     }
 
-    /// The core kernel tests' hot seat: the thermometer tracks it and runs
-    /// every stage.
+    /// The core kernel tests' hot seat: the winding estimate runs on it.
     fn hot_seat(sh: &Shared) -> SensorFrame {
         write_config(sh, |t| {
-            t.calib.thermal.th_alpha_q24 = 2097;
-            t.calib.thermal.th_g_q016 = 100;
-            t.calib.thermal.th_mu_q016 = 5369;
-            t.calib.winding.r0_q12 = 7393;
+            t.calib.thermal.th_rise_q016 = 1044;
             t.calib.thermal.ntc_raw_ref = 2048;
             t.calib.thermal.ntc_t_ref_cc = 2500;
             t.calib.thermal.ntc_k1_q88 = 563;
@@ -853,7 +822,7 @@ mod tests {
 
     /// The lane charges each stage on the tick the kernel runs it: every
     /// stage `Events::between` reads off a real kernel's tags (due, finish,
-    /// install, side, configuration take, the drive direction check's)
+    /// configuration take, the drive direction check's)
     /// lands on a tick the lane charges it, and the SLOW block's due and
     /// finish on exactly the lane's.
     #[test]
@@ -865,7 +834,7 @@ mod tests {
         while !k.probe_tags().slow_due {
             k.on_scan(f, &sh);
         }
-        let [slow, finish, install, side, refresh, drive] = COSTS;
+        let [slow, finish, refresh, drive] = COSTS;
         let mut cpu = Cpu::default();
         cpu.start_kernel(
             KernelLane {
@@ -878,8 +847,6 @@ mod tests {
                     refresh,
                     slow_due: [slow; EVENT_REGIMES],
                     finish,
-                    install,
-                    side,
                     drive,
                     health_close: 0,
                     catch_up: 0,
@@ -892,7 +859,7 @@ mod tests {
             lane_tick(&mut cpu, &mut now, sh.config_seq());
         }
         let ticks = 400 * DECIM_SLOW as u32 * DECIM_MED as u32;
-        let mut seen = [0u32; 6];
+        let mut seen = [0u32; 4];
         for t in 0..ticks {
             if t == ticks / 2 {
                 write_config(&sh, |_| {});
@@ -901,13 +868,11 @@ mod tests {
             let before = k.probe_tags();
             k.on_scan(f, &sh);
             let ev = Events::between(before, k.probe_tags());
-            let ran = [
-                ev.slow, ev.finish, ev.install, ev.side, ev.refresh, ev.drive,
-            ];
+            let ran = [ev.slow, ev.finish, ev.refresh, ev.drive];
             let charged = COSTS.map(|c| body & c != 0);
             assert_eq!(ran[..2], charged[..2], "tick {t}");
             assert!(
-                !charged[5] || !(charged[2] || charged[3] || charged[4]),
+                !(charged[2] && charged[3]),
                 "tick {t}: the drive stage stacked, {charged:?}"
             );
             for (n, (&r, &c)) in seen.iter_mut().zip(ran.iter().zip(&charged)) {
@@ -956,43 +921,6 @@ mod tests {
         for p in 0..PHASES {
             let body = lane_tick(&mut cpu, &mut now, 0);
             assert_eq!(body, closed[p].max(openloop[p]), "phase {p}");
-        }
-    }
-
-    /// The drive direction check's stage stays inside the thermometer's on
-    /// SPARE_B: at budget, charged on every SPARE_B the thermometer leaves,
-    /// it leaves each motion's dearest SPARE_B body and the bus wall where
-    /// the thermometer's stage puts them.
-    #[test]
-    fn the_drive_stage_stays_inside_the_spare_b_envelope() {
-        for motion in [Motion::Quiet, Motion::Hold, Motion::Moving] {
-            let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
-            let bare = KernelLane {
-                events: KernelEvents {
-                    drive: 0,
-                    ..lane.events
-                },
-                ..lane
-            };
-            let spare_b = |lane: KernelLane| {
-                let mut cpu = Cpu::default();
-                cpu.start_kernel(lane, u64::MAX);
-                let mut now = 0;
-                let (mut max, mut sum) = (0, 0);
-                for t in 0..4 * DECIM_SLOW as usize * PHASES {
-                    let body = lane_tick(&mut cpu, &mut now, 0);
-                    if t % PHASES == phase::SPARE_B as usize {
-                        max = body.max(max);
-                        sum += body;
-                    }
-                }
-                (max, sum)
-            };
-            let (with, without) = (spare_b(lane), spare_b(bare));
-            assert!(with.1 > without.1, "{motion:?}: never charged");
-            assert_eq!(with.0, without.0, "{motion:?}");
-            let bus = budget::frame(budget::Frame::ConfigWrite) as u64;
-            assert_eq!(lane.wall(bus), bare.wall(bus), "{motion:?}");
         }
     }
 }

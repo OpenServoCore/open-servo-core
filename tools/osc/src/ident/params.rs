@@ -17,7 +17,7 @@ use osc_ident::exp::wavefit::WaveRun;
 use osc_ident::exp::winding::VoltRun;
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
 use osc_ident::sources::{Source, Winding};
-use osc_ident::thermometer;
+use osc_ident::thermal::NtcCurve;
 use osc_ident::units::SenseParams;
 use serde::{Deserialize, Serialize};
 
@@ -846,19 +846,14 @@ impl GainJson {
         Self::of(&e.fields())
     }
 
-    /// The thermometer's model, LMS step and NTC curve, in table order.
-    pub fn thermal(t: &thermometer::Thermal) -> Vec<Self> {
-        Self::of(&t.fields())
+    /// The board NTC's curve, in table order.
+    pub fn ntc(curve: &NtcCurve) -> Vec<Self> {
+        Self::of(&curve.fields())
     }
 
-    /// The stored cold R ([`thermometer::cold_r_q12`]).
-    pub fn cold_r(r: Encoded) -> Self {
-        Self::of(&[("r0_q12", r)]).remove(0)
-    }
-
-    /// The thermometer's current floor ([`thermometer::floor_counts`]).
-    pub fn floor(f: Encoded) -> Self {
-        Self::of(&[("rtherm_i_min_counts", f)]).remove(0)
+    /// The winding estimate's rise ([`osc_ident::thermal`]).
+    pub fn rise(e: Encoded) -> Self {
+        Self::of(&[("th_rise_q016", e)]).remove(0)
     }
 
     fn of(fields: &[(&str, Encoded)]) -> Vec<Self> {

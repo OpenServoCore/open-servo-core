@@ -142,8 +142,9 @@ pub struct TelemetryEstimates {
     /// Effective current ceiling after limit folds.
     #[ct_field(access = ro)]
     pub i_lim_counts: u16,
-    /// Winding temperature, centi-C; `i16::MIN` while the thermometer has
-    /// no model or no NTC (`therm_flags` bit 0).
+    /// Winding estimate, centi-C: the board NTC plus the rise on the I2t
+    /// heat; `i16::MIN` while no rise constant or NTC curve is set
+    /// (`therm_flags` bit 0).
     #[ct_field(access = ro)]
     pub t_winding_cc: i16,
     #[ct_field(access = ro)]
@@ -152,7 +153,8 @@ pub struct TelemetryEstimates {
     /// the boxcar (`omega_hat_src` then reads 0 within a millisecond).
     #[ct_field(access = ro)]
     pub omega_bemf_cps: i16,
-    /// Winding-R LMS estimate, vcounts/ccount Q4.12.
+    /// Reserved, reads 0: the retired resistance thermometer's estimate;
+    /// the slot keeps the layout.
     #[ct_field(access = ro)]
     pub r_hat_q12: u16,
 }

@@ -127,7 +127,6 @@ pub fn seed(shared: &Shared) {
         c.thermal.cutoff_cc = 10000;
         c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
-        c.thermal.rtherm_i_min_counts = 300;
         // 1200 counts over 200 vcounts: 6 counts per vcount
         c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;

@@ -545,7 +545,7 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   OpenLoop over Open (the openloop window must book mostly OpenLoop), TEL
   and banking ticks too (OpenLoop's on the Closed rows, as are its event
   ticks), a tick that closed a
-  tick-load window apart from all of these, and SLOW-due ticks, SLOW finish ticks and a thermal close as events. Each
+  tick-load window apart from all of these, and SLOW-due ticks and SLOW finish ticks as events. Each
   window prints (and with `BUDGET_OUT` saves) its rows in ticks and us and
   its raw records as it ends; the window image (`scripts/build-image.sh
   --window`, `--features bench-window`) adds gamma(k) for k = 2, 4, 10, 20,
@@ -554,8 +554,8 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   window, the component, the measured ticks and us, and the budget. "hold
   raw pos" (a goal from raw `pos`) is report-only. "seated" runs only when
   `BUDGET_WINDOWS` names it: with the horn clamped at mid travel it holds a
-  goal past the clamp, so the thermometer tracks a seat, the SLOW block's
-  dearest path.
+  goal past the clamp, a press at the current limit on a still shaft that
+  the SLOW stages run under.
 
 - **turnaround** (`turnaround.rs`) - instruction wire-end -> status break
   fall, per baud, for ping, read and write. With the kernel above the bus a

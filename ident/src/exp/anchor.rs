@@ -1,66 +1,47 @@
-//! The thermometer's hold: the kernel's own winding R at a seat. Seek the
-//! low stop at the plan's seek duty, seat, hold at the stall-safe stop
-//! duty (the current limit governs it) and read the window each read
-//! carries: duty x vdiff / i per window is the quantity the kernel's
-//! thermometer LMS settles on (core `estimator::thermal`), so their median
-//! is a seat's R on the thermometer's own scale; after a long idle it
-//! becomes the stored cold R ([`crate::thermometer::cold_r_q12`]).
+//! The thermal hold: seek the low stop at the plan's seek duty, seat, hold
+//! at the stall-safe stop duty (the current limit governs it) for
+//! [`AnchorCfg::hold_ms`], polling at a bounded rate, and keep every poll
+//! and every aggregate window. Duty x vdiff / i per window is the winding's
+//! own R, whose ratio to the R just after the hold starts reads the
+//! copper's rise; [`crate::thermal::fit_rise`] regresses it over the NTC on
+//! the kernel's replayed heat for the winding estimate's rise constant.
 //! Runs with the pos guard off and the stall permit held, like the
 //! resistance stop ladder; a seek that rests anywhere but the stop ends
-//! the run ([`super::seek::at_stop`]). The hold is about a second: 0.3 W
-//! into the winding for a second is well under a degree of self-heating,
-//! and the current at the limit is where a loaded hold sits in service.
+//! the run ([`super::seek::at_stop`]).
 
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
+use crate::thermal::{self, HoldPoll, RiseFit};
 use crate::window::Watch;
-
-const Q15: f64 = 32767.0;
 
 pub struct AnchorCfg {
     /// Seek toward the low stop, q15, applied negative.
     pub seek_duty_q15: i16,
     /// The hold at the stop, q15: the stall-safe cap, so the limit governs.
     pub hold_duty_q15: i16,
-    /// Polls at the hold; with `poll_ms` about a second.
-    pub hold_polls: u32,
+    pub hold_ms: u32,
+    /// The hold's poll period: the fit bins by the second and the heat
+    /// replay holds the last poll, so a fast poll buys nothing.
     pub poll_ms: u32,
     pub seek_poll_ms: u32,
 }
+
+/// The shortest hold `osc ident thermal` takes, s: the rise fit needs
+/// [`thermal::MIN_BINS`] seconds of it and the heat several of its own
+/// time constants.
+pub const HOLD_MIN_S: u32 = 60;
 
 impl Default for AnchorCfg {
     fn default() -> Self {
         Self {
             seek_duty_q15: 3932,
             hold_duty_q15: 5242,
-            hold_polls: 400,
-            poll_ms: 2,
+            hold_ms: 480_000,
+            poll_ms: 20,
             seek_poll_ms: 30,
         }
     }
-}
-
-/// Windows a hold must read before its median stands: a hold the limiter
-/// is still slewing into, or one the poll budget cut, reads fewer.
-pub const MIN_WINDOWS: usize = 100;
-
-/// Per-window scatter of R over this fraction of the median says the
-/// shaft was not at rest against the stop (back-EMF in the windows) or
-/// the limiter hunted: healthy holds read under 2%.
-pub const MAX_SPREAD: f64 = 0.05;
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct AnchorResult {
-    /// The median window R, vcounts per ccount, at the hold's temperature.
-    pub r_vpc: f64,
-    /// Per-window standard deviation of R over the median.
-    pub spread: f64,
-    pub n: usize,
-    /// The median hold current, counts, into the stop.
-    pub i_counts: f64,
-    /// The median applied duty at the hold, fraction of full scale.
-    pub duty: f64,
 }
 
 enum Phase {
@@ -90,11 +71,22 @@ pub struct Anchor {
     polls_left: u32,
     windows: WindowStream,
     samples: Vec<WindowSample>,
+    polls: Vec<HoldPoll>,
+    t0_ms: Option<f64>,
     seat: Option<u16>,
 }
 
 /// Toward the low stop.
 const DIR: i8 = -1;
+
+fn poll(o: &TelemetrySnapshot) -> HoldPoll {
+    HoldPoll {
+        t_ms: o.host_ms,
+        i_counts: o.i_tick_counts as f64,
+        t_ntc_cc: o.t_ntc_cc as f64,
+        t_winding_cc: o.t_winding_cc as f64,
+    }
+}
 
 impl Anchor {
     pub fn new(cfg: AnchorCfg, params: &RigParams) -> Self {
@@ -111,12 +103,20 @@ impl Anchor {
             polls_left: 0,
             windows: WindowStream::new(params),
             samples: Vec::new(),
+            polls: Vec::new(),
+            t0_ms: None,
             seat: None,
         }
     }
 
+    /// Every aggregate window of the hold.
     pub fn samples(&self) -> &[WindowSample] {
         &self.samples
+    }
+
+    /// Every poll, the seek's and the hold's.
+    pub fn polls(&self) -> &[HoldPoll] {
+        &self.polls
     }
 
     /// Where the shaft seated, once it did.
@@ -124,59 +124,29 @@ impl Anchor {
         self.seat
     }
 
-    pub fn result(&self) -> Result<AnchorResult, String> {
-        Self::fit_samples(&self.samples)
+    /// The hold's start: the first poll after its duty write, which the
+    /// kernel applies on its next tick.
+    pub fn t0_ms(&self) -> Option<f64> {
+        self.t0_ms
     }
 
-    /// The median window R and its scatter; Err says why the hold is no
-    /// anchor. Associated so the CLI refits offline from recorded samples.
-    pub fn fit_samples(samples: &[WindowSample]) -> Result<AnchorResult, String> {
-        // duty and vdiff carry the drive's sign, i is folded by it, so
-        // every term is positive into the stop
-        let rs: Vec<f64> = samples
-            .iter()
-            .filter(|w| w.i != 0.0 && w.duty_q15 != 0.0)
-            .map(|w| (w.duty_q15 * w.vdiff / Q15) / (w.i * w.duty_q15.signum()))
-            .collect();
-        if rs.len() < MIN_WINDOWS {
-            return Err(format!(
-                "the hold read {} windows with current, under the {MIN_WINDOWS} an anchor needs",
-                rs.len()
-            ));
-        }
-        let r = median(&rs);
-        let sd = (rs.iter().map(|x| (x - r).powi(2)).sum::<f64>() / (rs.len() - 1) as f64).sqrt();
-        let spread = sd / r;
-        if !r.is_finite() || r <= 0.0 || spread > MAX_SPREAD {
-            return Err(format!(
-                "the hold's windows scatter {:.1}% around {r:.4} vcounts/ccount, over the \
-                 {:.0}% of a shaft at rest against the stop",
-                spread * 100.0,
-                MAX_SPREAD * 100.0
-            ));
-        }
-        let i: Vec<f64> = samples.iter().map(|w| w.i.abs()).collect();
-        let duty: Vec<f64> = samples.iter().map(|w| w.duty_q15.abs() / Q15).collect();
-        Ok(AnchorResult {
-            r_vpc: r,
-            spread,
-            n: rs.len(),
-            i_counts: median(&i),
-            duty: median(&duty),
-        })
-    }
-}
-
-fn median(xs: &[f64]) -> f64 {
-    let mut v = xs.to_vec();
-    v.sort_by(f64::total_cmp);
-    let n = v.len();
-    if n == 0 {
-        0.0
-    } else if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    /// The rise over the hold ([`thermal::fit_rise`]) on the servo's
+    /// `thermal_tau_ms` and terminal and current scales.
+    pub fn fit(
+        &self,
+        thermal_tau_ms: u16,
+        v_per_count: f64,
+        a_per_count: f64,
+    ) -> Result<RiseFit, String> {
+        let t0 = self.t0_ms.ok_or("the hold never started")?;
+        thermal::fit_rise(
+            &self.polls,
+            &self.samples,
+            t0,
+            thermal_tau_ms,
+            v_per_count,
+            a_per_count,
+        )
     }
 }
 
@@ -211,6 +181,7 @@ impl Experiment for Anchor {
             }
             Phase::SeekEval => {
                 if let Some(o) = obs {
+                    self.polls.push(poll(o));
                     if let Some(last) = self.last_pos
                         && o.pos.abs_diff(last) <= self.stall_eps
                     {
@@ -241,7 +212,9 @@ impl Experiment for Anchor {
             }
             Phase::HoldSet => {
                 self.phase = Phase::HoldRead;
-                self.polls_left = self.cfg.hold_polls;
+                // a backstop: every poll pauses poll_ms, so the clock ends
+                // the hold first
+                self.polls_left = self.cfg.hold_ms / self.cfg.poll_ms.max(1) + 1;
                 // no goal mark: the limiter governs the hold on purpose,
                 // and R per window holds whatever duty it applied
                 self.windows.mark_transition();
@@ -255,12 +228,16 @@ impl Experiment for Anchor {
                 Cmd::Read
             }
             Phase::HoldEval => {
-                if obs.is_some() {
+                let mut over = false;
+                if let Some(o) = obs {
+                    self.polls.push(poll(o));
                     self.samples
                         .extend(self.windows.drain().into_iter().map(|(w, _)| w));
+                    let t0 = *self.t0_ms.get_or_insert(o.host_ms);
+                    over = o.host_ms - t0 >= self.cfg.hold_ms as f64;
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
-                if self.polls_left == 0 {
+                if over || self.polls_left == 0 {
                     self.phase = Phase::FinishDuty;
                     Cmd::Pause { ms: 0 }
                 } else {
@@ -313,39 +290,50 @@ mod tests {
 
     /// The bench fake breaks away at 13%: a seek over it, as the plan's
     /// seek is in a run.
-    fn bench_cfg() -> AnchorCfg {
+    fn bench_cfg(hold_ms: u32) -> AnchorCfg {
         AnchorCfg {
             seek_duty_q15: 4915,
+            hold_ms,
             ..AnchorCfg::default()
         }
     }
 
-    /// The fake stalls through R alone: the hold's windows read it back
-    /// as duty x vdiff / i, seated at the low stop, whether or not the
-    /// limiter governs the hold.
-    #[test]
-    fn reads_the_planted_r_at_the_low_stop() {
-        for (mut servo, cfg, name) in [
-            (FakeServo::new(3.37), AnchorCfg::default(), "free limit"),
-            (bench_mg90(3204), bench_cfg(), "limit 280"),
-        ] {
-            servo.r = 3.37;
-            let (exp, log, abort) = run(&mut servo, cfg);
-            assert_eq!(abort, None, "{name}");
-            assert!(!log.contains(&"OVERRUN".to_string()), "{name}");
-            let seat = exp.seat().expect("seated");
-            assert!(seat <= 200 + seek::STOP_TOL, "{name}: seat {seat}");
-            let r = exp.result().unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert!((r.r_vpc - 3.37).abs() < 0.02, "{name}: r {}", r.r_vpc);
-            assert!(r.spread < 0.01, "{name}: spread {}", r.spread);
-            assert!(r.n >= MIN_WINDOWS, "{name}: n {}", r.n);
-            assert!(r.i_counts > 0.0 && r.duty > 0.0, "{name}: {r:?}");
+    fn short() -> AnchorCfg {
+        AnchorCfg {
+            hold_ms: 3000,
+            ..AnchorCfg::default()
         }
     }
 
-    /// At the bench limit the hold draws the limit, not the cap's stall:
-    /// the hold current the anchor reports is what the thermometer samples
-    /// in service.
+    /// Seated at the low stop, the hold runs its time at the bounded poll
+    /// rate and keeps the planted R in every window.
+    #[test]
+    fn holds_its_time_at_the_low_stop() {
+        let mut servo = FakeServo::new(3.37);
+        let (exp, log, abort) = run(&mut servo, short());
+        assert_eq!(abort, None);
+        assert!(!log.contains(&"OVERRUN".to_string()));
+        let seat = exp.seat().expect("seated");
+        assert!(seat <= 200 + seek::STOP_TOL, "seat {seat}");
+        let t0 = exp.t0_ms().expect("a hold");
+        let last = exp.polls().last().unwrap().t_ms;
+        assert!(
+            (3000.0..3100.0).contains(&(last - t0)),
+            "held {}",
+            last - t0
+        );
+        let hold_polls = exp.polls().iter().filter(|p| p.t_ms >= t0).count();
+        assert!(hold_polls <= 3000 / 20 + 1, "{hold_polls} polls");
+        assert!(exp.samples().len() > 50, "{} windows", exp.samples().len());
+        for w in exp.samples() {
+            let r = (w.duty_q15 * w.vdiff / 32767.0) / (w.i * w.duty_q15.signum());
+            assert!((r - 3.37).abs() < 0.05, "r {r}");
+        }
+        // the polls before t0 are the seek's
+        assert!(exp.polls().iter().any(|p| p.t_ms < t0));
+    }
+
+    /// At the bench limit the hold draws the limit, not the cap's stall.
     #[test]
     fn the_limit_governs_the_hold() {
         let mut servo = bench_mg90(3204);
@@ -353,39 +341,42 @@ mod tests {
         // 30%: a 3.37 winding stalls 285 counts on 3204, over the 280 limit
         let cfg = AnchorCfg {
             hold_duty_q15: 9830,
-            ..bench_cfg()
+            ..bench_cfg(3000)
         };
         let (exp, _, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
-        let r = exp.result().unwrap();
-        assert!(r.i_counts <= 281.0, "hold current {}", r.i_counts);
-        assert!((r.r_vpc - 3.37).abs() < 0.02, "r {}", r.r_vpc);
+        let t0 = exp.t0_ms().unwrap();
+        let late: Vec<f64> = exp
+            .polls()
+            .iter()
+            .filter(|p| p.t_ms >= t0 + 1000.0)
+            .map(|p| p.i_counts.abs())
+            .collect();
+        assert!(!late.is_empty());
+        assert!(late.iter().all(|i| *i <= 281.0), "{late:?}");
     }
 
-    /// The hold the limit governs at 280 leaves the thermometer's floor at
-    /// 7/8 of it.
+    /// A winding that does not warm over an NTC that does not move reads
+    /// no rise against the heat the hold carried.
     #[test]
-    fn anchor_sets_the_floor_under_its_hold() {
-        let mut servo = bench_mg90(3204);
-        servo.r = 3.37;
+    fn a_winding_that_does_not_warm_reads_no_rise() {
+        let mut servo = FakeServo::new(3.37);
         let cfg = AnchorCfg {
-            hold_duty_q15: 9830,
-            ..bench_cfg()
+            hold_ms: 40_000,
+            ..AnchorCfg::default()
         };
         let (exp, _, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
-        let r = exp.result().unwrap();
-        let hold = r.i_counts.round() as u16;
-        assert!((270..=281).contains(&hold), "hold current {}", r.i_counts);
-        let floor = crate::thermometer::floor_counts(r.i_counts);
-        assert_eq!(floor.raw, 7 * hold / 8);
-        assert!(!floor.saturated);
+        let f = exp.fit(4096, 4.0e-3, 0.9e-3).expect("a fit");
+        assert!(f.bins >= thermal::MIN_BINS, "{f:?}");
+        assert!(f.k.abs() < 1e-3, "{f:?}");
+        assert!(f.settled_rise_c.abs() < 0.5, "{f:?}");
     }
 
     #[test]
     fn command_choreography_is_safe() {
         let mut servo = FakeServo::new(3.37);
-        let (_, log, _) = run(&mut servo, AnchorCfg::default());
+        let (_, log, _) = run(&mut servo, short());
         let idx = |s: &str| log.iter().position(|l| l == s);
         let torque_on = idx("write torque_enable 1").expect("torque on");
         let permit_on = idx("write stall_permit 1").expect("the permit");
@@ -408,12 +399,12 @@ mod tests {
     }
 
     /// A shaft that rests short of the stop is blocked: no hold is
-    /// commanded against a jam, and nothing is anchored.
+    /// commanded against a jam, and nothing is fitted.
     #[test]
     fn a_mid_travel_jam_is_not_a_stop() {
         let mut servo = FakeServo::new(3.37);
         servo.jam = Some(1500.0);
-        let (exp, log, abort) = run(&mut servo, AnchorCfg::default());
+        let (exp, log, abort) = run(&mut servo, short());
         assert!(
             matches!(abort, Some(AbortReason::Blocked { pos: 1500, .. })),
             "{abort:?}"
@@ -426,32 +417,7 @@ mod tests {
             "a hold was commanded: {log:?}"
         );
         assert!(exp.samples().is_empty());
-        assert!(exp.result().is_err());
-    }
-
-    #[test]
-    fn too_few_or_scattered_windows_are_no_anchor() {
-        let w = |i: f64, vdiff: f64| WindowSample {
-            t_ms: 0.0,
-            i,
-            vdiff,
-            duty_q15: -16_000.0,
-        };
-        let few: Vec<WindowSample> = (0..MIN_WINDOWS - 1).map(|_| w(-200.0, -1380.0)).collect();
-        assert!(Anchor::fit_samples(&few).unwrap_err().contains("windows"));
-        let mut scattered = few.clone();
-        scattered.extend((0..40).map(|k| w(-200.0 - 40.0 * (k % 2) as f64, -1380.0)));
-        assert!(
-            Anchor::fit_samples(&scattered)
-                .unwrap_err()
-                .contains("scatter")
-        );
-        let mut tidy = few;
-        tidy.push(w(-200.0, -1380.0));
-        let r = Anchor::fit_samples(&tidy).unwrap();
-        // 16000/32767 x 1380 / 200 = 3.3686
-        assert!((r.r_vpc - 3.3686).abs() < 1e-3, "{}", r.r_vpc);
-        assert_eq!(r.spread, 0.0);
-        assert_eq!(r.i_counts, 200.0);
+        assert!(exp.t0_ms().is_none());
+        assert!(exp.fit(4096, 4.0e-3, 0.9e-3).is_err());
     }
 }

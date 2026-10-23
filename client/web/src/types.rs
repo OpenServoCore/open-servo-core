@@ -570,7 +570,7 @@ pub struct Track {
 /// One `fakeWithTracks` roster entry: a servo id, optionally playing a
 /// track back, optionally factory-fresh (never calibrated, identified or
 /// saved: every `data_flags` reason set) instead of stamped, optionally
-/// with its winding thermometer off or pinned in the derate band or
+/// with its winding estimate off or pinned in the derate band or
 /// holding another response deadline, optionally a board that carries
 /// only its bootloader or one whose next erase or write fails.
 #[cfg(feature = "fake")]
@@ -583,7 +583,7 @@ pub struct FakeServo {
     #[tsify(optional)]
     #[serde(default)]
     pub virgin: bool,
-    /// The winding thermometer of a calibrated servo (default "on").
+    /// The winding estimate of a calibrated servo (default "on").
     #[tsify(optional, type = "\"on\" | \"off\" | \"derating\"")]
     #[serde(default)]
     pub therm: osc_client::fake::Therm,

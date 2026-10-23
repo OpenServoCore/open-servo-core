@@ -26,7 +26,7 @@ pub mod run;
 pub mod runway;
 pub mod slip;
 pub mod sources;
-pub mod thermometer;
+pub mod thermal;
 pub mod trip;
 pub mod units;
 pub mod window;

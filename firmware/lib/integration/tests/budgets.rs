@@ -241,9 +241,8 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
 }
 
 /// The configuration take's tick while driven, Closed or OpenLoop at
-/// budget: phase SPARE_A carrying the take (the thermometer's stage there
-/// waits a period), with the health close where it can land and interrupt
-/// entry and exit. It carries no TEL row: a burst's start waits out a pending take
+/// budget: phase SPARE_A carrying the take, with the health close where it
+/// can land and interrupt entry and exit. It carries no TEL row: a burst's start waits out a pending take
 /// (DES `a_burst_never_streams_through_a_config_take`).
 #[test]
 fn the_take_tick_fits_at_budget_without_tel() {

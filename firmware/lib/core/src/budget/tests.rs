@@ -12,9 +12,6 @@ const PLAIN: Events = Events {
     bank: false,
     slow: false,
     finish: false,
-    close: false,
-    install: false,
-    side: false,
     drive: false,
     health: false,
 };
@@ -99,22 +96,11 @@ fn kernel_ticks_book_by_what_they_carried() {
             ..PLAIN
         },
     );
-    let close = Events {
+    let finish = Events {
         finish: true,
-        close: true,
         ..PLAIN
     };
-    both(&mut k, &mut w, 8, 2200, 6, closed, close);
-    let install = Events {
-        install: true,
-        ..PLAIN
-    };
-    both(&mut k, &mut w, 9, 1600, 8, closed, install);
-    let side = Events {
-        side: true,
-        ..PLAIN
-    };
-    both(&mut k, &mut w, 10, 1700, 9, closed, side);
+    both(&mut k, &mut w, 8, 2200, 6, closed, finish);
     assert_eq!(k.load(OPEN, 0), Load::ZERO, "the boot tick books nothing");
     let one = |b| Load {
         n: 1,
@@ -127,17 +113,16 @@ fn kernel_ticks_book_by_what_they_carried() {
     );
     assert_eq!((k.tel_max[0][2], k.bank_max[0][3]), (1500, 1700));
     assert_eq!(
-        (k.refresh, k.slow[1], k.close),
+        (k.refresh, k.slow[1], k.finish),
         (one(2000), one(1900), one(2200))
     );
-    assert_eq!((k.install, k.side), (one(1600), one(1700)));
     assert_eq!(
-        k.load(closed, 8),
+        k.load(closed, 6),
         Load::ZERO,
         "the stages stay off the plain rows"
     );
-    assert_eq!((k.halts, w.long), (1, [3, 5]));
-    both(&mut k, &mut w, 11, 1800, 8, OPEN, refresh);
+    assert_eq!((k.halts, w.long), (1, [3, 3]));
+    both(&mut k, &mut w, 9, 1800, 8, OPEN, refresh);
     assert_eq!(
         k.refresh,
         Load {
@@ -146,27 +131,9 @@ fn kernel_ticks_book_by_what_they_carried() {
             max: 2000
         }
     );
-    let finish = Events {
-        finish: true,
-        ..PLAIN
-    };
-    both(&mut k, &mut w, 12, 1750, 6, closed, finish);
-    assert_eq!(k.finish, one(1750));
-    let bodies = 1000
-        + 1100
-        + 1500
-        + 1700
-        + 2000
-        + HALT_TICKS
-        + 1
-        + LONG_TICKS
-        + 1900
-        + 2200
-        + 1600
-        + 1700
-        + 1800
-        + 1750;
-    assert_eq!((k.busy, k.entries), (bodies + 13 * ENTRY_EXIT, 13));
+    let bodies =
+        1000 + 1100 + 1500 + 1700 + 2000 + HALT_TICKS + 1 + LONG_TICKS + 1900 + 2200 + 1800;
+    assert_eq!((k.busy, k.entries), (bodies + 10 * ENTRY_EXIT, 10));
     assert_eq!(k.drove(), Regime::Closed);
 }
 
@@ -279,8 +246,8 @@ fn openloop_events_fold_into_the_closed_rows() {
 
 /// The drive direction check's stage books apart from the plain SPARE_B
 /// row: a SPARE_B tick that left a stage state. A crossing that enters
-/// one, an edge on another phase and a SPARE_B a thermometer stage took
-/// book plain.
+/// one, an edge on another phase and a SPARE_B that kept its state book
+/// plain.
 #[test]
 fn a_drive_stage_books_apart_from_its_tags() {
     use crate::kernel::phases::loops::faults::stage_due;
@@ -319,21 +286,6 @@ fn a_drive_stage_books_apart_from_its_tags() {
     );
     assert_eq!((k.drive.n, k.drive.max), (1, 1300));
     assert_eq!(k.load(OPEN, phase::SPARE_B as usize), Load::ZERO);
-}
-
-/// The drive direction check's stage stays inside the thermometer's stage
-/// on SPARE_B, alone or under a TEL row and its bank: the phase's worst
-/// tick is the thermometer's, as before the check.
-#[test]
-fn the_drive_stage_keeps_the_spare_b_envelope() {
-    let tel = Events { tel: true, ..PLAIN };
-    for r in Regime::ALL {
-        for c in [PLAIN, tel, Events { bank: true, ..tel }] {
-            let drive = kernel_tick(r, phase::SPARE_B as usize, Events { drive: true, ..c });
-            let side = kernel_tick(r, phase::SPARE_B as usize, Events { side: true, ..c });
-            assert!(drive <= side, "{r:?} {c:?}: {drive} over {side}");
-        }
-    }
 }
 
 /// Lateness counts only what held the tick off past both its grid slot
@@ -498,14 +450,13 @@ fn dumps_decode_field_for_field() {
         booted: true,
         slow_due: true,
         slow_finish: false,
-        therm: 2,
         regime: Regime::OpenLoop,
         drive: 3,
     };
     k.tick(2000, || after, true, 9, false);
     assert_eq!(KernelProbe::from_words(words(&k)), Some(k));
     let mut bad = words(&k).to_vec();
-    bad[4] |= 0xff << 16;
+    bad[4] |= 0xff << 8;
     assert_eq!(KernelProbe::from_words(&bad), None, "no such regime");
     let mut w = WindowProbe::ZERO;
     for n in 0..30 {
@@ -765,7 +716,7 @@ fn a_configuration_take_charges_its_row() {
 
 /// The chip closes a tick-load window on every twentieth tick, the first
 /// at the boot count's first PUBLISH tick: every close lands on PUBLISH,
-/// never on a SLOW, thermometer or configuration take's phase.
+/// never on a SLOW or configuration take's phase.
 #[test]
 fn the_health_close_lands_only_on_publish() {
     let lands: heapless::Vec<usize, PHASES> =
@@ -780,9 +731,8 @@ fn the_health_close_lands_only_on_publish() {
     assert_eq!(closes.count(), 4000 / HEALTH_CLOSE_TICKS as usize);
 }
 
-/// A SLOW or thermometer stage tick holds the TX lane: its TEL tick
-/// carries the poll and a head or a bank, never a lane step. A configuration
-/// take does not hold.
+/// A SLOW stage tick holds the TX lane: its TEL tick carries the poll and
+/// a head or a bank, never a lane step. A configuration take does not hold.
 #[test]
 fn a_stage_tick_holds_the_tel_lane() {
     let closed = Regime::Closed;
@@ -803,28 +753,6 @@ fn a_stage_tick_holds_the_tel_lane() {
                 ..PLAIN
             },
         ),
-        (
-            phase::SLOW,
-            Events {
-                close: true,
-                finish: true,
-                ..PLAIN
-            },
-        ),
-        (
-            phase::SPARE_A,
-            Events {
-                install: true,
-                ..PLAIN
-            },
-        ),
-        (
-            phase::SPARE_B,
-            Events {
-                side: true,
-                ..PLAIN
-            },
-        ),
     ];
     for (p, stage) in stages {
         let p = p as usize;
@@ -833,9 +761,6 @@ fn a_stage_tick_holds_the_tel_lane() {
             let ev = Events {
                 slow: stage.slow,
                 finish: stage.finish,
-                close: stage.close,
-                install: stage.install,
-                side: stage.side,
                 ..c
             };
             kernel_tick(closed, p, ev) - alone
@@ -862,7 +787,7 @@ fn a_stage_tick_holds_the_tel_lane() {
 }
 
 #[test]
-fn a_finish_charges_its_own_row_and_a_close_replaces_it() {
+fn a_finish_charges_its_own_row() {
     let closed = Regime::Closed;
     let p = phase::SLOW as usize;
     let finish = Events {
@@ -871,11 +796,6 @@ fn a_finish_charges_its_own_row_and_a_close_replaces_it() {
     };
     let base = kernel_tick(closed, p, PLAIN);
     assert_eq!(kernel_tick(closed, p, finish), base + SLOW_FINISH);
-    let close = Events {
-        close: true,
-        ..finish
-    };
-    assert_eq!(kernel_tick(closed, p, close), base + SLOW_CLOSE);
 }
 
 /// A TEL step books its stamps' time less the stamp pair's own, never

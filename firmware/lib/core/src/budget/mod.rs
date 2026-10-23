@@ -21,10 +21,7 @@
 //! Every kernel row, maximum and mean, carries [`LAYOUT`] on top. The
 //! allowance counts against the hard budgets (the tick period, the
 //! turnaround deadline, every DES pin at budget, the stack reserve): fit is
-//! judged with it, and it is never a reason to exceed one. The thermal rows
-//! ([`SLOW_FINISH`], [`SLOW_CLOSE`], [`THERM_INSTALL`], [`THERM_SIDE`]) are
-//! excepted while the thermometer's stages are being redesigned: their pins
-//! report and do not gate fit.
+//! judged with it, and it is never a reason to exceed one.
 
 pub mod probe;
 
@@ -123,14 +120,14 @@ pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
 pub const MEAN_MIN_BODIES: u32 = 100;
 
 /// The configuration take after a write, on top of [`KERNEL`], at most once
-/// per period, at phase SPARE_A and in place of the thermometer's
-/// stage there: the input span's word copy, the Ke belt, the thermometer's
-/// config, its bound, the continuous rating and its leak, and the terminal
-/// floor's store. It carries no TEL row: a burst starts neither on SPARE_A
-/// nor while a take is pending, and the host is silent through one. E:
-/// the take's longest path on matched release disassembly is 544.25
-/// HCLK, including the rating, its two log calls and the drive-polarity
-/// change. The unchanged thermometer bound adds 204, then 10% headroom.
+/// per period, at phase SPARE_A: the input span's word copy, the Ke belt,
+/// the winding estimate's config, the continuous rating and its leak, and
+/// the terminal floor's store. It carries no TEL row: a burst starts
+/// neither on SPARE_A nor while a take is pending, and the host is silent
+/// through one. E, an upper bound: the take's longest path on matched
+/// release disassembly is 544.25 HCLK, including the rating, its two log
+/// calls and the drive-polarity change; the row keeps its earlier, larger
+/// price until the probe re-prices it.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
 pub const REFRESH: u32 = 824;
@@ -223,7 +220,7 @@ const fn max(a: u32, b: u32) -> u32 {
 
 /// The most a TEL tick that banks nothing carries beyond its row: the poll
 /// and one lane step, or row 0's head on a tick the lane leaves be; a
-/// `held` tick (a SLOW or thermometer stage) takes no step.
+/// `held` tick (a SLOW stage) takes no step.
 pub const fn tel_lane(held: bool) -> u32 {
     let step = if held {
         0
@@ -241,52 +238,28 @@ pub const fn tel_lane(held: bool) -> u32 {
 pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
-/// DECIM_SLOW periods): the permit lease, undervoltage, the I2t heat and
-/// the thermometer's step on the tick's window, on top of the phase's
-/// row, per regime. E: the dearest path, a tracked seat (any drive that
-/// holds current), priced at 405 over the plain tick, plus the heat
-/// (`LimitState::heat`: 15 instructions, 3 loads and stores, one
-/// multiply, 46), plus 10%; no window has run it (r3-refill measured at
-/// most Open 252, Closed 351 before the heat).
+/// DECIM_SLOW periods): the permit lease, undervoltage and the I2t heat,
+/// on top of the phase's row, per regime. E, an upper bound kept from a
+/// dearer earlier body (405 over the plain tick, plus the heat's 46, plus
+/// 10%); the bench re-prices it.
 pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
 
-/// The second stage on the next period's SLOW phase: the thermometer's
-/// temperature, its seat rules and overtemperature, and the I2t ceiling.
-/// E: the tracked seat's original 330 HCLK plus 71.25 for I2t, then 10%.
-/// Matched out-of-line finish bodies on release disassembly add 23
-/// executed instructions, one load/store and two multiplies on the
-/// longest path (29 instructions in the static body).
+/// The second stage on the next period's SLOW phase: the I2t ceiling's
+/// fold, the NTC's quadratic, the rise multiply, the derate's reciprocal
+/// divide and the cutoff fault. E, an upper bound kept from a dearer
+/// earlier body (330 plus the I2t ceiling's 71.25, plus 10%); the bench
+/// re-prices it.
 pub const SLOW_FINISH: u32 = 442;
 
-/// The finish that freezes a thermal reference window, in place of
-/// [`SLOW_FINISH`]: at most once per seat, 190 gated SLOW runs after it
-/// opens. The same I2t ceiling runs here, so its E price is the finish's.
-pub const SLOW_CLOSE: u32 = SLOW_FINISH;
-
-/// The thermometer's stages on the spare phases (`kernel::phase`), on top
-/// of their rows. THERM_INSTALL: a frozen window's install the period
-/// after its finish (two reciprocal divides). THERM_SIDE: the NTC the
-/// period before a SLOW tick (a conversion and its bound once a second),
-/// or the derate and a cold check the period after a finish. THERM_INSTALL,
-/// E: priced at 531 over the plain tick, plus 10%; no bench window has run one. THERM_SIDE, M, above its E
-/// 631: the stage tick over the window's plain maximum at the phase, 591
-/// (hold); in the TEL windows over the TEL tick's maximum, at most 402,
-/// since [`kernel_tick`] stacks the TEL row on it.
-pub const THERM_INSTALL: u32 = 585;
-pub const THERM_SIDE: u32 = 639;
-
-/// The drive direction check's stage on phase SPARE_B, on top of its row:
-/// a leg's end against the pot, its verdict or an anchor, while the wiring
-/// is unproven, on a SPARE_B no thermometer stage takes. Above both its E
-/// and its M: E, the dearest, a leg's end through the position table,
-/// priced on the release disassembly with the fetch model as [`REFRESH`]
-/// at 193 over the plain tick (the verdict that latches 181, an anchor
-/// 120), plus 10%, 212; M 219, the bench's two runs. It stays inside the
-/// thermometer's stage there, so the SPARE_B envelope is the same. The
-/// plain check rides the SPARE_B row: 9.25 proven, at most 40.5 unproven.
+/// The drive direction check's stage on phase SPARE_B, on top of its row,
+/// while the wiring is unproven: a leg's end against the pot, its verdict
+/// or an anchor. Above both its E and its M: E, the dearest, a leg's end
+/// through the position table, priced on the release disassembly with the
+/// fetch model as [`REFRESH`] at 193 over the plain tick (the verdict that
+/// latches 181, an anchor 120), plus 10%, 212; M 219, the bench's two runs.
+/// The plain check rides the SPARE_B row: 9.25 proven, at most 40.5
+/// unproven.
 pub const DRIVE_STAGE: u32 = 231;
-
-const _: () = assert!(DRIVE_STAGE <= THERM_SIDE);
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
@@ -480,16 +453,8 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     if ev.slow {
         t += SLOW_DUE[r];
     }
-    if ev.close {
-        t += SLOW_CLOSE;
-    } else if ev.finish {
+    if ev.finish {
         t += SLOW_FINISH;
-    }
-    if ev.install {
-        t += THERM_INSTALL;
-    }
-    if ev.side {
-        t += THERM_SIDE;
     }
     if ev.drive {
         t += DRIVE_STAGE;
@@ -499,7 +464,7 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
         // and a stage tick, so the dearest TEL tick is the bank's or a lane
         // step's, a stage tick's the bank's or a head's. A one-row batch's
         // head and bank land on one tick: under a step's.
-        let held = ev.slow || ev.finish || ev.close || ev.install || ev.side;
+        let held = ev.slow || ev.finish;
         let bank = if ev.bank { TEL_BANK + TEL_POLL } else { 0 };
         t += TEL_ROW + max(tel_lane(held), bank);
     }
@@ -515,14 +480,9 @@ pub struct Events {
     pub refresh: bool,
     pub tel: bool,
     pub bank: bool,
-    /// The SLOW block's first stage ran; `finish`: its second, and
-    /// `close`: that froze a thermal reference window.
+    /// The SLOW block's first stage ran; `finish`: its second.
     pub slow: bool,
     pub finish: bool,
-    pub close: bool,
-    /// The thermometer's stages on phases SPARE_A and SPARE_B.
-    pub install: bool,
-    pub side: bool,
     /// The drive direction check's stage on phase SPARE_B.
     pub drive: bool,
     /// The tick-load counters closed a window.

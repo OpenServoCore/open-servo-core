@@ -346,7 +346,7 @@ be staged behind the CRC verdict:
   CH4 for the whole image with no TCIE, the DMA reading rows as the wire
   reaches them. The bank's feed and the CRC patch follow on later ticks,
   one lane step a tick, none on a tick that lands a head or a bank
-  or runs a SLOW or thermometer stage;
+  or runs a SLOW stage;
   the kernel polls TC and starts the next frame in the tick the last one
   ends. No bus body runs between frames. Lost ticks mid-frame ship stale
   bytes against the fresh CRC: the frame fails it, never silently, and

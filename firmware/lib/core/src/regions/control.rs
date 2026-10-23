@@ -20,7 +20,7 @@ pub enum Mode {
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     /// Let the motor stall on purpose: drops the stall trip and the endstop
-    /// band, and NOTHING else - the peak, I2t, thermometer and rail
+    /// band, and NOTHING else - the peak, I2t, derate and rail
     /// ceilings still compose. Identification pushes into a hard stop to measure R and
     /// L, which is precisely what those two guards exist to prevent, and no
     /// soft-limit value can express it because a stop can sit AT the position

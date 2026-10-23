@@ -3,11 +3,12 @@
 //! each term owning one physical quantity. i_lim = min of the peak cap
 //! (`current_limit_counts`, the nameplate stall current), the I2t budget's
 //! ceiling (copper, a one-node winding model on the held current), the
-//! thermometer's derate (copper, measured), the rail fold (a sagging
-//! source) and the application's `goal_current`; the press fold to
-//! `i_cont_counts` and the directional endstop come after. `fold` runs at
-//! MEDIUM and is compare/min only; the thermal ceilings are recomputed at
-//! the SLOW cadence and cached, the rail's at RAIL.
+//! winding estimate's derate (copper, the board NTC plus the rise on the
+//! same heat), the rail fold (a sagging source) and the application's
+//! `goal_current`; the press fold to `i_cont_counts` and the directional
+//! endstop come after. `fold` runs at MEDIUM and is compare/min only; the
+//! thermal ceilings are recomputed at the SLOW cadence and cached, the
+//! rail's at RAIL.
 
 use crate::kernel::{DECIM_MED, DECIM_SLOW, TICK_HZ};
 use crate::math::recip_div;
@@ -27,7 +28,7 @@ pub mod flag {
     pub const PERMIT: u8 = 1 << 3;
     /// The I2t budget's ceiling binds.
     pub const I2T: u8 = 1 << 4;
-    /// The winding thermometer's derate binds.
+    /// The winding estimate's derate binds.
     pub const DERATE: u8 = 1 << 5;
     /// The rail fold binds.
     pub const RAIL: u8 = 1 << 6;
@@ -190,6 +191,11 @@ impl LimitState {
         self.heat_qg += (x_qg - self.heat_qg) >> tau_shift;
     }
 
+    /// The heat state, counts squared: the winding estimate's rise input.
+    pub fn heat_counts2(&self) -> u32 {
+        (self.heat_qg >> HEAT_GUARD) as u32
+    }
+
     /// SLOW-rate: the I2t ceiling. The budget is `i_cont^2`; the cap while
     /// the heat sits under the knee, then linear to `i_cont` at the budget,
     /// where a hold at `i_cont` keeps the heat (first order, monotone, no
@@ -212,8 +218,8 @@ impl LimitState {
         self.i2t_cache = (i_cont as u32 + ((over * left) >> ramp_shift.min(RAMP_Q))) as u16;
     }
 
-    /// SLOW-rate: the thermometer's derate ceiling. Foldback: full below
-    /// derate_start_cc, zero at cutoff_cc, linear between - self-regulating
+    /// SLOW-rate: the winding estimate's derate ceiling. Foldback: full
+    /// below derate_start_cc, zero at cutoff_cc, linear between - self-regulating
     /// (less current -> less heating -> equilibrium at "weaker but still
     /// holding"). A degenerate span (cutoff <= start, no table cross-gate)
     /// degrades to a step at cutoff. At 62.5 Hz the reciprocal's ~10
@@ -1042,7 +1048,7 @@ mod tests {
 
     /// the permit drops the detectors and the endstop and nothing
     /// else. A permit that also dropped a ceiling would cook a winding or
-    /// brown the rail out, so the cap, the I2t budget, the thermometer and
+    /// brown the rail out, so the cap, the I2t budget, the derate and
     /// the rail still bind under it.
     #[test]
     fn permit_lifts_detectors_never_ceilings() {

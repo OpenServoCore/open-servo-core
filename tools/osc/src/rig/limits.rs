@@ -51,7 +51,7 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
         drive_polarity: read_bool(c, id, config::DRIVE_POLARITY)?,
     };
     lim.check_floor()?;
-    for w in lim.warnings(read_u16(c, id, config::RTHERM_I_MIN_COUNTS)?) {
+    for w in lim.warnings() {
         eprintln!("warning: {w}");
     }
     Ok(lim)

@@ -42,12 +42,16 @@ impl OutDir {
 /// Raw snapshot log: one row per Read, full field dump.
 pub(crate) struct SnapshotLog {
     w: BufWriter<File>,
+    therm: bool,
 }
+
+/// The board NTC's columns a thermal log appends to [`SNAPSHOT_COLUMNS`].
+pub(crate) const THERM_COLUMNS: &str = "t_ntc_cc,therm_flags";
 
 /// A snapshot row's columns, `host_ms` first.
 pub(crate) const SNAPSHOT_COLUMNS: &str = "host_ms,fault_flags,fault_code,mode_active,\
     theta_hat_q16,omega_hat_cps,omega_hat_src,tau_d_counts,i_lim_counts,t_winding_cc,\
-    vbus_counts,duty_applied_q15,omega_bemf_cps,r_hat_q12,i_hat_counts,sample_tick,pos,current,\
+    vbus_counts,duty_applied_q15,omega_bemf_cps,i_hat_counts,sample_tick,pos,current,\
     current_trough,current_bias_counts,i_mean_counts,i_min_counts,i_max_counts,vdiff_mean,\
     duty_mean_counts,agg_seq";
 
@@ -55,7 +59,15 @@ impl SnapshotLog {
     pub(crate) fn create(dir: &OutDir, name: &str) -> Result<Self> {
         let mut w = dir.file(name)?;
         writeln!(w, "{SNAPSHOT_COLUMNS}")?;
-        Ok(Self { w })
+        Ok(Self { w, therm: false })
+    }
+
+    /// A log whose rows carry the board NTC's reading and `therm_flags`
+    /// ([`THERM_COLUMNS`]): the driver reads them with each snapshot.
+    pub(crate) fn create_therm(dir: &OutDir, name: &str) -> Result<Self> {
+        let mut w = dir.file(name)?;
+        writeln!(w, "{SNAPSHOT_COLUMNS},{THERM_COLUMNS}")?;
+        Ok(Self { w, therm: true })
     }
 
     /// `pwm_period_ticks` is the servo's, the full scale of its duty.
@@ -65,7 +77,11 @@ impl SnapshotLog {
         s: &TelemetrySnapshot,
         pwm_period_ticks: u16,
     ) -> Result<()> {
-        writeln!(self.w, "{}", snapshot_fields(host_ms, s, pwm_period_ticks))?;
+        write!(self.w, "{}", snapshot_fields(host_ms, s, pwm_period_ticks))?;
+        if self.therm {
+            write!(self.w, ",{},{}", s.t_ntc_cc, s.therm_flags)?;
+        }
+        writeln!(self.w)?;
         Ok(())
     }
 }
@@ -79,7 +95,7 @@ pub(crate) fn snapshot_fields(
     pwm_period_ticks: u16,
 ) -> String {
     format!(
-        "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         s.fault_flags,
         s.fault_code,
         s.mode_active,
@@ -92,7 +108,6 @@ pub(crate) fn snapshot_fields(
         s.vbus_counts,
         counts_q15(s.duty_ticks, pwm_period_ticks).round() as i16,
         s.omega_bemf_cps,
-        s.r_hat_q12,
         s.i_tick_counts,
         s.sample_tick,
         s.pos,
@@ -234,7 +249,7 @@ pub(crate) fn write_jam_pulses(dir: &OutDir, pulses: &[Pulse]) -> Result<()> {
     Ok(())
 }
 
-/// The anchor hold's windows, kept with the run for an offline look.
+/// The thermal hold's windows, kept with the run for an offline look.
 pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Result<()> {
     let mut w = dir.file("anchor.csv")?;
     writeln!(w, "t_ms,i,vdiff,duty_q15")?;

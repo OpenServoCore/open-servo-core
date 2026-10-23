@@ -37,8 +37,7 @@
       "fric_fc_counts",
       "fric_fv_q016",
       "ke_vpc_q",
-      "th_alpha_q24",
-      "th_g_q016",
+      "th_rise_q016",
       "ntc_raw_ref",
       "ntc_t_ref_cc",
       "ntc_k1_q88",
@@ -378,27 +377,6 @@
       "kind": "uint"
     },
     {
-      "name": "rtherm_i_min_counts",
-      "addr": 104,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "rtherm_seat_band_counts",
-      "addr": 106,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "rtherm_cold_band_q016",
-      "addr": 108,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "l1_q016",
       "addr": 110,
       "width": 2,
@@ -504,22 +482,8 @@
       "kind": "uint"
     },
     {
-      "name": "th_alpha_q24",
+      "name": "th_rise_q016",
       "addr": 142,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "th_g_q016",
-      "addr": 144,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "th_mu_q016",
-      "addr": 146,
       "width": 2,
       "access": "rw",
       "kind": "uint"

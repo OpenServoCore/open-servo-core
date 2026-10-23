@@ -48,9 +48,6 @@ pub mod config {
     /// power of two of its 16 ms period.
     pub const THERMAL_TAU_MS: Reg = reg(0x005e, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
-    pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0068, 2);
-    pub const RTHERM_SEAT_BAND_COUNTS: Reg = reg(0x006a, 2);
-    pub const RTHERM_COLD_BAND_Q016: Reg = reg(0x006c, 2);
     pub const L1_Q016: Reg = reg(0x006e, 2);
     pub const L2_Q88: Reg = reg(0x0070, 2);
     pub const L3_Q88: Reg = reg(0x0072, 2);
@@ -68,10 +65,9 @@ pub mod calib {
     pub const FRIC_FC_COUNTS: Reg = reg(0x0086, 2);
     pub const FRIC_FV_Q016: Reg = reg(0x0088, 2);
     pub const KE_VPC_Q: Reg = reg(0x008a, 2);
-    pub const R0_Q12: Reg = reg(0x008c, 2);
-    pub const TH_ALPHA_Q24: Reg = reg(0x008e, 2);
-    pub const TH_G_Q016: Reg = reg(0x0090, 2);
-    pub const TH_MU_Q016: Reg = reg(0x0092, 2);
+    /// The winding's rise over the board NTC per count squared of the I2t
+    /// heat, centi-C, Q0.16; 0 = no winding estimate.
+    pub const TH_RISE_Q016: Reg = reg(0x008e, 2);
     pub const NTC_RAW_REF: Reg = reg(0x0094, 2);
     pub const NTC_T_REF_CC: Reg = reg(0x0096, 2);
     pub const NTC_K1_Q88: Reg = reg(0x0098, 2);
@@ -205,12 +201,11 @@ pub mod telemetry {
     /// published, up to a tick old.
     pub const VBUS_COUNTS: Reg = reg(0x0266, 2);
     pub const OMEGA_BEMF_CPS: Reg = reg(0x0268, 2);
-    pub const R_HAT_Q12: Reg = reg(0x026a, 2);
     pub const CURRENT_BIAS_COUNTS: Reg = reg(0x026c, 2);
     pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x026e, 2);
     /// What shaped the command: bit 0 the current ceiling, bit 1 the press
     /// fold, bit 2 an endstop, bit 3 the stall permit lease is live, then
-    /// the term that binds, bit 4 the I2t budget, bit 5 the thermometer's
+    /// the term that binds, bit 4 the I2t budget, bit 5 the thermal
     /// derate, bit 6 the rail fold, bit 7 `goal_current` (core
     /// `kernel::phases::loops::limits::flag`).
     pub const LIMIT_FLAGS: Reg = reg(0x027c, 1);
@@ -256,7 +251,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("thermal_tau_ms", config::THERMAL_TAU_MS),
     ("rail_fold_q8", config::RAIL_FOLD_Q8),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
-    ("rtherm_i_min_counts", config::RTHERM_I_MIN_COUNTS),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),
@@ -272,7 +266,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("gear_class", calib::GEAR_CLASS),
     ("i_window_min_ticks", calib::I_WINDOW_MIN_TICKS),
     ("v_window_min_ticks", calib::V_WINDOW_MIN_TICKS),
-    ("r0_q12", calib::R0_Q12),
     ("r_q12", calib::R_Q12),
     ("recip_ke_q", calib::RECIP_KE_Q),
     ("b_i_q313", calib::B_I_Q313),
@@ -337,22 +330,17 @@ pub const ALL: &[(&str, Reg)] = &[
     ("t_winding_cc", telemetry::T_WINDING_CC),
     ("vbus_counts", telemetry::VBUS_COUNTS),
     ("omega_bemf_cps", telemetry::OMEGA_BEMF_CPS),
-    ("r_hat_q12", telemetry::R_HAT_Q12),
     ("current_bias_counts", telemetry::CURRENT_BIAS_COUNTS),
     ("vmotor_bias_counts", telemetry::VMOTOR_BIAS_COUNTS),
     ("limit_flags", telemetry::LIMIT_FLAGS),
     ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),
     ("tel_drop_count", telemetry::TEL_DROP_COUNT),
     ("window_v_floor_q15", telemetry::WINDOW_V_FLOOR_Q15),
-    ("th_alpha_q24", calib::TH_ALPHA_Q24),
-    ("th_g_q016", calib::TH_G_Q016),
-    ("th_mu_q016", calib::TH_MU_Q016),
+    ("th_rise_q016", calib::TH_RISE_Q016),
     ("ntc_raw_ref", calib::NTC_RAW_REF),
     ("ntc_t_ref_cc", calib::NTC_T_REF_CC),
     ("ntc_k1_q88", calib::NTC_K1_Q88),
     ("ntc_k2_q24", calib::NTC_K2_Q24),
-    ("rtherm_seat_band_counts", config::RTHERM_SEAT_BAND_COUNTS),
-    ("rtherm_cold_band_q016", config::RTHERM_COLD_BAND_Q016),
     ("t_ntc_cc", telemetry::T_NTC_CC),
     ("therm_flags", telemetry::THERM_FLAGS),
     ("page_echo", burst::PAGE_ECHO),

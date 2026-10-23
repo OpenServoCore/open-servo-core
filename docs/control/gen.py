@@ -259,7 +259,7 @@ d += elm.Arrow().at(lpf.E).right(1.0).color(C_EST)
 d += elm.Label(label='V̂bus', color=C_EST).at((d.here[0] + 0.4, d.here[1]))
 save(d, 'sensor-frontends.svg')
 
-# --------------------------------------------------- bemf + thermometry
+# ------------------------------------------------------------------ bemf
 d = diagram()
 d += elm.Arrow().right(1.6).label('v̂_diff', loc='top').color(C_EST)
 d += (s1 := dsp.Sum().anchor('W').color(C_EST))
@@ -279,20 +279,9 @@ d += elm.Label(label='L·dî/dt  (drop when PWM-averaged)', fontsize=FSS).at((ds
 # identified R into the subtract input
 s1S = s1.absanchors['S']
 d += elm.Arrow().at((s1S[0], s1S[1] - 1.0)).up(1.0).color(C_EST)
-d += elm.Label(label='r_q12·î  (identified R, never R̂)', fontsize=FSS, color=C_EST).at(
+d += elm.Label(label='r_q12·î  (identified R)', fontsize=FSS, color=C_EST).at(
     (s1S[0] + 1.2, s1S[1] - 1.4))
-# thermometry chain below
-ty = -3.4
-d.here = (0.2, ty)
-d += (gt := dsp.Box(w=4.4, h=1.6).anchor('W').label('gate: |î| over floor AND\n(v̂_diff, î) steady').color(C_EST))
-d += elm.Arrow().at(gt.E).right(1.0).color(C_EST)
-d += (ir := dsp.Box(w=4.2, h=1.6).anchor('W').label('LMS\nR̂ ← v̂_diff / î').color(C_EST))
-d += elm.Arrow().at(ir.E).right(1.0).color(C_EST)
-d += (tw := dsp.Box(w=4.8, h=1.6).anchor('W').label('same seat: T̂ = T_ref +\n(234.5 + T_ref)(R̂/R_ref − 1)').color(C_EST))
-d += elm.Arrow().at(tw.E).right(1.4).label('-> derate()', loc='top', fontsize=FSS).color(C_LIM)
-d += elm.Arrow(ls='--').at((tw.absanchors['S'][0], tw.absanchors['S'][1] - 1.0)).up(1.0).label(
-    'base: board NTC + carried excess (per seat)', loc='bottom', fontsize=FSS).color(C_HW)
-save(d, 'bemf-thermometry.svg')
+save(d, 'bemf.svg')
 
 # ----------------------------------------------------------- pot observer
 d = diagram()
@@ -313,7 +302,7 @@ d += elm.Line().at((coS[0], coS[1] - 1.0)).left(coS[0] - prS[0]).label('state fe
 d += elm.Arrow().at((prS[0], coS[1] - 1.0)).up(1.0).color(C_EST)
 d += elm.Label(label='L1..L3 fixed - steady-state gains computed offline at cal (identified J, friction, sensor noise)',
                fontsize=FSS).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 1.75))
-d += elm.Label(label='θ̂ -> position loop        τ̂d -> contact detect, stall, collision        ω̂ -> rest, stall verdict, thermometer carry',
+d += elm.Label(label='θ̂ -> position loop        τ̂d -> contact detect, stall, collision        ω̂ -> rest, stall verdict',
                fontsize=FSS, color=C_EST).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 2.45))
 save(d, 'pot-observer.svg')
 
@@ -440,7 +429,7 @@ d += elm.Arrow().at((posx, FEED)).down(FEED - FE_N).color(C_HW)
 
 # observers row
 d += (bemf := dsp.Box(w=4.2, h=1.2).at((shx + 0.2, OB_C)).anchor('center').label(
-    'BEMF boxcar (1 ms)\n+ winding thermometry', fontsize=FSS).color(C_EST))
+    'BEMF boxcar (1 ms)', fontsize=FSS).color(C_EST))
 d += (kf := dsp.Box(w=4.2, h=1.2).at((svS[0], OB_C)).anchor('center').label(
     'pot observer\n[θ̂, ω̂, τ̂d]', fontsize=FSS).color(C_EST))
 bN = bemf.absanchors['N']
@@ -462,13 +451,17 @@ d += elm.Arrow().at((shx + 0.85, VD)).down(VD - bN[1]).color(C_EST)
 # theta_meas: position FE down into KF
 d += elm.Arrow().at((posx, FE_S)).down(FE_S - kN[1]).color(C_EST)
 d += elm.Label(label='θ_meas', fontsize=FSS, color=C_EST).at((posx + 0.9, FE_S - 0.4))
-# Twind up into the clamp
+# winding estimate at the SLOW rate: the I2t heat of the held current off
+# the i-hat lane, its Twind up into the clamp beside the i_lim terms
+d += (wst := dsp.Box(w=2.6, h=1.2).at((cS[0], -2.2)).anchor('center').label(
+    'I2t heat ->\nwinding estimate\n(SLOW)', fontsize=FSS).color(C_LIM))
+wS = wst.absanchors['S']
 twx = bemf.absanchors['W'][0] + 0.5
-d += elm.Line().at((twx, bN[1])).up(bN[1] * -1 - 1.85).color(C_EST)
-d += elm.Line().at((twx, -1.85)).left(twx - cS[0]).color(C_EST)
-d += elm.Arrow().at((cS[0], -1.85)).up(1.85 + cS[1]).color(C_EST)
-d += elm.Label(label='T̂wind', fontsize=FSS, color=C_EST).at((cS[0] + 0.62, -1.2))
-d += elm.Label(label='i_lim = min(torque_limit,\nderate, stall,\nendstop(θ̂))', fontsize=FSS, color=C_LIM).at((cS[0] - 1.9, -2.3))
+d += elm.Dot(radius=0.06).at((twx, JOG)).color(C_EST)
+d += elm.Arrow().at((twx, JOG)).up(wS[1] - JOG).color(C_EST)
+d += elm.Arrow().at(wst.N).up(cS[1] - wst.absanchors['N'][1]).color(C_LIM)
+d += elm.Label(label='T̂wind', fontsize=FSS, color=C_LIM).at((cS[0] + 0.62, -1.2))
+d += elm.Label(label='i_lim = min(torque_limit,\nderate, stall,\nendstop(θ̂))', fontsize=FSS, color=C_LIM).at((cS[0] - 3.0, -2.3))
 # theta-hat: KF left and up into the position sum
 kW = kf.absanchors['W']
 d += elm.Line().at(kW).left(kW[0] - spS[0]).color(C_EST)

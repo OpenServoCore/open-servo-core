@@ -10,7 +10,7 @@
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep
 //! no second list. Not covered: identity and comms, the user-owned safety
 //! limits (current, thermal, undervolt, `duty_max_q15`), the raw sensor
-//! screen, the LMS step and cold R, and the RO board facts install re-seeds.
+//! screen, cold R, and the RO board facts install re-seeds.
 //!
 //! The LUT hashes as its 256 points LE, zeros while no table is live: a LUT
 //! that falls back to identity changes the stamp by itself.
@@ -29,7 +29,7 @@ pub const TAG: &str = "osc-plant-1";
 pub const UNSTAMPED: u16 = 0;
 
 /// The covered fields, in table order.
-pub const COVERED_NAMES: [&str; 40] = [
+pub const COVERED_NAMES: [&str; 39] = [
     "pos_min_phys_counts",
     "pos_max_phys_counts",
     "pos_min_soft_counts",
@@ -57,8 +57,7 @@ pub const COVERED_NAMES: [&str; 40] = [
     "fric_fc_counts",
     "fric_fv_q016",
     "ke_vpc_q",
-    "th_alpha_q24",
-    "th_g_q016",
+    "th_rise_q016",
     "ntc_raw_ref",
     "ntc_t_ref_cc",
     "ntc_k1_q88",
@@ -240,7 +239,7 @@ mod tests {
             assert!(w[0].addr + w[0].width <= w[1].addr, "table order");
         }
         let hashed: u16 = COVERED.iter().map(|s| s.width).sum();
-        assert_eq!(hashed, 86);
+        assert_eq!(hashed, 84);
         let last = COVERED[COVERED.len() - 1];
         assert!(last.addr + last.width <= CALIB_BASE_ADDR + CALIB_REGION_SIZE);
         assert!(!covers(PLANT_STAMP, 2), "the stamp does not cover itself");

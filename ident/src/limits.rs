@@ -446,9 +446,8 @@ impl ServoLimits {
     }
 
     /// Settings that leave the current limit the only protection a stall
-    /// meets, in plain words. `rtherm_i_min` is `rtherm_i_min_counts`: the
-    /// winding thermometer samples only over it.
-    pub fn warnings(&self, rtherm_i_min: u16) -> Vec<String> {
+    /// meets, in plain words.
+    pub fn warnings(&self) -> Vec<String> {
         let ma = self.ma();
         let lim = ma.of(self.i_lim as f64);
         let mut w = Vec::new();
@@ -465,14 +464,6 @@ impl ServoLimits {
                 "the collision trip, {}, is over twice the current limit of {lim}: a collision \
                  never reaches it (set stall_tau_trip_counts near the limit)",
                 ma.of(self.tau_trip as f64)
-            ));
-        }
-        if rtherm_i_min >= self.i_lim {
-            w.push(format!(
-                "the winding thermometer's current floor, {}, is not below the current limit \
-                 of {lim}: the thermometer never samples, so the thermal derate never moves \
-                 (set rtherm_i_min_counts under the limit)",
-                ma.of(rtherm_i_min as f64)
             ));
         }
         w
@@ -1140,7 +1131,7 @@ mod tests {
     /// about; the boot trip value (off) is not.
     #[test]
     fn stall_settings_above_the_limit_are_warned() {
-        let w = mg90().warnings(150);
+        let w = mg90().warnings();
         assert_eq!(w.len(), 2, "{w:?}");
         assert_eq!(
             w[0],
@@ -1154,39 +1145,12 @@ mod tests {
             tau_trip: 280,
             ..mg90()
         };
-        assert!(tidy.warnings(150).is_empty());
+        assert!(tidy.warnings().is_empty());
         let unset = ServoLimits {
             i_cont: 168,
             tau_trip: u16::MAX,
             ..mg90()
         };
-        assert!(unset.warnings(150).is_empty());
-    }
-
-    /// The bench MG90's SAVEd thermometer floor, 545 counts, over its 280
-    /// limit: the current never crosses it, so the derate never moves.
-    #[test]
-    fn thermometer_floor_over_the_limit_warns() {
-        let tidy = ServoLimits {
-            i_cont: 168,
-            tau_trip: 280,
-            ..mg90()
-        };
-        let w = tidy.warnings(545);
-        assert_eq!(
-            w,
-            [
-                "the winding thermometer's current floor, 545 counts (488 mA), is not below the \
-              current limit of 280 counts (251 mA): the thermometer never samples, so the \
-              thermal derate never moves (set rtherm_i_min_counts under the limit)"
-            ]
-        );
-        assert_eq!(
-            tidy.warnings(280).len(),
-            1,
-            "at the limit it never samples either"
-        );
-        assert!(tidy.warnings(279).is_empty());
-        assert_eq!(mg90().warnings(545).len(), 3);
+        assert!(unset.warnings().is_empty());
     }
 }

@@ -1256,6 +1256,7 @@ impl FakeServo {
             fault_code,
             pos,
             current_raw: (512.0 + if driving { i } else { 0.0 }).round() as u16,
+            i_tick_counts: if driving { i.round() as i16 } else { 0 },
             current_bias_counts: 512,
             vbus_counts: self.vbus as u16,
             duty_ticks: duty_counts(duty, PWM_PERIOD_TICKS),
