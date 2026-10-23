@@ -352,10 +352,10 @@ pub fn replay_heat(polls: &[HoldPoll], thermal_tau_s: u16, at_ms: &[f64]) -> Vec
                 p += 1;
             }
             let i = polls[p].i_counts.abs().round().min(i16::MAX as f64) as i16;
-            st.heat(i, shift);
+            st.heat(i, 0, [shift, 0]);
             g += SLOW_PERIOD_MS as f64;
         }
-        out.push(st.heat_counts2() as f64);
+        out.push(st.heats()[0] as f64);
     }
     out
 }

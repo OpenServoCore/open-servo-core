@@ -130,6 +130,6 @@ impl Medium {
     /// estimate at the NTC ahead of the first SLOW tick.
     pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig) {
         self.fusion.seed(pos_q4);
-        self.thermal.update(ntc_raw, 0, &cfg.therm);
+        self.thermal.update(ntc_raw, [0; 2], &cfg.therm);
     }
 }

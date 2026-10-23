@@ -1147,10 +1147,12 @@ fn the_estimate_without_a_rise_reads_the_sentinel_and_never_derates() {
     assert_eq!(k.faults.mask(), 0);
 }
 
-/// A 400-count hold settles the I2t heat at the integer EWMA's fixed point
-/// on shift 8, 159984 counts squared (`(x - h) >> 8` stops moving once the
-/// gap is under 256 in the 4-bit guard), and the estimate reads the NTC
-/// plus the rise on it: 2500 + (159984 x 1044 >> 16) = 5048.
+/// A 400-count hold settles the heat and the warm input it feeds back at
+/// their joint fixed point: the cold square 160000 raised by alpha x the
+/// rise it produces, 177769 counts squared at 28.3 C over, and the estimate
+/// reads the NTC plus the rise on it: 2500 + (177769 x 1044 >> 16) = 5331.
+/// The cold square alone would read 5048; the copper 11 % warmer than
+/// cold adds the rest.
 #[test]
 fn the_estimate_reads_the_ntc_plus_the_rise_on_the_heat() {
     let sh = Shared::new();
@@ -1162,16 +1164,46 @@ fn the_estimate_reads_the_ntc_plus_the_rise_on_the_heat() {
     ticks(&mut k, &sh, hot, HEAT_SETTLE);
     assert_eq!(k.fast.i_meas_last(), 400);
     let (t, flags, i_lim, t_ntc) = therm(&sh);
-    assert_eq!((t, flags, t_ntc), (5048, 0, 2500));
+    assert_eq!((t, flags, t_ntc), (5331, 0, 2500));
     assert_eq!(i_lim, 1200, "under the derate");
     assert_eq!(k.faults.mask(), 0);
 }
 
+/// The body node adds its gain on its own leak: with the step-down's
+/// candidate body gain (825) on a 16 s leak (shift 10) the same hold reads
+/// the rotor's 5331 plus the body's share, most of it after 2.5 of its
+/// tau and all of it after 7, each node's heat settled at the joint fixed
+/// point (194880 counts squared, 2500 + (194880 x 1869 >> 16) = 8056 up to
+/// the EWMA's dead band); a zero `thermal_tau2_s` turns the node off
+/// whatever its gain.
+#[test]
+fn the_body_node_adds_its_gain_on_its_own_leak_and_a_zero_tau_turns_it_off() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    write_config(&sh, |t| {
+        t.calib.thermal.th_rise2_q016 = 825;
+        t.config.thermal.thermal_tau2_s = 16;
+    });
+    let mut k = kernel();
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hot);
+    ticks(&mut k, &sh, hot, HEAT_SETTLE);
+    let (t_mid, flags, _, _) = therm(&sh);
+    ticks(&mut k, &sh, hot, 5 * HEAT_SETTLE);
+    let (t_end, _, _, _) = therm(&sh);
+    assert_eq!((t_mid, t_end, flags), (7767, 8056, 0));
+    write_config(&sh, |t| t.config.thermal.thermal_tau2_s = 0);
+    ticks(&mut k, &sh, hot, HEAT_SETTLE);
+    let (t, flags, _, _) = therm(&sh);
+    assert_eq!((t, flags), (5331, 0));
+}
+
 /// Torque off: the held current drops to zero, the heat leaks on tau, and
 /// a derate taken on the hold lifts at rest instead of latching. The hot
-/// estimate (5048) derates the 1200-count cap to 1200 x (6500 - 5048) /
-/// 3000 = 580; five tau (1280 SLOW periods) leave 1059 counts squared of
-/// heat, 2516.
+/// estimate (5331) derates the 1200-count cap to 1200 x (6500 - 5331) /
+/// 3000 = 467; five tau (1280 SLOW periods) leave 1177 counts squared of
+/// heat, 2518.
 #[test]
 fn torque_off_lets_the_heat_leak_and_the_derate_lift() {
     let sh = Shared::new();
@@ -1187,13 +1219,13 @@ fn torque_off_lets_the_heat_leak_and_the_derate_lift() {
     settle(&mut k, &sh, hold);
     ticks(&mut k, &sh, hold, HEAT_SETTLE);
     let (t_hot, _, i_lim, _) = therm(&sh);
-    assert_eq!((t_hot, i_lim), (5048, 580));
+    assert_eq!((t_hot, i_lim), (5331, 467));
     assert_eq!(limit_flags(&sh), limits::flag::DERATE);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     ticks(&mut k, &sh, frame(2000, BIAS), 1280 * SLOW);
     let (t, flags, i_lim, t_ntc) = therm(&sh);
-    assert_eq!((t, flags, t_ntc), (2516, 0, 2500));
+    assert_eq!((t, flags, t_ntc), (2518, 0, 2500));
     assert_eq!(i_lim, 1200);
     assert_eq!(k.faults.mask(), 0);
 }

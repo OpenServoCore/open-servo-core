@@ -116,22 +116,21 @@ pub struct CalibSenseExt {
 }
 
 /// Winding estimate constants, host-written per servo and board:
-/// `th_rise_q016` the winding's rise over the board NTC per count squared
-/// of the I2t heat (centi-C, Q0.16: the thermal resistance from the
-/// winding to where the NTC sits, times the winding's resistance, in the
-/// board's current counts; the bench MG90 reads 507 with the NTC on the
-/// can and 710 with it on a board in room air), then the board NTC's
+/// `th_rise_q016` the rotor node's rise over the board NTC per count
+/// squared of its heat and `th_rise2_q016` the body node's (centi-C,
+/// Q0.16 each: a thermal resistance times the winding's resistance, in
+/// the board's current counts; with the NTC on the can the body gain is
+/// 0 and the rotor node alone rides on it), then the board NTC's
 /// counts-to-centi-C quadratic about its reference point, derived by the
 /// host from `CalibSenseExt`'s beta constants (`estimator::thermal::
-/// NtcCfg`). Zero rise or k1 = no estimate (`t_winding_cc` reads its
-/// sentinel, nothing derates). The two reserved words held the retired
-/// resistance thermometer's constants.
+/// NtcCfg`). No gain or no k1 = no estimate (`t_winding_cc` reads its
+/// sentinel, nothing derates). The reserved word held the retired
+/// resistance thermometer's constant.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibThermal {
     pub th_rise_q016: u16,
-    #[ct_field(skip)]
-    pub _rsvd0: u16,
+    pub th_rise2_q016: u16,
     #[ct_field(skip)]
     pub _rsvd1: u16,
     pub ntc_raw_ref: u16,

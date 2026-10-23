@@ -38,6 +38,7 @@
       "fric_fv_q016",
       "ke_vpc_q",
       "th_rise_q016",
+      "th_rise2_q016",
       "ntc_raw_ref",
       "ntc_t_ref_cc",
       "ntc_k1_q88",
@@ -377,6 +378,13 @@
       "kind": "uint"
     },
     {
+      "name": "thermal_tau2_s",
+      "addr": 104,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
       "name": "l1_q016",
       "addr": 110,
       "width": 2,
@@ -484,6 +492,13 @@
     {
       "name": "th_rise_q016",
       "addr": 142,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "th_rise2_q016",
+      "addr": 144,
       "width": 2,
       "access": "rw",
       "kind": "uint"

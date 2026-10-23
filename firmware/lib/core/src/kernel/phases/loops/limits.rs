@@ -162,8 +162,11 @@ pub struct Fold {
 /// for the first SLOW period; the base min still caps them at the cap.
 pub struct LimitState {
     stall_ticks: u32,
-    /// EWMA of the held current squared, counts^2 with `HEAT_GUARD` bits.
+    /// EWMAs of the warmed held current squared, counts^2 with
+    /// `HEAT_GUARD` bits: the rotor node (the I2t budget's heat) and the
+    /// body node.
     heat_qg: i32,
+    heat2_qg: i32,
     i2t_cache: u16,
     derate_cache: u16,
     rail_cache: u16,
@@ -176,6 +179,7 @@ impl LimitState {
         Self {
             stall_ticks: 0,
             heat_qg: 0,
+            heat2_qg: 0,
             i2t_cache: u16::MAX,
             derate_cache: u16::MAX,
             rail_cache: u16::MAX,
@@ -184,17 +188,24 @@ impl LimitState {
         }
     }
 
-    /// SLOW-rate: one step of the heat, `heat += (i^2 - heat) >> tau_shift`,
-    /// on the held current (0 with nothing driving). One multiply.
-    pub fn heat(&mut self, i_held: i16, tau_shift: u8) {
+    /// SLOW-rate: one step of both heats, `heat += (x - heat) >> shift`,
+    /// on the held current (0 with nothing driving) squared and warmed:
+    /// `x = i^2 x (1 + warm)`, `warm_q16` the copper's fractional
+    /// resistance rise in Q0.16 (`estimator::thermal::warm_q16`, under
+    /// 2^16, so with the square under 2^26 the product fits u32). Two
+    /// multiplies.
+    pub fn heat(&mut self, i_held: i16, warm_q16: u32, shifts: [u8; 2]) {
         let i = i_held.unsigned_abs() as u32;
-        let x_qg = ((i * i).min(HEAT_MAX) << HEAT_GUARD) as i32;
-        self.heat_qg += (x_qg - self.heat_qg) >> tau_shift;
+        let sq = (i * i).min(HEAT_MAX);
+        let x_qg = ((sq + (((sq >> 10) * warm_q16) >> 6)).min(HEAT_MAX) << HEAT_GUARD) as i32;
+        self.heat_qg += (x_qg - self.heat_qg) >> shifts[0];
+        self.heat2_qg += (x_qg - self.heat2_qg) >> shifts[1];
     }
 
-    /// The heat state, counts squared: the winding estimate's rise input.
-    pub fn heat_counts2(&self) -> u32 {
-        (self.heat_qg >> HEAT_GUARD) as u32
+    /// The heat states, counts squared: the winding estimate's inputs,
+    /// rotor then body.
+    pub fn heats(&self) -> [u32; 2] {
+        [self.heat_qg, self.heat2_qg].map(|h| (h >> HEAT_GUARD) as u32)
     }
 
     /// SLOW-rate: the I2t ceiling. The budget is `i_cont^2`; the cap while
@@ -456,7 +467,7 @@ mod tests {
     /// I2t ceiling at the finish.
     fn slow_period(st: &mut LimitState, i_held: i16, cfg: &LimitCfg) {
         let (limits, _, _) = cfg.blocks();
-        st.heat(i_held, tau_shift(limits.thermal_tau_s));
+        st.heat(i_held, 0, [tau_shift(limits.thermal_tau_s), 0]);
         st.update_i2t(&limits, i_cont_log2(limits.i_cont_counts));
     }
 
@@ -538,14 +549,33 @@ mod tests {
         let shift = TAU_SHIFT_MAX as u8;
         let mut st = LimitState::new();
         for _ in 0..20 << TAU_SHIFT_MAX {
-            st.heat(100, shift);
+            st.heat(100, 0, [shift, shift]);
         }
-        assert!(st.heat_counts2() >= 10_000 - 512, "{}", st.heat_counts2());
-        assert!(st.heat_counts2() <= 10_000);
+        let [h1, h2] = st.heats();
+        assert!(h1 >= 10_000 - 512, "{h1}");
+        assert!(h1 <= 10_000);
+        assert_eq!(h2, h1, "the same input on the same leak");
         for _ in 0..20 << TAU_SHIFT_MAX {
-            st.heat(0, shift);
+            st.heat(0, 0, [shift, shift]);
         }
-        assert!(st.heat_counts2() <= 512, "{}", st.heat_counts2());
+        assert!(st.heats()[0] <= 512, "{}", st.heats()[0]);
+    }
+
+    /// The warm factor raises the input by the copper's resistance rise:
+    /// 0.1 in Q0.16 on 400 counts reads 175975 counts squared, the
+    /// largest factor on the largest square stays inside the state, and
+    /// each node leaks on its own shift.
+    #[test]
+    fn the_input_is_the_square_warmed_and_each_node_has_its_own_leak() {
+        let mut st = LimitState::new();
+        st.heat(400, 6554, [0, 0]);
+        assert_eq!(st.heats(), [175_975, 175_975]);
+        st.heat(400, 0, [0, 1]);
+        assert_eq!(st.heats(), [160_000, 167_987]);
+        let mut st = LimitState::new();
+        st.heat(i16::MIN, (1 << 16) - 1, [0, 0]);
+        assert_eq!(st.heats(), [HEAT_MAX, HEAT_MAX]);
+        assert!(st.heat_qg >= 0);
     }
 
     #[test]
