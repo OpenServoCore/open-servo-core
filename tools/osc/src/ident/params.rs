@@ -881,12 +881,15 @@ impl GainJson {
     }
 }
 
-/// thermal.json: where `osc ident thermal`'s hold and step-down start,
-/// its last poll, the seek's and the hold's seats, both duties, and the
-/// `thermal_tau_s` the servo carried into the run, beside anchor.csv for
-/// `ident fit`. Times are the host's ms, as anchor.csv's.
+/// thermal.json: where `osc ident thermal`'s cold read, hold and step-down
+/// start, its last poll, the seek's and the hold's seats, both duties (the
+/// cold read sits at the step-down's), and the `thermal_tau_s` the servo
+/// carried into the run, beside anchor.csv for `ident fit`. Times are the
+/// host's ms, as anchor.csv's; a run before the cold read carries none.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct ThermalJson {
+    #[serde(default)]
+    pub cold_ms: Option<f64>,
     pub t0_ms: f64,
     pub cool_ms: Option<f64>,
     pub end_ms: f64,

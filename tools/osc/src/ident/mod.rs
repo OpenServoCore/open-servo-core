@@ -57,7 +57,9 @@ use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, HeldR, Source, Winding};
-use osc_ident::thermal::{self, CoolSummary, NtcBoard, NtcCurve, RiseFit};
+use osc_ident::thermal::{
+    self, ContactEvent, NtcBoard, NtcCurve, RiseFit, SegmentSummary, Step, ThermWindow,
+};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
     PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredMotionJson, StoredWindingJson,
@@ -295,12 +297,16 @@ enum Cmd {
     /// through the ladder, then inertia.
     Inertia,
     /// The thermal hold on an identified servo: the jam check, a seat at
-    /// the low stop under the stall permit, a hold there for --hold-s at a
-    /// duty whose stall is planned a fifth under the current limit and
+    /// the low stop under the stall permit, a cold read there at
+    /// --cool-duty of the hold's duty for --cold-s, a hold for --hold-s at
+    /// a duty whose stall is planned a fifth under the current limit and
     /// whose cold current must sit 10% under the current ceiling, then a
-    /// step-down to --cool-duty of the hold's duty for --cool-s, torque on
-    /// throughout and the rotor never released, then back to mid travel
-    /// with torque off, both confirmed before it returns, on every exit.
+    /// step-down to the cool duty again for --cool-s, torque on throughout
+    /// and the rotor never released, then back to mid travel with torque
+    /// off, both confirmed before it returns, on every exit. The duty step
+    /// at either end of the hold reads the thermometer's operating-point
+    /// change at the copper cold and warm; a step in R inside a segment
+    /// with the pot still is reported as a brush contact event.
     /// i_cont_counts is raised to the current limit for the run, volatile,
     /// so the I2t budget never folds the ceiling under the hold, and
     /// restored on every exit before anything is SAVEd. Polled every 20 ms
@@ -322,6 +328,10 @@ enum Cmd {
         /// must clear the servo's window floor.
         #[arg(long, default_value_t = 0.4, value_parser = parse_cool_duty)]
         cool_duty: f64,
+        /// The cold read at the step-down's duty before the hold, seconds;
+        /// 0 runs none.
+        #[arg(long, default_value_t = 30)]
+        cold_s: u32,
         /// Write th_rise_q016, stamp and SAVE.
         #[arg(long)]
         save: bool,
@@ -442,7 +452,12 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         lut: None,
         drive: None,
         hold: match args.cmd {
-            Cmd::Thermal { hold_s, cool_s, .. } => thermal_cfg(hold_s, cool_s),
+            Cmd::Thermal {
+                hold_s,
+                cool_s,
+                cold_s,
+                ..
+            } => thermal_cfg(hold_s, cool_s, cold_s),
             _ => AnchorCfg::default(),
         },
         cool_frac: match args.cmd {
@@ -761,12 +776,13 @@ fn hold_and_step_hint(soft: (i32, i32)) -> String {
     )
 }
 
-/// The hold and its step-down's lengths from `osc ident thermal`'s flags;
-/// the run plans their duties ([`Run::for_thermal`]).
-fn thermal_cfg(hold_s: u32, cool_s: u32) -> AnchorCfg {
+/// The hold's, its step-down's and the cold read's lengths from `osc ident
+/// thermal`'s flags; the run plans their duties ([`Run::for_thermal`]).
+fn thermal_cfg(hold_s: u32, cool_s: u32, cold_s: u32) -> AnchorCfg {
     AnchorCfg {
         hold_ms: hold_s.saturating_mul(1000),
         cool_ms: cool_s.saturating_mul(1000),
+        cold_ms: cold_s.saturating_mul(1000),
         ..AnchorCfg::default()
     }
 }
@@ -966,11 +982,54 @@ fn run_resistance(
 }
 
 /// What the thermal hold read: the rise, the run's marks as thermal.json
-/// keeps them, and its step-down.
+/// keeps them, and what its windows say beside the fit.
 struct ThermalRead {
     fit: RiseFit,
     marks: ThermalJson,
-    cool: Option<CoolSummary>,
+    trace: ThermalTrace,
+}
+
+/// The run's segments beside the fit: the cold read and the step-down as
+/// recorded, the duty step into the hold and the one out of it, and the
+/// contact events per segment.
+#[derive(Debug, PartialEq)]
+struct ThermalTrace {
+    cold: Option<SegmentSummary>,
+    cool: Option<SegmentSummary>,
+    up: Option<Step>,
+    down: Option<Step>,
+    events: Vec<(&'static str, ContactEvent)>,
+}
+
+/// The trace of `windows` over the segments `m` marks.
+fn thermal_trace(windows: &[ThermWindow], m: &ThermalJson) -> ThermalTrace {
+    let hold_end = m.cool_ms.unwrap_or(m.end_ms);
+    let mut segments = Vec::new();
+    if let Some(cold) = m.cold_ms {
+        segments.push(("cold read", cold, m.t0_ms));
+    }
+    segments.push(("hold", m.t0_ms, hold_end));
+    if let Some(cool) = m.cool_ms {
+        segments.push(("step-down", cool, m.end_ms));
+    }
+    ThermalTrace {
+        cold: m
+            .cold_ms
+            .and_then(|c| thermal::segment_summary(windows, c, m.t0_ms)),
+        cool: m
+            .cool_ms
+            .and_then(|c| thermal::segment_summary(windows, c, m.end_ms)),
+        up: m.cold_ms.and_then(|_| thermal::step_at(windows, m.t0_ms)),
+        down: m.cool_ms.and_then(|c| thermal::step_at(windows, c)),
+        events: segments
+            .iter()
+            .flat_map(|&(name, from, to)| {
+                thermal::contact_events(windows, from, to)
+                    .into_iter()
+                    .map(move |e| (name, e))
+            })
+            .collect(),
+    }
 }
 
 /// The thermal hold: seated at the low stop with the permit held for the
@@ -999,6 +1058,7 @@ fn run_hold(
     let marks = match (hold.t0_ms(), hold.polls().last()) {
         (Some(t0_ms), Some(last)) => {
             let m = ThermalJson {
+                cold_ms: hold.cold_ms(),
                 t0_ms,
                 cool_ms: hold.cool_ms(),
                 end_ms: last.t_ms,
@@ -1023,8 +1083,8 @@ fn run_hold(
         .fit(thermal_tau_s, sc.v_term_per_count, sc.amps_per_count)
         .map(|fit| ThermalRead {
             fit,
+            trace: thermal_trace(hold.samples(), &marks),
             marks,
-            cool: hold.cool_summary(),
         }))
 }
 
@@ -1120,7 +1180,7 @@ fn run_thermal(
             rec.declined.as_deref().unwrap_or("no hold was read")
         );
     };
-    report_thermal(&t.fit, &t.marks, t.cool.as_ref(), d.sc.amps_per_count);
+    report_thermal(&t.fit, &t.marks, &t.trace, d.sc.amps_per_count);
     let fields = [GainJson::rise(t.fit.rise_q016)];
     if save {
         write_reg(c, id, control::TORQUE_ENABLE, 0)?;
@@ -1151,9 +1211,18 @@ fn save_sense(dir: &Path, sense: SenseJson) -> Result<()> {
 }
 
 /// The thermal hold's report, `osc ident thermal`'s and `ident fit`'s on
-/// its directory: `f` fitted over the run `m` marks, `cool` its step-down,
-/// on `a` amps per count.
-fn report_thermal(f: &RiseFit, m: &ThermalJson, cool: Option<&CoolSummary>, a: f64) {
+/// its directory: `f` fitted over the run `m` marks, `t` its trace, on `a`
+/// amps per count.
+fn report_thermal(f: &RiseFit, m: &ThermalJson, t: &ThermalTrace, a: f64) {
+    let low = m.cool_duty_q15 as f64 / Q15 * 100.0;
+    let high = m.hold_duty_q15 as f64 / Q15 * 100.0;
+    if let Some(s) = &t.cold {
+        println!(
+            "  cold read    {:.0} s at {low:.1} %: {} windows, {} read the winding, mean {:.0} \
+             counts; the hold's reference is read after its heat",
+            s.s, s.windows, s.read, s.i_counts
+        );
+    }
     println!(
         "  cold current {:.0} counts under a {:.0} counts ceiling: {:.1} % margin (at least {:.0} \
          %)",
@@ -1174,14 +1243,65 @@ fn report_thermal(f: &RiseFit, m: &ThermalJson, cool: Option<&CoolSummary>, a: f
         thermal::LINE_MS / 1000.0,
         f.r_ref_slope_c_per_s
     );
-    if let Some(s) = cool {
+    if let Some(s) = &t.cool {
         println!(
-            "  cool-down    {:.0} s at {:.1} %: {} windows, {} read the winding, mean {:.0} counts",
-            s.s,
-            m.cool_duty_q15 as f64 / Q15 * 100.0,
-            s.windows,
-            s.read,
-            s.i_counts
+            "  cool-down    {:.0} s at {low:.1} %: {} windows, {} read the winding, mean {:.0} \
+             counts",
+            s.s, s.windows, s.read, s.i_counts
+        );
+    }
+    // the low duty's R over the high duty's at one copper temperature: the
+    // copper is continuous across each step
+    let offset = |low_over_high: f64| (low_over_high - 1.0) * 100.0;
+    let cold = t.up.map(|s| offset(1.0 / s.ratio));
+    let warm = t.down.map(|s| offset(s.ratio));
+    if cold.is_some() || warm.is_some() {
+        let at = |name: &str, off: Option<f64>, s: Option<Step>| match (off, s) {
+            (Some(o), Some(s)) => format!(
+                "{o:+.2} % at the hold's {name} (i {:.0} -> {:.0} counts, pos {:.1} -> {:.1})",
+                s.i_before, s.i_after, s.pos_before, s.pos_after
+            ),
+            _ => format!("unread at the hold's {name}"),
+        };
+        let apart = match (cold, warm) {
+            (Some(c), Some(w)) => format!(", {:.2} % apart", (c - w).abs()),
+            _ => String::new(),
+        };
+        println!(
+            "  duty offset  {low:.1} % reads R against {high:.1} %: {}, {}{apart}; each the \
+             last {:.1} s before the step against {:.1}-{:.1} s after",
+            at("start", cold, t.up),
+            at("end", warm, t.down),
+            thermal::STEP_BEFORE_MS / 1000.0,
+            thermal::STEP_FROM_MS / 1000.0,
+            thermal::STEP_TO_MS / 1000.0
+        );
+    }
+    if t.events.is_empty() {
+        println!(
+            "  contact      no event: no step over {:.0} % in R between {:.0} s blocks with the pot \
+             inside {:.1} count, past {:.0} s into a segment",
+            thermal::CONTACT_STEP_FRAC * 100.0,
+            thermal::CONTACT_BLOCK_MS / 1000.0,
+            thermal::CONTACT_POS_COUNTS,
+            thermal::CONTACT_SKIP_MS / 1000.0
+        );
+    }
+    for (name, e) in &t.events {
+        let from = match *name {
+            "cold read" => m.cold_ms.unwrap_or(m.t0_ms),
+            "step-down" => m.cool_ms.unwrap_or(m.t0_ms),
+            _ => m.t0_ms,
+        };
+        println!(
+            "  contact      event in the {name} at +{:.0} s: R {:+.2} %, i {:.0} -> {:.0} counts, \
+             pos {:.1} -> {:.1}",
+            (e.t_ms - from) / 1000.0,
+            e.step_frac * 100.0,
+            e.i_before,
+            e.i_after,
+            e.pos_before,
+            e.pos_after
         );
     }
     println!(
@@ -2159,11 +2279,13 @@ impl Recorded {
             } => {
                 let h = &cli.hold;
                 println!(
-                    "[thermal] seek the low stop at {}, hold at {} (its stall a fifth under the \
-                     current limit) for {} s, then step down to {} for {} s, torque on \
-                     throughout: the winding's own R against the board NTC; pos guard off, stall \
-                     permit held",
+                    "[thermal] seek the low stop at {}, read the cold winding at {} for {} s, \
+                     hold at {} (its stall a fifth under the current limit) for {} s, then step \
+                     down to {} for {} s, torque on throughout: the winding's own R against the \
+                     board NTC; pos guard off, stall permit held",
                     pct(*seek),
+                    pct(*cool),
+                    h.cold_ms / 1000,
                     pct(*hold),
                     h.hold_ms / 1000,
                     pct(*cool),
@@ -2572,10 +2694,7 @@ fn fit_thermal_dir(dir: &Path, sc: &Scales) -> Result<()> {
         sc.amps_per_count,
     )
     .map_err(|why| anyhow::anyhow!("the hold's refit declined: {why}"))?;
-    let cool = m
-        .cool_ms
-        .and_then(|c| thermal::cool_summary(&windows, c, m.end_ms));
-    report_thermal(&f, &m, cool.as_ref(), sc.amps_per_count);
+    report_thermal(&f, &m, &thermal_trace(&windows, &m), sc.amps_per_count);
     Ok(())
 }
 
@@ -2587,12 +2706,16 @@ fn render_partial(inputs: ReportInputs<'_>) -> String {
 mod tests {
     use super::*;
 
-    /// The defaults hold 480 s and step down for 960 s at 0.4 of the hold's
-    /// duty; a step-down off (0, 1] is refused before anything drives.
+    /// The defaults read the cold winding for 30 s, hold 480 s and step
+    /// down for 960 s at 0.4 of the hold's duty; a step-down off (0, 1] is
+    /// refused before anything drives.
     #[test]
     fn the_thermal_flags_hold_then_step_down() {
-        let cfg = thermal_cfg(480, 960);
-        assert_eq!((cfg.hold_ms, cfg.cool_ms), (480_000, 960_000));
+        let cfg = thermal_cfg(480, 960, 30);
+        assert_eq!(
+            (cfg.hold_ms, cfg.cool_ms, cfg.cold_ms),
+            (480_000, 960_000, 30_000)
+        );
         assert_eq!(parse_cool_duty("0.4"), Ok(0.4));
         assert_eq!(parse_cool_duty("1"), Ok(1.0));
         for bad in ["0", "-0.1", "1.01", "x"] {
@@ -2682,7 +2805,10 @@ mod tests {
         let out = csvio::OutDir(dir.clone());
         let mut servo = FakeServo::new(3.37);
         servo.current_limit = Some(280);
+        // the cold read and the step-down over the fake's window floor
         let cfg = AnchorCfg {
+            hold_duty_q15: 9830,
+            cool_duty_q15: 4915,
             hold_ms: HOLD_MIN_S * 1000,
             cool_ms: 3000,
             ..AnchorCfg::default()
@@ -2721,6 +2847,7 @@ mod tests {
         }
         drop(log);
         let m = ThermalJson {
+            cold_ms: hold.cold_ms(),
             t0_ms: hold.t0_ms().unwrap(),
             cool_ms: hold.cool_ms(),
             end_ms: hold.polls().last().unwrap().t_ms,
@@ -2770,8 +2897,12 @@ mod tests {
             )
         );
         assert!((refit.k - live.k).abs() < 1e-6, "{refit:?} {live:?}");
-        let cool = thermal::cool_summary(&windows, back.cool_ms.unwrap(), back.end_ms);
-        assert_eq!(cool, hold.cool_summary());
+        let trace = thermal_trace(&windows, &back);
+        assert_eq!(trace, thermal_trace(hold.samples(), &m));
+        assert_eq!(trace.cool, hold.cool_summary());
+        assert_eq!(trace.cold, hold.cold_summary());
+        assert!(trace.cold.is_some() && trace.up.is_some() && trace.down.is_some());
+        assert_eq!(trace.events, []);
         fit_dir(&ctx(dir.clone()), dir).unwrap();
     }
 

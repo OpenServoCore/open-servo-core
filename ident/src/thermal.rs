@@ -259,35 +259,198 @@ impl RiseFit {
     }
 }
 
-/// The step-down cool-down after the hold, as recorded.
+/// One constant-duty segment of the run (the cold read, the step-down), as
+/// recorded.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct CoolSummary {
+pub struct SegmentSummary {
     /// Its length, s.
     pub s: f64,
     pub windows: usize,
-    /// Those that read the winding at the cool-down's duty.
+    /// Those that read the winding at the segment's duty.
     pub read: usize,
     /// Their mean |i|, counts; 0 when none read.
     pub i_counts: f64,
 }
 
-/// The cool-down from `cool_ms` to the run's last poll `end_ms`; None
-/// when it never started.
-pub fn cool_summary(windows: &[ThermWindow], cool_ms: f64, end_ms: f64) -> Option<CoolSummary> {
-    if end_ms < cool_ms {
+/// The segment from `from_ms` to `to_ms`; None when it never started.
+pub fn segment_summary(
+    windows: &[ThermWindow],
+    from_ms: f64,
+    to_ms: f64,
+) -> Option<SegmentSummary> {
+    if to_ms < from_ms {
         return None;
     }
-    let cool = &windows[windows.partition_point(|x| x.w.t_ms < cool_ms)..];
+    let seg = &windows[windows.partition_point(|x| x.w.t_ms < from_ms)
+        ..windows.partition_point(|x| x.w.t_ms < to_ms)];
     let mut i = Acc::default();
-    cool.iter()
+    seg.iter()
         .filter(|x| at_command(x))
         .for_each(|x| i.add(x.w.i.abs()));
-    Some(CoolSummary {
-        s: (end_ms - cool_ms) / 1000.0,
-        windows: cool.len(),
+    Some(SegmentSummary {
+        s: (to_ms - from_ms) / 1000.0,
+        windows: seg.len(),
         read: i.n,
         i_counts: i.mean().unwrap_or(0.0),
     })
+}
+
+/// A duty step is read over this long before it, ms.
+pub const STEP_BEFORE_MS: f64 = 500.0;
+/// ... and from this long after it, ms, past the horn's spring and the
+/// current's settle.
+pub const STEP_FROM_MS: f64 = 400.0;
+/// ... to this long after it, ms: on the step-down runs the copper moves
+/// under 0.2 % of R across the whole read.
+pub const STEP_TO_MS: f64 = 1000.0;
+
+/// A duty step read model-free: R over the [`STEP_BEFORE_MS`] before it
+/// against R over [`STEP_FROM_MS`] to [`STEP_TO_MS`] after it, each side
+/// the mean of its windows at their own command. The copper is continuous
+/// across it, so the ratio is the thermometer's operating-point change
+/// between the two duties.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Step {
+    /// R after over R before.
+    pub ratio: f64,
+    pub i_before: f64,
+    pub i_after: f64,
+    /// The mean pot either side, counts.
+    pub pos_before: f64,
+    pub pos_after: f64,
+    pub windows_before: usize,
+    pub windows_after: usize,
+}
+
+/// The step at `at_ms`; None while either side has no window at command.
+pub fn step_at(windows: &[ThermWindow], at_ms: f64) -> Option<Step> {
+    let side = |lo: f64, hi: f64| {
+        let (mut r, mut i, mut pos) = (Acc::default(), Acc::default(), Acc::default());
+        windows[windows.partition_point(|x| x.w.t_ms < lo)
+            ..windows.partition_point(|x| x.w.t_ms < hi)]
+            .iter()
+            .filter(|x| at_duty(x))
+            .filter_map(|x| Some((window_r_vpc(&x.w)?, x)))
+            .for_each(|(rv, x)| {
+                r.add(rv);
+                i.add(x.w.i.abs());
+                pos.add(x.pos as f64);
+            });
+        Some((r.mean()?, i.mean()?, pos.mean()?, r.n))
+    };
+    let (r0, i0, p0, n0) = side(at_ms - STEP_BEFORE_MS, at_ms)?;
+    let (r1, i1, p1, n1) = side(at_ms + STEP_FROM_MS, at_ms + STEP_TO_MS)?;
+    Some(Step {
+        ratio: r1 / r0,
+        i_before: i0,
+        i_after: i1,
+        pos_before: p0,
+        pos_after: p1,
+        windows_before: n0,
+        windows_after: n1,
+    })
+}
+
+/// Contact events are looked for between blocks this long, ms: the copper
+/// moves under half a percent of R per block at any point of a hold.
+pub const CONTACT_BLOCK_MS: f64 = 2000.0;
+/// ... from this far into a segment, ms, past its settle and dip.
+pub const CONTACT_SKIP_MS: f64 = 2000.0;
+/// A step in R over this fraction between blocks is a contact event: the
+/// ones seen were 2 %.
+pub const CONTACT_STEP_FRAC: f64 = 0.01;
+/// ... with the pot inside this many counts of itself across it: a moved
+/// pot is motion, not contact.
+pub const CONTACT_POS_COUNTS: f64 = 0.5;
+
+/// A brush contact state change inside a segment: a step in R between two
+/// [`CONTACT_BLOCK_MS`] blocks at one duty with the pot still, the current
+/// stepping with it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ContactEvent {
+    /// The block boundary, ms on the host's clock.
+    pub t_ms: f64,
+    /// R after over R before, less one.
+    pub step_frac: f64,
+    pub i_before: f64,
+    pub i_after: f64,
+    pub pos_before: f64,
+    pub pos_after: f64,
+}
+
+/// The contact events of the segment from `from_ms` to `to_ms`: the
+/// windows at command past [`CONTACT_SKIP_MS`] in [`CONTACT_BLOCK_MS`]
+/// blocks, a block counting with half the median block population, and
+/// every pair of adjacent full blocks whose R steps over
+/// [`CONTACT_STEP_FRAC`] with the pot inside [`CONTACT_POS_COUNTS`]. A
+/// step inside a block reads half its size at each of the block's
+/// boundaries, so consecutive boundaries stepping the same way are one
+/// event, read across them. A ramp is not a step: the one seen rose 2.6 %
+/// over 7 s and fell back in 1 s, and reads as its fall.
+pub fn contact_events(windows: &[ThermWindow], from_ms: f64, to_ms: f64) -> Vec<ContactEvent> {
+    let lo = windows.partition_point(|x| x.w.t_ms < from_ms + CONTACT_SKIP_MS);
+    let hi = windows.partition_point(|x| x.w.t_ms < to_ms);
+    let block = |x: &ThermWindow| ((x.w.t_ms - from_ms) / CONTACT_BLOCK_MS).floor() as i64;
+    let blocks: Vec<(i64, Acc, Acc, Acc)> = windows[lo..hi]
+        .chunk_by(|x, y| block(x) == block(y))
+        .filter_map(|c| {
+            let (mut r, mut i, mut pos) = (Acc::default(), Acc::default(), Acc::default());
+            c.iter()
+                .filter(|x| at_duty(x))
+                .filter_map(|x| Some((window_r_vpc(&x.w)?, x)))
+                .for_each(|(rv, x)| {
+                    r.add(rv);
+                    i.add(x.w.i.abs());
+                    pos.add(x.pos as f64);
+                });
+            (r.n > 0).then_some((block(&c[0]), r, i, pos))
+        })
+        .collect();
+    let Some(population) = median(blocks.iter().map(|b| b.1.n as f64).collect()) else {
+        return Vec::new();
+    };
+    let full = |b: &(i64, Acc, Acc, Acc)| b.1.n as f64 >= population / 2.0;
+    // the sign of the step at each boundary, 0 for none
+    let stepped: Vec<i8> = blocks
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (&w[0], &w[1]);
+            let step = b.1.mean().unwrap_or(0.0) / a.1.mean().unwrap_or(1.0) - 1.0;
+            let still =
+                (b.3.mean().unwrap_or(0.0) - a.3.mean().unwrap_or(0.0)).abs() <= CONTACT_POS_COUNTS;
+            if b.0 == a.0 + 1 && full(a) && full(b) && still && step.abs() > CONTACT_STEP_FRAC {
+                step.signum() as i8
+            } else {
+                0
+            }
+        })
+        .collect();
+    let event = |k0: usize, k1: usize| {
+        let (a, b) = (&blocks[k0], &blocks[k1 + 1]);
+        Some(ContactEvent {
+            t_ms: from_ms + blocks[k0 + 1].0 as f64 * CONTACT_BLOCK_MS,
+            step_frac: b.1.mean()? / a.1.mean()? - 1.0,
+            i_before: a.2.mean()?,
+            i_after: b.2.mean()?,
+            pos_before: a.3.mean()?,
+            pos_after: b.3.mean()?,
+        })
+    };
+    let mut out = Vec::new();
+    let mut k = 0;
+    while k < stepped.len() {
+        if stepped[k] == 0 {
+            k += 1;
+            continue;
+        }
+        let mut k1 = k;
+        while k1 + 1 < stepped.len() && stepped[k1 + 1] == stepped[k] {
+            k1 += 1;
+        }
+        out.extend(event(k, k1));
+        k = k1 + 1;
+    }
+    out
 }
 
 #[derive(Copy, Clone, Default)]
@@ -333,6 +496,12 @@ fn window_r_vpc(w: &WindowSample) -> Option<f64> {
 /// The window read the winding at the duty commanded for it.
 fn at_command(x: &ThermWindow) -> bool {
     x.commanded && x.reads()
+}
+
+/// The window carried current over the floors at the duty commanded for
+/// it, still or not: a step-down's windows sit sprung off the hold's seat.
+fn at_duty(x: &ThermWindow) -> bool {
+    x.commanded && x.floors && x.w.i != 0.0
 }
 
 /// The kernel's heat over the polls: its own integer EWMA of the held
@@ -1532,5 +1701,144 @@ mod tests {
                 "{t} C: reads {read} for {truth}"
             );
         }
+    }
+
+    /// A window every 2 ms from `from` to `to` ms at `duty`, R `r0` and
+    /// the copper `x_w(t)` C over the NTC; the window at `t` reads `pos(t)`.
+    fn trace(
+        from: f64,
+        to: f64,
+        duty: f64,
+        r0: f64,
+        x_w: impl Fn(f64) -> f64,
+        pos: impl Fn(f64) -> u16,
+    ) -> Vec<ThermWindow> {
+        ((from / WIN_MS) as i64..(to / WIN_MS) as i64)
+            .map(|k| {
+                let t = k as f64 * WIN_MS;
+                let i = if duty == DUTY { I } else { I * duty / DUTY };
+                ThermWindow {
+                    pos: pos(t),
+                    ..tw(window_at(t, i + wobble(k as usize), duty, r0, x_w(t)))
+                }
+            })
+            .collect()
+    }
+
+    /// The step-down runs' duty step: the thermometer reads 6.5 % lower at
+    /// 0.4 of the hold's duty, the copper continuous across the step. The
+    /// step reads that ratio either way round, from each side's own
+    /// windows, with the horn's spring in the pot columns.
+    #[test]
+    fn a_duty_step_reads_the_operating_point_change_either_way() {
+        let low = DUTY * 0.4;
+        let mut w = trace(0.0, 30_000.0, low, 1.0 - 0.065, |_| 0.0, |_| SEAT + 14);
+        w.extend(trace(30_000.0, 60_000.0, DUTY, 1.0, |_| 0.0, |_| SEAT));
+        w.extend(trace(
+            60_000.0,
+            90_000.0,
+            low,
+            1.0 - 0.065,
+            |_| 0.0,
+            |_| SEAT + 14,
+        ));
+        let up = step_at(&w, 30_000.0).expect("an up-step");
+        assert!((up.ratio - 1.0 / 0.935).abs() < 1e-3, "{up:?}");
+        assert!((up.i_after / up.i_before - 2.5).abs() < 0.01, "{up:?}");
+        assert!((up.pos_before - up.pos_after - 14.0).abs() < 1e-9, "{up:?}");
+        assert_eq!(
+            (up.windows_before, up.windows_after),
+            (
+                (STEP_BEFORE_MS / WIN_MS) as usize,
+                ((STEP_TO_MS - STEP_FROM_MS) / WIN_MS) as usize
+            )
+        );
+        let down = step_at(&w, 60_000.0).expect("a down-step");
+        assert!((down.ratio - 0.935).abs() < 1e-3, "{down:?}");
+        // the windows in the horn's spring and the current's settle are
+        // not read: a step whose first 400 ms read anything reads the same
+        for x in w
+            .iter_mut()
+            .filter(|x| (60_000.0..60_400.0).contains(&x.w.t_ms))
+        {
+            x.w.vdiff *= 3.0;
+        }
+        assert_eq!(step_at(&w, 60_000.0), Some(down));
+        assert_eq!(step_at(&w, 90_000.0), None, "no windows after");
+        assert_eq!(step_at(&w, -1000.0), None, "no windows before");
+    }
+
+    /// Run 1's hold on the step-down round: R stepped up 2 % at 32 s with
+    /// the pot still and back down 2 % at 44 s. Both edges are events,
+    /// the copper's own rise (a 33 s node to 19 C) is not, and a step that
+    /// moved the pot is motion.
+    #[test]
+    fn contact_events_are_steps_in_r_with_the_pot_still() {
+        let copper = |t: f64| 19.0 * (1.0 - (-t / 33_000.0).exp());
+        let contact = |t: f64| {
+            if (32_000.0..44_000.0).contains(&t) {
+                1.02
+            } else {
+                1.0
+            }
+        };
+        let w = trace(
+            0.0,
+            120_000.0,
+            DUTY,
+            1.0,
+            |t| {
+                (contact(t) * (1.0 + copper(t) / (COPPER_ZERO_R_C + T_NTC0)) - 1.0)
+                    * (COPPER_ZERO_R_C + T_NTC0)
+            },
+            |_| SEAT,
+        );
+        let ev = contact_events(&w, 0.0, 120_000.0);
+        assert_eq!(ev.len(), 2, "{ev:?}");
+        assert_eq!((ev[0].t_ms, ev[1].t_ms), (32_000.0, 44_000.0));
+        assert!((ev[0].step_frac - 0.02).abs() < 0.005, "{:?}", ev[0]);
+        assert!((ev[1].step_frac + 0.02).abs() < 0.005, "{:?}", ev[1]);
+        assert!((ev[0].i_before - 270.0).abs() < 1.0 && ev[0].pos_before == SEAT as f64);
+        // the copper alone: no event in the whole hold, from its first second
+        let w = trace(0.0, 120_000.0, DUTY, 1.0, copper, |_| SEAT);
+        assert_eq!(contact_events(&w, 0.0, 120_000.0), []);
+        // the same step with the pot a count off: motion, not contact
+        let w = trace(
+            0.0,
+            120_000.0,
+            DUTY,
+            1.0,
+            |t| (contact(t) - 1.0) * (COPPER_ZERO_R_C + T_NTC0),
+            |t| if t >= 32_000.0 { SEAT + 1 } else { SEAT },
+        );
+        let ev = contact_events(&w, 0.0, 120_000.0);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0].t_ms, 44_000.0);
+        // run 2's step-down event, a step inside a block: both boundaries
+        // read half of it and merge into one event of the whole
+        let w = trace(
+            0.0,
+            120_000.0,
+            DUTY,
+            1.0,
+            |t| if t >= 33_000.0 { 0.024 } else { 0.0 } * (COPPER_ZERO_R_C + T_NTC0),
+            |_| SEAT,
+        );
+        let ev = contact_events(&w, 0.0, 120_000.0);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0].t_ms, 32_000.0);
+        assert!((ev[0].step_frac - 0.024).abs() < 0.001, "{:?}", ev[0]);
+        // a step inside the skip is the dip, not an event; a gap in the
+        // windows is not a step
+        let mut w = trace(0.0, 120_000.0, DUTY, 1.0, |_| 0.0, |_| SEAT);
+        for x in w.iter_mut().filter(|x| x.w.t_ms < 1_000.0) {
+            x.w.vdiff *= 0.97;
+        }
+        w.retain(|x| !(50_000.0..52_000.0).contains(&x.w.t_ms));
+        for x in w.iter_mut().filter(|x| x.w.t_ms >= 52_000.0) {
+            x.w.vdiff *= 1.03;
+        }
+        assert_eq!(contact_events(&w, 0.0, 120_000.0), []);
+        assert_eq!(contact_events(&[], 0.0, 1.0), []);
     }
 }
