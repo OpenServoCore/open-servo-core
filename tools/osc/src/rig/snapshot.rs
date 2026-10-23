@@ -24,10 +24,7 @@ pub(crate) fn reg_by_name(name: &str) -> Option<Reg> {
 /// The write-set superset: everything snapshot/rollback/show handles.
 pub(crate) const SNAPSHOT_FIELDS: &[(&str, Reg)] = &[
     ("r_q12", calib::R_Q12),
-    ("r0_q12", calib::R0_Q12),
-    ("th_alpha_q24", calib::TH_ALPHA_Q24),
-    ("th_g_q016", calib::TH_G_Q016),
-    ("th_mu_q016", calib::TH_MU_Q016),
+    ("th_rise_q016", calib::TH_RISE_Q016),
     ("ntc_raw_ref", calib::NTC_RAW_REF),
     ("ntc_t_ref_cc", calib::NTC_T_REF_CC),
     ("ntc_k1_q88", calib::NTC_K1_Q88),
@@ -47,7 +44,6 @@ pub(crate) const SNAPSHOT_FIELDS: &[(&str, Reg)] = &[
     ("j_ff_q88", config::J_FF_Q88),
     ("p_kp_q88", config::P_KP_Q88),
     ("pos_deadband_counts", config::POS_DEADBAND_COUNTS),
-    ("rtherm_i_min_counts", config::RTHERM_I_MIN_COUNTS),
     ("i_cont_counts", config::I_CONT_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
     ("thermal_tau_ms", config::THERMAL_TAU_MS),

@@ -30,7 +30,10 @@ pub struct TelemetrySnapshot {
     pub t_winding_cc: i16,
     pub vbus_counts: u16,
     pub omega_bemf_cps: i16,
-    pub r_hat_q12: u16,
+    /// TELEMETRY_EXT's board NTC reading and `therm_flags`, outside the
+    /// region read: a driver that reads them fills them, parse leaves 0.
+    pub t_ntc_cc: i16,
+    pub therm_flags: u8,
     /// The tick block's signed held current, the kernel's per-tick reading.
     pub i_tick_counts: i16,
     /// Signed PWM compare counts the bridge applied; full scale is CALIB
@@ -82,7 +85,6 @@ impl TelemetrySnapshot {
             t_winding_cc: i16::from_le_bytes(get(base, bytes, t::T_WINDING_CC)?),
             vbus_counts: u16::from_le_bytes(get(base, bytes, t::VBUS_COUNTS)?),
             omega_bemf_cps: i16::from_le_bytes(get(base, bytes, t::OMEGA_BEMF_CPS)?),
-            r_hat_q12: u16::from_le_bytes(get(base, bytes, t::R_HAT_Q12)?),
             i_tick_counts: i16::from_le_bytes(get(base, bytes, t::I_TICK_COUNTS)?),
             duty_ticks: i16::from_le_bytes(get(base, bytes, t::DUTY_TICKS)?),
             sample_tick: u32::from_le_bytes(get(base, bytes, t::SAMPLE_TICK)?),

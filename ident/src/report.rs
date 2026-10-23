@@ -327,7 +327,8 @@ pub fn render(r: &ReportInputs<'_>) -> String {
 
     let _ = writeln!(
         s,
-        "\n[thermometer] osc ident anchor writes the family model, the NTC curve and the cold R"
+        "\n[thermal] osc ident write writes the board's NTC curve; osc ident thermal (a hold) \
+         or ident write --rth-cw (a nameplate C/W) writes the winding rise"
     );
 
     let _ = writeln!(s, "\n[gains]");

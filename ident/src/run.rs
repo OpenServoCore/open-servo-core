@@ -44,12 +44,11 @@
 //! run ends as the ladder's decline; on one that does not the run goes to
 //! its closing centring.
 //!
-//! The thermometer's hold runs on a servo already identified
-//! ([`Run::for_anchor`]): the jam check, a seat at the low stop held at the
-//! stall-safe cap at the plan the stored winding gives, where the kernel's
-//! own winding R is read ([`crate::exp::anchor`]), and the closing
-//! centring. A hold that declines seeds no thermometer and changes nothing
-//! else.
+//! The thermal hold runs on a servo already identified
+//! ([`Run::for_thermal`]): the jam check, a seat at the low stop held at
+//! the stall-safe cap at the plan the stored winding gives, where the
+//! winding's own R is read for minutes ([`crate::exp::anchor`]), and the
+//! closing centring. A hold that declines changes nothing else.
 
 use crate::exp::AbortReason;
 use crate::exp::anchor::AnchorCfg;
@@ -109,9 +108,9 @@ pub enum Stage {
         seek: f64,
         base: f64,
     },
-    /// The thermometer's hold: `seek` to the low stop, `hold` there at
-    /// the stall-safe cap while the kernel's winding R is read.
-    Anchor {
+    /// The thermal hold: `seek` to the low stop, `hold` there at the
+    /// stall-safe cap while the winding's R is read.
+    Thermal {
         seek: f64,
         hold: f64,
     },
@@ -140,7 +139,7 @@ impl Stage {
             Stage::Breakaway { .. } => "breakaway",
             Stage::Ladder { .. } => "ladder",
             Stage::Inertia { .. } => "inertia",
-            Stage::Anchor { .. } => "anchor",
+            Stage::Thermal { .. } => "thermal",
             Stage::Stops { .. } => "stops",
             Stage::Traverse { .. } => "traverse",
         }
@@ -199,7 +198,7 @@ enum Step {
     Breakaway,
     Ladder,
     Inertia,
-    Anchor,
+    Thermal,
     Stops,
     Traverse,
     Park,
@@ -220,9 +219,9 @@ const ORDER: [Step; 10] = [
     Step::Park,
 ];
 
-/// The anchor alone, on a servo that carries its winding: the jam check,
-/// the anchor, and back to mid travel.
-const ANCHOR_ONLY_ORDER: [Step; 3] = [Step::JamCheck, Step::Anchor, Step::Park];
+/// The thermal hold alone, on a servo that carries its winding: the jam
+/// check, the hold, and back to mid travel.
+const THERMAL_ORDER: [Step; 3] = [Step::JamCheck, Step::Thermal, Step::Park];
 
 /// Cal: the jam check and the burst at mid travel, the stops, the traverse
 /// from the low end, and back to mid travel.
@@ -243,7 +242,7 @@ pub struct Run {
     class_r_vpc: f64,
     stall_ladder: bool,
     cal: bool,
-    anchor_only: bool,
+    thermal: bool,
     /// What an earlier identification left on the servo.
     stored: Option<Winding>,
     /// The servo carries a Ke and friction line.
@@ -271,7 +270,7 @@ impl Run {
             class_r_vpc: sc.r_vpc(CLASS_R_MIN),
             stall_ladder: false,
             cal: false,
-            anchor_only: false,
+            thermal: false,
             stored: None,
             stored_motion: false,
             reused: None,
@@ -326,13 +325,13 @@ impl Run {
         }
     }
 
-    /// The anchor alone: the jam check, then the anchor at the plan the
-    /// stored winding gives ([`Run::with_stored_winding`]), then the
+    /// The thermal hold alone: the jam check, then the hold at the plan
+    /// the stored winding gives ([`Run::with_stored_winding`]), then the
     /// closing centring. Without a stored winding nothing can plan the
     /// hold and the run ends.
-    pub fn for_anchor(lim: ServoLimits, sc: &Scales) -> Self {
+    pub fn for_thermal(lim: ServoLimits, sc: &Scales) -> Self {
         Self {
-            anchor_only: true,
+            thermal: true,
             ..Self::new(lim, sc)
         }
     }
@@ -340,8 +339,8 @@ impl Run {
     fn order(&self) -> &'static [Step] {
         if self.cal {
             &CAL_ORDER
-        } else if self.anchor_only {
-            &ANCHOR_ONLY_ORDER
+        } else if self.thermal {
+            &THERMAL_ORDER
         } else {
             &ORDER
         }
@@ -462,14 +461,14 @@ impl Run {
                 duty: boot,
                 cap: self.nudge_cap(),
             },
-            // the anchor alone plans from the winding the servo carries
-            (Step::Anchor, None) => match self.stored {
+            // the thermal hold plans from the winding the servo carries
+            (Step::Thermal, None) => match self.stored {
                 Some(w) => {
                     self.plan = Some(DutyPlan::new(&self.lim, w.r_vpc, self.free));
-                    self.pending = Some(Step::Anchor);
+                    self.pending = Some(Step::Thermal);
                     return self.next_stage();
                 }
-                None => return self.end(Over::Declined("anchor")),
+                None => return self.end(Over::Declined("thermal")),
             },
             (_, None) => return self.end(Over::Declined("burst")),
             (Step::Breakaway, Some(p)) => Stage::Breakaway { cap: p.stop_cap },
@@ -481,7 +480,7 @@ impl Run {
                 seek: p.seek,
                 base: p.seek + BASE_OVER_SEEK,
             },
-            (Step::Anchor, Some(p)) => Stage::Anchor {
+            (Step::Thermal, Some(p)) => Stage::Thermal {
                 seek: p.seek,
                 hold: p.stop_cap,
             },
@@ -545,8 +544,8 @@ impl Run {
                 Some("ladder") if self.stored_motion && self.plan.is_some() => {
                     self.cut.get_or_insert(Over::Declined("ladder"));
                 }
-                // no thermometer seed; the plant and the run are untouched
-                Some("anchor") => {}
+                // the plant and the run are untouched
+                Some("thermal") => {}
                 Some(stage) if self.plan.is_some() => {
                     self.cut.get_or_insert(Over::Declined(stage));
                     self.finish();
@@ -702,7 +701,7 @@ pub fn inertia_cfg(seek: f64, base: f64, cfg: InertiaCfg) -> InertiaCfg {
 mod tests {
     use super::*;
     use crate::burst::Capture;
-    use crate::exp::anchor::{Anchor, AnchorResult};
+    use crate::exp::anchor::Anchor;
     use crate::exp::bias::{Bias, BiasCfg};
     use crate::exp::breakaway::Breakaway;
     use crate::exp::centre::Centre;
@@ -1102,7 +1101,8 @@ mod tests {
         virgin: bool,
         /// The `drive_polarity` in force.
         polarity: bool,
-        anchor: Option<AnchorResult>,
+        /// The thermal hold's window R and its late hold currents.
+        thermal: Option<(Vec<f64>, Vec<f64>)>,
     }
 
     impl Rig<'_> {
@@ -1125,7 +1125,7 @@ mod tests {
                 captured: None,
                 virgin: false,
                 polarity: true,
-                anchor: None,
+                thermal: None,
             }
         }
 
@@ -1255,18 +1255,31 @@ mod tests {
                     }
                     how
                 }
-                Stage::Anchor { seek, hold } => {
-                    let cfg = anchor_cfg(*seek, *hold, AnchorCfg::default());
+                Stage::Thermal { seek, hold } => {
+                    let base = AnchorCfg {
+                        hold_ms: 3000,
+                        ..AnchorCfg::default()
+                    };
+                    let cfg = anchor_cfg(*seek, *hold, base);
                     let exp = Permitted::new(Anchor::new(cfg, &params));
                     let (exp, how) = self.go(exp, params.without_pos_guard());
-                    match exp.into_inner().result() {
-                        Ok(a) if how == Ended::Done => {
-                            self.anchor = Some(a);
-                            how
-                        }
-                        _ if how == Ended::Done => Ended::Declined,
-                        _ => how,
+                    let exp = exp.into_inner();
+                    if let Some(t0) = exp.t0_ms() {
+                        let r = exp
+                            .samples()
+                            .iter()
+                            .filter(|w| w.i != 0.0)
+                            .map(|w| (w.duty_q15 * w.vdiff / Q15) / (w.i * w.duty_q15.signum()))
+                            .collect();
+                        let i = exp
+                            .polls()
+                            .iter()
+                            .filter(|p| p.t_ms >= t0 + 1000.0)
+                            .map(|p| p.i_counts.abs())
+                            .collect();
+                        self.thermal = Some((r, i));
                     }
+                    how
                 }
                 Stage::Stops {
                     approach,
@@ -1329,55 +1342,59 @@ mod tests {
             .collect()
     }
 
-    /// On its own the anchor plans from the winding the servo carries, the
-    /// jam check's duty seeding the seek; a servo that carries none has
-    /// nothing to plan the hold with.
+    /// On its own the thermal hold plans from the winding the servo
+    /// carries, the jam check's duty seeding the seek; a servo that carries
+    /// none has nothing to plan the hold with.
     #[test]
-    fn the_anchor_alone_plans_from_the_stored_winding() {
+    fn the_thermal_hold_plans_from_the_stored_winding() {
         let mut r =
-            Run::for_anchor(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
-        let mut anchor = None;
+            Run::for_thermal(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
+        let mut hold = None;
         let seen = stages(&mut r, |s| {
-            if let Stage::Anchor { seek, hold } = s {
-                anchor = Some((*seek, *hold));
+            if let Stage::Thermal { seek, hold: h } = s {
+                hold = Some((*seek, *h));
             }
             Ended::Done
         });
-        assert_eq!(seen, ["jam check", "anchor", "centring"]);
+        assert_eq!(seen, ["jam check", "thermal", "centring"]);
         assert_eq!(r.over(), None);
         let plan = DutyPlan::new(&limits(RAIL_2S), R, Some(0.12));
-        assert_eq!(anchor, Some((plan.seek, plan.stop_cap)));
+        assert_eq!(hold, Some((plan.seek, plan.stop_cap)));
 
-        let mut r = Run::for_anchor(limits(RAIL_2S), &scales());
+        let mut r = Run::for_thermal(limits(RAIL_2S), &scales());
         let seen = stages(&mut r, |_| Ended::Done);
         assert_eq!(seen, ["jam check"]);
-        assert_eq!(r.over(), Some(Over::Declined("anchor")));
+        assert_eq!(r.over(), Some(Over::Declined("thermal")));
     }
 
-    /// The bench servo on 2S: the anchor is the one stage that presses a
-    /// stop, under the permit, its hold governed to the limit, and the R it
-    /// reads is the winding the fake stalls through.
+    /// The bench servo on 2S: the thermal hold is the one stage that
+    /// presses a stop, under the permit, its hold governed to the limit,
+    /// and its windows read the winding the fake stalls through.
     #[test]
-    fn the_anchor_seats_the_bench_servo_once_under_the_limit() {
+    fn the_thermal_hold_seats_the_bench_servo_once_under_the_limit() {
         let mut servo = bench_servo(RAIL_2S);
         servo.pos = 2600.0;
         let mut run =
-            Run::for_anchor(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
+            Run::for_thermal(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
         let mut rig = Rig::new(&mut servo, RAIL_2S);
         rig.run(&mut run);
         assert_eq!(run.over(), None, "{:?}", run.over());
         let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
-        assert_eq!(names, ["jam check", "anchor", "centring"]);
-        let a = rig.anchor.expect("the anchor read");
-        assert!((a.r_vpc / R - 1.0).abs() < 0.02, "R {} of {R}", a.r_vpc);
-        assert!(a.i_counts <= LIM as f64 * 1.05, "hold at {}", a.i_counts);
-        assert!(a.i_counts > LIM as f64 * 0.8, "hold at {}", a.i_counts);
+        assert_eq!(names, ["jam check", "thermal", "centring"]);
+        let (r, i) = rig.thermal.take().expect("the hold read");
+        assert!(!r.is_empty() && !i.is_empty());
+        let r_mean = r.iter().sum::<f64>() / r.len() as f64;
+        assert!((r_mean / R - 1.0).abs() < 0.02, "R {r_mean} of {R}");
+        for i in i {
+            assert!(i <= LIM as f64 * 1.05, "hold at {i}");
+            assert!(i > LIM as f64 * 0.8, "hold at {i}");
+        }
         for (k, name) in names.iter().enumerate() {
             let permit = rig
                 .span(k, k + 1)
                 .iter()
                 .any(|l| l == "write stall_permit 1");
-            assert_eq!(permit, *name == "anchor", "stage {k} {name}");
+            assert_eq!(permit, *name == "thermal", "stage {k} {name}");
         }
         assert!(servo.pressed_ms > 0.0);
         assert!(!servo.torque && !servo.permit_live());

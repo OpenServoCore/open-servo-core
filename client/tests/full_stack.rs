@@ -18,7 +18,7 @@ use osc_client::data_state::{
     self, CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, Reason, STAMP_MISMATCH, fault,
 };
 use osc_client::descriptor::{Descriptor, Kind, Value, encode};
-use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, seed};
+use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, heat_tau_s, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::pipe::{Pipe, PipeError};
 use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
@@ -33,7 +33,7 @@ use osc_protocol::table;
 use osc_protocol::tel::{Chunk, Chunks};
 use osc_protocol::wire::{DEFAULT_RESPONSE_DEADLINE_US, UID_LEN};
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
-use osc_servo_core::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
+use osc_servo_core::regions::config::addr::limits::{CURRENT_LIMIT_COUNTS, THERMAL_TAU_MS};
 use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
 use osc_servo_core::regions::telemetry_ext::addr::therm::{T_NTC_CC, THERM_FLAGS};
 
@@ -1358,7 +1358,7 @@ fn host_stamp_is_the_firmwares_over_the_same_table() {
     let mut c = Client::connect(pipe).expect("connect");
     let id = Id::new(1);
     let stamp = d.stamp().expect("recipe");
-    assert_eq!(stamp.covered().len(), 40);
+    assert_eq!(stamp.covered().len(), 39);
 
     let check = |c: &mut Client<FakePipe>, case: &str| {
         let host = c.plant_stamp(id, &d).expect("host stamp");
@@ -2343,10 +2343,10 @@ fn therm(c: &mut Client<FakePipe>, id: Id) -> (i16, u8, u16, u16) {
 }
 
 /// No CALIB thermal block - a factory-fresh servo, or a calibrated one with
-/// the thermometer off - reads the firmware's sentinel and the UNSET flag,
+/// the estimate off - reads the firmware's sentinel and the UNSET flag,
 /// and nothing derates.
 #[test]
-fn fake_thermometer_without_a_thermal_block_reads_unset() {
+fn fake_winding_without_a_thermal_block_reads_unset() {
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1, 2]);
     pipe.seed_board(0);
     pipe.seed_calibrated_with(1, Therm::Off);
@@ -2359,12 +2359,11 @@ fn fake_thermometer_without_a_thermal_block_reads_unset() {
     }
 }
 
-/// With the ident set stamped, a held current heats the winding over the
-/// 28 C NTC toward its steady excess, g i^2 r0, on the 128 s time constant
-/// (a quarter of it here: the sim stops at 60 s); below the derate start
-/// i_lim is the configured limit.
+/// With the rise stamped, a held current heats the winding over the 28 C
+/// NTC toward rise x i^2 on the heat's time constant (one of it here);
+/// below the derate start i_lim is the configured limit.
 #[test]
-fn fake_winding_rises_on_the_time_constant_toward_the_steady_excess() {
+fn fake_winding_rises_on_the_heat_time_constant_toward_rise_x_i_squared() {
     const HOLD_COUNTS: i16 = 280;
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
     pipe.seed_calibrated(0);
@@ -2387,11 +2386,10 @@ fn fake_winding_rises_on_the_time_constant_toward_the_steady_excess() {
     assert!((t0 - t_ntc).abs() <= 1, "boots at the NTC: {t0}");
     assert_eq!(i_lim, limit);
 
-    c.pause(Duration::from_secs(32));
-    let steady =
-        seed::TH_G_Q016 as f64 / 65536.0 * (HOLD_COUNTS as f64).powi(2) * seed::R_Q12 as f64
-            / 4096.0;
-    let want = t_ntc as f64 - steady * (-0.25f64).exp_m1();
+    let tau_s = heat_tau_s(read_u16(&mut c, id, THERMAL_TAU_MS));
+    c.pause(Duration::from_secs_f64(tau_s));
+    let steady = seed::TH_RISE_Q016 as f64 / 65536.0 * (HOLD_COUNTS as f64).powi(2);
+    let want = t_ntc as f64 - steady * (-1f64).exp_m1();
     let (t1, _, i_lim, _) = therm(&mut c, id);
     assert!((t1 as f64 - want).abs() < 10.0, "t {t1} want {want:.0}");
     assert_eq!(i_lim, limit);
@@ -2400,7 +2398,7 @@ fn fake_winding_rises_on_the_time_constant_toward_the_steady_excess() {
 /// Forced derating pins the winding midway from the derate start to the
 /// cutoff, where the limit fold halves the current ceiling.
 #[test]
-fn fake_thermometer_forced_derating_halves_i_lim() {
+fn fake_winding_forced_derating_halves_i_lim() {
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
     pipe.seed_calibrated_with(0, Therm::Derating);
     let mut c = Client::connect(pipe).expect("connect");

@@ -6,8 +6,9 @@
 use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
-use osc_servo_core::kernel::phases::loops::limits::{FoldIn, LimitState, i_cont_or_cap};
-use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW};
+use osc_servo_core::kernel::phases::loops::limits::{
+    FoldIn, LimitState, SLOW_PERIOD_MS, i_cont_or_cap, tau_shift,
+};
 use osc_servo_core::{ControlTable, stamp};
 
 use crate::pipe::{Pipe, PipeError};
@@ -51,12 +52,9 @@ pub mod seed {
     pub const FRIC_FC_COUNTS: u16 = 53;
     pub const FRIC_FV_Q016: u16 = 356;
     pub const KE_VPC_Q: u16 = 603;
-    // The winding thermometer set `osc ident` writes for the MG90 family on
-    // this board (ident `thermometer::Thermal::new`: tau 128 s, 63 C/W over
-    // the board NTC, a 280-count hold, the 10K/10K/3950 NTC divider).
-    pub const TH_ALPHA_Q24: u16 = 2097;
-    pub const TH_G_Q016: u16 = 1500;
-    pub const TH_MU_Q016: u16 = 7670;
+    // The winding estimate's rise for the bench MG90 on this board, and
+    // the 10K/10K/3950 NTC divider's curve.
+    pub const TH_RISE_Q016: u16 = 1044;
     pub const NTC_RAW_REF: u16 = 2048;
     pub const NTC_T_REF_CC: i16 = 2500;
     pub const NTC_K1_Q88: i16 = 563;
@@ -65,25 +63,26 @@ pub mod seed {
     pub const NTC_RAW_ROOM: u16 = 1913;
 }
 
-/// A fake servo's winding thermometer.
+/// A fake servo's winding estimate.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Therm {
-    /// The ident set is stamped: a one-node model of the excess over the
-    /// NTC, driven by the track's mean square current.
+    /// The rise is stamped: the I2t heat of the track's mean square
+    /// current over the NTC.
     #[default]
     On,
     /// No thermal block: `t_winding_cc` reads the sentinel.
     Off,
-    /// The ident set is stamped and the winding is pinned midway from the
+    /// The rise is stamped and the winding is pinned midway from the
     /// derate start to the cutoff.
     Derating,
 }
 
-/// The fake's stand-in for the kernel thermometer (the sim runs no kernel).
+/// The fake's stand-in for the kernel winding estimate (the sim runs no
+/// kernel).
 #[derive(Default)]
 struct Winding {
-    excess_cc: f64,
+    heat: f64,
     i_sq_mean: f64,
     forced: bool,
     at_us: u64,
@@ -95,7 +94,6 @@ impl Winding {
     /// limit fold's electrical ceiling.
     fn publish(&mut self, t: &mut ControlTable, now_us: u64) {
         let th = t.calib.thermal;
-        let r0 = t.calib.winding.r0_q12;
         let raw = match t.telemetry.tick.ntc_raw {
             0 => seed::NTC_RAW_ROOM,
             r => r,
@@ -111,15 +109,13 @@ impl Winding {
         self.at_us = now_us;
         let t_ntc = thermal::ntc_cc(raw, &ntc);
         let (t_cc, flags) = match t_ntc {
-            Some(base) if th.th_alpha_q24 != 0 && th.th_g_q016 != 0 && r0 != 0 => {
-                let slow_hz = t.calib.sense.tick_hz as f64 / (DECIM_MED as f64 * DECIM_SLOW as f64);
-                let tau_s = (1u32 << 24) as f64 / (th.th_alpha_q24 as f64 * slow_hz);
-                let steady = th.th_g_q016 as f64 / 65536.0 * self.i_sq_mean * r0 as f64 / 4096.0;
-                self.excess_cc += (steady - self.excess_cc) * -(-dt_s / tau_s).exp_m1();
+            Some(base) if th.th_rise_q016 != 0 => {
+                let tau_s = heat_tau_s(lim.thermal_tau_ms);
+                self.heat += (self.i_sq_mean - self.heat) * -(-dt_s / tau_s).exp_m1();
                 let t_cc = if self.forced {
                     (therm.derate_start_cc as i32 + therm.cutoff_cc as i32) / 2
                 } else {
-                    base as i32 + self.excess_cc as i32
+                    base as i32 + thermal::rise_cc(self.heat as u32, th.th_rise_q016)
                 };
                 (t_cc.clamp(i16::MIN as i32 + 1, i16::MAX as i32) as i16, 0)
             }
@@ -136,6 +132,12 @@ impl Winding {
         t.telemetry_ext.therm.t_ntc_cc = t_ntc.unwrap_or(0);
         t.telemetry_ext.therm.therm_flags = flags;
     }
+}
+
+/// The kernel heat EWMA's time constant, seconds: `2^tau_shift` SLOW
+/// periods.
+pub fn heat_tau_s(thermal_tau_ms: u16) -> f64 {
+    (1u32 << tau_shift(thermal_tau_ms)) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
 }
 
 pub struct FakePipe {
@@ -191,7 +193,7 @@ impl FakePipe {
         self.seed_calibrated_with(i, Therm::On);
     }
 
-    /// [`Self::seed_calibrated`] with the winding thermometer as `therm`.
+    /// [`Self::seed_calibrated`] with the winding estimate as `therm`.
     pub fn seed_calibrated_with(&mut self, i: usize, therm: Therm) {
         self.windings[i].forced = therm == Therm::Derating;
         self.sim.servo_table_mut(i, |t| {
@@ -214,14 +216,11 @@ impl FakePipe {
             t.config.limits.drive_polarity = seed::DRIVE_POLARITY;
             if therm != Therm::Off {
                 let th = &mut t.calib.thermal;
-                th.th_alpha_q24 = seed::TH_ALPHA_Q24;
-                th.th_g_q016 = seed::TH_G_Q016;
-                th.th_mu_q016 = seed::TH_MU_Q016;
+                th.th_rise_q016 = seed::TH_RISE_Q016;
                 th.ntc_raw_ref = seed::NTC_RAW_REF;
                 th.ntc_t_ref_cc = seed::NTC_T_REF_CC;
                 th.ntc_k1_q88 = seed::NTC_K1_Q88;
                 th.ntc_k2_q24 = seed::NTC_K2_Q24;
-                t.calib.winding.r0_q12 = seed::R_Q12;
             }
             t.calib.stamp.plant_stamp = stamp::compute(t, None);
         });

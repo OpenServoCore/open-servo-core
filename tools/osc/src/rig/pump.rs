@@ -609,6 +609,8 @@ pub(crate) struct Pump<'a, S: Servo = Wire<&'a mut Client<NusbPipe>>> {
     lease: Lease,
     /// The servo's PWM period, read at the first burst.
     pwm_period_ticks: Option<u16>,
+    /// Each Read also reads the board NTC and `therm_flags`.
+    therm: bool,
 }
 
 impl<'a> Pump<'a> {
@@ -631,6 +633,16 @@ impl<'a, S: Servo> Pump<'a, S> {
             tel: Vec::new(),
             lease: Lease::new(false),
             pwm_period_ticks: None,
+            therm: false,
+        }
+    }
+
+    /// Every snapshot carries the board NTC's reading and `therm_flags`,
+    /// one more read each.
+    pub(crate) fn with_therm(self) -> Self {
+        Self {
+            therm: true,
+            ..self
         }
     }
 
@@ -649,6 +661,17 @@ impl<'a, S: Servo> Pump<'a, S> {
                     let w = Watching::get(&mut self.watch, s)?;
                     let mut snap = s.snapshot()?;
                     w.windows.attach(&mut snap);
+                    if self.therm {
+                        let id = s.id();
+                        let raw = s
+                            .client()
+                            .read(id, telemetry::T_NTC_CC.addr, 3)
+                            .context("therm read")?;
+                        let [t0, t1, flags] =
+                            raw[..].try_into().ok().context("therm read short")?;
+                        snap.t_ntc_cc = i16::from_le_bytes([t0, t1]);
+                        snap.therm_flags = flags;
+                    }
                     if let Some(log) = self.log.as_mut() {
                         log.push(snap.host_ms, &snap, w.pwm)?;
                     }
