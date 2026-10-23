@@ -17,6 +17,7 @@ use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
 use osc_ident::fits::{Climb, RungPoint, StepSeries};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot, counts_q15};
+use osc_ident::thermal::{HoldPoll, ThermWindow};
 
 pub(crate) struct OutDir(pub(crate) PathBuf);
 
@@ -250,13 +251,90 @@ pub(crate) fn write_jam_pulses(dir: &OutDir, pulses: &[Pulse]) -> Result<()> {
 }
 
 /// The thermal hold's windows, kept with the run for an offline look.
-pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Result<()> {
+/// Every window of the thermal hold, as the run judged it.
+pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[ThermWindow]) -> Result<()> {
     let mut w = dir.file("anchor.csv")?;
-    writeln!(w, "t_ms,i,vdiff,duty_q15")?;
-    for s in samples {
-        writeln!(w, "{},{},{},{}", s.t_ms, s.i, s.vdiff, s.duty_q15)?;
+    writeln!(w, "t_ms,i,vdiff,duty_q15,pos,commanded,floors,still")?;
+    for x in samples {
+        let s = x.w;
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{},{}",
+            s.t_ms,
+            s.i,
+            s.vdiff,
+            s.duty_q15,
+            x.pos,
+            x.commanded as u8,
+            x.floors as u8,
+            x.still as u8
+        )?;
     }
     Ok(())
+}
+
+/// The thermal hold's windows back from anchor.csv, as the run judged
+/// them. Read a line at a time: a long hold lands a million rows.
+pub(crate) fn read_anchor_samples(dir: &Path) -> Result<Vec<ThermWindow>> {
+    let path = dir.join("anchor.csv");
+    let f = File::open(&path).with_context(|| format!("open {}", path.display()))?;
+    let mut out = Vec::new();
+    for (n, line) in BufReader::new(f).lines().enumerate() {
+        let line = line?;
+        if n == 0 || line.is_empty() {
+            continue;
+        }
+        let p: Vec<&str> = line.split(',').collect();
+        anyhow::ensure!(
+            p.len() >= 8,
+            "{}:{} has {} cols, want 8",
+            path.display(),
+            n + 1,
+            p.len()
+        );
+        out.push(ThermWindow {
+            w: WindowSample {
+                t_ms: p[0].parse()?,
+                i: p[1].parse()?,
+                vdiff: p[2].parse()?,
+                duty_q15: p[3].parse()?,
+            },
+            pos: p[4].parse()?,
+            commanded: p[5] == "1",
+            floors: p[6] == "1",
+            still: p[7] == "1",
+        });
+    }
+    Ok(out)
+}
+
+/// The thermal hold's polls back from anchor_snapshots.csv: the held
+/// current is the column [`snapshot_fields`] writes `i_tick_counts` under.
+pub(crate) fn read_anchor_polls(dir: &Path) -> Result<Vec<HoldPoll>> {
+    let cols = format!("{SNAPSHOT_COLUMNS},{THERM_COLUMNS}");
+    let col = |name: &str| {
+        cols.split(',')
+            .position(|c| c == name)
+            .with_context(|| format!("no {name} column"))
+    };
+    let (t, i, ntc, winding, lim) = (
+        col("host_ms")?,
+        col("i_hat_counts")?,
+        col("t_ntc_cc")?,
+        col("t_winding_cc")?,
+        col("i_lim_counts")?,
+    );
+    let mut out = Vec::new();
+    for r in rows(&dir.join("anchor_snapshots.csv"), cols.split(',').count())? {
+        out.push(HoldPoll {
+            t_ms: r[t].parse()?,
+            i_counts: r[i].parse()?,
+            t_ntc_cc: r[ntc].parse()?,
+            t_winding_cc: r[winding].parse()?,
+            i_lim_counts: r[lim].parse()?,
+        });
+    }
+    Ok(out)
 }
 
 pub(crate) fn write_rungs(dir: &OutDir, rungs: &[RungSummary]) -> Result<()> {
