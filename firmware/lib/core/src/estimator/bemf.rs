@@ -18,10 +18,8 @@ use crate::math::q_mul;
 /// `recip_arr` Q: chip const-evals `(1 << RECIP_ARR_SHIFT) / pwm_arr`. Q24
 /// keeps reciprocal quantization under arr/2^24 relative (arr=1200 -> 0.007%
 /// vs 1.2% at Q16). `drive_ticks * vdiff` <= 65535 * 4095 fits i32 and
-/// `q_mul` widens to i64, so the extra shift is free. The kernel computes
-/// `v_mean = q_mul(drive_ticks * vdiff, recip_arr, RECIP_ARR_SHIFT)` once
-/// per medium tick for the winding thermometer; the boxcar applies the same
-/// reciprocal to a half's summed `drive_ticks * vdiff`.
+/// `q_mul` widens to i64, so the extra shift is free. The boxcar applies
+/// the reciprocal to a half's summed `drive_ticks * vdiff`.
 pub const RECIP_ARR_SHIFT: u32 = 24;
 
 /// `recip_ke_q` (CALIB motor block) Q: c/s per vcount at Q6.10. SG90-scale

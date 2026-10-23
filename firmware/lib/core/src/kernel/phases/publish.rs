@@ -22,7 +22,6 @@ impl Medium {
             (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
             (&raw mut (*e).omega_bemf_cps)
                 .write_volatile(bemf::omega_cps_i16(self.omega_bemf.unwrap_or(0)));
-            (&raw mut (*e).r_hat_q12).write_volatile(self.thermal.r_q12());
             let md = &raw mut (*p).telemetry.mode;
             (&raw mut (*md).mode_active).write_volatile(self.ctl.life.mode as u8);
             (&raw mut (*md).fault_code).write_volatile(faults.code());

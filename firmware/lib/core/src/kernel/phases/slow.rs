@@ -1,21 +1,18 @@
 use super::Medium;
-use super::fast::Measured;
 use super::loops::faults::{self, FaultLatch};
-use crate::estimator::{bemf, thermal};
+use crate::kernel::DECIM_SLOW;
 use crate::kernel::config::KernelConfig;
-use crate::kernel::{DECIM_SLOW, phase};
-use crate::math::q_mul;
 
 impl Medium {
     /// SLOW, every DECIM_SLOW periods, in two stages a period apart, so
     /// neither sets the period's longest tick: on the due tick the permit
-    /// lease, undervoltage, the I2t heat on the held current `i_held` and
-    /// the thermometer's step on this tick's window; on the next period's
-    /// SLOW phase its temperature and overtemperature and the I2t ceiling.
+    /// lease, undervoltage and the I2t heat on the held current `i_held`;
+    /// on the next period's SLOW phase the I2t ceiling, the winding
+    /// estimate from the NTC and the heat, its derate and overtemperature.
     /// Whether a stage ran.
     pub(in crate::kernel) fn slow(
         &mut self,
-        m: &Measured,
+        ntc_raw: u16,
         i_held: i16,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
@@ -23,39 +20,19 @@ impl Medium {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
             if self.slow_periods == 1 {
-                self.slow_finish(cfg, faults);
+                self.slow_finish(ntc_raw, cfg, faults);
                 return true;
-            } else if self.slow_periods == DECIM_SLOW - 1 {
-                self.thermal.request(thermal::stage::NTC);
             }
             return false;
         }
         self.slow_periods = 0;
-        self.slow_due(m, i_held, cfg, faults);
+        self.slow_due(i_held, cfg, faults);
         true
     }
 
-    fn slow_due(&mut self, m: &Measured, i_held: i16, cfg: &KernelConfig, faults: &mut FaultLatch) {
+    fn slow_due(&mut self, i_held: i16, cfg: &KernelConfig, faults: &mut FaultLatch) {
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
         self.limits.heat(i_held, cfg.tau_shift());
-        // v_mean needs the taps' window valid (bemf RECIP_ARR contract)
-        let v_mean = m.vdiff.map(|vdiff| {
-            q_mul(
-                m.ticks as i32 * vdiff,
-                self.recip_arr_q24 as i32,
-                bemf::RECIP_ARR_SHIFT,
-            )
-        });
-        self.thermal.step(
-            &thermal::Sample {
-                v_mean,
-                i_meas: m.i_meas,
-                omega_hat_cps: self.fusion.omega_q16() >> 16,
-                ke_vpc_q: cfg.motor.ke_vpc_q,
-                pos_counts: self.fusion.theta_q16() >> 16,
-            },
-            &cfg.therm,
-        );
         // the rail tap samples drive or not, so a held sag never outlives the
         // sag itself: ack clears once the rail is back
         if self.vbus.vbus_counts() < cfg.thermal.v_undervolt_counts {
@@ -63,31 +40,15 @@ impl Medium {
         }
     }
 
-    fn slow_finish(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch) {
-        let t_cc = self.thermal.finish(&cfg.therm);
+    fn slow_finish(&mut self, ntc_raw: u16, cfg: &KernelConfig, faults: &mut FaultLatch) {
         self.limits.update_i2t(&cfg.limits, cfg.i_cont_log2());
-        // the fold reads the derate from the next period's LIMITS on, so it
-        // waits for SPARE_B; UNSET_CC sits under every threshold: no
-        // derate, no cutoff
-        self.thermal.request(thermal::stage::DERATE);
+        let t_cc = self
+            .thermal
+            .update(ntc_raw, self.limits.heat_counts2(), &cfg.therm);
+        // UNSET_CC sits under every threshold: no derate, no cutoff
+        self.limits.update_derate(t_cc, &cfg.limits, &cfg.thermal);
         if t_cc >= cfg.thermal.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
         }
-    }
-
-    /// SPARE_A and SPARE_B, while the thermometer has work; whether
-    /// a stage ran.
-    pub(in crate::kernel) fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) -> bool {
-        if k == phase::SPARE_A {
-            let due = self.thermal.pending() & thermal::stage::INSTALL != 0;
-            self.thermal.install();
-            return due;
-        }
-        if self.thermal.take(thermal::stage::DERATE) {
-            self.limits
-                .update_derate(self.thermal.t_cc(), &cfg.limits, &cfg.thermal);
-        }
-        self.thermal.side(ntc_raw, &cfg.therm);
-        true
     }
 }

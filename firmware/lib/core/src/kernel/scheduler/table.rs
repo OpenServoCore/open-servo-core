@@ -4,7 +4,7 @@
 use crate::Shared;
 use crate::kernel::KernelConfig;
 use crate::kernel::phases::Medium;
-use crate::kernel::phases::fast::{Command, Fast, Measured};
+use crate::kernel::phases::fast::{Command, Fast};
 use crate::kernel::phases::loops::faults::FaultLatch;
 
 /// Kernel tick rate, one ADC scan per PWM period (the chip asserts it).
@@ -34,18 +34,14 @@ pub mod phase {
     pub const VELOCITY: u8 = 4;
     /// Rail estimate, sensor screen, position error timer.
     pub const RAIL: u8 = 5;
-    /// The slow block, every DECIM_SLOW periods, and the thermometer's
-    /// finish one period later.
+    /// The slow block, every DECIM_SLOW periods, and its finish one period
+    /// later.
     pub const SLOW: u8 = 6;
     /// Estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
-    /// The configuration take after a commit; else, the period after the
-    /// thermometer's finish, the install of a reference it froze. A stage
-    /// whose phase another stage takes waits a period: its pending bit
-    /// carries it.
+    /// The configuration take after a commit.
     pub const SPARE_A: u8 = 8;
-    /// The NTC the period before a SLOW tick; the period after the finish,
-    /// the derate from its temperature and the cold check after an install.
+    /// The drive direction check while the wiring is unproven.
     pub const SPARE_B: u8 = 9;
 }
 
@@ -53,7 +49,7 @@ pub mod phase {
 pub const HEALTH_CLOSE_TICKS: u32 = 2 * DECIM_MED as u32;
 
 /// The phase every tick-load close lands on: the lightest Closed phase that
-/// carries no SLOW or thermometer stage and no configuration take.
+/// carries no SLOW stage and no configuration take.
 pub const HEALTH_CLOSE_PHASE: u8 = phase::PUBLISH;
 
 /// The most lost ticks one tick-load close counts: a longer hold-off, such
@@ -78,11 +74,9 @@ pub const fn health_close_lands(phase: usize) -> bool {
 impl Medium {
     /// Phase `k` of the medium chain (`phase`), on this tick's sample;
     /// whether a SLOW stage ran.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         k: u8,
-        m: &Measured,
         cfg: &KernelConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
@@ -96,7 +90,9 @@ impl Medium {
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
             phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
-            phase::SLOW => return self.slow(m, fast.i_meas_last(), cfg, faults),
+            phase::SLOW => {
+                return self.slow(shared.frame().ntc_raw(), fast.i_meas_last(), cfg, faults);
+            }
             phase::PUBLISH => self.publish(shared, faults, fast),
             _ => {}
         }

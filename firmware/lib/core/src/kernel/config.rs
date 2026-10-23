@@ -11,15 +11,14 @@ use crate::estimator::{NtcCfg, ThermCfg, window};
 use crate::regions::calib::{CalibMotor, CalibThermal, CalibWinding, addr as calib_addr};
 use crate::regions::config::{
     ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition,
-    ConfigLoopVelocity, ConfigPosSoft, ConfigThermal, ConfigThermalExt,
-    DEFAULT_RTHERM_COLD_BAND_Q016, DEFAULT_RTHERM_SEAT_BAND_COUNTS, addr as config_addr,
+    ConfigLoopVelocity, ConfigPosSoft, ConfigThermal, addr as config_addr,
 };
 use crate::{ControlTable, RegionStorageRaw, Shared};
 
 /// The kernel's inputs in the table: CONFIG from the soft limits on, CALIB
 /// up to its thermal block, one run across the region boundary.
 pub const SPAN_START: u16 = config_addr::pos_soft::POS_MIN_SOFT_COUNTS;
-pub const SPAN_END: u16 = calib_addr::thermal::TH_ALPHA_Q24 + CalibThermal::CT_SIZE;
+pub const SPAN_END: u16 = calib_addr::thermal::TH_RISE_Q016 + CalibThermal::CT_SIZE;
 const SPAN_WORDS: usize = (SPAN_END - SPAN_START) as usize / 4;
 
 #[repr(C)]
@@ -31,7 +30,7 @@ pub struct KernelConfig {
     pub loop_position: ConfigLoopPosition,
     pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
-    pub thermal_ext: ConfigThermalExt,
+    pub _rsvd_thermal_ext: [u8; 4],
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
     pub motor: CalibMotor,
@@ -75,7 +74,8 @@ const _: () = {
     assert!(offset_of!(KernelConfig, limits) + s == offset_of!(ControlTable, config.limits));
     assert!(offset_of!(KernelConfig, thermal) + s == offset_of!(ControlTable, config.thermal));
     assert!(
-        offset_of!(KernelConfig, thermal_ext) + s == offset_of!(ControlTable, config.thermal_ext)
+        offset_of!(KernelConfig, _rsvd_thermal_ext) + s
+            == offset_of!(ControlTable, config._rsvd_thermal_ext)
     );
     assert!(offset_of!(KernelConfig, fusion) + s == offset_of!(ControlTable, config.fusion));
     assert!(offset_of!(KernelConfig, fault_cfg) + s == offset_of!(ControlTable, config.fault_cfg));
@@ -94,7 +94,7 @@ impl KernelConfig {
             loop_position: ConfigLoopPosition::new(),
             limits: ConfigLimits::new(),
             thermal: ConfigThermal::new(),
-            thermal_ext: ConfigThermalExt::new(),
+            _rsvd_thermal_ext: [0; 4],
             fusion: ConfigFusion::new(),
             fault_cfg: ConfigFaultCfg::new(),
             motor: CalibMotor::new(),
@@ -131,8 +131,8 @@ impl KernelConfig {
         self.v_floor_q15 = [v0, v1];
     }
 
-    /// The span as the table holds it, then the belt and the thermometer's
-    /// config. The caller takes it only between commits.
+    /// The span as the table holds it, then the belt and the winding
+    /// estimate's config. The caller takes it only between commits.
     pub(super) fn take(&mut self, shared: &Shared) {
         let src = shared
             .table
@@ -148,24 +148,9 @@ impl KernelConfig {
             unsafe { dst.add(i).write(src.add(i).read_volatile()) };
         }
         self.ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
-        // a CONFIG image from before the bands existed reads them as zero
-        let or_default = |v: u16, d: u16| if v == 0 { d } else { v };
         let th = &self.calib_thermal;
         self.therm = ThermCfg {
-            alpha_q24: th.th_alpha_q24,
-            g_q016: th.th_g_q016,
-            mu_q016: th.th_mu_q016,
-            r_cold_q12: self.winding.r0_q12,
-            i_min_counts: self.thermal.rtherm_i_min_counts,
-            i_lim_counts: self.limits.current_limit_counts,
-            seat_band_counts: or_default(
-                self.thermal_ext.rtherm_seat_band_counts,
-                DEFAULT_RTHERM_SEAT_BAND_COUNTS,
-            ),
-            cold_band_q016: or_default(
-                self.thermal_ext.rtherm_cold_band_q016,
-                DEFAULT_RTHERM_COLD_BAND_Q016,
-            ),
+            rise_q016: th.th_rise_q016,
             ntc: NtcCfg {
                 raw_ref: th.ntc_raw_ref,
                 t_ref_cc: th.ntc_t_ref_cc,
@@ -173,7 +158,7 @@ impl KernelConfig {
                 k2_q24: th.ntc_k2_q24,
             },
         };
-        // Finish the thermometer stores before the log calls, so its
+        // Finish the estimate's stores before the log calls, so its
         // inputs need not spill across them. The table keeps the host's 0.
         self.limits.i_cont_counts = limits::i_cont_or_cap(&self.limits);
         self.i2t_shifts = limits::pack_shifts(

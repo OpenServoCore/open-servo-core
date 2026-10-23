@@ -34,7 +34,7 @@ pub trait TelStream {
     /// kernel's configuration take phase and while a take is pending, when
     /// the burst waits a tick, so no tick carries both a take and a row.
     fn on_publish(&mut self, hold_start: impl FnOnce() -> bool);
-    /// The tick runs a SLOW or thermometer stage: the TX lane takes no step
+    /// The tick runs a SLOW stage: the TX lane takes no step
     /// on it. Any time before [`Self::on_tick_end`].
     fn hold(&mut self) {}
     /// The tick's last work, after the drive is written: the row's second

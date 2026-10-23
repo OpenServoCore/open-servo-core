@@ -12,9 +12,8 @@ mod support;
 use osc_integration::mg90::{self, Mg90};
 use osc_integration::plant::{FakeIo, kernel, lut_live};
 use osc_servo_core::budget::Events;
-use osc_servo_core::kernel::phase;
 use osc_servo_core::kernel::phases::loops::faults::{
-    BIT_DATA, CODE_DRIVE_REVERSED, CODE_NONE, CODE_STALL, DRIVE_LEG_COUNTS, stage_due,
+    BIT_DATA, CODE_DRIVE_REVERSED, CODE_NONE, CODE_STALL, DRIVE_LEG_COUNTS,
 };
 use osc_servo_core::{
     ControlLifecycle, ControlTable, Kernel, Mode, MotorCmd, RegionStorage, Shared, StallResponse,
@@ -512,20 +511,19 @@ fn an_external_push_mid_travel_in_openloop_never_reads_reversed() {
     }
 }
 
-/// The check's stage takes a SPARE_B no thermometer stage or configuration
-/// take does: an open drive pushed back down most of the travel for 3 s,
-/// under a commit every 50 ms, ends a leg every few periods, and no tick
-/// runs the check's stage with another, a stage due on a SPARE_B the
-/// thermometer took waiting a period instead.
+/// The check's stage never shares a tick with a configuration take: an
+/// open drive pushed back down most of the travel for 3 s, under a commit
+/// every 50 ms, ends a leg every few periods, and no tick runs the check's
+/// stage with a take.
 #[test]
-fn the_drive_stage_never_shares_a_tick_with_a_thermometer_stage() {
+fn the_drive_stage_never_shares_a_tick_with_a_take() {
     let mut s = Servo::new(1, 3500.0, Mode::OpenLoop, |_| {});
     s.p.load = -250.0;
     s.control(|c| {
         c.goal_duty = 2500;
         c.torque_enable = true;
     });
-    let (mut drive, mut therm, mut takes, mut waited) = (0, 0, 0, 0);
+    let (mut drive, mut takes) = (0, 0);
     for t in 0..3000 * MS {
         if t % (50 * MS) == 0 {
             s.write_polarity(true);
@@ -533,18 +531,10 @@ fn the_drive_stage_never_shares_a_tick_with_a_thermometer_stage() {
         let before = s.k.probe_tags();
         s.tick();
         let ev = Events::between(before, s.k.probe_tags());
-        assert!(
-            !(ev.drive && (ev.side || ev.install || ev.refresh)),
-            "tick {t}: {ev:?}"
-        );
+        assert!(!(ev.drive && ev.refresh), "tick {t}: {ev:?}");
         drive += ev.drive as u32;
-        therm += ev.side as u32;
         takes += ev.refresh as u32;
-        waited += (before.phase == phase::SPARE_B && stage_due(before.drive) && ev.side) as u32;
     }
     assert_eq!(s.code(), CODE_NONE);
-    assert!(
-        drive > 50 && therm > 50 && takes > 50 && waited > 0,
-        "{drive} {therm} {takes} {waited}"
-    );
+    assert!(drive > 50 && takes > 50, "{drive} {takes}");
 }

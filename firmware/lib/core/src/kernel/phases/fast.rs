@@ -77,9 +77,6 @@ impl Command {
 #[derive(Copy, Clone)]
 pub struct Measured {
     pub i_meas: Option<i32>,
-    pub vdiff: Option<i32>,
-    /// Drive width of the window measured.
-    pub ticks: u32,
 }
 
 pub struct Fast {
@@ -269,11 +266,7 @@ impl Fast {
             (&raw mut (*t).tick_flags).write_volatile(flags);
         }
 
-        Measured {
-            i_meas,
-            vdiff,
-            ticks,
-        }
+        Measured { i_meas }
     }
 
     /// The motor command for this tick: the fault latch gates, then the

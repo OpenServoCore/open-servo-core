@@ -95,8 +95,8 @@ impl Medium {
         Self {
             dt_med_q32: timing.dt_med_q32,
             recip_arr_q24: timing.recip_arr_q24,
-            // primed so the FIRST period runs the slow block: the
-            // thermometer and the derate exist before any consumer sees them
+            // primed so the FIRST period runs the slow block: the winding
+            // estimate and the derate exist before any consumer sees them
             slow_periods: DECIM_SLOW - 1,
             ctl: Control::default(),
             run: false,
@@ -126,10 +126,10 @@ impl Medium {
         }
     }
 
-    /// First tick: the observer starts at the measurement, the
-    /// thermometer at the NTC ahead of the first SLOW tick.
+    /// First tick: the observer starts at the measurement, the winding
+    /// estimate at the NTC ahead of the first SLOW tick.
     pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig) {
         self.fusion.seed(pos_q4);
-        self.thermal.ntc(ntc_raw, &cfg.therm);
+        self.thermal.update(ntc_raw, 0, &cfg.therm);
     }
 }

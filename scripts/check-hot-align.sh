@@ -26,7 +26,6 @@ hot=(
     scan::swap_taps
     burst::on_dma_event
     burst::handshake
-    WindingTherm::install_reference
     TrajGen::step_position
     DutyLimiter::step
     Medium::drive_stage
@@ -34,10 +33,6 @@ hot=(
     __qingke_rt_TIM2
     __qingke_rt_USART1
     __qingke_rt_SysTick
-    WindingTherm::ntc
-    WindingTherm::bound
-    WindingTherm::reference
-    WindingTherm::cold_check
     math::recip_div
     limits::floor_log2
     ServoBus::drive_framer

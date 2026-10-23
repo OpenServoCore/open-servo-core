@@ -120,79 +120,22 @@ fn event_tick(phase: u8, ev: Events) -> u32 {
     tick.into_iter().max().unwrap_or(0) + budget::ENTRY_EXIT
 }
 
-/// A seated reference close, staged: the SLOW finish that freezes the
-/// window, the install, the side work after it, each driven at budget, and
-/// streaming with a TEL row and its bank on the same tick.
-#[rstest]
-#[case::quiet(false)]
-#[ignore = "the thermometer's stages are being trimmed: THERM_INSTALL and THERM_SIDE streaming run over the period at budget"]
-#[case::streaming(true)]
-fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
-    let carried = Events {
-        tel,
-        bank: tel,
-        ..Events::default()
-    };
-    let stages = [
-        (
-            phase::SLOW,
-            Events {
-                finish: true,
-                close: true,
-                ..carried
-            },
-        ),
-        (
-            phase::SPARE_A,
-            Events {
-                install: true,
-                ..carried
-            },
-        ),
-        (
-            phase::SPARE_B,
-            Events {
-                side: true,
-                ..carried
-            },
-        ),
-    ];
-    let over: Vec<_> = stages
-        .into_iter()
-        .map(|(p, ev)| (p, event_tick(p, ev)))
-        .filter(|&(_, t)| t > budget::TICK_PERIOD)
-        .collect();
-    assert!(
-        over.is_empty(),
-        "(phase, ticks) over {}: {over:?}",
-        budget::TICK_PERIOD
-    );
-}
-
 const NONE: Events = Events {
     refresh: false,
     tel: false,
     bank: false,
     slow: false,
     finish: false,
-    close: false,
-    install: false,
-    side: false,
     drive: false,
     health: false,
 };
 
-/// The SLOW block's stages, the due tick, the finish and a finish that
-/// freezes a reference, each on its own SLOW tick.
-const SLOW_STAGES: [Events; 3] = [
+/// The SLOW block's stages, the due tick and the finish, each on its own
+/// SLOW tick.
+const SLOW_STAGES: [Events; 2] = [
     Events { slow: true, ..NONE },
     Events {
         finish: true,
-        ..NONE
-    },
-    Events {
-        finish: true,
-        close: true,
         ..NONE
     },
 ];
@@ -254,14 +197,10 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{
-        DRIVE_STAGE, ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH,
-        THERM_INSTALL, THERM_SIDE, TROUGH_DONE,
+        DRIVE_STAGE, ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, TROUGH_DONE,
     };
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
-    let ahead = [REFRESH, THERM_INSTALL, THERM_SIDE, DRIVE_STAGE]
-        .into_iter()
-        .max()
-        .unwrap_or(0);
+    let ahead = REFRESH.max(DRIVE_STAGE);
     const { assert!(ENTRY + TROUGH_DONE <= NEXT_TROUGH) };
     let done = ENTRY + ahead + FRAME_DONE + copy;
     assert!(done <= NEXT_CREST, "{done} past {NEXT_CREST}");
@@ -279,7 +218,6 @@ fn slow_tick(r: Regime, stage: Events, c: Events) -> u32 {
     let ev = Events {
         slow: stage.slow,
         finish: stage.finish,
-        close: stage.close,
         ..c
     };
     budget::kernel_tick(r, phase::SLOW as usize, ev)
@@ -310,8 +248,8 @@ fn slow_stages_never_set_a_driven_tick_max_at_budget() {
 /// Open ticks leave at least this much of the period free at a SLOW stage.
 const OPEN_SLOW_FREE: u32 = budget::TICK_PERIOD / 10;
 
-/// Open, a SLOW stage may set the period's longest tick: the due stage is
-/// priced on a tracked seat, which OpenLoop can hold. Each stage tick,
+/// Open, a SLOW stage may set the period's longest tick: its rows are
+/// upper bounds, regime-blind past the due stage's. Each stage tick,
 /// carrying what any tick may carry, with the health close where it can
 /// land and interrupt entry and exit, still leaves [`OPEN_SLOW_FREE`].
 #[test]
@@ -557,8 +495,7 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
 
 /// The default six fields as a 12 B row, the longest a row runs, stepping
 /// at budget at 3M: every frame good, no row dropped, no body over the
-/// period but a thermometer stage's (those stages are being trimmed; their
-/// pins report alone).
+/// period.
 #[test]
 fn tel_twelve_byte_rows_fit_at_budget_while_stepping() {
     assert_eq!(SIX.row_bytes(), osc_servo_core::tel::ROW_BYTES_MAX);
@@ -570,10 +507,9 @@ fn tel_twelve_byte_rows_fit_at_budget_while_stepping() {
             .collect();
         let bad = stream.iter().filter(|f| !frame_crc_ok(f)).count();
         assert_eq!(
-            (stream.len(), bad, drops, st.over - st.therm_over),
+            (stream.len(), bad, drops, st.over),
             (TEL_FRAMES as usize, 0, 0, 0),
-            "start {k}: frames, CRC-bad, rows dropped, bodies over the period ({} thermal)",
-            st.therm_over
+            "start {k}: frames, CRC-bad, rows dropped, bodies over the period"
         );
     }
 }
@@ -672,7 +608,7 @@ fn tel_ack_crc_survives_a_burst_start() {
     }
 }
 
-/// A SLOW or thermometer stage tick holds the TX lane: at every start
+/// A SLOW stage tick holds the TX lane: at every start
 /// offset, stepping at budget, the burst's stage ticks carry their rows
 /// and never a lane step.
 #[test]
@@ -686,8 +622,8 @@ fn tel_lane_never_steps_on_a_stage_tick() {
     }
 }
 
-/// The tick-load close lands on phase PUBLISH alone, never on a SLOW or
-/// thermometer stage's phase: at every start offset of a burst, stepping
+/// The tick-load close lands on phase PUBLISH alone, never on a SLOW
+/// stage's phase: at every start offset of a burst, stepping
 /// at budget.
 #[test]
 fn health_close_lands_only_on_publish_while_streaming() {
@@ -823,16 +759,10 @@ fn a_burst_never_streams_through_a_config_take() {
             .collect();
         let bad = stream.iter().filter(|f| !frame_crc_ok(f)).count();
         assert_eq!(
-            (
-                st.takes,
-                st.take_rows,
-                st.row_misses,
-                st.over - st.therm_over
-            ),
+            (st.takes, st.take_rows, st.row_misses, st.over),
             (1, 0, 0, 0),
             "{how:?} start {k}: takes, rows on a take's tick, row charge misses, bodies over \
-             the period ({} thermal): {st:?}",
-            st.therm_over
+             the period: {st:?}"
         );
         assert_eq!(
             (stream.len(), bad, drops),

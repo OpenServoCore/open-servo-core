@@ -110,7 +110,6 @@ fn seed(shared: &Shared) {
         c.thermal.cutoff_cc = 10000;
         c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
-        c.thermal.rtherm_i_min_counts = 300;
         // 1200 counts over 200 vcounts: 6 counts per vcount
         c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;
@@ -1092,16 +1091,12 @@ fn current_mode_clamps_goal_to_i_lim() {
     assert_eq!(k.medium.i_ref_cc, -1200);
 }
 
-/// The thermometer's bench MG90 model on the test rig: tau 128 s, a small
-/// `g` so the carry's steady excess at the rig's 722 x 400 vcount-ccount
-/// hold is 4.4 C, mu for a 2 s settle at 400 counts, the dev board's
-/// 10K/10K/3950 NTC reading 25.00 C at the rig's 2048 counts.
-fn seed_thermometer(sh: &Shared, r_cold_q12: u16) {
+/// The winding estimate's bench MG90 constant (the NTC on a board in room
+/// air) and the dev board's 10K/10K/3950 NTC reading 25.00 C at the rig's
+/// 2048 counts, on an OpenLoop hold.
+fn seed_estimate(sh: &Shared) {
     write_config(sh, |t| {
-        t.calib.thermal.th_alpha_q24 = 2097;
-        t.calib.thermal.th_g_q016 = 100;
-        t.calib.thermal.th_mu_q016 = 5369;
-        t.calib.winding.r0_q12 = r_cold_q12;
+        t.calib.thermal.th_rise_q016 = 1044;
         t.calib.thermal.ntc_raw_ref = 2048;
         t.calib.thermal.ntc_t_ref_cc = 2500;
         t.calib.thermal.ntc_k1_q88 = 563;
@@ -1109,11 +1104,11 @@ fn seed_thermometer(sh: &Shared, r_cold_q12: u16) {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
+        // the hold sits over the continuous rating: the I2t budget and the
+        // press are not under test
+        t.config.limits.i_cont_counts = 0;
     });
 }
-
-/// The rig hold's own R, 722 x 4096 / 400, as the stored cold R at 25 C.
-const RIG_R_COLD_Q12: u16 = 7393;
 
 fn therm(sh: &Shared) -> (i16, u8, u16, i16) {
     sh.table.with(|t| {
@@ -1126,28 +1121,21 @@ fn therm(sh: &Shared) -> (i16, u8, u16, i16) {
     })
 }
 
-/// SLOW ticks in fast ticks; a reference needs 192 SLOW ticks at a seat.
+/// A SLOW period in fast ticks.
 const SLOW: u32 = DECIM_MED as u32 * DECIM_SLOW as u32;
 const BASE_FAST_TICKS: u32 = 200 * SLOW;
+/// SLOW periods for the seed's 4096 ms leak (shift 8) to settle a step in
+/// the held current to the integer EWMA's fixed point: 2501 from zero.
+const HEAT_SETTLE: u32 = 2600 * SLOW;
 
-/// Without model constants the thermometer reads its sentinel and nothing
-/// derates, however hot the hold would read through the retired anchor.
+/// Without the rise constant the estimate reads its sentinel and nothing
+/// derates, however long the hold.
 #[test]
-fn thermometer_without_a_model_reads_the_sentinel_and_never_derates() {
+fn the_estimate_without_a_rise_reads_the_sentinel_and_never_derates() {
     let sh = Shared::new();
     seed(&sh);
-    write_config(&sh, |t| {
-        t.calib.thermal.ntc_raw_ref = 2048;
-        t.calib.thermal.ntc_t_ref_cc = 2500;
-        t.calib.thermal.ntc_k1_q88 = 563;
-        t.calib.thermal.ntc_k2_q24 = 5800;
-        t.control.lifecycle.torque_enable = true;
-        t.control.lifecycle.mode = Mode::OpenLoop;
-        t.control.lifecycle.goal_duty = 8000;
-        // the hold sits over the continuous rating: the I2t budget and the
-        // press are not under test
-        t.config.limits.i_cont_counts = 0;
-    });
+    seed_estimate(&sh);
+    write_config(&sh, |t| t.calib.thermal.th_rise_q016 = 0);
     let mut k = kernel();
     let hot = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hot);
@@ -1159,82 +1147,36 @@ fn thermometer_without_a_model_reads_the_sentinel_and_never_derates() {
     assert_eq!(k.faults.mask(), 0);
 }
 
-/// A seat change with +1% of contact (the retired anchor read it as +2.6 C)
-/// re-bases on the carried temperature: the step is under 0.5 C.
+/// A 400-count hold settles the I2t heat at the integer EWMA's fixed point
+/// on shift 8, 159984 counts squared (`(x - h) >> 8` stops moving once the
+/// gap is under 256 in the 4-bit guard), and the estimate reads the NTC
+/// plus the rise on it: 2500 + (159984 x 1044 >> 16) = 5048.
 #[test]
-fn seat_change_rebases_the_ratio_without_a_temperature_step() {
+fn the_estimate_reads_the_ntc_plus_the_rise_on_the_heat() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    seed_estimate(&sh);
     let mut k = kernel();
-    let seat_a = frame(2000, BIAS + 400);
-    settle(&mut k, &sh, seat_a);
-    ticks(&mut k, &sh, seat_a, BASE_FAST_TICKS);
-    let (t_a, flags, _, t_ntc) = therm(&sh);
-    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
-    assert_eq!(t_ntc, 2500);
-    // the base inherits the boot prior: half the steady excess at the
-    // rig's 1200-count limit, 19.8 C
-    assert!((4400..4500).contains(&t_a), "{t_a}");
-    // 100 counts away, 396 counts at the same duty: R +1.0%
-    let seat_b = frame(2100, BIAS + 396);
-    ticks(&mut k, &sh, seat_b, BASE_FAST_TICKS);
-    let (t_b, flags, _, _) = therm(&sh);
-    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
-    assert!((t_b - t_a).abs() < 50, "{t_b} from {t_a}");
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hot);
+    ticks(&mut k, &sh, hot, HEAT_SETTLE);
+    assert_eq!(k.fast.i_meas_last(), 400);
+    let (t, flags, i_lim, t_ntc) = therm(&sh);
+    assert_eq!((t, flags, t_ntc), (5048, 0, 2500));
+    assert_eq!(i_lim, 1200, "under the derate");
+    assert_eq!(k.faults.mask(), 0);
 }
 
-/// A derate step at the seat (the current drops an eighth or more while
-/// the duty holds) would read +17% of R as heat through the ratio; the
-/// base is dropped and the carry holds the temperature within 0.5 C.
+/// Torque off: the held current drops to zero, the heat leaks on tau, and
+/// a derate taken on the hold lifts at rest instead of latching. The hot
+/// estimate (5048) derates the 1200-count cap to 1200 x (6500 - 5048) /
+/// 3000 = 580; five tau (1280 SLOW periods) leave 1059 counts squared of
+/// heat, 2516.
 #[test]
-fn a_derate_step_at_a_seat_reads_under_half_a_degree() {
+fn torque_off_lets_the_heat_leak_and_the_derate_lift() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, RIG_R_COLD_Q12);
-    let mut k = kernel();
-    let hold = frame(2000, BIAS + 400);
-    settle(&mut k, &sh, hold);
-    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
-    let (t0, _, _, _) = therm(&sh);
-    ticks(&mut k, &sh, frame(2000, BIAS + 340), 20 * SLOW);
-    let (t1, flags, _, _) = therm(&sh);
-    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 0);
-    assert!((t1 - t0).abs() < 50, "{t1} from {t0}");
-}
-
-/// A +1.5% contact step inside one hold (+3.9 C by the ratio) rises faster
-/// than heating can at a limit near the hold (500 counts: 0.3 C/s): the
-/// base is dropped, the carry keeps the temperature from before the step,
-/// and neither the re-base nor the next seat reads it.
-#[test]
-fn a_contact_step_inside_a_hold_is_rejected_on_its_rise_rate() {
-    let sh = Shared::new();
-    seed(&sh);
-    seed_thermometer(&sh, RIG_R_COLD_Q12);
-    write_config(&sh, |t| t.config.limits.current_limit_counts = 500);
-    let mut k = kernel();
-    let hold = frame(2000, BIAS + 400);
-    settle(&mut k, &sh, hold);
-    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
-    let (t0, _, _, _) = therm(&sh);
-    ticks(&mut k, &sh, frame(2000, BIAS + 394), 400 * SLOW);
-    let (t1, flags, _, _) = therm(&sh);
-    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
-    assert!((t1 - t0).abs() < 50, "{t1} from {t0}");
-    ticks(&mut k, &sh, frame(2100, BIAS + 394), BASE_FAST_TICKS);
-    let (t2, _, _, _) = therm(&sh);
-    assert!((t2 - t1).abs() < 50, "{t2} from {t1}");
-}
-
-/// Torque off: the carry decays the excess toward the NTC on tau, so a
-/// derate taken on the boot prior (the bench proxy band, 35 C) lifts at
-/// rest instead of latching.
-#[test]
-fn torque_off_carries_the_estimate_to_the_ntc_and_the_derate_lifts() {
-    let sh = Shared::new();
-    seed(&sh);
-    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    seed_estimate(&sh);
     write_config(&sh, |t| {
         t.config.thermal.derate_start_cc = 3500;
         t.config.thermal.cutoff_cc = 6500;
@@ -1243,17 +1185,17 @@ fn torque_off_carries_the_estimate_to_the_ntc_and_the_derate_lifts() {
     let mut k = kernel();
     let hold = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hold);
-    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
+    ticks(&mut k, &sh, hold, HEAT_SETTLE);
     let (t_hot, _, i_lim, _) = therm(&sh);
-    assert!(t_hot > 4400 && i_lim < 1200, "{t_hot} {i_lim}");
+    assert_eq!((t_hot, i_lim), (5048, 580));
+    assert_eq!(limit_flags(&sh), limits::flag::DERATE);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    // five tau: 40000 SLOW ticks
-    ticks(&mut k, &sh, frame(2000, BIAS), 40_000 * SLOW);
+    ticks(&mut k, &sh, frame(2000, BIAS), 1280 * SLOW);
     let (t, flags, i_lim, t_ntc) = therm(&sh);
-    assert!((t - t_ntc).abs() < 40, "{t} vs {t_ntc}");
-    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 0);
+    assert_eq!((t, flags, t_ntc), (2516, 0, 2500));
     assert_eq!(i_lim, 1200);
+    assert_eq!(k.faults.mask(), 0);
 }
 
 #[test]
@@ -2485,15 +2427,14 @@ impl TelStream for HoldTel {
 }
 
 /// The kernel holds the TX lane on every tick that runs a SLOW stage (due
-/// or finish) or a thermometer stage (an install or a side, each consuming
-/// its pending bit) and on no other: never a configuration take's tick, never a
-/// plain one. A tracked seat runs every stage, an install included. The
-/// stages are the budget probe's (`Events::between` on the tags).
+/// or finish) and on no other: never a configuration take's tick, never a
+/// plain one. The stages are the budget probe's (`Events::between` on the
+/// tags).
 #[test]
-fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
+fn slow_stage_ticks_hold_the_tel_lane() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    seed_estimate(&sh);
     let mut k = Kernel::with_tel(
         FakeIo {
             sensors: FakeSensors,
@@ -2504,8 +2445,8 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
     );
     let hot = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hot);
-    // due, finish, install, side, configuration take
-    let mut seen = [0u32; 5];
+    // due, finish, configuration take
+    let mut seen = [0u32; 3];
     for t in 0..BASE_FAST_TICKS {
         if t == BASE_FAST_TICKS / 2 {
             write_config(&sh, |_| {});
@@ -2514,11 +2455,11 @@ fn slow_and_thermometer_stage_ticks_hold_the_tel_lane() {
         k.tel.held = false;
         k.on_scan(hot, &sh);
         let ev = Events::between(before, k.probe_tags());
-        let kind = [ev.slow, ev.finish, ev.install, ev.side, ev.refresh];
+        let kind = [ev.slow, ev.finish, ev.refresh];
         for (n, &hit) in seen.iter_mut().zip(&kind) {
             *n += hit as u32;
         }
-        let want = kind[..4].iter().any(|&h| h);
+        let want = kind[..2].iter().any(|&h| h);
         assert_eq!(k.tel.held, want, "tick {t}: {kind:?}");
     }
     assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
@@ -2534,7 +2475,7 @@ fn the_probe_books_from_carried_tags_as_from_tags_around_the_body() {
     use crate::budget::probe::{HALT_TICKS, KernelProbe};
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    seed_estimate(&sh);
     let mut k = Kernel::with_tel(
         FakeIo {
             sensors: FakeSensors,
@@ -2547,7 +2488,7 @@ fn the_probe_books_from_carried_tags_as_from_tags_around_the_body() {
     let mut around = KernelProbe::ZERO;
     let mut carried = KernelProbe::ZERO;
     let mut banks = 0u32;
-    let mut events = [0u32; 9];
+    let mut events = [0u32; 6];
     let ticks = BASE_FAST_TICKS + 2000;
     for t in 0..ticks {
         match t {
@@ -2582,9 +2523,6 @@ fn the_probe_books_from_carried_tags_as_from_tags_around_the_body() {
         let kinds = [
             ev.slow,
             ev.finish,
-            ev.close,
-            ev.install,
-            ev.side,
             ev.refresh,
             ev.bank,
             ev.health,
@@ -2964,7 +2902,7 @@ fn kernel_never_reads_a_set_under_commit() {
 }
 
 #[test]
-fn a_take_moves_the_probe_tag_at_therm_install_alone() {
+fn a_take_moves_the_probe_tag_at_spare_a_alone() {
     let f = frame(2000, BIAS);
     let sh = Shared::new();
     seed(&sh);
@@ -3286,70 +3224,35 @@ fn the_slow_block_runs_every_32_periods() {
     }
 }
 
-#[test]
-fn a_take_owns_therm_install_and_the_install_waits_a_period() {
-    use crate::estimator::thermal::stage;
-    let f = frame(2000, BIAS);
-    let sh = Shared::new();
-    seed(&sh);
-    let mut k = kernel();
-    // past the first SLOW finish's period, which the thermometer sits out
-    for _ in 0..=2 * DECIM_MED {
-        k.on_scan(f, &sh);
-    }
-    write_config(&sh, |t| t.config.limits.stall_time_ticks = ms_ticks(20));
-    run_to(&mut k, &sh, f, phase::SPARE_A);
-    k.medium.thermal.request(stage::INSTALL | stage::NTC);
-    k.on_scan(f, &sh);
-    assert_eq!(k.cfg.limits.stall_time_ticks, 400, "the take ran");
-    let pending = k.medium.thermal.pending();
-    assert_ne!(pending & stage::INSTALL, 0, "the install waits");
-    k.on_scan(f, &sh);
-    assert_eq!(
-        k.medium.thermal.pending() & stage::NTC,
-        0,
-        "SPARE_B is its own"
-    );
-    run_to(&mut k, &sh, f, phase::SPARE_A);
-    k.on_scan(f, &sh);
-    assert_eq!(
-        k.medium.thermal.pending() & stage::INSTALL,
-        0,
-        "a period later"
-    );
-}
-
-/// The SLOW block's stages land one per period: the due stage, the finish
-/// a period later, then the thermometer's install and derate on the spare
-/// phases of the period after that.
+/// The SLOW block's stages land one per period: the due stage, then the
+/// finish on the next period's SLOW phase, then nothing until the next
+/// due period, DECIM_SLOW periods after the first.
 #[test]
 fn the_slow_stages_take_one_period_each() {
-    use crate::estimator::thermal::stage;
     let f = frame(2000, BIAS);
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    run_to(&mut k, &sh, f, phase::SLOW);
-    k.on_scan(f, &sh);
-    assert_eq!(k.medium.slow_periods, 0, "the due stage ran");
-    run_to(&mut k, &sh, f, phase::SLOW);
-    k.on_scan(f, &sh);
-    assert_ne!(
-        k.medium.thermal.pending() & stage::DERATE,
-        0,
-        "the finish asked"
-    );
-    run_to(&mut k, &sh, f, phase::CONTROL);
-    assert_ne!(
-        k.medium.thermal.pending() & stage::DERATE,
-        0,
-        "not in its period"
-    );
-    k.on_scan(f, &sh);
-    run_to(&mut k, &sh, f, phase::CONTROL);
+    let mut stages: heapless::Vec<(u32, bool, bool), 4> = heapless::Vec::new();
+    for t in 0..2 * SLOW {
+        let before = k.probe_tags();
+        k.on_scan(f, &sh);
+        let ev = Events::between(before, k.probe_tags());
+        if ev.slow || ev.finish {
+            stages
+                .push((t, ev.slow, ev.finish))
+                .expect("four stages at most");
+        }
+    }
+    let due = phase::SLOW as u32;
+    let med = DECIM_MED as u32;
     assert_eq!(
-        k.medium.thermal.pending() & stage::DERATE,
-        0,
-        "the next one"
+        stages[..],
+        [
+            (due, true, false),
+            (due + med, false, true),
+            (due + SLOW, true, false),
+            (due + SLOW + med, false, true),
+        ]
     );
 }

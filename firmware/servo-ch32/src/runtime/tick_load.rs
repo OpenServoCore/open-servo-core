@@ -343,8 +343,8 @@ mod tests {
 
     /// The kernel's executed ticks and this count advance together, a
     /// capture pausing both: whatever captures land, every close lands on
-    /// the boot count's PUBLISH ticks, one in twenty, so never on a SLOW,
-    /// thermometer or refresh phase.
+    /// the boot count's PUBLISH ticks, one in twenty, so never on a SLOW
+    /// or refresh phase.
     #[test]
     fn a_capture_keeps_the_close_on_the_publish_phase() {
         let mut load = TickLoad::new();

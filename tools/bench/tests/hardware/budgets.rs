@@ -17,8 +17,8 @@
 //! rail middle, each drive ending centred with torque off; the last window
 //! ends rebooted.
 //! `seated` runs only when `BUDGET_WINDOWS` names it: it needs the horn
-//! clamped at mid travel, and holds a goal past the clamp so the
-//! thermometer tracks a seat.
+//! clamped at mid travel, and holds a goal past the clamp so the drive
+//! holds current on a still shaft.
 //! Kernel ticks book by drive arm. A window image (`--features
 //! bench-window`, `scripts/build-image.sh --window`) also prints gamma(k),
 //! the long ticks by arm and the entry lateness; the standard bench image
@@ -59,7 +59,6 @@ use osc_servo_core::budget::probe::{
     WindowProbe, rows, us,
 };
 use osc_servo_core::budget::{Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
-use osc_servo_core::estimator::thermal::flag;
 use osc_servo_core::kernel::HEALTH_LOST_MAX;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::{
@@ -71,7 +70,6 @@ use osc_servo_core::regions::telemetry::addr::tick::{CURRENT_RAW, POS, SAMPLE_TI
 use osc_servo_core::regions::telemetry_ext::addr::health::{
     STACK_FREE_MIN, TEL_DROP_COUNT, TICK_LOST_COUNT, TICK_OVER_COUNT,
 };
-use osc_servo_core::regions::telemetry_ext::addr::therm::THERM_FLAGS;
 use serial_test::serial;
 
 use crate::support::{Bench, DRIVE_CHECK_DUTY_Q15, bench};
@@ -587,15 +585,8 @@ fn named(name: &str) -> bool {
 }
 
 /// Hold a goal past the clamp: the drive pushes at the current limit on a
-/// still shaft, which the thermometer gates as a seat and tracks once its
-/// reference window closes. Fails when the thermometer has no model, the
-/// shaft moved (no clamp), or no seat was tracked.
+/// still shaft. Fails when the shaft moved (no clamp).
 fn seated(b: &mut Bench, failed: &mut Vec<String>) {
-    let flags = |b: &mut Bench| read_bytes::<1>(b, THERM_FLAGS)[0];
-    if flags(b) & flag::UNSET != 0 {
-        failed.push("seated: the thermometer has no model".into());
-        return;
-    }
     let here = present(b);
     driven(b, |b| {
         hold_at(b, here + SEAT_PUSH);
@@ -603,9 +594,6 @@ fn seated(b: &mut Bench, failed: &mut Vec<String>) {
         let moved = present(b) - here;
         if moved.abs() > SEAT_MOVE_MAX {
             failed.push(format!("seated: the shaft moved {moved} counts"));
-        }
-        if flags(b) & flag::TRACK == 0 {
-            failed.push("seated: no seat tracked".into());
         }
     })
 }

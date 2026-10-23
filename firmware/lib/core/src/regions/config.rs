@@ -206,7 +206,8 @@ pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 // `vmotor_counts`.
 pub const BURST_MAX_MV: u16 = 3200;
 
-/// Thermal derate/cutoff, undervolt floor, winding-R estimator gates.
+/// Thermal derate/cutoff on the winding estimate, undervolt floor. The
+/// reserved word held the retired resistance thermometer's current gate.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
@@ -216,7 +217,8 @@ pub struct ConfigThermal {
     #[ct_field(lt = &addr::thermal::CUTOFF_CC)]
     pub recover_cc: i16,
     pub v_undervolt_counts: u16,
-    pub rtherm_i_min_counts: u16,
+    #[ct_field(skip)]
+    pub _rsvd: u16,
 }
 
 // 80C derate onset / 100C cutoff / 90C recover.
@@ -228,26 +230,6 @@ pub const DEFAULT_RECOVER_CC: i16 = 9000;
 // Pack-health thresholds are per-product tuning, written by the host.
 // Reaches the chip in vcounts through `vmotor_counts`.
 pub const DEFAULT_V_UNDERVOLT_MV: u16 = 2900;
-// Under the class current limit, or the winding thermometer never samples.
-pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 150;
-
-/// Winding thermometer seat rules: `rtherm_seat_band_counts` is the
-/// position band one seat spans (beyond it the same-seat ratio re-bases),
-/// `rtherm_cold_band_q016` the cold-R divergence that raises the
-/// recalibrate flag (Q0.16 of the stored cold R). Zero reads as the default.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct ConfigThermalExt {
-    pub rtherm_seat_band_counts: u16,
-    pub rtherm_cold_band_q016: u16,
-}
-
-// Half a commutator period on a 308:1 train is ~2 output counts, and the pot
-// rests within that; a wider band let a 1.8-bar move (+/-3% of R) pass.
-pub const DEFAULT_RTHERM_SEAT_BAND_COUNTS: u16 = 2;
-// 3% = 8 C: above the in-servo seat cluster (+/-1.5%), under half of the
-// +7% the bench motor shifted after its first running.
-pub const DEFAULT_RTHERM_COLD_BAND_Q016: u16 = 1966;
 
 /// Fusion observer correction gains.
 #[repr(C)]
@@ -320,7 +302,9 @@ pub struct ConfigRegs {
     pub loop_position: ConfigLoopPosition,
     pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
-    pub thermal_ext: ConfigThermalExt,
+    /// Held the retired resistance thermometer's seat rules.
+    #[ct_section(skip)]
+    pub _rsvd_thermal_ext: [u8; 4],
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
 }
@@ -344,7 +328,6 @@ pub struct CurrentDefaults {
     pub i_cont_counts: u16,
     pub stall_release_counts: u16,
     pub oc_trip_counts: u16,
-    pub rtherm_i_min_counts: u16,
 }
 
 impl CurrentDefaults {
@@ -364,12 +347,6 @@ impl CurrentDefaults {
                 vdd_mv,
             ),
             oc_trip_counts: current_counts(DEFAULT_OC_TRIP_MA, shunt_r_mohm, gain_milli, vdd_mv),
-            rtherm_i_min_counts: current_counts(
-                DEFAULT_RTHERM_I_MIN_MA,
-                shunt_r_mohm,
-                gain_milli,
-                vdd_mv,
-            ),
         }
     }
 }
@@ -489,7 +466,6 @@ mod tests {
         assert_eq!(d.i_cont_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.oc_trip_counts, 1352);
-        assert_eq!(d.rtherm_i_min_counts, 92);
     }
 
     #[test]

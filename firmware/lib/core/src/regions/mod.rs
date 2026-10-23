@@ -12,7 +12,7 @@
 //!   PROFILE   0x280..0x2C0  ( 64 B) - read-profile span words (sec 5.2)
 //!   BURST     0x2C0..0x3C0  (256 B) - RO paged shunt-capture readback
 //!   TELEMETRY-EXT 0x3C0..0x400 (64 B) - RO from host: health, the taps'
-//!                                       floor, the thermometer
+//!                                       floor, the winding estimate
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
 //! Cross-domain readers that must avoid forming `&T` (aliasing-sensitive
@@ -35,7 +35,7 @@ pub use calib::{
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
     ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys, ConfigPosSoft, ConfigRegs,
-    ConfigThermal, ConfigThermalExt, StallResponse,
+    ConfigThermal, StallResponse,
 };
 pub use control::{ControlBurst, ControlLifecycle, ControlRegs, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
@@ -133,9 +133,6 @@ impl ControlTableCell {
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
             cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
             cfg.thermal.v_undervolt_counts = v_undervolt_counts;
-            cfg.thermal.rtherm_i_min_counts = current.rtherm_i_min_counts;
-            cfg.thermal_ext.rtherm_seat_band_counts = config::DEFAULT_RTHERM_SEAT_BAND_COUNTS;
-            cfg.thermal_ext.rtherm_cold_band_q016 = config::DEFAULT_RTHERM_COLD_BAND_Q016;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
             cfg.fault_cfg.pos_error_time_ticks = config::DEFAULT_POS_ERROR_TIME_TICKS;
             cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
@@ -391,7 +388,7 @@ mod tests {
         assert_eq!(motor::R_Q12, super::CALIB_BASE_ADDR);
         assert_eq!(motor::KE_VPC_Q, 0x08A);
         assert_eq!(winding::R0_Q12, 0x08C);
-        assert_eq!(thermal::TH_ALPHA_Q24, 0x08E);
+        assert_eq!(thermal::TH_RISE_Q016, 0x08E);
         assert_eq!(thermal::NTC_K2_Q24, 0x09A);
         assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x09C);
         assert_eq!(pot::RAW_MIN, 0x0A0);
@@ -495,7 +492,7 @@ mod tests {
     /// TELEMETRY behind the sec 5.4 common block and the mode bytes: the
     /// tick block first, 4-aligned, the ADC's two scans at its front in
     /// slot order, the published shunt and taps behind them, then the
-    /// medium-rate blocks; health, the taps' floor and the thermometer in
+    /// medium-rate blocks; health, the taps' floor and the estimate in
     /// TELEMETRY-EXT. The common row sets are each at most two chunks of
     /// 12 B: the ident four (pos, then duty to vdiff), the default six (pos,
     /// then current_raw to current_trough), the R/L set (vbus_raw to duty).

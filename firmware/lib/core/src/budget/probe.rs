@@ -9,7 +9,6 @@
 use super::{
     Body, CLOCK_HZ, EVENT_REGIMES, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS,
 };
-use crate::estimator::thermal::stage;
 use crate::kernel::phases::loops::faults::stage_due;
 use crate::kernel::{ProbeTags, phase};
 use crate::tel::STREAM_SAMPLES_MAX;
@@ -19,14 +18,10 @@ impl Events {
     /// on either side of the body; `tel`, `bank` and `health` are the
     /// caller's.
     pub fn between(before: ProbeTags, after: ProbeTags) -> Self {
-        let ran = before.therm & !after.therm;
         Self {
             refresh: after.config_seq != before.config_seq,
             slow: before.slow_due,
             finish: before.slow_finish,
-            close: before.slow_finish && after.therm & stage::INSTALL != 0,
-            install: ran & stage::INSTALL != 0,
-            side: ran & (stage::NTC | stage::DERATE | stage::COLD) != 0,
             drive: before.phase == phase::SPARE_B
                 && stage_due(before.drive)
                 && after.drive != before.drive,
@@ -319,14 +314,9 @@ pub struct KernelProbe {
     pub tel: [Tally; EVENT_REGIMES],
     /// Ticks that took the configuration.
     pub refresh: Load,
-    /// The SLOW block's due ticks by event row, its finish ticks, and the
-    /// finishes that froze a thermal reference window; the thermometer's
-    /// stages on phases SPARE_A and SPARE_B.
+    /// The SLOW block's due ticks by event row and its finish ticks.
     pub slow: [Load; EVENT_REGIMES],
     pub finish: Load,
-    pub close: Load,
-    pub install: Load,
-    pub side: Load,
     /// The drive direction check's stages on phase SPARE_B.
     pub drive: Load,
 }
@@ -342,7 +332,6 @@ impl KernelProbe {
             booted: false,
             slow_due: false,
             slow_finish: false,
-            therm: 0,
             regime: Regime::Open,
             drive: 0,
         },
@@ -357,9 +346,6 @@ impl KernelProbe {
         refresh: Load::ZERO,
         slow: [Load::ZERO; EVENT_REGIMES],
         finish: Load::ZERO,
-        close: Load::ZERO,
-        install: Load::ZERO,
-        side: Load::ZERO,
         drive: Load::ZERO,
     };
 
@@ -388,7 +374,6 @@ impl KernelProbe {
             && !health
             && banks as u8 == self.banks
             && a.config_seq == b.config_seq
-            && a.therm == b.therm
             && a.regime == b.regime
             && a.drive == b.drive
             && !b.slow_due
@@ -480,18 +465,12 @@ impl KernelProbe {
         };
         if ev.refresh {
             self.refresh.add(body);
-        } else if ev.close {
-            self.close.add(body);
         } else if ev.slow {
             if let Some(l) = self.slow.get_mut(r) {
                 l.add(body);
             }
         } else if ev.finish {
             self.finish.add(body);
-        } else if ev.install {
-            self.install.add(body);
-        } else if ev.side {
-            self.side.add(body);
         } else if ev.drive {
             self.drive.add(body);
         } else if ev.health {
@@ -587,8 +566,7 @@ impl KernelProbe {
         let entries = r.word();
         let halts = r.word();
         let [phase, config_seq, booted, slow_due] = r.word().to_le_bytes();
-        let [slow_finish, therm, regime, drive] = r.word().to_le_bytes();
-        let [banks, ..] = r.word().to_le_bytes();
+        let [slow_finish, regime, drive, banks] = r.word().to_le_bytes();
         Some(Self {
             busy,
             entries,
@@ -599,7 +577,6 @@ impl KernelProbe {
                 booted: booted != 0,
                 slow_due: slow_due != 0,
                 slow_finish: slow_finish != 0,
-                therm,
                 regime: *Regime::ALL.get(usize::from(regime))?,
                 drive,
             },
@@ -626,9 +603,6 @@ impl KernelProbe {
             refresh: r.load(),
             slow: core::array::from_fn(|_| r.load()),
             finish: r.load(),
-            close: r.load(),
-            install: r.load(),
-            side: r.load(),
             drive: r.load(),
         })
     }
@@ -919,8 +893,7 @@ impl TelTally {
         hook: u32,
         boot: bool,
     ) {
-        let apart =
-            ev.refresh || ev.close || ev.slow || ev.finish || ev.install || ev.side || ev.drive;
+        let apart = ev.refresh || ev.slow || ev.finish || ev.drive;
         if boot || body > HALT_TICKS || apart || ev.health {
             return;
         }
@@ -1187,9 +1160,6 @@ pub enum Component {
     Refresh,
     Slow(Regime),
     Finish,
-    Close,
-    Install,
-    Side,
     /// The drive direction check's stage.
     Drive,
     /// The TEL ticks' mean over the same regime's plain ticks' (mean only).
@@ -1298,27 +1268,12 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     };
     let budget = super::kernel_tick(Regime::Closed, p, finish);
     f(load_row(Component::Finish, k.finish, budget, 0));
-    let close = Events {
-        close: true,
-        ..finish
+    let drive = Events {
+        drive: true,
+        ..carried
     };
-    let budget = super::kernel_tick(Regime::Closed, p, close);
-    f(load_row(Component::Close, k.close, budget, 0));
-    let stages = [
-        (Component::Install, k.install, crate::kernel::phase::SPARE_A),
-        (Component::Side, k.side, crate::kernel::phase::SPARE_B),
-        (Component::Drive, k.drive, crate::kernel::phase::SPARE_B),
-    ];
-    for (c, l, p) in stages {
-        let ev = Events {
-            install: c == Component::Install,
-            side: c == Component::Side,
-            drive: c == Component::Drive,
-            ..carried
-        };
-        let budget = super::kernel_tick(Regime::Closed, p as usize, ev);
-        f(load_row(c, l, budget, 0));
-    }
+    let budget = super::kernel_tick(Regime::Closed, phase::SPARE_B as usize, drive);
+    f(load_row(Component::Drive, k.drive, budget, 0));
     for (r, tel) in Regime::EVENT_ROWS.into_iter().zip(k.tel) {
         let (n, sum) = (0..PHASES)
             .map(|p| k.plain(r, p))

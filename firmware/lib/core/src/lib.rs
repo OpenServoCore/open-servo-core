@@ -57,9 +57,9 @@ pub use regions::{
     CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
     CalibStamp, CalibThermal, CalibWinding, ConfigCommon, ConfigFaultCfg, ConfigFusion,
     ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys,
-    ConfigPosSoft, ConfigRegs, ConfigThermal, ConfigThermalExt, ControlLifecycle, ControlRegs,
-    ControlTable, ControlTableCell, Mode, StallResponse, TelemetryCommon, TelemetryEstimates,
-    TelemetryMode, TelemetryRefs, TelemetryRegs, TelemetryTick,
+    ConfigPosSoft, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlTable,
+    ControlTableCell, Mode, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryMode,
+    TelemetryRefs, TelemetryRegs, TelemetryTick,
 };
 pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};

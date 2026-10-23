@@ -7,10 +7,9 @@ use crate::traits::{ControlIo, TelStream};
 /// What the budget probe reads of the kernel between ticks: the medium
 /// phase the next tick runs, the count the configuration was taken at (a
 /// take moves it), whether the boot tick has run, which SLOW stage the
-/// next tick runs, the thermometer's pending stages, the drive arm's
-/// regime and the drive direction check's state. Only the kernel tick
-/// moves any of it, so the tags after one tick are the tags before the
-/// next.
+/// next tick runs, the drive arm's regime and the drive direction check's
+/// state. Only the kernel tick moves any of it, so the tags after one tick
+/// are the tags before the next.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct ProbeTags {
@@ -19,8 +18,6 @@ pub struct ProbeTags {
     pub booted: bool,
     pub slow_due: bool,
     pub slow_finish: bool,
-    /// `thermal::stage` bits.
-    pub therm: u8,
     pub regime: Regime,
     /// `DriveCheck::state`.
     pub drive: u8,
@@ -35,7 +32,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             booted: self.booted,
             slow_due: self.phase == phase::SLOW && self.medium.slow_periods + 1 >= DECIM_SLOW,
             slow_finish: self.phase == phase::SLOW && self.medium.slow_periods == 0,
-            therm: self.medium.thermal.pending(),
             regime: match self.cmd.drive {
                 _ if self.faults.mask() != 0 => Regime::Open,
                 fast::Drive::Closed { .. } => Regime::Closed,

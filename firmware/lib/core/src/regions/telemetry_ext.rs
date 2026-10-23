@@ -42,10 +42,9 @@ pub struct TelemetryHealth {
     pub stack_free_min: u16,
 }
 
-/// Winding thermometer state beside `t_winding_cc`: the board NTC as the
-/// kernel converts it (centi-C, the carry's base) and the estimator's
-/// flags (`estimator::thermal::flag`: unset, tracking a seat, cold-R
-/// recalibrate; bits 3-7 reserved 0).
+/// Winding estimate state beside `t_winding_cc`: the board NTC as the
+/// kernel converts it (centi-C, the estimate's base) and the flags
+/// (`estimator::thermal::flag`: bit 0 unset; bits 1-7 reserved 0).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryTherm {
