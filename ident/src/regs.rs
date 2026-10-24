@@ -35,19 +35,25 @@ pub mod config {
     pub const STALL_RESPONSE: Reg = reg(0x004a, 1);
     pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
     pub const STALL_TIME_TICKS: Reg = reg(0x004c, 4);
-    /// The continuous current: the I2t budget folds the ceiling toward it,
-    /// a press over it on a still shaft trips and folds to it; 0 reads as
-    /// the limit.
+    /// The continuous current: a press over it on a still shaft trips and
+    /// folds to it; 0 reads as the limit.
     pub const I_CONT_COUNTS: Reg = reg(0x0052, 2);
     /// The fold holds while the held current reads this or more.
     pub const STALL_RELEASE_COUNTS: Reg = reg(0x0054, 2);
     /// The collision trip on the disturbance estimate; `u16::MAX` (the boot
     /// value) trips nothing.
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0056, 2);
-    /// The winding's thermal time constant, s; the kernel runs the nearest
+    /// The rotor heat node's time constant, s; the kernel runs the nearest
     /// power of two of its 16 ms period.
     pub const THERMAL_TAU_S: Reg = reg(0x005e, 2);
+    /// The winding estimate's derate: full under the start, zero at the
+    /// cutoff, where the overtemperature fault latches; recover clears it.
+    pub const DERATE_START_CC: Reg = reg(0x0060, 2);
+    pub const CUTOFF_CC: Reg = reg(0x0062, 2);
+    pub const RECOVER_CC: Reg = reg(0x0064, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
+    /// The body heat node's time constant, s; 0 = no body node.
+    pub const THERMAL_TAU2_S: Reg = reg(0x0068, 2);
     pub const L1_Q016: Reg = reg(0x006e, 2);
     pub const L2_Q88: Reg = reg(0x0070, 2);
     pub const L3_Q88: Reg = reg(0x0072, 2);
@@ -65,9 +71,11 @@ pub mod calib {
     pub const FRIC_FC_COUNTS: Reg = reg(0x0086, 2);
     pub const FRIC_FV_Q016: Reg = reg(0x0088, 2);
     pub const KE_VPC_Q: Reg = reg(0x008a, 2);
-    /// The winding's rise over the board NTC per count squared of the I2t
-    /// heat, centi-C, Q0.16; 0 = no winding estimate.
+    /// The rotor node's rise over the board NTC per count squared of its
+    /// heat, centi-C, Q0.16.
     pub const TH_RISE_Q016: Reg = reg(0x008e, 2);
+    /// The body node's, on its own heat.
+    pub const TH_RISE2_Q016: Reg = reg(0x0090, 2);
     pub const NTC_RAW_REF: Reg = reg(0x0094, 2);
     pub const NTC_T_REF_CC: Reg = reg(0x0096, 2);
     pub const NTC_K1_Q88: Reg = reg(0x0098, 2);
@@ -205,8 +213,8 @@ pub mod telemetry {
     pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x026e, 2);
     /// What shaped the command: bit 0 the current ceiling, bit 1 the press
     /// fold, bit 2 an endstop, bit 3 the stall permit lease is live, then
-    /// the term that binds, bit 4 the I2t budget, bit 5 the thermal
-    /// derate, bit 6 the rail fold, bit 7 `goal_current` (core
+    /// the term that binds, bit 4 retired and reading 0, bit 5 the
+    /// thermal derate, bit 6 the rail fold, bit 7 `goal_current` (core
     /// `kernel::phases::loops::limits::flag`).
     pub const LIMIT_FLAGS: Reg = reg(0x027c, 1);
     /// Smallest duty whose drive window the shunt reads, Q15: where the
@@ -249,6 +257,10 @@ pub const ALL: &[(&str, Reg)] = &[
     ("stall_release_counts", config::STALL_RELEASE_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
     ("thermal_tau_s", config::THERMAL_TAU_S),
+    ("derate_start_cc", config::DERATE_START_CC),
+    ("cutoff_cc", config::CUTOFF_CC),
+    ("recover_cc", config::RECOVER_CC),
+    ("thermal_tau2_s", config::THERMAL_TAU2_S),
     ("rail_fold_q8", config::RAIL_FOLD_Q8),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("l1_q016", config::L1_Q016),
@@ -337,6 +349,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("tel_drop_count", telemetry::TEL_DROP_COUNT),
     ("window_v_floor_q15", telemetry::WINDOW_V_FLOOR_Q15),
     ("th_rise_q016", calib::TH_RISE_Q016),
+    ("th_rise2_q016", calib::TH_RISE2_Q016),
     ("ntc_raw_ref", calib::NTC_RAW_REF),
     ("ntc_t_ref_cc", calib::NTC_T_REF_CC),
     ("ntc_k1_q88", calib::NTC_K1_Q88),

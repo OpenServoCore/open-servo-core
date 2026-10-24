@@ -225,6 +225,12 @@ pub struct FakeServo {
     /// `.0` q15 or more the pot reads `.1` counts further in, and under it
     /// the horn springs back at once.
     pub low_give: Option<(u16, f64)>,
+    /// A brush contact change: from `.0` ms the winding reads `.1` of its R
+    /// (1.02 = a 2 % step up), the pot unmoved.
+    pub r_step: Option<(f64, f64)>,
+    /// From `.0` ms the limit in force reads `.1` counts and governs, as a
+    /// rail fold or an NTC fault (0) composes the ceiling under the limit.
+    pub limit_drop: Option<(f64, u16)>,
     /// Wiring convention: false inverts duty's effect on motion, so the
     /// endstop experiment must infer the flipped drive_polarity.
     pub drive_polarity: bool,
@@ -376,6 +382,8 @@ impl FakeServo {
             ends: (200.0, 4000.0),
             give: [(0.0, 0.0); 2],
             low_give: None,
+            r_step: None,
+            limit_drop: None,
             drive_polarity: true,
             pos_noise: 0.0,
             skipped: None,
@@ -457,6 +465,14 @@ impl FakeServo {
         }
         self.alternate_up = !self.alternate_up;
         uniform + if self.alternate_up { 0.5 } else { -0.5 }
+    }
+
+    /// The winding's R now: [`Self::r_step`] from its time on.
+    fn r_now(&self) -> f64 {
+        match self.r_step {
+            Some((at, by)) if self.t_ms >= at => self.r * by,
+            _ => self.r,
+        }
     }
 
     /// The shaft as the pot sees it: [`Self::low_give`] at the low stop.
@@ -592,8 +608,14 @@ impl FakeServo {
         (self.ceil0 + 128.0 * ticks).clamp(self.floor_q15 as f64, 32767.0)
     }
 
-    /// The limit in force: the current limit, or the yield once folded.
+    /// The limit in force: the current limit, or the yield once folded, or
+    /// [`Self::limit_drop`] from its time on.
     fn limit(&self) -> Option<u16> {
+        if let Some((at, to)) = self.limit_drop
+            && self.t_ms >= at
+        {
+            return Some(to);
+        }
         self.current_limit
             .map(|l| if self.folded { l.min(self.i_cont) } else { l })
     }
@@ -607,7 +629,7 @@ impl FakeServo {
         let sign = self.duty.signum() as i32;
         let goal = self.duty.unsigned_abs() as i32;
         let floor = self.floor_q15 as i32;
-        let base = ((lim as f64 * self.r / self.vbus * 32767.0) as i32).min(floor);
+        let base = ((lim as f64 * self.r_now() / self.vbus * 32767.0) as i32).min(floor);
         if goal < floor {
             return ((sign * goal.min(base)) as i16, false);
         }
@@ -878,7 +900,7 @@ impl FakeServo {
         }
         if self.physical_motion {
             let v = duty.unsigned_abs() as f64 / 32767.0 * self.vbus;
-            let mag = ((v - self.r * self.fc) / (self.ke + self.r * self.fv)).max(0.0);
+            let mag = ((v - self.r_now() * self.fc) / (self.ke + self.r_now() * self.fv)).max(0.0);
             mag * vsign
         } else {
             duty.unsigned_abs() as f64 / 32767.0 * self.free_speed * vsign
@@ -895,7 +917,7 @@ impl FakeServo {
             return 0.0;
         }
         let v = duty as f64 / 32767.0 * self.vbus;
-        (v - self.ke * self.polarity() * self.omega_dyn) / self.r
+        (v - self.ke * self.polarity() * self.omega_dyn) / self.r_now()
     }
 
     /// +1 when a positive duty turns the shaft up: [`Self::drive_polarity`].
@@ -924,7 +946,7 @@ impl FakeServo {
         } else {
             0.0
         };
-        (v - self.ke * omega) / self.r + fric
+        (v - self.ke * omega) / self.r_now() + fric
     }
 
     pub fn write(&mut self, reg: Reg, value: i32) {
@@ -1110,7 +1132,7 @@ impl FakeServo {
             } else {
                 let v = duty as f64 / 32767.0 * self.vbus;
                 if driving {
-                    (v - self.ke * self.polarity() * self.omega()) / self.r
+                    (v - self.ke * self.polarity() * self.omega()) / self.r_now()
                 } else {
                     0.0
                 }
@@ -1263,7 +1285,7 @@ impl FakeServo {
         let omega_bemf = match self.ke_stored {
             Some(ke) if driving => {
                 let v = duty as f64 / 32767.0 * self.vbus;
-                (v - self.r * self.i_at(duty)) / ke
+                (v - self.r_now() * self.i_at(duty)) / ke
             }
             _ => 0.0,
         };

@@ -17,7 +17,7 @@ use osc_ident::exp::wavefit::WaveRun;
 use osc_ident::exp::winding::VoltRun;
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
 use osc_ident::sources::{Source, Winding};
-use osc_ident::thermal::NtcCurve;
+use osc_ident::thermal::{NtcCurve, TwoNodeFit};
 use osc_ident::units::SenseParams;
 use serde::{Deserialize, Serialize};
 
@@ -858,13 +858,36 @@ impl GainJson {
 
     /// The heat's time constant, s, as given.
     pub fn thermal_tau(s: u16) -> Self {
+        Self::tau("thermal_tau_s", s)
+    }
+
+    fn tau(name: &str, s: u16) -> Self {
         Self {
-            name: "thermal_tau_s".into(),
+            name: name.into(),
             physical: s as f64,
             raw: s,
             quantization_pct: 0.0,
             saturated: false,
         }
+    }
+
+    /// The two heat nodes of one hold ([`TwoNodeFit`]): both gains and
+    /// both octaves, a body without a gain writing no octave either.
+    pub fn two_node(f: &TwoNodeFit) -> Vec<Self> {
+        let mut v = Self::of(&[
+            ("th_rise_q016", f.rotor.rise_q016),
+            ("th_rise2_q016", f.body.rise_q016),
+        ]);
+        v.push(Self::tau("thermal_tau_s", f.rotor.tau_s));
+        v.push(Self::tau(
+            "thermal_tau2_s",
+            if f.body.rise_q016.raw == 0 {
+                0
+            } else {
+                f.body.tau_s
+            },
+        ));
+        v
     }
 
     fn of(fields: &[(&str, Encoded)]) -> Vec<Self> {
@@ -881,20 +904,18 @@ impl GainJson {
     }
 }
 
-/// thermal.json: where `osc ident thermal`'s hold and step-down start,
-/// its last poll, the seek's and the hold's seats, both duties, and the
-/// `thermal_tau_s` the servo carried into the run, beside anchor.csv for
-/// `ident fit`. Times are the host's ms, as anchor.csv's.
+/// thermal.json: where `osc ident thermal`'s hold starts, its last poll,
+/// the seek's and the hold's seats, the hold's duty, and the winding the
+/// servo carried into the run, ohms, beside anchor.csv for `ident fit`.
+/// Times are the host's ms, as anchor.csv's.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct ThermalJson {
     pub t0_ms: f64,
-    pub cool_ms: Option<f64>,
     pub end_ms: f64,
     pub seat: Option<u16>,
     pub hold_seat: Option<u16>,
     pub hold_duty_q15: i16,
-    pub cool_duty_q15: i16,
-    pub thermal_tau_s: u16,
+    pub r_stored_ohm: Option<f64>,
 }
 
 impl ThermalJson {
