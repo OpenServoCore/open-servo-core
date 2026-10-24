@@ -1,4 +1,4 @@
-//! Winding estimate, SLOW rate (control-theory "The I2t Winding
+//! Winding estimate, SLOW rate (control-theory "The Winding
 //! Estimate"). The board NTC is the base; the winding's excess over it is
 //! two heat nodes on one input, each an EWMA of the held current squared
 //! on its own leak (`kernel::phases::loops::limits`), scaled by a
@@ -7,7 +7,7 @@
 //! over the can, tens of seconds; the body node (`thermal_tau2_s`,
 //! `th_rise2_q016`) the can and case into wherever the NTC sits, hundreds.
 //! A gain is a thermal resistance times the winding's resistance in the
-//! board's current counts; the host fits both from a hold and a step-down
+//! board's current counts; the host fits both from one hold at one duty
 //! on the servo at hand. With the NTC on the can the body gain goes to 0
 //! and the rotor node alone rides on the NTC. The estimate is a protection
 //! number, never a thermometer.
@@ -225,7 +225,7 @@ mod tests {
         k2_q24: 5800,
     };
     /// The bench MG90 with the NTC on the board in room air: 0.01592
-    /// centi-C per count squared (notebook 21).
+    /// centi-C per count squared.
     pub(crate) const CFG: ThermCfg = ThermCfg {
         rise_q016: 1044,
         rise2_q016: 0,
@@ -272,7 +272,7 @@ mod tests {
 
     /// The estimate is the NTC plus the rise on the heat, in the kernel's
     /// integers: the 277-count rating squared at the bench constant reads
-    /// 8.31 C over a 25.00 C board (notebook 21 section 6).
+    /// 8.31 C over a 25.00 C board.
     #[test]
     fn the_estimate_is_the_ntc_plus_the_rise_on_the_heat() {
         let mut th = WindingTherm::new();

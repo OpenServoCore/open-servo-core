@@ -123,9 +123,9 @@ pub struct CalibSenseExt {
 /// 0 and the rotor node alone rides on it), then the board NTC's
 /// counts-to-centi-C quadratic about its reference point, derived by the
 /// host from `CalibSenseExt`'s beta constants (`estimator::thermal::
-/// NtcCfg`). No gain or no k1 = no estimate (`t_winding_cc` reads its
-/// sentinel, nothing derates). The reserved word held the retired
-/// resistance thermometer's constant.
+/// NtcCfg`). No curve = no estimate (`t_winding_cc` reads its sentinel,
+/// nothing derates); a curve with both gains 0 reads the NTC alone. The
+/// reserved word held the retired resistance thermometer's constant.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibThermal {

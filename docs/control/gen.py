@@ -451,10 +451,10 @@ d += elm.Arrow().at((shx + 0.85, VD)).down(VD - bN[1]).color(C_EST)
 # theta_meas: position FE down into KF
 d += elm.Arrow().at((posx, FE_S)).down(FE_S - kN[1]).color(C_EST)
 d += elm.Label(label='θ_meas', fontsize=FSS, color=C_EST).at((posx + 0.9, FE_S - 0.4))
-# winding estimate at the SLOW rate: the I2t heat of the held current off
+# winding estimate at the SLOW rate: the two heats of the held current off
 # the i-hat lane, its Twind up into the clamp beside the i_lim terms
 d += (wst := dsp.Box(w=2.6, h=1.2).at((cS[0], -2.2)).anchor('center').label(
-    'I2t heat ->\nwinding estimate\n(SLOW)', fontsize=FSS).color(C_LIM))
+    'two heats ->\nwinding estimate\n(SLOW)', fontsize=FSS).color(C_LIM))
 wS = wst.absanchors['S']
 twx = bemf.absanchors['W'][0] + 0.5
 d += elm.Dot(radius=0.06).at((twx, JOG)).color(C_EST)
