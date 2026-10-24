@@ -1,14 +1,18 @@
 //! The winding estimate's constants (core `estimator::thermal`): the
-//! kernel reads `t = t_ntc + rise x heat`, the heat the I2t EWMA of the held
-//! current squared on `thermal_tau_s`. The board NTC's counts-to-centi-C
-//! curve is a board fact, encoded from its beta constants ([`NtcCurve`]).
-//! Two host routes to the rise, `th_rise_q016`: a nameplate thermal
-//! resistance ([`rise_from_rth`]), or a hold's own copper against the heat
-//! replayed at the servo's `thermal_tau_s` ([`fit_rise`]). R moves with the
-//! operating point by a few percent across duties, so a copper reading
-//! never takes a ratio across duties: every reading of the hold is against
-//! the hold's own R_ref, read after its seat and its dip settle
-//! ([`settle_dip`]).
+//! kernel reads `t = t_ntc + rise x heat + rise2 x heat2`, the heats the
+//! kernel's EWMAs of the held current squared, warmed by the copper's
+//! rise, on `thermal_tau_s` and `thermal_tau2_s`. The board NTC's
+//! counts-to-centi-C curve is a board fact, encoded from its beta constants
+//! ([`NtcCurve`]). Two host routes to the gains: a nameplate thermal
+//! resistance ([`rise_from_rth`]) for the rotor alone, or one hold at one
+//! duty, torque on and the rotor never released, whose own copper against
+//! the two heats replayed in the kernel's arithmetic gives all four
+//! constants ([`fit_two_node`]). Any duty change moves the brush contact
+//! behind the gear train and shifts R by percents, so every reading of the
+//! hold is against the hold's own R_ref at the same duty, read after its
+//! seat and its dip settle ([`settle_dip`]); a contact change inside the
+//! hold is a step in R with the pot still ([`contact_events`]) and refuses
+//! the hold.
 
 use osc_servo_core::estimator::thermal::{rise_cc, warm_q16};
 use osc_servo_core::kernel::phases::loops::limits::{LimitState, SLOW_PERIOD_MS, tau_shift};
@@ -187,7 +191,7 @@ pub const LINE_MIN: usize = 3;
 /// sits at the NTC.
 pub const R_REF_WITHIN_MS: f64 = 10_000.0;
 /// The hold's cold current sits at least this fraction under the current
-/// ceiling: the copper only lowers it from there, which keeps the I2t fold
+/// ceiling: the copper only lowers it from there, which keeps the limiter
 /// off the hold.
 pub const HOLD_MARGIN: f64 = 0.10;
 /// The hold's stall is planned at this fraction of the stall-safe cap: the
@@ -202,94 +206,6 @@ pub const BIN_MS: f64 = 1000.0;
 pub const SETTLED_BINS: usize = 10;
 /// Bins a hold must cover before its rise stands.
 pub const MIN_BINS: usize = 30;
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RiseFit {
-    /// centi-C per count squared of heat.
-    pub k: f64,
-    pub rise_q016: Encoded,
-    pub r_ref_ohm: f64,
-    /// Where R_ref is read, the dip's bottom, ms into the hold.
-    pub r_ref_start_ms: f64,
-    /// Where the hold settled at its seat, ms into the hold.
-    pub r_ref_settle_ms: f64,
-    /// The copper's fall from the settle to the dip's bottom, C; positive
-    /// fell.
-    pub r_ref_dip_c: f64,
-    /// The windows the R_ref line ran through.
-    pub r_ref_windows: usize,
-    /// The copper's warming along the line, C/s.
-    pub r_ref_slope_c_per_s: f64,
-    /// The hold's cold current, the line's windows' mean |i|, counts.
-    pub i_cold_counts: f64,
-    /// The current ceiling over the line, counts.
-    pub ceiling_counts: f64,
-    /// The C/W the rise implies on this winding and sense scale.
-    pub rth_c_per_w: f64,
-    /// The NTC base, C.
-    pub t0_c: f64,
-    /// Per-bin scatter of the copper's excess over the NTC around k x h, C.
-    pub residual_sd_c: f64,
-    /// The copper's excess over the NTC, the mean over the last
-    /// [`SETTLED_BINS`] bins, C.
-    pub settled_rise_c: f64,
-    /// The settled rise over the replayed heat across the same bins,
-    /// centi-C per count squared: a second k, free of the regression's
-    /// weight on the transient.
-    pub plateau_k: f64,
-    pub plateau_rise_q016: Encoded,
-    /// The kernel's winding estimate less the copper's temperature over the
-    /// same closing bins, C; None while the estimate read UNSET.
-    pub estimate_err_c: Option<f64>,
-    pub bins: usize,
-    /// The `thermal_tau_s` the heat was replayed at.
-    pub thermal_tau_s: u16,
-    /// The leak the kernel runs for it ([`tau_shift`]).
-    pub tau_shift: u8,
-}
-
-impl RiseFit {
-    /// The kernel's leak in seconds: 2^shift SLOW periods.
-    pub fn octave_s(&self) -> f64 {
-        (1u32 << self.tau_shift) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
-    }
-
-    /// How far the cold current sits under the ceiling, a fraction of it.
-    pub fn margin(&self) -> f64 {
-        1.0 - self.i_cold_counts / self.ceiling_counts
-    }
-}
-
-/// The step-down cool-down after the hold, as recorded.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct CoolSummary {
-    /// Its length, s.
-    pub s: f64,
-    pub windows: usize,
-    /// Those that read the winding at the cool-down's duty.
-    pub read: usize,
-    /// Their mean |i|, counts; 0 when none read.
-    pub i_counts: f64,
-}
-
-/// The cool-down from `cool_ms` to the run's last poll `end_ms`; None
-/// when it never started.
-pub fn cool_summary(windows: &[ThermWindow], cool_ms: f64, end_ms: f64) -> Option<CoolSummary> {
-    if end_ms < cool_ms {
-        return None;
-    }
-    let cool = &windows[windows.partition_point(|x| x.w.t_ms < cool_ms)..];
-    let mut i = Acc::default();
-    cool.iter()
-        .filter(|x| at_command(x))
-        .for_each(|x| i.add(x.w.i.abs()));
-    Some(CoolSummary {
-        s: (end_ms - cool_ms) / 1000.0,
-        windows: cool.len(),
-        read: i.n,
-        i_counts: i.mean().unwrap_or(0.0),
-    })
-}
 
 #[derive(Copy, Clone, Default)]
 struct Acc {
@@ -334,31 +250,6 @@ fn window_r_vpc(w: &WindowSample) -> Option<f64> {
 /// The window read the winding at the duty commanded for it.
 fn at_command(x: &ThermWindow) -> bool {
     x.commanded && x.reads()
-}
-
-/// The kernel's heat over the polls: its own integer EWMA of the held
-/// current squared stepped on the SLOW grid, each step holding the last
-/// poll at or before it. Sampled at `at_ms` (ascending).
-pub fn replay_heat(polls: &[HoldPoll], thermal_tau_s: u16, at_ms: &[f64]) -> Vec<f64> {
-    let shift = tau_shift(thermal_tau_s);
-    let Some(first) = polls.first() else {
-        return vec![0.0; at_ms.len()];
-    };
-    let mut st = LimitState::new();
-    let mut out = Vec::with_capacity(at_ms.len());
-    let (mut p, mut g) = (0usize, first.t_ms);
-    for &at in at_ms {
-        while g <= at {
-            while p + 1 < polls.len() && polls[p + 1].t_ms <= g {
-                p += 1;
-            }
-            let i = polls[p].i_counts.abs().round().min(i16::MAX as f64) as i16;
-            st.heat(i, 0, [shift, 0]);
-            g += SLOW_PERIOD_MS as f64;
-        }
-        out.push(st.heats()[0] as f64);
-    }
-    out
 }
 
 /// Where the hold settled at its seat and where R's dip after it bottoms
@@ -540,7 +431,7 @@ fn cold_at(
     if !ceiling.is_finite() || i_counts > (1.0 - HOLD_MARGIN) * ceiling {
         return Err(format!(
             "the hold's cold current {i_counts:.0} counts sits {:.1} % under the {ceiling:.0} \
-             counts current ceiling, inside the {:.0} % margin that keeps the I2t fold off the \
+             counts current ceiling, inside the {:.0} % margin that keeps the limiter off the \
              hold",
             (1.0 - i_counts / ceiling) * 100.0,
             HOLD_MARGIN * 100.0
@@ -713,122 +604,6 @@ fn r_ohm_at(
         return Err("the sense scales are degenerate".into());
     }
     Ok(move |w: &WindowSample| window_r_vpc(w).map(|r| r * v_per_count / a_per_count))
-}
-
-struct Bin {
-    centre_ms: f64,
-    x_w: f64,
-    x_n: f64,
-    t_winding_c: Option<f64>,
-}
-
-/// The rise from a hold's own copper: per 1 s bin from the hold start
-/// `t0_ms` to its end `end_ms`, the copper's rise
-/// `x_w = (R / R_ref - 1)(234.5 + T_0)` less the NTC's `x_n = T_ntc - T_0`,
-/// regressed through the origin on the heat replayed at `thermal_tau_s`
-/// ([`reference`] for R_ref and T_0, the settle judged against the hold's
-/// `seat`). `v_per_count` / `a_per_count` the board's terminal and current
-/// scales.
-#[allow(clippy::too_many_arguments)]
-pub fn fit_rise(
-    polls: &[HoldPoll],
-    windows: &[ThermWindow],
-    t0_ms: f64,
-    end_ms: f64,
-    seat: u16,
-    thermal_tau_s: u16,
-    v_per_count: f64,
-    a_per_count: f64,
-) -> Result<RiseFit, String> {
-    let r_ohm = r_ohm_at(v_per_count, a_per_count)?;
-    let rf = reference(polls, windows, t0_ms, end_ms, seat, r_ohm)?;
-    rise_at(polls, &rf, t0_ms, thermal_tau_s, a_per_count)
-}
-
-fn rise_at(
-    polls: &[HoldPoll],
-    rf: &Reference,
-    t0_ms: f64,
-    thermal_tau_s: u16,
-    a_per_count: f64,
-) -> Result<RiseFit, String> {
-    let bins: Vec<Bin> = rf
-        .seconds
-        .iter()
-        .enumerate()
-        .filter_map(|(j, s)| {
-            let (r, t) = (s.r.mean()?, s.ntc.mean()?);
-            Some(Bin {
-                centre_ms: t0_ms + (j as f64 + 0.5) * BIN_MS,
-                x_w: rf.copper(r),
-                x_n: t - rf.t0_c,
-                t_winding_c: s.winding.mean().filter(|_| !s.unset),
-            })
-        })
-        .collect();
-    if bins.len() < MIN_BINS {
-        return Err(format!(
-            "the hold covers {} one-second bins with a window and an NTC reading, under the \
-             {MIN_BINS} a rise needs",
-            bins.len()
-        ));
-    }
-    let at: Vec<f64> = bins.iter().map(|b| b.centre_ms).collect();
-    let h = replay_heat(polls, thermal_tau_s, &at);
-    let shh: f64 = h.iter().map(|h| h * h).sum();
-    if shh <= 0.0 {
-        return Err("the hold carried no heat".into());
-    }
-    let k_c = h
-        .iter()
-        .zip(&bins)
-        .map(|(h, b)| h * (b.x_w - b.x_n))
-        .sum::<f64>()
-        / shh;
-    let res: Vec<f64> = h
-        .iter()
-        .zip(&bins)
-        .map(|(h, b)| b.x_w - b.x_n - k_c * h)
-        .collect();
-    let residual_sd_c = (res.iter().map(|e| e * e).sum::<f64>() / (res.len() - 1) as f64).sqrt();
-    let from = bins.len().saturating_sub(SETTLED_BINS);
-    let settled = &bins[from..];
-    let m = settled.len() as f64;
-    let settled_rise_c = settled.iter().map(|b| b.x_w - b.x_n).sum::<f64>() / m;
-    let settled_heat = h[from..].iter().sum::<f64>() / m;
-    if settled_heat <= 0.0 {
-        return Err("the hold's closing seconds carried no heat".into());
-    }
-    let copper_c = rf.t0_c + settled.iter().map(|b| b.x_w).sum::<f64>() / m;
-    let estimate_err_c = settled
-        .iter()
-        .map(|b| b.t_winding_c)
-        .sum::<Option<f64>>()
-        .map(|s| s / m - copper_c);
-    let k = k_c * 100.0;
-    let plateau_k = settled_rise_c / settled_heat * 100.0;
-    Ok(RiseFit {
-        k,
-        rise_q016: enc(k, 65536.0),
-        r_ref_ohm: rf.r_ref,
-        r_ref_start_ms: rf.start_ms,
-        r_ref_settle_ms: rf.settle_ms,
-        r_ref_dip_c: rf.dip_c,
-        r_ref_windows: rf.windows,
-        r_ref_slope_c_per_s: rf.slope_c_per_s,
-        i_cold_counts: rf.cold.i_counts,
-        ceiling_counts: rf.cold.ceiling,
-        rth_c_per_w: rth_of(k, rf.r_ref, a_per_count),
-        t0_c: rf.t0_c,
-        residual_sd_c,
-        settled_rise_c,
-        plateau_k,
-        plateau_rise_q016: enc(plateau_k, 65536.0),
-        estimate_err_c,
-        bins: bins.len(),
-        thermal_tau_s,
-        tau_shift: tau_shift(thermal_tau_s),
-    })
 }
 
 /// The two-node fit leaves the hold's first seconds out: the brush contact
@@ -1217,6 +992,147 @@ fn other_of(taus: &[u16; 2], tau: u16) -> u16 {
     if taus[0] == tau { taus[1] } else { taus[0] }
 }
 
+/// The reference a live hold reads its copper against once its windows
+/// cover the current's floor and the R_ref line: R_ref in the window's own
+/// vcounts per ccount and the NTC base T_0, C ([`reference`]).
+pub fn hold_reference(
+    polls: &[HoldPoll],
+    windows: &[ThermWindow],
+    t0_ms: f64,
+    seat: u16,
+) -> Result<(f64, f64), String> {
+    let rf = reference(polls, windows, t0_ms, f64::INFINITY, seat, window_r_vpc)?;
+    Ok((rf.r_ref, rf.t0_c))
+}
+
+/// The copper's temperature, C, from the mean R of the windows at the
+/// command from `from_ms` on, against `r_ref` and `t0_c`; None without one.
+pub fn copper_c(windows: &[ThermWindow], from_ms: f64, r_ref: f64, t0_c: f64) -> Option<f64> {
+    let lo = windows.partition_point(|x| x.w.t_ms < from_ms);
+    let r = mean(
+        windows[lo..]
+            .iter()
+            .filter(|x| at_command(x))
+            .filter_map(|x| window_r_vpc(&x.w)),
+    )?;
+    Some(t0_c + (r / r_ref - 1.0) * (COPPER_ZERO_R_C + t0_c))
+}
+
+/// Contact events are looked for across blocks this long, ms: the copper
+/// moves under half a percent of R per block at any point of a hold.
+pub const CONTACT_BLOCK_MS: f64 = 2000.0;
+/// ... from this far into the hold, ms, past its settle and dip.
+pub const CONTACT_SKIP_MS: f64 = 2000.0;
+/// A step in R over this fraction across a block is a contact event: the
+/// ones seen were 2 %.
+pub const CONTACT_STEP_FRAC: f64 = 0.01;
+/// ... with the pot inside this many counts of itself across it: a moved
+/// pot is motion, not contact.
+pub const CONTACT_POS_COUNTS: f64 = 0.5;
+
+/// A brush contact state change inside the hold: a step in R across a
+/// [`CONTACT_BLOCK_MS`] block at one duty with the pot still, the current
+/// stepping with it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ContactEvent {
+    /// The middle of the blocks the step lies in, ms on the host's clock:
+    /// within a block of it.
+    pub t_ms: f64,
+    /// The end of the last block the step lies in, ms: the event is final
+    /// once the two blocks after it are full.
+    pub to_ms: f64,
+    /// R after over R before, less one.
+    pub step_frac: f64,
+    pub i_before: f64,
+    pub i_after: f64,
+    pub pos_before: f64,
+    pub pos_after: f64,
+}
+
+/// The window read the winding at its commanded duty, seated or not: the
+/// contact detector judges the pot itself.
+fn at_duty(x: &ThermWindow) -> bool {
+    x.commanded && x.floors && x.w.i != 0.0
+}
+
+/// The contact events of the hold from `from_ms` to `to_ms`: the windows
+/// at the command past [`CONTACT_SKIP_MS`] in [`CONTACT_BLOCK_MS`] blocks, a
+/// block counting with half the median block population, and every full
+/// block whose two full neighbours' R steps over [`CONTACT_STEP_FRAC`] with
+/// the pot inside [`CONTACT_POS_COUNTS`]. The step is read across the block
+/// it lands in, so one anywhere inside a block reads its whole size, and
+/// consecutive blocks stepping the same way are one event, read across
+/// them. A ramp is not a step: the one seen rose 2.6 % over 7 s and fell
+/// back in 1 s, and reads as its fall.
+pub fn contact_events(windows: &[ThermWindow], from_ms: f64, to_ms: f64) -> Vec<ContactEvent> {
+    let lo = windows.partition_point(|x| x.w.t_ms < from_ms + CONTACT_SKIP_MS);
+    let hi = windows.partition_point(|x| x.w.t_ms < to_ms);
+    let block = |x: &ThermWindow| ((x.w.t_ms - from_ms) / CONTACT_BLOCK_MS).floor() as i64;
+    let blocks: Vec<(i64, Acc, Acc, Acc)> = windows[lo..hi]
+        .chunk_by(|x, y| block(x) == block(y))
+        .filter_map(|c| {
+            let (mut r, mut i, mut pos) = (Acc::default(), Acc::default(), Acc::default());
+            c.iter()
+                .filter(|x| at_duty(x))
+                .filter_map(|x| Some((window_r_vpc(&x.w)?, x)))
+                .for_each(|(rv, x)| {
+                    r.add(rv);
+                    i.add(x.w.i.abs());
+                    pos.add(x.pos as f64);
+                });
+            (r.n > 0).then_some((block(&c[0]), r, i, pos))
+        })
+        .collect();
+    let Some(population) = median(blocks.iter().map(|b| b.1.n as f64).collect()) else {
+        return Vec::new();
+    };
+    let full = |b: &(i64, Acc, Acc, Acc)| b.1.n as f64 >= population / 2.0;
+    // the sign of the step across each block, its neighbours compared, 0
+    // for none
+    let stepped: Vec<i8> = blocks
+        .windows(3)
+        .map(|w| {
+            let (a, c) = (&w[0], &w[2]);
+            let step = c.1.mean().unwrap_or(0.0) / a.1.mean().unwrap_or(1.0) - 1.0;
+            let still =
+                (c.3.mean().unwrap_or(0.0) - a.3.mean().unwrap_or(0.0)).abs() <= CONTACT_POS_COUNTS;
+            if c.0 == a.0 + 2 && full(a) && full(c) && still && step.abs() > CONTACT_STEP_FRAC {
+                step.signum() as i8
+            } else {
+                0
+            }
+        })
+        .collect();
+    let event = |k0: usize, k1: usize| {
+        let (a, b) = (&blocks[k0], &blocks[k1 + 2]);
+        let (first, end) = (blocks[k0 + 1].0 as f64, (blocks[k1 + 1].0 + 1) as f64);
+        Some(ContactEvent {
+            t_ms: from_ms + (first + end) / 2.0 * CONTACT_BLOCK_MS,
+            to_ms: from_ms + end * CONTACT_BLOCK_MS,
+            step_frac: b.1.mean()? / a.1.mean()? - 1.0,
+            i_before: a.2.mean()?,
+            i_after: b.2.mean()?,
+            pos_before: a.3.mean()?,
+            pos_after: b.3.mean()?,
+        })
+    };
+    let mut out = Vec::new();
+    let mut k = 0;
+    while k < stepped.len() {
+        if stepped[k] == 0 {
+            k += 1;
+            continue;
+        }
+        let mut k1 = k;
+        while k1 + 1 < stepped.len() && stepped[k1 + 1] == stepped[k] {
+            k1 += 1;
+        }
+        out.extend(event(k, k1));
+        k = k1 + 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1270,8 +1186,6 @@ mod tests {
     const WIN_MS: f64 = 2.0;
     /// The span the windows come dense through: past the current's floor.
     const DENSE_MS: f64 = FLOOR_TO_MS + 1000.0;
-    /// 40 C over the NTC at 270 counts, centi-C per count squared.
-    const K: f64 = 4000.0 / (270.0 * 270.0);
 
     /// A window that read the winding at its commanded duty, at the seat.
     fn tw(w: WindowSample) -> ThermWindow {
@@ -1323,111 +1237,29 @@ mod tests {
         (units::volts_per_count(&DEV), units::amps_per_count(&DEV))
     }
 
-    /// A hold whose copper rises over the NTC by exactly k x h at each bin
-    /// centre, the NTC climbing on its own: the fit reads k back.
-    #[test]
-    fn recovers_the_rise_of_a_synthetic_hold() {
-        const K_C: f64 = 0.0105;
-        const TAU_S: u16 = 4;
-        let (v, a) = scales();
-        let polls: Vec<HoldPoll> = (-500..30_000)
-            .map(|n| {
-                let t_ms = n as f64 * SLOW_PERIOD_MS as f64;
-                HoldPoll {
-                    t_ms,
-                    i_counts: if t_ms >= 0.0 { I } else { 0.0 },
-                    t_ntc_cc: 0.0,
-                    t_winding_cc: 0.0,
-                    i_lim_counts: CEILING,
-                }
-            })
-            .collect();
-        let bins = 470;
-        let centres: Vec<f64> = (0..bins).map(|j| (j as f64 + 0.5) * BIN_MS).collect();
-        let h = replay_heat(&polls, TAU_S, &centres);
-        // the NTC climbs on its own; for the first six bins it falls
-        // instead by the copper's excess, so R reads R_ref where R_ref is
-        // read
-        let x_n: Vec<f64> = (0..bins)
-            .map(|j| if j < 6 { -K_C * h[j] } else { 0.004 * j as f64 })
-            .collect();
-        let polls: Vec<HoldPoll> = polls
-            .into_iter()
-            .map(|p| {
-                let j = (p.t_ms / BIN_MS).floor();
-                let x = if j >= 0.0 {
-                    x_n.get(j as usize).copied().unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                // the kernel's estimate reads 0.5 C over the copper
-                let x_w = x + K_C * h.get(j.max(0.0) as usize).copied().unwrap_or(0.0);
-                HoldPoll {
-                    t_ntc_cc: (T_NTC0 + x) * 100.0,
-                    t_winding_cc: (T_NTC0 + x_w + 0.5) * 100.0,
-                    ..p
-                }
-            })
-            .collect();
-        let x_w = |t: f64| {
-            let j = (t / BIN_MS) as usize;
-            x_n[j] + K_C * h[j]
-        };
-        // dense through the floor's span, then a window a bin
-        let mut windows: Vec<ThermWindow> = (0..(DENSE_MS / WIN_MS) as usize)
-            .map(|k| {
-                let t = k as f64 * WIN_MS;
-                tw(window_at(t, I + wobble(k), DUTY, 1.0, x_w(t)))
-            })
-            .collect();
-        windows.extend(
-            centres
-                .iter()
-                .filter(|&&t| t >= DENSE_MS)
-                .map(|&t| tw(window_at(t, I, DUTY, 1.0, x_w(t)))),
-        );
-        let f = fit_rise(&polls, &windows, 0.0, f64::INFINITY, SEAT, TAU_S, v, a).unwrap();
-        assert!((f.k - K_C * 100.0).abs() < 1e-9, "{f:?}");
-        assert_eq!(f.rise_q016.raw, (K_C * 100.0 * 65536.0).round() as u16);
-        assert!(f.residual_sd_c < 1e-9, "{f:?}");
-        assert!((f.t0_c - T_NTC0).abs() < 1e-12);
-        assert!((f.r_ref_ohm - v / a).abs() < 1e-9);
-        assert!((f.rth_c_per_w - rth_of(f.k, f.r_ref_ohm, a)).abs() < 1e-12);
-        assert_eq!(f.bins, bins);
-        let steady = K_C * h[bins - 1];
-        assert!((f.settled_rise_c - steady).abs() < 0.01 * steady, "{f:?}");
-        assert!((f.estimate_err_c.unwrap() - 0.5).abs() < 1e-9, "{f:?}");
-        assert_eq!(f.r_ref_settle_ms, 0.0, "{f:?}");
-        assert!(f.r_ref_start_ms < DIP_MS, "{f:?}");
-        assert_eq!((f.thermal_tau_s, f.tau_shift), (TAU_S, 8));
-    }
+    /// Board D's gains, q016.
+    const Q_D: [u16; 2] = [719, 777];
 
     /// A synthetic hold from 0 to `hold_ms` under `ceiling`, seated from
-    /// its first window, whose copper rises over the NTC by exactly k x h on
-    /// the heat replayed at `tau_s`: a window every [`WIN_MS`] through the
+    /// its first window, whose copper rises over a flat NTC by the gains
+    /// `q` on the kernel's heats at (33, 262) s with the warm input fed
+    /// back, exactly at every window: a window every [`WIN_MS`] through the
     /// current's floor and one at each later bin's centre, the current
     /// wobbling half a count. The applied duty is `duty(t)` of the command,
-    /// the current `scale(t)` of [`I`]. The NTC sits at its base but for the
-    /// hold's first six seconds, where it falls by the copper's excess so R
-    /// reads R_ref along its line.
+    /// the current `scale(t)` of [`I`].
     struct Synth {
         hold_ms: f64,
-        k: f64,
-        tau_s: u16,
+        q: [u16; 2],
         duty: fn(f64) -> f64,
         scale: fn(f64) -> f64,
         ceiling: f64,
     }
 
-    /// The span at the hold's start where R reads R_ref.
-    const FLAT_MS: f64 = 6000.0;
-
     impl Synth {
-        fn hold(hold_ms: f64, tau_s: u16) -> Self {
+        fn hold(hold_ms: f64) -> Self {
             Self {
                 hold_ms,
-                k: K,
-                tau_s,
+                q: Q_D,
                 duty: |_| 1.0,
                 scale: |_| 1.0,
                 ceiling: CEILING,
@@ -1435,51 +1267,52 @@ mod tests {
         }
 
         fn build(&self) -> (Vec<HoldPoll>, Vec<ThermWindow>) {
-            let k_c = self.k / 100.0;
             let mut polls = flat_polls(self.hold_ms, self.ceiling);
             for p in polls.iter_mut() {
-                if (0.0..self.hold_ms).contains(&p.t_ms) {
-                    p.i_counts = I * (self.scale)(p.t_ms);
+                p.i_counts = if (0.0..self.hold_ms).contains(&p.t_ms) {
+                    I * (self.scale)(p.t_ms)
                 } else {
-                    p.i_counts = 0.0;
-                }
+                    0.0
+                };
             }
-            let bins = (self.hold_ms / BIN_MS) as usize;
-            let centres: Vec<f64> = (0..bins).map(|j| (j as f64 + 0.5) * BIN_MS).collect();
-            let h = replay_heat(&polls, self.tau_s, &centres);
-            for p in polls.iter_mut() {
-                if (0.0..FLAT_MS).contains(&p.t_ms) {
-                    let j = (p.t_ms / BIN_MS) as usize;
-                    p.t_ntc_cc -= k_c * h[j] * 100.0;
-                }
-            }
-            let hold_at = |t: f64, wob: f64| {
-                let j = (t / BIN_MS) as usize;
-                let x_w = if t < FLAT_MS { 0.0 } else { k_c * h[j] };
-                let d = (self.duty)(t);
-                ThermWindow {
-                    commanded: d == 1.0,
-                    ..tw(window_at(t, I * (self.scale)(t) + wob, DUTY * d, 1.0, x_w))
-                }
-            };
             let dense = DENSE_MS.min(self.hold_ms);
-            let mut windows: Vec<ThermWindow> = (0..(dense / WIN_MS) as usize)
-                .map(|k| hold_at(k as f64 * WIN_MS, wobble(k)))
+            let bins = (self.hold_ms / BIN_MS) as usize;
+            let mut at: Vec<f64> = (0..(dense / WIN_MS) as usize)
+                .map(|k| k as f64 * WIN_MS)
                 .collect();
-            windows.extend(
-                centres
-                    .iter()
-                    .filter(|&&t| t >= dense)
-                    .map(|&t| hold_at(t, 0.0)),
+            at.extend(
+                (0..bins)
+                    .map(|j| (j as f64 + 0.5) * BIN_MS)
+                    .filter(|&t| t >= dense),
             );
+            let h = replay_two(&polls, [tau_shift(33), tau_shift(262)], self.q, &at);
+            let windows = at
+                .iter()
+                .zip(&h)
+                .enumerate()
+                .map(|(k, (&t, h))| {
+                    let x_w = (self.q[0] as f64 * h[0] + self.q[1] as f64 * h[1]) / 65536.0 / 100.0;
+                    let wob = if t < dense { wobble(k) } else { 0.0 };
+                    let d = (self.duty)(t);
+                    ThermWindow {
+                        commanded: d == 1.0,
+                        ..tw(window_at(t, I * (self.scale)(t) + wob, DUTY * d, 1.0, x_w))
+                    }
+                })
+                .collect();
             (polls, windows)
         }
 
-        fn fit(&self) -> Result<RiseFit, String> {
+        fn fit(&self) -> Result<TwoNodeFit, String> {
             let (v, a) = scales();
             let (polls, windows) = self.build();
-            fit_rise(&polls, &windows, 0.0, f64::INFINITY, SEAT, self.tau_s, v, a)
+            fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, v, a)
         }
+    }
+
+    /// The rotor gain within `pct` percent of board D's.
+    fn rotor_near(f: &TwoNodeFit, pct: f64) -> bool {
+        (f.rotor.rise_q016.raw as f64 - Q_D[0] as f64).abs() <= Q_D[0] as f64 * pct / 100.0
     }
 
     /// The bench's hold, as `seated` builds it.
@@ -1713,14 +1546,15 @@ mod tests {
         let s = Synth {
             duty: step,
             scale: step,
-            ..Synth::hold(120_000.0, 4)
+            ..Synth::hold(120_000.0)
         };
         let f = s.fit().unwrap();
         let (v, a) = scales();
         assert_eq!(f.r_ref_settle_ms, 200.0, "{f:?}");
-        assert!((f.r_ref_ohm - v / a).abs() < 1e-9 * v / a, "{f:?}");
+        // the copper warms through the line: R_ref reads it cold within 0.3 C
+        assert!((f.r_ref_ohm / (v / a) - 1.0).abs() < 1e-3, "{f:?}");
         assert!((1000..=1600).contains(&f.r_ref_windows), "{f:?}");
-        assert!((f.k - K).abs() < 0.02 * K, "{f:?}");
+        assert!(rotor_near(&f, 5.0), "{f:?}");
     }
 
     /// A hold the limiter governs from its first window never reads the
@@ -1729,7 +1563,7 @@ mod tests {
     fn a_hold_never_at_its_command_is_refused() {
         let s = Synth {
             duty: |_| 0.9,
-            ..Synth::hold(120_000.0, 4)
+            ..Synth::hold(120_000.0)
         };
         let why = s.fit().unwrap_err();
         assert_eq!(
@@ -1741,13 +1575,13 @@ mod tests {
         assert_eq!(cold_current(&polls, &windows, 0.0, None), Some(Err(why)));
     }
 
-    /// A hold whose cold current sits 7 % under the ceiling leaves the I2t
-    /// fold no room: refused, named.
+    /// A hold whose cold current sits 7 % under the ceiling leaves the
+    /// limiter no room: refused, named.
     #[test]
     fn a_hold_inside_the_ceiling_margin_is_refused() {
         let s = Synth {
             ceiling: 290.0,
-            ..Synth::hold(120_000.0, 4)
+            ..Synth::hold(120_000.0)
         };
         let why = s.fit().unwrap_err();
         assert!(
@@ -1757,7 +1591,7 @@ mod tests {
         assert!(why.contains("inside the 10 % margin"), "{why}");
         let ok = Synth {
             ceiling: 301.0,
-            ..Synth::hold(120_000.0, 4)
+            ..Synth::hold(120_000.0)
         };
         let f = ok.fit().unwrap();
         assert!((f.i_cold_counts - 270.0).abs() < 1e-3, "{f:?}");
@@ -1772,14 +1606,15 @@ mod tests {
         let s = Synth {
             duty: |t| if t < 60_000.0 { 1.0 } else { 0.6 },
             scale: |t| if t < 60_000.0 { 1.0 } else { 0.6 },
-            ..Synth::hold(240_000.0, 115)
+            ..Synth::hold(240_000.0)
         };
         let f = s.fit().unwrap();
         let (v, a) = scales();
         assert_eq!(f.r_ref_settle_ms, 0.0, "{f:?}");
         assert!(f.r_ref_start_ms < DIP_MS, "{f:?}");
-        assert!((f.r_ref_ohm - v / a).abs() < 1e-9 * v / a, "{f:?}");
-        assert!((f.k - K).abs() < 0.02 * K, "{f:?}");
+        // the copper warms through the line: R_ref reads it cold within 0.3 C
+        assert!((f.r_ref_ohm / (v / a) - 1.0).abs() < 1e-3, "{f:?}");
+        assert!(rotor_near(&f, 5.0), "{f:?}");
     }
 
     /// A hold the limiter does not govern: its current falls 0.4 %/C as
@@ -1787,15 +1622,16 @@ mod tests {
     #[test]
     fn a_current_that_drifts_with_the_copper_leaves_the_reference_at_the_start() {
         let s = Synth {
-            k: 1500.0 / (270.0 * 270.0),
+            q: [300, 0],
             scale: |t| 1.0 - 0.004 * 15.0 * (1.0 - (-t / 131_072.0).exp()),
-            ..Synth::hold(480_000.0, 115)
+            ..Synth::hold(480_000.0)
         };
         let f = s.fit().unwrap();
         let (v, a) = scales();
         assert_eq!(f.r_ref_settle_ms, 0.0, "{f:?}");
         assert!(f.r_ref_start_ms < DIP_MS, "{f:?}");
-        assert!((f.r_ref_ohm - v / a).abs() < 1e-9 * v / a, "{f:?}");
+        // the copper warms through the line: R_ref reads it cold within 0.3 C
+        assert!((f.r_ref_ohm / (v / a) - 1.0).abs() < 1e-3, "{f:?}");
     }
 
     /// A seated hold whose current falls 2 %/s over its first 5 s at one
@@ -1824,16 +1660,6 @@ mod tests {
         assert!(rf.slope_c_per_s > 5.0, "{}", rf.slope_c_per_s);
     }
 
-    /// A copper that follows the replayed heat exactly settles where the
-    /// regression says: the plateau's k is the regression's.
-    #[test]
-    fn the_plateau_reads_the_regression_on_a_copper_that_follows_the_heat() {
-        let f = Synth::hold(300_000.0, 66).fit().unwrap();
-        assert!((f.k - K).abs() < 1e-9 * K, "{f:?}");
-        assert!((f.plateau_k - f.k).abs() < 1e-9 * K, "{f:?}");
-        assert_eq!(f.plateau_rise_q016.raw, f.rise_q016.raw);
-    }
-
     /// A hold whose windows stop short of the current's floor, whose NTC
     /// readings cover too few bins, or that has no NTC base: refused, each
     /// named.
@@ -1856,7 +1682,7 @@ mod tests {
             i_lim_counts: CEILING,
         };
         let fit = |polls: &[HoldPoll], windows: &[ThermWindow]| {
-            fit_rise(polls, windows, 0.0, f64::INFINITY, SEAT, 4, v, a).unwrap_err()
+            fit_two_node(polls, windows, 0.0, f64::INFINITY, SEAT, v, a).unwrap_err()
         };
         let polls: Vec<HoldPoll> = (-10..10).map(|k| p(k as f64 * 500.0)).collect();
         let held: Vec<ThermWindow> = (0..(DENSE_MS / WIN_MS) as usize).map(w).collect();
@@ -1970,48 +1796,12 @@ mod tests {
         assert_eq!(nnls2(&[0.0; 3], &[0.0; 3], &[1.0; 3]), [0.0, 0.0]);
     }
 
-    /// A hold of `hold_ms` whose copper rises over a flat NTC by the two
-    /// gains `q` (q016) on the kernel's heats at (33, 262) s with the warm
-    /// input fed back, exactly at every window: dense windows through the
-    /// current's floor, one per bin after.
-    fn two_node(hold_ms: f64, q: [u16; 2]) -> (Vec<HoldPoll>, Vec<ThermWindow>) {
-        let polls = flat_polls(hold_ms, CEILING);
-        let bins = (hold_ms / BIN_MS) as usize;
-        let mut at: Vec<f64> = (0..(DENSE_MS / WIN_MS) as usize)
-            .map(|k| k as f64 * WIN_MS)
-            .collect();
-        at.extend(
-            (0..bins)
-                .map(|j| (j as f64 + 0.5) * BIN_MS)
-                .filter(|&t| t >= DENSE_MS),
-        );
-        let shifts = [tau_shift(33), tau_shift(262)];
-        let h = replay_two(&polls, shifts, q, &at);
-        let windows = at
-            .iter()
-            .zip(&h)
-            .enumerate()
-            .map(|(k, (&t, h))| {
-                let x_w = (q[0] as f64 * h[0] + q[1] as f64 * h[1]) / 65536.0 / 100.0;
-                let wob = if t < DENSE_MS { wobble(k) } else { 0.0 };
-                tw(window_at(t, I + wob, DUTY, 1.0, x_w))
-            })
-            .collect();
-        (polls, windows)
-    }
-
-    fn two_node_fit(hold_ms: f64, q: [u16; 2]) -> TwoNodeFit {
-        let (v, a) = scales();
-        let (polls, windows) = two_node(hold_ms, q);
-        fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, v, a).unwrap()
-    }
-
     /// Board D's gains on a 960 s hold: both read back within 1 %, the pair
     /// (33, 262) s decided on both octaves, the residual under 0.05 C, the
     /// brush window empty of anything but the model.
     #[test]
     fn recovers_two_gains_and_their_octaves_from_a_long_hold() {
-        let f = two_node_fit(960_000.0, [719, 777]);
+        let f = Synth::hold(960_000.0).fit().unwrap();
         assert!((f.rotor.rise_q016.raw as i32 - 719).abs() <= 7, "{f:?}");
         assert!((f.body.rise_q016.raw as i32 - 777).abs() <= 8, "{f:?}");
         assert_eq!((f.rotor.tau_s, f.rotor.shift), (33, 11));
@@ -2043,13 +1833,23 @@ mod tests {
     /// decides itself.
     #[test]
     fn an_undecided_body_writes_the_octave_the_hold_covers() {
-        let f = two_node_fit(960_000.0, [719, 0]);
+        let f = Synth {
+            q: [719, 0],
+            ..Synth::hold(960_000.0)
+        }
+        .fit()
+        .unwrap();
         assert!((f.rotor.rise_q016.raw as i32 - 719).abs() <= 7, "{f:?}");
         assert_eq!(f.body.rise_q016.raw, 0, "{f:?}");
         assert!(f.rotor.decided && !f.body.decided, "{f:?}");
         assert!(f.body.sse_ratio < OCTAVE_DECIDES, "{f:?}");
         assert_eq!((f.body.tau_s, f.body.shift), (524, 15));
-        let f = two_node_fit(480_000.0, [719, 0]);
+        let f = Synth {
+            q: [719, 0],
+            ..Synth::hold(480_000.0)
+        }
+        .fit()
+        .unwrap();
         assert!(!f.body.decided, "{f:?}");
         assert_eq!(f.body.tau_s, 262);
         assert_eq!(f.rotor.tau_s, 33);
@@ -2060,8 +1860,125 @@ mod tests {
     #[test]
     fn a_short_hold_has_too_few_bins_to_fit() {
         let (v, a) = scales();
-        let (polls, windows) = two_node(45_000.0, [719, 777]);
+        let (polls, windows) = Synth::hold(45_000.0).build();
         let why = fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, v, a).unwrap_err();
         assert!(why.contains("past 20 s, under the 30"), "{why}");
+    }
+
+    /// A window every 2 ms from `from` to `to` ms at `duty`, R `r0` and
+    /// the copper `x_w(t)` C over the NTC; the window at `t` reads `pos(t)`.
+    fn trace(
+        from: f64,
+        to: f64,
+        duty: f64,
+        r0: f64,
+        x_w: impl Fn(f64) -> f64,
+        pos: impl Fn(f64) -> u16,
+    ) -> Vec<ThermWindow> {
+        ((from / WIN_MS) as i64..(to / WIN_MS) as i64)
+            .map(|k| {
+                let t = k as f64 * WIN_MS;
+                let i = if duty == DUTY { I } else { I * duty / DUTY };
+                ThermWindow {
+                    pos: pos(t),
+                    ..tw(window_at(t, i + wobble(k as usize), duty, r0, x_w(t)))
+                }
+            })
+            .collect()
+    }
+
+    /// A bench hold on board D: R stepped up 2 % at 32 s with the pot
+    /// still and back down 2 % at 44 s. Both edges are events,
+    /// the copper's own rise (a 33 s node to 19 C) is not, and a step that
+    /// moved the pot is motion.
+    #[test]
+    fn contact_events_are_steps_in_r_with_the_pot_still() {
+        let copper = |t: f64| 19.0 * (1.0 - (-t / 33_000.0).exp());
+        let contact = |t: f64| {
+            if (32_000.0..44_000.0).contains(&t) {
+                1.02
+            } else {
+                1.0
+            }
+        };
+        let w = trace(
+            0.0,
+            120_000.0,
+            DUTY,
+            1.0,
+            |t| {
+                (contact(t) * (1.0 + copper(t) / (COPPER_ZERO_R_C + T_NTC0)) - 1.0)
+                    * (COPPER_ZERO_R_C + T_NTC0)
+            },
+            |_| SEAT,
+        );
+        let ev = contact_events(&w, 0.0, 120_000.0);
+        assert_eq!(ev.len(), 2, "{ev:?}");
+        assert_eq!((ev[0].t_ms, ev[1].t_ms), (32_000.0, 44_000.0));
+        assert_eq!((ev[0].to_ms, ev[1].to_ms), (34_000.0, 46_000.0));
+        assert!((ev[0].step_frac - 0.02).abs() < 0.005, "{:?}", ev[0]);
+        assert!((ev[1].step_frac + 0.02).abs() < 0.005, "{:?}", ev[1]);
+        assert!((ev[0].i_before - 270.0).abs() < 1.0 && ev[0].pos_before == SEAT as f64);
+        // the copper alone: no event in the whole hold, from its first second
+        let w = trace(0.0, 120_000.0, DUTY, 1.0, copper, |_| SEAT);
+        assert_eq!(contact_events(&w, 0.0, 120_000.0), []);
+        // the same step with the pot a count off: motion, not contact
+        let w = trace(
+            0.0,
+            120_000.0,
+            DUTY,
+            1.0,
+            |t| (contact(t) - 1.0) * (COPPER_ZERO_R_C + T_NTC0),
+            |t| if t >= 32_000.0 { SEAT + 1 } else { SEAT },
+        );
+        let ev = contact_events(&w, 0.0, 120_000.0);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0].t_ms, 44_000.0);
+        // another bench hold's event, a step inside a block: read whole across
+        // the block, its half-stepped neighbours merge in, and the event is
+        // timed to the middle of the three
+        let w = trace(
+            0.0,
+            120_000.0,
+            DUTY,
+            1.0,
+            |t| if t >= 33_000.0 { 0.024 } else { 0.0 } * (COPPER_ZERO_R_C + T_NTC0),
+            |_| SEAT,
+        );
+        let ev = contact_events(&w, 0.0, 120_000.0);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!((ev[0].t_ms, ev[0].to_ms), (33_000.0, 36_000.0));
+        assert!((ev[0].step_frac - 0.024).abs() < 0.001, "{:?}", ev[0]);
+        // a step inside the skip is the dip, not an event; a gap in the
+        // windows is not a step
+        let mut w = trace(0.0, 120_000.0, DUTY, 1.0, |_| 0.0, |_| SEAT);
+        for x in w.iter_mut().filter(|x| x.w.t_ms < 1_000.0) {
+            x.w.vdiff *= 0.97;
+        }
+        w.retain(|x| !(50_000.0..52_000.0).contains(&x.w.t_ms));
+        for x in w.iter_mut().filter(|x| x.w.t_ms >= 52_000.0) {
+            x.w.vdiff *= 1.03;
+        }
+        assert_eq!(contact_events(&w, 0.0, 120_000.0), []);
+        assert_eq!(contact_events(&[], 0.0, 1.0), []);
+    }
+
+    /// The live hold's reference and copper: R_ref and T_0 as the fit reads
+    /// them, the copper over the last second of windows from them.
+    #[test]
+    fn the_live_hold_reads_its_copper_against_its_own_reference() {
+        let (polls, windows) = Synth::hold(120_000.0).build();
+        let (r_ref, t0_c) = hold_reference(&polls, &windows, 0.0, SEAT).unwrap();
+        assert!((t0_c - T_NTC0).abs() < 1e-9);
+        assert!((r_ref - 1.0).abs() < 1e-3, "{r_ref}");
+        let f = fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, 1.0, 1.0).unwrap();
+        assert!((f.r_ref_ohm - r_ref).abs() < 1e-12);
+        let c = copper_c(&windows, 119_000.0, r_ref, t0_c).unwrap();
+        assert!(
+            (c - (T_NTC0 + f.settled_rise_c)).abs() < 0.2,
+            "{c} vs {}",
+            f.settled_rise_c
+        );
+        assert_eq!(copper_c(&windows, 1e9, r_ref, t0_c), None);
     }
 }
