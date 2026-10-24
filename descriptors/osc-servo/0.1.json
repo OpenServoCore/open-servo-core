@@ -27,10 +27,10 @@
       "accel_limit_q88",
       "drive_polarity",
       "stall_omega_max_cps",
+      "pos_error_counts",
       "l1_q016",
       "l2_q88",
       "l3_q88",
-      "pos_error_counts",
       "r_q12",
       "recip_ke_q",
       "b_i_q313",
@@ -364,78 +364,71 @@
       "kind": "int"
     },
     {
-      "name": "recover_cc",
-      "addr": 100,
-      "width": 2,
-      "access": "rw",
-      "kind": "int"
-    },
-    {
       "name": "v_undervolt_counts",
-      "addr": 102,
+      "addr": 100,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "thermal_tau2_s",
-      "addr": 104,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "l1_q016",
-      "addr": 110,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "l2_q88",
-      "addr": 112,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "l3_q88",
-      "addr": 114,
+      "addr": 102,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "pos_error_time_ticks",
-      "addr": 116,
+      "addr": 104,
       "width": 4,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "pos_error_counts",
-      "addr": 120,
+      "addr": 108,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "sensor_delta_max",
-      "addr": 122,
+      "addr": 110,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "sensor_bad_count",
-      "addr": 124,
+      "addr": 112,
       "width": 1,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "rail_fold_q8",
-      "addr": 126,
+      "addr": 114,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l1_q016",
+      "addr": 116,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l2_q88",
+      "addr": 118,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l3_q88",
+      "addr": 120,
       "width": 2,
       "access": "rw",
       "kind": "uint"

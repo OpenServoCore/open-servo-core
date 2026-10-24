@@ -212,19 +212,18 @@ pub const BURST_MAX_MV: u16 = 3200;
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
+    /// The derate: the ceiling is the cap under this, zero at the cutoff.
     pub derate_start_cc: i16,
-    #[ct_field(gt = &addr::thermal::RECOVER_CC)]
+    /// Where the overtemperature fault latches; the host's ack relatches
+    /// while the estimate still reads this or more.
     pub cutoff_cc: i16,
-    #[ct_field(lt = &addr::thermal::CUTOFF_CC)]
-    pub recover_cc: i16,
     pub v_undervolt_counts: u16,
     pub thermal_tau2_s: u16,
 }
 
-// 80C derate onset / 100C cutoff / 90C recover.
+// 80C derate onset / 100C cutoff.
 pub const DEFAULT_DERATE_START_CC: i16 = 8000;
 pub const DEFAULT_CUTOFF_CC: i16 = 10000;
-pub const DEFAULT_RECOVER_CC: i16 = 9000;
 // True brown-out floor, not a battery-health line: the default must sit
 // below every legal supply, and a USB-fed 5 V bench bus idles at ~4.3 V.
 // Pack-health thresholds are per-product tuning, written by the host.
@@ -302,11 +301,10 @@ pub struct ConfigRegs {
     pub loop_position: ConfigLoopPosition,
     pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
-    /// Held the retired resistance thermometer's seat rules.
-    #[ct_section(skip)]
-    pub _rsvd_thermal_ext: [u8; 4],
-    pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
+    pub fusion: ConfigFusion,
+    #[ct_section(skip)]
+    pub _rsvd_tail: [u8; 6],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

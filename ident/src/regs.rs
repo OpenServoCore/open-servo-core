@@ -47,19 +47,18 @@ pub mod config {
     /// power of two of its 16 ms period.
     pub const THERMAL_TAU_S: Reg = reg(0x005e, 2);
     /// The winding estimate's derate: full under the start, zero at the
-    /// cutoff, where the overtemperature fault latches; recover clears it.
+    /// cutoff, where the overtemperature fault latches.
     pub const DERATE_START_CC: Reg = reg(0x0060, 2);
     pub const CUTOFF_CC: Reg = reg(0x0062, 2);
-    pub const RECOVER_CC: Reg = reg(0x0064, 2);
-    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
+    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0064, 2);
     /// The body heat node's time constant, s; 0 = no body node.
-    pub const THERMAL_TAU2_S: Reg = reg(0x0068, 2);
-    pub const L1_Q016: Reg = reg(0x006e, 2);
-    pub const L2_Q88: Reg = reg(0x0070, 2);
-    pub const L3_Q88: Reg = reg(0x0072, 2);
+    pub const THERMAL_TAU2_S: Reg = reg(0x0066, 2);
     /// The rail fold's slope, counts of ceiling per vcount of rail over
     /// `V_UNDERVOLT_COUNTS`, Q8; 0 = off.
-    pub const RAIL_FOLD_Q8: Reg = reg(0x007e, 2);
+    pub const RAIL_FOLD_Q8: Reg = reg(0x0072, 2);
+    pub const L1_Q016: Reg = reg(0x0074, 2);
+    pub const L2_Q88: Reg = reg(0x0076, 2);
+    pub const L3_Q88: Reg = reg(0x0078, 2);
 }
 
 pub mod calib {
@@ -259,10 +258,9 @@ pub const ALL: &[(&str, Reg)] = &[
     ("thermal_tau_s", config::THERMAL_TAU_S),
     ("derate_start_cc", config::DERATE_START_CC),
     ("cutoff_cc", config::CUTOFF_CC),
-    ("recover_cc", config::RECOVER_CC),
+    ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("thermal_tau2_s", config::THERMAL_TAU2_S),
     ("rail_fold_q8", config::RAIL_FOLD_Q8),
-    ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),

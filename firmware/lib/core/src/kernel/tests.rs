@@ -108,7 +108,6 @@ fn seed(shared: &Shared) {
         c.limits.thermal_tau_s = 4;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
-        c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
         // 1200 counts over 200 vcounts: 6 counts per vcount
         c.fault_cfg.rail_fold_q8 = 6 << 8;
@@ -1288,7 +1287,6 @@ fn torque_off_lets_the_heat_leak_and_the_derate_lift() {
     write_config(&sh, |t| {
         t.config.thermal.derate_start_cc = 3500;
         t.config.thermal.cutoff_cc = 6500;
-        t.config.thermal.recover_cc = 4000;
     });
     let mut k = kernel();
     let hold = frame(2000, BIAS + 400);

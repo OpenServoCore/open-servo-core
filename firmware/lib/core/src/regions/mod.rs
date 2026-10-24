@@ -131,7 +131,6 @@ impl ControlTableCell {
             cfg.limits.thermal_tau_s = config::DEFAULT_THERMAL_TAU_S;
             cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
-            cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
             cfg.thermal.v_undervolt_counts = v_undervolt_counts;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
             cfg.fault_cfg.pos_error_time_ticks = config::DEFAULT_POS_ERROR_TIME_TICKS;
