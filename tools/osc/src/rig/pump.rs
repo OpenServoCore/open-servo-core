@@ -74,6 +74,16 @@ pub(crate) fn read_stamped<P: Pipe>(
     Ok(snap)
 }
 
+/// TELEMETRY_EXT's board NTC, centi-C, and `therm_flags`, one 3-byte read:
+/// they sit outside the region [`read_stamped`] reads.
+pub(crate) fn read_therm<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(i16, u8)> {
+    let raw = c
+        .read(id, telemetry::T_NTC_CC.addr, 3)
+        .context("therm read")?;
+    let [t0, t1, flags] = raw[..].try_into().ok().context("therm read short")?;
+    Ok((i16::from_le_bytes([t0, t1]), flags))
+}
+
 /// Run the closure, then force the servo safe (duty/goals zero, torque,
 /// stall permit and TEL off) whether it succeeded, failed, or was
 /// ctrl-c'd.
@@ -662,15 +672,7 @@ impl<'a, S: Servo> Pump<'a, S> {
                     let mut snap = s.snapshot()?;
                     w.windows.attach(&mut snap);
                     if self.therm {
-                        let id = s.id();
-                        let raw = s
-                            .client()
-                            .read(id, telemetry::T_NTC_CC.addr, 3)
-                            .context("therm read")?;
-                        let [t0, t1, flags] =
-                            raw[..].try_into().ok().context("therm read short")?;
-                        snap.t_ntc_cc = i16::from_le_bytes([t0, t1]);
-                        snap.therm_flags = flags;
+                        (snap.t_ntc_cc, snap.therm_flags) = s.therm()?;
                     }
                     if let Some(log) = self.log.as_mut() {
                         log.push(snap.host_ms, &snap, w.pwm)?;
@@ -1004,6 +1006,64 @@ mod tests {
             panic!("two reads, {} seen", exp.seen.len())
         };
         assert!(a.pwm_period_ticks != 0 && b.agg_seq > a.agg_seq);
+    }
+
+    /// A therm pump reads the board NTC with every snapshot, outside the
+    /// region: the experiment and the log both see it, a plain pump leaves
+    /// it 0.
+    #[test]
+    fn a_therm_pump_logs_the_ntc_on_every_snapshot() {
+        use super::super::csvio::{OutDir, SnapshotLog, read_anchor_polls};
+        use super::super::servo::bench::Bench;
+        use crate::capture::Supply;
+
+        #[derive(Default)]
+        struct Exp {
+            reads: usize,
+            seen: Vec<TelemetrySnapshot>,
+        }
+        impl Experiment for Exp {
+            fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+                self.seen.extend(obs.copied());
+                if self.reads == 0 {
+                    return Cmd::Done;
+                }
+                self.reads -= 1;
+                Cmd::Read
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("osc-therm-pump-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = OutDir(dir.clone());
+        let mut log = SnapshotLog::create_therm(&out, "anchor_snapshots.csv").unwrap();
+        let mut exp = Exp {
+            reads: 3,
+            ..Default::default()
+        };
+        let mut b = Bench::mg90(Supply::TwoS);
+        b.ntc_c = 27.25;
+        Pump::on(&mut b, Some(&mut log))
+            .with_therm()
+            .run(&mut exp)
+            .unwrap();
+        drop(log);
+        assert_eq!(exp.seen.len(), 3);
+        assert!(
+            exp.seen.iter().all(|s| s.t_ntc_cc == 2725),
+            "{:?}",
+            exp.seen
+        );
+        let polls = read_anchor_polls(&dir).unwrap();
+        assert_eq!(polls.len(), 3);
+        assert!(polls.iter().all(|p| p.t_ntc_cc == 2725.0), "{polls:?}");
+
+        let mut exp = Exp {
+            reads: 1,
+            ..Default::default()
+        };
+        Pump::on(&mut b, None).run(&mut exp).unwrap();
+        assert_eq!(exp.seen[0].t_ntc_cc, 0);
     }
 
     #[test]

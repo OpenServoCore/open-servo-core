@@ -1209,7 +1209,8 @@ fn rest_check<S: Servo>(s: &mut S) -> Result<RestRead> {
                  ident write` writes the board's curve"
             );
         }
-        let t_c = snap.t_ntc_cc as f64 / 100.0;
+        let (t_ntc_cc, _) = s.therm()?;
+        let t_c = t_ntc_cc as f64 / 100.0;
         samples.push((s.now_ms(), t_c));
         let drift = thermal::rest_drift(&samples);
         if let Some(d) = drift
@@ -2765,9 +2766,27 @@ impl RecordedHold {
             polls: &self.polls,
             windows: &self.windows,
             t0_ms: self.marks.t0_ms,
-            end_ms: f64::INFINITY,
+            end_ms: self.end_ms(),
             seat: self.seat,
         }
+    }
+
+    /// Where the recording's command left the hold's: the first window
+    /// after `t0_ms` judged at a duty other than the one the hold's first
+    /// commanded window landed on, else never. `commanded` is exact on the
+    /// kernel's duty grid, so two commands differ or they are one; a window
+    /// the limiter governed is not commanded and ends nothing, as the live
+    /// fit skips it.
+    fn end_ms(&self) -> f64 {
+        let from = self
+            .windows
+            .partition_point(|x| x.w.t_ms < self.marks.t0_ms);
+        let mut at = self.windows[from..].iter().filter(|x| x.commanded);
+        let Some(cmd) = at.next().map(|x| x.w.duty_q15) else {
+            return f64::INFINITY;
+        };
+        at.find(|x| x.w.duty_q15 != cmd)
+            .map_or(f64::INFINITY, |x| x.w.t_ms)
     }
 }
 
@@ -2942,8 +2961,7 @@ mod tests {
     /// one: anchor.csv, anchor_snapshots.csv, thermal.json and a params.json
     /// with the sense block alone. The hold, and the sense it was read on.
     fn record_hold(dir: &Path, cfg: &AnchorCfg) -> (Anchor, SenseJson) {
-        use osc_ident::exp::testkit::{FakeServo, PWM_PERIOD_TICKS, pump, rig};
-        use osc_ident::frame::TelemetrySnapshot;
+        use osc_ident::exp::testkit::{FakeServo, pump, rig};
 
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
@@ -2971,18 +2989,7 @@ mod tests {
         let live = hold.fit(sc.v_term_per_count, sc.amps_per_count).unwrap();
 
         csvio::write_anchor_samples(&out, hold.samples()).unwrap();
-        let mut log = csvio::SnapshotLog::create_therm(&out, "anchor_snapshots.csv").unwrap();
-        for p in hold.polls() {
-            let s = TelemetrySnapshot {
-                i_tick_counts: p.i_counts as i16,
-                t_ntc_cc: p.t_ntc_cc as i16,
-                t_winding_cc: p.t_winding_cc as i16,
-                i_lim_counts: p.i_lim_counts as u16,
-                ..TelemetrySnapshot::default()
-            };
-            log.push(p.t_ms, &s, PWM_PERIOD_TICKS).unwrap();
-        }
-        drop(log);
+        write_polls(&out, hold.polls());
         ThermalJson {
             t0_ms: hold.t0_ms().unwrap(),
             end_ms: hold.polls().last().unwrap().t_ms,
@@ -2995,6 +3002,24 @@ mod tests {
         .unwrap();
         save_params(dir, sense, Vec::new()).unwrap();
         (hold, sense)
+    }
+
+    /// The hold's polls as `osc ident thermal` logs them, anchor_snapshots.csv.
+    fn write_polls(out: &csvio::OutDir, polls: &[HoldPoll]) {
+        use osc_ident::exp::testkit::PWM_PERIOD_TICKS;
+        use osc_ident::frame::TelemetrySnapshot;
+
+        let mut log = csvio::SnapshotLog::create_therm(out, "anchor_snapshots.csv").unwrap();
+        for p in polls {
+            let s = TelemetrySnapshot {
+                i_tick_counts: p.i_counts as i16,
+                t_ntc_cc: p.t_ntc_cc as i16,
+                t_winding_cc: p.t_winding_cc as i16,
+                i_lim_counts: p.i_lim_counts as u16,
+                ..TelemetrySnapshot::default()
+            };
+            log.push(p.t_ms, &s, PWM_PERIOD_TICKS).unwrap();
+        }
     }
 
     /// The hold `osc ident thermal` records at its minimum length under
@@ -3114,6 +3139,110 @@ mod tests {
         );
     }
 
+    /// A recording whose script stepped the duty after the hold ends where
+    /// the command changed: the refit sees the hold's own length and fits
+    /// the hold alone, and a window the limiter governed inside the hold
+    /// ends nothing.
+    #[test]
+    fn a_recorded_hold_ends_where_its_duty_changes() {
+        let dir = std::env::temp_dir().join(format!("ident-stepdown-{}", std::process::id()));
+        let cfg = hold_cfg();
+        let (hold, sense) = record_hold(&dir, &cfg);
+        let sc = sense.scales().unwrap();
+        let alone = hold.fit(sc.v_term_per_count, sc.amps_per_count).unwrap();
+        let t0 = hold.t0_ms().unwrap();
+        let mut windows = hold.samples().to_vec();
+        let mut polls = hold.polls().to_vec();
+        let last = polls.last().unwrap().t_ms;
+        let shift = last - t0 + 1000.0;
+        let stepped: Vec<ThermWindow> = hold
+            .samples()
+            .iter()
+            .filter(|x| x.w.t_ms >= t0)
+            .map(|x| {
+                let mut x = *x;
+                x.w.t_ms += shift;
+                x.w.duty_q15 *= 0.4;
+                x.w.i *= 0.4;
+                x
+            })
+            .collect();
+        let step_ms = stepped[0].w.t_ms;
+        windows.extend(stepped);
+        polls.extend(
+            hold.polls()
+                .iter()
+                .filter(|p| p.t_ms >= t0)
+                .map(|p| HoldPoll {
+                    t_ms: p.t_ms + shift,
+                    i_counts: p.i_counts * 0.4,
+                    ..*p
+                }),
+        );
+        let out = csvio::OutDir(dir.clone());
+        csvio::write_anchor_samples(&out, &windows).unwrap();
+        write_polls(&out, &polls);
+        let marks = ThermalJson::load(&dir.join("thermal.json")).unwrap();
+        ThermalJson {
+            end_ms: polls.last().unwrap().t_ms,
+            ..marks
+        }
+        .save(&dir.join("thermal.json"))
+        .unwrap();
+
+        let h = RecordedHold::load(&dir).unwrap();
+        assert_eq!(h.hold().end_ms, step_ms);
+        let refit =
+            thermal::fit_two_node_pooled(&[h.hold()], sc.v_term_per_count, sc.amps_per_count)
+                .unwrap();
+        let (rh, ah) = (&refit.holds[0], &alone.holds[0]);
+        assert_eq!(
+            (
+                rh.hold_s,
+                rh.r_ref_ohm,
+                refit.bins,
+                (refit.rotor.tau_s, refit.body.tau_s)
+            ),
+            (
+                ah.hold_s,
+                ah.r_ref_ohm,
+                alone.bins,
+                (alone.rotor.tau_s, alone.body.tau_s)
+            )
+        );
+        assert!(
+            (refit.rotor.k - alone.rotor.k).abs() < 1e-6,
+            "{refit:?} {alone:?}"
+        );
+        assert!(
+            (refit.body.k - alone.body.k).abs() < 1e-6,
+            "{refit:?} {alone:?}"
+        );
+        let open = Hold {
+            end_ms: f64::INFINITY,
+            ..h.hold()
+        };
+        let spanned =
+            thermal::fit_two_node_pooled(&[open], sc.v_term_per_count, sc.amps_per_count).unwrap();
+        assert!(
+            spanned.holds[0].hold_s > ah.hold_s + 1.0,
+            "{} vs {}",
+            spanned.holds[0].hold_s,
+            ah.hold_s
+        );
+
+        // a fold off the duty mid-hold is not a command
+        let mut folded = RecordedHold::load(&dir).unwrap();
+        let mid = folded.windows.partition_point(|x| x.w.t_ms < t0 + 5000.0);
+        folded.windows[mid].commanded = false;
+        folded.windows[mid].w.duty_q15 *= 0.9;
+        assert_eq!(folded.hold().end_ms, step_ms);
+        let mut flat = RecordedHold::load(&dir).unwrap();
+        flat.windows
+            .truncate(flat.windows.partition_point(|x| x.w.t_ms < step_ms));
+        assert_eq!(flat.hold().end_ms, f64::INFINITY);
+    }
+
     /// Two recorded holds pool in `ident fit`: one params.json with the
     /// four gains in a new out directory; a plant run directory in the
     /// pool is refused, named.
@@ -3155,7 +3284,7 @@ mod tests {
     }
 
     /// The rest check on the fake bench: a flat NTC lets the hold go once
-    /// the samples span the window.
+    /// the samples span the window, at the temperature the model reads.
     #[test]
     fn a_rested_board_passes_the_rest_check_at_the_window() {
         use crate::capture::Supply;
@@ -3168,7 +3297,23 @@ mod tests {
             "{}",
             r.waited_ms
         );
-        assert_eq!((r.drift_c_per_min, r.t_c), (0.0, 0.0));
+        assert_eq!((r.drift_c_per_min, r.t_c), (0.0, b.ntc_c));
+    }
+
+    /// The NTC sits outside the snapshot's region: the snapshot reads it
+    /// 0 and the rest check reads it through the therm read.
+    #[test]
+    fn the_rest_check_reads_the_ntc_outside_the_snapshot_region() {
+        use crate::capture::Supply;
+        use crate::rig::servo::bench::Bench;
+
+        let mut b = Bench::mg90(Supply::TwoS);
+        b.ntc_c = 31.5;
+        let snap = b.snapshot().unwrap();
+        assert_eq!((snap.t_ntc_cc, snap.therm_flags), (0, 0));
+        assert_eq!(b.therm().unwrap(), (3150, 0));
+        let r = rest_check(&mut b).unwrap();
+        assert_eq!((r.drift_c_per_min, r.t_c), (0.0, 31.5));
     }
 
     /// An NTC warming 0.3 C/min never rests: refused at five minutes, the

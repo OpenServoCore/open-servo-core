@@ -15,7 +15,8 @@ use osc_ident::regs::{Reg, calib, control, telemetry};
 use osc_protocol::tel::Chunks;
 
 use super::pump::{
-    BurstCap, BurstStats, admit_watch, exchange_tel_burst, read_stamped, watch_rows_on, write_reg,
+    BurstCap, BurstStats, admit_watch, exchange_tel_burst, read_stamped, read_therm, watch_rows_on,
+    write_reg,
 };
 use super::snapshot::read_u16;
 
@@ -30,6 +31,9 @@ pub(crate) trait Servo {
     fn write(&mut self, reg: Reg, value: i32) -> Result<()>;
     /// One telemetry snapshot, stamped `now_ms` at its read.
     fn snapshot(&mut self) -> Result<TelemetrySnapshot>;
+    /// TELEMETRY_EXT's board NTC, centi-C, and `therm_flags`: outside the
+    /// snapshot's region, one more read.
+    fn therm(&mut self) -> Result<(i16, u8)>;
     /// One TEL burst of `samples` fast ticks of `chunks` rows, the `goal`
     /// write applied in the instant the burst starts. Drives call
     /// [`Servo::stream`].
@@ -111,6 +115,10 @@ impl<S: Servo + ?Sized> Servo for &mut S {
 
     fn snapshot(&mut self) -> Result<TelemetrySnapshot> {
         (**self).snapshot()
+    }
+
+    fn therm(&mut self) -> Result<(i16, u8)> {
+        (**self).therm()
     }
 
     fn burst(
@@ -203,6 +211,10 @@ impl<C: AsClient> Servo for Wire<C> {
 
     fn snapshot(&mut self) -> Result<TelemetrySnapshot> {
         read_stamped(self.c.get(), self.id, self.t0)
+    }
+
+    fn therm(&mut self) -> Result<(i16, u8)> {
+        read_therm(self.c.get(), self.id)
     }
 
     fn burst(
@@ -342,6 +354,9 @@ pub(crate) mod bench {
         slow: Option<(i16, Option<u16>)>,
         decay: u16,
         pub(crate) cap: BurstCap,
+        /// The board NTC's reading as the bench starts, C: the test servo's
+        /// `ntc_c_per_min` warms it from there.
+        pub(crate) ntc_c: f64,
     }
 
     impl Bench {
@@ -370,6 +385,7 @@ pub(crate) mod bench {
                 slow: None,
                 decay,
                 cap,
+                ntc_c: 25.0,
             }
         }
 
@@ -414,13 +430,25 @@ pub(crate) mod bench {
             Ok(())
         }
 
-        /// The region read: one of a poll's two transactions.
+        /// The region read: one of a poll's two transactions. The NTC and
+        /// `therm_flags` sit outside it and read 0 here, as on the wire.
         fn snapshot(&mut self) -> Result<TelemetrySnapshot> {
             let quarter = self.bus.read_ms / 4.0;
             self.busy(quarter, 0.5);
-            let snap = self.servo.read();
+            let mut snap = self.servo.read();
+            (snap.t_ntc_cc, snap.therm_flags) = (0, 0);
             self.busy(quarter, 0.5);
             Ok(snap)
+        }
+
+        /// One more read: the board NTC off the test servo's model. The
+        /// kernel's `therm_flags` bits are not defined on the host, so the
+        /// flags read 0 and its NTC fault shows in `t_winding_cc` alone.
+        fn therm(&mut self) -> Result<(i16, u8)> {
+            self.busy(self.bus.read_ms / 2.0, 1.0);
+            let s = &self.servo;
+            let t_c = self.ntc_c + s.ntc_c_per_min * s.t_ms / 60_000.0;
+            Ok(((t_c * 100.0).round() as i16, 0))
         }
 
         /// The watch's arm, the other transaction, then its rows.
