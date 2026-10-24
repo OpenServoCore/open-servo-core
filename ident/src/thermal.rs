@@ -691,8 +691,13 @@ pub struct HoldFit {
     pub first_c: f64,
     /// The residual's mean per [`BLOCK_MS`] block of the fitted bins, C.
     pub block_means_c: Vec<f64>,
-    /// The copper's excess over the NTC, the mean over the last
-    /// [`SETTLED_BINS`] bins, C.
+    /// The copper over the NTC when R_ref was read, C, by the fit's own
+    /// replay at the written gains: about 0 on a cold start, the rise
+    /// carried from the hold before on a warm one. R/R_ref converts to
+    /// degrees on the copper's temperature there.
+    pub warm_ref_c: f64,
+    /// The copper's excess over the NTC at the end, the mean over the last
+    /// [`SETTLED_BINS`] bins, C: `warm_ref_c` and the rise since.
     pub settled_rise_c: f64,
     /// The kernel's winding estimate less the copper over the same closing
     /// bins, C; None while the estimate read UNSET.
@@ -887,6 +892,19 @@ pub struct Hold<'a> {
     pub seat: u16,
 }
 
+/// One 1 s bin of a hold that read.
+struct Bin {
+    /// Its centre, ms on the host's clock.
+    t_ms: f64,
+    /// The copper's rise over its reference, C, converted on the NTC
+    /// base's temperature ([`Reference::copper`]).
+    copper_c: f64,
+    /// The NTC over its base, C.
+    ntc_c: f64,
+    /// The kernel's estimate, C, when it was set.
+    estimate: Option<f64>,
+}
+
 /// A hold ready for the pair fits: its reference, its 1 s bins and where
 /// the fitted ones start.
 struct Prepared<'a> {
@@ -894,23 +912,38 @@ struct Prepared<'a> {
     rf: Reference,
     t0_ms: f64,
     hold_s: f64,
-    /// Per bin that read: its second, its centre ms, y in C and the
-    /// kernel's estimate when it was set.
-    all: Vec<(usize, f64, f64, Option<f64>)>,
+    all: Vec<Bin>,
     /// Where the replay samples: t_ref first, then every bin's centre.
     at: Vec<f64>,
-    y: Vec<f64>,
     /// The blank in force, ms into the hold, and the first fitted bin.
     from_ms: f64,
     from: usize,
 }
 
 impl Prepared<'_> {
+    /// What a bin's `copper_c` scales by when the copper sat `warm_ref_c`
+    /// over the NTC at the reference: R(T) runs with `COPPER_ZERO_R_C + T`,
+    /// so R/R_ref - 1 converts to degrees on the copper's own temperature
+    /// there, not the NTC's.
+    fn scale(&self, warm_ref_c: f64) -> f64 {
+        (COPPER_ZERO_R_C + self.rf.t0_c + warm_ref_c) / (COPPER_ZERO_R_C + self.rf.t0_c)
+    }
+
+    /// Every bin's copper over the NTC, less the NTC's own move, C, with
+    /// the copper `warm_ref_c` over the NTC at the reference.
+    fn y(&self, warm_ref_c: f64) -> Vec<f64> {
+        let scale = self.scale(warm_ref_c);
+        self.all
+            .iter()
+            .map(|b| b.copper_c * scale - b.ntc_c)
+            .collect()
+    }
+
     /// Blank the hold to `from_ms`: the bins before it leave the fit, and
     /// the fit refuses a hold with fewer than [`MIN_BINS`] left.
     fn blank(&mut self, from_ms: f64) -> Result<(), String> {
         self.from_ms = from_ms;
-        self.from = self.all.partition_point(|b| b.1 < self.t0_ms + from_ms);
+        self.from = self.all.partition_point(|b| b.t_ms < self.t0_ms + from_ms);
         let n = self.all.len() - self.from;
         if n < MIN_BINS {
             return Err(format!(
@@ -935,7 +968,7 @@ impl Prepared<'_> {
     fn unflat(&self, res: &[f64]) -> Option<(f64, f64)> {
         let fitted = &res[self.from..];
         let end = self.all[self.from..]
-            .partition_point(|b| b.1 < self.t0_ms + self.from_ms + FLAT_BLOCK_MS);
+            .partition_point(|b| b.t_ms < self.t0_ms + self.from_ms + FLAT_BLOCK_MS);
         let m = mean(fitted[..end].iter().copied())?;
         let rest = &fitted[end..];
         let floor = if rest.len() < 3 {
@@ -969,25 +1002,23 @@ fn prepare<'a>(
 ) -> Result<Prepared<'a>, String> {
     let rf = reference(h.polls, h.windows, h.t0_ms, h.end_ms, h.seat, r_ohm)?;
     let hold_s = rf.seconds.len() as f64 * BIN_MS / 1000.0;
-    let all: Vec<(usize, f64, f64, Option<f64>)> = rf
+    let all: Vec<Bin> = rf
         .seconds
         .iter()
         .enumerate()
         .filter_map(|(j, s)| {
             let (r, t) = (s.r.mean()?, s.ntc.mean()?);
-            let y = rf.copper(r) - (t - rf.t0_c);
-            Some((
-                j,
-                h.t0_ms + (j as f64 + 0.5) * BIN_MS,
-                y,
-                s.winding.mean().filter(|_| !s.unset),
-            ))
+            Some(Bin {
+                t_ms: h.t0_ms + (j as f64 + 0.5) * BIN_MS,
+                copper_c: rf.copper(r),
+                ntc_c: t - rf.t0_c,
+                estimate: s.winding.mean().filter(|_| !s.unset),
+            })
         })
         .collect();
     let mut at = Vec::with_capacity(all.len() + 1);
     at.push(h.t0_ms + rf.start_ms);
-    at.extend(all.iter().map(|b| b.1));
-    let y = all.iter().map(|b| b.2).collect();
+    at.extend(all.iter().map(|b| b.t_ms));
     let mut p = Prepared {
         polls: h.polls,
         rf,
@@ -995,7 +1026,6 @@ fn prepare<'a>(
         hold_s,
         all,
         at,
-        y,
         from_ms: 0.0,
         from: 0,
     };
@@ -1012,15 +1042,19 @@ struct PairFit {
     q: [Encoded; 2],
     sse: f64,
     res: Vec<Vec<f64>>,
+    /// Each hold's copper over the NTC at its reference, C, on the last
+    /// pass's gains.
+    warm_ref: Vec<f64>,
     passes: usize,
 }
 
 /// The pair `taus` fitted over every hold's bins from its `from` on, with
 /// its reference at its own t_ref: the replay at the last pass's gains
-/// gives each hold the columns `heat(t) - heat(t_ref)`, the fitted parts
-/// of every hold's columns and y are concatenated and solved once by the
-/// non-negative solve (the gains shared), and the loop closes when both
-/// q016 values hold within [`PASS_SETTLED_Q016`]. A `pinned` body is
+/// gives each hold the columns `heat(t) - heat(t_ref)` and the copper it
+/// carried at t_ref, which sets the hold's y ([`Prepared::y`]); the fitted
+/// parts of every hold's columns and y are concatenated and solved once by
+/// the non-negative solve (the gains shared), and the loop closes when
+/// both q016 values hold within [`PASS_SETTLED_Q016`]. A `pinned` body is
 /// known: the replay runs its shift and gain and the rotor alone is
 /// solved on what it leaves of y. Each hold's residual covers every bin,
 /// the SSE the fitted ones.
@@ -1032,20 +1066,23 @@ fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2], pinned: Option<&NodeFit>) ->
     let q_body = pinned.map_or(0, |b| b.rise_q016.raw);
     let mut q = [0u16, q_body];
     let mut passes = 0;
-    let (k, res): ([f64; 2], Vec<Vec<f64>>) = loop {
+    let (k, res, warm_ref): ([f64; 2], Vec<Vec<f64>>, Vec<f64>) = loop {
         passes += 1;
+        let mut warm_ref = Vec::with_capacity(holds.len());
         let cols: Vec<[Vec<f64>; 2]> = holds
             .iter()
             .map(|h| {
                 let r = replay_two(h.polls, shifts, q, &h.at);
+                warm_ref.push((q[0] as f64 * r[0][0] + q[1] as f64 * r[0][1]) / 65536.0 / 100.0);
                 [0, 1].map(|n| r[1..].iter().map(|v| v[n] - r[0][n]).collect())
             })
             .collect();
+        let ys: Vec<Vec<f64>> = holds.iter().zip(&warm_ref).map(|(h, &w)| h.y(w)).collect();
         let (mut x1, mut x2, mut y) = (Vec::new(), Vec::new(), Vec::new());
-        for (h, c) in holds.iter().zip(&cols) {
+        for ((h, c), hy) in holds.iter().zip(&cols).zip(&ys) {
             x1.extend_from_slice(&c[0][h.from..]);
             x2.extend_from_slice(&c[1][h.from..]);
-            y.extend_from_slice(&h.y[h.from..]);
+            y.extend_from_slice(&hy[h.from..]);
         }
         let k = match pinned {
             Some(b) => {
@@ -1055,13 +1092,13 @@ fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2], pinned: Option<&NodeFit>) ->
             }
             None => nnls2(&x1, &x2, &y),
         };
-        let res = holds
+        let res = cols
             .iter()
-            .zip(&cols)
-            .map(|(h, [x1, x2])| {
+            .zip(&ys)
+            .map(|([x1, x2], hy)| {
                 x1.iter()
                     .zip(x2)
-                    .zip(&h.y)
+                    .zip(hy)
                     .map(|((a, b), y)| y - k[0] * a - k[1] * b)
                     .collect()
             })
@@ -1076,7 +1113,7 @@ fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2], pinned: Option<&NodeFit>) ->
             .all(|(n, q)| n.abs_diff(*q) <= PASS_SETTLED_Q016);
         q = next;
         if settled || passes >= PASSES_MAX {
-            break (k, res);
+            break (k, res, warm_ref);
         }
     };
     let sse = holds
@@ -1090,6 +1127,7 @@ fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2], pinned: Option<&NodeFit>) ->
         q: k.map(|k| enc(k * 100.0, 65536.0)),
         sse,
         res,
+        warm_ref,
         passes,
     }
 }
@@ -1314,7 +1352,8 @@ fn fit_pool(
     let hold_fits = prepared
         .iter()
         .zip(&written.res)
-        .map(|(h, res)| hold_fit(h, res))
+        .zip(&written.warm_ref)
+        .map(|((h, res), &w)| hold_fit(h, res, w))
         .collect();
     let node = |n: usize, o: Octave| NodeFit {
         tau_s: o.tau,
@@ -1340,15 +1379,16 @@ fn fit_pool(
     })
 }
 
-/// One hold's diagnostics from the written pair's residual over its bins.
-fn hold_fit(h: &Prepared<'_>, res: &[f64]) -> HoldFit {
+/// One hold's diagnostics from the written pair's residual over its bins,
+/// the copper `warm_ref_c` over the NTC at its reference.
+fn hold_fit(h: &Prepared<'_>, res: &[f64], warm_ref_c: f64) -> HoldFit {
     let rf = &h.rf;
     let (early, fitted) = res.split_at(h.from);
     let first_c = mean(early.iter().copied()).unwrap_or(0.0);
     let timed: Vec<(f64, f64)> = h.all[h.from..]
         .iter()
         .zip(fitted)
-        .map(|(b, r)| (b.1, *r))
+        .map(|(b, r)| (b.t_ms, *r))
         .collect();
     let block = |t: f64| ((t - h.t0_ms) / BLOCK_MS).floor();
     let block_means_c: Vec<f64> = timed
@@ -1357,16 +1397,18 @@ fn hold_fit(h: &Prepared<'_>, res: &[f64]) -> HoldFit {
         .collect();
     let settled = &h.all[h.all.len().saturating_sub(SETTLED_BINS)..];
     let m = settled.len() as f64;
-    let settled_rise_c = settled.iter().map(|b| b.2).sum::<f64>() / m;
-    let copper_c = rf.t0_c
+    let scale = h.scale(warm_ref_c);
+    let settled_rise_c = warm_ref_c
         + settled
             .iter()
-            .map(|b| rf.copper(rf.seconds[b.0].r.mean().unwrap_or(rf.r_ref)))
+            .map(|b| b.copper_c * scale - b.ntc_c)
             .sum::<f64>()
             / m;
+    let copper_c =
+        rf.t0_c + warm_ref_c + settled.iter().map(|b| b.copper_c * scale).sum::<f64>() / m;
     let estimate_err_c = settled
         .iter()
-        .map(|b| b.3)
+        .map(|b| b.estimate)
         .sum::<Option<f64>>()
         .map(|s| s / m - copper_c);
     HoldFit {
@@ -1383,6 +1425,7 @@ fn hold_fit(h: &Prepared<'_>, res: &[f64]) -> HoldFit {
         fit_from_ms: h.from_ms,
         first_c,
         block_means_c,
+        warm_ref_c,
         settled_rise_c,
         estimate_err_c,
         bins: h.all.len() - h.from,
@@ -1409,6 +1452,9 @@ pub fn hold_reference(
 
 /// The copper's temperature, C, from the mean R of the windows at the
 /// command from `from_ms` on, against `r_ref` and `t0_c`; None without one.
+/// It converts on the NTC's temperature, so a warm start's excess reads
+/// low by its rise at the reference over `COPPER_ZERO_R_C + T`: under 2 %
+/// for a 5 C warm start, which the session's holds start within.
 pub fn copper_c(windows: &[ThermWindow], from_ms: f64, r_ref: f64, t0_c: f64) -> Option<f64> {
     let lo = windows.partition_point(|x| x.w.t_ms < from_ms);
     let r = mean(
@@ -2433,6 +2479,92 @@ mod tests {
         );
         assert!(rotor_near(&f, 1.0), "{f:?}");
         assert!(f.holds[0].first_c > 1.0, "{f:?}");
+    }
+
+    /// The windows of a hold from `t0_ms` for `hold_ms` in a record whose
+    /// copper the gains `q` warm over the whole of `polls`: dense through
+    /// the current's floor, then one per bin, as [`Synth::build`] lays
+    /// them, the copper read exactly at each from the kernel's replay over
+    /// the record from its first poll.
+    fn hold_in_record(
+        polls: &[HoldPoll],
+        t0_ms: f64,
+        hold_ms: f64,
+        q: [u16; 2],
+    ) -> Vec<ThermWindow> {
+        let dense = DENSE_MS.min(hold_ms);
+        let bins = (hold_ms / BIN_MS) as usize;
+        let mut at: Vec<f64> = (0..(dense / WIN_MS) as usize)
+            .map(|k| t0_ms + k as f64 * WIN_MS)
+            .collect();
+        at.extend(
+            (0..bins)
+                .map(|j| t0_ms + (j as f64 + 0.5) * BIN_MS)
+                .filter(|&t| t >= t0_ms + dense),
+        );
+        let h = replay_two(polls, [tau_shift(33), tau_shift(262)], q, &at);
+        at.iter()
+            .zip(&h)
+            .enumerate()
+            .map(|(k, (&t, h))| {
+                let x_w = (q[0] as f64 * h[0] + q[1] as f64 * h[1]) / 65536.0 / 100.0;
+                let wob = if t < t0_ms + dense { wobble(k) } else { 0.0 };
+                tw(window_at(t, I + wob, DUTY, 1.0, x_w))
+            })
+            .collect()
+    }
+
+    /// Two 120 s holds at board D's gains in one record, a 10 s rest of
+    /// zero current between them: hold B's reference is read with the
+    /// copper still carrying hold A's rise, and the pinned fit of B alone
+    /// over the whole record's polls converts its resistance on the
+    /// copper's own temperature there, reading the rotor within 1 % and
+    /// the warmth at the reference within 0.2 C of the planted.
+    #[test]
+    fn a_warm_start_reads_the_same_rotor() {
+        const A: (f64, f64) = (0.0, 120_000.0);
+        const B: (f64, f64) = (130_000.0, 250_000.0);
+        let mut polls = flat_polls(B.1, CEILING);
+        for p in polls.iter_mut() {
+            let held = (A.0..A.1).contains(&p.t_ms) || (B.0..B.1).contains(&p.t_ms);
+            p.i_counts = if held { I } else { 0.0 };
+        }
+        let mut windows = hold_in_record(&polls, A.0, A.1 - A.0, Q_D);
+        windows.extend(hold_in_record(&polls, B.0, B.1 - B.0, Q_D));
+        let (v, a) = scales();
+        let hold_b = Hold {
+            polls: &polls,
+            windows: &windows,
+            t0_ms: B.0,
+            end_ms: f64::INFINITY,
+            seat: SEAT,
+        };
+        let f = fit_rotor_pinned(&[hold_b], &pinned_body(Q_D[1]), v, a).unwrap();
+        let h = &f.holds[0];
+        let at_ref = replay_two(
+            &polls,
+            [tau_shift(33), tau_shift(262)],
+            Q_D,
+            &[B.0 + h.r_ref_start_ms],
+        )[0];
+        let planted_warm =
+            (Q_D[0] as f64 * at_ref[0] + Q_D[1] as f64 * at_ref[1]) / 65536.0 / 100.0;
+        assert!(
+            planted_warm > 4.0,
+            "the copper carried {planted_warm:.2} C into hold B"
+        );
+        let off = (f.rotor.rise_q016.raw as f64 / Q_D[0] as f64 - 1.0) * 100.0;
+        assert!(
+            rotor_near(&f, 1.0),
+            "the rotor read {off:+.1} % off the planted (-5.6 % converted on the NTC's \
+             temperature, within 1 % on the copper's own): {f:?}"
+        );
+        assert!(
+            (h.warm_ref_c - planted_warm).abs() < 0.2,
+            "warm_ref_c {:.2} C against {planted_warm:.2} C planted",
+            h.warm_ref_c
+        );
+        assert!(h.settled_rise_c > planted_warm, "{h:?}");
     }
 
     /// The body pinned 20 % high moves the 120 s rotor by the body's share
