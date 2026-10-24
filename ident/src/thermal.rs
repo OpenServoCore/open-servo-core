@@ -10,6 +10,7 @@
 //! the hold's own R_ref, read after its seat and its dip settle
 //! ([`settle_dip`]).
 
+use osc_servo_core::estimator::thermal::{rise_cc, warm_q16};
 use osc_servo_core::kernel::phases::loops::limits::{LimitState, SLOW_PERIOD_MS, tau_shift};
 
 use crate::exp::WindowSample;
@@ -830,6 +831,392 @@ fn rise_at(
     })
 }
 
+/// The two-node fit leaves the hold's first seconds out: the brush contact
+/// settles there and reads as copper, 2-5 C over the first 20 s on the
+/// holds on record, and is no node the estimate runs.
+pub const FIT_FROM_MS: f64 = 20_000.0;
+/// The rotor leaks the fit chooses between, s: the SLOW period's octaves
+/// either side of the 33 s every hold on record picks.
+pub const ROTOR_TAUS_S: [u16; 2] = [33, 66];
+/// The body leaks, s: the two longest octaves the kernel runs.
+pub const BODY_TAUS_S: [u16; 2] = [262, 524];
+/// One octave beats the other when its SSE sits under the other's by this
+/// ratio; under it the hold decides nothing and the safe octave is written.
+pub const OCTAVE_DECIDES: f64 = 1.10;
+/// An undecided body writes the slowest octave the hold covers this many
+/// times over: 960 s covers 524 s, 480 s covers 262 s alone.
+pub const BODY_COVER: f64 = 1.6;
+/// The feedback passes have settled when neither gain moves by more.
+const PASS_SETTLED_Q016: u16 = 2;
+const PASSES_MAX: usize = 8;
+/// The residual's block means are over this long.
+pub const BLOCK_MS: f64 = 60_000.0;
+
+/// One heat node as the fit reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeFit {
+    /// The leak written, s.
+    pub tau_s: u16,
+    /// The shift the kernel runs for it ([`tau_shift`]).
+    pub shift: u8,
+    /// centi-C per count squared of its heat.
+    pub k: f64,
+    pub rise_q016: Encoded,
+    /// The slower octave's SSE over the written one's: over
+    /// [`OCTAVE_DECIDES`] the hold decided it.
+    pub sse_ratio: f64,
+    pub decided: bool,
+}
+
+impl NodeFit {
+    /// The kernel's leak in seconds: 2^shift SLOW periods.
+    pub fn octave_s(&self) -> f64 {
+        (1u32 << self.shift) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
+    }
+}
+
+/// The winding estimate's four constants from one hold ([`fit_two_node`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TwoNodeFit {
+    pub rotor: NodeFit,
+    pub body: NodeFit,
+    pub r_ref_ohm: f64,
+    /// Where R_ref is read, the dip's bottom, ms into the hold.
+    pub r_ref_start_ms: f64,
+    pub r_ref_settle_ms: f64,
+    pub r_ref_dip_c: f64,
+    pub r_ref_windows: usize,
+    pub r_ref_slope_c_per_s: f64,
+    pub i_cold_counts: f64,
+    pub ceiling_counts: f64,
+    pub t0_c: f64,
+    /// The hold's length the fit saw, s.
+    pub hold_s: f64,
+    /// Per-bin scatter of the copper's excess over the NTC around the two
+    /// nodes, C, over the fitted bins.
+    pub residual_sd_c: f64,
+    /// The residual's mean over the bins before [`FIT_FROM_MS`], C: the
+    /// brush node, reported, never fitted.
+    pub first_c: f64,
+    /// The residual's mean per [`BLOCK_MS`] block of the fitted bins, C.
+    pub block_means_c: Vec<f64>,
+    /// The copper's excess over the NTC, the mean over the last
+    /// [`SETTLED_BINS`] bins, C.
+    pub settled_rise_c: f64,
+    /// The kernel's winding estimate less the copper over the same closing
+    /// bins, C; None while the estimate read UNSET.
+    pub estimate_err_c: Option<f64>,
+    /// The fitted bins.
+    pub bins: usize,
+    /// The feedback passes the written pair took.
+    pub passes: usize,
+}
+
+impl TwoNodeFit {
+    /// How far the cold current sits under the ceiling, a fraction of it.
+    pub fn margin(&self) -> f64 {
+        1.0 - self.i_cold_counts / self.ceiling_counts
+    }
+
+    /// The copper's settled rise over the NTC at a held current, C: the
+    /// fixed point of both gains on the warmed square, `G i^2 / (1 - alpha
+    /// G i^2)` with G in C per count squared.
+    pub fn plateau_c(&self, i_counts: f64) -> f64 {
+        let g = (self.rotor.k + self.body.k) / 100.0 * i_counts * i_counts;
+        g / (1.0 - COPPER_ALPHA_PER_C * g)
+    }
+}
+
+/// Copper's resistance rise per C, the kernel's `ALPHA_Q26` in physical
+/// units.
+pub const COPPER_ALPHA_PER_C: f64 = 0.00393;
+
+/// The kernel's two heats over the polls, its own integer loop: each SLOW
+/// step squares the last poll's held current, warms it by the rise the
+/// step before published ([`warm_q16`]) and steps both EWMAs on `shifts`;
+/// the rise is the two heats on `gains` ([`rise_cc`]). Sampled at `at_ms`
+/// (ascending), rotor then body, counts squared.
+pub fn replay_two(
+    polls: &[HoldPoll],
+    shifts: [u8; 2],
+    gains: [u16; 2],
+    at_ms: &[f64],
+) -> Vec<[f64; 2]> {
+    let Some(first) = polls.first() else {
+        return vec![[0.0; 2]; at_ms.len()];
+    };
+    let mut st = LimitState::new();
+    let mut rise: u16 = 0;
+    let mut out = Vec::with_capacity(at_ms.len());
+    let (mut p, mut g) = (0usize, first.t_ms);
+    for &at in at_ms {
+        while g <= at {
+            while p + 1 < polls.len() && polls[p + 1].t_ms <= g {
+                p += 1;
+            }
+            let i = polls[p].i_counts.abs().round().min(i16::MAX as f64) as i16;
+            st.heat(i, warm_q16(rise), shifts);
+            let [h1, h2] = st.heats();
+            rise = (rise_cc(h1, gains[0]) + rise_cc(h2, gains[1])).min(i16::MAX as i32) as u16;
+            g += SLOW_PERIOD_MS as f64;
+        }
+        out.push(st.heats().map(|h| h as f64));
+    }
+    out
+}
+
+/// Least squares of `y` on two columns with both coefficients held at or
+/// over zero: the free solution when it is non-negative, else the better of
+/// the two one-column solutions with the other at zero. Exact for two
+/// unknowns.
+fn nnls2(x1: &[f64], x2: &[f64], y: &[f64]) -> [f64; 2] {
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let (s11, s22, s12) = (dot(x1, x1), dot(x2, x2), dot(x1, x2));
+    let (s1y, s2y) = (dot(x1, y), dot(x2, y));
+    let one = |sxx: f64, sxy: f64| if sxx > 0.0 { (sxy / sxx).max(0.0) } else { 0.0 };
+    let det = s11 * s22 - s12 * s12;
+    if det > 0.0 {
+        let k1 = (s22 * s1y - s12 * s2y) / det;
+        let k2 = (s11 * s2y - s12 * s1y) / det;
+        if k1 >= 0.0 && k2 >= 0.0 {
+            return [k1, k2];
+        }
+    }
+    let a = [one(s11, s1y), 0.0];
+    let b = [0.0, one(s22, s2y)];
+    let sse = |k: [f64; 2]| {
+        x1.iter()
+            .zip(x2)
+            .zip(y)
+            .map(|((a, b), y)| (y - k[0] * a - k[1] * b).powi(2))
+            .sum::<f64>()
+    };
+    if sse(a) <= sse(b) { a } else { b }
+}
+
+/// One octave pair fitted: the gains, the SSE over the fitted bins, the
+/// residual per bin and the passes the feedback took.
+struct PairFit {
+    taus: [u16; 2],
+    k: [f64; 2],
+    q: [Encoded; 2],
+    sse: f64,
+    res: Vec<f64>,
+    passes: usize,
+}
+
+/// The pair `taus` fitted over `bins` (centre ms, y in C) from `from` on,
+/// with the reference at `t_ref_ms`: the replay at the last pass's gains
+/// gives the columns `heat(t) - heat(t_ref)`, the non-negative solve the
+/// gains, and the loop closes when both q016 values hold within
+/// [`PASS_SETTLED_Q016`]. The residual covers every bin, the SSE the
+/// fitted ones.
+fn fit_pair(
+    polls: &[HoldPoll],
+    bins: &[(f64, f64)],
+    from: usize,
+    t_ref_ms: f64,
+    taus: [u16; 2],
+) -> PairFit {
+    let shifts = taus.map(tau_shift);
+    let mut at: Vec<f64> = Vec::with_capacity(bins.len() + 1);
+    at.push(t_ref_ms);
+    at.extend(bins.iter().map(|b| b.0));
+    let y: Vec<f64> = bins.iter().map(|b| b.1).collect();
+    let mut q = [0u16; 2];
+    let mut passes = 0;
+    let (k, res): ([f64; 2], Vec<f64>) = loop {
+        passes += 1;
+        let h = replay_two(polls, shifts, q, &at);
+        let col = |n: usize| h[1..].iter().map(|v| v[n] - h[0][n]).collect::<Vec<f64>>();
+        let (x1, x2) = (col(0), col(1));
+        let k = nnls2(&x1[from..], &x2[from..], &y[from..]);
+        let res = x1
+            .iter()
+            .zip(&x2)
+            .zip(&y)
+            .map(|((a, b), y)| y - k[0] * a - k[1] * b)
+            .collect();
+        let next = k.map(|k| enc(k * 100.0, 65536.0).raw);
+        let settled = next
+            .iter()
+            .zip(&q)
+            .all(|(n, q)| n.abs_diff(*q) <= PASS_SETTLED_Q016);
+        q = next;
+        if settled || passes >= PASSES_MAX {
+            break (k, res);
+        }
+    };
+    PairFit {
+        taus,
+        k: k.map(|k| k * 100.0),
+        q: k.map(|k| enc(k * 100.0, 65536.0)),
+        sse: res[from..].iter().map(|e| e * e).sum(),
+        res,
+        passes,
+    }
+}
+
+/// The four constants from a hold's own copper: per 1 s bin from
+/// [`FIT_FROM_MS`] into the hold to its end, the copper's rise over the NTC
+/// base less the NTC's own, against the kernel's two heats replayed with
+/// the warm input fed back ([`replay_two`]), the gains by the non-negative
+/// solve, over the four octave pairs of [`ROTOR_TAUS_S`] x [`BODY_TAUS_S`].
+/// The pair with the least SSE is read; an octave the SSE ratio leaves
+/// undecided ([`OCTAVE_DECIDES`]) writes the safe one: the faster rotor
+/// (the slower under-reads the first minute), the slowest body the hold
+/// covers [`BODY_COVER`] times over (the faster under-reads a long hold).
+/// R_ref and T_0 as [`reference`], the settle judged against `seat`.
+#[allow(clippy::too_many_arguments)]
+pub fn fit_two_node(
+    polls: &[HoldPoll],
+    windows: &[ThermWindow],
+    t0_ms: f64,
+    end_ms: f64,
+    seat: u16,
+    v_per_count: f64,
+    a_per_count: f64,
+) -> Result<TwoNodeFit, String> {
+    let r_ohm = r_ohm_at(v_per_count, a_per_count)?;
+    let rf = reference(polls, windows, t0_ms, end_ms, seat, r_ohm)?;
+    let hold_s = rf.seconds.len() as f64 * BIN_MS / 1000.0;
+    let all: Vec<(usize, f64, f64, Option<f64>)> = rf
+        .seconds
+        .iter()
+        .enumerate()
+        .filter_map(|(j, s)| {
+            let (r, t) = (s.r.mean()?, s.ntc.mean()?);
+            let y = rf.copper(r) - (t - rf.t0_c);
+            Some((
+                j,
+                t0_ms + (j as f64 + 0.5) * BIN_MS,
+                y,
+                s.winding.mean().filter(|_| !s.unset),
+            ))
+        })
+        .collect();
+    let bins: Vec<(f64, f64)> = all.iter().map(|b| (b.1, b.2)).collect();
+    let from = bins.partition_point(|b| b.0 < t0_ms + FIT_FROM_MS);
+    let n = bins.len() - from;
+    if n < MIN_BINS {
+        return Err(format!(
+            "the hold covers {n} one-second bins with a window and an NTC reading past {:.0} s, \
+             under the {MIN_BINS} the fit needs",
+            FIT_FROM_MS / 1000.0
+        ));
+    }
+    let t_ref = t0_ms + rf.start_ms;
+    let fits: Vec<PairFit> = ROTOR_TAUS_S
+        .iter()
+        .flat_map(|&r| BODY_TAUS_S.iter().map(move |&b| [r, b]))
+        .map(|taus| fit_pair(polls, &bins, from, t_ref, taus))
+        .collect();
+    let sse_of = |taus: [u16; 2]| {
+        fits.iter()
+            .find(|f| f.taus == taus)
+            .map_or(f64::INFINITY, |f| f.sse)
+    };
+    let best = fits
+        .iter()
+        .min_by(|a, b| a.sse.total_cmp(&b.sse))
+        .ok_or("no octave pair fitted")?;
+    let ratio = |taus: [u16; 2]| {
+        let other = sse_of(taus);
+        if best.sse > 0.0 {
+            other / best.sse
+        } else if other > 0.0 {
+            f64::INFINITY
+        } else {
+            1.0
+        }
+    };
+    let rotor_ratio = ratio([other_of(&ROTOR_TAUS_S, best.taus[0]), best.taus[1]]);
+    let body_ratio = ratio([best.taus[0], other_of(&BODY_TAUS_S, best.taus[1])]);
+    let rotor_decided = rotor_ratio >= OCTAVE_DECIDES;
+    let body_decided = body_ratio >= OCTAVE_DECIDES;
+    let rotor_tau = if rotor_decided {
+        best.taus[0]
+    } else {
+        ROTOR_TAUS_S[0]
+    };
+    let body_tau = if body_decided {
+        best.taus[1]
+    } else {
+        BODY_TAUS_S
+            .iter()
+            .rev()
+            .copied()
+            .find(|&b| hold_s >= BODY_COVER * b as f64)
+            .unwrap_or(BODY_TAUS_S[0])
+    };
+    let written = fits
+        .iter()
+        .find(|f| f.taus == [rotor_tau, body_tau])
+        .ok_or("the written pair was not fitted")?;
+    let (early, fitted) = written.res.split_at(from);
+    let first_c = mean(early.iter().copied()).unwrap_or(0.0);
+    let residual_sd_c = (fitted.iter().map(|e| e * e).sum::<f64>() / (n - 1) as f64).sqrt();
+    let timed: Vec<(f64, f64)> = bins[from..]
+        .iter()
+        .zip(fitted)
+        .map(|(b, r)| (b.0, *r))
+        .collect();
+    let block = |t: f64| ((t - t0_ms) / BLOCK_MS).floor();
+    let block_means_c: Vec<f64> = timed
+        .chunk_by(|a, b| block(a.0) == block(b.0))
+        .map(|c| c.iter().map(|x| x.1).sum::<f64>() / c.len() as f64)
+        .collect();
+    let from = all.len().saturating_sub(SETTLED_BINS);
+    let settled = &all[from..];
+    let m = settled.len() as f64;
+    let settled_rise_c = settled.iter().map(|b| b.2).sum::<f64>() / m;
+    let copper_c = rf.t0_c
+        + settled
+            .iter()
+            .map(|b| rf.copper(rf.seconds[b.0].r.mean().unwrap_or(rf.r_ref)))
+            .sum::<f64>()
+            / m;
+    let estimate_err_c = settled
+        .iter()
+        .map(|b| b.3)
+        .sum::<Option<f64>>()
+        .map(|s| s / m - copper_c);
+    let node = |n: usize, tau: u16, ratio: f64, decided: bool| NodeFit {
+        tau_s: tau,
+        shift: tau_shift(tau),
+        k: written.k[n],
+        rise_q016: written.q[n],
+        sse_ratio: ratio,
+        decided,
+    };
+    Ok(TwoNodeFit {
+        rotor: node(0, rotor_tau, rotor_ratio, rotor_decided),
+        body: node(1, body_tau, body_ratio, body_decided),
+        r_ref_ohm: rf.r_ref,
+        r_ref_start_ms: rf.start_ms,
+        r_ref_settle_ms: rf.settle_ms,
+        r_ref_dip_c: rf.dip_c,
+        r_ref_windows: rf.windows,
+        r_ref_slope_c_per_s: rf.slope_c_per_s,
+        i_cold_counts: rf.cold.i_counts,
+        ceiling_counts: rf.cold.ceiling,
+        t0_c: rf.t0_c,
+        hold_s,
+        residual_sd_c,
+        first_c,
+        block_means_c,
+        settled_rise_c,
+        estimate_err_c,
+        bins: n,
+        passes: written.passes,
+    })
+}
+
+/// The other entry of a two-octave choice.
+fn other_of(taus: &[u16; 2], tau: u16) -> u16 {
+    if taus[0] == tau { taus[1] } else { taus[0] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,5 +1920,148 @@ mod tests {
                 "{t} C: reads {read} for {truth}"
             );
         }
+    }
+    /// The replay is the kernel's loop: a 400-count hold on a 4 s leak
+    /// (shift 8) with the rotor gain 1044 settles the heat and the warm
+    /// input it feeds back at the kernel's own fixed point, the rise 28.31 C
+    /// (`the_estimate_reads_the_ntc_plus_the_rise_on_the_heat`); the body
+    /// node on the same leak carries the same heat; no gain, the cold square.
+    #[test]
+    fn the_replay_lands_on_the_kernels_fixed_point() {
+        let polls: Vec<HoldPoll> = (0..2700)
+            .map(|n| HoldPoll {
+                t_ms: n as f64 * SLOW_PERIOD_MS as f64,
+                i_counts: 400.0,
+                t_ntc_cc: 2500.0,
+                t_winding_cc: 2500.0,
+                i_lim_counts: 1200.0,
+            })
+            .collect();
+        let at = [2650.0 * SLOW_PERIOD_MS as f64];
+        let [h1, h2] = replay_two(&polls, [8, 8], [1044, 0], &at)[0];
+        assert_eq!(h1, h2);
+        assert_eq!(rise_cc(h1 as u32, 1044), 2831, "{h1}");
+        assert!(h1 > 160_000.0 * 1.1, "{h1}");
+        let [c1, c2] = replay_two(&polls, [8, 8], [0, 0], &at)[0];
+        assert!(
+            c1 == c2 && (160_000.0 - 16.0..=160_000.0).contains(&c1),
+            "{c1}"
+        );
+        assert_eq!(replay_two(&[], [8, 8], [0, 0], &at), [[0.0; 2]]);
+    }
+
+    /// Two unknowns held at or over zero: the free solution when it is,
+    /// else the better single column.
+    #[test]
+    fn the_non_negative_solve_clamps_at_zero() {
+        let x1: Vec<f64> = (0..50).map(|j| j as f64).collect();
+        let x2: Vec<f64> = (0..50).map(|j| (j as f64).sqrt()).collect();
+        let y: Vec<f64> = x1.iter().zip(&x2).map(|(a, b)| 2.0 * a + 0.5 * b).collect();
+        let k = nnls2(&x1, &x2, &y);
+        assert!(
+            (k[0] - 2.0).abs() < 1e-9 && (k[1] - 0.5).abs() < 1e-9,
+            "{k:?}"
+        );
+        let y: Vec<f64> = x1.iter().zip(&x2).map(|(a, b)| 2.0 * a - 0.5 * b).collect();
+        let k = nnls2(&x1, &x2, &y);
+        assert!(k[1] == 0.0 && (1.5..2.0).contains(&k[0]), "{k:?}");
+        let y: Vec<f64> = x1.iter().map(|a| -a).collect();
+        assert_eq!(nnls2(&x1, &x2, &y), [0.0, 0.0]);
+        assert_eq!(nnls2(&[0.0; 3], &[0.0; 3], &[1.0; 3]), [0.0, 0.0]);
+    }
+
+    /// A hold of `hold_ms` whose copper rises over a flat NTC by the two
+    /// gains `q` (q016) on the kernel's heats at (33, 262) s with the warm
+    /// input fed back, exactly at every window: dense windows through the
+    /// current's floor, one per bin after.
+    fn two_node(hold_ms: f64, q: [u16; 2]) -> (Vec<HoldPoll>, Vec<ThermWindow>) {
+        let polls = flat_polls(hold_ms, CEILING);
+        let bins = (hold_ms / BIN_MS) as usize;
+        let mut at: Vec<f64> = (0..(DENSE_MS / WIN_MS) as usize)
+            .map(|k| k as f64 * WIN_MS)
+            .collect();
+        at.extend(
+            (0..bins)
+                .map(|j| (j as f64 + 0.5) * BIN_MS)
+                .filter(|&t| t >= DENSE_MS),
+        );
+        let shifts = [tau_shift(33), tau_shift(262)];
+        let h = replay_two(&polls, shifts, q, &at);
+        let windows = at
+            .iter()
+            .zip(&h)
+            .enumerate()
+            .map(|(k, (&t, h))| {
+                let x_w = (q[0] as f64 * h[0] + q[1] as f64 * h[1]) / 65536.0 / 100.0;
+                let wob = if t < DENSE_MS { wobble(k) } else { 0.0 };
+                tw(window_at(t, I + wob, DUTY, 1.0, x_w))
+            })
+            .collect();
+        (polls, windows)
+    }
+
+    fn two_node_fit(hold_ms: f64, q: [u16; 2]) -> TwoNodeFit {
+        let (v, a) = scales();
+        let (polls, windows) = two_node(hold_ms, q);
+        fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, v, a).unwrap()
+    }
+
+    /// Board D's gains on a 960 s hold: both read back within 1 %, the pair
+    /// (33, 262) s decided on both octaves, the residual under 0.05 C, the
+    /// brush window empty of anything but the model.
+    #[test]
+    fn recovers_two_gains_and_their_octaves_from_a_long_hold() {
+        let f = two_node_fit(960_000.0, [719, 777]);
+        assert!((f.rotor.rise_q016.raw as i32 - 719).abs() <= 7, "{f:?}");
+        assert!((f.body.rise_q016.raw as i32 - 777).abs() <= 8, "{f:?}");
+        assert_eq!((f.rotor.tau_s, f.rotor.shift), (33, 11));
+        assert_eq!((f.body.tau_s, f.body.shift), (262, 14));
+        assert!(f.rotor.decided && f.body.decided, "{f:?}");
+        assert!(f.rotor.sse_ratio > 2.0 && f.body.sse_ratio > 2.0, "{f:?}");
+        assert!(f.residual_sd_c < 0.05, "{f:?}");
+        assert!(f.first_c.abs() < 0.1, "{f:?}");
+        assert!(f.block_means_c.iter().all(|m| m.abs() < 0.05), "{f:?}");
+        assert_eq!(f.block_means_c.len(), 16, "{f:?}");
+        assert!((f.hold_s - 960.0).abs() <= 1.0, "{f:?}");
+        assert_eq!(f.bins, 940);
+        assert!(f.passes <= PASSES_MAX && f.passes >= 2, "{f:?}");
+        assert!((f.rotor.octave_s() - 32.768).abs() < 1e-9);
+        assert!((f.t0_c - T_NTC0).abs() < 1e-9);
+        assert!(f.settled_rise_c > 15.0, "{f:?}");
+        // the fixed point at the held current reads the settled rise
+        assert!((f.plateau_c(270.0) - f.settled_rise_c).abs() < 0.5, "{f:?}");
+        // the polls' estimate sat at the NTC: under the copper by its rise
+        assert!(
+            (f.estimate_err_c.unwrap() + f.settled_rise_c).abs() < 1e-6,
+            "{f:?}"
+        );
+    }
+
+    /// A rotor alone: the body gain reads 0 on either body octave, so the
+    /// SSE decides nothing there and the hold's length does: 960 s covers
+    /// 524 s and writes it, 480 s covers 262 s alone. The rotor still
+    /// decides itself.
+    #[test]
+    fn an_undecided_body_writes_the_octave_the_hold_covers() {
+        let f = two_node_fit(960_000.0, [719, 0]);
+        assert!((f.rotor.rise_q016.raw as i32 - 719).abs() <= 7, "{f:?}");
+        assert_eq!(f.body.rise_q016.raw, 0, "{f:?}");
+        assert!(f.rotor.decided && !f.body.decided, "{f:?}");
+        assert!(f.body.sse_ratio < OCTAVE_DECIDES, "{f:?}");
+        assert_eq!((f.body.tau_s, f.body.shift), (524, 15));
+        let f = two_node_fit(480_000.0, [719, 0]);
+        assert!(!f.body.decided, "{f:?}");
+        assert_eq!(f.body.tau_s, 262);
+        assert_eq!(f.rotor.tau_s, 33);
+    }
+
+    /// A hold too short to carry 30 fitted bins past the brush window is
+    /// refused, named.
+    #[test]
+    fn a_short_hold_has_too_few_bins_to_fit() {
+        let (v, a) = scales();
+        let (polls, windows) = two_node(45_000.0, [719, 777]);
+        let why = fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, v, a).unwrap_err();
+        assert!(why.contains("past 20 s, under the 30"), "{why}");
     }
 }
