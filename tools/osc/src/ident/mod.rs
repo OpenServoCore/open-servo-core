@@ -308,9 +308,12 @@ enum Cmd {
     /// for the run, volatile, so the derate never folds the ceiling under
     /// the hold, and restored on every exit before anything is SAVEd; the
     /// hold itself ends early when the copper's own temperature reaches the
-    /// saved derate start. A ceiling under the limit at any poll, a brush
-    /// contact step in R with the pot still, or an R_ref over the stored
-    /// winding by 15 % refuses the hold. Polled every 20 ms throughout:
+    /// saved derate start. The hold's watches are the cold current's margin,
+    /// the limiter and that guard: a cold current inside the margin or a
+    /// ceiling under the limit at any poll refuses the hold, as does an
+    /// R_ref over the stored winding by 15 %; the brush contact is not
+    /// watched, the fit blanks the hold's first seconds for it and moves
+    /// the blank out to 60 s before it refuses. Polled every 20 ms throughout:
     /// every poll lands in anchor_snapshots.csv with the board NTC, every
     /// window in anchor.csv, the run's marks in thermal.json for `ident
     /// fit`. R_ref is read once the hold settles at its seat, at the bottom
@@ -1241,7 +1244,7 @@ fn rest_check<S: Servo>(s: &mut S) -> Result<RestRead> {
 }
 
 /// R_ref over the stored winding by more than this fraction is not a cold
-/// copper: the hold started warm, or the brushes' contact changed.
+/// copper: the hold started warm.
 const R_REF_OVER_STORED: f64 = 0.15;
 
 /// Why the hold's R_ref is not the stored winding's cold R, when it is not.
@@ -1251,7 +1254,7 @@ fn r_ref_over_stored(h: &HoldFit, m: &ThermalJson) -> Option<String> {
     (over > R_REF_OVER_STORED).then(|| {
         format!(
             "R_ref {:.3} ohm reads {:.0} % over the stored winding {r:.3} ohm, past the {:.0} % a \
-             cold copper allows: the hold started warm or the brush contact changed",
+             cold copper allows: the hold started warm",
             h.r_ref_ohm,
             over * 100.0,
             R_REF_OVER_STORED * 100.0
@@ -1343,7 +1346,10 @@ fn report_thermal(f: &TwoNodeFit, marks: &[(Option<&str>, &ThermalJson)], a: f64
             (None, None) => {}
         }
         println!(
-            "{ind}  residuals    {} per {:.0} s block",
+            "{ind}  fitted       from {:.0} s in; the brush window before it read {:+.2} C (not \
+             fitted); residuals {} per {:.0} s block",
+            h.fit_from_ms / 1000.0,
+            h.first_c,
             h.block_means_c
                 .iter()
                 .map(|c| format!("{c:+.2}"))
@@ -1389,29 +1395,21 @@ fn report_thermal(f: &TwoNodeFit, marks: &[(Option<&str>, &ThermalJson)], a: f64
         a,
         r,
     );
-    let list = |each: &dyn Fn(&HoldFit) -> String| {
-        f.holds.iter().map(each).collect::<Vec<_>>().join(" and ")
-    };
-    let lengths = list(&|h| format!("{:.0}", h.hold_s));
-    let brushes = list(&|h| format!("{:+.2}", h.first_c));
-    let (span, brush) = if pooled {
-        (
-            format!("{} holds of {lengths} s", f.holds.len()),
-            format!("the brush windows before them read {brushes} C"),
-        )
+    let lengths = f
+        .holds
+        .iter()
+        .map(|h| format!("{:.0}", h.hold_s))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let span = if pooled {
+        format!("{} holds of {lengths} s", f.holds.len())
     } else {
-        (
-            format!("{lengths} s of hold"),
-            format!("the brush window before it read {brushes} C"),
-        )
+        format!("{lengths} s of hold")
     };
     println!(
-        "  fit          {} one-second bins over {span} from {:.0} s in, {} passes of the warm \
-         feedback; residual sd {:.2} C; {brush} (not fitted)",
-        f.bins,
-        thermal::FIT_FROM_MS / 1000.0,
-        f.passes,
-        f.residual_sd_c
+        "  fit          {} one-second bins over {span}, {} passes of the warm feedback; residual \
+         sd {:.2} C",
+        f.bins, f.passes, f.residual_sd_c
     );
 }
 

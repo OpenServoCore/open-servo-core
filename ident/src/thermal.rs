@@ -10,9 +10,10 @@
 //! constants ([`fit_two_node`]). Any duty change moves the brush contact
 //! behind the gear train and shifts R by percents, so every reading of the
 //! hold is against the hold's own R_ref at the same duty, read after its
-//! seat and its dip settle ([`settle_dip`]); a contact change inside the
-//! hold is a step in R with the pot still ([`contact_events`]) and refuses
-//! the hold.
+//! seat and its dip settle ([`settle_dip`]). The contact keeps settling
+//! for seconds after, so the fit leaves the hold's first [`FIT_FROM_MS`]
+//! out and checks its first fitted block against the hold's own noise,
+//! moving the blank out to [`FIT_FROM_MAX_MS`] before it refuses.
 
 use osc_servo_core::estimator::thermal::{rise_cc, warm_q16};
 use osc_servo_core::kernel::phases::loops::limits::{LimitState, SLOW_PERIOD_MS, tau_shift};
@@ -606,10 +607,27 @@ fn r_ohm_at(
     Ok(move |w: &WindowSample| window_r_vpc(w).map(|r| r * v_per_count / a_per_count))
 }
 
-/// The two-node fit leaves the hold's first seconds out: the brush contact
-/// settles there and reads as copper, 2-5 C over the first 20 s on the
-/// holds on record, and is no node the estimate runs.
+/// The two-node fit's first blank, ms: the brush contact settles over the
+/// hold's first seconds and reads as copper, no node the estimate runs.
 pub const FIT_FROM_MS: f64 = 20_000.0;
+/// The fitted residual's first block, ms, judged flat against the hold's
+/// own noise; a block that is not moves the blank out by its length.
+pub const FLAT_BLOCK_MS: f64 = 20_000.0;
+/// The blank never extends past this, ms: a hold whose residual is not
+/// flat by then is a contact that had not settled, refused.
+pub const FIT_FROM_MAX_MS: f64 = 60_000.0;
+/// The first block is flat when its mean sits within this many floors of
+/// the hold's own noise, the residual's sd inflated for its lag-1
+/// autocorrelation over the block's bins.
+pub const FLAT_SIGMAS: f64 = 2.0;
+/// A block mean inside this, C, is flat whatever the hold's noise says:
+/// every threshold the estimate is held against is set in whole degrees,
+/// and a noiseless residual is tiny but structured, so the sigma rule
+/// alone would refuse a perfect hold.
+pub const FLAT_MIN_C: f64 = 0.1;
+/// The lag-1 coefficient the inflation reads at most: at 1 the floor is
+/// unbounded.
+const RHO_MAX: f64 = 0.95;
 /// The rotor leaks the fit chooses between, s: the SLOW period's octaves
 /// either side of the 33 s every hold on record picks.
 pub const ROTOR_TAUS_S: [u16; 2] = [33, 66];
@@ -665,8 +683,11 @@ pub struct HoldFit {
     pub t0_c: f64,
     /// The hold's length the fit saw, s.
     pub hold_s: f64,
-    /// The residual's mean over the bins before [`FIT_FROM_MS`], C: the
-    /// brush node, reported, never fitted.
+    /// The blank this hold was fitted from, ms into it: [`FIT_FROM_MS`], or
+    /// [`FLAT_BLOCK_MS`] steps past it to [`FIT_FROM_MAX_MS`].
+    pub fit_from_ms: f64,
+    /// The residual's mean over the bins before the blank, C: the brush
+    /// node, reported, never fitted.
     pub first_c: f64,
     /// The residual's mean per [`BLOCK_MS`] block of the fitted bins, C.
     pub block_means_c: Vec<f64>,
@@ -803,7 +824,59 @@ struct Prepared<'a> {
     /// Where the replay samples: t_ref first, then every bin's centre.
     at: Vec<f64>,
     y: Vec<f64>,
+    /// The blank in force, ms into the hold, and the first fitted bin.
+    from_ms: f64,
     from: usize,
+}
+
+impl Prepared<'_> {
+    /// Blank the hold to `from_ms`: the bins before it leave the fit, and
+    /// the fit refuses a hold with fewer than [`MIN_BINS`] left.
+    fn blank(&mut self, from_ms: f64) -> Result<(), String> {
+        self.from_ms = from_ms;
+        self.from = self.all.partition_point(|b| b.1 < self.t0_ms + from_ms);
+        let n = self.all.len() - self.from;
+        if n < MIN_BINS {
+            return Err(format!(
+                "the hold covers {n} one-second bins with a window and an NTC reading past \
+                 {:.0} s, under the {MIN_BINS} the fit needs",
+                from_ms / 1000.0
+            ));
+        }
+        Ok(())
+    }
+
+    /// The first [`FLAT_BLOCK_MS`] of the hold's fitted residual `res`
+    /// against the hold's own noise: the block's mean and the bound it
+    /// had to sit inside, when it did not. The bound is [`FLAT_SIGMAS`]
+    /// floors, the floor the residual's sd over every fitted bin inflated
+    /// for its lag-1 autocorrelation over the root of the block's bins, or
+    /// [`FLAT_MIN_C`] when that is more.
+    #[allow(clippy::manual_clamp)]
+    fn unflat(&self, res: &[f64]) -> Option<(f64, f64)> {
+        let fitted = &res[self.from..];
+        let end = self.all[self.from..]
+            .partition_point(|b| b.1 < self.t0_ms + self.from_ms + FLAT_BLOCK_MS);
+        let m = mean(fitted[..end].iter().copied())?;
+        let rho = lag1(fitted).max(0.0).min(RHO_MAX);
+        let floor = sd(fitted) * ((1.0 + rho) / (1.0 - rho) / end as f64).sqrt();
+        let bound = (FLAT_SIGMAS * floor).max(FLAT_MIN_C);
+        (m.abs() > bound).then_some((m, bound))
+    }
+}
+
+/// The lag-1 autocorrelation coefficient of `xs`, 0 for fewer than three
+/// or no scatter.
+fn lag1(xs: &[f64]) -> f64 {
+    if xs.len() < 3 {
+        return 0.0;
+    }
+    let m = xs.iter().sum::<f64>() / xs.len() as f64;
+    let var = xs.iter().map(|x| (x - m).powi(2)).sum::<f64>();
+    if var <= 0.0 {
+        return 0.0;
+    }
+    xs.windows(2).map(|w| (w[0] - m) * (w[1] - m)).sum::<f64>() / var
 }
 
 fn prepare<'a>(
@@ -827,20 +900,11 @@ fn prepare<'a>(
             ))
         })
         .collect();
-    let from = all.partition_point(|b| b.1 < h.t0_ms + FIT_FROM_MS);
-    let n = all.len() - from;
-    if n < MIN_BINS {
-        return Err(format!(
-            "the hold covers {n} one-second bins with a window and an NTC reading past {:.0} s, \
-             under the {MIN_BINS} the fit needs",
-            FIT_FROM_MS / 1000.0
-        ));
-    }
     let mut at = Vec::with_capacity(all.len() + 1);
     at.push(h.t0_ms + rf.start_ms);
     at.extend(all.iter().map(|b| b.1));
     let y = all.iter().map(|b| b.2).collect();
-    Ok(Prepared {
+    let mut p = Prepared {
         polls: h.polls,
         rf,
         t0_ms: h.t0_ms,
@@ -848,8 +912,11 @@ fn prepare<'a>(
         all,
         at,
         y,
-        from,
-    })
+        from_ms: 0.0,
+        from: 0,
+    };
+    p.blank(FIT_FROM_MS)?;
+    Ok(p)
 }
 
 /// One octave pair fitted: the shared gains, the SSE over every hold's
@@ -953,50 +1020,21 @@ pub fn fit_two_node(
     )
 }
 
-/// The four constants from the holds' own copper: per 1 s bin from
-/// [`FIT_FROM_MS`] into each hold to its end, the copper's rise over the
-/// hold's NTC base less the NTC's own, against the kernel's two heats
-/// replayed with the warm input fed back ([`replay_two`]), one R_ref and
-/// NTC base per hold and the gains shared by the non-negative solve over
-/// every hold's fitted bins, over the four octave pairs of
-/// [`ROTOR_TAUS_S`] x [`BODY_TAUS_S`]. The pair with the least pooled SSE
-/// is read; an octave the SSE ratio leaves undecided ([`OCTAVE_DECIDES`])
-/// writes the safe one: the faster rotor (the slower under-reads the first
-/// minute), the slowest body the SHORTEST hold covers [`BODY_COVER`] times
-/// over (the faster under-reads a long hold, and a hold that does not
-/// cover an octave cannot certify it). A hold that fails names its place
-/// when there is more than one.
-pub fn fit_two_node_pooled(
-    holds: &[Hold<'_>],
-    v_per_count: f64,
-    a_per_count: f64,
-) -> Result<TwoNodeFit, String> {
-    if holds.is_empty() {
-        return Err("no hold to fit".into());
-    }
-    let r_ohm = r_ohm_at(v_per_count, a_per_count)?;
-    let named = |i: usize, why: String| {
-        if holds.len() > 1 {
-            format!("hold {}: {why}", i + 1)
-        } else {
-            why
-        }
-    };
-    let prepared: Vec<Prepared<'_>> = holds
-        .iter()
-        .enumerate()
-        .map(|(i, h)| prepare(h, &r_ohm).map_err(|why| named(i, why)))
-        .collect::<Result<_, _>>()?;
-    let n: usize = prepared.iter().map(|h| h.all.len() - h.from).sum();
-    let shortest_s = prepared
-        .iter()
-        .map(|h| h.hold_s)
-        .fold(f64::INFINITY, f64::min);
-    let fits: Vec<PairFit> = ROTOR_TAUS_S
-        .iter()
-        .flat_map(|&r| BODY_TAUS_S.iter().map(move |&b| [r, b]))
-        .map(|taus| fit_pair(&prepared, taus))
-        .collect();
+/// One node's octave as the four pair fits decide it.
+struct Octave {
+    tau: u16,
+    ratio: f64,
+    decided: bool,
+}
+
+/// The written pair over the four pair fits: the pair with the least
+/// pooled SSE is read; an octave the SSE ratio leaves undecided
+/// ([`OCTAVE_DECIDES`]) writes the safe one: the faster rotor (the slower
+/// under-reads the first minute), the slowest body a hold of `shortest_s`
+/// covers [`BODY_COVER`] times over (the faster under-reads a long hold,
+/// and a hold that does not cover an octave cannot certify it). The
+/// written pair's place in `fits`, then the rotor and the body.
+fn choose(fits: &[PairFit], shortest_s: f64) -> Result<(usize, Octave, Octave), String> {
     let sse_of = |taus: [u16; 2]| {
         fits.iter()
             .find(|f| f.taus == taus)
@@ -1018,27 +1056,109 @@ pub fn fit_two_node_pooled(
     };
     let rotor_ratio = ratio([other_of(&ROTOR_TAUS_S, best.taus[0]), best.taus[1]]);
     let body_ratio = ratio([best.taus[0], other_of(&BODY_TAUS_S, best.taus[1])]);
-    let rotor_decided = rotor_ratio >= OCTAVE_DECIDES;
-    let body_decided = body_ratio >= OCTAVE_DECIDES;
-    let rotor_tau = if rotor_decided {
-        best.taus[0]
-    } else {
-        ROTOR_TAUS_S[0]
+    let rotor = Octave {
+        decided: rotor_ratio >= OCTAVE_DECIDES,
+        tau: if rotor_ratio >= OCTAVE_DECIDES {
+            best.taus[0]
+        } else {
+            ROTOR_TAUS_S[0]
+        },
+        ratio: rotor_ratio,
     };
-    let body_tau = if body_decided {
-        best.taus[1]
-    } else {
-        BODY_TAUS_S
-            .iter()
-            .rev()
-            .copied()
-            .find(|&b| shortest_s >= BODY_COVER * b as f64)
-            .unwrap_or(BODY_TAUS_S[0])
+    let body = Octave {
+        decided: body_ratio >= OCTAVE_DECIDES,
+        tau: if body_ratio >= OCTAVE_DECIDES {
+            best.taus[1]
+        } else {
+            BODY_TAUS_S
+                .iter()
+                .rev()
+                .copied()
+                .find(|&b| shortest_s >= BODY_COVER * b as f64)
+                .unwrap_or(BODY_TAUS_S[0])
+        },
+        ratio: body_ratio,
     };
     let written = fits
         .iter()
-        .find(|f| f.taus == [rotor_tau, body_tau])
+        .position(|f| f.taus == [rotor.tau, body.tau])
         .ok_or("the written pair was not fitted")?;
+    Ok((written, rotor, body))
+}
+
+/// The four constants from the holds' own copper: per 1 s bin from each
+/// hold's blank to its end, the copper's rise over the hold's NTC base
+/// less the NTC's own, against the kernel's two heats replayed with the
+/// warm input fed back ([`replay_two`]), one R_ref and NTC base per hold
+/// and the gains shared by the non-negative solve over every hold's fitted
+/// bins, over the four octave pairs of [`ROTOR_TAUS_S`] x [`BODY_TAUS_S`],
+/// the written pair chosen on the pooled SSE ([`choose`]). Every hold's
+/// blank starts at [`FIT_FROM_MS`]; a hold whose fitted residual is not
+/// flat over its first [`FLAT_BLOCK_MS`] ([`Prepared::unflat`]) moves its
+/// blank out by that much and the whole fit runs again, until every hold
+/// is flat or one is not at [`FIT_FROM_MAX_MS`], which refuses it: the
+/// contact had not settled. Each hold moves at most twice, so a pool of
+/// one fits at most three times. A hold that fails names its place when
+/// there is more than one.
+pub fn fit_two_node_pooled(
+    holds: &[Hold<'_>],
+    v_per_count: f64,
+    a_per_count: f64,
+) -> Result<TwoNodeFit, String> {
+    if holds.is_empty() {
+        return Err("no hold to fit".into());
+    }
+    let r_ohm = r_ohm_at(v_per_count, a_per_count)?;
+    let named = |i: usize, why: String| {
+        if holds.len() > 1 {
+            format!("hold {}: {why}", i + 1)
+        } else {
+            why
+        }
+    };
+    let mut prepared: Vec<Prepared<'_>> = holds
+        .iter()
+        .enumerate()
+        .map(|(i, h)| prepare(h, &r_ohm).map_err(|why| named(i, why)))
+        .collect::<Result<_, _>>()?;
+    let shortest_s = prepared
+        .iter()
+        .map(|h| h.hold_s)
+        .fold(f64::INFINITY, f64::min);
+    let (written, rotor, body) = loop {
+        let mut fits: Vec<PairFit> = ROTOR_TAUS_S
+            .iter()
+            .flat_map(|&r| BODY_TAUS_S.iter().map(move |&b| [r, b]))
+            .map(|taus| fit_pair(&prepared, taus))
+            .collect();
+        let (at, rotor, body) = choose(&fits, shortest_s)?;
+        let mut moved = false;
+        for (i, h) in prepared.iter_mut().enumerate() {
+            let Some((m, bound)) = h.unflat(&fits[at].res[i]) else {
+                continue;
+            };
+            if h.from_ms >= FIT_FROM_MAX_MS {
+                return Err(named(
+                    i,
+                    format!(
+                        "the fitted residual's first {:.0} s block read {m:+.2} C against \
+                         +/-{:.2} C of the hold's own noise, {:.0} s in: the contact had not \
+                         settled",
+                        FLAT_BLOCK_MS / 1000.0,
+                        bound,
+                        h.from_ms / 1000.0
+                    ),
+                ));
+            }
+            h.blank(h.from_ms + FLAT_BLOCK_MS)
+                .map_err(|why| named(i, why))?;
+            moved = true;
+        }
+        if !moved {
+            break (fits.swap_remove(at), rotor, body);
+        }
+    };
+    let n: usize = prepared.iter().map(|h| h.all.len() - h.from).sum();
     let residual_sd_c = (prepared
         .iter()
         .zip(&written.res)
@@ -1051,17 +1171,17 @@ pub fn fit_two_node_pooled(
         .zip(&written.res)
         .map(|(h, res)| hold_fit(h, res))
         .collect();
-    let node = |n: usize, tau: u16, ratio: f64, decided: bool| NodeFit {
-        tau_s: tau,
-        shift: tau_shift(tau),
+    let node = |n: usize, o: Octave| NodeFit {
+        tau_s: o.tau,
+        shift: tau_shift(o.tau),
         k: written.k[n],
         rise_q016: written.q[n],
-        sse_ratio: ratio,
-        decided,
+        sse_ratio: o.ratio,
+        decided: o.decided,
     };
     Ok(TwoNodeFit {
-        rotor: node(0, rotor_tau, rotor_ratio, rotor_decided),
-        body: node(1, body_tau, body_ratio, body_decided),
+        rotor: node(0, rotor),
+        body: node(1, body),
         residual_sd_c,
         bins: n,
         passes: written.passes,
@@ -1109,6 +1229,7 @@ fn hold_fit(h: &Prepared<'_>, res: &[f64]) -> HoldFit {
         ceiling_counts: rf.cold.ceiling,
         t0_c: rf.t0_c,
         hold_s: h.hold_s,
+        fit_from_ms: h.from_ms,
         first_c,
         block_means_c,
         settled_rise_c,
@@ -1146,121 +1267,6 @@ pub fn copper_c(windows: &[ThermWindow], from_ms: f64, r_ref: f64, t0_c: f64) ->
             .filter_map(|x| window_r_vpc(&x.w)),
     )?;
     Some(t0_c + (r / r_ref - 1.0) * (COPPER_ZERO_R_C + t0_c))
-}
-
-/// Contact events are looked for across blocks this long, ms: the copper
-/// moves under half a percent of R per block at any point of a hold.
-pub const CONTACT_BLOCK_MS: f64 = 2000.0;
-/// ... from this far into the hold, ms, past its settle and dip.
-pub const CONTACT_SKIP_MS: f64 = 2000.0;
-/// A step in R over this fraction across a block is a contact event: the
-/// ones seen were 2 %.
-pub const CONTACT_STEP_FRAC: f64 = 0.01;
-/// ... with the pot inside this many counts of itself across it: a moved
-/// pot is motion, not contact.
-pub const CONTACT_POS_COUNTS: f64 = 0.5;
-
-/// A brush contact state change inside the hold: a step in R across a
-/// [`CONTACT_BLOCK_MS`] block at one duty with the pot still, the current
-/// stepping with it.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ContactEvent {
-    /// The middle of the blocks the step lies in, ms on the host's clock:
-    /// within a block of it.
-    pub t_ms: f64,
-    /// The end of the last block the step lies in, ms: the event is final
-    /// once the two blocks after it are full.
-    pub to_ms: f64,
-    /// R after over R before, less one.
-    pub step_frac: f64,
-    pub i_before: f64,
-    pub i_after: f64,
-    pub pos_before: f64,
-    pub pos_after: f64,
-}
-
-/// The window read the winding at its commanded duty, seated or not: the
-/// contact detector judges the pot itself.
-fn at_duty(x: &ThermWindow) -> bool {
-    x.commanded && x.floors && x.w.i != 0.0
-}
-
-/// The contact events of the hold from `from_ms` to `to_ms`: the windows
-/// at the command past [`CONTACT_SKIP_MS`] in [`CONTACT_BLOCK_MS`] blocks, a
-/// block counting with half the median block population, and every full
-/// block whose two full neighbours' R steps over [`CONTACT_STEP_FRAC`] with
-/// the pot inside [`CONTACT_POS_COUNTS`]. The step is read across the block
-/// it lands in, so one anywhere inside a block reads its whole size, and
-/// consecutive blocks stepping the same way are one event, read across
-/// them. A ramp is not a step: the one seen rose 2.6 % over 7 s and fell
-/// back in 1 s, and reads as its fall.
-pub fn contact_events(windows: &[ThermWindow], from_ms: f64, to_ms: f64) -> Vec<ContactEvent> {
-    let lo = windows.partition_point(|x| x.w.t_ms < from_ms + CONTACT_SKIP_MS);
-    let hi = windows.partition_point(|x| x.w.t_ms < to_ms);
-    let block = |x: &ThermWindow| ((x.w.t_ms - from_ms) / CONTACT_BLOCK_MS).floor() as i64;
-    let blocks: Vec<(i64, Acc, Acc, Acc)> = windows[lo..hi]
-        .chunk_by(|x, y| block(x) == block(y))
-        .filter_map(|c| {
-            let (mut r, mut i, mut pos) = (Acc::default(), Acc::default(), Acc::default());
-            c.iter()
-                .filter(|x| at_duty(x))
-                .filter_map(|x| Some((window_r_vpc(&x.w)?, x)))
-                .for_each(|(rv, x)| {
-                    r.add(rv);
-                    i.add(x.w.i.abs());
-                    pos.add(x.pos as f64);
-                });
-            (r.n > 0).then_some((block(&c[0]), r, i, pos))
-        })
-        .collect();
-    let Some(population) = median(blocks.iter().map(|b| b.1.n as f64).collect()) else {
-        return Vec::new();
-    };
-    let full = |b: &(i64, Acc, Acc, Acc)| b.1.n as f64 >= population / 2.0;
-    // the sign of the step across each block, its neighbours compared, 0
-    // for none
-    let stepped: Vec<i8> = blocks
-        .windows(3)
-        .map(|w| {
-            let (a, c) = (&w[0], &w[2]);
-            let step = c.1.mean().unwrap_or(0.0) / a.1.mean().unwrap_or(1.0) - 1.0;
-            let still =
-                (c.3.mean().unwrap_or(0.0) - a.3.mean().unwrap_or(0.0)).abs() <= CONTACT_POS_COUNTS;
-            if c.0 == a.0 + 2 && full(a) && full(c) && still && step.abs() > CONTACT_STEP_FRAC {
-                step.signum() as i8
-            } else {
-                0
-            }
-        })
-        .collect();
-    let event = |k0: usize, k1: usize| {
-        let (a, b) = (&blocks[k0], &blocks[k1 + 2]);
-        let (first, end) = (blocks[k0 + 1].0 as f64, (blocks[k1 + 1].0 + 1) as f64);
-        Some(ContactEvent {
-            t_ms: from_ms + (first + end) / 2.0 * CONTACT_BLOCK_MS,
-            to_ms: from_ms + end * CONTACT_BLOCK_MS,
-            step_frac: b.1.mean()? / a.1.mean()? - 1.0,
-            i_before: a.2.mean()?,
-            i_after: b.2.mean()?,
-            pos_before: a.3.mean()?,
-            pos_after: b.3.mean()?,
-        })
-    };
-    let mut out = Vec::new();
-    let mut k = 0;
-    while k < stepped.len() {
-        if stepped[k] == 0 {
-            k += 1;
-            continue;
-        }
-        let mut k1 = k;
-        while k1 + 1 < stepped.len() && stepped[k1 + 1] == stepped[k] {
-            k1 += 1;
-        }
-        out.extend(event(k, k1));
-        k = k1 + 1;
-    }
-    out
 }
 
 /// The rest check watches the NTC this long before a hold drives.
@@ -1408,7 +1414,8 @@ mod tests {
     /// back, exactly at every window: a window every [`WIN_MS`] through the
     /// current's floor and one at each later bin's centre, the current
     /// wobbling half a count. The applied duty is `duty(t)` of the command,
-    /// the current `scale(t)` of [`I`], the winding `r0` cold.
+    /// the current `scale(t)` of [`I`], the winding `r0` cold times
+    /// `r_of(t)`, the brush contact's own part of R.
     struct Synth {
         hold_ms: f64,
         q: [u16; 2],
@@ -1416,6 +1423,7 @@ mod tests {
         scale: fn(f64) -> f64,
         ceiling: f64,
         r0: f64,
+        r_of: fn(f64) -> f64,
     }
 
     impl Synth {
@@ -1427,6 +1435,7 @@ mod tests {
                 scale: |_| 1.0,
                 ceiling: CEILING,
                 r0: 1.0,
+                r_of: |_| 1.0,
             }
         }
 
@@ -1464,7 +1473,7 @@ mod tests {
                             t,
                             I * (self.scale)(t) + wob,
                             DUTY * d,
-                            self.r0,
+                            self.r0 * (self.r_of)(t),
                             x_w,
                         ))
                     }
@@ -1733,6 +1742,7 @@ mod tests {
         let (v, a) = scales();
         let h = &f.holds[0];
         assert_eq!(h.r_ref_settle_ms, 200.0, "{f:?}");
+        assert_eq!(h.fit_from_ms, FIT_FROM_MS);
         // the copper warms through the line: R_ref reads it cold within 0.3 C
         assert!((h.r_ref_ohm / (v / a) - 1.0).abs() < 1e-3, "{f:?}");
         assert!((1000..=1600).contains(&h.r_ref_windows), "{f:?}");
@@ -1996,6 +2006,7 @@ mod tests {
         assert!(f.residual_sd_c < 0.05, "{f:?}");
         assert_eq!(f.holds.len(), 1);
         let h = &f.holds[0];
+        assert_eq!(h.fit_from_ms, FIT_FROM_MS);
         assert!(h.first_c.abs() < 0.1, "{f:?}");
         assert!(h.block_means_c.iter().all(|m| m.abs() < 0.05), "{f:?}");
         assert_eq!(h.block_means_c.len(), 16, "{f:?}");
@@ -2081,6 +2092,10 @@ mod tests {
             assert!(n.rise_q016.raw.abs_diff(q) <= 1, "{n:?} against {q}");
         }
         assert_eq!(f.holds.len(), 2);
+        assert!(
+            f.holds.iter().all(|h| h.fit_from_ms == FIT_FROM_MS),
+            "{f:?}"
+        );
         let (ra, rb) = (f.holds[0].r_ref_ohm, f.holds[1].r_ref_ohm);
         assert!((rb / ra - 1.05).abs() < 1e-3, "{ra} {rb}");
         assert_eq!(f.bins, f.holds[0].bins + f.holds[1].bins);
@@ -2126,6 +2141,149 @@ mod tests {
         );
     }
 
+    /// A brush contact transient: R up `frac` from `from_ms`, falling back
+    /// along a half cosine to its seat by `to_ms`.
+    fn transient(t: f64, from_ms: f64, to_ms: f64, frac: f64) -> f64 {
+        if t < from_ms || t >= to_ms {
+            1.0
+        } else {
+            1.0 + frac
+                * 0.5
+                * (1.0 + (std::f64::consts::PI * (t - from_ms) / (to_ms - from_ms)).cos())
+        }
+    }
+
+    /// Both gains within `pct` percent of board D's.
+    fn gains_near(f: &TwoNodeFit, pct: f64) -> bool {
+        rotor_near(f, pct)
+            && (f.body.rise_q016.raw as f64 - Q_D[1] as f64).abs() <= Q_D[1] as f64 * pct / 100.0
+    }
+
+    /// A 480 s hold whose contact adds 1.5 % of R from 5 s and settles by
+    /// 15 s: inside the first blank, so the fit reads from 20 s, both gains
+    /// within 2 %, and the brush window before the blank reads the
+    /// transient.
+    #[test]
+    fn a_contact_transient_inside_the_blank_is_not_fitted() {
+        let f = Synth {
+            r_of: |t| transient(t, 5_000.0, 15_000.0, 0.015),
+            ..Synth::hold(480_000.0)
+        }
+        .fit()
+        .unwrap();
+        assert!(gains_near(&f, 2.0), "{f:?}");
+        let h = &f.holds[0];
+        assert_eq!(h.fit_from_ms, FIT_FROM_MS, "{f:?}");
+        assert!(h.first_c > 0.5, "{f:?}");
+    }
+
+    /// The same transient stretched to settle by 35 s runs into the first
+    /// fitted block: the fit moves its blank out to 40 s and reads the
+    /// rotor within 3 % from there.
+    #[test]
+    fn an_unsettled_transient_moves_the_blank_out() {
+        let f = Synth {
+            r_of: |t| transient(t, 5_000.0, 35_000.0, 0.015),
+            ..Synth::hold(480_000.0)
+        }
+        .fit()
+        .unwrap();
+        assert_eq!(f.holds[0].fit_from_ms, FIT_FROM_MS + FLAT_BLOCK_MS, "{f:?}");
+        assert!(rotor_near(&f, 3.0), "{f:?}");
+    }
+
+    /// A transient still decaying at 90 s is not flat at any blank: the
+    /// fit refuses at the maximum, named.
+    #[test]
+    fn a_transient_still_moving_at_the_maximum_blank_refuses() {
+        let why = Synth {
+            r_of: |t| transient(t, 5_000.0, 180_000.0, 0.015),
+            ..Synth::hold(480_000.0)
+        }
+        .fit()
+        .unwrap_err();
+        assert!(why.contains("the contact had not settled"), "{why}");
+        assert!(why.contains("60 s in"), "{why}");
+        assert!(!why.starts_with("hold "), "{why}");
+    }
+
+    /// Two holds pooled, one clean and one with the 35 s transient: each
+    /// hold's blank is its own, the clean one's at 20 s and the other's at
+    /// 40 s, and the pooled gains read within 3 %.
+    #[test]
+    fn the_blank_is_judged_per_hold_in_a_pool() {
+        let (v, a) = scales();
+        let (pa, wa) = Synth::hold(480_000.0).build();
+        let (pb, wb) = Synth {
+            r_of: |t| transient(t, 5_000.0, 35_000.0, 0.015),
+            ..Synth::hold(480_000.0)
+        }
+        .build();
+        let f = fit_two_node_pooled(&[hold(&pa, &wa), hold(&pb, &wb)], v, a).unwrap();
+        assert_eq!(f.holds[0].fit_from_ms, FIT_FROM_MS, "{f:?}");
+        assert_eq!(f.holds[1].fit_from_ms, FIT_FROM_MS + FLAT_BLOCK_MS, "{f:?}");
+        assert!(gains_near(&f, 3.0), "{f:?}");
+        assert_eq!(f.bins, f.holds[0].bins + f.holds[1].bins);
+        assert!(f.holds[0].bins > f.holds[1].bins, "{f:?}");
+    }
+
+    /// A +0.2 C bump over the hold's first fitted 20 s, the copper the
+    /// fit's blank starts on.
+    fn bump_c(t: f64) -> f64 {
+        if (FIT_FROM_MS..FIT_FROM_MS + FLAT_BLOCK_MS).contains(&t) {
+            0.2
+        } else {
+            0.0
+        }
+    }
+
+    /// A per-second scatter of sd 0.6 C on the copper reading past the
+    /// reference, a hash of the bin index.
+    fn scatter_c(t: f64) -> f64 {
+        if t < R_REF_WITHIN_MS {
+            return 0.0;
+        }
+        let mut x = (t / BIN_MS) as u64 ^ 0x9e37_79b9_7f4a_7c15;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^= x >> 33;
+        0.6 * 3f64.sqrt() * ((x >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0)
+    }
+
+    /// The flat judge reads the hold's own scatter: a +0.2 C bump over the
+    /// first fitted block sits inside the sigma bound of a hold scattered
+    /// 0.6 C per bin and the fit reads from 20 s, while the same bump on a
+    /// noiseless hold is over [`FLAT_MIN_C`] and moves the blank to 40 s.
+    #[test]
+    fn a_noisy_hold_is_judged_by_its_own_scatter() {
+        let noisy = Synth {
+            r_of: |t| 1.0 + (bump_c(t) + scatter_c(t)) / (COPPER_ZERO_R_C + T_NTC0),
+            ..Synth::hold(480_000.0)
+        }
+        .fit()
+        .unwrap();
+        assert_eq!(
+            noisy.holds[0].fit_from_ms, FIT_FROM_MS,
+            "the block read about +0.19 C against a bound of about 0.33 C: {noisy:?}"
+        );
+        assert!(noisy.residual_sd_c > 0.4, "{noisy:?}");
+        assert!(rotor_near(&noisy, 5.0), "{noisy:?}");
+        let quiet = Synth {
+            r_of: |t| 1.0 + bump_c(t) / (COPPER_ZERO_R_C + T_NTC0),
+            ..Synth::hold(480_000.0)
+        }
+        .fit()
+        .unwrap();
+        assert_eq!(
+            quiet.holds[0].fit_from_ms,
+            FIT_FROM_MS + FLAT_BLOCK_MS,
+            "the block read about +0.18 C against the 0.10 C floor: {quiet:?}"
+        );
+        assert!(quiet.holds[0].first_c.abs() < 0.1, "{quiet:?}");
+    }
+
     /// The rest judge: a ramp reads its slope once the samples span the
     /// window, a flat line 0, fewer None, and a long record its last 60 s
     /// alone.
@@ -2149,104 +2307,6 @@ mod tests {
             .collect();
         let d = rest_drift(&bent).unwrap();
         assert!((d - 0.5).abs() < 1e-9, "{d}");
-    }
-
-    /// A window every 2 ms from `from` to `to` ms at `duty`, R `r0` and
-    /// the copper `x_w(t)` C over the NTC; the window at `t` reads `pos(t)`.
-    fn trace(
-        from: f64,
-        to: f64,
-        duty: f64,
-        r0: f64,
-        x_w: impl Fn(f64) -> f64,
-        pos: impl Fn(f64) -> u16,
-    ) -> Vec<ThermWindow> {
-        ((from / WIN_MS) as i64..(to / WIN_MS) as i64)
-            .map(|k| {
-                let t = k as f64 * WIN_MS;
-                let i = if duty == DUTY { I } else { I * duty / DUTY };
-                ThermWindow {
-                    pos: pos(t),
-                    ..tw(window_at(t, i + wobble(k as usize), duty, r0, x_w(t)))
-                }
-            })
-            .collect()
-    }
-
-    /// A bench hold on board D: R stepped up 2 % at 32 s with the pot
-    /// still and back down 2 % at 44 s. Both edges are events,
-    /// the copper's own rise (a 33 s node to 19 C) is not, and a step that
-    /// moved the pot is motion.
-    #[test]
-    fn contact_events_are_steps_in_r_with_the_pot_still() {
-        let copper = |t: f64| 19.0 * (1.0 - (-t / 33_000.0).exp());
-        let contact = |t: f64| {
-            if (32_000.0..44_000.0).contains(&t) {
-                1.02
-            } else {
-                1.0
-            }
-        };
-        let w = trace(
-            0.0,
-            120_000.0,
-            DUTY,
-            1.0,
-            |t| {
-                (contact(t) * (1.0 + copper(t) / (COPPER_ZERO_R_C + T_NTC0)) - 1.0)
-                    * (COPPER_ZERO_R_C + T_NTC0)
-            },
-            |_| SEAT,
-        );
-        let ev = contact_events(&w, 0.0, 120_000.0);
-        assert_eq!(ev.len(), 2, "{ev:?}");
-        assert_eq!((ev[0].t_ms, ev[1].t_ms), (32_000.0, 44_000.0));
-        assert_eq!((ev[0].to_ms, ev[1].to_ms), (34_000.0, 46_000.0));
-        assert!((ev[0].step_frac - 0.02).abs() < 0.005, "{:?}", ev[0]);
-        assert!((ev[1].step_frac + 0.02).abs() < 0.005, "{:?}", ev[1]);
-        assert!((ev[0].i_before - 270.0).abs() < 1.0 && ev[0].pos_before == SEAT as f64);
-        // the copper alone: no event in the whole hold, from its first second
-        let w = trace(0.0, 120_000.0, DUTY, 1.0, copper, |_| SEAT);
-        assert_eq!(contact_events(&w, 0.0, 120_000.0), []);
-        // the same step with the pot a count off: motion, not contact
-        let w = trace(
-            0.0,
-            120_000.0,
-            DUTY,
-            1.0,
-            |t| (contact(t) - 1.0) * (COPPER_ZERO_R_C + T_NTC0),
-            |t| if t >= 32_000.0 { SEAT + 1 } else { SEAT },
-        );
-        let ev = contact_events(&w, 0.0, 120_000.0);
-        assert_eq!(ev.len(), 1, "{ev:?}");
-        assert_eq!(ev[0].t_ms, 44_000.0);
-        // another bench hold's event, a step inside a block: read whole across
-        // the block, its half-stepped neighbours merge in, and the event is
-        // timed to the middle of the three
-        let w = trace(
-            0.0,
-            120_000.0,
-            DUTY,
-            1.0,
-            |t| if t >= 33_000.0 { 0.024 } else { 0.0 } * (COPPER_ZERO_R_C + T_NTC0),
-            |_| SEAT,
-        );
-        let ev = contact_events(&w, 0.0, 120_000.0);
-        assert_eq!(ev.len(), 1, "{ev:?}");
-        assert_eq!((ev[0].t_ms, ev[0].to_ms), (33_000.0, 36_000.0));
-        assert!((ev[0].step_frac - 0.024).abs() < 0.001, "{:?}", ev[0]);
-        // a step inside the skip is the dip, not an event; a gap in the
-        // windows is not a step
-        let mut w = trace(0.0, 120_000.0, DUTY, 1.0, |_| 0.0, |_| SEAT);
-        for x in w.iter_mut().filter(|x| x.w.t_ms < 1_000.0) {
-            x.w.vdiff *= 0.97;
-        }
-        w.retain(|x| !(50_000.0..52_000.0).contains(&x.w.t_ms));
-        for x in w.iter_mut().filter(|x| x.w.t_ms >= 52_000.0) {
-            x.w.vdiff *= 1.03;
-        }
-        assert_eq!(contact_events(&w, 0.0, 120_000.0), []);
-        assert_eq!(contact_events(&[], 0.0, 1.0), []);
     }
 
     /// The live hold's reference and copper: R_ref and T_0 as the fit reads
