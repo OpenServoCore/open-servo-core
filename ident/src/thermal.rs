@@ -662,6 +662,20 @@ pub struct NodeFit {
 }
 
 impl NodeFit {
+    /// The node as the servo carries it, `rise_q016` and `tau_s` read off
+    /// its table: what a fit pins ([`fit_rotor_pinned`]).
+    pub fn pinned(rise_q016: u16, tau_s: u16) -> Self {
+        let k = rise_q016 as f64 / 65536.0;
+        Self {
+            tau_s,
+            shift: tau_shift(tau_s),
+            k,
+            rise_q016: enc(k, 65536.0),
+            sse_ratio: 1.0,
+            decided: true,
+        }
+    }
+
     /// The kernel's leak in seconds: 2^shift SLOW periods.
     pub fn octave_s(&self) -> f64 {
         (1u32 << self.shift) as f64 * SLOW_PERIOD_MS as f64 / 1000.0

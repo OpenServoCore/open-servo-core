@@ -28,7 +28,7 @@ use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_ident::burst::{Capture, Chans};
-use osc_ident::exp::anchor::{Anchor, AnchorCfg, HOLD_MIN_S};
+use osc_ident::exp::anchor::{Anchor, AnchorCfg, HOLD_MIN_S, HoldMarks};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
 use osc_ident::exp::centre::{Centre, CentreCfg};
@@ -42,6 +42,7 @@ use osc_ident::exp::inertia::{
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg, ResistanceResult};
 use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult, Scales};
+use osc_ident::exp::session::{self, SessionCfg, SessionFit, ShortHolds};
 use osc_ident::exp::verify::{VERIFY_CURRENT, VerifyCurrentCfg, VerifyVelocityCfg};
 use osc_ident::exp::wavefit::WaveCfg;
 use osc_ident::exp::{Guarded, Permitted, RigParams};
@@ -58,13 +59,13 @@ use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, HeldR, Source, Winding};
 use osc_ident::thermal::{
-    self, Hold, HoldFit, HoldPoll, NtcBoard, NtcCurve, REST_DRIFT_C_PER_MIN, REST_MAX_MS,
+    self, Hold, HoldFit, HoldPoll, NodeFit, NtcBoard, NtcCurve, REST_DRIFT_C_PER_MIN, REST_MAX_MS,
     REST_POLL_MS, REST_WINDOW_MS, ThermWindow, TwoNodeFit,
 };
 use params::{
-    BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
-    PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredMotionJson, StoredWindingJson,
-    ThermalJson,
+    BiasJson, BodyJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson,
+    ParamsFile, PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, SessionJson,
+    StoredMotionJson, StoredWindingJson, ThermalJson,
 };
 
 /// Where recorded runs land when `--out` is absent.
@@ -217,6 +218,18 @@ struct Ctx {
     drive: Option<Drive>,
     /// The thermal hold's length.
     hold: AnchorCfg,
+    /// `osc ident thermal --short`'s session, once the servo's body node
+    /// is read.
+    short: Option<ShortCfg>,
+}
+
+/// `--short`'s session: its flags and the body node the servo carries,
+/// read before anything drives.
+struct ShortCfg {
+    within_c: f64,
+    holds_max: usize,
+    rest_ms: u32,
+    body: NodeFit,
 }
 
 struct Drive {
@@ -322,14 +335,38 @@ enum Cmd {
     /// pairs, is th_rise_q016, th_rise2_q016, thermal_tau_s and
     /// thermal_tau2_s. With --save they are written read-back verified,
     /// stamped, then SAVEd.
+    /// With --short, on a servo that carries the body node from its long
+    /// hold: short holds alternating between the two stops, the servo
+    /// resting torque off between them, each fitted alone with the body
+    /// pinned and pooled, until the pooled rotor's standard error at the
+    /// current ceiling sits inside --within-c or --holds-max holds have
+    /// run; the whole session is one record. --save then writes
+    /// th_rise_q016 and thermal_tau_s alone, and only when the pool
+    /// decided.
     Thermal {
-        /// The hold at the stop, seconds: 960 decides the body octave up
-        /// to 524 s, the 480 minimum up to 262 s.
-        #[arg(long, default_value_t = 960, value_parser = clap::value_parser!(u32).range(HOLD_MIN_S as i64..))]
-        hold_s: u32,
-        /// Write the four constants, stamp and SAVE.
+        /// The hold at the stop, seconds [default: 960, which decides the
+        /// body octave up to 524 s; at least 480, which decides it up to
+        /// 262 s; with --short 120, at least 90].
+        #[arg(long)]
+        hold_s: Option<u32>,
+        /// Write the constants the run fitted, stamp and SAVE: the four of
+        /// the long hold, the rotor's two of a --short session.
         #[arg(long)]
         save: bool,
+        /// The short-hold session (above).
+        #[arg(long)]
+        short: bool,
+        /// --short: the pooled rotor gain's standard error, C at the
+        /// current ceiling, that ends the session decided.
+        #[arg(long, default_value_t = 2.0)]
+        within_c: f64,
+        /// --short: holds run, accepted or dropped, before the session
+        /// ends undecided.
+        #[arg(long, default_value_t = 8)]
+        holds_max: usize,
+        /// --short: the rest torque off between holds, seconds.
+        #[arg(long, default_value_t = 120)]
+        rest_s: u32,
     },
     /// Closed-loop verification on the written gains: verify current, then
     /// verify velocity. Needs a clean data state: a set written but not
@@ -452,9 +489,10 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         lut: None,
         drive: None,
         hold: match args.cmd {
-            Cmd::Thermal { hold_s, .. } => thermal_cfg(hold_s),
+            Cmd::Thermal { hold_s, short, .. } => thermal_cfg(hold_s_of(hold_s, short)?),
             _ => AnchorCfg::default(),
         },
+        short: None,
     };
     pump::install_ctrlc();
     if let Cmd::Fit { dirs } = &args.cmd {
@@ -513,6 +551,21 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
     let lut = Lut::read(&mut c, id, &d)?;
     println!("pot: {} counts, lut {}", lut.pot().label(), lut.describe());
     cli.lut = Some(lut);
+    if let Cmd::Thermal {
+        short: true,
+        within_c,
+        holds_max,
+        rest_s,
+        ..
+    } = args.cmd
+    {
+        cli.short = Some(ShortCfg {
+            within_c,
+            holds_max,
+            rest_ms: rest_s.saturating_mul(1000),
+            body: body_node(&mut c, id)?,
+        });
+    }
     let cli = &cli;
     match &args.cmd {
         Cmd::Run { stall_ladder } => run_all(cli, &mut c, id, *stall_ladder),
@@ -780,6 +833,89 @@ fn thermal_cfg(hold_s: u32) -> AnchorCfg {
     }
 }
 
+/// The long hold's length when `--hold-s` is absent, s.
+const LONG_HOLD_DEFAULT_S: u32 = 960;
+/// A `--short` hold's length when `--hold-s` is absent, s.
+const SHORT_HOLD_DEFAULT_S: u32 = 120;
+/// The shortest `--short` hold, s: the fit's [`thermal::MIN_BINS`]
+/// one-second bins past the blank it may move out to.
+const SHORT_HOLD_MIN_S: u32 = thermal::FIT_FROM_MAX_MS as u32 / 1000 + thermal::MIN_BINS as u32;
+
+/// `--hold-s` resolved for the run it is for, the long hold's or the
+/// `--short` session's, and checked against that run's floor.
+fn hold_s_of(hold_s: Option<u32>, short: bool) -> Result<u32> {
+    match (short, hold_s) {
+        (false, None) => Ok(LONG_HOLD_DEFAULT_S),
+        (false, Some(s)) if s >= HOLD_MIN_S => Ok(s),
+        (false, Some(s)) => {
+            bail!("--hold-s {s}: the hold takes at least {HOLD_MIN_S} s to decide the body octave")
+        }
+        (true, None) => Ok(SHORT_HOLD_DEFAULT_S),
+        (true, Some(s)) if s >= SHORT_HOLD_MIN_S => Ok(s),
+        (true, Some(s)) => bail!(
+            "--hold-s {s} with --short: a short hold takes at least {SHORT_HOLD_MIN_S} s, the \
+             fit's {} one-second bins past the {:.0} s its blank may move out to",
+            thermal::MIN_BINS,
+            thermal::FIT_FROM_MAX_MS / 1000.0
+        ),
+    }
+}
+
+/// The body node the servo carries from its long hold, for a `--short`
+/// session to pin; a servo without one is refused.
+fn body_node<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<NodeFit> {
+    let rise = snapshot::read_u16(c, id, calib::TH_RISE2_Q016)?;
+    let tau = snapshot::read_u16(c, id, config::THERMAL_TAU2_S)?;
+    if rise == 0 || tau == 0 {
+        bail!(
+            "this servo carries no body node (th_rise2_q016 {rise}, thermal_tau2_s {tau}): the \
+             long hold identifies it first (`osc ident thermal` without --short)"
+        );
+    }
+    Ok(NodeFit::pinned(rise, tau))
+}
+
+/// The rest between a session's holds is read for its NTC alone, this
+/// often, ms.
+const SESSION_REST_POLL_MS: u32 = 1000;
+
+/// The session's config over `anchor`, each hold's seek and hold as the
+/// stage planned them.
+fn session_cfg(short: &ShortCfg, d: &Drive, anchor: AnchorCfg) -> SessionCfg {
+    SessionCfg {
+        anchor,
+        body: short.body.clone(),
+        v_per_count: d.sc.v_term_per_count,
+        a_per_count: d.sc.amps_per_count,
+        ceiling_counts: d.lim.i_lim as f64,
+        within_c: short.within_c,
+        holds_min: thermal::SPREAD_MIN_HOLDS,
+        holds_max: short.holds_max,
+        rest_ms: short.rest_ms,
+        rest_poll_ms: SESSION_REST_POLL_MS,
+    }
+}
+
+/// The session's plan, before anything drives.
+fn say_session_plan(short: &ShortCfg, d: &Drive, hold: &AnchorCfg) {
+    let cfg = session_cfg(short, d, *hold);
+    println!(
+        "[thermal] short holds: {} s at a stop, {} s rest torque off between, at least {} and at \
+         most {} holds alternating the low and the high stop, until the pooled rotor's standard \
+         error at the {} counts ceiling sits inside {:.1} C: about {:.0} min at the most; the \
+         body pinned at th_rise2_q016 {} on thermal_tau2_s {} s",
+        cfg.anchor.hold_ms / 1000,
+        cfg.rest_ms / 1000,
+        cfg.holds_min,
+        cfg.holds_max,
+        d.lim.i_lim,
+        cfg.within_c,
+        session::planned_ms(&cfg, cfg.holds_max) / 60_000.0,
+        short.body.rise_q016.raw,
+        short.body.tau_s
+    );
+}
+
 fn parse_chans(s: &str) -> Result<Chans, String> {
     Chans::parse(s).ok_or_else(|| format!("`{s}` is not `driven`, `diff` or a mask 0..=15"))
 }
@@ -1006,6 +1142,9 @@ fn run_hold(
                 r_stored_ohm: d
                     .stored
                     .map(|w| w.r_taps_vpc * sc.v_term_per_count / sc.amps_per_count),
+                holds: Vec::new(),
+                body: None,
+                session: None,
             };
             m.save(&out.0.join("thermal.json"))?;
             Some(m)
@@ -1024,6 +1163,92 @@ fn run_hold(
     Ok(hold
         .fit(sc.v_term_per_count, sc.amps_per_count)
         .map(|fit| ThermalRead { fit, marks }))
+}
+
+/// What the short-hold session read: its fit, the record's marks as
+/// thermal.json keeps them, and why it ended.
+struct SessionRead {
+    fit: SessionFit,
+    marks: ThermalJson,
+}
+
+/// The short-hold session ([`ShortHolds`]): every hold's seek, hold and
+/// rest polled into one anchor_snapshots.csv with the board NTC, every
+/// window of every hold in anchor.csv and the session's marks in
+/// thermal.json, then its fit.
+fn run_session(
+    cli: &Ctx,
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &csvio::OutDir,
+    cfg: SessionCfg,
+) -> Result<Result<SessionRead, String>> {
+    let d = drive(cli)?;
+    let sc = d.sc;
+    let params = rig(cli)?.without_pos_guard();
+    let mut log = csvio::SnapshotLog::create_therm(out, "anchor_snapshots.csv")?;
+    let mut exp = Guarded::new(
+        Permitted::new(ShortHolds::new(cfg.clone(), &params)),
+        params,
+    );
+    let ran = with_guard(c, id, |c| {
+        Pump::new(c, id, Some(&mut log)).with_therm().run(&mut exp)
+    });
+    let abort = exp.abort();
+    let holds = exp.into_inner().into_inner();
+    let r_stored_ohm = d
+        .stored
+        .map(|w| w.r_taps_vpc * sc.v_term_per_count / sc.amps_per_count);
+    let marks = record_session(out, &holds, &cfg, r_stored_ohm)?;
+    ran?;
+    check_abort("thermal", abort)?;
+    // the pump gives the session no hook between steps: each hold's line
+    // lands here, in order, once the run is back
+    for line in holds.log_lines() {
+        println!("  {line}");
+    }
+    if let Some(verdict) = holds.verdict() {
+        println!("  {verdict}");
+    }
+    let Some(marks) = marks else {
+        return Ok(Err("no hold ever seated".into()));
+    };
+    Ok(holds.result().map(|fit| SessionRead { fit, marks }))
+}
+
+/// The session's record as `osc ident thermal --short` leaves it beside
+/// anchor_snapshots.csv: every window in anchor.csv, and thermal.json with
+/// every hold that seated, the body pinned and the pool's rule, its
+/// top-level fields the first hold's. None when no hold seated.
+fn record_session(
+    out: &csvio::OutDir,
+    holds: &ShortHolds,
+    cfg: &SessionCfg,
+    r_stored_ohm: Option<f64>,
+) -> Result<Option<ThermalJson>> {
+    csvio::write_anchor_samples(out, holds.samples())?;
+    let Some(first) = holds.marks().first() else {
+        return Ok(None);
+    };
+    let m = ThermalJson {
+        t0_ms: first.t0_ms,
+        end_ms: first.end_ms,
+        seat: Some(first.seat),
+        hold_seat: Some(first.hold_seat),
+        hold_duty_q15: cfg.anchor.hold_duty_q15,
+        r_stored_ohm,
+        holds: holds.marks().iter().map(|m| (*m).into()).collect(),
+        body: Some(BodyJson {
+            rise_q016: cfg.body.rise_q016.raw,
+            tau_s: cfg.body.tau_s,
+        }),
+        session: Some(SessionJson {
+            within_c: cfg.within_c,
+            ceiling_counts: cfg.ceiling_counts,
+        }),
+    };
+    m.save(&out.0.join("thermal.json"))?;
+    Ok(Some(m))
 }
 
 /// Run `f` with `derate_start_cc` and `cutoff_cc` raised to the top of
@@ -1113,6 +1338,9 @@ fn run_thermal(
              the hold; `osc ident run` identifies it first"
         );
     }
+    if let Some(short) = &cli.short {
+        say_session_plan(short, d, &cli.hold);
+    }
     rest_check(&mut Wire::new(&mut *c, id))?;
     let rec = with_thresholds_raised(c, id, |c| {
         let rec = match drive_stages(cli, c, id, Until::Thermal, false) {
@@ -1127,6 +1355,9 @@ fn run_thermal(
         park(cli, c, id, false)?;
         Ok(rec)
     })?;
+    if let Some(short) = &cli.short {
+        return finish_session(c, id, desc, &rec, d, short, save);
+    }
     let refused = |t: &ThermalRead| {
         t.fit
             .holds
@@ -1148,11 +1379,56 @@ fn run_thermal(
     if let Some(why) = refused(t) {
         bail!("{why}; nothing written");
     }
-    let fields = GainJson::two_node(&t.fit);
+    write_fields(c, id, desc, &rec.out, &GainJson::two_node(&t.fit), save)
+}
+
+/// `osc ident thermal --short`'s end: the session reported, its rotor
+/// written with `save` when the pool decided, nothing otherwise.
+fn finish_session(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    desc: &Descriptor,
+    rec: &Recorded,
+    d: &Drive,
+    short: &ShortCfg,
+    save: bool,
+) -> Result<()> {
+    let gains = match &rec.session {
+        Some(s) if s.fit.decided => GainJson::rotor(&s.fit.pooled),
+        _ => Vec::new(),
+    };
+    save_params(&rec.out.0, d.sense, gains)?;
+    let Some(s) = &rec.session else {
+        bail!(
+            "the session declined: {}; nothing written",
+            rec.declined.as_deref().unwrap_or("no hold was read")
+        );
+    };
+    let rule = s.marks.session.unwrap_or(SessionJson {
+        within_c: short.within_c,
+        ceiling_counts: d.lim.i_lim as f64,
+    });
+    report_short(&s.fit, rule, d.sc.amps_per_count);
+    if !s.fit.decided {
+        bail!("{}", decision_line(&s.fit, rule.within_c));
+    }
+    write_fields(c, id, desc, &rec.out, &GainJson::rotor(&s.fit.pooled), save)
+}
+
+/// The run's fields written with `save` under a snapshot in `out`, stamped
+/// and SAVEd; without it, what `--save` would write.
+fn write_fields(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    desc: &Descriptor,
+    out: &csvio::OutDir,
+    fields: &[GainJson],
+    save: bool,
+) -> Result<()> {
     if save {
         write_reg(c, id, control::TORQUE_ENABLE, 0)?;
-        snapshot::take_snapshot(c, id, &rec.out.0.join("snapshot.json"))?;
-        snapshot::write_gains(c, id, &fields)?;
+        snapshot::take_snapshot(c, id, &out.0.join("snapshot.json"))?;
+        snapshot::write_gains(c, id, fields)?;
         crate::state::commit(c, id, desc, true)?;
     } else {
         println!(
@@ -1375,6 +1651,13 @@ fn report_thermal(f: &TwoNodeFit, marks: &[(Option<&str>, &ThermalJson)], a: f64
             None => println!("{ind}  the estimate read UNSET through the end of the hold"),
         }
     }
+    report_nodes(f, a, "body");
+}
+
+/// The fit's shared lines: both nodes as `--save` writes them, the body's
+/// named `body`, then the fit over its holds.
+fn report_nodes(f: &TwoNodeFit, a: f64, body: &str) {
+    let pooled = f.holds.len() > 1;
     let r = f.holds.iter().map(|h| h.r_ref_ohm).sum::<f64>() / f.holds.len() as f64;
     let written = GainJson::two_node(f);
     report_node(
@@ -1387,7 +1670,7 @@ fn report_thermal(f: &TwoNodeFit, marks: &[(Option<&str>, &ThermalJson)], a: f64
         r,
     );
     report_node(
-        "body",
+        body,
         &f.body,
         "th_rise2_q016",
         "thermal_tau2_s",
@@ -1411,6 +1694,120 @@ fn report_thermal(f: &TwoNodeFit, marks: &[(Option<&str>, &ThermalJson)], a: f64
          sd {:.2} C",
         f.bins, f.passes, f.residual_sd_c
     );
+}
+
+/// The stop a session's hold `n` (the first is 1) pressed: the holds
+/// alternate, the first toward the low stop.
+fn session_stop(n: usize) -> &'static str {
+    if n % 2 == 1 {
+        "the low stop"
+    } else {
+        "the high stop"
+    }
+}
+
+/// The session's report, `osc ident thermal --short`'s and `ident fit`'s:
+/// each hold, the pool against `rule`, the decision, the pinned pooled fit's
+/// nodes, then both gains free beside the pinned body.
+fn report_short(f: &SessionFit, rule: SessionJson, a: f64) {
+    let total = f.singles.len() + f.dropped.len();
+    let mut dropped = f.dropped.iter().peekable();
+    let mut accepted = f.singles.iter().zip(&f.accepted);
+    for n in 1..=total {
+        if let Some((_, why)) = dropped.next_if(|(k, _)| *k == n) {
+            println!("  hold {n} toward {}: dropped, {why}", session_stop(n));
+        } else if let Some((single, m)) = accepted.next() {
+            let h = &single.holds[0];
+            println!(
+                "  hold {n} toward {}: seat {}, rotor {} q016 on tau {} s (2^{}), fitted from \
+                 {:.0} s in, started {:+.1} C warm",
+                session_stop(n),
+                m.hold_seat,
+                single.rotor.rise_q016.raw,
+                single.rotor.tau_s,
+                single.rotor.shift,
+                h.fit_from_ms / 1000.0,
+                h.warm_ref_c
+            );
+        }
+    }
+    match &f.spread {
+        Some(s) => println!(
+            "  pool         {} holds: rotor {:.0} +/- {:.0} q016, se {:.2} C at the {:.0} counts \
+             ceiling against the {:.2} C asked, {}",
+            s.n,
+            s.k_mean * 65536.0,
+            s.k_sd * 65536.0,
+            s.se_c_at_ceiling,
+            rule.ceiling_counts,
+            rule.within_c,
+            match s.split_c {
+                Some(c) => format!("the high stop {c:+.2} C over the low"),
+                None => "one stop held".to_string(),
+            }
+        ),
+        None => println!(
+            "  pool         {} accepted, the spread needs {}",
+            f.singles.len(),
+            thermal::SPREAD_MIN_HOLDS
+        ),
+    }
+    if let Some(why) = &f.pool_failed {
+        println!(
+            "  pool         the pool of {} fails: {why}; the pool of {} before it stands",
+            f.singles.len(),
+            f.pooled.holds.len()
+        );
+    }
+    println!("  {}", decision_line(f, rule.within_c));
+    report_nodes(&f.pooled, a, "body pinned");
+    match &f.cross_check {
+        Some(x) => println!(
+            "  cross-check  both gains free over the accepted holds: rotor {} q016 on tau {} s, \
+             body {} q016 on tau {} s, beside the pinned body {} q016 on tau {} s: reported, not \
+             written",
+            x.rotor.rise_q016.raw,
+            x.rotor.tau_s,
+            x.body.rise_q016.raw,
+            x.body.tau_s,
+            f.pooled.body.rise_q016.raw,
+            f.pooled.body.tau_s
+        ),
+        None => println!(
+            "  cross-check  both gains free over the accepted holds declined: reported, not \
+             written"
+        ),
+    }
+}
+
+/// Whether the session's pool decided, and on what.
+fn decision_line(f: &SessionFit, within_c: f64) -> String {
+    let n = f.singles.len() + f.dropped.len();
+    match (f.decided, f.spread.as_ref().map(|s| s.se_c_at_ceiling)) {
+        (true, Some(se)) => {
+            format!(
+                "decided: {n} holds reached +/-{se:.2} C at the ceiling, inside the {within_c:.2} C asked"
+            )
+        }
+        (true, None) => format!("decided: {n} holds"),
+        (false, Some(se)) => match &f.pool_failed {
+            Some(why) => format!(
+                "undecided after {n} holds: +/-{se:.2} C at the ceiling, the pool of {} failing: \
+                 {why}; nothing written",
+                f.singles.len()
+            ),
+            None => format!(
+                "undecided after {n} holds: +/-{se:.2} C at the ceiling, over the {within_c:.2} C \
+                 asked; nothing written"
+            ),
+        },
+        (false, None) => format!(
+            "undecided after {n} holds: {} accepted, under the {} the spread needs; nothing \
+             written",
+            f.singles.len(),
+            thermal::SPREAD_MIN_HOLDS
+        ),
+    }
 }
 
 fn run_rl(
@@ -1954,6 +2351,7 @@ fn drive_stages(
         ladder: None,
         inertia: None,
         thermal: None,
+        session: None,
         declined: None,
         runway: None,
         climbs: Vec::new(),
@@ -2156,6 +2554,8 @@ struct Recorded {
     inertia: Option<InertiaResult>,
     /// The thermal hold's rise and its marks.
     thermal: Option<ThermalRead>,
+    /// The short-hold session's fit and its marks.
+    session: Option<SessionRead>,
     /// Why a stage gave the fit nothing, in plain words.
     declined: Option<String>,
     /// What the ladder measured: inertia runs inside the same runway.
@@ -2344,6 +2744,34 @@ impl Recorded {
                     guard_c: d.derate_start_cc as f64 / 100.0,
                     ..cli.hold
                 };
+                if let Some(short) = &cli.short {
+                    println!(
+                        "[thermal] seek a stop at {}, hold at {} (its stall a fifth under the \
+                         limit and the gear class's hold current) for {} s, torque on \
+                         throughout, then {} s torque off and the other stop; the body pinned at \
+                         th_rise2_q016 {} on thermal_tau2_s {} s, the copper guarded at {:.0} C \
+                         and the ceiling at {} counts; pos guard off, stall permit held",
+                        pct(*seek),
+                        pct(*hold),
+                        base.hold_ms / 1000,
+                        short.rest_ms / 1000,
+                        short.body.rise_q016.raw,
+                        short.body.tau_s,
+                        base.guard_c,
+                        base.cap_counts
+                    );
+                    let cfg =
+                        session_cfg(short, d, order::anchor_cfg(*seek, *hold, *floor_q15, base));
+                    match run_session(cli, c, id, out, cfg)? {
+                        Ok(s) => self.session = Some(s),
+                        Err(why) => {
+                            println!("  the session declined: {why}");
+                            self.declined.get_or_insert(why);
+                            return Ok(Ended::Declined);
+                        }
+                    }
+                    return Ok(Ended::Done);
+                }
                 println!(
                     "[thermal] seek the low stop at {}, hold at {} (its stall a fifth under the \
                      limit and the gear class's hold current) for {} s, torque on throughout: \
@@ -2800,6 +3228,10 @@ fn report_params(path: &Path) {
 /// run's params.json beside the sense block (the run itself leaves sense
 /// alone when the hold was refused, and `ident write` needs gains).
 fn fit_thermal_dir(dir: &Path, mut p: ParamsFile, sc: &Scales) -> Result<()> {
+    if RecordedSession::is_one(dir)? {
+        let rec = RecordedSession::load(dir)?;
+        return fit_sessions(&[rec], p, sc, &dir.join("params.json"));
+    }
     let h = RecordedHold::load(dir)?;
     let f = thermal::fit_two_node_pooled(&[h.hold()], sc.v_term_per_count, sc.amps_per_count)
         .map_err(|why| anyhow::anyhow!("the hold's refit declined: {why}"))?;
@@ -2840,6 +3272,34 @@ fn fit_thermal_dirs(cli: &Ctx, dirs: &[PathBuf]) -> Result<()> {
             );
         }
     }
+    let sessions = dirs
+        .iter()
+        .map(|dir| RecordedSession::is_one(dir))
+        .collect::<Result<Vec<bool>>>()?;
+    if let Some(session) = sessions.iter().position(|s| *s) {
+        if let Some(plain) = sessions.iter().position(|s| !*s) {
+            bail!(
+                "`ident fit` pools sessions with sessions alone: {} is a plain hold beside the \
+                 session {}",
+                dirs[plain].display(),
+                dirs[session].display()
+            );
+        }
+        let recs = dirs
+            .iter()
+            .map(|dir| RecordedSession::load(dir))
+            .collect::<Result<Vec<_>>>()?;
+        let out = csvio::OutDir::create(&cli.out)?;
+        return fit_sessions(
+            &recs,
+            ParamsFile {
+                sense: Some(sense),
+                ..Default::default()
+            },
+            &sc,
+            &out.0.join("params.json"),
+        );
+    }
     let recorded = dirs
         .iter()
         .map(|dir| RecordedHold::load(dir))
@@ -2863,6 +3323,165 @@ fn fit_thermal_dirs(cli: &Ctx, dirs: &[PathBuf]) -> Result<()> {
     }
     .save(&path)?;
     report_params(&path);
+    Ok(())
+}
+
+/// A short-hold session read back off its directory: its marks and the
+/// one record every hold sits in.
+struct RecordedSession {
+    dir: PathBuf,
+    marks: ThermalJson,
+    windows: Vec<ThermWindow>,
+    polls: Vec<HoldPoll>,
+}
+
+impl RecordedSession {
+    /// Whether `dir`'s thermal.json is a session's: it carries holds.
+    fn is_one(dir: &Path) -> Result<bool> {
+        Ok(!ThermalJson::load(&dir.join("thermal.json"))?
+            .holds
+            .is_empty())
+    }
+
+    fn load(dir: &Path) -> Result<Self> {
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            marks: ThermalJson::load(&dir.join("thermal.json"))?,
+            windows: csvio::read_anchor_samples(dir)?,
+            polls: csvio::read_anchor_polls(dir)?,
+        })
+    }
+
+    /// The hold at `m` over the session's record.
+    fn hold(&self, m: &HoldMarks) -> Hold<'_> {
+        Hold {
+            polls: &self.polls,
+            windows: &self.windows,
+            t0_ms: m.t0_ms,
+            end_ms: m.end_ms,
+            seat: m.hold_seat,
+        }
+    }
+}
+
+/// `--short`'s session refitted from its record(s): every hold that seated
+/// fitted alone with the recorded body pinned, the accepted ones pooled in
+/// order as the live run pooled them, the last pool that stood kept, the
+/// spread and the decision on the recorded rule. Holds are numbered as
+/// recorded, so a live hold that never seated is not counted here.
+fn refit_session(recs: &[RecordedSession], sc: &Scales) -> Result<(SessionFit, SessionJson)> {
+    let first = recs.first().context("no session to fit")?;
+    let body = first.marks.body.with_context(|| {
+        format!(
+            "{}: thermal.json carries a session's holds but no body node",
+            first.dir.display()
+        )
+    })?;
+    let rule = first.marks.session.with_context(|| {
+        format!(
+            "{}: thermal.json carries a session's holds but not the pool's rule",
+            first.dir.display()
+        )
+    })?;
+    for r in &recs[1..] {
+        if r.marks.body != Some(body) {
+            bail!(
+                "the sessions pinned different body nodes: {} against {}",
+                r.dir.display(),
+                first.dir.display()
+            );
+        }
+    }
+    let body = NodeFit::pinned(body.rise_q016, body.tau_s);
+    let (v, a) = (sc.v_term_per_count, sc.amps_per_count);
+    let mut marks = Vec::new();
+    let mut accepted = Vec::new();
+    let mut singles = Vec::new();
+    let mut dirs = Vec::new();
+    let mut holds: Vec<Hold<'_>> = Vec::new();
+    let mut dropped = Vec::new();
+    let mut pooled = None;
+    let mut pool_failed = None;
+    for r in recs {
+        for mj in &r.marks.holds {
+            let m: HoldMarks = (*mj).into();
+            marks.push(m);
+            let n = marks.len();
+            match thermal::fit_rotor_pinned(&[r.hold(&m)], &body, v, a) {
+                Ok(single) => {
+                    accepted.push(m);
+                    singles.push(single);
+                    dirs.push(m.dir);
+                    holds.push(r.hold(&m));
+                    match thermal::fit_rotor_pinned(&holds, &body, v, a) {
+                        Ok(p) => {
+                            pooled = Some(p);
+                            pool_failed = None;
+                        }
+                        Err(why) => pool_failed = Some(why),
+                    }
+                }
+                Err(why) => dropped.push((n, why)),
+            }
+        }
+    }
+    if accepted.is_empty() {
+        let why: Vec<String> = dropped
+            .iter()
+            .map(|(n, why)| format!("hold {n}: {why}"))
+            .collect();
+        bail!("no hold was accepted: {}", why.join("; "));
+    }
+    let pooled = pooled.ok_or_else(|| {
+        anyhow::anyhow!(
+            "the pooled refit declined: {}",
+            pool_failed.clone().unwrap_or_default()
+        )
+    })?;
+    let spread = thermal::pool_spread(&singles, rule.ceiling_counts, &dirs);
+    let decided = accepted.len() >= thermal::SPREAD_MIN_HOLDS
+        && pool_failed.is_none()
+        && spread
+            .as_ref()
+            .is_some_and(|s| s.se_c_at_ceiling <= rule.within_c);
+    let cross_check = thermal::fit_two_node_pooled(&holds, v, a).ok();
+    Ok((
+        SessionFit {
+            pooled,
+            pool_failed,
+            singles,
+            accepted,
+            spread,
+            marks,
+            dropped,
+            decided,
+            cross_check,
+        },
+        rule,
+    ))
+}
+
+/// `ident fit` on short-hold sessions: refitted ([`refit_session`]),
+/// reported as the run reported them, the rotor's fields into `path`
+/// beside `p`'s sense block when the pool decided, none otherwise.
+fn fit_sessions(
+    recs: &[RecordedSession],
+    mut p: ParamsFile,
+    sc: &Scales,
+    path: &Path,
+) -> Result<()> {
+    let (f, rule) = refit_session(recs, sc)?;
+    report_short(&f, rule, sc.amps_per_count);
+    p.gains = if f.decided {
+        GainJson::rotor(&f.pooled)
+    } else {
+        Vec::new()
+    };
+    p.save(path)?;
+    if !f.decided {
+        bail!("{}", decision_line(&f, rule.within_c));
+    }
+    report_params(path);
     Ok(())
 }
 
@@ -2952,6 +3571,23 @@ mod tests {
             lut: None,
             drive: None,
             hold: AnchorCfg::default(),
+            short: None,
+        }
+    }
+
+    /// The sense block the thermal fixtures are read on.
+    fn sense() -> SenseJson {
+        SenseJson {
+            shunt_r_mohm: 60,
+            gain_milli: 15_000,
+            vmotor_div_top: 6_800,
+            vmotor_div_bot: 3_300,
+            tick_hz: 20_100,
+            vdd_mv: 3_300,
+            vbus_div_top_ohm: 15_000,
+            vbus_div_bot_ohm: 10_000,
+            vmotor_bias_top_ohm: 0,
+            vmotor_bias_bot_ohm: 0,
         }
     }
 
@@ -2971,18 +3607,7 @@ mod tests {
         pump(&mut exp, &mut servo, 2_000_000);
         assert_eq!(exp.abort(), None);
         let hold = exp.into_inner().into_inner();
-        let sense = SenseJson {
-            shunt_r_mohm: 60,
-            gain_milli: 15_000,
-            vmotor_div_top: 6_800,
-            vmotor_div_bot: 3_300,
-            tick_hz: 20_100,
-            vdd_mv: 3_300,
-            vbus_div_top_ohm: 15_000,
-            vbus_div_bot_ohm: 10_000,
-            vmotor_bias_top_ohm: 0,
-            vmotor_bias_bot_ohm: 0,
-        };
+        let sense = sense();
         let sc = sense.scales().unwrap();
         let live = hold.fit(sc.v_term_per_count, sc.amps_per_count).unwrap();
 
@@ -2995,6 +3620,9 @@ mod tests {
             hold_seat: hold.hold_seat(),
             hold_duty_q15: cfg.hold_duty_q15,
             r_stored_ohm: Some(live.holds[0].r_ref_ohm),
+            holds: Vec::new(),
+            body: None,
+            session: None,
         }
         .save(&dir.join("thermal.json"))
         .unwrap();
@@ -3050,6 +3678,9 @@ mod tests {
             hold_seat: hold.hold_seat(),
             hold_duty_q15: cfg.hold_duty_q15,
             r_stored_ohm: Some(live.holds[0].r_ref_ohm),
+            holds: Vec::new(),
+            body: None,
+            session: None,
         };
 
         let back = ThermalJson::load(&dir.join("thermal.json")).unwrap();
@@ -3116,6 +3747,15 @@ mod tests {
                 ("thermal_tau2_s", 0)
             ],
             "a winding that does not warm fits no body gain: {live:?}"
+        );
+        let rotor = GainJson::rotor(&live);
+        let named: Vec<(&str, u16)> = rotor.iter().map(|g| (g.name.as_str(), g.raw)).collect();
+        assert_eq!(
+            named,
+            [
+                ("th_rise_q016", live.rotor.rise_q016.raw),
+                ("thermal_tau_s", live.rotor.tau_s)
+            ]
         );
         assert!(
             ParamsFile::load(&dir.join("params.json"))
@@ -3239,6 +3879,339 @@ mod tests {
         flat.windows
             .truncate(flat.windows.partition_point(|x| x.w.t_ms < step_ms));
         assert_eq!(flat.hold().end_ms, f64::INFINITY);
+    }
+
+    /// `--short` and its flags parse to the session's defaults; `--hold-s`
+    /// defaults by the run and is checked against its floor in code: 90 s
+    /// for a short hold, the fit's bins past its blank, 480 s without.
+    #[test]
+    fn the_short_flag_plans_the_session() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Osc {
+            #[command(flatten)]
+            args: Args,
+        }
+        let thermal = |argv: &[&str]| match Osc::try_parse_from(argv).unwrap().args.cmd {
+            Cmd::Thermal {
+                hold_s,
+                save,
+                short,
+                within_c,
+                holds_max,
+                rest_s,
+            } => (hold_s, save, short, within_c, holds_max, rest_s),
+            other => panic!("{other:?}"),
+        };
+        let (hold_s, save, short, within_c, holds_max, rest_s) = thermal(&["osc", "thermal"]);
+        assert_eq!(
+            (hold_s, save, short, within_c, holds_max, rest_s),
+            (None, false, false, 2.0, 8, 120)
+        );
+        assert_eq!(hold_s_of(hold_s, short).unwrap(), 960);
+        assert_eq!(
+            thermal_cfg(hold_s_of(hold_s, short).unwrap()).hold_ms,
+            960_000
+        );
+
+        let (hold_s, _, short, within_c, holds_max, rest_s) =
+            thermal(&["osc", "thermal", "--short"]);
+        assert!(short);
+        assert_eq!((within_c, holds_max, rest_s), (2.0, 8, 120));
+        assert_eq!(hold_s_of(hold_s, short).unwrap(), 120);
+
+        let (hold_s, _, short, within_c, holds_max, rest_s) = thermal(&[
+            "osc",
+            "thermal",
+            "--short",
+            "--hold-s",
+            "90",
+            "--within-c",
+            "1.5",
+            "--holds-max",
+            "4",
+            "--rest-s",
+            "60",
+        ]);
+        assert_eq!(hold_s_of(hold_s, short).unwrap(), 90);
+        assert_eq!((within_c, holds_max, rest_s), (1.5, 4, 60));
+
+        assert_eq!(SHORT_HOLD_MIN_S, 90);
+        let why = hold_s_of(Some(89), true).unwrap_err().to_string();
+        assert!(
+            why.starts_with("--hold-s 89 with --short: a short hold takes at least 90 s")
+                && why.contains("30 one-second bins past the 60 s"),
+            "{why}"
+        );
+        let why = hold_s_of(Some(479), false).unwrap_err().to_string();
+        assert!(
+            why.starts_with("--hold-s 479: the hold takes at least 480 s"),
+            "{why}"
+        );
+        assert_eq!(hold_s_of(Some(480), false).unwrap(), 480);
+        assert_eq!(hold_s_of(Some(480), true).unwrap(), 480);
+    }
+
+    /// A servo whose body node reads 0 refuses the short run before
+    /// anything drives, both fields named; with both written the node is
+    /// the one the fit pins.
+    #[test]
+    fn a_servo_without_a_body_node_refuses_the_short_run() {
+        use crate::rig::servo::bench::{set, table};
+
+        let (mut c, id) = table(1961);
+        let why = body_node(&mut c, id).unwrap_err().to_string();
+        assert_eq!(
+            why,
+            "this servo carries no body node (th_rise2_q016 0, thermal_tau2_s 0): the long hold \
+             identifies it first (`osc ident thermal` without --short)"
+        );
+        set(&mut c, id, calib::TH_RISE2_Q016, 777);
+        let why = body_node(&mut c, id).unwrap_err().to_string();
+        assert!(
+            why.contains("(th_rise2_q016 777, thermal_tau2_s 0)"),
+            "{why}"
+        );
+        set(&mut c, id, config::THERMAL_TAU2_S, 262);
+        let body = body_node(&mut c, id).unwrap();
+        assert_eq!(
+            (body.rise_q016.raw, body.tau_s, body.shift, body.decided),
+            (777, 262, 14, true)
+        );
+        assert!((body.k - 777.0 / 65536.0).abs() < 1e-12, "{body:?}");
+    }
+
+    /// A short-hold session as `osc ident thermal --short` records one:
+    /// three holds on the fake warming by a planted rotor and body gain,
+    /// the body pinned, into anchor.csv, anchor_snapshots.csv, thermal.json
+    /// with the holds, the body and the pool's rule, and a params.json with
+    /// the sense block alone. The session, and its config.
+    fn record_session_on_the_fake(dir: &Path) -> (ShortHolds, SessionCfg) {
+        use osc_ident::exp::testkit::{FakeHeat, FakeServo, pump, rig};
+
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let out = csvio::OutDir(dir.to_path_buf());
+        let sc = sense().scales().unwrap();
+        let mut servo = FakeServo::new(1.2);
+        servo.current_limit = Some(280);
+        servo.heat = Some(FakeHeat::new([719, 777], [33, 262]));
+        servo.i_dither = true;
+        let cfg = SessionCfg {
+            anchor: AnchorCfg {
+                hold_ms: 120_000,
+                cap_counts: 280,
+                ..AnchorCfg::default()
+            },
+            body: NodeFit::pinned(777, 262),
+            v_per_count: sc.v_term_per_count,
+            a_per_count: sc.amps_per_count,
+            ceiling_counts: 280.0,
+            within_c: 1.0,
+            holds_min: thermal::SPREAD_MIN_HOLDS,
+            holds_max: 6,
+            rest_ms: 10_000,
+            rest_poll_ms: SESSION_REST_POLL_MS,
+        };
+        let params = rig().without_pos_guard();
+        let mut exp = Guarded::new(
+            Permitted::new(ShortHolds::new(cfg.clone(), &params)),
+            params,
+        );
+        pump(&mut exp, &mut servo, 4_000_000);
+        assert_eq!(exp.abort(), None);
+        let holds = exp.into_inner().into_inner();
+        record_session(&out, &holds, &cfg, None)
+            .unwrap()
+            .expect("a hold seated");
+        write_polls(&out, holds.polls());
+        save_params(dir, sense(), Vec::new()).unwrap();
+        (holds, cfg)
+    }
+
+    /// A session as it lands on disk: thermal.json carries every hold, the
+    /// pinned body and the pool's rule, its top-level fields the first
+    /// hold's. Read back, the session refits to the pooled rotor and the
+    /// decision the run reached live, `ident fit` leaves the rotor's two
+    /// fields in params.json, two session directories pool, and a plain
+    /// hold beside a session is refused, named.
+    #[test]
+    fn a_recorded_session_refits_offline_as_it_fitted_live() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("ident-session-{pid}"));
+        let (holds, cfg) = record_session_on_the_fake(&dir);
+        let sc = sense().scales().unwrap();
+        let live = holds.result().expect("a session fit");
+        assert!(live.decided, "{:?}", holds.verdict());
+        assert_eq!(live.singles.len(), 3);
+        assert!(live.dropped.is_empty(), "{:?}", live.dropped);
+
+        let back = ThermalJson::load(&dir.join("thermal.json")).unwrap();
+        let marks: Vec<HoldMarks> = back.holds.iter().map(|m| (*m).into()).collect();
+        assert_eq!(marks, holds.marks());
+        assert_eq!(marks.iter().map(|m| m.dir).collect::<Vec<_>>(), [-1, 1, -1]);
+        assert_eq!(
+            back.body,
+            Some(BodyJson {
+                rise_q016: 777,
+                tau_s: 262
+            })
+        );
+        assert_eq!(
+            back.session,
+            Some(SessionJson {
+                within_c: 1.0,
+                ceiling_counts: 280.0
+            })
+        );
+        let first = marks[0];
+        assert_eq!(
+            (
+                back.t0_ms,
+                back.end_ms,
+                back.seat,
+                back.hold_seat,
+                back.hold_duty_q15
+            ),
+            (
+                first.t0_ms,
+                first.end_ms,
+                Some(first.seat),
+                Some(first.hold_seat),
+                cfg.anchor.hold_duty_q15
+            )
+        );
+
+        let rec = RecordedSession::load(&dir).unwrap();
+        let (refit, rule) = refit_session(&[rec], &sc).unwrap();
+        assert_eq!(Some(rule), back.session);
+        assert_eq!(refit.decided, live.decided);
+        assert_eq!(refit.singles.len(), 3);
+        assert!(refit.dropped.is_empty(), "{:?}", refit.dropped);
+        assert_eq!(refit.accepted, live.accepted);
+        assert_eq!(refit.marks, live.marks);
+        assert_eq!(refit.pooled.body, live.pooled.body);
+        assert_eq!(
+            (refit.pooled.rotor.rise_q016.raw, refit.pooled.rotor.tau_s),
+            (live.pooled.rotor.rise_q016.raw, live.pooled.rotor.tau_s)
+        );
+        assert!(
+            (refit.pooled.rotor.k - live.pooled.rotor.k).abs() < 1e-6,
+            "{:?} {:?}",
+            refit.pooled.rotor,
+            live.pooled.rotor
+        );
+        let (rs, ls) = (
+            refit.spread.as_ref().unwrap(),
+            live.spread.as_ref().unwrap(),
+        );
+        assert_eq!(rs.n, ls.n);
+        assert!(
+            (rs.se_c_at_ceiling - ls.se_c_at_ceiling).abs() < 1e-3,
+            "{rs:?} {ls:?}"
+        );
+        assert_eq!(refit.pool_failed, None);
+        assert!(refit.cross_check.is_some());
+
+        assert!(
+            ParamsFile::load(&dir.join("params.json"))
+                .unwrap()
+                .gains
+                .is_empty()
+        );
+        fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        assert!(p.sense.is_some());
+        let named: Vec<(&str, u16)> = p.gains.iter().map(|g| (g.name.as_str(), g.raw)).collect();
+        assert_eq!(
+            named,
+            [
+                ("th_rise_q016", live.pooled.rotor.rise_q016.raw),
+                ("thermal_tau_s", live.pooled.rotor.tau_s)
+            ]
+        );
+
+        let dir_b = std::env::temp_dir().join(format!("ident-session-b-{pid}"));
+        let _ = std::fs::remove_dir_all(&dir_b);
+        std::fs::create_dir_all(&dir_b).unwrap();
+        for name in [
+            "anchor.csv",
+            "anchor_snapshots.csv",
+            "thermal.json",
+            "params.json",
+        ] {
+            std::fs::copy(dir.join(name), dir_b.join(name)).unwrap();
+        }
+        let out = std::env::temp_dir().join(format!("ident-session-out-{pid}"));
+        let _ = std::fs::remove_dir_all(&out);
+        fit_thermal_dirs(&ctx(out.clone()), &[dir.clone(), dir_b.clone()]).unwrap();
+        let written: Vec<PathBuf> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().path().join("params.json"))
+            .collect();
+        assert_eq!(written.len(), 1, "{written:?}");
+        let p = ParamsFile::load(&written[0]).unwrap();
+        assert_eq!(
+            p.gains.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(),
+            ["th_rise_q016", "thermal_tau_s"]
+        );
+        let recs = [
+            RecordedSession::load(&dir).unwrap(),
+            RecordedSession::load(&dir_b).unwrap(),
+        ];
+        let (six, _) = refit_session(&recs, &sc).unwrap();
+        assert_eq!((six.singles.len(), six.pooled.holds.len()), (6, 6));
+        assert!(six.decided, "{:?}", six.spread);
+
+        let plain = std::env::temp_dir().join(format!("ident-session-plain-{pid}"));
+        record_hold(&plain, &hold_cfg());
+        let why = fit_thermal_dirs(&ctx(out), &[dir, plain.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            why.contains(&plain.display().to_string())
+                && why.contains("is a plain hold beside the session"),
+            "{why}"
+        );
+    }
+
+    /// `--save` on a short session writes the rotor's gain and octave
+    /// alone: the two fields, and a write of them on a servo carrying a
+    /// body node leaves th_rise2_q016 and thermal_tau2_s as they were.
+    #[test]
+    fn the_short_save_writes_the_rotor_alone() {
+        use crate::rig::servo::bench::{set, table};
+
+        let (mut c, id) = table(1961);
+        set(&mut c, id, calib::TH_RISE2_Q016, 777);
+        set(&mut c, id, config::THERMAL_TAU2_S, 262);
+        let fit = TwoNodeFit {
+            rotor: NodeFit::pinned(719, 33),
+            body: body_node(&mut c, id).unwrap(),
+            residual_sd_c: 0.0,
+            bins: 0,
+            passes: 0,
+            holds: Vec::new(),
+        };
+        let fields = GainJson::rotor(&fit);
+        let named: Vec<(&str, u16)> = fields.iter().map(|g| (g.name.as_str(), g.raw)).collect();
+        assert_eq!(named, [("th_rise_q016", 719), ("thermal_tau_s", 33)]);
+        assert_eq!(GainJson::two_node(&fit).len(), 4);
+        let read = |c: &mut Client<_>| {
+            [
+                calib::TH_RISE_Q016,
+                config::THERMAL_TAU_S,
+                calib::TH_RISE2_Q016,
+                config::THERMAL_TAU2_S,
+            ]
+            .map(|reg| snapshot::read_u16(c, id, reg).unwrap())
+        };
+        let was = read(&mut c);
+        assert_eq!(&was[2..], [777, 262]);
+        assert_ne!(&was[..2], [719, 33]);
+        snapshot::write_gains(&mut c, id, &fields).unwrap();
+        assert_eq!(read(&mut c), [719, 33, 777, 262]);
     }
 
     /// Two recorded holds pool in `ident fit`: one params.json with the

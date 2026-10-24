@@ -76,6 +76,8 @@ pub struct SessionFit {
     pub pool_failed: Option<String>,
     /// Each accepted hold fitted alone, in order.
     pub singles: Vec<TwoNodeFit>,
+    /// The accepted holds' marks, one per single, in order.
+    pub accepted: Vec<HoldMarks>,
     /// The singles' spread; None under [`thermal::SPREAD_MIN_HOLDS`]
     /// accepted holds.
     pub spread: Option<PoolSpread>,
@@ -202,6 +204,7 @@ impl ShortHolds {
             pooled,
             pool_failed: self.pool_failed.clone(),
             singles: self.singles.clone(),
+            accepted: self.accepted.clone(),
             spread: self.spread.clone(),
             marks: self.marks.clone(),
             dropped: self.dropped.clone(),
@@ -429,8 +432,6 @@ mod tests {
     use super::super::testkit::{FakeHeat, FakeServo, pump, rig};
     use super::super::{Guarded, Permitted, seek};
     use super::*;
-    use crate::gains::enc;
-    use osc_servo_core::kernel::phases::loops::limits::tau_shift;
 
     /// Board D's gains, q016, rotor on 33 s and body on 262 s.
     const Q: [u16; 2] = [719, 777];
@@ -452,15 +453,7 @@ mod tests {
 
     /// The body node the long hold wrote, as the short holds take it.
     fn pinned_body(raw: u16) -> NodeFit {
-        let k = raw as f64 / 65536.0;
-        NodeFit {
-            tau_s: TAUS[1],
-            shift: tau_shift(TAUS[1]),
-            k,
-            rise_q016: enc(k, 65536.0),
-            sse_ratio: 1.0,
-            decided: true,
-        }
+        NodeFit::pinned(raw, TAUS[1])
     }
 
     /// A winding warming by board D's gains under the ceiling.
@@ -569,6 +562,7 @@ mod tests {
         );
         assert_eq!(f.pooled.body, pinned_body(Q[1]));
         assert_eq!(f.singles.len(), 3);
+        assert_eq!(f.accepted, f.marks);
         for s in &f.singles {
             let off = (s.rotor.rise_q016.raw as f64 / planted - 1.0) * 100.0;
             assert!(
@@ -685,6 +679,8 @@ mod tests {
         assert!(f.decided, "{:?}", exp.verdict());
         assert_eq!(f.singles.len(), 3);
         assert_eq!(f.marks.len(), 4);
+        assert_eq!(f.accepted.len(), 3);
+        assert!(f.accepted.iter().all(|m| f.marks.contains(m)));
         assert_eq!(f.dropped.len(), 1, "{:?}", f.dropped);
         let (n, why) = &f.dropped[0];
         assert_eq!(*n, 2);

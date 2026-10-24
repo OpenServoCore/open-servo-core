@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::rig::plant::Lut;
 use anyhow::{Context, Result};
+use osc_ident::exp::anchor::HoldMarks;
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::held::HeldRun;
@@ -890,6 +891,15 @@ impl GainJson {
         v
     }
 
+    /// The rotor node alone from a fit whose body is pinned
+    /// ([`osc_ident::thermal::fit_rotor_pinned`]): its gain and its octave,
+    /// the body fields left as the servo carries them.
+    pub fn rotor(f: &TwoNodeFit) -> Vec<Self> {
+        let mut v = Self::of(&[("th_rise_q016", f.rotor.rise_q016)]);
+        v.push(Self::tau("thermal_tau_s", f.rotor.tau_s));
+        v
+    }
+
     fn of(fields: &[(&str, Encoded)]) -> Vec<Self> {
         fields
             .iter()
@@ -907,8 +917,11 @@ impl GainJson {
 /// thermal.json: where `osc ident thermal`'s hold starts, its last poll,
 /// the seek's and the hold's seats, the hold's duty, and the winding the
 /// servo carried into the run, ohms, beside anchor.csv for `ident fit`.
-/// Times are the host's ms, as anchor.csv's.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+/// Times are the host's ms, as anchor.csv's. A short-hold session
+/// (`--short`) records every hold that seated in `holds`, the body node it
+/// pinned in `body` and what its pool decided on in `session`; the
+/// top-level fields then describe its first hold.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ThermalJson {
     pub t0_ms: f64,
     pub end_ms: f64,
@@ -916,6 +929,64 @@ pub struct ThermalJson {
     pub hold_seat: Option<u16>,
     pub hold_duty_q15: i16,
     pub r_stored_ohm: Option<f64>,
+    #[serde(default)]
+    pub holds: Vec<HoldMarksJson>,
+    #[serde(default)]
+    pub body: Option<BodyJson>,
+    #[serde(default)]
+    pub session: Option<SessionJson>,
+}
+
+/// One hold of a session as [`HoldMarks`] places it in the record: its
+/// start, its last poll, the seek's and the hold's seats and the stop it
+/// pressed (-1 low, +1 high).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct HoldMarksJson {
+    pub t0_ms: f64,
+    pub end_ms: f64,
+    pub seat: u16,
+    pub hold_seat: u16,
+    pub dir: i8,
+}
+
+impl From<HoldMarks> for HoldMarksJson {
+    fn from(m: HoldMarks) -> Self {
+        Self {
+            t0_ms: m.t0_ms,
+            end_ms: m.end_ms,
+            seat: m.seat,
+            hold_seat: m.hold_seat,
+            dir: m.dir,
+        }
+    }
+}
+
+impl From<HoldMarksJson> for HoldMarks {
+    fn from(m: HoldMarksJson) -> Self {
+        Self {
+            t0_ms: m.t0_ms,
+            end_ms: m.end_ms,
+            seat: m.seat,
+            hold_seat: m.hold_seat,
+            dir: m.dir,
+        }
+    }
+}
+
+/// The body node a session pinned, as the servo carried it: `th_rise2_q016`
+/// and `thermal_tau2_s`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct BodyJson {
+    pub rise_q016: u16,
+    pub tau_s: u16,
+}
+
+/// What a session's pool decided on: the standard error, C, the pooled
+/// rotor had to reach, at the current ceiling, counts, it was read at.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct SessionJson {
+    pub within_c: f64,
+    pub ceiling_counts: f64,
 }
 
 impl ThermalJson {
