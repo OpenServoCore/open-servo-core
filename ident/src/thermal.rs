@@ -727,12 +727,75 @@ pub struct TwoNodeFit {
 
 impl TwoNodeFit {
     /// The copper's settled rise over the NTC at a held current, C: the
-    /// fixed point of both gains on the warmed square, `G i^2 / (1 - alpha
-    /// G i^2)` with G in C per count squared.
+    /// fixed point of both gains on the warmed square ([`plateau_c`]).
     pub fn plateau_c(&self, i_counts: f64) -> f64 {
-        let g = (self.rotor.k + self.body.k) / 100.0 * i_counts * i_counts;
-        g / (1.0 - COPPER_ALPHA_PER_C * g)
+        plateau_c(self.rotor.k + self.body.k, i_counts)
     }
+}
+
+/// The copper's settled rise over the NTC at a held current, C, of the
+/// gains' sum `g_cc`, centi-C per count squared: the fixed point on the
+/// warmed square, `G i^2 / (1 - alpha G i^2)` with G in C per count
+/// squared.
+fn plateau_c(g_cc: f64, i_counts: f64) -> f64 {
+    let g = g_cc / 100.0 * i_counts * i_counts;
+    g / (1.0 - COPPER_ALPHA_PER_C * g)
+}
+
+/// A pool's spread reads from this many single-hold fits: fewer cannot
+/// tell a seat's share from the fit's own scatter.
+pub const SPREAD_MIN_HOLDS: usize = 3;
+
+/// How far the rotor gains of a pool of pinned single-hold fits spread
+/// ([`pool_spread`]): each hold is one brush seat, so the spread is the
+/// seat's share of the gain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoolSpread {
+    pub n: usize,
+    /// The rotor gains' mean, centi-C per count squared.
+    pub k_mean: f64,
+    /// Their sample sd.
+    pub k_sd: f64,
+    /// The mean's standard error, sd over root n, as degrees at the
+    /// ceiling: the plateau there with the rotor at `k_mean` plus one
+    /// error, less the plateau at `k_mean`, the body as pinned.
+    pub se_c_at_ceiling: f64,
+    /// The high stop's mean plateau at the ceiling less the low stop's,
+    /// C; None until both stops have a hold.
+    pub split_c: Option<f64>,
+}
+
+/// The rotor gains' spread over `singles`, each one hold fitted alone with
+/// the body pinned ([`fit_rotor_pinned`]), as degrees at `ceiling_counts`
+/// on the first single's body; `dirs[i]` is the stop `singles[i]` pressed,
+/// -1 low, +1 high. None under [`SPREAD_MIN_HOLDS`].
+pub fn pool_spread(singles: &[TwoNodeFit], ceiling_counts: f64, dirs: &[i8]) -> Option<PoolSpread> {
+    let n = singles.len();
+    if n < SPREAD_MIN_HOLDS {
+        return None;
+    }
+    let ks: Vec<f64> = singles.iter().map(|f| f.rotor.k).collect();
+    let k_mean = mean(ks.iter().copied())?;
+    let k_sd = sd(&ks);
+    let k_body = singles[0].body.k;
+    let at_ceiling = |k: f64| plateau_c(k + k_body, ceiling_counts);
+    let stop = |sign: i8| {
+        mean(
+            ks.iter()
+                .zip(dirs)
+                .filter(|(_, d)| d.signum() == sign)
+                .map(|(k, _)| *k),
+        )
+    };
+    Some(PoolSpread {
+        n,
+        k_mean,
+        k_sd,
+        se_c_at_ceiling: at_ceiling(k_mean + k_sd / (n as f64).sqrt()) - at_ceiling(k_mean),
+        split_c: stop(1)
+            .zip(stop(-1))
+            .map(|(high, low)| at_ceiling(high) - at_ceiling(low)),
+    })
 }
 
 /// Copper's resistance rise per C, the kernel's `ALPHA_Q26` in physical
@@ -773,15 +836,28 @@ pub fn replay_two(
     out
 }
 
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(a, b)| a * b).sum()
+}
+
+/// Least squares of `y` on one column with the coefficient held at or over
+/// zero; 0 on a column without scatter.
+fn nnls1(x: &[f64], y: &[f64]) -> f64 {
+    let sxx = dot(x, x);
+    if sxx > 0.0 {
+        (dot(x, y) / sxx).max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// Least squares of `y` on two columns with both coefficients held at or
 /// over zero: the free solution when it is non-negative, else the better of
-/// the two one-column solutions with the other at zero. Exact for two
-/// unknowns.
+/// the two one-column solutions ([`nnls1`]) with the other at zero. Exact
+/// for two unknowns.
 fn nnls2(x1: &[f64], x2: &[f64], y: &[f64]) -> [f64; 2] {
-    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
     let (s11, s22, s12) = (dot(x1, x1), dot(x2, x2), dot(x1, x2));
     let (s1y, s2y) = (dot(x1, y), dot(x2, y));
-    let one = |sxx: f64, sxy: f64| if sxx > 0.0 { (sxy / sxx).max(0.0) } else { 0.0 };
     let det = s11 * s22 - s12 * s12;
     if det > 0.0 {
         let k1 = (s22 * s1y - s12 * s2y) / det;
@@ -790,8 +866,8 @@ fn nnls2(x1: &[f64], x2: &[f64], y: &[f64]) -> [f64; 2] {
             return [k1, k2];
         }
     }
-    let a = [one(s11, s1y), 0.0];
-    let b = [0.0, one(s22, s2y)];
+    let a = [nnls1(x1, y), 0.0];
+    let b = [0.0, nnls1(x2, y)];
     let sse = |k: [f64; 2]| {
         x1.iter()
             .zip(x2)
@@ -849,17 +925,25 @@ impl Prepared<'_> {
     /// The first [`FLAT_BLOCK_MS`] of the hold's fitted residual `res`
     /// against the hold's own noise: the block's mean and the bound it
     /// had to sit inside, when it did not. The bound is [`FLAT_SIGMAS`]
-    /// floors, the floor the residual's sd over every fitted bin inflated
-    /// for its lag-1 autocorrelation over the root of the block's bins, or
-    /// [`FLAT_MIN_C`] when that is more.
+    /// floors, the floor the residual's sd over the fitted bins after the
+    /// block inflated for its lag-1 autocorrelation over the root of the
+    /// block's bins, or [`FLAT_MIN_C`] when that is more, and alone when
+    /// under three bins follow. The block is judged against the rest of
+    /// the hold, never against itself: on a short hold an unsettled
+    /// contact is most of the residual's scatter and would pass as noise.
     #[allow(clippy::manual_clamp)]
     fn unflat(&self, res: &[f64]) -> Option<(f64, f64)> {
         let fitted = &res[self.from..];
         let end = self.all[self.from..]
             .partition_point(|b| b.1 < self.t0_ms + self.from_ms + FLAT_BLOCK_MS);
         let m = mean(fitted[..end].iter().copied())?;
-        let rho = lag1(fitted).max(0.0).min(RHO_MAX);
-        let floor = sd(fitted) * ((1.0 + rho) / (1.0 - rho) / end as f64).sqrt();
+        let rest = &fitted[end..];
+        let floor = if rest.len() < 3 {
+            0.0
+        } else {
+            let rho = lag1(rest).max(0.0).min(RHO_MAX);
+            sd(rest) * ((1.0 + rho) / (1.0 - rho) / end as f64).sqrt()
+        };
         let bound = (FLAT_SIGMAS * floor).max(FLAT_MIN_C);
         (m.abs() > bound).then_some((m, bound))
     }
@@ -936,11 +1020,17 @@ struct PairFit {
 /// gives each hold the columns `heat(t) - heat(t_ref)`, the fitted parts
 /// of every hold's columns and y are concatenated and solved once by the
 /// non-negative solve (the gains shared), and the loop closes when both
-/// q016 values hold within [`PASS_SETTLED_Q016`]. Each hold's residual
-/// covers every bin, the SSE the fitted ones.
-fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2]) -> PairFit {
-    let shifts = taus.map(tau_shift);
-    let mut q = [0u16; 2];
+/// q016 values hold within [`PASS_SETTLED_Q016`]. A `pinned` body is
+/// known: the replay runs its shift and gain and the rotor alone is
+/// solved on what it leaves of y. Each hold's residual covers every bin,
+/// the SSE the fitted ones.
+fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2], pinned: Option<&NodeFit>) -> PairFit {
+    let shifts = match pinned {
+        Some(b) => [tau_shift(taus[0]), b.shift],
+        None => taus.map(tau_shift),
+    };
+    let q_body = pinned.map_or(0, |b| b.rise_q016.raw);
+    let mut q = [0u16, q_body];
     let mut passes = 0;
     let (k, res): ([f64; 2], Vec<Vec<f64>>) = loop {
         passes += 1;
@@ -957,7 +1047,14 @@ fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2]) -> PairFit {
             x2.extend_from_slice(&c[1][h.from..]);
             y.extend_from_slice(&h.y[h.from..]);
         }
-        let k = nnls2(&x1, &x2, &y);
+        let k = match pinned {
+            Some(b) => {
+                let kb = b.k / 100.0;
+                let left: Vec<f64> = y.iter().zip(&x2).map(|(y, b)| y - kb * b).collect();
+                [nnls1(&x1, &left), kb]
+            }
+            None => nnls2(&x1, &x2, &y),
+        };
         let res = holds
             .iter()
             .zip(&cols)
@@ -969,7 +1066,10 @@ fn fit_pair(holds: &[Prepared<'_>], taus: [u16; 2]) -> PairFit {
                     .collect()
             })
             .collect();
-        let next = k.map(|k| enc(k * 100.0, 65536.0).raw);
+        let mut next = k.map(|k| enc(k * 100.0, 65536.0).raw);
+        if pinned.is_some() {
+            next[1] = q_body;
+        }
         let settled = next
             .iter()
             .zip(&q)
@@ -1027,14 +1127,19 @@ struct Octave {
     decided: bool,
 }
 
-/// The written pair over the four pair fits: the pair with the least
-/// pooled SSE is read; an octave the SSE ratio leaves undecided
-/// ([`OCTAVE_DECIDES`]) writes the safe one: the faster rotor (the slower
-/// under-reads the first minute), the slowest body a hold of `shortest_s`
-/// covers [`BODY_COVER`] times over (the faster under-reads a long hold,
-/// and a hold that does not cover an octave cannot certify it). The
-/// written pair's place in `fits`, then the rotor and the body.
-fn choose(fits: &[PairFit], shortest_s: f64) -> Result<(usize, Octave, Octave), String> {
+/// The written pair over the pair fits: the pair with the least pooled SSE
+/// is read; an octave the SSE ratio leaves undecided ([`OCTAVE_DECIDES`])
+/// writes the safe one: the faster rotor (the slower under-reads the first
+/// minute), the slowest body a hold of `shortest_s` covers [`BODY_COVER`]
+/// times over (the faster under-reads a long hold, and a hold that does
+/// not cover an octave cannot certify it). A `pinned` body is the octave
+/// given, ratio 1: nothing here decided it. The written pair's place in
+/// `fits`, then the rotor and the body.
+fn choose(
+    fits: &[PairFit],
+    shortest_s: f64,
+    pinned: Option<&NodeFit>,
+) -> Result<(usize, Octave, Octave), String> {
     let sse_of = |taus: [u16; 2]| {
         fits.iter()
             .find(|f| f.taus == taus)
@@ -1055,7 +1160,6 @@ fn choose(fits: &[PairFit], shortest_s: f64) -> Result<(usize, Octave, Octave), 
         }
     };
     let rotor_ratio = ratio([other_of(&ROTOR_TAUS_S, best.taus[0]), best.taus[1]]);
-    let body_ratio = ratio([best.taus[0], other_of(&BODY_TAUS_S, best.taus[1])]);
     let rotor = Octave {
         decided: rotor_ratio >= OCTAVE_DECIDES,
         tau: if rotor_ratio >= OCTAVE_DECIDES {
@@ -1065,19 +1169,29 @@ fn choose(fits: &[PairFit], shortest_s: f64) -> Result<(usize, Octave, Octave), 
         },
         ratio: rotor_ratio,
     };
-    let body = Octave {
-        decided: body_ratio >= OCTAVE_DECIDES,
-        tau: if body_ratio >= OCTAVE_DECIDES {
-            best.taus[1]
-        } else {
-            BODY_TAUS_S
-                .iter()
-                .rev()
-                .copied()
-                .find(|&b| shortest_s >= BODY_COVER * b as f64)
-                .unwrap_or(BODY_TAUS_S[0])
+    let body = match pinned {
+        Some(b) => Octave {
+            tau: b.tau_s,
+            ratio: 1.0,
+            decided: b.decided,
         },
-        ratio: body_ratio,
+        None => {
+            let body_ratio = ratio([best.taus[0], other_of(&BODY_TAUS_S, best.taus[1])]);
+            Octave {
+                decided: body_ratio >= OCTAVE_DECIDES,
+                tau: if body_ratio >= OCTAVE_DECIDES {
+                    best.taus[1]
+                } else {
+                    BODY_TAUS_S
+                        .iter()
+                        .rev()
+                        .copied()
+                        .find(|&b| shortest_s >= BODY_COVER * b as f64)
+                        .unwrap_or(BODY_TAUS_S[0])
+                },
+                ratio: body_ratio,
+            }
+        }
     };
     let written = fits
         .iter()
@@ -1105,6 +1219,33 @@ pub fn fit_two_node_pooled(
     v_per_count: f64,
     a_per_count: f64,
 ) -> Result<TwoNodeFit, String> {
+    fit_pool(holds, None, v_per_count, a_per_count)
+}
+
+/// The rotor's gain and octave from holds too short to see the body, the
+/// body's gain and octave `body` pinned from the servo's long hold: as
+/// [`fit_two_node_pooled`] over the pairs [`ROTOR_TAUS_S`] x the body's
+/// octave, the replay fed the body's gain and the rotor's gain alone
+/// solved on what the body leaves of the copper. The body node written
+/// is `body` as given, its SSE ratio 1.
+pub fn fit_rotor_pinned(
+    holds: &[Hold<'_>],
+    body: &NodeFit,
+    v_per_count: f64,
+    a_per_count: f64,
+) -> Result<TwoNodeFit, String> {
+    fit_pool(holds, Some(body), v_per_count, a_per_count)
+}
+
+/// [`fit_two_node_pooled`] and [`fit_rotor_pinned`] in one body: `pinned`
+/// is the body the pairs and the solve are held to, None for both gains
+/// free.
+fn fit_pool(
+    holds: &[Hold<'_>],
+    pinned: Option<&NodeFit>,
+    v_per_count: f64,
+    a_per_count: f64,
+) -> Result<TwoNodeFit, String> {
     if holds.is_empty() {
         return Err("no hold to fit".into());
     }
@@ -1125,13 +1266,17 @@ pub fn fit_two_node_pooled(
         .iter()
         .map(|h| h.hold_s)
         .fold(f64::INFINITY, f64::min);
+    let bodies: &[u16] = match pinned {
+        Some(b) => std::slice::from_ref(&b.tau_s),
+        None => &BODY_TAUS_S,
+    };
     let (written, rotor, body) = loop {
         let mut fits: Vec<PairFit> = ROTOR_TAUS_S
             .iter()
-            .flat_map(|&r| BODY_TAUS_S.iter().map(move |&b| [r, b]))
-            .map(|taus| fit_pair(&prepared, taus))
+            .flat_map(|&r| bodies.iter().map(move |&b| [r, b]))
+            .map(|taus| fit_pair(&prepared, taus, pinned))
             .collect();
-        let (at, rotor, body) = choose(&fits, shortest_s)?;
+        let (at, rotor, body) = choose(&fits, shortest_s, pinned)?;
         let mut moved = false;
         for (i, h) in prepared.iter_mut().enumerate() {
             let Some((m, bound)) = h.unflat(&fits[at].res[i]) else {
@@ -1181,7 +1326,13 @@ pub fn fit_two_node_pooled(
     };
     Ok(TwoNodeFit {
         rotor: node(0, rotor),
-        body: node(1, body),
+        body: match pinned {
+            Some(b) => NodeFit {
+                sse_ratio: 1.0,
+                ..b.clone()
+            },
+            None => node(1, body),
+        },
         residual_sd_c,
         bins: n,
         passes: written.passes,
@@ -1486,6 +1637,26 @@ mod tests {
             let (v, a) = scales();
             let (polls, windows) = self.build();
             fit_two_node(&polls, &windows, 0.0, f64::INFINITY, SEAT, v, a)
+        }
+
+        fn fit_pinned(&self, body: &NodeFit) -> Result<TwoNodeFit, String> {
+            let (v, a) = scales();
+            let (polls, windows) = self.build();
+            fit_rotor_pinned(&[hold(&polls, &windows)], body, v, a)
+        }
+    }
+
+    /// The body node a long hold wrote at `raw` q016 on 262 s, as the
+    /// short holds take it.
+    fn pinned_body(raw: u16) -> NodeFit {
+        let k = raw as f64 / 65536.0;
+        NodeFit {
+            tau_s: 262,
+            shift: tau_shift(262),
+            k,
+            rise_q016: enc(k, 65536.0),
+            sse_ratio: 1.0,
+            decided: true,
         }
     }
 
@@ -2227,6 +2398,119 @@ mod tests {
         assert!(f.holds[0].bins > f.holds[1].bins, "{f:?}");
     }
 
+    /// A 120 s hold with the body pinned from the long hold reads the
+    /// rotor within 1 % on its own octave, decided, and writes the pin as
+    /// its body.
+    #[test]
+    fn a_short_hold_with_the_body_pinned_reads_the_rotor() {
+        let body = pinned_body(Q_D[1]);
+        let f = Synth::hold(120_000.0).fit_pinned(&body).unwrap();
+        assert!(rotor_near(&f, 1.0), "{f:?}");
+        assert_eq!((f.rotor.tau_s, f.rotor.shift), (33, 11));
+        assert!(f.rotor.decided, "{f:?}");
+        assert_eq!(f.body, body);
+        assert_eq!(f.holds.len(), 1);
+        assert_eq!(f.holds[0].fit_from_ms, FIT_FROM_MS, "{f:?}");
+        assert!(f.residual_sd_c < 0.05, "{f:?}");
+    }
+
+    /// The 1.5 % brush transient settling by 35 s on a 120 s hold under the
+    /// pinned fit: its tail is most of the short hold's residual, and the
+    /// judge still reads the block against the bins after it, moves the
+    /// blank to 40 s and reads the rotor within 1 % from there.
+    #[test]
+    fn a_short_hold_transient_moves_the_blank_under_the_pinned_fit() {
+        let f = Synth {
+            r_of: |t| transient(t, 5_000.0, 35_000.0, 0.015),
+            ..Synth::hold(120_000.0)
+        }
+        .fit_pinned(&pinned_body(Q_D[1]))
+        .unwrap();
+        assert_eq!(
+            f.holds[0].fit_from_ms,
+            FIT_FROM_MS + FLAT_BLOCK_MS,
+            "the block read about +0.50 C against the 0.10 C floor: {f:?}"
+        );
+        assert!(rotor_near(&f, 1.0), "{f:?}");
+        assert!(f.holds[0].first_c > 1.0, "{f:?}");
+    }
+
+    /// The body pinned 20 % high moves the 120 s rotor by the body's share
+    /// of the rise there, under 8 %.
+    #[test]
+    fn a_wrong_body_moves_the_short_rotor_by_its_share() {
+        let high = pinned_body((Q_D[1] as f64 * 1.2).round() as u16);
+        let f = Synth::hold(120_000.0).fit_pinned(&high).unwrap();
+        let moved = (f.rotor.rise_q016.raw as f64 / Q_D[0] as f64 - 1.0) * 100.0;
+        assert!(
+            moved.abs() < 8.0,
+            "the rotor moved {moved:+.1} %, about -6 % on a clean hold: {f:?}"
+        );
+    }
+
+    /// The free fit's unsettled transient under the pinned fit: the blank
+    /// moves out to 40 s there too and the rotor reads within 1 % from it.
+    #[test]
+    fn a_pinned_fit_keeps_the_blank_check() {
+        let f = Synth {
+            r_of: |t| transient(t, 5_000.0, 35_000.0, 0.015),
+            ..Synth::hold(480_000.0)
+        }
+        .fit_pinned(&pinned_body(Q_D[1]))
+        .unwrap();
+        assert_eq!(f.holds[0].fit_from_ms, FIT_FROM_MS + FLAT_BLOCK_MS, "{f:?}");
+        assert!(rotor_near(&f, 1.0), "{f:?}");
+    }
+
+    /// Five 120 s holds at five seats, the seat's drift planted as the
+    /// rotor gain -5, -2.5, 0, +2.5, +5 % about board D's: the pool's
+    /// spread reads the mean and the planted sd back, the mean's error as
+    /// degrees at the ceiling, and no split between the two stops when
+    /// each stop's holds average to the same gain; one stop alone has no
+    /// split, and under three holds no spread.
+    #[test]
+    fn the_pool_spread_reads_the_seats() {
+        let body = pinned_body(Q_D[1]);
+        let qs: [u16; 5] = [683, 701, 719, 737, 755];
+        let singles: Vec<TwoNodeFit> = qs
+            .iter()
+            .map(|&q| {
+                Synth {
+                    q: [q, Q_D[1]],
+                    ..Synth::hold(120_000.0)
+                }
+                .fit_pinned(&body)
+                .unwrap()
+            })
+            .collect();
+        let s = pool_spread(&singles, CEILING, &[-1, 1, -1, 1, -1]).unwrap();
+        assert_eq!(s.n, 5);
+        assert!(
+            (s.k_mean / (Q_D[0] as f64 / 65536.0) - 1.0).abs() < 0.005,
+            "{s:?}"
+        );
+        let planted: Vec<f64> = qs.iter().map(|&q| q as f64 / 65536.0).collect();
+        assert!((s.k_sd / sd(&planted) - 1.0).abs() < 0.2, "{s:?}");
+        let at = |k: f64| {
+            let mut f = singles[0].clone();
+            f.rotor.k = k;
+            f.plateau_c(CEILING)
+        };
+        let se_c = at(s.k_mean + s.k_sd / 5f64.sqrt()) - at(s.k_mean);
+        assert!((s.se_c_at_ceiling - se_c).abs() < 1e-9, "{s:?}");
+        assert!((0.3..0.6).contains(&s.se_c_at_ceiling), "{s:?}");
+        let split = s.split_c.unwrap();
+        assert!(
+            split.abs() < 0.1,
+            "the stops split {split:+.3} C, about 0.000 C on clean holds: {s:?}"
+        );
+        assert_eq!(
+            pool_spread(&singles, CEILING, &[1; 5]).unwrap().split_c,
+            None
+        );
+        assert_eq!(pool_spread(&singles[..2], CEILING, &[-1, 1]), None);
+    }
+
     /// A +0.2 C bump over the hold's first fitted 20 s, the copper the
     /// fit's blank starts on.
     fn bump_c(t: f64) -> f64 {
@@ -2266,7 +2550,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             noisy.holds[0].fit_from_ms, FIT_FROM_MS,
-            "the block read about +0.19 C against a bound of about 0.33 C: {noisy:?}"
+            "the block read about +0.20 C against a bound of about 0.30 C: {noisy:?}"
         );
         assert!(noisy.residual_sd_c > 0.4, "{noisy:?}");
         assert!(rotor_near(&noisy, 5.0), "{noisy:?}");
