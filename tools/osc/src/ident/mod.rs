@@ -1171,8 +1171,17 @@ fn r_ref_over_stored(f: &TwoNodeFit, m: &ThermalJson) -> Option<String> {
     })
 }
 
-/// One heat node's line of the report.
-fn report_node(name: &str, n: &thermal::NodeFit, field: &str, tau_field: &str, a: f64, r: f64) {
+/// One heat node's lines of the report: `tau` is the octave `--save`
+/// writes for it.
+fn report_node(
+    name: &str,
+    n: &thermal::NodeFit,
+    field: &str,
+    tau_field: &str,
+    tau: u16,
+    a: f64,
+    r: f64,
+) {
     println!(
         "  {name:<12} tau {} s (the kernel's 2^{} SLOW periods, {:.1} s){}: k {:.6} centi-C per \
          count^2, {:.1} C/W on R_ref {r:.3} ohm at {a:.5} A/count",
@@ -1199,7 +1208,7 @@ fn report_node(name: &str, n: &thermal::NodeFit, field: &str, tau_field: &str, a
         } else {
             ""
         },
-        if n.rise_q016.raw == 0 { 0 } else { n.tau_s }
+        tau
     );
 }
 
@@ -1237,11 +1246,13 @@ fn report_thermal(f: &TwoNodeFit, m: &ThermalJson, a: f64) {
         ),
         (None, None) => {}
     }
+    let written = GainJson::two_node(f);
     report_node(
         "rotor",
         &f.rotor,
         "th_rise_q016",
         "thermal_tau_s",
+        written[2].raw,
         a,
         f.r_ref_ohm,
     );
@@ -1250,6 +1261,7 @@ fn report_thermal(f: &TwoNodeFit, m: &ThermalJson, a: f64) {
         &f.body,
         "th_rise2_q016",
         "thermal_tau2_s",
+        written[3].raw,
         a,
         f.r_ref_ohm,
     );
