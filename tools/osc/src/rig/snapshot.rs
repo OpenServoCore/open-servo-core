@@ -97,7 +97,7 @@ pub(crate) fn rollback(c: &mut Client<NusbPipe>, id: Id, path: &Path) -> Result<
 }
 
 /// Write the encoded set, read-back verifying each field.
-pub(crate) fn write_gains(c: &mut Client<NusbPipe>, id: Id, gains: &[GainJson]) -> Result<()> {
+pub(crate) fn write_gains<P: Pipe>(c: &mut Client<P>, id: Id, gains: &[GainJson]) -> Result<()> {
     for g in gains {
         let reg =
             reg_by_name(&g.name).ok_or_else(|| anyhow::anyhow!("{}: not a known field", g.name))?;

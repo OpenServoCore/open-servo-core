@@ -1,7 +1,7 @@
-//! The thermal hold: seek the low stop at the plan's seek duty, seat, and
-//! hold there for [`AnchorCfg::hold_ms`] at one duty, torque on and the
-//! rotor never released, whose cold current must sit
-//! [`thermal::HOLD_MARGIN`] under the current ceiling. It polls at a
+//! The thermal hold: seek the stop [`AnchorCfg::dir`] points at, at the
+//! plan's seek duty, seat, and hold there for [`AnchorCfg::hold_ms`] at
+//! one duty, torque on and the rotor never released, whose cold current
+//! must sit [`thermal::HOLD_MARGIN`] under the current ceiling. It polls at a
 //! bounded rate throughout and keeps every poll and every aggregate window,
 //! each judged as it lands ([`ThermWindow`]). Duty x vdiff / i per window
 //! is the winding's own R; [`crate::thermal::fit_two_node`] fits the
@@ -10,15 +10,17 @@
 //! a window reads seated against the hold's own seat
 //! ([`Anchor::hold_seat`]).
 //!
-//! Three watches guard the hold as it runs. A cold current that crowds the
+//! Three watches guard the hold as it runs: the cold current's margin, the
+//! limiter and the thermometer guard. A cold current that crowds the
 //! ceiling refuses it once its current's floor is read
 //! ([`thermal::cold_current`]). A current ceiling under
 //! [`AnchorCfg::cap_counts`] at any poll is the limiter governing, a rail
-//! fold or an NTC fault, and refuses it. A step in R with the pot still is
-//! a brush contact event ([`thermal::contact_events`]) and refuses it. Once
-//! R_ref is read the copper's temperature is watched against
-//! [`AnchorCfg::guard_c`], the servo's own derate start, and reaching it
-//! ends the hold early with what it has ([`Anchor::ended_early`]). Runs with
+//! fold or an NTC fault, and refuses it. Once R_ref is read the copper's
+//! temperature is watched against [`AnchorCfg::guard_c`], the servo's own
+//! derate start, and reaching it ends the hold early with what it has
+//! ([`Anchor::ended_early`]). The brush contact is not watched: it moves R
+//! by percents with the pot still as it settles, and the fit blanks the
+//! hold's first seconds for it ([`thermal::FIT_FROM_MS`]). Runs with
 //! the pos guard off and the stall permit held, like the resistance stop
 //! ladder; a seek that rests anywhere but the stop ends the run
 //! ([`super::seek::at_stop`]).
@@ -26,15 +28,17 @@
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowStream, seek};
 use crate::frame::{TelemetrySnapshot, counts_q15, duty_counts};
 use crate::regs::control;
-use crate::thermal::{self, HoldPoll, ThermWindow, TwoNodeFit};
+use crate::thermal::{self, Hold, HoldPoll, ThermWindow, TwoNodeFit};
 use crate::window::Watch;
 
 #[derive(Copy, Clone, Debug)]
 pub struct AnchorCfg {
-    /// Seek toward the low stop, q15, applied negative.
+    /// Seek toward the stop, q15, applied with the sign of `dir`.
     pub seek_duty_q15: i16,
-    /// The hold at the stop, q15, applied negative.
+    /// The hold at the stop, q15, applied with the sign of `dir`.
     pub hold_duty_q15: i16,
+    /// Which stop: -1 seeks and holds toward the low stop, +1 the high.
+    pub dir: i8,
     /// The higher published window floor, q15: a window whose applied duty
     /// is under it does not read the winding.
     pub read_floor_q15: i16,
@@ -69,6 +73,7 @@ impl Default for AnchorCfg {
         Self {
             seek_duty_q15: 3932,
             hold_duty_q15: 5242,
+            dir: -1,
             // dev-v006's terminal floor under Fast decay, 13.3%
             read_floor_q15: 4356,
             hold_ms: 960_000,
@@ -108,8 +113,6 @@ pub struct Anchor {
     cold_checked: bool,
     /// R_ref, vcounts per ccount, and T_0, C, once the reference is read.
     guard: Option<(f64, f64)>,
-    /// When the contact detector next runs over the hold, ms.
-    contact_at: f64,
     seek_start: Option<u16>,
     last_pos: Option<u16>,
     still: u32,
@@ -125,10 +128,19 @@ pub struct Anchor {
     pwm_period_ticks: u16,
 }
 
-/// Toward the low stop.
-const DIR: i16 = -1;
+/// Where one hold sits in a record it shares with others: its start, its
+/// last poll, where the seek seated and where the hold pressed, and the
+/// stop it pressed (-1 low, +1 high).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct HoldMarks {
+    pub t0_ms: f64,
+    pub end_ms: f64,
+    pub seat: u16,
+    pub hold_seat: u16,
+    pub dir: i8,
+}
 
-fn poll(o: &TelemetrySnapshot) -> HoldPoll {
+pub(super) fn poll(o: &TelemetrySnapshot) -> HoldPoll {
     HoldPoll {
         t_ms: o.host_ms,
         i_counts: o.i_tick_counts as f64,
@@ -151,7 +163,6 @@ impl Anchor {
             ended: None,
             cold_checked: false,
             guard: None,
-            contact_at: 0.0,
             seek_start: None,
             last_pos: None,
             still: 0,
@@ -196,8 +207,8 @@ impl Anchor {
     }
 
     /// Why the hold was refused: its cold current crowded the ceiling, it
-    /// never settled or never read at the command, the limiter governed it,
-    /// or a brush contact event stepped its R.
+    /// never settled or never read at the command, or the limiter governed
+    /// it.
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }
@@ -206,6 +217,30 @@ impl Anchor {
     /// [`AnchorCfg::guard_c`].
     pub fn ended_early(&self) -> Option<&str> {
         self.ended.as_deref()
+    }
+
+    /// The hold as a pooled fit reads it from this run's own record, once
+    /// it started and seated.
+    pub fn hold(&self) -> Option<Hold<'_>> {
+        Some(Hold {
+            polls: &self.polls,
+            windows: &self.samples,
+            t0_ms: self.t0_ms?,
+            end_ms: f64::INFINITY,
+            seat: self.hold_seat?,
+        })
+    }
+
+    /// Where the hold sits, for a fit over a record this run's polls are
+    /// appended to: its end is the last poll's time.
+    pub fn marks(&self) -> Option<HoldMarks> {
+        Some(HoldMarks {
+            t0_ms: self.t0_ms?,
+            end_ms: self.polls.last()?.t_ms,
+            seat: self.seat?,
+            hold_seat: self.hold_seat?,
+            dir: self.cfg.dir,
+        })
     }
 
     /// The two heat nodes and their octaves over the hold
@@ -346,30 +381,6 @@ impl Anchor {
         }
     }
 
-    /// Every [`thermal::CONTACT_BLOCK_MS`], the hold's windows so far for a
-    /// brush contact event; the first final one refuses the hold.
-    fn watch_contact(&mut self, now: f64, t0: f64) {
-        if now < self.contact_at || self.refused.is_some() {
-            return;
-        }
-        self.contact_at = now + thermal::CONTACT_BLOCK_MS;
-        if let Some(e) = thermal::contact_events(&self.samples, t0, now)
-            .iter()
-            .find(|e| e.to_ms + 2.0 * thermal::CONTACT_BLOCK_MS <= now)
-        {
-            self.refused = Some(format!(
-                "a brush contact event {:.0} s in: R stepped {:+.1} % with the pot still, \
-                 {:.0} to {:.0} counts of current at pot {:.1} to {:.1}",
-                (e.t_ms - t0) / 1000.0,
-                e.step_frac * 100.0,
-                e.i_before,
-                e.i_after,
-                e.pos_before,
-                e.pos_after
-            ));
-        }
-    }
-
     /// Once the reference is read, the copper over the last [`GUARD_MS`]
     /// against the guard; reaching it ends the hold.
     fn watch_guard(&mut self, now: f64, t0: f64) {
@@ -406,7 +417,7 @@ impl Experiment for Anchor {
             }
             Phase::SeekSet => {
                 self.phase = Phase::SeekRead;
-                self.goal(DIR * self.cfg.seek_duty_q15)
+                self.goal(self.cfg.dir as i16 * self.cfg.seek_duty_q15)
             }
             Phase::SeekRead => {
                 self.phase = Phase::SeekEval;
@@ -425,7 +436,7 @@ impl Experiment for Anchor {
                     self.last_pos = Some(o.pos);
                     let start = *self.seek_start.get_or_insert(o.pos);
                     if self.still >= self.stall_polls {
-                        if let Err(reason) = seek::at_stop(start, o.pos, DIR as i8, self.stops) {
+                        if let Err(reason) = seek::at_stop(start, o.pos, self.cfg.dir, self.stops) {
                             self.halt = Some(reason);
                             self.phase = Phase::FinishDuty;
                             return Cmd::Pause { ms: 0 };
@@ -448,7 +459,7 @@ impl Experiment for Anchor {
                 // a backstop: every poll pauses poll_ms, so the clock ends
                 // the hold first
                 self.polls_left = self.cfg.hold_ms / self.cfg.poll_ms.max(1) + 1;
-                self.goal(DIR * self.cfg.hold_duty_q15)
+                self.goal(self.cfg.dir as i16 * self.cfg.hold_duty_q15)
             }
             Phase::HoldRead => {
                 self.phase = Phase::HoldEval;
@@ -464,7 +475,6 @@ impl Experiment for Anchor {
                     self.read_hold_seat(t0);
                     self.check_cold(t0);
                     self.watch_limiter(o, t0);
-                    self.watch_contact(o.host_ms, t0);
                     self.watch_guard(o.host_ms, t0);
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
@@ -583,6 +593,42 @@ mod tests {
         }
         // the polls before t0 are the seek's
         assert!(exp.polls().iter().any(|p| p.t_ms < t0));
+        assert_safe_tail(&log);
+    }
+
+    /// The same hold pointed at the high stop: every drive is positive, the
+    /// seek seats near the high stop, and every window reads the planted R
+    /// at the command, as the low stop's does.
+    #[test]
+    fn a_hold_toward_the_high_stop_reads_the_same_r() {
+        let mut servo = servo();
+        let cfg = AnchorCfg { dir: 1, ..short() };
+        let (exp, log, abort) = run(&mut servo, cfg);
+        assert_eq!(abort, None);
+        assert_eq!((exp.refused(), exp.ended_early()), (None, None));
+        let seat = exp.seat().expect("seated");
+        assert!(seat >= 4000 - seek::STOP_TOL, "seat {seat}");
+        let marks = exp.marks().expect("marks");
+        assert_eq!((marks.seat, marks.hold_seat, marks.dir), (seat, seat, 1));
+        assert_eq!(marks.t0_ms, exp.t0_ms().unwrap());
+        assert_eq!(marks.end_ms, exp.polls().last().unwrap().t_ms);
+        assert_eq!(
+            exp.hold().map(|h| (h.t0_ms, h.seat)),
+            Some((marks.t0_ms, seat))
+        );
+        let held = held_ms(&exp);
+        assert!((3000.0..3100.0).contains(&held), "held {held}");
+        assert!(exp.samples().len() > 50, "{} windows", exp.samples().len());
+        for x in exp.samples() {
+            assert!((r_of(&x.w) - 3.37).abs() < 0.05, "r {}", r_of(&x.w));
+            assert!(x.commanded && x.reads(), "{x:?}");
+        }
+        assert!(
+            log.iter()
+                .filter_map(|l| l.strip_prefix("write goal_duty "))
+                .all(|v| v.parse::<i32>().unwrap() >= 0),
+            "{log:?}"
+        );
         assert_safe_tail(&log);
     }
 
@@ -717,34 +763,22 @@ mod tests {
         assert_safe_tail(&log);
     }
 
-    /// A step in R with the pot still is a brush contact event: the hold
-    /// ends once the event is final, refused with the whole step. The fake
-    /// rounds its current to a count, so a 5 % step reads within one.
+    /// A step in R with the pot still is the brush contact settling, not a
+    /// refusal: the hold runs its full time with it and ends safe.
     #[test]
-    fn a_contact_event_refuses_the_hold() {
+    fn a_step_in_r_with_the_pot_still_does_not_refuse_the_hold() {
         let mut servo = servo();
-        servo.r_step = Some((20_000.0, 1.05));
+        servo.r_step = Some((6_000.0, 1.015));
         let cfg = AnchorCfg {
-            hold_ms: 60_000,
+            hold_ms: HOLD_MIN_S * 1000,
             ..AnchorCfg::default()
         };
         let (exp, log, abort) = run(&mut servo, cfg);
         assert_eq!(abort, None);
-        let why = exp.refused().expect("refused");
-        assert!(why.contains("a brush contact event"), "{why}");
-        let step: f64 = why
-            .split("R stepped +")
-            .nth(1)
-            .and_then(|r| r.split(" %").next())
-            .and_then(|n| n.parse().ok())
-            .expect(why);
-        assert!((4.0..6.0).contains(&step), "{why}");
-        let last = exp.polls().last().unwrap().t_ms;
-        assert!(
-            (20_000.0..20_000.0 + 5.0 * thermal::CONTACT_BLOCK_MS).contains(&last),
-            "ended at {last} ms"
-        );
-        assert_eq!(exp.fit(4.0e-3, 0.9e-3).unwrap_err(), why);
+        assert_eq!((exp.refused(), exp.ended_early()), (None, None));
+        let held = held_ms(&exp);
+        let full = (HOLD_MIN_S * 1000) as f64;
+        assert!((full..full + 100.0).contains(&held), "held {held} ms");
         assert_safe_tail(&log);
     }
 
