@@ -1,7 +1,7 @@
 //! The thermal hold: seek the stop [`AnchorCfg::dir`] points at, at the
 //! plan's seek duty, seat, and hold there for [`AnchorCfg::hold_ms`] at
-//! one duty, torque on and the rotor never released, whose cold current must sit
-//! [`thermal::HOLD_MARGIN`] under the current ceiling. It polls at a
+//! one duty, torque on and the rotor never released, whose cold current
+//! must sit [`thermal::HOLD_MARGIN`] under the current ceiling. It polls at a
 //! bounded rate throughout and keeps every poll and every aggregate window,
 //! each judged as it lands ([`ThermWindow`]). Duty x vdiff / i per window
 //! is the winding's own R; [`crate::thermal::fit_two_node`] fits the
