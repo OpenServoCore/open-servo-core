@@ -356,6 +356,10 @@ pub struct FakeServo {
     /// Counts a free burst turns the shaft, the way its step drives: the
     /// rotor spins up inside the step and the train carries it on.
     pub burst_kick: f64,
+    /// The NTC warms this much per minute from 0 C: the rest check's drift.
+    pub ntc_c_per_min: f64,
+    /// The winding estimate reads the kernel's NTC fault.
+    pub ntc_fault: bool,
     lcg: u64,
 }
 
@@ -443,6 +447,8 @@ impl FakeServo {
             transient_gain: 1.5,
             rows_dropped: 0,
             burst_kick: 0.0,
+            ntc_c_per_min: 0.0,
+            ntc_fault: false,
             // r 8 ohm keeps the whole default duty ladder inside the 0.4 A
             // envelope, so the plan is not pruned by accident
             burst: SynthBurst {
@@ -1305,6 +1311,8 @@ impl FakeServo {
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
             tau_d_counts: self.tau_d_counts(),
+            t_ntc_cc: (self.ntc_c_per_min * self.t_ms / 60_000.0 * 100.0).round() as i16,
+            t_winding_cc: if self.ntc_fault { i16::MAX } else { 0 },
             ..Default::default()
         }
     }

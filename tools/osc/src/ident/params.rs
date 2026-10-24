@@ -635,7 +635,7 @@ impl InertiaJson {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct SenseJson {
     pub shunt_r_mohm: u16,
     pub gain_milli: u16,
