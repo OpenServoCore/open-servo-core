@@ -57,7 +57,10 @@ use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, HeldR, Source, Winding};
-use osc_ident::thermal::{self, NtcBoard, NtcCurve, TwoNodeFit};
+use osc_ident::thermal::{
+    self, Hold, HoldFit, HoldPoll, NtcBoard, NtcCurve, REST_DRIFT_C_PER_MIN, REST_MAX_MS,
+    REST_POLL_MS, REST_WINDOW_MS, ThermWindow, TwoNodeFit,
+};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
     PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredMotionJson, StoredWindingJson,
@@ -346,8 +349,13 @@ enum Cmd {
         #[arg(long, requires = "write")]
         save: bool,
     },
-    /// Refit offline from a recorded run directory.
-    Fit { dir: PathBuf },
+    /// Refit offline from recorded run directories. One directory refits
+    /// that run; several pool thermal holds: one reference per hold, the
+    /// gains shared, the octaves chosen on the pooled SSE.
+    Fit {
+        #[arg(required = true, num_args = 1..)]
+        dirs: Vec<PathBuf>,
+    },
     /// Synthesize gains from a hand-written plant - no run directory.
     ///
     /// <FILE> is JSON carrying a `plant` object in the params.json schema;
@@ -446,8 +454,11 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
         },
     };
     pump::install_ctrlc();
-    if let Cmd::Fit { dir } = &args.cmd {
-        return fit_dir(&cli, dir.clone());
+    if let Cmd::Fit { dirs } = &args.cmd {
+        return match dirs.as_slice() {
+            [dir] => fit_dir(&cli, dir.clone()),
+            _ => fit_thermal_dirs(&cli, dirs),
+        };
     }
     if let Cmd::Synth { file } = &args.cmd {
         return synth_file(&cli, id, file, args.out.as_deref());
@@ -1099,6 +1110,7 @@ fn run_thermal(
              the hold; `osc ident run` identifies it first"
         );
     }
+    rest_check(&mut Wire::new(&mut *c, id))?;
     let rec = with_thresholds_raised(c, id, |c| {
         let rec = match drive_stages(cli, c, id, Until::Thermal, false) {
             Ok(rec) => rec,
@@ -1112,15 +1124,25 @@ fn run_thermal(
         park(cli, c, id, false)?;
         Ok(rec)
     })?;
-    save_sense(&rec.out.0, d.sense)?;
+    let refused = |t: &ThermalRead| {
+        t.fit
+            .holds
+            .first()
+            .and_then(|h| r_ref_over_stored(h, &t.marks))
+    };
+    let gains = match &rec.thermal {
+        Some(t) if refused(t).is_none() => GainJson::two_node(&t.fit),
+        _ => Vec::new(),
+    };
+    save_params(&rec.out.0, d.sense, gains)?;
     let Some(t) = &rec.thermal else {
         bail!(
             "the hold declined: {}; nothing written",
             rec.declined.as_deref().unwrap_or("no hold was read")
         );
     };
-    report_thermal(&t.fit, &t.marks, d.sc.amps_per_count);
-    if let Some(why) = r_ref_over_stored(&t.fit, &t.marks) {
+    report_thermal(&t.fit, &[(None, &t.marks)], d.sc.amps_per_count);
+    if let Some(why) = refused(t) {
         bail!("{why}; nothing written");
     }
     let fields = GainJson::two_node(&t.fit);
@@ -1142,14 +1164,79 @@ fn run_thermal(
     Ok(())
 }
 
-/// A params.json carrying the sense block alone: `ident fit` reads a
-/// thermal run's scales from it.
-fn save_sense(dir: &Path, sense: SenseJson) -> Result<()> {
+/// A thermal run's params.json: the sense block `ident fit` reads the
+/// run's scales from, and the hold's gains when it fitted and passed
+/// (sense alone when it was refused or declined).
+fn save_params(dir: &Path, sense: SenseJson, gains: Vec<GainJson>) -> Result<()> {
     ParamsFile {
         sense: Some(sense),
+        gains,
         ..Default::default()
     }
     .save(&dir.join("params.json"))
+}
+
+/// What the rest check read when it let the hold go.
+#[derive(Debug)]
+struct RestRead {
+    t_c: f64,
+    drift_c_per_min: f64,
+    waited_ms: f64,
+}
+
+/// Watches the NTC through `s` for REST_WINDOW_MS at REST_POLL_MS before
+/// anything drives, up to REST_MAX_MS, until its drift sits under
+/// REST_DRIFT_C_PER_MIN.
+fn rest_check<S: Servo>(s: &mut S) -> Result<RestRead> {
+    let (window_s, max_min) = (REST_WINDOW_MS / 1000.0, REST_MAX_MS / 60_000.0);
+    println!(
+        "[rest] the NTC for {window_s:.0} s before anything drives (up to {max_min:.0} min, drift \
+         under {REST_DRIFT_C_PER_MIN} C/min): a servo driven in the last 30 min idents warm \
+         whatever the NTC says"
+    );
+    let start = s.now_ms();
+    let mut samples = Vec::new();
+    loop {
+        let snap = s.snapshot()?;
+        if snap.t_winding_cc == i16::MAX {
+            let id = s.id();
+            let raw = snapshot::read_u16(s.client(), id, telemetry::NTC_RAW)?;
+            bail!("the servo reads an NTC fault (ntc_raw {raw}): nothing drives");
+        }
+        if snap.t_winding_cc == i16::MIN {
+            bail!(
+                "the servo carries no NTC curve, so no winding estimate exists to identify; `osc \
+                 ident write` writes the board's curve"
+            );
+        }
+        let t_c = snap.t_ntc_cc as f64 / 100.0;
+        samples.push((s.now_ms(), t_c));
+        let drift = thermal::rest_drift(&samples);
+        if let Some(d) = drift
+            && d.abs() < REST_DRIFT_C_PER_MIN
+        {
+            let r = RestRead {
+                t_c,
+                drift_c_per_min: d,
+                waited_ms: s.now_ms() - start,
+            };
+            println!(
+                "  ntc {:.2} C, drift {:+.3} C/min over the last {window_s:.0} s, {:.0} s in",
+                r.t_c,
+                r.drift_c_per_min,
+                r.waited_ms / 1000.0
+            );
+            return Ok(r);
+        }
+        if s.now_ms() - start >= REST_MAX_MS {
+            bail!(
+                "the board is still settling: the NTC drifted {:+.2} C/min over the last \
+                 {window_s:.0} s, {max_min:.0} min in; rest the servo torque off and retry",
+                drift.unwrap_or(f64::NAN)
+            );
+        }
+        s.sleep(REST_POLL_MS as u32);
+    }
 }
 
 /// R_ref over the stored winding by more than this fraction is not a cold
@@ -1157,14 +1244,14 @@ fn save_sense(dir: &Path, sense: SenseJson) -> Result<()> {
 const R_REF_OVER_STORED: f64 = 0.15;
 
 /// Why the hold's R_ref is not the stored winding's cold R, when it is not.
-fn r_ref_over_stored(f: &TwoNodeFit, m: &ThermalJson) -> Option<String> {
+fn r_ref_over_stored(h: &HoldFit, m: &ThermalJson) -> Option<String> {
     let r = m.r_stored_ohm?;
-    let over = f.r_ref_ohm / r - 1.0;
+    let over = h.r_ref_ohm / r - 1.0;
     (over > R_REF_OVER_STORED).then(|| {
         format!(
             "R_ref {:.3} ohm reads {:.0} % over the stored winding {r:.3} ohm, past the {:.0} % a \
              cold copper allows: the hold started warm or the brush contact changed",
-            f.r_ref_ohm,
+            h.r_ref_ohm,
             over * 100.0,
             R_REF_OVER_STORED * 100.0
         )
@@ -1212,40 +1299,76 @@ fn report_node(
     );
 }
 
-/// The thermal hold's report, `osc ident thermal`'s and `ident fit`'s on
-/// its directory: `f` fitted over the run `m` marks, on `a` amps per
-/// count.
-fn report_thermal(f: &TwoNodeFit, m: &ThermalJson, a: f64) {
-    println!(
-        "  cold current {:.0} counts under a {:.0} counts ceiling: {:.1} % margin (at least {:.0} \
-         %)",
-        f.i_cold_counts,
-        f.ceiling_counts,
-        f.margin() * 100.0,
-        thermal::HOLD_MARGIN * 100.0
-    );
-    println!(
-        "  R_ref        {:.3} ohm: the hold settled {:.0} ms in (current steady, pos at the seat \
-         {}), R fell {:.1} C over the next {:.0} ms, a line over the {:.0} s from there read at \
-         its start; the copper warms {:+.1} C/s along it",
-        f.r_ref_ohm,
-        f.r_ref_settle_ms,
-        m.hold_seat.map_or("unread".into(), |s| s.to_string()),
-        f.r_ref_dip_c,
-        f.r_ref_start_ms - f.r_ref_settle_ms,
-        thermal::LINE_MS / 1000.0,
-        f.r_ref_slope_c_per_s
-    );
-    match (m.r_stored_ohm, r_ref_over_stored(f, m)) {
-        (_, Some(why)) => println!("  refused      {why}"),
-        (Some(r), None) => println!(
-            "  stored R     {r:.3} ohm: R_ref {:+.1} % of it, inside the {:.0} % a cold copper \
-             allows",
-            (f.r_ref_ohm / r - 1.0) * 100.0,
-            R_REF_OVER_STORED * 100.0
-        ),
-        (None, None) => {}
+/// The thermal report, `osc ident thermal`'s and `ident fit`'s: `f` fitted
+/// over the holds whose run marks (and labels, the directory as given,
+/// when pooled) are `marks` in the fit's order, on `a` amps per count.
+/// Each hold's own lines, under a header when there is more than one,
+/// then the shared nodes and the fit once.
+fn report_thermal(f: &TwoNodeFit, marks: &[(Option<&str>, &ThermalJson)], a: f64) {
+    let pooled = f.holds.len() > 1;
+    let ind = if pooled { "  " } else { "" };
+    for (n, (h, (label, m))) in f.holds.iter().zip(marks).enumerate() {
+        if pooled {
+            println!("  hold {}      {}", n + 1, label.unwrap_or(""));
+        }
+        println!(
+            "{ind}  cold current {:.0} counts under a {:.0} counts ceiling: {:.1} % margin (at \
+             least {:.0} %)",
+            h.i_cold_counts,
+            h.ceiling_counts,
+            h.margin() * 100.0,
+            thermal::HOLD_MARGIN * 100.0
+        );
+        println!(
+            "{ind}  R_ref        {:.3} ohm: the hold settled {:.0} ms in (current steady, pos at \
+             the seat {}), R fell {:.1} C over the next {:.0} ms, a line over the {:.0} s from \
+             there read at its start; the copper warms {:+.1} C/s along it",
+            h.r_ref_ohm,
+            h.r_ref_settle_ms,
+            m.hold_seat.map_or("unread".into(), |s| s.to_string()),
+            h.r_ref_dip_c,
+            h.r_ref_start_ms - h.r_ref_settle_ms,
+            thermal::LINE_MS / 1000.0,
+            h.r_ref_slope_c_per_s
+        );
+        match (m.r_stored_ohm, r_ref_over_stored(h, m)) {
+            (_, Some(why)) => println!("{ind}  refused      {why}"),
+            (Some(r), None) => println!(
+                "{ind}  stored R     {r:.3} ohm: R_ref {:+.1} % of it, inside the {:.0} % a cold \
+                 copper allows",
+                (h.r_ref_ohm / r - 1.0) * 100.0,
+                R_REF_OVER_STORED * 100.0
+            ),
+            (None, None) => {}
+        }
+        println!(
+            "{ind}  residuals    {} per {:.0} s block",
+            h.block_means_c
+                .iter()
+                .map(|c| format!("{c:+.2}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            thermal::BLOCK_MS / 1000.0
+        );
+        println!(
+            "{ind}  plateau      {:.1} C over the NTC at the hold's {:.0} counts, {:.1} C at the \
+             {:.0} counts ceiling; settled rise read {:.2} C (NTC base {:.2} C)",
+            f.plateau_c(h.i_cold_counts),
+            h.i_cold_counts,
+            f.plateau_c(h.ceiling_counts),
+            h.ceiling_counts,
+            h.settled_rise_c,
+            h.t0_c
+        );
+        match h.estimate_err_c {
+            Some(e) => println!(
+                "{ind}  the estimate read {e:+.2} C off the copper at the end of the hold, on the \
+                 constants the servo carried into it"
+            ),
+            None => println!("{ind}  the estimate read UNSET through the end of the hold"),
+        }
     }
+    let r = f.holds.iter().map(|h| h.r_ref_ohm).sum::<f64>() / f.holds.len() as f64;
     let written = GainJson::two_node(f);
     report_node(
         "rotor",
@@ -1254,7 +1377,7 @@ fn report_thermal(f: &TwoNodeFit, m: &ThermalJson, a: f64) {
         "thermal_tau_s",
         written[2].raw,
         a,
-        f.r_ref_ohm,
+        r,
     );
     report_node(
         "body",
@@ -1263,45 +1386,32 @@ fn report_thermal(f: &TwoNodeFit, m: &ThermalJson, a: f64) {
         "thermal_tau2_s",
         written[3].raw,
         a,
-        f.r_ref_ohm,
+        r,
     );
+    let list = |each: &dyn Fn(&HoldFit) -> String| {
+        f.holds.iter().map(each).collect::<Vec<_>>().join(" and ")
+    };
+    let lengths = list(&|h| format!("{:.0}", h.hold_s));
+    let brushes = list(&|h| format!("{:+.2}", h.first_c));
+    let (span, brush) = if pooled {
+        (
+            format!("{} holds of {lengths} s", f.holds.len()),
+            format!("the brush windows before them read {brushes} C"),
+        )
+    } else {
+        (
+            format!("{lengths} s of hold"),
+            format!("the brush window before it read {brushes} C"),
+        )
+    };
     println!(
-        "  fit          {} one-second bins over {:.0} s of hold from {:.0} s in, {} passes of \
-         the warm feedback; residual sd {:.2} C; the brush window before it read {:+.2} C (not \
-         fitted)",
+        "  fit          {} one-second bins over {span} from {:.0} s in, {} passes of the warm \
+         feedback; residual sd {:.2} C; {brush} (not fitted)",
         f.bins,
-        f.hold_s,
         thermal::FIT_FROM_MS / 1000.0,
         f.passes,
-        f.residual_sd_c,
-        f.first_c
+        f.residual_sd_c
     );
-    println!(
-        "  residuals    {} per {:.0} s block",
-        f.block_means_c
-            .iter()
-            .map(|c| format!("{c:+.2}"))
-            .collect::<Vec<_>>()
-            .join(" "),
-        thermal::BLOCK_MS / 1000.0
-    );
-    println!(
-        "  plateau      {:.1} C over the NTC at the hold's {:.0} counts, {:.1} C at the {:.0} \
-         counts ceiling; settled rise read {:.2} C (NTC base {:.2} C)",
-        f.plateau_c(f.i_cold_counts),
-        f.i_cold_counts,
-        f.plateau_c(f.ceiling_counts),
-        f.ceiling_counts,
-        f.settled_rise_c,
-        f.t0_c
-    );
-    match f.estimate_err_c {
-        Some(e) => println!(
-            "  the estimate read {e:+.2} C off the copper at the end of the hold, on the \
-             constants the servo carried into it"
-        ),
-        None => println!("  the estimate read UNSET through the end of the hold"),
-    }
 }
 
 fn run_rl(
@@ -2275,7 +2385,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         let sc = sense
             .scales()
             .context("params.json sense block predates the R/L band (no vdd_mv / vbus divider)")?;
-        return fit_thermal_dir(&dir, &sc);
+        return fit_thermal_dir(&dir, p, &sc);
     }
     let tick_hz = sense.tick_hz as f64;
     println!(
@@ -2628,26 +2738,114 @@ fn synth_file(cli: &Ctx, id: u8, file: &Path, out: Option<&Path>) -> Result<()> 
     Ok(())
 }
 
+/// A thermal run's hold read back off its directory.
+struct RecordedHold {
+    marks: ThermalJson,
+    windows: Vec<ThermWindow>,
+    polls: Vec<HoldPoll>,
+    seat: u16,
+}
+
+impl RecordedHold {
+    fn load(dir: &Path) -> Result<Self> {
+        let marks = ThermalJson::load(&dir.join("thermal.json"))?;
+        let seat = marks
+            .hold_seat
+            .context("thermal.json carries no hold seat: the hold never seated")?;
+        Ok(Self {
+            marks,
+            windows: csvio::read_anchor_samples(dir)?,
+            polls: csvio::read_anchor_polls(dir)?,
+            seat,
+        })
+    }
+
+    fn hold(&self) -> Hold<'_> {
+        Hold {
+            polls: &self.polls,
+            windows: &self.windows,
+            t0_ms: self.marks.t0_ms,
+            end_ms: f64::INFINITY,
+            seat: self.seat,
+        }
+    }
+}
+
+/// The two lines that end a refit: where the params.json landed and the
+/// write it is for.
+fn report_params(path: &Path) {
+    println!("params: {}", path.display());
+    println!("next: ident write {} [--save]", path.display());
+}
+
 /// `ident fit` on a thermal run: the hold refitted from its thermal.json
-/// marks, reported as the run reported it.
-fn fit_thermal_dir(dir: &Path, sc: &Scales) -> Result<()> {
-    let m = ThermalJson::load(&dir.join("thermal.json"))?;
-    let windows = csvio::read_anchor_samples(dir)?;
-    let polls = csvio::read_anchor_polls(dir)?;
-    let seat = m
-        .hold_seat
-        .context("thermal.json carries no hold seat: the hold never seated")?;
-    let f = thermal::fit_two_node(
-        &polls,
-        &windows,
-        m.t0_ms,
-        f64::INFINITY,
-        seat,
-        sc.v_term_per_count,
-        sc.amps_per_count,
-    )
-    .map_err(|why| anyhow::anyhow!("the hold's refit declined: {why}"))?;
-    report_thermal(&f, &m, sc.amps_per_count);
+/// marks, reported as the run reported it, and its gains written into the
+/// run's params.json beside the sense block (the run itself leaves sense
+/// alone when the hold was refused, and `ident write` needs gains).
+fn fit_thermal_dir(dir: &Path, mut p: ParamsFile, sc: &Scales) -> Result<()> {
+    let h = RecordedHold::load(dir)?;
+    let f = thermal::fit_two_node_pooled(&[h.hold()], sc.v_term_per_count, sc.amps_per_count)
+        .map_err(|why| anyhow::anyhow!("the hold's refit declined: {why}"))?;
+    report_thermal(&f, &[(None, &h.marks)], sc.amps_per_count);
+    p.gains = GainJson::two_node(&f);
+    let path = dir.join("params.json");
+    p.save(&path)?;
+    report_params(&path);
+    Ok(())
+}
+
+/// `ident fit` over several thermal runs of one board: every hold pooled
+/// into one pair of gains ([`thermal::fit_two_node_pooled`]), on the first
+/// run's scales, which every other run must share; the pooled set lands
+/// in a new directory under `--out` with that sense block.
+fn fit_thermal_dirs(cli: &Ctx, dirs: &[PathBuf]) -> Result<()> {
+    let first = dirs.first().context("no run directory to fit")?;
+    for dir in dirs {
+        if !dir.join("thermal.json").exists() {
+            bail!(
+                "`ident fit` pools thermal holds alone: {} carries no thermal.json",
+                dir.display()
+            );
+        }
+    }
+    let sense = ParamsFile::load(&first.join("params.json"))?
+        .sense
+        .with_context(|| format!("{}: params.json has no sense block", first.display()))?;
+    let sc = sense
+        .scales()
+        .context("params.json sense block predates the R/L band (no vdd_mv / vbus divider)")?;
+    for dir in &dirs[1..] {
+        if ParamsFile::load(&dir.join("params.json"))?.sense != Some(sense) {
+            bail!(
+                "the holds' sense blocks differ: {} against {}",
+                dir.display(),
+                first.display()
+            );
+        }
+    }
+    let recorded = dirs
+        .iter()
+        .map(|dir| RecordedHold::load(dir))
+        .collect::<Result<Vec<_>>>()?;
+    let holds: Vec<Hold<'_>> = recorded.iter().map(RecordedHold::hold).collect();
+    let f = thermal::fit_two_node_pooled(&holds, sc.v_term_per_count, sc.amps_per_count)
+        .map_err(|why| anyhow::anyhow!("the holds' refit declined: {why}"))?;
+    let labels: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
+    let marks: Vec<(Option<&str>, &ThermalJson)> = labels
+        .iter()
+        .zip(&recorded)
+        .map(|(l, h)| (Some(l.as_str()), &h.marks))
+        .collect();
+    report_thermal(&f, &marks, sc.amps_per_count);
+    let out = csvio::OutDir::create(&cli.out)?;
+    let path = out.0.join("params.json");
+    ParamsFile {
+        sense: Some(sense),
+        gains: GainJson::two_node(&f),
+        ..Default::default()
+    }
+    .save(&path)?;
+    report_params(&path);
     Ok(())
 }
 
@@ -2740,29 +2938,20 @@ mod tests {
         }
     }
 
-    /// A thermal run as it lands on disk: anchor.csv, anchor_snapshots.csv,
-    /// thermal.json and a params.json with the sense block. Read back, the
-    /// hold refits to the two nodes the run fitted live, and `ident fit`
-    /// reports it.
-    #[test]
-    fn a_thermal_run_refits_offline_as_it_fitted_live() {
+    /// A thermal hold recorded under `dir` as `osc ident thermal` leaves
+    /// one: anchor.csv, anchor_snapshots.csv, thermal.json and a params.json
+    /// with the sense block alone. The hold, and the sense it was read on.
+    fn record_hold(dir: &Path, cfg: &AnchorCfg) -> (Anchor, SenseJson) {
         use osc_ident::exp::testkit::{FakeServo, PWM_PERIOD_TICKS, pump, rig};
         use osc_ident::frame::TelemetrySnapshot;
-        use osc_ident::thermal::HoldPoll;
 
-        let dir = std::env::temp_dir().join(format!("ident-thermal-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let out = csvio::OutDir(dir.clone());
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let out = csvio::OutDir(dir.to_path_buf());
         let mut servo = FakeServo::new(3.37);
         servo.current_limit = Some(280);
-        let cfg = AnchorCfg {
-            hold_ms: HOLD_MIN_S * 1000,
-            cap_counts: 280,
-            ..AnchorCfg::default()
-        };
         let params = rig().without_pos_guard();
-        let mut exp = Guarded::new(Permitted::new(Anchor::new(cfg, &params)), params);
+        let mut exp = Guarded::new(Permitted::new(Anchor::new(*cfg, &params)), params);
         pump(&mut exp, &mut servo, 2_000_000);
         assert_eq!(exp.abort(), None);
         let hold = exp.into_inner().into_inner();
@@ -2794,16 +2983,51 @@ mod tests {
             log.push(p.t_ms, &s, PWM_PERIOD_TICKS).unwrap();
         }
         drop(log);
+        ThermalJson {
+            t0_ms: hold.t0_ms().unwrap(),
+            end_ms: hold.polls().last().unwrap().t_ms,
+            seat: hold.seat(),
+            hold_seat: hold.hold_seat(),
+            hold_duty_q15: cfg.hold_duty_q15,
+            r_stored_ohm: Some(live.holds[0].r_ref_ohm),
+        }
+        .save(&dir.join("thermal.json"))
+        .unwrap();
+        save_params(dir, sense, Vec::new()).unwrap();
+        (hold, sense)
+    }
+
+    /// The hold `osc ident thermal` records at its minimum length under
+    /// the fake's 280 count limit.
+    fn hold_cfg() -> AnchorCfg {
+        AnchorCfg {
+            hold_ms: HOLD_MIN_S * 1000,
+            cap_counts: 280,
+            ..AnchorCfg::default()
+        }
+    }
+
+    /// A thermal run as it lands on disk: anchor.csv, anchor_snapshots.csv,
+    /// thermal.json and a params.json with the sense block. Read back, the
+    /// hold refits to the two nodes the run fitted live, and `ident fit`
+    /// reports it and leaves its gains in params.json.
+    #[test]
+    fn a_thermal_run_refits_offline_as_it_fitted_live() {
+        use osc_ident::thermal::HoldPoll;
+
+        let dir = std::env::temp_dir().join(format!("ident-thermal-{}", std::process::id()));
+        let cfg = hold_cfg();
+        let (hold, sense) = record_hold(&dir, &cfg);
+        let sc = sense.scales().unwrap();
+        let live = hold.fit(sc.v_term_per_count, sc.amps_per_count).unwrap();
         let m = ThermalJson {
             t0_ms: hold.t0_ms().unwrap(),
             end_ms: hold.polls().last().unwrap().t_ms,
             seat: hold.seat(),
             hold_seat: hold.hold_seat(),
             hold_duty_q15: cfg.hold_duty_q15,
-            r_stored_ohm: Some(live.r_ref_ohm),
+            r_stored_ohm: Some(live.holds[0].r_ref_ohm),
         };
-        m.save(&dir.join("thermal.json")).unwrap();
-        save_sense(&dir, sense).unwrap();
 
         let back = ThermalJson::load(&dir.join("thermal.json")).unwrap();
         assert_eq!(back, m);
@@ -2826,18 +3050,19 @@ mod tests {
             sc.amps_per_count,
         )
         .unwrap();
+        let (rh, lh) = (&refit.holds[0], &live.holds[0]);
         assert_eq!(
             (
-                refit.r_ref_ohm,
-                refit.r_ref_settle_ms,
-                refit.r_ref_start_ms,
+                rh.r_ref_ohm,
+                rh.r_ref_settle_ms,
+                rh.r_ref_start_ms,
                 refit.bins,
                 (refit.rotor.tau_s, refit.body.tau_s)
             ),
             (
-                live.r_ref_ohm,
-                live.r_ref_settle_ms,
-                live.r_ref_start_ms,
+                lh.r_ref_ohm,
+                lh.r_ref_settle_ms,
+                lh.r_ref_start_ms,
                 live.bins,
                 (live.rotor.tau_s, live.body.tau_s)
             )
@@ -2850,12 +3075,12 @@ mod tests {
             (refit.body.k - live.body.k).abs() < 1e-6,
             "{refit:?} {live:?}"
         );
-        assert_eq!(r_ref_over_stored(&refit, &back), None);
+        assert_eq!(r_ref_over_stored(rh, &back), None);
         let warm = ThermalJson {
-            r_stored_ohm: Some(live.r_ref_ohm / 1.2),
+            r_stored_ohm: Some(lh.r_ref_ohm / 1.2),
             ..back
         };
-        let why = r_ref_over_stored(&refit, &warm).unwrap();
+        let why = r_ref_over_stored(rh, &warm).unwrap();
         assert!(why.contains("reads 20 % over the stored winding"), "{why}");
         let fields = GainJson::two_node(&live);
         let named: Vec<(&str, u16)> = fields.iter().map(|g| (g.name.as_str(), g.raw)).collect();
@@ -2869,7 +3094,111 @@ mod tests {
             ],
             "a winding that does not warm fits no body gain: {live:?}"
         );
-        fit_dir(&ctx(dir.clone()), dir).unwrap();
+        assert!(
+            ParamsFile::load(&dir.join("params.json"))
+                .unwrap()
+                .gains
+                .is_empty()
+        );
+        fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        assert!(p.sense.is_some());
+        assert_eq!(
+            p.gains.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(),
+            [
+                "th_rise_q016",
+                "th_rise2_q016",
+                "thermal_tau_s",
+                "thermal_tau2_s"
+            ]
+        );
+    }
+
+    /// Two recorded holds pool in `ident fit`: one params.json with the
+    /// four gains in a new out directory; a plant run directory in the
+    /// pool is refused, named.
+    #[test]
+    fn two_recorded_holds_pool_in_ident_fit() {
+        let pid = std::process::id();
+        let dir_a = std::env::temp_dir().join(format!("ident-pool-a-{pid}"));
+        let dir_b = std::env::temp_dir().join(format!("ident-pool-b-{pid}"));
+        let cfg = hold_cfg();
+        record_hold(&dir_a, &cfg);
+        record_hold(&dir_b, &cfg);
+        let out = std::env::temp_dir().join(format!("ident-pool-out-{pid}"));
+        let _ = std::fs::remove_dir_all(&out);
+        fit_thermal_dirs(&ctx(out.clone()), &[dir_a.clone(), dir_b.clone()]).unwrap();
+        let written: Vec<PathBuf> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().path().join("params.json"))
+            .collect();
+        assert_eq!(written.len(), 1, "{written:?}");
+        let p = ParamsFile::load(&written[0]).unwrap();
+        assert!(p.sense.is_some());
+        assert_eq!(
+            p.gains.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(),
+            [
+                "th_rise_q016",
+                "th_rise2_q016",
+                "thermal_tau_s",
+                "thermal_tau2_s"
+            ]
+        );
+        let (front, _, _) = record_front("pool-front");
+        let why = fit_thermal_dirs(&ctx(out), &[dir_a, front.clone()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            why.contains(&front.display().to_string()) && why.contains("no thermal.json"),
+            "{why}"
+        );
+    }
+
+    /// The rest check on the fake bench: a flat NTC lets the hold go once
+    /// the samples span the window.
+    #[test]
+    fn a_rested_board_passes_the_rest_check_at_the_window() {
+        use crate::capture::Supply;
+        use crate::rig::servo::bench::Bench;
+
+        let mut b = Bench::mg90(Supply::TwoS);
+        let r = rest_check(&mut b).unwrap();
+        assert!(
+            (REST_WINDOW_MS - REST_POLL_MS..=REST_WINDOW_MS + REST_POLL_MS).contains(&r.waited_ms),
+            "{}",
+            r.waited_ms
+        );
+        assert_eq!((r.drift_c_per_min, r.t_c), (0.0, 0.0));
+    }
+
+    /// An NTC warming 0.3 C/min never rests: refused at five minutes, the
+    /// drift named.
+    #[test]
+    fn a_settling_board_is_refused_after_five_minutes() {
+        use crate::capture::Supply;
+        use crate::rig::servo::bench::Bench;
+
+        let mut b = Bench::mg90(Supply::TwoS);
+        b.servo.ntc_c_per_min = 0.3;
+        let why = rest_check(&mut b).unwrap_err().to_string();
+        assert!(
+            why.contains("still settling") && why.contains("+0.30 C/min"),
+            "{why}"
+        );
+        assert!(b.now_ms() >= REST_MAX_MS, "{}", b.now_ms());
+    }
+
+    /// The kernel's NTC fault refuses the hold at the first poll.
+    #[test]
+    fn an_ntc_fault_refuses_before_anything_drives() {
+        use crate::capture::Supply;
+        use crate::rig::servo::bench::Bench;
+
+        let mut b = Bench::mg90(Supply::TwoS);
+        b.servo.ntc_fault = true;
+        let why = rest_check(&mut b).unwrap_err().to_string();
+        assert!(why.contains("NTC fault"), "{why}");
+        assert!(b.now_ms() < REST_POLL_MS, "{}", b.now_ms());
     }
 
     /// A run's front as it lands on disk: the stop ladder's dwells for the

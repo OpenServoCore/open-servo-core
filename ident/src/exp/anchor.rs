@@ -677,12 +677,13 @@ mod tests {
         assert_eq!((exp.refused(), exp.ended_early()), (None, None));
         let f = exp.fit(4.0e-3, 0.9e-3).expect("a fit");
         assert!(f.bins >= thermal::MIN_BINS, "{f:?}");
-        assert!((f.hold_s - HOLD_MIN_S as f64).abs() <= 1.0, "{f:?}");
+        let h = &f.holds[0];
+        assert!((h.hold_s - HOLD_MIN_S as f64).abs() <= 1.0, "{f:?}");
         assert!(f.rotor.k.abs() < 1e-3 && f.body.k.abs() < 1e-3, "{f:?}");
         assert_eq!((f.rotor.tau_s, f.body.tau_s), (33, 262));
-        assert!(f.settled_rise_c.abs() < 0.5, "{f:?}");
-        assert!(f.margin() > 0.6, "{f:?}");
-        assert!(f.r_ref_settle_ms < thermal::R_REF_WITHIN_MS, "{f:?}");
+        assert!(h.settled_rise_c.abs() < 0.5, "{f:?}");
+        assert!(h.margin() > 0.6, "{f:?}");
+        assert!(h.r_ref_settle_ms < thermal::R_REF_WITHIN_MS, "{f:?}");
     }
 
     /// With the guard under the copper's own reading, the hold ends as
