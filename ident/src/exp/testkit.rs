@@ -38,9 +38,12 @@ use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, chunks_text, decode_ro
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, config, control};
+use crate::thermal::COPPER_ZERO_R_C;
 use crate::window::{WATCH_BURST_MS, WINDOW_TICKS, Watch, Windows, watch_rows};
 use osc_protocol::tel::{self, Chunks};
+use osc_servo_core::estimator::thermal::{rise_cc, warm_q16};
 use osc_servo_core::kernel::phases::loops::faults;
+use osc_servo_core::kernel::phases::loops::limits::{LimitState, SLOW_PERIOD_MS, tau_shift};
 
 /// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
 pub const TICK_HZ: f64 = 20_100.0;
@@ -360,7 +363,59 @@ pub struct FakeServo {
     pub ntc_c_per_min: f64,
     /// The winding estimate reads the kernel's NTC fault.
     pub ntc_fault: bool,
+    /// The winding's two heat nodes on the current it draws; None is a
+    /// winding that never warms.
+    pub heat: Option<FakeHeat>,
+    /// The current limit in force from the k-th torque enable on, each
+    /// hold of a session its own; None, or past the end, keeps
+    /// `current_limit`.
+    pub limit_per_enable: Vec<Option<u16>>,
+    /// Torque enables so far.
+    enables: usize,
+    /// The shunt reads whole counts and a window's mean is one too; set,
+    /// each window reads the count nearest the current plus the rounding
+    /// the windows before left, so a run of windows resolves the fraction
+    /// of a count the real shunt's noise lets it.
+    pub i_dither: bool,
+    i_carry: f64,
+    i_quant: i16,
     lcg: u64,
+}
+
+/// A winding that warms the way the kernel models it ([`LimitState`]):
+/// each SLOW period squares the current drawn, warms it by the rise the
+/// step before read ([`warm_q16`]) and steps both heats on the octaves of
+/// `taus_s`; R rises with the rise over the NTC as copper's does. A fit of
+/// the fake recovers `q`, the replay being the same loop.
+pub struct FakeHeat {
+    /// Rotor and body gains, q016.
+    pub q: [u16; 2],
+    pub taus_s: [u16; 2],
+    /// The rotor gain from the k-th torque enable on, one brush seat's
+    /// share each; past the end, `q[0]`.
+    pub rotor_q_per_enable: Vec<u16>,
+    state: LimitState,
+    rise_cc: u16,
+    /// The next SLOW step, ms on the fake's clock.
+    next_ms: f64,
+}
+
+impl FakeHeat {
+    pub fn new(q: [u16; 2], taus_s: [u16; 2]) -> Self {
+        Self {
+            q,
+            taus_s,
+            rotor_q_per_enable: Vec::new(),
+            state: LimitState::new(),
+            rise_cc: 0,
+            next_ms: 0.0,
+        }
+    }
+
+    /// The copper's rise over the NTC the loop last read, C.
+    pub fn rise_c(&self) -> f64 {
+        self.rise_cc as f64 / 100.0
+    }
 }
 
 impl FakeServo {
@@ -449,6 +504,12 @@ impl FakeServo {
             burst_kick: 0.0,
             ntc_c_per_min: 0.0,
             ntc_fault: false,
+            heat: None,
+            limit_per_enable: Vec::new(),
+            enables: 0,
+            i_dither: false,
+            i_carry: 0.0,
+            i_quant: 0,
             // r 8 ohm keeps the whole default duty ladder inside the 0.4 A
             // envelope, so the plan is not pruned by accident
             burst: SynthBurst {
@@ -473,11 +534,43 @@ impl FakeServo {
         uniform + if self.alternate_up { 0.5 } else { -0.5 }
     }
 
-    /// The winding's R now: [`Self::r_step`] from its time on.
+    /// The winding's R now: [`Self::r_step`] from its time on, warmed by
+    /// the copper's rise over the NTC ([`Self::heat`]).
     fn r_now(&self) -> f64 {
-        match self.r_step {
-            Some((at, by)) if self.t_ms >= at => self.r * by,
-            _ => self.r,
+        let step = match self.r_step {
+            Some((at, by)) if self.t_ms >= at => by,
+            _ => 1.0,
+        };
+        let warm = self
+            .heat
+            .as_ref()
+            .map_or(1.0, |h| 1.0 + h.rise_c() / (COPPER_ZERO_R_C + self.ntc_c()));
+        self.r * step * warm
+    }
+
+    /// The board NTC now, C: [`Self::ntc_c_per_min`] from 0 C.
+    fn ntc_c(&self) -> f64 {
+        self.ntc_c_per_min * self.t_ms / 60_000.0
+    }
+
+    /// Step the winding's heat ([`Self::heat`]) through every SLOW period
+    /// the clock has crossed, on the current drawn now.
+    fn warm(&mut self) {
+        if self.heat.is_none() {
+            return;
+        }
+        let i = self.i_at(self.applied()).abs().round().min(i16::MAX as f64) as i16;
+        let seat = self.enables.saturating_sub(1);
+        let Some(h) = &mut self.heat else {
+            return;
+        };
+        let shifts = h.taus_s.map(tau_shift);
+        let q0 = h.rotor_q_per_enable.get(seat).copied().unwrap_or(h.q[0]);
+        while h.next_ms <= self.t_ms {
+            h.state.heat(i, warm_q16(h.rise_cc), shifts);
+            let [h1, h2] = h.state.heats();
+            h.rise_cc = (rise_cc(h1, q0) + rise_cc(h2, h.q[1])).min(i16::MAX as i32) as u16;
+            h.next_ms += SLOW_PERIOD_MS as f64;
         }
     }
 
@@ -614,7 +707,8 @@ impl FakeServo {
         (self.ceil0 + 128.0 * ticks).clamp(self.floor_q15 as f64, 32767.0)
     }
 
-    /// The limit in force: the current limit, or the yield once folded, or
+    /// The limit in force: the current limit (this enable's own when
+    /// [`Self::limit_per_enable`] names one), or the yield once folded, or
     /// [`Self::limit_drop`] from its time on.
     fn limit(&self) -> Option<u16> {
         if let Some((at, to)) = self.limit_drop
@@ -622,7 +716,11 @@ impl FakeServo {
         {
             return Some(to);
         }
-        self.current_limit
+        self.limit_per_enable
+            .get(self.enables.saturating_sub(1))
+            .copied()
+            .flatten()
+            .or(self.current_limit)
             .map(|l| if self.folded { l.min(self.i_cont) } else { l })
     }
 
@@ -962,6 +1060,7 @@ impl FakeServo {
                 self.reset_ceiling(self.floor_q15 as f64);
                 self.reversed = false;
                 self.drive_anchor = self.pos;
+                self.enables += 1;
             }
             if !on {
                 self.folded = false;
@@ -1086,6 +1185,7 @@ impl FakeServo {
         let from = self.t_ms;
         self.advance_plant(ms);
         self.press(self.t_ms - from);
+        self.warm();
         self.stall_timer(from);
         self.check_drive();
     }
@@ -1127,6 +1227,7 @@ impl FakeServo {
             self.tick(dt);
             self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
             self.press(dt * 1000.0);
+            self.warm();
             if !chunks.valid() {
                 continue;
             }
@@ -1223,13 +1324,14 @@ impl FakeServo {
             self.tick(dt);
             self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
             self.press(dt * 1000.0);
+            self.warm();
             let (i, vdiff) = self.sensed();
             let noise = self.noise();
             let pos = self.read_pot(self.shown(), noise);
             sink.push(TelFrame {
                 tick: k,
                 pos: Some(pos),
-                current: Some((i * over).round() as i16),
+                current: Some(self.shunt(i * over, k)),
                 vdiff: Some(vdiff.round() as i16),
                 duty_counts: Some(duty_counts(self.applied(), PWM_PERIOD_TICKS)),
                 ..Default::default()
@@ -1239,6 +1341,21 @@ impl FakeServo {
         self.stall_timer(t0);
         self.check_drive();
         self.faulted()
+    }
+
+    /// Row `row` of a watch's shunt sample of `i`, whole counts; with
+    /// [`Self::i_dither`] the window's count, chosen at its first row with
+    /// the rounding the windows before left.
+    fn shunt(&mut self, i: f64, row: u64) -> i16 {
+        if !self.i_dither {
+            return i.round() as i16;
+        }
+        if row.is_multiple_of(WINDOW_TICKS as u64) {
+            let s = (i + self.i_carry).round();
+            self.i_carry += i - s;
+            self.i_quant = s as i16;
+        }
+        self.i_quant
     }
 
     fn faulted(&self) -> bool {
@@ -1311,7 +1428,7 @@ impl FakeServo {
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
             tau_d_counts: self.tau_d_counts(),
-            t_ntc_cc: (self.ntc_c_per_min * self.t_ms / 60_000.0 * 100.0).round() as i16,
+            t_ntc_cc: (self.ntc_c() * 100.0).round() as i16,
             t_winding_cc: if self.ntc_fault { i16::MAX } else { 0 },
             ..Default::default()
         }

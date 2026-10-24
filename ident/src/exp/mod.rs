@@ -48,6 +48,7 @@ pub mod resistance;
 pub mod rl;
 pub mod sag;
 pub mod seek;
+pub mod session;
 pub mod sweep;
 pub mod verify;
 pub mod wavefit;

@@ -1,6 +1,6 @@
-//! The thermal hold: seek the low stop at the plan's seek duty, seat, and
-//! hold there for [`AnchorCfg::hold_ms`] at one duty, torque on and the
-//! rotor never released, whose cold current must sit
+//! The thermal hold: seek the stop [`AnchorCfg::dir`] points at, at the
+//! plan's seek duty, seat, and hold there for [`AnchorCfg::hold_ms`] at
+//! one duty, torque on and the rotor never released, whose cold current must sit
 //! [`thermal::HOLD_MARGIN`] under the current ceiling. It polls at a
 //! bounded rate throughout and keeps every poll and every aggregate window,
 //! each judged as it lands ([`ThermWindow`]). Duty x vdiff / i per window
@@ -28,15 +28,17 @@
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowStream, seek};
 use crate::frame::{TelemetrySnapshot, counts_q15, duty_counts};
 use crate::regs::control;
-use crate::thermal::{self, HoldPoll, ThermWindow, TwoNodeFit};
+use crate::thermal::{self, Hold, HoldPoll, ThermWindow, TwoNodeFit};
 use crate::window::Watch;
 
 #[derive(Copy, Clone, Debug)]
 pub struct AnchorCfg {
-    /// Seek toward the low stop, q15, applied negative.
+    /// Seek toward the stop, q15, applied with the sign of `dir`.
     pub seek_duty_q15: i16,
-    /// The hold at the stop, q15, applied negative.
+    /// The hold at the stop, q15, applied with the sign of `dir`.
     pub hold_duty_q15: i16,
+    /// Which stop: -1 seeks and holds toward the low stop, +1 the high.
+    pub dir: i8,
     /// The higher published window floor, q15: a window whose applied duty
     /// is under it does not read the winding.
     pub read_floor_q15: i16,
@@ -71,6 +73,7 @@ impl Default for AnchorCfg {
         Self {
             seek_duty_q15: 3932,
             hold_duty_q15: 5242,
+            dir: -1,
             // dev-v006's terminal floor under Fast decay, 13.3%
             read_floor_q15: 4356,
             hold_ms: 960_000,
@@ -125,10 +128,19 @@ pub struct Anchor {
     pwm_period_ticks: u16,
 }
 
-/// Toward the low stop.
-const DIR: i16 = -1;
+/// Where one hold sits in a record it shares with others: its start, its
+/// last poll, where the seek seated and where the hold pressed, and the
+/// stop it pressed (-1 low, +1 high).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct HoldMarks {
+    pub t0_ms: f64,
+    pub end_ms: f64,
+    pub seat: u16,
+    pub hold_seat: u16,
+    pub dir: i8,
+}
 
-fn poll(o: &TelemetrySnapshot) -> HoldPoll {
+pub(super) fn poll(o: &TelemetrySnapshot) -> HoldPoll {
     HoldPoll {
         t_ms: o.host_ms,
         i_counts: o.i_tick_counts as f64,
@@ -205,6 +217,30 @@ impl Anchor {
     /// [`AnchorCfg::guard_c`].
     pub fn ended_early(&self) -> Option<&str> {
         self.ended.as_deref()
+    }
+
+    /// The hold as a pooled fit reads it from this run's own record, once
+    /// it started and seated.
+    pub fn hold(&self) -> Option<Hold<'_>> {
+        Some(Hold {
+            polls: &self.polls,
+            windows: &self.samples,
+            t0_ms: self.t0_ms?,
+            end_ms: f64::INFINITY,
+            seat: self.hold_seat?,
+        })
+    }
+
+    /// Where the hold sits, for a fit over a record this run's polls are
+    /// appended to: its end is the last poll's time.
+    pub fn marks(&self) -> Option<HoldMarks> {
+        Some(HoldMarks {
+            t0_ms: self.t0_ms?,
+            end_ms: self.polls.last()?.t_ms,
+            seat: self.seat?,
+            hold_seat: self.hold_seat?,
+            dir: self.cfg.dir,
+        })
     }
 
     /// The two heat nodes and their octaves over the hold
@@ -381,7 +417,7 @@ impl Experiment for Anchor {
             }
             Phase::SeekSet => {
                 self.phase = Phase::SeekRead;
-                self.goal(DIR * self.cfg.seek_duty_q15)
+                self.goal(self.cfg.dir as i16 * self.cfg.seek_duty_q15)
             }
             Phase::SeekRead => {
                 self.phase = Phase::SeekEval;
@@ -400,7 +436,7 @@ impl Experiment for Anchor {
                     self.last_pos = Some(o.pos);
                     let start = *self.seek_start.get_or_insert(o.pos);
                     if self.still >= self.stall_polls {
-                        if let Err(reason) = seek::at_stop(start, o.pos, DIR as i8, self.stops) {
+                        if let Err(reason) = seek::at_stop(start, o.pos, self.cfg.dir, self.stops) {
                             self.halt = Some(reason);
                             self.phase = Phase::FinishDuty;
                             return Cmd::Pause { ms: 0 };
@@ -423,7 +459,7 @@ impl Experiment for Anchor {
                 // a backstop: every poll pauses poll_ms, so the clock ends
                 // the hold first
                 self.polls_left = self.cfg.hold_ms / self.cfg.poll_ms.max(1) + 1;
-                self.goal(DIR * self.cfg.hold_duty_q15)
+                self.goal(self.cfg.dir as i16 * self.cfg.hold_duty_q15)
             }
             Phase::HoldRead => {
                 self.phase = Phase::HoldEval;
@@ -557,6 +593,42 @@ mod tests {
         }
         // the polls before t0 are the seek's
         assert!(exp.polls().iter().any(|p| p.t_ms < t0));
+        assert_safe_tail(&log);
+    }
+
+    /// The same hold pointed at the high stop: every drive is positive, the
+    /// seek seats near the high stop, and every window reads the planted R
+    /// at the command, as the low stop's does.
+    #[test]
+    fn a_hold_toward_the_high_stop_reads_the_same_r() {
+        let mut servo = servo();
+        let cfg = AnchorCfg { dir: 1, ..short() };
+        let (exp, log, abort) = run(&mut servo, cfg);
+        assert_eq!(abort, None);
+        assert_eq!((exp.refused(), exp.ended_early()), (None, None));
+        let seat = exp.seat().expect("seated");
+        assert!(seat >= 4000 - seek::STOP_TOL, "seat {seat}");
+        let marks = exp.marks().expect("marks");
+        assert_eq!((marks.seat, marks.hold_seat, marks.dir), (seat, seat, 1));
+        assert_eq!(marks.t0_ms, exp.t0_ms().unwrap());
+        assert_eq!(marks.end_ms, exp.polls().last().unwrap().t_ms);
+        assert_eq!(
+            exp.hold().map(|h| (h.t0_ms, h.seat)),
+            Some((marks.t0_ms, seat))
+        );
+        let held = held_ms(&exp);
+        assert!((3000.0..3100.0).contains(&held), "held {held}");
+        assert!(exp.samples().len() > 50, "{} windows", exp.samples().len());
+        for x in exp.samples() {
+            assert!((r_of(&x.w) - 3.37).abs() < 0.05, "r {}", r_of(&x.w));
+            assert!(x.commanded && x.reads(), "{x:?}");
+        }
+        assert!(
+            log.iter()
+                .filter_map(|l| l.strip_prefix("write goal_duty "))
+                .all(|v| v.parse::<i32>().unwrap() >= 0),
+            "{log:?}"
+        );
         assert_safe_tail(&log);
     }
 
