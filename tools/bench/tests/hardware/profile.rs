@@ -10,7 +10,7 @@ use serial_test::serial;
 
 use crate::support::bench;
 
-/// The turnaround scatter: pos+vcal(4) + vmotor_a(2) + enc_a(2)
+/// The turnaround scatter: pos+vref_raw(4) + vmotor_a(2) + enc_a(2)
 /// from the raw telemetry block: the protocol sec 5.2 cyclic-telemetry shape.
 const SCATTER: [(u16, u8); 3] = [(POS, 4), (VMOTOR_A, 2), (ENC_A, 2)];
 

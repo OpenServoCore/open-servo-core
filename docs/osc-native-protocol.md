@@ -704,7 +704,7 @@ in sample order, high side first, so no named field lies in its way.
 | addr  | name              | width | notes                                                       |
 | ----- | ----------------- | ----- | ----------------------------------------------------------- |
 | 0x238 | `pos`             | u16   | raw pot |
-| 0x23A | `vcal`            | u16   | |
+| 0x23A | `vref_raw`        | u16   | the 1.2 V internal reference against VDD |
 | 0x23C | `vbus_raw`        | u16   | |
 | 0x23E | `ntc_raw`         | u16   | |
 | 0x240 | `current_raw`     | u16   | the shunt at the counter peak |

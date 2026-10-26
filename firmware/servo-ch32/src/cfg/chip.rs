@@ -68,7 +68,7 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 /// Motor-terminal dividers, under 3 kOhm with reservoir caps.
 pub const ADC_TERMINAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
-/// Cap-backed or internal taps (pot, rail, NTC, Vcal).
+/// Cap-backed or internal taps (pot, rail, NTC, Vref).
 pub const ADC_RESERVOIR_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.

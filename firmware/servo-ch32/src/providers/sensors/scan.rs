@@ -65,7 +65,7 @@ pub(crate) const ADC_SENSOR_COUNT: usize = 5;
 
 /// Slot 0 is the current-sense amplifier output, read on whichever external
 /// channel the board routes the OPA output to; then both motor terminals
-/// (drive-window-critical, so they convert early), then pos, then Vcal,
+/// (drive-window-critical, so they convert early), then pos, then Vref,
 /// then the slow board taps (rail, NTC) appended last so the bench-validated
 /// terminal window floors keep their meaning. Each role's channel comes from
 /// the board's `BoardWiring` (`current_sense.opa.out`, `sensors`) via
@@ -89,7 +89,7 @@ const SCAN_IDX_VMOTOR_B: usize = 2;
 pub(super) const SCAN_IDX_TAP_HIGH: usize = 1;
 pub(super) const SCAN_IDX_TAP_LOW: usize = 2;
 const SCAN_IDX_POS: usize = 3;
-const SCAN_IDX_VCAL: usize = 4;
+const SCAN_IDX_VREF: usize = 4;
 const SCAN_IDX_VBUS: usize = 5;
 const SCAN_IDX_NTC: usize = 6;
 
@@ -115,7 +115,7 @@ const _: () = {
     const SPAN: usize = ADC_DMA_BUF_LEN * size_of::<u16>();
     assert!(offset_of!(T, _scan) == 0);
     assert!(offset_of!(T, pos) == peak(SCAN_IDX_POS));
-    assert!(offset_of!(T, vcal) == peak(SCAN_IDX_VCAL));
+    assert!(offset_of!(T, vref_raw) == peak(SCAN_IDX_VREF));
     assert!(offset_of!(T, vbus_raw) == peak(SCAN_IDX_VBUS));
     assert!(offset_of!(T, ntc_raw) == peak(SCAN_IDX_NTC));
     assert!(peak(SCAN_IDX_NTC) + size_of::<u16>() == SPAN);
@@ -357,7 +357,7 @@ mod tests {
 
     const SEQ_FWD: [adc::Channel; ADC_SCAN_LEN] = {
         use adc::Channel::*;
-        [IN0, IN1, IN2, IN3, Vcal, IN5, IN6]
+        [IN0, IN1, IN2, IN3, Vref, IN5, IN6]
     };
     /// A converter that reads each channel as its own number x 100.
     fn read(ch: adc::Channel) -> u16 {
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn burst_frame_follows_the_mask() {
         use adc::Channel::*;
-        let seq = [IN0, IN1, IN2, IN3, Vcal, IN5, IN6];
+        let seq = [IN0, IN1, IN2, IN3, Vref, IN5, IN6];
         let names = |mask: u8| {
             let (frame, len) = burst_frame(mask, &seq);
             assert_eq!(len, frame_len(mask) as usize, "chans {mask:#06b}");

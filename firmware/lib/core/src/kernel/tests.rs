@@ -160,7 +160,7 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
         vmotor_a_trough: 3000,
         vmotor_b: 40,
         vmotor_b_trough: 40,
-        vcal: 1200,
+        vref_raw: 1489,
         vbus_raw: vbus_raw(3000),
         ntc_raw: 2048,
     }
@@ -1940,7 +1940,7 @@ impl Plant {
             vmotor_a_trough: va,
             vmotor_b: vb,
             vmotor_b_trough: vb,
-            vcal: 1200,
+            vref_raw: 1489,
             vbus_raw: vbus_raw(self.vbus),
             ntc_raw: 2048,
         }

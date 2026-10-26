@@ -388,7 +388,7 @@ mod tests {
             vmotor_b: 0x0B00 + i,
             vbus_raw: 0x0C00 + i,
             ntc_raw: 0x0D00 + i,
-            vcal: 0x0500 + i,
+            vref_raw: 0x0500 + i,
             vmotor_a_trough: 0x0700 + i,
             vmotor_b_trough: 0x0800 + i,
             tick_flags: if i.is_multiple_of(2) {

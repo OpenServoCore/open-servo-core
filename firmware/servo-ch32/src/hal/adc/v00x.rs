@@ -15,14 +15,16 @@ pub enum Channel {
     IN5 = 5,
     IN6 = 6,
     IN7 = 7,
-    // IN8 is VREFINT, the 1.2 V internal reference (RM sec 9.2.2); not scanned.
-    /// IN10 = "Vcal" per datasheet block diagram, about VDD/2: it tracks the
-    /// ADC reference, so it cannot see a VDD change. SMP lives in SAMPTR1.
-    Vcal = 10,
+    /// IN8 = VREFINT, the 1.2 V internal reference (RM sec 9.2.2). The ADC
+    /// reference is VDD itself on this package, so this count is the one
+    /// reading of VDD: VDD = 1.2 V x 4096 / count. IN9 is the OPA's internal
+    /// output and IN10 ("VCAL" on the datasheet block diagram) is about
+    /// VDD/2, ratiometric, blind to a VDD change; neither is scanned.
+    Vref = 8,
 }
 
 impl Channel {
-    /// `None` for internal channels (Vcal). Caller configures pin as analog input.
+    /// `None` for internal channels (Vref). Caller configures pin as analog input.
     pub const fn pin(self) -> Option<Pin> {
         match self {
             Channel::IN0 => Some(Pin::PA2),
@@ -33,7 +35,7 @@ impl Channel {
             Channel::IN5 => Some(Pin::PD5),
             Channel::IN6 => Some(Pin::PD6),
             Channel::IN7 => Some(Pin::PD4),
-            Channel::Vcal => None,
+            Channel::Vref => None,
         }
     }
 }
@@ -255,7 +257,7 @@ mod tests {
 
     #[test]
     fn internal_channels_have_no_pin() {
-        assert!(Channel::Vcal.pin().is_none());
+        assert!(Channel::Vref.pin().is_none());
     }
 
     #[test]
