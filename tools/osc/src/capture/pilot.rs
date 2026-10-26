@@ -1198,7 +1198,7 @@ fn record<S: Servo>(s: &mut S, cfg: &Cfg) -> Result<Recording> {
 }
 
 fn gate<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
-    battery::before_drive(c, id)
+    battery::stop_on_flat(c, id)
 }
 
 /// A pilot recording at the session defaults: no baseline, every step with

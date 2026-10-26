@@ -1,9 +1,11 @@
-//! Battery gate: nothing drives on a pack near empty. The pack is read at
-//! rest as the rail through the board's vbus divider plus its
-//! rail_drop_mv, all from the servo's own calib table. The capture session
-//! gates the supply it was told; a drive tool reads the rail and takes a
-//! rail in USB's range for USB, which has no gate, and anything else for a
-//! 2S pack.
+//! Battery gate: a pack near empty is called out before anything drives.
+//! The pack is read at rest as the rail through the board's vbus divider
+//! plus its rail_drop_mv, all from the servo's own calib table. The capture
+//! session gates the supply it was told and stops on a flat pack. A drive
+//! tool reads the rail and takes a rail in USB's range for USB, which has
+//! no gate, and anything else for a 2S pack, and it only warns: the supply
+//! is the user's, a bench supply sits at whatever level an experiment asks
+//! for, and the servo's own undervoltage trip is the guard against a sag.
 
 use anyhow::{Result, bail};
 use osc_client::Id;
@@ -116,9 +118,19 @@ pub(crate) fn read_pack_mv<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Option<
     Ok(read(c, id)?.1)
 }
 
-/// Refuse to drive on a flat pack; read at rest, before anything turns
-/// torque on.
+/// Warn about a flat pack; read at rest, before anything turns torque on.
 pub(crate) fn before_drive<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
+    let (rail, pack) = read(c, id)?;
+    match drive_gate(rail, pack) {
+        Verdict::Ok => {}
+        Verdict::Warn(m) | Verdict::Refuse(m) => eprintln!("warning: {m}"),
+    }
+    Ok(())
+}
+
+/// The capture session's stop on a flat pack, read at rest before a
+/// recording: the session was told its supply is a pack and runs unattended.
+pub(crate) fn stop_on_flat<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
     let (rail, pack) = read(c, id)?;
     match drive_gate(rail, pack) {
         Verdict::Ok => Ok(()),
@@ -207,21 +219,23 @@ mod tests {
     }
 
     /// The bench servo on a 2S pack at 3.5 V a cell less a millivolt: the
-    /// gate every drive tool runs when it reads the servo's limits refuses
-    /// it in plain words, and the servo was never told to turn torque on.
+    /// check every drive tool runs before it drives warns and goes on, and
+    /// turns no torque on itself; the capture session's stop refuses the
+    /// same pack in plain words.
     #[test]
-    fn a_flat_pack_is_refused_before_torque_on() {
+    fn a_flat_pack_warns_a_drive_tool_and_stops_a_session() {
+        let flat = "the pack reads 6.99 V at rest, under its floor of 7.00 V (3.50 V a cell): \
+                    charge it before anything drives";
         let (mut c, id) = fake(1675);
-        let err = crate::rig::limits::read(&mut c, id).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "the pack reads 6.99 V at rest, under its floor of 7.00 V (3.50 V a cell): charge \
-             it before anything drives"
-        );
+        before_drive(&mut c, id).expect("a flat pack warns, it is not refused");
         let torque = c.read(id, control::TORQUE_ENABLE.addr, 1).unwrap();
         assert_eq!(torque, [0]);
+        assert_eq!(stop_on_flat(&mut c, id).unwrap_err().to_string(), flat);
+        let (mut c, id) = fake(0);
+        before_drive(&mut c, id).expect("an unreadable rail warns, it is not refused");
+        assert!(stop_on_flat(&mut c, id).is_err());
         let (mut c, id) = fake(1777);
-        before_drive(&mut c, id).expect("a charged pack drives");
+        stop_on_flat(&mut c, id).expect("a charged pack drives");
     }
 
     /// The in-process servo on the bench board's sense chain, its rail
