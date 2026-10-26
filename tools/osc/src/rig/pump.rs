@@ -19,7 +19,7 @@ use osc_client::{BaudRate, Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TelBurst, TelFrame, TelemetrySnapshot, chunks_text};
-use osc_ident::limits::PermitLease;
+use osc_ident::limits::{DEADMAN_TICKS, PermitLease};
 use osc_ident::regs::{Reg, calib, config, control, telemetry};
 use osc_ident::units::{self, SenseParams};
 use osc_ident::window::{WATCH_BURST_MS, Watch, Windows, watch_rows};
@@ -95,18 +95,34 @@ pub(crate) fn with_guard<P: Pipe, T>(
 /// The stall permit lease on the servo's clock ([`PermitLease`]): writes go
 /// out through it so it sees torque and permit, and `keep` rewrites a held
 /// permit when a refresh is due. With `hold` set, every torque enable is
-/// followed by the permit.
+/// followed by the permit. On the experiment image (`experiment`,
+/// [`Servo::experiment`]) the lease is the bus dead-man instead: every
+/// torque enable is followed by `bus_deadman_ticks`, hold or not, the same
+/// write repeats at the permit's cadence, and torque off alone releases it.
 pub(crate) struct Lease {
     state: PermitLease,
     hold: bool,
+    experiment: bool,
 }
 
 impl Lease {
-    pub(crate) fn new(hold: bool) -> Self {
+    pub(crate) fn new(hold: bool, experiment: bool) -> Self {
         Self {
-            state: PermitLease::default(),
+            state: PermitLease::new(experiment),
             hold,
+            experiment,
         }
+    }
+
+    /// The held register's write: the dead-man on the experiment image,
+    /// the permit on the production one.
+    fn feed<S: Servo>(&mut self, s: &mut S) -> Result<()> {
+        let (reg, value) = if self.experiment {
+            (control::BUS_DEADMAN_TICKS, DEADMAN_TICKS as i32)
+        } else {
+            (control::STALL_PERMIT, 1)
+        };
+        self.write(s, reg, value)
     }
 
     pub(crate) fn write<S: Servo>(&mut self, s: &mut S, reg: Reg, value: i32) -> Result<()> {
@@ -115,11 +131,12 @@ impl Lease {
         Ok(())
     }
 
-    /// Torque on, then the permit when this run holds one.
+    /// Torque on, then the dead-man on the experiment image, else the
+    /// permit when this run holds one.
     pub(crate) fn torque_on<S: Servo>(&mut self, s: &mut S) -> Result<()> {
         self.write(s, control::TORQUE_ENABLE, 1)?;
-        if self.hold {
-            self.write(s, control::STALL_PERMIT, 1)?;
+        if self.experiment || self.hold {
+            self.feed(s)?;
         }
         Ok(())
     }
@@ -131,7 +148,7 @@ impl Lease {
 
     pub(crate) fn keep<S: Servo>(&mut self, s: &mut S) -> Result<()> {
         if self.state.due(s.now_ms()) {
-            self.write(s, control::STALL_PERMIT, 1)?;
+            self.feed(s)?;
         }
         Ok(())
     }
@@ -249,12 +266,34 @@ pub(crate) fn parse_tel_chunks(text: &str) -> Result<Chunks> {
     check_tel_chunks(chunks)
 }
 
-/// The servo's TEL admission, read off its identity block: the line's rate
-/// and the longest row a burst arms with (protocol sec 5.6).
+/// The servo's identity block as the rig reads it, in one request: the
+/// capability word, the line's rate and the longest TEL row a burst arms
+/// with (protocol sec 5.4 and 5.6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Identity {
+    pub(crate) caps: u32,
+    pub(crate) baud: BaudRate,
+    pub(crate) row_bytes_max: usize,
+}
+
+impl Identity {
+    /// The servo runs the experiment image (kernel sec 2.7).
+    pub(crate) fn experiment(&self) -> bool {
+        self.caps & osc_protocol::table::CAP_EXPERIMENT != 0
+    }
+}
+
+/// The servo's TEL admission ([`identity`]): the line's rate and the
+/// longest row a burst arms with.
 pub(crate) fn tel_row_limit<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(BaudRate, usize)> {
+    let i = identity(c, id)?;
+    Ok((i.baud, i.row_bytes_max))
+}
+
+pub(crate) fn identity<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Identity> {
     use osc_protocol::table::{BAUD_RATE_IDX, CAP_TEL_ROWS, CAPABILITY_FLAGS, TEL_ROW_BYTES_MAX};
     let n = BAUD_RATE_IDX + 1 - CAPABILITY_FLAGS;
-    let raw = c.read(id, CAPABILITY_FLAGS, n).context("tel row limit")?;
+    let raw = c.read(id, CAPABILITY_FLAGS, n).context("identity read")?;
     let at = |addr: u16| raw.get((addr - CAPABILITY_FLAGS) as usize).copied();
     let caps = u32::from_le_bytes(
         raw.get(..4)
@@ -267,7 +306,11 @@ pub(crate) fn tel_row_limit<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(BaudR
     let idx = at(BAUD_RATE_IDX).context("short identity read")?;
     let baud = BaudRate::from_idx(idx).with_context(|| format!("baud_rate_idx {idx}"))?;
     let max = at(TEL_ROW_BYTES_MAX).context("short identity read")?;
-    Ok((baud, max as usize))
+    Ok(Identity {
+        caps,
+        baud,
+        row_bytes_max: max as usize,
+    })
 }
 
 /// What a window folds, duty to the differential with the trough riding
@@ -606,7 +649,8 @@ pub(crate) struct Pump<'a, S: Servo = Wire<&'a mut Client<NusbPipe>>> {
     /// source (the experiment gets the same frames via push_tel).
     pub(crate) tel: Vec<TelFrame>,
     /// The experiment writes its own permit; this only keeps it alive.
-    lease: Lease,
+    /// Bound to the servo's image at the first run.
+    lease: Option<Lease>,
     /// The servo's PWM period, read at the first burst.
     pwm_period_ticks: Option<u16>,
     /// Each Read also reads the board NTC and `therm_flags`.
@@ -631,7 +675,7 @@ impl<'a, S: Servo> Pump<'a, S> {
             watch: None,
             lost: 0,
             tel: Vec::new(),
-            lease: Lease::new(false),
+            lease: None,
             pwm_period_ticks: None,
             therm: false,
         }
@@ -650,13 +694,17 @@ impl<'a, S: Servo> Pump<'a, S> {
     pub(crate) fn run(&mut self, exp: &mut dyn Experiment) -> Result<()> {
         let mut pending: Option<TelemetrySnapshot> = None;
         let s = &mut self.servo;
+        let experiment = s.experiment()?;
+        let lease = self
+            .lease
+            .get_or_insert_with(|| Lease::new(false, experiment));
         loop {
             if STOP.load(Ordering::SeqCst) {
                 bail!("interrupted");
             }
-            self.lease.keep(s)?;
+            lease.keep(s)?;
             match exp.step(pending.take().as_ref()) {
-                Cmd::Write { reg, value } => self.lease.write(s, reg, value)?,
+                Cmd::Write { reg, value } => lease.write(s, reg, value)?,
                 Cmd::Read => {
                     let w = Watching::get(&mut self.watch, s)?;
                     let mut snap = s.snapshot()?;
@@ -684,7 +732,7 @@ impl<'a, S: Servo> Pump<'a, S> {
                         if STOP.load(Ordering::SeqCst) {
                             bail!("interrupted");
                         }
-                        let slice = self.lease.slice(left).min(WATCH_BURST_MS);
+                        let slice = lease.slice(left).min(WATCH_BURST_MS);
                         let end = s.now_ms() + slice as f64;
                         let rows = watch_rows(slice as f64, w.tick_hz);
                         if rows > 0 {
@@ -700,7 +748,7 @@ impl<'a, S: Servo> Pump<'a, S> {
                             s.sleep(((end - s.now_ms()).ceil() as u32).clamp(1, 5));
                         }
                         left -= slice;
-                        self.lease.keep(s)?;
+                        lease.keep(s)?;
                     }
                 }
                 Cmd::Stream {
@@ -708,7 +756,7 @@ impl<'a, S: Servo> Pump<'a, S> {
                     goal,
                     chunks,
                 } => {
-                    self.lease.check_stream(samples.into())?;
+                    lease.check_stream(samples.into())?;
                     let (frames, st) = s.stream(samples.into(), goal, chunks)?;
                     eprintln!(
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
@@ -1063,7 +1111,7 @@ mod tests {
 
     #[test]
     fn a_held_permit_refuses_a_stream_it_would_lapse_inside() {
-        let mut l = Lease::new(false);
+        let mut l = Lease::new(false, false);
         l.state.wrote(control::TORQUE_ENABLE, 1, 0.0);
         l.state.wrote(control::STALL_PERMIT, 1, 0.0);
         assert!(l.check_stream(15_000).is_ok(), "750 ms");
@@ -1073,6 +1121,45 @@ mod tests {
             l.check_stream(u16::MAX.into()).is_ok(),
             "torque off holds nothing"
         );
+    }
+
+    /// Torque on feeds the lease of the image: the permit when the run
+    /// holds one on the production image, the dead-man always on the
+    /// experiment image; the keep rewrites the same register once due, a
+    /// stream of any length rides the dead-man, and torque off drops both.
+    #[test]
+    fn torque_on_feeds_the_lease_of_the_image() {
+        use crate::capture::Supply;
+        use crate::rig::servo::bench::Bench;
+        use osc_ident::limits::PERMIT_REFRESH_MS;
+        let on = (control::TORQUE_ENABLE, 1);
+        let permit = (control::STALL_PERMIT, 1);
+        let deadman = (control::BUS_DEADMAN_TICKS, DEADMAN_TICKS as i32);
+        for (experiment, hold, feed) in [
+            (false, false, None),
+            (false, true, Some(permit)),
+            (true, false, Some(deadman)),
+            (true, true, Some(deadman)),
+        ] {
+            let mut b = Bench::mg90(Supply::TwoS);
+            b.experiment = experiment;
+            let mut l = Lease::new(hold, b.experiment().unwrap());
+            l.torque_on(&mut b).unwrap();
+            let want: Vec<_> = [on].into_iter().chain(feed).collect();
+            assert_eq!(b.writes, want, "experiment {experiment} hold {hold}");
+            b.writes.clear();
+            l.keep(&mut b).unwrap();
+            assert!(b.writes.is_empty(), "nothing due yet");
+            b.sleep(PERMIT_REFRESH_MS);
+            l.keep(&mut b).unwrap();
+            assert_eq!(b.writes, feed.into_iter().collect::<Vec<_>>());
+            assert_eq!(l.check_stream(60_000).is_ok(), experiment || !hold);
+            b.writes.clear();
+            l.write(&mut b, control::TORQUE_ENABLE, 0).unwrap();
+            b.sleep(PERMIT_REFRESH_MS);
+            l.keep(&mut b).unwrap();
+            assert_eq!(b.writes, vec![(control::TORQUE_ENABLE, 0)]);
+        }
     }
 
     #[test]

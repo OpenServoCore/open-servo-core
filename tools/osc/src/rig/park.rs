@@ -77,7 +77,14 @@ pub(crate) fn park<S: Servo>(s: &mut S, center: u16, duty_q15: i16) -> Result<()
             match poll(&mut watch, s.snapshot()?.pos, center, duty) {
                 // braked, not left to coast: the jam check that may follow
                 // judges a shaft that moves as one its duty moved
-                Ok(true) => return brake_to_rest(s, &mut Lease::new(false), duty.signum() as i8),
+                Ok(true) => {
+                    let experiment = s.experiment()?;
+                    return brake_to_rest(
+                        s,
+                        &mut Lease::new(false, experiment),
+                        duty.signum() as i8,
+                    );
+                }
                 Ok(false) => {}
                 Err(reason) => {
                     return Err(Aborted {

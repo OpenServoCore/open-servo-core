@@ -611,6 +611,7 @@ impl KernelProbe {
 #[cfg(test)]
 impl KernelProbe {
     /// The record less the tags it carries between ticks.
+    #[cfg(not(feature = "experiment"))]
     pub(crate) fn booked(&self) -> Self {
         Self {
             before: Self::ZERO.before,

@@ -233,6 +233,10 @@ impl<P: Providers> TelStream for TelLane<P> {
         }
         bench::tel_hook(&self.clock, top);
     }
+
+    fn streaming(&self) -> bool {
+        self.ch.active()
+    }
 }
 
 impl<P: Providers> TelLane<P> {

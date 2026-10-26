@@ -1,14 +1,21 @@
 //! The per-tick half of the kernel: measure the window the previous
 //! command drove, then drive what the medium half last commanded. Owns
 //! every piece of state that moves at the PWM rate; reads nothing from the
-//! control table.
+//! control table. The experiment image (kernel sec 2.7) keeps the window
+//! measurement and the overcurrent trip and drives the OpenLoop goal as
+//! written: no current loop, no duty ceiling, no back-EMF sums.
 
+#[cfg(not(feature = "experiment"))]
 use super::loops::current::{CurrentLoop, RailClamp};
+#[cfg(not(feature = "experiment"))]
 use super::loops::duty_limit::DutyLimiter;
 use super::loops::faults::{self, FaultLatch, OcDetector};
+#[cfg(not(feature = "experiment"))]
 use super::loops::limits::IBand;
+#[cfg(not(feature = "experiment"))]
+use crate::estimator::BemfObs;
 use crate::estimator::bias::Zero;
-use crate::estimator::{BemfObs, BiasTracker, window};
+use crate::estimator::{BiasTracker, window};
 use crate::kernel::KernelTiming;
 use crate::kernel::config::KernelConfig;
 use crate::regions::telemetry::tick_flag;
@@ -21,11 +28,13 @@ pub enum Drive {
     #[default]
     Off,
     /// The position hold's park: the winding short.
+    #[cfg(not(feature = "experiment"))]
     Brake,
     /// OpenLoop at `goal_q15`, already clamped to `duty_max`.
     OpenLoop { goal_q15: i32 },
     /// The current loop on `Command::i_ref_cc`, with the Ke feed-forward
     /// (`current::u_ff_vc`) riding the profile speed (0 in Current mode).
+    #[cfg(not(feature = "experiment"))]
     Closed { u_ff_vc: i32 },
 }
 
@@ -51,17 +60,24 @@ pub(in crate::kernel) const ZERO_SETTLE_TICKS: u8 = 32;
 #[derive(Copy, Clone, Default)]
 pub struct Command {
     pub drive: Drive,
+    #[cfg(not(feature = "experiment"))]
     pub i_ref_cc: i32,
+    #[cfg(not(feature = "experiment"))]
     pub band: IBand,
     /// The duty OpenLoop applies while its ceiling sits under the window
     /// floor.
+    #[cfg(not(feature = "experiment"))]
     pub ol_base_q15: u16,
+    #[cfg(not(feature = "experiment"))]
     pub vbus_counts: u16,
+    #[cfg(not(feature = "experiment"))]
     pub vbus_recip_q15: u32,
     /// The current loop's clamp on `vbus_counts`, prepared by `prepare_rail`.
+    #[cfg(not(feature = "experiment"))]
     pub rail: RailClamp,
 }
 
+#[cfg(not(feature = "experiment"))]
 impl Command {
     /// The clamp on the undervolt-floored vbus: the same floor `VbusEst`
     /// applies to the reciprocal, so (clamp, recip) stay the contract pair
@@ -74,23 +90,33 @@ impl Command {
 }
 
 /// Fast -> medium, this tick's measurement.
+#[cfg(not(feature = "experiment"))]
 #[derive(Copy, Clone)]
 pub struct Measured {
     pub i_meas: Option<i32>,
 }
 
+/// The experiment drive reads no measurement: the trip already ran.
+#[cfg(feature = "experiment")]
+#[derive(Copy, Clone)]
+pub struct Measured;
+
 pub struct Fast {
     pwm_arr: u16,
     bias_brake_min_ticks: u16,
+    #[cfg(not(feature = "experiment"))]
     bemf_min_ticks: u16,
     i_settle_gain: window::SettleGain,
     /// Shunt zero-current offset in use; the medium step publishes it to
     /// `current_bias_counts`.
     bias: BiasTracker,
     oc: OcDetector,
+    #[cfg(not(feature = "experiment"))]
     bemf: BemfObs,
+    #[cfg(not(feature = "experiment"))]
     cur: CurrentLoop,
     /// OpenLoop's duty ceiling against the band.
+    #[cfg(not(feature = "experiment"))]
     ol: DutyLimiter,
     /// The duty actually commanded this tick, post-clamp post-gate: 0 while
     /// Brake/Disabled. Feeds next tick's window select: the gate can
@@ -122,12 +148,16 @@ impl Fast {
         Self {
             pwm_arr: timing.pwm_arr,
             bias_brake_min_ticks: timing.bias_brake_min_ticks,
+            #[cfg(not(feature = "experiment"))]
             bemf_min_ticks: timing.bemf_min_ticks,
             i_settle_gain: timing.i_settle_gain,
             bias: BiasTracker::new(),
             oc: OcDetector::new(),
+            #[cfg(not(feature = "experiment"))]
             bemf: BemfObs::new(),
+            #[cfg(not(feature = "experiment"))]
             cur: CurrentLoop::new(),
+            #[cfg(not(feature = "experiment"))]
             ol: DutyLimiter::new(),
             duty_q15: 0,
             ticks: 0,
@@ -148,19 +178,23 @@ impl Fast {
         self.oc.reset();
     }
 
+    #[cfg(not(feature = "experiment"))]
     pub fn reset_current_loop(&mut self) {
         self.cur.reset();
     }
 
+    #[cfg(not(feature = "experiment"))]
     pub fn reset_limiter(&mut self, floor_q15: u16) {
         self.ol.reset(floor_q15);
     }
 
+    #[cfg(not(feature = "experiment"))]
     pub fn take_pinned(&mut self) -> bool {
         self.ol.take_pinned()
     }
 
     /// Medium-boundary close of the back-EMF boxcar half (`BemfObs`).
+    #[cfg(not(feature = "experiment"))]
     pub fn close_bemf_half(
         &mut self,
         r_q12: u16,
@@ -174,6 +208,7 @@ impl Fast {
         self.duty_q15
     }
 
+    #[cfg(not(feature = "experiment"))]
     pub fn i_meas_last(&self) -> i16 {
         self.i_meas_last
     }
@@ -242,6 +277,7 @@ impl Fast {
             // 12-bit taps: |vdiff| <= 4095
             self.vdiff_last = vdiff as i16;
         }
+        #[cfg(not(feature = "experiment"))]
         self.bemf.sample(
             ticks,
             vdiff.filter(|_| ticks >= self.bemf_min_ticks as u32),
@@ -266,11 +302,16 @@ impl Fast {
             (&raw mut (*t).tick_flags).write_volatile(flags);
         }
 
-        Measured { i_meas }
+        #[cfg(not(feature = "experiment"))]
+        let out = Measured { i_meas };
+        #[cfg(feature = "experiment")]
+        let out = Measured;
+        out
     }
 
     /// The motor command for this tick: the fault latch gates, then the
     /// medium half's command runs.
+    #[cfg(not(feature = "experiment"))]
     pub fn drive(
         &mut self,
         m: &Measured,
@@ -417,6 +458,79 @@ impl Fast {
             }
         }
         out
+    }
+
+    /// The motor command for this tick on the experiment image: the fault
+    /// latch gates, then the OpenLoop goal drives as written, no ceiling,
+    /// no endstop, no base duty.
+    #[cfg(feature = "experiment")]
+    pub fn drive(
+        &mut self,
+        _: &Measured,
+        cfg: &KernelConfig,
+        cmd: &Command,
+        faults: &FaultLatch,
+    ) -> MotorCmd {
+        // a fault raised this tick, fast or medium, disables this tick's
+        // drive
+        let drive = if faults.mask() == 0 {
+            cmd.drive
+        } else {
+            core::hint::cold_path();
+            Drive::Off
+        };
+        let out = match drive {
+            Drive::OpenLoop { goal_q15: goal } => {
+                // a reversal or a zero goal: the held current restarts from 0
+                if goal.signum() != (self.duty_q15 as i32).signum() {
+                    self.i_meas_last = 0;
+                }
+                let duty = goal as i16;
+                self.duty_q15 = duty;
+                if duty == 0 && cfg.limits.openloop_zero_brake {
+                    // chip-side Drive{0, Slow} maps to coast; a winding short
+                    // must be commanded explicitly
+                    self.decay = DecayMode::Slow;
+                    MotorCmd::Brake
+                } else {
+                    self.drive_cmd(duty, cfg.limits.openloop_decay, cfg.limits.drive_polarity)
+                }
+            }
+            Drive::Off => {
+                self.duty_q15 = 0;
+                MotorCmd::Disabled
+            }
+        };
+        self.book(out);
+        out
+    }
+
+    /// The bridge state `out` leaves and its settle toward a zero-current
+    /// sample; off and the brake drive nothing, so the held current drops
+    /// (`i_meas_last`). The production drive carries the same tail inline:
+    /// factored out, the tick ISR comes out 100 B larger.
+    #[cfg(feature = "experiment")]
+    #[inline(always)]
+    fn book(&mut self, out: MotorCmd) {
+        let bridge = match out {
+            MotorCmd::Disabled => Bridge::Asleep,
+            MotorCmd::Brake => Bridge::Brake,
+            MotorCmd::Drive { .. } if self.duty_q15 == 0 => Bridge::Coast,
+            _ => Bridge::Drive,
+        };
+        if bridge == self.bridge {
+            self.settle = self.settle.saturating_sub(1);
+        } else {
+            self.settle = ZERO_SETTLE_TICKS;
+            self.bridge = bridge;
+        }
+        match out {
+            MotorCmd::Drive { ticks, .. } => self.ticks = ticks,
+            _ => {
+                self.ticks = 0;
+                self.i_meas_last = 0;
+            }
+        }
     }
 
     /// The drive of `duty` (logical: +duty moves counts up) in the wiring's

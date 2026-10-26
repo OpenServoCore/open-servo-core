@@ -26,14 +26,10 @@ hot=(
     scan::swap_taps
     burst::on_dma_event
     burst::handshake
-    TrajGen::step_position
-    DutyLimiter::step
-    Medium::drive_stage
     __qingke_rt_DMA1_CHANNEL1
     __qingke_rt_TIM2
     __qingke_rt_USART1
     __qingke_rt_SysTick
-    math::recip_div
     limits::floor_log2
     ServoBus::drive_framer
     ServoBus::route_frame
@@ -73,6 +69,18 @@ bench_hot=(
     KernelProbe::event_tick
 )
 
+# The loops and folds the experiment image compiles out (kernel sec 2.7),
+# and the dead-man it runs in their place; one set or the other.
+production_hot=(
+    TrajGen::step_position
+    DutyLimiter::step
+    Medium::drive_stage
+    math::recip_div
+)
+experiment_hot=(
+    Medium::deadman
+)
+
 elf="${1:-firmware/boards/osc-dev-v006/target/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app}"
 if [[ ! -f "$elf" ]]; then
   echo "error: ELF not found: $elf" >&2
@@ -97,6 +105,11 @@ syms="$("$nm" -C --defined-only "$elf" \
 
 if grep -q ' KERNEL_PROBE$' <<<"$("$nm" --defined-only "$elf")"; then
   hot+=("${bench_hot[@]}")
+fi
+if grep -q 'Medium::deadman$' <<<"$syms"; then
+  hot+=("${experiment_hot[@]}")
+else
+  hot+=("${production_hot[@]}")
 fi
 
 fail=0

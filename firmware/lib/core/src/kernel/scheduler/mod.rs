@@ -11,9 +11,11 @@ use core::sync::atomic::{Ordering, compiler_fence};
 
 use self::table::{DECIM_MED, phase};
 use super::KernelConfig;
+use super::phases::Medium;
 use super::phases::fast::{Command, Fast};
 use super::phases::loops::faults::FaultLatch;
-use super::phases::{self, Control, Medium};
+#[cfg(not(feature = "experiment"))]
+use super::phases::{self, Control};
 use crate::estimator::window;
 use crate::traits::{ControlIo, Motor, TelStream};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
@@ -125,6 +127,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // the count load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
         self.cfg.take(shared);
+        #[cfg(not(feature = "experiment"))]
         self.medium.drive.take(self.cfg.limits.drive_polarity);
         let v_floor = self.cfg.v_floor_q15[self.cfg.limits.openloop_decay as usize];
         let p = shared.table.region_ptr();
@@ -146,21 +149,27 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(self.cfg.ol_floor_q15);
         }
         self.take_config(shared);
+        #[cfg(not(feature = "experiment"))]
         self.cmd.prepare_rail(&self.cfg);
     }
 
     /// First tick: the configuration, then the observer, the winding
-    /// estimate and the bias tracker seeded at the boot measurement.
+    /// estimate and the bias tracker seeded at the boot measurement. The
+    /// experiment image seeds the bias alone: it reads neither the position
+    /// table nor the NTC.
     fn boot(&mut self, shared: &Shared) {
-        let frame = shared.frame();
         self.configure(shared);
-        let ctl = Control::read(shared);
-        self.medium.seed(
-            phases::pos_q4(shared, ctl.lut_live, frame.pos()),
-            frame.ntc_raw(),
-            &self.cfg,
-            &mut self.faults,
-        );
+        #[cfg(not(feature = "experiment"))]
+        {
+            let frame = shared.frame();
+            let ctl = Control::read(shared);
+            self.medium.seed(
+                phases::pos_q4(shared, ctl.lut_live, frame.pos()),
+                frame.ntc_raw(),
+                &self.cfg,
+                &mut self.faults,
+            );
+        }
         let p = shared.table.region_ptr();
         // SAFETY: same volatile read contract; install stamped the boot rest
         // measurement here before the first tick, and from here on this
@@ -200,6 +209,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             phase::SPARE_A if config_due(shared.config_seq(), self.config_seq) => {
                 self.take_config(shared)
             }
+            #[cfg(not(feature = "experiment"))]
             phase::SPARE_B if self.medium.drive.unproven() => {
                 let duty = self.fast.duty_q15();
                 if self.medium.drive.check(self.medium.theta_q4(), duty) {
@@ -214,6 +224,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // Asked only at a start: a count read every tick costs every tick.
         self.tel
             .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
+        // the dead-man counts bus silence by the medium period, and a burst
+        // is the host silent by design: the TEL stream is in hand here
+        #[cfg(feature = "experiment")]
+        if phase == phase::RAIL {
+            self.medium
+                .deadman(shared, self.tel.streaming(), &mut self.faults);
+        }
         let staged = self.medium.step(
             phase,
             &self.cfg,

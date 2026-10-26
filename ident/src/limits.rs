@@ -17,6 +17,11 @@ pub const PERMIT_REFRESH_MS: u32 = 250;
 /// while a stream runs, and the refresh before it may already be due.
 pub const PERMIT_STREAM_MAX_MS: u32 = 750;
 
+/// What a pump writes into `bus_deadman_ticks` on the experiment image:
+/// 20000 kernel ticks at 20 kHz is one second of bus silence before the
+/// servo coasts, rewritten every [`PERMIT_REFRESH_MS`] while torque is on.
+pub const DEADMAN_TICKS: u16 = 20_000;
+
 /// Full scale of the 12-bit pot ADC; soft limits spanning it are the board
 /// default, not a calibration.
 pub const POT_MAX: i32 = 4095;
@@ -258,20 +263,42 @@ impl std::error::Error for Refusal {}
 /// the rewrites as no-ops. A pump mirrors every write it sends through
 /// [`PermitLease::wrote`] and rewrites the permit whenever it is `due`. The
 /// clock is the caller's: pass milliseconds on any monotone timebase.
+///
+/// On the experiment image there is no permit: the held register is
+/// `bus_deadman_ticks`, a keepalive the same cadence feeds, and a stream of
+/// any length rides it, since a burst holds the countdown on the servo.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct PermitLease {
+    experiment: bool,
     torque: bool,
     held: bool,
     last_ms: f64,
 }
 
 impl PermitLease {
+    /// A lease on the production image, or on the experiment image.
+    pub fn new(experiment: bool) -> Self {
+        Self {
+            experiment,
+            ..Self::default()
+        }
+    }
+
+    /// The register the lease is held behind.
+    pub fn held_reg(&self) -> Reg {
+        if self.experiment {
+            control::BUS_DEADMAN_TICKS
+        } else {
+            control::STALL_PERMIT
+        }
+    }
+
     /// Mirror one write sent at `now_ms`.
     pub fn wrote(&mut self, reg: Reg, value: i32, now_ms: f64) {
         if reg == control::TORQUE_ENABLE {
             self.torque = value != 0;
             self.held &= self.torque;
-        } else if reg == control::STALL_PERMIT {
+        } else if reg == self.held_reg() {
             // written with torque off it grants nothing
             self.held = value != 0 && self.torque;
             self.last_ms = now_ms;
@@ -297,9 +324,10 @@ impl PermitLease {
         }
     }
 
-    /// Refuse a stream of `ms` the held permit would lapse inside.
+    /// Refuse a stream of `ms` the held permit would lapse inside; the
+    /// dead-man holds through a burst, so the experiment image refuses none.
     pub fn check_stream(&self, ms: u32) -> Result<(), Refusal> {
-        if self.held && ms > PERMIT_STREAM_MAX_MS {
+        if self.held && !self.experiment && ms > PERMIT_STREAM_MAX_MS {
             return Err(Refusal::StreamOverLease { ms });
         }
         Ok(())
@@ -1125,6 +1153,33 @@ mod tests {
         assert!(!l.held() && !l.due(1000.0), "torque off drops it");
         assert_eq!(l.slice(3000), 3000);
         assert_eq!(l.check_stream(3000), Ok(()));
+    }
+
+    /// On the experiment image the lease is held behind `bus_deadman_ticks`
+    /// at the permit's cadence, the permit byte holds nothing, no stream is
+    /// refused, and torque off drops it.
+    #[test]
+    fn the_experiment_lease_is_the_deadman() {
+        let mut l = PermitLease::new(true);
+        assert_eq!(l.held_reg(), control::BUS_DEADMAN_TICKS);
+        l.wrote(control::TORQUE_ENABLE, 1, 0.0);
+        l.wrote(control::STALL_PERMIT, 1, 10.0);
+        assert!(!l.held(), "the permit byte is not the lease here");
+        l.wrote(control::BUS_DEADMAN_TICKS, DEADMAN_TICKS.into(), 20.0);
+        assert!(l.held());
+        assert!(!l.due(269.0));
+        assert!(l.due(270.0));
+        assert_eq!(l.slice(3000), PERMIT_REFRESH_MS);
+        assert_eq!(l.check_stream(3000), Ok(()), "a burst holds the count");
+        l.wrote(control::BUS_DEADMAN_TICKS, 0, 30.0);
+        assert!(!l.held(), "a zero field is off");
+        l.wrote(control::BUS_DEADMAN_TICKS, DEADMAN_TICKS.into(), 40.0);
+        l.wrote(control::TORQUE_ENABLE, 0, 50.0);
+        assert!(!l.held() && !l.due(1000.0), "torque off drops it");
+        let mut off = PermitLease::new(true);
+        off.wrote(control::BUS_DEADMAN_TICKS, DEADMAN_TICKS.into(), 0.0);
+        assert!(!off.held(), "written with torque off it holds nothing");
+        assert_eq!(PermitLease::new(false).held_reg(), control::STALL_PERMIT);
     }
 
     /// The bench MG90's SG90-era continuous current and trip: both warned

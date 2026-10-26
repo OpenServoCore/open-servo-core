@@ -1,4 +1,5 @@
 use super::Kernel;
+#[cfg(not(feature = "experiment"))]
 use super::table::{DECIM_SLOW, phase};
 use crate::budget::Regime;
 use crate::kernel::phases::fast;
@@ -23,6 +24,7 @@ pub struct ProbeTags {
     pub drive: u8,
 }
 
+#[cfg(not(feature = "experiment"))]
 impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     /// The kernel as the budget probe tags the tick after it.
     pub fn probe_tags(&self) -> ProbeTags {
@@ -39,6 +41,27 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 fast::Drive::Off | fast::Drive::Brake => Regime::Open,
             },
             drive: self.medium.drive.state(),
+        }
+    }
+}
+
+#[cfg(feature = "experiment")]
+impl<I: ControlIo, T: TelStream> Kernel<I, T> {
+    /// The experiment kernel runs no SLOW stage and no drive direction
+    /// check: its wiring reads proven and its drive is open or OpenLoop.
+    pub fn probe_tags(&self) -> ProbeTags {
+        ProbeTags {
+            phase: self.phase,
+            config_seq: self.config_seq,
+            booted: self.booted,
+            slow_due: false,
+            slow_finish: false,
+            regime: match self.cmd.drive {
+                _ if self.faults.mask() != 0 => Regime::Open,
+                fast::Drive::OpenLoop { .. } => Regime::OpenLoop,
+                fast::Drive::Off => Regime::Open,
+            },
+            drive: 0,
         }
     }
 }

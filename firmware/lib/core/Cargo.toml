@@ -26,3 +26,6 @@ crc = { workspace = true }
 default = []
 defmt   = ["dep:defmt", "osc-log/defmt", "control-table/defmt"]
 log     = ["osc-log/log"]
+# The experiment image (kernel sec 2.7): OpenLoop alone, the trip and the
+# bus dead-man its protections; the loops and estimators compile out.
+experiment = []

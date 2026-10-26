@@ -43,4 +43,6 @@ bench-telcost = ["bench", "osc-servo-drivers/bench-telcost"]
 # The uncommon tick instruments beside the bench record: gamma(k), long
 # ticks, entry lateness.
 bench-window = ["bench"]
+# The experiment image: the kernel's experiment half (kernel sec 2.7).
+experiment   = ["osc-servo-core/experiment"]
 defmt        = ["dep:defmt", "osc-servo-core/defmt", "osc-servo-drivers/defmt", "osc-log/defmt"]

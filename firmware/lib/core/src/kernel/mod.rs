@@ -23,10 +23,13 @@ pub mod phases;
 mod scheduler;
 
 pub use config::{KernelConfig, SPAN_END, SPAN_START};
+#[cfg(not(feature = "experiment"))]
 pub use phases::loops::current::CurrentLoop;
 pub use phases::loops::limits::{IBand, LimitState};
+#[cfg(not(feature = "experiment"))]
 pub use phases::loops::position::PosOut;
 pub use phases::loops::trajectory::TrajGen;
+#[cfg(not(feature = "experiment"))]
 pub use phases::loops::velocity::VelocityLoop;
 pub use scheduler::table::{
     DECIM_MED, DECIM_SLOW, HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, HEALTH_LOST_MAX, TICK_HZ,
@@ -34,5 +37,5 @@ pub use scheduler::table::{
 };
 pub use scheduler::{Kernel, KernelTiming, ProbeTags};
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "experiment")))]
 mod tests;

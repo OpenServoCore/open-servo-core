@@ -152,6 +152,10 @@ impl ControlTableCell {
             common.hardware_revision = hw_rev;
             common.firmware_version = crate::FIRMWARE_VERSION;
             common.capability_flags = table::CAP_TEL_ROWS;
+            #[cfg(feature = "experiment")]
+            {
+                common.capability_flags |= table::CAP_EXPERIMENT;
+            }
             common.tel_row_bytes_max = crate::tel::ROW_BYTES_MAX as u8;
             common.tel_chunks_max = crate::tel::CHUNKS_MAX as u8;
         });
@@ -209,6 +213,10 @@ mod tests {
             assert_eq!(t.config.common.hardware_revision, 3);
             assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
             assert_ne!(t.config.common.capability_flags & table::CAP_TEL_ROWS, 0);
+            assert_eq!(
+                t.config.common.capability_flags & table::CAP_EXPERIMENT != 0,
+                cfg!(feature = "experiment")
+            );
             assert_eq!(t.config.common.tel_row_bytes_max, 12);
             assert_eq!(t.config.common.tel_chunks_max, 2);
         });

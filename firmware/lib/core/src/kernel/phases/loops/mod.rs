@@ -1,7 +1,11 @@
+#[cfg(not(feature = "experiment"))]
 pub mod current;
+#[cfg(not(feature = "experiment"))]
 pub mod duty_limit;
 pub mod faults;
 pub mod limits;
+#[cfg(not(feature = "experiment"))]
 pub mod position;
 pub mod trajectory;
+#[cfg(not(feature = "experiment"))]
 pub mod velocity;

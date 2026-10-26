@@ -5,30 +5,54 @@
 //! (`phase`), one stage of the chain each, one file each, dispatched from
 //! the schedule's table; every value is
 //! written by the phase that computes it and read by the later phases and
-//! by the fast half.
+//! by the fast half. The experiment image (`experiment`, kernel sec 2.7)
+//! swaps in a medium half of CONTROL, the bus dead-man and PUBLISH alone.
 
+#[cfg(not(feature = "experiment"))]
 mod control;
+#[cfg(feature = "experiment")]
+mod experiment;
 pub(in crate::kernel) mod fast;
+#[cfg(not(feature = "experiment"))]
 mod limits;
 pub mod loops;
+#[cfg(not(feature = "experiment"))]
 mod observer;
+#[cfg(not(feature = "experiment"))]
 mod publish;
+#[cfg(not(feature = "experiment"))]
 mod rail;
+#[cfg(not(feature = "experiment"))]
 mod slow;
+#[cfg(not(feature = "experiment"))]
 mod trajectory;
+#[cfg(not(feature = "experiment"))]
 mod velocity;
 
+#[cfg(not(feature = "experiment"))]
 pub(in crate::kernel) use control::Control;
+#[cfg(feature = "experiment")]
+pub(in crate::kernel) use experiment::Medium;
 
+#[cfg(not(feature = "experiment"))]
 use self::loops::faults::{Detectors, DriveCheck, FaultLatch};
+#[cfg(not(feature = "experiment"))]
 use self::loops::limits::{IBand, LimitState};
+#[cfg(not(feature = "experiment"))]
 use self::loops::trajectory::TrajGen;
+#[cfg(not(feature = "experiment"))]
 use self::loops::velocity::VelocityLoop;
+#[cfg(not(feature = "experiment"))]
 use super::config::KernelConfig;
+#[cfg(not(feature = "experiment"))]
 use super::{DECIM_SLOW, KernelTiming};
+#[cfg(not(feature = "experiment"))]
 use crate::Shared;
+#[cfg(not(feature = "experiment"))]
 use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm};
+#[cfg(not(feature = "experiment"))]
 use crate::pos_lut;
+#[cfg(not(feature = "experiment"))]
 use crate::regions::control::Mode;
 
 /// The linearized pot (pos_lut module), Q4 counts: the one measurement
@@ -36,6 +60,7 @@ use crate::regions::control::Mode;
 /// reads it (trajectory, position loop, soft limits, stall gates) are in
 /// linearized counts. The raw pot stays for the sensors publish, TEL `pos`
 /// and the glitch screen.
+#[cfg(not(feature = "experiment"))]
 pub(in crate::kernel) fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
     if lut_live {
         shared.pos_lut_q4(raw)
@@ -44,6 +69,7 @@ pub(in crate::kernel) fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u1
     }
 }
 
+#[cfg(not(feature = "experiment"))]
 pub(in crate::kernel) struct Medium {
     /// `KernelTiming::dt_med_q32`.
     dt_med_q32: u32,
@@ -90,6 +116,7 @@ pub(in crate::kernel) struct Medium {
     pub(in crate::kernel) hold: bool,
 }
 
+#[cfg(not(feature = "experiment"))]
 impl Medium {
     pub fn new(timing: &KernelTiming) -> Self {
         Self {
