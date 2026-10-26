@@ -500,7 +500,7 @@ mod tests {
         use super::telemetry::addr::{estimates, limits, refs, tick};
         use super::telemetry_ext::addr::{health, limits_ext, therm};
         assert_eq!(
-            [tick::POS, tick::VCAL, tick::VBUS_RAW, tick::NTC_RAW],
+            [tick::POS, tick::VREF_RAW, tick::VBUS_RAW, tick::NTC_RAW],
             [0x224 + 20, 0x23A, 0x23C, 0x23E]
         );
         assert_eq!(

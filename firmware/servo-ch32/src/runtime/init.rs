@@ -162,7 +162,7 @@ fn calib_sense_ext(cal: &Calibration, pre: &Precomputed) -> CalibSenseExt {
     }
 }
 
-// Order mirrors the scan tail in `configure_adc_dma_scan` (Vcal aside).
+// Order mirrors the scan tail in `configure_adc_dma_scan` (Vref aside).
 fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
     [s.vmotor.0, s.vmotor.1, s.pos, s.vbus, s.ntc]
 }
@@ -311,7 +311,7 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_sample_time(sensors.pos.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
-    adc::set_sample_time(adc::Channel::Vcal, chip::ADC_RESERVOIR_SAMPLE_TIME);
+    adc::set_sample_time(adc::Channel::Vref, chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.vbus.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.ntc.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_low_power(true);
@@ -321,7 +321,7 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
         sensors.vmotor.0.channel(),
         sensors.vmotor.1.channel(),
         sensors.pos.channel(),
-        adc::Channel::Vcal,
+        adc::Channel::Vref,
         sensors.vbus.channel(),
         sensors.ntc.channel(),
     ]);

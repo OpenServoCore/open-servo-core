@@ -238,7 +238,7 @@ Ticks are 48 MHz TIM1 ticks (20.8 ns). The PWM half-period is 1200 ticks, so a d
 |ADC clock|24 MHz (HCLK / 2).|`servo-ch32/src/hal/clocks.rs`|
 |Aperture|13.5 ADC clocks on every channel. A conversion is 26 clocks: 1.083 us, 52 ticks, 0.92 Msps.|`cfg/chip.rs`, nb10 sec 8|
 |Trigger|TIM1 update (TRGO) at the counter crest and at the trough, so two scans a period. TIM1 CH4 (CCR4 = ARR - 68) starts the low-side tap's injected conversion before the crest: tap B forward, tap A reverse.|`providers/sensors/scan.rs`|
-|Scan order|shunt, high tap, low tap, pos, vcal, vbus, ntc: vmA before vmB forward, vmB before vmA reverse. The order follows a direction flip one period late.|`main.rs`, `providers/sensors/scan.rs`|
+|Scan order|shunt, high tap, low tap, pos, vref, vbus, ntc: vmA before vmB forward, vmB before vmA reverse. The order follows a direction flip one period late.|`main.rs`, `providers/sensors/scan.rs`|
 |Sample closes from the crest|Low-side tap -37 (injected), shunt +31, high-side tap +83; the scan's own low-side tap +135, read only from the trough scan (Fast decay). The same in both directions. The ADC's 2-clock trigger delay included.|nb10 sec 8, bringup `captures/winding-r/injb`|
 
 Under slow decay the drive window is centred on the crest, so the crest scan reads the driven half; under fast decay the trough scan does.

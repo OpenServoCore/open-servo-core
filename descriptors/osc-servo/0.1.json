@@ -952,7 +952,7 @@
       "kind": "uint"
     },
     {
-      "name": "vcal",
+      "name": "vref_raw",
       "addr": 570,
       "width": 2,
       "access": "ro",

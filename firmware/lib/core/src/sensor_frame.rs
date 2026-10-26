@@ -15,7 +15,7 @@ pub struct SensorFrame {
     pub vmotor_b: u16,
     pub vbus_raw: u16,
     pub ntc_raw: u16,
-    pub vcal: u16,
+    pub vref_raw: u16,
     pub vmotor_a_trough: u16,
     pub vmotor_b_trough: u16,
 }
@@ -36,7 +36,7 @@ impl SensorFrame {
             (&raw mut (*tick).vmotor_b).write_volatile(self.vmotor_b);
             (&raw mut (*tick).vbus_raw).write_volatile(self.vbus_raw);
             (&raw mut (*tick).ntc_raw).write_volatile(self.ntc_raw);
-            (&raw mut (*tick).vcal).write_volatile(self.vcal);
+            (&raw mut (*tick).vref_raw).write_volatile(self.vref_raw);
             (&raw mut (*tick).vmotor_a_trough).write_volatile(self.vmotor_a_trough);
             (&raw mut (*tick).vmotor_b_trough).write_volatile(self.vmotor_b_trough);
         }

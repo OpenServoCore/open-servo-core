@@ -70,7 +70,7 @@ fn main() -> ! {
             // VSYS.
             rail_drop_mv: 250,
             vdd_mv: 3300,
-            // Scan order is [shunt, high tap, low tap, pos, vcal, vbus, ntc],
+            // Scan order is [shunt, high tap, low tap, pos, vref, vbus, ntc],
             // the taps following the drive direction. The i floor sits inside the settle gain's reach (`i_settle_gain`),
             // where the amplifier's own deficit is a calibrated gain, not an
             // error. On a motor the edge also charges the winding's terminal

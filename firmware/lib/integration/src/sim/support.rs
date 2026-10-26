@@ -96,7 +96,7 @@ pub fn tel_sample(i: u32) -> TelSample {
             vmotor_b: raw(0x600),
             vbus_raw: raw(0xC00),
             ntc_raw: raw(0xD00),
-            vcal: raw(0x500),
+            vref_raw: raw(0x500),
             vmotor_a_trough: raw(0x700),
             vmotor_b_trough: raw(0x800),
             tick_flags: valid,

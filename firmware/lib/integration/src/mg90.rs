@@ -153,7 +153,7 @@ impl Mg90 {
             vmotor_a_trough: va,
             vmotor_b: vb,
             vmotor_b_trough: vb,
-            vcal: 1200,
+            vref_raw: 1489,
             vbus_raw: vbus_raw(VBUS as u16),
             ntc_raw: 2048,
         }

@@ -193,7 +193,7 @@ pub mod telemetry {
     pub const VMOTOR_B: Reg = reg(0x0244, 2);
     pub const VBUS_RAW: Reg = reg(0x023c, 2);
     pub const NTC_RAW: Reg = reg(0x023e, 2);
-    pub const VCAL: Reg = reg(0x023a, 2);
+    pub const VREF_RAW: Reg = reg(0x023a, 2);
     pub const VMOTOR_A_TROUGH: Reg = reg(0x024e, 2);
     pub const VMOTOR_B_TROUGH: Reg = reg(0x0250, 2);
     /// `osc_servo_core::regions::telemetry::tick_flag` bits.
@@ -328,7 +328,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("vmotor_b", telemetry::VMOTOR_B),
     ("vbus_raw", telemetry::VBUS_RAW),
     ("ntc_raw", telemetry::NTC_RAW),
-    ("vcal", telemetry::VCAL),
+    ("vref_raw", telemetry::VREF_RAW),
     ("vmotor_a_trough", telemetry::VMOTOR_A_TROUGH),
     ("vmotor_b_trough", telemetry::VMOTOR_B_TROUGH),
     ("tick_flags", telemetry::TICK_FLAGS),

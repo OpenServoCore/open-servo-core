@@ -11,7 +11,7 @@ use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::telemetry::addr::refs::ENC_A;
 use osc_servo_core::regions::telemetry::addr::tick::{POS, VMOTOR_A};
 
-/// pos+vcal(4) + vmotor_a(2) + enc_a(2): the scatter
+/// pos+vref_raw(4) + vmotor_a(2) + enc_a(2): the scatter
 /// `tests/hardware/profile.rs` gates the turnaround on.
 const SCATTER: [(u16, u8); 3] = [(POS, 4), (VMOTOR_A, 2), (ENC_A, 2)];
 

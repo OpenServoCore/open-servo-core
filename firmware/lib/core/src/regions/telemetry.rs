@@ -71,8 +71,10 @@ pub struct TelemetryTick {
     pub _scan: [u16; 10],
     #[ct_field(access = ro)]
     pub pos: u16,
+    /// The chip's 1.2 V internal reference, counted against VDD, which is
+    /// the ADC reference: VDD = 1.2 V x 4096 / vref_raw.
     #[ct_field(access = ro)]
-    pub vcal: u16,
+    pub vref_raw: u16,
     /// Direct supply divider tap (the rail `vbus_counts` derives from).
     #[ct_field(access = ro)]
     pub vbus_raw: u16,
