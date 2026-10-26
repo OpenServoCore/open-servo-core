@@ -255,6 +255,17 @@ enum Cmd {
     },
     /// Read the whole control table, one decoded line per descriptor field.
     Dump,
+    /// Flash the STAT lamp at logged moments, the bench clapper: one CSV
+    /// line per flash on stdout, `flash,t_before,t_after` in Unix seconds
+    /// taken either side of the write.
+    Clapper {
+        /// Number of flashes.
+        #[arg(long, default_value_t = 12)]
+        flashes: u32,
+        /// Flash length in control ticks (20 kHz, so 2000 is 100 ms).
+        #[arg(long, default_value_t = 2000)]
+        ticks: u16,
+    },
     /// Identify the motor and synthesize its gains: experiments, fits,
     /// write-back.
     Ident(ident::Args),
@@ -798,6 +809,39 @@ fn set(
     Ok(())
 }
 
+/// The gaps between flashes, irregular on purpose so the flashes in a
+/// recording match the log in one way only; none shorter than a flash.
+const CLAPPER_GAPS_MS: [u64; 8] = [900, 1700, 800, 2300, 1200, 3100, 1000, 1500];
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn clapper(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    d: &descriptor::Descriptor,
+    flashes: u32,
+    ticks: u16,
+) -> Result<()> {
+    let f = descriptor::field(d, "stat_flash_ticks")?;
+    let data = ticks.to_le_bytes();
+    println!("flash,t_before,t_after");
+    for k in 0..flashes {
+        std::thread::sleep(std::time::Duration::from_millis(
+            CLAPPER_GAPS_MS[k as usize % CLAPPER_GAPS_MS.len()],
+        ));
+        let before = unix_now();
+        c.write(id, f.addr, &data)?;
+        let after = unix_now();
+        println!("{k},{before:.4},{after:.4}");
+    }
+    Ok(())
+}
+
 fn dump(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor) -> Result<()> {
     // A status frame carries <= 252 payload bytes; walk the table in chunks
     // and slice each field's bytes out of the flat image.
@@ -1064,6 +1108,12 @@ fn main() -> Result<()> {
             let d = state::descriptor(&mut c, id)?;
             state::warn(&mut c, id, &d)?;
             dump(&mut c, id, &d)
+        }
+        Cmd::Clapper { flashes, ticks } => {
+            let mut c = connect_bus(&cli)?;
+            let d = state::descriptor(&mut c, id)?;
+            state::warn(&mut c, id, &d)?;
+            clapper(&mut c, id, &d, *flashes, *ticks)
         }
         Cmd::Ident(args) => ident::run(args, cli.bus.clone(), cli.id),
         Cmd::Cal(args) => cal::run(args, cli.bus.clone(), cli.id),
