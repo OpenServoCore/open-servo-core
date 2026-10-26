@@ -186,6 +186,7 @@ pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
             vmotor_b: opt(&parts[10])?,
             vbus_raw: opt(&parts[11])?,
             ntc_raw: opt(&parts[12])?,
+            vref_raw: None,
         });
     }
     Ok(out)
@@ -700,6 +701,7 @@ mod tests {
                 vmotor_b: Some(12),
                 vbus_raw: Some(2290),
                 ntc_raw: None,
+                vref_raw: None,
             },
             TelFrame {
                 tick: 17,
@@ -715,6 +717,7 @@ mod tests {
                 vmotor_b: Some(3),
                 vbus_raw: None,
                 ntc_raw: Some(2050),
+                vref_raw: None,
             },
         ];
         write_tel_frames(&dir, "tel.csv", &frames).unwrap();

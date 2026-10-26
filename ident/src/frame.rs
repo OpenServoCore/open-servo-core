@@ -213,6 +213,8 @@ pub struct TelFrame {
     pub vmotor_b: Option<u16>,
     pub vbus_raw: Option<u16>,
     pub ntc_raw: Option<u16>,
+    /// The chip's 1.2 V reference against VDD (`vref_raw`).
+    pub vref_raw: Option<u16>,
 }
 
 impl TelFrame {
@@ -272,6 +274,7 @@ pub fn decode_row(chunks: &Chunks, i_window_min_ticks: u16, row: &[u8], tick: u6
         vmotor_b: take(t::VMOTOR_B),
         vbus_raw: take(t::VBUS_RAW),
         ntc_raw: take(t::NTC_RAW),
+        vref_raw: take(t::VREF_RAW),
     }
 }
 
@@ -458,6 +461,7 @@ mod tests {
             vmotor_b: sel(t::VMOTOR_B).then_some(s.vmotor_b),
             vbus_raw: sel(t::VBUS_RAW).then_some(s.vbus_raw),
             ntc_raw: sel(t::NTC_RAW).then_some(s.ntc_raw),
+            vref_raw: sel(t::VREF_RAW).then_some(s.vref_raw),
         }
     }
 

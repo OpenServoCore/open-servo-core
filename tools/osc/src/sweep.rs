@@ -606,7 +606,7 @@ fn rest<S: Servo>(s: &mut S, ms: u32) -> Result<()> {
 
 /// `pos_lin` stays an empty column: the stream no longer carries it, and
 /// every recording keeps one header.
-pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_counts,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin";
+pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_counts,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,vref_raw,pos_lin";
 
 pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
@@ -614,7 +614,7 @@ pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     for f in &s.frames {
         writeln!(
             w,
-            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{},{},{},",
+            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{},{},{},{},",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -628,6 +628,7 @@ pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
             opt(f.vmotor_b.map(|v| v as i32)),
             opt(f.vbus_raw.map(|v| v as i32)),
             opt(f.ntc_raw.map(|v| v as i32)),
+            opt(f.vref_raw.map(|v| v as i32)),
         )?;
     }
     Ok(())

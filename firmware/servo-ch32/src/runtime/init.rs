@@ -311,7 +311,7 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_sample_time(sensors.pos.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
-    adc::set_sample_time(adc::Channel::Vref, chip::ADC_RESERVOIR_SAMPLE_TIME);
+    adc::set_sample_time(adc::Channel::Vref, chip::ADC_VREF_SAMPLE_TIME);
     adc::set_sample_time(sensors.vbus.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.ntc.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_low_power(true);

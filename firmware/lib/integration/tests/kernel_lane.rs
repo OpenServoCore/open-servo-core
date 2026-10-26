@@ -194,16 +194,24 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 /// runs, inside FRAME_DONE. CH6 is idle at every arm: a row's copy lands
 /// before the next tick's entry, and a late tick's row arms an exit and
 /// an entry behind the last at least.
+///
+/// Two ticks bound the crest, apart: the scheduler's publish gate starts
+/// no burst on SPARE_A nor while a take is pending, so a refresh tick
+/// carries no row and a row rides at most the drive stage.
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{
         DRIVE_STAGE, ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, TROUGH_DONE,
     };
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
-    let ahead = REFRESH.max(DRIVE_STAGE);
     const { assert!(ENTRY + TROUGH_DONE <= NEXT_TROUGH) };
-    let done = ENTRY + ahead + FRAME_DONE + copy;
-    assert!(done <= NEXT_CREST, "{done} past {NEXT_CREST}");
+    let refresh = ENTRY + REFRESH + FRAME_DONE;
+    assert!(
+        refresh <= NEXT_CREST,
+        "refresh tick {refresh} past {NEXT_CREST}"
+    );
+    let row = ENTRY + DRIVE_STAGE + FRAME_DONE + copy;
+    assert!(row <= NEXT_CREST, "row tick {row} past {NEXT_CREST}");
     assert!(copy <= ENTRY_EXIT, "a {copy} copy outlasts {ENTRY_EXIT}");
 }
 

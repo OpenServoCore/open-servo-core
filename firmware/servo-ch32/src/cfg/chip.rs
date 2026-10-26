@@ -51,12 +51,12 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 // === ADC ===
 
 // Apertures at ADCCLK 24 MHz. TCONV = aperture + 12.5, so 13.5 cycles puts
-// every channel at 1.083 us, fS 0.92 MHz. That is the binding constraint:
-// V006 datasheet Table 3-23 allows VDD down to 2.4 V only while fS stays at
-// or under 1 MHz, and this board's MCU rail is 3.3 V. Above the line the
-// part wants 4.5 V. 13.5 cycles also clears every source impedance here by a
-// wide margin (RAIN table: 3.5 cycles already holds under 1.5 kOhm, 7.5
-// under 3 kOhm), which is free once the rate ceiling sets the aperture.
+// every channel but Vref at 1.083 us, fS 0.92 MHz. That is the binding
+// constraint: V006 datasheet Table 3-23 allows VDD down to 2.4 V only while
+// fS stays at or under 1 MHz, and this board's MCU rail is 3.3 V. Above the
+// line the part wants 4.5 V. 13.5 cycles also clears every source impedance
+// here by a wide margin (RAIN table: 3.5 cycles already holds under 1.5 kOhm,
+// 7.5 under 3 kOhm), which is free once the rate ceiling sets the aperture.
 //
 // The aperture width does not trade against rest current noise at 24 MHz:
 // a 562 ns aperture holds the phase-locked part to 0.76 counts against 0.68
@@ -68,8 +68,12 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 /// Motor-terminal dividers, under 3 kOhm with reservoir caps.
 pub const ADC_TERMINAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
-/// Cap-backed or internal taps (pot, rail, NTC, Vref).
+/// Cap-backed board taps (pot, rail, NTC).
 pub const ADC_RESERVOIR_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
+/// The 1.2 V reference, scanned right behind the pot: at the reservoir
+/// aperture it reads about +62 counts (+4 %) high, at 28.5 cycles +3.6, at
+/// 41.5 within a count of its settled value (measured).
+pub const ADC_VREF_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES43;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
 /// A0 (PA2) doubles as an OPA positive-input route (PSEL=00), so a board

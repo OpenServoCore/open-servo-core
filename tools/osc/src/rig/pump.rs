@@ -867,6 +867,7 @@ mod tests {
                     vmotor_b: sel(t::VMOTOR_B).then_some(s.vmotor_b),
                     vbus_raw: sel(t::VBUS_RAW).then_some(s.vbus_raw),
                     ntc_raw: sel(t::NTC_RAW).then_some(s.ntc_raw),
+                    vref_raw: sel(t::VREF_RAW).then_some(s.vref_raw),
                 };
                 assert_eq!(*f, want, "{chunks:?}");
             }

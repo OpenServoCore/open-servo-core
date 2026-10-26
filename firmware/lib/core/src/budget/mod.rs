@@ -282,8 +282,8 @@ pub const ENTRY: u32 = 37;
 /// starts a tick, each at its first slot (`providers::sensors::scan` on the
 /// chip asserts the geometry): the trough scan half a period on, the crest
 /// scan a period on, each less the crest scan's length.
-pub const NEXT_TROUGH: u32 = 888;
-pub const NEXT_CREST: u32 = 2088;
+pub const NEXT_TROUGH: u32 = 832;
+pub const NEXT_CREST: u32 = 2032;
 
 /// Past the entry stamp, the latest a tick moves the trough's samples out
 /// of the next trough scan's way. E: priced as [`TEL_POLL`], 96, plus 10%.
