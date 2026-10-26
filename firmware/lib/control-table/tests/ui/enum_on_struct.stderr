@@ -12,5 +12,6 @@ error: the `repr(u8)` attribute cannot be used on structs
   |
 4 | #[repr(u8)]
   |   ^^^^^^^^
+5 | struct NotAnEnum {
   |
   = help: the `repr(u8)` attribute can only be applied to enums
