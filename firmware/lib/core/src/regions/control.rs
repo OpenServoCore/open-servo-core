@@ -73,6 +73,18 @@ pub struct ControlBurst {
     pub _rsvd_align: u8,
 }
 
+/// STAT lamp flash, the bench clapper. A committed nonzero write lights the
+/// lamp for that many control ticks (20 kHz: 2000 is 100 ms, 65535 about
+/// 3.3 s) above every other lamp rule, then the field reads 0 again. The
+/// host's own time of the write is the event; the lamp follows within one
+/// main-loop pass. Sits where `boot_mode` was (now a MGMT REBOOT arg,
+/// protocol sec 9.5), so the burst block keeps its addresses.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Block)]
+pub struct ControlStat {
+    pub stat_flash_ticks: u16,
+}
+
 /// Paged window onto the position table in RAM (`pos_lut` module).
 /// `pos_lut_page` selects `PAGE_POINTS` points of the array; a committed
 /// write carrying `pos_lut_cmd` STOREs the window into that page, FETCHes it
@@ -125,10 +137,7 @@ pub struct ControlTel {
 )]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
-    // Was `boot_mode`, now a MGMT REBOOT arg (protocol sec 9.5); kept so
-    // the burst block keeps its addresses.
-    #[ct_section(skip)]
-    pub _rsvd_system: [u8; 2],
+    pub stat: ControlStat,
     pub burst: ControlBurst,
     pub pos_lut: ControlPosLut,
     #[ct_section(skip)]
