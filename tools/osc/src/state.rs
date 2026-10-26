@@ -57,7 +57,7 @@ pub(crate) fn alert(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let d = descriptor(c, id)?;
     let s = c.data_state(id, &d)?;
     if s.fault_code != fault::NONE {
-        println!("id {}: fault {}", id.as_byte(), fault_name(s.fault_code));
+        eprintln!("id {}: fault {}", id.as_byte(), fault_name(s.fault_code));
     }
     warn(c, id, &d)?;
     Ok(())

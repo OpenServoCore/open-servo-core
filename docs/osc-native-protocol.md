@@ -1056,6 +1056,13 @@ the command back, and the duty under which the shunt reads nothing.
 Like sec 5.7 these are model facts in model-specific space, and the
 descriptor carries the addresses.
 
+**STAT flash.** `stat_flash_ticks` (u16, RW, `0x194` in CONTROL) is the
+bench clapper: a committed nonzero write lights the STAT lamp for that
+many control ticks (20 kHz, so 2000 is 100 ms and 65535 about 3.3 s), above
+the fault and setup lamp rules, after which the field reads 0 again. The
+host's own time of the write is the event a recording is lined up to; the
+lamp follows within one main-loop pass of the servo. Zero is a no-op.
+
 **Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
 the motor stall on purpose, which calibration needs to seat a hard
 stop and identification's stop routes, when asked for, need to measure

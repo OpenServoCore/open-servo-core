@@ -781,6 +781,13 @@
       "kind": "int"
     },
     {
+      "name": "stat_flash_ticks",
+      "addr": 404,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
       "name": "duty_q15",
       "addr": 406,
       "width": 2,

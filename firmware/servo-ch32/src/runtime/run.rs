@@ -46,6 +46,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     };
     let mut tel_published: u16 = 0;
     let mut lamp_test = crate::runtime::stat::LampTest::new(Monotonic.ticks());
+    let mut flash = crate::runtime::stat::Flash::default();
     loop {
         // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick
         // + SW, the bus level). Main loop owns LED housekeeping, the
@@ -66,10 +67,30 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
                 (&raw const (*mode).data_flags).read_volatile(),
             )
         };
+        // A host flash request (`stat_flash_ticks`) is taken and zeroed
+        // here. The mask folds the take against a commit landing from the
+        // bus, which is the field's only other writer.
+        let flash_ticks = pfic::mask_bus(|| {
+            // SAFETY: table storage is 'static; the bus level is masked.
+            unsafe {
+                let field = &raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
+                    .control
+                    .stat
+                    .stat_flash_ticks;
+                let ticks = field.read_volatile();
+                if ticks != 0 {
+                    field.write_volatile(0);
+                }
+                ticks
+            }
+        });
+        let now = Monotonic.ticks();
+        flash.request(now, flash_ticks);
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         let led = unsafe { crate::runtime::Drivers::stat_led() };
         led.set_pattern(crate::runtime::stat::pattern(
-            lamp_test.running(Monotonic.ticks()),
+            flash.running(now),
+            lamp_test.running(now),
             fault_code,
             data_flags,
         ));
