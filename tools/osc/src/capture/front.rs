@@ -79,8 +79,9 @@ impl Proved {
 }
 
 /// Read the servo and refuse, in plain words, anything a capture on
-/// `supply` cannot run under. The pack gate, read at rest, refuses first.
+/// `supply` cannot run under. The pack stop, read at rest, refuses first.
 pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id, supply: Supply) -> Result<Front> {
+    battery::stop_on_flat(c, id)?;
     let data = crate::state::check(c, id)?;
     let lim = limits::read(c, id)?;
     let stall = Stall::read(c, id)?;

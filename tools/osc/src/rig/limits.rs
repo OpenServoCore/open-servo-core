@@ -1,7 +1,8 @@
 //! Read the servo's limits for a drive to plan against (osc-ident
-//! `limits`), refuse a flat pack and a servo that publishes no window
-//! floor, and say out loud when its stall settings leave the current limit
-//! as the only protection. Every drive tool reads them before it drives.
+//! `limits`), warn about a flat pack, refuse a servo that publishes no
+//! window floor, and say out loud when its stall settings leave the current
+//! limit as the only protection. Every drive tool reads them before it
+//! drives.
 
 use anyhow::{Context, Result, bail};
 use osc_client::Id;
