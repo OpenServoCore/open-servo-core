@@ -10,13 +10,14 @@
 //! block (`TelemetryTick`): the trough scan and the peak scan's shunt and taps
 //! on unnamed halfwords, the peak scan's slots from `pos` on their fields.
 //!
-//! Budget at ADCCLK 24 MHz (TCONV = aperture + 12.5, RM sec 9.3; every slot
-//! runs `SampleTime::CYCLES15` = a 13.5-cycle aperture, apertures in
-//! `cfg::chip`): a conversion is 26 ADCCLK = 52 HCLK = 1.083 us and a 7-slot
-//! scan is 182 ADCCLK = 7.58 us. The peak scan's TC lands 7.6 us after its
-//! trigger and the trough trigger follows 25 us after that trigger, so the TC
-//! ISR has ~17 us to drain the trough slots before slot 0 is rewritten; the
-//! peak slots stand until the next peak trigger.
+//! Budget at ADCCLK 24 MHz (TCONV = aperture + 12.5, RM sec 9.3; apertures
+//! in `cfg::chip`): a slot at `SampleTime::CYCLES15` (a 13.5-cycle aperture)
+//! converts in 26 ADCCLK = 52 HCLK = 1.083 us, the Vref slot at `CYCLES43`
+//! (41.5) in 54 ADCCLK = 2.25 us, and a 7-slot scan is 210 ADCCLK = 8.75 us.
+//! The peak scan's TC lands 8.8 us after its trigger and the trough trigger
+//! follows 25 us after that trigger, so the TC ISR has ~16 us to drain the
+//! trough slots before slot 0 is rewritten; the peak slots stand until the
+//! next peak trigger.
 //!
 //! The terminal taps follow the drive direction. The low-side tap converts on
 //! a one-channel injected group triggered `LOW_TAP_LEAD_TICKS` before the
@@ -45,6 +46,8 @@ use crate::runtime::statics::SHARED;
 const TICKS_PER_ADCCLK: u16 = (TIM_CLK_HZ / ADCCLK_HZ) as u16;
 /// One conversion at the `CYCLES15` aperture: 13.5 + 12.5 ADCCLK.
 const CONV_CYCLES: u16 = 26;
+/// The Vref slot at the `CYCLES43` aperture: 41.5 + 12.5 ADCCLK.
+const VREF_CONV_CYCLES: u16 = 54;
 /// External trigger to aperture start.
 const TRIGGER_DELAY_CYCLES: u16 = 2;
 /// Idle between the injected conversion retiring and the crest TRGO. A
@@ -56,9 +59,10 @@ const INJECTED_GUARD_CYCLES: u16 = 6;
 /// conversion.
 pub(crate) const LOW_TAP_LEAD_TICKS: u16 =
     (CONV_CYCLES + TRIGGER_DELAY_CYCLES + INJECTED_GUARD_CYCLES) * TICKS_PER_ADCCLK;
-/// One regular scan, trigger to retire.
+/// One regular scan, trigger to retire: every slot but Vref at `CONV_CYCLES`.
 const SCAN_TICKS: u16 =
-    (TRIGGER_DELAY_CYCLES + ADC_SCAN_LEN as u16 * CONV_CYCLES) * TICKS_PER_ADCCLK;
+    (TRIGGER_DELAY_CYCLES + (ADC_SCAN_LEN as u16 - 1) * CONV_CYCLES + VREF_CONV_CYCLES)
+        * TICKS_PER_ADCCLK;
 
 /// In `AdcPins` field order: pos, vmotor.0, vmotor.1, vbus, ntc.
 pub(crate) const ADC_SENSOR_COUNT: usize = 5;
@@ -398,7 +402,7 @@ mod tests {
     #[test]
     fn the_swap_waits_for_the_idle_gap() {
         let arr = 1200;
-        assert_eq!(SCAN_TICKS, 368);
+        assert_eq!(SCAN_TICKS, 424);
         assert!(swap_gap(true, arr - SCAN_TICKS, arr));
         assert!(!swap_gap(true, arr - SCAN_TICKS + 1, arr));
         assert!(swap_gap(true, SCAN_TICKS, arr));

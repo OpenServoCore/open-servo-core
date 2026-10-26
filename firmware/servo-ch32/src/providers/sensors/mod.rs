@@ -103,7 +103,7 @@ mod tests {
     }
 
     /// A reader between the crest scan landing and the next frame (about
-    /// 6 us of each 50 us tick: the high tap lands NEXT_CREST + one
+    /// 7 us of each 50 us tick: the high tap lands NEXT_CREST + one
     /// conversion after the scan TC, the frame ENTRY past the next) reads
     /// the previous frame's taps, each under its own terminal's name, in
     /// either drive direction.
