@@ -498,7 +498,7 @@ comms RW:
 | ----- | ---------------------- | ----- | ------ | -------------------------------------- |
 | 0x000 | `model_number`         | u16   | RO     | keys the per-model map                 |
 | 0x002 | `firmware_version`     | u16   | RO     | semver packed 5.5.6: `[major:5][minor:5][patch:6]` |
-| 0x004 | `capability_flags`     | u32   | RO     | bit 0: the two TEL row registers below |
+| 0x004 | `capability_flags`     | u32   | RO     | bit 0: the two TEL row registers below; bit 1: the experiment image (sec 5.8) |
 | 0x008 | `hardware_revision`    | u8    | RO     |                                        |
 | 0x009 | -                      | 1 B   | rsvd   |                                        |
 | 0x00A | `tel_row_bytes_max`    | u8    | RO     | sec 5.6: the longest TEL row, bytes    |
@@ -838,6 +838,7 @@ newly-latched kind (`fault_code`, `0x221`):
 | 5   | 6    | `under_volt`     |
 | 6   | 7    | `data`           |
 | 6   | 8    | `drive_reversed` |
+| 7   | 9    | `deadman`        |
 
 Any set bit forces the drive off (`drive_reversed` shorts the winding
 instead, below); the `torque_enable` 0 to 1 edge is the only
@@ -1096,6 +1097,31 @@ runs again. A permit written once against a locked rotor, with a
 between 1.5 and 1.6 s after the write (DES
 `dead_host_stall_trips_within_the_lease`). A TEL burst is a silent host
 too (sec 5.6).
+
+**Bus dead-man.** `bus_deadman_ticks` (u16, RW, `0x192` in CONTROL) is
+the experiment image's host-loss guard, in kernel ticks (20 kHz, so
+20000 is one second and 65535 about 3.3 s). On that image a nonzero
+value with `torque_enable` 1 is a countdown: every instruction the bus
+dispatches to this servo (a read, a write, a ping, anything addressed
+to it) reloads it, and a streaming TEL burst holds it, since the host
+is silent by design while the burst runs. At zero the kernel latches
+`deadman` (bit 7, code 9, the table above) and the drive coasts until
+the `torque_enable` 0 to 1 ack. Torque off clears the countdown; a
+fresh enable starts it from the field; 0 is off. The production image
+accepts the field and ignores it. `osc` writes 20000 after every
+torque enable on the experiment image and rewrites it every 250 ms
+while torque is on, so a host that dies mid-drive leaves a servo that
+coasts within a second on either image.
+
+**The experiment image.** `capability_flags` bit 1 (sec 5.4) names a
+servo built with the `experiment` feature (osc-servo-kernel sec 2.7):
+the image the notebooks capture on, where the host owns safety. It
+runs OpenLoop alone at the goal as written, with the overcurrent trip
+and the bus dead-man its only protections; the `mode` byte and the
+stall permit are accepted and ignored, and the duty limiter, the
+limits fold, the closed loops, the estimators and the detectors are
+compiled out. A servo on it answers every register; the stripped ones
+(the estimates, `limit_flags`, the thermal fields) read zero.
 
 **What governs.** `limit_flags` (u8, RO, `0x27C` in TELEMETRY; `0x27D`
 is reserved) names what shaped the command at the last medium tick,

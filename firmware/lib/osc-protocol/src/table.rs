@@ -25,6 +25,10 @@ pub const TEL_CHUNKS_MAX: u16 = 0x00B;
 /// `CAPABILITY_FLAGS` bit 0: `TEL_ROW_BYTES_MAX` and `TEL_CHUNKS_MAX` are
 /// published.
 pub const CAP_TEL_ROWS: u32 = 1 << 0;
+/// `CAPABILITY_FLAGS` bit 1: the experiment image (kernel sec 2.7): OpenLoop
+/// alone, no limiter and no stall permit, the overcurrent trip and the bus
+/// dead-man its two protections.
+pub const CAP_EXPERIMENT: u32 = 1 << 1;
 /// u8 RW -- unicast address, 0x01..=0xF9 (sec 3.1).
 pub const ID: u16 = 0x010;
 /// u8 RW -- sec 2 rate index (`BaudRate` discriminant).

@@ -1590,6 +1590,7 @@ fn permit_write_bumps_the_generation_only_when_set() {
 }
 
 /// One committed plain write, as the bus lands it after a clean CRC.
+#[cfg(not(feature = "experiment"))]
 pub(crate) fn write_committed(shared: &Shared, addr: u16, data: &[u8]) {
     let mut staged = StagedWrites::new();
     let reply = go(shared, &mut staged, write(addr, data, false), true);

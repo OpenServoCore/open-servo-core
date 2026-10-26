@@ -819,7 +819,7 @@ fn chains<S: Servo>(
 
     s.write(regs.decay, Decay::Slow as i32)?;
     s.write(regs.zero_brake, 0)?;
-    let mut lease = Lease::new(cfg.stall || cfg.static_load);
+    let mut lease = Lease::new(cfg.stall || cfg.static_load, s.experiment()?);
 
     // baseline: mid-travel, torque off, noise floor at full tick rate
     if cfg.baseline_ms > 0 {
@@ -1396,7 +1396,7 @@ mod tests {
             let seek = pct_q15(15);
             seek_band(
                 &mut b,
-                &mut Lease::new(false),
+                &mut Lease::new(false, false),
                 band,
                 seek,
                 seek as i32,
@@ -1415,7 +1415,7 @@ mod tests {
         let mut b = crate::rig::servo::bench::Bench::mg90(crate::capture::Supply::TwoS);
         b.servo.pos_noise = 400.0;
         let t = b.now_ms();
-        let e = rest_before_seek(&mut b, &mut Lease::new(false))
+        let e = rest_before_seek(&mut b, &mut Lease::new(false, false))
             .err()
             .unwrap()
             .to_string();

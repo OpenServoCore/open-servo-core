@@ -84,12 +84,21 @@ impl Medium {
         cmd: &mut Command,
     ) -> bool {
         match k {
+            #[cfg(not(feature = "experiment"))]
             phase::CONTROL => self.control(shared.frame().pos(), cfg, shared, faults, fast, cmd),
+            #[cfg(feature = "experiment")]
+            phase::CONTROL => self.control(cfg, shared, faults, fast, cmd),
+            #[cfg(not(feature = "experiment"))]
             phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
+            #[cfg(not(feature = "experiment"))]
             phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
+            #[cfg(not(feature = "experiment"))]
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
+            #[cfg(not(feature = "experiment"))]
             phase::VELOCITY => self.velocity(cfg, cmd),
+            #[cfg(not(feature = "experiment"))]
             phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
+            #[cfg(not(feature = "experiment"))]
             phase::SLOW => {
                 return self.slow(shared.frame().ntc_raw(), fast.i_meas_last(), cfg, faults);
             }

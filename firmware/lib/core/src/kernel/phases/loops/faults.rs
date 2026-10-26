@@ -21,6 +21,9 @@ pub const BIT_UNDER_VOLT: u8 = 1 << 5;
 /// ([`DriveCheck`]), a motor wired the other way round from
 /// `drive_polarity`.
 pub const BIT_DATA: u8 = 1 << 6;
+/// The bus fell silent under torque for `bus_deadman_ticks`: the experiment
+/// image's host-loss guard (kernel sec 2.7).
+pub const BIT_DEADMAN: u8 = 1 << 7;
 
 /// `fault_code` values: bit index + 1, then the kinds that share a bit;
 /// 0 = no fault since the last ack.
@@ -33,6 +36,7 @@ pub const CODE_SENSOR: u8 = 5;
 pub const CODE_UNDER_VOLT: u8 = 6;
 pub const CODE_DATA: u8 = 7;
 pub const CODE_DRIVE_REVERSED: u8 = 8;
+pub const CODE_DEADMAN: u8 = 9;
 
 /// Latched mask + the LATEST newly-latched kind (`fault_code`). Re-raising
 /// an already-set bit does not touch the code, so a persisting first fault

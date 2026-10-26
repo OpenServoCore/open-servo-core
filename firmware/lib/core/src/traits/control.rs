@@ -40,6 +40,11 @@ pub trait TelStream {
     /// The tick's last work, after the drive is written: the row's second
     /// chunk, then the TX lane.
     fn on_tick_end(&mut self) {}
+    /// A burst streams: the host is silent by design, so the experiment
+    /// image's bus dead-man holds (kernel sec 2.7).
+    fn streaming(&self) -> bool {
+        false
+    }
 }
 
 /// Stream absent (boards without a burst producer, tests).

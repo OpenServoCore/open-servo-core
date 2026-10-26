@@ -50,8 +50,14 @@ pub struct ControlLifecycle {
     /// Zero requests no cap in those modes. OpenLoop uses goal_duty.
     #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]
     pub goal_current: i16,
-    #[ct_field(skip)]
-    pub _rsvd_tail: u16,
+    /// Bus dead-man, kernel ticks (20 kHz: 20000 is one second, 65535 about
+    /// 3.3 s). On the experiment image (kernel sec 2.7) a nonzero value with
+    /// torque on is a countdown that every instruction the bus dispatches
+    /// to this servo reloads and a TEL burst holds; at zero the kernel
+    /// latches `deadman` and the drive coasts until the torque enable ack.
+    /// Torque off clears the countdown; a fresh enable starts it from the
+    /// field. 0 is off. The production image accepts and ignores it.
+    pub bus_deadman_ticks: u16,
 }
 
 /// Shunt-burst request. `arm` is level, not an edge: 1 asks for a capture, 0

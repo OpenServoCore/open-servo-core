@@ -110,6 +110,8 @@ impl Dispatch for Dispatcher<'_> {
         // write -- drop it here (see revert_dangling) before this frame reads
         // or stages anything.
         self.revert_dangling();
+        #[cfg(feature = "experiment")]
+        self.shared.bus_touch();
         let alert = self.alert();
         match *req {
             Request::Ping => {

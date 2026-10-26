@@ -15,7 +15,8 @@ use osc_ident::regs::{Reg, calib, control, telemetry};
 use osc_protocol::tel::Chunks;
 
 use super::pump::{
-    BurstCap, BurstStats, admit_watch, exchange_tel_burst, read_stamped, watch_rows_on, write_reg,
+    BurstCap, BurstStats, admit_watch, exchange_tel_burst, identity, read_stamped, watch_rows_on,
+    write_reg,
 };
 use super::snapshot::read_u16;
 
@@ -60,6 +61,10 @@ pub(crate) trait Servo {
 
     /// The longest TEL burst the servo arms ([`BurstCap`]).
     fn burst_cap(&mut self) -> Result<BurstCap>;
+
+    /// The servo runs the experiment image ([`identity`]): its lease is the
+    /// bus dead-man, not the stall permit (`rig::pump::Lease`).
+    fn experiment(&mut self) -> Result<bool>;
 
     /// The PWM period the servo's TEL duty counts are of.
     fn pwm_period_ticks(&mut self) -> Result<u16> {
@@ -141,6 +146,10 @@ impl<S: Servo + ?Sized> Servo for &mut S {
     fn burst_cap(&mut self) -> Result<BurstCap> {
         (**self).burst_cap()
     }
+
+    fn experiment(&mut self) -> Result<bool> {
+        (**self).experiment()
+    }
 }
 
 /// A client, owned or borrowed.
@@ -169,6 +178,7 @@ pub(crate) struct Wire<C> {
     id: Id,
     t0: Instant,
     cap: Option<BurstCap>,
+    experiment: Option<bool>,
 }
 
 impl<C: AsClient> Wire<C> {
@@ -178,6 +188,7 @@ impl<C: AsClient> Wire<C> {
             id,
             t0: Instant::now(),
             cap: None,
+            experiment: None,
         }
     }
 }
@@ -232,6 +243,22 @@ impl<C: AsClient> Servo for Wire<C> {
     /// No admission read: the run's first watch admitted the line.
     fn watch(&mut self, rows: u16, chunks: Chunks) -> Result<(Vec<TelFrame>, bool)> {
         watch_rows_on(self.c.get(), self.id, rows, chunks)
+    }
+
+    /// Read once, at the first lease: the connect line says so.
+    fn experiment(&mut self) -> Result<bool> {
+        if let Some(experiment) = self.experiment {
+            return Ok(experiment);
+        }
+        let experiment = identity(self.c.get(), self.id)?.experiment();
+        if experiment {
+            eprintln!(
+                "id {}: experiment image, the bus dead-man in place of the stall permit",
+                self.id.as_byte()
+            );
+        }
+        self.experiment = Some(experiment);
+        Ok(experiment)
     }
 }
 
@@ -342,6 +369,10 @@ pub(crate) mod bench {
         slow: Option<(i16, Option<u16>)>,
         decay: u16,
         pub(crate) cap: BurstCap,
+        /// The image the bench servo answers for.
+        pub(crate) experiment: bool,
+        /// Every write, in order.
+        pub(crate) writes: Vec<(Reg, i32)>,
     }
 
     impl Bench {
@@ -370,6 +401,8 @@ pub(crate) mod bench {
                 slow: None,
                 decay,
                 cap,
+                experiment: false,
+                writes: Vec::new(),
             }
         }
 
@@ -398,6 +431,7 @@ pub(crate) mod bench {
         fn write(&mut self, reg: Reg, value: i32) -> Result<()> {
             let half = self.bus.write_ms / 2.0;
             self.busy(half, 0.5);
+            self.writes.push((reg, value));
             self.servo.write(reg, value);
             if reg.addr == self.decay
                 && let Some(q15) = self.fast_breakaway_q15
@@ -442,6 +476,10 @@ pub(crate) mod bench {
 
         fn burst_cap(&mut self) -> Result<BurstCap> {
             Ok(self.cap)
+        }
+
+        fn experiment(&mut self) -> Result<bool> {
+            Ok(self.experiment)
         }
 
         /// The rows the test servo drops land in the table's

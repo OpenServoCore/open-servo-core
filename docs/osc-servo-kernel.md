@@ -119,6 +119,20 @@ Arbitration is the first `match` in `on_tick`: boot, then the take, then the dri
 
 > **The main loop masks the bus level only (`pfic::mask_bus`), never the kernel.**
 
+### 2.7 The experiment image
+
+One build of the same firmware, `--features experiment`, for captures where the host owns safety: the same control table, transport, TEL and shunt burst, the same bootloader path (`osc flash` keeps META and the saved configuration). The identity block sets `capability_flags` bit 1 (`CAP_EXPERIMENT`, protocol sec 5.4), which the host tools read at connect.
+
+| Runs | Stripped (compiled out, not switched off) |
+| --- | --- |
+| FAST every tick: the window measurement, the bias tracker, the tick block publish, the overcurrent trip, the motor write | the current, velocity and position loops, the trajectory generator |
+| OpenLoop only: `goal_duty` clamped to `duty_max_q15`, `openloop_decay`, `openloop_zero_brake` and `drive_polarity` honoured; the `mode` byte is accepted and ignored, `mode_active` publishes OpenLoop | the duty limiter and the limits fold: peak cap, derate, rail fold, endstop, press fold, stall verdict |
+| MEDIUM: CONTROL (the read, the enable edge, the drive kind), the bus dead-man on the RAIL phase, PUBLISH (`current_bias_counts`, `mode_active`, `fault_code`, `fault_flags`), the configuration take on SPARE_A; the window floors at the first tick | the estimators (fusion observer, back-EMF boxcar, omega switch, rail estimate, winding thermal), the detectors (sensor screen, position error, stall, undervoltage, overtemperature, data-state entry check, Ke belt, drive direction check), the position table inside the kernel, the stall permit lease |
+
+The fault latch has two raise points. The **raw current trip** is the production overcurrent detector: `|i_meas|` over `oc_trip_counts` for `oc_trip_ticks` consecutive valid windows latches `over_current` and the drive coasts. The **bus dead-man** is `bus_deadman_ticks` (CONTROL, protocol sec 5.8): nonzero with torque on, a countdown in kernel ticks that every instruction the bus dispatches to this servo reloads (`Shared::bus_touch`, a generation counter the kernel compares once per medium period) and a streaming TEL burst holds; at zero the kernel latches `deadman` (bit 7, code 9) and the drive coasts until the torque enable ack. Torque off clears the countdown and a fresh enable starts it from the field. The stripped fields publish zero; the floors publish as today, so the host tools still refuse to drive without them.
+
+The experiment tick is a strict subset of the production tick (no estimator, no loop, no fold), so the production rows of [sec 4](#4-budgets-and-the-des) and their DES pins bound it: it carries no pin of its own. CI builds the image and runs the three binary gates on it. `scripts/build-image.sh --experiment <rev>` builds `osc-dev-v006-app-experiment`; the pins are `kernel/phases/experiment/tests.rs` (`openloop_duty_is_the_goal`, `the_trip_coasts_and_the_ack_rearms`, `the_deadman_counts_bus_silence`, `publish_is_the_truth`).
+
 ---
 
 ## 3. The kernel above the bus

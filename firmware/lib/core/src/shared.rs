@@ -44,6 +44,10 @@ pub struct Shared {
     /// window loads it a page at a time. Boot, then the bus dispatcher
     /// alone, write it - the table's single-writer contract.
     pos_lut: SyncUnsafeCell<[i16; POINTS]>,
+    /// Bumped by dispatch on every instruction addressed to this servo; the
+    /// experiment image's bus dead-man reloads when it moves (`bus_touch`).
+    /// Dispatch is the sole writer. Last, so no field above it moves.
+    bus_gen: AtomicU8,
 }
 
 #[allow(clippy::new_without_default)]
@@ -58,6 +62,7 @@ impl Shared {
             uid: SyncUnsafeCell::new([0; UID_LEN]),
             store: SyncUnsafeCell::new(None),
             pos_lut: SyncUnsafeCell::new([0; POINTS]),
+            bus_gen: AtomicU8::new(0),
         }
     }
 
@@ -112,8 +117,21 @@ impl Shared {
         unsafe { Frame::new(self.tick_block()) }
     }
 
+    #[cfg(any(test, not(feature = "experiment")))]
     pub(crate) fn permit_gen(&self) -> u8 {
         self.permit_gen.load(Ordering::Relaxed)
+    }
+
+    /// Bus dispatch: an instruction addressed to this servo arrived.
+    pub fn bus_touch(&self) {
+        self.bus_gen.store(
+            self.bus_gen.load(Ordering::Relaxed).wrapping_add(1),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn bus_gen(&self) -> u8 {
+        self.bus_gen.load(Ordering::Relaxed)
     }
 
     /// Bus dispatch, ahead of a commit reaching the kernel's inputs: the
