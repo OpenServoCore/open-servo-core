@@ -108,13 +108,13 @@ pub(crate) fn connect(bus: &Bus, ids: &[Id]) -> Result<Client<NusbPipe>> {
     let mut c = Client::connect(NusbPipe::open()?)?;
     match bus.baud.as_str() {
         "auto" => match c.find_bus_baud()? {
-            Some(rate) => println!("bus at {} baud", rate.as_hz()),
+            Some(rate) => eprintln!("bus at {} baud", rate.as_hz()),
             None => bail!("no servo bus found at any supported baud"),
         },
         s => c.host_baud(crate::parse_rate(s)?)?,
     }
     for (id, held) in c.sync_response_deadline(ids, bus.deadline)? {
-        println!(
+        eprintln!(
             "id {}: response_deadline_us {held} -> {} (volatile until SAVE)",
             id.as_byte(),
             bus.deadline
