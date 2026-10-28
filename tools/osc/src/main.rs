@@ -6,6 +6,7 @@
 //! the bench `tool-*` binaries' job, not this tool's.
 
 mod boot;
+mod burst;
 mod cal;
 mod capture;
 mod descriptor;
@@ -278,6 +279,9 @@ enum Cmd {
     /// Raw open-loop duty sweep: burst-captured TEL rungs across a duty grid
     /// for empirical plant capture (sweep.csv + meta.json).
     Sweep(sweep::Args),
+    /// Raw high-rate shunt bursts from rest at a list of step duties, no fit
+    /// (burst-K.csv + meta.json).
+    Burst(burst::Args),
     /// Plant-capture campaign on one servo and supply: `pilot` measures the
     /// servo and writes the dataset's envelope.toml, `plan` shows the session
     /// it sizes, `session` runs it, `check` re-reads a landed capture.
@@ -1119,6 +1123,7 @@ fn main() -> Result<()> {
         Cmd::Cal(args) => cal::run(args, cli.bus.clone(), cli.id),
         Cmd::CalReplay(a) => cal::replay::run(a),
         Cmd::Sweep(args) => sweep::run(args, cli.bus.clone(), cli.id),
+        Cmd::Burst(args) => burst::run(args, cli.bus.clone(), cli.id),
         Cmd::Capture(args) => capture::run(args, cli.bus.clone(), cli.id),
         Cmd::Lut(args) => lut::run(args, cli.bus.clone(), cli.id),
     }
