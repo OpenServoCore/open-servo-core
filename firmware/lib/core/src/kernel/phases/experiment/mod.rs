@@ -3,6 +3,8 @@
 //! drives the OpenLoop goal as written, and the overcurrent trip and the
 //! dead-man are the only raise points.
 
+use core::sync::atomic::{Ordering, compiler_fence};
+
 use super::fast::{Command, Drive, Fast};
 use super::loops::faults::{self, FaultLatch};
 use crate::kernel::config::KernelConfig;
@@ -20,6 +22,8 @@ struct Deadman {
     ticks: u16,
     /// `Shared::bus_gen` at the last reload.
     bus_gen: u8,
+    /// `Shared::bus_gen` as the CONTROL phase read it, ahead of `life`.
+    seen: u8,
 }
 
 pub(in crate::kernel) struct Medium {
@@ -37,6 +41,7 @@ impl Medium {
             deadman: Deadman {
                 ticks: 0,
                 bus_gen: 0,
+                seen: 0,
             },
         }
     }
@@ -51,6 +56,10 @@ impl Medium {
         cmd: &mut Command,
     ) {
         let p = shared.table.region_ptr();
+        // the generation ahead of the read: dispatch bumps it behind the
+        // write it reports, so a step seen here is in the lifecycle below
+        self.deadman.seen = shared.bus_gen();
+        compiler_fence(Ordering::Acquire);
         // SAFETY: a read of a transport-owned region - a raw-pointer
         // volatile block copy, no `&T` formed, an aligned repr(C) block
         // inside the static table (single-writer contract on `Kernel`).
@@ -63,7 +72,7 @@ impl Medium {
             faults.clear();
             fast.ack();
             self.deadman.ticks = life.bus_deadman_ticks;
-            self.deadman.bus_gen = shared.bus_gen();
+            self.deadman.bus_gen = self.deadman.seen;
         }
         self.te_prev = life.torque_enable;
         cmd.drive = self.drive(cfg, faults);
@@ -82,31 +91,26 @@ impl Medium {
         }
     }
 
-    /// RAIL: the dead-man's period. An instruction the bus dispatched since
-    /// the last period reloads the countdown from the field; a streaming
-    /// burst holds it; else it counts the period down, and at zero with
-    /// the field nonzero the fault latches. Out of line, so the tick body
-    /// keeps its shape.
+    /// RAIL: the dead-man's period. An instruction the CONTROL read saw
+    /// dispatched since the last reload reloads the countdown from the
+    /// field it read; a streaming burst holds it; else a loaded countdown
+    /// counts the period down and latches the fault at zero. Zero never
+    /// counts: the field is off, or a write the next CONTROL carries. Out
+    /// of line, so the tick body keeps its shape.
     #[inline(never)]
     #[rustc_align(4)]
-    pub(in crate::kernel) fn deadman(
-        &mut self,
-        shared: &Shared,
-        streaming: bool,
-        faults: &mut FaultLatch,
-    ) {
-        let life = &self.life;
-        if !life.torque_enable {
-            self.deadman.ticks = 0;
-            return;
-        }
-        let bus_gen = shared.bus_gen();
-        if bus_gen != self.deadman.bus_gen {
-            self.deadman.bus_gen = bus_gen;
-            self.deadman.ticks = life.bus_deadman_ticks;
-        } else if !streaming {
-            self.deadman.ticks = self.deadman.ticks.saturating_sub(DECIM_MED as u16);
-            if self.deadman.ticks == 0 && life.bus_deadman_ticks != 0 {
+    pub(in crate::kernel) fn deadman(&mut self, streaming: bool, faults: &mut FaultLatch) {
+        let d = &mut self.deadman;
+        if !self.life.torque_enable {
+            d.ticks = 0;
+        } else if d.bus_gen != d.seen {
+            d.bus_gen = d.seen;
+            d.ticks = self.life.bus_deadman_ticks;
+        } else if !streaming && d.ticks != 0 {
+            if d.ticks > DECIM_MED as u16 {
+                d.ticks -= DECIM_MED as u16;
+            } else {
+                d.ticks = 0;
                 faults.raise(faults::BIT_DEADMAN, faults::CODE_DEADMAN);
             }
         }

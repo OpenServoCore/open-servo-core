@@ -334,6 +334,60 @@ fn the_deadman_counts_bus_silence() {
     assert!(drives(&k));
 }
 
+/// A nonzero field written under torque arms the dead-man and trips
+/// nothing, wherever the write and its touch land against the CONTROL
+/// read. From 0 at the enable edge: a write of 400 landing with its touch
+/// at tick 2, between CONTROL and RAIL, is carried by the CONTROL at 10
+/// and loaded on the RAIL at 15, so the silence lapses at tick 415. A
+/// touch at tick 2 ahead of the write, as a write frame's dispatch is
+/// ahead of its commit, then the write with its own touch at tick 12,
+/// loads on the RAIL at 25: tick 425.
+#[test]
+fn the_deadman_reloads_a_field_written_under_torque() {
+    let f = frame(2000, BIAS);
+    let drives = |k: &Kernel<FakeIo, FakeTel>| {
+        fault(k) == 0 && matches!(last_cmd(k), MotorCmd::Drive { .. })
+    };
+    let lapsed = |k: &Kernel<FakeIo, FakeTel>| {
+        fault(k) == faults::BIT_DEADMAN && matches!(last_cmd(k), MotorCmd::Disabled)
+    };
+    let write = |sh: &Shared, ticks: u16| {
+        sh.table
+            .with_mut(|t| t.control.lifecycle.bus_deadman_ticks = ticks);
+        sh.bus_touch();
+    };
+
+    // the write and its touch at tick 2: ticks 2..414 drive, 415 coasts
+    let sh = Shared::new();
+    seed(&sh);
+    torque_on(&sh, 8000, 0);
+    let mut k = kernel();
+    scan(&mut k, &sh, f, 2);
+    write(&sh, 400);
+    scan(&mut k, &sh, f, 2 * DECIM_MED as u32);
+    assert!(drives(&k), "a field written under torque trips nothing");
+    scan(&mut k, &sh, f, 415 - 22);
+    assert!(drives(&k));
+    k.on_scan(f, &sh);
+    assert!(lapsed(&k));
+
+    // a touch at tick 2 ahead of the write at 12: 425 coasts
+    let sh = Shared::new();
+    seed(&sh);
+    torque_on(&sh, 8000, 0);
+    let mut k = kernel();
+    scan(&mut k, &sh, f, 2);
+    sh.bus_touch();
+    scan(&mut k, &sh, f, 10);
+    write(&sh, 400);
+    scan(&mut k, &sh, f, 2 * DECIM_MED as u32);
+    assert!(drives(&k), "a field written under torque trips nothing");
+    scan(&mut k, &sh, f, 425 - 32);
+    assert!(drives(&k));
+    k.on_scan(f, &sh);
+    assert!(lapsed(&k));
+}
+
 /// The publish carries what the image computes and nothing else: the bias
 /// and the window floors, the mode as OpenLoop, the fault; the estimates,
 /// the limits and the thermal fields read zero through a drive.

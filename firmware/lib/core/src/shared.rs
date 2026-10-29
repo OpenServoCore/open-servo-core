@@ -44,9 +44,10 @@ pub struct Shared {
     /// window loads it a page at a time. Boot, then the bus dispatcher
     /// alone, write it - the table's single-writer contract.
     pos_lut: SyncUnsafeCell<[i16; POINTS]>,
-    /// Bumped by dispatch on every instruction addressed to this servo; the
-    /// experiment image's bus dead-man reloads when it moves (`bus_touch`).
-    /// Dispatch is the sole writer. Last, so no field above it moves.
+    /// Bumped by dispatch behind every instruction addressed to this servo,
+    /// and behind the store of every write it commits; the experiment
+    /// image's bus dead-man reloads when it moves (`bus_touch`). Dispatch
+    /// is the sole writer. Last, so no field above it moves.
     bus_gen: AtomicU8,
 }
 
@@ -122,8 +123,13 @@ impl Shared {
         self.permit_gen.load(Ordering::Relaxed)
     }
 
-    /// Bus dispatch: an instruction addressed to this servo arrived.
+    /// Bus dispatch: an instruction addressed to this servo ran, or a write
+    /// landed.
     pub fn bus_touch(&self) {
+        // the kernel preempts dispatch: the write's store lands ahead of
+        // the step the kernel takes it under (`Medium::control` holds the
+        // Acquire side)
+        compiler_fence(Ordering::Release);
         self.bus_gen.store(
             self.bus_gen.load(Ordering::Relaxed).wrapping_add(1),
             Ordering::Relaxed,

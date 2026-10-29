@@ -110,10 +110,8 @@ impl Dispatch for Dispatcher<'_> {
         // write -- drop it here (see revert_dangling) before this frame reads
         // or stages anything.
         self.revert_dangling();
-        #[cfg(feature = "experiment")]
-        self.shared.bus_touch();
         let alert = self.alert();
-        match *req {
+        let dispatched = match *req {
             Request::Ping => {
                 self.ping(alert, &ctx, reply);
                 Dispatched::Done
@@ -155,7 +153,12 @@ impl Dispatch for Dispatcher<'_> {
                 self.instruction_error(alert, &ctx, reply);
                 Dispatched::Done
             }
-        }
+        };
+        // behind the arms: a COMMIT applies inside them, and the dead-man
+        // takes a field under the step that follows its store
+        #[cfg(feature = "experiment")]
+        self.shared.bus_touch();
+        dispatched
     }
 
     unsafe fn commit<R: Reply>(&mut self, reply: &mut R) {
@@ -175,6 +178,8 @@ impl Dispatch for Dispatcher<'_> {
         if config {
             self.shared.config_commit_end();
         }
+        #[cfg(feature = "experiment")]
+        self.shared.bus_touch();
         self.after_commit(addr, len);
         let mut hooks = ControlTableHooks::new(reply);
         self.shared
