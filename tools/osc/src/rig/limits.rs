@@ -4,12 +4,11 @@
 //! limit as the only protection. Every drive tool reads them before it
 //! drives.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use osc_client::Id;
 use osc_client::blocking::Client;
-use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
-use osc_ident::limits::{CLASS_R_MIN, DutyPlan, ServoLimits};
+use osc_ident::limits::ServoLimits;
 use osc_ident::regs::{calib, config, telemetry};
 use osc_ident::units::{self, SenseParams};
 use osc_protocol::table::{CAP_EXPERIMENT, CAPABILITY_FLAGS};
@@ -123,27 +122,6 @@ impl Stall {
     pub(crate) fn response(&self) -> &'static str {
         if self.folds { "yield" } else { "fault" }
     }
-}
-
-/// The stall-safe plan for a drive outside a run: by the winding R the
-/// servo carries, else by the class's lowest, which errs safe.
-pub(crate) fn plan(c: &mut Client<NusbPipe>, id: Id, lim: &ServoLimits) -> Result<DutyPlan> {
-    let sense = SenseParams {
-        shunt_r_mohm: read_u16(c, id, calib::SHUNT_R_MOHM)?,
-        gain_milli: read_u16(c, id, calib::GAIN_MILLI)?,
-        vmotor_div_top: read_u16(c, id, calib::VMOTOR_DIV_TOP)?,
-        vmotor_div_bot: read_u16(c, id, calib::VMOTOR_DIV_BOT)?,
-        vdd_mv: read_u16(c, id, calib::VDD_MV)?,
-        tick_hz: 0,
-    };
-    let (a, v) = (
-        units::amps_per_count(&sense),
-        units::volts_per_count(&sense),
-    );
-    if a <= 0.0 || v <= 0.0 {
-        bail!("CalibSense scales degenerate (shunt/gain/dividers/vdd)");
-    }
-    Ok(lim.stall_plan(CLASS_R_MIN * a / v, None))
 }
 
 #[cfg(test)]

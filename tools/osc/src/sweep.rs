@@ -1,4 +1,4 @@
-//! `osc sweep` - raw open-loop duty sweep for empirical plant capture:
+//! The open-loop duty sweep recorder under `osc capture`:
 //! per direction x per duty rung, seek to a start band by polling, brake and
 //! settle so the rung opens on a still shaft, then one
 //! goal+arm COMMIT captures a TEL burst at full tick rate - no mid-rung
@@ -38,7 +38,7 @@
 //! Free-running rungs are not capped: the firmware limiter governs them.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
@@ -47,20 +47,18 @@ use osc_client::blocking::Client;
 use osc_client::pipe::Pipe;
 use osc_ident::exp::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::frame::TelFrame;
-use osc_ident::limits::{DutyPlan, POT_MAX, ServoLimits, pct_floor};
+use osc_ident::limits::ServoLimits;
 use osc_ident::regs::{Reg, calib, control};
 use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS};
 use osc_protocol::tel::Chunks;
 
 use crate::descriptor;
-use crate::rig::Bus;
+use crate::rig::Aborted;
 use crate::rig::limits::Stall;
-use crate::rig::park::park;
 use crate::rig::plant::Snapshot;
-use crate::rig::pump::{self, BurstStats, Lease, STOP, read_snapshot};
-use crate::rig::servo::{Servo, Wire, guard};
+use crate::rig::pump::{BurstStats, Lease, STOP, read_snapshot};
+use crate::rig::servo::{Servo, guard};
 use crate::rig::snapshot::read_u16;
-use crate::rig::{Aborted, blocked};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Dirs {
@@ -184,86 +182,7 @@ pub(crate) fn feeds(steps: &[Step], k: usize) -> bool {
     )
 }
 
-/// `osc sweep` args. `--baud`/`--id` come from the top-level osc globals.
-#[derive(clap::Args, Debug)]
-pub struct Args {
-    /// Output dir; sweep.csv + meta.json land here directly.
-    #[arg(long, default_value = "./sweep-out")]
-    out: PathBuf,
-    /// Duty grid, percent of full scale; `coast:MS` / `brake:MS` entries
-    /// capture a zero-duty segment chained to the preceding step, `then:PCT`
-    /// a signed drive chained the same way (no seek).
-    #[arg(long, value_delimiter = ',', value_parser = parse_step,
-          default_values_t = (1..=20u8).map(|k| Step::Drive(k * 5, None)))]
-    duty_pct: Vec<Step>,
-    #[arg(long, value_enum, default_value_t = Dirs::Both)]
-    dirs: Dirs,
-    /// openloop_decay for the capture bursts; seeks and brakes stay slow.
-    #[arg(long, value_enum, default_value_t = Decay::Slow)]
-    decay: Decay,
-    /// Capture per rung; samples = window_ms x 20 ticks.
-    #[arg(long, default_value_t = 150)]
-    window_ms: u32,
-    /// Torque-off cool-down between rungs.
-    #[arg(long, default_value_t = 500)]
-    rest_ms: u32,
-    /// Torque-off noise-floor capture before the grid; 0 skips it.
-    #[arg(long, default_value_t = 1000)]
-    baseline_ms: u32,
-    /// Seek drive, percent of full scale [default: the duty whose stall
-    /// draws the servo's current limit, by its winding R and the rail]; a
-    /// seek whose stall draws more is refused.
-    #[arg(long)]
-    seek_duty_pct: Option<u8>,
-    /// Ceiling for the breakout escalation off a stop, percent of full
-    /// scale [default: the duty whose stall draws the servo's current
-    /// limit]; a ceiling whose stall draws more is refused. Breakout loads
-    /// the teeth like a stall does.
-    #[arg(long)]
-    seek_cap_pct: Option<u8>,
-    /// Seek the physical end stop and ladder against it instead of seeking a
-    /// start band. Chain the rungs (`20,then:25,...`) to hold the gear train
-    /// wound up across the whole ladder: released, it unwinds and the next
-    /// onset measures the re-wind instead of the winding. A rung whose stall
-    /// draws more than the servo's current limit is refused.
-    #[arg(long)]
-    stall: bool,
-    /// The load is a resistor, not a motor: no shaft to seek, brake or
-    /// settle, so every seek is skipped and the rungs drive directly.
-    /// Implies the stall permit - the rungs draw current with no motion,
-    /// which is exactly what the stall trip exists to catch.
-    #[arg(long)]
-    static_load: bool,
-    /// Brake-and-hold after the seek, before the rung arms. Without it the
-    /// rung opens on a shaft still coasting from the seek, and since a fwd
-    /// rung's start band is at the LOW guard the coast is BACKWARD: measured
-    /// -0.70 V of entry EMF, which lands in the intercept of any onset fit.
-    /// Settled-window analysis does not care; onset R and L do.
-    #[arg(long, default_value_t = 300)]
-    settle_ms: u32,
-    /// Seek envelope only - the captures themselves run unpolled. Low end,
-    /// counts [default: the servo's low soft limit, 100 counts in].
-    #[arg(long)]
-    guard_lo: Option<u16>,
-    /// High end, counts [default: the servo's high soft limit, 100 counts
-    /// in].
-    #[arg(long)]
-    guard_hi: Option<u16>,
-    /// TEL row: table chunks as addr+len, at most two, comma-joined (hex
-    /// ok). Default = the raw six: pos, raw current, vmotor_a, vmotor_b,
-    /// applied duty, trough - measurements only, kernel conclusions (vdiff,
-    /// vbus, the held current) stay out of raw captures.
-    #[arg(long, default_value = "0x238+2,0x240+10")]
-    tel_chunks: String,
-    /// Attempts per rung before the sweep gives up. A rung is captured as one
-    /// burst, so a dropped frame anywhere in it corrupts that rung alone -
-    /// retrying just the rung costs seconds where discarding the recording
-    /// costs a minute and a half of good rungs with it.
-    #[arg(long, default_value_t = 3)]
-    rung_tries: u32,
-}
-
-/// What one sweep run drives: `Args` minus the output dir, chunks parsed.
+/// What one sweep run drives.
 pub(crate) struct Cfg {
     pub(crate) steps: Vec<Step>,
     pub(crate) dirs: Dirs,
@@ -281,56 +200,6 @@ pub(crate) struct Cfg {
     pub(crate) stops: Option<(u16, u16)>,
     pub(crate) tel_chunks: Chunks,
     pub(crate) rung_tries: u32,
-}
-
-impl Cfg {
-    /// The run as asked, the guard filled in from the servo's soft limits
-    /// and the seek from `plan`. A resistor has no travel, so a static load
-    /// takes any limits and its guard spans the pot. Every duty that can
-    /// stall the shaft - the seek, its breakout ceiling, a rung pressed
-    /// into a stop - is refused when its stall draws more than the limit.
-    fn new(a: &Args, lim: &ServoLimits, plan: &DutyPlan) -> Result<Self> {
-        let guard = if a.static_load {
-            (
-                a.guard_lo.unwrap_or(0),
-                a.guard_hi.unwrap_or(POT_MAX as u16),
-            )
-        } else {
-            lim.envelope((a.guard_lo, a.guard_hi), None)?.guard
-        };
-        let seek_duty_pct = a.seek_duty_pct.unwrap_or(pct_floor(plan.seek));
-        let seek_cap_pct = a.seek_cap_pct.unwrap_or(pct_floor(plan.stop_cap));
-        if !a.static_load {
-            let stall = |what: &str, pct: u8| lim.check_stall_at(what, pct_q15(pct), plan.r_vpc);
-            stall("the seek", seek_duty_pct)?;
-            stall("a seek raised to its ceiling", seek_cap_pct)?;
-            for s in a.duty_pct.iter().filter(|_| a.stall) {
-                let pct = match s {
-                    Step::Drive(pct, _) => *pct,
-                    Step::Then(pct, _) => pct.unsigned_abs(),
-                    Step::Coast(_) | Step::Brake(_) => continue,
-                };
-                stall("a rung pressed into the stop", pct)?;
-            }
-        }
-        Ok(Self {
-            steps: a.duty_pct.clone(),
-            dirs: a.dirs,
-            decay: a.decay,
-            window_ms: a.window_ms,
-            rest_ms: a.rest_ms,
-            baseline_ms: a.baseline_ms,
-            seek_duty_pct,
-            seek_cap_pct,
-            settle_ms: a.settle_ms,
-            stall: a.stall,
-            static_load: a.static_load,
-            guard,
-            stops: (!a.static_load).then_some(lim.raw),
-            tel_chunks: pump::parse_tel_chunks(&a.tel_chunks).context("--tel-chunks")?,
-            rung_tries: a.rung_tries,
-        })
-    }
 }
 
 /// One committed segment: the baseline (seg 0) or one schedule step of one
@@ -986,78 +855,6 @@ fn chains<S: Servo>(
     Ok(segments)
 }
 
-/// Rewrite the run's meta with the rows the servo dropped. A sweep is a raw
-/// tool and keeps what it captured: dropped rows only warn.
-fn land_rows_dropped(
-    meta_path: &Path,
-    mut meta: serde_json::Value,
-    rows_dropped: u16,
-) -> Result<Option<String>> {
-    meta["rows_dropped"] = rows_dropped.into();
-    std::fs::write(meta_path, serde_json::to_string_pretty(&meta)?)
-        .with_context(|| format!("write {}", meta_path.display()))?;
-    Ok((rows_dropped > 0).then(|| {
-        format!(
-            "warning: the servo dropped {rows_dropped} TEL rows (both stream buffers were \
-             waiting for the wire); the files are saved with those rows missing"
-        )
-    }))
-}
-
-/// Entry from the top-level `osc sweep` dispatch.
-pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
-    pump::install_ctrlc();
-    let id = Id::new(id);
-    let mut c = crate::rig::connect(&bus, &[id])?;
-    crate::state::check(&mut c, id)?;
-    let lim = crate::rig::limits::read(&mut c, id)?;
-    let plan = crate::rig::limits::plan(&mut c, id, &lim)?;
-    let cfg = Cfg::new(args, &lim, &plan)?;
-
-    std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
-
-    let stall = Stall::read(&mut c, id)?;
-    let drive = drive(&lim, &stall, pct_q15(cfg.seek_duty_pct));
-    let meta = meta(&mut c, id, &cfg, serde_json::Value::Object(drive))?;
-    let meta_path = args.out.join("meta.json");
-    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)
-        .with_context(|| format!("write {}", meta_path.display()))?;
-
-    let csv_path = args.out.join("sweep.csv");
-    let mut w = std::io::BufWriter::new(
-        std::fs::File::create(&csv_path)
-            .with_context(|| format!("create {}", csv_path.display()))?,
-    );
-    writeln!(w, "{CSV_HEADER}")?;
-
-    // A resistor has no shaft to park.
-    let center = if cfg.static_load {
-        None
-    } else {
-        let (lo, hi) = lim.soft;
-        Some(((lo + hi) / 2).clamp(0, u16::MAX as i32) as u16)
-    };
-
-    let mut s = Wire::new(c, id);
-    let r = record(&mut s, &cfg, |g| write_rows(&mut w, g));
-    let flushed = w.flush();
-    // a blocked shaft is left where it stopped
-    let parked = match (&r, center) {
-        (Err(e), _) if blocked(e) => Ok(()),
-        (_, Some(at)) => park(&mut s, at, pct_q15(cfg.seek_duty_pct)),
-        (_, None) => Ok(()),
-    };
-    flushed?;
-    let rec = r?;
-    parked?;
-    if let Some(warning) = land_rows_dropped(&meta_path, meta, rec.rows_dropped)? {
-        println!("{warning}");
-    }
-    println!("sweep: {}", csv_path.display());
-    println!("meta:  {}", meta_path.display());
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,240 +938,11 @@ mod tests {
         })
     }
 
-    #[derive(clap::Parser)]
-    struct Cli {
-        #[command(flatten)]
-        args: Args,
-    }
-
-    fn parse(argv: &[&str]) -> Args {
-        <Cli as clap::Parser>::try_parse_from(argv).unwrap().args
-    }
-
-    fn mg90() -> ServoLimits {
-        ServoLimits {
-            i_lim: 280,
-            i_cont: 168,
-            tau_trip: 280,
-            soft: (432, 3626),
-            phys: (209, 3849),
-            raw: (209, 3849),
-            r_q12: 7270,
-            vbus: 3204,
-            window_floor_q15: 4356,
-            window_v_floor_q15: 4356,
-            amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
-            drive_polarity: true,
-        }
-    }
-
-    /// The class's lowest winding, 3.0 ohm, on the bench board's sense
-    /// chain: 60 mohm at G 15, 6k8/3k3 terminal taps.
-    const CLASS_R_VPC: f64 = 3.0 * (3.3 / 4096.0 / 0.9) / (3.3 / 4096.0 * 10_100.0 / 3_300.0);
-
-    fn plan(lim: &ServoLimits) -> DutyPlan {
-        lim.stall_plan(CLASS_R_VPC, None)
-    }
-
-    /// The bench MG90, limit 280 at 4.9 ohm: the seek and its ceiling are
-    /// the duty whose stall draws the limit, 15% on 2S and 27% on USB.
-    /// Before R is identified the class's lowest R plans them: 9% on 2S.
-    #[test]
-    fn sweep_defaults_come_from_the_servo_limits() {
-        for (vbus, want) in [(3204, 15), (1780, 27)] {
-            let lim = ServoLimits { vbus, ..mg90() };
-            let cfg = Cfg::new(&parse(&["sweep"]), &lim, &plan(&lim)).unwrap();
-            assert_eq!(
-                (cfg.seek_duty_pct, cfg.seek_cap_pct),
-                (want, want),
-                "{vbus}"
-            );
-            let p = plan(&lim);
-            assert!(p.stall(pct_q15(want) as f64 / 32767.0) <= 280.0);
-        }
-        let virgin = ServoLimits { r_q12: 0, ..mg90() };
-        let cfg = Cfg::new(&parse(&["sweep"]), &virgin, &plan(&virgin)).unwrap();
-        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (9, 9));
-        // asked for, a gentler seek is taken as it stands
-        let a = parse(&["sweep", "--seek-duty-pct", "12", "--seek-cap-pct", "14"]);
-        let cfg = Cfg::new(&a, &mg90(), &plan(&mg90())).unwrap();
-        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (12, 14));
-    }
-
-    /// A seek, a breakout ceiling or a rung pressed into a stop whose stall
-    /// draws more than the limit is refused in plain words; free-running
-    /// rungs and a resistor's rungs are not.
-    #[test]
-    fn a_stall_sweep_over_the_limit_is_refused() {
-        let refused = |argv: &[&str]| {
-            let Err(e) = Cfg::new(&parse(argv), &mg90(), &plan(&mg90())) else {
-                panic!("{argv:?} was not refused");
-            };
-            e.to_string()
-        };
-        assert_eq!(
-            refused(&["sweep", "--stall", "--duty-pct", "10,then:15,20"]),
-            "a rung pressed into the stop stalls the motor at 20% duty, which draws about 361 \
-             counts (323 mA), over this servo's current limit of 280 counts (251 mA); on this \
-             supply the limit holds a stall only up to 15% duty"
-        );
-        assert_eq!(
-            refused(&["sweep", "--seek-duty-pct", "28"]),
-            "the seek stalls the motor at 28% duty, which draws about 505 counts (452 mA), \
-             over this servo's current limit of 280 counts (251 mA); on this supply the limit \
-             holds a stall only up to 15% duty"
-        );
-        assert!(
-            refused(&["sweep", "--seek-cap-pct", "45"])
-                .starts_with("a seek raised to its ceiling stalls the motor at 45% duty")
-        );
-        assert!(refused(&["sweep", "--stall", "--duty-pct", "then:-16"]).contains("at 16% duty"));
-
-        let a = parse(&["sweep", "--stall", "--duty-pct", "10,then:15,coast:100"]);
-        let cfg = Cfg::new(&a, &mg90(), &plan(&mg90())).unwrap();
-        assert!(cfg.stall);
-        // free rungs run on the firmware limiter, whatever their duty
-        let a = parse(&["sweep", "--duty-pct", "64,100"]);
-        assert!(Cfg::new(&a, &mg90(), &plan(&mg90())).is_ok());
-        // a resistor has no travel and no stop
-        let a = parse(&[
-            "sweep",
-            "--static-load",
-            "--duty-pct",
-            "64",
-            "--seek-duty-pct",
-            "40",
-        ]);
-        assert!(Cfg::new(&a, &mg90(), &plan(&mg90())).is_ok());
-    }
-
-    #[test]
-    fn cfg_carries_the_cli_defaults() {
-        let cfg = Cfg::new(&parse(&["sweep"]), &mg90(), &plan(&mg90())).unwrap();
-        let grid: Vec<Step> = (1..=20u8).map(|k| Step::Drive(k * 5, None)).collect();
-        assert_eq!(cfg.steps, grid);
-        assert_eq!(cfg.dirs, Dirs::Both);
-        assert_eq!(cfg.decay, Decay::Slow);
-        assert_eq!(cfg.window_ms, 150);
-        assert_eq!(cfg.rest_ms, 500);
-        assert_eq!(cfg.baseline_ms, 1000);
-        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (15, 15));
-        assert_eq!(cfg.settle_ms, 300);
-        assert!(!cfg.stall && !cfg.static_load);
-        assert_eq!(cfg.guard, (532, 3526), "the soft limits, 100 counts in");
-        assert_eq!(cfg.stops, Some((209, 3849)));
-        assert_eq!(cfg.tel_chunks, osc_ident::frame::TEL_RAW);
-        assert_eq!(cfg.rung_tries, 3);
-    }
-
-    #[test]
-    fn guard_flags_override_the_soft_limits() {
-        let a = parse(&["sweep", "--guard-lo", "600"]);
-        assert_eq!(
-            Cfg::new(&a, &mg90(), &plan(&mg90())).unwrap().guard,
-            (600, 3526)
-        );
-    }
-
-    #[test]
-    fn a_servo_without_calibrated_limits_is_refused() {
-        let virgin = ServoLimits {
-            soft: (0, 4095),
-            ..mg90()
-        };
-        let Err(err) = Cfg::new(&parse(&["sweep"]), &virgin, &plan(&virgin)) else {
-            panic!("a virgin servo was not refused");
-        };
-        assert!(err.to_string().ends_with("run `osc cal` first"), "{err}");
-        // a resistor has no travel to calibrate
-        let a = parse(&["sweep", "--static-load"]);
-        assert_eq!(
-            Cfg::new(&a, &virgin, &plan(&virgin)).unwrap().guard,
-            (0, 4095)
-        );
-    }
-
-    #[test]
-    fn schedule_strings_parse_through_the_cli_grammar() {
-        let steps: Vec<Step> = ["20@450", "then:-20", "brake:150"]
-            .iter()
-            .map(|s| s.parse().unwrap())
-            .collect();
-        assert_eq!(
-            steps,
-            [
-                Step::Drive(20, Some(450)),
-                Step::Then(-20, None),
-                Step::Brake(150)
-            ]
-        );
-    }
-
     #[test]
     fn start_bands_hug_the_guard_edges() {
         // centred on the guard, so approach direction cannot shift the start
         assert_eq!(start_band(1, 400, 3700), (325, 475));
         assert_eq!(start_band(-1, 400, 3700), (3625, 3775));
-    }
-
-    /// A sweep whose servo dropped rows saves its rows and a meta that
-    /// names the count, and warns; a clean one writes 0 and says nothing.
-    #[test]
-    fn a_sweep_with_dropped_rows_warns_and_saves() {
-        use crate::capture::Supply;
-        use crate::rig::servo::bench::Bench;
-
-        let cfg = Cfg {
-            steps: vec![Step::Drive(40, Some(361))],
-            dirs: Dirs::Fwd,
-            decay: Decay::Slow,
-            window_ms: 150,
-            rest_ms: 500,
-            baseline_ms: 200,
-            seek_duty_pct: 15,
-            seek_cap_pct: 15,
-            settle_ms: 300,
-            stall: false,
-            static_load: false,
-            guard: (532, 3526),
-            stops: Some((232, 3849)),
-            tel_chunks: osc_ident::frame::TEL_RAW,
-            rung_tries: 3,
-        };
-        for (drops, warns) in [(0, false), (3, true)] {
-            let out = std::env::temp_dir()
-                .join(format!("osc-sweep-{}-dropped-{drops}", std::process::id()));
-            std::fs::create_dir_all(&out).unwrap();
-            let mut b = Bench::mg90(Supply::TwoS);
-            b.servo.rows_dropped = drops;
-            let rec = record(&mut b, &cfg, |_| Ok(())).unwrap();
-            let csv_path = out.join("sweep.csv");
-            let mut w = std::fs::File::create(&csv_path).unwrap();
-            writeln!(w, "{CSV_HEADER}").unwrap();
-            for g in &rec.segments {
-                write_rows(&mut w, g).unwrap();
-            }
-            let meta_path = out.join("meta.json");
-            let meta = serde_json::json!({ "window_ms": 150 });
-            let warning = land_rows_dropped(&meta_path, meta, rec.rows_dropped).unwrap();
-
-            let meta: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-            assert_eq!(meta["rows_dropped"], rec.rows_dropped);
-            assert_eq!(meta["window_ms"], 150, "the rest of the meta is kept");
-            let rows = std::fs::read_to_string(&csv_path).unwrap().lines().count();
-            assert_eq!(
-                rows,
-                1 + rec.segments.iter().map(|g| g.frames.len()).sum::<usize>()
-            );
-            assert_eq!(warning.is_some(), warns);
-            if let Some(w) = warning {
-                let n = rec.rows_dropped;
-                assert!(n > 0);
-                assert!(w.contains(&format!("dropped {n} TEL rows")), "{w}");
-            }
-            std::fs::remove_dir_all(&out).unwrap();
-        }
     }
 
     /// A shaft let go at speed coasting up the pot, away from the low start

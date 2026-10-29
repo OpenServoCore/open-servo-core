@@ -6,7 +6,6 @@
 //! the bench `tool-*` binaries' job, not this tool's.
 
 mod boot;
-mod burst;
 mod cal;
 mod capture;
 mod descriptor;
@@ -267,26 +266,20 @@ enum Cmd {
         #[arg(long, default_value_t = 2000)]
         ticks: u16,
     },
-    /// Identify the motor and synthesize its gains: experiments, fits,
-    /// write-back.
+    /// DEPRECATED, to be removed. Identify the motor and synthesize its
+    /// gains: experiments, fits, write-back.
     Ident(ident::Args),
-    /// Calibrate: find the end-stops, confirm the angle range, write limits +
+    /// DEPRECATED, to be removed. Calibrate: find the end-stops, confirm the angle range, write limits +
     /// polarity + angle endpoints, then SAVE.
     Cal(cal::Args),
-    /// Replay a saved cal sweep_tel.csv offline: classify capture corruption
+    /// DEPRECATED, to be removed. Replay a saved cal sweep_tel.csv offline: classify capture corruption
     /// and re-run the position-table / motor-rev pipeline without a servo.
     CalReplay(cal::replay::Args),
-    /// Raw open-loop duty sweep: burst-captured TEL rungs across a duty grid
-    /// for empirical plant capture (sweep.csv + meta.json).
-    Sweep(sweep::Args),
-    /// Raw high-rate shunt bursts from rest at a list of step duties, no fit
-    /// (burst-K.csv + meta.json).
-    Burst(burst::Args),
-    /// Plant-capture campaign on one servo and supply: `pilot` measures the
+    /// DEPRECATED, to be removed. Plant-capture campaign on one servo and supply: `pilot` measures the
     /// servo and writes the dataset's envelope.toml, `plan` shows the session
     /// it sizes, `session` runs it, `check` re-reads a landed capture.
     Capture(capture::Args),
-    /// Position table: `build` stitches one from a capture dataset's settled
+    /// DEPRECATED, to be removed. Position table: `build` stitches one from a capture dataset's settled
     /// rungs and writes the image JSON, `grade` graphs it, `write` puts it on
     /// the servo, `show` reads the servo's back, `clear` returns it to the
     /// identity. A write never stamps: closed loop is refused until
@@ -324,6 +317,13 @@ impl Cmd {
             _ => vec![Id::new(id)],
         }
     }
+}
+
+/// `osc` keeps the bus verbs. Identification and calibration move to their
+/// own tool, written from the characterization notebooks, and the notebooks
+/// capture with their own instrument, `osc-lab`.
+fn deprecated(verb: &str) {
+    eprintln!("warning: `osc {verb}` is deprecated and will be removed");
 }
 
 fn on_off(s: &str) -> Result<bool, String> {
@@ -1119,13 +1119,26 @@ fn main() -> Result<()> {
             state::warn(&mut c, id, &d)?;
             clapper(&mut c, id, &d, *flashes, *ticks)
         }
-        Cmd::Ident(args) => ident::run(args, cli.bus.clone(), cli.id),
-        Cmd::Cal(args) => cal::run(args, cli.bus.clone(), cli.id),
-        Cmd::CalReplay(a) => cal::replay::run(a),
-        Cmd::Sweep(args) => sweep::run(args, cli.bus.clone(), cli.id),
-        Cmd::Burst(args) => burst::run(args, cli.bus.clone(), cli.id),
-        Cmd::Capture(args) => capture::run(args, cli.bus.clone(), cli.id),
-        Cmd::Lut(args) => lut::run(args, cli.bus.clone(), cli.id),
+        Cmd::Ident(args) => {
+            deprecated("ident");
+            ident::run(args, cli.bus.clone(), cli.id)
+        }
+        Cmd::Cal(args) => {
+            deprecated("cal");
+            cal::run(args, cli.bus.clone(), cli.id)
+        }
+        Cmd::CalReplay(a) => {
+            deprecated("cal-replay");
+            cal::replay::run(a)
+        }
+        Cmd::Capture(args) => {
+            deprecated("capture");
+            capture::run(args, cli.bus.clone(), cli.id)
+        }
+        Cmd::Lut(args) => {
+            deprecated("lut");
+            lut::run(args, cli.bus.clone(), cli.id)
+        }
     }
 }
 
