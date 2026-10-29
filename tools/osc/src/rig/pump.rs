@@ -97,7 +97,7 @@ pub(crate) fn with_guard<P: Pipe, T>(
 /// permit when a refresh is due. With `hold` set, every torque enable is
 /// followed by the permit. On the experiment image (`experiment`,
 /// [`Servo::experiment`]) the lease is the bus dead-man instead: every
-/// torque enable is followed by `bus_deadman_ticks`, hold or not, the same
+/// torque enable is preceded by `bus_deadman_ticks`, hold or not, the same
 /// write repeats at the permit's cadence, and torque off alone releases it.
 pub(crate) struct Lease {
     state: PermitLease,
@@ -131,11 +131,18 @@ impl Lease {
         Ok(())
     }
 
-    /// Torque on, then the dead-man on the experiment image, else the
-    /// permit when this run holds one.
+    /// The dead-man, then torque on, on the experiment image: the enable
+    /// starts the countdown from the field, and a field changed under
+    /// torque can be reloaded from the kernel's stale read of it, 0 after a
+    /// boot, which trips at once. Else torque on, then the permit when this
+    /// run holds one.
     pub(crate) fn torque_on<S: Servo>(&mut self, s: &mut S) -> Result<()> {
+        if self.experiment {
+            self.feed(s)?;
+            return self.write(s, control::TORQUE_ENABLE, 1);
+        }
         self.write(s, control::TORQUE_ENABLE, 1)?;
-        if self.experiment || self.hold {
+        if self.hold {
             self.feed(s)?;
         }
         Ok(())
@@ -1123,9 +1130,9 @@ mod tests {
         );
     }
 
-    /// Torque on feeds the lease of the image: the permit when the run
-    /// holds one on the production image, the dead-man always on the
-    /// experiment image; the keep rewrites the same register once due, a
+    /// Torque on feeds the lease of the image: the permit after the enable
+    /// when the run holds one on the production image, the dead-man before
+    /// it always on the experiment image; the keep rewrites the same register once due, a
     /// stream of any length rides the dead-man, and torque off drops both.
     #[test]
     fn torque_on_feeds_the_lease_of_the_image() {
@@ -1145,7 +1152,11 @@ mod tests {
             b.experiment = experiment;
             let mut l = Lease::new(hold, b.experiment().unwrap());
             l.torque_on(&mut b).unwrap();
-            let want: Vec<_> = [on].into_iter().chain(feed).collect();
+            let want: Vec<_> = if experiment {
+                feed.into_iter().chain([on]).collect()
+            } else {
+                [on].into_iter().chain(feed).collect()
+            };
             assert_eq!(b.writes, want, "experiment {experiment} hold {hold}");
             b.writes.clear();
             l.keep(&mut b).unwrap();

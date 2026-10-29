@@ -267,11 +267,15 @@ impl std::error::Error for Refusal {}
 /// On the experiment image there is no permit: the held register is
 /// `bus_deadman_ticks`, a keepalive the same cadence feeds, and a stream of
 /// any length rides it, since a burst holds the countdown on the servo.
+/// The torque enable starts the countdown from the field it finds set, so
+/// a field written with torque off is held from the enable on.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct PermitLease {
     experiment: bool,
     torque: bool,
     held: bool,
+    /// The dead-man field holds a countdown (experiment image).
+    armed: bool,
     last_ms: f64,
 }
 
@@ -296,10 +300,16 @@ impl PermitLease {
     /// Mirror one write sent at `now_ms`.
     pub fn wrote(&mut self, reg: Reg, value: i32, now_ms: f64) {
         if reg == control::TORQUE_ENABLE {
+            let enable = value != 0 && !self.torque;
             self.torque = value != 0;
+            if enable && self.experiment && self.armed {
+                self.held = true;
+                self.last_ms = now_ms;
+            }
             self.held &= self.torque;
         } else if reg == self.held_reg() {
-            // written with torque off it grants nothing
+            // a permit written with torque off grants nothing
+            self.armed = self.experiment && value != 0;
             self.held = value != 0 && self.torque;
             self.last_ms = now_ms;
         }
@@ -1178,7 +1188,18 @@ mod tests {
         assert!(!l.held() && !l.due(1000.0), "torque off drops it");
         let mut off = PermitLease::new(true);
         off.wrote(control::BUS_DEADMAN_TICKS, DEADMAN_TICKS.into(), 0.0);
-        assert!(!off.held(), "written with torque off it holds nothing");
+        assert!(!off.held(), "written with torque off it holds nothing yet");
+        off.wrote(control::TORQUE_ENABLE, 1, 100.0);
+        assert!(off.held(), "the enable starts it from the field");
+        assert!(!off.due(349.0) && off.due(350.0), "counted from the enable");
+        off.wrote(control::TORQUE_ENABLE, 0, 400.0);
+        off.wrote(control::BUS_DEADMAN_TICKS, 0, 410.0);
+        off.wrote(control::TORQUE_ENABLE, 1, 420.0);
+        assert!(!off.held(), "a zero field is off");
+        let mut prod = PermitLease::new(false);
+        prod.wrote(control::STALL_PERMIT, 1, 0.0);
+        prod.wrote(control::TORQUE_ENABLE, 1, 10.0);
+        assert!(!prod.held(), "a permit is never carried across an enable");
         assert_eq!(PermitLease::new(false).held_reg(), control::STALL_PERMIT);
     }
 
