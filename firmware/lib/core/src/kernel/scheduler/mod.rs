@@ -228,8 +228,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // is the host silent by design: the TEL stream is in hand here
         #[cfg(feature = "experiment")]
         if phase == phase::RAIL {
-            self.medium
-                .deadman(shared, self.tel.streaming(), &mut self.faults);
+            self.medium.deadman(self.tel.streaming(), &mut self.faults);
         }
         let staged = self.medium.step(
             phase,
