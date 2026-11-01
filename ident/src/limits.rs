@@ -351,7 +351,7 @@ impl ServoLimits {
 
     /// Winding R, vcounts per ccount, once identified and with a rail read.
     pub fn r_vpc(&self) -> Option<f64> {
-        (self.r_q12 != 0 && self.vbus != 0).then(|| self.r_q12 as f64 / 4096.0)
+        (self.r_q12 != 0 && self.vbus != 0).then_some(self.r_q12 as f64 / 4096.0)
     }
 
     /// Soft limits inside the pot and in order: `osc cal` has run.
@@ -603,7 +603,7 @@ impl BurstAllowance {
     pub fn rungs(rail_mv: f64) -> Option<[f64; 2]> {
         let lo = pct_floor(Self::LO);
         let hi = pct_floor(Self::HI.min(Self::top(rail_mv)));
-        (hi >= lo + Self::PAIR_MIN_PCT).then(|| [lo as f64 / 100.0, hi as f64 / 100.0])
+        (hi >= lo + Self::PAIR_MIN_PCT).then_some([lo as f64 / 100.0, hi as f64 / 100.0])
     }
 
     /// Repeats of a plan whose every repeat arms `arms` bursts, the asked

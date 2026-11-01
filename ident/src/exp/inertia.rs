@@ -72,7 +72,7 @@ impl StoredMotion {
     /// From the calib fields as gain synthesis encodes them; None unless
     /// the servo carries a Ke.
     pub fn read(ke_vpc_q: u16, fric_fc_counts: u16, fric_fv_q016: u16) -> Option<Self> {
-        (ke_vpc_q != 0).then(|| Self {
+        (ke_vpc_q != 0).then_some(Self {
             ke_vpc: ke_vpc_q as f64 / 4096.0,
             fc: fric_fc_counts as f64,
             fv: fric_fv_q016 as f64 / 65536.0,

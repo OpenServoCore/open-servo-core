@@ -220,7 +220,7 @@ impl Acc {
     }
 
     fn mean(&self) -> Option<f64> {
-        (self.n > 0).then(|| self.s / self.n as f64)
+        (self.n > 0).then_some(self.s / self.n as f64)
     }
 }
 
