@@ -564,7 +564,7 @@ pub(super) fn fold(name: &'static str, over: &[&CaptureFit]) -> Gate {
 /// the ON window under-reads.
 pub(super) fn duty_cap(f: &CaptureFit, i_max_a: f64) -> Option<f64> {
     let asym = f.asymptote_a.max(f.asymptote_cb_a);
-    (f.duty > 0.0 && asym > 0.0).then(|| i_max_a / (asym / f.duty))
+    (f.duty > 0.0 && asym > 0.0).then_some(i_max_a / (asym / f.duty))
 }
 
 /// Minimise `cost` over a time constant in [lo, hi]: log grid, then golden
@@ -1053,7 +1053,7 @@ fn fit_segmented(
         asymptote_a: asym,
         tau_cb_us: tau_cb_s * 1e6,
         asymptote_cb_a: asym_cb,
-        on_share: (cb_sum > 0.0).then(|| on_sum / cb_sum),
+        on_share: (cb_sum > 0.0).then_some(on_sum / cb_sum),
         r_capture_ohm: r_capture,
         pre_level_a: pre_level,
         drop_volts: drop,
@@ -1125,7 +1125,7 @@ pub fn pair_resistance(a: &CaptureFit, b: &CaptureFit, cfg: &FitCfg) -> Option<P
     }
     let di = hi.asymptote_a - lo.asymptote_a;
     let ddv = hi.duty * hi.v_rail - lo.duty * lo.v_rail;
-    (di > 0.0 && ddv > 0.0).then(|| PairR {
+    (di > 0.0 && ddv > 0.0).then_some(PairR {
         r_ohm: ddv / di,
         duty_lo: lo.duty,
         duty_hi: hi.duty,
@@ -1514,7 +1514,7 @@ pub(super) fn worst_spread(groups: &[Vec<f64>]) -> f64 {
             let m = median(g)?;
             let lo = g.iter().copied().fold(f64::MAX, f64::min);
             let hi = g.iter().copied().fold(f64::MIN, f64::max);
-            (m > 0.0 && g.len() > 1).then(|| (hi - lo) / m)
+            (m > 0.0 && g.len() > 1).then_some((hi - lo) / m)
         })
         .fold(0.0f64, f64::max)
 }

@@ -423,7 +423,7 @@ pub(crate) fn over_abort(
 
 fn mean(v: impl Iterator<Item = u16>) -> Option<f64> {
     let (sum, n) = v.fold((0.0, 0usize), |(s, n), c| (s + c as f64, n + 1));
-    (n > 0).then(|| sum / n as f64)
+    (n > 0).then_some(sum / n as f64)
 }
 
 #[cfg(test)]
