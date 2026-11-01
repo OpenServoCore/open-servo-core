@@ -1004,7 +1004,7 @@ impl TelReport {
         let bank = matched(k, &t.bank_n, t.bank_sum.map(u64::from), None);
         let w = 1.0 / STREAM_SAMPLES_MAX as f32;
         let mix = |row: f32, bank: f32| (1.0 - w) * row + w * bank;
-        let mean = |s: Tally| (s.n != 0).then(|| s.sum as f32 / s.n as f32);
+        let mean = |s: Tally| (s.n != 0).then_some(s.sum as f32 / s.n as f32);
         let steps = match (mean(t.tel_steps), mean(t.bank_steps)) {
             (Some(r), Some(b)) => Some(mix(r, b)),
             _ => None,
@@ -1111,7 +1111,7 @@ fn matched(
             plain += c as f64 * f64::from(t.sum) / f64::from(t.n);
         }
     }
-    (count != 0).then(|| (((total as f64 - plain) / count as f64) as f32, count as u32))
+    (count != 0).then_some((((total as f64 - plain) / count as f64) as f32, count as u32))
 }
 
 struct Words<'a>(&'a [u32]);
