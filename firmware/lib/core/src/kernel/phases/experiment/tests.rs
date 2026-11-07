@@ -4,6 +4,7 @@
 
 use crate::estimator::{bemf, window};
 use crate::kernel::phases::loops::faults;
+use crate::kernel::phases::loops::limits::flag;
 use crate::kernel::{DECIM_MED, Kernel, KernelTiming, phase};
 use crate::regions::control::Mode;
 use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
@@ -386,6 +387,45 @@ fn the_deadman_reloads_a_field_written_under_torque() {
     assert!(drives(&k));
     k.on_scan(f, &sh);
     assert!(lapsed(&k));
+}
+
+/// The dead-man's loaded countdown publishes as the permit's grant, the bit
+/// the burst arm reads for a seat outside the soft limits: live from the
+/// enable edge, gone when the count lapses or torque goes off, never there
+/// with the field at zero.
+#[test]
+fn the_deadman_publishes_the_permit_grant() {
+    let f = frame(2000, BIAS);
+    let flags = |sh: &Shared| sh.table.with(|t| t.telemetry.limits.limit_flags);
+
+    let sh = Shared::new();
+    seed(&sh);
+    torque_on(&sh, 8000, 400);
+    let mut k = kernel();
+    run_to(&mut k, &sh, f, phase::SPARE_A);
+    assert_eq!(flags(&sh), flag::PERMIT, "a loaded countdown is the grant");
+    scan(&mut k, &sh, f, 400);
+    run_to(&mut k, &sh, f, phase::SPARE_A);
+    assert_eq!(fault(&k), faults::BIT_DEADMAN);
+    assert_eq!(flags(&sh), 0, "a lapsed count is no grant");
+
+    let sh = Shared::new();
+    seed(&sh);
+    torque_on(&sh, 8000, 400);
+    let mut k = kernel();
+    scan(&mut k, &sh, f, 100);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    run_to(&mut k, &sh, f, phase::SPARE_A);
+    assert_eq!(flags(&sh), 0, "torque off drops the grant");
+
+    let sh = Shared::new();
+    seed(&sh);
+    torque_on(&sh, 8000, 0);
+    let mut k = kernel();
+    scan(&mut k, &sh, f, 100);
+    run_to(&mut k, &sh, f, phase::SPARE_A);
+    assert_eq!(flags(&sh), 0, "no field, no grant");
 }
 
 /// The publish carries what the image computes and nothing else: the bias
