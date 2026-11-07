@@ -7,6 +7,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 
 use super::fast::{Command, Drive, Fast};
 use super::loops::faults::{self, FaultLatch};
+use super::loops::limits::flag;
 use crate::kernel::config::KernelConfig;
 use crate::kernel::{DECIM_MED, KernelTiming};
 use crate::regions::control::{ControlLifecycle, Mode};
@@ -116,14 +117,21 @@ impl Medium {
         }
     }
 
-    /// PUBLISH: the bias, the mode and the fault; the estimates, limits
-    /// and thermal fields keep their boot zero, nothing computes them.
+    /// PUBLISH: the bias, the mode, the fault and the permit bit of
+    /// `limit_flags`; the estimates, the other limits and the thermal
+    /// fields keep their boot zero, nothing computes them.
     pub(in crate::kernel) fn publish(&self, shared: &Shared, faults: &FaultLatch, fast: &Fast) {
         let p = shared.table.region_ptr();
+        // the dead-man stands in for the stall permit lease, so its loaded
+        // countdown is the grant the burst arm reads for a seat outside the
+        // soft limits (kernel sec 2.7)
+        let permit = self.life.torque_enable && self.deadman.ticks != 0;
         // SAFETY: sole-telemetry-writer contract (`Kernel` doc); volatile
         // per-field stores.
         unsafe {
             (&raw mut (*p).telemetry.refs.current_bias_counts).write_volatile(fast.bias_counts());
+            (&raw mut (*p).telemetry.limits.limit_flags)
+                .write_volatile(permit as u8 * flag::PERMIT);
             let md = &raw mut (*p).telemetry.mode;
             (&raw mut (*md).mode_active).write_volatile(Mode::OpenLoop as u8);
             (&raw mut (*md).fault_code).write_volatile(faults.code());
