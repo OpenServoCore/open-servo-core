@@ -12,10 +12,16 @@
 //! A shaft resting on the band's edge is released by every dip of sensor
 //! noise, each wake too short to move it, so "parked for the dwell" may
 //! never come true. The dwell (`HOLD_SETTLE_TICKS`) therefore runs while the
-//! error stays within 1.5x the band of a stopped goal: a shaft that has not
+//! error stays within twice the band of a stopped goal: a shaft that has not
 //! left that zone for the dwell is at rest there, and from then on the zone
 //! is the band. Before the dwell the band is the gate both ways, so a moving
 //! shaft is caught and a coast through is redriven as before.
+//!
+//! Where the play between the motor and the position sensor is wider than
+//! the band, a free output can rest outside the band with the motor at the
+//! goal, and the loop then throws it from side to side without end. A shaft
+//! that has stayed inside the zone for the dwell is parked where it is, so
+//! that oscillation ends with the dwell.
 //!
 //! Hold gates on POSITION rest alone (profile stopped, error inside the
 //! deadband) - never on omega_hat. The fused omega is pot-noise driven at
@@ -37,14 +43,14 @@ use crate::regions::config::ConfigLoopPosition;
 /// compares the RAW error, never this clamp.
 const E_LIM_CQ16: i32 = 1 << 23;
 
-/// Medium ticks the error must stay within 1.5x the band of a stopped goal
+/// Medium ticks the error must stay within twice the band of a stopped goal
 /// before the hold settles (64 ms at 2 kHz). A shaft that stays in that
 /// zone that long moves slower than its width per dwell: it is nearly
 /// stopped, not coasting through.
 pub const HOLD_SETTLE_TICKS: u8 = 128;
 
 /// omega_ref for the velocity loop, the anti-hunt flag (kernel maps hold ->
-/// Brake) and whether the error is within 1.5x the band of a stopped goal
+/// Brake) and whether the error is within twice the band of a stopped goal
 /// (the kernel counts it toward `HOLD_SETTLE_TICKS`).
 #[derive(Copy, Clone)]
 pub struct PosOut {
@@ -57,7 +63,7 @@ pub struct PosOut {
 /// trajectory generator, theta_hat/omega_hat from fusion. `band_gain_q4` is
 /// linearized counts per raw count at the present position, Q4 (16 at the
 /// identity), clamped (`pos_lut::band_gain_q4`). `settled`: `near` has held
-/// for `HOLD_SETTLE_TICKS`, so the gate is 1.5x the band.
+/// for `HOLD_SETTLE_TICKS`, so the gate is twice the band.
 pub fn step(
     theta_star_q16: i32,
     omega_star_q16: i32,
@@ -75,12 +81,12 @@ pub fn step(
     let omega_ref = q_mul(cfg.p_kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
         .clamp(-v_lim, v_lim);
-    // Q4 -> cQ16 is << 12; the zone adds half a band. Raw-magnitude compares
-    // as u32: the ceiling and the saturating add hold both past any |error|
-    // (2^31) instead of wrapping; the identity's largest band, 65535 x 16,
-    // sits under both.
+    // Q4 -> cQ16 is << 12; the zone is twice the band. Raw-magnitude
+    // compares as u32: the ceiling and the saturating add hold both past any
+    // |error| (2^31) instead of wrapping; the identity's largest band,
+    // 65535 x 16, sits under both.
     let band = (cfg.pos_deadband_counts as u32 * band_gain_q4 as u32).min(u32::MAX >> 12) << 12;
-    let zone = band.saturating_add(band >> 1);
+    let zone = band.saturating_add(band);
     let e_abs = e_raw.unsigned_abs();
     let near = cfg.pos_deadband_counts != 0 && omega_star_q16 == 0 && e_abs <= zone;
     PosOut {
@@ -109,9 +115,9 @@ mod tests {
 
     #[test]
     fn hold_band_scales_by_the_local_gain() {
-        // gain 26/16: 12 raw counts span 19.5 linearized, 1.5x is 29.25
+        // gain 26/16: 12 raw counts span 19.5 linearized, twice is 39
         let cfg = c(1 << 8, 12, 32767);
-        for (settled, gate) in [(false, 39 << 15), (true, 117 << 14)] {
+        for (settled, gate) in [(false, 39 << 15), (true, 39 << 16)] {
             assert!(step(gate, 0, 0, 26, settled, &cfg).hold);
             assert!(step(0, 0, gate, 26, settled, &cfg).hold);
             assert!(!step(gate + 1, 0, 0, 26, settled, &cfg).hold);
@@ -127,13 +133,13 @@ mod tests {
     }
 
     #[test]
-    fn near_is_one_and_a_half_bands_of_a_stopped_goal() {
+    fn near_is_two_bands_of_a_stopped_goal() {
         let cfg = c(1 << 8, 12, 32767);
         for settled in [false, true] {
-            assert!(step(18 << 16, 0, 0, ID, settled, &cfg).near);
-            assert!(step(0, 0, 18 << 16, ID, settled, &cfg).near);
-            assert!(!step((18 << 16) + 1, 0, 0, ID, settled, &cfg).near);
-            assert!(!step(0, 0, (18 << 16) + 1, ID, settled, &cfg).near);
+            assert!(step(24 << 16, 0, 0, ID, settled, &cfg).near);
+            assert!(step(0, 0, 24 << 16, ID, settled, &cfg).near);
+            assert!(!step((24 << 16) + 1, 0, 0, ID, settled, &cfg).near);
+            assert!(!step(0, 0, (24 << 16) + 1, ID, settled, &cfg).near);
             // a moving profile is never near, even at zero error
             assert!(!step(0, 1, 0, ID, settled, &cfg).near);
             assert!(!step(0, -1, 0, ID, settled, &cfg).near);
@@ -147,18 +153,18 @@ mod tests {
     }
 
     #[test]
-    fn a_settled_park_releases_past_one_and_a_half_bands() {
+    fn a_settled_park_releases_past_two_bands() {
         let cfg = c(1 << 8, 12, 32767);
         // entry and an un-settled park: the band, not past it
         assert!(step(12 << 16, 0, 0, ID, false, &cfg).hold);
         assert!(step(0, 0, 12 << 16, ID, false, &cfg).hold);
         assert!(!step((12 << 16) + 1, 0, 0, ID, false, &cfg).hold);
-        assert!(!step(15 << 16, 0, 0, ID, false, &cfg).hold);
-        // settled: 1.5x the band, not past it
-        assert!(step(15 << 16, 0, 0, ID, true, &cfg).hold);
-        assert!(step(0, 0, 18 << 16, ID, true, &cfg).hold);
-        assert!(!step((18 << 16) + 1, 0, 0, ID, true, &cfg).hold);
-        assert!(!step(0, 0, (18 << 16) + 1, ID, true, &cfg).hold);
+        assert!(!step(18 << 16, 0, 0, ID, false, &cfg).hold);
+        // settled: twice the band, not past it
+        assert!(step(18 << 16, 0, 0, ID, true, &cfg).hold);
+        assert!(step(0, 0, 24 << 16, ID, true, &cfg).hold);
+        assert!(!step((24 << 16) + 1, 0, 0, ID, true, &cfg).hold);
+        assert!(!step(0, 0, (24 << 16) + 1, ID, true, &cfg).hold);
         // a moving profile drops either, even at zero error
         for settled in [false, true] {
             assert!(!step(0, 1, 0, ID, settled, &cfg).hold);

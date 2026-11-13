@@ -2451,11 +2451,11 @@ fn a_settled_hold_stays_parked_under_noise_past_the_band() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
-    // the pot then sits 1.25x the band off, +-1 count of noise
+    // the pot then sits 1.5x the band off, +-1 count of noise
     let mut rng: u32 = 0xdead_beef;
     for n in 0..20_000 {
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let raw = (1939 + ((rng >> 24) as i32 % 3) - 1) as u16;
+        let raw = (1942 + ((rng >> 24) as i32 % 3) - 1) as u16;
         k.on_scan(frame(raw, BIAS), &sh);
         assert!(k.medium.hold, "woke at tick {n}, pot {raw}");
     }
@@ -2488,17 +2488,17 @@ const SETTLE_SLACK: u32 = 2 * DECIM_MED as u32;
 fn a_still_pot_past_the_band_parks_once_the_dwell_has_passed() {
     let sh = Shared::new();
     seed(&sh);
-    // 1.25x the band off the goal
-    let mut k = landed(&sh, &mut || 1939);
+    // 1.5x the band off the goal
+    let mut k = landed(&sh, &mut || 1942);
     for n in 0..SETTLE_SCANS - SETTLE_SLACK {
-        k.on_scan(frame(1939, BIAS), &sh);
+        k.on_scan(frame(1942, BIAS), &sh);
         assert!(!k.medium.hold, "parked before the dwell, tick {n}");
     }
     for _ in 0..2 * SETTLE_SLACK {
-        k.on_scan(frame(1939, BIAS), &sh);
+        k.on_scan(frame(1942, BIAS), &sh);
     }
     for n in 0..20_000 {
-        k.on_scan(frame(1939, BIAS), &sh);
+        k.on_scan(frame(1942, BIAS), &sh);
         assert!(k.medium.hold, "woke after the dwell, tick {n}");
     }
     assert_eq!(k.faults.mask(), 0);
@@ -2527,11 +2527,11 @@ fn a_hold_on_the_band_edge_settles_through_its_wakes() {
 }
 
 #[test]
-fn a_settled_hold_wakes_past_one_and_a_half_bands() {
+fn a_settled_hold_wakes_past_two_bands() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
-    assert!(wakes(&mut k, &sh, 1945), "parked at 1.75x the band");
+    assert!(wakes(&mut k, &sh, 1954), "parked at 2.5x the band");
     assert_eq!(k.faults.mask(), 0);
 }
 
@@ -2549,8 +2549,8 @@ fn a_goal_write_unsettles_the_hold() {
         n += 1;
         assert!(n < 10_000, "the move never landed in a park");
     }
-    // right after the landing, 1.25x the band off the new goal
-    assert!(wakes(&mut k, &sh, 1915), "the new park started settled");
+    // right after the landing, 1.5x the band off the new goal
+    assert!(wakes(&mut k, &sh, 1912), "the new park started settled");
     assert_eq!(k.faults.mask(), 0);
 }
 
