@@ -1,7 +1,9 @@
 use super::fast::{Command, Drive, Fast};
-use super::loops::current;
 use super::loops::faults::{self, FaultLatch};
+use super::loops::trajectory::TrajGen;
+use super::loops::{current, position};
 use super::{Medium, pos_q4};
+use crate::estimator::FusionObs;
 use crate::kernel::config::KernelConfig;
 use crate::pos_lut;
 use crate::regions::control::{ControlLifecycle, Mode};
@@ -116,13 +118,34 @@ impl Medium {
         let run = life.torque_enable && faults.mask() == 0;
         if run != self.run_prev {
             // both edges zero the loop chain; the enable edge additionally
-            // reseeds fusion at the measurement (torque-off tau_d is built
-            // on a zero current - a hand-moved shaft rails it and every
-            // enable would re-latch STALL via the collision check) and the
-            // profile at the fresh estimate - bumpless
+            // restarts fusion and the profile at rest. A position goal
+            // inside the band of the estimate, with this sample agreeing
+            // within the zone, keeps the estimate's position and starts the
+            // profile on the goal: the host read the goal from that
+            // estimate, one sample sits farther off the shaft, and a
+            // profile from it to the goal drives a shaft already there.
+            // Otherwise fusion seeds at the sample and the profile at it:
+            // torque-off tau_d is built on a zero current, so a hand-moved
+            // shaft leaves the estimate stale and rails tau_d, and every
+            // enable would re-latch STALL via the collision check.
             if run {
-                self.fusion.seed(pos_q4(shared, self.ctl.lut_live, raw_pos));
-                self.traj.reseed(self.fusion.theta_q16());
+                let pos = pos_q4(shared, self.ctl.lut_live, raw_pos);
+                let theta_hat = self.fusion.theta_q16();
+                let goal = TrajGen::goal_q16(life.goal_position, &cfg.pos_soft);
+                let db = cfg.loop_position.pos_deadband_counts;
+                let band = position::band_q16(db, self.band_gain_q4);
+                if life.mode == Mode::Position
+                    && db != 0
+                    && goal.abs_diff(theta_hat) <= band
+                    && FusionObs::seed_theta_q16(pos).abs_diff(theta_hat)
+                        <= band.saturating_add(band)
+                {
+                    self.fusion.rest();
+                    self.traj.reseed(goal);
+                } else {
+                    self.fusion.seed(pos);
+                    self.traj.reseed(self.fusion.theta_q16());
+                }
             }
             fast.reset_current_loop();
             self.vel.reset();

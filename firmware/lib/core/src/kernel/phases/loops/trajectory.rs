@@ -62,11 +62,24 @@ impl TrajGen {
         }
     }
 
-    /// Enable edge / mode change: reference = estimate, at rest - bumpless.
-    pub fn reseed(&mut self, theta_hat_q16: i32) {
-        self.theta_ref_q16 = theta_hat_q16.clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+    /// Enable edge / mode change: the reference at rest at `theta_q16`.
+    pub fn reseed(&mut self, theta_q16: i32) {
+        self.theta_ref_q16 = theta_q16.clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
         self.omega_ref_q16 = 0;
         self.alpha_last_q16 = 0;
+    }
+
+    /// Where the position profile lands for `goal_counts`, cQ16: the goal
+    /// clamped to the soft limits, inside +-`GOAL_LIM_COUNTS`.
+    #[inline(always)]
+    pub fn goal_q16(goal_counts: i32, soft: &ConfigPosSoft) -> i32 {
+        // max().min(): the order is the table's, clamp would keep a panic
+        // path
+        goal_counts
+            .max(soft.pos_min_soft_counts)
+            .min(soft.pos_max_soft_counts)
+            .clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS)
+            << 16
     }
 
     /// One MEDIUM step over `dt_q32` toward `goal_counts` clamped to the soft
@@ -95,13 +108,7 @@ impl TrajGen {
     ) {
         let a = (lp.accel_limit_q88 as i32) << 8;
         let v_lim = vel_cap(lp) << 16;
-        // max().min(): the order is the table's, clamp would keep a panic
-        // path
-        let goal = goal_counts
-            .max(soft.pos_min_soft_counts)
-            .min(soft.pos_max_soft_counts)
-            .clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS)
-            << 16;
+        let goal = Self::goal_q16(goal_counts, soft);
         // both operands within +-2^29 -> exact
         let d = goal - self.theta_ref_q16;
         let prev = self.omega_ref_q16;
@@ -499,6 +506,30 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn goal_q16_is_where_the_profile_lands() {
+        let soft = |min, max| ConfigPosSoft {
+            pos_min_soft_counts: min,
+            pos_max_soft_counts: max,
+        };
+        assert_eq!(TrajGen::goal_q16(77, &soft(-300, 500)), 77 << 16);
+        assert_eq!(TrajGen::goal_q16(501, &soft(-300, 500)), 500 << 16);
+        assert_eq!(TrajGen::goal_q16(-301, &soft(-300, 500)), -(300 << 16));
+        // inverted limits: the max wins, as the table orders them
+        assert_eq!(TrajGen::goal_q16(0, &soft(100, -100)), -(100 << 16));
+        // open limits: the arithmetic guard
+        let open = soft(i32::MIN, i32::MAX);
+        assert_eq!(TrajGen::goal_q16(i32::MAX, &open), THETA_LIM_CQ16);
+        assert_eq!(TrajGen::goal_q16(i32::MIN, &open), -THETA_LIM_CQ16);
+        // a profile run to rest lands on it
+        let c = cfg_with(1000, 50 << 8, -300, 500);
+        for goal in [-100_000, -7, 0, 123, 100_000] {
+            let mut t = TrajGen::new();
+            t.reseed(0);
+            run_to_land(&mut t, goal, TrajGen::goal_q16(goal, &c.soft), &c, 4000);
         }
     }
 

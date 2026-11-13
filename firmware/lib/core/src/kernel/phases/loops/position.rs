@@ -59,6 +59,16 @@ pub struct PosOut {
     pub near: bool,
 }
 
+/// The hold band, cQ16: the deadband's raw counts times the local gain
+/// (`band_gain_q4`, Q4). The zone is twice it.
+#[inline(always)]
+pub fn band_q16(deadband_counts: u16, band_gain_q4: u16) -> u32 {
+    // Q4 -> cQ16 is << 12. Raw-magnitude compares as u32: the ceiling and
+    // a saturating doubling hold past any |error| (2^31) instead of
+    // wrapping; the identity's largest band, 65535 x 16, sits under both.
+    (deadband_counts as u32 * band_gain_q4 as u32).min(u32::MAX >> 12) << 12
+}
+
 /// One MEDIUM-tick update; stateless. theta*/omega* come from the
 /// trajectory generator, theta_hat/omega_hat from fusion. `band_gain_q4` is
 /// linearized counts per raw count at the present position, Q4 (16 at the
@@ -81,11 +91,7 @@ pub fn step(
     let omega_ref = q_mul(cfg.p_kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
         .clamp(-v_lim, v_lim);
-    // Q4 -> cQ16 is << 12; the zone is twice the band. Raw-magnitude
-    // compares as u32: the ceiling and the saturating add hold both past any
-    // |error| (2^31) instead of wrapping; the identity's largest band,
-    // 65535 x 16, sits under both.
-    let band = (cfg.pos_deadband_counts as u32 * band_gain_q4 as u32).min(u32::MAX >> 12) << 12;
+    let band = band_q16(cfg.pos_deadband_counts, band_gain_q4);
     let zone = band.saturating_add(band);
     let e_abs = e_raw.unsigned_abs();
     let near = cfg.pos_deadband_counts != 0 && omega_star_q16 == 0 && e_abs <= zone;
@@ -111,6 +117,19 @@ mod tests {
             velocity_limit_cps: vl,
             accel_limit_q88: 0,
         }
+    }
+
+    #[test]
+    fn band_is_the_deadband_times_the_gain() {
+        assert_eq!(band_q16(12, ID), 12 << 16);
+        // gain 26/16: 12 raw counts span 19.5 linearized
+        assert_eq!(band_q16(12, 26), 39 << 15);
+        assert_eq!(band_q16(0, 26), 0);
+        assert_eq!(band_q16(12, 0), 0);
+        // the ceiling: the largest product stays under 2^32, and so does
+        // the identity's largest band
+        assert_eq!(band_q16(u16::MAX, u16::MAX), (u32::MAX >> 12) << 12);
+        assert_eq!(band_q16(u16::MAX, ID), (u16::MAX as u32) << 16);
     }
 
     #[test]

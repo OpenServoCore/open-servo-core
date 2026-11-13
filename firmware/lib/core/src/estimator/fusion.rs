@@ -77,7 +77,21 @@ impl FusionObs {
     /// Reset to the measurement. Kernel calls at install and on the
     /// torque-enable edge so stale states never kick a fresh enable.
     pub fn seed(&mut self, pos_q4: u16) {
-        self.theta_q16 = (pos_q4 as i32) << Q4_TO_Q16;
+        self.theta_q16 = Self::seed_theta_q16(pos_q4);
+        self.omega_q16 = 0;
+        self.tau_d_q16 = 0;
+    }
+
+    /// The theta a seed at `pos_q4` takes.
+    #[inline(always)]
+    pub fn seed_theta_q16(pos_q4: u16) -> i32 {
+        (pos_q4 as i32) << Q4_TO_Q16
+    }
+
+    /// Keep theta, at rest: the seed without the measurement, for an
+    /// estimate the caller trusts over one sample.
+    #[inline(always)]
+    pub fn rest(&mut self) {
         self.omega_q16 = 0;
         self.tau_d_q16 = 0;
     }
@@ -209,6 +223,33 @@ mod tests {
         assert_eq!(f.theta_q16(), 1234 << 16);
         assert_eq!(f.omega_q16(), 0);
         assert_eq!(f.tau_d_counts(), 0);
+    }
+
+    #[test]
+    fn rest_keeps_theta_and_clears_the_rest() {
+        // torque-off motion against a pinned pot builds omega and tau_d
+        let mut f = FusionObs::new();
+        f.seed(q4(1990));
+        for _ in 0..50 {
+            step(&mut f, 300, q4(2000), &G);
+        }
+        assert_ne!(f.omega_q16(), 0, "precondition");
+        assert_ne!(f.tau_d_counts(), 0, "precondition");
+        let theta = f.theta_q16();
+        assert_ne!(theta, 2000 << 16, "precondition: theta off the pot");
+        f.rest();
+        assert_eq!(f.theta_q16(), theta);
+        assert_eq!(f.omega_q16(), 0);
+        assert_eq!(f.tau_d_counts(), 0);
+    }
+
+    #[test]
+    fn seed_theta_is_the_seed() {
+        let mut f = FusionObs::new();
+        for pos in [0, 1, q4(2000) + 8, u16::MAX] {
+            f.seed(pos);
+            assert_eq!(f.theta_q16(), FusionObs::seed_theta_q16(pos));
+        }
     }
 
     /// The Q4 seed at identity is the old `raw << 16` for every raw count,
