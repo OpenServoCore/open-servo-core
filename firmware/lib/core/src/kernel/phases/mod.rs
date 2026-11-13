@@ -65,11 +65,28 @@ use crate::regions::control::Mode;
 /// and the glitch screen.
 #[cfg(not(feature = "experiment"))]
 pub(in crate::kernel) fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
-    if lut_live {
-        shared.pos_lut_q4(raw)
+    pos_q4_band_gain(shared, lut_live, raw).0
+}
+
+/// [`pos_q4`] and the linearized counts per raw count of its interval:
+/// the table or the identity at the pot channel's code, plus the ADC
+/// wide-code step. The step is raw counts ahead of the table, so it lands
+/// scaled by the interval's gain; the identity's gain is unity, the bare
+/// slot.
+#[cfg(not(feature = "experiment"))]
+#[inline(always)]
+pub(in crate::kernel) fn pos_q4_band_gain(shared: &Shared, lut_live: bool, raw: u16) -> (u16, u16) {
+    let (pos, band_gain_q4) = if lut_live {
+        shared.pos_lut_q4_band_gain(raw)
     } else {
-        pos_lut::identity_q4(raw)
+        (pos_lut::identity_q4(raw), pos_lut::GRID as u16)
+    };
+    let wide_q4 = shared.adc_wide_q4(raw);
+    if wide_q4 == 0 {
+        return (pos, band_gain_q4);
     }
+    let step = (wide_q4 as u32 * band_gain_q4 as u32) >> pos_lut::GRID_SHIFT;
+    (pos.wrapping_add(step as u16), band_gain_q4)
 }
 
 #[cfg(not(feature = "experiment"))]

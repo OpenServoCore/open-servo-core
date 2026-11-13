@@ -2,6 +2,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(fn_align)]
 
+pub mod adc;
 pub mod budget;
 pub mod data_state;
 pub mod debug;

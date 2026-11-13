@@ -714,6 +714,13 @@
       "kind": "uint"
     },
     {
+      "name": "adc_wide_mid_q4",
+      "addr": 209,
+      "width": 16,
+      "access": "rw",
+      "kind": "bytes"
+    },
+    {
       "name": "torque_enable",
       "addr": 384,
       "width": 1,

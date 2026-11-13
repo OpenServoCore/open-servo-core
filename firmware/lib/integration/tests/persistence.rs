@@ -6,8 +6,9 @@
 use osc_integration::sim::{RamStore, Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MgmtOp, Opcode, ResultCode};
+use osc_servo_core::adc::ADC_WIDE_SLOTS;
 use osc_servo_core::persist::{CALIB_LEN, CalibImage, Image, Slot};
-use osc_servo_core::regions::calib::addr::gear::GEAR_CLASS;
+use osc_servo_core::regions::calib::addr::adc::ADC_WIDE_MID_Q4;
 use osc_servo_core::regions::calib::addr::motor::R_Q12;
 use osc_servo_core::regions::calib::addr::sense::TICK_HZ;
 use osc_servo_core::regions::calib::addr::thermal::TH_RISE_Q016;
@@ -213,6 +214,8 @@ fn board_sense_wins_over_a_stale_calib_image(baud_idx: u8) {
 #[apply(matrix)]
 fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
     const JUNK: u8 = 0xA5;
+    /// The CALIB reserved tail's first byte, behind the ADC wide-code map.
+    const RESERVED: u16 = ADC_WIDE_MID_Q4 + ADC_WIDE_SLOTS as u16;
     const SEALED: usize = (CALIB_BASE_ADDR + CALIB_LEN as u16) as usize;
     let mut covered = [false; SEALED];
     for f in ControlTable::FIELDS.iter() {
@@ -243,7 +246,7 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
             t.config.common._rsvd_identity = JUNK;
             t.config.common._rsvd_tail = [JUNK; 12];
         });
-        let reserved = GEAR_CLASS + 1;
+        let reserved = RESERVED;
         assert_eq!(read_byte(&mut sim, ID5, reserved), JUNK, "read as stored");
         let before = live(&sim);
         let frames = mgmt(&mut sim, ID5, MgmtOp::Save);
@@ -266,7 +269,7 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
     sim.add_servo_with_store(ID5, store);
     assert_eq!(read_u16(&mut sim, ID5, R0_Q12), 4016);
     assert_eq!(read_u16(&mut sim, ID5, TH_RISE_Q016), 2097);
-    assert_eq!(read_byte(&mut sim, ID5, GEAR_CLASS + 1), 0);
+    assert_eq!(read_byte(&mut sim, ID5, RESERVED), 0);
 }
 
 /// The sec 9.2 + 9.4 field story: ASSIGN takes a new id immediately, SAVE

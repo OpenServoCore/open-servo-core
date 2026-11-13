@@ -7,14 +7,14 @@ use super::phases::fast;
 use super::phases::loops::{duty_limit, faults, limits};
 use super::*;
 use crate::budget::Events;
-use crate::estimator::{OmegaSource, bemf, bias, window};
+use crate::estimator::{FusionObs, OmegaSource, bemf, bias, window};
 use crate::math::q_mul;
-use crate::pos_lut;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
 use crate::regions::telemetry::tick_flag;
 use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
 use crate::{ControlTable, RegionStorage, SensorFrame, Shared, TelemetryTick};
+use crate::{adc, pos_lut};
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
@@ -2408,6 +2408,173 @@ fn hold_band_is_judged_in_raw_counts() {
     assert!(!parks(&sh, 1924, 1937));
     assert!(parks(&sh, 1924, 1912));
     assert!(!parks(&sh, 1924, 1911));
+}
+
+/// A non-trivial live table: local gain 26/16 over raw 1600..2240.
+fn ramp_lut() -> [i16; pos_lut::POINTS] {
+    let mut k = [0i16; pos_lut::POINTS];
+    for (n, c) in k.iter_mut().enumerate().take(141).skip(100) {
+        *c = 10 * (n as i16 - 100);
+    }
+    k
+}
+
+fn write_wide_map(sh: &Shared, map: [u8; adc::ADC_WIDE_SLOTS]) {
+    sh.table.with_mut(|t| t.calib.adc.adc_wide_mid_q4 = map);
+}
+
+/// The all-zero map is the reading without one, on the identity and on a
+/// live table, for every code the ADC can land.
+#[test]
+fn zero_wide_map_leaves_pos_q4_unchanged() {
+    let sh = Shared::new();
+    let k = ramp_lut();
+    sh.with_pos_lut_mut(|a| *a = k);
+    for raw in 0..=4095u16 {
+        assert_eq!(phases::pos_q4(&sh, false, raw), pos_lut::identity_q4(raw));
+        assert_eq!(
+            phases::pos_q4(&sh, true, raw),
+            pos_lut::interp_q4(raw, &k),
+            "raw {raw}"
+        );
+    }
+}
+
+/// A set slot adds at exactly its stuck code and nowhere else: its bare
+/// value on the identity, scaled by the interval's gain on a live table
+/// (2047 sits in the ramp's 26/16 interval).
+#[test]
+fn wide_slot_adds_at_its_stuck_code_only() {
+    let sh = Shared::new();
+    let k = ramp_lut();
+    sh.with_pos_lut_mut(|a| *a = k);
+    let mut map = [0u8; adc::ADC_WIDE_SLOTS];
+    map[3] = 88;
+    map[7] = 80;
+    map[15] = 255;
+    write_wide_map(&sh, map);
+    for raw in 0..=4095u16 {
+        let add = match raw {
+            1023 => 88,
+            2047 => 80,
+            4095 => 255,
+            _ => 0,
+        };
+        let i = pos_lut::index(raw);
+        let gain = pos_lut::band_gain_q4(k[i], k[i + 1]) as u32;
+        let scaled = ((add as u32 * gain) >> pos_lut::GRID_SHIFT) as u16;
+        assert_eq!(
+            phases::pos_q4(&sh, false, raw),
+            pos_lut::identity_q4(raw).wrapping_add(add),
+            "raw {raw}"
+        );
+        assert_eq!(
+            phases::pos_q4(&sh, true, raw),
+            pos_lut::interp_q4(raw, &k).wrapping_add(scaled),
+            "raw {raw}"
+        );
+    }
+    assert_eq!(
+        phases::pos_q4(&sh, true, 2047) - pos_lut::interp_q4(2047, &k),
+        80 * 26 / 16
+    );
+}
+
+/// A table with gain `16 + rise` (Q4) through raw 960..1120, across the
+/// stuck code 1023 and the interval above it.
+fn sloped_lut(rise: i16) -> [i16; pos_lut::POINTS] {
+    let mut k = [0i16; pos_lut::POINTS];
+    for (n, c) in k.iter_mut().enumerate().take(71).skip(60) {
+        *c = rise * (n as i16 - 60);
+    }
+    k
+}
+
+/// The wide-code step is raw counts ahead of the table: on a live table it
+/// is the slot times the interval's gain, truncated, and lands within one
+/// Q4 count of the table read at the corrected raw, steeper and shallower
+/// than unity alike.
+#[test]
+fn wide_step_scales_by_the_table_gain() {
+    let sh = Shared::new();
+    for (rise, gain) in [(8i16, 24u16), (-4, 12)] {
+        let k = sloped_lut(rise);
+        sh.with_pos_lut_mut(|a| *a = k);
+        let i = pos_lut::index(1023);
+        assert_eq!(pos_lut::band_gain_q4(k[i], k[i + 1]), gain);
+        assert_eq!(pos_lut::band_gain_q4(k[i + 1], k[i + 2]), gain);
+        for slot in [16u8, 80, 88, 255] {
+            let mut map = [0u8; adc::ADC_WIDE_SLOTS];
+            map[3] = slot;
+            write_wide_map(&sh, map);
+            let got = phases::pos_q4(&sh, true, 1023);
+            let base = pos_lut::interp_q4(1023, &k);
+            assert_eq!(
+                got - base,
+                (slot as u16 * gain) >> pos_lut::GRID_SHIFT,
+                "gain {gain} slot {slot}"
+            );
+            // the table at raw 1023 + slot / 16, interpolated inside the
+            // interval above
+            let at = (1023u32 << pos_lut::GRID_SHIFT) + slot as u32;
+            let r = (at >> pos_lut::GRID_SHIFT) as u16;
+            let f = (at & 15) as f64 / 16.0;
+            let (lo, hi) = (
+                pos_lut::interp_q4(r, &k) as f64,
+                pos_lut::interp_q4(r + 1, &k) as f64,
+            );
+            let want = lo + (hi - lo) * f;
+            assert!(
+                (got as f64 - want).abs() <= 1.0,
+                "gain {gain} slot {slot}: {got} vs {want}"
+            );
+            assert_eq!(phases::pos_q4(&sh, false, 1023), (1023 << 4) + slot as u16);
+        }
+    }
+}
+
+/// The observer innovates on the same measurement `pos_q4` gives: seeded
+/// at `pos_q4(raw)` with no model, one observer step on `raw` leaves the
+/// estimate where it was, for every code, the table live and a full map.
+#[test]
+fn observer_measures_what_pos_q4_reads() {
+    let sh = Shared::new();
+    let lut = ramp_lut();
+    sh.with_pos_lut_mut(|a| *a = lut);
+    let mut map = [0u8; adc::ADC_WIDE_SLOTS];
+    for (s, m) in map.iter_mut().enumerate() {
+        *m = 1 + 16 * s as u8;
+    }
+    write_wide_map(&sh, map);
+    sh.table.with_mut(|t| {
+        t.config.fusion.l1_q016 = 1 << 14;
+        t.config.fusion.l2_q88 = 1 << 8;
+        t.control.pos_lut.pos_lut_state = pos_lut::state::LIVE;
+    });
+    let mut k = kernel();
+    for _ in 0..4 * DECIM_MED as u32 {
+        k.on_scan(frame(2000, BIAS), &sh);
+    }
+    for live in [true, false] {
+        if !live {
+            sh.table
+                .with_mut(|t| t.control.pos_lut.pos_lut_state = pos_lut::state::IDENTITY);
+            for _ in 0..4 * DECIM_MED as u32 {
+                k.on_scan(frame(2000, BIAS), &sh);
+            }
+        }
+        for raw in 0..=4095u16 {
+            let pos = phases::pos_q4(&sh, live, raw);
+            k.medium.fusion.seed(pos);
+            k.medium.observe(raw, &k.cfg, &sh, &mut k.fast);
+            assert_eq!(
+                k.medium.fusion.theta_q16(),
+                FusionObs::seed_theta_q16(pos),
+                "live {live} raw {raw}"
+            );
+            assert_eq!(k.medium.fusion.omega_q16(), 0, "live {live} raw {raw}");
+        }
+    }
 }
 
 /// The settle dwell in fast ticks.
