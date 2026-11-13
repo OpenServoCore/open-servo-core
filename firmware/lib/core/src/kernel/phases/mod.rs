@@ -119,9 +119,9 @@ pub(in crate::kernel) struct Medium {
     pub(in crate::kernel) omega_ref_q16: i32,
     /// Anti-hunt hold from the position loop; the drive parks on it.
     pub(in crate::kernel) hold: bool,
-    /// Consecutive medium ticks `hold` has stood, up to
-    /// `position::HOLD_SETTLE_TICKS`, where the park is settled.
-    pub(in crate::kernel) hold_ticks: u8,
+    /// Consecutive medium ticks the position loop has reported `near`, up
+    /// to `position::HOLD_SETTLE_TICKS`, where the hold is settled.
+    pub(in crate::kernel) near_ticks: u8,
 }
 
 #[cfg(not(feature = "experiment"))]
@@ -160,7 +160,7 @@ impl Medium {
             i_ref_cc: 0,
             omega_ref_q16: 0,
             hold: false,
-            hold_ticks: 0,
+            near_ticks: 0,
         }
     }
 

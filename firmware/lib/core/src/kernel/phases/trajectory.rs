@@ -28,13 +28,13 @@ impl Medium {
                     self.traj.omega_star_q16(),
                     theta_hat,
                     self.band_gain_q4,
-                    self.hold_ticks == HOLD_SETTLE_TICKS,
+                    self.near_ticks == HOLD_SETTLE_TICKS,
                     lp,
                 );
                 self.omega_ref_q16 = out.omega_ref_q16;
                 self.hold = out.hold;
-                self.hold_ticks = if out.hold {
-                    self.hold_ticks + (self.hold_ticks < HOLD_SETTLE_TICKS) as u8
+                self.near_ticks = if out.near {
+                    self.near_ticks + (self.near_ticks < HOLD_SETTLE_TICKS) as u8
                 } else {
                     0
                 };

@@ -9,15 +9,13 @@
 //! quantisation live, while the error is linearized: the band is the
 //! deadband times the table's local gain at the present position.
 //!
-//! A park enters and releases at the band until it has rested inside it for
-//! `HOLD_SETTLE_TICKS`; a settled park releases only past 1.5x the band. An
-//! arrival that creeps in parks on the band's edge at the first dip of
-//! sensor noise, its mean error on or past the edge, so noise releases it
-//! again and again with wakes too short to move it. Once the park has
-//! rested for the dwell the shaft is known to be still there: noise no
-//! longer wakes it, a real displacement past the wider gate still does.
-//! Until then the release is the band, so a shaft that coasts through is
-//! still caught and redriven.
+//! A shaft resting on the band's edge is released by every dip of sensor
+//! noise, each wake too short to move it, so "parked for the dwell" may
+//! never come true. The dwell (`HOLD_SETTLE_TICKS`) therefore runs while the
+//! error stays within 1.5x the band of a stopped goal: a shaft that has not
+//! left that zone for the dwell is at rest there, and from then on the zone
+//! is the band. Before the dwell the band is the gate both ways, so a moving
+//! shaft is caught and a coast through is redriven as before.
 //!
 //! Hold gates on POSITION rest alone (profile stopped, error inside the
 //! deadband) - never on omega_hat. The fused omega is pot-noise driven at
@@ -39,25 +37,27 @@ use crate::regions::config::ConfigLoopPosition;
 /// compares the RAW error, never this clamp.
 const E_LIM_CQ16: i32 = 1 << 23;
 
-/// Medium ticks a park must hold, every one inside the band, before it
-/// settles (64 ms at 2 kHz). A shaft that stays inside the band that long
-/// moves slower than the band's width per dwell: it is nearly stopped, not
-/// coasting through.
+/// Medium ticks the error must stay within 1.5x the band of a stopped goal
+/// before the hold settles (64 ms at 2 kHz). A shaft that stays in that
+/// zone that long moves slower than its width per dwell: it is nearly
+/// stopped, not coasting through.
 pub const HOLD_SETTLE_TICKS: u8 = 128;
 
-/// omega_ref for the velocity loop plus the anti-hunt flag (kernel maps
-/// hold -> Brake).
+/// omega_ref for the velocity loop, the anti-hunt flag (kernel maps hold ->
+/// Brake) and whether the error is within 1.5x the band of a stopped goal
+/// (the kernel counts it toward `HOLD_SETTLE_TICKS`).
 #[derive(Copy, Clone)]
 pub struct PosOut {
     pub omega_ref_q16: i32,
     pub hold: bool,
+    pub near: bool,
 }
 
 /// One MEDIUM-tick update; stateless. theta*/omega* come from the
 /// trajectory generator, theta_hat/omega_hat from fusion. `band_gain_q4` is
 /// linearized counts per raw count at the present position, Q4 (16 at the
-/// identity), clamped (`pos_lut::band_gain_q4`). `settled`: the park has
-/// held for `HOLD_SETTLE_TICKS`, so it releases past 1.5x the band.
+/// identity), clamped (`pos_lut::band_gain_q4`). `settled`: `near` has held
+/// for `HOLD_SETTLE_TICKS`, so the gate is 1.5x the band.
 pub fn step(
     theta_star_q16: i32,
     omega_star_q16: i32,
@@ -75,16 +75,19 @@ pub fn step(
     let omega_ref = q_mul(cfg.p_kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
         .clamp(-v_lim, v_lim);
-    // Q4 -> cQ16 is << 12; a settled park adds half a band. Raw-magnitude
-    // compares as u32: the ceiling and the saturating add hold either gate
-    // past any |error| (2^31) instead of wrapping; the identity's largest
-    // band, 65535 x 16, sits under both.
+    // Q4 -> cQ16 is << 12; the zone adds half a band. Raw-magnitude compares
+    // as u32: the ceiling and the saturating add hold both past any |error|
+    // (2^31) instead of wrapping; the identity's largest band, 65535 x 16,
+    // sits under both.
     let band = (cfg.pos_deadband_counts as u32 * band_gain_q4 as u32).min(u32::MAX >> 12) << 12;
-    let gate = band.saturating_add(if settled { band >> 1 } else { 0 });
-    let hold = cfg.pos_deadband_counts != 0 && e_raw.unsigned_abs() <= gate && omega_star_q16 == 0;
+    let zone = band.saturating_add(band >> 1);
+    let e_abs = e_raw.unsigned_abs();
+    let near = cfg.pos_deadband_counts != 0 && omega_star_q16 == 0 && e_abs <= zone;
     PosOut {
         omega_ref_q16: omega_ref,
-        hold,
+        // the band sits inside the zone
+        hold: near && (settled || e_abs <= band),
+        near,
     }
 }
 
@@ -121,6 +124,26 @@ mod tests {
             assert!(step(i32::MAX, 0, i32::MIN, 64, settled, &cfg).hold);
             assert!(step(i32::MIN, 0, i32::MAX, 64, settled, &cfg).hold);
         }
+    }
+
+    #[test]
+    fn near_is_one_and_a_half_bands_of_a_stopped_goal() {
+        let cfg = c(1 << 8, 12, 32767);
+        for settled in [false, true] {
+            assert!(step(18 << 16, 0, 0, ID, settled, &cfg).near);
+            assert!(step(0, 0, 18 << 16, ID, settled, &cfg).near);
+            assert!(!step((18 << 16) + 1, 0, 0, ID, settled, &cfg).near);
+            assert!(!step(0, 0, (18 << 16) + 1, ID, settled, &cfg).near);
+            // a moving profile is never near, even at zero error
+            assert!(!step(0, 1, 0, ID, settled, &cfg).near);
+            assert!(!step(0, -1, 0, ID, settled, &cfg).near);
+            // deadband 0 never counts
+            assert!(!step(0, 0, 0, ID, settled, &c(1 << 8, 0, 32767)).near);
+        }
+        // the ceiling saturates the zone past any error
+        let cfg = c(1 << 8, 65535, 32767);
+        assert!(step(i32::MAX, 0, i32::MIN, 64, false, &cfg).near);
+        assert!(step(i32::MIN, 0, i32::MAX, 64, false, &cfg).near);
     }
 
     #[test]

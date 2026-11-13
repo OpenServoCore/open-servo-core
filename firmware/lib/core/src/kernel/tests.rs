@@ -2360,7 +2360,9 @@ fn hold_stays_parked_under_pot_noise() {
     assert!(parked >= 36_000, "parked ticks {parked} of 40000");
 }
 
-/// A still pot at `raw` under a goal of `goal`: whether the loop parks.
+/// A still pot at `raw` under a goal of `goal`: whether the loop parks once
+/// the profile has landed, judged before the settle dwell can widen the
+/// gate.
 fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
@@ -2368,11 +2370,16 @@ fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
         t.config.loop_position.pos_deadband_counts = 12;
     });
     let mut k = kernel();
-    for _ in 0..10_000 {
+    let mut n = 0;
+    while !(k.medium.traj.theta_star_q16() == goal << 16 && k.medium.traj.omega_star_q16() == 0) {
+        k.on_scan(frame(raw, BIAS), sh);
+        n += 1;
+        assert!(n < 10_000, "the profile never landed");
+    }
+    for _ in 0..SETTLE_SCANS - SETTLE_SLACK {
         k.on_scan(frame(raw, BIAS), sh);
     }
     assert_eq!(k.faults.mask(), 0);
-    assert_eq!(k.medium.traj.theta_star_q16(), goal << 16, "profile landed");
     k.medium.hold
 }
 
@@ -2455,12 +2462,67 @@ fn a_settled_hold_stays_parked_under_noise_past_the_band() {
     assert_eq!(k.faults.mask(), 0);
 }
 
+/// Torque on under a goal of 1924 and a 12-count band, the pot read by
+/// `pot` on every scan, until the profile has landed.
+fn landed(sh: &Shared, pot: &mut impl FnMut() -> u16) -> Kernel<FakeIo> {
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 1924;
+        t.config.loop_position.pos_deadband_counts = 12;
+    });
+    let mut k = kernel();
+    let mut n = 0;
+    while !(k.medium.traj.theta_star_q16() == 1924 << 16 && k.medium.traj.omega_star_q16() == 0) {
+        k.on_scan(frame(pot(), BIAS), sh);
+        n += 1;
+        assert!(n < 10_000, "the profile never landed");
+    }
+    k
+}
+
+/// Medium ticks of slack either side of the dwell for the phase the
+/// landing falls on.
+const SETTLE_SLACK: u32 = 2 * DECIM_MED as u32;
+
 #[test]
-fn an_unsettled_hold_wakes_past_the_band() {
+fn a_still_pot_past_the_band_parks_once_the_dwell_has_passed() {
     let sh = Shared::new();
     seed(&sh);
-    let mut k = parked_for(&sh, 3 * DECIM_MED as u32);
-    assert!(wakes(&mut k, &sh, 1939), "parked at 1.25x the band");
+    // 1.25x the band off the goal
+    let mut k = landed(&sh, &mut || 1939);
+    for n in 0..SETTLE_SCANS - SETTLE_SLACK {
+        k.on_scan(frame(1939, BIAS), &sh);
+        assert!(!k.medium.hold, "parked before the dwell, tick {n}");
+    }
+    for _ in 0..2 * SETTLE_SLACK {
+        k.on_scan(frame(1939, BIAS), &sh);
+    }
+    for n in 0..20_000 {
+        k.on_scan(frame(1939, BIAS), &sh);
+        assert!(k.medium.hold, "woke after the dwell, tick {n}");
+    }
+    assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
+fn a_hold_on_the_band_edge_settles_through_its_wakes() {
+    let sh = Shared::new();
+    seed(&sh);
+    // one count past the band, +-1 count of noise: it parks only on dips
+    let mut rng: u32 = 0xdead_beef;
+    let mut pot = || {
+        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (1937 + ((rng >> 24) as i32 % 3) - 1) as u16
+    };
+    let mut k = landed(&sh, &mut pot);
+    for _ in 0..SETTLE_SCANS + SETTLE_SLACK {
+        k.on_scan(frame(pot(), BIAS), &sh);
+    }
+    for n in 0..20_000 {
+        let raw = pot();
+        k.on_scan(frame(raw, BIAS), &sh);
+        assert!(k.medium.hold, "woke after the dwell, tick {n}, pot {raw}");
+    }
     assert_eq!(k.faults.mask(), 0);
 }
 
