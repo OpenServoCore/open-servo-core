@@ -226,7 +226,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
         // the dead-man counts bus silence by the medium period, and a burst
         // is the host silent by design: the TEL stream is in hand here
-        #[cfg(feature = "experiment")]
+        #[cfg(any(feature = "experiment", feature = "deadman"))]
         if phase == phase::RAIL {
             self.medium.deadman(self.tel.streaming(), &mut self.faults);
         }

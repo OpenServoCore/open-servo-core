@@ -478,6 +478,187 @@ fn permit_written_with_torque_off_never_grants() {
     }
 }
 
+// --- Bus dead-man -----------------------------------------------------------
+
+/// OpenLoop under torque from the boot tick, `bus_deadman_ticks` at `field`.
+fn deadman_seed(sh: &Shared, field: u16) {
+    seed(sh);
+    sh.table.with_mut(|t| {
+        let l = &mut t.control.lifecycle;
+        l.torque_enable = true;
+        l.mode = Mode::OpenLoop;
+        l.goal_duty = 8000;
+        l.bus_deadman_ticks = field;
+    });
+}
+
+/// The production image accepts the field and ignores it: a nonzero count
+/// with torque on and a silent bus never lapses.
+#[cfg(not(feature = "deadman"))]
+#[test]
+fn the_deadman_field_is_ignored_without_the_feature() {
+    let f = frame(2000, BIAS);
+    let sh = Shared::new();
+    deadman_seed(&sh, 400);
+    let mut k = kernel();
+    to_first_command(&mut k, &sh, f);
+    for _ in 0..5000 {
+        k.on_scan(f, &sh);
+        assert_eq!(k.faults.mask(), 0);
+        assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
+    }
+    sh.table
+        .with(|t| assert_eq!(t.telemetry.mode.fault_code, faults::CODE_NONE));
+}
+
+/// The `deadman` image's guard, on the experiment image's clock: the
+/// countdown steps DECIM_MED ticks on each RAIL phase, so a field of 400
+/// lapses on the 40th RAIL after the enable edge, tick 395 from an enable
+/// at the boot tick.
+#[cfg(feature = "deadman")]
+mod deadman {
+    use super::*;
+
+    /// A TEL stream the test switches on and off.
+    #[derive(Default)]
+    struct StreamTel {
+        streaming: bool,
+    }
+    impl TelStream for StreamTel {
+        fn on_publish(&mut self, _: impl FnOnce() -> bool) {}
+        fn streaming(&self) -> bool {
+            self.streaming
+        }
+    }
+
+    type K = Kernel<FakeIo, StreamTel>;
+
+    fn rig(sh: &Shared, field: u16) -> K {
+        deadman_seed(sh, field);
+        Kernel::with_tel(
+            FakeIo {
+                sensors: FakeSensors,
+                motor: FakeMotor { last: None },
+            },
+            StreamTel::default(),
+            TIMING,
+        )
+    }
+
+    fn scan(k: &mut K, sh: &Shared, f: SensorFrame, n: u32) {
+        for _ in 0..n {
+            k.on_scan(f, sh);
+        }
+    }
+
+    fn drives(k: &K) -> bool {
+        k.faults.mask() == 0 && matches!(k.io.motor.last, Some(MotorCmd::Drive { .. }))
+    }
+
+    fn lapsed(k: &K) -> bool {
+        k.faults.mask() == faults::BIT_DEADMAN
+            && matches!(k.io.motor.last, Some(MotorCmd::Disabled))
+    }
+
+    /// Bus silence under torque latches `deadman` and the drive goes off,
+    /// published as code 9 on bit 7; it stays off under torque until the
+    /// enable edge acks it, which restarts the countdown from the field.
+    #[test]
+    fn the_deadman_lapses_bus_silence_and_the_enable_edge_acks() {
+        let f = frame(2000, BIAS);
+        let sh = Shared::new();
+        let mut k = rig(&sh, 400);
+        scan(&mut k, &sh, f, 395);
+        assert!(drives(&k));
+        k.on_scan(f, &sh);
+        assert!(lapsed(&k));
+        run_to(&mut k, &sh, f, phase::SPARE_A);
+        sh.table.with(|t| {
+            assert_eq!(t.telemetry.mode.fault_code, faults::CODE_DEADMAN);
+            assert_eq!(t.telemetry.common.fault_flags, faults::BIT_DEADMAN);
+        });
+        assert_eq!(faults::CODE_DEADMAN, 9);
+        assert_eq!(faults::BIT_DEADMAN, 1 << 7);
+        for _ in 0..1000 {
+            k.on_scan(f, &sh);
+            assert!(lapsed(&k), "the lapse holds under torque");
+        }
+
+        // torque off, then the enable edge at the CONTROL of tick 1410:
+        // the 40th RAIL after it is tick 1805
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        run_to(&mut k, &sh, f, phase::SLOW);
+        assert!(matches!(k.io.motor.last, Some(MotorCmd::Disabled)));
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        run_to(&mut k, &sh, f, phase::CONTROL);
+        assert_eq!(k.faults.mask(), faults::BIT_DEADMAN);
+        scan(&mut k, &sh, f, 395);
+        assert!(drives(&k), "the ack clears the fault");
+        k.on_scan(f, &sh);
+        assert!(lapsed(&k));
+    }
+
+    /// An instruction dispatched at tick 300 reloads: the RAIL at 305
+    /// starts 400 afresh, so tick 705 is the lapse.
+    #[test]
+    fn the_deadman_reloads_on_a_dispatched_instruction() {
+        let f = frame(2000, BIAS);
+        let sh = Shared::new();
+        let mut k = rig(&sh, 400);
+        scan(&mut k, &sh, f, 300);
+        sh.bus_touch();
+        scan(&mut k, &sh, f, 405);
+        assert!(drives(&k));
+        k.on_scan(f, &sh);
+        assert!(lapsed(&k));
+    }
+
+    /// A stream from tick 100 holds the 300 ticks left; released at 1100,
+    /// they run out on the RAIL of tick 1395.
+    #[test]
+    fn the_deadman_holds_while_a_burst_streams() {
+        let f = frame(2000, BIAS);
+        let sh = Shared::new();
+        let mut k = rig(&sh, 400);
+        scan(&mut k, &sh, f, 100);
+        k.tel.streaming = true;
+        scan(&mut k, &sh, f, 1000);
+        assert!(drives(&k));
+        k.tel.streaming = false;
+        scan(&mut k, &sh, f, 295);
+        assert!(drives(&k));
+        k.on_scan(f, &sh);
+        assert!(lapsed(&k));
+    }
+
+    /// From 0 at the enable edge, a write of 400 landing with its touch at
+    /// tick 2 is carried by the CONTROL at 10 and loaded on the RAIL at
+    /// 15, so the silence lapses at tick 415; a zero field never trips.
+    #[test]
+    fn the_deadman_takes_a_field_written_under_torque() {
+        let f = frame(2000, BIAS);
+        let sh = Shared::new();
+        let mut k = rig(&sh, 0);
+        scan(&mut k, &sh, f, 5000);
+        assert!(drives(&k), "a zero field never trips");
+
+        let sh = Shared::new();
+        let mut k = rig(&sh, 0);
+        scan(&mut k, &sh, f, 2);
+        sh.table
+            .with_mut(|t| t.control.lifecycle.bus_deadman_ticks = 400);
+        sh.bus_touch();
+        scan(&mut k, &sh, f, 2 * DECIM_MED as u32);
+        assert!(drives(&k), "a field written under torque trips nothing");
+        scan(&mut k, &sh, f, 415 - 22);
+        assert!(drives(&k));
+        k.on_scan(f, &sh);
+        assert!(lapsed(&k));
+    }
+}
+
 fn limit_flags(sh: &Shared) -> u8 {
     sh.table.with(|t| t.telemetry.limits.limit_flags)
 }

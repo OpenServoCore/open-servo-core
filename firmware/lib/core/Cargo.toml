@@ -29,3 +29,6 @@ log     = ["osc-log/log"]
 # The experiment image (kernel sec 2.7): OpenLoop alone, the trip and the
 # bus dead-man its protections; the loops and estimators compile out.
 experiment = []
+# The production kernel with the experiment image's bus dead-man, for bench
+# work (kernel sec 2.7).
+deadman = []

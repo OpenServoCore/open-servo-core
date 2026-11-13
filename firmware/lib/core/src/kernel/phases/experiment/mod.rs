@@ -3,29 +3,17 @@
 //! drives the OpenLoop goal as written, and the overcurrent trip and the
 //! dead-man are the only raise points.
 
-use core::sync::atomic::{Ordering, compiler_fence};
-
+use super::deadman::Deadman;
 use super::fast::{Command, Drive, Fast};
-use super::loops::faults::{self, FaultLatch};
+use super::loops::faults::FaultLatch;
 use super::loops::limits::flag;
+use crate::kernel::KernelTiming;
 use crate::kernel::config::KernelConfig;
-use crate::kernel::{DECIM_MED, KernelTiming};
 use crate::regions::control::{ControlLifecycle, Mode};
 use crate::{RegionStorageRaw, Shared};
 
 #[cfg(test)]
 mod tests;
-
-/// The bus dead-man countdown of `bus_deadman_ticks`, stepped once per
-/// medium period on the RAIL phase.
-struct Deadman {
-    /// Ticks left; 0 while off, lapsed or torque off.
-    ticks: u16,
-    /// `Shared::bus_gen` at the last reload.
-    bus_gen: u8,
-    /// `Shared::bus_gen` as the CONTROL phase read it, ahead of `life`.
-    seen: u8,
-}
 
 pub(in crate::kernel) struct Medium {
     /// CONTROL as the CONTROL phase read it.
@@ -39,11 +27,7 @@ impl Medium {
         Self {
             life: ControlLifecycle::default(),
             te_prev: false,
-            deadman: Deadman {
-                ticks: 0,
-                bus_gen: 0,
-                seen: 0,
-            },
+            deadman: Deadman::new(),
         }
     }
 
@@ -57,10 +41,7 @@ impl Medium {
         cmd: &mut Command,
     ) {
         let p = shared.table.region_ptr();
-        // the generation ahead of the read: dispatch bumps it behind the
-        // write it reports, so a step seen here is in the lifecycle below
-        self.deadman.seen = shared.bus_gen();
-        compiler_fence(Ordering::Acquire);
+        self.deadman.see(shared);
         // SAFETY: a read of a transport-owned region - a raw-pointer
         // volatile block copy, no `&T` formed, an aligned repr(C) block
         // inside the static table (single-writer contract on `Kernel`).
@@ -72,8 +53,7 @@ impl Medium {
         if enable_edge {
             faults.clear();
             fast.ack();
-            self.deadman.ticks = life.bus_deadman_ticks;
-            self.deadman.bus_gen = self.deadman.seen;
+            self.deadman.start(life.bus_deadman_ticks);
         }
         self.te_prev = life.torque_enable;
         cmd.drive = self.drive(cfg, faults);
@@ -92,29 +72,18 @@ impl Medium {
         }
     }
 
-    /// RAIL: the dead-man's period. An instruction the CONTROL read saw
-    /// dispatched since the last reload reloads the countdown from the
-    /// field it read; a streaming burst holds it; else a loaded countdown
-    /// counts the period down and latches the fault at zero. Zero never
-    /// counts: the field is off, or a write the next CONTROL carries. Out
-    /// of line, so the tick body keeps its shape.
+    /// RAIL: the dead-man's period (`Deadman::step`). Out of line, so the
+    /// tick body keeps its shape.
     #[inline(never)]
     #[rustc_align(4)]
     pub(in crate::kernel) fn deadman(&mut self, streaming: bool, faults: &mut FaultLatch) {
-        let d = &mut self.deadman;
-        if !self.life.torque_enable {
-            d.ticks = 0;
-        } else if d.bus_gen != d.seen {
-            d.bus_gen = d.seen;
-            d.ticks = self.life.bus_deadman_ticks;
-        } else if !streaming && d.ticks != 0 {
-            if d.ticks > DECIM_MED as u16 {
-                d.ticks -= DECIM_MED as u16;
-            } else {
-                d.ticks = 0;
-                faults.raise(faults::BIT_DEADMAN, faults::CODE_DEADMAN);
-            }
-        }
+        let life = &self.life;
+        self.deadman.step(
+            life.torque_enable,
+            life.bus_deadman_ticks,
+            streaming,
+            faults,
+        );
     }
 
     /// PUBLISH: the bias, the mode, the fault and the permit bit of
@@ -125,7 +94,7 @@ impl Medium {
         // the dead-man stands in for the stall permit lease, so its loaded
         // countdown is the grant the burst arm reads for a seat outside the
         // soft limits (kernel sec 2.7)
-        let permit = self.life.torque_enable && self.deadman.ticks != 0;
+        let permit = self.life.torque_enable && self.deadman.loaded();
         // SAFETY: sole-telemetry-writer contract (`Kernel` doc); volatile
         // per-field stores.
         unsafe {

@@ -50,4 +50,19 @@ impl Medium {
             faults.raise(faults::BIT_POSITION_ERROR, faults::CODE_POSITION_ERROR);
         }
     }
+
+    /// RAIL: the dead-man's period (`Deadman::step`). Out of line, so the
+    /// tick body keeps its shape.
+    #[cfg(feature = "deadman")]
+    #[inline(never)]
+    #[rustc_align(4)]
+    pub(in crate::kernel) fn deadman(&mut self, streaming: bool, faults: &mut FaultLatch) {
+        let life = &self.ctl.life;
+        self.deadman.step(
+            life.torque_enable,
+            life.bus_deadman_ticks,
+            streaming,
+            faults,
+        );
+    }
 }

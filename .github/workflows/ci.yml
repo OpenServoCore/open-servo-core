@@ -53,6 +53,10 @@ jobs:
         run: cargo clippy -p osc-servo-core --tests --features experiment -- -D warnings
       - name: cargo test osc-servo-core --features experiment
         run: cargo test -p osc-servo-core --features experiment
+      - name: cargo clippy osc-servo-core --features deadman
+        run: cargo clippy -p osc-servo-core --tests --features deadman -- -D warnings
+      - name: cargo test osc-servo-core --features deadman
+        run: cargo test -p osc-servo-core --features deadman
 
   ch32-build-test:
     name: build + test (firmware/servo-ch32)
@@ -85,6 +89,8 @@ jobs:
         run: cargo check --features ch32v006x8x6,bench-window
       - name: cargo check --features experiment
         run: cargo check --features ch32v006x8x6,experiment
+      - name: cargo check --features deadman
+        run: cargo check --features ch32v006x8x6,deadman
 
   osc-dev-v006-cross-build:
     name: cross-build (boards/osc-dev-v006)
@@ -148,6 +154,17 @@ jobs:
       - name: hot callees 4-byte aligned gate (experiment image)
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/experiment/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: cargo build --release (deadman image)
+        run: CARGO_TARGET_DIR=target/deadman cargo build --release -p osc-dev-v006-app --features osc-dev-v006-app/deadman
+      - name: no soft div/mod/mul gate (deadman image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-soft-arith.sh firmware/boards/osc-dev-v006/target/deadman/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: no mem* calls gate (deadman image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/deadman/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: hot callees 4-byte aligned gate (deadman image)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/deadman/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
 
   host-ch32-build-test:
     name: build + test (firmware/host-ch32)

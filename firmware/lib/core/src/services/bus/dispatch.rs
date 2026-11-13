@@ -156,7 +156,7 @@ impl Dispatch for Dispatcher<'_> {
         };
         // behind the arms: a COMMIT applies inside them, and the dead-man
         // takes a field under the step that follows its store
-        #[cfg(feature = "experiment")]
+        #[cfg(any(feature = "experiment", feature = "deadman"))]
         self.shared.bus_touch();
         dispatched
     }
@@ -178,7 +178,7 @@ impl Dispatch for Dispatcher<'_> {
         if config {
             self.shared.config_commit_end();
         }
-        #[cfg(feature = "experiment")]
+        #[cfg(any(feature = "experiment", feature = "deadman"))]
         self.shared.bus_touch();
         self.after_commit(addr, len);
         let mut hooks = ControlTableHooks::new(reply);

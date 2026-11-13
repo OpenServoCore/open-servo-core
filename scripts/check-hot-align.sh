@@ -70,7 +70,8 @@ bench_hot=(
 )
 
 # The loops and folds the experiment image compiles out (kernel sec 2.7),
-# and the dead-man it runs in their place; one set or the other.
+# and the dead-man it runs in their place; one set or the other. The
+# deadman image carries the production set and its own dead-man.
 production_hot=(
     TrajGen::step_position
     DutyLimiter::step
@@ -78,7 +79,10 @@ production_hot=(
     math::recip_div
 )
 experiment_hot=(
-    Medium::deadman
+    experiment::Medium::deadman
+)
+deadman_hot=(
+    phases::Medium::deadman
 )
 
 elf="${1:-firmware/boards/osc-dev-v006/target/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app}"
@@ -106,10 +110,13 @@ syms="$("$nm" -C --defined-only "$elf" \
 if grep -q ' KERNEL_PROBE$' <<<"$("$nm" --defined-only "$elf")"; then
   hot+=("${bench_hot[@]}")
 fi
-if grep -q 'Medium::deadman$' <<<"$syms"; then
+if grep -q 'experiment::Medium::deadman$' <<<"$syms"; then
   hot+=("${experiment_hot[@]}")
 else
   hot+=("${production_hot[@]}")
+  if grep -q 'phases::Medium::deadman$' <<<"$syms"; then
+    hot+=("${deadman_hot[@]}")
+  fi
 fi
 
 fail=0
