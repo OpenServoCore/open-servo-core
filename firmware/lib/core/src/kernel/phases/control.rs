@@ -45,6 +45,8 @@ impl Medium {
         fast: &mut Fast,
         cmd: &mut Command,
     ) {
+        #[cfg(feature = "deadman")]
+        self.deadman.see(shared);
         self.ctl = Control::read(shared);
         self.admit(cfg, shared, faults, fast);
         self.edges(raw_pos, cfg, shared, faults, fast);
@@ -65,13 +67,15 @@ impl Medium {
         let life = &self.ctl.life;
         // torque_enable 0->1 is the fault ack: latch, detectors, and the
         // limits pend all clear; a still-present condition re-latches
-        // through the normal detectors.
+        // through the normal detectors. The dead-man starts from the field.
         let enable_edge = life.torque_enable && !self.te_prev;
         if enable_edge {
             faults.clear();
             self.det.reset();
             fast.ack();
             self.limits.ack();
+            #[cfg(feature = "deadman")]
+            self.deadman.start(life.bus_deadman_ticks);
         }
         self.te_prev = life.torque_enable;
 

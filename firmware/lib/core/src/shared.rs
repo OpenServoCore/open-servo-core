@@ -45,8 +45,9 @@ pub struct Shared {
     /// alone, write it - the table's single-writer contract.
     pos_lut: SyncUnsafeCell<[i16; POINTS]>,
     /// Bumped by dispatch behind every instruction addressed to this servo,
-    /// and behind the store of every write it commits; the experiment
-    /// image's bus dead-man reloads when it moves (`bus_touch`). Dispatch
+    /// and behind the store of every write it commits; the bus dead-man of
+    /// the experiment and `deadman` images reloads when it moves
+    /// (`bus_touch`). Dispatch
     /// is the sole writer. Last, so no field above it moves.
     bus_gen: AtomicU8,
 }

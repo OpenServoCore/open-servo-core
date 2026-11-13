@@ -21,8 +21,8 @@ pub const BIT_UNDER_VOLT: u8 = 1 << 5;
 /// ([`DriveCheck`]), a motor wired the other way round from
 /// `drive_polarity`.
 pub const BIT_DATA: u8 = 1 << 6;
-/// The bus fell silent under torque for `bus_deadman_ticks`: the experiment
-/// image's host-loss guard (kernel sec 2.7).
+/// The bus fell silent under torque for `bus_deadman_ticks`: the host-loss
+/// guard of the experiment and `deadman` images (kernel sec 2.7).
 pub const BIT_DEADMAN: u8 = 1 << 7;
 
 /// `fault_code` values: bit index + 1, then the kinds that share a bit;

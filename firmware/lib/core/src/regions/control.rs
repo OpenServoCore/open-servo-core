@@ -56,7 +56,8 @@ pub struct ControlLifecycle {
     /// to this servo reloads and a TEL burst holds; at zero the kernel
     /// latches `deadman` and the drive coasts until the torque enable ack.
     /// Torque off clears the countdown; a fresh enable starts it from the
-    /// field. 0 is off. The production image accepts and ignores it.
+    /// field. 0 is off. The production image accepts and ignores it unless
+    /// built with `deadman`, where it counts the same.
     pub bus_deadman_ticks: u16,
 }
 

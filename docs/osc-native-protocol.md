@@ -1108,10 +1108,12 @@ is silent by design while the burst runs. At zero the kernel latches
 `deadman` (bit 7, code 9, the table above) and the drive coasts until
 the `torque_enable` 0 to 1 ack. Torque off clears the countdown; a
 fresh enable starts it from the field; 0 is off. The production image
-accepts the field and ignores it. `osc` writes 20000 after every
-torque enable on the experiment image and rewrites it every 250 ms
-while torque is on, so a host that dies mid-drive leaves a servo that
-coasts within a second on either image.
+accepts the field and ignores it, unless built with the `deadman`
+feature (osc-servo-kernel sec 2.7), a bench build that counts it as
+above; no capability bit names that build. `osc` writes 20000 after
+every torque enable on the experiment image and rewrites it every
+250 ms while torque is on, so a host that dies mid-drive leaves a servo
+that coasts within a second on either image.
 
 **The experiment image.** `capability_flags` bit 1 (sec 5.4) names a
 servo built with the `experiment` feature (osc-servo-kernel sec 2.7):

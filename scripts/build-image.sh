@@ -2,7 +2,7 @@
 #
 # Build the flash images of one commit from one canonical path.
 #
-#   scripts/build-image.sh [--bench] [--telcost] [--window] [--experiment] <rev> [board...]
+#   scripts/build-image.sh [--bench] [--telcost] [--window] [--experiment] [--deadman] <rev> [board...]
 #
 # Cargo hashes the absolute path of every path dependency outside the
 # workspace root into crate metadata. The hash lands in symbol names, and
@@ -15,23 +15,27 @@
 # --telcost adds it built with bench-telcost (osc-dev-v006-app-telcost);
 # --window adds it built with bench-window (osc-dev-v006-app-window);
 # --experiment adds it built with experiment (osc-dev-v006-app-experiment),
-# the notebooks' image (kernel sec 2.7).
+# the notebooks' image (kernel sec 2.7);
+# --deadman adds it built with deadman (osc-dev-v006-app-deadman), the
+# production image with the bus dead-man for bench work (kernel sec 2.7).
 # Images land in $OSC_BUILD_ROOT/out/<rev>/ as <image>.elf, .bin and .sha1;
 # each prints as `<board> <image> <sha1>`.
 set -euo pipefail
 
-usage() { echo "usage: $0 [--bench] [--telcost] [--window] [--experiment] <rev> [osc-dev-v006|osc-adapter-wchlinke ...]" >&2; exit 2; }
+usage() { echo "usage: $0 [--bench] [--telcost] [--window] [--experiment] [--deadman] <rev> [osc-dev-v006|osc-adapter-wchlinke ...]" >&2; exit 2; }
 
 bench=0
 telcost=0
 window=0
 experiment=0
+deadman=0
 while :; do
     case ${1:-} in
         --bench) bench=1; shift ;;
         --telcost) telcost=1; shift ;;
         --window) window=1; shift ;;
         --experiment) experiment=1; shift ;;
+        --deadman) deadman=1; shift ;;
         *) break ;;
     esac
 done
@@ -99,6 +103,10 @@ for board in "${boards[@]}"; do
             if [ $experiment = 1 ]; then
                 build "$board" osc-dev-v006-app osc-dev-v006-app-experiment $t \
                     -p osc-dev-v006-app --features osc-dev-v006-app/experiment
+            fi
+            if [ $deadman = 1 ]; then
+                build "$board" osc-dev-v006-app osc-dev-v006-app-deadman $t \
+                    -p osc-dev-v006-app --features osc-dev-v006-app/deadman
             fi
             ;;
         osc-adapter-wchlinke)

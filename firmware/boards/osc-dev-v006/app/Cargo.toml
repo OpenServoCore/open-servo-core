@@ -29,3 +29,6 @@ bench-telcost = ["bench", "osc-servo-ch32/bench-telcost"]
 bench-window = ["bench", "osc-servo-ch32/bench-window"]
 # The notebooks' experiment image (scripts/build-image.sh --experiment).
 experiment = ["osc-servo-ch32/experiment"]
+# The production image with the bus dead-man for bench work
+# (scripts/build-image.sh --deadman).
+deadman = ["osc-servo-ch32/deadman"]

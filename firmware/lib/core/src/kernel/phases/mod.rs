@@ -6,10 +6,13 @@
 //! the schedule's table; every value is
 //! written by the phase that computes it and read by the later phases and
 //! by the fast half. The experiment image (`experiment`, kernel sec 2.7)
-//! swaps in a medium half of CONTROL, the bus dead-man and PUBLISH alone.
+//! swaps in a medium half of CONTROL, the bus dead-man and PUBLISH alone;
+//! `deadman` gives the production half the same dead-man.
 
 #[cfg(not(feature = "experiment"))]
 mod control;
+#[cfg(any(feature = "experiment", feature = "deadman"))]
+mod deadman;
 #[cfg(feature = "experiment")]
 mod experiment;
 pub(in crate::kernel) mod fast;
@@ -105,6 +108,8 @@ pub(in crate::kernel) struct Medium {
     permit_gen: u8,
     det: Detectors,
     pub(in crate::kernel) drive: DriveCheck,
+    #[cfg(feature = "deadman")]
+    deadman: deadman::Deadman,
     te_prev: bool,
     run_prev: bool,
     mode_prev: Mode,
@@ -144,6 +149,8 @@ impl Medium {
             permit_gen: 0,
             det: Detectors::new(),
             drive: DriveCheck::new(),
+            #[cfg(feature = "deadman")]
+            deadman: deadman::Deadman::new(),
             te_prev: false,
             run_prev: false,
             mode_prev: Mode::OpenLoop,

@@ -45,4 +45,6 @@ bench-telcost = ["bench", "osc-servo-drivers/bench-telcost"]
 bench-window = ["bench"]
 # The experiment image: the kernel's experiment half (kernel sec 2.7).
 experiment   = ["osc-servo-core/experiment"]
+# The production kernel with the bus dead-man (kernel sec 2.7).
+deadman      = ["osc-servo-core/deadman"]
 defmt        = ["dep:defmt", "osc-servo-core/defmt", "osc-servo-drivers/defmt", "osc-log/defmt"]
