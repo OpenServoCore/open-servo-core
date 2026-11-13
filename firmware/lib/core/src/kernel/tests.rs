@@ -2554,6 +2554,204 @@ fn a_goal_write_unsettles_the_hold() {
     assert_eq!(k.faults.mask(), 0);
 }
 
+/// A servo at rest moves only when asked: torque on with the goal on the
+/// present position parks at once. The host writes the goal as it reads
+/// the position, the published estimate rounded to the count, so the goal
+/// sits inside the band of the shaft whatever one pot sample says.
+#[test]
+fn torque_on_at_rest_on_the_goal_drives_nothing() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table
+        .with_mut(|t| t.config.loop_position.pos_deadband_counts = 4);
+    let mut k = kernel();
+    // a still shaft under +-2 counts of pot noise, half the band
+    let mut rng: u32 = 0xdead_beef;
+    let mut pot = move || {
+        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (2000 + ((rng >> 24) as i32 % 5) - 2) as u16
+    };
+    for enable in 0..32 {
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        for _ in 0..2_000 {
+            k.on_scan(frame(pot(), BIAS), &sh);
+        }
+        let goal = sh
+            .table
+            .with(|t| (t.telemetry.estimates.theta_hat_q16 + (1 << 15)) >> 16);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.goal_position = goal;
+            t.control.lifecycle.torque_enable = true;
+        });
+        for n in 0..8_000u32 {
+            k.on_scan(frame(pot(), BIAS), &sh);
+            let width = match last_cmd(&k) {
+                MotorCmd::Drive { ticks, .. } => ticks,
+                _ => 0,
+            };
+            assert_eq!(width, 0, "enable {enable}, goal {goal}: drove at tick {n}");
+            assert_eq!(
+                k.medium.i_ref_cc, 0,
+                "enable {enable}, goal {goal}: current asked at tick {n}"
+            );
+            // the edge lands on the next CONTROL phase, the park on that
+            // period's TRAJECTORY phase
+            if n >= 2 * DECIM_MED as u32 {
+                assert!(
+                    k.medium.hold,
+                    "enable {enable}, goal {goal}: not parked at tick {n}"
+                );
+            }
+        }
+        assert_eq!(k.faults.mask(), 0);
+    }
+}
+
+/// One pot sample is no measure of a shaft at rest: the edge tick's sample
+/// sits 3 counts off the still shaft, either side, and torque on with the
+/// goal on the estimate still parks at once without a drive.
+#[test]
+fn torque_on_at_rest_ignores_a_stray_edge_sample() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table
+        .with_mut(|t| t.config.loop_position.pos_deadband_counts = 4);
+    let mut k = kernel();
+    let mut rng: u32 = 0xdead_beef;
+    let mut pot = move || {
+        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (2000 + ((rng >> 24) as i32 % 5) - 2) as u16
+    };
+    for enable in 0..32 {
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        for _ in 0..2_000 {
+            k.on_scan(frame(pot(), BIAS), &sh);
+        }
+        let goal = sh
+            .table
+            .with(|t| (t.telemetry.estimates.theta_hat_q16 + (1 << 15)) >> 16);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.goal_position = goal;
+            t.control.lifecycle.torque_enable = true;
+        });
+        while k.phase != phase::CONTROL {
+            k.on_scan(frame(pot(), BIAS), &sh);
+        }
+        let stray = if enable % 2 == 0 { 3 } else { -3 };
+        k.on_scan(frame((pot() as i32 + stray) as u16, BIAS), &sh);
+        assert_eq!(k.medium.traj.theta_star_q16(), goal << 16);
+        for n in 0..8_000u32 {
+            k.on_scan(frame(pot(), BIAS), &sh);
+            let width = match last_cmd(&k) {
+                MotorCmd::Drive { ticks, .. } => ticks,
+                _ => 0,
+            };
+            assert_eq!(width, 0, "enable {enable}, goal {goal}: drove at tick {n}");
+            assert_eq!(
+                k.medium.i_ref_cc, 0,
+                "enable {enable}, goal {goal}: current asked at tick {n}"
+            );
+            // the park lands on the edge period's TRAJECTORY phase
+            if n >= DECIM_MED as u32 {
+                assert!(
+                    k.medium.hold,
+                    "enable {enable}, goal {goal}: not parked at tick {n}"
+                );
+            }
+        }
+        assert_eq!(k.faults.mask(), 0);
+    }
+}
+
+/// A shaft moved by hand under torque off leaves the estimate behind the
+/// pot, and a host that reads the position then writes that stale estimate
+/// as the goal. The edge sample disagrees with the estimate by more than
+/// the zone: the estimate is not kept, fusion seeds at the sample, its
+/// railed disturbance goes with it, and nothing latches, STALL included.
+#[test]
+fn torque_on_after_a_hand_move_seeds_at_the_sample() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table
+        .with_mut(|t| t.config.limits.stall_response = StallResponse::Fault);
+    let mut k = kernel();
+    for i in 0..4000u32 {
+        let pos = 1000 + ((i / 4) % 2000) as u16;
+        k.on_scan(frame(pos, BIAS), &sh);
+    }
+    for _ in 0..150 {
+        k.on_scan(frame(1000, BIAS), &sh);
+    }
+    let goal = sh
+        .table
+        .with(|t| (t.telemetry.estimates.theta_hat_q16 + (1 << 15)) >> 16);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.goal_position = goal;
+        t.control.lifecycle.torque_enable = true;
+    });
+    run_to(&mut k, &sh, frame(1000, BIAS), phase::CONTROL);
+    let band = 8 << 16;
+    let theta_pre = k.medium.fusion.theta_q16();
+    assert!(
+        ((goal << 16) - theta_pre).abs() <= band,
+        "precondition: the goal is on the estimate"
+    );
+    assert!(
+        (theta_pre - (1000 << 16)).abs() > 2 * band,
+        "precondition: the estimate lags the pot past the zone, at {}",
+        theta_pre >> 16
+    );
+    assert!(
+        k.medium.fusion.tau_d_counts().unsigned_abs() > 200,
+        "precondition: hand motion railed tau_d, got {}",
+        k.medium.fusion.tau_d_counts()
+    );
+    k.on_scan(frame(1000, BIAS), &sh);
+    assert_eq!(k.medium.fusion.theta_q16(), 1000 << 16);
+    assert_eq!(k.medium.fusion.tau_d_counts(), 0);
+    assert_eq!(k.medium.traj.theta_star_q16(), 1000 << 16);
+    for _ in 0..4000 {
+        k.on_scan(frame(1000, BIAS), &sh);
+        assert_eq!(k.faults.mask(), 0);
+    }
+}
+
+/// A goal past the band of the estimate is a move: the profile starts at
+/// the fresh estimate, seeded at the edge sample, and runs to the goal.
+#[test]
+fn torque_on_with_the_goal_past_the_band_moves_from_the_sample() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    for _ in 0..2000 {
+        k.on_scan(frame(2000, BIAS), &sh);
+    }
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.goal_position = 2100;
+        t.control.lifecycle.torque_enable = true;
+    });
+    run_to(&mut k, &sh, frame(2000, BIAS), phase::CONTROL);
+    assert_eq!(k.medium.fusion.theta_q16(), 2000 << 16);
+    // a sample off the estimate, inside the zone
+    k.on_scan(frame(2003, BIAS), &sh);
+    assert_eq!(k.medium.fusion.theta_q16(), 2003 << 16);
+    assert_eq!(k.medium.traj.theta_star_q16(), 2003 << 16);
+    let mut prev = 2003 << 16;
+    let mut moved = false;
+    for _ in 0..4000 {
+        k.on_scan(frame(2000, BIAS), &sh);
+        let theta_star = k.medium.traj.theta_star_q16();
+        assert!(theta_star >= prev, "the profile turned back");
+        moved |= k.medium.traj.omega_star_q16() > 0;
+        prev = theta_star;
+    }
+    assert!(moved);
+    assert_eq!(prev, 2100 << 16);
+    assert_eq!(k.medium.traj.omega_star_q16(), 0);
+}
+
 #[test]
 fn hold_freezes_and_drains_the_velocity_loop() {
     let sh = Shared::new();
