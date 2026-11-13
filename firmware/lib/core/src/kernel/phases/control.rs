@@ -130,6 +130,7 @@ impl Medium {
             self.i_ref_cc = 0;
             self.omega_ref_q16 = 0;
             self.hold = false;
+            self.hold_ticks = 0;
             self.drive.restart();
             self.run_prev = run;
         }
@@ -138,6 +139,7 @@ impl Medium {
             self.traj.reseed(self.fusion.theta_q16());
             fast.reset_limiter(cfg.ol_floor_q15);
             self.hold = false;
+            self.hold_ticks = 0;
             self.drive.restart();
         }
         self.mode_prev = life.mode;

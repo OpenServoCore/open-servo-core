@@ -2403,6 +2403,95 @@ fn hold_band_is_judged_in_raw_counts() {
     assert!(!parks(&sh, 1924, 1911));
 }
 
+/// The settle dwell in fast ticks.
+const SETTLE_SCANS: u32 = phases::loops::position::HOLD_SETTLE_TICKS as u32 * DECIM_MED as u32;
+
+/// A still pot at 1924 under a goal of 1924 and a 12-count band, scanned
+/// until the loop parks and then `after` more ticks.
+fn parked_for(sh: &Shared, after: u32) -> Kernel<FakeIo> {
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 1924;
+        t.config.loop_position.pos_deadband_counts = 12;
+    });
+    let mut k = kernel();
+    let mut n = 0;
+    while !k.medium.hold {
+        k.on_scan(frame(1924, BIAS), sh);
+        n += 1;
+        assert!(n < 10_000, "never parked at zero error");
+    }
+    for _ in 0..after {
+        k.on_scan(frame(1924, BIAS), sh);
+        assert!(k.medium.hold, "woke at zero error");
+    }
+    k
+}
+
+/// Whether the pot still at `raw` wakes the park within 2000 ticks.
+fn wakes(k: &mut Kernel<FakeIo>, sh: &Shared, raw: u16) -> bool {
+    for _ in 0..2_000 {
+        k.on_scan(frame(raw, BIAS), sh);
+        if !k.medium.hold {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn a_settled_hold_stays_parked_under_noise_past_the_band() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
+    // the pot then sits 1.25x the band off, +-1 count of noise
+    let mut rng: u32 = 0xdead_beef;
+    for n in 0..20_000 {
+        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let raw = (1939 + ((rng >> 24) as i32 % 3) - 1) as u16;
+        k.on_scan(frame(raw, BIAS), &sh);
+        assert!(k.medium.hold, "woke at tick {n}, pot {raw}");
+    }
+    assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
+fn an_unsettled_hold_wakes_past_the_band() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = parked_for(&sh, 3 * DECIM_MED as u32);
+    assert!(wakes(&mut k, &sh, 1939), "parked at 1.25x the band");
+    assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
+fn a_settled_hold_wakes_past_one_and_a_half_bands() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
+    assert!(wakes(&mut k, &sh, 1945), "parked at 1.75x the band");
+    assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
+fn a_goal_write_unsettles_the_hold() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
+    // a 6-count move lands with the still pot inside the band: a new park
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = 1930);
+    let mut n = 0;
+    while !(k.medium.hold && k.medium.traj.theta_star_q16() == 1930 << 16) {
+        k.on_scan(frame(1924, BIAS), &sh);
+        n += 1;
+        assert!(n < 10_000, "the move never landed in a park");
+    }
+    // right after the landing, 1.25x the band off the new goal
+    assert!(wakes(&mut k, &sh, 1915), "the new park started settled");
+    assert_eq!(k.faults.mask(), 0);
+}
+
 #[test]
 fn hold_freezes_and_drains_the_velocity_loop() {
     let sh = Shared::new();

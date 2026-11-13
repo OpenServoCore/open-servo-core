@@ -1,7 +1,7 @@
 use super::Medium;
 use super::fast::Command;
 use super::loops::faults::FaultLatch;
-use super::loops::position;
+use super::loops::position::{self, HOLD_SETTLE_TICKS};
 use crate::kernel::config::KernelConfig;
 use crate::regions::control::Mode;
 
@@ -28,10 +28,16 @@ impl Medium {
                     self.traj.omega_star_q16(),
                     theta_hat,
                     self.band_gain_q4,
+                    self.hold_ticks == HOLD_SETTLE_TICKS,
                     lp,
                 );
                 self.omega_ref_q16 = out.omega_ref_q16;
                 self.hold = out.hold;
+                self.hold_ticks = if out.hold {
+                    self.hold_ticks + (self.hold_ticks < HOLD_SETTLE_TICKS) as u8
+                } else {
+                    0
+                };
             }
             Mode::Velocity => {
                 self.traj
