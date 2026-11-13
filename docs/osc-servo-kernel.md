@@ -73,6 +73,10 @@ Module layout:
 
 Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind, current reference and band, rail clamp); the FAST measurement reaches the same tick's medium phase as `Measured`. Only the CONTROL phase reads CONTROL, so a host write lands at the next period's CONTROL phase. The sample-to-command delay is fixed by the table ([control-theory.md, Why a Cascade](control-theory.md#why-a-cascade)).
 
+ADC wide codes: the converter can stick at a code just under a multiple of 256 while its input rises through the codes it then skips, so one code stands for a band of inputs on any channel. The wide-code map (CALIB `adc_wide_mid_q4`, per board since the converter is the chip's, host-written by calibration) gives slot `k` to code `(k << 8) | 0xff` and holds half the span the converter skips after that code, Q4 counts; 0 is no wide code there, and the all-zero map changes nothing.
+
+The position measurement: the observer, its seeds and the drive check read the pot through one function (`phases::pos_q4`), so they never disagree. The wide-code step is taken in raw counts ahead of the table: a code whose low eight bits are all set gains its slot of the map (`Shared::adc_wide_q4`), carried through the table at the local gain `g` of the code's interval (Q4, 16 = unity, as the hold band clamps it), `lin = table(raw) + (map[raw >> 8] * g) >> 4`. That is the table read at the corrected raw count to within a Q4 count where the next interval has the same gain; on the identity it is the bare slot. A stuck reading lands mid band, not at its edge, and a goal inside the band can rest. Every other code costs one compare, and the multiply runs only on a nonzero slot. No other channel applies the map. A position table should be built from readings that already carry the step, so the table holds the pot alone. The raw sample stays raw for the sensors publish, TEL `pos` and the sensor screen.
+
 ### 2.3 Tick sequence
 
 `runtime::isr::on_adc_dma_tc` and `Kernel::on_tick` run, in order:
@@ -169,8 +173,9 @@ A bus body can exceed a tick period (the `Deadline` body and every `frame` row e
 | Data | Writer | Kernel access |
 | --- | --- | --- |
 | CONTROL | bus | volatile reads via `region_ptr`, once per period at CONTROL; cross-field tearing accepted |
-| CONFIG, CALIB | bus | only through the take ([sec 6](#6-the-configuration-take)) |
+| CONFIG, CALIB | bus | only through the take ([sec 6](#6-the-configuration-take)), the ADC wide-code map aside |
 | position table | bus | volatile reads (`Shared::pos_lut_q4`) |
+| ADC wide-code map (CALIB `adc_wide_mid_q4`) | bus | one volatile byte read on a wide code (`Shared::adc_wide_q4`); a slot is one byte, so it never tears |
 | tick block | ADC DMA and tick ISR (scan, `sample_tick`), then kernel | sole writer after the landing |
 | estimates, references, mode, limits, fault byte | kernel | sole writer |
 | health block | chip side (ISR wrapper, main loop) | none |
@@ -285,7 +290,7 @@ Lane rules:
 
 ## 6. The configuration take
 
-CONTROL is read field by field. CONFIG and CALIB reach the kernel only as a whole committed set, through its copy `KernelConfig` (`kernel/config.rs`).
+CONTROL is read field by field. CONFIG and CALIB reach the kernel only as a whole committed set, through its copy `KernelConfig` (`kernel/config.rs`). The one exception is the ADC wide-code map ([sec 2.2](#22-rates-and-phases)), read a byte at a time on a wide code only: copying it would lengthen every take for a value the steady tick never loads.
 
 ### 6.1 The even/odd count
 

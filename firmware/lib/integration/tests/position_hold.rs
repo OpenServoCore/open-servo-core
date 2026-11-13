@@ -16,8 +16,9 @@
 
 use osc_integration::mg90::{self, B, FC, Mg90, Rng, TICK_HZ};
 use osc_integration::plant::{FakeIo, kernel};
+use osc_servo_core::adc::{ADC_WIDE_SHIFT, ADC_WIDE_SLOTS};
 use osc_servo_core::kernel::phases::loops::limits::flag;
-use osc_servo_core::pos_lut::POINTS;
+use osc_servo_core::pos_lut::{GRID, POINTS};
 use osc_servo_core::{ControlTable, Kernel, MotorCmd, RegionStorage, Shared, StallResponse};
 
 const DEADBAND: u16 = 12;
@@ -360,5 +361,58 @@ fn hold_never_cycles_on_a_steep_table() {
             cycling.len(),
             all.len()
         );
+    }
+}
+
+/// An ADC wide code: raw 1023 holds while the input rises through the 11
+/// codes above it, so the pot reads 1023 anywhere from 1023 to 1034.
+const WIDE: (u16, u16) = (1023, 11);
+/// A goal mid band, on the identity table.
+const WIDE_GOAL: i32 = 1029;
+
+/// Holds at `WIDE_GOAL` under the bench's 4-count deadband with `map` in
+/// CALIB, from `from`: the hold, then the drive ticks over one more tail.
+fn wide_hold(map: [u8; ADC_WIDE_SLOTS], seed_n: u64, from: i32) -> (Hold, usize) {
+    let mut s = Session::new(seed_n, from, [0; POINTS], |t| {
+        t.config.loop_position.pos_deadband_counts = 4;
+        t.calib.adc.adc_wide_mid_q4 = map;
+    });
+    s.p.wide = Some(WIDE);
+    let h = s.hold(WIDE_GOAL, HOLD_TICKS);
+    let driven = (0..TAIL_TICKS)
+        .filter(|_| {
+            s.tick();
+            !matches!(s.k.io.motor.last, Some(MotorCmd::Coast | MotorCmd::Brake))
+        })
+        .count();
+    (h, driven)
+}
+
+/// A goal inside a wide code's dead band: the stuck reading sits 5 to 6
+/// counts off it on either side, past the 4-count band, and with the slot
+/// zero the hold hunts across the band without end. With the code's slot
+/// set the stuck reading lands mid band, and the hold rests there with the
+/// drive off, from below and from above.
+#[test]
+fn hold_rests_inside_a_wide_code() {
+    let mut map = [0u8; ADC_WIDE_SLOTS];
+    map[(WIDE.0 >> ADC_WIDE_SHIFT) as usize] = (WIDE.1 * GRID as u16 / 2) as u8;
+    for seed_n in 1..=4u64 {
+        for from in [WIDE_GOAL - 300, WIDE_GOAL + 300] {
+            let (h, driven) = wide_hold(map, seed_n, from);
+            assert_eq!(driven, 0, "seed {seed_n} from {from}: drove: {h:?}");
+            assert!(
+                h.wakes == 0 && h.spread <= 1.0,
+                "seed {seed_n} from {from}: hunts: {h:?}"
+            );
+            let lo = WIDE.0 as f64 - 0.5;
+            let hi = (WIDE.0 + WIDE.1) as f64 + 0.5;
+            let at = h.err + WIDE_GOAL as f64;
+            assert!(
+                (lo..hi).contains(&at),
+                "seed {seed_n} from {from}: rest outside the band: {h:?}"
+            );
+            assert_eq!(h.faults, 0, "seed {seed_n} from {from}: {h:?}");
+        }
     }
 }

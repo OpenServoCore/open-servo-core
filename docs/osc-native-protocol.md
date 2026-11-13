@@ -922,7 +922,7 @@ point and slope, and the gear class in CALIB. The points are the position table'
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
 (current, thermal, undervolt, `duty_max_q15`), the raw sensor screen,
-cold R, and the RO board facts install re-seeds. `0` is
+cold R, the ADC wide-code map, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,
 `pos_lut_points`); the CRC is the sec 3.2 checksum in software, ~600 B
@@ -1043,6 +1043,38 @@ otherwise the
 identity runs and the stamp reports the loss as `STAMP_MISMATCH` (DES
 `lut_survives_save_and_reboot_until_factory`,
 `corrupt_or_stale_calib_image_boots_identity_under_its_reason`).
+
+**ADC wide codes.** The converter can stick at a code just under a
+multiple of 256 while its input rises through the codes it then skips,
+so one code stands for a band of inputs on any channel. The wide-code
+map records them per board, since the converter is the chip's:
+
+| addr  | name              | width | access | notes                                                       |
+| ----- | ----------------- | ----- | ------ | ----------------------------------------------------------- |
+| 0x0D1 | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
+
+A slot holds half the span the converter skips after its code, in Q4
+counts; `0` is no wide code there, and the all-zero default changes
+nothing. Calibration writes it; it is persisted with CALIB and not
+covered by the stamp.
+
+The kernel applies the map to the pot channel when it linearizes the
+pot, and to no other channel. The wide-code step is taken in raw counts
+ahead of the table, so it reaches the linearized reading scaled by the
+local gain `g` of the code's interval (Q4, `16 + c[i+1] - c[i]` clamped
+to 8..64 as for the hold band, 16 = unity):
+
+```
+lin += (map[raw >> 8] * g) >> 4    when raw & 0xff == 0xff      (Q4)
+```
+
+That is the table read at the corrected raw count to within a Q4 count
+where the next interval has the same gain; on the identity it is the
+bare slot. A stuck pot reading lands mid band. A position table should
+be built from readings that already carry the step, so the table holds
+the pot alone. The raw sample stays raw, as for the table, and a host
+linearizing a streamed `pos` takes the same step in raw counts first
+(`osc-servo-core::adc::wide_q4`; DES `hold_rests_inside_a_wide_code`).
 
 ### 5.8 Limits and the stall permit (osc-servo)
 

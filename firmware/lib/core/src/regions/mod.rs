@@ -418,6 +418,31 @@ mod tests {
         assert!(rw(gear::GEAR_CLASS, gear::GEAR_CLASS + 1));
     }
 
+    /// The ADC wide-code map takes the reserved bytes right behind the gear
+    /// class, one byte per slot, host-written, outside the plant stamp; the
+    /// rest of the tail stays reserved, so the region keeps its size.
+    #[test]
+    fn calib_adc_appends_after_gear() {
+        use super::calib::addr::{adc, gear};
+        use crate::adc::ADC_WIDE_SLOTS;
+        assert_eq!(gear::GEAR_CLASS, 0x0D0);
+        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D1);
+        let f = ControlTable::FIELDS;
+        let w = f.iter().find(|d| d.name == "adc_wide_mid_q4").unwrap();
+        assert_eq!(w.addr, 0x0D1);
+        assert_eq!(w.width, ADC_WIDE_SLOTS as u16);
+        assert_eq!(w.kind, FieldKind::Bytes);
+        assert!(w.writable);
+        assert!(!crate::stamp::COVERED_NAMES.contains(&"adc_wide_mid_q4"));
+        let calib_end = super::CALIB_BASE_ADDR + super::CALIB_REGION_SIZE;
+        assert!(
+            f.iter()
+                .filter(|d| d.name != w.name)
+                .all(|d| d.addr + d.width <= w.addr || d.addr >= calib_end),
+            "the rest of the tail stays reserved"
+        );
+    }
+
     /// The burst block is an ABI pin: it stays put behind the two reserved
     /// bytes `boot_mode` left, two-byte aligned without repr(C) inserting
     /// invisible padding.

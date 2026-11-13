@@ -77,6 +77,9 @@ pub struct Mg90 {
     /// The motor leads swapped at the motor: the bridge and its sensing
     /// see the same wiring, the rotor turns the other way.
     pub swapped: bool,
+    /// An ADC wide code, `(stuck, skipped)`: the reading sticks at `stuck`
+    /// while the input rises through the `skipped` codes above it.
+    pub wide: Option<(u16, u16)>,
 }
 
 impl Mg90 {
@@ -92,6 +95,7 @@ impl Mg90 {
             inertia: 1.0,
             locked: false,
             swapped: false,
+            wide: None,
         }
     }
 
@@ -138,6 +142,13 @@ impl Mg90 {
             .out
             .clamp(self.rotor - LASH / 2.0, self.rotor + LASH / 2.0);
         let raw = raw_of(&self.lut, self.sensed()) + SIGMA_RAW * self.rng.gauss();
+        let mut pos = raw.round().clamp(0.0, 4095.0) as u16;
+        if let Some((stuck, skipped)) = self.wide
+            && pos > stuck
+            && pos <= stuck + skipped
+        {
+            pos = stuck;
+        }
         let fwd = !matches!(cmd, Some(MotorCmd::Drive { reverse: true, .. }));
         let bridge_i = wiring * self.i;
         let (sample, va, vb) = if fwd {
@@ -146,7 +157,7 @@ impl Mg90 {
             (-bridge_i, 0, VBUS as u16)
         };
         SensorFrame {
-            pos: raw.round().clamp(0.0, 4095.0) as u16,
+            pos,
             current: (BIAS as f64 + sample).round().clamp(0.0, 4095.0) as u16,
             current_trough: BIAS,
             vmotor_a: va,

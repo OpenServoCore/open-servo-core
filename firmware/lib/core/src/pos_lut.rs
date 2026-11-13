@@ -14,11 +14,11 @@
 //! at SAVE drops to the identity first, so a reboot never applies a table
 //! the kernel did not.
 
+use crate::adc::{ADC_BITS, ADC_MASK};
 use crate::data_state::{STAMP_MISMATCH, job};
 use crate::regions::control::addr::pos_lut::POS_LUT_CMD;
 use crate::{RegionStorage, Shared};
 
-pub const ADC_BITS: u32 = 12;
 pub const GRID_SHIFT: u32 = 4;
 pub const GRID: usize = 1 << GRID_SHIFT;
 pub const INTERVALS: usize = 1 << (ADC_BITS - GRID_SHIFT);
@@ -27,7 +27,6 @@ pub const POINTS: usize = INTERVALS + 1;
 pub const PAGE_POINTS: usize = 32;
 /// Pages covering the host-written points; the fixed last point has none.
 pub const PAGES: usize = INTERVALS / PAGE_POINTS;
-const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 const FRAC_MASK: u16 = GRID as u16 - 1;
 const GAIN_MAX: i32 = 16;
 /// Clamp on the local gain the hold band scales by, Q4: 1/2 to 4. Pots
