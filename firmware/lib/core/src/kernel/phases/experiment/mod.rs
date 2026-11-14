@@ -1,14 +1,15 @@
 //! The experiment image's medium half (kernel sec 2.7): CONTROL, the bus
-//! dead-man and PUBLISH. No loop, no estimator, no limit: the fast half
-//! drives the OpenLoop goal as written, and the overcurrent trip and the
-//! dead-man are the only raise points.
+//! dead-man, the bias tracker's aging and PUBLISH with the tracker's
+//! feed. No loop, no estimator, no limit: the fast half drives the
+//! OpenLoop goal as written, and the overcurrent trip and the dead-man are
+//! the only raise points.
 
 use super::deadman::Deadman;
 use super::fast::{Command, Drive, Fast};
 use super::loops::faults::FaultLatch;
 use super::loops::limits::flag;
-use crate::kernel::KernelTiming;
 use crate::kernel::config::KernelConfig;
+use crate::kernel::{DECIM_SLOW, KernelTiming};
 use crate::regions::control::{ControlLifecycle, Mode};
 use crate::{RegionStorageRaw, Shared};
 
@@ -20,6 +21,8 @@ pub(in crate::kernel) struct Medium {
     life: ControlLifecycle,
     te_prev: bool,
     deadman: Deadman,
+    /// Medium periods toward the next SLOW period.
+    pub(in crate::kernel) slow_periods: u8,
 }
 
 impl Medium {
@@ -28,6 +31,7 @@ impl Medium {
             life: ControlLifecycle::default(),
             te_prev: false,
             deadman: Deadman::new(),
+            slow_periods: 0,
         }
     }
 
@@ -84,6 +88,17 @@ impl Medium {
             streaming,
             faults,
         );
+    }
+
+    /// SLOW, every DECIM_SLOW periods: the bias tracker's aging step, the
+    /// image's whole slow block. It holds no TX lane.
+    #[inline(always)]
+    pub(in crate::kernel) fn slow(&mut self, fast: &mut Fast) {
+        self.slow_periods += 1;
+        if self.slow_periods >= DECIM_SLOW {
+            self.slow_periods = 0;
+            fast.age_bias();
+        }
     }
 
     /// PUBLISH: the bias, the mode, the fault and the permit bit of

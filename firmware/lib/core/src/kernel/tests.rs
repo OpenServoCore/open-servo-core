@@ -1542,14 +1542,24 @@ fn published_bias(sh: &Shared) -> u16 {
     sh.table.with(|t| t.telemetry.refs.current_bias_counts)
 }
 
-/// Ticks for the bias tracker to settle a step to the count: 12 time
-/// constants.
-const BIAS_SETTLE_TICKS: u32 = 12 << bias::ALPHA_SHIFT;
+/// Control periods for the bias tracker to settle a step to the count: 12
+/// time constants, one sample a period.
+const BIAS_SETTLE_PERIODS: u32 = 12 << bias::ALPHA_SHIFT;
 
 fn ticks(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
     for _ in 0..n {
         k.on_scan(f, sh);
     }
+}
+
+/// `n` control periods of `f`.
+fn periods(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
+    ticks(k, sh, f, n * DECIM_MED as u32);
+}
+
+/// `n` SLOW periods of `f`.
+fn slow_periods(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
+    ticks(k, sh, f, n * SLOW);
 }
 
 /// A frame with no drive: both scans read `trough`.
@@ -1599,7 +1609,7 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     assert_eq!(published_bias(&sh), BIAS);
     // a partial Slow window: the trough is the brake phase, the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
-    ticks(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
+    periods(&mut k, &sh, shifted(), BIAS_SETTLE_PERIODS);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive {
@@ -1620,10 +1630,10 @@ fn drifting_trough_bias_leaves_i_meas_flat() {
         t.control.lifecycle.goal_duty = 8000;
     });
     let mut k = kernel();
-    // offset walks 40 counts at 1 count per 4096 ticks, 2 counts of lag
-    // at the 8192-tick time constant (the bench drift, 8 counts per
-    // degree C, would need a degree every 1.6 s); the true current is a
-    // constant 300 counts above it
+    // offset walks 40 counts at 1 count per 4096 ticks, 409.6 periods: 2.5
+    // counts of lag at the 1024-period time constant (the bench drift, 8
+    // counts per degree C, would need a degree every 1.6 s); the true
+    // current is a constant 300 counts above it
     let mut b = BIAS;
     for n in 0..40u32 << 12 {
         b = BIAS + (n >> 12) as u16;
@@ -1668,28 +1678,44 @@ fn bias_feed_ignores_the_current_floor() {
     assert_eq!(published_bias(&sh), BIAS);
     // 293 drive ticks leave 907: the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
-    ticks(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
+    periods(&mut k, &sh, shifted(), BIAS_SETTLE_PERIODS);
     assert_eq!(published_bias(&sh), BIAS + 500);
 }
 
+/// The board warms with torque off and the bias follows the rest. The rest
+/// walks 200 counts down at 1 count per 1024 ticks, 102.4 control periods.
+/// A first-order tracker follows a ramp one time constant behind: 1024
+/// periods at 1 count per 102.4 periods is 10 counts of lag. The walk's
+/// whole-count steps put the lag half a count either side of that, 9.5
+/// just before a step and 10.5 just after, and the published zero rounds
+/// to the count, half a count more: settled, the lag reads 9 to 11, and
+/// never more on the way there.
 #[test]
 fn torque_off_bias_follows_a_drifting_rest() {
+    /// The tracker's time constant in ticks.
+    const TAU_TICKS: u32 = (1 << bias::ALPHA_SHIFT) * DECIM_MED as u32;
+    /// Ticks per count of the walk.
+    const WALK_SHIFT: u32 = 10;
+    const LAG: u16 = (TAU_TICKS >> WALK_SHIFT) as u16;
+    const _: () = assert!(LAG == 10);
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    // the board warms with torque off: the rest walks 200 counts down at
-    // 1 count per 1024 ticks, 8 counts of lag
-    for n in 0..200u32 << 10 {
-        let b = BIAS - (n >> 10) as u16;
+    for n in 0..200u32 << WALK_SHIFT {
+        let b = BIAS - (n >> WALK_SHIFT) as u16;
         k.on_scan(rest(b), &sh);
-        if n >= 1 << 10 {
+        if n >= 1 << WALK_SHIFT {
             let p = published_bias(&sh);
-            assert!(p >= b && p - b <= 9, "tick {n}: bias {p}, rest {b}");
+            assert!(p >= b && p - b <= LAG + 1, "tick {n}: bias {p}, rest {b}");
+            // 8 time constants in, the lag has settled to within the count
+            if n >= 8 * TAU_TICKS {
+                assert!(p - b >= LAG - 1, "tick {n}: bias {p}, rest {b}");
+            }
         }
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     // never awake: no step learned, the bias is the rest itself
-    ticks(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
+    periods(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_PERIODS);
     assert_eq!(published_bias(&sh), BIAS - 200);
 }
 
@@ -1708,16 +1734,16 @@ fn the_awake_step_is_learned_and_rides_the_torque_off_drift() {
     ticks(&mut k, &sh, rest(BIAS), 1000);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    ticks(&mut k, &sh, rest(BIAS + 10), BIAS_SETTLE_TICKS);
+    periods(&mut k, &sh, rest(BIAS + 10), BIAS_SETTLE_PERIODS);
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     assert_eq!(published_bias(&sh), BIAS + 10);
     // torque off past the stale window, then the board warms: the bias
     // keeps the step over the rest
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    ticks(&mut k, &sh, rest(BIAS), bias::STALE_TICKS as u32);
+    slow_periods(&mut k, &sh, rest(BIAS), bias::STALE_PERIODS as u32);
     assert_eq!(published_bias(&sh), BIAS + 10);
-    ticks(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
+    periods(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_PERIODS);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     assert_eq!(published_bias(&sh), BIAS - 190);
     // awake again, coasting on a zero goal: the zero it reads is the one
@@ -1725,7 +1751,7 @@ fn the_awake_step_is_learned_and_rides_the_torque_off_drift() {
     write_config(&sh, |t| t.config.limits.openloop_zero_brake = false);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    for _ in 0..BIAS_SETTLE_TICKS {
+    for _ in 0..BIAS_SETTLE_PERIODS * DECIM_MED as u32 {
         k.on_scan(rest(BIAS - 190), &sh);
         assert_eq!(published_bias(&sh), BIAS - 190);
     }
@@ -1753,7 +1779,7 @@ fn a_draining_current_is_never_learned_as_zero() {
     let mut driven = slew;
     driven.current_trough = 4095;
     settle(&mut k, &sh, slew);
-    ticks(&mut k, &sh, driven, bias::STALE_TICKS as u32);
+    slow_periods(&mut k, &sh, driven, bias::STALE_PERIODS as u32);
     assert_eq!(published_bias(&sh), BIAS);
     // torque off, then the brake: the shunt still reads the drive through
     // the settle and none of it reaches the tracker; past it, the rest does
@@ -1771,17 +1797,121 @@ fn a_draining_current_is_never_learned_as_zero() {
         }
         ticks(&mut k, &sh, driven, fast::ZERO_SETTLE_TICKS as u32);
         assert_eq!(published_bias(&sh), BIAS);
-        ticks(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
+        periods(&mut k, &sh, rest(BIAS), BIAS_SETTLE_PERIODS);
         assert_eq!(published_bias(&sh), BIAS);
-        ticks(&mut k, &sh, rest(rest_counts), BIAS_SETTLE_TICKS);
+        periods(&mut k, &sh, rest(rest_counts), BIAS_SETTLE_PERIODS);
         assert_eq!(published_bias(&sh), rest_counts);
-        ticks(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
+        periods(&mut k, &sh, rest(BIAS), BIAS_SETTLE_PERIODS);
         sh.table.with_mut(|t| {
             t.control.lifecycle.torque_enable = true;
             t.control.lifecycle.goal_duty = i16::MAX;
         });
         settle(&mut k, &sh, slew);
     }
+}
+
+/// The tracker takes one sample a control period, on the PUBLISH tick, and
+/// none on the other nine phases, asleep and under drive alike: against a
+/// trough far from the zero every sample moves the zero in use by a count
+/// or more, so it steps on the PUBLISH ticks alone, by what one sample
+/// moves the tracker, and the same tick's publish carries it.
+#[test]
+fn the_zero_takes_one_sample_a_period_at_publish() {
+    const PERIODS: u32 = 5;
+    for (torque, zero) in [(false, bias::Zero::Asleep), (true, bias::Zero::Awake)] {
+        let sh = Shared::new();
+        seed(&sh);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = torque;
+            t.control.lifecycle.mode = Mode::OpenLoop;
+            t.control.lifecycle.goal_duty = 8000;
+        });
+        let mut k = kernel();
+        // the zero's own value until the bridge state has settled: torque
+        // off, or a Slow drive whose trough is a wide brake half
+        let near = frame(2000, BIAS + 300);
+        if torque {
+            settle(&mut k, &sh, near);
+        }
+        periods(&mut k, &sh, near, fast::ZERO_SETTLE_TICKS as u32);
+        assert_eq!(k.fast.bias_counts(), BIAS);
+        let mut far = near;
+        far.current_trough = BIAS - 1600;
+        let mut model = bias::BiasTracker::new();
+        model.seed(BIAS);
+        let mut samples = 0;
+        for tick in 0..PERIODS * DECIM_MED as u32 {
+            let next = k.phase;
+            let before = k.fast.bias_counts();
+            k.on_scan(far, &sh);
+            let after = k.fast.bias_counts();
+            if next == phase::PUBLISH {
+                samples += 1;
+                assert_ne!(after, before, "{zero:?} tick {tick}");
+                assert_eq!(
+                    after,
+                    model.update(zero, far.current_trough),
+                    "{zero:?} tick {tick}"
+                );
+                assert_eq!(published_bias(&sh), after, "{zero:?} tick {tick}");
+            } else {
+                assert_eq!(after, before, "{zero:?} tick {tick}");
+            }
+        }
+        assert_eq!(samples, PERIODS, "{zero:?}");
+        assert_eq!(drive_duty(&k).is_some(), torque);
+    }
+}
+
+/// An unfed zero ages one step a SLOW period, at the block's finish, and
+/// is stale after `STALE_PERIODS` of them. The brake feeds the awake zero,
+/// then torque goes off. Through the last SLOW period of the horizon the
+/// rest sits far off, so every sample moves the asleep zero by a count or
+/// more: the awake zero in use holds until the finish that ends the
+/// horizon and moves with the next sample.
+#[test]
+fn an_unfed_zero_is_stale_after_stale_periods_of_slow() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 0;
+        t.config.limits.openloop_zero_brake = true;
+    });
+    let mut k = kernel();
+    // the last awake sample is the PUBLISH ahead of the CONTROL phase that
+    // reads torque off
+    periods(&mut k, &sh, rest(BIAS), 100);
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
+    assert_eq!(k.phase, phase::CONTROL);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    // one tick of `f`; whether it ran the SLOW block's finish
+    let step = |k: &mut Kernel<FakeIo>, f: SensorFrame| {
+        let before = k.probe_tags();
+        k.on_scan(f, &sh);
+        Events::between(before, k.probe_tags()).finish
+    };
+    let mut aged = 0;
+    while aged < bias::STALE_PERIODS - 1 {
+        aged += step(&mut k, rest(BIAS)) as u8;
+    }
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    let far = rest(BIAS - 1600);
+    let mut samples = 0;
+    loop {
+        samples += (k.phase == phase::PUBLISH) as u32;
+        let finish = step(&mut k, far);
+        assert_eq!(k.fast.bias_counts(), BIAS, "sample {samples}");
+        if finish {
+            break;
+        }
+    }
+    assert_eq!(samples, DECIM_SLOW as u32);
+    assert_eq!(k.phase, phase::PUBLISH);
+    k.on_scan(far, &sh);
+    assert!(k.fast.bias_counts() < BIAS, "{}", k.fast.bias_counts());
 }
 
 #[test]

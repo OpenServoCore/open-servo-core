@@ -33,7 +33,7 @@ Columns:
 |---|---|---|---|---|---|
 | Kernel skeleton, config snapshot, faults, medium phase glue | 3,008 | ~260 (config snapshot 156, timing 36, command 36, latches) | M: the config snapshot saved 2.2-2.7 us/tick. S: 716 ins, 8 muls | FAST + MEDIUM | core |
 | Fast path: window select, measure, drive (settle gain, floors) | 1,134 | ~30 | M: settle-gain table +2.4 pts, two drive-window floors +1.9 pts. S: 225 + 95 ins, 4 muls | FAST | core |
-| Bias tracker (shunt zero, two zeros) | 214 | 12 | M: +4.9 pts as first built, -3.1 after the trim, ~+1.8 net. S: 70 ins | FAST | core |
+| Bias tracker (shunt zero, two zeros) | 214 | 12 | M: +4.9 pts as first built, -3.1 after the trim, ~+1.8 net. S: 70 ins. All as the per-tick feed; one sample a period since, not re-counted | MEDIUM (PUBLISH), SLOW | core |
 | Current loop (PI) | 378 | 4 | S: 117 ins, 12 muls (closed-loop modes only) | FAST | core |
 | Open-loop duty limiter | 200 | 4 | S: 7 ins inline + `DutyLimiter::step` 58 ins out of line (open loop only) | FAST | core |
 | Back-EMF observer (boxcar) | 244 | 20 | S: 76 ins, 8 muls (sums every tick, close every medium half) | FAST | core (velocity source above the floor) |

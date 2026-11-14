@@ -166,10 +166,10 @@ pub struct TelemetryEstimates {
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryRefs {
     /// Zero-current sense-chain output in use, raw ADC counts, driver
-    /// awake: the boot rest measurement, then tracked from every settled
-    /// tick the shunt carries no current - torque off, a brake or coast, a
-    /// Slow-decay brake trough (`estimator::bias`). Published at the medium
-    /// boundary.
+    /// awake: the boot rest measurement, then tracked from one sample a
+    /// control period while the shunt carries no current - torque off, a
+    /// settled brake or coast, a Slow-decay brake trough
+    /// (`estimator::bias`). Published at the medium boundary.
     #[ct_field(access = ro)]
     pub current_bias_counts: u16,
     /// Boot-measured motor-terminal divider bias (terminals high-impedance),
