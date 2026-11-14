@@ -185,8 +185,15 @@ impl Medium {
     /// First tick: the observer starts at the measurement, the winding
     /// estimate at the NTC ahead of the first SLOW tick, its fault with
     /// it, so a failed NTC never drives.
-    pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig, faults: &mut FaultLatch) {
+    pub fn seed(
+        &mut self,
+        pos_q4: u16,
+        ntc_raw: u16,
+        cfg: &KernelConfig,
+        shared: &Shared,
+        faults: &mut FaultLatch,
+    ) {
         self.fusion.seed(pos_q4);
-        self.estimate(ntc_raw, cfg, faults);
+        self.estimate(ntc_raw, cfg, shared, faults);
     }
 }

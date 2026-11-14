@@ -1,6 +1,7 @@
 use super::Medium;
 use super::fast::Fast;
 use super::loops::faults::{self, FaultLatch};
+use crate::Shared;
 use crate::kernel::DECIM_SLOW;
 use crate::kernel::config::KernelConfig;
 
@@ -17,13 +18,14 @@ impl Medium {
         ntc_raw: u16,
         i_held: i16,
         cfg: &KernelConfig,
+        shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
     ) -> bool {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
             if self.slow_periods == 1 {
-                self.estimate(ntc_raw, cfg, faults);
+                self.estimate(ntc_raw, cfg, shared, faults);
                 fast.age_bias();
                 return true;
             }
@@ -47,11 +49,18 @@ impl Medium {
 
     /// The winding estimate on the NTC and the heats, its derate and the
     /// overtemperature fault; the seed runs it too, so a failed NTC faults
-    /// before the first drive.
-    pub(super) fn estimate(&mut self, ntc_raw: u16, cfg: &KernelConfig, faults: &mut FaultLatch) {
-        let t_cc = self
-            .thermal
-            .update(ntc_raw, self.limits.heats(), &cfg.therm);
+    /// before the first drive. The NTC reads a wide code as the middle of
+    /// its band, whole counts.
+    pub(super) fn estimate(
+        &mut self,
+        ntc_raw: u16,
+        cfg: &KernelConfig,
+        shared: &Shared,
+        faults: &mut FaultLatch,
+    ) {
+        // at most `ADC_WIDE_MID_MAX` over a 12-bit code
+        let ntc = shared.adc_mid(ntc_raw) as u16;
+        let t_cc = self.thermal.update(ntc, self.limits.heats(), &cfg.therm);
         // UNSET_CC sits under every threshold: no derate, no cutoff;
         // NTC_FAULT_CC over every one
         self.limits.update_derate(t_cc, &cfg.limits, &cfg.thermal);

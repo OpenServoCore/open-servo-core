@@ -5,10 +5,10 @@
 //! alone picks the scan half. The shunt is direction-blind, so the signed
 //! current takes its sign from the commanded duty.
 
-use crate::Frame;
 use crate::estimator::bemf::RECIP_ARR_SHIFT;
 use crate::math::{q_mul, q_mul_u};
 use crate::traits::DecayMode;
+use crate::{Frame, Shared};
 
 /// Which scan half carries the drive window and whether it is wide enough
 /// for each sense path to have settled.
@@ -72,8 +72,10 @@ impl SettleGain {
 
 /// Signed bias-subtracted shunt current from the drive-window scan, scaled
 /// by the window's settle gain (`SettleGain::q15_at`), or `None` when the
-/// window is too narrow for a settled sample.
+/// window is too narrow for a settled sample. The sample reads a wide code
+/// as the middle of its band (`Shared::adc_mid`), ahead of the bias.
 pub fn i_from_frame(
+    shared: &Shared,
     frame: Frame<'_>,
     sel: WindowSel,
     duty_sign_positive: bool,
@@ -83,28 +85,31 @@ pub fn i_from_frame(
     if !sel.i_valid {
         return None;
     }
-    let sample = if sel.use_trough {
+    let sample = shared.adc_mid(if sel.use_trough {
         frame.current_trough()
     } else {
         frame.current()
-    };
+    });
     // round half up: floor((floor(2x) + 1) / 2) == floor(x + 1/2)
     let mag = (q_mul(sample as i32 - bias as i32, gain_q15 as i32, 14) + 1) >> 1;
     Some(if duty_sign_positive { mag } else { -mag })
 }
 
-/// The largest |i| `i_from_frame` returns: any u16 sample and bias under
-/// a u16 settle gain.
+/// The largest |i| `i_from_frame` returns: any u16 sample, a wide one
+/// read up by the largest slot, and any bias under a u16 settle gain.
 #[cfg(test)]
 pub(crate) const I_FROM_FRAME_MAX: i32 =
-    (((u16::MAX as i64 * u16::MAX as i64) >> 14) as i32 + 1) >> 1;
+    ((((u16::MAX as i64 + crate::adc::ADC_WIDE_MID_MAX as i64) * u16::MAX as i64) >> 14) as i32
+        + 1)
+        >> 1;
 
 /// Drive-window terminal differential `va - vb`. Positive duty drives IN1
 /// (TIM1 CH3, PC6) -> DRV8212P OUT1 -> MOT_A -> VSNA -> `vmotor_a`, so
 /// `va - vb` is positive under forward drive, negative under reverse - the
 /// sign convention downstream bemf math relies on. Both taps share the
-/// board's terminal bias, so it cancels here.
-pub fn vdiff_from_frame(frame: Frame<'_>, sel: WindowSel) -> Option<i32> {
+/// board's terminal bias, so it cancels here. Each tap reads a wide code as
+/// the middle of its band (`Shared::adc_mid`).
+pub fn vdiff_from_frame(shared: &Shared, frame: Frame<'_>, sel: WindowSel) -> Option<i32> {
     if !sel.v_valid {
         return None;
     }
@@ -113,6 +118,7 @@ pub fn vdiff_from_frame(frame: Frame<'_>, sel: WindowSel) -> Option<i32> {
     } else {
         (frame.vmotor_a(), frame.vmotor_b())
     };
+    let (va, vb) = (shared.adc_mid(va), shared.adc_mid(vb));
     Some(va as i32 - vb as i32)
 }
 
@@ -174,8 +180,9 @@ pub fn floor_duty(min_ticks: u16, pwm_arr: u16, recip_arr_q24: u32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SensorFrame;
+    use crate::adc::{ADC_WIDE_SLOTS, wide_q4};
     use crate::regions::TelemetryTick;
+    use crate::{RegionStorage, SensorFrame};
 
     /// `f` landed in a tick block of its own.
     fn block(f: &SensorFrame) -> TelemetryTick {
@@ -192,11 +199,11 @@ mod tests {
         bias: u16,
         gain: u32,
     ) -> Option<i32> {
-        super::i_from_frame(Frame::of(&block(f)), sel, fwd, bias, gain)
+        super::i_from_frame(&Shared::new(), Frame::of(&block(f)), sel, fwd, bias, gain)
     }
 
     fn vdiff_from_frame(f: &SensorFrame, sel: WindowSel) -> Option<i32> {
-        super::vdiff_from_frame(Frame::of(&block(f)), sel)
+        super::vdiff_from_frame(&Shared::new(), Frame::of(&block(f)), sel)
     }
 
     fn frame() -> SensorFrame {
@@ -411,6 +418,14 @@ mod tests {
 
     #[test]
     fn i_from_frame_max_bounds_every_u16_input() {
+        // without a map the two extremes read what they read before the
+        // correction
+        const RAW_MAX: i32 = (((u16::MAX as i64 * u16::MAX as i64) >> 14) as i32 + 1) >> 1;
+        // the widest sample under the largest slot reaches the bound
+        let widest = Shared::new();
+        widest
+            .table
+            .with_mut(|t| t.calib.adc.adc_wide_mid_q4 = [u8::MAX; ADC_WIDE_SLOTS]);
         for (sample, bias) in [(u16::MAX, 0), (0, u16::MAX)] {
             let f = SensorFrame {
                 current: sample,
@@ -418,9 +433,21 @@ mod tests {
             };
             for fwd in [true, false] {
                 let i = i_from_frame(&f, valid(false), fwd, bias, u16::MAX as u32).unwrap();
-                assert_eq!(i.abs(), I_FROM_FRAME_MAX, "{sample} {bias} {fwd}");
+                assert_eq!(i.abs(), RAW_MAX, "{sample} {bias} {fwd}");
+                let i = super::i_from_frame(
+                    &widest,
+                    Frame::of(&block(&f)),
+                    valid(false),
+                    fwd,
+                    bias,
+                    u16::MAX as u32,
+                )
+                .unwrap();
+                assert!(i.abs() <= I_FROM_FRAME_MAX, "{sample} {bias} {fwd}");
+                assert_eq!(i.abs() == I_FROM_FRAME_MAX, sample == u16::MAX);
             }
         }
+        const { assert!(RAW_MAX < I_FROM_FRAME_MAX) };
     }
 
     #[test]
@@ -519,5 +546,99 @@ mod tests {
     fn floor_duty_saturates_past_full_duty() {
         assert_eq!(floor_duty(1201, 1200, recip(1200)), i16::MAX as u16);
         assert_eq!(floor_duty(u16::MAX, 1200, recip(1200)), i16::MAX as u16);
+    }
+
+    /// The shunt sample and each tap, in each scan half, with every other
+    /// field of the frame on a code of its own off the wide ones.
+    fn on_channel(code: u16) -> [(SensorFrame, bool, &'static str); 6] {
+        let rest = SensorFrame {
+            current: 0x812,
+            current_trough: 0x834,
+            vmotor_a: 0x856,
+            vmotor_a_trough: 0x878,
+            vmotor_b: 0x09a,
+            vmotor_b_trough: 0x0bc,
+            ..Default::default()
+        };
+        let mut out = [
+            (rest, false, "crest shunt"),
+            (rest, true, "trough shunt"),
+            (rest, false, "crest tap a"),
+            (rest, true, "trough tap a"),
+            (rest, false, "crest tap b"),
+            (rest, true, "trough tap b"),
+        ];
+        out[0].0.current = code;
+        out[1].0.current_trough = code;
+        out[2].0.vmotor_a = code;
+        out[3].0.vmotor_a_trough = code;
+        out[4].0.vmotor_b = code;
+        out[5].0.vmotor_b_trough = code;
+        out
+    }
+
+    /// The current and the differential a frame reads with no correction
+    /// at all, in the scan half `trough`.
+    fn raw_reads(f: &SensorFrame, trough: bool, bias: u16) -> (i32, i32) {
+        let (i, a, b) = if trough {
+            (f.current_trough, f.vmotor_a_trough, f.vmotor_b_trough)
+        } else {
+            (f.current, f.vmotor_a, f.vmotor_b)
+        };
+        (i as i32 - bias as i32, a as i32 - b as i32)
+    }
+
+    fn reads(sh: &Shared, f: &SensorFrame, trough: bool, bias: u16) -> (i32, i32) {
+        let t = block(f);
+        (
+            super::i_from_frame(sh, Frame::of(&t), valid(trough), true, bias, UNITY).unwrap(),
+            super::vdiff_from_frame(sh, Frame::of(&t), valid(trough)).unwrap(),
+        )
+    }
+
+    /// An all-zero map changes no reading: for every 12-bit code on the
+    /// shunt sample and on each tap, in each scan half, the current and
+    /// the differential are the raw subtractions.
+    #[test]
+    fn a_zero_map_reads_every_window_code_raw() {
+        let sh = Shared::new();
+        for code in 0..=ADC_MAX {
+            for (f, trough, name) in on_channel(code) {
+                assert_eq!(
+                    reads(&sh, &f, trough, 2048),
+                    raw_reads(&f, trough, 2048),
+                    "{name} {code}"
+                );
+            }
+        }
+    }
+
+    /// A slot adds to the window's sample at exactly its stuck code, in
+    /// whole counts rounded half up, on the channel that sits on the code
+    /// and on no other: up on the shunt and on tap a, down on tap b, and
+    /// nothing at any other code.
+    #[test]
+    fn a_slot_adds_at_its_stuck_code_on_its_channel_alone() {
+        let map = [
+            0, 1, 7, 8, 9, 15, 16, 23, 24, 25, 100, 160, 200, 247, 248, 255,
+        ];
+        let sh = Shared::new();
+        sh.table.with_mut(|t| t.calib.adc.adc_wide_mid_q4 = map);
+        let mut added = 0;
+        for code in 0..=ADC_MAX {
+            let mid = ((wide_q4(code, &map) as i32) + 8) >> 4;
+            added += (mid != 0) as u32;
+            for (n, (f, trough, name)) in on_channel(code).into_iter().enumerate() {
+                let (i, v) = raw_reads(&f, trough, 2048);
+                let want = match n {
+                    0 | 1 => (i + mid, v),
+                    2 | 3 => (i, v + mid),
+                    _ => (i, v - mid),
+                };
+                assert_eq!(reads(&sh, &f, trough, 2048), want, "{name} {code}");
+            }
+        }
+        // slots 0, 1 and 7 round to nothing; the other thirteen add
+        assert_eq!(added, 13);
     }
 }

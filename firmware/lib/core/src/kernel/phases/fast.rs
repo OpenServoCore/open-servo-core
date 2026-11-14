@@ -236,9 +236,11 @@ impl Fast {
             Bridge::Asleep => Some(Zero::Asleep),
             Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
         };
-        // the sample loads only on a period that feeds
+        // the sample loads, and reads a wide code as the middle of its
+        // band, only on a period that feeds
         if let Some(zero) = zero {
-            self.bias.update(zero, shared.frame().current_trough());
+            self.bias
+                .update(zero, shared.adc_mid_q4(shared.frame().current_trough()));
         }
     }
 
@@ -271,6 +273,7 @@ impl Fast {
         // zero's rounding and the settle-gain band lookup on the tick path
         let i_meas = if sel.i_valid {
             window::i_from_frame(
+                shared,
                 frame,
                 sel,
                 fwd,
@@ -293,7 +296,7 @@ impl Fast {
         // negative of the logical drive direction every consumer expects.
         // m is 0 or -1: (v ^ m) - m negates without a branch
         let m = cfg.limits.drive_polarity as i32 - 1;
-        let vdiff = window::vdiff_from_frame(frame, sel).map(|v| (v ^ m) - m);
+        let vdiff = window::vdiff_from_frame(shared, frame, sel).map(|v| (v ^ m) - m);
         if let Some(vdiff) = vdiff {
             // 12-bit taps: |vdiff| <= 4095
             self.vdiff_last = vdiff as i16;

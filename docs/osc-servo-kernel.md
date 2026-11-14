@@ -75,9 +75,21 @@ Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind
 
 The shunt zero: every current reading subtracts the zero-current output of the sense chain, which moves with board temperature, over minutes. The tracker (`estimator/bias.rs`) keeps two zeros, driver awake and driver asleep, and takes at most one sample a control period, at PUBLISH, on that tick's trough sample. The sample is named by the bridge state the previous command left: asleep, a brake or a coast once the state has held `ZERO_SETTLE_TICKS`, or a Slow-decay drive whose brake half is at least the board's minimum; any other period feeds nothing. Each zero is a first-order filter with a time constant of 1024 periods (0.51 s). A zero that has taken no sample for `STALE_PERIODS` (205) SLOW periods, 3.3 s, is stale and moves by the other zero's steps, so a drift seen in one state carries into the other; a fresh one holds, and the pair learns the awake step. The age counts down at the SLOW finish. The FAST measurement reads the awake zero every tick. Pins: `the_zero_takes_one_sample_a_period_at_publish`, `an_unfed_zero_is_stale_after_stale_periods_of_slow`, `the_awake_step_is_learned_and_rides_the_torque_off_drift`.
 
-ADC wide codes: the converter can stick at a code just under a multiple of 256 while its input rises through the codes it then skips, so one code stands for a band of inputs on any channel. The wide-code map (CALIB `adc_wide_mid_q4`, per board since the converter is the chip's, host-written by calibration) gives slot `k` to code `(k << 8) | 0xff` and holds half the span the converter skips after that code, Q4 counts; 0 is no wide code there, and the all-zero map changes nothing.
+ADC wide codes: the converter can stick at a code just under a multiple of 256 while its input rises through the codes it then skips, so one code stands for a band of inputs on any channel. The wide-code map (CALIB `adc_wide_mid_q4`, per board since the converter is the chip's, host-written by calibration) gives slot `k` to code `(k << 8) | 0xff` and holds half the span the converter skips after that code, Q4 counts; 0 is no wide code there, and the all-zero map changes nothing. The kernel adds the slot on every channel it consumes, where the consumer reads the sample, so a stuck reading lands mid band, not at its edge. The fast samples take whole counts, the slot rounded half up (`Shared::adc_mid`); a consumer that carries fraction bits takes the slot in Q4 (`Shared::adc_mid_q4`, or the bare slot from `Shared::adc_wide_q4`). Every other code costs one compare.
 
-The position measurement: the observer, its seeds and the drive check read the pot through one function (`phases::pos_q4`), so they never disagree. The wide-code step is taken in raw counts ahead of the table: a code whose low eight bits are all set gains its slot of the map (`Shared::adc_wide_q4`), carried through the table at the local gain `g` of the code's interval (Q4, 16 = unity, as the hold band clamps it), `lin = table(raw) + (map[raw >> 8] * g) >> 4`. That is the table read at the corrected raw count to within a Q4 count where the next interval has the same gain; on the identity it is the bare slot. A stuck reading lands mid band, not at its edge, and a goal inside the band can rest. Every other code costs one compare, and the multiply runs only on a nonzero slot. No other channel applies the map. A position table should be built from readings that already carry the step, so the table holds the pot alone. The raw sample stays raw for the sensors publish, TEL `pos` and the sensor screen.
+| Channel | Corrected at | Unit | Rate |
+| --- | --- | --- | --- |
+| drive window's shunt sample | `window::i_from_frame`, ahead of the zero | whole counts | FAST |
+| drive window's two taps | `window::vdiff_from_frame`, each ahead of the subtraction | whole counts | FAST |
+| trough shunt as the zero | the zero tracker's feed (`Fast::track_bias`) | Q4 | MEDIUM at PUBLISH, on a period that feeds |
+| rail | `VbusEst::step` | Q4: whole counts scale as a raw code does, the fraction lands on the guard bits | MEDIUM at RAIL |
+| NTC | the winding estimate (`Medium::estimate`) | whole counts | SLOW finish and the boot seed |
+| pot | `phases::pos_q4`, below | Q4, through the table's local gain | MEDIUM |
+| Vref | no kernel consumer: the host applies the map | - | - |
+
+Everything downstream reads the corrected value: the loops, the overcurrent trip, the duty limiter and the stall check the current; the rail clamp, the rail fold and undervoltage the rail; the derate and overtemperature the NTC. Raw stays raw: the tick block's raw fields, TEL rows, the shunt burst, the sensor screen's pot and the boot rest measurements hold the converter's codes, so a TEL row can carry a raw field beside the corrected value derived from it (`i_tick_counts`, `vdiff_counts`, `current_bias_counts`, `vbus_counts`, `t_ntc_cc`). Pins: `a_wide_code_reads_mid_band_on_every_channel`, `the_zero_the_rail_and_the_ntc_read_every_wide_code_mid_band`, `the_trip_compares_the_corrected_current`, `a_written_map_leaves_every_raw_field_alone`; an all-zero map changes no reading (`kernel_trace_matches_golden`, `a_zero_map_reads_every_window_code_raw`, `a_whole_count_tap_steps_as_its_code`).
+
+The position measurement: the observer, its seeds and the drive check read the pot through one function (`phases::pos_q4`), so they never disagree. The wide-code step is taken in raw counts ahead of the table: a code whose low eight bits are all set gains its slot of the map (`Shared::adc_wide_q4`), carried through the table at the local gain `g` of the code's interval (Q4, 16 = unity, as the hold band clamps it), `lin = table(raw) + (map[raw >> 8] * g) >> 4`. That is the table read at the corrected raw count to within a Q4 count where the next interval has the same gain; on the identity it is the bare slot. A stuck reading lands mid band, not at its edge, and a goal inside the band can rest. Every other code costs one compare, and the multiply runs only on a nonzero slot. A position table should be built from readings that already carry the step, so the table holds the pot alone. The raw sample stays raw for the sensors publish, TEL `pos` and the sensor screen.
 
 ### 2.3 Tick sequence
 
@@ -177,7 +189,7 @@ A bus body can exceed a tick period (the `Deadline` body and every `frame` row e
 | CONTROL | bus | volatile reads via `region_ptr`, once per period at CONTROL; cross-field tearing accepted |
 | CONFIG, CALIB | bus | only through the take ([sec 6](#6-the-configuration-take)), the ADC wide-code map aside |
 | position table | bus | volatile reads (`Shared::pos_lut_q4`) |
-| ADC wide-code map (CALIB `adc_wide_mid_q4`) | bus | one volatile byte read on a wide code (`Shared::adc_wide_q4`); a slot is one byte, so it never tears |
+| ADC wide-code map (CALIB `adc_wide_mid_q4`) | bus | one volatile byte read where a consumer's sample sits on a wide code, on any channel (`Shared::adc_wide_q4`); a slot is one byte, so it never tears |
 | tick block | ADC DMA and tick ISR (scan, `sample_tick`), then kernel | sole writer after the landing |
 | estimates, references, mode, limits, fault byte | kernel | sole writer |
 | health block | chip side (ISR wrapper, main loop) | none |
@@ -292,7 +304,7 @@ Lane rules:
 
 ## 6. The configuration take
 
-CONTROL is read field by field. CONFIG and CALIB reach the kernel only as a whole committed set, through its copy `KernelConfig` (`kernel/config.rs`). The one exception is the ADC wide-code map ([sec 2.2](#22-rates-and-phases)), read a byte at a time on a wide code only: copying it would lengthen every take for a value the steady tick never loads.
+CONTROL is read field by field. CONFIG and CALIB reach the kernel only as a whole committed set, through its copy `KernelConfig` (`kernel/config.rs`). The one exception is the ADC wide-code map ([sec 2.2](#22-rates-and-phases)), read a byte at a time, only where a consumed sample of any channel sits on a wide code: copying it would lengthen every take for a value the steady tick never loads.
 
 ### 6.1 The even/odd count
 
