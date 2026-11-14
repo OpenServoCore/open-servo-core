@@ -3,7 +3,9 @@
 //! reciprocal, and a voltage-domain clamp at duty_max*vbus whose excess
 //! back-calculates into the one integrator. Clamping in volts means the
 //! anti-windup term needs no domain crossing and duty <= duty_max by
-//! construction, sagging battery included.
+//! construction, sagging battery included. On a tick with no reading the
+//! PI does not run: the command is the reference's volts through the
+//! winding (control-theory "The Blind Band Under the Floor").
 
 use crate::math::{q_mul, sat_add, sat_clamp, sat_mul};
 use crate::regions::config::ConfigLoopCurrent;
@@ -69,15 +71,21 @@ impl CurrentLoop {
         self.integ_vq16 = 0;
     }
 
-    /// One FAST-tick update -> duty. `i_meas` None (shunt window invalid)
-    /// freezes the whole integrator update - ki term and back-calc both -
-    /// and the output rides integrator + feedforward (`u_ff_vc`) until the
-    /// window returns. `rail` and `recip_vbus_q15` must describe the same
-    /// vbus (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~=
-    /// 32767`) or the duty cap is off by their mismatch. The plain sums
-    /// rely on the kernel's ranges: `i_ref` inside an `IBand` (<= u16::MAX),
-    /// `i_meas` from `window::i_from_frame` (<= 131100) and `u_ff_vc` from
-    /// the free fn `u_ff_vc` (<= 2^19).
+    /// One FAST-tick update -> duty. `i_meas` None is a tick with no
+    /// reading to take: a window under the shunt floor, or the first one
+    /// read after a pulse the bridge dropped. The bridge is a voltage
+    /// source under the floor, so the loop commands the reference's volts
+    /// through the winding, `r_q12 x i_ref` (Q.12 vcounts per ccount,
+    /// `KernelConfig::r_loop_q12`), on top of the feed-forward (`u_ff_vc`),
+    /// and leaves the integrator there: nothing integrates on a current
+    /// nobody read, and the first reading back starts from those volts.
+    /// `rail` and `recip_vbus_q15` must describe the same vbus
+    /// (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~= 32767`)
+    /// or the duty cap is off by their mismatch. The plain sums rely on the
+    /// kernel's ranges: `i_ref` inside an `IBand` (<= u16::MAX), `i_meas`
+    /// from `window::i_from_frame` (<= 131100), `u_ff_vc` from the free fn
+    /// `u_ff_vc` (<= 2^19) and `r_q12` <= 2^20.
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         i_ref: i32,
@@ -86,18 +94,16 @@ impl CurrentLoop {
         rail: &RailClamp,
         recip_vbus_q15: u32,
         gains: &ConfigLoopCurrent,
+        r_q12: u32,
     ) -> i16 {
-        let e = match i_meas {
-            Some(i) => sat_clamp(i_ref - i, -E_LIM_CC, E_LIM_CC),
-            None => 0,
-        };
-        // kp * 2^13 <= 2^29, i32-exact before the shift; |u_pi| < 2^22, so
-        // u, and u_cl - u below, stay under 2^23
-        let u_pi = q_mul(gains.i_kp_q88 as i32, e, 8) + (self.integ_vq16 >> 16);
-        let u = u_pi + u_ff_vc;
         let v_max = rail.v_max_vc;
-        let u_cl = sat_clamp(u, -v_max, v_max);
-        if i_meas.is_some() {
+        let u_cl = if let Some(i) = i_meas {
+            let e = sat_clamp(i_ref - i, -E_LIM_CC, E_LIM_CC);
+            // kp * 2^13 <= 2^29, i32-exact before the shift; |u_pi| < 2^22,
+            // so u, and u_cl - u below, stay under 2^23
+            let u_pi = q_mul(gains.i_kp_q88 as i32, e, 8) + (self.integ_vq16 >> 16);
+            let u = u_pi + u_ff_vc;
+            let u_cl = sat_clamp(u, -v_max, v_max);
             let aw = sat_clamp(u_cl - u, -AW_LIM_VC, AW_LIM_VC);
             // Q4.12 * ccounts -> vQ16 needs << (16 - 12); the products are
             // i32-exact (<= 2^29 per the E/AW clamps) but << 4 can reach
@@ -112,7 +118,17 @@ impl CurrentLoop {
                 -lim,
                 lim,
             );
-        }
+            u_cl
+        } else {
+            core::hint::cold_path();
+            // whole vcounts (the product is <= 2^36, under 2^24 after its
+            // shift), clamped inside the integrator's limit so the shift
+            // back up cannot wrap
+            let lim = rail.integ_lim_vq16 >> 16;
+            let v = sat_clamp(q_mul(r_q12 as i32, i_ref, 12), -lim, lim);
+            self.integ_vq16 = v << 16;
+            sat_clamp(v + u_ff_vc, -v_max, v_max)
+        };
         // VbusEst floors its divisor at 1, so recip <= 32767 << 15 < 2^30
         // casts exactly; |u_cl| * recip <= 2^17 * 2^30 = 2^47, i64-safe.
         sat_clamp(
@@ -155,6 +171,7 @@ mod tests {
             &rail,
             recip,
             &gains.lc,
+            gains.r,
         )
     }
 
@@ -164,10 +181,12 @@ mod tests {
 
     const KP_1: u16 = 1 << 8; // 1.0 vcounts/ccount
 
-    /// The loop's block and the forward Ke the feed-forward takes.
+    /// The loop's block, the forward Ke the feed-forward takes and the
+    /// resistance a tick with no reading commands through (0 from `g`).
     struct Gains {
         lc: ConfigLoopCurrent,
         ke: u16,
+        r: u32,
     }
 
     fn g(kp: u16, ki: u16, kaw: u16, ke: u16, duty_max: u16) -> Gains {
@@ -179,6 +198,7 @@ mod tests {
                 duty_max_q15: duty_max,
             },
             ke,
+            r: 0,
         }
     }
 
@@ -223,24 +243,74 @@ mod tests {
         assert!((i - 500).abs() <= 1, "pi i={i}");
     }
 
+    /// R = 2.0 vcounts/ccount for the ticks with no reading.
+    const R_2: u32 = 2 << 12;
+
     #[test]
-    fn invalid_window_holds_integrator_outputs_ff() {
-        let gains = g(64, 200, 0, 1 << 12, 32767);
-        let mut cur = CurrentLoop::new();
+    fn no_reading_commands_the_reference_through_r_on_the_feed_forward() {
+        let gains = Gains {
+            r: R_2,
+            ..g(64, 200, 0, 1 << 12, 32767)
+        };
+        let mut wound = CurrentLoop::new();
         for _ in 0..50 {
-            step(&mut cur, 500, Some(0), 0, VBUS, RECIP, &gains);
+            step(&mut wound, 500, Some(0), 0, VBUS, RECIP, &gains);
         }
-        // None freezes the integrator: repeated steps identical
-        let d1 = step(&mut cur, 500, None, 0, VBUS, RECIP, &gains);
-        let d2 = step(&mut cur, 500, None, 0, VBUS, RECIP, &gains);
-        assert_eq!(d1, d2);
-        // ff still live: ke 1.0, omega 100 c/s -> +100 vcounts ->
-        // +100*RECIP>>15 = +1092 duty on top of the held integrator
-        let d3 = step(&mut cur, 500, None, 100 << 16, VBUS, RECIP, &gains);
-        assert_eq!(d3 - d1, 1092);
-        // valid sample moves it again
-        let d4 = step(&mut cur, 500, Some(0), 0, VBUS, RECIP, &gains);
-        assert!(d4 > d1);
+        // 2.0 x 500 counts = 1000 vcounts -> 1000*RECIP>>15 = 10922,
+        // whatever the integrator held and however many ticks repeat it
+        let mut fresh = CurrentLoop::new();
+        for cur in [&mut wound, &mut fresh] {
+            for _ in 0..3 {
+                assert_eq!(step(cur, 500, None, 0, VBUS, RECIP, &gains), 10922);
+            }
+        }
+        // the arithmetic shift floors the negative side
+        assert_eq!(step(&mut wound, -500, None, 0, VBUS, RECIP, &gains), -10923);
+        // ff rides on top: ke 1.0, omega 100 c/s -> +100 vcounts ->
+        // 1100*RECIP>>15 = 12014
+        assert_eq!(
+            step(&mut wound, 500, None, 100 << 16, VBUS, RECIP, &gains),
+            12014
+        );
+        // the first reading back starts from the reference's volts: on the
+        // reference it changes nothing, off it the PI moves from there
+        assert_eq!(
+            step(&mut wound, 500, Some(500), 0, VBUS, RECIP, &gains),
+            10922
+        );
+        assert!(step(&mut wound, 500, Some(0), 0, VBUS, RECIP, &gains) > 10922);
+        // a zero reference leaves nothing standing
+        assert_eq!(step(&mut wound, 0, None, 0, VBUS, RECIP, &gains), 0);
+        assert_eq!(step(&mut wound, 0, Some(0), 0, VBUS, RECIP, &gains), 0);
+    }
+
+    #[test]
+    fn no_reading_keeps_the_integrator_inside_its_limit() {
+        // the kernel's largest resistance: a u16 kp standing in, Q8.8 to Q.12
+        const R_MAX: u32 = (u16::MAX as u32) << 4;
+        for r in [1, R_2, R_MAX] {
+            let gains = Gains {
+                r,
+                ..g(KP_1, 200, 2048, 0, u16::MAX)
+            };
+            for vbus in [1u16, 2400, 4095, u16::MAX] {
+                let lim = RailClamp::new(gains.lc.duty_max_q15, vbus).integ_lim_vq16;
+                for i_ref in [-I_REF_MAX, -8000, -1, 0, 1, 8000, I_REF_MAX] {
+                    let mut cur = CurrentLoop::new();
+                    step(&mut cur, i_ref, None, 0, vbus, recip_for(vbus), &gains);
+                    let v = cur.integ_vq16;
+                    assert!(v.abs() <= lim, "r={r} vbus={vbus} i_ref={i_ref}: {v}");
+                    // inside the limit it is the reference's whole volts
+                    let want = (r as i64 * i_ref as i64) >> 12;
+                    if want.abs() <= (lim >> 16) as i64 {
+                        assert_eq!(v as i64, want << 16, "r={r} vbus={vbus} i_ref={i_ref}");
+                    } else {
+                        assert_eq!(v.signum() as i64, want.signum());
+                        assert_eq!(v.abs(), (lim >> 16) << 16);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -282,9 +352,10 @@ mod tests {
 
     #[test]
     fn vbus_compensation_and_sagging_cap() {
-        // Unsaturated: fixed u_ff = 1000 vcounts (ke 1.0, omega 1000 c/s,
-        // None so PI stays zero). Sag raises the reciprocal, so the same
-        // voltage command costs more duty: 1000/3000 vs 1000/2400 of scale.
+        // Unsaturated: fixed u_ff = 1000 vcounts (ke 1.0, omega 1000 c/s;
+        // None on a zero reference, so the loop adds nothing). Sag raises
+        // the reciprocal, so the same voltage command costs more duty:
+        // 1000/3000 vs 1000/2400 of scale.
         let gains = g(0, 0, 0, 1 << 12, 32767);
         let mut cur = CurrentLoop::new();
         assert_eq!(
@@ -324,7 +395,10 @@ mod tests {
         // Floor reciprocal keeps recip*vbus <= 32767<<15, so the voltage
         // clamp maps to duty <= duty_max exactly; sweep hostile corners
         // including the range extremes and a pre-wound integrator.
-        let gains = g(KP_1, 200, 2048, 1 << 12, 20000);
+        let gains = Gains {
+            r: R_2,
+            ..g(KP_1, 200, 2048, 1 << 12, 20000)
+        };
         for vbus in [2400u16, 3000, 4095] {
             let recip = recip_for(vbus);
             for i_ref in [-I_REF_MAX, -8000, 0, 500, 8000, I_REF_MAX] {
@@ -355,7 +429,10 @@ mod tests {
     fn sums_stay_in_i32_at_legal_extremes() {
         // debug overflow checks trip if any plain add or subtract in `step`
         // leaves i32
-        let gains = g(u16::MAX, u16::MAX, u16::MAX, u16::MAX, u16::MAX);
+        let gains = Gains {
+            r: (u16::MAX as u32) << 4,
+            ..g(u16::MAX, u16::MAX, u16::MAX, u16::MAX, u16::MAX)
+        };
         for vbus in [1u16, 4095, u16::MAX] {
             let recip = recip_for(vbus);
             for i_ref in [-I_REF_MAX, 0, I_REF_MAX] {

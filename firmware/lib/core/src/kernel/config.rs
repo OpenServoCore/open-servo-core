@@ -51,6 +51,11 @@ pub struct KernelConfig {
     pub ol_floor_q15: u16,
     /// `v_floor_ticks` as duties, published at the OpenLoop decay.
     pub v_floor_q15: [u16; 2],
+    /// The winding resistance the current loop commands through on a tick
+    /// with no reading (`CurrentLoop::step`), Q.12 vcounts per ccount:
+    /// `motor.r_q12`, or the loop's own `i_kp_q88` where the winding is
+    /// unidentified, so its command still lifts over the window floor.
+    pub r_loop_q12: u32,
     pub therm: ThermCfg,
 }
 
@@ -108,6 +113,7 @@ impl KernelConfig {
             v_floor_ticks: [0; 2],
             ol_floor_q15: 0,
             v_floor_q15: [0; 2],
+            r_loop_q12: 0,
             therm: ThermCfg::default(),
         }
     }
@@ -150,6 +156,11 @@ impl KernelConfig {
             unsafe { dst.add(i).write(src.add(i).read_volatile()) };
         }
         self.ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
+        // Q8.8 to Q.12: selected here, so the tick tests nothing
+        self.r_loop_q12 = match self.motor.r_q12 {
+            0 => (self.loop_current.i_kp_q88 as u32) << 4,
+            r => r as u32,
+        };
         let th = &self.calib_thermal;
         // a body node needs both its words: a tau alone is a gain of 0, a
         // gain alone would ride a one-period leak

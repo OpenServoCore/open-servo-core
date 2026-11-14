@@ -1287,11 +1287,11 @@ struct Lift {
     faults: u8,
 }
 
-/// `dropped`: the reference steps from 10 to 120 counts, so the command
-/// jumps from a pulse of a few ticks straight over the floor. Otherwise the
-/// integrator walks the command up to the floor a tick at a time on a
-/// reference of 60. The first read window reads `first` counts over the
-/// zero and the next one `second`.
+/// The reference steps to 120 counts, whose volts clear the floor, from
+/// one whose volts sit under it: 10 counts with `dropped`, a pulse of a few
+/// ticks the bridge drops, otherwise 45, a pulse the bridge puts out. The
+/// first read window reads `first` counts over the zero and the next one
+/// `second`.
 fn lift(dropped: bool, first: u16, second: u16, oc_trip_counts: u16) -> Lift {
     const FLOOR: u16 = 40;
     let sh = Shared::new();
@@ -1299,18 +1299,16 @@ fn lift(dropped: bool, first: u16, second: u16, oc_trip_counts: u16) -> Lift {
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Current;
-        t.control.lifecycle.goal_current = if dropped { 10 } else { 60 };
+        t.control.lifecycle.goal_current = if dropped { 10 } else { 45 };
         t.calib.sense.i_window_min_ticks = FLOOR;
         t.config.limits.oc_trip_counts = oc_trip_counts;
         t.config.limits.oc_trip_ticks = 1;
     });
     let mut k = kernel();
     let rest = frame(2000, BIAS);
-    if dropped {
-        ticks(&mut k, &sh, rest, 20);
-        sh.table
-            .with_mut(|t| t.control.lifecycle.goal_current = 120);
-    }
+    ticks(&mut k, &sh, rest, 20);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_current = 120);
     let mut before = 0;
     for _ in 0..200 {
         before = k.fast.ticks;
@@ -1339,8 +1337,8 @@ fn lift(dropped: bool, first: u16, second: u16, oc_trip_counts: u16) -> Lift {
 /// of 145 counts after a row of 1 to 15 ticks against 63 inside a train of
 /// the same width), and on the proportional gain that one reading steps
 /// the duty across zero. The current loop does not take it: the command
-/// that follows is the one a zero reading gives, whatever the window read,
-/// and the window after it is taken as any other. Everything else keeps
+/// that follows is the one no reading gives, whatever the window read, and
+/// the window after it is taken as any other. Everything else keeps
 /// the reading: the held current, the tick flags and the overcurrent trip.
 /// A first read window after a pulse the bridge did put out is winding
 /// current still rising, and the loop takes it.
@@ -1355,7 +1353,7 @@ fn the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop() {
     // the reading is over the reference: taken, it reverses the drive
     assert!(over.duty[0] > 0);
     assert_eq!(over.duty[1], zero.duty[1], "the loop took the reading");
-    assert!(over.duty[1] >= over.duty[0], "the drive stepped back");
+    assert_eq!(over.duty[1], over.duty[0], "the command moved");
     // the strict view of the same window
     assert_eq!(over.i_tick_counts, HIGH as i16);
     assert!(over.i_valid);
@@ -1371,16 +1369,276 @@ fn the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop() {
     );
     assert!(over.duty[2] > 0);
 
-    // a lift the integrator walks up: the pulse before the first read one
-    // came out, and its reading is taken
-    let walked_high = lift(false, HIGH, 100, NO_TRIP);
-    let walked_zero = lift(false, 0, 100, NO_TRIP);
+    // a lift from a pulse under the floor that the bridge put out: the
+    // first read window's reading is taken
+    let put_out_high = lift(false, HIGH, 100, NO_TRIP);
+    let put_out_zero = lift(false, 0, 100, NO_TRIP);
     assert!(
-        (31..40).contains(&walked_high.before),
+        (31..40).contains(&put_out_high.before),
         "{}",
-        walked_high.before
+        put_out_high.before
     );
-    assert!(walked_high.duty[1] < walked_zero.duty[1]);
+    assert!(put_out_high.duty[1] < put_out_zero.duty[1]);
+}
+
+/// Under the shunt floor no window reports, and the command is the
+/// reference through the winding's resistance on top of the Ke
+/// feed-forward: `r_q12 x i_ref`, nothing integrated. Fed a zero current
+/// there, the integrator moves by `ki x i_ref` a tick whatever the winding
+/// carries, so a reference of a few counts walks the command across the
+/// whole band and out its far edge (bench: a decelerating shaft asked for
+/// -38 counts went from +62 to -64 ticks in 10 ticks and read about -110
+/// there, driven in reverse), and a reference back at zero leaves the
+/// walked width standing. A reference whose volts clear the floor lifts
+/// over it on its first command, so the band cannot deadlock.
+#[test]
+fn the_command_never_integrates_under_the_shunt_floor() {
+    const FLOOR: u16 = 64;
+    // r_q12 2.0 vcounts per ccount x 10 counts = 20 vcounts of a 3000 rail
+    const HELD: u16 = 8;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = -10;
+        t.calib.sense.i_window_min_ticks = FLOOR;
+    });
+    let mut k = kernel();
+    // a shaft at rest inside its friction: no window ever reads a current
+    let rest = frame(2000, BIAS);
+    to_first_command(&mut k, &sh, rest);
+    let (mut widest, mut narrowest) = (0, u16::MAX);
+    for _ in 0..1000 {
+        k.on_scan(rest, &sh);
+        assert!(k.fast.duty_q15 < 0, "the drive left the reference's side");
+        widest = widest.max(k.fast.ticks);
+        narrowest = narrowest.min(k.fast.ticks);
+    }
+    assert!(
+        widest <= HELD + 1,
+        "a reference of 10 counts walked the command to {widest} ticks"
+    );
+    assert!(narrowest >= HELD - 1, "{narrowest} ticks");
+
+    // back at zero nothing stands
+    let goal = |g: i16, k: &mut Kernel<FakeIo>| {
+        sh.table.with_mut(|t| t.control.lifecycle.goal_current = g);
+        run_to(k, &sh, rest, phase::CONTROL);
+        run_to(k, &sh, rest, phase::VELOCITY);
+        k.on_scan(rest, &sh);
+    };
+    goal(0, &mut k);
+    assert_eq!(k.fast.duty_q15, 0, "a zero reference kept a width");
+
+    // 2.0 x 100 counts = 200 vcounts = 80 ticks: over the floor at once
+    goal(100, &mut k);
+    assert!(k.fast.ticks >= FLOOR, "{} ticks", k.fast.ticks);
+    assert!(k.fast.duty_q15 > 0);
+}
+
+/// The duty the current loop commands on a tick with no reading: the
+/// reference through `r_q12` on top of the feed-forward, over the rail.
+fn blind_duty(k: &Kernel<FakeIo>, r_q12: i32) -> i16 {
+    let fast::Drive::Closed { u_ff_vc } = k.cmd.drive else {
+        panic!("not the current loop");
+    };
+    let u = q_mul(r_q12, k.cmd.i_ref_cc, 12) + u_ff_vc;
+    q_mul(u, k.cmd.vbus_recip_q15 as i32, 15) as i16
+}
+
+/// On a tick with no reading the command is the reference's volts through
+/// the winding on top of the Ke feed-forward, to the count, whatever the
+/// ticks before it commanded: the velocity loop moves the reference across
+/// its band on a still shaft and the command follows it tick for tick. The
+/// held current is that reference, with the tick flags still naming no
+/// reading.
+#[test]
+fn under_the_floor_the_command_is_the_reference_through_the_winding() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 160;
+        // 2.0 x 40 counts + 0.0625 x 160 c/s = 90 vcounts = 36 ticks: the
+        // whole band sits under the 100-tick floor
+        t.config.limits.current_limit_counts = 40;
+    });
+    let mut k = kernel();
+    let rest = frame(2000, BIAS);
+    to_first_command(&mut k, &sh, rest);
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    for _ in 0..4000 {
+        k.on_scan(rest, &sh);
+        assert_eq!(k.fast.duty_q15, blind_duty(&k, 8192));
+        assert!(k.fast.ticks < 100, "{} ticks", k.fast.ticks);
+        assert_eq!(k.fast.i_meas_last as i32, k.cmd.i_ref_cc);
+        lo = lo.min(k.cmd.i_ref_cc);
+        hi = hi.max(k.cmd.i_ref_cc);
+    }
+    assert_eq!(k.faults.mask(), 0);
+    assert!(hi - lo >= 20, "the reference stood still: {lo}..{hi}");
+    assert!(matches!(k.cmd.drive, fast::Drive::Closed { u_ff_vc: 10 }));
+    let held = k.fast.i_meas_last;
+    assert_ne!(held, 0);
+    k.on_scan(rest, &sh);
+    let t = tick_block(&sh);
+    assert_eq!(t.i_tick_counts, held);
+    assert_eq!(t.tick_flags & tick_flag::I_VALID, 0);
+}
+
+/// Under the floor the command's stall current is the reference, so the
+/// band holds no more than the floor's volts over the winding's resistance,
+/// the bound OpenLoop's base duty has there; a reference past it opens a
+/// window on its first command.
+#[test]
+fn the_band_under_the_floor_holds_at_most_the_floors_volts_over_r() {
+    const FLOOR: u16 = 64;
+    let rest = frame(2000, BIAS);
+    let mut held = 0;
+    for goal in (-120..=120).filter(|&g| g != 0) {
+        let sh = Shared::new();
+        seed(&sh);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.mode = Mode::Current;
+            t.calib.sense.i_window_min_ticks = FLOOR;
+        });
+        let mut k = kernel();
+        ticks(&mut k, &sh, rest, 2 * DECIM_MED as u32);
+        sh.table
+            .with_mut(|t| t.control.lifecycle.goal_current = goal);
+        run_to(&mut k, &sh, rest, phase::CONTROL);
+        run_to(&mut k, &sh, rest, phase::VELOCITY);
+        k.on_scan(rest, &sh);
+        assert_eq!(k.cmd.i_ref_cc, goal as i32);
+        assert_eq!(k.fast.duty_q15, blind_duty(&k, 8192), "{goal}");
+        if k.fast.ticks >= FLOOR {
+            continue;
+        }
+        held = held.max(goal.unsigned_abs());
+        let width = k.fast.ticks;
+        for _ in 0..200 {
+            k.on_scan(rest, &sh);
+            assert_eq!(k.fast.ticks, width, "{goal}");
+        }
+    }
+    // 64 ticks of 1200 on a 3000 rail = 160 vcounts, 80 counts at 2.0
+    assert_eq!(held, 79);
+}
+
+/// The reference held under the floor is the loop's own command, not a
+/// reading: the overcurrent trip and the back-EMF sums take a reading or
+/// nothing. A held reference over the trip raises nothing and closes no
+/// back-EMF half, with the terminal taps reading the window all along;
+/// the same drive with the shunt's floor under it trips on its reading.
+#[test]
+fn the_reference_held_under_the_floor_reaches_no_trip_and_no_back_emf_sum() {
+    let rig = |i_floor: u16| {
+        let sh = Shared::new();
+        seed(&sh);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.mode = Mode::Current;
+            // 2.0 x 40 counts = 80 vcounts = 32 ticks
+            t.control.lifecycle.goal_current = 40;
+            t.config.limits.oc_trip_counts = 30;
+            t.config.limits.oc_trip_ticks = 1;
+            t.calib.sense.i_window_min_ticks = i_floor;
+            t.calib.sense.v_window_min_ticks = 20;
+        });
+        let mut k = kernel();
+        for _ in 0..400 {
+            k.on_scan(frame(2000, BIAS + 35), &sh);
+        }
+        (k, sh)
+    };
+    let (k, sh) = rig(100);
+    assert_eq!(k.fast.ticks, 32);
+    assert_eq!(k.fast.i_meas_last, 40);
+    let t = tick_block(&sh);
+    assert_eq!(t.i_tick_counts, 40);
+    assert_eq!(
+        t.tick_flags & (tick_flag::I_VALID | tick_flag::V_VALID),
+        tick_flag::V_VALID
+    );
+    assert_eq!(k.faults.mask(), 0);
+    // a closed half would read (32 x 2960 / 1200 - 2.0 x 35) x 16 c/s
+    let published = sh.table.with(|t| {
+        (
+            t.telemetry.estimates.omega_bemf_cps,
+            t.telemetry.mode.omega_hat_src,
+        )
+    });
+    assert_eq!(published, (0, 0));
+
+    let (k, _) = rig(20);
+    assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
+}
+
+/// The held current is an i16: a reference past it, which only a current
+/// limit over the shunt's range allows, holds at the field's end instead
+/// of wrapping to the other sign.
+#[test]
+fn the_reference_held_under_the_floor_saturates_at_the_fields_width() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    k.on_scan(frame(2000, BIAS), &sh);
+    k.cmd.drive = fast::Drive::Closed { u_ff_vc: 0 };
+    for (i_ref, held) in [(40_000, i16::MAX), (-40_000, i16::MIN), (-7, -7)] {
+        k.cmd.i_ref_cc = i_ref;
+        k.fast
+            .drive(&fast::Measured { i_meas: None }, &k.cfg, &k.cmd, &k.faults);
+        assert_eq!(k.fast.i_meas_last, held, "{i_ref}");
+    }
+}
+
+/// With no identified resistance the loop's own proportional gain stands
+/// in under the floor, so an unidentified winding still lifts over it; the
+/// choice is made where the configuration is taken, and a commit moves it.
+#[test]
+fn an_unidentified_winding_is_commanded_through_the_loops_own_gain() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 40;
+        t.calib.motor.r_q12 = 0;
+        // 1.5 vcounts per count
+        t.config.loop_current.i_kp_q88 = 384;
+    });
+    let mut k = kernel();
+    let rest = frame(2000, BIAS);
+    to_first_command(&mut k, &sh, rest);
+    assert_eq!(k.cfg.r_loop_q12, 384 << 4);
+    // 1.5 x 40 counts = 60 vcounts = 24 ticks, and it stays there
+    for _ in 0..200 {
+        k.on_scan(rest, &sh);
+        assert_eq!(k.fast.duty_q15, blind_duty(&k, 384 << 4));
+        assert_eq!(k.fast.ticks, 24);
+    }
+    // an identified winding is the one commanded through: 1.0 x 40 counts
+    // = 40 vcounts = 16 ticks
+    write_config(&sh, |t| t.calib.motor.r_q12 = 4096);
+    ticks(&mut k, &sh, rest, 2 * DECIM_MED as u32);
+    assert_eq!(k.cfg.r_loop_q12, 4096);
+    assert_eq!(k.fast.duty_q15, blind_duty(&k, 4096));
+    assert_eq!(k.fast.ticks, 16);
+    write_config(&sh, |t| t.calib.motor.r_q12 = 0);
+    ticks(&mut k, &sh, rest, 2 * DECIM_MED as u32);
+    assert_eq!(k.cfg.r_loop_q12, 384 << 4);
+    assert_eq!(k.fast.ticks, 24);
+
+    // 1.5 x 200 counts = 300 vcounts = 120 ticks: over the floor at once
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_current = 200);
+    run_to(&mut k, &sh, rest, phase::CONTROL);
+    run_to(&mut k, &sh, rest, phase::VELOCITY);
+    k.on_scan(rest, &sh);
+    assert_eq!(k.fast.ticks, 120);
 }
 
 /// The winding estimate's bench MG90 constant (the NTC on a board in room
@@ -2270,10 +2528,12 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
-        // current PI inert: the duty IS the Ke feedforward
+        // current loop inert, no gain and no resistance to command the
+        // reference through under the floor: the duty IS the Ke feedforward
         t.config.loop_current.i_kp_q88 = 0;
         t.config.loop_current.i_ki_q412 = 0;
         t.config.loop_current.i_kaw_q412 = 0;
+        t.calib.motor.r_q12 = 0;
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Velocity;
         t.control.lifecycle.goal_velocity = 1600;
@@ -2632,6 +2892,11 @@ fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
 fn hold_band_is_judged_in_raw_counts() {
     let sh = Shared::new();
     seed(&sh);
+    // the pot alone places the observer, so the band's edge is judged to
+    // the count: this rig's shaft never moves, and with a current gain the
+    // observer sits a fraction of a count off it while the loop pushes
+    // (under the window floor it is told the reference)
+    sh.table.with_mut(|t| t.calib.motor.b_i_q313 = 0);
     let mut k = [0i16; pos_lut::POINTS];
     for (n, c) in k.iter_mut().enumerate().take(141).skip(100) {
         *c = 10 * (n as i16 - 100);

@@ -18,6 +18,8 @@ use crate::estimator::bias::Zero;
 use crate::estimator::{BiasTracker, window};
 use crate::kernel::KernelTiming;
 use crate::kernel::config::KernelConfig;
+#[cfg(not(feature = "experiment"))]
+use crate::math::sat_clamp;
 use crate::regions::telemetry::tick_flag;
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, Shared};
@@ -133,11 +135,13 @@ pub struct Fast {
     bridge: Bridge,
     settle: u8,
     /// Last window-valid measurement, 0 from the first tick nothing drives:
-    /// the current the observer and the tick block's `i_tick_counts` read.
-    /// A window under the floor holds it, as the drive still pushes there;
-    /// with no drive the winding current is gone within a period, and every
-    /// window under a zero duty is invalid, so the 0 holds until the drive
-    /// resumes.
+    /// the current the observer, the limits and the tick block's
+    /// `i_tick_counts` read. A window under the floor holds it under
+    /// OpenLoop, as the drive still pushes there, and under the current
+    /// loop takes the reference, the current its command is built for
+    /// (`drive`); with no drive the winding current is gone within a
+    /// period, and every window under a zero duty is invalid, so the 0
+    /// holds until the drive resumes.
     pub(in crate::kernel) i_meas_last: i16,
     /// Last v-valid drive-window differential (va - vb), the tick block's
     /// `vdiff_counts` - same hold-last-valid pattern as `i_meas_last`.
@@ -368,11 +372,9 @@ impl Fast {
         let out = if let Drive::Closed { u_ff_vc } = drive {
             if cmd.i_ref_cc == 0 && m.i_meas.is_none() && (cmd.band.hi == 0 || cmd.band.lo == 0) {
                 core::hint::cold_path();
-                // endstop-clamped ref with no window: the honest-zero
-                // feed below makes e = 0, freezing the PI at whatever
-                // sub-floor duty it unwound to - stalled at an endstop
-                // that grinds the gears forever (bench: 18% duty held
-                // into the rail). Brake shorts the winding, passively
+                // endstop-clamped ref with no window: the loop below
+                // would command the feed-forward alone, and a zero duty
+                // holds nothing. Brake shorts the winding, passively
                 // holding against whatever momentum remains; it must be
                 // commanded explicitly - chip-side Drive{0, Slow} maps to
                 // coast. Scoped to a collapsed band so a transient i_ref
@@ -383,28 +385,36 @@ impl Fast {
                 self.decay = DecayMode::Slow;
                 MotorCmd::Brake
             } else {
-                // An invalid window only happens below the sampling
-                // floor, where the duty is too small to push real
-                // current: 0 is the honest estimate THERE, and it lets
-                // the PI lift off zero duty - a strict freeze would
-                // deadlock (no duty -> no window -> e = 0 -> no duty). OC
-                // and the estimators keep the strict validity view.
+                // No window only happens under the sampling floor, where
+                // the bridge is a voltage source and nothing reads the
+                // winding: the loop commands the reference's volts
+                // (`CurrentLoop::step`) and the held current is that
+                // reference. Fed a zero instead, the integrator moves
+                // `ki x i_ref` a tick whatever the winding carries and
+                // walks the command across the band
+                // (`the_command_never_integrates_under_the_shunt_floor`).
+                // The overcurrent trip and the back-EMF sums keep the
+                // strict validity view.
                 // The first window read after a command the bridge drops
                 // reads far over the winding current, and on the
                 // proportional gain that one reading reverses the drive:
-                // the loop gets the same feed for it. `ticks` still holds
+                // the loop takes it as no reading. `ticks` still holds
                 // the width this frame measured, the one the next tick's
                 // window follows; a width of 0 wraps out of the range.
                 let taken = m.i_meas.filter(|_| !self.dropped);
                 self.dropped = self.ticks.wrapping_sub(1) < self.dropped_max_ticks;
-                let i_loop = Some(taken.unwrap_or(0));
+                if m.i_meas.is_none() {
+                    self.i_meas_last =
+                        sat_clamp(cmd.i_ref_cc, i16::MIN as i32, i16::MAX as i32) as i16;
+                }
                 let duty = self.cur.step(
                     cmd.i_ref_cc,
-                    i_loop,
+                    taken,
                     u_ff_vc,
                     &cmd.rail,
                     cmd.vbus_recip_q15,
                     &cfg.loop_current,
+                    cfg.r_loop_q12,
                 );
                 self.duty_q15 = duty;
                 // closed-loop decay is fixed Slow (spec: config enum
