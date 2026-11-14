@@ -69,13 +69,15 @@ bench_hot=(
     KernelProbe::event_tick
 )
 
-# The loops and folds the experiment image compiles out (kernel sec 2.7),
-# and the dead-man it runs in their place; one set or the other. The
-# deadman image carries the production set and its own dead-man.
+# The loops, folds and estimates the experiment image compiles out
+# (kernel sec 2.7), and the dead-man it runs in their place; one set or
+# the other. The deadman image carries the production set and its own
+# dead-man.
 production_hot=(
     TrajGen::step_position
     DutyLimiter::step
     math::recip_div
+    phases::Medium::r_hat
 )
 experiment_hot=(
     experiment::Medium::deadman

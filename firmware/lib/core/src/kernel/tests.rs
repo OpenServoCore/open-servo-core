@@ -1957,6 +1957,217 @@ fn a_hold_that_heats_to_the_cutoff_runs_at_the_cap_and_ends_in_the_latch() {
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
 }
 
+fn r_hat(sh: &Shared) -> u16 {
+    sh.table.with(|t| t.telemetry.estimates.r_hat_q12)
+}
+
+/// Ticks `f` through the next SLOW finish and the PUBLISH phase behind it.
+fn to_finish(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
+    k.on_scan(f, sh);
+    while !(k.medium.slow_periods == 1 && k.phase == phase::PUBLISH + 1) {
+        k.on_scan(f, sh);
+    }
+}
+
+/// The resistance the control path reads is the stored one wherever the
+/// heat model adds nothing: from the boot tick with no NTC curve, through
+/// a hot hold there; on a curve with nothing held; and on a failed NTC,
+/// whose estimate feeds no rise back, the finish after a settled hold had
+/// it at 2.222 vcounts per count.
+#[test]
+fn r_hat_is_the_stored_resistance_with_no_heat_unset_or_on_a_failed_ntc() {
+    use crate::estimator::thermal::flag;
+    let hot = frame(2000, BIAS + 400);
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    write_config(&sh, |t| t.calib.thermal.ntc_k1_q88 = 0);
+    let mut k = kernel();
+    k.on_scan(hot, &sh);
+    assert_eq!(r_hat(&sh), 8192, "the boot tick");
+    settle(&mut k, &sh, hot);
+    ticks(&mut k, &sh, hot, HEAT_SETTLE);
+    assert_eq!(k.fast.i_meas_last(), 400);
+    assert_eq!((therm(&sh).1, r_hat(&sh)), (flag::UNSET, 8192));
+
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    let mut k = kernel();
+    ticks(&mut k, &sh, frame(2000, BIAS), BASE_FAST_TICKS);
+    assert_eq!((therm(&sh).0, r_hat(&sh)), (2500, 8192), "nothing held");
+
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    settle(&mut k, &sh, hot);
+    ticks(&mut k, &sh, hot, HEAT_SETTLE);
+    assert_eq!((therm(&sh).0, r_hat(&sh)), (5331, 9103));
+    let dead = SensorFrame {
+        ntc_raw: 4090,
+        ..hot
+    };
+    to_finish(&mut k, &sh, dead);
+    assert_eq!((therm(&sh).1, r_hat(&sh)), (flag::NTC_FAULT, 8192));
+}
+
+/// A held current raises the resistance with the estimate, finish by
+/// finish, to the value the warm factor gives: the 400-count hold settles
+/// 28.31 C over the NTC, where copper is 0.393 % x 28.31 = 11.12 % over
+/// cold (7290 in Q0.16), and 2.0 vcounts per count reads 8192 + (8192 x
+/// 7290 >> 16) = 9103, 2.222. Torque off, it falls back with the heat:
+/// five tau on, 0.18 C over reads 8197.
+#[test]
+fn r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    let mut k = kernel();
+    let hot = frame(2000, BIAS + 400);
+    k.on_scan(hot, &sh);
+    let mut last = r_hat(&sh);
+    assert_eq!(last, 8192, "the boot tick");
+    settle(&mut k, &sh, hot);
+    for _ in 0..HEAT_SETTLE / SLOW {
+        ticks(&mut k, &sh, hot, SLOW);
+        let r = r_hat(&sh);
+        assert!(r >= last, "{r} after {last}");
+        last = r;
+    }
+    assert_eq!(therm(&sh).0, 5331);
+    assert_eq!(k.medium.thermal.warm_q16(), 7290);
+    assert_eq!(r_hat(&sh), 9103);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    ticks(&mut k, &sh, frame(2000, BIAS), 1280 * SLOW);
+    assert_eq!((therm(&sh).0, r_hat(&sh)), (2518, 8197));
+}
+
+/// A new `r_q12` is the one warmed from the configuration take on, a
+/// period after its commit and with no finish in between: at the settled
+/// hold's 11.12 % a write of 1.0 reads 4096 + 455, a write the factor
+/// carries past the field saturates at its top, an unidentified winding
+/// reads 0 at any heat, and the first value back reads 9103 again.
+#[test]
+fn r_hat_follows_a_new_r_q12_at_the_take_and_saturates() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    let mut k = kernel();
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hot);
+    ticks(&mut k, &sh, hot, HEAT_SETTLE);
+    to_finish(&mut k, &sh, hot);
+    assert_eq!(r_hat(&sh), 9103);
+    for (r_q12, want) in [(4096, 4551), (60000, u16::MAX), (0, 0), (8192, 9103)] {
+        write_config(&sh, |t| t.calib.motor.r_q12 = r_q12);
+        periods(&mut k, &sh, hot, 2);
+        assert_eq!(k.cfg.motor.r_q12, r_q12, "taken");
+        assert_eq!(r_hat(&sh), want, "{r_q12}");
+    }
+    assert!(
+        (2..DECIM_SLOW).contains(&k.medium.slow_periods),
+        "a finish ran: the take alone did not move it"
+    );
+}
+
+/// The back-EMF boxcar reads the same speed on a warm winding as on a
+/// cold one. The frames stand in for the plant: at one duty and one speed
+/// the window's volts and the back-EMF are the same, so a winding an
+/// eighth over cold carries eight ninths of the current, and the drop the
+/// boxcar subtracts is the same 360 vcounts, cold 2.0 x 180 counts and
+/// warm 2.25 x 160. A rise gain of 7246 settles the 160-count hold 31.83
+/// C over the NTC, where the factor is an eighth and `r_hat` reads 9216.
+/// Both read (293 x 2960 / 1200 - 360) x 16 = 5803 c/s; the stored
+/// resistance alone reads the warm winding 0.25 x 160 x 16 = 640 c/s
+/// fast.
+#[test]
+fn the_boxcar_reads_a_warm_winding_at_the_speed_it_read_cold() {
+    let read = |i: u16, th_rise_q016: u16| {
+        let sh = Shared::new();
+        seed(&sh);
+        seed_estimate(&sh);
+        write_config(&sh, |t| t.calib.thermal.th_rise_q016 = th_rise_q016);
+        let mut k = kernel();
+        let f = frame(2000, BIAS + i);
+        settle(&mut k, &sh, f);
+        ticks(&mut k, &sh, f, HEAT_SETTLE);
+        run_to(&mut k, &sh, f, phase::PUBLISH + 1);
+        let omega = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps);
+        (therm(&sh).0, r_hat(&sh), omega)
+    };
+    assert_eq!(read(180, 0), (2500, 8192, 5803), "cold");
+    assert_eq!(read(160, 7246), (5683, 9216, 5803), "warm");
+    assert_eq!(read(160, 0), (2500, 8192, 6443), "warm on the stored R");
+}
+
+/// A current reference held under the shunt floor on a warm winding: a
+/// 40-count limit under a rise gain at the top of its field, which settles
+/// the held reference 16.57 C over the NTC, `r_hat` 8725.
+fn warm_blind_rig(sh: &Shared) -> Kernel<FakeIo> {
+    seed(sh);
+    seed_estimate(sh);
+    write_config(sh, |t| {
+        t.calib.thermal.th_rise_q016 = u16::MAX;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 40;
+        t.config.limits.current_limit_counts = 40;
+    });
+    let mut k = kernel();
+    let rest = frame(2000, BIAS);
+    to_first_command(&mut k, sh, rest);
+    k.on_scan(rest, sh);
+    // cold: 2.0 x 40 counts = 80 vcounts = 32 ticks
+    assert_eq!((r_hat(sh), k.fast.ticks), (8192, 32));
+    assert_eq!(k.fast.duty_q15, blind_duty(&k, 8192));
+    ticks(&mut k, sh, rest, HEAT_SETTLE);
+    assert_eq!((therm(sh).0, r_hat(sh)), (4157, 8725));
+    k
+}
+
+/// On a tick with no reading the loop commands the reference through the
+/// resistance at the estimate's temperature, `r_hat x i_ref`: warm, 2.130
+/// x 40 counts = 85 vcounts = 34 ticks where the stored 2.0 commanded 32,
+/// tick for tick as the reference stands. An unidentified winding keeps
+/// the loop's own gain as the take chose it, unscaled by the heat.
+#[test]
+fn under_the_floor_a_warm_winding_is_commanded_through_r_hat() {
+    let sh = Shared::new();
+    let mut k = warm_blind_rig(&sh);
+    let rest = frame(2000, BIAS);
+    assert_eq!(k.cmd.r_loop_q12, 8725);
+    for _ in 0..200 {
+        k.on_scan(rest, &sh);
+        assert_eq!(k.fast.duty_q15, blind_duty(&k, 8725));
+        assert_eq!(k.fast.ticks, 34);
+    }
+    assert_eq!(k.fast.i_meas_last, 40);
+    // 1.5 x 40 counts = 60 vcounts = 24 ticks, the estimate still warm
+    write_config(&sh, |t| {
+        t.calib.motor.r_q12 = 0;
+        t.config.loop_current.i_kp_q88 = 384;
+    });
+    periods(&mut k, &sh, rest, 2);
+    assert_eq!((r_hat(&sh), k.cmd.r_loop_q12), (0, 384 << 4));
+    assert_eq!(k.fast.duty_q15, blind_duty(&k, 384 << 4));
+    assert_eq!(k.fast.ticks, 24);
+    assert!(therm(&sh).0 > 4000, "{}", therm(&sh).0);
+}
+
+/// OpenLoop's stall-safe base duty is a ceiling, so it stays on the
+/// stored resistance, which a warm winding only ever exceeds: with
+/// `r_hat` at 8725 the base is still the 40-count limit through 2.0, 80
+/// vcounts of the 3000 rail.
+#[test]
+fn the_stall_safe_open_loop_duty_stays_on_the_stored_resistance() {
+    let sh = Shared::new();
+    let k = warm_blind_rig(&sh);
+    assert_eq!(r_hat(&sh), 8725);
+    let cold = q_mul(80, k.cmd.vbus_recip_q15 as i32, 15);
+    assert_eq!((k.cmd.ol_base_q15 as i32, cold), (873, 873));
+}
+
 #[test]
 fn position_error_latches_after_persistence() {
     let sh = Shared::new();

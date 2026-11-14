@@ -156,8 +156,12 @@ pub struct TelemetryEstimates {
     /// the boxcar (`omega_hat_src` then reads 0 within a millisecond).
     #[ct_field(access = ro)]
     pub omega_bemf_cps: i16,
-    /// Reserved, reads 0: the retired resistance thermometer's estimate;
-    /// the slot keeps the layout.
+    /// The winding resistance the control path reads, Q4.12 vcounts per
+    /// ccount: CALIB `r_q12` raised by copper's slope on the winding
+    /// estimate's rise over the NTC, saturating. The heat model's number,
+    /// not a measurement: `r_q12` itself with no heat, while no NTC curve
+    /// is set and on a failed NTC, 0 for an unidentified winding. Published
+    /// at the SLOW finish and at a configuration take.
     #[ct_field(access = ro)]
     pub r_hat_q12: u16,
 }

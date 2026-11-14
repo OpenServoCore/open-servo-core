@@ -122,12 +122,13 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// The configuration take after a write, on top of [`KERNEL`], at most once
 /// per period, at phase SPARE_A: the input span's word copy, the Ke belt,
 /// the current loop's resistance, the winding estimate's config, the
-/// continuous rating and its leak, and the terminal floor's store. It
+/// continuous rating and its leak, the winding resistance on the new
+/// `r_q12` (`Medium::r_hat`) and the terminal floor's store. It
 /// carries no TEL row: a burst starts neither on SPARE_A nor while a take
 /// is pending, and the host is silent through one. E, an upper bound: the
-/// take's longest path on matched release disassembly is under 573.75 HCLK,
-/// including the rating and its two log calls; the row keeps its earlier,
-/// larger price until the probe re-prices it.
+/// take's longest path on matched release disassembly is under 664 HCLK,
+/// including the rating, its two log calls and the resistance's 89.5; the
+/// row keeps its earlier, larger price until the probe re-prices it.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
 pub const REFRESH: u32 = 824;
@@ -245,9 +246,13 @@ pub const TEL_LANE_MEAN: u32 = 124;
 pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
-/// quadratic, the two rise multiplies and the cutoff fault. E, an upper
-/// bound kept from a dearer earlier body (330 plus a since-deleted
-/// ceiling's 71.25, plus 10%); the bench re-prices it.
+/// quadratic, the two rise multiplies, the cutoff fault and the winding
+/// resistance (`Medium::r_hat`: two multiplies and three stores). E, an
+/// upper bound kept from a dearer earlier body (330 plus a since-deleted
+/// ceiling's 71.25, plus 10%). The resistance prices at 82.25 HCLK on the
+/// fetch model, 89.5 for an unidentified winding, where the ceiling was
+/// 71.25: by the same sum the row would read 454. It keeps its number
+/// until the bench re-prices it.
 pub const SLOW_FINISH: u32 = 442;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top

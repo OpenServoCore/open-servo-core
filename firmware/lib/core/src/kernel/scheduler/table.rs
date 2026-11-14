@@ -107,6 +107,7 @@ impl Medium {
                     shared,
                     faults,
                     fast,
+                    cmd,
                 );
             }
             #[cfg(feature = "experiment")]

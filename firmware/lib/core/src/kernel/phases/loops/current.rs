@@ -76,7 +76,7 @@ impl CurrentLoop {
     /// read after a pulse the bridge dropped. The bridge is a voltage
     /// source under the floor, so the loop commands the reference's volts
     /// through the winding, `r_q12 x i_ref` (Q.12 vcounts per ccount,
-    /// `KernelConfig::r_loop_q12`), on top of the feed-forward (`u_ff_vc`),
+    /// `Command::r_loop_q12`), on top of the feed-forward (`u_ff_vc`),
     /// and leaves the integrator there: nothing integrates on a current
     /// nobody read, and the first reading back starts from those volts.
     /// `rail` and `recip_vbus_q15` must describe the same vbus

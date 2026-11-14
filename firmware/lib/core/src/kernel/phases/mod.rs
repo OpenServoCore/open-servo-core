@@ -39,6 +39,8 @@ pub(in crate::kernel) use control::Control;
 pub(in crate::kernel) use experiment::Medium;
 
 #[cfg(not(feature = "experiment"))]
+use self::fast::Command;
+#[cfg(not(feature = "experiment"))]
 use self::loops::faults::{Detectors, FaultLatch};
 #[cfg(not(feature = "experiment"))]
 use self::loops::limits::{IBand, LimitState};
@@ -120,6 +122,9 @@ pub(in crate::kernel) struct Medium {
     limit_flags: u8,
     pub(in crate::kernel) vbus: VbusEst,
     pub(in crate::kernel) thermal: WindingTherm,
+    /// The winding resistance at the estimate's temperature, as published
+    /// (`Medium::r_hat`): the back-EMF boxcar's R.
+    r_hat_q12: u16,
     /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
     pub(in crate::kernel) omega_sw: OmegaSwitch,
     /// The duty OpenLoop applies while its ceiling sits under the window
@@ -168,6 +173,7 @@ impl Medium {
             limit_flags: 0,
             vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),
+            r_hat_q12: 0,
             omega_sw: OmegaSwitch::new(),
             ol_base_q15: 0,
             permit_ticks: 0,
@@ -195,8 +201,9 @@ impl Medium {
         cfg: &KernelConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
+        cmd: &mut Command,
     ) {
         self.fusion.seed(pos_q4);
-        self.estimate(ntc_raw, cfg, shared, faults);
+        self.estimate(ntc_raw, cfg, shared, faults, cmd);
     }
 }
