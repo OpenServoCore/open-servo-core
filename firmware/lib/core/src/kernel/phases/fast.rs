@@ -142,6 +142,14 @@ pub struct Fast {
     /// Last v-valid drive-window differential (va - vb), the tick block's
     /// `vdiff_counts` - same hold-last-valid pattern as `i_meas_last`.
     pub(in crate::kernel) vdiff_last: i16,
+    /// `KernelTiming::bridge_min_ticks` less one, 0 with the gate off: a
+    /// commanded width of 1 up to it comes out as no pulse.
+    #[cfg(not(feature = "experiment"))]
+    dropped_max_ticks: u16,
+    /// The width the next tick's window follows was such a command: the
+    /// current loop does not take that window's reading.
+    #[cfg(not(feature = "experiment"))]
+    dropped: bool,
 }
 
 impl Fast {
@@ -167,6 +175,10 @@ impl Fast {
             settle: ZERO_SETTLE_TICKS,
             i_meas_last: 0,
             vdiff_last: 0,
+            #[cfg(not(feature = "experiment"))]
+            dropped_max_ticks: timing.bridge_min_ticks.saturating_sub(1),
+            #[cfg(not(feature = "experiment"))]
+            dropped: false,
         }
     }
 
@@ -382,7 +394,15 @@ impl Fast {
                 // the PI lift off zero duty - a strict freeze would
                 // deadlock (no duty -> no window -> e = 0 -> no duty). OC
                 // and the estimators keep the strict validity view.
-                let i_loop = Some(m.i_meas.unwrap_or(0));
+                // The first window read after a command the bridge drops
+                // reads far over the winding current, and on the
+                // proportional gain that one reading reverses the drive:
+                // the loop gets the same feed for it. `ticks` still holds
+                // the width this frame measured, the one the next tick's
+                // window follows; a width of 0 wraps out of the range.
+                let taken = m.i_meas.filter(|_| !self.dropped);
+                self.dropped = self.ticks.wrapping_sub(1) < self.dropped_max_ticks;
+                let i_loop = Some(taken.unwrap_or(0));
                 let duty = self.cur.step(
                     cmd.i_ref_cc,
                     i_loop,

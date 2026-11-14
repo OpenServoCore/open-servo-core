@@ -26,6 +26,7 @@ const TIMING: KernelTiming = KernelTiming {
     bias_brake_min_ticks: 600,
     v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
+    bridge_min_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
 };
 

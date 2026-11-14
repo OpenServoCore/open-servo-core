@@ -220,12 +220,11 @@ fn holds_on(lut: [i16; POINTS], seed_n: u64, n: usize) -> Vec<Hold> {
     g[1..].iter().map(|&g| s.hold(g, HOLD_TICKS)).collect()
 }
 
-/// Seed 28's first step: the shaft trails the profile into the
-/// deceleration and enters the band at about 1670 counts/s, faster than
-/// friction can stop it there.
+/// Seed 20's first step: the shaft enters the band at about 1780
+/// counts/s, faster than friction can stop it there.
 #[test]
 fn hold_rests_after_a_fast_arrival() {
-    let h = holds(28, 1)[0];
+    let h = holds(20, 1)[0];
     assert!(h.entry_cps > coast_stop_cps(), "not a fast arrival: {h:?}");
     assert!(h.spread <= 1.0 && h.wakes == 0, "limit cycle: {h:?}");
     assert!(
@@ -270,7 +269,7 @@ fn hold_never_cycles_over_many_arrivals() {
 /// still: the rail supplies nothing and no current circulates.
 #[test]
 fn hold_draws_no_supply_current_at_rest() {
-    let h = holds(28, 1)[0];
+    let h = holds(20, 1)[0];
     assert_eq!(h.wakes, 0, "{h:?}");
     assert_eq!(h.braked, TAIL_TICKS, "{h:?}");
     assert_eq!(h.supply, 0.0, "{h:?}");

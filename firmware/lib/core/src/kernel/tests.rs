@@ -32,6 +32,7 @@ const TIMING: KernelTiming = KernelTiming {
     bias_brake_min_ticks: 600,
     v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
+    bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
 };
 
@@ -1268,6 +1269,118 @@ fn current_mode_clamps_goal_to_i_lim() {
     assert_eq!(k.medium.i_ref_cc, 1200);
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.medium.i_ref_cc, -1200);
+}
+
+/// One Current-mode lift across a 40-tick shunt floor, and the three ticks
+/// from the first command at or over it.
+struct Lift {
+    /// The width commanded on the tick before the first command at or over
+    /// the floor.
+    before: u16,
+    /// The duty of that first command, of the tick that measured its
+    /// window, and of the tick after.
+    duty: [i16; 3],
+    /// The tick block and the fault mask on the tick that measured the
+    /// first read window.
+    i_tick_counts: i16,
+    i_valid: bool,
+    faults: u8,
+}
+
+/// `dropped`: the reference steps from 10 to 120 counts, so the command
+/// jumps from a pulse of a few ticks straight over the floor. Otherwise the
+/// integrator walks the command up to the floor a tick at a time on a
+/// reference of 60. The first read window reads `first` counts over the
+/// zero and the next one `second`.
+fn lift(dropped: bool, first: u16, second: u16, oc_trip_counts: u16) -> Lift {
+    const FLOOR: u16 = 40;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = if dropped { 10 } else { 60 };
+        t.calib.sense.i_window_min_ticks = FLOOR;
+        t.config.limits.oc_trip_counts = oc_trip_counts;
+        t.config.limits.oc_trip_ticks = 1;
+    });
+    let mut k = kernel();
+    let rest = frame(2000, BIAS);
+    if dropped {
+        ticks(&mut k, &sh, rest, 20);
+        sh.table
+            .with_mut(|t| t.control.lifecycle.goal_current = 120);
+    }
+    let mut before = 0;
+    for _ in 0..200 {
+        before = k.fast.ticks;
+        k.on_scan(rest, &sh);
+        if k.fast.ticks >= FLOOR {
+            break;
+        }
+    }
+    assert!(k.fast.ticks >= FLOOR, "never over the floor");
+    let d0 = k.fast.duty_q15;
+    k.on_scan(frame(2000, BIAS + first), &sh);
+    let t = tick_block(&sh);
+    let (d1, faults) = (k.fast.duty_q15, k.faults.mask());
+    k.on_scan(frame(2000, BIAS + second), &sh);
+    Lift {
+        before,
+        duty: [d0, d1, k.fast.duty_q15],
+        i_tick_counts: t.i_tick_counts,
+        i_valid: t.tick_flags & tick_flag::I_VALID != 0,
+        faults,
+    }
+}
+
+/// The first shunt window read after a commanded pulse too narrow for the
+/// bridge to put out reads far over the winding current (bench: a median
+/// of 145 counts after a row of 1 to 15 ticks against 63 inside a train of
+/// the same width), and on the proportional gain that one reading steps
+/// the duty across zero. The current loop does not take it: the command
+/// that follows is the one a zero reading gives, whatever the window read,
+/// and the window after it is taken as any other. Everything else keeps
+/// the reading: the held current, the tick flags and the overcurrent trip.
+/// A first read window after a pulse the bridge did put out is winding
+/// current still rising, and the loop takes it.
+#[test]
+fn the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop() {
+    const HIGH: u16 = 300;
+    const NO_TRIP: u16 = 2400;
+    let over = lift(true, HIGH, 100, NO_TRIP);
+    let zero = lift(true, 0, 100, NO_TRIP);
+    assert!((1..=15).contains(&over.before), "{}", over.before);
+    assert_eq!(over.before, zero.before);
+    // the reading is over the reference: taken, it reverses the drive
+    assert!(over.duty[0] > 0);
+    assert_eq!(over.duty[1], zero.duty[1], "the loop took the reading");
+    assert!(over.duty[1] >= over.duty[0], "the drive stepped back");
+    // the strict view of the same window
+    assert_eq!(over.i_tick_counts, HIGH as i16);
+    assert!(over.i_valid);
+    assert_eq!(over.faults, 0);
+    let trip = lift(true, HIGH, 100, HIGH - 1);
+    assert_eq!(trip.faults, faults::BIT_OVER_CURRENT);
+    // one reading, not the visit: the next window moves the loop
+    let next = lift(true, HIGH, 0, NO_TRIP);
+    assert_eq!(next.duty[1], over.duty[1]);
+    assert!(
+        over.duty[2] < next.duty[2],
+        "the second reading was not taken"
+    );
+    assert!(over.duty[2] > 0);
+
+    // a lift the integrator walks up: the pulse before the first read one
+    // came out, and its reading is taken
+    let walked_high = lift(false, HIGH, 100, NO_TRIP);
+    let walked_zero = lift(false, 0, 100, NO_TRIP);
+    assert!(
+        (31..40).contains(&walked_high.before),
+        "{}",
+        walked_high.before
+    );
+    assert!(walked_high.duty[1] < walked_zero.duty[1]);
 }
 
 /// The winding estimate's bench MG90 constant (the NTC on a board in room
