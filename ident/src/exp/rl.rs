@@ -1605,7 +1605,7 @@ mod tests {
         let mut servo = FakeServo::new(3.37);
         servo.dynamic = true;
         let (exp, log) = run_e2e(&mut servo);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let torque_on = log
             .iter()
             .position(|l| l == "write torque_enable 1")
@@ -1766,7 +1766,7 @@ mod tests {
         };
         let mut exp = Guarded::new(Rl::new(cfg, &params, sc), params);
         let log = pump(&mut exp, &mut servo, 500_000);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         assert!(
             log.iter()
                 .any(|l| l.starts_with("stream 8 0x23c+12 goal_duty")),

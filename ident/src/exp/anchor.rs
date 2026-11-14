@@ -568,7 +568,7 @@ mod tests {
         let (exp, log, abort) = run(&mut servo, short());
         assert_eq!(abort, None);
         assert_eq!((exp.refused(), exp.ended_early()), (None, None));
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let seat = exp.seat().expect("seated");
         assert!(seat <= 200 + seek::STOP_TOL, "seat {seat}");
         let t0 = exp.t0_ms().expect("a hold");
