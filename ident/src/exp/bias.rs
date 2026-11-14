@@ -356,7 +356,7 @@ mod tests {
         servo.pos_noise = 5.0;
         let mut exp = Bias::new(BiasCfg::default(), &crate::exp::testkit::rig());
         let log = pump(&mut exp, &mut servo, 10_000);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let r = exp.result().expect("enough polls");
         assert_eq!(r.n, 400);
         assert!(
@@ -425,7 +425,7 @@ mod tests {
             (exp.into_inner().result().expect("a result"), log)
         };
         let (r, log) = run(false, 5082);
-        assert!(log.contains(&"write goal_duty 5082".to_string()), "{log:?}");
+        assert!(log.iter().any(|l| l == "write goal_duty 5082"), "{log:?}");
         assert!(
             (r.rest.round() as u16).abs_diff(2048) >= 2 * CARRY_BAND,
             "rests at {}",

@@ -1129,7 +1129,7 @@ mod tests {
         let rig = rig().with_polarity(servo.burst.drive_polarity);
         let mut exp = Guarded::new(Held::new(cfg, &rig, scales()), rig.without_pos_guard());
         let log = pump(&mut exp, servo, 400_000);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         (exp, log)
     }
 
@@ -1151,7 +1151,7 @@ mod tests {
         assert!(at(log, "write torque_enable 1") < at(log, "write stall_permit 1"));
         assert!(at(log, "write stall_permit 1") < first_drive);
         assert_eq!(log[log.len() - 1..], ["write stall_permit 0"]);
-        assert!(log.contains(&"write torque_enable 0".to_string()));
+        assert!(log.iter().any(|l| l == "write torque_enable 0"));
     }
 
     #[test]

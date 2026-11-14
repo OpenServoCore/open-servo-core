@@ -250,7 +250,7 @@ mod tests {
         let mut servo = FakeServo::new(3.37);
         servo.breakaway_q15 = 4000;
         let (exp, log) = run_e1(&mut servo);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let fit = exp.fit(3.37, 1731.0);
         let fwd = fit.duty_bk_fwd.expect("fwd found");
         let rev = fit.duty_bk_rev.expect("rev found");
