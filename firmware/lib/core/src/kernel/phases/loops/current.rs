@@ -76,7 +76,7 @@ impl CurrentLoop {
     /// vbus (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~=
     /// 32767`) or the duty cap is off by their mismatch. The plain sums
     /// rely on the kernel's ranges: `i_ref` inside an `IBand` (<= u16::MAX),
-    /// `i_meas` from `window::i_from_frame` (<= 131068) and `u_ff_vc` from
+    /// `i_meas` from `window::i_from_frame` (<= 131100) and `u_ff_vc` from
     /// the free fn `u_ff_vc` (<= 2^19).
     pub fn step(
         &mut self,

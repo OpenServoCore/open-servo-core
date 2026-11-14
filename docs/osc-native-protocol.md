@@ -1058,8 +1058,28 @@ counts; `0` is no wide code there, and the all-zero default changes
 nothing. Calibration writes it; it is persisted with CALIB and not
 covered by the stamp.
 
-The kernel applies the map to the pot channel when it linearizes the
-pot, and to no other channel. The wide-code step is taken in raw counts
+The kernel applies the map to every channel it consumes, where the
+consumer reads the sample, so a stuck reading lands mid band. Its
+derived fields carry the step and the raw fields beside them do not:
+
+| derived field | from | step |
+| ------------- | ---- | ---- |
+| `i_tick_counts` | the drive window's shunt sample | whole counts, the slot rounded half up |
+| `vdiff_counts` | the drive window's two taps | whole counts each, the slot rounded half up |
+| `current_bias_counts` | the trough shunt sample as the zero | Q4 |
+| `vbus_counts` | `vbus_raw` | Q4 |
+| `t_ntc_cc`, `t_winding_cc` | `ntc_raw` | whole counts, the slot rounded half up |
+| the estimates on the pot | `pos` | Q4, below |
+
+`pos`, `vref_raw`, `vbus_raw`, `ntc_raw`, `current_raw`, `vmotor_a`,
+`vmotor_b`, `current_trough`, `vmotor_a_trough` and `vmotor_b_trough`
+stay the converter's codes in the table, in TEL rows and in the shunt
+burst. A host converting a streamed raw field adds the slot itself,
+`(code << 4) + wide_q4(code, map)` in Q4 counts
+(`osc-servo-core::adc::wide_q4`). `vref_raw` has no consumer in the
+kernel, so its step is the host's alone.
+
+On the pot the wide-code step is taken in raw counts
 ahead of the table, so it reaches the linearized reading scaled by the
 local gain `g` of the code's interval (Q4, `16 + c[i+1] - c[i]` clamped
 to 8..64 as for the hold band, 16 = unity):

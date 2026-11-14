@@ -1,23 +1,29 @@
 use super::Medium;
 use super::fast::Command;
 use super::loops::faults::{self, FaultLatch};
-use crate::Frame;
+use crate::Shared;
 use crate::kernel::config::KernelConfig;
 use crate::regions::control::Mode;
 
 impl Medium {
-    /// RAIL: the rail estimate on this tick's tap and its fold, the sensor
-    /// screen and the position error timer.
+    /// RAIL: the rail estimate on this tick's tap, a wide code read as the
+    /// middle of its band, and its fold; the sensor screen on the raw pot
+    /// and the position error timer.
     pub(in crate::kernel) fn rail(
         &mut self,
-        frame: Frame<'_>,
+        shared: &Shared,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
         cmd: &mut Command,
     ) {
+        let frame = shared.frame();
         let fault_cfg = &cfg.fault_cfg;
-        self.vbus
-            .step(frame.vbus_raw(), cfg.thermal.v_undervolt_counts);
+        let vbus_raw = frame.vbus_raw();
+        self.vbus.step(
+            vbus_raw,
+            shared.adc_wide_q4(vbus_raw),
+            cfg.thermal.v_undervolt_counts,
+        );
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
         cmd.prepare_rail(cfg);

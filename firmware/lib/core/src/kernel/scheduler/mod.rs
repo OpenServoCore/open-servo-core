@@ -167,6 +167,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 phases::pos_q4(shared, ctl.lut_live, frame.pos()),
                 frame.ntc_raw(),
                 &self.cfg,
+                shared,
                 &mut self.faults,
             );
         }

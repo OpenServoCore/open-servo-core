@@ -9,7 +9,7 @@ use crate::kernel::phases::loops::limits::flag;
 use crate::kernel::{DECIM_MED, DECIM_SLOW, Kernel, KernelTiming, phase};
 use crate::regions::control::Mode;
 use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
-use crate::{ControlTable, RegionStorage, SensorFrame, Shared};
+use crate::{ControlTable, RegionStorage, SensorFrame, Shared, adc};
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
@@ -465,7 +465,7 @@ fn the_zero_takes_one_sample_a_period_at_publish() {
                 assert_ne!(after, before, "{zero:?} tick {tick}");
                 assert_eq!(
                     after,
-                    model.update(zero, far.current_trough),
+                    model.update(zero, (far.current_trough as u32) << adc::ADC_Q4_SHIFT),
                     "{zero:?} tick {tick}"
                 );
                 let published = sh.table.with(|t| t.telemetry.refs.current_bias_counts);
@@ -533,6 +533,85 @@ fn an_unfed_zero_is_stale_after_stale_periods_of_slow() {
     assert_eq!(k.phase, phase::PUBLISH);
     k.on_scan(far, &sh);
     assert!(k.fast.bias_counts() < BIAS, "{}", k.fast.bias_counts());
+}
+
+/// The image reads a wide code as the middle of its band where the
+/// production image does, on what it computes: the window's shunt sample
+/// and taps, the zero, and so the trip. A drive with the crest shunt and
+/// each tap on a wide code reads the current and the differential the
+/// codes their slots up read without a map, the raw fields stay the
+/// codes, and a crest under the trip without its slot trips with it.
+#[test]
+fn a_wide_code_reads_mid_band_and_the_trip_follows() {
+    const TRIP: u16 = 1030;
+    // the held current, the differential, the fault mask and the zero in
+    // use after a drive on `f` under `map`
+    let run = |map: [u8; adc::ADC_WIDE_SLOTS], f: SensorFrame| {
+        let sh = Shared::new();
+        seed(&sh);
+        write_config(&sh, |t| {
+            t.config.limits.oc_trip_counts = TRIP;
+            t.calib.adc.adc_wide_mid_q4 = map;
+        });
+        torque_on(&sh, 8000, 0);
+        let mut k = kernel();
+        scan(&mut k, &sh, f, 10 * DECIM_MED as u32);
+        sh.table.with(|t| {
+            let b = &t.telemetry.tick;
+            assert_eq!(
+                (b.current_raw, b.vmotor_a, b.vmotor_b, b.current_trough),
+                (f.current, f.vmotor_a, f.vmotor_b, f.current_trough)
+            );
+            (
+                b.i_tick_counts,
+                b.vdiff_counts,
+                fault(&k),
+                t.telemetry.refs.current_bias_counts,
+            )
+        })
+    };
+    let none = [0u8; adc::ADC_WIDE_SLOTS];
+    let mut map = [0xa0u8; adc::ADC_WIDE_SLOTS];
+    map[0] = 0x60;
+    let stuck = SensorFrame {
+        current: 0x8ff,
+        vmotor_a: 0xbff,
+        vmotor_b: 0x0ff,
+        ..frame(2000, BIAS)
+    };
+    let mid = SensorFrame {
+        current: stuck.current + 10,
+        vmotor_a: stuck.vmotor_a + 10,
+        vmotor_b: stuck.vmotor_b + 6,
+        ..stuck
+    };
+    let want = run(none, mid);
+    assert_eq!(want, (0x8ff + 10 - BIAS as i16, 0xb00 + 4, 0, BIAS));
+    assert_eq!(run(map, stuck), want);
+    assert_eq!(run(none, stuck), (0x8ff - BIAS as i16, 0xb00, 0, BIAS));
+    // the crest on 0xbff: 1023 counts over the zero, 1033 with its slot
+    let hot = SensorFrame {
+        current: 0xbff,
+        ..frame(2000, BIAS)
+    };
+    assert_eq!(run(none, hot).2, 0);
+    assert_eq!(run(map, hot).2, faults::BIT_OVER_CURRENT);
+    // the zero on a wide code settles on the middle of its band
+    let sh = Shared::new();
+    seed(&sh);
+    write_config(&sh, |t| t.calib.adc.adc_wide_mid_q4 = map);
+    let mut k = kernel();
+    let rest = SensorFrame {
+        current_trough: 0x7ff,
+        ..frame(2000, 0x7ff)
+    };
+    scan(
+        &mut k,
+        &sh,
+        rest,
+        (12 << bias::ALPHA_SHIFT) * DECIM_MED as u32,
+    );
+    assert_eq!(k.fast.bias_counts(), 0x7ff + 10);
 }
 
 /// The publish carries what the image computes and nothing else: the bias

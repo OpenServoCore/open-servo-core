@@ -15,6 +15,8 @@ pub enum Zero {
 /// Sub-count bits of the state: the update's dead band is a 64th of a
 /// count at `ALPHA_SHIFT`.
 const FRAC: u32 = 16;
+/// Sub-count bits of a sample.
+const SAMPLE_FRAC: u32 = crate::adc::ADC_Q4_SHIFT;
 /// Alpha = 2^-10 per sample, one sample a control period: a 1024-period
 /// time constant, 0.51 s at 2 kHz. The offset moves with board
 /// temperature, over minutes.
@@ -56,19 +58,20 @@ impl BiasTracker {
     }
 
     /// One sample, at most one a control period: `zero` names the state
-    /// `sample` read zero current in. A period whose shunt may carry
-    /// current feeds nothing. Returns the awake zero.
-    pub fn update(&mut self, zero: Zero, sample: u16) -> u16 {
+    /// `sample_q4` (Q4 counts, `Shared::adc_mid_q4`) read zero current in.
+    /// A period whose shunt may carry current feeds nothing. Returns the
+    /// awake zero.
+    pub fn update(&mut self, zero: Zero, sample_q4: u32) -> u16 {
         match zero {
             Zero::Awake => feed(
-                sample,
+                sample_q4,
                 &mut self.awake_q,
                 &mut self.awake_fresh,
                 &mut self.asleep_q,
                 self.asleep_fresh,
             ),
             Zero::Asleep => feed(
-                sample,
+                sample_q4,
                 &mut self.asleep_q,
                 &mut self.asleep_fresh,
                 &mut self.awake_q,
@@ -99,8 +102,8 @@ impl BiasTracker {
 /// inlines this against its own fields, so the feed addresses them
 /// directly instead of through a pair of pointers picked by the match.
 #[inline(always)]
-fn feed(sample: u16, fed: &mut i32, fed_fresh: &mut u8, other: &mut i32, other_fresh: u8) {
-    let delta = (((sample as i32) << FRAC) - *fed) >> ALPHA_SHIFT;
+fn feed(sample_q4: u32, fed: &mut i32, fed_fresh: &mut u8, other: &mut i32, other_fresh: u8) {
+    let delta = (((sample_q4 as i32) << (FRAC - SAMPLE_FRAC)) - *fed) >> ALPHA_SHIFT;
     *fed += delta;
     if other_fresh == 0 {
         *other += delta;
@@ -122,11 +125,16 @@ mod tests {
     /// One time constant, in samples.
     const TAU: u32 = 1 << ALPHA_SHIFT;
 
+    /// A whole-count sample as the tracker takes it.
+    fn q4(counts: u16) -> u32 {
+        (counts as u32) << SAMPLE_FRAC
+    }
+
     /// `n` samples of `sample` into `zero`, none of them aging.
     fn feed(b: &mut BiasTracker, zero: Zero, sample: u16, n: u32) -> u16 {
         let mut v = b.counts();
         for _ in 0..n {
-            v = b.update(zero, sample);
+            v = b.update(zero, q4(sample));
         }
         v
     }
@@ -154,8 +162,8 @@ mod tests {
         b.seed(1234);
         assert_eq!(b.counts(), 1234);
         assert_eq!(b.asleep_counts(), 1234);
-        assert_eq!(b.update(Zero::Awake, 1234), 1234);
-        assert_eq!(b.update(Zero::Asleep, 1234), 1234);
+        assert_eq!(b.update(Zero::Awake, q4(1234)), 1234);
+        assert_eq!(b.update(Zero::Asleep, q4(1234)), 1234);
     }
 
     #[test]
@@ -164,7 +172,7 @@ mod tests {
             let mut b = BiasTracker::new();
             b.seed(2048);
             for _ in 0..4 * TAU {
-                assert_eq!(b.update(zero, 2048), 2048);
+                assert_eq!(b.update(zero, q4(2048)), 2048);
             }
         }
     }
@@ -188,8 +196,8 @@ mod tests {
     fn aging_alone_holds_both_zeros() {
         let mut b = BiasTracker::new();
         b.seed(1000);
-        b.update(Zero::Awake, 1000);
-        b.update(Zero::Asleep, 1000);
+        b.update(Zero::Awake, q4(1000));
+        b.update(Zero::Asleep, q4(1000));
         age(&mut b, 4 * STALE_PERIODS as u32);
         assert_eq!(b.counts(), 1000);
         assert_eq!(b.asleep_counts(), 1000);
@@ -205,7 +213,7 @@ mod tests {
         // and a long awake run carries the asleep zero the same way
         let mut b = BiasTracker::new();
         b.seed(1000);
-        b.update(Zero::Asleep, 1000);
+        b.update(Zero::Asleep, q4(1000));
         age(&mut b, STALE_PERIODS as u32);
         assert_eq!(feed(&mut b, Zero::Awake, 1100, 12 * TAU), 1100);
         assert_eq!(b.asleep_counts(), 1100);
@@ -220,7 +228,7 @@ mod tests {
             };
             let mut b = BiasTracker::new();
             b.seed(1000);
-            b.update(held, 1000);
+            b.update(held, q4(1000));
             // one SLOW period short of the horizon: the held zero stays put
             // however many samples the other takes, as no sample ages it
             age(&mut b, STALE_PERIODS as u32 - 1);
@@ -237,9 +245,9 @@ mod tests {
     fn a_sample_restarts_its_own_horizon() {
         let mut b = BiasTracker::new();
         b.seed(1000);
-        b.update(Zero::Awake, 1000);
+        b.update(Zero::Awake, q4(1000));
         age(&mut b, STALE_PERIODS as u32 - 1);
-        b.update(Zero::Awake, 1000);
+        b.update(Zero::Awake, q4(1000));
         age(&mut b, STALE_PERIODS as u32 - 1);
         assert_eq!(feed(&mut b, Zero::Asleep, 900, 12 * TAU), 1000);
         assert_eq!(b.asleep_counts(), 900);
@@ -287,5 +295,25 @@ mod tests {
         // then a stale awake zero follows the asleep one down to 0
         age(&mut b, STALE_PERIODS as u32);
         assert_eq!(feed(&mut b, Zero::Asleep, 0, 12 * TAU), 0);
+    }
+
+    /// A sample's fraction bits reach the state: a zero held between two
+    /// counts settles on the Q4 value, and the count published is its
+    /// nearest.
+    #[test]
+    fn a_q4_sample_is_tracked_to_the_fraction() {
+        for (frac, counts) in [(0u32, 2047u16), (4, 2047), (12, 2048), (15, 2048)] {
+            let mut b = BiasTracker::new();
+            b.seed(1000);
+            let mut v = 0;
+            for _ in 0..12 * TAU {
+                v = b.update(Zero::Awake, q4(2047) + frac);
+            }
+            assert_eq!(v, counts, "frac {frac}");
+            // inside the update's dead band of the sample, a 64th of a
+            // count
+            let err = (b.awake_q - ((q4(2047) + frac) << (FRAC - SAMPLE_FRAC)) as i32).abs();
+            assert!(err <= 1 << ALPHA_SHIFT, "frac {frac}: {err}");
+        }
     }
 }

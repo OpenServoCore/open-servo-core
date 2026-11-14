@@ -1850,7 +1850,7 @@ fn the_zero_takes_one_sample_a_period_at_publish() {
                 assert_ne!(after, before, "{zero:?} tick {tick}");
                 assert_eq!(
                     after,
-                    model.update(zero, far.current_trough),
+                    model.update(zero, (far.current_trough as u32) << adc::ADC_Q4_SHIFT),
                     "{zero:?} tick {tick}"
                 );
                 assert_eq!(published_bias(&sh), after, "{zero:?} tick {tick}");
@@ -2705,6 +2705,298 @@ fn observer_measures_what_pos_q4_reads() {
             assert_eq!(k.medium.fusion.omega_q16(), 0, "live {live} raw {raw}");
         }
     }
+}
+
+/// What a held OpenLoop drive publishes from `f` under `map`: the held
+/// current, the differential, the rail and the NTC temperature. The raw
+/// fields of the tick block are `f`'s own codes.
+fn wide_drive_reads(map: [u8; adc::ADC_WIDE_SLOTS], f: SensorFrame) -> (i16, i16, u16, i16) {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    write_config(&sh, |t| t.calib.thermal.th_rise_q016 = 0);
+    write_wide_map(&sh, map);
+    let mut k = kernel();
+    settle(&mut k, &sh, f);
+    ticks(&mut k, &sh, f, BASE_FAST_TICKS);
+    assert_eq!(k.faults.mask(), 0);
+    let t = tick_block(&sh);
+    let both = tick_flag::I_VALID | tick_flag::V_VALID;
+    assert_eq!(t.tick_flags & both, both);
+    assert_eq!(
+        (t.current_raw, t.vmotor_a, t.vmotor_b, t.vbus_raw, t.ntc_raw),
+        (f.current, f.vmotor_a, f.vmotor_b, f.vbus_raw, f.ntc_raw)
+    );
+    (
+        t.i_tick_counts,
+        t.vdiff_counts,
+        sh.table.with(|t| t.telemetry.estimates.vbus_counts),
+        therm(&sh).3,
+    )
+}
+
+/// Every channel reads a wide code as the middle of its band: the crest
+/// shunt, each tap, the rail and the NTC, each stuck on a wide code under
+/// its slot, publish what the code that many counts up publishes without
+/// a map. The raw fields stay raw.
+#[test]
+fn a_wide_code_reads_mid_band_on_every_channel() {
+    const MID: u16 = 10;
+    const MID_LOW: u16 = 6;
+    let stuck = SensorFrame {
+        current: 0x8ff,
+        vmotor_a: 0xbff,
+        vmotor_b: 0x0ff,
+        vbus_raw: 0xaff,
+        ntc_raw: 0x7ff,
+        ..frame(2000, BIAS)
+    };
+    let mid = SensorFrame {
+        current: stuck.current + MID,
+        vmotor_a: stuck.vmotor_a + MID,
+        vmotor_b: stuck.vmotor_b + MID_LOW,
+        vbus_raw: stuck.vbus_raw + MID,
+        ntc_raw: stuck.ntc_raw + MID,
+        ..stuck
+    };
+    let none = [0u8; adc::ADC_WIDE_SLOTS];
+    let want = wide_drive_reads(none, mid);
+    // the bare stuck codes read apart on every channel: the pin can fail
+    let bare = wide_drive_reads(none, stuck);
+    assert!(bare.0 != want.0 && bare.1 != want.1 && bare.2 != want.2 && bare.3 != want.3);
+    let mut map = [(MID << 4) as u8; adc::ADC_WIDE_SLOTS];
+    map[adc::wide_slot(stuck.vmotor_b)] = (MID_LOW << 4) as u8;
+    assert_eq!(wide_drive_reads(map, stuck), want);
+}
+
+/// The shunt zero stuck on a wide code is tracked at the middle of its
+/// band.
+#[test]
+fn a_wide_zero_is_tracked_mid_band() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut map = [0u8; adc::ADC_WIDE_SLOTS];
+    map[7] = 160;
+    write_wide_map(&sh, map);
+    let mut k = kernel();
+    // 12 time constants at either feed rate, a tick or a period
+    ticks(&mut k, &sh, rest(0x7ff), 200_000);
+    assert_eq!(published_bias(&sh), 0x7ff + 10);
+}
+
+/// What a torque-off servo publishes with the trough shunt, the rail and
+/// the NTC all on `code` under `map`, after `n` ticks: the zero in use,
+/// the rail and the NTC temperature. The zero boots at `code`, so only a
+/// slot moves it. The raw fields of the tick block are the codes.
+fn rest_reads(map: [u8; adc::ADC_WIDE_SLOTS], code: u16, n: u32) -> (u16, u16, i16) {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = false;
+        t.telemetry.refs.current_bias_counts = code;
+    });
+    write_wide_map(&sh, map);
+    let mut k = kernel();
+    let f = SensorFrame {
+        vbus_raw: code,
+        ntc_raw: code,
+        ..rest(code)
+    };
+    ticks(&mut k, &sh, f, n);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    let t = tick_block(&sh);
+    assert_eq!(
+        (t.current_trough, t.vbus_raw, t.ntc_raw),
+        (code, code, code)
+    );
+    (
+        published_bias(&sh),
+        sh.table.with(|t| t.telemetry.estimates.vbus_counts),
+        therm(&sh).3,
+    )
+}
+
+/// The slower consumers on every wide code, torque off: the shunt zero,
+/// the rail and the NTC. Under an all-zero map each reads its code raw,
+/// the wide codes and their neighbors alike. Under a map each reads a
+/// wide code as the code its slot's whole counts up reads without one,
+/// and the neighbors of a wide code as before: the slot adds at its stuck
+/// code and nowhere else.
+#[test]
+fn the_zero_the_rail_and_the_ntc_read_every_wide_code_mid_band() {
+    const NONE: [u8; adc::ADC_WIDE_SLOTS] = [0; adc::ADC_WIDE_SLOTS];
+    // a boot, a SLOW due and its finish: nothing left to move without a
+    // slot
+    const SHORT: u32 = 2 * SLOW;
+    // 8 time constants of the zero carry it a slot of 15 counts to the
+    // count
+    const LONG: u32 = (8 << bias::ALPHA_SHIFT) * DECIM_MED as u32;
+    // a slot of its own on every wide code, whole counts
+    let counts = |k: usize| (k % 15 + 1) as u16;
+    let map: [u8; adc::ADC_WIDE_SLOTS] = core::array::from_fn(|k| (counts(k) << 4) as u8);
+    for k in 0..adc::ADC_WIDE_SLOTS {
+        let code = ((k as u16) << adc::ADC_WIDE_SHIFT) | adc::ADC_WIDE_MASK;
+        let up = code + counts(k);
+        for near in [code - 1, code, code + 1, up] {
+            let raw = rest_reads(NONE, near, SHORT);
+            let rail = q_mul(near as i32, VBUS_SCALE_Q15 as i32, 15) as u16;
+            assert_eq!((raw.0, raw.1), (near, rail), "no map, code {near}");
+            if near != code {
+                assert_eq!(rest_reads(map, near, SHORT), raw, "map, code {near}");
+            }
+        }
+        let mid = rest_reads(map, code, LONG);
+        assert_eq!(mid, rest_reads(NONE, up, SHORT), "map, wide code {code}");
+        assert_eq!(mid.0, up, "map, wide code {code}");
+        // the code alone reads apart on the zero and the rail: the pin can
+        // fail
+        let bare = rest_reads(NONE, code, SHORT);
+        assert!(bare.0 != mid.0 && bare.1 != mid.1, "wide code {code}");
+    }
+}
+
+/// The ten raw fields of a tick block, as the frame carries them.
+fn raw_fields(t: &TelemetryTick) -> [u16; 10] {
+    [
+        t.pos,
+        t.vref_raw,
+        t.vbus_raw,
+        t.ntc_raw,
+        t.current_raw,
+        t.vmotor_a,
+        t.vmotor_b,
+        t.current_trough,
+        t.vmotor_a_trough,
+        t.vmotor_b_trough,
+    ]
+}
+
+/// Raw stays raw: with every channel parked on a wide code under a full
+/// map, the raw fields of the tick block and of the row the TEL stream
+/// takes are the converter's codes on every tick, as they are under no
+/// map, through the fast ticks, every medium phase and both SLOW stages.
+/// The derived fields beside them move with the map.
+#[test]
+fn a_written_map_leaves_every_raw_field_alone() {
+    let f = SensorFrame {
+        pos: 0x7ff,
+        current_trough: 0x7ff,
+        current: 0x8ff,
+        vmotor_a: 0xbff,
+        vmotor_b: 0x0ff,
+        vbus_raw: 0xaff,
+        ntc_raw: 0x7ff,
+        vref_raw: 0x5ff,
+        vmotor_a_trough: 0xbff,
+        vmotor_b_trough: 0x0ff,
+    };
+    let codes = [
+        f.pos,
+        f.vref_raw,
+        f.vbus_raw,
+        f.ntc_raw,
+        f.current,
+        f.vmotor_a,
+        f.vmotor_b,
+        f.current_trough,
+        f.vmotor_a_trough,
+        f.vmotor_b_trough,
+    ];
+    assert!(
+        codes
+            .iter()
+            .all(|c| c & adc::ADC_WIDE_MASK == adc::ADC_WIDE_MASK)
+    );
+    // ten counts on every wide code, six on the low tap's
+    let mut full = [0xa0u8; adc::ADC_WIDE_SLOTS];
+    full[adc::wide_slot(f.vmotor_b)] = 0x60;
+    let derived = [[0u8; adc::ADC_WIDE_SLOTS], full].map(|map| {
+        let sh = Shared::new();
+        seed(&sh);
+        seed_estimate(&sh);
+        sh.table
+            .with_mut(|t| t.telemetry.refs.current_bias_counts = f.current_trough);
+        write_wide_map(&sh, map);
+        let mut k = Kernel::with_tel(
+            FakeIo {
+                sensors: FakeSensors,
+                motor: FakeMotor { last: None },
+            },
+            RecTel::new(&sh),
+            TIMING,
+        );
+        settle(&mut k, &sh, f);
+        for tick in 0..2 * SLOW {
+            k.tel.rows.clear();
+            k.on_scan(f, &sh);
+            assert_eq!(raw_fields(&k.tel.rows[0]), codes, "row, tick {tick}");
+            assert_eq!(raw_fields(&tick_block(&sh)), codes, "block, tick {tick}");
+        }
+        assert_eq!(k.faults.mask(), 0);
+        let t = tick_block(&sh);
+        (
+            t.i_tick_counts,
+            t.vdiff_counts,
+            sh.table.with(|t| t.telemetry.estimates.vbus_counts),
+            therm(&sh).3,
+        )
+    });
+    let (none, full) = (derived[0], derived[1]);
+    assert!(
+        none.0 != full.0 && none.1 != full.1 && none.2 != full.2 && none.3 != full.3,
+        "{none:?} {full:?}"
+    );
+}
+
+/// The overcurrent trip compares the corrected current, either way. A
+/// crest sample on a wide code under the trip without its slot and over
+/// it with: no trip without the map, a trip with. A zero on a wide code
+/// that reads the current over the trip without its slot and under it
+/// with: a trip without the map, none with.
+#[test]
+fn the_trip_compares_the_corrected_current() {
+    const TRIP: u16 = 1030;
+    const SLOT: u16 = 10;
+    // a held OpenLoop drive on a calm current until the zero has settled
+    // on `zero` read under `map`, then `hot` on the crest; the fault mask
+    // and the held current
+    let run = |map: [u8; adc::ADC_WIDE_SLOTS], zero: u16, hot: u16| {
+        let sh = Shared::new();
+        seed(&sh);
+        seed_estimate(&sh);
+        write_config(&sh, |t| t.config.limits.oc_trip_counts = TRIP);
+        sh.table
+            .with_mut(|t| t.telemetry.refs.current_bias_counts = zero);
+        write_wide_map(&sh, map);
+        let mut k = kernel();
+        let mut f = frame(2000, zero + 40);
+        f.current_trough = zero;
+        settle(&mut k, &sh, f);
+        periods(&mut k, &sh, f, BIAS_SETTLE_PERIODS);
+        assert_eq!(k.faults.mask(), 0);
+        f.current = hot;
+        ticks(&mut k, &sh, f, 50);
+        (k.faults.mask(), tick_block(&sh).i_tick_counts)
+    };
+    let none = [0u8; adc::ADC_WIDE_SLOTS];
+    let slot_at = |code: u16| {
+        let mut map = none;
+        map[adc::wide_slot(code)] = (SLOT << 4) as u8;
+        map
+    };
+    // the crest on 0xbff over a zero of 2048: 1023 counts, 1033 with the
+    // slot
+    assert_eq!(run(none, BIAS, 0xbff), (0, TRIP as i16 - 7));
+    let (mask, _) = run(slot_at(0xbff), BIAS, 0xbff);
+    assert_eq!(mask, faults::BIT_OVER_CURRENT);
+    // the zero on 0x7ff, the crest 1033 counts over it: 1023 with the
+    // zero's slot
+    let hot = 0x7ff + TRIP + 3;
+    assert!(hot & adc::ADC_WIDE_MASK != adc::ADC_WIDE_MASK);
+    let (mask, _) = run(none, 0x7ff, hot);
+    assert_eq!(mask, faults::BIT_OVER_CURRENT);
+    assert_eq!(run(slot_at(0x7ff), 0x7ff, hot), (0, TRIP as i16 - 7));
 }
 
 /// The settle dwell in fast ticks.

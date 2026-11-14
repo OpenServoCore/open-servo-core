@@ -6,7 +6,9 @@
 //! `(k << ADC_WIDE_SHIFT) | ADC_WIDE_MASK` on any channel and holds half
 //! the span the converter skips after it, Q4 counts, 0 = no wide code
 //! there. A consumer that adds it reads a stuck code as the middle of its
-//! band.
+//! band. The kernel adds it on every channel it consumes, where the
+//! consumer reads the sample; the raw fields it publishes stay the
+//! converter's codes.
 
 use crate::{RegionStorageRaw, Shared};
 
@@ -17,6 +19,11 @@ pub const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 pub const ADC_WIDE_SHIFT: u32 = 8;
 pub const ADC_WIDE_MASK: u16 = (1 << ADC_WIDE_SHIFT) - 1;
 pub const ADC_WIDE_SLOTS: usize = 1 << (ADC_BITS - ADC_WIDE_SHIFT);
+/// Fraction bits of a slot and of a Q4 reading.
+pub const ADC_Q4_SHIFT: u32 = 4;
+/// The most a wide code reads up in whole counts: the largest slot,
+/// rounded half up.
+pub const ADC_WIDE_MID_MAX: u32 = (u8::MAX as u32 + (1 << (ADC_Q4_SHIFT - 1))) >> ADC_Q4_SHIFT;
 
 /// The wide-code map's slot for `code`, `< ADC_WIDE_SLOTS`.
 #[inline(always)]
@@ -54,6 +61,31 @@ impl Shared {
                 .read_volatile() as u16
         }
     }
+
+    /// `code` read as the middle of its band, whole counts, the slot
+    /// rounded half up; the code itself off a wide code. The fast tick's
+    /// form: one compare on every code, and the result stays in a
+    /// register's width, so nothing re-masks it.
+    #[inline(always)]
+    pub fn adc_mid(&self, code: u16) -> u32 {
+        const { assert!(ADC_WIDE_MASK == u8::MAX as u16) };
+        let mut v = code as u32;
+        if code as u8 == u8::MAX {
+            v += (self.adc_wide_q4(code) as u32 + (1 << (ADC_Q4_SHIFT - 1))) >> ADC_Q4_SHIFT;
+        }
+        v
+    }
+
+    /// `code` read as the middle of its band, Q4 counts: for a consumer
+    /// that carries fraction bits of its own.
+    #[inline(always)]
+    pub fn adc_mid_q4(&self, code: u16) -> u32 {
+        let mut v = (code as u32) << ADC_Q4_SHIFT;
+        if code as u8 == u8::MAX {
+            v += self.adc_wide_q4(code) as u32;
+        }
+        v
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +110,49 @@ mod tests {
         assert_eq!(wide_q4(1022, &map), 0);
         assert_eq!(wide_q4(1024, &map), 0);
         assert_eq!(wide_q4(0x1FFF, &map), wide_q4(0x0FFF, &map));
+    }
+
+    /// A map with a different slot on every wide code, rounding both ways
+    /// in whole counts: fractions under, at and over the half.
+    fn mixed_map() -> [u8; ADC_WIDE_SLOTS] {
+        [
+            0, 1, 7, 8, 9, 15, 16, 23, 24, 25, 100, 160, 200, 247, 248, 255,
+        ]
+    }
+
+    /// The whole-count and Q4 readers add the slot at its stuck code and
+    /// nowhere else, for every u16: the whole-count one rounds the slot
+    /// half up, the Q4 one carries it whole.
+    #[test]
+    fn the_mid_readers_add_the_slot_at_its_code_alone() {
+        let sh = Shared::new();
+        let map = mixed_map();
+        sh.table.with_mut(|t| t.calib.adc.adc_wide_mid_q4 = map);
+        for code in 0..=u16::MAX {
+            let slot = wide_q4(code, &map) as u32;
+            assert_eq!(sh.adc_mid(code), code as u32 + ((slot + 8) >> 4), "{code}");
+            assert_eq!(sh.adc_mid_q4(code), ((code as u32) << 4) + slot, "{code}");
+            if code & ADC_WIDE_MASK != ADC_WIDE_MASK {
+                assert_eq!(sh.adc_mid(code), code as u32, "{code}");
+                assert_eq!(sh.adc_mid_q4(code), (code as u32) << 4, "{code}");
+            }
+        }
+        // half up: 7 sixteenths round away, 8 round to a count
+        assert_eq!(sh.adc_mid(0x2ff), 0x2ff);
+        assert_eq!(sh.adc_mid(0x3ff), 0x3ff + 1);
+        assert_eq!(sh.adc_mid(0x7ff), 0x7ff + 1);
+        assert_eq!(sh.adc_mid(0x8ff), 0x8ff + 2);
+        assert_eq!(sh.adc_mid(0xfff), 0xfff + ADC_WIDE_MID_MAX);
+        assert_eq!(ADC_WIDE_MID_MAX, 16);
+    }
+
+    /// The all-zero map reads every code as itself through both readers.
+    #[test]
+    fn a_zero_map_reads_every_code_as_itself() {
+        let sh = Shared::new();
+        for code in 0..=u16::MAX {
+            assert_eq!(sh.adc_mid(code), code as u32, "{code}");
+            assert_eq!(sh.adc_mid_q4(code), (code as u32) << ADC_Q4_SHIFT, "{code}");
+        }
     }
 }
