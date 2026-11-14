@@ -1012,8 +1012,13 @@ and only a committed span that covers `pos_lut_cmd` runs a command. STORE
 copies the window into its page of the array and leaves LOADING (the
 kernel applies the identity until a COMMIT); FETCH copies that page
 back into the window; COMMIT validates the whole array against
-`raw_min`/`raw_max` and lands LIVE or a REJECT, then runs the stamp
-checkpoint. The reply leaves first: COMMIT reads back LOADING with
+`raw_min`/`raw_max` and lands LIVE, IDENTITY when the array corrects
+nothing (every calibration point zero), or a REJECT, then runs the stamp
+checkpoint. A table that corrects nothing is the identity at a COMMIT as
+at boot, so a host returns a LIVE servo to IDENTITY by STOREing zeros
+and COMMITting, and the state it then reads is the one the next boot
+reads (unit `zero_table_commit_lands_the_identity_a_boot_gives`). The
+reply leaves first: COMMIT reads back LOADING with
 `STAMP_MISMATCH` marked until the servo's main loop lands the verdict
 (~0.6 ms), so a host polls `pos_lut_state` past LOADING. A STORE behind
 an unjudged COMMIT cancels it (the array is loading again; only the next
@@ -1039,7 +1044,7 @@ interpolation (`osc-servo-core::pos_lut::interp_q4`). SAVE persists
 the table beside the calibration in the CALIB image (sec 9.4); boot
 re-validates the loaded calibration points against the stops loaded
 with them and goes LIVE only when they validate and correct something,
-otherwise the
+the rule a COMMIT lands by; otherwise the
 identity runs and the stamp reports the loss as `STAMP_MISMATCH` (DES
 `lut_survives_save_and_reboot_until_factory`,
 `corrupt_or_stale_calib_image_boots_identity_under_its_reason`).

@@ -444,10 +444,10 @@ pub fn boot_overlay(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> B
 /// Boot-time calib load: same A/B rule as [`boot_overlay`], own slots and
 /// seq. The image's points land in the array beside its calibration and go
 /// LIVE only if they validate against the stops just overlaid and correct
-/// something (the all-zero image SAVE persists for the identity reads
-/// IDENTITY); otherwise the array returns to the identity, and the stamp
-/// checkpoint reports the loss. Bringup-only, pre-IRQ; caller re-seeds RO
-/// board facts after.
+/// something, the rule a COMMIT lands by (`pos_lut::verdict`: the all-zero
+/// image SAVE persists for the identity reads IDENTITY); otherwise the
+/// array returns to the identity, and the stamp checkpoint reports the
+/// loss. Bringup-only, pre-IRQ; caller re-seeds RO board facts after.
 pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> BootPick {
     let (img, next_slot) = pick_newest(CalibImage::parse(slot_a), CalibImage::parse(slot_b), |i| {
         i.seq
@@ -461,13 +461,11 @@ pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> Boot
             let live = shared.with_pos_lut_mut(|k| {
                 let points = img.lut_points.as_chunks::<2>().0;
                 pos_lut::store_points(k, points.iter().map(|&b| i16::from_le_bytes(b)));
-                match pos_lut::validate(k, raw_min, raw_max) {
-                    Ok(()) => k.iter().any(|&c| c != 0),
-                    Err(_) => {
-                        pos_lut::store_points(k, core::iter::repeat(0));
-                        false
-                    }
+                let live = pos_lut::verdict(k, raw_min, raw_max) == state::LIVE;
+                if !live {
+                    pos_lut::store_points(k, core::iter::repeat(0));
                 }
+                live
             });
             shared.table.with_mut(|t| {
                 t.control.pos_lut.pos_lut_state = if live { state::LIVE } else { state::IDENTITY }
@@ -486,6 +484,24 @@ pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> Boot
             CALIB_LEN + LUT_LEN,
         )),
     }
+}
+
+/// A fresh servo booted on the CALIB image a SAVE of `shared` stores, its
+/// calibration and the points in its array. CONFIG is not carried.
+#[cfg(test)]
+pub(crate) fn rebooted(shared: &Shared) -> Shared {
+    let calib: &[u8; CALIB_LEN] =
+        RegisterFile::read(&shared.table, CALIB_BASE_ADDR, CALIB_REGION_SIZE)
+            .unwrap()
+            .try_into()
+            .unwrap();
+    let mut img = [0u8; CALIB_IMAGE_LEN];
+    shared.with_pos_lut(|k| calib_assemble(&mut img, 1, calib, k.first_chunk().unwrap()));
+    let booted = Shared::new();
+    let pick = boot_overlay_calib(&booted, &img, &[0xFF; CALIB_IMAGE_LEN]);
+    assert_eq!(pick.state, ImageState::Loaded);
+    booted.publish_data_state(ImageState::Loaded, ImageState::Loaded);
+    booted
 }
 
 #[cfg(test)]

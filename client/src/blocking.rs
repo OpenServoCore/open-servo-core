@@ -356,7 +356,7 @@ impl<P: Pipe> Client<P> {
         block_on(pos_lut::write(&mut self.0, id, d, points))
     }
 
-    /// The identity as a LIVE all-zero table.
+    /// Back to IDENTITY: an all-zero table STOREd and COMMITted.
     pub fn clear_pos_lut(&mut self, id: Id, d: &Descriptor) -> Result<(), Error> {
         block_on(pos_lut::clear(&mut self.0, id, d))
     }

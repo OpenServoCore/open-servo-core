@@ -2826,6 +2826,49 @@ fn wide_step_reads_the_table_where_the_band_lies() {
     }
 }
 
+/// A COMMIT of all-zero points over a LIVE table puts the kernel on the
+/// identity: the flag, every code's reading and the hold band's gain are
+/// what a boot on the stored points gives, under a full wide map.
+#[test]
+fn zero_table_commit_reads_the_pot_as_a_boot_does() {
+    use crate::regions::control::addr::pos_lut::{POS_LUT_CMD, POS_LUT_PAGE};
+    let sh = Shared::new();
+    sh.with_pos_lut_mut(|a| *a = ramp_lut());
+    let mut map = [0u8; adc::ADC_WIDE_SLOTS];
+    for (s, m) in map.iter_mut().enumerate() {
+        *m = 1 + 16 * s as u8;
+    }
+    write_wide_map(&sh, map);
+    sh.table
+        .with_mut(|t| t.control.pos_lut.pos_lut_state = pos_lut::state::LIVE);
+    assert!(phases::Control::read(&sh).lut_live);
+
+    for page in 0..pos_lut::PAGES as u8 {
+        sh.table.with_mut(|t| {
+            t.control.pos_lut.pos_lut_page = page;
+            t.control.pos_lut.pos_lut_cmd = pos_lut::cmd::STORE;
+            t.control.pos_lut.pos_lut_points = [0; pos_lut::PAGE_POINTS];
+        });
+        sh.pos_lut_after_commit(POS_LUT_PAGE, 2 + 2 * pos_lut::PAGE_POINTS as u16);
+    }
+    sh.table
+        .with_mut(|t| t.control.pos_lut.pos_lut_cmd = pos_lut::cmd::COMMIT);
+    sh.pos_lut_after_commit(POS_LUT_CMD, 1);
+    assert!(sh.data_job_service());
+
+    let booted = crate::persist::rebooted(&sh);
+    let (ctl, boot) = (phases::Control::read(&sh), phases::Control::read(&booted));
+    assert!(!boot.lut_live);
+    assert_eq!(ctl.lut_live, boot.lut_live);
+    for raw in 0..=4095u16 {
+        assert_eq!(
+            phases::pos_q4_band_gain(&sh, ctl.lut_live, raw),
+            phases::pos_q4_band_gain(&booted, boot.lut_live, raw),
+            "raw {raw}"
+        );
+    }
+}
+
 /// The observer innovates on the same measurement `pos_q4` gives: seeded
 /// at `pos_q4(raw)` with no model, one observer step on `raw` leaves the
 /// estimate where it was, for every code, the table live and a full map.

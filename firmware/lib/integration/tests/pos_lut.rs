@@ -206,10 +206,10 @@ fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
         assert_eq!(fetch(&mut sim, page), page_bytes(&k, page), "page {page}");
     }
     assert_eq!(pos_lut_state(&mut sim), state::LIVE, "fetch moves nothing");
-    // an all-zero table LIVE hashes like the identity
+    // an all-zero table corrects nothing: the COMMIT lands the identity
     store_all(&mut sim, &ZERO);
     assert_eq!(data_flags(&mut sim), STAMP_MISMATCH, "left LIVE");
-    assert_eq!(commit(&mut sim), state::LIVE);
+    assert_eq!(commit(&mut sim), state::IDENTITY);
     assert_eq!(array(&sim, s), ZERO);
     assert_eq!(
         data_flags(&mut sim),
@@ -486,7 +486,7 @@ fn torn_calib_save_boots_the_previous_calibration_with_its_tables(baud_idx: u8) 
     go_live(&mut sim, s);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
     store_all(&mut sim, &ZERO);
-    assert_eq!(commit(&mut sim), state::LIVE);
+    assert_eq!(commit(&mut sim), state::IDENTITY);
     stamp(&mut sim, s, None);
     assert_eq!(data_flags(&mut sim), 0);
     flash.tear(Tear::MidCalib);
