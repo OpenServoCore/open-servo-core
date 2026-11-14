@@ -71,9 +71,10 @@ pub(in crate::kernel) fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u1
 
 /// [`pos_q4`] and the linearized counts per raw count of its interval:
 /// the table or the identity at the pot channel's code, plus the ADC
-/// wide-code step. The step is raw counts ahead of the table, so it lands
-/// scaled by the interval's gain; the identity's gain is unity, the bare
-/// slot.
+/// wide-code step. The step is raw counts ahead of the table, so a live
+/// table is read again at the corrected raw count, in the interval that
+/// holds it; on the identity it is the bare slot. The band gain stays the
+/// code's own interval's.
 #[cfg(not(feature = "experiment"))]
 #[inline(always)]
 pub(in crate::kernel) fn pos_q4_band_gain(shared: &Shared, lut_live: bool, raw: u16) -> (u16, u16) {
@@ -86,8 +87,12 @@ pub(in crate::kernel) fn pos_q4_band_gain(shared: &Shared, lut_live: bool, raw: 
     if wide_q4 == 0 {
         return (pos, band_gain_q4);
     }
-    let step = (wide_q4 as u32 * band_gain_q4 as u32) >> pos_lut::GRID_SHIFT;
-    (pos.wrapping_add(step as u16), band_gain_q4)
+    if lut_live {
+        // keeps the second read out of the steady tick's straight line
+        core::hint::cold_path();
+        return (shared.pos_lut_at_q4(raw, wide_q4 as u8), band_gain_q4);
+    }
+    (pos.wrapping_add(wide_q4), band_gain_q4)
 }
 
 #[cfg(not(feature = "experiment"))]

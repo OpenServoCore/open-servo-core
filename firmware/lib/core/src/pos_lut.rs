@@ -28,6 +28,9 @@ pub const PAGE_POINTS: usize = 32;
 /// Pages covering the host-written points; the fixed last point has none.
 pub const PAGES: usize = INTERVALS / PAGE_POINTS;
 const FRAC_MASK: u16 = GRID as u16 - 1;
+/// A Q4 raw count's interval and its place inside it.
+const AT_SHIFT: u32 = 2 * GRID_SHIFT;
+const AT_FRAC_MASK: u32 = (1 << AT_SHIFT) - 1;
 const GAIN_MAX: i32 = 16;
 /// Clamp on the local gain the hold band scales by, Q4: 1/2 to 4. Pots
 /// measure 0.5 to 2.06 and scale in full; past the clamp the interval is a
@@ -102,6 +105,30 @@ pub fn lerp_q4(raw: u16, c0: i16, c1: i16) -> u16 {
     (((raw as i32 + c0 as i32) << GRID_SHIFT) + (c1 as i32 - c0 as i32) * f) as u16
 }
 
+/// [`lerp_q4`] at a raw count with fraction bits, `at_q4` (Q4), floored to
+/// a Q4 count; `c0`/`c1` the points either side of `at_q4`'s interval. At
+/// a whole count it is [`lerp_q4`].
+#[inline(always)]
+pub fn lerp_at_q4(at_q4: u32, c0: i16, c1: i16) -> u16 {
+    let f = (at_q4 & AT_FRAC_MASK) as i32;
+    (at_q4 as i32 + ((c0 as i32) << GRID_SHIFT) + (((c1 as i32 - c0 as i32) * f) >> GRID_SHIFT))
+        as u16
+}
+
+/// The interval `at_q4` (Q4 raw counts) falls in, `<= INTERVALS`. Past
+/// the ADC span both points of a read are the fixed last one, so the table
+/// there is the identity.
+#[inline(always)]
+fn index_at(at_q4: u32) -> usize {
+    ((at_q4 >> AT_SHIFT) as usize).min(INTERVALS)
+}
+
+/// The table at `at_q4`, Q4 raw counts, past the last point the identity.
+pub fn interp_at_q4(at_q4: u32, points: &[i16; POINTS]) -> u16 {
+    let i = index_at(at_q4);
+    lerp_at_q4(at_q4, points[i], points[(i + 1).min(INTERVALS)])
+}
+
 /// The interval's local gain `16 + c1 - c0` (Q4, the `d` [`validate`]
 /// bounds), clamped for the hold band.
 #[inline(always)]
@@ -173,6 +200,27 @@ impl Shared {
     pub fn pos_lut_q4_band_gain(&self, raw: u16) -> (u16, u16) {
         let (c0, c1) = self.pos_lut_points(raw);
         (lerp_q4(raw, c0, c1), band_gain_q4(c0, c1))
+    }
+
+    /// The table at `raw + slot / 16` (`slot` Q4 counts), the volatile
+    /// [`interp_at_q4`]: a wide code is the last of its interval, so its
+    /// band's middle lies in the interval above once the slot reaches a
+    /// count.
+    #[inline(always)]
+    pub fn pos_lut_at_q4(&self, raw: u16, slot: u8) -> u16 {
+        let at = (((raw & ADC_MASK) as u32) << GRID_SHIFT) + slot as u32;
+        let i = index_at(at);
+        let k = self.pos_lut_ptr().cast::<i16>();
+        // SAFETY: `index_at` and the `min` keep both offsets <= INTERVALS <
+        // POINTS, inside the static array; single-writer contract in the
+        // `pos_lut_q4` doc.
+        let (c0, c1) = unsafe {
+            (
+                k.add(i).read_volatile(),
+                k.add((i + 1).min(INTERVALS)).read_volatile(),
+            )
+        };
+        lerp_at_q4(at, c0, c1)
     }
 
     #[inline(always)]
@@ -511,6 +559,33 @@ mod tests {
             );
             assert_eq!(identity_q4(raw), interp_q4(raw, &ZERO), "raw {raw}");
         }
+    }
+
+    /// At a whole count the fractional read is the table's, and the
+    /// kernel's volatile one is `interp_at_q4` for every code and slot,
+    /// past the last point included.
+    #[test]
+    fn kernel_read_at_q4_matches_interp_exhaustive() {
+        let sh = Shared::new();
+        let mut k = mg90_a();
+        k[255] = -3;
+        sh.with_pos_lut_mut(|a| *a = k);
+        for raw in 0..=ADC_MASK {
+            assert_eq!(interp_at_q4((raw as u32) << 4, &k), interp_q4(raw, &k));
+            for slot in 0..=u8::MAX {
+                let at = ((raw as u32) << 4) + slot as u32;
+                assert_eq!(
+                    sh.pos_lut_at_q4(raw, slot),
+                    interp_at_q4(at, &k),
+                    "{raw} {slot}"
+                );
+            }
+        }
+        assert_eq!(
+            sh.pos_lut_at_q4(4095, 255),
+            65775u32 as u16,
+            "identity past the end"
+        );
     }
 
     // The window: what the dispatcher's post-commit step runs.
