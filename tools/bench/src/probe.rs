@@ -10,7 +10,10 @@
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use osc_servo_core::budget::probe::{BusProbe, KernelProbe, TelCost, TelTally, WindowProbe};
+use osc_servo_core::budget::probe::{
+    BusProbe, Component, KernelProbe, Row, TelCost, TelTally, WindowProbe,
+};
+use osc_servo_core::budget::{MEAN_MIN_BODIES, PHASES};
 
 pub const KERNEL_SYMBOL: &str = "KERNEL_PROBE";
 pub const BUS_SYMBOL: &str = "BUS_PROBE";
@@ -162,6 +165,33 @@ impl Reader {
     }
 }
 
+/// `row`, the probe's [`Component::TelRow`] of the window `tel`, with its
+/// baseline taken from another window: the TEL ticks' mean over `base`'s
+/// plain ticks of the same event row. A TEL window that steps has plain
+/// ticks only between its bursts and on the centring move, a few thousand
+/// of them on cheaper motion than its TEL ticks cover, and their mean moves
+/// from run to run with where those gaps fall; the same steps with no TEL
+/// are the motion the TEL ticks ran on. `None` for any other row, and where
+/// `base` holds too few plain ticks to judge a mean by.
+pub fn tel_row_over(row: &Row, tel: &KernelProbe, base: &KernelProbe) -> Option<Row> {
+    let Component::TelRow(r) = row.component else {
+        return None;
+    };
+    let (n, sum) = (0..PHASES)
+        .map(|p| base.plain(r, p))
+        .fold((0u64, 0u64), |(n, sum), t| {
+            (n + u64::from(t.n), sum + u64::from(t.sum))
+        });
+    if n < u64::from(MEAN_MIN_BODIES) {
+        return None;
+    }
+    let plain = (sum / n) as u32;
+    Some(Row {
+        mean: tel.tel.get(r as usize)?.mean().saturating_sub(plain),
+        ..*row
+    })
+}
+
 /// Restart a hart a dump left halted.
 pub fn resume() -> Result<()> {
     let st = Command::new("wlink").arg("resume").status()?;
@@ -290,6 +320,9 @@ pub fn symbol(elf: &[u8], name: &str) -> Result<Option<(u32, u32)>> {
 
 #[cfg(test)]
 mod tests {
+    use osc_servo_core::budget::Regime;
+    use osc_servo_core::budget::probe::{Scenario, rows};
+
     use super::*;
 
     /// An ELF32 with a symbol table holding `syms`.
@@ -382,6 +415,69 @@ mod tests {
         both.push(("BUS_PROBE", 0x100, b));
         assert!(Reader::from_elf(&elf(&both)).is_err(), "both layouts");
         assert!(Reader::from_elf(&elf(&tel[..1])).is_err(), "no layout");
+    }
+
+    /// A window's kernel record, as a report prints its words.
+    fn record(text: &str) -> KernelProbe {
+        let w: Vec<u32> = text
+            .split_whitespace()
+            .map(|w| u32::from_str_radix(w, 16).expect("a hex word"))
+            .collect();
+        KernelProbe::from_words(&w).expect("a kernel record of this layout")
+    }
+
+    /// The probe's Closed TEL row of a window.
+    fn closed_tel_row(k: &KernelProbe) -> Row {
+        let s = Scenario {
+            tel: true,
+            frames: &[],
+        };
+        let mut row = None;
+        rows(k, &BusProbe::ZERO, &s, |r| {
+            if r.component == Component::TelRow(Regime::Closed) {
+                row = Some(r);
+            }
+        });
+        row.expect("a TEL row")
+    }
+
+    /// Two runs of one bench image on one servo, each window's record as
+    /// dumped. The probe's row reads 307 and 291 about the 293 it is held
+    /// to, moved by the tel stepping window's own 3054 and 3345 plain ticks
+    /// (mean 1148 and 1162). Over the stepping window's plain ticks, 400
+    /// thousand on the same steps, the same TEL ticks read 262 and 259.
+    #[test]
+    fn a_stepping_tel_row_reads_over_the_stepping_windows_plain_ticks() {
+        let runs = [
+            (
+                include_str!("../testdata/tel-row/over.tel-stepping.words"),
+                include_str!("../testdata/tel-row/over.stepping.words"),
+                (307, true),
+                262,
+            ),
+            (
+                include_str!("../testdata/tel-row/under.tel-stepping.words"),
+                include_str!("../testdata/tel-row/under.stepping.words"),
+                (291, false),
+                259,
+            ),
+        ];
+        for (tel, base, (probe, over), held) in runs {
+            let (tel, base) = (record(tel), record(base));
+            let row = closed_tel_row(&tel);
+            assert_eq!((row.mean, row.over()), (probe, over));
+            let against = tel_row_over(&row, &tel, &base).expect("a baseline");
+            assert_eq!(against.mean, held);
+            assert!(!against.over());
+            assert_eq!(against, Row { mean: held, ..row });
+            // a baseline with no plain tick of the row forms no figure
+            assert_eq!(tel_row_over(&row, &tel, &KernelProbe::ZERO), None);
+            let other = Row {
+                component: Component::Refresh,
+                ..row
+            };
+            assert_eq!(tel_row_over(&other, &tel, &base), None);
+        }
     }
 
     #[test]

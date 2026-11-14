@@ -26,6 +26,13 @@
 //! time (the kernel vectors inside it subtracted), which the table judges,
 //! and for its longest one the wall time and the kernel vectors nested.
 //! A report-only window is never held to the table.
+//! The tel stepping window's Closed TEL row is held as its TEL ticks' mean
+//! over the stepping window's plain Closed ticks of the same run, the same
+//! steps with no TEL (`bench::probe::tel_row_over`): the window's own plain
+//! ticks are the few between its bursts and on the centring move, on
+//! cheaper motion, and their mean moves from run to run. The report prints
+//! the probe's row and that figure, and says which was held; a run without
+//! the stepping window prints the probe's row unheld.
 //! A telcost image (`--features bench-telcost`, no bus record) reports the
 //! TEL windows' cost per tick and per TEL step instead, held only to its
 //! own self-check; its windows run no budget, bus or host-frame check. It
@@ -48,7 +55,7 @@ use bench::osc::{
     REBOOT_SETTLE_MS, build_instruction, build_ping, build_read, build_reboot, build_write,
     gread_uniform_payload,
 };
-use bench::probe::{self, Reader, Snapshot};
+use bench::probe::{self, Reader, Snapshot, tel_row_over};
 use osc_client::Outcome;
 use osc_protocol::table::{CRC_FAIL_COUNT, FRAMING_DROP_COUNT};
 use osc_protocol::tel::{Chunk, Chunks, StreamFrame};
@@ -98,6 +105,9 @@ const THETA_FRAC_BITS: u32 = 16;
 /// may move.
 const SEAT_PUSH: i32 = 40;
 const SEAT_MOVE_MAX: i32 = 10;
+/// The TEL window that steps: its Closed TEL row takes the stepping
+/// window's plain ticks for its baseline.
+const TEL_STEPPING: &str = "tel stepping";
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Gate {
     Budget,
@@ -142,6 +152,8 @@ struct Fill {
     out: Option<PathBuf>,
     failed: Vec<String>,
     over: Vec<String>,
+    /// The stepping window's kernel record, once it ran.
+    stepping: Option<KernelProbe>,
 }
 
 #[serial]
@@ -159,6 +171,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
         out,
         failed: Vec::new(),
         over: Vec::new(),
+        stepping: None,
     };
     let mut b = bench();
     let fast = b.home_baud();
@@ -209,7 +222,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
             })
         },
     );
-    f.window(&mut b, "stepping", Gate::Budget, false, &writes, |b, _| {
+    f.stepping = f.window(&mut b, "stepping", Gate::Budget, false, &writes, |b, _| {
         driven(b, |b| {
             hold_at(b, mid);
             for k in 0..(STEP_WINDOW.as_millis() / STEP_HOLD.as_millis()) {
@@ -238,7 +251,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     );
     f.window(
         &mut b,
-        "tel stepping",
+        TEL_STEPPING,
         Gate::Budget,
         true,
         &writes,
@@ -247,7 +260,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
                 hold_at(b, mid);
                 for k in 0..TEL_BURSTS {
                     write(b, GOAL_POSITION, &step_goal(mid, k).to_le_bytes());
-                    tel_burst(b, failed, "tel stepping");
+                    tel_burst(b, failed, TEL_STEPPING);
                 }
             })
         },
@@ -435,13 +448,43 @@ impl Fill {
             w.stack_free_min
         );
         window_lines(&mut text, w.snap.windows.as_ref());
+        let stepping = self.stepping;
         rows(k, bus, &s, |r| {
             if r.n == 0 && r.max == 0 {
                 return;
             }
-            let l = line(&r);
+            let rebased =
+                w.name == TEL_STEPPING && r.component == Component::TelRow(Regime::Closed);
+            let held = if rebased {
+                let probe = described(&r, &format!("{:?}", r.component));
+                let Some(base) = stepping else {
+                    let _ = writeln!(
+                        text,
+                        "  {probe}  as the probe gives it, not held: this run has no \
+                         stepping window to take the plain ticks from"
+                    );
+                    return;
+                };
+                let Some(against) = tel_row_over(&r, k, &base) else {
+                    let _ = writeln!(text, "  {probe}  as the probe gives it, not held");
+                    self.failed.push(format!(
+                        "{}: the stepping window holds too few plain Closed ticks \
+                         for the TEL row's baseline",
+                        w.name
+                    ));
+                    return;
+                };
+                let _ = writeln!(
+                    text,
+                    "  {probe}  as the probe gives it; held on the next line"
+                );
+                against
+            } else {
+                r
+            };
+            let l = line(&held, rebased);
             let _ = writeln!(text, "  {l}");
-            if r.over() && w.gate == Gate::Budget {
+            if held.over() && w.gate == Gate::Budget {
                 self.over.push(format!("{}: {l}", w.name));
             }
         });
@@ -782,14 +825,26 @@ fn opt_ticks(t: Option<f32>) -> String {
     )
 }
 
-fn line(r: &Row) -> String {
+/// A row's report line; `rebased`: a TEL row over the stepping window's
+/// plain ticks.
+fn line(r: &Row, rebased: bool) -> String {
     let name = match r.component {
         Component::Tick(r, p) => format!("{r:?} tick phase {p}"),
         Component::TelTick(r, p) => format!("{r:?} TEL tick phase {p}"),
         Component::BankTick(r, p) => format!("{r:?} bank tick phase {p}"),
         Component::Health(r, p) => format!("{r:?} close tick phase {p}"),
+        c if rebased => format!("{c:?} vs stepping"),
         c => format!("{c:?}"),
     };
+    let mut s = described(r, &name);
+    if r.over() {
+        s += "  OVER";
+    }
+    s
+}
+
+/// `r`'s figures against its budgets under `name`, with no verdict.
+fn described(r: &Row, name: &str) -> String {
     let mut s = format!(
         "{name:<27} n {:>7}  max {} / budget {}",
         r.n,
@@ -807,9 +862,6 @@ fn line(r: &Row) -> String {
     }
     if r.saturated() {
         s += "  saturated";
-    }
-    if r.over() {
-        s += "  OVER";
     }
     s
 }

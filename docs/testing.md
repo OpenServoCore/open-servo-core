@@ -548,7 +548,14 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   --window`, `--features bench-window`) adds gamma(k) for k = 2, 4, 10, 20,
   the ticks of 30 us or more by arm and the longest entry lateness, which
   the standard bench image skips and says so; a red run names the
-  window, the component, the measured ticks and us, and the budget. "hold
+  window, the component, the measured ticks and us, and the budget. The
+  TEL stepping window's Closed TEL row is held as its TEL ticks' mean over
+  the stepping window's plain Closed ticks of the same run, the same steps
+  with no TEL: its own plain ticks are the few between its bursts and on
+  the centring move, and their mean moves from run to run. The report
+  prints the probe's row and that figure and says which was held; with
+  `BUDGET_WINDOWS` leaving the stepping window out the row is printed and
+  not held. "hold
   raw pos" (a goal from raw `pos`) is report-only. "seated" runs only when
   `BUDGET_WINDOWS` names it: with the horn clamped at mid travel it holds a
   goal past the clamp, a press at the current limit on a still shaft that
