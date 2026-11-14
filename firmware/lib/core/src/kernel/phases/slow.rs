@@ -1,4 +1,5 @@
 use super::Medium;
+use super::fast::Fast;
 use super::loops::faults::{self, FaultLatch};
 use crate::kernel::DECIM_SLOW;
 use crate::kernel::config::KernelConfig;
@@ -9,7 +10,7 @@ impl Medium {
     /// lease, undervoltage and the two heats on the held current `i_held`
     /// warmed by the last estimate; on the next period's SLOW phase the
     /// winding estimate from the NTC and the heats, its derate and
-    /// overtemperature.
+    /// overtemperature, and the bias tracker's aging step.
     /// Whether a stage ran.
     pub(in crate::kernel) fn slow(
         &mut self,
@@ -17,11 +18,13 @@ impl Medium {
         i_held: i16,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
+        fast: &mut Fast,
     ) -> bool {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
             if self.slow_periods == 1 {
                 self.estimate(ntc_raw, cfg, faults);
+                fast.age_bias();
                 return true;
             }
             return false;

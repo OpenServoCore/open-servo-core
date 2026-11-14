@@ -107,7 +107,8 @@ pub struct Fast {
     #[cfg(not(feature = "experiment"))]
     bemf_min_ticks: u16,
     i_settle_gain: window::SettleGain,
-    /// Shunt zero-current offset in use; the medium step publishes it to
+    /// Shunt zero-current offset in use, read every tick; the medium half
+    /// feeds it once a period (`track_bias`) and publishes it to
     /// `current_bias_counts`.
     bias: BiasTracker,
     oc: OcDetector,
@@ -217,6 +218,36 @@ impl Fast {
         self.bias.counts()
     }
 
+    /// The bias tracker's sample, once a period from the PUBLISH phase:
+    /// the zero moves with board temperature, over minutes. Ahead of this
+    /// tick's `drive`, so the bridge state still names the command this
+    /// frame's trough ran under.
+    #[inline(always)]
+    pub fn track_bias(&mut self, shared: &Shared) {
+        let zero = match self.bridge {
+            Bridge::Drive => window::trough_is_brake(
+                self.decay,
+                self.ticks as u32,
+                self.pwm_arr,
+                self.bias_brake_min_ticks,
+            )
+            .then_some(Zero::Awake),
+            _ if self.settle != 0 => None,
+            Bridge::Asleep => Some(Zero::Asleep),
+            Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
+        };
+        // the sample loads only on a period that feeds
+        if let Some(zero) = zero {
+            self.bias.update(zero, shared.frame().current_trough());
+        }
+    }
+
+    /// The bias tracker's aging step, once a SLOW period.
+    #[inline(always)]
+    pub fn age_bias(&mut self) {
+        self.bias.age();
+    }
+
     /// One tick's measurement against the window the PREVIOUS tick's
     /// command drove: this frame's scan sampled the period that command
     /// drove, so terminal and sign attribution stay correct across sign
@@ -236,16 +267,6 @@ impl Fast {
             cfg.i_window_min_ticks,
             cfg.v_floor_ticks[self.decay as usize],
         );
-        let zero = match self.bridge {
-            Bridge::Drive => {
-                window::trough_is_brake(self.decay, ticks, self.pwm_arr, self.bias_brake_min_ticks)
-                    .then_some(Zero::Awake)
-            }
-            _ if self.settle != 0 => None,
-            Bridge::Asleep => Some(Zero::Asleep),
-            Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
-        };
-        self.bias.update(zero, frame.current_trough());
         // gated here, not only inside: a window under the floor skips the
         // zero's rounding and the settle-gain band lookup on the tick path
         let i_meas = if sel.i_valid {

@@ -35,9 +35,9 @@ pub mod phase {
     /// Rail estimate, sensor screen, position error timer.
     pub const RAIL: u8 = 5;
     /// The slow block, every DECIM_SLOW periods, and its finish one period
-    /// later.
+    /// later, with the shunt zero's aging step.
     pub const SLOW: u8 = 6;
-    /// Estimates, mode, limits and sensors publish.
+    /// The shunt zero's sample; estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
     /// The configuration take after a commit.
     pub const SPARE_A: u8 = 8;
@@ -100,9 +100,20 @@ impl Medium {
             phase::RAIL => self.rail(shared.frame(), cfg, faults, cmd),
             #[cfg(not(feature = "experiment"))]
             phase::SLOW => {
-                return self.slow(shared.frame().ntc_raw(), fast.i_meas_last(), cfg, faults);
+                return self.slow(
+                    shared.frame().ntc_raw(),
+                    fast.i_meas_last(),
+                    cfg,
+                    faults,
+                    fast,
+                );
             }
-            phase::PUBLISH => self.publish(shared, faults, fast),
+            #[cfg(feature = "experiment")]
+            phase::SLOW => self.slow(fast),
+            phase::PUBLISH => {
+                fast.track_bias(shared);
+                self.publish(shared, faults, fast)
+            }
             _ => {}
         }
         false

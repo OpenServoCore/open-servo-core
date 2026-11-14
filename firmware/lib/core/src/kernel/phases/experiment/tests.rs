@@ -1,11 +1,12 @@
 //! The experiment image's pins: OpenLoop as written, the trip, the bus
-//! dead-man and the publish. On a copy of the kernel tests' fake rig: the
-//! production tests compile out with the feature.
+//! dead-man, the bias tracker and the publish. On a copy of the kernel
+//! tests' fake rig: the production tests compile out with the feature.
 
+use crate::estimator::bias::{self, BiasTracker, Zero};
 use crate::estimator::{bemf, window};
 use crate::kernel::phases::loops::faults;
 use crate::kernel::phases::loops::limits::flag;
-use crate::kernel::{DECIM_MED, Kernel, KernelTiming, phase};
+use crate::kernel::{DECIM_MED, DECIM_SLOW, Kernel, KernelTiming, phase};
 use crate::regions::control::Mode;
 use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
 use crate::{ControlTable, RegionStorage, SensorFrame, Shared};
@@ -426,6 +427,112 @@ fn the_deadman_publishes_the_permit_grant() {
     scan(&mut k, &sh, f, 100);
     run_to(&mut k, &sh, f, phase::SPARE_A);
     assert_eq!(flags(&sh), 0, "no field, no grant");
+}
+
+/// The image keeps the bias tracker's feed: one sample a control period on
+/// the PUBLISH tick and none on the other nine phases, asleep and under
+/// drive alike. Against a trough far from the zero every sample moves the
+/// zero in use by a count or more, so it steps on the PUBLISH ticks alone,
+/// by what one sample moves the tracker, and the same tick's publish
+/// carries it.
+#[test]
+fn the_zero_takes_one_sample_a_period_at_publish() {
+    const PERIODS: u32 = 5;
+    for (torque, zero) in [(false, Zero::Asleep), (true, Zero::Awake)] {
+        let sh = Shared::new();
+        seed(&sh);
+        if torque {
+            torque_on(&sh, 8000, 0);
+        }
+        let mut k = kernel();
+        // the zero's own value until the bridge state has settled: torque
+        // off, or a Slow drive whose trough is a wide brake half
+        let near = frame(2000, BIAS + 300);
+        scan(&mut k, &sh, near, 10 * DECIM_MED as u32);
+        assert_eq!(k.fast.bias_counts(), BIAS);
+        let mut far = near;
+        far.current_trough = BIAS - 1600;
+        let mut model = BiasTracker::new();
+        model.seed(BIAS);
+        let mut samples = 0;
+        for tick in 0..PERIODS * DECIM_MED as u32 {
+            let next = k.phase;
+            let before = k.fast.bias_counts();
+            k.on_scan(far, &sh);
+            let after = k.fast.bias_counts();
+            if next == phase::PUBLISH {
+                samples += 1;
+                assert_ne!(after, before, "{zero:?} tick {tick}");
+                assert_eq!(
+                    after,
+                    model.update(zero, far.current_trough),
+                    "{zero:?} tick {tick}"
+                );
+                let published = sh.table.with(|t| t.telemetry.refs.current_bias_counts);
+                assert_eq!(published, after, "{zero:?} tick {tick}");
+            } else {
+                assert_eq!(after, before, "{zero:?} tick {tick}");
+            }
+        }
+        assert_eq!(samples, PERIODS, "{zero:?}");
+        assert_eq!(matches!(last_cmd(&k), MotorCmd::Drive { .. }), torque);
+    }
+}
+
+/// The image keeps the tracker's aging, its whole slow block: one step
+/// every DECIM_SLOW periods on the SLOW phase, and an unfed zero is stale
+/// after `STALE_PERIODS` of them. The brake feeds the awake zero, then
+/// torque goes off. Through the last SLOW period of the horizon the rest
+/// sits far off, so every sample moves the asleep zero by a count or more:
+/// the awake zero in use holds until the step that ends the horizon and
+/// moves with the next sample.
+#[test]
+fn an_unfed_zero_is_stale_after_stale_periods_of_slow() {
+    let sh = Shared::new();
+    seed(&sh);
+    write_config(&sh, |t| t.config.limits.openloop_zero_brake = true);
+    torque_on(&sh, 0, 0);
+    let mut k = kernel();
+    let rest = |trough: u16| SensorFrame {
+        current_trough: trough,
+        ..frame(2000, trough)
+    };
+    // the last awake sample is the PUBLISH ahead of the CONTROL phase that
+    // reads torque off
+    scan(&mut k, &sh, rest(BIAS), 100 * DECIM_MED as u32);
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
+    assert_eq!(k.phase, phase::CONTROL);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    // one tick of `f`; whether it ran the aging step
+    let step = |k: &mut Kernel<FakeIo, FakeTel>, f: SensorFrame| {
+        let (next, before) = (k.phase, k.medium.slow_periods);
+        k.on_scan(f, &sh);
+        let aged = k.medium.slow_periods < before;
+        assert!(!aged || next == phase::SLOW);
+        aged
+    };
+    let (mut aged, mut ticks) = (0, 0);
+    while aged < bias::STALE_PERIODS - 1 {
+        aged += step(&mut k, rest(BIAS)) as u8;
+        ticks += 1;
+    }
+    assert!(ticks <= aged as u32 * DECIM_SLOW as u32 * DECIM_MED as u32);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    let far = rest(BIAS - 1600);
+    let mut samples = 0;
+    loop {
+        samples += (k.phase == phase::PUBLISH) as u32;
+        let last = step(&mut k, far);
+        assert_eq!(k.fast.bias_counts(), BIAS, "sample {samples}");
+        if last {
+            break;
+        }
+    }
+    assert_eq!(samples, DECIM_SLOW as u32);
+    assert_eq!(k.phase, phase::PUBLISH);
+    k.on_scan(far, &sh);
+    assert!(k.fast.bias_counts() < BIAS, "{}", k.fast.bias_counts());
 }
 
 /// The publish carries what the image computes and nothing else: the bias

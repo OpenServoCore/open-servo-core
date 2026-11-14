@@ -6,8 +6,9 @@
 //! the schedule's table; every value is
 //! written by the phase that computes it and read by the later phases and
 //! by the fast half. The experiment image (`experiment`, kernel sec 2.7)
-//! swaps in a medium half of CONTROL, the bus dead-man and PUBLISH alone;
-//! `deadman` gives the production half the same dead-man.
+//! swaps in a medium half of CONTROL, the bus dead-man, the bias
+//! tracker's aging and PUBLISH alone; `deadman` gives the production half
+//! the same dead-man.
 
 #[cfg(not(feature = "experiment"))]
 mod control;
