@@ -5,13 +5,19 @@
 //! table, the residual linearization leaves. A load torque, a heavier
 //! output, a held rotor and leads wired the other way round are the
 //! scenarios' knobs. [`rig`] is the bench MG90's identified set (2S rail,
-//! 280-count limit, deadband 12).
+//! 280-count limit, deadband 12) and [`kernel`] its kernel, both on the
+//! osc-dev-v006 board's window floors: the floor decides what the current
+//! loop reads on every small command, so a rig on another board's floors
+//! runs another loop.
 
 use osc_servo_core::pos_lut::{GRID, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
-use osc_servo_core::{ControlTable, MotorCmd, RegionStorage, SensorFrame, Shared, StallResponse};
+use osc_servo_core::{
+    ControlTable, Kernel, KernelTiming, MotorCmd, RegionStorage, SensorFrame, Shared, StallResponse,
+};
 
-use crate::plant::{BIAS, lut_live, seed, vbus_raw};
+use crate::plant::{self, BIAS, FakeIo, FakeMotor, FakeSensors, lut_live, seed, vbus_raw};
+use crate::sim::{DEV_V006_BEMF_MIN_TICKS, DEV_V006_SENSE, DEV_V006_V_TROUGH_MIN_TICKS};
 
 /// 7.1 V in vmotor-tap counts.
 pub const VBUS: f64 = 2880.0;
@@ -29,6 +35,24 @@ pub const LASH: f64 = 5.7;
 /// Amplitude and period, linearized counts.
 pub const RESIDUAL: (f64, f64) = (5.0, 60.0);
 pub const ARR: u32 = 1200;
+
+/// The generic rig's timing with the board's Fast-decay trough and
+/// back-EMF observer floors.
+pub const TIMING: KernelTiming = KernelTiming {
+    v_trough_min_ticks: DEV_V006_V_TROUGH_MIN_TICKS,
+    bemf_min_ticks: DEV_V006_BEMF_MIN_TICKS,
+    ..plant::TIMING
+};
+
+pub fn kernel() -> Kernel<FakeIo> {
+    Kernel::new(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        TIMING,
+    )
+}
 
 pub struct Rng(pub u64);
 
@@ -179,8 +203,8 @@ impl Mg90 {
     }
 }
 
-/// The bench MG90's saved set, identified in linearized counts, `lut` live,
-/// then `cfg`.
+/// The bench MG90's saved set, identified in linearized counts, on the
+/// board's shunt and terminal window floors, `lut` live, then `cfg`.
 pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
     let sh = Shared::new();
     seed(&sh);
@@ -212,8 +236,8 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         c.fusion.l3_q88 = 81;
         c.fault_cfg.pos_error_counts = 400;
         let cal = &mut t.calib;
-        cal.sense.i_window_min_ticks = 160;
-        cal.sense.v_window_min_ticks = 160;
+        cal.sense.i_window_min_ticks = DEV_V006_SENSE.i_window_min_ticks;
+        cal.sense.v_window_min_ticks = DEV_V006_SENSE.v_window_min_ticks;
         cal.motor.r_q12 = 7270;
         cal.motor.ke_vpc_q = 580;
         cal.motor.recip_ke_q = 7228;

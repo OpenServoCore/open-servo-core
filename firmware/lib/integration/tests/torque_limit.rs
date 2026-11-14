@@ -7,6 +7,7 @@ use osc_integration::plant::{
     FakeIo, FakeMotor, FakeSensors, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd,
     seed, stamp,
 };
+use osc_integration::sim::DEV_V006_V_TROUGH_MIN_TICKS;
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::phases::loops::duty_limit::UP_Q15;
 use osc_servo_core::kernel::phases::loops::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
@@ -541,7 +542,7 @@ fn window_v_floor_follows_the_openloop_decay() {
             motor: FakeMotor { last: None },
         },
         KernelTiming {
-            v_trough_min_ticks: 160,
+            v_trough_min_ticks: DEV_V006_V_TROUGH_MIN_TICKS,
             ..TIMING
         },
     );
@@ -552,7 +553,7 @@ fn window_v_floor_follows_the_openloop_decay() {
         .with_mut(|t| t.config.limits.openloop_decay = DecayMode::Fast);
     sh.config_commit_end();
     run(&mut k, &sh, &mut p, 10);
-    assert_eq!(v_floor(), duty(160));
+    assert_eq!(v_floor(), duty(DEV_V006_V_TROUGH_MIN_TICKS));
 }
 
 /// `rig` with the window floor at `floor_ticks` and the trip over a

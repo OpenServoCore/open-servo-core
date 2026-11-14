@@ -56,6 +56,12 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
     vmotor_bias_bot_ohm: 100,
 };
 
+/// The same `Calibration`'s `v_trough_window_min_ticks` and
+/// `bemf_window_min_ticks`, the two floors the board hands the kernel
+/// through `KernelTiming` and not through CALIB.
+pub const DEV_V006_V_TROUGH_MIN_TICKS: u16 = 160;
+pub const DEV_V006_BEMF_MIN_TICKS: u16 = 160;
+
 /// Board travel the config defaults seed (the v006 pot's 12-bit span): what
 /// the soft limits fall back to when a wiped store boots.
 const PHYS_MAX_COUNTS: i32 = 4095;
