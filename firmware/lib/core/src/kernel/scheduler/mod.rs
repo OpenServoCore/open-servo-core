@@ -53,6 +53,10 @@ pub struct KernelTiming {
     /// the commanded width by enough to bias the period-average voltage the
     /// observer scales by that width.
     pub bemf_min_ticks: u16,
+    /// Board data: the narrowest commanded drive width the bridge puts out
+    /// as a pulse. The current loop does not take the first window read
+    /// after a narrower nonzero command; 0 turns that gate off.
+    pub bridge_min_ticks: u16,
     /// Board data: the shunt amplifier's settle gain by drive width
     /// (`window::i_from_frame`).
     pub i_settle_gain: window::SettleGain,

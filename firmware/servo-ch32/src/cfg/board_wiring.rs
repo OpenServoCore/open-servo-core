@@ -99,6 +99,9 @@ pub struct Calibration {
     /// Shortest Fast-decay window (TIM1 ticks) whose trough scan samples
     /// both terminal taps inside it; raises `v_window_min_ticks` for Fast.
     pub v_trough_window_min_ticks: u16,
+    /// Narrowest commanded drive width (TIM1 ticks) the bridge puts out as
+    /// a pulse; 0 when not measured.
+    pub bridge_min_ticks: u16,
     /// Shortest drive window (TIM1 ticks) the back-EMF observer takes.
     pub bemf_window_min_ticks: u16,
     /// Shortest Slow-decay brake half (TIM1 ticks) whose trough shunt sample

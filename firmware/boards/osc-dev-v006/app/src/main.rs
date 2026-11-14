@@ -90,6 +90,9 @@ fn main() -> ! {
             // The drive pulse comes out ~27 ticks short of the commanded
             // width and the observer scales by the commanded one.
             bemf_window_min_ticks: 160,
+            // A narrower command loses its whole pulse, and the first shunt
+            // window read after one reads far over the winding current.
+            bridge_min_ticks: 27,
             // The amplifier tail after a drive pulse, measured on board D
             // over a duty grid: the trough sits a flat 5 counts over the
             // disabled-driver rest bias down to 960 brake ticks (20% duty),

@@ -108,6 +108,8 @@ The position measurement: the observer, its seeds and the drive check read the p
 
 The next trough scan lands mid-period and the next crest scan near the period's end, in the same block. The tick moves the trough samples out by `TROUGH_DONE` and finishes crest reads and the row's DMA arm by `FRAME_DONE` (`the_tick_reads_its_scan_before_the_next_lands`).
 
+The current loop in step 6 takes the reading step 3 measured, with two exceptions that it is fed as zero current. A window under the shunt floor reports nothing, and zero lets the loop lift off zero duty. The first window read after a command the bridge drops reads far over the winding current, and on the proportional gain that one reading steps the drive across zero. A board names the narrowest commanded width that comes out as a pulse (`KernelTiming::bridge_min_ticks`); the loop skips the first read window after a command of 1 tick up to one under it, in either direction. Zero duty is not a dropped command, so a lift from rest, the park and its wake read as before, and a board constant of 0 turns the gate off. Only the loop skips the reading: the overcurrent trip, the held current, the tick block and the observers see every read window (`the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop`).
+
 ### 2.4 Event slots
 
 | Event | Slot | Rule |

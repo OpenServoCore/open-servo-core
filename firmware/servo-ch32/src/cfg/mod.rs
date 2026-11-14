@@ -72,6 +72,7 @@ impl Precomputed {
                 bias_brake_min_ticks: cfg.calibration.bias_brake_min_ticks,
                 v_trough_min_ticks: cfg.calibration.v_trough_window_min_ticks,
                 bemf_min_ticks: cfg.calibration.bemf_window_min_ticks,
+                bridge_min_ticks: cfg.calibration.bridge_min_ticks,
                 i_settle_gain: cfg.calibration.i_settle_gain,
             },
             current_defaults: CurrentDefaults::from_sense(
