@@ -7,7 +7,7 @@ use super::phases::fast;
 use super::phases::loops::{duty_limit, faults, limits};
 use super::*;
 use crate::budget::Events;
-use crate::estimator::{FusionObs, OmegaSource, bemf, bias, window};
+use crate::estimator::{FusionObs, OmegaSource, OmegaSwitch, bemf, bias, window};
 use crate::math::q_mul;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
@@ -2727,12 +2727,12 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let sh = Shared::new();
     drive_setup(&sh);
     let mut k = kernel();
-    // from the OBSERVER phase after the slew every tick measures duty
-    // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed 10 ticks
-    // later is the first clean one, 20 ticks pairs it with a second, and the
-    // PUBLISH phase after it lands the boxcar.
+    // from the CONTROL phase after the slew every tick measures duty
+    // 8000: drive_ticks 293, vdiff 2960, i 100. The half the SPEED phase
+    // closes 10 ticks later is the first clean one, 20 ticks pairs it with
+    // a second, and the PUBLISH phase after it lands the boxcar.
     settle(&mut k, &sh, frame(2000, BIAS + 100));
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::CONTROL);
     for _ in 0..20 {
         k.on_scan(frame(2000, BIAS + 100), &sh);
     }
@@ -2746,11 +2746,13 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
     assert_eq!(got, 8363, "pin");
     // torque off lands at the next CONTROL phase, which still measures the
-    // last drive; the OBSERVER tick after it measures sub-floor, so the half
-    // it closes voids, and the PUBLISH phase after that drops to 0
+    // last drive; the tick after it measures sub-floor, in the half that
+    // period's SPEED phase closes, so the boxcar the PUBLISH phase lands in
+    // between is the clean one closed ahead of the edge, and the next
+    // period's PUBLISH drops to 0
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    for _ in 0..DECIM_MED - 1 {
+    for _ in 0..2 * DECIM_MED - 1 {
         k.on_scan(frame(2000, BIAS + 100), &sh);
     }
     assert_eq!(
@@ -2793,6 +2795,144 @@ fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
     }
 }
 
+/// A back-EMF row as the fast half summed it: the width, the terminal
+/// differential and the current of a tick's window.
+type BemfRow = (u32, Option<i32>, Option<i32>);
+
+/// The back-EMF chain with the half's close on the OBSERVER tick itself,
+/// ahead of the switch.
+struct CloseAtObserver {
+    obs: bemf::BemfObs,
+    sw: OmegaSwitch,
+    boxcar: Option<i32>,
+}
+
+impl CloseAtObserver {
+    fn new() -> Self {
+        Self {
+            obs: bemf::BemfObs::new(),
+            sw: OmegaSwitch::new(),
+            boxcar: None,
+        }
+    }
+
+    fn sample(&mut self, (ticks, vdiff, i): BemfRow) {
+        self.obs.sample(ticks, vdiff, i);
+    }
+
+    /// The close on the operands this tick reads, then the switch on the
+    /// kernel's own observer speed.
+    fn observe(&mut self, k: &Kernel<FakeIo>, sh: &Shared) -> i32 {
+        self.boxcar = self
+            .obs
+            .close_half(r_hat(sh), k.cfg.motor.recip_ke_q, TIMING.recip_arr_q24);
+        self.sw.step(self.boxcar, k.medium.fusion.omega_q16())
+    }
+}
+
+/// The boxcar closes on SPEED, two ticks ahead of the OBSERVER that reads
+/// it, and its place changes nothing else: the speed OBSERVER hands on and
+/// the boxcar PUBLISH lands are the ones a close on the OBSERVER tick
+/// itself gives on the same rows two ticks late, with the resistance and
+/// the Ke reciprocal as that tick reads them. A half is still ten rows,
+/// each in one half: the rows of phases 0 to 9 of one period. The same
+/// close on the rows as they come hands on another speed, so the two
+/// ticks show. The plant runs up, reverses, crawls under the floors and
+/// stops, a 160-tick back-EMF floor over the 100-tick windows, with a
+/// resistance and a Ke write landing mid run.
+#[test]
+fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
+    const BEMF_FLOOR: u16 = 160;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.config.pos_soft.pos_max_soft_counts = 1_000_000;
+    });
+    let mut k = Kernel::new(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        KernelTiming {
+            bemf_min_ticks: BEMF_FLOOR,
+            ..TIMING
+        },
+    );
+    let mut plant = Plant::new(2000);
+    let (mut late, mut now) = (CloseAtObserver::new(), CloseAtObserver::new());
+    // ahead of the first tick no window read
+    let mut held: [BemfRow; 2] = [(0, None, None); 2];
+    let (mut boxcars, mut voids, mut moved) = (0u32, 0u32, 0u32);
+    let mut sources = [false; 2];
+    let mut void_at = [false; DECIM_MED as usize];
+    for tick in 0..9000u32 {
+        match tick {
+            0 => sh
+                .table
+                .with_mut(|t| t.control.lifecycle.goal_velocity = 2500),
+            3000 => sh
+                .table
+                .with_mut(|t| t.control.lifecycle.goal_velocity = -2500),
+            4003 => write_config(&sh, |t| {
+                t.calib.motor.r_q12 = 7000;
+                t.calib.motor.recip_ke_q = 15 << 10;
+            }),
+            6000 => sh
+                .table
+                .with_mut(|t| t.control.lifecycle.goal_velocity = 200),
+            8000 => sh
+                .table
+                .with_mut(|t| t.control.lifecycle.torque_enable = false),
+            _ => {}
+        }
+        let next = k.phase;
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        let t = tick_block(&sh);
+        let width = t.duty_ticks.unsigned_abs() as u32;
+        let row: BemfRow = (
+            width,
+            (t.tick_flags & tick_flag::V_VALID != 0 && width >= BEMF_FLOOR as u32)
+                .then_some(t.vdiff_counts as i32),
+            (t.tick_flags & tick_flag::I_VALID != 0).then_some(t.i_tick_counts as i32),
+        );
+        void_at[next as usize] |= width != 0 && (row.1.is_none() || row.2.is_none());
+        late.sample(held[0]);
+        held = [held[1], row];
+        now.sample(row);
+        if next == phase::OBSERVER {
+            let speed = late.observe(&k, &sh);
+            assert_eq!(k.medium.omega_hat, speed, "tick {tick}");
+            assert_eq!(k.medium.omega_sw.source(), late.sw.source(), "tick {tick}");
+            moved += (now.observe(&k, &sh) != speed) as u32;
+            sources[late.sw.source() as usize] = true;
+            match late.boxcar {
+                Some(_) => boxcars += 1,
+                None => voids += 1,
+            }
+        }
+        if next == phase::PUBLISH {
+            let boxcar = bemf::omega_cps_i16(late.boxcar.unwrap_or(0));
+            let published = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps);
+            assert_eq!(published, boxcar, "tick {tick}");
+        }
+    }
+    assert_eq!(k.faults.mask(), 0);
+    assert_eq!(k.cfg.motor.r_q12, 7000, "the write was taken");
+    assert!(
+        boxcars > 300 && voids > 300,
+        "{boxcars} boxcars, {voids} voids"
+    );
+    assert_eq!(sources, [true; 2], "both sources fed the loop");
+    assert_eq!(
+        void_at, [true; DECIM_MED as usize],
+        "a void row on every phase"
+    );
+    assert!(moved > 0, "a close on the OBSERVER tick reads the same");
+}
+
 #[test]
 fn velocity_feedback_switches_to_the_bemf_and_back() {
     let sh = Shared::new();
@@ -2820,13 +2960,22 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
     assert!(bemf > 0);
     assert_eq!(published(&sh), (bemf << 16, 1));
-    // torque off lands at the next CONTROL phase; the half the OBSERVER
-    // phase after it closes voids, and the source rides the held boxcar
-    // through that one result, then falls back at the next period's void
+    // torque off lands at the next CONTROL phase, and the first window it
+    // changes is the tick after: the half the SPEED phase closed ahead of
+    // the edge is clean, so the loop takes one more boxcar
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     k.on_scan(frame(2000, BIAS + 100), &sh);
     run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
+    let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
+    assert!(bemf > 0);
+    assert_eq!(published(&sh), (bemf << 16, 1));
+    // the half that holds the edge voids at that period's SPEED phase: the
+    // source rides the held boxcar through that one result, then falls
+    // back at the next period's void
+    k.on_scan(frame(2000, BIAS + 100), &sh);
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
+    assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
     assert_eq!(published(&sh), (bemf << 16, 1));
     k.on_scan(frame(2000, BIAS + 100), &sh);
     run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
@@ -3479,7 +3628,7 @@ fn observer_measures_what_pos_q4_reads() {
         for raw in 0..=4095u16 {
             let pos = phases::pos_q4(&sh, live, raw);
             k.medium.fusion.seed(pos);
-            k.medium.observe(raw, &k.cfg, &sh, &mut k.fast);
+            k.medium.observe(raw, &k.cfg, &sh, &k.fast);
             assert_eq!(
                 k.medium.fusion.theta_q16(),
                 FusionObs::seed_theta_q16(pos),

@@ -38,8 +38,8 @@ pub const TICKS_PER_US: u32 = CLOCK_HZ / 1_000_000;
 
 pub const TICK_PERIOD: u32 = CLOCK_HZ / TICK_HZ;
 
-/// Medium phases per period; index = `kernel::phase` (8 and 9 run the fast
-/// path alone).
+/// Medium phases per period; index = `kernel::phase` (8 runs the fast path
+/// alone, but for a configuration take).
 pub const PHASES: usize = DECIM_MED as usize;
 
 /// The drive arm a tick ran: the closed current loop is the work that sets
@@ -96,7 +96,10 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// [`TICK_PUBLISH`]. OpenLoop, M: the openloop window's OpenLoop ticks, 3
 /// runs, the tick block's work in the row. Phase SLOW off its due period is
 /// a plain tick; the due body is [`SLOW_DUE`]. The limit split's additions
-/// are E, carried separately by [`LIMIT_SPLIT`] pending a probe refill.
+/// are E, carried separately by [`LIMIT_SPLIT`] pending a probe refill, as
+/// is what came with phase SPEED's stage by [`SPEED_STAGE`]: the phase's
+/// rows are the fast path alone, and SPARE_A's predate the stage's entry
+/// in the phase table.
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
@@ -167,17 +170,37 @@ pub const LAYOUT: u32 = 35;
 /// Each delta plus 10%, rounded up; the bench must refill both phases.
 pub const LIMIT_SPLIT: [u32; PHASES] = [0, 0, 0, 140, 0, 59, 0, 0, 0, 0];
 
+/// E, over the measured SPARE_A and SPEED rows, maxima and means: what
+/// came with phase SPEED's stage, the back-EMF half's close, which the
+/// rows predate. Matched release builds, each phase's longest executed
+/// path against the same tick with no stage, priced as REFRESH. SPARE_A,
+/// every regime, a take's tick included: the phase table grew to hold
+/// SPEED, so the tick's dispatch goes through it where the default arm
+/// skipped, 10 -> 25.25 HCLK. SPEED, Closed and OpenLoop, a valid half
+/// paired with the one before: 10 -> 222 (62 more instructions, 16
+/// loads/stores, 7 multiplies, three more taken transfers: the same
+/// dispatch, the close, its stores). SPEED, Open: nothing drove the
+/// tick's own window, so its row voids the half and the products are
+/// skipped, 10 -> 69.25. Each delta plus 10%, rounded up. OBSERVER, which
+/// the close left, keeps its rows until the probe reads them lower; the
+/// bench must refill all three phases.
+pub const SPEED_STAGE: [[u32; PHASES]; REGIMES] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 17, 66],
+    [0, 0, 0, 0, 0, 0, 0, 0, 17, 234],
+    [0, 0, 0, 0, 0, 0, 0, 0, 17, 234],
+];
+
 /// A plain tick's budget at `regime` and `phase`: its row, the tick
-/// block's work and layout.
+/// block's work, the estimated additions and layout.
 pub const fn tick_body(regime: Regime, phase: usize) -> u32 {
     let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + LAYOUT
+    KERNEL[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + LAYOUT
 }
 
 /// The same plain ticks' mean over a window.
 pub const fn tick_body_mean(regime: Regime, phase: usize) -> u32 {
     let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + LAYOUT
+    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + LAYOUT
 }
 
 /// Every tick of a TEL burst, on top of [`KERNEL`] and the lane: the row
