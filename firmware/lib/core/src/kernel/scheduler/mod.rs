@@ -1,6 +1,5 @@
-//! The tick: one `on_tick` per PWM period, the spare phases' configuration
-//! take and drive direction check, the lane holds, and the hand-off between
-//! the halves.
+//! The tick: one `on_tick` per PWM period, the spare phase's configuration
+//! take, the lane holds, and the hand-off between the halves.
 
 mod probe;
 pub mod table;
@@ -119,11 +118,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     }
 
     /// The configuration, whole, then the terminal floor at the OpenLoop
-    /// decay; a new `drive_polarity` unproves the drive direction check. The rail clamp follows
-    /// `duty_max_q15` at the next RAIL phase. The kernel preempts the bus, so
-    /// no commit store lands inside the tick: at an even count the span is
-    /// one committed set. At an odd one (the first tick only) the next even
-    /// count differs from it and takes again.
+    /// decay. The rail clamp follows `duty_max_q15` at the next RAIL phase.
+    /// The kernel preempts the bus, so no commit store lands inside the
+    /// tick: at an even count the span is one committed set. At an odd one
+    /// (the first tick only) the next even count differs from it and takes
+    /// again.
     #[inline(never)]
     #[rustc_align(4)]
     fn take_config(&mut self, shared: &Shared) {
@@ -131,8 +130,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // the count load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
         self.cfg.take(shared);
-        #[cfg(not(feature = "experiment"))]
-        self.medium.drive.take(self.cfg.limits.drive_polarity);
         let v_floor = self.cfg.v_floor_q15[self.cfg.limits.openloop_decay as usize];
         let p = shared.table.region_ptr();
         // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
@@ -206,21 +203,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     pub fn on_tick(&mut self, shared: &Shared) {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
-        // A take holds no TX lane, as one can run every period. The drive
-        // direction check's stage runs on its own SPARE_B and holds no lane
-        // either.
+        // A take holds no TX lane, as one can run every period.
         match phase {
             phase::CONTROL if !self.booted => self.boot(shared),
             phase::SPARE_A if config_due(shared.config_seq(), self.config_seq) => {
                 self.take_config(shared)
-            }
-            #[cfg(not(feature = "experiment"))]
-            phase::SPARE_B if self.medium.drive.unproven() => {
-                let duty = self.fast.duty_q15();
-                if self.medium.drive.check(self.medium.theta_q4(), duty) {
-                    core::hint::cold_path();
-                    self.medium.drive_stage(shared, duty, &mut self.faults);
-                }
             }
             _ => {}
         }

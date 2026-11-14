@@ -75,7 +75,6 @@ bench_hot=(
 production_hot=(
     TrajGen::step_position
     DutyLimiter::step
-    Medium::drive_stage
     math::recip_div
 )
 experiment_hot=(

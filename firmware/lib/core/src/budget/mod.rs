@@ -125,9 +125,9 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// the terminal floor's store. It carries no TEL row: a burst starts
 /// neither on SPARE_A nor while a take is pending, and the host is silent
 /// through one. E, an upper bound: the take's longest path on matched
-/// release disassembly is 544.25 HCLK, including the rating, its two log
-/// calls and the drive-polarity change; the row keeps its earlier, larger
-/// price until the probe re-prices it.
+/// release disassembly is under 544.25 HCLK, including the rating and its
+/// two log calls; the row keeps its earlier, larger price until the probe
+/// re-prices it.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
 pub const REFRESH: u32 = 824;
@@ -250,16 +250,6 @@ pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
 /// (330 plus a since-deleted ceiling's 71.25, plus 10%); the bench
 /// re-prices it.
 pub const SLOW_FINISH: u32 = 442;
-
-/// The drive direction check's stage on phase SPARE_B, on top of its row,
-/// while the wiring is unproven: a leg's end against the pot, its verdict
-/// or an anchor. Above both its E and its M: E, the dearest, a leg's end
-/// through the position table, priced on the release disassembly with the
-/// fetch model as [`REFRESH`] at 193 over the plain tick (the verdict that
-/// latches 181, an anchor 120), plus 10%, 212; M 219, the bench's two runs.
-/// The plain check rides the SPARE_B row: 9.25 proven, at most 40.5
-/// unproven.
-pub const DRIVE_STAGE: u32 = 231;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
@@ -456,9 +446,6 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     if ev.finish {
         t += SLOW_FINISH;
     }
-    if ev.drive {
-        t += DRIVE_STAGE;
-    }
     if ev.tel {
         // The lane leaves a banking tick be (its gate is under the poll),
         // and a stage tick, so the dearest TEL tick is the bank's or a lane
@@ -483,8 +470,6 @@ pub struct Events {
     /// The SLOW block's first stage ran; `finish`: its second.
     pub slow: bool,
     pub finish: bool,
-    /// The drive direction check's stage on phase SPARE_B.
-    pub drive: bool,
     /// The tick-load counters closed a window.
     pub health: bool,
 }

@@ -39,7 +39,7 @@ pub(in crate::kernel) use control::Control;
 pub(in crate::kernel) use experiment::Medium;
 
 #[cfg(not(feature = "experiment"))]
-use self::loops::faults::{Detectors, DriveCheck, FaultLatch};
+use self::loops::faults::{Detectors, FaultLatch};
 #[cfg(not(feature = "experiment"))]
 use self::loops::limits::{IBand, LimitState};
 #[cfg(not(feature = "experiment"))]
@@ -130,7 +130,6 @@ pub(in crate::kernel) struct Medium {
     permit_ticks: u8,
     permit_gen: u8,
     det: Detectors,
-    pub(in crate::kernel) drive: DriveCheck,
     #[cfg(feature = "deadman")]
     deadman: deadman::Deadman,
     te_prev: bool,
@@ -174,7 +173,6 @@ impl Medium {
             permit_ticks: 0,
             permit_gen: 0,
             det: Detectors::new(),
-            drive: DriveCheck::new(),
             #[cfg(feature = "deadman")]
             deadman: deadman::Deadman::new(),
             te_prev: false,

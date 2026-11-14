@@ -12,7 +12,6 @@ const PLAIN: Events = Events {
     bank: false,
     slow: false,
     finish: false,
-    drive: false,
     health: false,
 };
 const OPEN: Regime = Regime::Open;
@@ -244,50 +243,6 @@ fn openloop_events_fold_into_the_closed_rows() {
     );
 }
 
-/// The drive direction check's stage books apart from the plain SPARE_B
-/// row: a SPARE_B tick that left a stage state. A crossing that enters
-/// one, an edge on another phase and a SPARE_B that kept its state book
-/// plain.
-#[test]
-fn a_drive_stage_books_apart_from_its_tags() {
-    use crate::kernel::phases::loops::faults::stage_due;
-    let (track, leg_end, judge) = (1, 2, 3);
-    assert!(!stage_due(track) && stage_due(leg_end) && stage_due(judge));
-    let tags = |phase, drive| ProbeTags {
-        phase,
-        booted: true,
-        drive,
-        ..ProbeTags::default()
-    };
-    let ran = |b, a| Events::between(b, a).drive;
-    assert!(ran(tags(phase::SPARE_B, leg_end), tags(0, judge)));
-    assert!(ran(tags(phase::SPARE_B, judge), tags(0, track)));
-    assert!(!ran(tags(phase::SPARE_B, track), tags(0, leg_end)));
-    assert!(!ran(tags(phase::SPARE_B, judge), tags(0, judge)));
-    assert!(!ran(
-        tags(phase::CONTROL, judge),
-        tags(phase::CONTROL + 1, 4)
-    ));
-    let mut k = KernelProbe::ZERO;
-    let mut w = WindowProbe::ZERO;
-    both(&mut k, &mut w, 0, 1000, 0, OPEN, PLAIN);
-    let drive = Events {
-        drive: true,
-        ..PLAIN
-    };
-    both(
-        &mut k,
-        &mut w,
-        1,
-        1300,
-        phase::SPARE_B as usize,
-        OPEN,
-        drive,
-    );
-    assert_eq!((k.drive.n, k.drive.max), (1, 1300));
-    assert_eq!(k.load(OPEN, phase::SPARE_B as usize), Load::ZERO);
-}
-
 /// Lateness counts only what held the tick off past both its grid slot
 /// and its predecessor's end.
 #[test]
@@ -451,9 +406,8 @@ fn dumps_decode_field_for_field() {
         slow_due: true,
         slow_finish: false,
         regime: Regime::OpenLoop,
-        drive: 3,
     };
-    k.tick(2000, || after, true, 9, false);
+    k.tick(2000, || after, true, 265, false);
     assert_eq!(KernelProbe::from_words(words(&k)), Some(k));
     let mut bad = words(&k).to_vec();
     bad[4] |= 0xff << 8;

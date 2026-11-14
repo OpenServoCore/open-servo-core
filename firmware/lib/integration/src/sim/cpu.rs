@@ -184,14 +184,12 @@ pub struct TelCosts {
 /// ([`kernel::health_close_at`], the lane's first tick the boot tick), with
 /// the catch-up when a tick was lost since the last one. A configuration
 /// take runs on phase SPARE_A when the servo's count is even and new; it
-/// holds no lane. The drive direction check's stage runs on every SPARE_B,
-/// as an unproven servo's could, and holds no lane.
+/// holds no lane.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub refresh: u64,
     pub slow_due: [u64; EVENT_REGIMES],
     pub finish: u64,
-    pub drive: u64,
     pub health_close: u64,
     pub catch_up: u64,
 }
@@ -218,7 +216,6 @@ impl KernelLane {
                 refresh: budget::REFRESH as u64,
                 slow_due: budget::SLOW_DUE.map(u64::from),
                 finish: budget::SLOW_FINISH as u64,
-                drive: budget::DRIVE_STAGE as u64,
                 health_close: budget::HEALTH_CLOSE as u64,
                 catch_up: budget::CATCH_UP as u64,
             },
@@ -244,9 +241,7 @@ impl KernelLane {
         let span = n as u64 * KERNEL_PERIOD;
         let at = |p: u8, extra: u64| body(p as usize) + extra;
         let slow_due = ev.slow_due[self.heavier(phase::SLOW as usize).event_row() as usize];
-        let events = at(phase::SLOW, slow_due.max(ev.finish))
-            .max(at(phase::SPARE_A, ev.refresh))
-            .max(at(phase::SPARE_B, ev.drive));
+        let events = at(phase::SLOW, slow_due.max(ev.finish)).max(at(phase::SPARE_A, ev.refresh));
         let longest = (0..n).map(body).max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
@@ -621,9 +616,6 @@ impl Cpu {
         };
         k.stage = stage.is_some();
         cost += stage.unwrap_or(0);
-        if k.phase == phase::SPARE_B as usize {
-            cost += ev.drive;
-        }
         if take {
             cost += ev.refresh;
             k.config_taken = k.config_seq;
@@ -775,7 +767,7 @@ mod tests {
     use crate::plant::{BIAS, kernel, seed, vbus_raw};
 
     /// One bit per stage: a body's cost names the stages the lane charged.
-    const COSTS: [u64; 4] = [1, 2, 4, 8];
+    const COSTS: [u64; 3] = [1, 2, 4];
     static FREE: [u64; PHASES] = [0; PHASES];
 
     fn write_config(sh: &Shared, f: impl FnOnce(&mut osc_servo_core::ControlTable)) {
@@ -822,9 +814,8 @@ mod tests {
 
     /// The lane charges each stage on the tick the kernel runs it: every
     /// stage `Events::between` reads off a real kernel's tags (due, finish,
-    /// configuration take, the drive direction check's)
-    /// lands on a tick the lane charges it, and the SLOW block's due and
-    /// finish on exactly the lane's.
+    /// configuration take) lands on a tick the lane charges it, and the
+    /// SLOW block's due and finish on exactly the lane's.
     #[test]
     fn the_lane_charges_each_stage_on_the_kernels_tick() {
         let sh = Shared::new();
@@ -834,7 +825,7 @@ mod tests {
         while !k.probe_tags().slow_due {
             k.on_scan(f, &sh);
         }
-        let [slow, finish, refresh, drive] = COSTS;
+        let [slow, finish, refresh] = COSTS;
         let mut cpu = Cpu::default();
         cpu.start_kernel(
             KernelLane {
@@ -847,7 +838,6 @@ mod tests {
                     refresh,
                     slow_due: [slow; EVENT_REGIMES],
                     finish,
-                    drive,
                     health_close: 0,
                     catch_up: 0,
                 },
@@ -859,7 +849,7 @@ mod tests {
             lane_tick(&mut cpu, &mut now, sh.config_seq());
         }
         let ticks = 400 * DECIM_SLOW as u32 * DECIM_MED as u32;
-        let mut seen = [0u32; 4];
+        let mut seen = [0u32; 3];
         for t in 0..ticks {
             if t == ticks / 2 {
                 write_config(&sh, |_| {});
@@ -868,13 +858,9 @@ mod tests {
             let before = k.probe_tags();
             k.on_scan(f, &sh);
             let ev = Events::between(before, k.probe_tags());
-            let ran = [ev.slow, ev.finish, ev.refresh, ev.drive];
+            let ran = [ev.slow, ev.finish, ev.refresh];
             let charged = COSTS.map(|c| body & c != 0);
             assert_eq!(ran[..2], charged[..2], "tick {t}");
-            assert!(
-                !(charged[2] && charged[3]),
-                "tick {t}: the drive stage stacked, {charged:?}"
-            );
             for (n, (&r, &c)) in seen.iter_mut().zip(ran.iter().zip(&charged)) {
                 assert!(!r || c, "tick {t}: ran {ran:?}, charged {charged:?}");
                 *n += r as u32;

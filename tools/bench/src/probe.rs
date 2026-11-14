@@ -442,10 +442,13 @@ mod tests {
     }
 
     /// Two runs of one bench image on one servo, each window's record as
-    /// dumped. The probe's row reads 307 and 291 about the 293 it is held
-    /// to, moved by the tel stepping window's own 3054 and 3345 plain ticks
-    /// (mean 1148 and 1162). Over the stepping window's plain ticks, 400
-    /// thousand on the same steps, the same TEL ticks read 262 and 259.
+    /// dumped. The dumps were recorded with a drive-stage row and re-laid to
+    /// the record without it (its three words dropped, the batch count moved
+    /// into its tag's place). The probe's row reads 307 and 291 about the 293
+    /// it is held to, moved by the tel stepping window's own 3054 and 3345
+    /// plain ticks (mean 1148 and 1162). Over the stepping window's plain
+    /// ticks, 400 thousand on the same steps, the same TEL ticks read 262 and
+    /// 259.
     #[test]
     fn a_stepping_tel_row_reads_over_the_stepping_windows_plain_ticks() {
         let runs = [

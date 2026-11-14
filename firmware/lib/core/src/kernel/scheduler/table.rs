@@ -41,7 +41,7 @@ pub mod phase {
     pub const PUBLISH: u8 = 7;
     /// The configuration take after a commit.
     pub const SPARE_A: u8 = 8;
-    /// The drive direction check while the wiring is unproven.
+    /// No medium work: the fast path alone.
     pub const SPARE_B: u8 = 9;
 }
 

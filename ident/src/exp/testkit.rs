@@ -264,15 +264,6 @@ pub struct FakeServo {
     pub soft: Option<(f64, f64)>,
     /// Goal writes under torque that the soft endstop zeroed as written.
     pub refused_goals: Vec<i16>,
-    /// The kernel's drive direction check, its OpenLoop rule: from the
-    /// torque enable until a leg of travel the duty's way proves the wiring,
-    /// two legs against the duty past a soft limit latch `drive_reversed`.
-    /// False never checks.
-    pub drive_check: bool,
-    drive_proven: bool,
-    drive_anchor: f64,
-    /// `drive_reversed` latched: no drive until the next torque enable.
-    pub reversed: bool,
     /// The permit as last written; [`FakeServo::permit_live`] says whether
     /// it is granted.
     pub permit: bool,
@@ -402,10 +393,6 @@ impl FakeServo {
             bursts: 0,
             soft: None,
             refused_goals: Vec::new(),
-            drive_check: false,
-            drive_proven: false,
-            drive_anchor: 0.0,
-            reversed: false,
             permit: false,
             honors_permit: true,
             lease_ms: None,
@@ -570,34 +557,11 @@ impl FakeServo {
             && !(self.permit_live() && self.honors_permit)
     }
 
-    /// One drive direction check on the plant as it stands.
-    fn check_drive(&mut self) {
-        if !self.drive_check || self.drive_proven || self.reversed || !self.torque {
-            return;
-        }
-        let duty = self.applied();
-        if duty == 0 {
-            self.drive_anchor = self.pos;
-            return;
-        }
-        let leg = faults::DRIVE_LEG_COUNTS as f64;
-        let along = (self.pos - self.drive_anchor) * duty.signum() as f64;
-        let walled = self.soft.is_some_and(|(lo, hi)| {
-            if self.pos < self.drive_anchor {
-                self.pos <= lo
-            } else {
-                self.pos >= hi
-            }
-        });
-        self.drive_proven = along >= leg;
-        self.reversed = along <= -2.0 * leg && walled;
-    }
-
     /// The duty the bridge actually sees: zero with torque off, zero driving
     /// outward at a soft limit the permit does not open, and the governed
     /// duty under the limiter.
     fn applied(&self) -> i16 {
-        if !self.torque || self.reversed || self.endstop_blocks() {
+        if !self.torque || self.endstop_blocks() {
             0
         } else {
             self.govern().0
@@ -960,8 +924,6 @@ impl FakeServo {
             let on = value != 0;
             if on && !self.torque {
                 self.reset_ceiling(self.floor_q15 as f64);
-                self.reversed = false;
-                self.drive_anchor = self.pos;
             }
             if !on {
                 self.folded = false;
@@ -993,7 +955,6 @@ impl FakeServo {
             if on != self.burst.drive_polarity {
                 self.drive_polarity = !self.drive_polarity;
                 self.burst.drive_polarity = on;
-                self.drive_proven = false;
             }
         } else if reg == control::STALL_PERMIT {
             self.permit = value != 0;
@@ -1087,7 +1048,6 @@ impl FakeServo {
         self.advance_plant(ms);
         self.press(self.t_ms - from);
         self.stall_timer(from);
-        self.check_drive();
     }
 
     fn advance_plant(&mut self, ms: f64) {
@@ -1237,14 +1197,12 @@ impl FakeServo {
         }
         self.ticks += rows as f64;
         self.stall_timer(t0);
-        self.check_drive();
         self.faulted()
     }
 
     fn faulted(&self) -> bool {
         matches!(self.fault_at_ms, Some(at) if self.t_ms >= at)
             || matches!(self.fault_after_bursts, Some(n) if self.bursts >= n)
-            || self.reversed
     }
 
     /// One watch of `rows` folded, as the pump makes it, without the bus
@@ -1275,9 +1233,7 @@ impl FakeServo {
         let duty = self.applied();
         let driving = duty != 0;
         let (i, _) = self.sensed();
-        let (fault_flags, fault_code) = if self.reversed {
-            (faults::BIT_DATA, faults::CODE_DRIVE_REVERSED)
-        } else if self.faulted() {
+        let (fault_flags, fault_code) = if self.faulted() {
             (faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT)
         } else {
             (0, 0)

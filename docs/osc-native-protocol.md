@@ -837,12 +837,11 @@ newly-latched kind (`fault_code`, `0x221`):
 | 4   | 5    | `sensor`         |
 | 5   | 6    | `under_volt`     |
 | 6   | 7    | `data`           |
-| 6   | 8    | `drive_reversed` |
 | 7   | 9    | `deadman`        |
 
-Any set bit forces the drive off (`drive_reversed` shorts the winding
-instead, below); the `torque_enable` 0 to 1 edge is the only
-acknowledgement, and a still-present condition re-latches at once.
+Code 8 is unassigned. Any set bit forces the drive off; the
+`torque_enable` 0 to 1 edge is the only acknowledgement, and a
+still-present condition re-latches at once.
 The kernel reads `torque_enable`, `mode` and the goals once per medium
 tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
 and a new `goal_duty` take effect at the first medium tick after the
@@ -855,52 +854,36 @@ stall timer runs off the duty ceiling (sec 5.8), so with
 against a stop or a jam for longer than `stall_time_ticks` latches it
 unless a stall permit is live.
 
-`drive_reversed` shares the `data` bit, since the stored
-`drive_polarity` does not describe the servo, and latches when the shaft
-turns against the drive: a motor wired the other way round, which would
-also turn the soft-limit walls the wrong way. From boot, and again after
-a write that changes `drive_polarity`, the kernel follows the observer's
-position (`theta_hat_q16`) in legs of 20 counts, about 1 degree on the
-bench MG90, once per medium period while torque is on: an idle drive
-drags the start of the leg along. A drive is idle once the duty is zero
-on two periods in a row; a single zero is a loop passing through it with
-the shaft at speed, and the leg keeps its start (DES
-`a_zero_duty_check_in_a_reversed_run_keeps_its_legs`). A leg's end counts the
-next period only where the pot has come half a leg from the leg's start
-the leg's way: an observer that walks off a still rotor leaves the pot
-behind whatever offset the two hold at rest, while on a running shaft the
-observer trails the pot, a reversed motor's by up to a leg and a half
-(DES `a_reversed_motor_at_the_bench_limits_latches_and_brakes`). A leg the
-pot has not followed keeps its start. A counted leg is judged the period
-after against the drive's direction, the
-position loop's or the profile's in Position and Velocity, the applied
-duty in OpenLoop and Current. A leg the drive's way proves the wiring,
-and the check stops until the next boot or polarity change. Two legs in
-a row against it, 40 counts, latch the fault: in Position and Velocity
-anywhere, in OpenLoop and Current only at a soft limit with the drive
-pointing back in, within about a leg past it, since a load may overpower
-an open drive mid travel (DES
-`a_reversed_motor_faults_in_the_closed_loops_within_three_legs`,
-`a_reversed_open_drive_faults_at_the_soft_limit`). A latch leaves the
-wiring unproven, so the next enable checks again; `osc cal` learns the
-polarity. While `drive_reversed` is latched the bridge shorts the
-winding, the passive brake the position hold parks on, in place of
-switching the drive off: the short opposes the shaft's motion whichever
-way the motor is wired and drives nothing, so a reversed shaft stops
-within about five legs of the latch where a coast runs ten or more. The
-acknowledgement releases it with the latch (DES
-`the_latch_brakes_until_the_ack`). A sag the loop wins does not latch
-it, up to a load at the current limit (DES
-`gravity_sag_at_the_limit_never_reads_reversed`).
-Before a first move has proven the wiring, a load the limit cannot hold,
-or a push that drives a closed loop back two legs, reads the same as a
-reversed motor and latches it. One case slips through: a reversed motor
-that holds, drifts, and is then stepped toward its drift can creep to the
-goal and prove the wiring, since at low speed friction and the closed
-loop's dithering duty leave a slow leg unable to show which way the motor
-turns (DES `a_reversed_motor_stepped_toward_its_drift_latches`, ignored).
-The host's direction nudge before it closes a loop (`osc cal`, `osc
-ident`, the bench harness) catches leads swapped at assembly.
+**Drive polarity.** `drive_polarity` is a calibration fact: which way
+the motor turns the pot's counts under a positive drive. The firmware
+does not check it against the motor at run time. `osc cal` finds it from
+a pulse each way and leaves it in the set it stamps, and the field is
+under the plant stamp (below), so a write that changes it reads as
+`STAMP_MISMATCH` and the next enable of a closed loop is refused until a
+tool stamps the set again (DES
+`a_polarity_write_refuses_closed_loop_until_the_stamp`). After a motor
+is rewired or replaced, run the calibration again; a tool that already
+knows the wiring flips the field with torque off and stamps the set. A
+hand edit alone never closes a loop.
+
+A stored polarity that is wrong under a matching stamp inverts every
+closed loop, and the soft-limit walls with it: the walls judge a current
+by its sign, so past a limit they close the side that would bring the
+shaft back. In Position and Velocity the loop drives the shaft away from
+its goal and through the soft limit toward the hard stop, at the current
+limit, until a timer acts. In Position that is `position_error`,
+`pos_error_time_ticks` after the error passed `pos_error_counts`, on the
+stop or short of it, and the drive goes off. In Velocity it is the
+press's verdict on the stop, `stall_time_ticks` after the observer reads
+the shaft still (sec 5.8): `stall` under `stall_response` Fault, and the
+drive goes off; under Yield the fold to `i_cont_counts`, which the servo
+then holds against the stop. DES
+`a_reversed_motor_runs_to_its_stop_and_a_timer_latches` has the travel,
+the times and the currents on the bench MG90's plant, `stall_response`
+Fault. In OpenLoop and Current the drive is the host's: the shaft runs
+to the stop the same way, and the press's rule applies there as at any
+stop. The host's direction nudge before it closes a loop (`osc cal`,
+`osc ident`, the bench harness) catches leads swapped at assembly.
 
 **Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified

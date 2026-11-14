@@ -126,7 +126,6 @@ const NONE: Events = Events {
     bank: false,
     slow: false,
     finish: false,
-    drive: false,
     health: false,
 };
 
@@ -197,12 +196,10 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 ///
 /// Two ticks bound the crest, apart: the scheduler's publish gate starts
 /// no burst on SPARE_A nor while a take is pending, so a refresh tick
-/// carries no row and a row rides at most the drive stage.
+/// carries no row and a row rides no stage ahead of the fast step.
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
-    use budget::{
-        DRIVE_STAGE, ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, TROUGH_DONE,
-    };
+    use budget::{ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, TROUGH_DONE};
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
     const { assert!(ENTRY + TROUGH_DONE <= NEXT_TROUGH) };
     let refresh = ENTRY + REFRESH + FRAME_DONE;
@@ -210,7 +207,7 @@ fn the_tick_reads_its_scan_before_the_next_lands() {
         refresh <= NEXT_CREST,
         "refresh tick {refresh} past {NEXT_CREST}"
     );
-    let row = ENTRY + DRIVE_STAGE + FRAME_DONE + copy;
+    let row = ENTRY + FRAME_DONE + copy;
     assert!(row <= NEXT_CREST, "row tick {row} past {NEXT_CREST}");
     assert!(copy <= ENTRY_EXIT, "a {copy} copy outlasts {ENTRY_EXIT}");
 }
