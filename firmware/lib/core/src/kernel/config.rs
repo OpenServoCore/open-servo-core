@@ -51,10 +51,13 @@ pub struct KernelConfig {
     pub ol_floor_q15: u16,
     /// `v_floor_ticks` as duties, published at the OpenLoop decay.
     pub v_floor_q15: [u16; 2],
-    /// The winding resistance the current loop commands through on a tick
-    /// with no reading (`CurrentLoop::step`), Q.12 vcounts per ccount:
-    /// `motor.r_q12`, or the loop's own `i_kp_q88` where the winding is
-    /// unidentified, so its command still lifts over the window floor.
+    /// The take's choice of the resistance the current loop commands
+    /// through on a tick with no reading, Q.12 vcounts per ccount:
+    /// `motor.r_q12` as stored, or the loop's own `i_kp_q88` where the
+    /// winding is unidentified, so its command still lifts over the window
+    /// floor. The tick reads `Command::r_loop_q12`: an identified winding
+    /// at the estimate's temperature, the stand-in as chosen here
+    /// (`Medium::r_hat`).
     pub r_loop_q12: u32,
     pub therm: ThermCfg,
 }

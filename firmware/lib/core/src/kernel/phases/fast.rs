@@ -77,6 +77,12 @@ pub struct Command {
     /// The current loop's clamp on `vbus_counts`, prepared by `prepare_rail`.
     #[cfg(not(feature = "experiment"))]
     pub rail: RailClamp,
+    /// The winding resistance the current loop commands through on a tick
+    /// with no reading (`CurrentLoop::step`), Q.12 vcounts per ccount: the
+    /// one at the estimate's temperature, or the take's stand-in for an
+    /// unidentified winding (`Medium::r_hat`).
+    #[cfg(not(feature = "experiment"))]
+    pub r_loop_q12: u32,
 }
 
 #[cfg(not(feature = "experiment"))]
@@ -414,7 +420,7 @@ impl Fast {
                     &cmd.rail,
                     cmd.vbus_recip_q15,
                     &cfg.loop_current,
-                    cfg.r_loop_q12,
+                    cmd.r_loop_q12,
                 );
                 self.duty_q15 = duty;
                 // closed-loop decay is fixed Slow (spec: config enum

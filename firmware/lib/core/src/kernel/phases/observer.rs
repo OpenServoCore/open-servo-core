@@ -15,7 +15,7 @@ impl Medium {
         // the band gain is the interval this sample linearized in
         let (pos, band_gain_q4) = super::pos_q4_band_gain(shared, self.ctl.lut_live, raw_pos);
         let m = &cfg.motor;
-        self.omega_bemf = fast.close_bemf_half(m.r_q12, m.recip_ke_q, self.recip_arr_q24);
+        self.omega_bemf = fast.close_bemf_half(self.r_hat_q12, m.recip_ke_q, self.recip_arr_q24);
         self.fusion.step(
             fast.i_meas_last() as i32,
             pos,

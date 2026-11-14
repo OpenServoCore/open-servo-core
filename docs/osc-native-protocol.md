@@ -1253,8 +1253,9 @@ why.
 **Blind band.** Under the window floor (`window_floor_q15`, 5.3% on
 osc-dev-v006) the shunt reports nothing and the servo applies
 a stall-safe base duty instead of trusting its ceiling:
-`min(i_lim x R / Vbus, floor)` from the identified `r_q12`, whose stall
-current is at most the limit. A servo with no identified resistance
+`min(i_lim x R / Vbus, floor)` from the identified `r_q12` as stored
+(not `r_hat_q12`, below: a ceiling errs low on the cold value), whose
+stall current is at most the limit. A servo with no identified resistance
 (`r_q12` 0) has the floor as its base, so the lowest duty it applies to
 a goal above the floor is the floor itself, and stall current in the
 blind band is bounded by `floor x Vbus / R` of the actual winding:
@@ -1263,6 +1264,23 @@ limit for any winding above 0.89 ohm on 8.4 V. If the floor
 already draws more than the limit, the applied duty stays pinned at
 the floor and the stall timer decides (DES
 `virgin_blind_band_passes_to_the_window_floor`).
+
+**Winding resistance.** `r_hat_q12` (u16, RO, `0x26A` in TELEMETRY,
+Q4.12 vcounts per current count, the units of CALIB `r_q12`) is the
+winding resistance the servo's control path uses: `r_q12` raised by
+copper's 0.393% per °C on the winding estimate's rise over the NTC
+(`t_winding_cc` less `t_ntc_cc`), saturating at 65535. It is the heat
+model's number, not a measurement. The back-EMF speed estimate and the
+current loop under the window floor read it; the blind band's base duty
+above does not. It reads `r_q12` itself while nothing has heated the
+estimate, while no NTC curve is set and on a failed NTC (`therm_flags`),
+and 0 while `r_q12` is 0. The servo publishes it at boot, every 16 ms
+with the estimate and within a medium period (0.5 ms) of a CONFIG or
+CALIB write that reaches the kernel. It takes `r_q12` as the resistance
+at the NTC's temperature: a board warmer or colder than the one `r_q12`
+was identified at is not corrected (control-theory "The Winding
+Estimate"; unit
+`r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools`).
 
 **Shunt burst.** The high-rate shunt capture (`arm` at `0x198` in
 CONTROL, with `duty_q15` at `0x196` and `chans` at `0x19A`; read back

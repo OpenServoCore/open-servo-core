@@ -25,6 +25,12 @@
 //! settle under the cutoff ends in the latch, whatever the fields hold
 //! (unit `the_warm_feedback_ends_under_the_cutoff_or_in_the_latch`).
 //!
+//! The same factor gives the resistance the control path reads
+//! ([`WindingTherm::r_hat_q12`]): the stored `r_q12` raised by the copper's
+//! rise over the NTC. It is the model's number, not a measurement, and it
+//! takes `r_q12` as read at the NTC's temperature: a board warmer or
+//! colder than the one `r_q12` was identified on is not corrected.
+//!
 //! No NTC curve is UNSET: `t` reads [`UNSET_CC`], which sits under the
 //! cutoff, and the flag says so. A curve with no gain reads the NTC
 //! alone. The NTC itself is checked every time: a raw count within
@@ -183,6 +189,16 @@ impl WindingTherm {
         warm_q16(self.rise_cc)
     }
 
+    /// The winding resistance at the estimate's temperature, Q4.12
+    /// vcounts per ccount: `r_q12 x (1 + warm)` on the last published
+    /// excess, saturating; `r_q12` itself while UNSET or NTC_FAULT, 0 for
+    /// an unidentified winding. The warm factor sits under 2^16, so its
+    /// product with a u16 fits u32.
+    pub fn r_hat_q12(&self, r_q12: u16) -> u16 {
+        let r = r_q12 as u32;
+        (r + ((r * self.warm_q16()) >> 16)).min(u16::MAX as u32) as u16
+    }
+
     pub fn t_cc(&self) -> i16 {
         self.t_cc
     }
@@ -330,6 +346,43 @@ mod tests {
         assert_eq!(th.warm_q16(), warm_q16(1222));
         th.update(0, [277 * 277, 0], &CFG);
         assert_eq!(th.warm_q16(), 0, "UNSET feeds nothing back");
+    }
+
+    /// The modeled resistance is the stored one raised by the warm factor
+    /// on the last published excess: 2.0 vcounts per count reads 2.096 at
+    /// 12.22 C over the NTC (4.80 %) and 2.222 at the 28.31 C a 400-count
+    /// hold settles at on the bench constant (11.12 %). It is the stored
+    /// one with no heat, while UNSET and on a failed NTC, 0 for an
+    /// unidentified winding at any heat, and it saturates in its u16 at
+    /// the 150 C the feedback stops at (58.94 %).
+    #[test]
+    fn the_modeled_resistance_is_the_stored_one_raised_by_the_warm_factor() {
+        let mut th = WindingTherm::new();
+        assert_eq!(th.r_hat_q12(8192), 8192, "UNSET");
+        th.update(RAW_25, [0; 2], &CFG);
+        assert_eq!(th.r_hat_q12(8192), 8192, "no heat");
+        th.update(RAW_25, [277 * 277, 0], &CFG);
+        assert_eq!((th.warm_q16(), th.r_hat_q12(8192)), (3146, 8585));
+        assert_eq!(th.r_hat_q12(0), 0);
+        th.update(RAW_25, [177_769, 0], &CFG);
+        assert_eq!(th.t_cc(), 5331);
+        assert_eq!((th.warm_q16(), th.r_hat_q12(8192)), (7290, 9103));
+        assert_eq!(th.r_hat_q12(1), 1);
+        th.update(0, [177_769, 0], &CFG);
+        assert_eq!(th.r_hat_q12(8192), 8192, "NTC_FAULT");
+        let no_curve = ThermCfg {
+            ntc: NtcCfg::default(),
+            ..CFG
+        };
+        th.update(RAW_25, [177_769, 0], &no_curve);
+        assert_eq!(th.r_hat_q12(8192), 8192, "UNSET");
+        th.update(RAW_25, [u32::MAX, 0], &CFG);
+        assert_eq!(th.warm_q16(), 38627);
+        assert_eq!(th.r_hat_q12(8192), 13020);
+        assert_eq!(th.r_hat_q12(41232), 65534, "the last one under the top");
+        assert_eq!(th.r_hat_q12(41234), u16::MAX, "65537 saturates");
+        assert_eq!(th.r_hat_q12(u16::MAX), u16::MAX);
+        assert_eq!(th.r_hat_q12(0), 0);
     }
 
     /// A held current through the SLOW block's two stages as the kernel

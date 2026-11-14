@@ -44,7 +44,7 @@ TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period it triggers two 
 | --- | --- | --- |
 | **FAST** | every tick, `TICK_HZ` = 20 kHz | window measurement, overcurrent trip, back-EMF sums, current loop, motor write |
 | **MEDIUM** | `DECIM_MED` = 10 ticks (2 kHz) | outer loops, estimators, limits, detectors, publishes; one phase per tick |
-| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the two heats; then the winding estimate, its cutoff (overtemperature) and the shunt zero's aging; one stage per period |
+| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the two heats; then the winding estimate, its cutoff (overtemperature), the winding resistance at its temperature and the shunt zero's aging; one stage per period |
 
 Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 
@@ -71,7 +71,7 @@ Module layout:
 | `kernel/phases/loops/` | loops and detectors the phases run |
 | `kernel/config.rs` | `KernelConfig`, the kernel's copy of CONFIG and CALIB |
 
-Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind, current reference and band, rail clamp); the FAST measurement reaches the same tick's medium phase as `Measured`. Only the CONTROL phase reads CONTROL, so a host write lands at the next period's CONTROL phase. The sample-to-command delay is fixed by the table ([control-theory.md, Why a Cascade](control-theory.md#why-a-cascade)).
+Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind, current reference and band, rail clamp, the winding resistance); the FAST measurement reaches the same tick's medium phase as `Measured`. Only the CONTROL phase reads CONTROL, so a host write lands at the next period's CONTROL phase. The sample-to-command delay is fixed by the table ([control-theory.md, Why a Cascade](control-theory.md#why-a-cascade)).
 
 The shunt zero: every current reading subtracts the zero-current output of the sense chain, which moves with board temperature, over minutes. The tracker (`estimator/bias.rs`) keeps two zeros, driver awake and driver asleep, and takes at most one sample a control period, at PUBLISH, on that tick's trough sample. The sample is named by the bridge state the previous command left: asleep, a brake or a coast once the state has held `ZERO_SETTLE_TICKS`, or a Slow-decay drive whose brake half is at least the board's minimum; any other period feeds nothing. Each zero is a first-order filter with a time constant of 1024 periods (0.51 s). A zero that has taken no sample for `STALE_PERIODS` (205) SLOW periods, 3.3 s, is stale and moves by the other zero's steps, so a drift seen in one state carries into the other; a fresh one holds, and the pair learns the awake step. The age counts down at the SLOW finish. The FAST measurement reads the awake zero every tick. Pins: `the_zero_takes_one_sample_a_period_at_publish`, `an_unfed_zero_is_stale_after_stale_periods_of_slow`, `the_awake_step_is_learned_and_rides_the_torque_off_drift`.
 
@@ -110,7 +110,17 @@ The next trough scan lands mid-period and the next crest scan near the period's 
 
 The current loop in step 6 takes the reading step 3 measured, with two exceptions that it takes as no reading. A window under the shunt floor reports nothing. The first window read after a command the bridge drops reads far over the winding current, and on the proportional gain that one reading steps the drive across zero. A board names the narrowest commanded width that comes out as a pulse (`KernelTiming::bridge_min_ticks`); the loop skips the first read window after a command of 1 tick up to one under it, in either direction. Zero duty is not a dropped command, so a lift from rest, the park and its wake read as before, and a board constant of 0 turns the gate off. Only the loop skips the reading: the overcurrent trip, the held current, the tick block and the observers see every read window (`the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop`).
 
-On a tick with no reading the loop integrates nothing. It commands the reference's volts through the winding on top of the feed-forward, `r x i_ref + u_ff`, and leaves its integrator at `r x i_ref`, so a constant reference under the floor is a constant command, a reference whose volts clear the floor opens a window on its first command, and the first reading back starts from those volts (`the_command_never_integrates_under_the_shunt_floor`, `under_the_floor_the_command_is_the_reference_through_the_winding`, `the_band_under_the_floor_holds_at_most_the_floors_volts_over_r`). `r` is CALIB `r_q12`, or the loop's own `i_kp_q88` while that is 0; the configuration take selects it ([sec 6.2](#62-the-take)), so the tick tests nothing (`an_unidentified_winding_is_commanded_through_the_loops_own_gain`). Under the floor the held current is that reference: the observer, the limits and the tick block's `i_tick_counts` read it there, with `tick_flags` still naming no reading. The overcurrent trip and the back-EMF sums take a reading or nothing (`the_reference_held_under_the_floor_reaches_no_trip_and_no_back_emf_sum`). OpenLoop holds its last reading through the band as before. The rule and its limits are in [control-theory](control-theory.md#the-blind-band-under-the-floor).
+On a tick with no reading the loop integrates nothing. It commands the reference's volts through the winding on top of the feed-forward, `r x i_ref + u_ff`, and leaves its integrator at `r x i_ref`, so a constant reference under the floor is a constant command, a reference whose volts clear the floor opens a window on its first command, and the first reading back starts from those volts (`the_command_never_integrates_under_the_shunt_floor`, `under_the_floor_the_command_is_the_reference_through_the_winding`, `the_band_under_the_floor_holds_at_most_the_floors_volts_over_r`). `r` is the winding resistance at the estimate's temperature (below), or the loop's own `i_kp_q88`, unscaled, while CALIB `r_q12` is 0; the configuration take makes that choice ([sec 6.2](#62-the-take)) and the tick loads one value from the `Command`, so it tests nothing (`an_unidentified_winding_is_commanded_through_the_loops_own_gain`, `under_the_floor_a_warm_winding_is_commanded_through_r_hat`). Under the floor the held current is that reference: the observer, the limits and the tick block's `i_tick_counts` read it there, with `tick_flags` still naming no reading. The overcurrent trip and the back-EMF sums take a reading or nothing (`the_reference_held_under_the_floor_reaches_no_trip_and_no_back_emf_sum`). OpenLoop holds its last reading through the band as before. The rule and its limits are in [control-theory](control-theory.md#the-blind-band-under-the-floor).
+
+The winding resistance: the control path reads one resistance, CALIB `r_q12` raised by copper's slope on the winding estimate's rise over the NTC, `r_hat = r_q12 x (1 + warm)`, saturating in its u16 ([control-theory](control-theory.md#the-winding-estimate)). `Medium::r_hat` computes it off the tick's straight line, on the SLOW finish right after the estimate, at the boot seed and at the configuration take, so it is never stale against the estimate or a new `r_q12`, and publishes it there as `r_hat_q12`. It is the heat model's number, not a measurement: `r_q12` itself with nothing held, with no NTC curve and on a failed NTC, and 0 for an unidentified winding.
+
+| Consumer | Reads | Where |
+| --- | --- | --- |
+| back-EMF boxcar's `R x i` | `r_hat` | OBSERVER, at the half's close |
+| current loop on a tick with no reading | `r_hat`, through the `Command` | FAST |
+| OpenLoop's stall-safe base duty | the stored `r_q12` | LIMITS |
+
+The base duty stays on the stored value on purpose: it is a ceiling, which must err low, and a cold resistance does. Pins: `r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools`, `r_hat_is_the_stored_resistance_with_no_heat_unset_or_on_a_failed_ntc`, `r_hat_follows_a_new_r_q12_at_the_take_and_saturates`, `the_boxcar_reads_a_warm_winding_at_the_speed_it_read_cold`, `the_stall_safe_open_loop_duty_stays_on_the_stored_resistance`.
 
 ### 2.4 Event slots
 
@@ -326,7 +336,7 @@ On SPARE_A, `config_due` compares the count with the one last taken:
 
 | Count | Action |
 | --- | --- |
-| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values |
+| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them |
 | odd | keep the current set; check again at the next SPARE_A |
 | equal to the last taken | nothing |
 

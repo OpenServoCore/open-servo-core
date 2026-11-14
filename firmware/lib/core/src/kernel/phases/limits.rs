@@ -59,7 +59,9 @@ impl Medium {
         );
         self.i_band = band;
         // the stall-safe duty lim x R / vbus: winding R alone, so it errs low
-        // by the bridge and shunt; unset R keeps it at the floor
+        // by the bridge and shunt; unset R keeps it at the floor. The stored
+        // `r_q12`, not the one at the estimate's temperature the loops read:
+        // this is a ceiling, which must err low, and a cold resistance does
         let r_q12 = cfg.motor.r_q12;
         self.ol_base_q15 = if r_q12 == 0 {
             cfg.ol_floor_q15
