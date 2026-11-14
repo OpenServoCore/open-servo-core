@@ -29,6 +29,8 @@ mod rail;
 #[cfg(not(feature = "experiment"))]
 mod slow;
 #[cfg(not(feature = "experiment"))]
+mod speed;
+#[cfg(not(feature = "experiment"))]
 mod trajectory;
 #[cfg(not(feature = "experiment"))]
 mod velocity;
@@ -111,8 +113,10 @@ pub(in crate::kernel) struct Medium {
     run: bool,
     pub(in crate::kernel) traj: TrajGen,
     pub(in crate::kernel) fusion: FusionObs,
-    /// The observer phase's picks, for the later phases.
+    /// The observer phase's pick, for the later phases.
     pub(in crate::kernel) omega_hat: i32,
+    /// The boxcar the SPEED phase closed, for the next period's OBSERVER
+    /// and PUBLISH.
     omega_bemf: Option<i32>,
     /// Linearized counts per raw count at the observer's sample.
     band_gain_q4: u16,

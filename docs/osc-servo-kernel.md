@@ -51,7 +51,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | Phase | Name | Work |
 | --- | --- | --- |
 | 0 | CONTROL | CONTROL read, enable and mode edges, drive kind; the configuration on the first tick |
-| 1 | OBSERVER | back-EMF close, observer step, speed source switch |
+| 1 | OBSERVER | observer step, speed source switch on the boxcar SPEED closed |
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
 | 3 | LIMITS | limits fold, OpenLoop base duty, stall fault |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land |
@@ -59,7 +59,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
 | 7 | PUBLISH | the shunt zero's sample; estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit |
-| 9 | SPARE_B | none: the fast path alone |
+| 9 | SPEED | back-EMF close: the boxcar the next period's OBSERVER reads |
 
 Module layout:
 
@@ -72,6 +72,8 @@ Module layout:
 | `kernel/config.rs` | `KernelConfig`, the kernel's copy of CONFIG and CALIB |
 
 Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind, current reference and band, rail clamp, the winding resistance); the FAST measurement reaches the same tick's medium phase as `Measured`. Only the CONTROL phase reads CONTROL, so a host write lands at the next period's CONTROL phase. The sample-to-command delay is fixed by the table ([control-theory.md, Why a Cascade](control-theory.md#why-a-cascade)).
+
+The back-EMF boxcar: FAST adds each tick's window to the open half, and SPEED closes the half on the period's last tick, after that tick's own window is in. A half is therefore the ten rows of one period, phases 0 to 9, every row in exactly one half, and the boxcar is the two periods that end at the close. The next period's OBSERVER feeds it to the speed source switch two ticks later, and PUBLISH lands the same boxcar as `omega_bemf_cps`, so a published source and boxcar belong together. The rows of phases 0 and 1 belong to the half that is still open when OBSERVER runs: a command that lands at CONTROL first shows in the phase 1 row, and reaches the switch with the next period's boxcar. The close reads the winding resistance and the Ke reciprocal as they stand on its own tick, behind a take on SPARE_A and a SLOW finish of the same period. In Open nothing drives, the tick's own row voids the half, and the close folds no product. Pin: `the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead`.
 
 The shunt zero: every current reading subtracts the zero-current output of the sense chain, which moves with board temperature, over minutes. The tracker (`estimator/bias.rs`) keeps two zeros, driver awake and driver asleep, and takes at most one sample a control period, at PUBLISH, on that tick's trough sample. The sample is named by the bridge state the previous command left: asleep, a brake or a coast once the state has held `ZERO_SETTLE_TICKS`, or a Slow-decay drive whose brake half is at least the board's minimum; any other period feeds nothing. Each zero is a first-order filter with a time constant of 1024 periods (0.51 s). A zero that has taken no sample for `STALE_PERIODS` (205) SLOW periods, 3.3 s, is stale and moves by the other zero's steps, so a drift seen in one state carries into the other; a fresh one holds, and the pair learns the awake step. The age counts down at the SLOW finish. The FAST measurement reads the awake zero every tick. Pins: `the_zero_takes_one_sample_a_period_at_publish`, `an_unfed_zero_is_stale_after_stale_periods_of_slow`, `the_awake_step_is_learned_and_rides_the_torque_off_drift`.
 
@@ -116,7 +118,7 @@ The winding resistance: the control path reads one resistance, CALIB `r_q12` rai
 
 | Consumer | Reads | Where |
 | --- | --- | --- |
-| back-EMF boxcar's `R x i` | `r_hat` | OBSERVER, at the half's close |
+| back-EMF boxcar's `R x i` | `r_hat` | SPEED, at the half's close |
 | current loop on a tick with no reading | `r_hat`, through the `Command` | FAST |
 | OpenLoop's stall-safe base duty | the stored `r_q12` | LIMITS |
 
@@ -223,6 +225,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `KERNEL`, `KERNEL_MEAN`, `TICK_PUBLISH` | plain tick body by regime (Open, Closed) and phase, maximum and mean |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
+| `LIMIT_SPLIT`, `SPEED_STAGE` | estimated additions over measured rows, by phase, until the probe refills the phase; `SPEED_STAGE` is what came with phase SPEED's stage: the close on SPEED, and on SPARE_A the dispatch through the phase table that grew to hold it |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
 | `TROUGH_DONE`, `FRAME_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |

@@ -13,9 +13,7 @@ pub const TICK_HZ: u32 = 20_000;
 /// FAST -> MEDIUM decimation: MED_HZ = tick_hz / DECIM_MED (2 kHz at 20 kHz).
 pub const DECIM_MED: u8 = 10;
 const _: () = assert!(
-    phase::PUBLISH < phase::SPARE_A
-        && phase::SPARE_A < phase::SPARE_B
-        && phase::SPARE_B < DECIM_MED
+    phase::PUBLISH < phase::SPARE_A && phase::SPARE_A < phase::SPEED && phase::SPEED < DECIM_MED
 );
 /// MEDIUM -> SLOW decimation: SLOW_HZ = MED_HZ / DECIM_SLOW (62.5 Hz).
 pub const DECIM_SLOW: u8 = 32;
@@ -24,7 +22,7 @@ pub const DECIM_SLOW: u8 = 32;
 pub mod phase {
     /// Configuration, CONTROL, the edges and the drive kind.
     pub const CONTROL: u8 = 0;
-    /// Back-EMF close, observer step, speed source switch.
+    /// Observer step, speed source switch on the boxcar SPEED closed.
     pub const OBSERVER: u8 = 1;
     /// Trajectory and position loop; the hold updates the drive kind.
     pub const TRAJECTORY: u8 = 2;
@@ -41,8 +39,9 @@ pub mod phase {
     pub const PUBLISH: u8 = 7;
     /// The configuration take after a commit.
     pub const SPARE_A: u8 = 8;
-    /// No medium work: the fast path alone.
-    pub const SPARE_B: u8 = 9;
+    /// Back-EMF close, on the half this tick's sample ends: the boxcar the
+    /// next period's OBSERVER reads.
+    pub const SPEED: u8 = 9;
 }
 
 /// Ticks between two tick-load closes.
@@ -116,6 +115,8 @@ impl Medium {
                 fast.track_bias(shared);
                 self.publish(shared, faults, fast)
             }
+            #[cfg(not(feature = "experiment"))]
+            phase::SPEED => self.speed(cfg, fast),
             _ => {}
         }
         false

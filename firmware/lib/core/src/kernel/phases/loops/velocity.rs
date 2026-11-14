@@ -67,7 +67,11 @@ impl VelocityLoop {
     /// on top of back-calc, and when the band shrinks mid-run (rail fold,
     /// stall fold) the clamp drains the stale charge to the new ceiling in
     /// one tick: intended, the fold propagates instantly. The friction
-    /// model is CALIB `motor`'s.
+    /// model is CALIB `motor`'s. Always inline: left to the compiler it
+    /// comes out of line as the tick's other phases change, and its one
+    /// call then costs the VELOCITY tick the call, two stack arguments and
+    /// three saved registers, about 56 HCLK.
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,

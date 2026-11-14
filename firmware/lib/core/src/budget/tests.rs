@@ -664,7 +664,7 @@ fn a_configuration_take_charges_its_row() {
     let (closed, p) = (Regime::Closed as usize, phase::SPARE_A as usize);
     assert_eq!(
         kernel_tick(Regime::Closed, p, refresh),
-        KERNEL[closed][p] + TICK_PUBLISH[closed][p] + LAYOUT + REFRESH
+        KERNEL[closed][p] + TICK_PUBLISH[closed][p] + SPEED_STAGE[closed][p] + LAYOUT + REFRESH
     );
 }
 
