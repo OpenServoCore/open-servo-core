@@ -2347,7 +2347,7 @@ fn therm(c: &mut Client<FakePipe>, id: Id) -> (i16, u8, u16, u16) {
 
 /// No CALIB thermal block - a factory-fresh servo, or a calibrated one with
 /// the estimate off - reads the firmware's sentinel and the UNSET flag,
-/// and nothing derates.
+/// and the ceiling is the configured limit.
 #[test]
 fn fake_winding_without_a_thermal_block_reads_unset() {
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1, 2]);
@@ -2364,7 +2364,7 @@ fn fake_winding_without_a_thermal_block_reads_unset() {
 
 /// With the rise stamped, a held current heats the winding over the 28 C
 /// NTC toward rise x i^2 on the heat's time constant (one of it here);
-/// below the derate start i_lim is the configured limit.
+/// i_lim stays the configured limit.
 #[test]
 fn fake_winding_rises_on_the_heat_time_constant_toward_rise_x_i_squared() {
     const HOLD_COUNTS: i16 = 280;
@@ -2396,20 +2396,4 @@ fn fake_winding_rises_on_the_heat_time_constant_toward_rise_x_i_squared() {
     let (t1, _, i_lim, _) = therm(&mut c, id);
     assert!((t1 as f64 - want).abs() < 10.0, "t {t1} want {want:.0}");
     assert_eq!(i_lim, limit);
-}
-
-/// Forced derating pins the winding midway from the derate start to the
-/// cutoff, where the limit fold halves the current ceiling.
-#[test]
-fn fake_winding_forced_derating_halves_i_lim() {
-    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
-    pipe.seed_calibrated_with(0, Therm::Derating);
-    let mut c = Client::connect(pipe).expect("connect");
-    let (t, flags, i_lim, limit) = therm(&mut c, Id::new(1));
-    assert_eq!(flags, 0);
-    assert_eq!(t, 9000);
-    assert!(
-        (i_lim as i32 - limit as i32 / 2).abs() <= 1,
-        "{i_lim} of {limit}"
-    );
 }

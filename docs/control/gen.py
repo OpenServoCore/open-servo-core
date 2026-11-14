@@ -155,9 +155,9 @@ d += elm.Arrow().right(1.4).label('i_cmd', loc='top').color(C_VEL)
 d += (cl := dsp.Box(w=2.6, h=BH).anchor('W').label('clamp ±i_lim').color(C_LIM))
 d += elm.Arrow().at(cl.E).right(1.4).label('i*', loc='top').color(C_LIM)
 d += (mn := dsp.Box(w=11.0, h=1.6).at((cl.absanchors['S'][0], cl.absanchors['S'][1] - 2.6)).anchor('S').label(
-    'i_lim = min( torque_limit,  derate(T̂wind),  stall policy,  endstop(θ̂) )').color(C_LIM))
+    'i_lim = min( current_limit,  rail(V̂bus),  goal_current )\nthen press fold,  endstop(θ̂)').color(C_LIM))
 d += elm.Arrow().at(mn.N).up(2.6 - 1.6).label('i_lim', loc='bottom', ofst=(0.35, -0.3), fontsize=FSS).color(C_LIM)
-d += elm.Arrow().at((mn.absanchors['W'][0] - 2.4, mn.absanchors['W'][1])).right(2.4).label('T̂wind, θ̂, τ̂d', loc='top', ofst=(-0.3, 0.1), fontsize=FSS).color(C_EST)
+d += elm.Arrow().at((mn.absanchors['W'][0] - 2.4, mn.absanchors['W'][1])).right(2.4).label('V̂bus, θ̂, τ̂d', loc='top', ofst=(-0.3, 0.1), fontsize=FSS).color(C_EST)
 d += elm.Arrow(ls='--').at(cl.N).up(1.0).label('back-calc -> VEL integrator', loc='top', fontsize=FSS).color(C_LIM)
 save(d, 'limits.svg')
 
@@ -452,7 +452,7 @@ d += elm.Arrow().at((shx + 0.85, VD)).down(VD - bN[1]).color(C_EST)
 d += elm.Arrow().at((posx, FE_S)).down(FE_S - kN[1]).color(C_EST)
 d += elm.Label(label='θ_meas', fontsize=FSS, color=C_EST).at((posx + 0.9, FE_S - 0.4))
 # winding estimate at the SLOW rate: the two heats of the held current off
-# the i-hat lane, its Twind up into the clamp beside the i_lim terms
+# the i-hat lane, its cutoff fault up into the clamp beside the i_lim terms
 d += (wst := dsp.Box(w=2.6, h=1.2).at((cS[0], -2.2)).anchor('center').label(
     'two heats ->\nwinding estimate\n(SLOW)', fontsize=FSS).color(C_LIM))
 wS = wst.absanchors['S']
@@ -460,8 +460,8 @@ twx = bemf.absanchors['W'][0] + 0.5
 d += elm.Dot(radius=0.06).at((twx, JOG)).color(C_EST)
 d += elm.Arrow().at((twx, JOG)).up(wS[1] - JOG).color(C_EST)
 d += elm.Arrow().at(wst.N).up(cS[1] - wst.absanchors['N'][1]).color(C_LIM)
-d += elm.Label(label='T̂wind', fontsize=FSS, color=C_LIM).at((cS[0] + 0.62, -1.2))
-d += elm.Label(label='i_lim = min(torque_limit,\nderate, stall,\nendstop(θ̂))', fontsize=FSS, color=C_LIM).at((cS[0] - 3.0, -2.3))
+d += elm.Label(label='over_temp', fontsize=FSS, color=C_LIM).at((cS[0] + 0.8, -1.2))
+d += elm.Label(label='i_lim = min(current_limit,\nrail, goal_current),\npress fold, endstop(θ̂)', fontsize=FSS, color=C_LIM).at((cS[0] - 3.0, -2.3))
 # theta-hat: KF left and up into the position sum
 kW = kf.absanchors['W']
 d += elm.Line().at(kW).left(kW[0] - spS[0]).color(C_EST)

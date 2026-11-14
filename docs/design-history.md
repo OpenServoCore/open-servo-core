@@ -226,6 +226,24 @@ state machines defeat. The driver is instead a composed set of explicitly
 scheduled state machines driven by two interrupt vectors: the scheduling is
 the design, not plumbing to be abstracted away.
 
+### The thermal derate
+
+The winding estimate once folded the current limit as well as tripping a
+fault: full current under `derate_start_cc`, a linear ramp down to zero at
+`cutoff_cc`, where the overtemperature fault latched. The ramp existed to
+hold "weaker but still holding": less current, less heat, an equilibrium
+short of the fault instead of a shutdown. It went for two reasons. One
+temperature limit with a shutdown at it is what the servos of this class
+do, and a host that wants a soft approach can lower the current limit or
+watch the estimate itself. And a ramp needs its two ends to sit where their
+registers say, which the stored NTC curve could not give: it is a quadratic
+about 25 C, good from 15 to 50 C, and it could not put two limits far above
+that where they said. The cutoff alone stayed. The ramp had one side effect
+worth keeping, a zero ceiling that kept a servo with a failed NTC from
+driving between a host's ack and the next estimate, and the enable edge now
+checks the estimate against the cutoff for that. Lesson: delete the
+machinery rather than tune its second knob.
+
 ### Framing alternatives that lost to the break
 
 Recorded so they are not re-derived. Closing double-break (a break at both

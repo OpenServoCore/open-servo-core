@@ -101,6 +101,13 @@ fn virgin_openloop_run_never_collision_trips() {
     }
 }
 
+/// One thermal limit, 90.00 C on the winding estimate.
+#[test]
+fn virgin_servo_cuts_off_at_90_c() {
+    let sh = virgin();
+    assert_eq!(sh.table.with(|t| t.config.thermal.cutoff_cc), 9000);
+}
+
 #[test]
 fn virgin_servo_stalls_at_the_class_limit() {
     for goal in [GOAL_64, -GOAL_64] {

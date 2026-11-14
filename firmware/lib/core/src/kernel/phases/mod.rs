@@ -153,7 +153,7 @@ impl Medium {
             dt_med_q32: timing.dt_med_q32,
             recip_arr_q24: timing.recip_arr_q24,
             // primed so the FIRST period runs the slow block: the winding
-            // estimate and the derate exist before any consumer sees them
+            // estimate exists before any consumer sees it
             slow_periods: DECIM_SLOW - 1,
             ctl: Control::default(),
             run: false,

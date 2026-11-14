@@ -245,10 +245,9 @@ pub const TEL_LANE_MEAN: u32 = 124;
 pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
-/// quadratic, the two rise multiplies, the derate's reciprocal divide and
-/// the cutoff fault. E, an upper bound kept from a dearer earlier body
-/// (330 plus a since-deleted ceiling's 71.25, plus 10%); the bench
-/// re-prices it.
+/// quadratic, the two rise multiplies and the cutoff fault. E, an upper
+/// bound kept from a dearer earlier body (330 plus a since-deleted
+/// ceiling's 71.25, plus 10%); the bench re-prices it.
 pub const SLOW_FINISH: u32 = 442;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top

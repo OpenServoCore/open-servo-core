@@ -69,13 +69,15 @@ impl Medium {
         let life = &self.ctl.life;
         // torque_enable 0->1 is the fault ack: latch, detectors, and the
         // limits pend all clear; a still-present condition re-latches
-        // through the normal detectors. The dead-man starts from the field.
+        // through the normal detectors, an estimate still at its cutoff
+        // here, ahead of the drive. The dead-man starts from the field.
         let enable_edge = life.torque_enable && !self.te_prev;
         if enable_edge {
             faults.clear();
             self.det.reset();
             fast.ack();
             self.limits.ack();
+            self.cutoff(cfg, faults);
             #[cfg(feature = "deadman")]
             self.deadman.start(life.bus_deadman_ticks);
         }

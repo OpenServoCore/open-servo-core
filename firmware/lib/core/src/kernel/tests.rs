@@ -107,7 +107,6 @@ fn seed(shared: &Shared) {
         c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = false;
         c.limits.thermal_tau_s = 4;
-        c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
         c.thermal.v_undervolt_counts = 2200;
         // 1200 counts over 200 vcounts: 6 counts per vcount
@@ -1678,16 +1677,19 @@ const BASE_FAST_TICKS: u32 = 200 * SLOW;
 /// the held current to the integer EWMA's fixed point: 2501 from zero.
 const HEAT_SETTLE: u32 = 2600 * SLOW;
 
-/// Without an NTC curve the estimate reads its sentinel and nothing
-/// derates, however long the hold; with a curve and no gain it is the NTC
-/// alone.
+/// Without an NTC curve the estimate reads its sentinel, under the lowest
+/// cutoff a host can write over it, and nothing faults, however long the
+/// hold; with a curve and no gain it is the NTC alone.
 #[test]
 fn the_estimate_without_a_curve_reads_the_sentinel_and_without_a_gain_the_ntc() {
     use crate::estimator::thermal::flag;
     let sh = Shared::new();
     seed(&sh);
     seed_estimate(&sh);
-    write_config(&sh, |t| t.calib.thermal.ntc_k1_q88 = 0);
+    write_config(&sh, |t| {
+        t.calib.thermal.ntc_k1_q88 = 0;
+        t.config.thermal.cutoff_cc = i16::MIN + 1;
+    });
     let mut k = kernel();
     let hot = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hot);
@@ -1695,9 +1697,11 @@ fn the_estimate_without_a_curve_reads_the_sentinel_and_without_a_gain_the_ntc() 
     let (t, flags, i_lim, _) = therm(&sh);
     assert_eq!((t, flags, i_lim), (i16::MIN, flag::UNSET, 1200));
     assert_eq!(k.faults.mask(), 0);
+    assert_eq!(k.fast.duty_q15, 8000, "the hold drives");
     write_config(&sh, |t| {
         t.calib.thermal.ntc_k1_q88 = 563;
         t.calib.thermal.th_rise_q016 = 0;
+        t.config.thermal.cutoff_cc = 10000;
     });
     ticks(&mut k, &sh, hot, BASE_FAST_TICKS);
     let (t, flags, i_lim, t_ntc) = therm(&sh);
@@ -1705,51 +1709,81 @@ fn the_estimate_without_a_curve_reads_the_sentinel_and_without_a_gain_the_ntc() 
     assert_eq!(k.faults.mask(), 0);
 }
 
-/// A dead NTC reads a rail: the seed latches the overtemperature fault on
-/// the boot tick, torque off as a servo boots, the estimate reads i16::MAX
-/// with the fault flag and the derate takes the ceiling to zero; the
-/// host's enable is an ack that clears the latch, and the next SLOW
-/// finish re-raises it while the rail stands, so the drive is back off
-/// within two SLOW periods.
-#[test]
-fn a_railed_ntc_faults_at_the_seed_and_relatches_after_an_ack() {
-    use crate::estimator::thermal::flag;
-    let sh = Shared::new();
-    seed(&sh);
-    seed_estimate(&sh);
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    let mut k = kernel();
-    let dead = SensorFrame {
-        ntc_raw: 6,
-        ..frame(2000, BIAS)
-    };
-    k.on_scan(dead, &sh);
-    assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP);
-    assert_eq!(k.faults.code(), faults::CODE_OVER_TEMP);
-    ticks(&mut k, &sh, dead, 2 * SLOW);
-    let (t, flags, i_lim, _) = therm(&sh);
-    assert_eq!((t, flags, i_lim), (i16::MAX, flag::NTC_FAULT, 0));
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    while k.phase != 0 {
-        k.on_scan(dead, &sh);
+/// `n` ticks of `f`, the bridge off on every one.
+fn never_drives(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
+    for at in 0..n {
+        k.on_scan(f, sh);
+        assert!(matches!(last_cmd(k), MotorCmd::Disabled), "tick {at}");
     }
-    k.on_scan(dead, &sh);
-    assert_eq!(k.faults.mask(), 0, "the enable acks the latch");
-    ticks(&mut k, &sh, dead, 2 * SLOW);
-    assert_eq!(
-        k.faults.mask(),
-        faults::BIT_OVER_TEMP,
-        "the rail re-latches"
-    );
-    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
 }
 
-/// An NTC that fails mid-hold: the next finish reads i16::MAX, the derate
-/// takes the ceiling to zero and the fault latches.
+/// A failed NTC, a dead divider reading a rail or a curve reading outside
+/// the band: the seed latches the overtemperature fault on the boot tick,
+/// torque off as a servo boots, and the estimate reads i16::MAX with the
+/// fault flag. Nothing folds the ceiling, so the latch alone holds the
+/// bridge: the host's enable is an ack, the CONTROL phase that takes it
+/// raises the fault again on the estimate it already has, and the bridge
+/// stays off on every tick from boot, across the ack and through the
+/// finishes after it. Once the NTC reads again an ack clears and the hold
+/// drives.
 #[test]
-fn a_rail_mid_hold_derates_to_zero_on_the_next_finish() {
+fn a_failed_ntc_faults_at_the_seed_and_never_drives() {
+    use crate::estimator::thermal::flag;
+    for (ntc_raw, k1_q88) in [(6, 563), (4090, 563), (1000, 563 * 8)] {
+        let sh = Shared::new();
+        seed(&sh);
+        seed_estimate(&sh);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = false;
+            t.calib.thermal.ntc_k1_q88 = k1_q88;
+        });
+        let mut k = kernel();
+        let dead = SensorFrame {
+            ntc_raw,
+            ..frame(2000, BIAS)
+        };
+        never_drives(&mut k, &sh, dead, 1);
+        assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP, "{ntc_raw}");
+        assert_eq!(k.faults.code(), faults::CODE_OVER_TEMP);
+        never_drives(&mut k, &sh, dead, 2 * SLOW);
+        let (t, flags, i_lim, _) = therm(&sh);
+        assert_eq!((t, flags, i_lim), (i16::MAX, flag::NTC_FAULT, 1200));
+        // the enable, taken at every phase of the SLOW block in turn
+        for offset in [0, 1, SLOW / 2, SLOW - 1] {
+            sh.table
+                .with_mut(|t| t.control.lifecycle.torque_enable = false);
+            never_drives(&mut k, &sh, dead, SLOW + offset);
+            sh.table
+                .with_mut(|t| t.control.lifecycle.torque_enable = true);
+            never_drives(&mut k, &sh, dead, 3 * SLOW);
+            assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP, "{ntc_raw}");
+            assert_eq!(k.faults.code(), faults::CODE_OVER_TEMP);
+        }
+        // the NTC back at 25.00 C on the right curve
+        write_config(&sh, |t| {
+            t.calib.thermal.ntc_k1_q88 = 563;
+            t.control.lifecycle.torque_enable = false;
+        });
+        let good = frame(2000, BIAS);
+        never_drives(&mut k, &sh, good, 2 * SLOW);
+        assert_eq!(therm(&sh).0, 2500);
+        assert_eq!(
+            k.faults.mask(),
+            faults::BIT_OVER_TEMP,
+            "latched until an ack"
+        );
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        settle(&mut k, &sh, good);
+        assert_eq!(k.faults.mask(), 0);
+        assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
+    }
+}
+
+/// An NTC that fails mid-hold: the next finish reads i16::MAX and the
+/// fault latches, the bridge off with it.
+#[test]
+fn a_rail_mid_hold_latches_on_the_next_finish() {
     use crate::estimator::thermal::flag;
     let sh = Shared::new();
     seed(&sh);
@@ -1768,7 +1802,7 @@ fn a_rail_mid_hold_derates_to_zero_on_the_next_finish() {
     let (t, flags, i_lim, t_ntc) = therm(&sh);
     assert_eq!(
         (t, flags, i_lim, t_ntc),
-        (i16::MAX, flag::NTC_FAULT, 0, 2500)
+        (i16::MAX, flag::NTC_FAULT, 1200, 2500)
     );
     assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
@@ -1779,7 +1813,8 @@ fn a_rail_mid_hold_derates_to_zero_on_the_next_finish() {
 /// rise it produces, 177769 counts squared at 28.3 C over, and the estimate
 /// reads the NTC plus the rise on it: 2500 + (177769 x 1044 >> 16) = 5331.
 /// The cold square alone would read 5048; the copper 11 % warmer than
-/// cold adds the rest.
+/// cold adds the rest. Under the cutoff the estimate shapes nothing: the
+/// ceiling is the cap.
 #[test]
 fn the_estimate_reads_the_ntc_plus_the_rise_on_the_heat() {
     let sh = Shared::new();
@@ -1792,7 +1827,8 @@ fn the_estimate_reads_the_ntc_plus_the_rise_on_the_heat() {
     assert_eq!(k.fast.i_meas_last(), 400);
     let (t, flags, i_lim, t_ntc) = therm(&sh);
     assert_eq!((t, flags, t_ntc), (5331, 0, 2500));
-    assert_eq!(i_lim, 1200, "under the derate");
+    assert_eq!(i_lim, 1200, "under the cutoff");
+    assert_eq!(limit_flags(&sh), 0);
     assert_eq!(k.faults.mask(), 0);
 }
 
@@ -1826,27 +1862,19 @@ fn the_body_node_adds_its_gain_on_its_own_leak_and_a_zero_tau_turns_it_off() {
     assert_eq!((t, flags), (5331, 0));
 }
 
-/// Torque off: the held current drops to zero, the heat leaks on tau, and
-/// a derate taken on the hold lifts at rest instead of latching. The hot
-/// estimate (5331) derates the 1200-count cap to 1200 x (6500 - 5331) /
-/// 3000 = 467; five tau (1280 SLOW periods) leave 1177 counts squared of
-/// heat, 2518.
+/// Torque off: the held current drops to zero and the heat leaks on tau.
+/// Five tau (1280 SLOW periods) leave 1177 counts squared of the hot
+/// hold's heat, 2518.
 #[test]
-fn torque_off_lets_the_heat_leak_and_the_derate_lift() {
+fn torque_off_lets_the_heat_leak() {
     let sh = Shared::new();
     seed(&sh);
     seed_estimate(&sh);
-    write_config(&sh, |t| {
-        t.config.thermal.derate_start_cc = 3500;
-        t.config.thermal.cutoff_cc = 6500;
-    });
     let mut k = kernel();
     let hold = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hold);
     ticks(&mut k, &sh, hold, HEAT_SETTLE);
-    let (t_hot, _, i_lim, _) = therm(&sh);
-    assert_eq!((t_hot, i_lim), (5331, 467));
-    assert_eq!(limit_flags(&sh), limits::flag::DERATE);
+    assert_eq!(therm(&sh).0, 5331);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     ticks(&mut k, &sh, frame(2000, BIAS), 1280 * SLOW);
@@ -1854,6 +1882,79 @@ fn torque_off_lets_the_heat_leak_and_the_derate_lift() {
     assert_eq!((t, flags, t_ntc), (2518, 0, 2500));
     assert_eq!(i_lim, 1200);
     assert_eq!(k.faults.mask(), 0);
+}
+
+/// One thermal limit: a hold at the 1200-count cap heads for a fixed point
+/// far over the 90.00 C cutoff, and until the estimate reads the cutoff
+/// nothing takes current away: the ceiling is the cap and no term binds on
+/// every period. The 74th finish, 1.18 s in, reads 90.38 C after 89.51 C,
+/// latches the fault, and the bridge is off from that tick. The winding
+/// then cools with the fault standing: an ack while the estimate still
+/// reads the cutoff or more never drives, and once it reads less an ack
+/// clears and the hold drives again.
+#[test]
+fn a_hold_that_heats_to_the_cutoff_runs_at_the_cap_and_ends_in_the_latch() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_estimate(&sh);
+    write_config(&sh, |t| {
+        t.config.thermal.cutoff_cc = 9000;
+        // the collision trip off, its boot value: under the rig's
+        // 1200-count trip this hold on a still pot sets YIELD
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let hold = frame(2000, BIAS + 1200);
+    let mut finishes = 0u32;
+    let mut last_under = 0;
+    while k.faults.mask() == 0 {
+        ticks(&mut k, &sh, hold, SLOW);
+        finishes += 1;
+        assert!(finishes < 10_000, "never latched");
+        let (t, flags, i_lim, _) = therm(&sh);
+        if k.faults.mask() == 0 {
+            assert!(t < 9000 && t >= last_under, "{t}");
+            last_under = t;
+            assert_eq!((flags, i_lim), (0, 1200));
+            assert_eq!(limit_flags(&sh) & !limits::flag::CEILING, 0);
+            assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
+        }
+    }
+    let t_latch = therm(&sh).0;
+    assert_eq!((finishes, last_under, t_latch), (74, 8951, 9038));
+    assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP);
+    assert_eq!(k.faults.code(), faults::CODE_OVER_TEMP);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+
+    // the bridge is off: the winding carries nothing and cools. An ack
+    // inside the period of the latch, the estimate still at the cutoff
+    let rest = frame(2000, BIAS);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    never_drives(&mut k, &sh, rest, DECIM_MED as u32);
+    assert!(therm(&sh).0 >= 9000);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    never_drives(&mut k, &sh, rest, DECIM_MED as u32);
+    assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP, "the ack relatches");
+    assert_eq!(k.faults.code(), faults::CODE_OVER_TEMP);
+    for _ in 0..4 {
+        never_drives(&mut k, &sh, rest, SLOW);
+    }
+    assert!(therm(&sh).0 < 9000);
+    assert_eq!(
+        k.faults.mask(),
+        faults::BIT_OVER_TEMP,
+        "latched until an ack"
+    );
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    never_drives(&mut k, &sh, rest, SLOW);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    settle(&mut k, &sh, rest);
+    assert_eq!(k.faults.mask(), 0);
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
 }
 
 #[test]

@@ -457,8 +457,8 @@ impl OscClient {
     /// telemetry registers show captured data instead of the synthetic
     /// ramp; columns must be non-empty and equal in length), `virgin`
     /// for a factory-fresh servo that has never been calibrated,
-    /// identified or saved, `therm` ("on", "off" or "derating") for a
-    /// calibrated servo's winding estimate, `responseDeadlineUs` for
+    /// identified or saved, `therm` ("on" or "off") for a calibrated
+    /// servo's winding estimate, `responseDeadlineUs` for
     /// a servo holding another deadline than the protocol default,
     /// `bootloader` for a board that carries only its bootloader, and
     /// `failNext` ("erase" or "write") for a bootloader that fails its next

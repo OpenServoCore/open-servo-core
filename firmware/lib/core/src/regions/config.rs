@@ -206,24 +206,22 @@ pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 // `vmotor_counts`.
 pub const BURST_MAX_MV: u16 = 3200;
 
-/// Thermal derate/cutoff on the winding estimate, undervolt floor, and
-/// the body node's leak: `thermal_tau2_s` in seconds to the nearest
-/// octave of the SLOW period like `thermal_tau_s`, 0 = no body node.
+/// The winding estimate's cutoff, the undervolt floor, and the body
+/// node's leak: `thermal_tau2_s` in seconds to the nearest octave of the
+/// SLOW period like `thermal_tau_s`, 0 = no body node.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
-    /// The derate: the ceiling is the cap under this, zero at the cutoff.
-    pub derate_start_cc: i16,
-    /// Where the overtemperature fault latches; the host's ack relatches
-    /// while the estimate still reads this or more.
+    /// The one thermal limit: the overtemperature fault latches while the
+    /// winding estimate reads this or more, and the host's ack relatches
+    /// until it reads less.
     pub cutoff_cc: i16,
     pub v_undervolt_counts: u16,
     pub thermal_tau2_s: u16,
 }
 
-// 80C derate onset / 100C cutoff.
-pub const DEFAULT_DERATE_START_CC: i16 = 8000;
-pub const DEFAULT_CUTOFF_CC: i16 = 10000;
+// 90 C.
+pub const DEFAULT_CUTOFF_CC: i16 = 9000;
 // True brown-out floor, not a battery-health line: the default must sit
 // below every legal supply, and a USB-fed 5 V bench bus idles at ~4.3 V.
 // Pack-health thresholds are per-product tuning, written by the host.
@@ -301,10 +299,10 @@ pub struct ConfigRegs {
     pub loop_position: ConfigLoopPosition,
     pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
-    pub fault_cfg: ConfigFaultCfg,
     pub fusion: ConfigFusion,
+    pub fault_cfg: ConfigFaultCfg,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 6],
+    pub _rsvd_tail: [u8; 8],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

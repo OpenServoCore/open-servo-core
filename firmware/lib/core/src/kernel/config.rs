@@ -30,9 +30,9 @@ pub struct KernelConfig {
     pub loop_position: ConfigLoopPosition,
     pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
-    pub fault_cfg: ConfigFaultCfg,
     pub fusion: ConfigFusion,
-    pub _rsvd_config_tail: [u8; 6],
+    pub fault_cfg: ConfigFaultCfg,
+    pub _rsvd_config_tail: [u8; 8],
     pub motor: CalibMotor,
     pub winding: CalibWinding,
     pub calib_thermal: CalibThermal,
@@ -79,8 +79,8 @@ const _: () = {
     );
     assert!(offset_of!(KernelConfig, limits) + s == offset_of!(ControlTable, config.limits));
     assert!(offset_of!(KernelConfig, thermal) + s == offset_of!(ControlTable, config.thermal));
-    assert!(offset_of!(KernelConfig, fault_cfg) + s == offset_of!(ControlTable, config.fault_cfg));
     assert!(offset_of!(KernelConfig, fusion) + s == offset_of!(ControlTable, config.fusion));
+    assert!(offset_of!(KernelConfig, fault_cfg) + s == offset_of!(ControlTable, config.fault_cfg));
     assert!(
         offset_of!(KernelConfig, _rsvd_config_tail) + s
             == offset_of!(ControlTable, config._rsvd_tail)
@@ -100,9 +100,9 @@ impl KernelConfig {
             loop_position: ConfigLoopPosition::new(),
             limits: ConfigLimits::new(),
             thermal: ConfigThermal::new(),
-            fault_cfg: ConfigFaultCfg::new(),
             fusion: ConfigFusion::new(),
-            _rsvd_config_tail: [0; 6],
+            fault_cfg: ConfigFaultCfg::new(),
+            _rsvd_config_tail: [0; 8],
             motor: CalibMotor::new(),
             winding: CalibWinding::new(),
             calib_thermal: CalibThermal::new(),

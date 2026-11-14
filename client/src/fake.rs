@@ -73,9 +73,6 @@ pub enum Therm {
     On,
     /// No thermal block: `t_winding_cc` reads the sentinel.
     Off,
-    /// The rise is stamped and the winding is pinned midway from the
-    /// derate start to the cutoff.
-    Derating,
 }
 
 /// The fake's stand-in for the kernel winding estimate (the sim runs no
@@ -84,7 +81,6 @@ pub enum Therm {
 struct Winding {
     heat: f64,
     i_sq_mean: f64,
-    forced: bool,
     at_us: u64,
 }
 
@@ -104,7 +100,7 @@ impl Winding {
             k1_q88: th.ntc_k1_q88,
             k2_q24: th.ntc_k2_q24,
         };
-        let (lim, therm) = (t.config.limits, t.config.thermal);
+        let lim = t.config.limits;
         let dt_s = now_us.saturating_sub(self.at_us) as f64 * 1e-6;
         self.at_us = now_us;
         let t_ntc = thermal::ntc_cc(raw, &ntc);
@@ -112,11 +108,7 @@ impl Winding {
             Some(base) if th.th_rise_q016 != 0 => {
                 let tau_s = heat_tau_s(lim.thermal_tau_s);
                 self.heat += (self.i_sq_mean - self.heat) * -(-dt_s / tau_s).exp_m1();
-                let t_cc = if self.forced {
-                    (therm.derate_start_cc as i32 + therm.cutoff_cc as i32) / 2
-                } else {
-                    base as i32 + thermal::rise_cc(self.heat as u32, th.th_rise_q016)
-                };
+                let t_cc = base as i32 + thermal::rise_cc(self.heat as u32, th.th_rise_q016);
                 (t_cc.clamp(i16::MIN as i32 + 1, i16::MAX as i32) as i16, 0)
             }
             _ => (UNSET_CC, flag::UNSET),
@@ -124,7 +116,6 @@ impl Winding {
         let mut limits = LimitState::new();
         let mut lim = lim;
         lim.i_cont_counts = i_cont_or_cap(&lim);
-        limits.update_derate(t_cc, &lim, &therm);
         let fold = limits.fold(&FoldIn::default(), &lim, &t.config.pos_soft);
         t.telemetry.tick.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
@@ -195,7 +186,6 @@ impl FakePipe {
 
     /// [`Self::seed_calibrated`] with the winding estimate as `therm`.
     pub fn seed_calibrated_with(&mut self, i: usize, therm: Therm) {
-        self.windings[i].forced = therm == Therm::Derating;
         self.sim.servo_table_mut(i, |t| {
             t.calib.pot.raw_min = seed::RAW_MIN;
             t.calib.pot.raw_max = seed::RAW_MAX;

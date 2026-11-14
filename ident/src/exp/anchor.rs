@@ -17,7 +17,7 @@
 //! fold or an NTC fault, and refuses it. A step in R with the pot still is
 //! a brush contact event ([`thermal::contact_events`]) and refuses it. Once
 //! R_ref is read the copper's temperature is watched against
-//! [`AnchorCfg::guard_c`], the servo's own derate start, and reaching it
+//! [`AnchorCfg::guard_c`], the servo's own cutoff, and reaching it
 //! ends the hold early with what it has ([`Anchor::ended_early`]). Runs with
 //! the pos guard off and the stall permit held, like the resistance stop
 //! ladder; a seek that rests anywhere but the stop ends the run
@@ -47,7 +47,7 @@ pub struct AnchorCfg {
     /// the limiter governing and refuses the hold. 0 watches nothing.
     pub cap_counts: u16,
     /// The copper temperature, C, that ends the hold: the servo's saved
-    /// derate start. Infinity watches nothing.
+    /// cutoff. Infinity watches nothing.
     pub guard_c: f64,
 }
 
@@ -382,7 +382,7 @@ impl Anchor {
         {
             self.ended = Some(format!(
                 "the thermometer guard ended the hold {:.0} s in: the copper read {c:.1} C \
-                 against the {:.1} C derate start",
+                 against the {:.1} C cutoff",
                 (now - t0) / 1000.0,
                 self.cfg.guard_c
             ));
@@ -705,7 +705,7 @@ mod tests {
             why.contains("the thermometer guard ended the hold"),
             "{why}"
         );
-        assert!(why.contains("against the -1.0 C derate start"), "{why}");
+        assert!(why.contains("against the -1.0 C cutoff"), "{why}");
         let held = held_ms(&exp);
         assert!(
             (thermal::FLOOR_TO_MS..thermal::FLOOR_TO_MS + 5000.0).contains(&held),

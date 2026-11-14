@@ -1093,7 +1093,7 @@ linearizing a streamed `pos` takes the same step in raw counts first
 ### 5.8 Limits and the stall permit (osc-servo)
 
 Every drive mode clamps against the same current band (control-theory
-"Limits"): the peak cap, the thermal derate, the rail fold and
+"Limits"): the peak cap, the rail fold and
 `goal_current`, then the press fold and the directional endstop. The closed loops clamp their current reference;
 OpenLoop, which has none, holds a duty ceiling against the band from
 the shunt alone, so a host-written `goal_duty` is a request the servo
@@ -1114,8 +1114,8 @@ lamp follows within one main-loop pass of the servo. Zero is a no-op.
 the motor stall on purpose, which calibration needs to seat a hard
 stop and identification's stop routes, when asked for, need to measure
 the winding. It drops the detectors (the press timer and the collision
-check) and the endstop, and nothing else: the peak cap, the thermal
-derate and the rail fold still compose. The byte is the
+check) and the endstop, and nothing else: the peak cap, the rail fold
+and `goal_current` still compose. The byte is the
 host's *request*; the *grant* is a lease the servo keeps:
 
 - A committed write whose span covers the byte, leaving it true while
@@ -1184,18 +1184,17 @@ every medium tick (2 kHz), torque on or off.
 | 2   | `ENDSTOP` | exactly one side of the band is closed: a soft limit forbids current in one direction (a zero limit closes both and does not set it)                                 |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
 | 4   | retired   | reads 0                                                                                                                                                              |
-| 5   | `DERATE`  | the winding estimate's derate binds before the press fold, under the cap                                                                                             |
+| 5   | retired   | reads 0                                                                                                                                                              |
 | 6   | `RAIL`    | the rail fold binds before the press fold, under the cap                                                                                                                       |
 | 7   | `GOAL`    | `goal_current` binds before the press fold, under the cap                                                                                                                      |
 
-Bits 5 to 7 name the ceiling that binds before the press fold: none of
-them set means the peak cap does, and a tie sets each term at the
-minimum. The press trigger is the held current over `i_cont_counts` on
+Bits 6 and 7 name the ceiling that binds before the press fold: neither
+set means the peak cap does, and a tie sets both. The press trigger is the held current over `i_cont_counts` on
 a still shaft, not bit 0, so bit 0 alone on a still shaft under
 `i_cont_counts` is a hold the loop is content with. The permit drops
 the fold and the endstop, so bit 3 never appears with bits 1 or 2, and
-it drops no ceiling, so it does appear with bits 5 to 7 (unit
-`limit_flags_name_the_governor`). Bit 4 is retired and reads 0.
+it drops no ceiling, so it does appear with bits 6 and 7 (unit
+`limit_flags_name_the_governor`). Bits 4 and 5 are retired and read 0.
 The flags are a polled register; a TEL row may carry them, as any table
 field, at medium rate.
 

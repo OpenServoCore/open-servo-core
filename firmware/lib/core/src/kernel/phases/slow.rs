@@ -10,8 +10,8 @@ impl Medium {
     /// neither sets the period's longest tick: on the due tick the permit
     /// lease, undervoltage and the two heats on the held current `i_held`
     /// warmed by the last estimate; on the next period's SLOW phase the
-    /// winding estimate from the NTC and the heats, its derate and
-    /// overtemperature, and the bias tracker's aging step.
+    /// winding estimate from the NTC and the heats, its cutoff, and the
+    /// bias tracker's aging step.
     /// Whether a stage ran.
     pub(in crate::kernel) fn slow(
         &mut self,
@@ -47,10 +47,9 @@ impl Medium {
         }
     }
 
-    /// The winding estimate on the NTC and the heats, its derate and the
-    /// overtemperature fault; the seed runs it too, so a failed NTC faults
-    /// before the first drive. The NTC reads a wide code as the middle of
-    /// its band, whole counts.
+    /// The winding estimate on the NTC and the heats, and its cutoff; the
+    /// seed runs it too, so a failed NTC faults before the first drive.
+    /// The NTC reads a wide code as the middle of its band, whole counts.
     pub(super) fn estimate(
         &mut self,
         ntc_raw: u16,
@@ -60,11 +59,15 @@ impl Medium {
     ) {
         // at most `ADC_WIDE_MID_MAX` over a 12-bit code
         let ntc = shared.adc_mid(ntc_raw) as u16;
-        let t_cc = self.thermal.update(ntc, self.limits.heats(), &cfg.therm);
-        // UNSET_CC sits under every threshold: no derate, no cutoff;
-        // NTC_FAULT_CC over every one
-        self.limits.update_derate(t_cc, &cfg.limits, &cfg.thermal);
-        if t_cc >= cfg.thermal.cutoff_cc {
+        self.thermal.update(ntc, self.limits.heats(), &cfg.therm);
+        self.cutoff(cfg, faults);
+    }
+
+    /// The overtemperature fault on the last estimate: UNSET_CC sits under
+    /// the cutoff, NTC_FAULT_CC over every one. The enable edge runs it
+    /// too, so an ack over the cutoff never drives.
+    pub(super) fn cutoff(&self, cfg: &KernelConfig, faults: &mut FaultLatch) {
+        if self.thermal.t_cc() >= cfg.thermal.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
         }
     }
