@@ -16,17 +16,23 @@
 //! resistance's fractional rise over cold, alpha x the last published
 //! excess ([`warm_q16`]), so a hold at one current heats as the copper
 //! does. The feedback has a fixed point while the open-loop rise sits
-//! under 1 / alpha = 254 C, which the derate takes the current down long
-//! before.
+//! under 1 / alpha = 254 C. Nothing folds the current on the way up: a
+//! hold whose fixed point sits at the cutoff or over it, or that has none,
+//! climbs until the estimate reads the cutoff, where the overtemperature
+//! fault takes the drive off and the heats leak. The rise fed back stops
+//! at [`RISE_FEEDBACK_MAX_CC`] and the estimate saturates at the top of
+//! its range, which reads over every cutoff, so a climb that does not
+//! settle under the cutoff ends in the latch, whatever the fields hold
+//! (unit `the_warm_feedback_ends_under_the_cutoff_or_in_the_latch`).
 //!
-//! No NTC curve is UNSET: `t` reads [`UNSET_CC`], which sits under every
-//! derate threshold, and the flag says so. A curve with no gain reads the
-//! NTC alone. The NTC itself is checked every time: a raw count within
+//! No NTC curve is UNSET: `t` reads [`UNSET_CC`], which sits under the
+//! cutoff, and the flag says so. A curve with no gain reads the NTC
+//! alone. The NTC itself is checked every time: a raw count within
 //! [`NTC_RAIL_COUNTS`] of a rail (an open or shorted divider, curve or
 //! not) or a converted temperature outside the band (a wrong curve) is
 //! NTC_FAULT, and `t` reads [`NTC_FAULT_CC`], over every cutoff, so the
-//! derate goes to zero and the overtemperature fault latches on the same
-//! finish, at boot before anything drives.
+//! overtemperature fault latches on the same finish, at boot before
+//! anything drives.
 
 use crate::math::q_mul;
 
@@ -85,8 +91,8 @@ const NTC_BAND_HI_CC: i16 = 15_000;
 /// Copper's resistance rise per centi-C, 0.00393 per C, Q26.
 const ALPHA_Q26: u32 = 2637;
 /// The rise fed back into the heat input stops here, 150 C over the NTC:
-/// the fault tripped long before, and the bound keeps the warm factor
-/// under 2^16 so its product with the square fits u32 (`limits::heat`).
+/// the bound keeps the warm factor under 2^16 so its product with the
+/// square fits u32 (`limits::heat`), whatever cutoff the host wrote.
 const RISE_FEEDBACK_MAX_CC: u16 = 15_000;
 const _: () = assert!((RISE_FEEDBACK_MAX_CC as u32 * ALPHA_Q26) >> 10 < 1 << 16);
 
@@ -194,6 +200,7 @@ impl WindingTherm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::LimitState;
 
     /// The beta model of the dev-v006 board's NTC (10K pull-up, 10K at
     /// 25 C, beta 3950), as the host evaluates it.
@@ -323,6 +330,92 @@ mod tests {
         assert_eq!(th.warm_q16(), warm_q16(1222));
         th.update(0, [277 * 277, 0], &CFG);
         assert_eq!(th.warm_q16(), 0, "UNSET feeds nothing back");
+    }
+
+    /// A held current through the SLOW block's two stages as the kernel
+    /// runs them, the heats on the last estimate's warm factor and then the
+    /// estimate, up to the finish that reads `cutoff_cc`: that finish, the
+    /// estimate before it and the estimate on it. None when `finishes` pass
+    /// under the cutoff, with the last estimate. Every finish reads at
+    /// least the one before.
+    fn hold_to_cutoff(
+        i_held: i16,
+        cfg: &ThermCfg,
+        shifts: [u8; 2],
+        cutoff_cc: i16,
+        finishes: u32,
+    ) -> (Option<u32>, i16, i16) {
+        let mut heat = LimitState::new();
+        let mut th = WindingTherm::new();
+        let mut under = th.update(RAW_25, heat.heats(), cfg);
+        assert!(under < cutoff_cc);
+        for n in 1..=finishes {
+            heat.heat(i_held, th.warm_q16(), shifts);
+            let t = th.update(RAW_25, heat.heats(), cfg);
+            assert!(t >= under, "finish {n}: {t} after {under}");
+            assert!(th.warm_q16() <= warm_q16(RISE_FEEDBACK_MAX_CC));
+            if t >= cutoff_cc {
+                return (Some(n), under, t);
+            }
+            under = t;
+        }
+        (None, under, under)
+    }
+
+    /// Nothing folds the current while the estimate climbs, so a held
+    /// current ends one of two ways: at a fixed point under the cutoff, or
+    /// on the finish that reads the cutoff, where the fault takes the drive
+    /// off. The warm feedback opens no third: the rise it feeds back stops
+    /// at 150 C over the NTC and the estimate saturates at the top of its
+    /// range, which reads over every cutoff a host can write.
+    #[test]
+    fn the_warm_feedback_ends_under_the_cutoff_or_in_the_latch() {
+        // the bench constant at 400 counts: a fixed point under the cutoff
+        assert_eq!(
+            hold_to_cutoff(400, &CFG, [8, 0], 9000, 5000),
+            (None, 5331, 5331)
+        );
+        // at 1200 counts the fixed point sits over it: 74 finishes, 1.18 s
+        assert_eq!(
+            hold_to_cutoff(1200, &CFG, [8, 0], 9000, 5000),
+            (Some(74), 8951, 9038)
+        );
+        // the cutoff at the top of its range: 1000 counts still settle,
+        // 159 C of open-loop rise raised by the 150 C the feedback stops at
+        assert_eq!(rise_cc(1000 * 1000, CFG.rise_q016), 15930);
+        assert_eq!(
+            hold_to_cutoff(1000, &CFG, [8, 0], i16::MAX, 5000),
+            (None, 27813, 27813)
+        );
+        // 1300 counts have no fixed point, 269 C of open-loop rise: the
+        // estimate saturates, and the top of the range is the latch
+        assert_eq!(rise_cc(1300 * 1300, CFG.rise_q016), 26921);
+        assert_eq!(
+            hold_to_cutoff(1300, &CFG, [8, 0], i16::MAX, 5000),
+            (Some(345), 32761, i16::MAX)
+        );
+        // the largest the fields hold, both gains and the heat input at
+        // the top of their ranges: the first finish on the shortest leak,
+        // the second or the eighth on the longest
+        let max = ThermCfg {
+            rise_q016: u16::MAX,
+            rise2_q016: u16::MAX,
+            ..CFG
+        };
+        for cutoff in [9000, i16::MAX] {
+            assert_eq!(
+                hold_to_cutoff(i16::MIN, &max, [0, 0], cutoff, 10),
+                (Some(1), 2500, i16::MAX)
+            );
+        }
+        assert_eq!(
+            hold_to_cutoff(i16::MIN, &max, [15, 15], 9000, 100),
+            (Some(2), 6592, 10688)
+        );
+        assert_eq!(
+            hold_to_cutoff(i16::MIN, &max, [15, 15], i16::MAX, 100),
+            (Some(8), 31166, i16::MAX)
+        );
     }
 
     /// The rise saturates at the sentinel's far end instead of wrapping,

@@ -129,7 +129,6 @@ impl ControlTableCell {
             cfg.limits.oc_trip_counts = current.oc_trip_counts;
             cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
             cfg.limits.thermal_tau_s = config::DEFAULT_THERMAL_TAU_S;
-            cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
             cfg.thermal.v_undervolt_counts = v_undervolt_counts;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;

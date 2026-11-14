@@ -666,7 +666,7 @@ fn span_runs() -> [(u16, u16); 3] {
     use osc_servo_core::regions::config::addr::{fault_cfg, limits, thermal};
     [
         (SPAN_START, limits::OPENLOOP_ZERO_BRAKE + 1),
-        (thermal::DERATE_START_CC, fault_cfg::SENSOR_BAD_COUNT + 1),
+        (thermal::CUTOFF_CC, fault_cfg::SENSOR_BAD_COUNT + 1),
         (CALIB_BASE_ADDR, SPAN_END),
     ]
 }

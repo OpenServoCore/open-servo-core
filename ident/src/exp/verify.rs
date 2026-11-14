@@ -43,7 +43,7 @@ impl VerifyCurrentCfg {
     /// dwells a ladder from the window floor, `floor_q15`, to the
     /// stall-safe cap takes ([`DutyPlan::stall_ladder`]), its ends
     /// dropped: at the floor the shunt reads only some windows, at the
-    /// limit the derate may hold the loop under its goal.
+    /// limit the rail fold may hold the loop under its goal.
     pub fn planned(plan: &DutyPlan, floor_q15: i16) -> Result<Self, Refusal> {
         let rungs = plan.stall_ladder(VERIFY_CURRENT, floor_q15)?;
         let steps_counts = rungs[1..rungs.len() - 1]

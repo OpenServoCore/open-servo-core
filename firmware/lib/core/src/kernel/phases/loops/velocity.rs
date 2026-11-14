@@ -64,7 +64,7 @@ impl VelocityLoop {
     /// (directional: an endstop zeroes only the inward side). The clip
     /// excess i_ref - i_raw IS that fold's clip, fed back through kaw. The
     /// integrator is also clamped to the band's widest side << 16 - a belt
-    /// on top of back-calc, and when the band shrinks mid-run (derate,
+    /// on top of back-calc, and when the band shrinks mid-run (rail fold,
     /// stall fold) the clamp drains the stale charge to the new ceiling in
     /// one tick: intended, the fold propagates instantly. The friction
     /// model is CALIB `motor`'s.

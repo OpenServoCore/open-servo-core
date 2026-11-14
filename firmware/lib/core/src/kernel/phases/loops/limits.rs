@@ -1,20 +1,20 @@
 //! i_lim composition (control-theory "Limits"): the current clamp is the one
 //! choke point every command passes through, so all protection lives here,
 //! each term owning one physical quantity. i_lim = min of the peak cap
-//! (`current_limit_counts`, the nameplate stall current), the winding
-//! estimate's derate (copper, the board NTC plus the rise on the two heat
-//! nodes kept here), the rail fold (a sagging source) and the application's
-//! `goal_current`; the press fold to `i_cont_counts` and the directional
-//! endstop come after. `fold` runs at MEDIUM and is compare/min only; the
-//! derate is recomputed at the SLOW cadence and cached, the rail's at RAIL.
+//! (`current_limit_counts`, the nameplate stall current), the rail fold (a
+//! sagging source) and the application's `goal_current`; the press fold to
+//! `i_cont_counts` and the directional endstop come after. The copper has
+//! no ceiling here: the winding estimate (the board NTC plus the rise on
+//! the two heat nodes kept here) latches the overtemperature fault at its
+//! cutoff. `fold` runs at MEDIUM and is compare/min only; the rail fold is
+//! recomputed at RAIL and cached.
 
 use crate::kernel::{DECIM_MED, DECIM_SLOW, TICK_HZ};
-use crate::math::recip_div;
-use crate::regions::config::{ConfigLimits, ConfigPosSoft, ConfigThermal, StallResponse};
+use crate::regions::config::{ConfigLimits, ConfigPosSoft, StallResponse};
 
 /// `limit_flags` bits: what shaped the command. A term bit names a term
 /// whose ceiling sits under the cap and is the composed `i_lim_counts`.
-/// Bit 4 is retired and reads 0.
+/// Bits 4 and 5 are retired and read 0.
 pub mod flag {
     /// The command sat at the current ceiling: OpenLoop's duty ceiling held
     /// under the goal, or a closed loop's current reference at the band.
@@ -25,8 +25,6 @@ pub mod flag {
     pub const ENDSTOP: u8 = 1 << 2;
     /// The stall permit lease is live.
     pub const PERMIT: u8 = 1 << 3;
-    /// The winding estimate's derate binds.
-    pub const DERATE: u8 = 1 << 5;
     /// The rail fold binds.
     pub const RAIL: u8 = 1 << 6;
     /// `goal_current` binds.
@@ -138,16 +136,16 @@ pub struct Fold {
     pub terms: u8,
 }
 
-/// Stall timer + fold flag, the heat state and the cached ceilings. The
-/// caches boot non-binding (u16::MAX) so a fresh state is not zero-current
-/// for the first SLOW period; the base min still caps them at the cap.
+/// Stall timer + fold flag, the heat state and the cached rail ceiling.
+/// The cache boots non-binding (u16::MAX) so a fresh state is not
+/// zero-current before the first RAIL phase; the base min still caps it at
+/// the cap.
 pub struct LimitState {
     stall_ticks: u32,
     /// EWMAs of the warmed held current squared, counts^2 with
     /// `HEAT_GUARD` bits: the rotor node and the body node.
     heat_qg: i32,
     heat2_qg: i32,
-    derate_cache: u16,
     rail_cache: u16,
     stalled: bool,
     fault_pending: bool,
@@ -159,7 +157,6 @@ impl LimitState {
             stall_ticks: 0,
             heat_qg: 0,
             heat2_qg: 0,
-            derate_cache: u16::MAX,
             rail_cache: u16::MAX,
             stalled: false,
             fault_pending: false,
@@ -186,26 +183,6 @@ impl LimitState {
         [self.heat_qg, self.heat2_qg].map(|h| (h >> HEAT_GUARD) as u32)
     }
 
-    /// SLOW-rate: the winding estimate's derate ceiling. Foldback: full
-    /// below derate_start_cc, zero at cutoff_cc, linear between - self-regulating
-    /// (less current -> less heating -> equilibrium at "weaker but still
-    /// holding"). A degenerate span (cutoff <= start, no table cross-gate)
-    /// degrades to a step at cutoff. At 62.5 Hz the reciprocal's ~10
-    /// multiplies are noise.
-    pub fn update_derate(&mut self, t_winding_cc: i16, cfg: &ConfigLimits, th: &ConfigThermal) {
-        let span = th.cutoff_cc as i32 - th.derate_start_cc as i32;
-        self.derate_cache = if t_winding_cc >= th.cutoff_cc {
-            0
-        } else if t_winding_cc < th.derate_start_cc || span <= 0 {
-            u16::MAX
-        } else {
-            // head in [1, span], both <= 65535: num fits u32 exactly
-            let head = (th.cutoff_cc as i32 - t_winding_cc as i32) as u32;
-            let num = cfg.current_limit_counts as u32 * head;
-            recip_div(num, span as u32).min(cfg.current_limit_counts as u32) as u16
-        };
-    }
-
     /// RAIL-rate: the rail fold, `slope_q8` counts per vcount over the
     /// undervolt floor (`rail_fold_q8`; 0 = off), zero at the floor. One
     /// multiply; two u16 factors never overflow.
@@ -219,13 +196,12 @@ impl LimitState {
     }
 
     // Select the flags with each minimum so the detector path need not
-    // keep all three ceilings live. The packed result fits one register.
+    // keep both ceilings live. The packed result fits one register.
     #[inline(always)]
     fn ceiling(&self, cap: u16, goal_abs: u16) -> u32 {
         let mut lim = cap;
         let mut terms = 0;
         for (ceiling, bit) in [
-            (self.derate_cache, flag::DERATE),
             (self.rail_cache, flag::RAIL),
             (if goal_abs == 0 { u16::MAX } else { goal_abs }, flag::GOAL),
         ] {
@@ -314,9 +290,9 @@ impl LimitState {
     }
 
     /// Torque-enable ack: drop the pending fault, unfold, re-arm a full
-    /// stall window. The heat and the caches survive - they are thermal
-    /// and rail state, not latches, and clearing them would hand a hot
-    /// winding one SLOW period of full current.
+    /// stall window. The heat and the rail cache survive - they are thermal
+    /// and rail state, not latches, and a cleared heat would read a hot
+    /// winding cold.
     pub fn ack(&mut self) {
         self.fault_pending = false;
         self.stalled = false;
@@ -354,8 +330,6 @@ mod tests {
         stall_release_counts: u16,
         stall_tau_trip_counts: u16,
         thermal_tau_s: u16,
-        derate_start_cc: i16,
-        cutoff_cc: i16,
         v_undervolt_counts: u16,
         rail_fold_q8: u16,
         pos_min_soft_counts: i32,
@@ -363,7 +337,7 @@ mod tests {
     }
 
     impl LimitCfg {
-        fn blocks(&self) -> (ConfigLimits, ConfigThermal, ConfigPosSoft) {
+        fn blocks(&self) -> (ConfigLimits, ConfigPosSoft) {
             let mut limits = ConfigLimits {
                 current_limit_counts: self.current_limit_counts,
                 stall_response: self.stall_response,
@@ -376,17 +350,11 @@ mod tests {
                 ..ConfigLimits::new()
             };
             limits.i_cont_counts = i_cont_or_cap(&limits);
-            let thermal = ConfigThermal {
-                derate_start_cc: self.derate_start_cc,
-                cutoff_cc: self.cutoff_cc,
-                v_undervolt_counts: self.v_undervolt_counts,
-                ..ConfigThermal::new()
-            };
             let soft = ConfigPosSoft {
                 pos_min_soft_counts: self.pos_min_soft_counts,
                 pos_max_soft_counts: self.pos_max_soft_counts,
             };
-            (limits, thermal, soft)
+            (limits, soft)
         }
     }
 
@@ -405,13 +373,8 @@ mod tests {
     }
 
     fn fold(st: &mut LimitState, inp: &FoldIn, cfg: &LimitCfg) -> Fold {
-        let (limits, _, soft) = cfg.blocks();
+        let (limits, soft) = cfg.blocks();
         st.fold(inp, &limits, &soft)
-    }
-
-    fn derate(st: &mut LimitState, t_winding_cc: i16, cfg: &LimitCfg) {
-        let (limits, th, _) = cfg.blocks();
-        st.update_derate(t_winding_cc, &limits, &th);
     }
 
     fn rail(st: &mut LimitState, vbus: u16, cfg: &LimitCfg) {
@@ -420,7 +383,7 @@ mod tests {
 
     /// One SLOW period at `i_held`: the heat step on the due tick.
     fn slow_period(st: &mut LimitState, i_held: i16, cfg: &LimitCfg) {
-        let (limits, _, _) = cfg.blocks();
+        let (limits, _) = cfg.blocks();
         st.heat(i_held, 0, [tau_shift(limits.thermal_tau_s), 0]);
     }
 
@@ -433,8 +396,6 @@ mod tests {
         stall_release_counts: 150,
         stall_tau_trip_counts: 1200,
         thermal_tau_s: 2,
-        derate_start_cc: 8000,
-        cutoff_cc: 10000,
         v_undervolt_counts: 700,
         // 6 counts per vcount: the cap 200 vcounts over the floor
         rail_fold_q8: 6 << 8,
@@ -519,43 +480,6 @@ mod tests {
         st.heat(i16::MIN, (1 << 16) - 1, [0, 0]);
         assert_eq!(st.heats(), [HEAT_MAX, HEAT_MAX]);
         assert!(st.heat_qg >= 0);
-    }
-
-    #[test]
-    fn derate_endpoints_and_midpoint() {
-        let mut st = LimitState::new();
-        derate(&mut st, 7999, &CFG);
-        assert_eq!(free_fold(&mut st, &CFG), 1200);
-        // onset: head == span, quotient = current_limit up to truncation
-        derate(&mut st, 8000, &CFG);
-        assert!(free_fold(&mut st, &CFG) >= 1199);
-        // midpoint -> half, and the derate names itself
-        derate(&mut st, 9000, &CFG);
-        let f = free(&mut st, &CFG);
-        assert!((599..=600).contains(&f.band.hi), "mid={}", f.band.hi);
-        assert_eq!(f.terms, flag::DERATE);
-        // cutoff and beyond -> zero
-        derate(&mut st, 10000, &CFG);
-        assert_eq!(free_fold(&mut st, &CFG), 0);
-        derate(&mut st, 12000, &CFG);
-        assert_eq!(free_fold(&mut st, &CFG), 0);
-        // recovery is just the next SLOW recompute
-        derate(&mut st, 2500, &CFG);
-        let f = free(&mut st, &CFG);
-        assert_eq!((f.band.hi, f.terms), (1200, 0));
-    }
-
-    #[test]
-    fn derate_degenerate_span_steps_at_cutoff() {
-        let cfg = LimitCfg {
-            derate_start_cc: 10000,
-            ..CFG
-        };
-        let mut st = LimitState::new();
-        derate(&mut st, 9999, &cfg);
-        assert_eq!(free_fold(&mut st, &cfg), 1200);
-        derate(&mut st, 10000, &cfg);
-        assert_eq!(free_fold(&mut st, &cfg), 0);
     }
 
     /// a jam at 40% of the cap but over i_cont trips after
@@ -848,7 +772,7 @@ mod tests {
     #[test]
     fn min_composition_names_the_tightest_term() {
         let mut st = LimitState::new();
-        derate(&mut st, 9990, &CFG); // head 10/2000 -> ~6, way under i_cont
+        rail(&mut st, 701, &CFG); // one vcount over the floor: 6, way under i_cont
         for _ in 0..10 {
             fold_at(&mut st, 480, 0, &CFG);
         }
@@ -861,8 +785,7 @@ mod tests {
             },
             &CFG,
         );
-        assert!((5..=6).contains(&f.band.hi), "lim={}", f.band.hi);
-        assert_eq!(f.terms, flag::DERATE);
+        assert_eq!((f.band.hi, f.terms), (6, flag::RAIL));
         // the goal at the rail's value: a tie names both
         let mut tie = LimitState::new();
         rail(&mut tie, 800, &CFG);
@@ -961,8 +884,8 @@ mod tests {
     }
 
     /// the permit drops the detectors and the endstop and nothing
-    /// else. A permit that also dropped a ceiling would cook a winding or
-    /// brown the rail out, so the cap, the derate and the rail still bind
+    /// else. A permit that also dropped a ceiling would strip a train or
+    /// brown the rail out, so the cap, the rail and the goal still bind
     /// under it.
     #[test]
     fn permit_lifts_detectors_never_ceilings() {
@@ -976,11 +899,16 @@ mod tests {
             ..Default::default()
         };
         let mut st = LimitState::new();
-        derate(&mut st, CFG.cutoff_cc, &cfg);
-        assert_eq!(fold(&mut st, &press, &cfg).band.hi, 0);
-        let mut st = LimitState::new();
         rail(&mut st, 800, &cfg);
         assert_eq!(fold(&mut st, &press, &cfg).band.hi, 600);
+        rail(&mut st, 700, &cfg);
+        assert_eq!(fold(&mut st, &press, &cfg).band.hi, 0);
+        let mut st = LimitState::new();
+        let asked = FoldIn {
+            goal_abs: 400,
+            ..press
+        };
+        assert_eq!(fold(&mut st, &asked, &cfg).band.hi, 400);
         let mut st = LimitState::new();
         let capped = LimitCfg {
             current_limit_counts: 554,

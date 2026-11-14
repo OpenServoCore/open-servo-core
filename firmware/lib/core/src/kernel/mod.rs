@@ -7,8 +7,8 @@
 //! velocity, vbus and detectors, slow, the shunt zero's sample and the
 //! publishes); SLOW every DECIM_SLOW periods inside the medium half in two
 //! stages a period apart (undervolt and the heats on the due tick; the
-//! winding estimate, its derate, overtemp and the shunt zero's aging on
-//! the next period's). The schedule itself is one table
+//! winding estimate, its cutoff and the shunt zero's aging on the next
+//! period's). The schedule itself is one table
 //! (`scheduler::table`); the loops and detectors the phases run live in
 //! `phases::loops`. The medium half leaves the fast half a `Command`. Only
 //! the CONTROL phase reads CONTROL, so a host write (torque, mode, goals)

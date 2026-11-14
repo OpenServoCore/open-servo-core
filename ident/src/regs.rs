@@ -46,19 +46,18 @@ pub mod config {
     /// The rotor heat node's time constant, s; the kernel runs the nearest
     /// power of two of its 16 ms period.
     pub const THERMAL_TAU_S: Reg = reg(0x005e, 2);
-    /// The winding estimate's derate: full under the start, zero at the
-    /// cutoff, where the overtemperature fault latches.
-    pub const DERATE_START_CC: Reg = reg(0x0060, 2);
-    pub const CUTOFF_CC: Reg = reg(0x0062, 2);
-    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0064, 2);
+    /// The winding estimate's one limit: the overtemperature fault latches
+    /// while the estimate reads this or more.
+    pub const CUTOFF_CC: Reg = reg(0x0060, 2);
+    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
     /// The body heat node's time constant, s; 0 = no body node.
-    pub const THERMAL_TAU2_S: Reg = reg(0x0066, 2);
+    pub const THERMAL_TAU2_S: Reg = reg(0x0064, 2);
+    pub const L1_Q016: Reg = reg(0x0066, 2);
+    pub const L2_Q88: Reg = reg(0x0068, 2);
+    pub const L3_Q88: Reg = reg(0x006a, 2);
     /// The rail fold's slope, counts of ceiling per vcount of rail over
     /// `V_UNDERVOLT_COUNTS`, Q8; 0 = off.
-    pub const RAIL_FOLD_Q8: Reg = reg(0x0072, 2);
-    pub const L1_Q016: Reg = reg(0x0074, 2);
-    pub const L2_Q88: Reg = reg(0x0076, 2);
-    pub const L3_Q88: Reg = reg(0x0078, 2);
+    pub const RAIL_FOLD_Q8: Reg = reg(0x0076, 2);
 }
 
 pub mod calib {
@@ -120,7 +119,7 @@ pub mod control {
 
     pub const TORQUE_ENABLE: Reg = reg(0x0180, 1);
     /// Deliberate stall: drops the stall trip and the endstop band, keeps the
-    /// current limit and the thermal derate. RAM only, cleared by a reboot.
+    /// current limit and the rail fold. RAM only, cleared by a reboot.
     /// Firmware that leases it grants about a second per write of true with
     /// torque on, and drops it on torque off ([`crate::limits::PermitLease`]).
     pub const STALL_PERMIT: Reg = reg(0x0181, 1);
@@ -217,8 +216,8 @@ pub mod telemetry {
     pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x026e, 2);
     /// What shaped the command: bit 0 the current ceiling, bit 1 the press
     /// fold, bit 2 an endstop, bit 3 the stall permit lease is live, then
-    /// the term that binds, bit 4 retired and reading 0, bit 5 the
-    /// thermal derate, bit 6 the rail fold, bit 7 `goal_current` (core
+    /// the term that binds, bits 4 and 5 retired and reading 0, bit 6 the
+    /// rail fold, bit 7 `goal_current` (core
     /// `kernel::phases::loops::limits::flag`).
     pub const LIMIT_FLAGS: Reg = reg(0x027c, 1);
     /// Smallest duty whose drive window the shunt reads, Q15: where the
@@ -261,14 +260,13 @@ pub const ALL: &[(&str, Reg)] = &[
     ("stall_release_counts", config::STALL_RELEASE_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
     ("thermal_tau_s", config::THERMAL_TAU_S),
-    ("derate_start_cc", config::DERATE_START_CC),
     ("cutoff_cc", config::CUTOFF_CC),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("thermal_tau2_s", config::THERMAL_TAU2_S),
-    ("rail_fold_q8", config::RAIL_FOLD_Q8),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),
+    ("rail_fold_q8", config::RAIL_FOLD_Q8),
     ("raw_min", calib::RAW_MIN),
     ("raw_max", calib::RAW_MAX),
     ("shunt_r_mohm", calib::SHUNT_R_MOHM),

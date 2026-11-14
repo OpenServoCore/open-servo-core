@@ -233,8 +233,8 @@ struct Drive {
     /// servo: its back-EMF speed checks the ladder's, and inertia reads B
     /// against them when the ladder declines.
     stored_motion: Option<StoredMotion>,
-    /// The servo's saved `derate_start_cc`: the thermal hold's guard.
-    derate_start_cc: i16,
+    /// The servo's saved `cutoff_cc`: the thermal hold's guard.
+    cutoff_cc: i16,
 }
 
 impl Ctx {
@@ -304,11 +304,11 @@ enum Cmd {
     /// current must sit 10% under the current ceiling, torque on throughout
     /// and the rotor never released, then back to mid travel with torque
     /// off, both confirmed before it returns, on every exit.
-    /// derate_start_cc and cutoff_cc are raised to the top of their range
-    /// for the run, volatile, so the derate never folds the ceiling under
-    /// the hold, and restored on every exit before anything is SAVEd; the
-    /// hold itself ends early when the copper's own temperature reaches the
-    /// saved derate start. A ceiling under the limit at any poll, a brush
+    /// cutoff_cc is raised to the top of its range for the run, volatile,
+    /// so the estimate under fit never latches the fault on the hold, and
+    /// restored on every exit before anything is SAVEd; the hold itself
+    /// ends early when the copper's own temperature reaches the saved
+    /// cutoff. A ceiling under the limit at any poll, a brush
     /// contact step in R with the pot still, or an R_ref over the stored
     /// winding by 15 % refuses the hold. Polled every 20 ms throughout:
     /// every poll lands in anchor_snapshots.csv with the board NTC, every
@@ -504,7 +504,7 @@ pub fn run(args: &Args, bus: Bus, id: u8) -> Result<()> {
             sc,
             stored,
             stored_motion,
-            derate_start_cc: snapshot::read_u16(&mut c, id, config::DERATE_START_CC)? as i16,
+            cutoff_cc: snapshot::read_u16(&mut c, id, config::CUTOFF_CC)? as i16,
         });
     }
     let lut = Lut::read(&mut c, id, &d)?;
@@ -1023,48 +1023,32 @@ fn run_hold(
         .map(|fit| ThermalRead { fit, marks }))
 }
 
-/// Run `f` with `derate_start_cc` and `cutoff_cc` raised to the top of
-/// their range, volatile, so the derate never folds the ceiling under the
-/// hold's duty; restored and read back on every exit `f` returns by, the
-/// start first so the span never inverts. A hard kill skips the restore,
-/// and a reboot drops the volatile writes.
-fn with_thresholds_raised<P: Pipe, T>(
+/// Run `f` with `cutoff_cc` raised to the top of its range, volatile, so
+/// the estimate under fit never latches the fault on the hold; restored
+/// and read back on every exit `f` returns by. A hard kill skips the
+/// restore, and a reboot drops the volatile write.
+fn with_cutoff_raised<P: Pipe, T>(
     c: &mut Client<P>,
     id: Id,
     f: impl FnOnce(&mut Client<P>) -> Result<T>,
 ) -> Result<T> {
-    let regs = [
-        ("cutoff_cc", config::CUTOFF_CC),
-        ("derate_start_cc", config::DERATE_START_CC),
-    ];
-    let set = |c: &mut Client<P>, k: usize, v: i16| -> Result<()> {
-        let (name, reg) = regs[k];
-        write_reg(c, id, reg, v as i32)?;
-        let back = snapshot::read_u16(c, id, reg)? as i16;
+    let set = |c: &mut Client<P>, v: i16| -> Result<()> {
+        write_reg(c, id, config::CUTOFF_CC, v as i32)?;
+        let back = snapshot::read_u16(c, id, config::CUTOFF_CC)? as i16;
         if back != v {
-            bail!("{name}: wrote {v}, read back {back}");
+            bail!("cutoff_cc: wrote {v}, read back {back}");
         }
         Ok(())
     };
-    let was = [
-        snapshot::read_u16(c, id, regs[0].1)? as i16,
-        snapshot::read_u16(c, id, regs[1].1)? as i16,
-    ];
-    let ran = set(c, 0, i16::MAX)
-        .and_then(|()| set(c, 1, i16::MAX))
-        .and_then(|()| {
-            println!(
-                "derate_start_cc {} and cutoff_cc {} -> {} for the hold (volatile, restored \
-                 after)",
-                was[1],
-                was[0],
-                i16::MAX
-            );
-            f(c)
-        });
-    let restored = set(c, 1, was[1])
-        .and_then(|()| set(c, 0, was[0]))
-        .with_context(|| format!("thresholds not restored to {} and {}", was[1], was[0]));
+    let was = snapshot::read_u16(c, id, config::CUTOFF_CC)? as i16;
+    let ran = set(c, i16::MAX).and_then(|()| {
+        println!(
+            "cutoff_cc {was} -> {} for the hold (volatile, restored after)",
+            i16::MAX
+        );
+        f(c)
+    });
+    let restored = set(c, was).with_context(|| format!("cutoff_cc not restored to {was}"));
     match (ran, restored) {
         (Ok(t), Ok(())) => Ok(t),
         (Ok(_), Err(e)) => Err(e),
@@ -1111,7 +1095,7 @@ fn run_thermal(
         );
     }
     rest_check(&mut Wire::new(&mut *c, id))?;
-    let rec = with_thresholds_raised(c, id, |c| {
+    let rec = with_cutoff_raised(c, id, |c| {
         let rec = match drive_stages(cli, c, id, Until::Thermal, false) {
             Ok(rec) => rec,
             Err(e) => {
@@ -2342,7 +2326,7 @@ impl Recorded {
                 let d = drive(cli)?;
                 let base = AnchorCfg {
                     cap_counts: d.lim.i_lim,
-                    guard_c: d.derate_start_cc as f64 / 100.0,
+                    guard_c: d.cutoff_cc as f64 / 100.0,
                     ..cli.hold
                 };
                 println!(
@@ -2867,25 +2851,19 @@ mod tests {
         assert_eq!(cfg.guard_c, f64::INFINITY);
     }
 
-    /// derate_start_cc and cutoff_cc sit at the top of their range while
-    /// the hold runs and are back, read back, after it: on success and on
-    /// a failed run alike.
+    /// cutoff_cc sits at the top of its range while the hold runs and is
+    /// back, read back, after it: on success and on a failed run alike.
     #[test]
-    fn the_hold_raises_the_thresholds_and_restores_them_on_every_exit() {
+    fn the_hold_raises_the_cutoff_and_restores_it_on_every_exit() {
         let (mut c, id) = crate::rig::servo::bench::table(1961);
-        let read = |c: &mut Client<_>| {
-            (
-                snapshot::read_u16(c, id, config::DERATE_START_CC).unwrap() as i16,
-                snapshot::read_u16(c, id, config::CUTOFF_CC).unwrap() as i16,
-            )
-        };
+        let read = |c: &mut Client<_>| snapshot::read_u16(c, id, config::CUTOFF_CC).unwrap() as i16;
         let was = read(&mut c);
-        assert!(0 < was.0 && was.0 < was.1 && was.1 < i16::MAX, "{was:?}");
-        let during = with_thresholds_raised(&mut c, id, |c| Ok(read(c))).unwrap();
-        assert_eq!(during, (i16::MAX, i16::MAX));
+        assert!(0 < was && was < i16::MAX, "{was}");
+        let during = with_cutoff_raised(&mut c, id, |c| Ok(read(c))).unwrap();
+        assert_eq!(during, i16::MAX);
         assert_eq!(read(&mut c), was);
-        let err = with_thresholds_raised(&mut c, id, |c| -> Result<()> {
-            assert_eq!(read(c), (i16::MAX, i16::MAX));
+        let err = with_cutoff_raised(&mut c, id, |c| -> Result<()> {
+            assert_eq!(read(c), i16::MAX);
             bail!("the hold aborted")
         })
         .unwrap_err();

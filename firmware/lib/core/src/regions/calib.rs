@@ -124,7 +124,7 @@ pub struct CalibSenseExt {
 /// counts-to-centi-C quadratic about its reference point, derived by the
 /// host from `CalibSenseExt`'s beta constants (`estimator::thermal::
 /// NtcCfg`). No curve = no estimate (`t_winding_cc` reads its sentinel,
-/// nothing derates); a curve with both gains 0 reads the NTC alone. The
+/// under every cutoff); a curve with both gains 0 reads the NTC alone. The
 /// reserved word held the retired resistance thermometer's constant.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
