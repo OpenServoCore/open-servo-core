@@ -154,7 +154,6 @@ impl Medium {
             self.omega_ref_q16 = 0;
             self.hold = false;
             self.near_ticks = 0;
-            self.drive.restart();
             self.run_prev = run;
         }
         if run && life.mode != self.mode_prev {
@@ -163,7 +162,6 @@ impl Medium {
             fast.reset_limiter(cfg.ol_floor_q15);
             self.hold = false;
             self.near_ticks = 0;
-            self.drive.restart();
         }
         self.mode_prev = life.mode;
         self.run = run;

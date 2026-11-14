@@ -1794,8 +1794,8 @@ mod tests {
     /// drive polarity is learned against them, and the angle map makes a
     /// positive degree step counterclockwise. A swapped pot runs its counts
     /// clockwise, so its counterclockwise end is the low one. The run stays
-    /// inside every guard with the kernel's drive check on (an abort fails
-    /// it), and the soft limits land inside the stops.
+    /// inside every guard (an abort fails it), and the soft limits land
+    /// inside the stops.
     #[test]
     fn every_wiring_calibrates_degrees_counterclockwise_positive() {
         use crate::rig::servo::bench::Bench;
@@ -1807,7 +1807,6 @@ mod tests {
             let mut b = Bench::mg90(crate::capture::Supply::TwoS);
             // a positive duty raises the counts unless one of the two is swapped
             b.servo.drive_polarity = pot_swapped == motor_swapped;
-            b.servo.drive_check = true;
             let ccw_end = if pot_swapped {
                 CcwEnd::Low
             } else {

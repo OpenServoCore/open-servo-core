@@ -118,13 +118,8 @@ pub(crate) fn jam_check<S: Servo>(
         );
     }
     if exp.polarity() != stored {
-        let latch = if exp.resumed() {
-            "the servo latched drive_reversed: "
-        } else {
-            ""
-        };
         println!(
-            "  {latch}the motor turns against the stored drive_polarity {}; this run drives with \
+            "  the motor turns against the stored drive_polarity {}; this run drives with \
              drive_polarity {} (RAM until a SAVE)",
             stored as u8,
             exp.polarity() as u8
@@ -142,12 +137,11 @@ mod tests {
     use osc_ident::exp::testkit::board_d_scales;
 
     /// The bench MG90 at `pos` under the stored `drive_polarity` 1, its
-    /// motor wired `along` it or not, the kernel's drive check on.
+    /// motor wired `along` it or not.
     fn bench_at(pos: f64, along: bool) -> Bench {
         let mut b = Bench::mg90(Supply::TwoS);
         b.servo.pos = pos;
         b.servo.drive_polarity = along;
-        b.servo.drive_check = true;
         b
     }
 
@@ -208,14 +202,31 @@ mod tests {
         assert!(!b.servo.torque && b.servo.refused_goals.is_empty());
     }
 
-    /// A reversed motor whose pot is dead runs past the soft limit unseen
-    /// and the servo latches drive_reversed: the check rests, flips,
-    /// acknowledges and ends at the position sensor. It is an error that
-    /// says what to check, and the stored polarity is written back.
+    /// A reversed motor under the low soft limit whose servo latches a fault
+    /// on the way to mid travel, after the first pulse's flip went to it in
+    /// RAM: the check is an error, and the stored polarity is written back.
     #[test]
     fn a_failed_check_writes_the_stored_polarity_back() {
-        let mut b = bench_at(400.0, false);
-        b.servo.pot_dead = Some(400);
+        let mut b = bench_at(380.0, false);
+        b.servo.fault_at_ms = Some(b.servo.t_ms + 300.0);
+        assert!(check(&mut b).is_err());
+        let polarity: Vec<i32> = b
+            .writes
+            .iter()
+            .filter(|(reg, _)| reg.addr == config::DRIVE_POLARITY.addr)
+            .map(|&(_, v)| v)
+            .collect();
+        assert_eq!(polarity, [0, 1]);
+        assert!(b.servo.burst.drive_polarity);
+        assert!(!b.servo.torque);
+    }
+
+    /// A dead pot at mid travel ends at the position sensor: an error that
+    /// says what to check, torque off.
+    #[test]
+    fn a_dead_pot_ends_at_the_sensor() {
+        let mut b = bench_at(2029.0, true);
+        b.servo.pot_dead = Some(2029);
         let Err(e) = check(&mut b) else {
             panic!("passed");
         };
@@ -223,7 +234,6 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("position sensor does not move"), "{msg}");
         assert!(msg.contains("check the pot's wiring"), "{msg}");
-        assert!(b.servo.burst.drive_polarity && !b.servo.reversed);
         assert!(!b.servo.torque);
     }
 

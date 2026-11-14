@@ -59,7 +59,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
 | 7 | PUBLISH | the shunt zero's sample; estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit |
-| 9 | SPARE_B | drive direction check while the wiring is unproven |
+| 9 | SPARE_B | none: the fast path alone |
 
 Module layout:
 
@@ -89,14 +89,14 @@ ADC wide codes: the converter can stick at a code just under a multiple of 256 w
 
 Everything downstream reads the corrected value: the loops, the overcurrent trip, the duty limiter and the stall check the current; the rail clamp, the rail fold and undervoltage the rail; the derate and overtemperature the NTC. Raw stays raw: the tick block's raw fields, TEL rows, the shunt burst, the sensor screen's pot and the boot rest measurements hold the converter's codes, so a TEL row can carry a raw field beside the corrected value derived from it (`i_tick_counts`, `vdiff_counts`, `current_bias_counts`, `vbus_counts`, `t_ntc_cc`). Pins: `a_wide_code_reads_mid_band_on_every_channel`, `the_zero_the_rail_and_the_ntc_read_every_wide_code_mid_band`, `the_trip_compares_the_corrected_current`, `a_written_map_leaves_every_raw_field_alone`; an all-zero map changes no reading (`kernel_trace_matches_golden`, `a_zero_map_reads_every_window_code_raw`, `a_whole_count_tap_steps_as_its_code`).
 
-The position measurement: the observer, its seeds and the drive check read the pot through one function (`phases::pos_q4`), so they never disagree. The wide-code step is taken in raw counts ahead of the table: a code whose low eight bits are all set gains its slot of the map (`Shared::adc_wide_q4`), and a live table is read again at the corrected raw count, `lin = table(raw + map[raw >> 8] / 16)` (Q4, floored), in the interval that holds it. A wide code is the last code of its interval, so once the slot reaches a count the band's middle lies in the interval above and takes that interval's gain, not the code's own; past the table's last point the reading is the identity. On the identity it is the bare slot. A stuck reading lands mid band, not at its edge, and a goal inside the band can rest. Every other code costs one compare, and the second table read runs only on a nonzero slot. The hold band keeps the gain of the code's own interval. Pin: `wide_step_reads_the_table_where_the_band_lies`. A position table should be built from readings that already carry the step, so the table holds the pot alone. The raw sample stays raw for the sensors publish, TEL `pos` and the sensor screen.
+The position measurement: the observer and its seeds read the pot through one function (`phases::pos_q4`), so they never disagree. The wide-code step is taken in raw counts ahead of the table: a code whose low eight bits are all set gains its slot of the map (`Shared::adc_wide_q4`), and a live table is read again at the corrected raw count, `lin = table(raw + map[raw >> 8] / 16)` (Q4, floored), in the interval that holds it. A wide code is the last code of its interval, so once the slot reaches a count the band's middle lies in the interval above and takes that interval's gain, not the code's own; past the table's last point the reading is the identity. On the identity it is the bare slot. A stuck reading lands mid band, not at its edge, and a goal inside the band can rest. Every other code costs one compare, and the second table read runs only on a nonzero slot. The hold band keeps the gain of the code's own interval. Pin: `wide_step_reads_the_table_where_the_band_lies`. A position table should be built from readings that already carry the step, so the table holds the pot alone. The raw sample stays raw for the sensors publish, TEL `pos` and the sensor screen.
 
 ### 2.3 Tick sequence
 
 `runtime::isr::on_adc_dma_tc` and `Kernel::on_tick` run, in order:
 
 1. Increment `sample_tick`; publish the scan's shunt and taps in the tick block.
-2. Spare-phase arbitration: boot on the first tick, else the configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)), else on SPARE_B the drive direction check while the wiring is unproven: its plain check, or its stage (`DRIVE_STAGE`).
+2. Spare-phase arbitration: boot on the first tick, else the configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)).
 3. FAST measure: the window the previous command drove, published in the tick block.
 4. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)).
 5. The medium phase.
@@ -116,11 +116,10 @@ The current loop in step 6 takes the reading step 3 measured, with two exception
 | --- | --- | --- |
 | Configuration take | first SPARE_A after a commit | owns the phase; holds no TX lane |
 | SLOW block | SLOW phase, every `DECIM_SLOW` periods | the due stage, then the finish on the next period's SLOW phase (`the_slow_stages_take_one_period_each`); each holds the TX lane (`slow_stage_ticks_hold_the_tel_lane`) |
-| Drive direction stage | SPARE_B, while the wiring is unproven | its own phase, apart from the take's; holds no TX lane |
 | Tick-load close | PUBLISH (`HEALTH_CLOSE_PHASE`) | never on a stage or take phase (`health_close_lands_only_on_publish_while_streaming`) |
 | TEL lane step | end of tick | at most one per tick; none on a head, bank or stage tick |
 
-Arbitration is the first `match` in `on_tick`: boot, then the take, then the drive direction check.
+Arbitration is the first `match` in `on_tick`: boot, then the take.
 
 > **Two rare events share a tick only where the budget table prices the combination.**
 
@@ -147,7 +146,7 @@ One build of the same firmware, `--features experiment`, for captures where the 
 | --- | --- |
 | FAST every tick: the window measurement, the tick block publish, the overcurrent trip, the motor write | the current, velocity and position loops, the trajectory generator |
 | OpenLoop only: `goal_duty` clamped to `duty_max_q15`, `openloop_decay`, `openloop_zero_brake` and `drive_polarity` honoured; the `mode` byte is accepted and ignored, `mode_active` publishes OpenLoop | the duty limiter and the limits fold: peak cap, derate, rail fold, endstop, press fold, stall verdict |
-| MEDIUM: CONTROL (the read, the enable edge, the drive kind), the bus dead-man on the RAIL phase, the shunt zero's aging step every `DECIM_SLOW` periods on the SLOW phase, PUBLISH (the shunt zero's sample, `current_bias_counts`, `mode_active`, `fault_code`, `fault_flags`), the configuration take on SPARE_A; the window floors at the first tick | the estimators (fusion observer, back-EMF boxcar, omega switch, rail estimate, winding thermal), the detectors (sensor screen, position error, stall, undervoltage, overtemperature, data-state entry check, Ke belt, drive direction check), the position table inside the kernel, the stall permit lease |
+| MEDIUM: CONTROL (the read, the enable edge, the drive kind), the bus dead-man on the RAIL phase, the shunt zero's aging step every `DECIM_SLOW` periods on the SLOW phase, PUBLISH (the shunt zero's sample, `current_bias_counts`, `mode_active`, `fault_code`, `fault_flags`), the configuration take on SPARE_A; the window floors at the first tick | the estimators (fusion observer, back-EMF boxcar, omega switch, rail estimate, winding thermal), the detectors (sensor screen, position error, stall, undervoltage, overtemperature, data-state entry check, Ke belt), the position table inside the kernel, the stall permit lease |
 
 The fault latch has two raise points. The **raw current trip** is the production overcurrent detector: `|i_meas|` over `oc_trip_counts` for `oc_trip_ticks` consecutive valid windows latches `over_current` and the drive coasts. The **bus dead-man** is `bus_deadman_ticks` (CONTROL, protocol sec 5.8): nonzero with torque on, a countdown in kernel ticks that every instruction the bus dispatches to this servo reloads (`Shared::bus_touch`, a generation counter the kernel compares once per medium period) and a streaming TEL burst holds; at zero the kernel latches `deadman` (bit 7, code 9) and the drive coasts until the torque enable ack. Torque off clears the countdown and a fresh enable starts it from the field. The loaded countdown publishes as the permit bit of `limit_flags`, the grant the burst arm reads for a seat outside the soft limits, so a seated burst arms under the dead-man as it does under the production lease. The other stripped fields publish zero; the floors publish as today, so the host tools still refuse to drive without them.
 
@@ -210,7 +209,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | Rows | Scope |
 | --- | --- |
 | `KERNEL`, `KERNEL_MEAN`, `TICK_PUBLISH` | plain tick body by regime (Open, Closed) and phase, maximum and mean |
-| `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `DRIVE_STAGE`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
+| `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |

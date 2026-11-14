@@ -368,8 +368,6 @@ The jam check (`exp/jam.rs`, `exp/sag.rs`):
 - `a_reversal_past_a_soft_limit_is_flipped_in_ram` - reversed under the
   low soft limit, one pulse reads it, the refused pulse back is never
   written, one RAM flip, mid travel without pressing the stop.
-- `a_latch_is_acknowledged_at_rest_and_resumed_once` - a drive_reversed
-  latch: rest, one flip, goal 0 then torque on, never a second flip.
 - `reversed_in_a_stoppers_give_ends_at_the_stop` - the test stops yield
   90 counts an amp (low, first contact 30 counts out from the press
   depth) and 40 (high, 20 out); reversed 2 to 15 counts inside first
@@ -392,7 +390,13 @@ The jam check (`exp/jam.rs`, `exp/sag.rs`):
   stop, a jam stiff or at a stop within 2 s, a dead pot at the sensor,
   an open winding at the motor; no press past the class's budget or over
   250 mA (3% over from a creeping pulse's projection), no arrival over 3
-  counts/ms, no refused duty written. Prints its table.
+  counts/ms, no refused duty written. A dead pot that ends at the sensor
+  is the one case the check cannot know reached a stop. With the stop
+  unseen a rung's step can carry a stalled winding over the mid-travel
+  probe cap (the largest in the sweep: plastic, 8.4 V, no stored R,
+  270.4 mA for 43.6 ms against a 225 mA cap), so the probe cap is not
+  held there: the press is bounded by the hold current of the class's
+  gears, with no allowance, and by the budget. Prints its table.
 - `the_sweep_holds_with_the_stored_r` - the same every 50 counts with
   the winding R stored.
 

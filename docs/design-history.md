@@ -239,6 +239,29 @@ provides, and none deletes receiver machinery. Break framing is the strong
 form of sync — DXL's `FF FF FD` + stuffing is the workaround for not having
 an out-of-band delimiter at all.
 
+### The run-time check for a reversed motor
+
+For a while the kernel checked the wiring itself. The soft-limit walls
+trust `drive_polarity`, and a motor wired the other way round turns them
+inside out, so from boot until a first move had shown the shaft going the
+drive's way, the kernel followed the shaft in legs of about a degree and
+latched a `drive_reversed` fault on two legs against the drive. That asked
+it to tell a reversed motor from a right-wired one losing to a load, with
+only the pot and the drive's sign to go on, and it could not. A load at the
+current limit, let go on a parked hold, back-drove the shaft two legs and
+latched it: a false verdict, and a worse outcome than none, since the latch
+shorted the winding and let fall a load the hold would have stopped and
+handed to the stall timer. It also proved the wiring falsely in two cases:
+a load carrying a reversed motor the way its velocity command pointed, and
+a reversed motor stepped the way it had already drifted. Each fix would
+have added a term and a budget row to a check that servos of this class do
+not carry at all. So the check went. The polarity is a calibration fact
+that `osc cal` measures and the plant stamp covers, a write that changes it
+refuses closed loop until a tool stamps the set again, and a servo that
+carries a wrong one runs to its stop and ends on the position error timer
+or the stall timer. Lesson: a fact the calibration measures is not one for
+the control loop to keep re-deriving from evidence a load can forge.
+
 ## Recurring lessons
 
 - **Measure before structuring.** Twice I built structure to avoid a cost
