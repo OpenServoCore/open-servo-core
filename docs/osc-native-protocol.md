@@ -1080,17 +1080,20 @@ burst. A host converting a streamed raw field adds the slot itself,
 kernel, so its step is the host's alone.
 
 On the pot the wide-code step is taken in raw counts
-ahead of the table, so it reaches the linearized reading scaled by the
-local gain `g` of the code's interval (Q4, `16 + c[i+1] - c[i]` clamped
-to 8..64 as for the hold band, 16 = unity):
+ahead of the table: a live table is read at the corrected raw count, in
+the interval that holds it, floored to a Q4 count:
 
 ```
-lin += (map[raw >> 8] * g) >> 4    when raw & 0xff == 0xff      (Q4)
+at  = (raw << 4) + map[raw >> 8]   when raw & 0xff == 0xff      (Q4 raw)
+i   = at >> 8                      (at most 256)
+lin = at + 16 c[i] + ((c[i+1] - c[i]) * (at & 0xff)) >> 4      (Q4)
 ```
 
-That is the table read at the corrected raw count to within a Q4 count
-where the next interval has the same gain; on the identity it is the
-bare slot. A stuck pot reading lands mid band. A position table should
+A wide code is the last code of its interval, so a slot of a count or
+more puts the band's middle in the interval above, at that interval's
+gain. Past the last point (`i = 256`, `c[i+1]` read as `c[256]`) the
+table is the identity; on the identity it is the bare slot. A stuck pot
+reading lands mid band. A position table should
 be built from readings that already carry the step, so the table holds
 the pot alone. The raw sample stays raw, as for the table, and a host
 linearizing a streamed `pos` takes the same step in raw counts first

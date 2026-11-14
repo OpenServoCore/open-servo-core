@@ -2733,10 +2733,10 @@ fn sloped_lut(rise: i16) -> [i16; pos_lut::POINTS] {
     k
 }
 
-/// The wide-code step is raw counts ahead of the table: on a live table it
-/// is the slot times the interval's gain, truncated, and lands within one
-/// Q4 count of the table read at the corrected raw, steeper and shallower
-/// than unity alike.
+/// The wide-code step is raw counts ahead of the table: where the code's
+/// interval and the one above share a gain, on a live table it is the slot
+/// times that gain, truncated, and lands within one Q4 count of the table
+/// read at the corrected raw, steeper and shallower than unity alike.
 #[test]
 fn wide_step_scales_by_the_table_gain() {
     let sh = Shared::new();
@@ -2772,6 +2772,56 @@ fn wide_step_scales_by_the_table_gain() {
                 "gain {gain} slot {slot}: {got} vs {want}"
             );
             assert_eq!(phases::pos_q4(&sh, false, 1023), (1023 << 4) + slot as u16);
+        }
+    }
+}
+
+/// The table as a continuous function of raw counts, Q4, the identity
+/// past its last point.
+fn table_at_q4(k: &[i16; pos_lut::POINTS], raw: f64) -> f64 {
+    let j = ((raw / 16.0).floor() as usize).min(pos_lut::INTERVALS);
+    let c0 = k[j] as f64;
+    let c1 = k.get(j + 1).map_or(0.0, |&c| c as f64);
+    16.0 * (raw + c0 + (c1 - c0) * (raw - 16.0 * j as f64) / 16.0)
+}
+
+/// A stuck code is the last of its interval, so a slot of a count or more
+/// puts the band's middle in the interval above: the reading is the table
+/// at raw + slot / 16, floored to a Q4 count, whatever the two intervals'
+/// gains. The cases: a steeper interval above (2047, gains 20 and 23),
+/// a shallower one (3071, 24 and 12), an own gain under the hold band's
+/// clamp (1023, gain 4 below 28) and the top code, past the last point.
+#[test]
+fn wide_step_reads_the_table_where_the_band_lies() {
+    let sh = Shared::new();
+    let mut k = [0i16; pos_lut::POINTS];
+    for (n, c) in [
+        (128, 4),
+        (129, 11),
+        (192, 8),
+        (193, 4),
+        (64, -12),
+        (255, -3),
+    ] {
+        k[n] = c;
+    }
+    sh.with_pos_lut_mut(|a| *a = k);
+    for raw in [2047u16, 3071, 1023, 4095] {
+        for slot in [88u8, 1, 8, 15, 16, 17, 40, 99, 160, 255] {
+            let mut map = [0u8; adc::ADC_WIDE_SLOTS];
+            map[adc::wide_slot(raw)] = slot;
+            write_wide_map(&sh, map);
+            let want = table_at_q4(&k, raw as f64 + slot as f64 / 16.0).floor() as u32 as u16;
+            assert_eq!(
+                phases::pos_q4(&sh, true, raw),
+                want,
+                "raw {raw} slot {slot}"
+            );
+            assert_eq!(
+                phases::pos_q4(&sh, false, raw),
+                pos_lut::identity_q4(raw).wrapping_add(slot as u16),
+                "raw {raw} slot {slot}"
+            );
         }
     }
 }
