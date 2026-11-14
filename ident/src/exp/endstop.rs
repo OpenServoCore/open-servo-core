@@ -401,7 +401,7 @@ mod tests {
         servo.ends = (321.0, 3702.0);
         servo.pos = 2000.0;
         let (exp, log) = run(&mut servo);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let r = exp.result().expect("both rails found");
         assert!((r.pos_min_phys - 321).abs() <= 3, "min {}", r.pos_min_phys);
         assert!((r.pos_max_phys - 3702).abs() <= 3, "max {}", r.pos_max_phys);

@@ -2846,7 +2846,7 @@ mod tests {
         servo.dynamic = true;
         let mut exp = Guarded::new(Inductance::new(cfg, &params, scales()), params);
         let log = pump(&mut exp, &mut servo, 200_000);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         assert!(exp.abort().is_none(), "abort {:?}", exp.abort());
         let torque_on = log
             .iter()
@@ -3234,7 +3234,7 @@ mod tests {
                 .all(|l| !l.starts_with("write goal_duty") || l.ends_with(" 0")),
             "a seek drove the shaft: {log:?}"
         );
-        assert!(log.contains(&"write stall_permit 1".to_string()));
+        assert!(log.iter().any(|l| l == "write stall_permit 1"));
         let caps = exp.into_inner().into_inner().captures().to_vec();
         assert_eq!(caps.len(), 12);
 

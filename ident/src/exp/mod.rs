@@ -1532,7 +1532,7 @@ mod tests {
             log: Vec::new(),
         };
         s.log = pump(&mut s, servo, 4_000_000);
-        assert!(!s.log.contains(&"OVERRUN".to_string()));
+        assert!(!s.log.iter().any(|l| l == "OVERRUN"));
         s
     }
 

@@ -359,7 +359,7 @@ mod tests {
     fn recovers_planted_r_end_to_end() {
         let mut servo = FakeServo::new(3.37);
         let (exp, log) = run_e2(&mut servo);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let fit = exp.fit().expect("samples collected");
         // settle discard keeps the planted 1.5x transient out of the fit,
         // so R lands on the plant value despite it

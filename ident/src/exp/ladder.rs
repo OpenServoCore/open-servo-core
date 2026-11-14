@@ -1118,7 +1118,7 @@ mod tests {
     fn recovers_planted_ke_and_friction_line() {
         let mut servo = physical_servo();
         let (exp, log) = run_e3(&mut servo, rig());
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         assert_eq!(exp.declined(), None);
         let fit = exp.fit(3.37).expect("usable rungs");
         assert_eq!(fit.rungs.iter().filter(|r| r.used).count(), 12);
@@ -1153,7 +1153,7 @@ mod tests {
                 2_000_000,
                 Bus::BENCH.with_read_ms(1.9),
             );
-            assert!(exp.abort().is_none() && !log.contains(&"OVERRUN".to_string()));
+            assert!(exp.abort().is_none() && !log.iter().any(|l| l == "OVERRUN"));
             let exp = exp.into_inner();
             assert_eq!(exp.declined(), None, "{:?}", exp.warnings());
             exp.fit(3.37).expect("usable rungs").ke.ke_vpc
@@ -1654,7 +1654,7 @@ mod tests {
             seen: Vec::new(),
         };
         let log = pump(&mut s, servo, 4_000_000);
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         s
     }
 

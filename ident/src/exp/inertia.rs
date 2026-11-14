@@ -934,7 +934,7 @@ mod tests {
     #[test]
     fn recovers_planted_b_from_burst_captures() {
         let (exp, log) = run();
-        assert!(!log.contains(&"OVERRUN".to_string()));
+        assert!(!log.iter().any(|l| l == "OVERRUN"));
         let fit = exp.fit(&priors(), &[]).expect("fit");
         assert_eq!(fit.tel_steps, 6, "every step captures one burst");
         assert_eq!(fit.b_decay.steps.len(), 6);

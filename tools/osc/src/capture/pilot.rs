@@ -2005,11 +2005,9 @@ mod tests {
         let fast = plans.iter().find(|p| p.decay == Decay::Fast).unwrap();
         assert_eq!(fast.schedule, schedule);
         assert!(
-            fast.dropped.contains(
-                &"grid: 5, 10, 15, 20, 25, 30% dropped, below breakaway: the pilot saw the \
-                  shaft stay still both ways"
-                    .to_string()
-            ),
+            fast.dropped.iter().any(|l| l
+                == "grid: 5, 10, 15, 20, 25, 30% dropped, below breakaway: the pilot saw the \
+                  shaft stay still both ways"),
             "{:?}",
             fast.dropped
         );

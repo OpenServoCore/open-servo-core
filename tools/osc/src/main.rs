@@ -5,6 +5,10 @@
 //! osc-client -- every choreography lives in the library. Wire measurement is
 //! the bench `tool-*` binaries' job, not this tool's.
 
+// clap's derive parses every Cmd variant in one generated function, and an allow on the
+// enum does not reach it.
+#![allow(clippy::large_unopt_stack_frames)]
+
 mod boot;
 mod cal;
 mod capture;
