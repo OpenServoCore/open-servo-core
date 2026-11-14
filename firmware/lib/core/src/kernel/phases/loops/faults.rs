@@ -211,8 +211,9 @@ pub const fn stage_due(state: u8) -> bool {
 
 /// The drive direction check, once per medium period while the wiring is
 /// unproven. A plain check holds the observer's position against an
-/// anchor: an idle drive (zero duty) drags the anchor along, a driven shaft
-/// ends a leg once it is `DRIVE_LEG_COUNTS` away. The stages follow, a check
+/// anchor: an idle drive (zero duty on two checks in a row) drags the
+/// anchor along, a driven shaft ends a leg once it is `DRIVE_LEG_COUNTS`
+/// away. The stages follow, a check
 /// each: the leg's end counts only where the pot has come half a leg from
 /// the leg's start, and the next leg starts a leg on; then the leg is judged
 /// against the drive's direction. The observer's model walks its position
@@ -232,6 +233,8 @@ pub struct DriveCheck {
     leg: i8,
     /// The last leg ran against the drive.
     against: bool,
+    /// The last plain check read a zero duty.
+    idle: bool,
     /// Linearized Q4 counts.
     anchor: i32,
 }
@@ -243,6 +246,7 @@ impl DriveCheck {
             polarity: false,
             leg: 0,
             against: false,
+            idle: false,
             anchor: 0,
         }
     }
@@ -283,11 +287,19 @@ impl DriveCheck {
             return true;
         }
         if duty_q15 == 0 {
-            self.anchor = pos_q4;
-            self.against = false;
-        } else if ((pos_q4 - self.anchor + LEG_Q4 as i32 - 1) as u32) >= 2 * LEG_Q4 - 1 {
-            // |travel| >= LEG_Q4 in one compare
-            self.state = LEG_END;
+            // a loop passing through zero reads zero on one check, with
+            // the shaft at speed: only the second in a row is an idle drive
+            if self.idle {
+                self.anchor = pos_q4;
+                self.against = false;
+            }
+            self.idle = true;
+        } else {
+            self.idle = false;
+            if ((pos_q4 - self.anchor + LEG_Q4 as i32 - 1) as u32) >= 2 * LEG_Q4 - 1 {
+                // |travel| >= LEG_Q4 in one compare
+                self.state = LEG_END;
+            }
         }
         false
     }
@@ -534,6 +546,8 @@ mod tests {
     fn an_idle_drive_a_restart_or_no_drive_counts_afresh() {
         let mut c = started(2000);
         assert_eq!(walk(&mut c, 1, 2000, -1, LEG + 2, true).1, 1);
+        // idle on two checks in a row
+        assert!(!check(&mut c, 1977, 0, 1, true));
         assert!(!check(&mut c, 1977, 0, 1, true));
         assert!(!walk(&mut c, 1, 1977, -1, LEG + 2, true).0);
         let mut c = started(2000);
@@ -543,6 +557,36 @@ mod tests {
         let mut c = started(2000);
         assert_eq!(walk(&mut c, 1, 2000, -1, LEG + 2, true).1, 1);
         assert!(!walk(&mut c, 0, 1977, -1, LEG + 3, true).0);
+    }
+
+    /// A walk against the drive with the duty at zero on its `zero`-th
+    /// check; where it latches.
+    fn latch_with_a_zero_duty_check(sign: i32, zero: Option<i32>) -> Option<i32> {
+        let mut c = started(2000);
+        (0..=4 * LEG).find(|&n| {
+            let duty = if zero == Some(n) { 0 } else { 1000 };
+            check(&mut c, 2000 - sign * n, duty, sign, true)
+        })
+    }
+
+    /// One zero-duty check inside a driven run is the loop passing through
+    /// zero, not an idle drive: wherever it falls inside a leg, the legs end
+    /// where they do without it and the second one latches.
+    #[test]
+    fn a_single_zero_duty_check_keeps_the_leg_start() {
+        for sign in [1, -1] {
+            let clean = latch_with_a_zero_duty_check(sign, None);
+            assert_eq!(clean, Some(2 * LEG + 2));
+            // inside the first leg, then inside the second: the checks at
+            // LEG and 2 x LEG end the legs and two stages follow each
+            for zero in (1..LEG).chain(LEG + 3..2 * LEG) {
+                assert_eq!(
+                    latch_with_a_zero_duty_check(sign, Some(zero)),
+                    clean,
+                    "sign {sign}: zero duty on check {zero}"
+                );
+            }
+        }
     }
 
     #[test]

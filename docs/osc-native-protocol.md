@@ -862,7 +862,10 @@ also turn the soft-limit walls the wrong way. From boot, and again after
 a write that changes `drive_polarity`, the kernel follows the observer's
 position (`theta_hat_q16`) in legs of 20 counts, about 1 degree on the
 bench MG90, once per medium period while torque is on: an idle drive
-(zero duty) drags the start of the leg along. A leg's end counts the
+drags the start of the leg along. A drive is idle once the duty is zero
+on two periods in a row; a single zero is a loop passing through it with
+the shaft at speed, and the leg keeps its start (DES
+`a_zero_duty_check_in_a_reversed_run_keeps_its_legs`). A leg's end counts the
 next period only where the pot has come half a leg from the leg's start
 the leg's way: an observer that walks off a still rotor leaves the pot
 behind whatever offset the two hold at rest, while on a running shaft the

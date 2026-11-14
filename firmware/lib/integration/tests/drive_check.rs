@@ -271,6 +271,35 @@ fn a_reversed_motor_at_the_bench_limits_latches_and_brakes() {
     );
 }
 
+/// The same enable on two seeds whose loop passes through zero duty on one
+/// check with the shaft at speed, a leg and more into its run, as about one
+/// seed in a thousand does: one zero-duty check is not an idle drive, so
+/// the legs keep their start and the latch comes inside the same three and
+/// a half legs.
+#[test]
+fn a_zero_duty_check_in_a_reversed_run_keeps_its_legs() {
+    for (mode, seed) in [(Mode::Position, 540), (Mode::Velocity, 884)] {
+        let mut s = Servo::new(seed, MID, mode, |t| {
+            bench_limits(t);
+            t.control.lifecycle.goal_position = MID as i32 + 200;
+            t.control.lifecycle.goal_velocity = 4000;
+        });
+        s.p.swapped = true;
+        let from = s.pos();
+        s.control(|c| c.torque_enable = true);
+        let mut travel: f64 = 0.0;
+        s.until(1000 * MS, |s| {
+            travel = travel.max((s.pos() - from).abs());
+            s.reversed()
+        })
+        .unwrap_or_else(|| panic!("{mode:?} seed {seed}: never latched"));
+        assert!(
+            travel <= 3.5 * DRIVE_LEG_COUNTS as f64,
+            "{mode:?} seed {seed}: {travel:.1} counts to the latch"
+        );
+    }
+}
+
 /// A reversed loop held 10 ms at mid at the bench limits, then stepped
 /// toward the way it drifted, should latch in every seed. Some creep to the
 /// goal under the dithering duty instead and prove the wiring.
