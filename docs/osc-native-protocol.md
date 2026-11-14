@@ -712,7 +712,7 @@ in sample order, high side first, so no named field lies in its way.
 | 0x244 | `vmotor_b`        | u16   | |
 | 0x246 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
 | 0x248 | `current_trough`  | u16   | |
-| 0x24A | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; held through windows the shunt cannot read, 0 from the first tick nothing drives |
+| 0x24A | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; through windows the shunt cannot read, held in OpenLoop and the current reference in the closed loops; 0 from the first tick nothing drives |
 | 0x24C | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
 | 0x24E | `vmotor_a_trough` | u16   | |
 | 0x250 | `vmotor_b_trough` | u16   | |

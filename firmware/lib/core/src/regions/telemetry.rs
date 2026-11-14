@@ -95,8 +95,9 @@ pub struct TelemetryTick {
     #[ct_field(access = ro)]
     pub current_trough: u16,
     /// Window-selected, bias-subtracted, settle-gained, signed current
-    /// (`window::i_from_frame`), held through windows the shunt cannot read,
-    /// 0 from the first tick nothing drives.
+    /// (`window::i_from_frame`), 0 from the first tick nothing drives.
+    /// Through windows the shunt cannot read it holds under OpenLoop and
+    /// is the current reference under the closed loops.
     #[ct_field(access = ro)]
     pub i_tick_counts: i16,
     /// Drive-window `va - vb`, logical sign, held through windows the

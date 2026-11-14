@@ -10,11 +10,12 @@
 mod support;
 
 use osc_integration::mg90::{self, Mg90};
-use osc_integration::plant::{FakeIo, kernel, lut_live};
+use osc_integration::plant::{FakeIo, lut_live};
 use osc_servo_core::kernel::phases::loops::faults::{
-    CODE_DATA, CODE_NONE, CODE_POSITION_ERROR, CODE_STALL,
+    BIT_OVER_CURRENT, CODE_DATA, CODE_NONE, CODE_POSITION_ERROR, CODE_STALL,
 };
 use osc_servo_core::kernel::phases::loops::limits::flag;
+use osc_servo_core::kernel::{DECIM_MED, TICK_HZ as KERNEL_HZ};
 use osc_servo_core::regions::config::addr::limits::DRIVE_POLARITY;
 use osc_servo_core::{
     ControlLifecycle, ControlTable, Kernel, Mode, MotorCmd, RegionStorage, Shared, StallResponse,
@@ -29,7 +30,10 @@ const STOPS: (f64, f64) = (support::MG90_A_MIN as f64, support::MG90_A_MAX as f6
 /// Linearized counts per degree on the bench MG90: 4096 over 184.2 deg.
 const PER_DEG: f64 = 22.2;
 /// FAST ticks per ms.
-const MS: u32 = 20;
+const MS: u32 = KERNEL_HZ / 1000;
+const TICK_HZ: f64 = KERNEL_HZ as f64;
+/// Medium periods a second.
+const MED_HZ: f64 = TICK_HZ / DECIM_MED as f64;
 const SEEDS: u64 = 16;
 /// The current limit of the bench set, as a load on the output.
 const LIMIT_LOAD: f64 = 280.0;
@@ -42,14 +46,6 @@ fn bench_limits(t: &mut ControlTable) {
     t.config.limits.current_limit_counts = BENCH_LIMIT as u16;
     t.config.loop_position.velocity_limit_cps = 4000;
     t.config.loop_position.accel_limit_q88 = 10240;
-}
-
-/// The board's window floors (osc-dev-v006: the shunt 64 ticks, the
-/// terminals 93), where the current loop reads every drive it holds a
-/// limit with.
-fn board_floors(t: &mut ControlTable) {
-    t.calib.sense.i_window_min_ticks = 64;
-    t.calib.sense.v_window_min_ticks = 93;
 }
 
 struct Servo {
@@ -74,7 +70,7 @@ impl Servo {
         });
         let mut s = Self {
             sh,
-            k: kernel(),
+            k: mg90::kernel(),
             p: Mg90::new(at, lut, seed),
             stops: false,
         };
@@ -113,6 +109,17 @@ impl Servo {
 
     fn limit_flags(&self) -> u8 {
         self.sh.table.with(|t| t.telemetry.limits.limit_flags)
+    }
+
+    fn fault_flags(&self) -> u8 {
+        self.sh.table.with(|t| t.telemetry.common.fault_flags)
+    }
+
+    /// The observer's position, linearized counts.
+    fn theta_hat(&self) -> f64 {
+        self.sh
+            .table
+            .with(|t| t.telemetry.estimates.theta_hat_q16 as f64 / 65536.0)
     }
 
     /// Ticks until `done`, at most `ticks`.
@@ -159,24 +166,46 @@ fn a_position_move_runs_to_its_goal() {
     }
 }
 
+/// The travel of a trapezoid profile `t` seconds into `d` counts from
+/// rest, under a velocity limit `v` and an acceleration `a`.
+fn profile(t: f64, d: f64, v: f64, a: f64) -> f64 {
+    let ramp = (v / a).min((d / a).sqrt());
+    let peak = a * ramp;
+    let end = 2.0 * ramp + (d - peak * ramp) / peak;
+    if t <= ramp {
+        a * t * t / 2.0
+    } else if t <= end - ramp {
+        peak * (t - ramp / 2.0)
+    } else if t <= end {
+        d - a * (end - t) * (end - t) / 2.0
+    } else {
+        d
+    }
+}
+
 /// A motor wired against `drive_polarity` under a closed loop at the bench
-/// limits, on the board's window floors, goal and torque in one write.
-/// Nothing reads the wiring, so the loop drives the shaft away from its
-/// goal at the profile's speed, through the soft limit, whose wall closes
-/// the side that would bring a reversed motor back, and onto the hard stop
-/// 82 deg from mid travel, inside half a second. There it presses at the
-/// current limit until a timer ends it: in Position the position error
-/// timer, started when the run passed `pos_error_counts`, about 0.1 s
-/// after the stop; in Velocity the stall timer, `stall_time_ticks` after
-/// the observer reads the shaft still, about 0.6 s after it. The latch
-/// switches the drive off. The winding current stays under twice the limit
-/// through the run and the impact, and on the stop it is the limit within
-/// a millisecond of the impact. 16 seeds each.
+/// limits, goal and torque in one write. Nothing reads the wiring, so the
+/// loop drives the shaft away from its goal, through the soft limit, whose
+/// wall closes the side that would bring a reversed motor back, and onto
+/// the hard stop 82 deg from mid travel, inside half a second. There it
+/// presses at the current limit until a timer ends it. In Position that is
+/// the position error timer: the latch comes `pos_error_time_ticks` after
+/// the profile's lead over the observer first passed `pos_error_counts`,
+/// which is early in the run, so the press lasts less than that time. The
+/// test places that crossing to two medium periods: the timer counts its
+/// first sample as a whole period, and the observer's position is read as
+/// published, once a period. In Velocity it is the stall timer,
+/// `stall_time_ticks` after the observer reads the shaft still, which
+/// takes it up to 150 ms on the stop. The latch switches the drive off. No
+/// current reaches `oc_trip_counts`, through the run, the impact or the
+/// press, and from a millisecond after the impact the press averages the
+/// limit. 16 seeds each.
 #[test]
 fn a_reversed_motor_runs_to_its_stop_and_a_timer_latches() {
-    for (mode, code, latch_ms) in [
-        (Mode::Position, CODE_POSITION_ERROR, 0..=150),
-        (Mode::Velocity, CODE_STALL, 500..=650),
+    const STEP: i32 = 200;
+    for (mode, code) in [
+        (Mode::Position, CODE_POSITION_ERROR),
+        (Mode::Velocity, CODE_STALL),
     ] {
         for dir in [1i32, -1] {
             let stop = if dir > 0 { STOPS.0 } else { STOPS.1 };
@@ -184,21 +213,44 @@ fn a_reversed_motor_runs_to_its_stop_and_a_timer_latches() {
                 let case = format!("{mode:?} {dir} seed {seed}");
                 let mut s = Servo::new(seed, MID, mode, |t| {
                     bench_limits(t);
-                    board_floors(t);
                     t.config.limits.stall_response = StallResponse::Fault;
-                    t.control.lifecycle.goal_position = MID as i32 + 200 * dir;
+                    t.control.lifecycle.goal_position = MID as i32 + STEP * dir;
                     t.control.lifecycle.goal_velocity = 4000 * dir;
                 });
+                let (limit, oc_trip, stall_ticks) = s.sh.table.with(|t| {
+                    let l = &t.config.limits;
+                    (
+                        l.current_limit_counts as f64,
+                        l.oc_trip_counts as f64,
+                        l.stall_time_ticks,
+                    )
+                });
+                let (v, a) = s.sh.table.with(|t| {
+                    let lp = &t.config.loop_position;
+                    (
+                        lp.velocity_limit_cps as f64,
+                        lp.accel_limit_q88 as f64 / 256.0 * MED_HZ,
+                    )
+                });
+                let (error_counts, error_ticks) = s.sh.table.with(|t| {
+                    let f = &t.config.fault_cfg;
+                    (f.pos_error_counts as f64, f.pos_error_time_ticks)
+                });
+                let from = s.theta_hat();
                 s.p.swapped = true;
                 s.stops = true;
                 s.control(|c| c.torque_enable = true);
                 let mut peak: f64 = 0.0;
-                let mut at_stop = None;
+                let (mut over, mut at_stop) = (None, None);
                 let (mut press, mut press_peak, mut pressed) = (0.0, 0.0f64, 0);
                 let latch = (0..2000 * MS)
                     .find(|&t| {
                         s.tick();
                         peak = peak.max(s.p.i.abs());
+                        let lead = profile(t as f64 / TICK_HZ, STEP as f64, v, a);
+                        if (from + dir as f64 * lead - s.theta_hat()).abs() > error_counts {
+                            over.get_or_insert(t);
+                        }
                         if s.p.locked {
                             let at = *at_stop.get_or_insert(t);
                             if t > at + MS {
@@ -214,19 +266,29 @@ fn a_reversed_motor_runs_to_its_stop_and_a_timer_latches() {
                 let at_stop =
                     at_stop.unwrap_or_else(|| panic!("{case}: latched short of the stop"));
                 assert_eq!(s.code(), code, "{case}");
+                assert_eq!(s.fault_flags() & BIT_OVER_CURRENT, 0, "{case}");
                 assert!(s.limit_flags() & flag::ENDSTOP != 0, "{case}: no wall");
                 assert!((s.p.out - stop).abs() <= 2.0, "{case}: at {:.1}", s.p.out);
                 assert!(at_stop <= 500 * MS, "{case}: {at_stop} ticks to the stop");
-                let held = (latch - at_stop) / MS;
-                assert!(latch_ms.contains(&held), "{case}: {held} ms on the stop");
-                assert!(peak <= 2.0 * BENCH_LIMIT, "{case}: peak {peak:.0}");
-                assert!(
-                    press_peak <= 1.125 * BENCH_LIMIT,
-                    "{case}: {press_peak:.0} on the stop"
-                );
+                let held = latch - at_stop;
+                if mode == Mode::Position {
+                    let due = over.unwrap_or_else(|| panic!("{case}: never over")) + error_ticks;
+                    assert!(
+                        latch.abs_diff(due) <= 2 * DECIM_MED as u32,
+                        "{case}: latched at {latch}, due at {due}"
+                    );
+                    assert!(held <= error_ticks, "{case}: {held} ticks on the stop");
+                } else {
+                    assert!(
+                        (stall_ticks..=stall_ticks + 150 * MS).contains(&held),
+                        "{case}: {held} ticks on the stop"
+                    );
+                }
+                assert!(peak < oc_trip, "{case}: peak {peak:.0}");
+                assert!(press_peak < oc_trip, "{case}: {press_peak:.0} on the stop");
                 let press = press / pressed as f64;
                 assert!(
-                    (0.98 * BENCH_LIMIT..=1.02 * BENCH_LIMIT).contains(&press),
+                    (0.98 * limit..=1.02 * limit).contains(&press),
                     "{case}: pressing at {press:.0}"
                 );
                 s.run(MS);
@@ -287,7 +349,7 @@ fn a_load_at_the_limit_gives_way_to_the_press() {
         for load in [LIMIT_LOAD, -LIMIT_LOAD] {
             for let_go_ms in [0, 100] {
                 for seed in 1..=SEEDS {
-                    let mut s = Servo::new(seed, MID, Mode::Position, board_floors);
+                    let mut s = Servo::new(seed, MID, Mode::Position, |_| {});
                     s.p.inertia = inertia;
                     s.p.load = load;
                     s.p.locked = true;
