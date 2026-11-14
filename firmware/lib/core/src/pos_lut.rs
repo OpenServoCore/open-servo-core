@@ -8,11 +8,12 @@
 //!
 //! The table lives in `Shared` RAM behind a paged window in CONTROL
 //! (`ControlPosLut`): the host STOREs it `PAGE_POINTS` at a time, COMMITs,
-//! and the kernel applies it only while `pos_lut_state` reads LIVE. SAVE
-//! persists the effective table beside the calibration in the CALIB image
-//! (`persist` module) and boot loads it back LIVE; anything short of LIVE
-//! at SAVE drops to the identity first, so a reboot never applies a table
-//! the kernel did not.
+//! and the kernel applies it only while `pos_lut_state` reads LIVE. A table
+//! that corrects nothing reads IDENTITY, at a COMMIT as at boot
+//! (`verdict`). SAVE persists the effective table beside the calibration in
+//! the CALIB image (`persist` module) and boot loads it back LIVE; anything
+//! short of LIVE at SAVE drops to the identity first, so a reboot never
+//! applies a table the kernel did not.
 
 use crate::adc::{ADC_BITS, ADC_MASK};
 use crate::data_state::{STAMP_MISMATCH, job};
@@ -174,10 +175,15 @@ impl Reject {
     }
 }
 
-/// [`validate`] as the `pos_lut_state` a COMMIT lands.
+/// The `pos_lut_state` `points` land under the stops, the one rule a
+/// COMMIT and boot share: LIVE when they pass [`validate`] and correct
+/// something, IDENTITY when every point is zero, else the REJECT. Cold
+/// path with two callers: one copy, not one per call site.
+#[inline(never)]
 pub fn verdict(points: &[i16; POINTS], raw_min: u16, raw_max: u16) -> u8 {
     match validate(points, raw_min, raw_max) {
-        Ok(()) => state::LIVE,
+        Ok(()) if points.iter().any(|&c| c != 0) => state::LIVE,
+        Ok(()) => state::IDENTITY,
         Err(r) => r.state(),
     }
 }
@@ -237,9 +243,9 @@ impl Shared {
     /// STORE copies the window into the array's page and leaves LOADING;
     /// FETCH copies that page back into the window; COMMIT leaves LOADING
     /// (the kernel applies the identity) and posts the main-loop job that
-    /// validates the array against the stops, lands LIVE or a REJECT and
-    /// runs the stamp checkpoint - validation plus the CRC outlast the
-    /// reply deadline. STORE and COMMIT are torque-gated: from LIVE a
+    /// judges the array against the stops, lands its [`verdict`] and runs
+    /// the stamp checkpoint - validation plus the CRC outlast the reply
+    /// deadline. STORE and COMMIT are torque-gated: from LIVE a
     /// refusal leaves LIVE standing, since the state is what the kernel
     /// applies and a refusal must not move it under a running loop; from
     /// any other state it reads REJECT_TORQUE. Leaving LIVE by STORE marks
@@ -487,6 +493,19 @@ mod tests {
         assert_eq!(validate(&step(80), 209, 3849), Ok(()));
     }
 
+    #[test]
+    fn verdict_reads_a_table_that_corrects_nothing_as_the_identity() {
+        assert_eq!(verdict(&ZERO, 0, 0), state::IDENTITY);
+        assert_eq!(verdict(&ZERO, MG90_A_MIN, MG90_A_MAX), state::IDENTITY);
+        assert_eq!(verdict(&mg90_a(), MG90_A_MIN, MG90_A_MAX), state::LIVE);
+        assert_eq!(verdict(&table(&[(100, 1)]), 209, 3849), state::LIVE);
+        assert_eq!(verdict(&table(&[(14, 1)]), 209, 3849), state::REJECT_ENDS);
+        assert_eq!(
+            verdict(&table(&[(100, 16)]), 209, 3849),
+            state::REJECT_SHAPE
+        );
+    }
+
     /// Intervals at the validation extremes, d = 1 and d = 255, land on the
     /// clamp; inside it the gain is the interval's own.
     #[test]
@@ -670,11 +689,50 @@ mod tests {
     }
 
     #[test]
-    fn zero_table_committed_live_keeps_the_stamp() {
+    fn zero_table_committed_on_the_identity_keeps_the_stamp() {
         let sh = servo();
         store_all(&sh, &ZERO);
-        assert_eq!(commit(&sh), state::LIVE);
+        assert_eq!(commit(&sh), state::IDENTITY);
         assert_eq!(flags(&sh), 0);
+    }
+
+    /// One rule at a COMMIT and at boot: all-zero pages over a LIVE table
+    /// land IDENTITY, with the state, the array and the data state a boot
+    /// on the same stored bytes gives, before the restamp and after it.
+    #[test]
+    fn zero_table_commit_lands_the_identity_a_boot_gives() {
+        let sh = servo();
+        store_all(&sh, &mg90_a());
+        assert_eq!(commit(&sh), state::LIVE);
+        sh.table.with_mut(|t| {
+            t.calib.stamp.plant_stamp = stamp::compute(t, Some(&MG90_A));
+        });
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), 0);
+
+        store_all(&sh, &ZERO);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "left LIVE");
+        assert_eq!(commit(&sh), state::IDENTITY);
+        assert_eq!(
+            flags(&sh),
+            STAMP_MISMATCH,
+            "the stamp covered the mg90-a points"
+        );
+        let booted = crate::persist::rebooted(&sh);
+        assert_eq!(pos_lut_state(&booted), state::IDENTITY);
+        sh.with_pos_lut(|k| booted.with_pos_lut(|b| assert_eq!(k, b)));
+        assert_eq!(flags(&booted), flags(&sh));
+
+        sh.table
+            .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
+        sh.data_state_after_commit(crate::regions::calib::addr::stamp::PLANT_STAMP, 2);
+        sh.data_job_service();
+        assert_eq!((pos_lut_state(&sh), flags(&sh)), (state::IDENTITY, 0));
+        let booted = crate::persist::rebooted(&sh);
+        assert_eq!(
+            (pos_lut_state(&booted), flags(&booted)),
+            (state::IDENTITY, 0)
+        );
     }
 
     #[test]

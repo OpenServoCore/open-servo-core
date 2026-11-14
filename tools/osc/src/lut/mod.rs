@@ -41,7 +41,8 @@ enum LutCmd {
     Write(servo::WriteArgs),
     /// The servo's table: state, band, nonzero calibration points, grade.
     Show(servo::ShowArgs),
-    /// Return the servo to the identity: an all-zero table COMMITted LIVE.
+    /// Return the servo to the identity: an all-zero table STOREd and
+    /// COMMITted, which lands IDENTITY.
     Clear,
 }
 

@@ -1622,12 +1622,12 @@ fn lut_write_goes_live_and_the_stamp_hashes_the_live_points() {
     c.write_pos_lut(id, &d, &points).expect("rewrite");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
-    // the identity as a LIVE table hashes like no table
+    // an all-zero table lands IDENTITY and hashes like no table
     c.clear_pos_lut(id, &d).expect("clear");
     let lut = c.pos_lut(id, &d).expect("read");
     assert_eq!(
         (lut.state, lut.points),
-        (pos_lut::state::LIVE, [0; INTERVALS])
+        (pos_lut::state::IDENTITY, [0; INTERVALS])
     );
     assert_eq!(
         c.data_state(id, &d).expect("data state").flags,
@@ -1698,7 +1698,10 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
     assert_eq!(c.clear_pos_lut(id, &d), Err(Error::Lut(LutError::TorqueOn)));
     write_field(&mut c, id, &d, "torque_enable", Value::Bool(false));
     c.clear_pos_lut(id, &d).expect("clear");
-    assert_eq!(servo_lut(&mut c), (pos_lut::state::LIVE, [0; INTERVALS]));
+    assert_eq!(
+        servo_lut(&mut c),
+        (pos_lut::state::IDENTITY, [0; INTERVALS])
+    );
 }
 
 /// Cal moving the stops under a LIVE table: the servo validates a table

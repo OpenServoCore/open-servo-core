@@ -175,8 +175,13 @@ pub(crate) fn write(a: &WriteArgs, bus: Bus, id: u8) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     let r = Report::new(&lut, stops);
+    let landed = if points.iter().all(|&k| k == 0) {
+        "IDENTITY (the image corrects nothing)"
+    } else {
+        "LIVE"
+    };
     println!(
-        "id {}: lut LIVE, every calibration point read back\n{}",
+        "id {}: lut {landed}, every calibration point read back\n{}",
         s.id.as_byte(),
         r.summary()
     );
@@ -256,7 +261,7 @@ pub(crate) fn clear(bus: Bus, id: u8) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     println!(
-        "id {}: lut LIVE with every calibration point 0 (the identity; hashes like no table, so a stamped set stays stamped)",
+        "id {}: lut IDENTITY, every calibration point 0 (hashes like no table, so a set stamped over the identity stays stamped)",
         s.id.as_byte()
     );
     s.after()?;

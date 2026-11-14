@@ -226,9 +226,10 @@ impl OscClient {
     }
 
     /// STORE the 256 points, COMMIT and read them back: resolves once the
-    /// table is LIVE point for point, rejects with the servo's reason (ends,
-    /// shape, torque). Torque must be off. Never stamps: the COMMIT
-    /// checkpoint leaves STAMP_MISMATCH until the set is re-identified.
+    /// table is LIVE point for point (IDENTITY when every point is zero),
+    /// rejects with the servo's reason (ends, shape, torque). Torque must
+    /// be off. Never stamps: the COMMIT checkpoint leaves STAMP_MISMATCH
+    /// until the set is re-identified.
     #[wasm_bindgen(js_name = writePosLut)]
     pub async fn write_pos_lut(
         &self,
@@ -248,7 +249,7 @@ impl OscClient {
         Ok(())
     }
 
-    /// The identity as a LIVE all-zero table.
+    /// Back to IDENTITY: an all-zero table STOREd and COMMITted.
     #[wasm_bindgen(js_name = clearPosLut)]
     pub async fn clear_pos_lut(&self, id: u8, d: &Descriptor) -> Result<(), JsError> {
         cmd!(self, |c| pos_lut::clear(c, Id::new(id), d.inner()).await?);

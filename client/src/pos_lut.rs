@@ -68,7 +68,8 @@ pub enum LutError {
     /// Still LOADING after [`crate::stamp::VERDICT_WAIT`]: the servo's
     /// main loop has not judged the COMMIT.
     Pending,
-    /// `pos_lut_state` after COMMIT is none of the above.
+    /// `pos_lut_state` after COMMIT is none of the above and not the state
+    /// the points land (IDENTITY for all-zero points, LIVE otherwise).
     State(u8),
     /// The FETCHed page differs from what was STOREd.
     Readback { page: u8 },
@@ -263,10 +264,12 @@ async fn torque_off<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Resul
 }
 
 /// STORE every page, COMMIT, then FETCH every page back: the table is LIVE
-/// and point for point what was sent, or the error says why not. Torque must
-/// be off, checked here before anything is sent. Never stamps: a new
-/// table re-defines the domain the identified set was fitted in, so the
-/// COMMIT checkpoint leaves STAMP_MISMATCH for `osc ident` to clear.
+/// (IDENTITY when every point is zero, the servo's rule for a table that
+/// corrects nothing) and point for point what was sent, or the error says
+/// why not. Torque must be off, checked here before anything is sent.
+/// Never stamps: a new table re-defines the domain the identified set was
+/// fitted in, so the COMMIT checkpoint leaves STAMP_MISMATCH for `osc
+/// ident` to clear.
 pub async fn write<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -279,8 +282,13 @@ pub async fn write<P: Pipe>(
         let k = &points[page * PAGE_POINTS..][..PAGE_POINTS];
         command(c, id, &w, page as u8, cmd::STORE, Some(k)).await?;
     }
+    let landed = if points.iter().all(|&k| k == 0) {
+        state::IDENTITY
+    } else {
+        state::LIVE
+    };
     match commit(c, id, &w).await? {
-        state::LIVE => {}
+        s if s == landed => {}
         state::LOADING => return Err(Error::Lut(LutError::Pending)),
         state::REJECT_TORQUE => return Err(Error::Lut(LutError::RejectTorque)),
         state::REJECT_ENDS => return Err(Error::Lut(LutError::RejectEnds)),
@@ -296,8 +304,8 @@ pub async fn write<P: Pipe>(
     Ok(())
 }
 
-/// The identity as a LIVE table: all-zero points hash like no table, so a
-/// stamped servo stays stamped.
+/// Back to IDENTITY: all-zero points STOREd and COMMITted. They hash like
+/// no table, so a servo stamped over the identity stays stamped.
 pub async fn clear<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<(), Error> {
     write(c, id, d, &[0; INTERVALS]).await
 }
