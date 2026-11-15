@@ -122,7 +122,7 @@ pub(in crate::kernel) struct Medium {
     /// Linearized counts per raw count at the observer's sample.
     band_gain_q4: u16,
     vel: VelocityLoop,
-    limits: LimitState,
+    pub(in crate::kernel) limits: LimitState,
     pub(in crate::kernel) i_band: IBand,
     limit_flags: u8,
     pub(in crate::kernel) vbus: VbusEst,

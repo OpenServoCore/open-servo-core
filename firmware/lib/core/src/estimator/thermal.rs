@@ -1,11 +1,12 @@
 //! Winding estimate, SLOW rate (control-theory "The Winding
 //! Estimate"). The board NTC is the base; the winding's excess over it is
-//! two heat nodes on one input, each an EWMA of the held current squared
-//! on its own leak (`kernel::phases::loops::limits`), scaled by a
-//! host-written gain each: `t = t_ntc + rise x heat + rise2 x heat2`. The
-//! rotor node (`thermal_tau_s`, `th_rise_q016`) is the copper and iron
-//! over the can, tens of seconds; the body node (`thermal_tau2_s`,
-//! `th_rise2_q016`) the can and case into wherever the NTC sits, hundreds.
+//! two heat nodes on one input, each an EWMA of the SLOW cycle's mean of
+//! the held current squared on its own leak
+//! (`kernel::phases::loops::limits`), scaled by a host-written gain each:
+//! `t = t_ntc + rise x heat + rise2 x heat2`. The rotor node
+//! (`thermal_tau_s`, `th_rise_q016`) is the copper and iron over the can,
+//! tens of seconds; the body node (`thermal_tau2_s`, `th_rise2_q016`) the
+//! can and case into wherever the NTC sits, hundreds.
 //! A gain is a thermal resistance times the winding's resistance in the
 //! board's current counts; the host fits both from one hold at one duty
 //! on the servo at hand. With the NTC on the can the body gain goes to 0
@@ -216,7 +217,7 @@ impl WindingTherm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::LimitState;
+    use crate::kernel::{DECIM_SLOW, LimitState};
 
     /// The beta model of the dev-v006 board's NTC (10K pull-up, 10K at
     /// 25 C, beta 3950), as the host evaluates it.
@@ -386,11 +387,11 @@ mod tests {
     }
 
     /// A held current through the SLOW block's two stages as the kernel
-    /// runs them, the heats on the last estimate's warm factor and then the
-    /// estimate, up to the finish that reads `cutoff_cc`: that finish, the
-    /// estimate before it and the estimate on it. None when `finishes` pass
-    /// under the cutoff, with the last estimate. Every finish reads at
-    /// least the one before.
+    /// runs them, the heats on the cycle's mean square and the last
+    /// estimate's warm factor and then the estimate, up to the finish that
+    /// reads `cutoff_cc`: that finish, the estimate before it and the
+    /// estimate on it. None when `finishes` pass under the cutoff, with the
+    /// last estimate. Every finish reads at least the one before.
     fn hold_to_cutoff(
         i_held: i16,
         cfg: &ThermCfg,
@@ -403,7 +404,11 @@ mod tests {
         let mut under = th.update(RAW_25, heat.heats(), cfg);
         assert!(under < cutoff_cc);
         for n in 1..=finishes {
-            heat.heat(i_held, th.warm_q16(), shifts);
+            for _ in 0..DECIM_SLOW {
+                heat.heat_sample(i_held.unsigned_abs());
+            }
+            let mean_sq = heat.take_heat_mean();
+            heat.heat(mean_sq, th.warm_q16(), shifts);
             let t = th.update(RAW_25, heat.heats(), cfg);
             assert!(t >= under, "finish {n}: {t} after {under}");
             assert!(th.warm_q16() <= warm_q16(RISE_FEEDBACK_MAX_CC));

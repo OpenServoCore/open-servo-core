@@ -1882,11 +1882,94 @@ fn torque_off_lets_the_heat_leak() {
     assert_eq!(k.faults.mask(), 0);
 }
 
+/// The OpenLoop hold with no rise (`th_rise_q016` 0, so the warm factor is
+/// 0) on a one-period leak (`thermal_tau_s` 0, shift 0): the rotor heat
+/// after each due reads that cycle's mean square exactly.
+fn bare_heat_rig(sh: &Shared) -> Kernel<FakeIo> {
+    seed(sh);
+    seed_estimate(sh);
+    write_config(sh, |t| {
+        t.calib.thermal.th_rise_q016 = 0;
+        t.config.limits.thermal_tau_s = 0;
+    });
+    kernel()
+}
+
+/// Ticks `f` until the next tick is the CONTROL tick of the period `n`
+/// periods after a SLOW due.
+fn to_slow_period(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u8) {
+    k.on_scan(f, sh);
+    while !(k.phase == phase::CONTROL && k.medium.slow_periods == n) {
+        k.on_scan(f, sh);
+    }
+}
+
+/// The heat reads the SLOW cycle's mean of the held current squared, not
+/// one sample of it: a hold whose current alternates 400 counts and 0
+/// every MEDIUM period heats as 400^2 / 2 = 80000 counts squared on every
+/// cycle, whichever parity of the cycle's periods carries the current.
+#[test]
+fn a_current_alternating_each_period_heats_as_half_its_square_at_either_phase() {
+    let hot = frame(2000, BIAS + 400);
+    let cold = frame(2000, BIAS);
+    for parity in [0, 1] {
+        let sh = Shared::new();
+        let mut k = bare_heat_rig(&sh);
+        settle(&mut k, &sh, hot);
+        to_slow_period(&mut k, &sh, hot, 0);
+        for due in 0..8 {
+            for _ in 0..DECIM_SLOW {
+                let (f, i) = if k.medium.slow_periods % 2 == parity {
+                    (hot, 400)
+                } else {
+                    (cold, 0)
+                };
+                periods(&mut k, &sh, f, 1);
+                assert_eq!(k.fast.i_meas_last(), i);
+            }
+            assert_eq!(k.medium.slow_periods, 0);
+            assert_eq!(
+                k.medium.limits.heats()[0],
+                80_000,
+                "parity {parity}, due {due}"
+            );
+        }
+        assert_eq!(k.fast.duty_q15, 8000, "the hold drives");
+    }
+}
+
+/// With nothing driving the held current is 0, so the cycle's mean falls
+/// on its own: torque off 15 periods into a cycle of a 400-count hold
+/// leaves that cycle's due the 15 driven periods' share, 15 x 160000 / 32
+/// = 75000 counts squared, and the next due 0, the shunt still reading
+/// 400 counts on every frame.
+#[test]
+fn torque_off_drops_the_heat_mean_within_one_cycle() {
+    let hot = frame(2000, BIAS + 400);
+    let sh = Shared::new();
+    let mut k = bare_heat_rig(&sh);
+    settle(&mut k, &sh, hot);
+    slow_periods(&mut k, &sh, hot, 2);
+    to_slow_period(&mut k, &sh, hot, 0);
+    assert_eq!(k.medium.limits.heats()[0], 160_000);
+    to_slow_period(&mut k, &sh, hot, 15);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    to_slow_period(&mut k, &sh, hot, 0);
+    assert_eq!(k.medium.limits.heats()[0], 75_000);
+    assert_eq!(k.fast.i_meas_last(), 0);
+    to_slow_period(&mut k, &sh, hot, 1);
+    to_slow_period(&mut k, &sh, hot, 0);
+    assert_eq!(k.medium.limits.heats()[0], 0);
+}
+
 /// One thermal limit: a hold at the 1200-count cap heads for a fixed point
 /// far over the 90.00 C cutoff, and until the estimate reads the cutoff
 /// nothing takes current away: the ceiling is the cap and no term binds on
-/// every period. The 74th finish, 1.18 s in, reads 90.38 C after 89.51 C,
-/// latches the fault, and the bridge is off from that tick. The winding
+/// every period. The heats step on a finished cycle's mean, so the first
+/// due has no current behind it: the 75th finish, 1.2 s in, reads 90.38 C
+/// after 89.51 C, latches the fault, and the bridge is off from that tick.
+/// The winding
 /// then cools with the fault standing: an ack while the estimate still
 /// reads the cutoff or more never drives, and once it reads less an ack
 /// clears and the hold drives again.
@@ -1919,7 +2002,7 @@ fn a_hold_that_heats_to_the_cutoff_runs_at_the_cap_and_ends_in_the_latch() {
         }
     }
     let t_latch = therm(&sh).0;
-    assert_eq!((finishes, last_under, t_latch), (74, 8951, 9038));
+    assert_eq!((finishes, last_under, t_latch), (75, 8951, 9038));
     assert_eq!(k.faults.mask(), faults::BIT_OVER_TEMP);
     assert_eq!(k.faults.code(), faults::CODE_OVER_TEMP);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));

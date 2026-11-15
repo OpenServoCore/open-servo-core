@@ -100,7 +100,7 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// is what came with phase SPEED's stage by [`SPEED_STAGE`]: the phase's
 /// rows are the fast path alone, and SPARE_A's predate the stage's entry
 /// in the phase table. The rows predate the speed blend as well
-/// ([`SPEED_BLEND`]).
+/// ([`SPEED_BLEND`]) and the heat's SLOW-cycle sum ([`HEAT_MEAN`]).
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
@@ -214,9 +214,24 @@ pub const SPEED_BLEND: [[u32; PHASES]; REGIMES] = [
     [8, 53, 0, 0, 0, 0, 0, 0, 0, 0],
 ];
 
+/// E, over the measured LIMITS rows, maxima and means: the heat's
+/// SLOW-cycle sum, the held current's square limited to the heat's top
+/// and added every period whatever the drive, which the rows predate.
+/// Matched release builds, LIMITS' longest executed path, the fold's,
+/// priced as REFRESH: 7 more instructions, 28.5 HCLK (the multiply, the
+/// limit's two ALU and its taken transfer, the sum's load, add and
+/// store); the held current's load and magnitude moved ahead of the fold,
+/// which read them on that path already. The delta plus 10%, rounded up;
+/// the bench must refill the phase.
+pub const HEAT_MEAN: [[u32; PHASES]; REGIMES] = [
+    [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
+];
+
 /// The estimated additions over a measured row at `r` and `p`.
 const fn estimated(r: usize, p: usize) -> u32 {
-    LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + SPEED_BLEND[r][p]
+    LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + SPEED_BLEND[r][p] + HEAT_MEAN[r][p]
 }
 
 /// A plain tick's budget at `regime` and `phase`: its row, the tick
