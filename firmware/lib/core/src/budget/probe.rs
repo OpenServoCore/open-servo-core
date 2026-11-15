@@ -96,8 +96,10 @@ const _: () = {
 };
 
 /// gamma(k), k in [`WINDOW_TICKS`]: the most the bodies of k consecutive
-/// booked ticks took, HCLK ticks. Exact while k consecutive bodies sum
-/// under 2^16 ticks (1.36 ms): a kernel that far behind drops ticks.
+/// ticks took, HCLK ticks, every one of them booked: a tick the probe does
+/// not book breaks every window ([`Self::restart`]). Exact while k
+/// consecutive bodies sum under 2^16 ticks (1.36 ms): a kernel that far
+/// behind drops ticks.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Windows {
@@ -106,6 +108,9 @@ pub struct Windows {
     /// lookback is a fixed offset from `at`, the slot the next tick takes.
     ring: [u16; 2 * RING],
     at: u32,
+    /// Bodies added since the last restart, at most `RING`: a window takes
+    /// a sum only once all its ticks follow the restart.
+    run: u32,
     pub gamma: [u32; K],
 }
 
@@ -113,6 +118,7 @@ impl Windows {
     pub const ZERO: Self = Self {
         ring: [0; 2 * RING],
         at: 0,
+        run: 0,
         gamma: [0; K],
     };
 
@@ -125,10 +131,11 @@ impl Windows {
             core::hint::cold_path();
             0
         };
+        let run = self.run as usize;
         let total = self.ring[at + RING - 1].wrapping_add(body as u16);
         for (g, k) in self.gamma.iter_mut().zip(WINDOW_TICKS) {
             let s = total.wrapping_sub(self.ring[at + RING - k]) as u32;
-            if s > *g {
+            if run + 1 >= k && s > *g {
                 core::hint::cold_path();
                 *g = s;
             }
@@ -136,6 +143,17 @@ impl Windows {
         self.ring[at] = total;
         self.ring[at + RING] = total;
         self.at = if at + 1 < RING { at as u32 + 1 } else { 0 };
+        self.run = if run < RING {
+            run as u32 + 1
+        } else {
+            RING as u32
+        };
+    }
+
+    /// A tick the probe did not book (a halt): no window spans it.
+    #[inline(always)]
+    pub fn restart(&mut self) {
+        self.run = 0;
     }
 }
 
@@ -192,6 +210,7 @@ impl WindowProbe {
         let late = entry.wrapping_sub(slot);
         self.last_entry = entry;
         let Some(r) = booked else {
+            self.windows.restart();
             return;
         };
         if late < HALT_TICKS && late > self.late_max {
@@ -224,6 +243,7 @@ impl WindowProbe {
             windows: Windows {
                 ring: r.halves(),
                 at: r.word(),
+                run: r.word(),
                 gamma: core::array::from_fn(|_| r.word()),
             },
         })
