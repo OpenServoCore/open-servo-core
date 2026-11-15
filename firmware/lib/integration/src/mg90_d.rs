@@ -2,11 +2,12 @@
 //! [`rig`] seeds the kernel with every field of the servo's constant set
 //! of record, and [`plant`] is the [`mg90`](crate::mg90) plant on the
 //! motor model those fields hold ([`motor`]), so the stored model is the
-//! plant's by construction. The rest of the plant's physics is that
-//! plant's own: the winding time constant, the gear lash, the pot's noise
-//! and the residual it wanders off the table by, on the board's window
-//! floors and shunt settle bands. Both sides run on the identity position
-//! table, the residual standing in for what a table leaves.
+//! plant's by construction. The pot's residual is this servo's own
+//! ([`POT_RESIDUAL`]). The rest of the plant's physics is that plant's
+//! own: the winding time constant, the gear lash and the pot's noise, on
+//! the board's window floors and shunt settle bands. Both sides run on the
+//! identity position table, the residual standing in for what a table
+//! leaves.
 //!
 //! Not carried: the set's position table, whose curve the plant's pot
 //! does not have, and its ADC wide-code slots, which compensate codes the
@@ -27,6 +28,14 @@ pub const VBUS: u16 = 1238;
 pub const COUNTS_PER_DEG: f64 = 20.126631678008682;
 /// The set's shunt scale, the board's measured counts per A.
 pub const CURRENT_COUNTS_PER_A: f64 = 1135.013429521035;
+
+/// The bench pot's direction-free departure through the set's table, as
+/// `(amplitude, period)` sine lines in linearized counts at the 21, 47,
+/// 86 and 191-count band centers, each sqrt(2) x the band's rms shared by
+/// both directions of travel. Not in it: the wide codes, which the
+/// measurement masked, and the part that flips with the travel, which is
+/// shaft motion, not the pot.
+pub const POT_RESIDUAL: &[(f64, f64)] = &[(0.64, 21.0), (1.29, 47.0), (0.64, 86.0), (0.95, 191.0)];
 
 /// Set of record 324e326794b5, every field it stores.
 pub fn set_of_record(t: &mut ControlTable) {
@@ -112,9 +121,12 @@ pub fn motor() -> Motor {
     }
 }
 
-/// The plant at rest at `lin`, on the set's motor model.
+/// The plant at rest at `lin`, on the set's motor model and the bench
+/// pot's residual.
 pub fn plant(lin: f64, seed: u64) -> Mg90 {
-    Mg90::new(lin, [0; POINTS], seed).with_motor(motor())
+    let mut p = Mg90::new(lin, [0; POINTS], seed).with_motor(motor());
+    p.residual = POT_RESIDUAL;
+    p
 }
 
 /// The set of record on the board's shunt and terminal window floors, the

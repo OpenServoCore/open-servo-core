@@ -36,10 +36,12 @@ pub const FV: f64 = 0.005135;
 /// L/R = 0.87 mH / 4.89 ohm, in FAST ticks.
 pub const TAU_E: f64 = 3.56;
 pub const TICK_HZ: f64 = 20_000.0;
+/// The pot's noise, raw counts rms: a plant's `sigma_raw` unless set.
 pub const SIGMA_RAW: f64 = 1.2;
 pub const LASH: f64 = 5.7;
-/// Amplitude and period, linearized counts.
-pub const RESIDUAL: (f64, f64) = (5.0, 60.0);
+/// The pot's residual as `(amplitude, period)` sine lines, linearized
+/// counts: a plant's `residual` unless set.
+pub const RESIDUAL: &[(f64, f64)] = &[(5.0, 60.0)];
 pub const ARR: u32 = 1200;
 
 /// A plant's rail and motor in the board's counts: the rail in vcounts, R
@@ -136,6 +138,11 @@ pub struct Mg90 {
     /// An ADC wide code, `(stuck, skipped)`: the reading sticks at `stuck`
     /// while the input rises through the `skipped` codes above it.
     pub wide: Option<(u16, u16)>,
+    /// The pot's noise, raw counts rms.
+    pub sigma_raw: f64,
+    /// The residual the pot wanders off the table by, `(amplitude,
+    /// period)` sine lines in linearized counts, summed: `&[]` is none.
+    pub residual: &'static [(f64, f64)],
 }
 
 impl Mg90 {
@@ -153,6 +160,8 @@ impl Mg90 {
             locked: false,
             swapped: false,
             wide: None,
+            sigma_raw: SIGMA_RAW,
+            residual: RESIDUAL,
         }
     }
 
@@ -163,7 +172,9 @@ impl Mg90 {
 
     /// The linearized position the kernel reads, noise aside.
     pub fn sensed(&self) -> f64 {
-        self.out - RESIDUAL.0 * (std::f64::consts::TAU * self.out / RESIDUAL.1).sin()
+        self.residual.iter().fold(self.out, |s, &(a, period)| {
+            s - a * (std::f64::consts::TAU * self.out / period).sin()
+        })
     }
 
     /// One FAST tick under `cmd`, with the chip's mapping: a zero width
@@ -206,7 +217,7 @@ impl Mg90 {
         self.out = self
             .out
             .clamp(self.rotor - LASH / 2.0, self.rotor + LASH / 2.0);
-        let raw = raw_of(&self.lut, self.sensed()) + SIGMA_RAW * self.rng.gauss();
+        let raw = raw_of(&self.lut, self.sensed()) + self.sigma_raw * self.rng.gauss();
         let mut pos = raw.round().clamp(0.0, 4095.0) as u16;
         if let Some((stuck, skipped)) = self.wide
             && pos > stuck
