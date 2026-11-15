@@ -21,6 +21,7 @@ impl Medium {
                 Mode::Position if self.hold => {
                     self.i_ref_cc = 0;
                     self.vel.reset();
+                    self.omega_blend.reset();
                 }
                 Mode::Velocity | Mode::Position => {
                     self.i_ref_cc = self.vel.step(

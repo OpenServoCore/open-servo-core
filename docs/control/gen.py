@@ -306,23 +306,36 @@ d += elm.Label(label='θ̂ -> position loop        τ̂d -> contact detect, stal
                fontsize=FSS, color=C_EST).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 2.45))
 save(d, 'pot-observer.svg')
 
-# ------------------------------------------------------- omega source switch
+# ------------------------------------------------------------ omega blend
+# the observer in the mean, the boxcar for what changes fast: the boxcar's
+# difference from the observer, less its standing part, through the lead
 d = diagram()
 d += elm.Arrow().right(1.8).label('v̂_diff, î', loc='top').color(C_EST)
-d += (mb := dsp.Box(w=3.8, h=1.6).anchor('W').label('model BEMF\n(v̂_diff − R̂·î) / Ke', fontsize=FSS).color(C_EST))
-d += elm.Arrow().at(mb.E).right(1.0).color(C_EST)
-d += (bx := dsp.Box(w=3.0, h=1.6).anchor('W').label('1 ms boxcar\n(two halves)', fontsize=FSS).color(C_EST))
-d += elm.Arrow().at(bx.E).right(1.0).color(C_EST)
-d += (vg := dsp.Box(w=3.4, h=1.6).anchor('W').label('validity\nevery tick above\nthe window floors', fontsize=FSS).color(C_EST))
-d += elm.Arrow().at(vg.E).right(2.4).label('ω̂_bemf or none', loc='top', fontsize=FSS).color(C_EST)
-d += (sw := dsp.Box(w=3.8, h=2.4).anchor('W').label('source switch\nto BEMF: 4 valid\nto pot: 2 void', fontsize=FSS).color(C_EST))
-d += elm.Arrow().at(sw.E).right(2.8).label('ω̂ -> velocity PI', loc='top').color(C_VEL)
-swS = sw.absanchors['S']
-d += elm.Arrow().at((swS[0], swS[1] - 1.5)).up(1.5).label('ω̂_pot  (pot observer)', loc='bottom', fontsize=FSS).color(C_EST)
-d += elm.Arrow(ls='--').at(sw.N).up(1.0).label('omega_hat_src', loc='top', fontsize=FSS).color(C_EST)
-d += elm.Label(label='one source or the other, never a blend: the measured weight on a pot velocity is 1 part in 17,804',
-               fontsize=FSS).at(((mb.absanchors['W'][0] + sw.absanchors['E'][0]) / 2, swS[1] - 2.3))
-save(d, 'omega-switch.svg')
+d += (bx := dsp.Box(w=4.2, h=1.8).anchor('W').label('back-EMF boxcar, 1 ms\n(v̂_diff − R̂·î) / Ke\nnone if a floor missed', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(bx.E).right(2.4).label('ω̂_bemf or none', loc='top', fontsize=FSS).color(C_EST)
+d += (gd := dsp.Box(w=3.4, h=1.8).anchor('W').label('difference\ng = ω̂_bemf − ω̂_pot\n(limited)', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(gd.E).right(1.0).color(C_EST)
+d += (sd := dsp.Box(w=3.6, h=1.8).anchor('W').label('standing part\nd += (g − d) / 128\nholds with no boxcar', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(sd.E).right(2.0).label('g − d, or 0', loc='top', fontsize=FSS).color(C_EST)
+d += (ld := dsp.Box(w=3.0, h=1.8).anchor('W').label('lead\nc += (in − c) / 4', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(ld.E).right(1.0).label('c', loc='top', fontsize=FSS).color(C_EST)
+d += (sm := dsp.Box(w=2.2, h=1.8).anchor('W').label('ω̂_pot + c', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(sm.E).right(2.8).label('ω̂ -> velocity PI', loc='top').color(C_VEL)
+# the observer's speed from below, into the difference and the sum
+gdS = gd.absanchors['S']
+smS = sm.absanchors['S']
+OBY = gdS[1] - 1.0
+d += elm.Line().at((gdS[0], OBY - 0.8)).up(0.8).label('ω̂_pot  (pot observer)', loc='bottom', fontsize=FSS).color(C_EST)
+d += elm.Dot(radius=0.06).at((gdS[0], OBY)).color(C_EST)
+d += elm.Arrow().at((gdS[0], OBY)).up(1.0).color(C_EST)
+d += elm.Line().at((gdS[0], OBY)).right(smS[0] - gdS[0]).color(C_EST)
+d += elm.Arrow().at((smS[0], OBY)).up(1.0).color(C_EST)
+sdN = sd.absanchors['N']
+d += elm.Arrow(ls='--').at((sdN[0], sdN[1] + 1.0)).down(1.0).label('drive flip: d -> −d', loc='top', fontsize=FSS).color(C_EST)
+d += elm.Arrow(ls='--').at(gd.N).up(1.0).label('omega_hat_src', loc='top', fontsize=FSS).color(C_EST)
+d += elm.Label(label="the loop's mean speed is the observer's: the boxcar's level never reaches it, only what it shows beyond its standing part",
+               fontsize=FSS).at(((bx.absanchors['W'][0] + sm.absanchors['E'][0]) / 2, OBY - 1.6))
+save(d, 'omega-blend.svg')
 
 # ------------------------------------------------ putting it all together
 d = diagram()
@@ -475,12 +488,12 @@ d += elm.Line().at((-0.5, -0.75)).up(LANE3 + 0.75).color(C_EST)
 d += elm.Line().at((-0.5, LANE3)).right(ffN[0] + 1.0 + 0.5).color(C_EST)
 d += elm.Arrow().at((ffN[0] + 1.0, LANE3)).down(LANE3 - ffN[1]).color(C_EST)
 d += elm.Label(label='θ̂_m', fontsize=FSS, color=C_EST).at((ffN[0] + 1.6, ffN[1] + 0.5))
-# omega source switch: the pot observer from below, the BEMF boxcar from the
-# right, one selected estimate up into the velocity sum. never a blend
+# omega blend: the pot observer from below, the BEMF boxcar from the right,
+# the observer's speed plus the boxcar's fast part up into the velocity sum
 SWY = -3.6
 SWX = (posx + 1.5 + shx - 1.0) / 2       # corridor between the two front ends
 d += (osw := dsp.Box(w=3.0, h=1.0).at((svS[0], SWY)).anchor('center').label(
-    'ω source switch', fontsize=FSS).color(C_EST))
+    'ω blend', fontsize=FSS).color(C_EST))
 oswS = osw.absanchors['S']
 oswN = osw.absanchors['N']
 d += elm.Arrow().at((svS[0], kN[1])).up(oswS[1] - kN[1]).color(C_EST)

@@ -5,7 +5,7 @@ pub mod bias;
 #[cfg(not(feature = "experiment"))]
 pub mod fusion;
 #[cfg(not(feature = "experiment"))]
-pub mod omega_switch;
+pub mod omega_blend;
 pub mod thermal;
 #[cfg(not(feature = "experiment"))]
 pub mod vbus;
@@ -16,7 +16,7 @@ pub use bias::BiasTracker;
 #[cfg(not(feature = "experiment"))]
 pub use fusion::FusionObs;
 #[cfg(not(feature = "experiment"))]
-pub use omega_switch::{OmegaSource, OmegaSwitch};
+pub use omega_blend::OmegaBlend;
 pub use thermal::{NtcCfg, ThermCfg, WindingTherm};
 #[cfg(not(feature = "experiment"))]
 pub use vbus::VbusEst;

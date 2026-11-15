@@ -7,7 +7,7 @@ use super::phases::fast;
 use super::phases::loops::{duty_limit, faults, limits};
 use super::*;
 use crate::budget::Events;
-use crate::estimator::{FusionObs, OmegaSource, OmegaSwitch, bemf, bias, window};
+use crate::estimator::{FusionObs, OmegaBlend, bemf, bias, omega_blend, window};
 use crate::math::q_mul;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
@@ -2802,10 +2802,10 @@ fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
 type BemfRow = (u32, Option<i32>, Option<i32>);
 
 /// The back-EMF chain with the half's close on the OBSERVER tick itself,
-/// ahead of the switch.
+/// ahead of the blend.
 struct CloseAtObserver {
     obs: bemf::BemfObs,
-    sw: OmegaSwitch,
+    blend: OmegaBlend,
     boxcar: Option<i32>,
     /// The duty that drove the last row sampled.
     duty: i16,
@@ -2815,7 +2815,7 @@ impl CloseAtObserver {
     fn new() -> Self {
         Self {
             obs: bemf::BemfObs::new(),
-            sw: OmegaSwitch::new(),
+            blend: OmegaBlend::new(),
             boxcar: None,
             duty: 0,
         }
@@ -2827,7 +2827,7 @@ impl CloseAtObserver {
     }
 
     /// The kernel's close on the operands this tick reads and the duty of
-    /// the half's last row, then the switch on the kernel's own observer
+    /// the half's last row, then the blend on the kernel's own observer
     /// speed.
     fn observe(&mut self, k: &Kernel<FakeIo>, sh: &Shared) -> i32 {
         self.boxcar = self.obs.close(
@@ -2836,7 +2836,8 @@ impl CloseAtObserver {
             k.cfg.motor.recip_ke_q,
             TIMING.recip_arr_q24,
         );
-        self.sw.step(self.boxcar, k.medium.fusion.omega_q16())
+        self.blend
+            .step(self.boxcar, self.obs.flipped(), k.medium.fusion.omega_q16())
     }
 }
 
@@ -2892,9 +2893,13 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
             6000 => sh
                 .table
                 .with_mut(|t| t.control.lifecycle.goal_velocity = 200),
-            8000 => sh
-                .table
-                .with_mut(|t| t.control.lifecycle.torque_enable = false),
+            8000 => {
+                sh.table
+                    .with_mut(|t| t.control.lifecycle.torque_enable = false);
+                // the edge lands on this tick's CONTROL and clears the blend
+                late.blend.reset();
+                now.blend.reset();
+            }
             _ => {}
         }
         let next = k.phase;
@@ -2916,9 +2921,8 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
         if next == phase::OBSERVER {
             let speed = late.observe(&k, &sh);
             assert_eq!(k.medium.omega_hat, speed, "tick {tick}");
-            assert_eq!(k.medium.omega_sw.source(), late.sw.source(), "tick {tick}");
             moved += (now.observe(&k, &sh) != speed) as u32;
-            sources[late.sw.source() as usize] = true;
+            sources[late.boxcar.is_some() as usize] = true;
             match late.boxcar {
                 Some(_) => boxcars += 1,
                 None => voids += 1,
@@ -2928,6 +2932,8 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
             let boxcar = bemf::omega_cps_i16(late.boxcar.unwrap_or(0));
             let published = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps);
             assert_eq!(published, boxcar, "tick {tick}");
+            let src = sh.table.with(|t| t.telemetry.mode.omega_hat_src);
+            assert_eq!(src, late.boxcar.is_some() as u8, "tick {tick}");
         }
     }
     assert_eq!(k.faults.mask(), 0);
@@ -3200,53 +3206,207 @@ fn a_zero_duty_has_no_sign_to_flip() {
     }
 }
 
+/// What the loop's speed carries over the observer's: the blend's lead.
+fn lead(k: &Kernel<FakeIo>) -> i32 {
+    k.medium.omega_hat - k.medium.fusion.omega_q16()
+}
+
+/// FAST ticks for the blend's standing part to form on a boxcar every
+/// period: sixteen of its corners.
+const STANDING_FORM_TICKS: u32 = (16 << omega_blend::D_SHIFT) * DECIM_MED as u32;
+
+/// The loop's speed is the observer's plus the boxcar's fast part, and
+/// `omega_hat_src` says whether a boxcar fed it this period. An OpenLoop
+/// drive over a still pot, so the boxcar reads thousands of c/s over the
+/// observer. Until a boxcar closes the loop reads the observer bit for bit
+/// and the source reads 0. The first boxcar moves the loop's speed a
+/// quarter of its gap, and that period's PUBLISH lands the loop's speed,
+/// the source at 1 and the boxcar as it closed. Once the standing part
+/// has formed the loop reads within 16 c/s of the observer under a boxcar
+/// still 8363 c/s over it. The torque edge clears the blend; the boxcar
+/// closed ahead of the edge still feeds once, so the next enable edge has
+/// a standing part to clear, and with no boxcar left the loop reads the
+/// observer bit for bit again.
 #[test]
-fn velocity_feedback_switches_to_the_bemf_and_back() {
+fn the_loops_speed_is_the_observers_plus_the_boxcars_fast_part() {
     let sh = Shared::new();
     drive_setup(&sh);
     let mut k = kernel();
+    let f = frame(2000, BIAS + 100);
     let published = |sh: &Shared| {
         sh.table.with(|t| {
             (
                 t.telemetry.estimates.omega_hat_cps,
                 t.telemetry.mode.omega_hat_src,
+                t.telemetry.estimates.omega_bemf_cps,
             )
         })
     };
-    // the fourth clean boxcar flips the source; until then the published
-    // source is the observer
     let mut n = 0;
-    while k.medium.omega_sw.source() != OmegaSource::Bemf {
-        k.on_scan(frame(2000, BIAS + 100), &sh);
-        assert_eq!(published(&sh).1, 0);
+    while k.medium.omega_bemf.is_none() {
+        k.on_scan(f, &sh);
+        assert_eq!(lead(&k), 0, "tick {n}");
+        assert_eq!(published(&sh).1, 0, "tick {n}");
         n += 1;
-        assert!(n < 100, "the source never flipped");
+        assert!(n < 100, "no boxcar closed");
     }
-    // the PUBLISH phase lands it
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
-    assert!(bemf > 0);
-    assert_eq!(published(&sh), (bemf << 16, 1));
-    // torque off lands at the next CONTROL phase, and the first window it
-    // changes is the tick after: the half the SPEED phase closed ahead of
-    // the edge is clean, so the loop takes one more boxcar
+    let boxcar = k.medium.omega_bemf.unwrap();
+    run_to(&mut k, &sh, f, phase::OBSERVER + 1);
+    let gap = (boxcar << 16) - k.medium.fusion.omega_q16();
+    assert!(gap > 1000 << 16, "a gap of {} c/s", gap >> 16);
+    assert!(
+        lead(&k) <= gap / 4 + (1 << 16) && lead(&k) > gap / 4 - gap / 64,
+        "the first boxcar moved the loop {} of {gap}",
+        lead(&k)
+    );
+    run_to(&mut k, &sh, f, phase::PUBLISH + 1);
+    assert_eq!(published(&sh), (k.medium.omega_hat, 1, boxcar as i16));
+
+    ticks(&mut k, &sh, f, STANDING_FORM_TICKS);
+    assert_eq!(published(&sh).1, 1);
+    assert_eq!(published(&sh).2, 8363);
+    assert!(lead(&k).abs() < 16 << 16, "a lead of {}", lead(&k));
+    let standing = k.medium.omega_blend.standing_q16();
+    let gap = (8363 << 16) - k.medium.fusion.omega_q16();
+    assert!((standing - gap).abs() < 16 << 16, "{standing} of {gap}");
+
+    // torque off lands on the next CONTROL
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    k.on_scan(frame(2000, BIAS + 100), &sh);
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
-    assert!(bemf > 0);
-    assert_eq!(published(&sh), (bemf << 16, 1));
-    // the half that holds the edge voids at that period's SPEED phase: the
-    // source rides the held boxcar through that one result, then falls
-    // back at the next period's void
-    k.on_scan(frame(2000, BIAS + 100), &sh);
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
-    assert_eq!(published(&sh), (bemf << 16, 1));
-    k.on_scan(frame(2000, BIAS + 100), &sh);
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_scan(f, &sh);
+    let cleared = |k: &Kernel<FakeIo>| {
+        (
+            k.medium.omega_blend.standing_q16(),
+            k.medium.omega_blend.lead_q16(),
+        )
+    };
+    assert_eq!(cleared(&k), (0, 0), "the torque edge");
+    periods(&mut k, &sh, f, 80);
+    assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0, 0));
+    assert_eq!(lead(&k), 0);
+    assert_ne!(
+        k.medium.omega_blend.standing_q16(),
+        0,
+        "the boxcar closed ahead of the edge fed once"
+    );
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_scan(f, &sh);
+    assert_eq!(cleared(&k), (0, 0), "the enable edge");
+}
+
+/// The park clears the blend with the velocity loop's integrator. A
+/// position step on the plant forms a standing part on the way; from the
+/// first parked VELOCITY on, every parked period leaves it and the lead at
+/// zero, so the loop that leaves the park starts on the observer alone.
+#[test]
+fn the_park_clears_the_blend() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 3000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.fusion.l3_q88 = 256;
+        t.config.loop_position.p_kp_q88 = 1024;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    let (mut formed, mut fed, mut parked) = (0i32, 0u32, 0u32);
+    for tick in 0..40_000u32 {
+        let ran = plant_tick(&mut k, &sh, &mut plant);
+        let (standing, c) = (
+            k.medium.omega_blend.standing_q16(),
+            k.medium.omega_blend.lead_q16(),
+        );
+        if !k.medium.hold {
+            formed = formed.max(standing.abs());
+            fed += (ran == phase::OBSERVER && k.medium.omega_bemf.is_some()) as u32;
+        } else if ran == phase::VELOCITY {
+            assert_eq!((standing, c), (0, 0), "tick {tick}");
+            parked += 1;
+        }
+    }
+    assert_eq!(k.faults.mask(), 0);
+    assert!(fed > 100, "{fed} boxcars fed the move");
+    assert!(formed > 16 << 16, "a standing part of {formed} on the way");
+    assert!(parked > 1000, "{parked} parked periods");
+}
+
+/// The standing part turns at the OBSERVER behind a drive flip. A still
+/// plant whose shunt reads 20 counts under the winding's, so the boxcar
+/// reads over 500 c/s along the drive over a pot that stays. Driven one
+/// way the standing part forms at that gap. Through an OpenLoop reversal
+/// the close flags one flip, the OBSERVER behind it negates the standing
+/// part, bit for bit, and the boxcars of the drive the other way, as far
+/// the other side of the observer, move the loop's speed under 16 c/s off
+/// it; a standing part that kept its sign would hand it most of twice the
+/// gap.
+#[test]
+fn the_standing_part_turns_at_the_observer_behind_a_flip() {
+    const SHORT: u16 = 20;
+    let sh = Shared::new();
+    drive_setup(&sh);
+    sh.table.with_mut(|t| {
+        // under the continuous rating on this plant, so the press stays out
+        t.control.lifecycle.goal_duty = 5000;
+        // no model: the observer reads the still pot at rest, where the
+        // rig's would read the held current as a speed for a second
+        t.calib.motor.b_i_q313 = 0;
+    });
+    let mut k = kernel();
+    let mut plant = held_plant();
+    let mut tick = |k: &mut Kernel<FakeIo>| {
+        let ran = k.phase;
+        let duty = k.fast.duty_q15;
+        let mut f = plant.step(duty);
+        if duty != 0 {
+            // the winding's current at this plant's 2.0 vcounts a count,
+            // the same size either way round, less the shortfall
+            let i = (duty.unsigned_abs() as u32 * plant.vbus as u32) >> 16;
+            f.current = BIAS + i as u16 - SHORT;
+        }
+        k.on_scan(f, &sh);
+        ran
+    };
+    let boxcar = |sh: &Shared| sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
+    for _ in 0..STANDING_FORM_TICKS {
+        tick(&mut k);
+    }
+    let formed = k.medium.omega_blend.standing_q16();
+    let over = boxcar(&sh);
+    assert!(over > 500, "a boxcar of {over}");
+    assert!((formed - (over << 16)).abs() < 16 << 16, "{formed}");
+    assert!(lead(&k).abs() < 16 << 16, "a lead of {}", lead(&k));
+
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -5000);
+    let (mut flips, mut worst, mut fed) = (0u32, 0i32, 0u32);
+    let mut before = None;
+    for n in 0..4000u32 {
+        let ran = tick(&mut k);
+        worst = worst.max(lead(&k).abs());
+        if ran == phase::SPEED && k.fast.bemf.flipped() {
+            flips += 1;
+            before = Some(k.medium.omega_blend.standing_q16());
+        }
+        if ran == phase::OBSERVER {
+            if let Some(d) = before.take() {
+                assert!(d > 0, "tick {n}: {d}");
+                assert_eq!(k.medium.omega_blend.standing_q16(), -d, "tick {n}");
+            }
+            fed += (flips == 1 && k.medium.omega_bemf.is_some()) as u32;
+        }
+    }
+    assert_eq!(flips, 1);
+    assert!(fed > 300, "{fed} boxcars the other way");
+    assert!(
+        (boxcar(&sh) + over).abs() <= 16,
+        "a boxcar of {}",
+        boxcar(&sh)
+    );
+    assert!(worst < 16 << 16, "the loop's speed moved {worst} off");
 }
 
 // --- Current-loop feedforward ---------------------------------------------

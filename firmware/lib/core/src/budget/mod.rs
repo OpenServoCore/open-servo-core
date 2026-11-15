@@ -99,7 +99,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// are E, carried separately by [`LIMIT_SPLIT`] pending a probe refill, as
 /// is what came with phase SPEED's stage by [`SPEED_STAGE`]: the phase's
 /// rows are the fast path alone, and SPARE_A's predate the stage's entry
-/// in the phase table.
+/// in the phase table. The rows predate the speed blend as well
+/// ([`SPEED_BLEND`]).
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
@@ -192,17 +193,43 @@ pub const SPEED_STAGE: [[u32; PHASES]; REGIMES] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 17, 274],
 ];
 
+/// E, over the measured OBSERVER, CONTROL and VELOCITY rows, maxima and
+/// means: the speed blend in place of the source switch
+/// (`estimator::omega_blend`), which the rows predate. Matched release
+/// builds, priced as REFRESH. OBSERVER, the phase's arm from its dispatch
+/// to the tick's tail on the same executed path. Closed and OpenLoop, a
+/// boxcar on a forward speed: 480.5 -> 528 HCLK (28 more instructions, 6
+/// more loads/stores, 4 fewer taken transfers), the largest rise of the
+/// paths priced; the phase's longest path, a boxcar on a reverse speed,
+/// 523 -> 534. Open, where no boxcar closes: 463.25 -> 498.25 (19 more
+/// instructions, 4 more loads/stores, 2 fewer taken transfers). The
+/// blend's clear is two stores, 6.5 HCLK: on CONTROL's run-edge tick,
+/// which any regime books, and on VELOCITY's parked tick, which is
+/// Open's. Each delta plus 10%, rounded up. OBSERVER's rows still hold
+/// the back-EMF close, which left the phase with SPEED's stage; the
+/// bench must refill the three phases.
+pub const SPEED_BLEND: [[u32; PHASES]; REGIMES] = [
+    [8, 39, 0, 0, 8, 0, 0, 0, 0, 0],
+    [8, 53, 0, 0, 0, 0, 0, 0, 0, 0],
+    [8, 53, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// The estimated additions over a measured row at `r` and `p`.
+const fn estimated(r: usize, p: usize) -> u32 {
+    LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + SPEED_BLEND[r][p]
+}
+
 /// A plain tick's budget at `regime` and `phase`: its row, the tick
 /// block's work, the estimated additions and layout.
 pub const fn tick_body(regime: Regime, phase: usize) -> u32 {
     let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + LAYOUT
+    KERNEL[r][p] + TICK_PUBLISH[r][p] + estimated(r, p) + LAYOUT
 }
 
 /// The same plain ticks' mean over a window.
 pub const fn tick_body_mean(regime: Regime, phase: usize) -> u32 {
     let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + LAYOUT
+    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + estimated(r, p) + LAYOUT
 }
 
 /// Every tick of a TEL burst, on top of [`KERNEL`] and the lane: the row

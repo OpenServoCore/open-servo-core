@@ -37,7 +37,7 @@ Columns:
 | Current loop (PI) | 378 | 4 | S: 117 ins, 12 muls (closed-loop modes only) | FAST | core |
 | Open-loop duty limiter | 200 | 4 | S: 7 ins inline + `DutyLimiter::step` 58 ins out of line (open loop only) | FAST | core |
 | Back-EMF observer (boxcar) | 340 | 16 | S: 96 ins, 8 muls (sums every tick, close every medium half). The sheet's image measured 244 B / 20 B / 76 ins; the start-up half and the drive flip at the close added 96 B of flash and 20 ins and took 4 B of RAM back, the delta between matched release images built the same way | FAST | core (velocity source above the floor) |
-| Omega switch | 164 | 8 | S: 56 ins | MEDIUM (OBSERVER) | core |
+| Speed blend (the observer's speed plus the back-EMF's fast part) | 124 | 8 | S: 76 ins, no multiply. The sheet's image measured the source switch it replaced at 164 B / 8 B / 56 ins; the blend took 40 B of flash off the image on the same 8 B of state, the delta between matched release images built the same way | MEDIUM (OBSERVER) | core |
 | Fusion (pot) observer | 666 | 12 | S: 197 ins, 10 muls (5 widening per the fusion plan) | MEDIUM (OBSERVER) | core (the only source under the floor) |
 | Trajectory + position loop | 968 | ~20 | S: 141 ins inline + `step_position` 550 B out of line | MEDIUM (TRAJECTORY) | core |
 | Velocity loop | 578 | 4 | S: 175 ins, 8 muls | MEDIUM (VELOCITY) | core |

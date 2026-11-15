@@ -39,8 +39,9 @@ pub struct TelemetryMode {
     pub mode_active: u8,
     #[ct_field(access = ro)]
     pub fault_code: u8,
-    /// Velocity-loop feedback source behind `omega_hat_cps`: 0 = the pot
-    /// observer's omega, 1 = the back-EMF boxcar (estimator::OmegaSource).
+    /// Whether a back-EMF boxcar fed the velocity loop's speed this
+    /// period (`estimator::OmegaBlend`): 1 = `omega_bemf_cps` is that
+    /// boxcar, 0 = none closed.
     #[ct_field(access = ro)]
     pub omega_hat_src: u8,
     /// Why closed loop is refused, one bit per reason (`data_state` module
@@ -136,7 +137,8 @@ pub struct TelemetryEstimates {
     #[ct_field(access = ro)]
     pub theta_hat_q16: i32,
     /// Velocity-loop feedback, raw csQ16 ((counts/s) x 2^16) - published
-    /// unshifted; `omega_hat_src` names which estimate it is.
+    /// unshifted: the pot observer's omega plus the back-EMF boxcar's
+    /// fast part (`estimator::OmegaBlend`).
     #[ct_field(access = ro)]
     pub omega_hat_cps: i32,
     /// Disturbance-torque estimate, current counts.
@@ -152,8 +154,8 @@ pub struct TelemetryEstimates {
     pub t_winding_cc: i16,
     #[ct_field(access = ro)]
     pub vbus_counts: u16,
-    /// Back-EMF boxcar, whole c/s; 0 while a sub-floor window sits inside
-    /// the boxcar (`omega_hat_src` then reads 0 within a millisecond).
+    /// Back-EMF boxcar, whole c/s; 0 while none closed (`omega_hat_src`
+    /// reads 0 beside it).
     #[ct_field(access = ro)]
     pub omega_bemf_cps: i16,
     /// The winding resistance the control path reads, Q4.12 vcounts per

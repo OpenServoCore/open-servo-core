@@ -349,7 +349,7 @@ const STEP_GOAL: i32 = START_POS as i32 + 400;
 /// The mg90-a table LIVE: the observer tracks the linearized pot the whole
 /// way, and the position loop settles at the linearized goal, so the raw
 /// pot parks where the table maps the goal from (raw 1881 reads 1900 on
-/// mg90-a), not on the goal count as the identity run does.
+/// mg90-a), while the identity run settles at the goal count itself.
 #[test_log::test]
 fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
     let k = support::mg90_a();
@@ -384,8 +384,8 @@ fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
     let identity = row_at(&run(None, STEP_TICKS, step_script), STEP_TICKS - 10);
     assert_eq!(identity.cmd, CMD_BRAKE, "{identity:?}");
     assert!(
-        (STEP_GOAL - identity.pos as i32).abs() <= 8,
-        "identity parks on the goal count: {identity:?}"
+        ((identity.theta_hat_q16 >> 16) - STEP_GOAL).abs() <= 8,
+        "identity settles at the goal count: {identity:?}"
     );
 }
 

@@ -22,7 +22,7 @@ pub const DECIM_SLOW: u8 = 32;
 pub mod phase {
     /// Configuration, CONTROL, the edges and the drive kind.
     pub const CONTROL: u8 = 0;
-    /// Observer step, speed source switch on the boxcar SPEED closed.
+    /// Observer step, speed blend on the boxcar SPEED closed.
     pub const OBSERVER: u8 = 1;
     /// Trajectory and position loop; the hold updates the drive kind.
     pub const TRAJECTORY: u8 = 2;
