@@ -31,7 +31,7 @@ pub mod telemetry_ext;
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
     CalibGear, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense,
-    CalibSenseExt, CalibStamp, CalibThermal, CalibWinding,
+    CalibSenseExt, CalibStamp, CalibThermal,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
@@ -390,23 +390,22 @@ mod tests {
     #[test]
     fn calib_layout_keeps_the_host_written_blocks_contiguous() {
         use super::calib::addr::{
-            gear, kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, stamp, thermal, winding,
+            gear, kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, stamp, thermal,
         };
         assert_eq!(motor::R_Q12, super::CALIB_BASE_ADDR);
         assert_eq!(motor::KE_VPC_Q, 0x08A);
-        assert_eq!(winding::R0_Q12, 0x08C);
-        assert_eq!(thermal::TH_RISE_Q016, 0x08E);
-        assert_eq!(thermal::NTC_K2_Q24, 0x09A);
-        assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x09C);
-        assert_eq!(pot::RAW_MIN, 0x0A0);
-        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0A8);
-        assert_eq!(stamp::PLANT_STAMP, 0x0AA);
-        assert_eq!(sense::SHUNT_R_MOHM, 0x0AC);
-        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C8);
-        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CA);
-        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0CC);
-        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CE);
-        assert_eq!(gear::GEAR_CLASS, 0x0D0);
+        assert_eq!(thermal::TH_RISE_Q016, 0x08C);
+        assert_eq!(thermal::NTC_K2_Q24, 0x096);
+        assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x098);
+        assert_eq!(pot::RAW_MIN, 0x09C);
+        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0A4);
+        assert_eq!(stamp::PLANT_STAMP, 0x0A6);
+        assert_eq!(sense::SHUNT_R_MOHM, 0x0A8);
+        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C4);
+        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0C6);
+        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0C8);
+        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CA);
+        assert_eq!(gear::GEAR_CLASS, 0x0CC);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
@@ -425,11 +424,11 @@ mod tests {
     fn calib_adc_appends_after_gear() {
         use super::calib::addr::{adc, gear};
         use crate::adc::ADC_WIDE_SLOTS;
-        assert_eq!(gear::GEAR_CLASS, 0x0D0);
-        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D1);
+        assert_eq!(gear::GEAR_CLASS, 0x0CC);
+        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0CD);
         let f = ControlTable::FIELDS;
         let w = f.iter().find(|d| d.name == "adc_wide_mid_q4").unwrap();
-        assert_eq!(w.addr, 0x0D1);
+        assert_eq!(w.addr, 0x0CD);
         assert_eq!(w.width, ADC_WIDE_SLOTS as u16);
         assert_eq!(w.kind, FieldKind::Bytes);
         assert!(w.writable);

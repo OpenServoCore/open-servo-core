@@ -916,7 +916,7 @@ to the stop the same way, and the press's rule applies there as at any
 stop. The host's direction nudge before it closes a loop (`osc cal`,
 `osc ident`, the bench harness) catches leads swapped at assembly.
 
-**Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
+**Plant stamp.** `plant_stamp` (u16, RW, `0x0A6` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
 and calibrated fields plus the effective position table. Firmware
 recomputes it over what actually landed at every checkpoint and reports
@@ -939,7 +939,7 @@ point and slope, and the gear class in CALIB. The points are the position table'
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
 (current, thermal, undervolt, `duty_max_q15`), the raw sensor screen,
-cold R, the ADC wide-code map, and the RO board facts install re-seeds. `0` is
+the ADC wide-code map, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,
 `pos_lut_points`); the CRC is the sec 3.2 checksum in software, ~600 B
@@ -1073,7 +1073,7 @@ map records them per board, since the converter is the chip's:
 
 | addr  | name              | width | access | notes                                                       |
 | ----- | ----------------- | ----- | ------ | ----------------------------------------------------------- |
-| 0x0D1 | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
+| 0x0CD | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
 
 A slot holds half the span the converter skips after its code, in Q4
 counts; `0` is no wide code there, and the all-zero default changes
@@ -1284,9 +1284,11 @@ why.
 **Blind band.** Under the window floor (`window_floor_q15`, 5.3% on
 osc-dev-v006) the shunt reports nothing and the servo applies
 a stall-safe base duty instead of trusting its ceiling:
-`min(i_lim x R / Vbus, floor)` from the identified `r_q12` as stored
-(not `r_hat_q12`, below: a ceiling errs low on the cold value), whose
-stall current is at most the limit. A servo with no identified resistance
+`min(i_lim x R / Vbus, floor)` from the identified `r_q12` as stored,
+the winding at 25 °C (not `r_hat_q12`, below), whose stall current is at
+most the limit on a winding at 25 °C or warmer; on a board under 25 °C it
+sits over the limit by copper's slope on the difference, 4% at 15 °C,
+where the stall current is tens of mA. A servo with no identified resistance
 (`r_q12` 0) has the floor as its base, so the lowest duty it applies to
 a goal above the floor is the floor itself, and stall current in the
 blind band is bounded by `floor x Vbus / R` of the actual winding:
@@ -1296,22 +1298,32 @@ already draws more than the limit, the applied duty stays pinned at
 the floor and the stall timer decides (DES
 `virgin_blind_band_passes_to_the_window_floor`).
 
-**Winding resistance.** `r_hat_q12` (u16, RO, `0x26A` in TELEMETRY,
-Q4.12 vcounts per current count, the units of CALIB `r_q12`) is the
-winding resistance the servo's control path uses: `r_q12` raised by
-copper's 0.393% per °C on the winding estimate's rise over the NTC
-(`t_winding_cc` less `t_ntc_cc`), saturating at 65535. It is the heat
-model's number, not a measurement. The back-EMF speed estimate and the
-current loop under the window floor read it; the blind band's base duty
-above does not. It reads `r_q12` itself while nothing has heated the
-estimate, while no NTC curve is set and on a failed NTC (`therm_flags`),
-and 0 while `r_q12` is 0. The servo publishes it at boot, every 16 ms
-with the estimate and within a medium period (0.5 ms) of a CONFIG or
-CALIB write that reaches the kernel. It takes `r_q12` as the resistance
-at the NTC's temperature: a board warmer or colder than the one `r_q12`
-was identified at is not corrected (control-theory "The Winding
-Estimate"; unit
-`r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools`).
+**Winding resistance.** CALIB `r_q12` (u16, Q4.12 vcounts per current
+count) is the winding's resistance at 25.00 °C, never the value as
+measured. The field's definition is copper's law about that point, with
+T in centi-°C:
+
+```
+r(T) = r_q12 x (1 + ALPHA x (T - 2500)),   ALPHA = 2637 / 2^26 (0.393% per °C)
+```
+
+A host converts a measurement with the board NTC's reading at the time
+by the same constant, `r_q12 = r_meas / (1 + ALPHA x (t_ntc_cc - 2500))`,
+so the reference temperature has no field of its own. `r_hat_q12` (u16,
+RO, `0x26A` in TELEMETRY, the units of `r_q12`) is the winding
+resistance the servo's control path uses: the law at the winding
+estimate's temperature, `t_ntc_cc` plus the estimate's rise over it
+(bounded at 150 °C, as the heat input's feedback is), saturating at
+65535. It reads under `r_q12` on a board below 25 °C and over it above.
+It is the heat model's number, not a measurement. The back-EMF speed
+estimate and the current loop under the window floor read it; the blind
+band's base duty above does not. It reads `r_q12` itself while no NTC
+curve is set and on a failed NTC (`therm_flags`), and 0 while `r_q12` is
+0. The servo publishes it at boot, every 16 ms with the estimate and
+within a medium period (0.5 ms) of a CONFIG or CALIB write that reaches
+the kernel (control-theory "The Winding Estimate"; pins
+`r_hat_reads_the_25_c_resistance_at_the_estimates_temperature`,
+`r_hat_follows_copper_on_25_c_for_every_resistance_and_temperature`).
 
 **Shunt burst.** The high-rate shunt capture (`arm` at `0x198` in
 CONTROL, with `duty_q15` at `0x196` and `chans` at `0x19A`; read back

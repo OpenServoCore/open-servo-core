@@ -56,11 +56,11 @@ pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults, CurrentDefaults};
 pub use regions::{
     CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
-    CalibStamp, CalibThermal, CalibWinding, ConfigCommon, ConfigFaultCfg, ConfigFusion,
-    ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys,
-    ConfigPosSoft, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlTable,
-    ControlTableCell, Mode, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryMode,
-    TelemetryRefs, TelemetryRegs, TelemetryTick,
+    CalibStamp, CalibThermal, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits,
+    ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys, ConfigPosSoft,
+    ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlTable, ControlTableCell, Mode,
+    StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryMode, TelemetryRefs,
+    TelemetryRegs, TelemetryTick,
 };
 pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};

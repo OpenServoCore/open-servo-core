@@ -469,246 +469,239 @@
       "kind": "uint"
     },
     {
-      "name": "r0_q12",
+      "name": "th_rise_q016",
       "addr": 140,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "th_rise_q016",
+      "name": "th_rise2_q016",
       "addr": 142,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "th_rise2_q016",
+      "name": "ntc_raw_ref",
       "addr": 144,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "ntc_raw_ref",
-      "addr": 148,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "ntc_t_ref_cc",
-      "addr": 150,
+      "addr": 146,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
       "name": "ntc_k1_q88",
-      "addr": 152,
+      "addr": 148,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
       "name": "ntc_k2_q24",
-      "addr": 154,
+      "addr": 150,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "ke_uvs_per_rad",
-      "addr": 156,
+      "addr": 152,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "fric_breakaway_counts",
-      "addr": 158,
+      "addr": 154,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "raw_min",
-      "addr": 160,
+      "addr": 156,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "raw_max",
-      "addr": 162,
+      "addr": 158,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "angle_min_cdeg",
-      "addr": 164,
+      "addr": 160,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
       "name": "angle_max_cdeg",
-      "addr": 166,
+      "addr": 162,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
       "name": "gear_ratio_centi",
-      "addr": 168,
+      "addr": 164,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "plant_stamp",
-      "addr": 170,
+      "addr": 166,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "shunt_r_mohm",
-      "addr": 172,
+      "addr": 168,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "gain_milli",
-      "addr": 174,
+      "addr": 170,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_div_top",
-      "addr": 176,
+      "addr": 172,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_div_bot",
-      "addr": 178,
+      "addr": 174,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vdd_mv",
-      "addr": 180,
+      "addr": 176,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "tick_hz",
-      "addr": 182,
+      "addr": 178,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "i_window_min_ticks",
-      "addr": 184,
+      "addr": 180,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "v_window_min_ticks",
-      "addr": 186,
+      "addr": 182,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vbus_div_top_ohm",
-      "addr": 188,
+      "addr": 184,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vbus_div_bot_ohm",
-      "addr": 190,
+      "addr": 186,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "ntc_pullup_ohm",
-      "addr": 192,
+      "addr": 188,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "ntc_r25_ohm",
-      "addr": 194,
+      "addr": 190,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "ntc_beta",
-      "addr": 196,
+      "addr": 192,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_bias_nom_counts",
-      "addr": 198,
+      "addr": 194,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "rail_drop_mv",
-      "addr": 200,
+      "addr": 196,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_bias_top_ohm",
-      "addr": 202,
+      "addr": 198,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_bias_bot_ohm",
-      "addr": 204,
+      "addr": 200,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "pwm_period_ticks",
-      "addr": 206,
+      "addr": 202,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "gear_class",
-      "addr": 208,
+      "addr": 204,
       "width": 1,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "adc_wide_mid_q4",
-      "addr": 209,
+      "addr": 205,
       "width": 16,
       "access": "rw",
       "kind": "bytes"

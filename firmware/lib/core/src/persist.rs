@@ -61,7 +61,7 @@ pub const IMAGE_VERSION: u8 = 10;
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 4;
+pub const CALIB_IMAGE_VERSION: u8 = 5;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1026,6 +1026,22 @@ mod tests {
             ImageState::Stale
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
+    }
+
+    /// CALIB images SAVEd while `r_q12` was the resistance as measured
+    /// (CALIB 4, `r0_q12` beside it) boot stale: their `r_q12` is at
+    /// another temperature and the blocks behind it sit at other addresses.
+    #[test]
+    fn calib_images_of_the_as_measured_resistance_are_stale() {
+        let mut old = calib_image_of(7);
+        reseal_version(&mut old, 4);
+        let sh = seeded_servo();
+        assert_eq!(
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Stale
+        );
+        assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
     /// The layout before the tables joined the image: the region alone as

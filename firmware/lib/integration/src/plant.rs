@@ -160,7 +160,6 @@ pub fn seed(shared: &Shared) {
         let cal = &mut t.calib;
         cal.sense.i_window_min_ticks = 100;
         cal.sense.v_window_min_ticks = 100;
-        cal.winding.r0_q12 = 8192;
         cal.motor.ke_vpc_q = 256;
         cal.motor.r_q12 = 8192;
         cal.motor.recip_ke_q = 16 << 10;

@@ -17,7 +17,7 @@ use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::{ControlTable, DecayMode, RegionStorage, Shared, StallResponse};
 
-use crate::mg90::{Mg90, Motor};
+use crate::mg90::{Mg90, Motor, stored_r};
 use crate::plant::{lut_live, seed};
 use crate::sim::DEV_V006_SENSE;
 
@@ -37,7 +37,8 @@ pub const CURRENT_COUNTS_PER_A: f64 = 1135.013429521035;
 /// shaft motion, not the pot.
 pub const POT_RESIDUAL: &[(f64, f64)] = &[(0.64, 21.0), (1.29, 47.0), (0.64, 86.0), (0.95, 191.0)];
 
-/// Set of record 324e326794b5, every field it stores.
+/// Set of record 324e326794b5, every field it stores, its resistance as
+/// the winding at 25.00 C, the field's meaning.
 pub fn set_of_record(t: &mut ControlTable) {
     let c = &mut t.config;
     c.pos_phys.pos_min_phys_counts = 82;
@@ -81,13 +82,12 @@ pub fn set_of_record(t: &mut ControlTable) {
     c.fusion.l2_q88 = 3180;
     c.fusion.l3_q88 = 84;
     let cal = &mut t.calib;
-    cal.motor.r_q12 = 3744;
+    cal.motor.r_q12 = 3725;
     cal.motor.recip_ke_q = 13315;
     cal.motor.b_i_q313 = 2434;
     cal.motor.fric_fc_counts = 54;
     cal.motor.fric_fv_q016 = 812;
     cal.motor.ke_vpc_q = 315;
-    cal.winding.r0_q12 = 3725;
     cal.thermal.th_rise_q016 = 434;
     cal.thermal.th_rise2_q016 = 1274;
     cal.thermal.ntc_raw_ref = 2048;
@@ -106,14 +106,16 @@ pub fn set_of_record(t: &mut ControlTable) {
 }
 
 /// The motor model the set's fields hold, read back the way
-/// [`mg90::rig`](crate::mg90::rig) stores a plant's, on the rig's rail.
+/// [`mg90::rig`](crate::mg90::rig) stores a plant's, on the rig's rail:
+/// the winding at the temperature the set's NTC curve reads on the plant's
+/// board, 24.30 C ([`stored_r`]).
 pub fn motor() -> Motor {
     let sh = Shared::new();
     sh.table.with_mut(set_of_record);
-    let m = sh.table.with(|t| t.calib.motor);
+    let (m, r) = sh.table.with(|t| (t.calib.motor, stored_r(t)));
     Motor {
         vbus: VBUS as f64,
-        r: m.r_q12 as f64 / 4096.0,
+        r,
         ke: m.ke_vpc_q as f64 / 4096.0,
         b: m.b_i_q313 as f64 / 8192.0 / DECIM_MED as f64,
         fc: m.fric_fc_counts as f64,

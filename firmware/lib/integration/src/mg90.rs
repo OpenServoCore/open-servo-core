@@ -13,6 +13,7 @@
 //! drive window short of the amplifier's settle low by the board's band for
 //! that width, the bands the kernel scales it back up by.
 
+use osc_servo_core::estimator::thermal::{ALPHA_Q26, NtcCfg, R_REF_CC, ntc_cc};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::{GRID, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
@@ -43,6 +44,8 @@ pub const LASH: f64 = 5.7;
 /// counts: a plant's `residual` unless set.
 pub const RESIDUAL: &[(f64, f64)] = &[(5.0, 60.0)];
 pub const ARR: u32 = 1200;
+/// The board NTC's reading, raw counts: steady, the board never warms.
+pub const NTC_RAW: u16 = 2048;
 
 /// A plant's rail and motor in the board's counts: the rail in vcounts, R
 /// in vcounts per ccount, Ke in vcounts per c/s, B in c/s per FAST tick
@@ -242,7 +245,7 @@ impl Mg90 {
             vmotor_b_trough: vb,
             vref_raw: 1489,
             vbus_raw: vbus_raw(m.vbus as u16),
-            ntc_raw: 2048,
+            ntc_raw: NTC_RAW,
         }
     }
 
@@ -309,11 +312,27 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         cal.motor.b_i_q313 = q(B * DECIM_MED as f64, 13);
         cal.motor.fric_fc_counts = q(FC, 0);
         cal.motor.fric_fv_q016 = q(FV, 16);
-        cal.winding.r0_q12 = q(R, 12);
     });
     sh.table.with_mut(cfg);
     lut_live(&sh, lut);
     sh
+}
+
+/// The winding resistance a set's fields hold at the plant's board,
+/// vcounts per count: `r_q12`, the winding at 25.00 C, along copper's
+/// slope to the temperature the set's NTC curve reads at [`NTC_RAW`], as
+/// the kernel reads it; `r_q12` itself with no curve.
+pub fn stored_r(t: &ControlTable) -> f64 {
+    let th = &t.calib.thermal;
+    let curve = NtcCfg {
+        raw_ref: th.ntc_raw_ref,
+        t_ref_cc: th.ntc_t_ref_cc,
+        k1_q88: th.ntc_k1_q88,
+        k2_q24: th.ntc_k2_q24,
+    };
+    let d = ntc_cc(NTC_RAW, &curve).map_or(0, |t| t as i32 - R_REF_CC);
+    let alpha = ALPHA_Q26 as f64 / (1u64 << 26) as f64;
+    t.calib.motor.r_q12 as f64 / 4096.0 * (1.0 + alpha * d as f64)
 }
 
 #[cfg(test)]
@@ -345,8 +364,7 @@ pub(crate) mod tests {
     /// The pin above for the motor model `sh` stores against the plants
     /// `plant` builds at rest.
     pub(crate) fn motor_model_is_the_plants(sh: &Shared, plant: impl Fn() -> Mg90) {
-        let m = sh.table.with(|t| t.calib.motor);
-        let r = m.r_q12 as f64 / 4096.0;
+        let (m, r) = sh.table.with(|t| (t.calib.motor, stored_r(t)));
         let ke = m.ke_vpc_q as f64 / 4096.0;
         let recip = m.recip_ke_q as f64 / 1024.0;
         let fric = |omega: f64| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega / 65536.0;

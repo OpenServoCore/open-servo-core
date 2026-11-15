@@ -50,10 +50,10 @@ const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
 /// V006 map facts the seeded calibration lands in: calib.pot.raw_max,
 /// calib.kinematics.angle_max_cdeg and .gear_ratio_centi, the RO board fact
 /// calib.sense.shunt_r_mohm, and config.pos_soft.pos_max_soft_counts.
-const RAW_MAX: u16 = 162;
-const ANGLE_MAX_CDEG: u16 = 166;
-const GEAR_RATIO_CENTI: u16 = 168;
-const SHUNT_R_MOHM: u16 = 172;
+const RAW_MAX: u16 = 158;
+const ANGLE_MAX_CDEG: u16 = 162;
+const GEAR_RATIO_CENTI: u16 = 164;
+const SHUNT_R_MOHM: u16 = 168;
 const POS_MAX_SOFT_COUNTS: u16 = 44;
 /// The soft limit a wiped store boots: the board default travel, the pot's
 /// full 12-bit span.

@@ -12,7 +12,6 @@ use osc_servo_core::regions::calib::addr::adc::ADC_WIDE_MID_Q4;
 use osc_servo_core::regions::calib::addr::motor::R_Q12;
 use osc_servo_core::regions::calib::addr::sense::TICK_HZ;
 use osc_servo_core::regions::calib::addr::thermal::TH_RISE_Q016;
-use osc_servo_core::regions::calib::addr::winding::R0_Q12;
 use osc_servo_core::regions::config::addr::common::RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::telemetry::addr::common::STATUS_FLAGS;
@@ -207,10 +206,10 @@ fn board_sense_wins_over_a_stale_calib_image(baud_idx: u8) {
 }
 
 /// SAVE seals every CONFIG and CALIB byte no field covers as zero: bytes
-/// an image of another layout left in the reserved tail and behind r0 (the
-/// leak that booted a winding estimate with its constants set) read as
-/// stored until the SAVE, are zero in both sealed images and read zero
-/// after it, while every field byte seals as it stood and loads back.
+/// an image of another layout left in reserved bytes (the leak that booted
+/// a winding estimate with its constants set) read as stored until the
+/// SAVE, are zero in both sealed images and read zero after it, while
+/// every field byte seals as it stood and loads back.
 #[apply(matrix)]
 fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
     const JUNK: u8 = 0xA5;
@@ -229,7 +228,7 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
             *b = JUNK;
         }
     }
-    calib[(R0_Q12 - CALIB_BASE_ADDR) as usize..][..2].copy_from_slice(&4016u16.to_le_bytes());
+    calib[(R_Q12 - CALIB_BASE_ADDR) as usize..][..2].copy_from_slice(&4016u16.to_le_bytes());
     calib[(TH_RISE_Q016 - CALIB_BASE_ADDR) as usize..][..2].copy_from_slice(&2097u16.to_le_bytes());
     let store = RamStore::leak();
     store.inject_calib(Slot::A, 1, &calib);
@@ -267,7 +266,7 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
     }
     let mut sim = sim(baud_idx);
     sim.add_servo_with_store(ID5, store);
-    assert_eq!(read_u16(&mut sim, ID5, R0_Q12), 4016);
+    assert_eq!(read_u16(&mut sim, ID5, R_Q12), 4016);
     assert_eq!(read_u16(&mut sim, ID5, TH_RISE_Q016), 2097);
     assert_eq!(read_byte(&mut sim, ID5, RESERVED), 0);
 }
