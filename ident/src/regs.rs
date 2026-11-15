@@ -179,7 +179,7 @@ pub mod telemetry {
     pub const STATUS_FLAGS: Reg = reg(0x0201, 1);
     pub const MODE_ACTIVE: Reg = reg(0x0220, 1);
     pub const FAULT_CODE: Reg = reg(0x0221, 1);
-    /// 0 = pot observer, 1 = back-EMF boxcar behind `omega_hat_cps`.
+    /// 1 = a back-EMF boxcar fed `omega_hat_cps` this period, 0 = none.
     pub const OMEGA_HAT_SRC: Reg = reg(0x0222, 1);
     /// Why closed loop is refused, one bit per reason (core `data_state`);
     /// 0 = the images and the identified set are this servo's own.

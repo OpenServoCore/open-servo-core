@@ -25,7 +25,7 @@ impl Medium {
             let md = &raw mut (*p).telemetry.mode;
             (&raw mut (*md).mode_active).write_volatile(self.ctl.life.mode as u8);
             (&raw mut (*md).fault_code).write_volatile(faults.code());
-            (&raw mut (*md).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
+            (&raw mut (*md).omega_hat_src).write_volatile(self.omega_bemf.is_some() as u8);
             (&raw mut (*p).telemetry.common.fault_flags).write_volatile(faults.mask());
             (&raw mut (*p).telemetry.limits.limit_flags).write_volatile(self.limit_flags);
             let th = &raw mut (*p).telemetry_ext.therm;

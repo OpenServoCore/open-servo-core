@@ -21,10 +21,15 @@ impl Medium {
             &cfg.fusion,
             &cfg.motor,
         );
-        // The observer's omega keeps the rest-shaped consumer (the stall
-        // verdict): it is always there and reads small at rest, where the
-        // boxcar has no window at all.
-        self.omega_hat = self.omega_sw.step(self.omega_bemf, self.fusion.omega_q16());
+        // Only the velocity loop reads the blend. The observer's omega
+        // keeps the rest-shaped consumer (the stall verdict): it is always
+        // there and reads small at rest, where the boxcar has no window at
+        // all.
+        self.omega_hat = self.omega_blend.step(
+            self.omega_bemf,
+            fast.bemf.flipped(),
+            self.fusion.omega_q16(),
+        );
         self.band_gain_q4 = band_gain_q4;
     }
 }

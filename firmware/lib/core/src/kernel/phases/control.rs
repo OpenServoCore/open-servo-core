@@ -151,6 +151,7 @@ impl Medium {
             }
             fast.reset_current_loop();
             self.vel.reset();
+            self.omega_blend.reset();
             fast.reset_limiter(cfg.ol_floor_q15);
             self.i_ref_cc = 0;
             self.omega_ref_q16 = 0;

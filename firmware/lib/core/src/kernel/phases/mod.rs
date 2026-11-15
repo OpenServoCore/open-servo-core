@@ -57,7 +57,7 @@ use super::{DECIM_SLOW, KernelTiming};
 #[cfg(not(feature = "experiment"))]
 use crate::Shared;
 #[cfg(not(feature = "experiment"))]
-use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm};
+use crate::estimator::{FusionObs, OmegaBlend, VbusEst, WindingTherm};
 #[cfg(not(feature = "experiment"))]
 use crate::pos_lut;
 #[cfg(not(feature = "experiment"))]
@@ -113,7 +113,8 @@ pub(in crate::kernel) struct Medium {
     run: bool,
     pub(in crate::kernel) traj: TrajGen,
     pub(in crate::kernel) fusion: FusionObs,
-    /// The observer phase's pick, for the later phases.
+    /// The velocity loop's speed, from the observer phase: the observer's
+    /// plus the blend's lead.
     pub(in crate::kernel) omega_hat: i32,
     /// The boxcar the SPEED phase closed, for the next period's OBSERVER
     /// and PUBLISH.
@@ -129,8 +130,8 @@ pub(in crate::kernel) struct Medium {
     /// The winding resistance at the estimate's temperature, as published
     /// (`Medium::r_hat`): the back-EMF boxcar's R.
     r_hat_q12: u16,
-    /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
-    pub(in crate::kernel) omega_sw: OmegaSwitch,
+    /// The boxcar's part in the velocity loop's speed.
+    pub(in crate::kernel) omega_blend: OmegaBlend,
     /// The duty OpenLoop applies while its ceiling sits under the window
     /// floor.
     ol_base_q15: u16,
@@ -178,7 +179,7 @@ impl Medium {
             vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),
             r_hat_q12: 0,
-            omega_sw: OmegaSwitch::new(),
+            omega_blend: OmegaBlend::new(),
             ol_base_q15: 0,
             permit_ticks: 0,
             permit_gen: 0,
