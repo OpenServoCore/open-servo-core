@@ -57,6 +57,8 @@ jobs:
         run: cargo clippy -p osc-servo-core --tests --features deadman -- -D warnings
       - name: cargo test osc-servo-core --features deadman
         run: cargo test -p osc-servo-core --features deadman
+      - name: cargo test osc-integration --features deadman (loop margins)
+        run: cargo test -p osc-integration --features deadman --test loop_margin
 
   ch32-build-test:
     name: build + test (firmware/servo-ch32)

@@ -889,6 +889,20 @@
       "kind": "uint"
     },
     {
+      "name": "inject_accel_q88",
+      "addr": 492,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "inject_half_periods",
+      "addr": 494,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
       "name": "fault_flags",
       "addr": 512,
       "width": 1,
@@ -1293,6 +1307,13 @@
       "width": 1,
       "access": "ro",
       "kind": "uint"
+    },
+    {
+      "name": "omega_ref_cps",
+      "addr": 976,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
     }
   ]
 }

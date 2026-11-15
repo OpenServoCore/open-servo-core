@@ -12,7 +12,8 @@
 //!   PROFILE   0x280..0x2C0  ( 64 B) - read-profile span words (sec 5.2)
 //!   BURST     0x2C0..0x3C0  (256 B) - RO paged shunt-capture readback
 //!   TELEMETRY-EXT 0x3C0..0x400 (64 B) - RO from host: health, the taps'
-//!                                       floor, the winding estimate
+//!                                       floor, the winding estimate, the
+//!                                       velocity reference
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
 //! Cross-domain readers that must avoid forming `&T` (aliasing-sensitive
@@ -484,9 +485,11 @@ mod tests {
     /// reserved tail, past the deleted ident switch's byte: chunks then
     /// count, so one WRITE sets the row and arms; every earlier address and
     /// the region size stay put, and a write to the old switch is refused.
+    /// The loop-margin stimulus's two fields follow the count, the last
+    /// CONTROL fields.
     #[test]
     fn control_tel_arm_appends_after_pos_lut() {
-        use super::control::addr::{pos_lut, tel};
+        use super::control::addr::{inject, pos_lut, tel};
         assert_eq!(pos_lut::POS_LUT_STATE, 0x1DE);
         assert_eq!(
             [
@@ -511,12 +514,18 @@ mod tests {
             "chunk1_addr",
             "chunk1_len",
             "tel_count",
+            "inject_accel_q88",
+            "inject_half_periods",
         ] {
             assert!(by(name).writable, "{name}");
         }
+        assert_eq!(
+            [inject::INJECT_ACCEL_Q88, inject::INJECT_HALF_PERIODS],
+            [0x1EC, 0x1EE]
+        );
         assert!(
             f.iter()
-                .all(|d| d.addr <= tel::TEL_COUNT || d.addr >= 0x200)
+                .all(|d| d.addr <= inject::INJECT_HALF_PERIODS || d.addr >= 0x200)
         );
     }
 
@@ -530,7 +539,7 @@ mod tests {
     #[test]
     fn telemetry_lands_the_scans_at_the_tick_block_front() {
         use super::telemetry::addr::{estimates, limits, refs, tick};
-        use super::telemetry_ext::addr::{health, limits_ext, therm};
+        use super::telemetry_ext::addr::{health, inject, limits_ext, therm};
         assert_eq!(
             [tick::POS, tick::VREF_RAW, tick::VBUS_RAW, tick::NTC_RAW],
             [0x224 + 20, 0x23A, 0x23C, 0x23E]
@@ -568,6 +577,7 @@ mod tests {
         assert_eq!(health::STACK_FREE_MIN, 0x3C8);
         assert_eq!(limits_ext::WINDOW_V_FLOOR_Q15, 0x3CA);
         assert_eq!([therm::T_NTC_CC, therm::THERM_FLAGS], [0x3CC, 0x3CE]);
+        assert_eq!(inject::OMEGA_REF_CPS, 0x3D0);
         assert_eq!(
             core::mem::size_of::<super::TelemetryRegs>(),
             super::TELEMETRY_REGION_SIZE as usize
@@ -577,7 +587,13 @@ mod tests {
         for name in ["tick_over_count", "tick_lost_count", "tel_drop_count"] {
             assert!(by(name).writable, "{name} is host-clearable");
         }
-        for name in ["tick_load_mean_q15", "stack_free_min", "pos", "tick_flags"] {
+        for name in [
+            "tick_load_mean_q15",
+            "stack_free_min",
+            "pos",
+            "tick_flags",
+            "omega_ref_cps",
+        ] {
             assert!(!by(name).writable, "{name} must stay RO");
         }
     }

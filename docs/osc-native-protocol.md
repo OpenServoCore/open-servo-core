@@ -730,6 +730,37 @@ kernel's own window rule (`tick_flags` bit 0 says the same for a row
 that carries it). The linearized pot is not streamed: a host linearizes
 `pos` with the servo's own table (sec 5.7).
 
+**Margin row (osc-servo, `deadman` image).** The bench image built with
+the `deadman` feature (osc-servo-kernel sec 2.7) sums a triangle into the
+velocity loop's reference in Velocity mode while a burst streams under a
+loaded bus dead-man, for a host that reads the speed and position loops'
+margins. Two CONTROL fields set it and one TELEMETRY-EXT field publishes
+the reference it lands on:
+
+| addr  | name                  | width | access | notes                                                                                 |
+| ----- | --------------------- | ----- | ------ | ------------------------------------------------------------------------------------- |
+| 0x1EC | `inject_accel_q88`    | u16   | RW     | the triangle's slope, Q8.8 c/s per medium period (the unit of `accel_limit_q88`), read at most 0x7FFF; 0 off |
+| 0x1EE | `inject_half_periods` | u16   | RW     | its half-period N in medium periods, read at most 512; 0 off                          |
+| 0x3D0 | `omega_ref_cps`       | i32   | RO     | the velocity loop's reference, raw csQ16 as `omega_hat_cps`; 0 on the production image |
+
+The triangle's peak is slope x N / 2 and its frequency 1000 / N Hz, at
+most 1 kHz (Nyquist of the 2 kHz medium rate), at least 1.95 Hz. The sum
+is clamped to `velocity_limit_cps`; the triangle pauses on a period after
+any limit flag but the permit (`limit_flags`, sec 5.8), and its phase
+holds through the pause. The fields are volatile and the servo never
+clears them: a host zeroes both before it drives and when it is done. The
+production image accepts both and ignores them.
+
+The margin row is 12 B in two chunks: `0x258` 8 B (`theta_hat_q16` and
+`omega_hat_cps`) and `0x3D0` 4 B (`omega_ref_cps`). All three are written
+at the same medium-period publish, so every row holds one period's
+triple, and one row a period at a fixed offset of the unwrapped `tick`
+is the period's sample. With U, W and TH the fundamentals at the
+triangle's frequency over whole cycles of `omega_ref_cps`,
+`omega_hat_cps` and `theta_hat_q16` (TH through the period difference,
+which removes the cruise's ramp), the speed loop's gain is W / (U - W)
+and the position loop's `kp` x TH / U, `kp` CONFIG `p_kp_q88` / 256.
+
 The wire contract during a burst: the host is silent. The servo owns
 the line from the arm's ack (or the arming COMMIT's silence) through
 the LAST-flagged frame, then the line frees on its own - no polling, no

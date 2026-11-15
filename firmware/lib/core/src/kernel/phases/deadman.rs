@@ -73,7 +73,7 @@ impl Deadman {
         }
     }
 
-    #[cfg(feature = "experiment")]
+    #[inline(always)]
     pub(in crate::kernel) fn loaded(&self) -> bool {
         self.ticks != 0
     }

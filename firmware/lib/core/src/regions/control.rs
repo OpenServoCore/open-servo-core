@@ -135,6 +135,30 @@ pub struct ControlTel {
     pub tel_count: u16,
 }
 
+/// The loop-margin stimulus (kernel sec 2.7): a triangle on the velocity
+/// loop's reference in Velocity mode, rising and falling at
+/// `inject_accel_q88` (Q8.8 c/s per medium period) over halves of
+/// `inject_half_periods` medium periods, so its peak is
+/// `inject_accel_q88 x inject_half_periods / 2`. It runs only while a TEL
+/// burst streams under a loaded bus dead-man with no limit flag but the
+/// permit set; 0 in either field is off. The kernel reads the slope at most
+/// [`INJECT_ACCEL_MAX_Q88`] and the half-period at most
+/// [`INJECT_HALF_PERIODS_MAX`]. Read only by an image built with
+/// `deadman`; the production image accepts and ignores both. Volatile: a
+/// host zeroes both when it is done.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Block)]
+pub struct ControlInject {
+    pub inject_accel_q88: u16,
+    pub inject_half_periods: u16,
+}
+
+/// The ceilings the kernel reads the two fields at: the triangle's peak,
+/// `0x7FFF x 512 / 2` in Q8.8, stays under 2^23, so its csQ16 form fits
+/// i32. 512 half-periods is 1.95 Hz.
+pub const INJECT_HALF_PERIODS_MAX: u16 = 512;
+pub const INJECT_ACCEL_MAX_Q88: u16 = 0x7FFF;
+
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(
@@ -150,8 +174,9 @@ pub struct ControlRegs {
     #[ct_section(skip)]
     pub _rsvd_ident: [u8; 2],
     pub tel: ControlTel,
+    pub inject: ControlInject,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 20],
+    pub _rsvd_tail: [u8; 16],
 }
 
 #[cfg(test)]
