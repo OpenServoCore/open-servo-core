@@ -287,6 +287,7 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         c.loop_velocity.j_ff_q88 = 831;
         c.loop_position.p_kp_q88 = 40212;
         c.loop_position.pos_deadband_counts = 12;
+        c.loop_position.speed_ceiling_cps = 1500;
         c.loop_position.velocity_limit_cps = 1500;
         c.loop_position.accel_limit_q88 = 15 << 8;
         c.limits.current_limit_counts = 280;

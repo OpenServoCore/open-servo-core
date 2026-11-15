@@ -56,7 +56,7 @@ pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout or unit change; a mismatched image boots
 /// `ImageState::Stale` (board defaults stand, closed loop gated) rather
 /// than migrating.
-pub const IMAGE_VERSION: u8 = 10;
+pub const IMAGE_VERSION: u8 = 11;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
@@ -1042,6 +1042,32 @@ mod tests {
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+    }
+
+    /// CONFIG images SAVEd with one speed (CONFIG 10: `velocity_limit_cps`
+    /// at 0x044, both the cruise and the position loop's clamp, no ceiling)
+    /// boot stale: their speed would load as the ceiling and every block
+    /// behind it sits 4 B off.
+    #[test]
+    fn config_images_of_the_single_speed_are_stale() {
+        let (mut config, profile) = body();
+        let at = addr::loop_position::SPEED_CEILING_CPS as usize;
+        config[at..at + 2].copy_from_slice(&4000u16.to_le_bytes());
+        let mut old = [0u8; IMAGE_LEN];
+        assemble(&mut old, 7, &config, &profile);
+        reseal_version(&mut old, 10);
+        let table = seeded_table();
+        assert_eq!(
+            boot_overlay(&table, &old, &[0xFF; IMAGE_LEN]).state,
+            ImageState::Stale
+        );
+        let lp = table.with(|t| t.config.loop_position);
+        assert_eq!(
+            (lp.speed_ceiling_cps, lp.velocity_limit_cps),
+            (0, config::DEFAULT_VELOCITY_LIMIT_CPS),
+            "seeds stand"
+        );
+        assert_eq!(table.with(|t| t.config.common.id), 1);
     }
 
     /// The layout before the tables joined the image: the region alone as

@@ -55,6 +55,7 @@ pub fn set_of_record(t: &mut ControlTable) {
     c.loop_velocity.j_ff_q88 = 862;
     c.loop_position.p_kp_q88 = 5026;
     c.loop_position.pos_deadband_counts = 4;
+    c.loop_position.speed_ceiling_cps = 8051;
     c.loop_position.velocity_limit_cps = 4025;
     c.loop_position.accel_limit_q88 = 10305;
     c.limits.current_limit_counts = 568;

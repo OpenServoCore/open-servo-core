@@ -494,8 +494,8 @@ fn two_sweeps_on_the_bench_mg90_repeat_within_the_bounds() {
 }
 
 /// The injection rides only a streaming Velocity loop: the reference is the
-/// cruise plus the triangle, peak slope x half / 2, inside the velocity
-/// limit; with no dead-man loaded it is the cruise alone.
+/// cruise plus the triangle, peak slope x half / 2, inside the speed
+/// ceiling; with no dead-man loaded it is the cruise alone.
 #[test]
 fn the_triangle_rides_the_velocity_reference_under_the_deadman() {
     let n = 20;
@@ -516,7 +516,7 @@ fn the_triangle_rides_the_velocity_reference_under_the_deadman() {
     let off = burst(plant, n, 400, |t| t.control.lifecycle.bus_deadman_ticks = 0);
     assert!(off.u.iter().all(|&u| u == CRUISE as f64));
     let capped = burst(plant, n, 400, |t| {
-        t.config.loop_position.velocity_limit_cps = CRUISE as u16 + 50
+        t.config.loop_position.speed_ceiling_cps = CRUISE as u16 + 50
     });
     assert!(capped.u.iter().all(|&u| u <= CRUISE as f64 + 50.0));
 }

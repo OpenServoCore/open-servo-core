@@ -32,7 +32,7 @@ pub struct KernelConfig {
     pub thermal: ConfigThermal,
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
-    pub _rsvd_config_tail: [u8; 8],
+    pub _rsvd_config_tail: [u8; 4],
     pub motor: CalibMotor,
     pub calib_thermal: CalibThermal,
     /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
@@ -103,7 +103,7 @@ impl KernelConfig {
             thermal: ConfigThermal::new(),
             fusion: ConfigFusion::new(),
             fault_cfg: ConfigFaultCfg::new(),
-            _rsvd_config_tail: [0; 8],
+            _rsvd_config_tail: [0; 4],
             motor: CalibMotor::new(),
             calib_thermal: CalibThermal::new(),
             ke_unset: true,
@@ -139,8 +139,8 @@ impl KernelConfig {
         self.v_floor_q15 = [v0, v1];
     }
 
-    /// The span as the table holds it, then the belt and the winding
-    /// estimate's config. The caller takes it only between commits.
+    /// The span as the table holds it, then the belt, the two speeds and the
+    /// winding estimate's config. The caller takes it only between commits.
     pub(super) fn take(&mut self, shared: &Shared) {
         let src = shared
             .table
@@ -156,6 +156,17 @@ impl KernelConfig {
             unsafe { dst.add(i).write(src.add(i).read_volatile()) };
         }
         self.ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
+        // the two speeds resolved here, so the tick tests nothing: a
+        // ceiling of 0 reads as the move speed, a move speed of 0 as the
+        // ceiling, and the move speed never runs over the ceiling
+        let lp = &mut self.loop_position;
+        let v = lp.velocity_limit_cps;
+        let c = match lp.speed_ceiling_cps {
+            0 => v,
+            c => c,
+        };
+        lp.speed_ceiling_cps = c;
+        lp.velocity_limit_cps = if v == 0 { c } else { v.min(c) };
         // Q8.8 to Q.12: selected here, so the tick tests nothing
         self.r_loop_q12 = match self.motor.r_q12 {
             0 => (self.loop_current.i_kp_q88 as u32) << 4,

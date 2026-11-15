@@ -20,7 +20,7 @@ pub const GOAL_LIM_COUNTS: i32 = THETA_LIM_CQ16 >> 16;
 
 /// omega_ref cap in c/s: i16 full scale (fusion OMEGA_LIM convention); also
 /// keeps v_up + a inside u32 for the decel compare. The table rule on
-/// `velocity_limit_cps`.
+/// `speed_ceiling_cps`, and through it on `velocity_limit_cps`.
 pub const VEL_CAP_CPS: u16 = 32767;
 
 /// Terminal snap floor: below one accel step of omega and within one whole
@@ -35,13 +35,20 @@ const SNAP_D_CQ16: u32 = 1 << 16;
 /// the ramp through the accel slew.
 const WALL_RAMP_SHIFT: u32 = 4;
 
-/// The profile reads CONFIG `loop_position` and `pos_soft` as stored: the
-/// table rules hold the velocity limit under [`VEL_CAP_CPS`] and the soft
-/// limits ordered inside [`GOAL_LIM_COUNTS`]. The cap and the goal bound
-/// apply again at the use, constant compares, so a corrupt table stays
-/// bounded and panic-free.
+/// The profile reads CONFIG `loop_position` and `pos_soft` as the take
+/// resolved them: the move speed at most the ceiling, the table rules
+/// holding the ceiling under [`VEL_CAP_CPS`] and the soft limits ordered
+/// inside [`GOAL_LIM_COUNTS`]. The cap and the goal bound apply again at
+/// the use, constant compares, so a corrupt table stays bounded and
+/// panic-free. This is the move speed, the Position profile's cruise.
 pub(in crate::kernel) fn vel_cap(lp: &ConfigLoopPosition) -> i32 {
     lp.velocity_limit_cps.min(VEL_CAP_CPS) as i32
+}
+
+/// The speed ceiling under the same cap: the bound on the position loop's
+/// output and on the Velocity goal.
+pub(in crate::kernel) fn ceiling_cap(lp: &ConfigLoopPosition) -> i32 {
+    lp.speed_ceiling_cps.min(VEL_CAP_CPS) as i32
 }
 
 /// State: theta_ref cQ16, omega_ref csQ16, alpha_last csQ16 per tick (the
@@ -167,9 +174,11 @@ impl TrajGen {
         }
     }
 
-    /// Velocity-mode entry: slew omega_ref toward the clamped goal by +-a
-    /// per tick. theta_ref holds: nothing reads it in this mode, and every
-    /// entry into position mode moves it to the estimate.
+    /// Velocity-mode entry: slew omega_ref toward the goal, clamped at the
+    /// speed ceiling, by +-a per tick. The move speed is the Position
+    /// profile's and bounds nothing here. theta_ref holds: nothing reads it
+    /// in this mode, and every entry into position mode moves it to the
+    /// estimate.
     ///
     /// Soft-limit wall ramp: the goal's inward component is capped at
     /// WALL_RAMP c/s per count of distance to the wall, reaching 0 at the
@@ -188,7 +197,7 @@ impl TrajGen {
         soft: &ConfigPosSoft,
     ) {
         let a = (lp.accel_limit_q88 as i32) << 8;
-        let v_cap = vel_cap(lp);
+        let v_cap = ceiling_cap(lp);
         let th = theta_hat_q16 >> 16;
         // distance pre-clamped so the shift cannot overflow
         let cap = (VEL_CAP_CPS as i32) >> WALL_RAMP_SHIFT;
@@ -236,9 +245,11 @@ mod tests {
         soft: ConfigPosSoft,
     }
 
+    /// The blocks as the take leaves them, the move speed at the ceiling.
     fn cfg_with(vel: u16, accel_q88: u16, min: i32, max: i32) -> Cfg {
         Cfg {
             lp: ConfigLoopPosition {
+                speed_ceiling_cps: vel,
                 velocity_limit_cps: vel,
                 accel_limit_q88: accel_q88,
                 ..ConfigLoopPosition::new()
@@ -601,6 +612,24 @@ mod tests {
         assert_eq!(run(25, -5000), -400);
         assert_eq!(run(0, -5000), 0);
         assert_eq!(run(500, -5000), -1000);
+    }
+
+    /// The Velocity goal clamps at the speed ceiling; the move speed under
+    /// it is the Position profile's cruise and bounds nothing here.
+    #[test]
+    fn velocity_goal_clamps_at_the_ceiling_not_the_move_speed() {
+        let mut c = cfg(2000, 50 << 8);
+        c.lp.velocity_limit_cps = 300;
+        let run = |goal: i32| {
+            let mut t = TrajGen::new();
+            for _ in 0..100 {
+                step_vel(&mut t, goal, 0, &c);
+            }
+            t.omega_star_q16() >> 16
+        };
+        assert_eq!(run(1500), 1500);
+        assert_eq!(run(5000), 2000);
+        assert_eq!(run(-5000), -2000);
     }
 
     #[test]

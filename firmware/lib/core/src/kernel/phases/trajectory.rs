@@ -64,8 +64,9 @@ impl Medium {
 #[cfg(feature = "deadman")]
 impl Medium {
     /// The loop-margin stimulus (kernel sec 2.7): the triangle summed into
-    /// the velocity loop's reference, inside the velocity limit. Its phase
-    /// steps only on a period it runs, so a gated period holds it.
+    /// the velocity loop's reference, inside the speed ceiling that bounds
+    /// the reference it rides. Its phase steps only on a period it runs, so
+    /// a gated period holds it.
     #[inline(always)]
     fn inject(&mut self, lp: &ConfigLoopPosition) {
         let inj = self.ctl.inject;
@@ -77,7 +78,7 @@ impl Medium {
         // |triangle| <= 256 and a < 2^15: the product stays under 2^23, so
         // the Q8.8 -> csQ16 shift stays inside i32
         let d = (a * ((n >> 1) - (p - n).abs())) << 8;
-        let v_lim = trajectory::vel_cap(lp) << 16;
+        let v_lim = trajectory::ceiling_cap(lp) << 16;
         self.omega_ref_q16 = self.omega_ref_q16.saturating_add(d).max(-v_lim).min(v_lim);
     }
 }
