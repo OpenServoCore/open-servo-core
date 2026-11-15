@@ -34,19 +34,11 @@ pub struct CalibSense {
     pub v_window_min_ticks: u16,
 }
 
-/// The winding's resistance at 25.00 C (vcounts per ccount, Q4.12). It is
-/// never the value as measured: the host measures the resistance together
-/// with the board NTC's temperature and converts it to 25.00 C along
-/// copper's slope before it writes the field, so the reference temperature
-/// is fixed and has no field of its own. A record for hosts, which firmware
-/// does not read; 0 = never measured.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct CalibWinding {
-    pub r0_q12: u16,
-}
-
-/// Motor identification, firmware-shaped: bemf subtract R (Q4.12),
+/// Motor identification, firmware-shaped: the winding's resistance at
+/// 25.00 C (Q4.12 vcounts per ccount, never the value as measured: the
+/// host converts its measurement to 25.00 C with the board NTC's reading
+/// along copper's slope, `r(T) = r_q12 x (1 + ALPHA x (T - 25.00 C))`,
+/// `estimator::thermal::ALPHA_Q26`; 0 = never measured),
 /// reciprocal Ke (c/s per vcount Q6.10, estimator::bemf convention), fusion
 /// current gain (bakes Ts/J, Q3.13: rig B runs ~3.4 so Q0.16 saturated), the
 /// friction model (Coulomb ccounts, viscous Q0.16), and forward Ke (vcounts
@@ -127,15 +119,12 @@ pub struct CalibSenseExt {
 /// counts-to-centi-C quadratic about its reference point, derived by the
 /// host from `CalibSenseExt`'s beta constants (`estimator::thermal::
 /// NtcCfg`). No curve = no estimate (`t_winding_cc` reads its sentinel,
-/// under every cutoff); a curve with both gains 0 reads the NTC alone. The
-/// reserved word held the retired resistance thermometer's constant.
+/// under every cutoff); a curve with both gains 0 reads the NTC alone.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibThermal {
     pub th_rise_q016: u16,
     pub th_rise2_q016: u16,
-    #[ct_field(skip)]
-    pub _rsvd1: u16,
     pub ntc_raw_ref: u16,
     pub ntc_t_ref_cc: i16,
     pub ntc_k1_q88: i16,
@@ -193,7 +182,6 @@ pub struct CalibStamp {
 )]
 pub struct CalibRegs {
     pub motor: CalibMotor,
-    pub winding: CalibWinding,
     pub thermal: CalibThermal,
     pub motor_ext: CalibMotorExt,
     pub pot: CalibPot,
@@ -205,5 +193,5 @@ pub struct CalibRegs {
     pub gear: CalibGear,
     pub adc: CalibAdc,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 159],
+    pub _rsvd_tail: [u8; 163],
 }

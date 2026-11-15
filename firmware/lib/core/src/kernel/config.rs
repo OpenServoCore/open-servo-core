@@ -8,7 +8,7 @@
 use super::KernelTiming;
 use super::phases::loops::limits;
 use crate::estimator::{NtcCfg, ThermCfg, window};
-use crate::regions::calib::{CalibMotor, CalibThermal, CalibWinding, addr as calib_addr};
+use crate::regions::calib::{CalibMotor, CalibThermal, addr as calib_addr};
 use crate::regions::config::{
     ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition,
     ConfigLoopVelocity, ConfigPosSoft, ConfigThermal, addr as config_addr,
@@ -34,7 +34,6 @@ pub struct KernelConfig {
     pub fault_cfg: ConfigFaultCfg,
     pub _rsvd_config_tail: [u8; 8],
     pub motor: CalibMotor,
-    pub winding: CalibWinding,
     pub calib_thermal: CalibThermal,
     /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
     pub ke_unset: bool,
@@ -89,7 +88,6 @@ const _: () = {
             == offset_of!(ControlTable, config._rsvd_tail)
     );
     assert!(offset_of!(KernelConfig, motor) + s == offset_of!(ControlTable, calib.motor));
-    assert!(offset_of!(KernelConfig, winding) + s == offset_of!(ControlTable, calib.winding));
     assert!(offset_of!(KernelConfig, calib_thermal) + s == offset_of!(ControlTable, calib.thermal));
     assert!(offset_of!(KernelConfig, calib_thermal) + size_of::<CalibThermal>() == 4 * SPAN_WORDS);
 };
@@ -107,7 +105,6 @@ impl KernelConfig {
             fault_cfg: ConfigFaultCfg::new(),
             _rsvd_config_tail: [0; 8],
             motor: CalibMotor::new(),
-            winding: CalibWinding::new(),
             calib_thermal: CalibThermal::new(),
             ke_unset: true,
             tau_shift: 0,

@@ -10,7 +10,7 @@
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep
 //! no second list. Not covered: identity and comms, the user-owned safety
 //! limits (current, thermal, undervolt, `duty_max_q15`), the raw sensor
-//! screen, cold R, and the RO board facts install re-seeds.
+//! screen, and the RO board facts install re-seeds.
 //!
 //! The LUT hashes as its 256 points LE, zeros while no table is live: a LUT
 //! that falls back to identity changes the stamp by itself.

@@ -6500,3 +6500,40 @@ fn the_slow_stages_take_one_period_each() {
         ]
     );
 }
+
+/// The position loop's output clamps at the speed ceiling, not at the move
+/// speed: the profile cruises at `velocity_limit_cps`, and a shaft held
+/// back behind it is asked for more, up to the ceiling, so it can catch
+/// up. The seed's ceiling is 3000 c/s; the move speed here is 300. On main
+/// the clamp is the move speed and the loop never asks over 300 c/s.
+#[test]
+#[ignore = "red until the speed ceiling is stored and clamps the loops"]
+fn a_held_shaft_is_asked_over_the_move_speed_up_to_the_ceiling() {
+    const MOVE_CPS: i32 = 300;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.config.loop_position.velocity_limit_cps = MOVE_CPS as u16;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.control.lifecycle.goal_position = 3000;
+        t.control.lifecycle.torque_enable = true;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(500);
+    run_plant(&mut k, &sh, &mut plant, 8_000);
+    plant.frozen = true;
+    run_plant(&mut k, &sh, &mut plant, 800);
+    plant.frozen = false;
+    let mut asked = i32::MIN;
+    for _ in 0..400 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        asked = asked.max(k.medium.omega_ref_q16);
+    }
+    assert_eq!(k.faults.mask(), 0);
+    assert!(
+        asked > (MOVE_CPS + 5) << 16,
+        "the loop asks at most {:.1} c/s of a held shaft, the move speed {MOVE_CPS}",
+        asked as f64 / 65536.0
+    );
+    assert!(asked <= 3000 << 16, "{asked}");
+}

@@ -124,8 +124,8 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// `r_q12` (`Medium::r_hat`) and the terminal floor's store. It
 /// carries no TEL row: a burst starts neither on SPARE_A nor while a take
 /// is pending, and the host is silent through one. E, an upper bound: the
-/// take's longest path on matched release disassembly is under 664 HCLK,
-/// including the rating, its two log calls and the resistance's 89.5; the
+/// take's longest path on matched release disassembly is under 690 HCLK,
+/// including the rating, its two log calls and the resistance's 115.25; the
 /// row keeps its earlier, larger price until the probe re-prices it.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
@@ -220,8 +220,18 @@ pub const SLOW_DUE: [u32; EVENT_REGIMES] = [185, 150];
 /// quadratic, the two rise multiplies, the cutoff fault and the winding
 /// resistance (`Medium::r_hat`: two multiplies and three stores). M as
 /// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1416, the
-/// openloop window's, over 1044.
-pub const SLOW_FINISH: u32 = 420;
+/// openloop window's, over 1044; plus [`R_AT_TEMPERATURE`], which the
+/// measurement predates.
+pub const SLOW_FINISH: u32 = 420 + R_AT_TEMPERATURE;
+
+/// E, over the measured finish: the winding resistance read at the
+/// estimate's temperature over 25.00 C, where the measured stage raised
+/// the stored value by the rise alone. Matched release builds, the
+/// stage's common path priced as [`REFRESH`]: 13 more instructions (one
+/// load, ten ALU, one fewer taken transfer, and the caller's two loads),
+/// 25.75 HCLK. The delta plus 10%, rounded up; the bench must refill the
+/// finish.
+pub const R_AT_TEMPERATURE: u32 = 29;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.

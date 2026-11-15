@@ -26,11 +26,10 @@
 //! settle under the cutoff ends in the latch, whatever the fields hold
 //! (unit `the_warm_feedback_ends_under_the_cutoff_or_in_the_latch`).
 //!
-//! The same factor gives the resistance the control path reads
-//! ([`WindingTherm::r_hat_q12`]): the stored `r_q12` raised by the copper's
-//! rise over the NTC. It is the model's number, not a measurement, and it
-//! takes `r_q12` as read at the NTC's temperature: a board warmer or
-//! colder than the one `r_q12` was identified on is not corrected.
+//! The same slope gives the resistance the control path reads
+//! ([`WindingTherm::r_hat_q12`]): `r_q12` is the winding at 25.00 C, read
+//! at the estimate's temperature, the NTC plus the excess. It is the
+//! model's number, not a measurement.
 //!
 //! No NTC curve is UNSET: `t` reads [`UNSET_CC`], which sits under the
 //! cutoff, and the flag says so. A curve with no gain reads the NTC
@@ -95,13 +94,25 @@ const NTC_RAIL_COUNTS: u16 = 8;
 const NTC_BAND_LO_CC: i16 = -4000;
 const NTC_BAND_HI_CC: i16 = 15_000;
 
-/// Copper's resistance rise per centi-C, 0.00393 per C, Q26.
-const ALPHA_Q26: u32 = 2637;
+/// Copper's resistance rise per centi-C, 0.00393 per C, Q26: the slope
+/// `r_q12` is defined on, `r(T) = r_q12 x (1 + ALPHA x (T - 25.00 C))`, so
+/// a host converts a measurement to 25.00 C with this constant.
+pub const ALPHA_Q26: u32 = 2637;
+/// The temperature `r_q12` is stored at, centi-C.
+pub const R_REF_CC: i32 = 2500;
 /// The rise fed back into the heat input stops here, 150 C over the NTC:
 /// the bound keeps the warm factor under 2^16 so its product with the
 /// square fits u32 (`limits::heat`), whatever cutoff the host wrote.
 const RISE_FEEDBACK_MAX_CC: u16 = 15_000;
 const _: () = assert!((RISE_FEEDBACK_MAX_CC as u32 * ALPHA_Q26) >> 10 < 1 << 16);
+// `r_hat_q12`'s factor over the band and the feedback bound: above -1 so
+// the resistance stays positive, and its product with a u16 fits i32.
+const _: () = {
+    let lo = ((NTC_BAND_LO_CC as i32 - R_REF_CC) * ALPHA_Q26 as i32) >> 12;
+    let hi =
+        ((NTC_BAND_HI_CC as i32 - R_REF_CC + RISE_FEEDBACK_MAX_CC as i32) * ALPHA_Q26 as i32) >> 12;
+    assert!(lo > -(1 << 14) && hi as i64 * u16::MAX as i64 <= i32::MAX as i64);
+};
 
 /// The heat input's warm factor for a rise over the NTC: the copper's
 /// fractional resistance rise over cold, Q0.16, at most 38627.
@@ -191,13 +202,29 @@ impl WindingTherm {
     }
 
     /// The winding resistance at the estimate's temperature, Q4.12
-    /// vcounts per ccount: `r_q12 x (1 + warm)` on the last published
-    /// excess, saturating; `r_q12` itself while UNSET or NTC_FAULT, 0 for
-    /// an unidentified winding. The warm factor sits under 2^16, so its
-    /// product with a u16 fits u32.
+    /// vcounts per ccount: `r_q12`, the winding at 25.00 C, along copper's
+    /// slope to the NTC plus the last published excess (bounded as the
+    /// feedback is), saturating; `r_q12` itself while UNSET or NTC_FAULT,
+    /// 0 for an unidentified winding. The correction truncates toward
+    /// zero, so an identified winding never reads 0 on a cold board.
     pub fn r_hat_q12(&self, r_q12: u16) -> u16 {
-        let r = r_q12 as u32;
-        (r + ((r * self.warm_q16()) >> 16)).min(u16::MAX as u32) as u16
+        let d = if self.flags == 0 {
+            let rise = if self.rise_cc > RISE_FEEDBACK_MAX_CC {
+                core::hint::cold_path();
+                RISE_FEEDBACK_MAX_CC
+            } else {
+                self.rise_cc
+            };
+            self.t_ntc_cc as i32 - R_REF_CC + rise as i32
+        } else {
+            core::hint::cold_path();
+            0
+        };
+        // the fraction of `r_q12` the temperature adds, Q14
+        let f = (d * ALPHA_Q26 as i32) >> 12;
+        let r = r_q12 as i32;
+        let p = r * f;
+        (r + ((p + ((p >> 31) & 0x3fff)) >> 14)).min(u16::MAX as i32) as u16
     }
 
     pub fn t_cc(&self) -> i16 {
@@ -349,13 +376,13 @@ mod tests {
         assert_eq!(th.warm_q16(), 0, "UNSET feeds nothing back");
     }
 
-    /// The modeled resistance is the stored one raised by the warm factor
-    /// on the last published excess: 2.0 vcounts per count reads 2.096 at
-    /// 12.22 C over the NTC (4.80 %) and 2.222 at the 28.31 C a 400-count
-    /// hold settles at on the bench constant (11.12 %). It is the stored
-    /// one with no heat, while UNSET and on a failed NTC, 0 for an
-    /// unidentified winding at any heat, and it saturates in its u16 at
-    /// the 150 C the feedback stops at (58.94 %).
+    /// On a 25.00 C board the modeled resistance is the stored one raised
+    /// by copper's slope on the last published excess: 2.0 vcounts per
+    /// count reads 2.096 at 12.22 C over the NTC (4.80 %) and 2.222 at the
+    /// 28.31 C a 400-count hold settles at on the bench constant
+    /// (11.12 %). It is the stored one with no heat, while UNSET and on a
+    /// failed NTC, 0 for an unidentified winding at any heat, and it
+    /// saturates in its u16 at the 150 C the feedback stops at (58.94 %).
     #[test]
     fn the_modeled_resistance_is_the_stored_one_raised_by_the_warm_factor() {
         let mut th = WindingTherm::new();
@@ -380,10 +407,81 @@ mod tests {
         th.update(RAW_25, [u32::MAX, 0], &CFG);
         assert_eq!(th.warm_q16(), 38627);
         assert_eq!(th.r_hat_q12(8192), 13020);
-        assert_eq!(th.r_hat_q12(41232), 65534, "the last one under the top");
-        assert_eq!(th.r_hat_q12(41234), u16::MAX, "65537 saturates");
+        assert_eq!(th.r_hat_q12(41233), 65533, "the last one under the top");
+        assert_eq!(th.r_hat_q12(41235), u16::MAX, "65537 saturates");
         assert_eq!(th.r_hat_q12(u16::MAX), u16::MAX);
         assert_eq!(th.r_hat_q12(0), 0);
+    }
+
+    /// Every resistance the field holds at every temperature the estimate
+    /// can carry into it, the board across the NTC band and the excess to
+    /// past the feedback bound: within the Q14 factor's quantization of
+    /// copper's law on 25.00 C, never 0 for an identified winding, never
+    /// wrapped, saturating at the top, and never falling as it warms.
+    #[test]
+    fn r_hat_follows_copper_on_25_c_for_every_resistance_and_temperature() {
+        let alpha = ALPHA_Q26 as f64 / (1u64 << 26) as f64;
+        let boards = [
+            NTC_BAND_LO_CC,
+            -2000,
+            -191,
+            0,
+            1500,
+            2430,
+            2500,
+            2501,
+            6700,
+            NTC_BAND_HI_CC,
+        ];
+        let rises = [
+            0u16,
+            1,
+            1222,
+            2831,
+            9999,
+            RISE_FEEDBACK_MAX_CC,
+            i16::MAX as u16,
+        ];
+        for r_q12 in 0..=u16::MAX {
+            let mut read = [(0i32, 0u16); 70];
+            let mut n = 0;
+            for t_ntc_cc in boards {
+                for rise_cc in rises {
+                    let th = WindingTherm {
+                        t_cc: 0,
+                        t_ntc_cc,
+                        rise_cc,
+                        flags: 0,
+                    };
+                    let got = th.r_hat_q12(r_q12);
+                    let d = t_ntc_cc as i32 - R_REF_CC + rise_cc.min(RISE_FEEDBACK_MAX_CC) as i32;
+                    let law = r_q12 as f64 * (1.0 + alpha * d as f64);
+                    let want = law.min(u16::MAX as f64);
+                    let r = r_q12 as f64;
+                    assert!(
+                        (got as f64 - want).abs() <= r / 16384.0 + 1.0,
+                        "r_q12 {r_q12} at {d} cc: {got}, the law {law:.2}"
+                    );
+                    assert_eq!(got == 0, r_q12 == 0, "r_q12 {r_q12} at {d} cc");
+                    read[n] = (d, got);
+                    n += 1;
+                }
+            }
+            read.sort_unstable();
+            assert!(
+                read.windows(2).all(|w| w[0].1 <= w[1].1),
+                "r_q12 {r_q12}: {read:?}"
+            );
+        }
+        let flagged = |flags| WindingTherm {
+            t_cc: 0,
+            t_ntc_cc: NTC_BAND_LO_CC,
+            rise_cc: RISE_FEEDBACK_MAX_CC,
+            flags,
+        };
+        for flags in [flag::UNSET, flag::NTC_FAULT] {
+            assert_eq!(flagged(flags).r_hat_q12(3725), 3725, "{flags}");
+        }
     }
 
     /// A held current through the SLOW block's two stages as the kernel
