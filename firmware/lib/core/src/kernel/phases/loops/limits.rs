@@ -44,6 +44,10 @@ const HEAT_GUARD: u32 = 5;
 /// under 2.0 square to under this, and the guard keeps it inside i32.
 const HEAT_MAX: u32 = (i32::MAX as u32) >> HEAT_GUARD;
 const _: () = assert!(8190 * 8190 <= HEAT_MAX);
+/// `DECIM_SLOW` as a shift: the SLOW cycle's sum of squares to its mean.
+const SLOW_SHIFT: u32 = DECIM_SLOW.trailing_zeros();
+const _: () = assert!(1 << SLOW_SHIFT == DECIM_SLOW as u32);
+const _: () = assert!(HEAT_MAX as u64 * DECIM_SLOW as u64 <= u32::MAX as u64);
 /// The rail fold's Q.
 const RAIL_SHIFT: u32 = 8;
 
@@ -142,8 +146,11 @@ pub struct Fold {
 /// the cap.
 pub struct LimitState {
     stall_ticks: u32,
-    /// EWMAs of the warmed held current squared, counts^2 with
-    /// `HEAT_GUARD` bits: the rotor node and the body node.
+    /// The SLOW cycle's sum of the held current squared, one sample a
+    /// MEDIUM period, each at most `HEAT_MAX`.
+    heat_sum: u32,
+    /// EWMAs of the warmed SLOW-cycle mean of the held current squared,
+    /// counts^2 with `HEAT_GUARD` bits: the rotor node and the body node.
     heat_qg: i32,
     heat2_qg: i32,
     rail_cache: u16,
@@ -155,6 +162,7 @@ impl LimitState {
     pub const fn new() -> Self {
         Self {
             stall_ticks: 0,
+            heat_sum: 0,
             heat_qg: 0,
             heat2_qg: 0,
             rail_cache: u16::MAX,
@@ -163,15 +171,30 @@ impl LimitState {
         }
     }
 
+    /// MEDIUM-rate: the held current's square, at most `HEAT_MAX`, into
+    /// the SLOW cycle's sum. One multiply.
+    pub fn heat_sample(&mut self, i_held_abs: u16) {
+        let i = i_held_abs as u32;
+        self.heat_sum += (i * i).min(HEAT_MAX);
+    }
+
+    /// The SLOW cycle's mean square, its sum over `DECIM_SLOW` periods; the
+    /// sum restarts.
+    pub fn take_heat_mean(&mut self) -> u32 {
+        let mean = self.heat_sum >> SLOW_SHIFT;
+        self.heat_sum = 0;
+        mean
+    }
+
     /// SLOW-rate: one step of both heats, `heat += (x - heat) >> shift`,
-    /// on the held current (0 with nothing driving) squared and warmed:
-    /// `x = i^2 x (1 + warm)`, `warm_q16` the copper's fractional
+    /// on the SLOW cycle's mean of the held current squared
+    /// (`take_heat_mean`, 0 on a cycle nothing drove) warmed:
+    /// `x = mean(i^2) x (1 + warm)`, `warm_q16` the copper's fractional
     /// resistance rise in Q0.16 (`estimator::thermal::warm_q16`, under
-    /// 2^16, so with the square under 2^26 the product fits u32). Two
-    /// multiplies.
-    pub fn heat(&mut self, i_held: i16, warm_q16: u32, shifts: [u8; 2]) {
-        let i = i_held.unsigned_abs() as u32;
-        let sq = (i * i).min(HEAT_MAX);
+    /// 2^16, so with the square under 2^26 the product fits u32). One
+    /// multiply.
+    pub fn heat(&mut self, mean_sq: u32, warm_q16: u32, shifts: [u8; 2]) {
+        let sq = mean_sq.min(HEAT_MAX);
         let x_qg = ((sq + (((sq >> 10) * warm_q16) >> 6)).min(HEAT_MAX) << HEAT_GUARD) as i32;
         self.heat_qg += (x_qg - self.heat_qg) >> shifts[0];
         self.heat2_qg += (x_qg - self.heat2_qg) >> shifts[1];
@@ -381,10 +404,21 @@ mod tests {
         st.update_rail(vbus, cfg.v_undervolt_counts, cfg.rail_fold_q8);
     }
 
-    /// One SLOW period at `i_held`: the heat step on the due tick.
+    /// One SLOW cycle of a steady `i_held` as the kernel runs it: a sample
+    /// each MEDIUM period, the heat step on the cycle's mean.
+    fn cycle(st: &mut LimitState, i_held: i16, warm_q16: u32, shifts: [u8; 2]) {
+        for _ in 0..DECIM_SLOW {
+            st.heat_sample(i_held.unsigned_abs());
+        }
+        let mean_sq = st.take_heat_mean();
+        st.heat(mean_sq, warm_q16, shifts);
+    }
+
+    /// One SLOW period at `i_held`: its samples and the heat step on the
+    /// due tick.
     fn slow_period(st: &mut LimitState, i_held: i16, cfg: &LimitCfg) {
         let (limits, _) = cfg.blocks();
-        st.heat(i_held, 0, [tau_shift(limits.thermal_tau_s), 0]);
+        cycle(st, i_held, 0, [tau_shift(limits.thermal_tau_s), 0]);
     }
 
     const CFG: LimitCfg = LimitCfg {
@@ -453,14 +487,14 @@ mod tests {
         let shift = TAU_SHIFT_MAX as u8;
         let mut st = LimitState::new();
         for _ in 0..20 << TAU_SHIFT_MAX {
-            st.heat(100, 0, [shift, shift]);
+            cycle(&mut st, 100, 0, [shift, shift]);
         }
         let [h1, h2] = st.heats();
         assert!(h1 >= 10_000 - 1024, "{h1}");
         assert!(h1 <= 10_000);
         assert_eq!(h2, h1, "the same input on the same leak");
         for _ in 0..20 << TAU_SHIFT_MAX {
-            st.heat(0, 0, [shift, shift]);
+            cycle(&mut st, 0, 0, [shift, shift]);
         }
         assert!(st.heats()[0] <= 1024, "{}", st.heats()[0]);
     }
@@ -472,14 +506,47 @@ mod tests {
     #[test]
     fn the_input_is_the_square_warmed_and_each_node_has_its_own_leak() {
         let mut st = LimitState::new();
-        st.heat(400, 6554, [0, 0]);
+        cycle(&mut st, 400, 6554, [0, 0]);
         assert_eq!(st.heats(), [175_975, 175_975]);
-        st.heat(400, 0, [0, 1]);
+        cycle(&mut st, 400, 0, [0, 1]);
         assert_eq!(st.heats(), [160_000, 167_987]);
         let mut st = LimitState::new();
-        st.heat(i16::MIN, (1 << 16) - 1, [0, 0]);
+        cycle(&mut st, i16::MIN, (1 << 16) - 1, [0, 0]);
         assert_eq!(st.heats(), [HEAT_MAX, HEAT_MAX]);
         assert!(st.heat_qg >= 0);
+    }
+
+    /// The cycle's sum holds `DECIM_SLOW` samples at the largest square
+    /// the sample takes: every one limited to `HEAT_MAX`, the sum stays
+    /// inside u32, and its mean is `HEAT_MAX`. The sum restarts at the
+    /// mean.
+    #[test]
+    fn the_heat_sum_cannot_overflow_at_the_largest_current() {
+        let mut st = LimitState::new();
+        for _ in 0..DECIM_SLOW {
+            st.heat_sample(u16::MAX);
+        }
+        assert_eq!(st.heat_sum, HEAT_MAX * DECIM_SLOW as u32);
+        assert_eq!(st.take_heat_mean(), HEAT_MAX);
+        assert_eq!(st.take_heat_mean(), 0, "the sum restarts");
+        st.heat(u32::MAX, (1 << 16) - 1, [0, 0]);
+        assert_eq!(st.heats(), [HEAT_MAX, HEAT_MAX]);
+    }
+
+    /// The step reads the cycle's mean square, not one sample: half the
+    /// periods at 400 counts and half at 0, in either order, heat as
+    /// 400^2 / 2.
+    #[test]
+    fn the_heat_steps_on_the_cycles_mean_square() {
+        for order in [0u8, 1] {
+            let mut st = LimitState::new();
+            for n in 0..DECIM_SLOW {
+                st.heat_sample(if n % 2 == order { 400 } else { 0 });
+            }
+            let mean_sq = st.take_heat_mean();
+            st.heat(mean_sq, 0, [0, 0]);
+            assert_eq!(st.heats(), [80_000, 80_000], "order {order}");
+        }
     }
 
     /// a jam at 40% of the cap but over i_cont trips after

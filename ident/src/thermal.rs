@@ -719,10 +719,11 @@ impl TwoNodeFit {
 pub const COPPER_ALPHA_PER_C: f64 = 0.00393;
 
 /// The kernel's two heats over the polls, its own integer loop: each SLOW
-/// step squares the last poll's held current, warms it by the rise the
-/// step before published ([`warm_q16`]) and steps both EWMAs on `shifts`;
-/// the rise is the two heats on `gains` ([`rise_cc`]). Sampled at `at_ms`
-/// (ascending), rotor then body, counts squared.
+/// step takes the last poll's held current squared as the cycle's mean
+/// square, warms it by the rise the step before published ([`warm_q16`])
+/// and steps both EWMAs on `shifts`; the rise is the two heats on `gains`
+/// ([`rise_cc`]). Sampled at `at_ms` (ascending), rotor then body, counts
+/// squared.
 pub fn replay_two(
     polls: &[HoldPoll],
     shifts: [u8; 2],
@@ -741,8 +742,8 @@ pub fn replay_two(
             while p + 1 < polls.len() && polls[p + 1].t_ms <= g {
                 p += 1;
             }
-            let i = polls[p].i_counts.abs().round().min(i16::MAX as f64) as i16;
-            st.heat(i, warm_q16(rise), shifts);
+            let i = polls[p].i_counts.abs().round().min(i16::MAX as f64) as u32;
+            st.heat(i * i, warm_q16(rise), shifts);
             let [h1, h2] = st.heats();
             rise = (rise_cc(h1, gains[0]) + rise_cc(h2, gains[1])).min(i16::MAX as i32) as u16;
             g += SLOW_PERIOD_MS as f64;

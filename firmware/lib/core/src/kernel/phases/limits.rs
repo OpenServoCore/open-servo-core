@@ -11,7 +11,8 @@ use crate::regions::control::Mode;
 const PERMIT_LEASE_TICKS: u8 = 63;
 
 impl Medium {
-    /// LIMITS: the band, the OpenLoop base duty, the stall verdict.
+    /// LIMITS: the band, the OpenLoop base duty, the stall verdict, and
+    /// the held current's square into the heat's SLOW-cycle sum.
     pub(in crate::kernel) fn limit(
         &mut self,
         cfg: &KernelConfig,
@@ -45,9 +46,11 @@ impl Medium {
         } else {
             0
         };
+        let i_held_abs = fast.i_meas_last().unsigned_abs();
+        self.limits.heat_sample(i_held_abs);
         let limits::Fold { band, terms } = self.limits.fold(
             &limits::FoldIn {
-                i_held_abs: fast.i_meas_last().unsigned_abs() as u32,
+                i_held_abs: i_held_abs as u32,
                 omega_hat_abs_cps: self.fusion.omega_q16().unsigned_abs() >> 16,
                 tau_d_abs_counts: self.fusion.tau_d_counts().unsigned_abs(),
                 theta_hat_counts: self.fusion.theta_q16() >> 16,

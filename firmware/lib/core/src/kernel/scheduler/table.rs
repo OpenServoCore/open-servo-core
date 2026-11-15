@@ -99,15 +99,7 @@ impl Medium {
             phase::RAIL => self.rail(shared, cfg, faults, cmd),
             #[cfg(not(feature = "experiment"))]
             phase::SLOW => {
-                return self.slow(
-                    shared.frame().ntc_raw(),
-                    fast.i_meas_last(),
-                    cfg,
-                    shared,
-                    faults,
-                    fast,
-                    cmd,
-                );
+                return self.slow(shared.frame().ntc_raw(), cfg, shared, faults, fast, cmd);
             }
             #[cfg(feature = "experiment")]
             phase::SLOW => self.slow(fast),

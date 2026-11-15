@@ -44,7 +44,7 @@ TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period it triggers two 
 | --- | --- | --- |
 | **FAST** | every tick, `TICK_HZ` = 20 kHz | window measurement, overcurrent trip, back-EMF sums, current loop, motor write |
 | **MEDIUM** | `DECIM_MED` = 10 ticks (2 kHz) | outer loops, estimators, limits, detectors, publishes; one phase per tick |
-| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the two heats; then the winding estimate, its cutoff (overtemperature), the winding resistance at its temperature and the shunt zero's aging; one stage per period |
+| **SLOW** | `DECIM_SLOW` = 32 medium periods (62.5 Hz) | stall permit lease, undervoltage, the two heats on the period's mean of the held current squared, which LIMITS sums one sample a medium period; then the winding estimate, its cutoff (overtemperature), the winding resistance at its temperature and the shunt zero's aging; one stage per period |
 
 Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 
@@ -53,7 +53,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 0 | CONTROL | CONTROL read, enable and mode edges, drive kind; the configuration on the first tick |
 | 1 | OBSERVER | observer step, speed blend on the boxcar SPEED closed |
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
-| 3 | LIMITS | limits fold, OpenLoop base duty, stall fault |
+| 3 | LIMITS | limits fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land |
 | 5 | RAIL | rail estimate and its fold, sensor screen, position error timer |
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
@@ -242,7 +242,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `KERNEL`, `KERNEL_MEAN`, `TICK_PUBLISH` | plain tick body by regime (Open, Closed) and phase, maximum and mean |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
-| `LIMIT_SPLIT`, `SPEED_STAGE`, `SPEED_BLEND` | estimated additions over measured rows, by phase, until the probe refills the phase; `SPEED_STAGE` is what came with phase SPEED's stage: the close on SPEED, and on SPARE_A the dispatch through the phase table that grew to hold it; `SPEED_BLEND` is the speed blend over the source switch the rows were measured with: the blend's step on OBSERVER, its clears on CONTROL and on the parked VELOCITY |
+| `LIMIT_SPLIT`, `SPEED_STAGE`, `SPEED_BLEND`, `HEAT_MEAN` | estimated additions over measured rows, by phase, until the probe refills the phase; `SPEED_STAGE` is what came with phase SPEED's stage: the close on SPEED, and on SPARE_A the dispatch through the phase table that grew to hold it; `SPEED_BLEND` is the speed blend over the source switch the rows were measured with: the blend's step on OBSERVER, its clears on CONTROL and on the parked VELOCITY; `HEAT_MEAN` is the heats' sum of the held current squared on LIMITS |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
 | `TROUGH_DONE`, `FRAME_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |
