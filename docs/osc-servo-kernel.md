@@ -139,7 +139,7 @@ The winding resistance: the control path reads one resistance, CALIB `r_q12` rai
 | current loop on a tick with no reading | `r_hat`, through the `Command` | FAST |
 | OpenLoop's stall-safe base duty | the stored `r_q12` | LIMITS |
 
-The base duty stays on the stored value on purpose: it is a ceiling, which must err low, and a cold resistance does. Pins: `r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools`, `r_hat_is_the_stored_resistance_with_no_heat_unset_or_on_a_failed_ntc`, `r_hat_follows_a_new_r_q12_at_the_take_and_saturates`, `the_boxcar_reads_a_warm_winding_at_the_speed_it_read_cold`, `the_stall_safe_open_loop_duty_stays_on_the_stored_resistance`.
+The base duty stays on the stored value on purpose: it is a ceiling, which must err low, and a cold resistance does. The stored `r_q12` is the resistance as the host measured it, at the board temperature of that measurement, which no field keeps. `r0_q12` (CALIB) is the same measurement converted by the host to 25.00 C along copper's slope: the pair a temperature-referenced resistance would start from, a host record the kernel does not read. Pins: `r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools`, `r_hat_is_the_stored_resistance_with_no_heat_unset_or_on_a_failed_ntc`, `r_hat_follows_a_new_r_q12_at_the_take_and_saturates`, `the_boxcar_reads_a_warm_winding_at_the_speed_it_read_cold`, `the_stall_safe_open_loop_duty_stays_on_the_stored_resistance`.
 
 ### 2.4 Event slots
 
