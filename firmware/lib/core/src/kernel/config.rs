@@ -21,6 +21,30 @@ pub const SPAN_START: u16 = config_addr::pos_soft::POS_MIN_SOFT_COUNTS;
 pub const SPAN_END: u16 = calib_addr::thermal::TH_RISE_Q016 + CalibThermal::CT_SIZE;
 const SPAN_WORDS: usize = (SPAN_END - SPAN_START) as usize / 4;
 
+/// The physics belt's mode bits (`KernelConfig::belt`): bit `mode as u8`.
+pub mod belt {
+    use crate::regions::control::Mode;
+
+    const fn bit(mode: Mode) -> u8 {
+        1 << mode as u8
+    }
+
+    /// A zero Ke: the boxcar yields nothing, the current loop decouples
+    /// nothing.
+    pub const KE_UNSET: u8 = bit(Mode::Velocity) | bit(Mode::Position);
+    /// An unset current cap or speed ceiling: every closed mode clamps
+    /// against both.
+    pub const LIMITS_UNSET: u8 = bit(Mode::Current) | KE_UNSET;
+
+    /// Whether `belt` refuses `mode`: one shift, no mode match. The
+    /// experiment image runs OpenLoop alone and refuses nothing.
+    #[cfg(not(feature = "experiment"))]
+    #[inline(always)]
+    pub fn refuses(belt: u8, mode: Mode) -> bool {
+        (belt >> mode as u8) & 1 != 0
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct KernelConfig {
@@ -35,10 +59,14 @@ pub struct KernelConfig {
     pub _rsvd_config_tail: [u8; 4],
     pub motor: CalibMotor,
     pub calib_thermal: CalibThermal,
-    /// `recip_ke_q == 0 || ke_vpc_q == 0`: the physics belt's verdict.
-    pub ke_unset: bool,
+    /// The physics belt: bit `mode as u8` set refuses that mode
+    /// (`belt::refuses`). A zero Ke refuses Velocity and Position, an unset
+    /// current cap or speed ceiling every closed mode.
+    pub belt: u8,
+    /// `limit_flags`' `UNSET` bit while a limit is unset, else 0.
+    pub unset_flag: u8,
     /// The leak shifts for `thermal_tau_s` and `thermal_tau2_s`
-    /// (`limits::tau_shift`): the bytes the bool's padding left.
+    /// (`limits::tau_shift`).
     tau_shift: u8,
     tau2_shift: u8,
     pub i_window_min_ticks: u16,
@@ -106,7 +134,8 @@ impl KernelConfig {
             _rsvd_config_tail: [0; 4],
             motor: CalibMotor::new(),
             calib_thermal: CalibThermal::new(),
-            ke_unset: true,
+            belt: belt::KE_UNSET | belt::LIMITS_UNSET,
+            unset_flag: limits::flag::UNSET,
             tau_shift: 0,
             tau2_shift: 0,
             i_window_min_ticks: 0,
@@ -139,8 +168,9 @@ impl KernelConfig {
         self.v_floor_q15 = [v0, v1];
     }
 
-    /// The span as the table holds it, then the belt, the two speeds and the
-    /// winding estimate's config. The caller takes it only between commits.
+    /// The span as the table holds it, then the belt, the two speeds, the
+    /// cap and the winding estimate's config. The caller takes it only
+    /// between commits.
     pub(super) fn take(&mut self, shared: &Shared) {
         let src = shared
             .table
@@ -155,18 +185,24 @@ impl KernelConfig {
             // volatile, as every kernel read of a transport-owned region.
             unsafe { dst.add(i).write(src.add(i).read_volatile()) };
         }
-        self.ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
-        // the two speeds resolved here, so the tick tests nothing: a
-        // ceiling of 0 reads as the move speed, a move speed of 0 as the
-        // ceiling, and the move speed never runs over the ceiling
         let lp = &mut self.loop_position;
+        let lim = &mut self.limits;
+        let ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
+        let limits_unset = lim.current_limit_counts == 0 || lp.speed_ceiling_cps == 0;
+        self.belt = (ke_unset as u8 * belt::KE_UNSET) | (limits_unset as u8 * belt::LIMITS_UNSET);
+        self.unset_flag = limits_unset as u8 * limits::flag::UNSET;
+        // Resolved here, so the tick tests nothing. While a limit is unset
+        // the belt refuses every closed mode at the CONTROL ahead of any
+        // phase that reads these (`unset_limits_never_reach_a_closed_tick`):
+        // an unset ceiling stays 0 with the move speed under it, and an
+        // unset cap reads as the overcurrent trip, the board's guard, which
+        // OpenLoop's limiter then holds under.
+        let c = lp.speed_ceiling_cps;
         let v = lp.velocity_limit_cps;
-        let c = match lp.speed_ceiling_cps {
-            0 => v,
-            c => c,
-        };
-        lp.speed_ceiling_cps = c;
         lp.velocity_limit_cps = if v == 0 { c } else { v.min(c) };
+        if lim.current_limit_counts == 0 {
+            lim.current_limit_counts = lim.oc_trip_counts;
+        }
         // Q8.8 to Q.12: selected here, so the tick tests nothing
         self.r_loop_q12 = match self.motor.r_q12 {
             0 => (self.loop_current.i_kp_q88 as u32) << 4,

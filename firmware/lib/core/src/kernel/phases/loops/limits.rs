@@ -15,7 +15,6 @@ use crate::regions::config::{ConfigLimits, ConfigPosSoft, StallResponse};
 
 /// `limit_flags` bits: what shaped the command. A term bit names a term
 /// whose ceiling sits under the cap and is the composed `i_lim_counts`.
-/// Bit 5 is retired and reads 0.
 pub mod flag {
     /// The command sat at the current ceiling: OpenLoop's duty ceiling held
     /// under the goal, or a closed loop's current reference at the band.
@@ -29,6 +28,9 @@ pub mod flag {
     /// Current mode's speed fold sits under the composed limit: the side
     /// along the motion folds toward 0 near the speed ceiling.
     pub const SPEED: u8 = 1 << 4;
+    /// The current cap or the speed ceiling is unset (0): every closed mode
+    /// is refused. From the configuration take, torque on or off.
+    pub const UNSET: u8 = 1 << 5;
     /// The rail fold binds.
     pub const RAIL: u8 = 1 << 6;
     /// `goal_current` binds.

@@ -43,11 +43,11 @@ const GOAL_VELOCITY: u16 = 396;
 /// Slot 0 of the profile region (protocol sec 5.2 pin).
 const PROFILE_SLOT0: u16 = 0x280;
 /// V006 map facts: config.loop_position.speed_ceiling_cps with the move
-/// speed `velocity_limit_cps` behind it, and the move speed's board default
-/// the factory state comes back with.
+/// speed `velocity_limit_cps` behind it, and the move speed the factory
+/// state comes back with: 0, the ceiling.
 const SPEED_CEILING_CPS: u16 = 68;
 const VELOCITY_LIMIT_CPS: u16 = 70;
-const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
+const FACTORY_VELOCITY_LIMIT_CPS: u16 = 0;
 
 /// V006 map facts the seeded calibration lands in: calib.pot.raw_max,
 /// calib.kinematics.angle_max_cdeg and .gear_ratio_centi, the RO board fact
@@ -363,7 +363,7 @@ fn save_survives_reboot_and_factory_restores_defaults() {
     assert_eq!(
         c.read(id, VELOCITY_LIMIT_CPS, 2)
             .expect("read after factory"),
-        DEFAULT_VELOCITY_LIMIT_CPS.to_le_bytes(),
+        FACTORY_VELOCITY_LIMIT_CPS.to_le_bytes(),
         "a wiped store boots board defaults"
     );
     let found = c.discover().expect("discover after factory");

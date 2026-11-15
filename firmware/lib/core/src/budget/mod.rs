@@ -95,10 +95,11 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// window's OpenLoop ticks. A report-only window feeds no row. Each cell
 /// is its measured maximum with the rule's margin; the bodies hold the
 /// tick block's work and every phase's stages. The LIMITS column carries
-/// [`SPEED_FOLD`] on top, which the measurement predates.
+/// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, which the measurement
+/// predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
-pub const KERNEL: [[u32; PHASES]; REGIMES] = with_speed_fold([
+pub const KERNEL: [[u32; PHASES]; REGIMES] = with_limits_cells([
     [684, 1002, 849, 912, 534, 915, 519, 699, 510, 537],
     [1269, 1635, 1605, 1500, 1422, 1614, 1092, 1395, 1155, 1236],
     [1254, 1611, 1125, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
@@ -109,8 +110,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_speed_fold([
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
-/// column with [`SPEED_FOLD`], as the maximum's.
-pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_speed_fold([
+/// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], as the maximum's.
+pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_limits_cells([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
     [1244, 1546, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
@@ -128,10 +129,19 @@ pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_speed_fold([
 /// rounded up; the bench must refill the rows.
 pub const SPEED_FOLD: u32 = 91;
 
-const fn with_speed_fold(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
+/// E, on the LIMITS column of every regime, maximum and mean: the `UNSET`
+/// bit the configuration take leaves for `limit_flags`, where the measured
+/// phase composed none. Matched release builds, priced as [`REFRESH`]: one
+/// load and one OR on the tail every path through the phase shares, 5.25
+/// HCLK. The delta plus 10%, rounded up; the bench must refill the rows.
+/// CONTROL's belt, one shift where a mode match was, prices 9.25 to 15.25
+/// under the measured phase on every steady path and keeps its row.
+pub const UNSET_FLAG: u32 = 6;
+
+const fn with_limits_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut r = 0;
     while r < REGIMES {
-        rows[r][phase::LIMITS as usize] += SPEED_FOLD;
+        rows[r][phase::LIMITS as usize] += SPEED_FOLD + UNSET_FLAG;
         r += 1;
     }
     rows
@@ -141,17 +151,21 @@ const fn with_speed_fold(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; 
 pub const MEAN_MIN_BODIES: u32 = 100;
 
 /// The configuration take after a write, on top of [`KERNEL`], at most once
-/// per period, at phase SPARE_A: the input span's word copy, the Ke belt,
-/// the two speeds' resolution, the current loop's resistance, the winding
-/// estimate's config, the continuous rating and its leak, the winding
-/// resistance on the new `r_q12` (`Medium::r_hat`) and the terminal
-/// floor's store. It carries no TEL row: a burst starts neither on SPARE_A
-/// nor while a take is pending, and the host is silent through one. E, an
-/// upper bound: the take's longest path on matched release disassembly is
-/// under 724 HCLK, including the rating, its two log calls, the
-/// resistance's 115.25 and the speeds' 34 (22 more instructions, two
-/// halfword stores where the span copy stored their word); the row keeps
-/// its earlier, larger price until the probe re-prices it.
+/// per period, at phase SPARE_A: the input span's word copy, the belt and
+/// the `UNSET` bit, the two speeds' and the cap's resolution, the current
+/// loop's resistance, the winding estimate's config, the continuous rating
+/// and its leak, the winding resistance on the new `r_q12`
+/// (`Medium::r_hat`) and the terminal floor's store. It carries no TEL
+/// row: a burst starts neither on SPARE_A nor while a take is pending, and
+/// the host is silent through one. E, an upper bound: the take's longest
+/// path on matched release disassembly is under 781 HCLK, including the
+/// rating, its two log calls, the resistance's 115.25, the speeds' 34 (22
+/// more instructions, two halfword stores where the span copy stored their
+/// word) and the unset limits' 56.25 (the belt over both limits, the
+/// `UNSET` byte and the cap's resolution: 22 more instructions on the
+/// longest path, thirteen loads and stores, most of them spills, and ten
+/// ALU, one taken transfer fewer); the row keeps its earlier, larger price
+/// until the probe re-prices it.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
 pub const REFRESH: u32 = 824;
