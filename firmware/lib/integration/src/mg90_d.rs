@@ -2,12 +2,13 @@
 //! [`rig`] seeds the kernel with every field of the servo's constant set
 //! of record, and [`plant`] is the [`mg90`](crate::mg90) plant on the
 //! motor model those fields hold ([`motor`]), so the stored model is the
-//! plant's by construction. The pot's residual is this servo's own
-//! ([`POT_RESIDUAL`]). The rest of the plant's physics is that plant's
-//! own: the winding time constant, the gear lash and the pot's noise, on
-//! the board's window floors and shunt settle bands. Both sides run on the
-//! identity position table, the residual standing in for what a table
-//! leaves.
+//! plant's at rest by construction. Spinning, the winding is the one the
+//! bench reads, which the stored model leaves out: its inductance ([`L`])
+//! and its brush contact's drop ([`CONTACT`]). The pot's residual is this
+//! servo's own ([`POT_RESIDUAL`]). The rest of the plant's physics is that
+//! plant's own: the gear lash and the pot's noise, on the board's window
+//! floors and shunt settle bands. Both sides run on the identity position
+//! table, the residual standing in for what a table leaves.
 //!
 //! Not carried: the set's position table, whose curve the plant's pot
 //! does not have, and its ADC wide-code slots, which compensate codes the
@@ -17,7 +18,7 @@ use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::{ControlTable, DecayMode, RegionStorage, Shared, StallResponse};
 
-use crate::mg90::{Mg90, Motor, stored_r};
+use crate::mg90::{Contact, Mg90, Motor, stored_r};
 use crate::plant::{lut_live, seed};
 use crate::sim::DEV_V006_SENSE;
 
@@ -124,11 +125,36 @@ pub fn motor() -> Motor {
     }
 }
 
-/// The plant at rest at `lin`, on the set's motor model and the bench
-/// pot's residual.
+/// The bench winding's inductance, vcounts x FAST ticks per ccount: 1.11
+/// mH, what the speed loop's margin sweeps at 2500 to 3500 c/s fit, where
+/// the record's 0.82 mH reads 5 sigma off at 250 Hz.
+pub const L: f64 = 4.858;
+
+/// The spinning winding's drop beyond the stored resistance, as the bench
+/// reads it: 2.30 ohm of slope from 37 mA to 159 mA. Small signal at 25 to
+/// 333 Hz the margin sweeps fit 2.2 to 2.4 ohm over the stored 4.18 at
+/// about 90 mA, fixed from 2500 to 3500 c/s. OpenLoop legs read the same
+/// slope at DC with no loop over 58 to 89 mA, at a level a passive drop
+/// through zero current meets only from about 37 mA up. Where the slope
+/// ends the bench's break with the small-signal resistance installed
+/// places, in the sweeps' own session
+/// (`the_record_rig_breaks_where_the_bench_did_with_the_small_signal_resistance`);
+/// the run-ups' 0.5 ohm over 0.14 to 0.39 A, another session's, would put
+/// it nearer 0.2 A. Locked it reads the stored resistance.
+pub const CONTACT: Contact = Contact {
+    from: 42.0,
+    to: 180.0,
+    slope: 0.5033,
+};
+
+/// The plant at rest at `lin`, on the set's motor model with the bench
+/// winding's inductance and contact, and the bench pot's residual.
 pub fn plant(lin: f64, seed: u64) -> Mg90 {
-    let mut p = Mg90::new(lin, [0; POINTS], seed).with_motor(motor());
+    let m = motor();
+    let mut p = Mg90::new(lin, [0; POINTS], seed).with_motor(m);
     p.residual = POT_RESIDUAL;
+    p.tau_e = L / m.r;
+    p.contact = Some(CONTACT);
     p
 }
 

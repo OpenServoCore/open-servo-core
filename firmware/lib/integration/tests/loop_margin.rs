@@ -37,8 +37,14 @@ impl TelStream for Burst {
 
 /// The cruise, c/s: high enough that the triangle and the loop's answer
 /// to the pot's residual leave the rotor above [`window_open_cps`] through
-/// every burst, which [`burst`] asserts.
+/// every burst, which [`gains`] asserts.
 const CRUISE: i32 = 742;
+/// The fast cruise, c/s: the back-EMF boxcar feeds the speed loop on every
+/// period of a burst there.
+const FAST: i32 = 2500;
+/// A swing: the rotor this far off the cruise, c/s, the most the bench's
+/// sweeps at the fast cruise read on a loop that held.
+const SWING_CPS: f64 = 434.0;
 /// Where a burst up and a burst down start, linearized counts: 86 counts
 /// inside the soft limits. The longest burst, 6400 periods at 1.25 x the
 /// cruise, travels 2968 counts and stops 134 counts short of the far one.
@@ -54,21 +60,27 @@ const SLOPE_CPS: f64 = 15.0;
 const PEAK_CPS: f64 = 150.0;
 
 /// The rows of one burst, one per medium period: theta counts, omega c/s,
-/// the reference c/s; and the plant's slowest rotor speed over them, c/s
-/// in the cruise's direction.
+/// the reference c/s; the plant's slowest rotor speed over them, c/s in
+/// the cruise's direction; and the periods that end with the rotor more
+/// than [`SWING_CPS`] off the cruise.
 struct Rows {
     theta: Vec<f64>,
     omega: Vec<f64>,
     u: Vec<f64>,
     slowest: f64,
+    swings: usize,
 }
 
 #[derive(Copy, Clone)]
 struct Plant {
+    /// No pot noise, no table residual and the stored winding: the plant
+    /// [`model`] describes.
     quiet: bool,
     seed: u64,
     /// The cruise's sign.
     up: bool,
+    /// The cruise's speed, c/s.
+    cruise: i32,
 }
 
 /// The slope for half-period `n`, Q8.8 c/s per period.
@@ -94,7 +106,7 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
     let dir = if plant.up { 1 } else { -1 };
     let sh = mg90_d::rig(|t| {
         t.control.lifecycle.mode = Mode::Velocity;
-        t.control.lifecycle.goal_velocity = dir * CRUISE;
+        t.control.lifecycle.goal_velocity = dir * plant.cruise;
         t.control.lifecycle.bus_deadman_ticks = u16::MAX;
         t.control.inject.inject_accel_q88 = slope_q88(n);
         t.control.inject.inject_half_periods = n;
@@ -112,6 +124,8 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
     if plant.quiet {
         p.sigma_raw = 0.0;
         p.residual = &[];
+        p.contact = None;
+        p.tau_e = TAU_E;
     }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
@@ -120,6 +134,7 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
         omega: Vec::new(),
         u: Vec::new(),
         slowest: f64::MAX,
+        swings: 0,
     };
     // the boot tick runs CONTROL: a period's rows are read after its
     // PUBLISH, on its last tick
@@ -134,6 +149,7 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
         if period < SETTLE {
             continue;
         }
+        rows.swings += ((p.omega * dir as f64 - plant.cruise as f64).abs() > SWING_CPS) as usize;
         sh.table.with(|t| {
             assert_eq!(t.telemetry.common.fault_flags, 0, "a fault under the burst");
             rows.theta
@@ -144,12 +160,6 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
                 .push(t.telemetry_ext.inject.omega_ref_cps as f64 / 65536.0);
         });
     }
-    let open = window_open_cps();
-    assert!(
-        rows.slowest >= open,
-        "half-period {n}: the rotor fell to {:.1} c/s, under the window's {open:.1}",
-        rows.slowest
-    );
     rows
 }
 
@@ -209,8 +219,14 @@ fn fundamentals(r: &Rows, cycles: usize) -> (C, C, C) {
 fn gains(plants: &[Plant], n: u16, periods: usize, kp: f64) -> (C, C) {
     let cycles = periods / (2 * n as usize);
     let (mut uu, mut wu, mut eu, mut tu) = (0.0, C(0.0, 0.0), C(0.0, 0.0), C(0.0, 0.0));
+    let open = window_open_cps();
     for &pl in plants {
         let r = burst(pl, n, cycles * 2 * n as usize, |_| {});
+        assert!(
+            r.slowest >= open,
+            "half-period {n}: the rotor fell to {:.1} c/s, under the window's {open:.1}",
+            r.slowest
+        );
         let (u, w, th) = fundamentals(&r, cycles);
         uu += u.0 * u.0 + u.1 * u.1;
         let uc = u.conj();
@@ -291,6 +307,7 @@ fn model(g: &Gains, w: f64) -> (C, C) {
             omega: ws,
             u: us,
             slowest: 0.0,
+            swings: 0,
         };
         let (u, w, th) = fundamentals(&r, cycles as usize);
         (u, w, th, dft(&es, cycles))
@@ -381,12 +398,12 @@ fn rig_gains() -> Gains {
     })
 }
 
-/// On a quiet plant (no pot noise, no table residual) the loop is the
-/// linear one, so the reading is the model's: every point of both bands
-/// within 1 dB and 10 degrees, the margins within 5 degrees and 1 dB, the
-/// crossovers within 10 %. On the rig's gains the model's speed loop
-/// crosses near 57 Hz with about 42 degrees and 25 dB, its position loop
-/// near 3.0 Hz with about 88 degrees.
+/// On a quiet plant (no pot noise, no table residual, the stored winding)
+/// the loop is the linear one, so the reading is the model's: every point
+/// of both bands within 1 dB and 10 degrees, the margins within 5 degrees
+/// and 1 dB, the crossovers within 10 %. On the rig's gains the model's
+/// speed loop crosses near 57 Hz with about 42 degrees and 25 dB, its
+/// position loop near 3.0 Hz with about 88 degrees.
 #[test]
 fn the_margins_read_on_a_quiet_mg90_are_the_loop_models() {
     let g = rig_gains();
@@ -395,6 +412,7 @@ fn the_margins_read_on_a_quiet_mg90_are_the_loop_models() {
         quiet: true,
         seed: 1,
         up: true,
+        cruise: CRUISE,
     }];
     let got = sweep(&quiet, 2000, 2000, kp);
     let model_at = |f: f64| model(&g, TAU * f / 2000.0);
@@ -446,20 +464,7 @@ fn the_margins_read_on_a_quiet_mg90_are_the_loop_models() {
 #[test]
 fn two_sweeps_on_the_bench_mg90_repeat_within_the_bounds() {
     let kp = rig_gains().kp;
-    let pair = |a: u64| {
-        [
-            Plant {
-                quiet: false,
-                seed: a,
-                up: true,
-            },
-            Plant {
-                quiet: false,
-                seed: a + 1,
-                up: false,
-            },
-        ]
-    };
+    let pair = |a: u64| bench_pair(a, CRUISE);
     let (one, two) = (
         sweep(&pair(1), 2000, 6000, kp),
         sweep(&pair(3), 2000, 6000, kp),
@@ -493,6 +498,84 @@ fn two_sweeps_on_the_bench_mg90_repeat_within_the_bounds() {
     );
 }
 
+/// A burst up and a burst down at `cruise` under the bench's pot noise and
+/// table residual, seeds `a` and `a + 1`.
+fn bench_pair(a: u64, cruise: i32) -> [Plant; 2] {
+    [true, false].map(|up| Plant {
+        quiet: false,
+        seed: a + !up as u64,
+        up,
+        cruise,
+    })
+}
+
+/// The bench's extended speed band, 25 Hz to 500 Hz: at the fast cruise the
+/// loop crosses over above the default band.
+const EXTENDED: [u16; 11] = [40, 25, 15, 10, 8, 7, 6, 5, 4, 3, 2];
+/// Periods a burst records at the fast cruise: 1600 travel 2000 counts
+/// behind the settle's run-up, inside the soft limits from either start.
+const FAST_PERIODS: usize = 1600;
+
+/// The speed loop over the extended band at the fast cruise, ascending in
+/// frequency.
+fn fast_band(plants: &[Plant]) -> Vec<(f64, C)> {
+    EXTENDED
+        .iter()
+        .map(|&n| (1000.0 / n as f64, gains(plants, n, FAST_PERIODS, 0.0).0))
+        .collect()
+}
+
+/// The bench servo's speed loop at the fast cruise on the set of record,
+/// two sweeps: crossover 283.7 and 281.8 Hz, phase margin 43.6 and 44.8
+/// deg. The boxcar subtracts the stored resistance from a spinning winding
+/// that shows about 2.3 ohm more to small signals, and the blend's lead
+/// hands that current term to the loop as speed: over the band the loop
+/// closes on its own current, and crosses over five times higher than the
+/// rigid loop's 57 Hz.
+const BENCH_FAST: (f64, f64) = (282.8, 44.2);
+
+/// The record rig reads the bench's speed loop at the fast cruise: its
+/// crossover within 25 % of the bench's and its phase margin within 10
+/// degrees, the bench gate's bounds on the sim's loop model. Its plant
+/// carries the bench winding ([`mg90_d::CONTACT`], [`mg90_d::L`]); on the
+/// stored model the boxcar reads the shaft exactly and the loop crosses
+/// over near 46 Hz.
+#[test]
+fn the_record_rig_reads_the_benchs_speed_loop_at_the_fast_cruise() {
+    let (f, pm) = crossover(&fast_band(&bench_pair(1, FAST)));
+    let (bf, bpm) = BENCH_FAST;
+    assert!(
+        (f / bf - 1.0).abs() <= 0.25 && (pm - bpm).abs() <= 10.0,
+        "read {f:.1} Hz {pm:.1} deg, the bench {bf:.1} Hz {bpm:.1} deg"
+    );
+}
+
+/// With 6.10 ohm installed, the small-signal resistance the bench's fast
+/// cruise fits, the bench's loop broke into swings past [`SWING_CPS`] on
+/// 4.4 and 3.8 % of the periods of two extended sweeps: over a large swing
+/// the winding shows less than the small signal's 6.4 to 6.6 ohm, and the
+/// boxcar subtracts too much. The record rig breaks on 2 to 8 % of
+/// periods, within a factor of two of the bench. Were the contact's slope
+/// held to 0.35 A the rig would break on 0.1 %; on the stored model it
+/// breaks on 31 %.
+#[test]
+fn the_record_rig_breaks_where_the_bench_did_with_the_small_signal_resistance() {
+    let (mut swings, mut periods) = (0, 0);
+    for &n in &EXTENDED {
+        let len = FAST_PERIODS / (2 * n as usize) * 2 * n as usize;
+        for pl in bench_pair(1, FAST) {
+            swings += burst(pl, n, len, |t| t.calib.motor.r_q12 = 5470).swings;
+            periods += len;
+        }
+    }
+    let share = swings as f64 / periods as f64;
+    assert!(
+        (0.02..=0.08).contains(&share),
+        "{:.2} % of periods swing past {SWING_CPS} c/s",
+        100.0 * share
+    );
+}
+
 /// The injection rides only a streaming Velocity loop: the reference is the
 /// cruise plus the triangle, peak slope x half / 2, inside the speed
 /// ceiling; with no dead-man loaded it is the cruise alone.
@@ -503,6 +586,7 @@ fn the_triangle_rides_the_velocity_reference_under_the_deadman() {
         quiet: true,
         seed: 1,
         up: true,
+        cruise: CRUISE,
     };
     let r = burst(plant, n, 400, |_| {});
     let peak = slope_q88(n) as f64 / 256.0 * (n / 2) as f64;
