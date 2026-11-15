@@ -4,7 +4,7 @@
 //! behavior against a crude integer plant.
 
 use super::phases::fast;
-use super::phases::loops::{duty_limit, faults, limits};
+use super::phases::loops::{self, duty_limit, faults, limits};
 use super::*;
 use crate::budget::Events;
 use crate::estimator::{FusionObs, OmegaBlend, bemf, bias, omega_blend, window};
@@ -1243,6 +1243,7 @@ fn duty_max_write_caps_the_closed_loop_at_the_rail_phase() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
+        unfolded(t);
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Current;
         t.control.lifecycle.goal_current = 1200;
@@ -1501,11 +1502,19 @@ fn reversed_polarity_negates_vdiff() {
     assert_eq!(k.fast.vdiff_last, 3000 - 40);
 }
 
+/// The seed's 3000 c/s ceiling at its speed gain folds Current mode's band
+/// at every speed (the fold binds from `ceiling - cap / kp`): the ceiling
+/// for a Current-mode test of something else, where the fold never binds.
+fn unfolded(t: &mut ControlTable) {
+    t.config.loop_position.speed_ceiling_cps = loops::trajectory::VEL_CAP_CPS;
+}
+
 #[test]
 fn current_mode_clamps_goal_to_i_lim() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
+        unfolded(t);
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Current;
         t.control.lifecycle.goal_current = 5000;
@@ -1529,6 +1538,35 @@ fn current_mode_clamps_goal_to_i_lim() {
     assert_eq!(k.medium.i_ref_cc, 1200);
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.medium.i_ref_cc, -1200);
+}
+
+/// With no speed gain the speed fold reads 0 at every speed, so Current
+/// mode delivers nothing: at rest the band closes both sides, the goal
+/// clamps to 0, and `limit_flags` names the fold.
+#[test]
+fn current_mode_with_no_speed_gain_delivers_nothing() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.config.loop_velocity.v_kp_q88 = 0;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 5000;
+    });
+    let mut k = kernel();
+    to_first_command(&mut k, &sh, frame(2000, BIAS));
+    assert_eq!(k.medium.i_band, IBand { lo: 0, hi: 0 });
+    assert_eq!(k.medium.i_ref_cc, 0);
+    for _ in 0..4 * DECIM_MED {
+        k.on_scan(frame(2000, BIAS), &sh);
+        assert_eq!(k.medium.i_ref_cc, 0);
+    }
+    assert_eq!(limit_flags(&sh), limits::flag::SPEED);
+    assert_eq!(
+        sh.table.with(|t| t.telemetry.estimates.i_lim_counts),
+        1200,
+        "the composed limit is published, not the folded sides"
+    );
 }
 
 /// One Current-mode lift across a 40-tick shunt floor, and the three ticks
@@ -5214,6 +5252,7 @@ fn current_mode_endstop_unwinds_duty_to_zero() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
+        unfolded(t);
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Current;
         t.control.lifecycle.goal_current = 300;
@@ -6344,6 +6383,7 @@ fn mode_change_lands_at_the_control_phase() {
             t.control.lifecycle.mode = Mode::Current;
             t.control.lifecycle.goal_current = 300;
             t.control.lifecycle.goal_duty = 8000;
+            unfolded(t);
         },
         |t| t.control.lifecycle.mode = Mode::OpenLoop,
         restarts_from_the_floor,

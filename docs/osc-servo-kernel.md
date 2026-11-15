@@ -53,7 +53,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 0 | CONTROL | CONTROL read, enable and mode edges, drive kind; the configuration on the first tick |
 | 1 | OBSERVER | observer step, speed blend on the boxcar SPEED closed |
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
-| 3 | LIMITS | limits fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
+| 3 | LIMITS | limits fold, Current mode's speed fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land |
 | 5 | RAIL | rail estimate and its fold, sensor screen, position error timer |
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
@@ -72,6 +72,8 @@ Module layout:
 | `kernel/config.rs` | `KernelConfig`, the kernel's copy of CONFIG and CALIB |
 
 Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind, current reference and band, rail clamp, the winding resistance); the FAST measurement reaches the same tick's medium phase as `Measured`. Only the CONTROL phase reads CONTROL, so a host write lands at the next period's CONTROL phase. The sample-to-command delay is fixed by the table ([control-theory.md, Why a Cascade](control-theory.md#why-a-cascade)).
+
+The speed fold: in Current mode LIMITS folds the band under the speed ceiling after the composed limit and the endstop, on the blend OBSERVER computed two phases earlier: `fold = (ceiling - |omega_hat|) x v_kp_q88 >> 8`, saturating, 0 at and over the ceiling, one multiply and no divide (`speed_fold`). The side along the blend's sign takes `min(side, fold)`, both sides at a blend of 0, and the other keeps the band, so `lo <= 0 <= hi` holds and the fold never brakes. Every other mode passes `u16::MAX` and pays the mode test and one compare. With asymmetric non-zero sides the band no longer recovers its magnitude, so the fold returns the composed limit beside it: that is `i_lim_counts` and what `CEILING` compares against; `ENDSTOP` is set by the endstop branch itself, and `SPEED` (`limit_flags` bit 4) while the fold sits under the composed limit. With `v_kp_q88` 0 the fold reads 0 and Current mode delivers nothing. Pins: `current_mode_folds_under_the_speed_ceiling`, `the_speed_fold_never_closes_past_zero_and_leaves_the_braking_side`, `the_speed_fold_is_the_gain_on_the_speed_short_of_the_ceiling`, `current_mode_with_no_speed_gain_delivers_nothing`.
 
 The back-EMF boxcar: FAST adds each tick's window to the open half, and SPEED closes the half on the period's last tick, after that tick's own window is in. A half is therefore the ten rows of one period, phases 0 to 9, every row in exactly one half, and the boxcar is the two periods that end at the close. The next period's OBSERVER feeds it to the speed blend two ticks later, and PUBLISH lands the same boxcar as `omega_bemf_cps`, so a published source and boxcar belong together. The rows of phases 0 and 1 belong to the half that is still open when OBSERVER runs: a command that lands at CONTROL first shows in the phase 1 row, and reaches the blend with the next period's boxcar. The close reads the winding resistance and the Ke reciprocal as they stand on its own tick, behind a take on SPARE_A and a SLOW finish of the same period. In Open nothing drives, the close voids the half on its zero duty and folds no product. Pin: `the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead`.
 
@@ -244,6 +246,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `KERNEL`, `KERNEL_MEAN` | plain tick body by regime (Open, Closed, OpenLoop) and phase, maximum and mean, every phase's stages and the tick block's work in it |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `R_AT_TEMPERATURE` | estimated addition inside `SLOW_FINISH`, the resistance read at the estimate's temperature, until the probe refills the finish |
+| `SPEED_FOLD` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, Current mode's speed fold, until the probe refills the rows |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |

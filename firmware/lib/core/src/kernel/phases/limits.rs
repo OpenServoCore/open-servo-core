@@ -21,14 +21,6 @@ impl Medium {
         fast: &mut Fast,
     ) {
         let life = &self.ctl.life;
-        // pinned = last command sat at a nonzero ceiling, in OpenLoop the
-        // duty ceiling held under the goal
-        let prev_lim = self.i_band.lim();
-        let pinned = if life.mode == Mode::OpenLoop {
-            fast.take_pinned()
-        } else {
-            prev_lim != 0 && self.i_ref_cc.unsigned_abs() >= prev_lim as u32
-        };
         let permit_gen = shared.permit_gen();
         if permit_gen != self.permit_gen {
             self.permit_gen = permit_gen;
@@ -46,9 +38,20 @@ impl Medium {
         } else {
             0
         };
+        // Current mode's band folds on the blend, the speed the velocity
+        // loop closes on, at that loop's own gain
+        let speed_fold = if life.mode == Mode::Current {
+            limits::speed_fold(
+                cfg.loop_position.speed_ceiling_cps,
+                self.omega_hat,
+                cfg.loop_velocity.v_kp_q88,
+            )
+        } else {
+            u16::MAX
+        };
         let i_held_abs = fast.i_meas_last().unsigned_abs();
         self.limits.heat_sample(i_held_abs);
-        let limits::Fold { band, terms } = self.limits.fold(
+        let limits::Fold { band, lim, terms } = self.limits.fold(
             &limits::FoldIn {
                 i_held_abs: i_held_abs as u32,
                 omega_hat_abs_cps: self.fusion.omega_q16().unsigned_abs() >> 16,
@@ -56,6 +59,8 @@ impl Medium {
                 theta_hat_counts: self.fusion.theta_q16() >> 16,
                 stall_permit: permit,
                 goal_abs,
+                speed_fold,
+                omega_q16: self.omega_hat,
             },
             &cfg.limits,
             &cfg.pos_soft,
@@ -81,11 +86,17 @@ impl Medium {
         if self.life != Life::Off && self.limits.stall_fault_pending() {
             faults.raise(faults::BIT_STALL, faults::CODE_STALL);
         }
-        // one closed side makes the band asymmetric; a zero limit closes
-        // both and is no endstop
+        // pinned = last command sat at a nonzero ceiling, in OpenLoop the
+        // duty ceiling held under the goal
+        let prev_lim = self.i_lim;
+        let pinned = if life.mode == Mode::OpenLoop {
+            fast.take_pinned()
+        } else {
+            prev_lim != 0 && self.i_ref_cc.unsigned_abs() >= prev_lim as u32
+        };
+        self.i_lim = lim;
         self.limit_flags = (pinned as u8 * limits::flag::CEILING)
             | (self.limits.stalled() as u8 * limits::flag::YIELD)
-            | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
             | (permit as u8 * limits::flag::PERMIT)
             | terms;
     }
