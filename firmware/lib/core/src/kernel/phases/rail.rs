@@ -1,6 +1,6 @@
-use super::Medium;
 use super::fast::Command;
 use super::loops::faults::{self, FaultLatch};
+use super::{Life, Medium};
 use crate::Shared;
 use crate::kernel::config::KernelConfig;
 use crate::regions::control::Mode;
@@ -41,7 +41,7 @@ impl Medium {
             faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
         }
         // tracking-error persistence: only meaningful with a live profile
-        let pos_err_over = self.run
+        let pos_err_over = self.life != Life::Off
             && self.ctl.life.mode == Mode::Position
             && self
                 .traj

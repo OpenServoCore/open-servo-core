@@ -67,7 +67,7 @@ Module layout:
 | --- | --- |
 | `kernel/scheduler/mod.rs` | `Kernel`, `on_tick`, spare-phase arbitration, `take_config` |
 | `kernel/scheduler/table.rs` | rates, phase indices, health-close constants, `Medium::step` dispatch |
-| `kernel/phases/` | one file per phase; `fast.rs` is the FAST half |
+| `kernel/phases/` | one file per phase; `fast.rs` is the FAST half; `lifecycle.rs` holds the lifecycle state (Off, Run, Parked) and the cells each edge zeroes or reseeds |
 | `kernel/phases/loops/` | loops and detectors the phases run |
 | `kernel/config.rs` | `KernelConfig`, the kernel's copy of CONFIG and CALIB |
 
@@ -88,7 +88,7 @@ The velocity loop's speed (`estimator/omega_blend.rs`) is the pot observer's spe
 - **The standing part.** On a period with a boxcar the blend takes the boxcar's difference from the observer's speed, limited so that nothing in the form wraps, and the standing part follows it with a corner of 2^7 such periods. It holds across the periods without a boxcar: under a closed loop a run of boxcars lasts a few periods, and a part cleared at every gap would never form.
 - **The lead.** What the difference shows beyond the standing part reaches the loop through a first-order filter of four periods, the lead, so a boxcar that comes or goes moves the loop's speed by at most a quarter of that fast part a period. With no boxcar the lead's input is zero and it runs out to exactly zero: under the window floors and at rest the loop reads the observer alone.
 - **A drive flip** negates the standing part. Every volts term of the boxcar lies along the drive, so its standing error turns with it.
-- **The clears.** Both states clear where the velocity loop's integrator clears: the run edges and every parked period. Behind a clear the standing part is zero, so the loop sees the whole difference until the part has formed again.
+- **The clears.** Both states clear at the run edges and every parked period. Behind a clear the standing part is zero, so the loop sees the whole difference until the part has formed again.
 
 On any steady pattern of boxcars the loop's mean speed is therefore the observer's, whatever the boxcar's standing error. Only the velocity loop and `omega_hat_cps` read the blend. The stall verdict reads the observer's speed, and the other limits, the park and the Ke feed-forward read no speed estimate, as before. `omega_hat_src` reads 1 on a period whose boxcar fed the blend and 0 otherwise, beside that boxcar in `omega_bemf_cps`, which the blend leaves as it closed. Pins: `a_steady_cruise_reads_the_observer_in_the_mean`, `a_validity_change_never_steps_the_loops_speed`, `without_a_boxcar_the_loop_reads_the_observer`, `the_standing_part_turns_with_the_drive`, `the_extremes_never_wrap`, `the_loops_speed_is_the_observers_plus_the_boxcars_fast_part`, `the_park_clears_the_blend`, `the_standing_part_turns_at_the_observer_behind_a_flip`, `a_cruise_holds_the_asked_speed_with_a_back_emf_that_reads_over`.
 
@@ -242,7 +242,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `KERNEL`, `KERNEL_MEAN`, `TICK_PUBLISH` | plain tick body by regime (Open, Closed) and phase, maximum and mean |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
-| `LIMIT_SPLIT`, `SPEED_STAGE`, `SPEED_BLEND`, `HEAT_MEAN` | estimated additions over measured rows, by phase, until the probe refills the phase; `SPEED_STAGE` is what came with phase SPEED's stage: the close on SPEED, and on SPARE_A the dispatch through the phase table that grew to hold it; `SPEED_BLEND` is the speed blend over the source switch the rows were measured with: the blend's step on OBSERVER, its clears on CONTROL and on the parked VELOCITY; `HEAT_MEAN` is the heats' sum of the held current squared on LIMITS |
+| `LIMIT_SPLIT`, `SPEED_STAGE`, `SPEED_BLEND`, `HEAT_MEAN`, `LIFECYCLE` | estimated additions over measured rows, by phase, until the probe refills the phase; `SPEED_STAGE` is what came with phase SPEED's stage: the close on SPEED, and on SPARE_A the dispatch through the phase table that grew to hold it; `SPEED_BLEND` is the speed blend over the source switch the rows were measured with: the blend's step on OBSERVER, its clears on CONTROL and on the parked VELOCITY; `HEAT_MEAN` is the heats' sum of the held current squared on LIMITS; `LIFECYCLE` is the lifecycle state over the run, run-edge and hold flags: the edges on CONTROL, the park's state on TRAJECTORY, the mode arms on VELOCITY |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
 | `TROUGH_DONE`, `FRAME_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |

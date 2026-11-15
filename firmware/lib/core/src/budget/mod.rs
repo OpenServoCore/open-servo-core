@@ -100,7 +100,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// is what came with phase SPEED's stage by [`SPEED_STAGE`]: the phase's
 /// rows are the fast path alone, and SPARE_A's predate the stage's entry
 /// in the phase table. The rows predate the speed blend as well
-/// ([`SPEED_BLEND`]) and the heat's SLOW-cycle sum ([`HEAT_MEAN`]).
+/// ([`SPEED_BLEND`]), the heat's SLOW-cycle sum ([`HEAT_MEAN`]) and the
+/// lifecycle state ([`LIFECYCLE`]).
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
     [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
@@ -229,9 +230,34 @@ pub const HEAT_MEAN: [[u32; PHASES]; REGIMES] = [
     [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
 ];
 
+/// E, over the measured CONTROL, TRAJECTORY and VELOCITY rows, maxima and
+/// means: the lifecycle state in place of the run, run-edge and hold flags
+/// (`kernel/phases/lifecycle.rs`), which the rows predate. Matched release
+/// builds, each phase's executed paths priced as REFRESH, the largest rise
+/// over each regime's paths. CONTROL, every regime: the run-on edge's
+/// tick, which any regime books and which sets the phase's maximum, on its
+/// dearest path (a live position table read at a wide code) 564.75 ->
+/// 566.25 HCLK (8 more instructions, 3 fewer taken transfers: the table's
+/// base rematerialized and a register held across the wide code's read),
+/// 17 less on the other table paths; the mode edge's tick from OpenLoop,
+/// 394.75, stays under the run-on edge's cheapest path (no table, 449.5);
+/// every tick without an edge is 3.25 to 18 cheaper. TRAJECTORY, Closed
+/// and Open (a parked period is Open's): the position step's hold into the
+/// state and the park's compare, 3 more ALU, 6; OpenLoop: the state's
+/// store, 1 more ALU, 2. VELOCITY, Closed and OpenLoop: the Current arm
+/// moved behind a taken branch, and the OpenLoop arm took one more compare
+/// and a constant, 4 each; the parked and profile arms read no flag, 3.25
+/// less. Each delta plus 10%, rounded up; the bench must refill the three
+/// phases.
+pub const LIFECYCLE: [[u32; PHASES]; REGIMES] = [
+    [2, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+    [2, 0, 7, 0, 5, 0, 0, 0, 0, 0],
+    [2, 0, 3, 0, 5, 0, 0, 0, 0, 0],
+];
+
 /// The estimated additions over a measured row at `r` and `p`.
 const fn estimated(r: usize, p: usize) -> u32 {
-    LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + SPEED_BLEND[r][p] + HEAT_MEAN[r][p]
+    LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + SPEED_BLEND[r][p] + HEAT_MEAN[r][p] + LIFECYCLE[r][p]
 }
 
 /// A plain tick's budget at `regime` and `phase`: its row, the tick
