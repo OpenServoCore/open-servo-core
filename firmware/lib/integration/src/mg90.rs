@@ -3,8 +3,9 @@
 //! friction, 5.7 counts of gear lash between the rotor and the pot, and a
 //! pot with 1.2 raw counts of noise that wanders +/-5 counts off the position
 //! table, the residual linearization leaves. A load torque, a heavier
-//! output, a held rotor and leads wired the other way round are the
-//! scenarios' knobs. [`rig`] is the bench MG90's saved gains and limits (2S
+//! output, a held rotor, leads wired the other way round and a brush
+//! contact's drop while the rotor turns ([`Contact`]) are the scenarios'
+//! knobs. [`rig`] is the bench MG90's saved gains and limits (2S
 //! rail, 280-count limit, deadband 12) over the plant's own motor model and
 //! [`kernel`] its kernel, both on the
 //! osc-dev-v006 board's window floors and shunt settle bands: the floor
@@ -59,6 +60,33 @@ pub struct Motor {
     pub b: f64,
     pub fc: f64,
     pub fv: f64,
+}
+
+/// What the brush contact drops beyond the winding's resistance while the
+/// rotor turns, odd in the current: nothing up to `from` ccounts, `slope`
+/// vcounts per ccount from there to `to`, and flat past it. At rest the
+/// contact holds still and drops nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct Contact {
+    pub from: f64,
+    pub to: f64,
+    pub slope: f64,
+}
+
+impl Contact {
+    /// The drop at current `i`, vcounts, and its slope there.
+    pub fn at(&self, i: f64) -> (f64, f64) {
+        let a = i.abs();
+        let drop = i.signum() * self.slope * (a.min(self.to) - self.from).max(0.0);
+        (
+            drop,
+            if a > self.from && a < self.to {
+                self.slope
+            } else {
+                0.0
+            },
+        )
+    }
 }
 
 /// The bench MG90's, on its 2S rail.
@@ -146,6 +174,10 @@ pub struct Mg90 {
     /// The residual the pot wanders off the table by, `(amplitude,
     /// period)` sine lines in linearized counts, summed: `&[]` is none.
     pub residual: &'static [(f64, f64)],
+    /// The winding's L over its resistance, FAST ticks.
+    pub tau_e: f64,
+    /// The brush contact's drop while the rotor turns: `None` is none.
+    pub contact: Option<Contact>,
 }
 
 impl Mg90 {
@@ -165,6 +197,8 @@ impl Mg90 {
             wide: None,
             sigma_raw: SIGMA_RAW,
             residual: RESIDUAL,
+            tau_e: TAU_E,
+            contact: None,
         }
     }
 
@@ -194,9 +228,21 @@ impl Mg90 {
             _ => None,
         };
         self.i = match volts {
-            Some(v) => {
-                self.i + ((v - m.ke * self.omega) / m.r - self.i) * (1.0 - (-1.0 / TAU_E).exp())
-            }
+            // the contact's drop on its tangent at this current: the winding
+            // relaxes on R plus its slope, the step exact for the tangent
+            Some(v) => match self.contact.filter(|_| self.omega != 0.0) {
+                None => {
+                    self.i
+                        + ((v - m.ke * self.omega) / m.r - self.i)
+                            * (1.0 - (-1.0 / self.tau_e).exp())
+                }
+                Some(c) => {
+                    let (x, s) = c.at(self.i);
+                    let r = m.r + s;
+                    let target = (v - m.ke * self.omega - x + s * self.i) / r;
+                    self.i + (target - self.i) * (1.0 - (-r / m.r / self.tau_e).exp())
+                }
+            },
             None => 0.0,
         };
         let torque = self.i + self.load;
@@ -350,8 +396,9 @@ pub(crate) mod tests {
     }
 
     /// The rig's motor model is the plant's: a held rotor's current pins R,
-    /// the steady current and speed at two widths pin Ke and the friction,
-    /// one MEDIUM tick's rise from rest pins B. Over every width from the
+    /// the steady current and speed at two widths pin Ke and the friction
+    /// past the brush contact's drop, one MEDIUM tick's rise from rest pins
+    /// B. Over every width from the
     /// board's shunt floor past the last settle band, the held current the
     /// shunt reads, scaled by the kernel's band, is the winding's to the
     /// sample's rounding.
@@ -398,7 +445,8 @@ pub(crate) mod tests {
                 p.i,
                 p.omega
             );
-            let e = v - r * p.i;
+            let contact = p.contact.map_or(0.0, |c| c.at(p.i).0);
+            let e = v - r * p.i - contact;
             assert!(
                 (ke * p.omega - e).abs() <= 1.0,
                 "{ticks} ticks: {e:.1} vcounts of back-EMF at {:.0} c/s",
