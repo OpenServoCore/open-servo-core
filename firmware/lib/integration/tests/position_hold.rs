@@ -17,7 +17,7 @@
 //! let go. Friction alone stops the shaft inside the band only below
 //! `coast_stop_cps`.
 
-use osc_integration::mg90::{self, B, FC, Mg90, Rng, TICK_HZ};
+use osc_integration::mg90::{self, B, FC, Mg90, Rng, SIGMA_RAW, TICK_HZ};
 use osc_integration::plant::FakeIo;
 use osc_servo_core::adc::{ADC_WIDE_SHIFT, ADC_WIDE_SLOTS};
 use osc_servo_core::kernel::DECIM_MED;
@@ -32,6 +32,13 @@ const HOLD_TICKS: u32 = 16_000;
 const TAIL_TICKS: u32 = 6_000;
 /// A held rotor is let go this long after its profile has landed.
 const LET_GO_TICKS: u32 = 400;
+
+/// A rest `err` off the goal lies in the band where a raw count spans `gain`
+/// linearized counts. The kernel judges the band on a reading that carries
+/// the pot's noise, which `err` leaves out.
+fn rests_in_band(err: f64, gain: f64) -> bool {
+    err.abs() <= (DEADBAND as f64 + SIGMA_RAW) * gain
+}
 
 /// Entering at one edge, the speed Coulomb friction alone sheds across the
 /// band: v^2 = 2 x (B x FC) x 2 x deadband.
@@ -283,11 +290,7 @@ fn hold_rests_after_a_fast_arrival() {
     for h in fast_arrivals() {
         assert!(h.entry_cps > coast_stop_cps(), "not a fast arrival: {h:?}");
         assert!(h.spread <= 1.0 && h.wakes == 0, "limit cycle: {h:?}");
-        // 12 raw counts at the table's gain
-        assert!(
-            h.err.abs() <= DEADBAND as f64 * 1.25,
-            "rest outside the band: {h:?}"
-        );
+        assert!(rests_in_band(h.err, 1.25), "rest outside the band: {h:?}");
         assert_eq!(h.faults, 0, "{h:?}");
     }
 }
@@ -310,11 +313,7 @@ fn hold_never_cycles_over_many_arrivals() {
         all.len()
     );
     for h in &all {
-        // 12 raw counts at the table's gain
-        assert!(
-            h.err.abs() <= DEADBAND as f64 * 1.25,
-            "rest outside the band: {h:?}"
-        );
+        assert!(rests_in_band(h.err, 1.25), "rest outside the band: {h:?}");
         assert_eq!(h.faults, 0, "{h:?}");
     }
 }
@@ -389,7 +388,7 @@ fn hold_rests_on_a_steep_table() {
         );
         for h in &all {
             assert!(
-                h.err.abs() <= DEADBAND as f64 * gain,
+                rests_in_band(h.err, gain),
                 "gain {gain}: rest outside the band: {h:?}"
             );
             assert_eq!(h.faults, 0, "gain {gain}: {h:?}");

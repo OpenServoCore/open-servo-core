@@ -8,6 +8,7 @@ use std::rc::Rc;
 use osc_servo_core::TelStream;
 use osc_servo_core::TelemetryTick;
 use osc_servo_core::data_state::DataJob;
+use osc_servo_core::estimator::window::SettleGain;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::{
     DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
@@ -61,6 +62,16 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
 /// through `KernelTiming` and not through CALIB.
 pub const DEV_V006_V_TROUGH_MIN_TICKS: u16 = 160;
 pub const DEV_V006_BEMF_MIN_TICKS: u16 = 160;
+
+/// The same `Calibration`'s `i_settle_gain`, the shunt amplifier's settle
+/// bands the board hands the kernel through `KernelTiming`.
+pub const DEV_V006_I_SETTLE_GAIN: SettleGain = SettleGain {
+    start_ticks: 40,
+    q15: &[
+        37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020,
+        32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785,
+    ],
+};
 
 /// Board travel the config defaults seed (the v006 pot's 12-bit span): what
 /// the soft limits fall back to when a wiped store boots.

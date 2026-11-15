@@ -13,8 +13,8 @@ use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::stamp;
 use osc_servo_core::{
-    ControlIo, DecayMode, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
-    SensorFrame, Sensors, Shared, StallResponse, TelStream,
+    ControlIo, ControlTable, DecayMode, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd,
+    RegionStorage, SensorFrame, Sensors, Shared, StallResponse, TelStream,
 };
 
 /// Shunt zero-current offset the plant's current samples sit on.
@@ -268,6 +268,27 @@ const RL_FRIC_COUNTS: i32 = 53;
 /// Rotor acceleration per count of net current: 7.58 c/s Q8 per tick.
 const RL_ACCEL_Q8_X100: i32 = 758;
 
+/// `RlPlant` in the kernel's motor model: Ke `2^-RL_KE_SHIFT` vcounts per
+/// c/s, B `DECIM_MED` ticks of the acceleration per count, the Coulomb
+/// current, no viscous term.
+pub const RL_KE_VPC_Q12: u16 = 4096 >> RL_KE_SHIFT;
+pub const RL_RECIP_KE_Q10: u16 = 1024 << RL_KE_SHIFT;
+pub const RL_B_I_Q313: u16 =
+    ((RL_ACCEL_Q8_X100 * DECIM_MED as i32 * 8192 + 12_800) / 25_600) as u16;
+pub const RL_FRIC_FC_COUNTS: u16 = RL_FRIC_COUNTS as u16;
+pub const RL_FRIC_FV_Q016: u16 = 0;
+
+/// The `RlPlant` motor model over `seed`'s, at the plant's default winding.
+pub fn rl_motor(t: &mut ControlTable) {
+    let m = &mut t.calib.motor;
+    m.r_q12 = RL_R_Q12;
+    m.ke_vpc_q = RL_KE_VPC_Q12;
+    m.recip_ke_q = RL_RECIP_KE_Q10;
+    m.b_i_q313 = RL_B_I_Q313;
+    m.fric_fc_counts = RL_FRIC_FC_COUNTS;
+    m.fric_fv_q016 = RL_FRIC_FV_Q016;
+}
+
 /// MG90-scale R-L-back-EMF plant at the FAST tick for the current-limit
 /// pins: the winding current closes 1/4 of its gap to `(v - e) / R` each
 /// tick (tau_e ~ 3.5 ticks) and the shunt reads it at the crest. Coulomb
@@ -434,6 +455,75 @@ mod tests {
                 let omega = p.omega_cps();
                 let i = current(p.step(duty));
                 model += m.b_i_q313 as f64 / 8192.0 * (i as f64 - fric(omega)) / DECIM_MED as f64;
+            }
+            let rise = p.omega_cps() as f64;
+            assert!(
+                (model - rise).abs() <= rise / 16.0,
+                "duty {duty}: one MEDIUM tick from rest rose {rise} c/s, the model {model:.1}"
+            );
+        }
+    }
+
+    /// The `RlPlant` rigs' motor model is the plant's: a held bare-resistor
+    /// rotor's current pins R, the steady current and speed at two duties
+    /// pin Ke and the friction, one MEDIUM tick's rise from rest pins B.
+    /// The winding's quarter-gap closure stands up to 3 counts under its
+    /// target, so the steady state is read to that.
+    #[test]
+    fn the_rl_rigs_motor_model_is_the_plants() {
+        const CLOSURE: f64 = 3.0;
+        const MID: u16 = 2050;
+        let sh = Shared::new();
+        seed(&sh);
+        sh.table.with_mut(rl_motor);
+        let m = sh.table.with(|t| t.calib.motor);
+        let r = m.r_q12 as f64 / 4096.0;
+        let ke = m.ke_vpc_q as f64 / 4096.0;
+        let recip = m.recip_ke_q as f64 / 1024.0;
+        let fric =
+            |omega: i32| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega as f64 / 65536.0;
+        for duty in [8192i16, 16384] {
+            let v = ((duty as i32 * RL_VBUS as i32) >> 15) as f64;
+            let mut p = RlPlant::new(MID);
+            p.locked = true;
+            p.low_l = true;
+            p.step(duty);
+            assert!(
+                (p.current() as f64 - v / r).abs() <= 1.0,
+                "duty {duty}: held {} counts, the model {:.1}",
+                p.current(),
+                v / r
+            );
+
+            let mut p = RlPlant::new(MID);
+            p.stop_hi = i32::MAX >> 16;
+            for _ in 0..20_000 {
+                p.step(duty);
+            }
+            let (i, omega) = (p.current(), p.omega_cps());
+            let model = fric(omega);
+            assert!(
+                (i as f64 - model).abs() <= CLOSURE,
+                "duty {duty}: steady {i} counts at {omega} c/s, the model holds {model:.1}"
+            );
+            let e = v - r * i as f64;
+            assert!(
+                (ke * omega as f64 - e).abs() <= r * CLOSURE + 1.0,
+                "duty {duty}: {e:.1} vcounts of back-EMF at {omega} c/s"
+            );
+            assert!(
+                (recip * e - omega as f64).abs() <= recip * (r * CLOSURE + 1.0),
+                "duty {duty}: {e:.1} vcounts of back-EMF read {:.0} c/s at {omega} c/s",
+                recip * e
+            );
+
+            let mut p = RlPlant::new(MID);
+            let mut model = 0.0;
+            for _ in 0..DECIM_MED {
+                let omega = p.omega_cps();
+                p.step(duty);
+                model += m.b_i_q313 as f64 / 8192.0 * (p.current() as f64 - fric(omega))
+                    / DECIM_MED as f64;
             }
             let rise = p.omega_cps() as f64;
             assert!(
