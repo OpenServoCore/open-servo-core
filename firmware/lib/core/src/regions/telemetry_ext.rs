@@ -57,6 +57,16 @@ pub struct TelemetryTherm {
     pub _rsvd_align: u8,
 }
 
+/// The velocity loop's reference as its VELOCITY phase reads it, raw csQ16
+/// as `omega_hat_cps`, published at PUBLISH beside the estimates by an
+/// image built with `deadman`; 0 in the production image.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryInject {
+    #[ct_field(access = ro)]
+    pub omega_ref_cps: i32,
+}
+
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(
@@ -67,6 +77,7 @@ pub struct TelemetryExtRegs {
     pub health: TelemetryHealth,
     pub limits_ext: TelemetryLimitsExt,
     pub therm: TelemetryTherm,
+    pub inject: TelemetryInject,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 48],
+    pub _rsvd_tail: [u8; 44],
 }

@@ -5,6 +5,8 @@ use super::loops::current;
 use super::loops::faults::{self, FaultLatch};
 use crate::kernel::config::KernelConfig;
 use crate::pos_lut;
+#[cfg(feature = "deadman")]
+use crate::regions::control::ControlInject;
 use crate::regions::control::{ControlLifecycle, Mode};
 use crate::{RegionStorageRaw, Shared};
 
@@ -14,6 +16,8 @@ pub struct Control {
     pub life: ControlLifecycle,
     /// `pos_lut_state` reads LIVE: the position table applies.
     pub lut_live: bool,
+    #[cfg(feature = "deadman")]
+    pub inject: ControlInject,
 }
 
 impl Control {
@@ -31,6 +35,9 @@ impl Control {
         Self {
             life,
             lut_live: pos_lut_state == pos_lut::state::LIVE,
+            // SAFETY: as above.
+            #[cfg(feature = "deadman")]
+            inject: unsafe { (&raw const (*p).control.inject).read_volatile() },
         }
     }
 }

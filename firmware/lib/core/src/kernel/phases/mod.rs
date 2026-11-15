@@ -145,6 +145,15 @@ pub(in crate::kernel) struct Medium {
     det: Detectors,
     #[cfg(feature = "deadman")]
     deadman: deadman::Deadman,
+    /// The loop-margin stimulus runs on the next TRAJECTORY (RAIL's
+    /// `deadman`): both fields nonzero, a burst streams under a loaded
+    /// dead-man and no limit flag but PERMIT is set.
+    #[cfg(feature = "deadman")]
+    inj_on: bool,
+    /// The stimulus's phase, medium periods into its cycle of
+    /// `2 x inject_half_periods`.
+    #[cfg(feature = "deadman")]
+    inj_p: u16,
     te_prev: bool,
     mode_prev: Mode,
     /// The current command the fast half's loop tracks.
@@ -186,6 +195,10 @@ impl Medium {
             det: Detectors::new(),
             #[cfg(feature = "deadman")]
             deadman: deadman::Deadman::new(),
+            #[cfg(feature = "deadman")]
+            inj_on: false,
+            #[cfg(feature = "deadman")]
+            inj_p: 0,
             te_prev: false,
             mode_prev: Mode::OpenLoop,
             i_ref_cc: 0,

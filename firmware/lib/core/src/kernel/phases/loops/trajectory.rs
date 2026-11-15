@@ -40,7 +40,7 @@ const WALL_RAMP_SHIFT: u32 = 4;
 /// limits ordered inside [`GOAL_LIM_COUNTS`]. The cap and the goal bound
 /// apply again at the use, constant compares, so a corrupt table stays
 /// bounded and panic-free.
-fn vel_cap(lp: &ConfigLoopPosition) -> i32 {
+pub(in crate::kernel) fn vel_cap(lp: &ConfigLoopPosition) -> i32 {
     lp.velocity_limit_cps.min(VEL_CAP_CPS) as i32
 }
 

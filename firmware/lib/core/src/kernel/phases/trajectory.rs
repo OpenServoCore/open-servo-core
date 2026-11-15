@@ -1,9 +1,15 @@
 use super::fast::Command;
 use super::loops::faults::FaultLatch;
 use super::loops::position::{self, HOLD_SETTLE_TICKS};
+#[cfg(feature = "deadman")]
+use super::loops::trajectory;
 use super::{Life, Medium};
 use crate::kernel::config::KernelConfig;
+#[cfg(feature = "deadman")]
+use crate::regions::config::ConfigLoopPosition;
 use crate::regions::control::Mode;
+#[cfg(feature = "deadman")]
+use crate::regions::control::{INJECT_ACCEL_MAX_Q88, INJECT_HALF_PERIODS_MAX};
 
 impl Medium {
     /// TRAJECTORY: the profile and the position loop.
@@ -43,10 +49,35 @@ impl Medium {
                 self.traj
                     .step_velocity(life.goal_velocity, theta_hat, lp, soft);
                 self.omega_ref_q16 = self.traj.omega_star_q16();
+                #[cfg(feature = "deadman")]
+                if self.inj_on {
+                    self.inject(lp);
+                }
                 self.life = Life::Run;
             }
             Mode::Current | Mode::OpenLoop => self.life = Life::Run,
         }
         cmd.drive = self.drive(cfg, faults);
+    }
+}
+
+#[cfg(feature = "deadman")]
+impl Medium {
+    /// The loop-margin stimulus (kernel sec 2.7): the triangle summed into
+    /// the velocity loop's reference, inside the velocity limit. Its phase
+    /// steps only on a period it runs, so a gated period holds it.
+    #[inline(always)]
+    fn inject(&mut self, lp: &ConfigLoopPosition) {
+        let inj = self.ctl.inject;
+        let n = inj.inject_half_periods.min(INJECT_HALF_PERIODS_MAX) as i32;
+        let a = inj.inject_accel_q88.min(INJECT_ACCEL_MAX_Q88) as i32;
+        let p = self.inj_p as i32 + 1;
+        let p = if p >= n + n { 0 } else { p };
+        self.inj_p = p as u16;
+        // |triangle| <= 256 and a < 2^15: the product stays under 2^23, so
+        // the Q8.8 -> csQ16 shift stays inside i32
+        let d = (a * ((n >> 1) - (p - n).abs())) << 8;
+        let v_lim = trajectory::vel_cap(lp) << 16;
+        self.omega_ref_q16 = self.omega_ref_q16.saturating_add(d).max(-v_lim).min(v_lim);
     }
 }
