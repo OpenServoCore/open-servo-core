@@ -1064,7 +1064,7 @@ mod tests {
         let lp = table.with(|t| t.config.loop_position);
         assert_eq!(
             (lp.speed_ceiling_cps, lp.velocity_limit_cps),
-            (0, config::DEFAULT_VELOCITY_LIMIT_CPS),
+            (0, 0),
             "seeds stand"
         );
         assert_eq!(table.with(|t| t.config.common.id), 1);

@@ -25,7 +25,8 @@ use osc_servo_core::persist::Slot;
 use osc_servo_core::regions::CALIB_BASE_ADDR;
 use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, R_Q12, RECIP_KE_Q};
 use osc_servo_core::regions::calib::addr::stamp::PLANT_STAMP;
-use osc_servo_core::regions::config::addr::limits::STALL_TIME_TICKS;
+use osc_servo_core::regions::config::addr::limits::{CURRENT_LIMIT_COUNTS, STALL_TIME_TICKS};
+use osc_servo_core::regions::config::addr::loop_position::SPEED_CEILING_CPS;
 use osc_servo_core::regions::config::addr::loop_velocity::V_KP_Q88;
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
@@ -306,6 +307,41 @@ fn corrupt_config_refuses_every_mode() {
 #[case(Mode::Position, KE_VPC_Q)]
 #[test_log::test]
 fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] reg: u16) {
+    stops_at_the_next_control(mode, |t| {
+        if reg == RECIP_KE_Q {
+            t.calib.motor.recip_ke_q = 0;
+        } else {
+            t.calib.motor.ke_vpc_q = 0;
+        }
+    });
+}
+
+/// The same belt on the two limits every closed mode clamps against: a
+/// zero current cap or speed ceiling written into a running loop stops it
+/// at the first CONTROL after the take, and every tick before runs on the
+/// limits it had, so no closed-loop tick runs on an unset limit.
+#[rstest]
+#[case(Mode::Current, CURRENT_LIMIT_COUNTS)]
+#[case(Mode::Current, SPEED_CEILING_CPS)]
+#[case(Mode::Velocity, CURRENT_LIMIT_COUNTS)]
+#[case(Mode::Velocity, SPEED_CEILING_CPS)]
+#[case(Mode::Position, CURRENT_LIMIT_COUNTS)]
+#[case(Mode::Position, SPEED_CEILING_CPS)]
+#[test_log::test]
+fn live_zero_limit_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] reg: u16) {
+    stops_at_the_next_control(mode, |t| {
+        if reg == CURRENT_LIMIT_COUNTS {
+            t.config.limits.current_limit_counts = 0;
+        } else {
+            t.config.loop_position.speed_ceiling_cps = 0;
+        }
+    });
+}
+
+/// A running `mode` loop, `zero` committed at each phase of the medium
+/// period: the drive matches an unwritten twin up to the CONTROL after the
+/// take, then stops with the data fault, and the ack re-latches.
+fn stops_at_the_next_control(mode: Mode, zero: impl Fn(&mut ControlTable)) {
     const RUN: u32 = 3000;
     for phase in 0..DECIM_MED as u32 {
         let (sh, twin) = (Shared::new(), Shared::new());
@@ -324,13 +360,7 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
             );
         }
         sh.config_commit_begin();
-        set(&sh, |t| {
-            if reg == RECIP_KE_Q {
-                t.calib.motor.recip_ke_q = 0;
-            } else {
-                t.calib.motor.ke_vpc_q = 0;
-            }
-        });
+        set(&sh, &zero);
         sh.config_commit_end();
         // tick n runs medium phase n % DECIM_MED; the write reaches the
         // kernel at the next SPARE_A, and the belt latches at the
@@ -350,7 +380,7 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
                 );
                 assert_eq!(
                     rig.duty, twin_rig.duty,
-                    "phase {phase} tick {n}: off the old Ke"
+                    "phase {phase} tick {n}: off the old set"
                 );
                 assert_eq!(fault(&sh), (0, CODE_NONE), "phase {phase} tick {n}");
             } else {

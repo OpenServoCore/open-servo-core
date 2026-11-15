@@ -3,7 +3,7 @@ use super::fast::{Command, Drive, Fast};
 use super::lifecycle::Life;
 use super::loops::current;
 use super::loops::faults::{self, FaultLatch};
-use crate::kernel::config::KernelConfig;
+use crate::kernel::config::{KernelConfig, belt};
 use crate::pos_lut;
 #[cfg(feature = "deadman")]
 use crate::regions::control::ControlInject;
@@ -64,7 +64,7 @@ impl Medium {
         cmd.i_ref_cc = self.i_ref_cc;
     }
 
-    /// The torque enable edge, the data-state entry check and the Ke belt.
+    /// The torque enable edge, the data-state entry check and the belt.
     fn admit(
         &mut self,
         cfg: &KernelConfig,
@@ -92,7 +92,7 @@ impl Medium {
         // Data-state entry check (data_state module): at the enable edge and
         // at a mode change under torque, a named reason refuses closed loop
         // for this run. A reason that appears mid-run (a live edit) waits
-        // for the next entry; only the Ke belt below stops a running loop.
+        // for the next entry; only the belt below stops a running loop.
         if life.torque_enable && (enable_edge || life.mode != self.mode_prev) {
             let p = shared.table.region_ptr();
             // SAFETY: same volatile read contract as `Control::read`; boot
@@ -102,13 +102,10 @@ impl Medium {
                 faults.raise(faults::BIT_DATA, faults::CODE_DATA);
             }
         }
-        // Physics belt: a closed loop on a zero Ke runs open (the boxcar
-        // yields nothing, the current loop decouples nothing), whatever the
-        // flags say - a live write of 0 into a running loop stops it here.
-        if life.torque_enable
-            && matches!(life.mode, Mode::Velocity | Mode::Position)
-            && cfg.ke_unset
-        {
+        // Physics belt: a closed loop on a zero Ke runs open and one on an
+        // unset limit has none fit for its motor, whatever the flags say -
+        // a live write of 0 into a running loop stops it here.
+        if life.torque_enable && belt::refuses(cfg.belt, life.mode) {
             faults.raise(faults::BIT_DATA, faults::CODE_DATA);
         }
     }

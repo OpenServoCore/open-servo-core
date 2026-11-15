@@ -50,7 +50,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 
 | Phase | Name | Work |
 | --- | --- | --- |
-| 0 | CONTROL | CONTROL read, enable and mode edges, drive kind; the configuration on the first tick |
+| 0 | CONTROL | CONTROL read, enable and mode edges, the data-state check and the belt, drive kind; the configuration on the first tick |
 | 1 | OBSERVER | observer step, speed blend on the boxcar SPEED closed |
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
 | 3 | LIMITS | limits fold, Current mode's speed fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
@@ -179,7 +179,7 @@ One build of the same firmware, `--features experiment`, for captures where the 
 | --- | --- |
 | FAST every tick: the window measurement, the tick block publish, the overcurrent trip, the motor write | the current, velocity and position loops, the trajectory generator |
 | OpenLoop only: `goal_duty` clamped to `duty_max_q15`, `openloop_decay`, `openloop_zero_brake` and `drive_polarity` honoured; the `mode` byte is accepted and ignored, `mode_active` publishes OpenLoop | the duty limiter and the limits fold: peak cap, rail fold, endstop, press fold, stall verdict |
-| MEDIUM: CONTROL (the read, the enable edge, the drive kind), the bus dead-man on the RAIL phase, the shunt zero's aging step every `DECIM_SLOW` periods on the SLOW phase, PUBLISH (the shunt zero's sample, `current_bias_counts`, `mode_active`, `fault_code`, `fault_flags`), the configuration take on SPARE_A; the window floors at the first tick | the estimators (fusion observer, back-EMF boxcar, speed blend, rail estimate, winding thermal), the detectors (sensor screen, position error, stall, undervoltage, overtemperature, data-state entry check, Ke belt), the position table inside the kernel, the stall permit lease |
+| MEDIUM: CONTROL (the read, the enable edge, the drive kind), the bus dead-man on the RAIL phase, the shunt zero's aging step every `DECIM_SLOW` periods on the SLOW phase, PUBLISH (the shunt zero's sample, `current_bias_counts`, `mode_active`, `fault_code`, `fault_flags`), the configuration take on SPARE_A; the window floors at the first tick | the estimators (fusion observer, back-EMF boxcar, speed blend, rail estimate, winding thermal), the detectors (sensor screen, position error, stall, undervoltage, overtemperature, data-state entry check, the belt), the position table inside the kernel, the stall permit lease |
 
 The fault latch has two raise points. The **raw current trip** is the production overcurrent detector: `|i_meas|` over `oc_trip_counts` for `oc_trip_ticks` consecutive valid windows latches `over_current` and the drive coasts. The **bus dead-man** is `bus_deadman_ticks` (CONTROL, protocol sec 5.8): nonzero with torque on, a countdown in kernel ticks that every instruction the bus dispatches to this servo reloads (`Shared::bus_touch`, a generation counter the kernel compares once per medium period) and a streaming TEL burst holds; at zero the kernel latches `deadman` (bit 7, code 9) and the drive coasts until the torque enable ack. Torque off clears the countdown and a fresh enable starts it from the field. The loaded countdown publishes as the permit bit of `limit_flags`, the grant the burst arm reads for a seat outside the soft limits, so a seated burst arms under the dead-man as it does under the production lease. The other stripped fields publish zero; the floors publish as today, so the host tools still refuse to drive without them.
 
@@ -247,6 +247,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `R_AT_TEMPERATURE` | estimated addition inside `SLOW_FINISH`, the resistance read at the estimate's temperature, until the probe refills the finish |
 | `SPEED_FOLD` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, Current mode's speed fold, until the probe refills the rows |
+| `UNSET_FLAG` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, the take's `UNSET` bit ORed into `limit_flags`, until the probe refills the rows |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
@@ -361,11 +362,13 @@ On SPARE_A, `config_due` compares the count with the one last taken:
 
 | Count | Action |
 | --- | --- |
-| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them, and the two speeds resolved in the copy: a ceiling of 0 reads as the move speed, a move speed of 0 as the ceiling, and the move speed runs at most the ceiling, so no phase tests either field |
+| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them, the belt and the `UNSET` bit (below), and the two speeds and the cap resolved in the copy: a move speed of 0 reads as the ceiling and the move speed runs at most the ceiling; an unset ceiling stays 0 and an unset cap reads as `oc_trip_counts`; so no phase tests either field |
 | odd | keep the current set; check again at the next SPARE_A |
 | equal to the last taken | nothing |
 
 > **The take is a CPU copy inside one tick.** The kernel preempts the bus, so no commit store lands during the copy.
+
+The belt is one byte the take derives, bit `mode` set for each mode it refuses: Velocity and Position on a zero Ke (`recip_ke_q` or `ke_vpc_q`), every closed mode while `current_limit_counts` or `speed_ceiling_cps` is 0, unset. CONTROL tests `torque_enable` and the mode's bit every period, one shift, and raises the data fault on it, so a live write of a zero Ke or limit stops a running loop at the first CONTROL after its take and FAST drives Off that tick. TRAJECTORY, LIMITS and VELOCITY, the phases that read the ceiling or the cap, come after CONTROL and the take lands at SPARE_A after them, so the ticks between the take and that CONTROL drive on the band and reference built before it, and no closed-loop tick runs on an unset limit. OpenLoop is never refused: it reads no ceiling, and the unset cap's stand-in, the board's overcurrent trip, is what its limiter holds under. The take also leaves `limit_flags`' `UNSET` bit (bit 5), which LIMITS ORs in every period, torque on or off. Pins: `unset_limits_never_reach_a_closed_tick`, `live_zero_limit_write_stops_a_running_closed_loop`, `live_zero_ke_write_stops_a_running_closed_loop`, `a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop`, `a_live_zero_cap_write_stops_a_running_closed_loop`, `the_factory_block_refuses_current_mode_and_runs_openloop`.
 
 A write takes effect within one medium period, or one more when the take's tick lands inside the next commit (`config_apply_lands_within_its_bound_at_budget`, `dispatched_config_write_lands_at_the_take`). The first tick takes the configuration unconditionally.
 

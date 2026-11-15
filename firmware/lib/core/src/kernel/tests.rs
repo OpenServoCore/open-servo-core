@@ -5825,7 +5825,7 @@ fn write_across_the_span(sh: &Shared) {
 fn fields_new(k: &Kernel<FakeIo>) -> [bool; 3] {
     let c = &k.cfg;
     assert_eq!(
-        c.ke_unset,
+        crate::kernel::config::belt::refuses(c.belt, Mode::Position),
         c.motor.recip_ke_q == 0,
         "the belt reads the boxcar's Ke"
     );
@@ -5834,6 +5834,94 @@ fn fields_new(k: &Kernel<FakeIo>) -> [bool; 3] {
         c.limits.stall_time_ticks == 400,
         c.motor.recip_ke_q == 0,
     ]
+}
+
+/// While a limit is unset the kernel's copy holds the ceiling at 0 with the
+/// move speed under it, and the cap at the overcurrent trip, the guard
+/// OpenLoop's limiter holds under. The take lands at SPARE_A and the belt
+/// refuses every closed mode at the next CONTROL, ahead of TRAJECTORY,
+/// LIMITS and VELOCITY, the phases that read either: the ticks between
+/// still drive on the band and reference built before the take, and none
+/// after drives at all, so no closed-loop tick runs on an unset limit.
+#[test]
+fn unset_limits_never_reach_a_closed_tick() {
+    const _: () = assert!(
+        phase::CONTROL < phase::TRAJECTORY
+            && phase::TRAJECTORY < phase::LIMITS
+            && phase::LIMITS < phase::VELOCITY
+            && phase::VELOCITY < phase::SPARE_A
+    );
+    let f = frame(2000, BIAS);
+    for mode in [Mode::Current, Mode::Velocity, Mode::Position] {
+        for cap in [true, false] {
+            let sh = Shared::new();
+            seed(&sh);
+            sh.table.with_mut(|t| {
+                let l = &mut t.control.lifecycle;
+                l.mode = mode;
+                l.goal_current = 150;
+                l.goal_velocity = 800;
+                l.goal_position = 3000;
+                l.torque_enable = true;
+            });
+            let mut k = kernel();
+            periods(&mut k, &sh, f, 4);
+            let case = (mode, cap);
+            assert!(
+                matches!(k.cmd.drive, fast::Drive::Closed { .. }),
+                "{case:?}"
+            );
+            assert_eq!((k.cfg.belt, k.cfg.unset_flag), (0, 0), "{case:?}");
+            write_config(&sh, |t| {
+                if cap {
+                    t.config.limits.current_limit_counts = 0;
+                } else {
+                    t.config.loop_position.speed_ceiling_cps = 0;
+                }
+            });
+            run_to(&mut k, &sh, f, phase::SPARE_A);
+            k.on_scan(f, &sh);
+            let (lp, lim) = (k.cfg.loop_position, k.cfg.limits);
+            let held = if cap {
+                (2400, 3000, 3000)
+            } else {
+                (1200, 0, 0)
+            };
+            assert_eq!(
+                (
+                    lim.current_limit_counts,
+                    lp.speed_ceiling_cps,
+                    lp.velocity_limit_cps
+                ),
+                held,
+                "{case:?}: the copy"
+            );
+            assert_eq!(k.cfg.belt, config::belt::LIMITS_UNSET, "{case:?}");
+            assert_eq!(k.cfg.unset_flag, limits::flag::UNSET, "{case:?}");
+            assert!(
+                !config::belt::refuses(k.cfg.belt, Mode::OpenLoop),
+                "{case:?}"
+            );
+            while k.phase != phase::CONTROL {
+                k.on_scan(f, &sh);
+                assert!(
+                    matches!(k.cmd.drive, fast::Drive::Closed { .. }),
+                    "{case:?}: the band of the take's period"
+                );
+            }
+            for n in 0..2 * DECIM_MED {
+                k.on_scan(f, &sh);
+                assert!(matches!(k.cmd.drive, fast::Drive::Off), "{case:?} tick {n}");
+                assert!(
+                    matches!(last_cmd(&k), MotorCmd::Disabled),
+                    "{case:?} tick {n}"
+                );
+            }
+            assert_eq!(k.faults.code(), faults::CODE_DATA, "{case:?}");
+            let flags = sh.table.with(|t| t.telemetry.limits.limit_flags);
+            assert_ne!(flags & limits::flag::UNSET, 0, "{case:?}");
+        }
+    }
 }
 
 #[test]

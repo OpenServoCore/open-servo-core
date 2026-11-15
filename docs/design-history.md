@@ -280,6 +280,22 @@ carries a wrong one runs to its stop and ends on the position error timer
 or the stall timer. Lesson: a fact the calibration measures is not one for
 the control loop to keep re-deriving from evidence a load can forge.
 
+### The compiled current cap and move speed
+
+A servo with no saved configuration once booted on a compiled 500 mA cap
+and a 1500 c/s move speed, and Current mode ran on them under every data
+reason but a corrupt CONFIG. Both were class guesses: 500 mA already sat
+over what a plastic train holds at a stop, and a board meets motors whose
+stall current and top speed it has never seen, so no compiled value was
+right for the motor at hand. They went when the speed ceiling joined the
+cap as the second limit every closed mode clamps against. Both now boot 0,
+unset, and the kernel's belt refuses every closed mode until calibration
+writes them; OpenLoop, which has no limits by design, runs under the
+board's overcurrent trip, and the host protects the train. The servos of
+this class ship limits for their own motor because their factory is the
+calibration. Lesson: a default that stands in for a measurement is a guess
+the servo will run on; refuse instead.
+
 ## Recurring lessons
 
 - **Measure before structuring.** Twice I built structure to avoid a cost

@@ -216,7 +216,6 @@ fn drives(cmds: &[(f64, MotorCmd)]) -> bool {
 /// OpenLoop still runs, under the board's own trip. On main the closed
 /// modes run on a zero band without a fault, and OpenLoop's band is shut.
 #[test]
-#[ignore = "red until every closed mode refuses an unset limit"]
 fn a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop() {
     for mode in [Mode::Current, Mode::Velocity, Mode::Position] {
         let (sh, mut p) = record(1500.0, |t| t.config.limits.current_limit_counts = 0);
@@ -257,7 +256,6 @@ fn a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop() {
 /// so within two medium periods of the commit nothing drives. On main the
 /// loop runs on a zero band, braking, with no fault.
 #[test]
-#[ignore = "red until every closed mode refuses an unset limit"]
 fn a_live_zero_cap_write_stops_a_running_closed_loop() {
     for mode in [Mode::Current, Mode::Velocity, Mode::Position] {
         let (sh, mut p) = record(1500.0, |_| {});
@@ -291,7 +289,6 @@ fn a_live_zero_cap_write_stops_a_running_closed_loop() {
 /// OpenLoop runs. On main the factory block carries a compiled 500 mA cap
 /// and Current mode runs on it.
 #[test]
-#[ignore = "red until every closed mode refuses an unset limit"]
 fn the_factory_block_refuses_current_mode_and_runs_openloop() {
     let sh = Shared::new();
     sh.table.seed_config_defaults(

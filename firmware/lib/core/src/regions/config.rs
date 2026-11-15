@@ -120,7 +120,8 @@ pub struct ConfigLoopPosition {
     /// on position rest alone (position.rs).
     pub pos_deadband_counts: u16,
     /// The hard speed limit calibration writes: the position loop's output
-    /// and the Velocity goal clamp at it. 0 reads as the move speed. It sits
+    /// and the Velocity goal clamp at it, and Current mode's band folds
+    /// under it. 0 = unset: every closed mode is refused. It sits
     /// ahead of the move speed, so an install in table order lands it
     /// before the rule that reads it.
     #[ct_field(le = VEL_CAP_CPS)]
@@ -134,11 +135,9 @@ pub struct ConfigLoopPosition {
     pub _rsvd_align: u16,
 }
 
-// Trajectory limits are clamps, not gains: with no ceiling stored, a move
-// speed of 0 pins omega_ref to 0 and velocity/position modes are inert even
-// with live gains, so they get real defaults (bench-validated on the SG90
-// rig: 1500 c/s, 15 c/s per medium tick = 0 -> 1500 in 50 ms).
-pub const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
+// The profile's acceleration is a clamp, not a gain: at 0 the profile never
+// leaves rest, so it gets a real default (bench-validated on the SG90 rig:
+// 15 c/s per medium tick, 0 -> 1500 c/s in 50 ms).
 pub const DEFAULT_ACCEL_LIMIT_Q88: u16 = 3840;
 
 // Anti-hunt hold: at 0 the park never engages and the position loop chases
@@ -152,7 +151,9 @@ pub const DEFAULT_POS_DEADBAND_COUNTS: u16 = 12;
 #[derive(Copy, Clone, Block)]
 pub struct ConfigLimits {
     /// The hard peak cap: the motor's nameplate stall current, which the
-    /// train is rated to deliver. Nothing composes over it.
+    /// train is rated to deliver. Nothing composes over it. 0 = unset:
+    /// every closed mode is refused, and OpenLoop runs under
+    /// `oc_trip_counts`.
     pub current_limit_counts: u16,
     pub stall_response: StallResponse,
     /// false = the wiring is reversed: the kernel negates its motor output so
@@ -192,7 +193,6 @@ pub struct ConfigLimits {
 // replace it with the actual motor's rating. The leak uses the octave
 // below that reference constant, so the estimate rises sooner.
 // Release stays below the fold so a held press does not unfold.
-pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 500;
 pub const DEFAULT_I_CONT_MA: u16 = 250;
 pub const DEFAULT_THERMAL_TAU_S: u16 = 4;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
@@ -279,9 +279,9 @@ pub struct ConfigFaultCfg {
 }
 
 // The source a stall may sag the rail through: about 0.8 ohm, what a USB
-// lead and its connectors add, so the 500 mA class cap folds over the
-// 400 mV above the floor; a pack's floor and source are per-product
-// tuning, written by the host. Reaches the chip through `rail_fold_q8`.
+// lead and its connectors add, so a 500 mA cap folds over the 400 mV above
+// the floor; a pack's floor and source are per-product tuning, written by
+// the host. Reaches the chip through `rail_fold_q8`.
 pub const DEFAULT_RAIL_SOURCE_MOHM: u32 = 800;
 
 // Wide screens so healthy motion never trips; tighten per application.
@@ -330,7 +330,6 @@ pub struct ConfigDefaults {
 /// only; the chip has no divide.
 #[derive(Copy, Clone, Debug)]
 pub struct CurrentDefaults {
-    pub current_limit_counts: u16,
     pub i_cont_counts: u16,
     pub stall_release_counts: u16,
     pub oc_trip_counts: u16,
@@ -339,12 +338,6 @@ pub struct CurrentDefaults {
 impl CurrentDefaults {
     pub const fn from_sense(shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> Self {
         Self {
-            current_limit_counts: current_counts(
-                DEFAULT_CURRENT_LIMIT_MA,
-                shunt_r_mohm,
-                gain_milli,
-                vdd_mv,
-            ),
             i_cont_counts: current_counts(DEFAULT_I_CONT_MA, shunt_r_mohm, gain_milli, vdd_mv),
             stall_release_counts: current_counts(
                 DEFAULT_STALL_RELEASE_MA,
@@ -369,8 +362,7 @@ const _: () = assert!(crate::kernel::TICK_HZ.is_multiple_of(1000));
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
 /// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4
 /// counts/A on the arm-B rig (33 mOhm, G 15.000, 3300 mV), 1108.5 on the
-/// osc-dev-v006 board (60 mOhm, G 14.884), where the 500 mA class limit is
-/// 554.
+/// osc-dev-v006 board (60 mOhm, G 14.884), where 500 mA is 554.
 pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> u16 {
     let num = ma as u64 * gain_milli as u64 * shunt_r_mohm as u64 * ADC_COUNTS_PER_VDD;
     let den = vdd_mv as u64 * 1_000_000;
@@ -440,8 +432,7 @@ mod tests {
             rail_fold_q8(DEFAULT_RAIL_SOURCE_MOHM, 60, 14_884, 3300, 6_400, 1_600),
             1430
         );
-        // 500 mA x 0.8 ohm: the cap, 554 counts, 99 vcounts (400 mV) over
-        // the floor
+        // 500 mA x 0.8 ohm: 554 counts, 99 vcounts (400 mV) over the floor
         assert_eq!((554u32 << 8) / 1430, 99);
         assert_eq!(rail_fold_q8(0, 60, 14_884, 3300, 6_400, 1_600), 0);
         assert_eq!(rail_fold_q8(1, 60, 14_884, 3300, 6_400, 1_600), u16::MAX);
@@ -468,7 +459,6 @@ mod tests {
     #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {
         let d = CurrentDefaults::from_sense(33, 15_000, 3300);
-        assert_eq!(d.current_limit_counts, 307);
         assert_eq!(d.i_cont_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.oc_trip_counts, 1352);

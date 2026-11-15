@@ -98,6 +98,7 @@ impl Medium {
         self.limit_flags = (pinned as u8 * limits::flag::CEILING)
             | (self.limits.stalled() as u8 * limits::flag::YIELD)
             | (permit as u8 * limits::flag::PERMIT)
+            | cfg.unset_flag
             | terms;
     }
 }

@@ -110,17 +110,16 @@ impl ControlTableCell {
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;
             // Core-owned safe defaults; gains stay at their zero seed so
-            // every loop boots inert. Enum defaults are discriminant 0.
-            // Trajectory limits are clamps, not gains - zero would pin the
-            // profile at 0 and keep the loops inert even once gains land.
+            // every loop boots inert. Enum defaults are discriminant 0. The
+            // current cap and the speed ceiling stay 0, unset: no compiled
+            // value is right for an unknown motor, so every closed mode is
+            // refused until calibration writes them.
             cfg.loop_current.duty_max_q15 = config::DEFAULT_DUTY_MAX_Q15;
-            cfg.loop_position.velocity_limit_cps = config::DEFAULT_VELOCITY_LIMIT_CPS;
             cfg.loop_position.accel_limit_q88 = config::DEFAULT_ACCEL_LIMIT_Q88;
             cfg.loop_position.pos_deadband_counts = config::DEFAULT_POS_DEADBAND_COUNTS;
             cfg.fusion.l1_q016 = config::DEFAULT_L1_Q016;
             cfg.fusion.l2_q88 = config::DEFAULT_L2_Q88;
             cfg.fusion.l3_q88 = config::DEFAULT_L3_Q88;
-            cfg.limits.current_limit_counts = current.current_limit_counts;
             cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
             cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
             cfg.limits.stall_time_ticks = config::DEFAULT_STALL_TIME_TICKS;

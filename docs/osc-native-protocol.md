@@ -849,13 +849,37 @@ reaches the kernel whole, at one tick near the end of a medium period,
 within a medium period (0.5 ms) of the commit, or a period later when
 that tick lands inside the next commit. If that write leaves
 `recip_ke_q == 0` or `ke_vpc_q == 0` under a running Velocity or
-Position loop, the same fault latches at the next medium tick and the
-drive stops. Until then the loop keeps running
-on the Ke it had, so a live write of a zero Ke can never run a loop
-open.
+Position loop, or a limit unset (below) under any running closed loop,
+the same fault latches at the next medium tick and the drive stops.
+Until then the loop keeps running on the Ke and the limits it had, so
+a live write of a zero Ke can never run a loop open, nor a live write
+of a zero limit run one unbounded.
 A virgin servo jogging in OpenLoop therefore shows no ALERT and its
 captures stay clean (DES `virgin_servo_drives_openloop_and_current_without_alert`,
 `live_zero_ke_write_stops_a_running_closed_loop`).
+
+**Limits unset.** The two limits every closed mode clamps against,
+`current_limit_counts` (the current cap, sec 5.8) and
+`speed_ceiling_cps` (the speed ceiling, sec 5.8), read 0 when unset,
+and the factory block holds 0 in both: no compiled value is right for a
+motor the board has never met. Neither has a meaningful 0 in a closed
+loop, so 0 fails safe. While either is 0 the physics belt refuses
+Current, Velocity and Position, whatever `data_flags` says: an enable
+or a mode change into one latches the `data` fault (code 7) and the
+servo stays disabled, and a live write of 0 stops a running loop as a
+zero Ke does (above). `limit_flags` bit 5 `UNSET` (sec 5.8) names the
+state every medium tick, torque on or off, so a host sees it before any
+enable; the fields themselves read 0. OpenLoop is never refused: it
+reads no ceiling, and with the cap unset its band is the board's
+overcurrent trip `oc_trip_counts` (sec 5.8). Calibration writes the cap
+first, the ceiling once the angle scale is known; with both set the bit
+clears within a medium period of the write and Current mode is admitted
+under the data reasons that leave it open (DES
+`a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop`,
+`a_live_zero_cap_write_stops_a_running_closed_loop`,
+`live_zero_limit_write_stops_a_running_closed_loop`,
+`the_factory_block_refuses_current_mode_and_runs_openloop`,
+`virgin_servo_admits_current_mode_once_both_limits_are_written`).
 
 The osc-servo alarm register (`fault_flags`, sec 5.4) and the latest
 newly-latched kind (`fault_code`, `0x221`):
@@ -1130,7 +1154,10 @@ Every drive mode clamps against the same current band (control-theory
 `goal_current`, then the press fold and the directional endstop. The closed loops clamp their current reference;
 OpenLoop, which has none, holds a duty ceiling against the band from
 the shunt alone, so a host-written `goal_duty` is a request the servo
-may refuse to apply in full. Three registers let a host take part: a
+may refuse to apply in full. With the cap unset (0, sec 5.7) OpenLoop,
+the one mode that runs then, takes the overcurrent trip
+`oc_trip_counts` as its cap, and `i_lim_counts` reads it (DES
+`virgin_servo_stalls_under_the_board_trip`). Three registers let a host take part: a
 permit to stall on purpose, a flag byte that names whatever is holding
 the command back, and the duty under which the shunt reads nothing.
 Like sec 5.7 these are model facts in model-specific space, and the
@@ -1207,7 +1234,8 @@ compiled out. A servo on it answers every register; the stripped ones
 **Speed ceiling and move speed.** Two CONFIG speeds bound the closed
 loops' motion, both u16 in counts per second of the linearized count.
 `speed_ceiling_cps` (RW, `0x044`, at most 32767, under the plant stamp,
-sec 5.7) is the hard speed limit calibration writes. `velocity_limit_cps`
+sec 5.7) is the hard speed limit calibration writes; 0 is unset and
+refuses every closed mode (sec 5.7, limits unset). `velocity_limit_cps`
 (RW, `0x046`, not covered) is the move speed, the cruise of the Position
 profile: a user setting from 0 to the ceiling. A write of a move speed
 over the ceiling is refused, the table's convention for a field bounded
@@ -1218,9 +1246,9 @@ ceiling. A later write that lowers the ceiling under a stored move speed
 is accepted, and the servo runs the move speed at the ceiling. The
 kernel resolves both at the configuration take (osc-servo-kernel sec
 6.2): a move speed of 0 reads as the ceiling, as Dynamixel's Profile
-Velocity 0 reads as the Velocity Limit, and a ceiling of 0 reads as the
-move speed, so a servo with no ceiling written runs on the move speed
-alone as one speed.
+Velocity 0 reads as the Velocity Limit, and the move speed runs at most
+the ceiling. A ceiling of 0 is not a speed: the servo refuses every
+closed mode until one is written.
 
 In Position mode the profile cruises at the move speed and the position
 loop's output clamps at the ceiling, so a shaft that falls behind its
@@ -1260,7 +1288,7 @@ every medium tick (2 kHz), torque on or off.
 | 2   | `ENDSTOP` | a soft limit closed a side of the band: at or past a wall, current toward it is forbidden                                                                            |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
 | 4   | `SPEED`   | Current mode only: the speed fold sits under the composed limit, so near `speed_ceiling_cps` the side of the band along the motion folds toward 0                    |
-| 5   | retired   | reads 0                                                                                                                                                              |
+| 5   | `UNSET`   | `current_limit_counts` or `speed_ceiling_cps` is 0: every closed mode is refused (sec 5.7, limits unset)                                                             |
 | 6   | `RAIL`    | the rail fold binds before the press fold, under the cap                                                                                                                       |
 | 7   | `GOAL`    | `goal_current` binds before the press fold, under the cap                                                                                                                      |
 
@@ -1272,7 +1300,10 @@ the fold and the endstop, so bit 3 never appears with bits 1 or 2, and
 it drops no ceiling, so it does appear with bits 6 and 7 (unit
 `limit_flags_name_the_governor`). Bit 4 is never set in Position,
 Velocity or OpenLoop, where the ceiling bounds a reference or nothing.
-Bit 5 is retired and reads 0.
+Bit 5 comes from the configuration the kernel holds, not from the
+command: it is set from the medium tick after a write leaves a limit at
+0 until the one after both are written again, in every mode and with
+torque off.
 The flags are a polled register; a TEL row may carry them, as any table
 field, at medium rate.
 
@@ -1339,8 +1370,8 @@ where the stall current is tens of mA. A servo with no identified resistance
 (`r_q12` 0) has the floor as its base, so the lowest duty it applies to
 a goal above the floor is the floor itself, and stall current in the
 blind band is bounded by `floor x Vbus / R` of the actual winding:
-0.085 A for a 4.9 ohm winding on 7.9 V, and under the 500 mA class
-limit for any winding above 0.89 ohm on 8.4 V. If the floor
+0.085 A for a 4.9 ohm winding on 7.9 V, and under 500 mA for any
+winding above 0.89 ohm on 8.4 V. If the floor
 already draws more than the limit, the applied duty stays pinned at
 the floor and the stall timer decides (DES
 `virgin_blind_band_passes_to_the_window_floor`).
@@ -1436,6 +1467,10 @@ Under the Same Band" has the planning behind it):
   warned about. Identification also refuses soft limits that span the
   whole pot (a servo `osc cal` never ran on) and an abort threshold
   more than a quarter over the limit.
+- A `current_limit_counts` of 0 is unset (sec 5.7): the servo's
+  OpenLoop band is then the overcurrent trip, not a limit fit for the
+  motor, so a host that drives a servo in that state plans against a
+  cap of its own, and writes the cap before it enables a closed mode.
 - Each drive watches while it waits: every pause is a TEL burst of
   `pos`, then `duty_ticks` to `vdiff_counts` (sec 5.6), of whole 16-tick
   windows, at most 250 ms long. The host folds each window into floor
