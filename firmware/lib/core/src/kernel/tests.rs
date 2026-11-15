@@ -3417,7 +3417,7 @@ fn the_park_clears_the_blend() {
             k.medium.omega_blend.standing_q16(),
             k.medium.omega_blend.lead_q16(),
         );
-        if !k.medium.hold {
+        if k.medium.life != phases::Life::Parked {
             formed = formed.max(standing.abs());
             fed += (ran == phase::OBSERVER && k.medium.omega_bemf.is_some()) as u32;
         } else if ran == phase::VELOCITY {
@@ -3956,7 +3956,7 @@ fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
         k.on_scan(frame(raw, BIAS), sh);
     }
     assert_eq!(k.faults.mask(), 0);
-    k.medium.hold
+    k.medium.life == phases::Life::Parked
 }
 
 /// Local gain 26/16 over raw 1600..2240: raw 1924 linearizes to 2126.5,
@@ -4556,14 +4556,14 @@ fn parked_for(sh: &Shared, after: u32) -> Kernel<FakeIo> {
     });
     let mut k = kernel();
     let mut n = 0;
-    while !k.medium.hold {
+    while k.medium.life != phases::Life::Parked {
         k.on_scan(frame(1924, BIAS), sh);
         n += 1;
         assert!(n < 10_000, "never parked at zero error");
     }
     for _ in 0..after {
         k.on_scan(frame(1924, BIAS), sh);
-        assert!(k.medium.hold, "woke at zero error");
+        assert!(k.medium.life == phases::Life::Parked, "woke at zero error");
     }
     k
 }
@@ -4572,7 +4572,7 @@ fn parked_for(sh: &Shared, after: u32) -> Kernel<FakeIo> {
 fn wakes(k: &mut Kernel<FakeIo>, sh: &Shared, raw: u16) -> bool {
     for _ in 0..2_000 {
         k.on_scan(frame(raw, BIAS), sh);
-        if !k.medium.hold {
+        if k.medium.life != phases::Life::Parked {
             return true;
         }
     }
@@ -4590,7 +4590,10 @@ fn a_settled_hold_stays_parked_under_noise_past_the_band() {
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let raw = (1942 + ((rng >> 24) as i32 % 3) - 1) as u16;
         k.on_scan(frame(raw, BIAS), &sh);
-        assert!(k.medium.hold, "woke at tick {n}, pot {raw}");
+        assert!(
+            k.medium.life == phases::Life::Parked,
+            "woke at tick {n}, pot {raw}"
+        );
     }
     assert_eq!(k.faults.mask(), 0);
 }
@@ -4625,14 +4628,20 @@ fn a_still_pot_past_the_band_parks_once_the_dwell_has_passed() {
     let mut k = landed(&sh, &mut || 1942);
     for n in 0..SETTLE_SCANS - SETTLE_SLACK {
         k.on_scan(frame(1942, BIAS), &sh);
-        assert!(!k.medium.hold, "parked before the dwell, tick {n}");
+        assert!(
+            k.medium.life != phases::Life::Parked,
+            "parked before the dwell, tick {n}"
+        );
     }
     for _ in 0..2 * SETTLE_SLACK {
         k.on_scan(frame(1942, BIAS), &sh);
     }
     for n in 0..20_000 {
         k.on_scan(frame(1942, BIAS), &sh);
-        assert!(k.medium.hold, "woke after the dwell, tick {n}");
+        assert!(
+            k.medium.life == phases::Life::Parked,
+            "woke after the dwell, tick {n}"
+        );
     }
     assert_eq!(k.faults.mask(), 0);
 }
@@ -4654,7 +4663,10 @@ fn a_hold_on_the_band_edge_settles_through_its_wakes() {
     for n in 0..20_000 {
         let raw = pot();
         k.on_scan(frame(raw, BIAS), &sh);
-        assert!(k.medium.hold, "woke after the dwell, tick {n}, pot {raw}");
+        assert!(
+            k.medium.life == phases::Life::Parked,
+            "woke after the dwell, tick {n}, pot {raw}"
+        );
     }
     assert_eq!(k.faults.mask(), 0);
 }
@@ -4677,7 +4689,7 @@ fn a_goal_write_unsettles_the_hold() {
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_position = 1930);
     let mut n = 0;
-    while !(k.medium.hold && k.medium.traj.theta_star_q16() == 1930 << 16) {
+    while !(k.medium.life == phases::Life::Parked && k.medium.traj.theta_star_q16() == 1930 << 16) {
         k.on_scan(frame(1924, BIAS), &sh);
         n += 1;
         assert!(n < 10_000, "the move never landed in a park");
@@ -4732,7 +4744,7 @@ fn torque_on_at_rest_on_the_goal_drives_nothing() {
             // period's TRAJECTORY phase
             if n >= 2 * DECIM_MED as u32 {
                 assert!(
-                    k.medium.hold,
+                    k.medium.life == phases::Life::Parked,
                     "enable {enable}, goal {goal}: not parked at tick {n}"
                 );
             }
@@ -4789,7 +4801,7 @@ fn torque_on_at_rest_ignores_a_stray_edge_sample() {
             // the park lands on the edge period's TRAJECTORY phase
             if n >= DECIM_MED as u32 {
                 assert!(
-                    k.medium.hold,
+                    k.medium.life == phases::Life::Parked,
                     "enable {enable}, goal {goal}: not parked at tick {n}"
                 );
             }
@@ -4899,14 +4911,14 @@ fn hold_freezes_and_drains_the_velocity_loop() {
     let mut k = kernel();
     let mut plant = Plant::new(1990);
     run_plant(&mut k, &sh, &mut plant, 20_000);
-    assert!(k.medium.hold, "never parked");
+    assert!(k.medium.life == phases::Life::Parked, "never parked");
     let mut rng: u32 = 0xdead_beef;
     for _ in 0..20_000 {
         let mut f = plant.step(k.fast.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         f.pos = (f.pos as i32 + ((rng >> 24) as i32 % 7) - 3).clamp(0, 4095) as u16;
         k.on_scan(f, &sh);
-        if k.medium.hold && k.phase == phase::VELOCITY + 1 {
+        if k.medium.life == phases::Life::Parked && k.phase == phase::VELOCITY + 1 {
             assert_eq!(k.medium.i_ref_cc, 0, "parked with a current command");
         }
     }
@@ -4915,7 +4927,7 @@ fn hold_freezes_and_drains_the_velocity_loop() {
     plant.theta_q16 -= 60i64 << 16;
     for _ in 0..2000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        if k.phase == phase::VELOCITY + 1 && !k.medium.hold {
+        if k.phase == phase::VELOCITY + 1 && k.medium.life != phases::Life::Parked {
             let (lv, motor) = sh.table.with(|t| (t.config.loop_velocity, t.calib.motor));
             let fresh = VelocityLoop::new().step(
                 k.medium.omega_ref_q16,
@@ -5750,6 +5762,207 @@ fn a_pending_take_holds_a_burst_start_through_its_tick() {
             .collect();
         assert_eq!(k.tel.held, want);
     }
+}
+
+// --- Mode changes under torque ---------------------------------------------
+
+/// Runs `plant` until the next tick runs the CONTROL phase, where a mode
+/// write lands.
+fn plant_to_control(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant) {
+    while k.phase != phase::CONTROL {
+        plant_tick(k, sh, plant);
+    }
+}
+
+/// The velocity loop entered from a mode that does not run it starts
+/// without charge, as at the enable edge and out of the park. A Velocity
+/// cruise charges the integrator with the plant's drag; Current mode at
+/// zero lets the shaft run down with the loop not stepping; back in
+/// Velocity at zero, the first velocity step is a fresh loop's on the same
+/// inputs. A loop that kept its charge pushes the old cruise's current
+/// into a shaft at rest.
+#[test]
+fn a_velocity_loop_entered_from_current_mode_carries_no_earlier_charge() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 1000;
+        t.config.pos_soft.pos_max_soft_counts = 1_000_000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(100);
+    run_plant(&mut k, &sh, &mut plant, 4000);
+    assert!(plant.omega_cps > 800, "cruise {}", plant.omega_cps);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 0;
+    });
+    run_plant(&mut k, &sh, &mut plant, 2000);
+    assert_eq!(plant.omega_cps, 0, "the shaft ran down");
+    plant_to_control(&mut k, &sh, &mut plant);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 0;
+    });
+    while plant_tick(&mut k, &sh, &mut plant) != phase::VELOCITY {}
+    let (lv, motor) = sh.table.with(|t| (t.config.loop_velocity, t.calib.motor));
+    let fresh = VelocityLoop::new().step(
+        k.medium.omega_ref_q16,
+        k.medium.omega_hat,
+        k.medium.traj.alpha_star_q16(),
+        k.medium.traj.omega_star_q16(),
+        k.medium.i_band,
+        &lv,
+        &motor,
+    );
+    assert_eq!(
+        k.medium.i_ref_cc, fresh,
+        "the loop came back with the cruise's charge"
+    );
+}
+
+/// What the drive applied the tick before a switch from OpenLoop to
+/// Current mode, and the duty of each tick from the switch to the end of
+/// the next period. OpenLoop at 5000 on a still shaft, then Current at the
+/// current that drive held. `r_q12` is the kernel's resistance.
+fn open_loop_to_current(sh: &Shared, r_q12: u16, from_current: bool) -> (i16, [i16; 20]) {
+    seed(sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.calib.motor.r_q12 = r_q12;
+        if from_current {
+            // a blind command a few ticks wide: every tick's width is a
+            // pulse the bridge drops
+            t.control.lifecycle.mode = Mode::Current;
+            t.control.lifecycle.goal_current = 5;
+        } else {
+            t.control.lifecycle.mode = Mode::OpenLoop;
+            t.control.lifecycle.goal_duty = 5000;
+        }
+    });
+    let mut k = kernel();
+    let mut plant = held_plant();
+    run_plant(&mut k, sh, &mut plant, 400);
+    if from_current {
+        let w = k.fast.ticks;
+        assert!(w != 0 && w < TIMING.bridge_min_ticks, "width {w}");
+        plant_to_control(&mut k, sh, &mut plant);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.mode = Mode::OpenLoop;
+            t.control.lifecycle.goal_duty = 5000;
+        });
+        run_plant(&mut k, sh, &mut plant, 400);
+    }
+    assert_eq!(k.fast.duty_q15, 5000);
+    // the winding's current under that drive: 5000 of 3000 vcounts over 2.0
+    let held = k.fast.i_meas_last;
+    assert_eq!(held, 228);
+    plant_to_control(&mut k, sh, &mut plant);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = held;
+    });
+    let before = k.fast.duty_q15;
+    let mut duties = [0; 20];
+    for d in &mut duties {
+        plant_tick(&mut k, sh, &mut plant);
+        *d = k.fast.duty_q15;
+    }
+    (before, duties)
+}
+
+/// A switch from OpenLoop to a closed mode enters the current loop on the
+/// winding as the drive left it: the reference is the current that flows
+/// and the integral the volts the bridge applied, so the duty runs on
+/// through the switch. Here the new goal is that same current, so every
+/// tick from the switch on drives within a sixteenth of the OpenLoop duty.
+/// A loop entered on a zero reference and an empty integral reverses the
+/// drive at the switch on its proportional gain alone.
+#[test]
+fn a_switch_from_open_loop_to_current_mode_continues_the_drive() {
+    let sh = Shared::new();
+    let (before, duties) = open_loop_to_current(&sh, 8192, false);
+    for (n, d) in duties.into_iter().enumerate() {
+        assert!(
+            (d as i32 - before as i32).abs() <= before as i32 / 16,
+            "tick {n} from the switch: duty {d} after {before}"
+        );
+    }
+}
+
+/// The first closed-loop tick after an OpenLoop drive takes its window's
+/// reading: whether the bridge dropped the pulse ahead of that window is
+/// a fact of the widths the drive wrote, whatever drive wrote them. A
+/// Current-mode run whose blind command is a few ticks wide ends on such
+/// a pulse; OpenLoop at 5000 follows, then the switch back to Current.
+/// The kernel's resistance is half the winding's, so a tick that took no
+/// reading would command half the volts; taken, the duty runs on as in
+/// `a_switch_from_open_loop_to_current_mode_continues_the_drive`.
+#[test]
+fn the_first_closed_tick_after_open_loop_takes_its_reading() {
+    let sh = Shared::new();
+    let (before, duties) = open_loop_to_current(&sh, 4096, true);
+    assert!(
+        (duties[0] as i32 - before as i32).abs() <= before as i32 / 16,
+        "the switch's tick drove {} after {before}",
+        duties[0]
+    );
+}
+
+/// A switch between the two profile modes keeps the profile's speed: the
+/// reference moves on from where the shaft is, at the speed it was asked
+/// for, and the new mode's goal shapes it from there under the accel
+/// limit. A Velocity cruise at the velocity limit switched to a far
+/// Position goal, and that move switched back to Velocity at the same
+/// speed: the shaft never drops a tenth under its speed at the switch.
+/// A profile restarted at rest asks the loop to stop the shaft and brakes
+/// it at each switch.
+#[test]
+fn a_switch_between_velocity_and_position_keeps_the_profiles_speed() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 1000;
+        t.config.loop_position.velocity_limit_cps = 1000;
+        t.config.pos_soft.pos_max_soft_counts = 1_000_000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(100);
+    run_plant(&mut k, &sh, &mut plant, 2000);
+    let writes: [fn(&mut ControlTable); 2] = [
+        |t| {
+            t.control.lifecycle.mode = Mode::Position;
+            t.control.lifecycle.goal_position = 3500;
+        },
+        |t| t.control.lifecycle.mode = Mode::Velocity,
+    ];
+    for (leg, write) in writes.into_iter().enumerate() {
+        plant_to_control(&mut k, &sh, &mut plant);
+        let cruise = plant.omega_cps;
+        assert!(
+            cruise > 800,
+            "leg {leg}: cruise {cruise} ahead of the switch"
+        );
+        sh.table.with_mut(write);
+        let mut low = i32::MAX;
+        for _ in 0..1000 {
+            plant_tick(&mut k, &sh, &mut plant);
+            low = low.min(plant.omega_cps);
+        }
+        assert!(
+            low >= cruise - cruise / 10,
+            "leg {leg}: the switch slowed the shaft from {cruise} to {low}"
+        );
+    }
+    assert_eq!(k.faults.mask(), 0);
 }
 
 // --- Host writes land at the CONTROL phase ---------------------------------

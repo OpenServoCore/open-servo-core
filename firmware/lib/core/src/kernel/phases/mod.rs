@@ -18,6 +18,8 @@ mod deadman;
 mod experiment;
 pub(in crate::kernel) mod fast;
 #[cfg(not(feature = "experiment"))]
+mod lifecycle;
+#[cfg(not(feature = "experiment"))]
 mod limits;
 pub mod loops;
 #[cfg(not(feature = "experiment"))]
@@ -39,6 +41,8 @@ mod velocity;
 pub(in crate::kernel) use control::Control;
 #[cfg(feature = "experiment")]
 pub(in crate::kernel) use experiment::Medium;
+#[cfg(not(feature = "experiment"))]
+pub(in crate::kernel) use lifecycle::Life;
 
 #[cfg(not(feature = "experiment"))]
 use self::fast::Command;
@@ -109,8 +113,7 @@ pub(in crate::kernel) struct Medium {
     pub(in crate::kernel) slow_periods: u8,
     /// CONTROL as the CONTROL phase read it.
     ctl: Control,
-    /// Torque on and no fault at the CONTROL phase: the loops run.
-    run: bool,
+    pub(in crate::kernel) life: Life,
     pub(in crate::kernel) traj: TrajGen,
     pub(in crate::kernel) fusion: FusionObs,
     /// The velocity loop's speed, from the observer phase: the observer's
@@ -143,14 +146,11 @@ pub(in crate::kernel) struct Medium {
     #[cfg(feature = "deadman")]
     deadman: deadman::Deadman,
     te_prev: bool,
-    run_prev: bool,
     mode_prev: Mode,
     /// The current command the fast half's loop tracks.
     pub(in crate::kernel) i_ref_cc: i32,
     /// Position loop output, held for the velocity step.
     pub(in crate::kernel) omega_ref_q16: i32,
-    /// Anti-hunt hold from the position loop; the drive parks on it.
-    pub(in crate::kernel) hold: bool,
     /// Consecutive medium ticks the position loop has reported `near`, up
     /// to `position::HOLD_SETTLE_TICKS`, where the hold is settled.
     pub(in crate::kernel) near_ticks: u8,
@@ -166,7 +166,7 @@ impl Medium {
             // estimate exists before any consumer sees it
             slow_periods: DECIM_SLOW - 1,
             ctl: Control::default(),
-            run: false,
+            life: Life::Off,
             traj: TrajGen::new(),
             fusion: FusionObs::new(),
             omega_hat: 0,
@@ -187,11 +187,9 @@ impl Medium {
             #[cfg(feature = "deadman")]
             deadman: deadman::Deadman::new(),
             te_prev: false,
-            run_prev: false,
             mode_prev: Mode::OpenLoop,
             i_ref_cc: 0,
             omega_ref_q16: 0,
-            hold: false,
             near_ticks: 0,
         }
     }

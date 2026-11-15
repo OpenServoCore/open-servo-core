@@ -1,9 +1,8 @@
+use super::Medium;
 use super::fast::{Command, Drive, Fast};
+use super::lifecycle::Life;
+use super::loops::current;
 use super::loops::faults::{self, FaultLatch};
-use super::loops::trajectory::TrajGen;
-use super::loops::{current, position};
-use super::{Medium, pos_q4};
-use crate::estimator::FusionObs;
 use crate::kernel::config::KernelConfig;
 use crate::pos_lut;
 use crate::regions::control::{ControlLifecycle, Mode};
@@ -51,7 +50,7 @@ impl Medium {
         self.deadman.see(shared);
         self.ctl = Control::read(shared);
         self.admit(cfg, shared, faults, fast);
-        self.edges(raw_pos, cfg, shared, faults, fast);
+        self.edges(raw_pos, cfg, shared, faults, fast, cmd);
         cmd.drive = self.drive(cfg, faults);
         // the resets of an edge reach the fast half with the drive they
         // change
@@ -107,7 +106,7 @@ impl Medium {
         }
     }
 
-    /// The run and mode edges.
+    /// The run and mode edges (`lifecycle`).
     fn edges(
         &mut self,
         raw_pos: u16,
@@ -115,59 +114,18 @@ impl Medium {
         shared: &Shared,
         faults: &FaultLatch,
         fast: &mut Fast,
+        cmd: &Command,
     ) {
-        let life = &self.ctl.life;
-        let run = life.torque_enable && faults.mask() == 0;
-        if run != self.run_prev {
-            // both edges zero the loop chain; the enable edge additionally
-            // restarts fusion and the profile at rest. A position goal
-            // inside the band of the estimate, with this sample agreeing
-            // within the zone, keeps the estimate's position and starts the
-            // profile on the goal: the host read the goal from that
-            // estimate, one sample sits farther off the shaft, and a
-            // profile from it to the goal drives a shaft already there.
-            // Otherwise fusion seeds at the sample and the profile at it:
-            // torque-off tau_d is built on a zero current, so a hand-moved
-            // shaft leaves the estimate stale and rails tau_d, and every
-            // enable would re-latch STALL via the collision check.
+        let run = self.ctl.life.torque_enable && faults.mask() == 0;
+        if run != (self.life != Life::Off) {
+            self.run_edge(run, raw_pos, cfg, shared, fast);
+        }
+        if self.ctl.life.mode != self.mode_prev {
             if run {
-                let pos = pos_q4(shared, self.ctl.lut_live, raw_pos);
-                let theta_hat = self.fusion.theta_q16();
-                let goal = TrajGen::goal_q16(life.goal_position, &cfg.pos_soft);
-                let db = cfg.loop_position.pos_deadband_counts;
-                let band = position::band_q16(db, self.band_gain_q4);
-                if life.mode == Mode::Position
-                    && db != 0
-                    && goal.abs_diff(theta_hat) <= band
-                    && FusionObs::seed_theta_q16(pos).abs_diff(theta_hat)
-                        <= band.saturating_add(band)
-                {
-                    self.fusion.rest();
-                    self.traj.reseed(goal);
-                } else {
-                    self.fusion.seed(pos);
-                    self.traj.reseed(self.fusion.theta_q16());
-                }
+                self.mode_edge(cfg, fast, cmd);
             }
-            fast.reset_current_loop();
-            self.vel.reset();
-            self.omega_blend.reset();
-            fast.reset_limiter(cfg.ol_floor_q15);
-            self.i_ref_cc = 0;
-            self.omega_ref_q16 = 0;
-            self.hold = false;
-            self.near_ticks = 0;
-            self.run_prev = run;
+            self.mode_prev = self.ctl.life.mode;
         }
-        if run && life.mode != self.mode_prev {
-            // mode change mid-run: reference = estimate, at rest
-            self.traj.reseed(self.fusion.theta_q16());
-            fast.reset_limiter(cfg.ol_floor_q15);
-            self.hold = false;
-            self.near_ticks = 0;
-        }
-        self.mode_prev = life.mode;
-        self.run = run;
     }
 
     /// The drive kind the fast half runs: off, the hold's park, OpenLoop
@@ -181,10 +139,10 @@ impl Medium {
             Mode::OpenLoop => {
                 let max = cfg.loop_current.duty_max_q15 as i32;
                 Drive::OpenLoop {
-                    goal_q15: (life.goal_duty as i32).clamp(-max, max),
+                    goal_q15: (life.goal_duty as i32).max(-max).min(max),
                 }
             }
-            _ if self.hold => Drive::Brake,
+            _ if self.life == Life::Parked => Drive::Brake,
             // Ke decoupling rides the profile, not an estimate
             // (`current::u_ff_vc`); Current mode has no profile
             Mode::Velocity | Mode::Position => Drive::Closed {

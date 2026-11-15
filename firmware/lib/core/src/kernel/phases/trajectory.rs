@@ -1,7 +1,7 @@
-use super::Medium;
 use super::fast::Command;
 use super::loops::faults::FaultLatch;
 use super::loops::position::{self, HOLD_SETTLE_TICKS};
+use super::{Life, Medium};
 use crate::kernel::config::KernelConfig;
 use crate::regions::control::Mode;
 
@@ -13,7 +13,7 @@ impl Medium {
         faults: &FaultLatch,
         cmd: &mut Command,
     ) {
-        if !self.run {
+        if self.life == Life::Off {
             return;
         }
         let (lp, soft) = (&cfg.loop_position, &cfg.pos_soft);
@@ -32,7 +32,7 @@ impl Medium {
                     lp,
                 );
                 self.omega_ref_q16 = out.omega_ref_q16;
-                self.hold = out.hold;
+                self.life = if out.hold { Life::Parked } else { Life::Run };
                 self.near_ticks = if out.near {
                     self.near_ticks + (self.near_ticks < HOLD_SETTLE_TICKS) as u8
                 } else {
@@ -43,9 +43,9 @@ impl Medium {
                 self.traj
                     .step_velocity(life.goal_velocity, theta_hat, lp, soft);
                 self.omega_ref_q16 = self.traj.omega_star_q16();
-                self.hold = false;
+                self.life = Life::Run;
             }
-            Mode::Current | Mode::OpenLoop => self.hold = false,
+            Mode::Current | Mode::OpenLoop => self.life = Life::Run,
         }
         cmd.drive = self.drive(cfg, faults);
     }

@@ -1,7 +1,7 @@
-use super::Medium;
 use super::fast::Fast;
 use super::loops::faults::{self, FaultLatch};
 use super::loops::limits;
+use super::{Life, Medium};
 use crate::Shared;
 use crate::kernel::config::KernelConfig;
 use crate::math::q_mul_u;
@@ -78,7 +78,7 @@ impl Medium {
             let v = (lim.unsigned_abs() * r_q12 as u32) >> 12;
             q_mul_u(v, self.vbus.recip_q15(), 15).min(cfg.ol_floor_q15 as u32) as u16
         };
-        if self.run && self.limits.stall_fault_pending() {
+        if self.life != Life::Off && self.limits.stall_fault_pending() {
             faults.raise(faults::BIT_STALL, faults::CODE_STALL);
         }
         // one closed side makes the band asymmetric; a zero limit closes

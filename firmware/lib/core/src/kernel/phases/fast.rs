@@ -206,6 +206,17 @@ impl Fast {
         self.cur.reset();
     }
 
+    /// The current loop entered from OpenLoop: the integral at the volts
+    /// the bridge applied, and the dropped-pulse gate's rule on the last
+    /// width OpenLoop wrote, which nothing judged while it drove.
+    #[cfg(not(feature = "experiment"))]
+    pub fn enter_current_loop(&mut self, cmd: &Command) {
+        let lim = cmd.rail.integ_lim_vq16 >> 16;
+        let v = crate::math::q_mul(self.duty_q15 as i32, cmd.vbus_counts as i32, 15);
+        self.cur.seed(v.max(-lim).min(lim));
+        self.dropped = self.ticks.wrapping_sub(1) < self.dropped_max_ticks;
+    }
+
     #[cfg(not(feature = "experiment"))]
     pub fn reset_limiter(&mut self, floor_q15: u16) {
         self.ol.reset(floor_q15);
@@ -431,13 +442,15 @@ impl Fast {
                 self.drive_cmd(duty, DecayMode::Slow, cfg.limits.drive_polarity)
             }
         } else if let Drive::Brake = drive {
-            // anti-hunt: park instead of dithering on friction; the frozen
-            // loop resumes bumplessly on exit. The winding short brakes a
-            // shaft that enters the band at speed (Ke x omega / R, zero at
-            // rest, nothing from the rail). On friction alone a fast arrival
-            // leaves the far edge, and the wake kicks it back through at the
-            // current limit: a limit cycle. Not with the cold kinds below: a
-            // hold at rest parks here every tick.
+            // anti-hunt: park instead of dithering on friction. The first
+            // closed tick after it has no reading (a zero width voids the
+            // window), so the loop restarts at `r x i_ref`. The winding
+            // short brakes a shaft that enters the band at speed
+            // (Ke x omega / R, zero at rest, nothing from the rail). On
+            // friction alone a fast arrival leaves the far edge, and the
+            // wake kicks it back through at the current limit: a limit
+            // cycle. Not with the cold kinds below: a hold at rest parks
+            // here every tick.
             self.duty_q15 = 0;
             MotorCmd::Brake
         } else {

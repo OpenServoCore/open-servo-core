@@ -71,6 +71,12 @@ impl CurrentLoop {
         self.integ_vq16 = 0;
     }
 
+    /// The integral at `v_vc` whole vcounts, which the caller holds inside
+    /// the integrator's limit.
+    pub fn seed(&mut self, v_vc: i32) {
+        self.integ_vq16 = v_vc << 16;
+    }
+
     /// One FAST-tick update -> duty. `i_meas` None is a tick with no
     /// reading to take: a window under the shunt floor, or the first one
     /// read after a pulse the bridge dropped. The bridge is a voltage

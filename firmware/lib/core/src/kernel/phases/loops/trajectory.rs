@@ -69,6 +69,14 @@ impl TrajGen {
         self.alpha_last_q16 = 0;
     }
 
+    /// Mode change between the profile modes: the reference at
+    /// `theta_q16`, at the speed it was asked for, with no acceleration
+    /// applied.
+    pub fn rebase(&mut self, theta_q16: i32) {
+        self.theta_ref_q16 = theta_q16.clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+        self.alpha_last_q16 = 0;
+    }
+
     /// Where the position profile lands for `goal_counts`, cQ16: the goal
     /// clamped to the soft limits, inside +-`GOAL_LIM_COUNTS`.
     #[inline(always)]
@@ -161,7 +169,7 @@ impl TrajGen {
 
     /// Velocity-mode entry: slew omega_ref toward the clamped goal by +-a
     /// per tick. theta_ref holds: nothing reads it in this mode, and every
-    /// entry into position mode reseeds the profile.
+    /// entry into position mode moves it to the estimate.
     ///
     /// Soft-limit wall ramp: the goal's inward component is capped at
     /// WALL_RAMP c/s per count of distance to the wall, reaching 0 at the
