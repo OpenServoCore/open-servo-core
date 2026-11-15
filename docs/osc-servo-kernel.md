@@ -241,10 +241,9 @@ No reference is formed into a region another context writes. Cross-context acces
 
 | Rows | Scope |
 | --- | --- |
-| `KERNEL`, `KERNEL_MEAN`, `TICK_PUBLISH` | plain tick body by regime (Open, Closed, OpenLoop) and phase, maximum and mean |
+| `KERNEL`, `KERNEL_MEAN` | plain tick body by regime (Open, Closed, OpenLoop) and phase, maximum and mean, every phase's stages and the tick block's work in it |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
-| `LIMIT_SPLIT`, `SPEED_STAGE`, `SPEED_BLEND`, `HEAT_MEAN`, `LIFECYCLE` | estimated additions over measured rows, by phase, until the probe refills the phase; `SPEED_STAGE` is what came with phase SPEED's stage: the close on SPEED, and on SPARE_A the dispatch through the phase table that grew to hold it; `SPEED_BLEND` is the speed blend over the source switch the rows were measured with: the blend's step on OBSERVER, its clears on CONTROL and on the parked VELOCITY; `HEAT_MEAN` is the heats' sum of the held current squared on LIMITS; `LIFECYCLE` is the lifecycle state over the run, run-edge and hold flags: the edges on CONTROL, the park's state on TRAJECTORY, the mode arms on VELOCITY |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
 | `TROUGH_DONE`, `FRAME_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |

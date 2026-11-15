@@ -89,36 +89,29 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// Kernel tick body with no event on it, per regime and phase: the longest
 /// a window may show.
 ///
-/// M, drive-arm tagged on this image, a closing tick booked apart:
-/// Open over the quiet, hold, parked hold and stepping windows' Open ticks,
-/// Closed over the same windows' Closed ticks. Open phases 0, 5 and 7, M:
-/// r3-refill, every gated window's Open ticks, 3 runs, less
-/// [`TICK_PUBLISH`]. OpenLoop, M: the openloop window's OpenLoop ticks, 3
-/// runs, the tick block's work in the row. Phase SLOW off its due period is
-/// a plain tick; the due body is [`SLOW_DUE`]. The limit split's additions
-/// are E, carried separately by [`LIMIT_SPLIT`] pending a probe refill, as
-/// is what came with phase SPEED's stage by [`SPEED_STAGE`]: the phase's
-/// rows are the fast path alone, and SPARE_A's predate the stage's entry
-/// in the phase table. The rows predate the speed blend as well
-/// ([`SPEED_BLEND`]), the heat's SLOW-cycle sum ([`HEAT_MEAN`]) and the
-/// lifecycle state ([`LIFECYCLE`]).
+/// M, every gated window's ticks by drive arm, on the image the table
+/// ships with, a closing tick booked apart, 5 runs: Open over the Open
+/// ticks, Closed over the Closed ticks, OpenLoop over the openloop
+/// window's OpenLoop ticks. A report-only window feeds no row. Each cell
+/// is its measured maximum with the rule's margin; the bodies hold the
+/// tick block's work and every phase's stages.
+/// Phase SLOW off its due period is a plain tick; the due body is
+/// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
-    [811, 1070, 890, 932, 641, 954, 641, 803, 599, 593],
-    [1403, 1610, 1684, 1469, 1613, 1520, 1181, 1346, 1139, 1127],
-    [1317, 1675, 1182, 1452, 1155, 1446, 1140, 1251, 1119, 1101],
+    [684, 1002, 849, 912, 534, 915, 519, 699, 510, 537],
+    [1269, 1635, 1605, 1500, 1422, 1614, 1092, 1395, 1155, 1236],
+    [1254, 1611, 1125, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
 ///
-/// M: per phase the largest window mean of the same windows, Closed from
-/// the stepping windows. Open phases 0 and 7, M: r3-refill, every gated
-/// window's largest Open mean, 3 runs, less [`TICK_PUBLISH`]. OpenLoop,
-/// M: the openloop window's largest OpenLoop mean, 3 runs, at most the
-/// maximum's row (phases 3 and 5: the bodies barely vary).
+/// M: per phase the largest window mean over the same windows and ticks,
+/// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
+/// maximum's row (OpenLoop phase 5: the bodies barely vary).
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
-    [781, 1062, 867, 915, 622, 951, 611, 782, 578, 566],
-    [1234, 1528, 1495, 1307, 1454, 1367, 994, 1175, 956, 948],
-    [1312, 1600, 1172, 1452, 1144, 1446, 1117, 1245, 1091, 1078],
+    [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
+    [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
+    [1244, 1546, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
 ];
 
 /// A window's mean is judged only over this many bodies.
@@ -138,139 +131,22 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
 pub const REFRESH: u32 = 824;
 
-/// The tick block's work on every tick, on top of [`KERNEL`], whose bodies
-/// predate it, by regime and phase: the scan landed by the ADC DMA (the
-/// trough's copies, the crest's shunt copy and the taps named by terminal,
-/// where the bodies copied the frame), the publish (the held current, the
-/// differential, the duty and the tick flags) and the TEL gate. E: each
-/// phase's plain tick over the same tick of the image the rows were
-/// measured on, priced on the release image with the fetch model (as
-/// [`TEL_POLL`]), per drive arm (Closed; the dearer of Brake and Off for
-/// Open), plus 10%; a phase that got cheaper, PUBLISH with its dropped
-/// duplicates, is not credited. The crest's shunt copy, two 4-byte
-/// instructions (6), is 7 in every cell. The release image prices under
-/// every row. OpenLoop's rows were measured with the block: none.
-pub const TICK_PUBLISH: [[u32; PHASES]; REGIMES] = [
-    [9, 38, 18, 7, 15, 28, 18, 7, 13, 16],
-    [12, 65, 42, 32, 25, 35, 45, 7, 39, 43],
-    [0; PHASES],
-];
-
 /// Code layout on top of every kernel row, maximum and mean: one source
 /// compiles to tick bodies that differ by register allocation and block
 /// placement from build to build, and between the bench image the rows
 /// are measured on and the release image. E: the bench image's excess
-/// over the release image's on the same change, priced per phase as
-/// [`TICK_PUBLISH`], on mean rows.
+/// over the release image's on the same change, priced per phase on the
+/// release image with the fetch model (as [`TEL_POLL`]), on mean rows.
 pub const LAYOUT: u32 = 35;
 
-/// E, over the measured LIMITS and RAIL rows, maxima and means. Matched
-/// release builds with each phase out of line, longest executed paths,
-/// priced as REFRESH: LIMITS 450.75 -> 578 HCLK (58 more instructions,
-/// 9 more loads/stores, two fewer multiplies); RAIL 351.25 -> 404.75
-/// (17 more instructions, 6 more loads/stores, one more multiply).
-/// Each delta plus 10%, rounded up; the bench must refill both phases.
-pub const LIMIT_SPLIT: [u32; PHASES] = [0, 0, 0, 140, 0, 59, 0, 0, 0, 0];
-
-/// E, over the measured SPARE_A and SPEED rows, maxima and means: what
-/// came with phase SPEED's stage, the back-EMF half's close, which the
-/// rows predate. Matched release builds, each phase's longest executed
-/// path against the same tick with no stage, priced as REFRESH. SPARE_A,
-/// every regime, a take's tick included: the phase table grew to hold
-/// SPEED, so the tick's dispatch goes through it where the default arm
-/// skipped, 10 -> 25.25 HCLK. SPEED, Closed and OpenLoop, a driven valid
-/// half paired behind a valid run: 10 -> 259 (78 more instructions, 20
-/// loads/stores, 7 multiplies, three more taken transfers: the same
-/// dispatch, the close, its stores; the drive's sign and the validity
-/// history are 4 of the loads/stores and 12 ALU, 37). SPEED, Open:
-/// nothing drove the tick's own window, so the close voids the half on
-/// the zero duty and the products are skipped, 10 -> 75.25. Each delta
-/// plus 10%, rounded up. OBSERVER, which the close left, keeps its rows
-/// until the probe reads them lower; the bench must refill all three
-/// phases.
-pub const SPEED_STAGE: [[u32; PHASES]; REGIMES] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 17, 72],
-    [0, 0, 0, 0, 0, 0, 0, 0, 17, 274],
-    [0, 0, 0, 0, 0, 0, 0, 0, 17, 274],
-];
-
-/// E, over the measured OBSERVER, CONTROL and VELOCITY rows, maxima and
-/// means: the speed blend in place of the source switch
-/// (`estimator::omega_blend`), which the rows predate. Matched release
-/// builds, priced as REFRESH. OBSERVER, the phase's arm from its dispatch
-/// to the tick's tail on the same executed path. Closed and OpenLoop, a
-/// boxcar on a forward speed: 480.5 -> 528 HCLK (28 more instructions, 6
-/// more loads/stores, 4 fewer taken transfers), the largest rise of the
-/// paths priced; the phase's longest path, a boxcar on a reverse speed,
-/// 523 -> 534. Open, where no boxcar closes: 463.25 -> 498.25 (19 more
-/// instructions, 4 more loads/stores, 2 fewer taken transfers). The
-/// blend's clear is two stores, 6.5 HCLK: on CONTROL's run-edge tick,
-/// which any regime books, and on VELOCITY's parked tick, which is
-/// Open's. Each delta plus 10%, rounded up. OBSERVER's rows still hold
-/// the back-EMF close, which left the phase with SPEED's stage; the
-/// bench must refill the three phases.
-pub const SPEED_BLEND: [[u32; PHASES]; REGIMES] = [
-    [8, 39, 0, 0, 8, 0, 0, 0, 0, 0],
-    [8, 53, 0, 0, 0, 0, 0, 0, 0, 0],
-    [8, 53, 0, 0, 0, 0, 0, 0, 0, 0],
-];
-
-/// E, over the measured LIMITS rows, maxima and means: the heat's
-/// SLOW-cycle sum, the held current's square limited to the heat's top
-/// and added every period whatever the drive, which the rows predate.
-/// Matched release builds, LIMITS' longest executed path, the fold's,
-/// priced as REFRESH: 7 more instructions, 28.5 HCLK (the multiply, the
-/// limit's two ALU and its taken transfer, the sum's load, add and
-/// store); the held current's load and magnitude moved ahead of the fold,
-/// which read them on that path already. The delta plus 10%, rounded up;
-/// the bench must refill the phase.
-pub const HEAT_MEAN: [[u32; PHASES]; REGIMES] = [
-    [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 32, 0, 0, 0, 0, 0, 0],
-];
-
-/// E, over the measured CONTROL, TRAJECTORY and VELOCITY rows, maxima and
-/// means: the lifecycle state in place of the run, run-edge and hold flags
-/// (`kernel/phases/lifecycle.rs`), which the rows predate. Matched release
-/// builds, each phase's executed paths priced as REFRESH, the largest rise
-/// over each regime's paths. CONTROL, every regime: the run-on edge's
-/// tick, which any regime books and which sets the phase's maximum, on its
-/// dearest path (a live position table read at a wide code) 564.75 ->
-/// 566.25 HCLK (8 more instructions, 3 fewer taken transfers: the table's
-/// base rematerialized and a register held across the wide code's read),
-/// 17 less on the other table paths; the mode edge's tick from OpenLoop,
-/// 394.75, stays under the run-on edge's cheapest path (no table, 449.5);
-/// every tick without an edge is 3.25 to 18 cheaper. TRAJECTORY, Closed
-/// and Open (a parked period is Open's): the position step's hold into the
-/// state and the park's compare, 3 more ALU, 6; OpenLoop: the state's
-/// store, 1 more ALU, 2. VELOCITY, Closed and OpenLoop: the Current arm
-/// moved behind a taken branch, and the OpenLoop arm took one more compare
-/// and a constant, 4 each; the parked and profile arms read no flag, 3.25
-/// less. Each delta plus 10%, rounded up; the bench must refill the three
-/// phases.
-pub const LIFECYCLE: [[u32; PHASES]; REGIMES] = [
-    [2, 0, 7, 0, 0, 0, 0, 0, 0, 0],
-    [2, 0, 7, 0, 5, 0, 0, 0, 0, 0],
-    [2, 0, 3, 0, 5, 0, 0, 0, 0, 0],
-];
-
-/// The estimated additions over a measured row at `r` and `p`.
-const fn estimated(r: usize, p: usize) -> u32 {
-    LIMIT_SPLIT[p] + SPEED_STAGE[r][p] + SPEED_BLEND[r][p] + HEAT_MEAN[r][p] + LIFECYCLE[r][p]
-}
-
-/// A plain tick's budget at `regime` and `phase`: its row, the tick
-/// block's work, the estimated additions and layout.
+/// A plain tick's budget at `regime` and `phase`: its row and layout.
 pub const fn tick_body(regime: Regime, phase: usize) -> u32 {
-    let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL[r][p] + TICK_PUBLISH[r][p] + estimated(r, p) + LAYOUT
+    KERNEL[regime as usize][phase % PHASES] + LAYOUT
 }
 
 /// The same plain ticks' mean over a window.
 pub const fn tick_body_mean(regime: Regime, phase: usize) -> u32 {
-    let (r, p) = (regime as usize, phase % PHASES);
-    KERNEL_MEAN[r][p] + TICK_PUBLISH[r][p] + estimated(r, p) + LAYOUT
+    KERNEL_MEAN[regime as usize][phase % PHASES] + LAYOUT
 }
 
 /// Every tick of a TEL burst, on top of [`KERNEL`] and the lane: the row
@@ -333,20 +209,19 @@ pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
 /// DECIM_SLOW periods): the permit lease, undervoltage and the two heats,
-/// on top of the phase's row, per regime. E, an upper bound kept from a
-/// dearer earlier body (405 over the plain tick, plus the heat's 46, plus
-/// 10%); the bench re-prices it.
-pub const SLOW_DUE: [u32; EVENT_REGIMES] = [496, 496];
+/// on top of the phase's row, per regime. M: the due bodies' maximum over
+/// the phase's plain maximum that sets its row, every gated window with no
+/// TEL, 5 runs, with the rule's margin: Open 608 over 471; Closed 1146
+/// over 1044, the maximum from the openloop window, its OpenLoop ticks
+/// booked Closed.
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [185, 150];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
 /// quadratic, the two rise multiplies, the cutoff fault and the winding
-/// resistance (`Medium::r_hat`: two multiplies and three stores). E, an
-/// upper bound kept from a dearer earlier body (330 plus a since-deleted
-/// ceiling's 71.25, plus 10%). The resistance prices at 82.25 HCLK on the
-/// fetch model, 89.5 for an unidentified winding, where the ceiling was
-/// 71.25: by the same sum the row would read 454. It keeps its number
-/// until the bench re-prices it.
-pub const SLOW_FINISH: u32 = 442;
+/// resistance (`Medium::r_hat`: two multiplies and three stores). M as
+/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1416, the
+/// openloop window's, over 1044.
+pub const SLOW_FINISH: u32 = 420;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
@@ -354,7 +229,11 @@ pub const SLOW_FINISH: u32 = 442;
 /// maximum (in the TEL windows over the TEL ticks'), either regime, every
 /// window with the report-only one, 3 runs: 228 (Closed, hold raw pos;
 /// 159 in the TEL windows). The probe books a close ahead of a bank, so
-/// that cell may hold a bank too. CATCH_UP, E: priced on the executed path.
+/// that cell may hold a bank too. CATCH_UP, E: priced on the executed path,
+/// one step. The first close after a hold-off of many periods runs the
+/// step once a period owed, up to `kernel::HEALTH_LOST_MAX`, and costs
+/// several hundred HCLK more; no kernel row books it when the hold-off is
+/// a probe dump, which reads the kernel record before that close runs.
 pub const HEALTH_CLOSE: u32 = 276;
 pub const CATCH_UP: u32 = 111;
 
@@ -391,16 +270,18 @@ pub const HOLD_APPROACH_TICKS: u32 = 3400;
 pub const WINDOW_TICKS: [usize; 4] = [2, 4, 10, 20];
 
 /// gamma(k) on the bench by regime: the most the bodies of k consecutive
-/// ticks took. M: the quiet windows (Open) and the stepping windows
-/// (Closed). Closed and Open gamma(2) and gamma(4), M: r3-refill, the same
-/// windows, 3 runs.
+/// ticks took, events included. M: the quiet windows (Open) and the
+/// stepping windows (Closed), 3 runs, on the window-record image, with the
+/// rule's margin. The record updates after the exit stamp, outside every
+/// body; that image's quiet-window plain maxima read 4 to 7 ticks over
+/// the bench image's, layout.
 pub const WINDOW_LOAD: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[1861, 3461, 8216, 15705], [3446, 6459, 14369, 27820]];
+    [[1781, 3155, 7015, 13428], [3225, 6073, 13729, 27067]];
 
-/// The same with six fields streaming at 3M. M: r3-refill, TEL still
-/// (Open) and TEL stepping (Closed), 3 runs.
+/// The same with six fields streaming at 3M. M as [`WINDOW_LOAD`]: TEL
+/// still (Open) and TEL stepping (Closed).
 pub const WINDOW_LOAD_TEL: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[2806, 4886, 11628, 22137], [4249, 7831, 17150, 33348]];
+    [[2441, 4405, 9888, 18956], [4091, 7362, 16665, 32527]];
 
 /// Bus vector bodies.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

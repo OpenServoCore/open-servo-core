@@ -640,6 +640,32 @@ fn gamma_is_the_heaviest_run_of_k_ticks() {
     }
 }
 
+/// A tick the probe does not book breaks every window: no gamma(k) sums
+/// the heavy bodies on either side of a halt, and none takes a sum of
+/// fewer than k ticks after it.
+#[test]
+fn a_halt_between_two_heavy_bodies_never_sums_them() {
+    let mut k = KernelProbe::ZERO;
+    let mut w = WindowProbe::ZERO;
+    let mut n = 0;
+    let mut run = |k: &mut KernelProbe, w: &mut WindowProbe, body: u32, count: u32| {
+        for _ in 0..count {
+            both(k, w, n, body, n as usize % PHASES, OPEN, PLAIN);
+            n += 1;
+        }
+    };
+    run(&mut k, &mut w, 100, 26);
+    run(&mut k, &mut w, 2000, 1);
+    run(&mut k, &mut w, HALT_TICKS + 1, 1);
+    run(&mut k, &mut w, 2000, 1);
+    run(&mut k, &mut w, 100, 25);
+    assert_eq!(k.halts, 1);
+    assert_eq!(w.windows.gamma, [2100, 2300, 2900, 3900]);
+    run(&mut k, &mut w, HALT_TICKS + 1, 1);
+    run(&mut k, &mut w, 3000, 3);
+    assert_eq!(w.windows.gamma, [6000, 2300, 2900, 3900]);
+}
+
 /// Many laps of the ring, the running total wrapping its 16 bits about
 /// every 40 ticks: each gamma(k) is still the heaviest run of k bodies.
 #[test]
@@ -664,7 +690,7 @@ fn a_configuration_take_charges_its_row() {
     let (closed, p) = (Regime::Closed as usize, phase::SPARE_A as usize);
     assert_eq!(
         kernel_tick(Regime::Closed, p, refresh),
-        KERNEL[closed][p] + TICK_PUBLISH[closed][p] + SPEED_STAGE[closed][p] + LAYOUT + REFRESH
+        KERNEL[closed][p] + LAYOUT + REFRESH
     );
 }
 
