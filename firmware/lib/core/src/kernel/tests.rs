@@ -113,8 +113,7 @@ fn seed(shared: &Shared) {
         c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
-        // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
-        // 0.5 cc per count is stable, 2.0 rails the filter
+        // l3 * B is the tau_d loop gain
         c.fusion.l3_q88 = 128;
         c.fault_cfg.pos_error_counts = 400;
         c.fault_cfg.pos_error_time_ticks = ms_ticks(500);
@@ -123,13 +122,12 @@ fn seed(shared: &Shared) {
         let cal = &mut t.calib;
         cal.sense.i_window_min_ticks = 100;
         cal.sense.v_window_min_ticks = 100;
-        cal.motor.ke_vpc_q = 256; // 0.0625 vcounts per c/s
-        cal.motor.r_q12 = 8192; // 2.0 vcounts/ccount
-        cal.motor.recip_ke_q = 16 << 10; // 16 c/s per vcount
-        // plant B ~= 1.33 c/s per ccount per medium tick (200/1500 x 10);
-        // encoded 1.0 (the old Q0.16-ceiling dynamics, kept so the pinned
-        // integer sims stand); correction gains absorb the gap
-        cal.motor.b_i_q313 = 8192;
+        cal.motor.ke_vpc_q = 4096 >> PLANT_KE_SHIFT;
+        cal.motor.r_q12 = 4096 << PLANT_R_SHIFT;
+        cal.motor.recip_ke_q = 1024 << PLANT_KE_SHIFT;
+        cal.motor.b_i_q313 = PLANT_B_I_Q313;
+        cal.motor.fric_fc_counts = PLANT_FRIC_FC_COUNTS;
+        cal.motor.fric_fv_q016 = PLANT_FRIC_FV_Q016;
         t.telemetry.refs.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
@@ -1460,9 +1458,9 @@ fn under_the_floor_the_command_is_the_reference_through_the_winding() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::Velocity;
         t.control.lifecycle.goal_velocity = 160;
-        // 2.0 x 40 counts + 0.0625 x 160 c/s = 90 vcounts = 36 ticks: the
+        // 2.0 x 49 counts + 0.0625 x 160 c/s = 108 vcounts = 43 ticks: the
         // whole band sits under the 100-tick floor
-        t.config.limits.current_limit_counts = 40;
+        t.config.limits.current_limit_counts = 49;
     });
     let mut k = kernel();
     let rest = frame(2000, BIAS);
@@ -3222,11 +3220,13 @@ const STANDING_FORM_TICKS: u32 = (16 << omega_blend::D_SHIFT) * DECIM_MED as u32
 /// and the source reads 0. The first boxcar moves the loop's speed a
 /// quarter of its gap, and that period's PUBLISH lands the loop's speed,
 /// the source at 1 and the boxcar as it closed. Once the standing part
-/// has formed the loop reads within 16 c/s of the observer under a boxcar
-/// still 8363 c/s over it. The torque edge clears the blend; the boxcar
-/// closed ahead of the edge still feeds once, so the next enable edge has
-/// a standing part to clear, and with no boxcar left the loop reads the
-/// observer bit for bit again.
+/// has formed, under a boxcar still 8363 c/s over the observer, the loop
+/// reads within 16 c/s of the observer and the standing part within 16 c/s
+/// of the gap, both as means over the blend's last corner of periods, since
+/// on this still pot the observer's speed alternates period to period. The
+/// torque edge clears the blend; the boxcar closed ahead of the edge still
+/// feeds once, so the next enable edge has a standing part to clear, and
+/// with no boxcar left the loop reads the observer bit for bit again.
 #[test]
 fn the_loops_speed_is_the_observers_plus_the_boxcars_fast_part() {
     let sh = Shared::new();
@@ -3262,13 +3262,26 @@ fn the_loops_speed_is_the_observers_plus_the_boxcars_fast_part() {
     run_to(&mut k, &sh, f, phase::PUBLISH + 1);
     assert_eq!(published(&sh), (k.medium.omega_hat, 1, boxcar as i16));
 
-    ticks(&mut k, &sh, f, STANDING_FORM_TICKS);
+    let corner = 1u32 << omega_blend::D_SHIFT;
+    let (mut leads, mut gaps) = (0i64, 0i64);
+    for n in 0..STANDING_FORM_TICKS {
+        let ran = k.phase;
+        k.on_scan(f, &sh);
+        if ran == phase::OBSERVER && n >= STANDING_FORM_TICKS - corner * DECIM_MED as u32 {
+            leads += lead(&k) as i64;
+            gaps += ((8363 << 16) - k.medium.fusion.omega_q16()) as i64;
+        }
+    }
     assert_eq!(published(&sh).1, 1);
     assert_eq!(published(&sh).2, 8363);
-    assert!(lead(&k).abs() < 16 << 16, "a lead of {}", lead(&k));
-    let standing = k.medium.omega_blend.standing_q16();
-    let gap = (8363 << 16) - k.medium.fusion.omega_q16();
-    assert!((standing - gap).abs() < 16 << 16, "{standing} of {gap}");
+    let lead_mean = leads / corner as i64;
+    assert!(lead_mean.abs() < 16 << 16, "a mean lead of {lead_mean}");
+    let standing = k.medium.omega_blend.standing_q16() as i64;
+    let gap = gaps / corner as i64;
+    assert!(
+        (standing - gap).abs() < 16 << 16,
+        "{standing} of a mean gap {gap}"
+    );
 
     // torque off lands on the next CONTROL
     sh.table
@@ -3458,6 +3471,32 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
 
 // --- Closed-loop plant ----------------------------------------------------
 
+/// `Plant::step` per FAST tick: the duty adds `duty * PLANT_DUTY_GAIN >> 15`
+/// c/s, omega decays by `omega >> PLANT_DECAY_SHIFT`, Coulomb friction takes
+/// `PLANT_COULOMB_CPS` toward zero; the winding reads back-EMF
+/// `omega >> PLANT_KE_SHIFT` vcounts over R = `1 << PLANT_R_SHIFT` vcounts
+/// per ccount, on a `PLANT_VBUS` rail.
+const PLANT_DUTY_GAIN: u32 = 200;
+const PLANT_DECAY_SHIFT: u32 = 6;
+const PLANT_COULOMB_CPS: u32 = 8;
+const PLANT_KE_SHIFT: u32 = 4;
+const PLANT_R_SHIFT: u32 = 1;
+const PLANT_VBUS: u16 = 3000;
+
+/// `Plant::step` in the kernel's motion model, current counts per MEDIUM
+/// tick. The duty term is `DUTY_GAIN * (R i + e) / VBUS`, so per FAST tick
+/// omega gains `B_f i` with `B_f = DUTY_GAIN R / VBUS` and loses
+/// `(2^-DECAY_SHIFT - DUTY_GAIN 2^-KE_SHIFT / VBUS) omega + COULOMB_CPS`:
+/// B is `DECIM_MED` of `B_f`, the frictions are their c/s terms over `B_f`.
+const PLANT_B_I_Q313: u16 = (((PLANT_DUTY_GAIN << PLANT_R_SHIFT) * DECIM_MED as u32 * 8192
+    + PLANT_VBUS as u32 / 2)
+    / PLANT_VBUS as u32) as u16;
+const PLANT_FRIC_FC_COUNTS: u16 =
+    (PLANT_COULOMB_CPS * PLANT_VBUS as u32 / (PLANT_DUTY_GAIN << PLANT_R_SHIFT)) as u16;
+const PLANT_FRIC_FV_Q016: u16 = (((PLANT_VBUS as u32) << 16)
+    / (PLANT_DUTY_GAIN << (PLANT_DECAY_SHIFT + PLANT_R_SHIFT))
+    - (1 << (16 - PLANT_KE_SHIFT - PLANT_R_SHIFT))) as u16;
+
 /// Crude integer plant in the identification-model shape:
 /// `omega[k+1] = a*omega[k] + b*duty - coulomb`, theta integrates, pot =
 /// theta >> 16 clamped 0..4095, `i = (duty*vbus>>15 - ke*omega)/R`. Units
@@ -3474,29 +3513,29 @@ impl Plant {
         Self {
             theta_q16: (pos as i64) << 16,
             omega_cps: 0,
-            vbus: 3000,
+            vbus: PLANT_VBUS,
             frozen: false,
         }
     }
 
-    /// One FAST tick: a = 1 - 1/64, b*duty = duty*200>>15, coulomb 8 c/s
-    /// toward zero; frozen = hard wall (theta pinned, omega 0).
+    /// One FAST tick; frozen = hard wall (theta pinned, omega 0).
     fn step(&mut self, duty: i16) -> SensorFrame {
         if self.frozen {
             self.omega_cps = 0;
         } else {
-            self.omega_cps += ((duty as i32 * 200) >> 15) - (self.omega_cps >> 6);
+            self.omega_cps += ((duty as i32 * PLANT_DUTY_GAIN as i32) >> 15)
+                - (self.omega_cps >> PLANT_DECAY_SHIFT);
+            let coulomb = PLANT_COULOMB_CPS as i32;
             if self.omega_cps > 0 {
-                self.omega_cps = (self.omega_cps - 8).max(0);
+                self.omega_cps = (self.omega_cps - coulomb).max(0);
             } else {
-                self.omega_cps = (self.omega_cps + 8).min(0);
+                self.omega_cps = (self.omega_cps + coulomb).min(0);
             }
             self.theta_q16 += ((self.omega_cps as i64) << 16) / 20_000;
         }
         let pos = (self.theta_q16 >> 16).clamp(0, 4095) as u16;
-        // ke = 1/16 vcounts per c/s, R = 2 vcounts/ccount
         let v = (duty as i32 * self.vbus as i32) >> 15;
-        let i = (v - (self.omega_cps >> 4)) >> 1;
+        let i = (v - (self.omega_cps >> PLANT_KE_SHIFT)) >> PLANT_R_SHIFT;
         let mag = if duty >= 0 { i } else { -i };
         let sample = (BIAS as i32 + mag).clamp(0, 4095) as u16;
         let (va, vb) = if duty >= 0 {
@@ -3530,6 +3569,71 @@ fn run_plant(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant, ticks: u32)
     }
 }
 
+/// The seed is the plant it drives: a held rotor's current pins R, the
+/// steady current and speed at two duties pin Ke and the Coulomb and
+/// viscous terms, one MEDIUM tick's rise from rest pins B. Both duties make
+/// a whole c/s drive term, so the plant's truncation stays out of the
+/// steady state.
+#[test]
+fn the_seeds_motor_model_is_the_plants() {
+    let sh = Shared::new();
+    seed(&sh);
+    let m = sh.table.with(|t| t.calib.motor);
+    let r = m.r_q12 as f64 / 4096.0;
+    let ke = m.ke_vpc_q as f64 / 4096.0;
+    let recip = m.recip_ke_q as f64 / 1024.0;
+    let fric =
+        |omega: i32| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega as f64 / 65536.0;
+    let current = |f: SensorFrame| f.current as i32 - BIAS as i32;
+    for duty in [4096i16, 8192] {
+        let v = ((duty as i32 * PLANT_VBUS as i32) >> 15) as f64;
+        let mut p = held_plant();
+        let held = current(p.step(duty));
+        assert!(
+            (held as f64 - v / r).abs() <= 1.0,
+            "duty {duty}: held {held} counts, the model {:.1}",
+            v / r
+        );
+
+        let mut p = Plant::new(0);
+        let mut i = 0;
+        for _ in 0..20_000 {
+            i = current(p.step(duty));
+        }
+        let model = fric(p.omega_cps);
+        assert!(
+            (i as f64 - model).abs() <= 1.0,
+            "duty {duty}: steady {i} counts at {} c/s, the model holds {model:.1}",
+            p.omega_cps
+        );
+        let e = v - r * i as f64;
+        assert!(
+            (ke * p.omega_cps as f64 - e).abs() <= 1.0,
+            "duty {duty}: {e} vcounts of back-EMF at {} c/s",
+            p.omega_cps
+        );
+        assert!(
+            (recip * e - p.omega_cps as f64).abs() <= recip,
+            "duty {duty}: {e} vcounts of back-EMF read {:.0} c/s at {} c/s",
+            recip * e,
+            p.omega_cps
+        );
+
+        let mut p = Plant::new(0);
+        let mut model = 0.0;
+        for _ in 0..DECIM_MED {
+            let omega = p.omega_cps;
+            let i = current(p.step(duty));
+            model += m.b_i_q313 as f64 / 8192.0 * (i as f64 - fric(omega)) / DECIM_MED as f64;
+        }
+        let rise = p.omega_cps as f64;
+        assert!(
+            (model - rise).abs() <= rise / 16.0,
+            "duty {duty}: one MEDIUM tick from rest rose {rise} c/s, the model {model:.1}"
+        );
+    }
+}
+
 #[test]
 fn position_step_settles_without_limit_cycle() {
     let sh = Shared::new();
@@ -3539,9 +3643,7 @@ fn position_step_settles_without_limit_cycle() {
         t.control.lifecycle.goal_position = 3000;
         // the plant/gain pair is qualitative; keep the tracking screen out
         t.config.fault_cfg.pos_error_counts = u16::MAX;
-        // this plant accelerates far beyond what the (deliberately
-        // degenerate) b_i predict explains, so a large l3 rails tau_d into
-        // the collision trip on every ramp; keep it gentle here
+        // a gentle tau_d loop gain (l3 * B)
         t.config.fusion.l3_q88 = 256;
         // tighter position loop so the post-profile residual closes inside
         // the run instead of creeping on a 1 s time constant

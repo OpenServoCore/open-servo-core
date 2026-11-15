@@ -4,12 +4,16 @@
 //! pot with 1.2 raw counts of noise that wanders +/-5 counts off the position
 //! table, the residual linearization leaves. A load torque, a heavier
 //! output, a held rotor and leads wired the other way round are the
-//! scenarios' knobs. [`rig`] is the bench MG90's identified set (2S rail,
-//! 280-count limit, deadband 12) and [`kernel`] its kernel, both on the
-//! osc-dev-v006 board's window floors: the floor decides what the current
-//! loop reads on every small command, so a rig on another board's floors
-//! runs another loop.
+//! scenarios' knobs. [`rig`] is the bench MG90's saved gains and limits (2S
+//! rail, 280-count limit, deadband 12) over the plant's own motor model and
+//! [`kernel`] its kernel, both on the
+//! osc-dev-v006 board's window floors and shunt settle bands: the floor
+//! decides what the current loop reads on every small command, so a rig on
+//! another board's floors runs another loop. The plant's shunt reads a
+//! drive window short of the amplifier's settle low by the board's band for
+//! that width, the bands the kernel scales it back up by.
 
+use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::{GRID, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::{
@@ -17,7 +21,9 @@ use osc_servo_core::{
 };
 
 use crate::plant::{self, BIAS, FakeIo, FakeMotor, FakeSensors, lut_live, seed, vbus_raw};
-use crate::sim::{DEV_V006_BEMF_MIN_TICKS, DEV_V006_SENSE, DEV_V006_V_TROUGH_MIN_TICKS};
+use crate::sim::{
+    DEV_V006_BEMF_MIN_TICKS, DEV_V006_I_SETTLE_GAIN, DEV_V006_SENSE, DEV_V006_V_TROUGH_MIN_TICKS,
+};
 
 /// 7.1 V in vmotor-tap counts.
 pub const VBUS: f64 = 2880.0;
@@ -37,10 +43,11 @@ pub const RESIDUAL: (f64, f64) = (5.0, 60.0);
 pub const ARR: u32 = 1200;
 
 /// The generic rig's timing with the board's Fast-decay trough and
-/// back-EMF observer floors.
+/// back-EMF observer floors and its shunt settle bands.
 pub const TIMING: KernelTiming = KernelTiming {
     v_trough_min_ticks: DEV_V006_V_TROUGH_MIN_TICKS,
     bemf_min_ticks: DEV_V006_BEMF_MIN_TICKS,
+    i_settle_gain: DEV_V006_I_SETTLE_GAIN,
     ..plant::TIMING
 };
 
@@ -174,7 +181,7 @@ impl Mg90 {
             pos = stuck;
         }
         let fwd = !matches!(cmd, Some(MotorCmd::Drive { reverse: true, .. }));
-        let bridge_i = wiring * self.i;
+        let bridge_i = wiring * self.i * Self::settle(cmd);
         let (sample, va, vb) = if fwd {
             (bridge_i, VBUS as u16, 0)
         } else {
@@ -194,6 +201,17 @@ impl Mg90 {
         }
     }
 
+    /// What the shunt reads of the winding current in the drive window
+    /// `cmd` sets: low by the board's settle band for its width.
+    fn settle(cmd: Option<MotorCmd>) -> f64 {
+        match cmd {
+            Some(MotorCmd::Drive { ticks, .. }) if ticks != 0 => {
+                32768.0 / DEV_V006_I_SETTLE_GAIN.q15_at(ticks as u32) as f64
+            }
+            _ => 1.0,
+        }
+    }
+
     /// What the rail supplies: the winding current over the on fraction.
     pub fn supply(&self, cmd: Option<MotorCmd>) -> f64 {
         match cmd {
@@ -203,9 +221,11 @@ impl Mg90 {
     }
 }
 
-/// The bench MG90's saved set, identified in linearized counts, on the
-/// board's shunt and terminal window floors, `lut` live, then `cfg`.
+/// The bench MG90's saved gains and limits with the plant's own motor
+/// model, on the board's shunt and terminal window floors, `lut` live, then
+/// `cfg`.
 pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
+    let q = |x: f64, frac: u32| (x * (1u32 << frac) as f64).round() as u16;
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
@@ -238,15 +258,111 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         let cal = &mut t.calib;
         cal.sense.i_window_min_ticks = DEV_V006_SENSE.i_window_min_ticks;
         cal.sense.v_window_min_ticks = DEV_V006_SENSE.v_window_min_ticks;
-        cal.motor.r_q12 = 7270;
-        cal.motor.ke_vpc_q = 580;
-        cal.motor.recip_ke_q = 7228;
-        cal.motor.b_i_q313 = 2524;
-        cal.motor.fric_fc_counts = 53;
-        cal.motor.fric_fv_q016 = 336;
-        cal.winding.r0_q12 = 7270;
+        cal.motor.r_q12 = q(R, 12);
+        cal.motor.ke_vpc_q = q(KE, 12);
+        cal.motor.recip_ke_q = q(1.0 / KE, 10);
+        cal.motor.b_i_q313 = q(B * DECIM_MED as f64, 13);
+        cal.motor.fric_fc_counts = q(FC, 0);
+        cal.motor.fric_fv_q016 = q(FV, 16);
+        cal.winding.r0_q12 = q(R, 12);
     });
     sh.table.with_mut(cfg);
     lut_live(&sh, lut);
     sh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osc_servo_core::DecayMode;
+
+    fn drive(ticks: u16) -> Option<MotorCmd> {
+        Some(MotorCmd::Drive {
+            ticks,
+            reverse: false,
+            decay: DecayMode::Slow,
+        })
+    }
+
+    /// The rig's motor model is the plant's: a held rotor's current pins R,
+    /// the steady current and speed at two widths pin Ke and the friction,
+    /// one MEDIUM tick's rise from rest pins B. Over every width from the
+    /// board's shunt floor past the last settle band, the held current the
+    /// shunt reads, scaled by the kernel's band, is the winding's to the
+    /// sample's rounding.
+    #[test]
+    fn the_rigs_motor_model_is_the_plants() {
+        let sh = rig(&[0; POINTS], |_| {});
+        let m = sh.table.with(|t| t.calib.motor);
+        let r = m.r_q12 as f64 / 4096.0;
+        let ke = m.ke_vpc_q as f64 / 4096.0;
+        let recip = m.recip_ke_q as f64 / 1024.0;
+        let fric = |omega: f64| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega / 65536.0;
+        let held = |ticks: u16| {
+            let mut p = Mg90::new(2048.0, [0; POINTS], 1);
+            p.locked = true;
+            let mut f = p.step(drive(ticks));
+            for _ in 0..200 {
+                f = p.step(drive(ticks));
+            }
+            (p.i, f.current as f64 - BIAS as f64)
+        };
+        for ticks in [300u16, 600] {
+            let v = ticks as f64 / ARR as f64 * VBUS;
+            let (i, _) = held(ticks);
+            assert!(
+                (i - v / r).abs() <= 1.0,
+                "{ticks} ticks: held {i:.1} counts, the model {:.1}",
+                v / r
+            );
+
+            let mut p = Mg90::new(2048.0, [0; POINTS], 1);
+            for _ in 0..20_000 {
+                p.step(drive(ticks));
+            }
+            let model = fric(p.omega);
+            assert!(
+                (p.i - model).abs() <= 1.0,
+                "{ticks} ticks: steady {:.1} counts at {:.0} c/s, the model holds {model:.1}",
+                p.i,
+                p.omega
+            );
+            let e = v - r * p.i;
+            assert!(
+                (ke * p.omega - e).abs() <= 1.0,
+                "{ticks} ticks: {e:.1} vcounts of back-EMF at {:.0} c/s",
+                p.omega
+            );
+            assert!(
+                (recip * e - p.omega).abs() <= recip,
+                "{ticks} ticks: {e:.1} vcounts of back-EMF read {:.0} c/s at {:.0} c/s",
+                recip * e,
+                p.omega
+            );
+
+            let mut p = Mg90::new(2048.0, [0; POINTS], 1);
+            let mut model = 0.0;
+            for _ in 0..DECIM_MED {
+                let omega = p.omega;
+                p.step(drive(ticks));
+                model += m.b_i_q313 as f64 / 8192.0 * (p.i - fric(omega)) / DECIM_MED as f64;
+            }
+            assert!(
+                (model - p.omega).abs() <= p.omega / 16.0,
+                "{ticks} ticks: one MEDIUM tick from rest rose {:.1} c/s, the model {model:.1}",
+                p.omega
+            );
+        }
+
+        let floor = sh.table.with(|t| t.calib.sense.i_window_min_ticks);
+        let past = DEV_V006_I_SETTLE_GAIN.start_ticks + 8 * DEV_V006_I_SETTLE_GAIN.q15.len() as u16;
+        for ticks in floor..=past {
+            let (i, sample) = held(ticks);
+            let gain = TIMING.i_settle_gain.q15_at(ticks as u32) as f64 / 32768.0;
+            assert!(
+                (sample * gain - i).abs() <= 0.5 * gain,
+                "{ticks} ticks: the shunt reads {sample}, x{gain:.4} of {i:.2} counts"
+            );
+        }
+    }
 }

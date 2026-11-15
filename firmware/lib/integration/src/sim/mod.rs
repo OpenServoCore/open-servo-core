@@ -46,7 +46,8 @@ pub use self::cpu::{
 };
 pub use self::host::{HOST_MARK_LAG_US, HostEvent};
 pub use self::servo::{
-    DEV_V006_BEMF_MIN_TICKS, DEV_V006_SENSE, DEV_V006_SENSE_EXT, DEV_V006_V_TROUGH_MIN_TICKS,
+    DEV_V006_BEMF_MIN_TICKS, DEV_V006_I_SETTLE_GAIN, DEV_V006_SENSE, DEV_V006_SENSE_EXT,
+    DEV_V006_V_TROUGH_MIN_TICKS,
 };
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
 

@@ -5,7 +5,7 @@
 
 use osc_integration::plant::{
     FakeIo, FakeMotor, FakeSensors, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd,
-    seed, stamp,
+    rl_motor, seed, stamp,
 };
 use osc_integration::sim::DEV_V006_V_TROUGH_MIN_TICKS;
 use osc_servo_core::estimator::window::floor_duty;
@@ -47,22 +47,19 @@ fn rig(lim: u16) -> Shared {
     sh.table.with_mut(|t| {
         t.calib.sense.i_window_min_ticks = I_FLOOR_TICKS;
         t.calib.sense.v_window_min_ticks = I_FLOOR_TICKS;
-        t.calib.motor.r_q12 = RL_R_Q12;
         t.config.limits.current_limit_counts = lim;
         // the collision trip folds the limit on its own: not under test here
         t.config.limits.stall_tau_trip_counts = u16::MAX;
         t.config.limits.openloop_zero_brake = false;
         t.control.lifecycle.mode = Mode::OpenLoop;
-        // the mg90-a observer and motor model: `seed`'s gains ring for over
-        // a second after a current step, landing the stall trip near 2 s
-        // instead of at stall_time_ticks plus the observer's settle
+        // the mg90-a observer and the plant's motor model: `seed`'s gains
+        // ring for over a second after a current step, landing the stall
+        // trip near 2 s instead of at stall_time_ticks plus the observer's
+        // settle
         t.config.fusion.l1_q016 = 8640;
         t.config.fusion.l2_q88 = 3180;
         t.config.fusion.l3_q88 = 84;
-        t.calib.motor.b_i_q313 = 2427;
-        t.calib.motor.fric_fc_counts = 53;
-        t.calib.motor.ke_vpc_q = 603;
-        t.calib.motor.recip_ke_q = 6957;
+        rl_motor(t);
     });
     stamp(&sh);
     sh

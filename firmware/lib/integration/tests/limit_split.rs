@@ -6,7 +6,7 @@
 //! cap, and the kernel reads that current through the shunt window one
 //! tick late. Every pin runs every seed: the worst seed is the verdict.
 
-use osc_integration::plant::{FakeIo, RL_VBUS, RlPlant, duty_of, kernel, seed, stamp};
+use osc_integration::plant::{FakeIo, RL_VBUS, RlPlant, duty_of, kernel, rl_motor, seed, stamp};
 use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::{Kernel, Mode, RegionStorage, Shared, StallResponse};
@@ -70,7 +70,6 @@ impl Family {
         sh.table.with_mut(|t| {
             t.calib.sense.i_window_min_ticks = 64;
             t.calib.sense.v_window_min_ticks = 64;
-            t.calib.motor.r_q12 = self.r_q12;
             let l = &mut t.config.limits;
             l.current_limit_counts = self.cap;
             l.i_cont_counts = self.i_cont;
@@ -85,10 +84,8 @@ impl Family {
             t.config.fusion.l1_q016 = 8640;
             t.config.fusion.l2_q88 = 3180;
             t.config.fusion.l3_q88 = 84;
-            t.calib.motor.b_i_q313 = 2427;
-            t.calib.motor.fric_fc_counts = 53;
-            t.calib.motor.ke_vpc_q = 603;
-            t.calib.motor.recip_ke_q = 6957;
+            rl_motor(t);
+            t.calib.motor.r_q12 = self.r_q12;
         });
         stamp(&sh);
         sh
