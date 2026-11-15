@@ -42,6 +42,30 @@ pub const LASH: f64 = 5.7;
 pub const RESIDUAL: (f64, f64) = (5.0, 60.0);
 pub const ARR: u32 = 1200;
 
+/// A plant's rail and motor in the board's counts: the rail in vcounts, R
+/// in vcounts per ccount, Ke in vcounts per c/s, B in c/s per FAST tick
+/// per ccount, the Coulomb term in ccounts and the viscous one in ccounts
+/// per c/s.
+#[derive(Clone, Copy, Debug)]
+pub struct Motor {
+    pub vbus: f64,
+    pub r: f64,
+    pub ke: f64,
+    pub b: f64,
+    pub fc: f64,
+    pub fv: f64,
+}
+
+/// The bench MG90's, on its 2S rail.
+pub const MOTOR: Motor = Motor {
+    vbus: VBUS,
+    r: R,
+    ke: KE,
+    b: B,
+    fc: FC,
+    fv: FV,
+};
+
 /// The generic rig's timing with the board's Fast-decay trough and
 /// back-EMF observer floors and its shunt settle bands.
 pub const TIMING: KernelTiming = KernelTiming {
@@ -97,6 +121,7 @@ pub struct Mg90 {
     pub out: f64,
     pub omega: f64,
     pub i: f64,
+    pub motor: Motor,
     rng: Rng,
     lut: [i16; POINTS],
     /// A torque on the output as a winding current, counts: positive turns
@@ -120,6 +145,7 @@ impl Mg90 {
             out: lin,
             omega: 0.0,
             i: 0.0,
+            motor: MOTOR,
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             lut,
             load: 0.0,
@@ -130,6 +156,11 @@ impl Mg90 {
         }
     }
 
+    /// The same plant on `motor`.
+    pub fn with_motor(self, motor: Motor) -> Self {
+        Self { motor, ..self }
+    }
+
     /// The linearized position the kernel reads, noise aside.
     pub fn sensed(&self) -> f64 {
         self.out - RESIDUAL.0 * (std::f64::consts::TAU * self.out / RESIDUAL.1).sin()
@@ -138,29 +169,32 @@ impl Mg90 {
     /// One FAST tick under `cmd`, with the chip's mapping: a zero width
     /// coasts, Brake shorts the winding, Coast and Disabled open it.
     pub fn step(&mut self, cmd: Option<MotorCmd>) -> SensorFrame {
+        let m = self.motor;
         let wiring = if self.swapped { -1.0 } else { 1.0 };
         let volts = match cmd {
             Some(MotorCmd::Drive { ticks, reverse, .. }) => (ticks != 0).then(|| {
-                let v = ticks as f64 / ARR as f64 * VBUS;
+                let v = ticks as f64 / ARR as f64 * m.vbus;
                 wiring * if reverse { -v } else { v }
             }),
             Some(MotorCmd::Brake) => Some(0.0),
             _ => None,
         };
         self.i = match volts {
-            Some(v) => self.i + ((v - KE * self.omega) / R - self.i) * (1.0 - (-1.0 / TAU_E).exp()),
+            Some(v) => {
+                self.i + ((v - m.ke * self.omega) / m.r - self.i) * (1.0 - (-1.0 / TAU_E).exp())
+            }
             None => 0.0,
         };
         let torque = self.i + self.load;
         if self.locked {
             self.omega = 0.0;
-        } else if self.omega != 0.0 || torque.abs() > FC {
+        } else if self.omega != 0.0 || torque.abs() > m.fc {
             let dir = if self.omega != 0.0 {
                 self.omega.signum()
             } else {
                 torque.signum()
             };
-            let next = self.omega + B / self.inertia * (torque - FC * dir - FV * self.omega);
+            let next = self.omega + m.b / self.inertia * (torque - m.fc * dir - m.fv * self.omega);
             // friction stops a coasting rotor, it never reverses it
             self.omega = if self.omega != 0.0 && next.signum() != self.omega.signum() {
                 0.0
@@ -183,9 +217,9 @@ impl Mg90 {
         let fwd = !matches!(cmd, Some(MotorCmd::Drive { reverse: true, .. }));
         let bridge_i = wiring * self.i * Self::settle(cmd);
         let (sample, va, vb) = if fwd {
-            (bridge_i, VBUS as u16, 0)
+            (bridge_i, m.vbus as u16, 0)
         } else {
-            (-bridge_i, 0, VBUS as u16)
+            (-bridge_i, 0, m.vbus as u16)
         };
         SensorFrame {
             pos,
@@ -196,7 +230,7 @@ impl Mg90 {
             vmotor_b: vb,
             vmotor_b_trough: vb,
             vref_raw: 1489,
-            vbus_raw: vbus_raw(VBUS as u16),
+            vbus_raw: vbus_raw(m.vbus as u16),
             ntc_raw: 2048,
         }
     }
@@ -272,7 +306,7 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use osc_servo_core::DecayMode;
 
@@ -292,14 +326,21 @@ mod tests {
     /// sample's rounding.
     #[test]
     fn the_rigs_motor_model_is_the_plants() {
-        let sh = rig(&[0; POINTS], |_| {});
+        motor_model_is_the_plants(&rig(&[0; POINTS], |_| {}), || {
+            Mg90::new(2048.0, [0; POINTS], 1)
+        });
+    }
+
+    /// The pin above for the motor model `sh` stores against the plants
+    /// `plant` builds at rest.
+    pub(crate) fn motor_model_is_the_plants(sh: &Shared, plant: impl Fn() -> Mg90) {
         let m = sh.table.with(|t| t.calib.motor);
         let r = m.r_q12 as f64 / 4096.0;
         let ke = m.ke_vpc_q as f64 / 4096.0;
         let recip = m.recip_ke_q as f64 / 1024.0;
         let fric = |omega: f64| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega / 65536.0;
         let held = |ticks: u16| {
-            let mut p = Mg90::new(2048.0, [0; POINTS], 1);
+            let mut p = plant();
             p.locked = true;
             let mut f = p.step(drive(ticks));
             for _ in 0..200 {
@@ -308,7 +349,7 @@ mod tests {
             (p.i, f.current as f64 - BIAS as f64)
         };
         for ticks in [300u16, 600] {
-            let v = ticks as f64 / ARR as f64 * VBUS;
+            let v = ticks as f64 / ARR as f64 * plant().motor.vbus;
             let (i, _) = held(ticks);
             assert!(
                 (i - v / r).abs() <= 1.0,
@@ -316,7 +357,7 @@ mod tests {
                 v / r
             );
 
-            let mut p = Mg90::new(2048.0, [0; POINTS], 1);
+            let mut p = plant();
             for _ in 0..20_000 {
                 p.step(drive(ticks));
             }
@@ -340,7 +381,7 @@ mod tests {
                 p.omega
             );
 
-            let mut p = Mg90::new(2048.0, [0; POINTS], 1);
+            let mut p = plant();
             let mut model = 0.0;
             for _ in 0..DECIM_MED {
                 let omega = p.omega;

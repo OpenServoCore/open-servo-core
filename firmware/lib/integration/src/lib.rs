@@ -7,5 +7,6 @@
 //! band will wire to hardware.
 
 pub mod mg90;
+pub mod mg90_d;
 pub mod plant;
 pub mod sim;
