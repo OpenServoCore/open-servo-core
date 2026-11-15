@@ -116,11 +116,12 @@ impl Medium {
     }
 
     /// Every parked period at VELOCITY: nothing drives, so the velocity
-    /// loop stops too. omega_hat is the pot observer at rest (no window,
-    /// +-hundreds c/s of noise); left running, the PI integrates that
-    /// phantom error until i_ref pins at the current limit, and pinned +
-    /// slow false-trips the stall detector (bench: CODE_STALL a few
-    /// seconds into a clean hold).
+    /// loop stops too. omega_hat is the blend, and with no window its lead
+    /// runs out (the reset here empties it), so at rest it reads the pot
+    /// observer (+-hundreds c/s of noise); left running, the PI integrates
+    /// that phantom error until i_ref pins at the current limit, and
+    /// pinned + slow false-trips the stall detector (bench: CODE_STALL a
+    /// few seconds into a clean hold).
     #[inline(always)]
     pub(super) fn parked(&mut self) {
         self.i_ref_cc = 0;
