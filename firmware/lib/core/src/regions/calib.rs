@@ -34,9 +34,12 @@ pub struct CalibSense {
     pub v_window_min_ticks: u16,
 }
 
-/// The winding's cold resistance as the host last measured it (vcounts per
-/// ccount, Q4.12, at 25.00 C): a record for hosts, which firmware does not
-/// read; 0 = never measured.
+/// The winding's resistance at 25.00 C (vcounts per ccount, Q4.12). It is
+/// never the value as measured: the host measures the resistance together
+/// with the board NTC's temperature and converts it to 25.00 C along
+/// copper's slope before it writes the field, so the reference temperature
+/// is fixed and has no field of its own. A record for hosts, which firmware
+/// does not read; 0 = never measured.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibWinding {
