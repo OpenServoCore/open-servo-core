@@ -121,7 +121,7 @@ pub struct Fast {
     bias: BiasTracker,
     oc: OcDetector,
     #[cfg(not(feature = "experiment"))]
-    bemf: BemfObs,
+    pub(in crate::kernel) bemf: BemfObs,
     #[cfg(not(feature = "experiment"))]
     cur: CurrentLoop,
     /// OpenLoop's duty ceiling against the band.
@@ -216,7 +216,9 @@ impl Fast {
         self.ol.take_pinned()
     }
 
-    /// Medium-boundary close of the back-EMF boxcar half (`BemfObs`).
+    /// Medium-boundary close of the back-EMF boxcar half (`BemfObs::close`).
+    /// Between this tick's `measure` and its `drive`, `duty_q15` is still
+    /// the duty that drove the half's last sample.
     #[cfg(not(feature = "experiment"))]
     pub fn close_bemf_half(
         &mut self,
@@ -224,7 +226,8 @@ impl Fast {
         recip_ke_q: u16,
         recip_arr_q24: u32,
     ) -> Option<i32> {
-        self.bemf.close_half(r_q12, recip_ke_q, recip_arr_q24)
+        self.bemf
+            .close(self.duty_q15, r_q12, recip_ke_q, recip_arr_q24)
     }
 
     pub fn duty_q15(&self) -> i16 {

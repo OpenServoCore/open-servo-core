@@ -11,6 +11,12 @@
 //! most recent halves - 2 x DECIM_MED FAST ticks, 1 ms at 20 kHz. A half is
 //! valid only if every sample in it had both drive windows above the
 //! sampling floors; one sub-floor tick voids both boxcars it sits in.
+//!
+//! The kernel's close (`close`) holds two more rules over that pairing. A
+//! boxcar needs `STARTUP_HALVES` valid halves ahead of its own two: the
+//! first rows of a drive read fast while the current rises. And a half in
+//! which the drive's sign changed is void, so the halves behind it start
+//! up again. Both live at the close: the per-tick sample carries neither.
 
 use crate::kernel::DECIM_MED;
 use crate::math::q_mul;
@@ -41,6 +47,15 @@ const TAP_FULL_SCALE: u32 = 4095;
 /// full-scale differential stay under i32.
 pub const ARR_MAX: u32 = i32::MAX as u32 / (DECIM_MED as u32 * TAP_FULL_SCALE);
 
+/// Valid halves a boxcar needs ahead of its own two (`BemfObs::close`).
+pub const STARTUP_HALVES: u8 = 1;
+
+/// `BemfObs::hist` of a valid half ahead of the open one: the plain
+/// pairing's.
+const PAIR: u8 = 1;
+/// `BemfObs::hist` of that half and the `STARTUP_HALVES` ahead of it.
+const STARTUP: u8 = (1 << (1 + STARTUP_HALVES)) - 1;
+
 /// Half-boxcar accumulators plus the previous closed half.
 #[derive(Default)]
 pub struct BemfObs {
@@ -49,9 +64,16 @@ pub struct BemfObs {
     /// Sum of the signed shunt current over the open half.
     sum_i: i32,
     half_valid: bool,
-    /// Previous half's `sum(v_mean) - R * sum(i)`, None if any sample in it
-    /// was sub-floor.
-    prev_half: Option<i32>,
+    /// Previous half's `sum(v_mean) - R * sum(i)`, stale unless `hist`
+    /// names that half valid.
+    prev_half: i32,
+    /// The closed halves' validity, bit n the half n + 1 closes back: no
+    /// sub-floor sample in it and, under `close`, no drive flip.
+    hist: u8,
+    /// The sign of the last nonzero duty a `close` saw, 0 until one has.
+    drive: i8,
+    /// The last `close` saw the drive's sign change.
+    flip: bool,
 }
 
 impl BemfObs {
@@ -60,7 +82,10 @@ impl BemfObs {
             sum_tv: 0,
             sum_i: 0,
             half_valid: true,
-            prev_half: None,
+            prev_half: 0,
+            hist: 0,
+            drive: 0,
+            flip: false,
         }
     }
 
@@ -85,29 +110,87 @@ impl BemfObs {
     /// vcounts/ccount Q4.12. An unset Ke (0) yields no estimate: a zero
     /// would read as "at rest" to the velocity loop, the runaway seed.
     pub fn close_half(&mut self, r_q12: u16, recip_ke_q: u16, recip_arr_q24: u32) -> Option<i32> {
-        let half = if self.half_valid {
+        self.fold(self.half_valid, PAIR, r_q12, recip_ke_q, recip_arr_q24)
+    }
+
+    /// The kernel's close: `close_half` behind the start-up half and the
+    /// drive flip. `duty_q15` is the duty that drove the half's last
+    /// sample. Its sign against the last close's names a flip: the half
+    /// holds rows of both signs, so it is void, and the halves behind it
+    /// start up again. A zero duty drove nothing and has no sign: it is
+    /// no flip, the sign a later drive is compared with stays the last one
+    /// that drove, and the half is void, as its last sample had no window
+    /// (`window::select`). A sign that changes and changes back between
+    /// two closes is not seen.
+    pub fn close(
+        &mut self,
+        duty_q15: i16,
+        r_q12: u16,
+        recip_ke_q: u16,
+        recip_arr_q24: u32,
+    ) -> Option<i32> {
+        let duty = duty_q15 as i32;
+        if duty == 0 {
+            self.flip = false;
+            return self.fold(false, STARTUP, r_q12, recip_ke_q, recip_arr_q24);
+        }
+        let sign = (duty >> 31) | 1;
+        let flip = sign + self.drive as i32 == 0;
+        self.drive = sign as i8;
+        self.flip = flip;
+        self.fold(
+            self.half_valid & !flip,
+            STARTUP,
+            r_q12,
+            recip_ke_q,
+            recip_arr_q24,
+        )
+    }
+
+    /// Whether the last `close` saw the drive's sign change: set for the
+    /// one period behind that close.
+    pub fn flipped(&self) -> bool {
+        self.flip
+    }
+
+    /// Folds the open half, `valid` or not, and pairs it with the one
+    /// before when the halves `need` names were valid.
+    #[inline(always)]
+    fn fold(
+        &mut self,
+        valid: bool,
+        need: u8,
+        r_q12: u16,
+        recip_ke_q: u16,
+        recip_arr_q24: u32,
+    ) -> Option<i32> {
+        let hist = self.hist;
+        self.hist = (hist << 1) | valid as u8;
+        let out = if valid {
             // sum(v_mean) - R * sum(i): |sum_i| <= 10 * 4095 keeps the R
             // product i64-exact for any gain encoding
             let v = q_mul(self.sum_tv, recip_arr_q24 as i32, RECIP_ARR_SHIFT);
-            Some(v.saturating_sub(q_mul(r_q12 as i32, self.sum_i, 12)))
+            let half = v.saturating_sub(q_mul(r_q12 as i32, self.sum_i, 12));
+            let prev = self.prev_half;
+            self.prev_half = half;
+            if hist & need == need && recip_ke_q != 0 {
+                // (a + b) / BOXCAR_TICKS * recip_ke in one truncation: the
+                // reciprocal product <= 65535 * 3277 stays i32, the i64
+                // widen holds |a + b| * that for any half sum
+                Some(q_mul(
+                    prev.saturating_add(half),
+                    recip_ke_q as i32 * RECIP_BOXCAR,
+                    RECIP_KE_SHIFT + RECIP_BOXCAR_SHIFT,
+                ))
+            } else {
+                None
+            }
         } else {
             None
         };
         self.sum_tv = 0;
         self.sum_i = 0;
         self.half_valid = true;
-        let out = match (self.prev_half, half) {
-            // (a + b) / BOXCAR_TICKS * recip_ke in one truncation: the
-            // reciprocal product <= 65535 * 3277 stays i32, the i64 widen
-            // holds |a + b| * that for any half sum
-            (Some(a), Some(b)) if recip_ke_q != 0 => Some(q_mul(
-                a.saturating_add(b),
-                recip_ke_q as i32 * RECIP_BOXCAR,
-                RECIP_KE_SHIFT + RECIP_BOXCAR_SHIFT,
-            )),
-            _ => None,
-        };
-        self.prev_half = half;
         out
     }
 }
@@ -240,6 +323,71 @@ mod tests {
         assert_eq!(obs.close_half(4096, 0, RECIP_ARR), None);
         // the halves kept folding: the next clean close pairs as usual
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
+    }
+
+    /// `close` on any run of halves is the plain pairing behind the two
+    /// rules, each stated here on its own: a half is void on a sub-floor
+    /// sample, which the last sample under a zero duty is, or when the
+    /// duty at its close has the other sign from the last nonzero duty at
+    /// a close, and a boxcar needs the half ahead of its two valid as
+    /// well. The duty takes both extremes, zero and small values of either
+    /// sign; the flag is that close's flip alone.
+    #[test]
+    fn close_is_the_plain_pairing_behind_the_startup_half_and_the_flip() {
+        const DUTIES: [i16; 8] = [i16::MAX, 1, 0, -1, i16::MIN, 8000, 0, -8000];
+        let (mut obs, mut plain) = (BemfObs::new(), BemfObs::new());
+        let mut lcg = 0x2545_f491u32;
+        let mut next = move || {
+            lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            lcg >> 16
+        };
+        // the last sign that drove, and the valid halves in a row
+        let (mut drove, mut run) = (0i32, 0u32);
+        let (mut boxcars, mut flips, mut held, mut stops) = (0u32, 0u32, 0u32, 0u32);
+        for _ in 0..20_000 {
+            // runs of one duty, so most closes see no flip
+            let duty = if next() % 4 == 0 {
+                DUTIES[next() as usize % DUTIES.len()]
+            } else {
+                drove as i16 * 8000
+            };
+            let sub_floor = next() % 8 == 0;
+            let v = if duty < 0 { -3000 } else { 3000 };
+            for n in 0..HALF {
+                let row = if (sub_floor && n == 3) || (duty == 0 && n == HALF - 1) {
+                    (0, None, None)
+                } else {
+                    (600, Some(v), Some(v / 30))
+                };
+                obs.sample(row.0, row.1, row.2);
+                plain.sample(row.0, row.1, row.2);
+            }
+            let sign = (duty as i32).signum();
+            let flip = sign != 0 && sign == -drove;
+            if sign != 0 {
+                drove = sign;
+            }
+            if flip {
+                plain.sample(0, None, None);
+            }
+            let pair = plain.close_half(4096, KE_UNITY, RECIP_ARR);
+            let want = pair.filter(|_| run >= 2);
+            run = if sub_floor || flip || sign == 0 {
+                0
+            } else {
+                run + 1
+            };
+            assert_eq!(obs.close(duty, 4096, KE_UNITY, RECIP_ARR), want);
+            assert_eq!(obs.flipped(), flip);
+            boxcars += want.is_some() as u32;
+            flips += flip as u32;
+            held += (pair.is_some() && want.is_none()) as u32;
+            stops += (sign == 0) as u32;
+        }
+        assert!(
+            boxcars > 2000 && flips > 1000 && held > 1000 && stops > 1000,
+            "{boxcars} boxcars, {flips} flips, {held} held off, {stops} stops"
+        );
     }
 
     #[test]

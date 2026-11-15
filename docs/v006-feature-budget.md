@@ -36,7 +36,7 @@ Columns:
 | Bias tracker (shunt zero, two zeros) | 214 | 12 | M: +4.9 pts as first built, -3.1 after the trim, ~+1.8 net. S: 70 ins. All as the per-tick feed; one sample a period since, not re-counted | MEDIUM (PUBLISH), SLOW | core |
 | Current loop (PI) | 378 | 4 | S: 117 ins, 12 muls (closed-loop modes only) | FAST | core |
 | Open-loop duty limiter | 200 | 4 | S: 7 ins inline + `DutyLimiter::step` 58 ins out of line (open loop only) | FAST | core |
-| Back-EMF observer (boxcar) | 244 | 20 | S: 76 ins, 8 muls (sums every tick, close every medium half) | FAST | core (velocity source above the floor) |
+| Back-EMF observer (boxcar) | 340 | 16 | S: 96 ins, 8 muls (sums every tick, close every medium half). The sheet's image measured 244 B / 20 B / 76 ins; the start-up half and the drive flip at the close added 96 B of flash and 20 ins and took 4 B of RAM back, the delta between matched release images built the same way | FAST | core (velocity source above the floor) |
 | Omega switch | 164 | 8 | S: 56 ins | MEDIUM (OBSERVER) | core |
 | Fusion (pot) observer | 666 | 12 | S: 197 ins, 10 muls (5 widening per the fusion plan) | MEDIUM (OBSERVER) | core (the only source under the floor) |
 | Trajectory + position loop | 968 | ~20 | S: 141 ins inline + `step_position` 550 B out of line | MEDIUM (TRAJECTORY) | core |

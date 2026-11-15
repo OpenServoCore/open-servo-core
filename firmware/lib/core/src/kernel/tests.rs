@@ -2782,7 +2782,9 @@ fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
         );
         settle(&mut k, &sh, frame(2000, BIAS + 100));
         run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
-        for _ in 0..20 {
+        // the slew ran under the floor: the start-up half, then the
+        // boxcar's two
+        for _ in 0..30 {
             k.on_scan(frame(2000, BIAS + 100), &sh);
         }
         run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
@@ -2805,6 +2807,8 @@ struct CloseAtObserver {
     obs: bemf::BemfObs,
     sw: OmegaSwitch,
     boxcar: Option<i32>,
+    /// The duty that drove the last row sampled.
+    duty: i16,
 }
 
 impl CloseAtObserver {
@@ -2813,19 +2817,25 @@ impl CloseAtObserver {
             obs: bemf::BemfObs::new(),
             sw: OmegaSwitch::new(),
             boxcar: None,
+            duty: 0,
         }
     }
 
-    fn sample(&mut self, (ticks, vdiff, i): BemfRow) {
+    fn sample(&mut self, (ticks, vdiff, i): BemfRow, duty: i16) {
         self.obs.sample(ticks, vdiff, i);
+        self.duty = duty;
     }
 
-    /// The close on the operands this tick reads, then the switch on the
-    /// kernel's own observer speed.
+    /// The kernel's close on the operands this tick reads and the duty of
+    /// the half's last row, then the switch on the kernel's own observer
+    /// speed.
     fn observe(&mut self, k: &Kernel<FakeIo>, sh: &Shared) -> i32 {
-        self.boxcar = self
-            .obs
-            .close_half(r_hat(sh), k.cfg.motor.recip_ke_q, TIMING.recip_arr_q24);
+        self.boxcar = self.obs.close(
+            self.duty,
+            r_hat(sh),
+            k.cfg.motor.recip_ke_q,
+            TIMING.recip_arr_q24,
+        );
         self.sw.step(self.boxcar, k.medium.fusion.omega_q16())
     }
 }
@@ -2863,7 +2873,7 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
     let mut plant = Plant::new(2000);
     let (mut late, mut now) = (CloseAtObserver::new(), CloseAtObserver::new());
     // ahead of the first tick no window read
-    let mut held: [BemfRow; 2] = [(0, None, None); 2];
+    let mut held: [(BemfRow, i16); 2] = [((0, None, None), 0); 2];
     let (mut boxcars, mut voids, mut moved) = (0u32, 0u32, 0u32);
     let mut sources = [false; 2];
     let mut void_at = [false; DECIM_MED as usize];
@@ -2888,7 +2898,8 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
             _ => {}
         }
         let next = k.phase;
-        let f = plant.step(k.fast.duty_q15);
+        let drove = k.fast.duty_q15;
+        let f = plant.step(drove);
         k.on_scan(f, &sh);
         let t = tick_block(&sh);
         let width = t.duty_ticks.unsigned_abs() as u32;
@@ -2899,9 +2910,9 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
             (t.tick_flags & tick_flag::I_VALID != 0).then_some(t.i_tick_counts as i32),
         );
         void_at[next as usize] |= width != 0 && (row.1.is_none() || row.2.is_none());
-        late.sample(held[0]);
-        held = [held[1], row];
-        now.sample(row);
+        late.sample(held[0].0, held[0].1);
+        held = [held[1], (row, drove)];
+        now.sample(row, drove);
         if next == phase::OBSERVER {
             let speed = late.observe(&k, &sh);
             assert_eq!(k.medium.omega_hat, speed, "tick {tick}");
@@ -2931,6 +2942,262 @@ fn the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead() {
         "a void row on every phase"
     );
     assert!(moved > 0, "a close on the OBSERVER tick reads the same");
+}
+
+/// The back-EMF row the fast half just summed, off the tick block: no
+/// differential under the back-EMF `floor`.
+fn bemf_row(sh: &Shared, floor: u16) -> BemfRow {
+    let t = tick_block(sh);
+    let width = t.duty_ticks.unsigned_abs() as u32;
+    (
+        width,
+        (t.tick_flags & tick_flag::V_VALID != 0 && width >= floor as u32)
+            .then_some(t.vdiff_counts as i32),
+        (t.tick_flags & tick_flag::I_VALID != 0).then_some(t.i_tick_counts as i32),
+    )
+}
+
+/// The kernel's rows through the plain pairing of two valid halves, with
+/// the valid halves in a row counted beside it.
+struct PlainPairing {
+    obs: bemf::BemfObs,
+    valid: bool,
+    run: u32,
+}
+
+impl PlainPairing {
+    fn new() -> Self {
+        Self {
+            obs: bemf::BemfObs::new(),
+            valid: true,
+            run: 0,
+        }
+    }
+
+    fn sample(&mut self, (ticks, vdiff, i): BemfRow) {
+        self.valid &= vdiff.is_some() && i.is_some();
+        self.obs.sample(ticks, vdiff, i);
+    }
+
+    /// The plain boxcar at this close, and the valid halves in a row up to
+    /// and with the one it closes.
+    fn close(&mut self, k: &Kernel<FakeIo>, sh: &Shared) -> (Option<i32>, u32) {
+        self.run = if self.valid { self.run + 1 } else { 0 };
+        self.valid = true;
+        let boxcar = self
+            .obs
+            .close_half(r_hat(sh), k.cfg.motor.recip_ke_q, TIMING.recip_arr_q24);
+        (boxcar, self.run)
+    }
+}
+
+/// A plant held still: the taps and the shunt follow the duty's sign and
+/// size, the pot stays.
+fn held_plant() -> Plant {
+    Plant {
+        frozen: true,
+        ..Plant::new(2000)
+    }
+}
+
+/// One tick of `plant` under the duty that drives its window; the phase
+/// the tick ran.
+fn plant_tick(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant) -> u8 {
+    let ran = k.phase;
+    let f = plant.step(k.fast.duty_q15);
+    k.on_scan(f, sh);
+    ran
+}
+
+/// A boxcar waits out the start-up half: the first rows of a drive read
+/// fast while the current rises, so the close hands on a boxcar only when
+/// the half ahead of its two was valid as well. From rest the second valid
+/// half closes a boxcar under the plain pairing and none here; from the
+/// third on the two are the same boxcar. The slew crosses a swept back-EMF
+/// floor, so the drive's first valid row lands on every phase, and the
+/// first boxcar starts 10 to 19 rows behind it.
+#[test]
+fn a_boxcar_waits_out_the_startup_half() {
+    let mut held_off = [false; 2 * DECIM_MED as usize];
+    for floor in 100..=160u16 {
+        let sh = Shared::new();
+        drive_setup(&sh);
+        let mut k = Kernel::new(
+            FakeIo {
+                sensors: FakeSensors,
+                motor: FakeMotor { last: None },
+            },
+            KernelTiming {
+                bemf_min_ticks: floor,
+                ..TIMING
+            },
+        );
+        let mut plant = held_plant();
+        let mut plain = PlainPairing::new();
+        let mut first_valid = None;
+        let mut boxcars = 0;
+        for tick in 0..120u32 {
+            let ran = plant_tick(&mut k, &sh, &mut plant);
+            let row = bemf_row(&sh, floor);
+            if row.1.is_some() && row.2.is_some() {
+                first_valid.get_or_insert(tick);
+            } else {
+                assert_eq!(first_valid, None, "floor {floor}: a void row in the drive");
+            }
+            plain.sample(row);
+            if ran != phase::SPEED {
+                continue;
+            }
+            let (pair, run) = plain.close(&k, &sh);
+            let got = k.medium.omega_bemf;
+            match run {
+                0 | 1 => assert_eq!((got, pair), (None, None), "floor {floor} tick {tick}"),
+                2 => {
+                    assert!(pair.is_some(), "floor {floor}: the plain pairing reads");
+                    assert_eq!(got, None, "floor {floor}: the start-up boxcar");
+                }
+                _ => {
+                    assert!(got.is_some(), "floor {floor} tick {tick}");
+                    assert_eq!(got, pair, "floor {floor} tick {tick}");
+                    if boxcars == 0 {
+                        // the boxcar's twenty rows end on this tick
+                        let start = tick + 1 - bemf::BOXCAR_TICKS as u32;
+                        held_off[(start - first_valid.unwrap()) as usize] = true;
+                    }
+                    boxcars += 1;
+                }
+            }
+        }
+        assert!(boxcars > 4, "floor {floor}: {boxcars} boxcars");
+    }
+    let want: [bool; 2 * DECIM_MED as usize] = core::array::from_fn(|n| n >= DECIM_MED as usize);
+    assert_eq!(held_off, want, "rows held off, each of 10 to 19");
+}
+
+/// The next SPEED close on `plant`: the boxcar it handed on, and whether
+/// it saw the drive flip.
+fn to_close(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant) -> (Option<i32>, bool) {
+    while plant_tick(k, sh, plant) != phase::SPEED {}
+    (k.medium.omega_bemf, k.fast.bemf.flipped())
+}
+
+/// A half that holds a drive flip is void, and the next is a start-up
+/// half. An OpenLoop reversal restarts at the window floor on the other
+/// side, so every row through it reads and the plain pairing closes a
+/// boxcar on rows of both signs. Here the close that sees the duty's sign
+/// differ from the last close's hands on nothing and flags the flip for
+/// that one period; the two closes behind it hand on nothing, and from the
+/// third on the boxcar is the plain pairing's again, down to the speed the
+/// other way.
+#[test]
+fn a_half_that_holds_a_drive_flip_is_void() {
+    const FROM: u32 = 200;
+    let sh = Shared::new();
+    drive_setup(&sh);
+    let mut k = kernel();
+    let mut plant = Plant::new(2000);
+    let mut plain = PlainPairing::new();
+    let mut closes: heapless::Vec<(Option<i32>, bool, Option<i32>), 64> = heapless::Vec::new();
+    let mut signs = [false; 2];
+    let mut flip_at = None;
+    for tick in 0..700u32 {
+        if tick == 300 {
+            sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
+        }
+        let ran = plant_tick(&mut k, &sh, &mut plant);
+        let row = bemf_row(&sh, 0);
+        plain.sample(row);
+        signs[(tick_block(&sh).duty_ticks < 0) as usize] = true;
+        if tick >= FROM {
+            assert!(row.1.is_some() && row.2.is_some(), "tick {tick}: {row:?}");
+        }
+        if ran != phase::SPEED {
+            continue;
+        }
+        let (pair, _) = plain.close(&k, &sh);
+        if tick >= FROM + DECIM_MED as u32 {
+            if signs == [true; 2] {
+                assert_eq!(flip_at.replace(closes.len()), None, "one flip");
+            }
+            closes
+                .push((k.medium.omega_bemf, k.fast.bemf.flipped(), pair))
+                .unwrap();
+        }
+        signs = [false; 2];
+    }
+    let at = flip_at.expect("a half held both signs");
+    assert!(
+        at >= 5 && closes.len() > at + 20,
+        "{at} of {}",
+        closes.len()
+    );
+    for (n, &(got, flipped, pair)) in closes.iter().enumerate() {
+        assert!(pair.is_some(), "close {n}: the plain pairing reads");
+        assert_eq!(flipped, n == at, "close {n}");
+        let want = if (at..at + 3).contains(&n) {
+            None
+        } else {
+            pair
+        };
+        assert_eq!(got, want, "close {n}");
+    }
+    assert!(closes[at - 1].0 > Some(1000), "{:?}", closes[at - 1]);
+    let last = closes[closes.len() - 1];
+    assert!(last.0.is_some_and(|w| w < -1000), "{last:?}");
+}
+
+/// A zero duty drives nothing and has no sign: a close on it is no flip,
+/// and it leaves the sign a later drive is compared with at the last one
+/// that drove. A first drive, either way, flips nothing; a drive that
+/// stops and resumes the same way flips nothing; one that stops and
+/// resumes the other way flips once, on the first close that drives. The
+/// resumed drive's first boxcar comes on the same close either way: the
+/// half the drive resumes in holds a zero row, so it is void already.
+#[test]
+fn a_zero_duty_has_no_sign_to_flip() {
+    let goal = |sh: &Shared, duty: i16| sh.table.with_mut(|t| t.control.lifecycle.goal_duty = duty);
+    for first in [8000i16, -8000] {
+        let sh = Shared::new();
+        drive_setup(&sh);
+        goal(&sh, first);
+        let mut k = kernel();
+        let mut plant = Plant::new(2000);
+        let mut last = None;
+        for n in 0..20 {
+            let (got, flipped) = to_close(&mut k, &sh, &mut plant);
+            assert!(!flipped, "first drive {first}, close {n}");
+            last = got;
+        }
+        assert_eq!(last.map(i32::signum), Some(first.signum() as i32));
+        let mut waits = [0u32; 2];
+        for (leg, resume) in [first, -first].into_iter().enumerate() {
+            goal(&sh, 0);
+            for n in 0..20 {
+                let (got, flipped) = to_close(&mut k, &sh, &mut plant);
+                assert!(!flipped, "{first} to zero, close {n}");
+                assert!(n < 1 || got.is_none(), "{first} to zero, close {n}");
+            }
+            assert_eq!(k.fast.duty_q15, 0);
+            goal(&sh, resume);
+            let mut flips: heapless::Vec<u32, 20> = heapless::Vec::new();
+            let mut first_boxcar = None;
+            for n in 0..20 {
+                let (got, flipped) = to_close(&mut k, &sh, &mut plant);
+                if flipped {
+                    flips.push(n).unwrap();
+                }
+                if got.is_some() {
+                    first_boxcar.get_or_insert(n);
+                }
+                last = got;
+            }
+            let want: &[u32] = if resume == first { &[] } else { &[0] };
+            assert_eq!(flips.as_slice(), want, "{first} then {resume}");
+            assert_eq!(last.map(i32::signum), Some(resume.signum() as i32));
+            waits[leg] = first_boxcar.expect("the resumed drive reads");
+        }
+        assert_eq!(waits, [3; 2], "first drive {first}");
+    }
 }
 
 #[test]

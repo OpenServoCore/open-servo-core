@@ -176,18 +176,20 @@ pub const LIMIT_SPLIT: [u32; PHASES] = [0, 0, 0, 140, 0, 59, 0, 0, 0, 0];
 /// path against the same tick with no stage, priced as REFRESH. SPARE_A,
 /// every regime, a take's tick included: the phase table grew to hold
 /// SPEED, so the tick's dispatch goes through it where the default arm
-/// skipped, 10 -> 25.25 HCLK. SPEED, Closed and OpenLoop, a valid half
-/// paired with the one before: 10 -> 222 (62 more instructions, 16
+/// skipped, 10 -> 25.25 HCLK. SPEED, Closed and OpenLoop, a driven valid
+/// half paired behind a valid run: 10 -> 259 (78 more instructions, 20
 /// loads/stores, 7 multiplies, three more taken transfers: the same
-/// dispatch, the close, its stores). SPEED, Open: nothing drove the
-/// tick's own window, so its row voids the half and the products are
-/// skipped, 10 -> 69.25. Each delta plus 10%, rounded up. OBSERVER, which
-/// the close left, keeps its rows until the probe reads them lower; the
-/// bench must refill all three phases.
+/// dispatch, the close, its stores; the drive's sign and the validity
+/// history are 4 of the loads/stores and 12 ALU, 37). SPEED, Open:
+/// nothing drove the tick's own window, so the close voids the half on
+/// the zero duty and the products are skipped, 10 -> 75.25. Each delta
+/// plus 10%, rounded up. OBSERVER, which the close left, keeps its rows
+/// until the probe reads them lower; the bench must refill all three
+/// phases.
 pub const SPEED_STAGE: [[u32; PHASES]; REGIMES] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 17, 66],
-    [0, 0, 0, 0, 0, 0, 0, 0, 17, 234],
-    [0, 0, 0, 0, 0, 0, 0, 0, 17, 234],
+    [0, 0, 0, 0, 0, 0, 0, 0, 17, 72],
+    [0, 0, 0, 0, 0, 0, 0, 0, 17, 274],
+    [0, 0, 0, 0, 0, 0, 0, 0, 17, 274],
 ];
 
 /// A plain tick's budget at `regime` and `phase`: its row, the tick

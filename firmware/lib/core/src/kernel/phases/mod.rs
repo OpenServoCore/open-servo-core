@@ -117,7 +117,7 @@ pub(in crate::kernel) struct Medium {
     pub(in crate::kernel) omega_hat: i32,
     /// The boxcar the SPEED phase closed, for the next period's OBSERVER
     /// and PUBLISH.
-    omega_bemf: Option<i32>,
+    pub(in crate::kernel) omega_bemf: Option<i32>,
     /// Linearized counts per raw count at the observer's sample.
     band_gain_q4: u16,
     vel: VelocityLoop,
