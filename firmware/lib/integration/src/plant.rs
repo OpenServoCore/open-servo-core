@@ -130,6 +130,7 @@ pub fn seed(shared: &Shared) {
         c.loop_velocity.j_ff_q88 = 0;
         c.loop_position.p_kp_q88 = 1024;
         c.loop_position.pos_deadband_counts = 8;
+        c.loop_position.speed_ceiling_cps = 3000;
         c.loop_position.velocity_limit_cps = 3000;
         c.loop_position.accel_limit_q88 = 50 << 8;
         c.limits.current_limit_counts = 1200;

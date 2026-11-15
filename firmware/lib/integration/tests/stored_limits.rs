@@ -163,7 +163,6 @@ fn current_mode_folds_under_the_speed_ceiling() {
 /// whatever the move speed: the move speed is the Position profile's
 /// cruise. On main the goal clamps at the move speed.
 #[test]
-#[ignore = "red until the speed ceiling is stored and clamps the loops"]
 fn velocity_mode_clamps_its_goal_at_the_ceiling() {
     let (sh, mut p) = record(400.0, |t| {
         t.config.loop_position.velocity_limit_cps = MOVE_CPS;
@@ -187,7 +186,6 @@ fn velocity_mode_clamps_its_goal_at_the_ceiling() {
 /// loop's overshoot. On main a move speed of 0 pins the profile at rest
 /// and nothing moves.
 #[test]
-#[ignore = "red until the speed ceiling is stored and clamps the loops"]
 fn a_zero_move_speed_cruises_at_the_ceiling() {
     let (sh, mut p) = record(400.0, |t| t.config.loop_position.velocity_limit_cps = 0);
     let mut k = mg90::kernel();

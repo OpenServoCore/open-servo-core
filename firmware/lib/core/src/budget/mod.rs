@@ -119,14 +119,16 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 
 /// The configuration take after a write, on top of [`KERNEL`], at most once
 /// per period, at phase SPARE_A: the input span's word copy, the Ke belt,
-/// the current loop's resistance, the winding estimate's config, the
-/// continuous rating and its leak, the winding resistance on the new
-/// `r_q12` (`Medium::r_hat`) and the terminal floor's store. It
-/// carries no TEL row: a burst starts neither on SPARE_A nor while a take
-/// is pending, and the host is silent through one. E, an upper bound: the
-/// take's longest path on matched release disassembly is under 690 HCLK,
-/// including the rating, its two log calls and the resistance's 115.25; the
-/// row keeps its earlier, larger price until the probe re-prices it.
+/// the two speeds' resolution, the current loop's resistance, the winding
+/// estimate's config, the continuous rating and its leak, the winding
+/// resistance on the new `r_q12` (`Medium::r_hat`) and the terminal
+/// floor's store. It carries no TEL row: a burst starts neither on SPARE_A
+/// nor while a take is pending, and the host is silent through one. E, an
+/// upper bound: the take's longest path on matched release disassembly is
+/// under 724 HCLK, including the rating, its two log calls, the
+/// resistance's 115.25 and the speeds' 34 (22 more instructions, two
+/// halfword stores where the span copy stored their word); the row keeps
+/// its earlier, larger price until the probe re-prices it.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
 pub const REFRESH: u32 = 824;

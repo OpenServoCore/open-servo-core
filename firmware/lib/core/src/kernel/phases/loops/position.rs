@@ -1,6 +1,6 @@
 //! Position P loop (control-theory "The Position Loop"): pure proportional -
 //! error times kp gives a velocity command, add the omega* feedforward,
-//! clamp to vel_limit. NO integrator ever (one integrator per band; a
+//! clamp to the speed ceiling. NO integrator ever (one integrator per band; a
 //! position integrator over Coulomb friction limit-cycles). The anti-hunt
 //! hold predicate tells the kernel to park (Brake) inside the deadband
 //! instead of dithering against friction.
@@ -39,7 +39,7 @@ use crate::regions::config::ConfigLoopPosition;
 /// P error clamp, cQ16 (128 counts): 2^16 * 2^23 >> 8 < 2^31 keeps the kp
 /// product i32-exact for any gain encoding (velocity.rs E_LIM discipline).
 /// Past 128 counts of tracking error any practical kp already commands
-/// beyond vel_limit, so the flat region costs nothing; the hold predicate
+/// beyond the ceiling, so the flat region costs nothing; the hold predicate
 /// compares the RAW error, never this clamp.
 const E_LIM_CQ16: i32 = 1 << 23;
 
@@ -84,9 +84,10 @@ pub fn step(
 ) -> PosOut {
     let e_raw = theta_star_q16.saturating_sub(theta_hat_q16);
     let e = e_raw.clamp(-E_LIM_CQ16, E_LIM_CQ16);
-    // the table rule bounds the limit; the min keeps the clamp below
-    // panic-free on a corrupt one
-    let v_lim = (cfg.velocity_limit_cps.min(VEL_CAP_CPS) as i32) << 16;
+    // the speed ceiling, not the move speed: a shaft behind its profile is
+    // asked for more, up to the ceiling. The table rule bounds it; the min
+    // keeps the clamp below panic-free on a corrupt one
+    let v_lim = (cfg.speed_ceiling_cps.min(VEL_CAP_CPS) as i32) << 16;
     // Q8.8 * cQ16 >> 8 -> csQ16, i32-exact per E_LIM
     let omega_ref = q_mul(cfg.p_kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
@@ -110,12 +111,15 @@ mod tests {
     /// The identity's band gain.
     const ID: u16 = crate::pos_lut::GRID as u16;
 
-    fn c(kp: u16, db: u16, vl: u16) -> ConfigLoopPosition {
+    /// The block as the take leaves it: the move speed at the ceiling.
+    fn c(kp: u16, db: u16, ceiling: u16) -> ConfigLoopPosition {
         ConfigLoopPosition {
             p_kp_q88: kp,
             pos_deadband_counts: db,
-            velocity_limit_cps: vl,
+            speed_ceiling_cps: ceiling,
+            velocity_limit_cps: ceiling,
             accel_limit_q88: 0,
+            _rsvd_align: 0,
         }
     }
 
@@ -237,14 +241,14 @@ mod tests {
     }
 
     #[test]
-    fn vel_limit_and_error_clamp() {
+    fn ceiling_and_error_clamp() {
         // 1000 counts of error clamps to E_LIM's 128 first: kp 1.0 -> 128 c/s
         let cfg = c(1 << 8, 0, 32767);
         assert_eq!(
             step(1000 << 16, 0, 0, ID, false, &cfg).omega_ref_q16,
             128 << 16
         );
-        // vel_limit clamps the sum, both signs
+        // the ceiling clamps the sum, both signs
         let cfg = c(1 << 8, 0, 100);
         assert_eq!(
             step(1000 << 16, 0, 0, ID, false, &cfg).omega_ref_q16,
@@ -257,6 +261,15 @@ mod tests {
         // feedforward alone also cannot escape the limit
         assert_eq!(
             step(0, 500 << 16, 0, ID, false, &cfg).omega_ref_q16,
+            100 << 16
+        );
+        // the move speed under the ceiling bounds nothing here
+        let cfg = ConfigLoopPosition {
+            velocity_limit_cps: 30,
+            ..c(1 << 8, 0, 100)
+        };
+        assert_eq!(
+            step(1000 << 16, 0, 0, ID, false, &cfg).omega_ref_q16,
             100 << 16
         );
     }
@@ -281,7 +294,7 @@ mod tests {
         let cfg = c(1 << 8, 65535, 32767);
         let out = step(3000 << 16, 0, -(3000 << 16), ID, false, &cfg);
         assert!(out.hold);
-        // while the drive command stays E_LIM/vel_limit-clamped
+        // while the drive command stays E_LIM/ceiling-clamped
         assert_eq!(out.omega_ref_q16, 128 << 16);
         // and a small deadband rejects the same error
         assert!(

@@ -29,35 +29,35 @@ pub mod config {
     pub const J_FF_Q88: Reg = reg(0x003e, 2);
     pub const P_KP_Q88: Reg = reg(0x0040, 2);
     pub const POS_DEADBAND_COUNTS: Reg = reg(0x0042, 2);
-    pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x0048, 2);
+    pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x004c, 2);
     /// 0 = a stall latches a fault, 1 = it folds the limit to the
     /// continuous current.
-    pub const STALL_RESPONSE: Reg = reg(0x004a, 1);
-    pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
-    pub const STALL_TIME_TICKS: Reg = reg(0x004c, 4);
+    pub const STALL_RESPONSE: Reg = reg(0x004e, 1);
+    pub const DRIVE_POLARITY: Reg = reg(0x004f, 1);
+    pub const STALL_TIME_TICKS: Reg = reg(0x0050, 4);
     /// The continuous current: a press over it on a still shaft trips and
     /// folds to it; 0 reads as the limit.
-    pub const I_CONT_COUNTS: Reg = reg(0x0052, 2);
+    pub const I_CONT_COUNTS: Reg = reg(0x0056, 2);
     /// The fold holds while the held current reads this or more.
-    pub const STALL_RELEASE_COUNTS: Reg = reg(0x0054, 2);
+    pub const STALL_RELEASE_COUNTS: Reg = reg(0x0058, 2);
     /// The collision trip on the disturbance estimate; `u16::MAX` (the boot
     /// value) trips nothing.
-    pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0056, 2);
+    pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x005a, 2);
     /// The rotor heat node's time constant, s; the kernel runs the nearest
     /// power of two of its 16 ms period.
-    pub const THERMAL_TAU_S: Reg = reg(0x005e, 2);
+    pub const THERMAL_TAU_S: Reg = reg(0x0062, 2);
     /// The winding estimate's one limit: the overtemperature fault latches
     /// while the estimate reads this or more.
-    pub const CUTOFF_CC: Reg = reg(0x0060, 2);
-    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
+    pub const CUTOFF_CC: Reg = reg(0x0064, 2);
+    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0066, 2);
     /// The body heat node's time constant, s; 0 = no body node.
-    pub const THERMAL_TAU2_S: Reg = reg(0x0064, 2);
-    pub const L1_Q016: Reg = reg(0x0066, 2);
-    pub const L2_Q88: Reg = reg(0x0068, 2);
-    pub const L3_Q88: Reg = reg(0x006a, 2);
+    pub const THERMAL_TAU2_S: Reg = reg(0x0068, 2);
+    pub const L1_Q016: Reg = reg(0x006a, 2);
+    pub const L2_Q88: Reg = reg(0x006c, 2);
+    pub const L3_Q88: Reg = reg(0x006e, 2);
     /// The rail fold's slope, counts of ceiling per vcount of rail over
     /// `V_UNDERVOLT_COUNTS`, Q8; 0 = off.
-    pub const RAIL_FOLD_Q8: Reg = reg(0x0076, 2);
+    pub const RAIL_FOLD_Q8: Reg = reg(0x007a, 2);
 }
 
 pub mod calib {

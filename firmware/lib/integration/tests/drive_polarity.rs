@@ -44,6 +44,7 @@ const BENCH_LIMIT: f64 = 554.0;
 /// the shaft runs at its 3-6 counts/ms there.
 fn bench_limits(t: &mut ControlTable) {
     t.config.limits.current_limit_counts = BENCH_LIMIT as u16;
+    t.config.loop_position.speed_ceiling_cps = 4000;
     t.config.loop_position.velocity_limit_cps = 4000;
     t.config.loop_position.accel_limit_q88 = 10240;
 }

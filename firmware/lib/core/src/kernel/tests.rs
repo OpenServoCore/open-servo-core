@@ -92,6 +92,7 @@ fn seed(shared: &Shared) {
         c.loop_velocity.j_ff_q88 = 0;
         c.loop_position.p_kp_q88 = 256;
         c.loop_position.pos_deadband_counts = 8;
+        c.loop_position.speed_ceiling_cps = 3000;
         c.loop_position.velocity_limit_cps = 3000;
         c.loop_position.accel_limit_q88 = 50 << 8;
         c.limits.current_limit_counts = 1200;
@@ -804,14 +805,14 @@ mod deadman {
         assert_eq!(plain[8..], after[..]);
     }
 
-    /// The summed reference stays inside the velocity limit at every field
+    /// The summed reference stays inside the speed ceiling at every field
     /// value.
     #[test]
-    fn the_stimulus_is_clamped_to_the_velocity_limit() {
+    fn the_stimulus_is_clamped_to_the_speed_ceiling() {
         let lim = CRUISE + 5;
         let sh = Shared::new();
         let mut k = inject_rig(&sh, |t| {
-            t.config.loop_position.velocity_limit_cps = lim as u16;
+            t.config.loop_position.speed_ceiling_cps = lim as u16;
         });
         let d = injected::<{ 2 * CYCLE }>(&mut k, &sh);
         assert_eq!(d.iter().max(), Some(&((lim - CRUISE) << 16)));
@@ -840,14 +841,14 @@ mod deadman {
     /// most 512: at both ceilings the triangle's peak is 0x7FFF x 256 in
     /// Q8.8, exactly i32's last whole c/s in csQ16 (32767 c/s), and a field
     /// above either ceiling runs as the ceiling. A 0 cruise under the
-    /// table's widest velocity limit shows the whole triangle unclamped.
+    /// table's widest speed ceiling shows the whole triangle unclamped.
     #[test]
     fn the_stimulus_reads_its_fields_at_most_at_their_ceilings() {
         let wide = |accel: u16, half: u16| {
             let sh = Shared::new();
             let mut k = inject_rig(&sh, |t| {
                 t.control.lifecycle.goal_velocity = 0;
-                t.config.loop_position.velocity_limit_cps = 32767;
+                t.config.loop_position.speed_ceiling_cps = 32767;
                 t.control.inject.inject_accel_q88 = accel;
                 t.control.inject.inject_half_periods = half;
             });
@@ -867,7 +868,7 @@ mod deadman {
 
     /// Either field 0 is the production image's Velocity arm exactly, the
     /// gate's other inputs all open: nothing sums and nothing clamps, so a
-    /// profile above a velocity limit lowered mid-run comes down at the
+    /// profile above a speed ceiling lowered mid-run comes down at the
     /// accel limit as the default image's does.
     #[test]
     fn a_stimulus_not_asked_for_leaves_the_velocity_arm_alone() {
@@ -878,7 +879,7 @@ mod deadman {
                 t.control.inject.inject_half_periods = half;
             });
             assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
-            write_config(&sh, |t| t.config.loop_position.velocity_limit_cps = 500);
+            write_config(&sh, |t| t.config.loop_position.speed_ceiling_cps = 500);
             let mut above = 0;
             for _ in 0..40 {
                 assert_eq!(period(&mut k, &sh, frame(2000, BIAS)), 0, "{accel} {half}");
@@ -6507,7 +6508,6 @@ fn the_slow_stages_take_one_period_each() {
 /// up. The seed's ceiling is 3000 c/s; the move speed here is 300. On main
 /// the clamp is the move speed and the loop never asks over 300 c/s.
 #[test]
-#[ignore = "red until the speed ceiling is stored and clamps the loops"]
 fn a_held_shaft_is_asked_over_the_move_speed_up_to_the_ceiling() {
     const MOVE_CPS: i32 = 300;
     let sh = Shared::new();

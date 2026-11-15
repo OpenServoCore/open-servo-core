@@ -745,7 +745,8 @@ the reference it lands on:
 
 The triangle's peak is slope x N / 2 and its frequency 1000 / N Hz, at
 most 1 kHz (Nyquist of the 2 kHz medium rate), at least 1.95 Hz. The sum
-is clamped to `velocity_limit_cps`; the triangle pauses on a period after
+is clamped to `speed_ceiling_cps`, the bound on the Velocity reference
+it rides (sec 5.8); the triangle pauses on a period after
 any limit flag but the permit (`limit_flags`, sec 5.8), and its phase
 holds through the pause. The fields are volatile and the servo never
 clears them: a host zeroes both before it drives and when it is done. The
@@ -928,9 +929,9 @@ same way.
 stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
-The covered bytes are the 39 covered fields' own table bytes in table
-order (84 B): the position limits, the loop gains, the deadband,
-velocity and acceleration limits, drive polarity, the stall speed gate,
+The covered bytes are the 40 covered fields' own table bytes in table
+order (86 B): the position limits, the loop gains, the deadband, the
+speed ceiling and the acceleration limit, drive polarity, the stall speed gate,
 the observer gains and the position-error threshold in CONFIG; the pot
 stops, the motor constants, the friction model, the angle map, the
 winding estimate's rise constant, the board NTC's reference
@@ -938,7 +939,8 @@ point and slope, and the gear class in CALIB. The points are the position table'
 256 host-written calibration points i16 LE (sec below) while
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
-(current, thermal, undervolt, `duty_max_q15`), the raw sensor screen,
+(current, thermal, undervolt, `duty_max_q15`), the move speed
+`velocity_limit_cps` (a user setting, sec 5.8), the raw sensor screen,
 the ADC wide-code map, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,
@@ -1201,6 +1203,36 @@ stall permit are accepted and ignored, and the duty limiter, the
 limits fold, the closed loops, the estimators and the detectors are
 compiled out. A servo on it answers every register; the stripped ones
 (the estimates, `limit_flags`, the thermal fields) read zero.
+
+**Speed ceiling and move speed.** Two CONFIG speeds bound the closed
+loops' motion, both u16 in counts per second of the linearized count.
+`speed_ceiling_cps` (RW, `0x044`, at most 32767, under the plant stamp,
+sec 5.7) is the hard speed limit calibration writes. `velocity_limit_cps`
+(RW, `0x046`, not covered) is the move speed, the cruise of the Position
+profile: a user setting from 0 to the ceiling. A write of a move speed
+over the ceiling is refused, the table's convention for a field bounded
+by another (`goal_current` against the cap). The ceiling sits ahead of
+the move speed, so an install in table order lands it before the rule
+that reads it, and one WRITE over both is judged against the incoming
+ceiling. A later write that lowers the ceiling under a stored move speed
+is accepted, and the servo runs the move speed at the ceiling. The
+kernel resolves both at the configuration take (osc-servo-kernel sec
+6.2): a move speed of 0 reads as the ceiling, as Dynamixel's Profile
+Velocity 0 reads as the Velocity Limit, and a ceiling of 0 reads as the
+move speed, so a servo with no ceiling written runs on the move speed
+alone as one speed.
+
+In Position mode the profile cruises at the move speed and the position
+loop's output clamps at the ceiling, so a shaft that falls behind its
+profile is asked for up to the ceiling to catch up. In Velocity mode
+`goal_velocity` clamps at the ceiling and the move speed bounds nothing.
+Current mode and OpenLoop read neither field. The ceiling bounds the
+reference the velocity loop follows, not the shaft: the loop's transient
+overshoot can carry the shaft past it, and the derate a calibration
+takes under the datasheet speed is that margin (DES
+`velocity_mode_clamps_its_goal_at_the_ceiling`,
+`a_zero_move_speed_cruises_at_the_ceiling`,
+`a_held_shaft_is_asked_over_the_move_speed_up_to_the_ceiling`).
 
 **What governs.** `limit_flags` (u8, RO, `0x27C` in TELEMETRY; `0x27D`
 is reserved) names what shaped the command at the last medium tick,

@@ -109,7 +109,8 @@ pub struct ConfigLoopVelocity {
     pub j_ff_q88: u16,
 }
 
-/// Position P gain, anti-hunt hold deadband, trajectory limits.
+/// Position P gain, anti-hunt hold deadband, the speed ceiling, the move
+/// speed and the profile's acceleration.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigLoopPosition {
@@ -118,16 +119,25 @@ pub struct ConfigLoopPosition {
     /// local gain into the linearized error. 0 = hold disabled. Hold brakes
     /// on position rest alone (position.rs).
     pub pos_deadband_counts: u16,
+    /// The hard speed limit calibration writes: the position loop's output
+    /// and the Velocity goal clamp at it. 0 reads as the move speed. It sits
+    /// ahead of the move speed, so an install in table order lands it
+    /// before the rule that reads it.
     #[ct_field(le = VEL_CAP_CPS)]
+    pub speed_ceiling_cps: u16,
+    /// The move speed, the Position profile's cruise; 0 = the ceiling.
+    #[ct_field(le = &addr::loop_position::SPEED_CEILING_CPS)]
     pub velocity_limit_cps: u16,
     /// c/s per medium tick.
     pub accel_limit_q88: u16,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
 }
 
-// Trajectory limits are clamps, not gains: at 0 the profile pins omega_ref
-// to 0 and velocity/position modes are inert even with live gains, so they
-// get real defaults (bench-validated on the SG90 rig: 1500 c/s, 15 c/s per
-// medium tick = 0 -> 1500 in 50 ms).
+// Trajectory limits are clamps, not gains: with no ceiling stored, a move
+// speed of 0 pins omega_ref to 0 and velocity/position modes are inert even
+// with live gains, so they get real defaults (bench-validated on the SG90
+// rig: 1500 c/s, 15 c/s per medium tick = 0 -> 1500 in 50 ms).
 pub const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
 pub const DEFAULT_ACCEL_LIMIT_Q88: u16 = 3840;
 
@@ -302,7 +312,7 @@ pub struct ConfigRegs {
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 8],
+    pub _rsvd_tail: [u8; 4],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

@@ -42,9 +42,11 @@ use osc_servo_core::regions::telemetry_ext::addr::therm::{T_NTC_CC, THERM_FLAGS}
 const GOAL_VELOCITY: u16 = 396;
 /// Slot 0 of the profile region (protocol sec 5.2 pin).
 const PROFILE_SLOT0: u16 = 0x280;
-/// V006 map fact: config.loop_position.velocity_limit_cps, and the board
-/// default the factory state comes back with.
-const VELOCITY_LIMIT_CPS: u16 = 68;
+/// V006 map facts: config.loop_position.speed_ceiling_cps with the move
+/// speed `velocity_limit_cps` behind it, and the move speed's board default
+/// the factory state comes back with.
+const SPEED_CEILING_CPS: u16 = 68;
+const VELOCITY_LIMIT_CPS: u16 = 70;
 const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
 
 /// V006 map facts the seeded calibration lands in: calib.pot.raw_max,
@@ -343,7 +345,11 @@ fn save_survives_reboot_and_factory_restores_defaults() {
     let mut c = fleet(&[1]);
     let id = Id::new(1);
     let val = 777u16.to_le_bytes();
-    c.write(id, VELOCITY_LIMIT_CPS, &val).expect("write");
+    // the move speed's rule reads the ceiling: one write lands both, the
+    // ceiling first
+    let mut both = 1000u16.to_le_bytes().to_vec();
+    both.extend_from_slice(&val);
+    c.write(id, SPEED_CEILING_CPS, &both).expect("write");
     c.save(id).expect("save");
     c.reboot(id).expect("reboot");
     assert_eq!(

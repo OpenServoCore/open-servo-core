@@ -9,8 +9,8 @@
 //! Covered: the fields a fit or a cal produces, in table order, named once
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep
 //! no second list. Not covered: identity and comms, the user-owned safety
-//! limits (current, thermal, undervolt, `duty_max_q15`), the raw sensor
-//! screen, and the RO board facts install re-seeds.
+//! limits (current, thermal, undervolt, `duty_max_q15`), the move speed,
+//! the raw sensor screen, and the RO board facts install re-seeds.
 //!
 //! The LUT hashes as its 256 points LE, zeros while no table is live: a LUT
 //! that falls back to identity changes the stamp by itself.
@@ -43,7 +43,7 @@ pub const COVERED_NAMES: [&str; 40] = [
     "j_ff_q88",
     "p_kp_q88",
     "pos_deadband_counts",
-    "velocity_limit_cps",
+    "speed_ceiling_cps",
     "accel_limit_q88",
     "drive_polarity",
     "stall_omega_max_cps",
