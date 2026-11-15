@@ -119,7 +119,7 @@ impl Winding {
         let fold = limits.fold(&FoldIn::default(), &lim, &t.config.pos_soft);
         t.telemetry.tick.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
-        t.telemetry.estimates.i_lim_counts = fold.band.lim();
+        t.telemetry.estimates.i_lim_counts = fold.lim;
         t.telemetry_ext.therm.t_ntc_cc = t_ntc.unwrap_or(0);
         t.telemetry_ext.therm.therm_flags = flags;
     }

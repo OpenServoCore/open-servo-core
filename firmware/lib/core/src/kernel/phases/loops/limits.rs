@@ -6,15 +6,16 @@
 //! `i_cont_counts` and the directional endstop come after. The copper has
 //! no ceiling here: the winding estimate (the board NTC plus the rise on
 //! the two heat nodes kept here) latches the overtemperature fault at its
-//! cutoff. `fold` runs at MEDIUM and is compare/min only; the rail fold is
-//! recomputed at RAIL and cached.
+//! cutoff. In Current mode the forward side then folds under the speed
+//! ceiling. `fold` runs at MEDIUM and is compare/min only; the rail fold is
+//! recomputed at RAIL and cached, the speed fold by the caller.
 
 use crate::kernel::{DECIM_MED, DECIM_SLOW, TICK_HZ};
 use crate::regions::config::{ConfigLimits, ConfigPosSoft, StallResponse};
 
 /// `limit_flags` bits: what shaped the command. A term bit names a term
 /// whose ceiling sits under the cap and is the composed `i_lim_counts`.
-/// Bits 4 and 5 are retired and read 0.
+/// Bit 5 is retired and reads 0.
 pub mod flag {
     /// The command sat at the current ceiling: OpenLoop's duty ceiling held
     /// under the goal, or a closed loop's current reference at the band.
@@ -25,6 +26,9 @@ pub mod flag {
     pub const ENDSTOP: u8 = 1 << 2;
     /// The stall permit lease is live.
     pub const PERMIT: u8 = 1 << 3;
+    /// Current mode's speed fold sits under the composed limit: the side
+    /// along the motion folds toward 0 near the speed ceiling.
+    pub const SPEED: u8 = 1 << 4;
     /// The rail fold binds.
     pub const RAIL: u8 = 1 << 6;
     /// `goal_current` binds.
@@ -94,9 +98,22 @@ pub fn i_cont_or_cap(cfg: &ConfigLimits) -> u16 {
     }
 }
 
-/// The signed current band every command clamps into: `lo <= i_ref <= hi`.
-/// Symmetric `+-i_lim` away from the walls; a soft-limit wall collapses its
-/// inward side to 0 while the outward side keeps the composed limit.
+/// Current mode's forward-side ceiling on the speed ceiling: a P loop of
+/// the velocity loop's gain around it, `(ceiling - |omega|) x kp_q88 >> 8`,
+/// 0 at and over the ceiling, saturated at `u16::MAX`. A gain of 0 reads 0
+/// at every speed. No divide: `over` and the gain fit u16, so the product
+/// fits u32.
+#[inline(always)]
+pub fn speed_fold(ceiling_cps: u16, omega_q16: i32, kp_q88: u16) -> u16 {
+    let over = (ceiling_cps as u32).saturating_sub(omega_q16.unsigned_abs() >> 16);
+    ((over * kp_q88 as u32) >> 8).min(u16::MAX as u32) as u16
+}
+
+/// The signed current band every command clamps into: `lo <= i_ref <= hi`,
+/// with `lo <= 0 <= hi`. Symmetric `+-i_lim` away from the walls and the
+/// speed ceiling; a soft-limit wall collapses its inward side to 0 and the
+/// speed fold lowers the forward side toward 0, while the other side keeps
+/// the composed limit.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct IBand {
     pub lo: i32,
@@ -107,18 +124,10 @@ impl IBand {
     pub fn clamp(&self, i: i32) -> i32 {
         i.max(self.lo).min(self.hi)
     }
-
-    /// The composed magnitude the band was built from (every term and the
-    /// press fold; the endstop is positional and lives in the sides). This
-    /// is what telemetry publishes as `i_lim_counts`. Each side is zero
-    /// or that magnitude, so OR recovers it without a branch.
-    pub fn lim(&self) -> u16 {
-        self.hi as u16 | (-self.lo) as u16
-    }
 }
 
 /// The MEDIUM-rate inputs of one `fold`.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 pub struct FoldIn {
     /// The held measured current, magnitude.
     pub i_held_abs: u32,
@@ -130,13 +139,39 @@ pub struct FoldIn {
     /// the caller passes 0 in Current mode, where the goal is the
     /// reference, and in OpenLoop, whose knob is the duty.
     pub goal_abs: u16,
+    /// The forward side's ceiling in Current mode, `(ceiling - |omega|)
+    /// x v_kp_q88 >> 8` saturated, 0 at and over the ceiling; `u16::MAX`
+    /// in every other mode, where it never binds.
+    pub speed_fold: u16,
+    /// The blend, the speed the fold was computed on: its sign names the
+    /// forward side, and 0 folds both.
+    pub omega_q16: i32,
 }
 
-/// One `fold`'s verdict: the band and the term bits (`flag`) of the
-/// ceiling that binds.
+impl Default for FoldIn {
+    fn default() -> Self {
+        Self {
+            i_held_abs: 0,
+            omega_hat_abs_cps: 0,
+            tau_d_abs_counts: 0,
+            theta_hat_counts: 0,
+            stall_permit: false,
+            goal_abs: 0,
+            speed_fold: u16::MAX,
+            omega_q16: 0,
+        }
+    }
+}
+
+/// One `fold`'s verdict: the band, the composed magnitude it was built
+/// from (every term and the press fold, published as `i_lim_counts`; the
+/// endstop and the speed fold close sides under it, so the sides no longer
+/// recover it), and the bits (`flag`) of the ceiling that binds, ENDSTOP
+/// and SPEED.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fold {
     pub band: IBand,
+    pub lim: u16,
     pub terms: u8,
 }
 
@@ -261,6 +296,11 @@ impl LimitState {
     /// `stall_permit` is the deliberate-stall escape hatch, the kernel's live
     /// lease (`ControlLifecycle::stall_permit`): it lifts the detectors and
     /// the endstop, never a ceiling.
+    ///
+    /// Speed: under the composed limit, `speed_fold` mins the side along
+    /// the blend's sign (both at 0) and never passes 0, so over the ceiling
+    /// the forward side gives no torque along the motion and the braking
+    /// side keeps the band (no brake is asked).
     pub fn fold(&mut self, inp: &FoldIn, cfg: &ConfigLimits, soft: &ConfigPosSoft) -> Fold {
         if inp.stall_permit {
             self.stalled = false;
@@ -290,7 +330,7 @@ impl LimitState {
         }
         let ceiling = self.ceiling(cfg.current_limit_counts, inp.goal_abs);
         let mut lim = ceiling as u16;
-        let terms = (ceiling >> 16) as u8;
+        let mut terms = (ceiling >> 16) as u8;
         if self.stalled {
             lim = lim.min(cfg.i_cont_counts);
         }
@@ -304,12 +344,25 @@ impl LimitState {
         if !inp.stall_permit {
             if inp.theta_hat_counts >= soft.pos_max_soft_counts {
                 band.hi = 0;
+                terms |= flag::ENDSTOP;
             }
             if inp.theta_hat_counts <= soft.pos_min_soft_counts {
                 band.lo = 0;
+                terms |= flag::ENDSTOP;
             }
         }
-        Fold { band, terms }
+        // one compare outside Current mode: u16::MAX is never under lim
+        if inp.speed_fold < lim {
+            let fold = inp.speed_fold as i32;
+            if inp.omega_q16 >= 0 {
+                band.hi = band.hi.min(fold);
+            }
+            if inp.omega_q16 <= 0 {
+                band.lo = band.lo.max(-fold);
+            }
+            terms |= flag::SPEED;
+        }
+        Fold { band, lim, terms }
     }
 
     /// Torque-enable ack: drop the pending fault, unfold, re-arm a full
@@ -458,7 +511,7 @@ mod tests {
         let mut st = LimitState::new();
         let f = free(&mut st, &CFG);
         assert_eq!(f.band.hi, 1200);
-        assert_eq!(f.band.lim(), 1200);
+        assert_eq!(f.lim, 1200);
         assert_eq!(f.terms, 0);
         assert!(!st.stalled());
         assert!(!st.stall_fault_pending());
@@ -558,8 +611,15 @@ mod tests {
             assert_eq!(fold_at(&mut st, 480, 0, &CFG).hi, 1200);
             assert!(!st.stalled());
         }
-        let b = fold_at(&mut st, 480, 0, &CFG);
-        assert_eq!((b.hi, b.lim()), (300, 300));
+        let f = fold(
+            &mut st,
+            &FoldIn {
+                i_held_abs: 480,
+                ..Default::default()
+            },
+            &CFG,
+        );
+        assert_eq!((f.band.hi, f.lim), (300, 300));
         assert!(st.stalled());
         assert!(!st.stall_fault_pending());
         let mut st = LimitState::new();
@@ -807,28 +867,27 @@ mod tests {
                 },
                 &CFG,
             )
-            .band
         };
         // at max: the inward (positive) side collapses,
         // retreat keeps the composed limit - one band carries both verdicts
-        let b = at(&mut st, 4000);
-        assert_eq!((b.lo, b.hi), (-1200, 0));
-        assert_eq!(b.lim(), 1200);
+        let f = at(&mut st, 4000);
+        assert_eq!((f.band.lo, f.band.hi), (-1200, 0));
+        assert_eq!((f.lim, f.terms), (1200, flag::ENDSTOP));
         // mirrored at min
-        let b = at(&mut st, -4000);
-        assert_eq!((b.lo, b.hi), (0, 1200));
-        assert_eq!(b.lim(), 1200);
+        let f = at(&mut st, -4000);
+        assert_eq!((f.band.lo, f.band.hi), (0, 1200));
+        assert_eq!((f.lim, f.terms), (1200, flag::ENDSTOP));
         // past the wall keeps protecting
-        assert_eq!(at(&mut st, 5000).hi, 0);
+        assert_eq!(at(&mut st, 5000).band.hi, 0);
         // mid-range: symmetric
-        let b = at(&mut st, 0);
-        assert_eq!((b.lo, b.hi), (-1200, 1200));
+        let f = at(&mut st, 0);
+        assert_eq!((f.band.lo, f.band.hi, f.terms), (-1200, 1200, 0));
         // past the min wall mirrors it
-        let b = at(&mut st, -5000);
+        let b = at(&mut st, -5000).band;
         assert_eq!((b.lo, b.hi), (0, 1200));
         // the deadlock regression: a zeroed command must not re-read as an
         // inward push - the band's retreat side stays open regardless
-        let b = at(&mut st, 4000);
+        let b = at(&mut st, 4000).band;
         assert_eq!(b.clamp(0), 0);
         assert_eq!(b.clamp(-120), -120);
         assert_eq!(b.clamp(120), 0);
@@ -928,7 +987,7 @@ mod tests {
         }
         assert!(!st.stalled());
         assert!(!st.stall_fault_pending());
-        assert_eq!(last.band.lim(), 1200);
+        assert_eq!(last.lim, 1200);
     }
 
     /// Granted while already folded, the permit releases rather than leaving
@@ -982,5 +1041,90 @@ mod tests {
             ..cfg
         };
         assert_eq!(fold(&mut st, &press, &capped).band.hi, 554);
+    }
+
+    /// The fold's arithmetic over its ranges: under the ceiling it is the
+    /// speed short of it times the gain, 0 at and over the ceiling whatever
+    /// the sign, and it saturates instead of wrapping. A ceiling of 0 and a
+    /// gain of 0 read 0 at every speed: with no speed gain Current mode
+    /// delivers nothing.
+    #[test]
+    fn the_speed_fold_is_the_gain_on_the_speed_short_of_the_ceiling() {
+        // 0.5 in Q8.8: 1000 c/s short folds to 500 counts, either sign
+        assert_eq!(speed_fold(3000, 2000 << 16, 128), 500);
+        assert_eq!(speed_fold(3000, -2000 << 16, 128), 500);
+        assert_eq!(speed_fold(3000, 3000 << 16, 128), 0);
+        assert_eq!(speed_fold(3000, 3001 << 16, 128), 0);
+        for omega in [0, 1 << 16, 32767 << 16, -(32767 << 16), i32::MIN, i32::MAX] {
+            assert_eq!(speed_fold(0, omega, u16::MAX), 0, "ceiling 0 at {omega}");
+            assert_eq!(speed_fold(32767, omega, 0), 0, "gain 0 at {omega}");
+        }
+        assert_eq!(speed_fold(32767, 32767 << 16, u16::MAX), 0);
+        assert_eq!(speed_fold(32767, -(32767 << 16), u16::MAX), 0);
+        assert_eq!(speed_fold(32767, i32::MIN, u16::MAX), 0);
+        assert_eq!(speed_fold(32767, 0, u16::MAX), u16::MAX, "saturates");
+        assert_eq!(speed_fold(u16::MAX, 0, u16::MAX), u16::MAX);
+    }
+
+    /// The speed fold lowers the side along the motion toward 0 and never
+    /// past it; the braking side keeps the composed band, at rest both
+    /// sides fold, and `lim` stays the composed magnitude. SPEED names a
+    /// fold under the composed limit, as a term bit names its term; a fold
+    /// at or over it changes nothing and names nothing.
+    #[test]
+    fn the_speed_fold_never_closes_past_zero_and_leaves_the_braking_side() {
+        let mut st = LimitState::new();
+        let at = |st: &mut LimitState, speed_fold: u16, omega_q16: i32, theta: i32| {
+            fold(
+                st,
+                &FoldIn {
+                    omega_hat_abs_cps: 1000,
+                    theta_hat_counts: theta,
+                    speed_fold,
+                    omega_q16,
+                    ..Default::default()
+                },
+                &CFG,
+            )
+        };
+        let f = at(&mut st, 400, 1 << 16, 0);
+        assert_eq!((f.band.lo, f.band.hi), (-1200, 400));
+        assert_eq!((f.lim, f.terms), (1200, flag::SPEED));
+        let f = at(&mut st, 400, -1 << 16, 0);
+        assert_eq!((f.band.lo, f.band.hi), (-400, 1200));
+        assert_eq!((f.lim, f.terms), (1200, flag::SPEED));
+        let f = at(&mut st, 400, 0, 0);
+        assert_eq!((f.band.lo, f.band.hi, f.terms), (-400, 400, flag::SPEED));
+        // over the ceiling: no torque along the motion, the brake side open
+        let f = at(&mut st, 0, 5000 << 16, 0);
+        assert_eq!((f.band.lo, f.band.hi, f.terms), (-1200, 0, flag::SPEED));
+        let f = at(&mut st, 0, -5000 << 16, 0);
+        assert_eq!((f.band.lo, f.band.hi, f.terms), (0, 1200, flag::SPEED));
+        let f = at(&mut st, 0, 0, 0);
+        assert_eq!((f.band.lo, f.band.hi), (0, 0));
+        // a fold at or over the composed limit does not bind
+        for fold in [1200, 5000, u16::MAX] {
+            let f = at(&mut st, fold, 1 << 16, 0);
+            assert_eq!((f.band.lo, f.band.hi, f.terms), (-1200, 1200, 0), "{fold}");
+        }
+        // under the endstop: the closed side stays 0, the fold takes the
+        // other only when the motion runs that way
+        let f = at(&mut st, 400, 1 << 16, 4000);
+        assert_eq!(
+            (f.band.lo, f.band.hi, f.terms),
+            (-1200, 0, flag::ENDSTOP | flag::SPEED)
+        );
+        let f = at(&mut st, 400, -1 << 16, 4000);
+        assert_eq!(
+            (f.band.lo, f.band.hi, f.terms),
+            (-400, 0, flag::ENDSTOP | flag::SPEED)
+        );
+        // every fold and every speed keeps lo <= 0 <= hi
+        for fold in [0, 1, 599, 1199, 1200, u16::MAX] {
+            for omega in [i32::MIN, -1, 0, 1, i32::MAX] {
+                let b = at(&mut st, fold, omega, 0).band;
+                assert!(b.lo <= 0 && 0 <= b.hi, "{fold} {omega}: {b:?}");
+            }
+        }
     }
 }

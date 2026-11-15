@@ -129,7 +129,6 @@ fn r_hat_reads_the_25_c_resistance_at_the_estimates_temperature() {
 /// On main Current mode has no ceiling and the shaft runs to its free
 /// speed at the cap.
 #[test]
-#[ignore = "red until Current mode folds its band under the speed ceiling"]
 fn current_mode_folds_under_the_speed_ceiling() {
     let (sh, mut p) = record(400.0, |_| {});
     let mut k = mg90::kernel();

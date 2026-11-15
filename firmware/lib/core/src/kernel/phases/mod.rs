@@ -127,6 +127,8 @@ pub(in crate::kernel) struct Medium {
     vel: VelocityLoop,
     pub(in crate::kernel) limits: LimitState,
     pub(in crate::kernel) i_band: IBand,
+    /// The composed magnitude `i_band` was built from (`limits::Fold::lim`).
+    i_lim: u16,
     limit_flags: u8,
     pub(in crate::kernel) vbus: VbusEst,
     pub(in crate::kernel) thermal: WindingTherm,
@@ -184,6 +186,7 @@ impl Medium {
             vel: VelocityLoop::new(),
             limits: LimitState::new(),
             i_band: IBand { lo: 0, hi: 0 },
+            i_lim: 0,
             limit_flags: 0,
             vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),

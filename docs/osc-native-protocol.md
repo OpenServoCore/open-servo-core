@@ -1226,13 +1226,26 @@ In Position mode the profile cruises at the move speed and the position
 loop's output clamps at the ceiling, so a shaft that falls behind its
 profile is asked for up to the ceiling to catch up. In Velocity mode
 `goal_velocity` clamps at the ceiling and the move speed bounds nothing.
-Current mode and OpenLoop read neither field. The ceiling bounds the
-reference the velocity loop follows, not the shaft: the loop's transient
-overshoot can carry the shaft past it, and the derate a calibration
-takes under the datasheet speed is that margin (DES
-`velocity_mode_clamps_its_goal_at_the_ceiling`,
+In both the ceiling bounds the reference the velocity loop follows, not
+the shaft: the loop's transient overshoot can carry the shaft past it,
+and the derate a calibration takes under the datasheet speed is that
+margin (DES `velocity_mode_clamps_its_goal_at_the_ceiling`,
 `a_zero_move_speed_cruises_at_the_ceiling`,
 `a_held_shaft_is_asked_over_the_move_speed_up_to_the_ceiling`).
+
+Current mode reads the ceiling as a fold of its current band: the side
+along the motion is at most `(speed_ceiling_cps - |omega_hat_cps|) x
+v_kp_q88 / 256` counts, the velocity loop's own gain on the speed short
+of the ceiling, and 0 at and over it; the other side keeps the band.
+Near the ceiling `goal_current` is cut back, the shaft settles a little
+under the ceiling where friction meets the fold, and over the ceiling
+(an overhauling load) the servo applies no torque along the motion and
+never brakes. `i_lim_counts` stays the composed limit and `limit_flags`
+bit 4 names the fold. The fold rides the speed gain: with `v_kp_q88` 0
+it reads 0 at every speed and Current mode delivers no current, so a
+servo with no speed gain moves in no closed mode (DES
+`current_mode_folds_under_the_speed_ceiling`). OpenLoop reads neither
+field.
 
 **What governs.** `limit_flags` (u8, RO, `0x27C` in TELEMETRY; `0x27D`
 is reserved) names what shaped the command at the last medium tick,
@@ -1244,9 +1257,9 @@ every medium tick (2 kHz), torque on or off.
 | --- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0   | `CEILING` | the command sat at the current ceiling: in OpenLoop the duty ceiling held under the goal by the current, in the closed loops the current reference at `i_lim_counts` |
 | 1   | `YIELD`   | the press or collision verdict folded the limit to `i_cont_counts`                                                                                                   |
-| 2   | `ENDSTOP` | exactly one side of the band is closed: a soft limit forbids current in one direction (a zero limit closes both and does not set it)                                 |
+| 2   | `ENDSTOP` | a soft limit closed a side of the band: at or past a wall, current toward it is forbidden                                                                            |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
-| 4   | retired   | reads 0                                                                                                                                                              |
+| 4   | `SPEED`   | Current mode only: the speed fold sits under the composed limit, so near `speed_ceiling_cps` the side of the band along the motion folds toward 0                    |
 | 5   | retired   | reads 0                                                                                                                                                              |
 | 6   | `RAIL`    | the rail fold binds before the press fold, under the cap                                                                                                                       |
 | 7   | `GOAL`    | `goal_current` binds before the press fold, under the cap                                                                                                                      |
@@ -1257,7 +1270,9 @@ a still shaft, not bit 0, so bit 0 alone on a still shaft under
 `i_cont_counts` is a hold the loop is content with. The permit drops
 the fold and the endstop, so bit 3 never appears with bits 1 or 2, and
 it drops no ceiling, so it does appear with bits 6 and 7 (unit
-`limit_flags_name_the_governor`). Bits 4 and 5 are retired and read 0.
+`limit_flags_name_the_governor`). Bit 4 is never set in Position,
+Velocity or OpenLoop, where the ceiling bounds a reference or nothing.
+Bit 5 is retired and reads 0.
 The flags are a polled register; a TEL row may carry them, as any table
 field, at medium rate.
 

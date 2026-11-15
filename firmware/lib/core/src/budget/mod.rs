@@ -30,7 +30,7 @@ mod tests;
 
 use osc_protocol::wire::LAW_BREAK_BIT_TIMES;
 
-use crate::kernel::{DECIM_MED, TICK_HZ};
+use crate::kernel::{DECIM_MED, TICK_HZ, phase};
 
 /// The clock every budget counts: the chip's HCLK (the chip asserts it).
 pub const CLOCK_HZ: u32 = 48_000_000;
@@ -94,25 +94,48 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// ticks, Closed over the Closed ticks, OpenLoop over the openloop
 /// window's OpenLoop ticks. A report-only window feeds no row. Each cell
 /// is its measured maximum with the rule's margin; the bodies hold the
-/// tick block's work and every phase's stages.
+/// tick block's work and every phase's stages. The LIMITS column carries
+/// [`SPEED_FOLD`] on top, which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
-pub const KERNEL: [[u32; PHASES]; REGIMES] = [
+pub const KERNEL: [[u32; PHASES]; REGIMES] = with_speed_fold([
     [684, 1002, 849, 912, 534, 915, 519, 699, 510, 537],
     [1269, 1635, 1605, 1500, 1422, 1614, 1092, 1395, 1155, 1236],
     [1254, 1611, 1125, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
-];
+]);
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
-/// maximum's row (OpenLoop phase 5: the bodies barely vary).
-pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
+/// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
+/// column with [`SPEED_FOLD`], as the maximum's.
+pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_speed_fold([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
     [1244, 1546, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
-];
+]);
+
+/// E, on the LIMITS column of every regime, maximum and mean: Current
+/// mode's speed fold under the speed ceiling, where the measured phase
+/// had none. Matched release builds, each path through the phase priced
+/// as [`REFRESH`]: Current mode's longest, the stall permit's with the
+/// fold binding, 26 more instructions (five loads and stores, sixteen
+/// ALU, one multiply, four more taken transfers), 82.25 HCLK, with no
+/// permit 80.25; Position and Velocity take the mode test and the fold's
+/// one compare, 15.75, and OpenLoop 27. Torque off in Current mode runs
+/// the fold too, so the Open row carries it. The longest delta plus 10%,
+/// rounded up; the bench must refill the rows.
+pub const SPEED_FOLD: u32 = 91;
+
+const fn with_speed_fold(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
+    let mut r = 0;
+    while r < REGIMES {
+        rows[r][phase::LIMITS as usize] += SPEED_FOLD;
+        r += 1;
+    }
+    rows
+}
 
 /// A window's mean is judged only over this many bodies.
 pub const MEAN_MIN_BODIES: u32 = 100;
