@@ -243,6 +243,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | --- | --- |
 | `KERNEL`, `KERNEL_MEAN` | plain tick body by regime (Open, Closed, OpenLoop) and phase, maximum and mean, every phase's stages and the tick block's work in it |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
+| `R_AT_TEMPERATURE` | estimated addition inside `SLOW_FINISH`, the resistance read at the estimate's temperature, until the probe refills the finish |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
