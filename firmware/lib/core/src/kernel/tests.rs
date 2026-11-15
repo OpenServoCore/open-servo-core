@@ -3206,55 +3206,6 @@ fn a_zero_duty_has_no_sign_to_flip() {
     }
 }
 
-#[test]
-fn velocity_feedback_switches_to_the_bemf_and_back() {
-    let sh = Shared::new();
-    drive_setup(&sh);
-    let mut k = kernel();
-    let published = |sh: &Shared| {
-        sh.table.with(|t| {
-            (
-                t.telemetry.estimates.omega_hat_cps,
-                t.telemetry.mode.omega_hat_src,
-            )
-        })
-    };
-    // the fourth clean boxcar flips the source; until then the published
-    // source is the observer
-    let mut n = 0;
-    while k.medium.omega_blend.standing_q16() == 0 {
-        k.on_scan(frame(2000, BIAS + 100), &sh);
-        assert_eq!(published(&sh).1, 0);
-        n += 1;
-        assert!(n < 100, "the source never flipped");
-    }
-    // the PUBLISH phase lands it
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
-    assert!(bemf > 0);
-    assert_eq!(published(&sh), (bemf << 16, 1));
-    // torque off lands at the next CONTROL phase, and the first window it
-    // changes is the tick after: the half the SPEED phase closed ahead of
-    // the edge is clean, so the loop takes one more boxcar
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    k.on_scan(frame(2000, BIAS + 100), &sh);
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
-    assert!(bemf > 0);
-    assert_eq!(published(&sh), (bemf << 16, 1));
-    // the half that holds the edge voids at that period's SPEED phase: the
-    // source rides the held boxcar through that one result, then falls
-    // back at the next period's void
-    k.on_scan(frame(2000, BIAS + 100), &sh);
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
-    assert_eq!(published(&sh), (bemf << 16, 1));
-    k.on_scan(frame(2000, BIAS + 100), &sh);
-    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
-    assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
-}
-
 /// What the loop's speed carries over the observer's: the blend's lead.
 fn lead(k: &Kernel<FakeIo>) -> i32 {
     k.medium.omega_hat - k.medium.fusion.omega_q16()

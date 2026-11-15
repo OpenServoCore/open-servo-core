@@ -8,6 +8,7 @@
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::estimator::window;
+use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::stamp;
@@ -33,6 +34,27 @@ pub fn duty_counts(q15: i16) -> i16 {
 /// exercises the rescale.
 const VBUS_SCALE_Q15: u32 = 34952;
 const VBUS: u16 = 3000;
+
+/// `Plant::step` per FAST tick: the duty adds `duty * DUTY_GAIN >> 15` c/s,
+/// omega decays by `omega >> DECAY_SHIFT`, Coulomb friction takes
+/// `COULOMB_CPS` toward zero; the winding reads back-EMF
+/// `omega >> KE_SHIFT` vcounts over R = `1 << R_SHIFT` vcounts per ccount.
+const DUTY_GAIN: u32 = 200;
+const DECAY_SHIFT: u32 = 6;
+const COULOMB_CPS: u32 = 8;
+const KE_SHIFT: u32 = 4;
+const R_SHIFT: u32 = 1;
+
+/// `Plant::step` in the kernel's motion model, current counts per MEDIUM
+/// tick. The duty term is `DUTY_GAIN * (R i + e) / VBUS`, so per FAST tick
+/// omega gains `B_f i` with `B_f = DUTY_GAIN R / VBUS` and loses
+/// `(2^-DECAY_SHIFT - DUTY_GAIN 2^-KE_SHIFT / VBUS) omega + COULOMB_CPS`:
+/// B is `DECIM_MED` of `B_f`, the frictions are their c/s terms over `B_f`.
+pub const B_I_Q313: u16 =
+    (((DUTY_GAIN << R_SHIFT) * DECIM_MED as u32 * 8192 + VBUS as u32 / 2) / VBUS as u32) as u16;
+pub const FRIC_FC_COUNTS: u16 = (COULOMB_CPS * VBUS as u32 / (DUTY_GAIN << R_SHIFT)) as u16;
+pub const FRIC_FV_Q016: u16 = (((VBUS as u32) << 16) / (DUTY_GAIN << (DECAY_SHIFT + R_SHIFT))
+    - (1 << (16 - KE_SHIFT - R_SHIFT))) as u16;
 
 /// The chip-side const-eval for a 20 kHz FAST rate (MED 2 kHz).
 pub const TIMING: KernelTiming = KernelTiming {
@@ -89,9 +111,9 @@ pub fn last_cmd(k: &Kernel<FakeIo>) -> MotorCmd {
 }
 
 /// Hand-stable rig baseline: the gains the core kernel tests settle the
-/// plant with, the stored cold R at the plant's R, position tracking
-/// screen out (the plant/gain pair is qualitative), zero open-loop duty
-/// braking. A fully loaded servo: both images loaded, Ke set, the set
+/// plant with, the stored cold R and the motion model at the plant's own,
+/// position tracking screen out (the plant/gain pair is qualitative), zero
+/// open-loop duty braking. A fully loaded servo: both images loaded, Ke set, the set
 /// stamped, so the data state opens every mode.
 pub fn seed(shared: &Shared) {
     shared.table.with_mut(|t| {
@@ -142,7 +164,9 @@ pub fn seed(shared: &Shared) {
         cal.motor.ke_vpc_q = 256;
         cal.motor.r_q12 = 8192;
         cal.motor.recip_ke_q = 16 << 10;
-        cal.motor.b_i_q313 = 8192;
+        cal.motor.b_i_q313 = B_I_Q313;
+        cal.motor.fric_fc_counts = FRIC_FC_COUNTS;
+        cal.motor.fric_fv_q016 = FRIC_FV_Q016;
         t.telemetry.refs.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
@@ -190,22 +214,22 @@ impl Plant {
         }
     }
 
-    /// One FAST tick under the duty the kernel last wrote: a = 1 - 1/64,
-    /// b*duty = duty*200>>15, coulomb 8 c/s toward zero. Slow-decay frames:
-    /// the trough scan lands in the brake phase, so the shunt reads its
-    /// offset there.
+    /// One FAST tick under the duty the kernel last wrote. Slow-decay
+    /// frames: the trough scan lands in the brake phase, so the shunt reads
+    /// its offset there.
     pub fn step(&mut self, duty: i16) -> SensorFrame {
-        self.omega_cps += ((duty as i32 * 200) >> 15) - (self.omega_cps >> 6);
+        self.omega_cps +=
+            ((duty as i32 * DUTY_GAIN as i32) >> 15) - (self.omega_cps >> DECAY_SHIFT);
+        let coulomb = COULOMB_CPS as i32;
         if self.omega_cps > 0 {
-            self.omega_cps = (self.omega_cps - 8).max(0);
+            self.omega_cps = (self.omega_cps - coulomb).max(0);
         } else {
-            self.omega_cps = (self.omega_cps + 8).min(0);
+            self.omega_cps = (self.omega_cps + coulomb).min(0);
         }
         self.theta_q16 += ((self.omega_cps as i64) << 16) / 20_000;
         let pos = (self.theta_q16 >> 16).clamp(0, 4095) as u16;
-        // ke = 1/16 vcounts per c/s, R = 2 vcounts/ccount
         let v = (duty as i32 * VBUS as i32) >> 15;
-        let i = (v - (self.omega_cps >> 4)) >> 1;
+        let i = (v - (self.omega_cps >> KE_SHIFT)) >> R_SHIFT;
         let mag = if duty >= 0 { i } else { -i };
         let sample = (BIAS as i32 + mag + self.current_offset).clamp(0, 4095) as u16;
         let (va, vb) = if duty >= 0 { (VBUS, 40) } else { (40, VBUS) };
@@ -372,5 +396,50 @@ pub fn duty_of<T: TelStream>(k: &Kernel<FakeIo, T>) -> i16 {
             }
         }
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The seed's motion model is the plant it drives: the steady current at
+    /// two duties pins the Coulomb and viscous terms, one MEDIUM tick's rise
+    /// from rest pins B. Both duties make a whole c/s drive term, so the
+    /// plant's truncation stays out of the steady state.
+    #[test]
+    fn the_seeds_motion_model_is_the_plants() {
+        let sh = Shared::new();
+        seed(&sh);
+        let m = sh.table.with(|t| t.calib.motor);
+        let fric =
+            |omega: i32| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega as f64 / 65536.0;
+        let current = |f: SensorFrame| f.current as i32 - BIAS as i32;
+        for duty in [4096, 8192] {
+            let mut p = Plant::new(0);
+            let mut i = 0;
+            for _ in 0..20_000 {
+                i = current(p.step(duty));
+            }
+            let model = fric(p.omega_cps());
+            assert!(
+                (i as f64 - model).abs() <= 1.0,
+                "duty {duty}: steady {i} counts at {} c/s, the model holds {model:.1}",
+                p.omega_cps()
+            );
+
+            let mut p = Plant::new(0);
+            let mut model = 0.0;
+            for _ in 0..DECIM_MED {
+                let omega = p.omega_cps();
+                let i = current(p.step(duty));
+                model += m.b_i_q313 as f64 / 8192.0 * (i as f64 - fric(omega)) / DECIM_MED as f64;
+            }
+            let rise = p.omega_cps() as f64;
+            assert!(
+                (model - rise).abs() <= rise / 16.0,
+                "duty {duty}: one MEDIUM tick from rest rose {rise} c/s, the model {model:.1}"
+            );
+        }
     }
 }
