@@ -90,16 +90,17 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// a window may show.
 ///
 /// M, every gated window's ticks by drive arm, on the image the table
-/// ships with, a closing tick booked apart, 3 runs: Open over the Open
+/// ships with, a closing tick booked apart, 5 runs: Open over the Open
 /// ticks, Closed over the Closed ticks, OpenLoop over the openloop
-/// window's OpenLoop ticks. A report-only window feeds no row. Each cell is its measured maximum with the rule's
-/// margin; the bodies hold the tick block's work and every phase's stages.
+/// window's OpenLoop ticks. A report-only window feeds no row. Each cell
+/// is its measured maximum with the rule's margin; the bodies hold the
+/// tick block's work and every phase's stages.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
     [684, 1002, 849, 912, 534, 915, 519, 699, 510, 537],
-    [1269, 1635, 1599, 1479, 1422, 1614, 1092, 1365, 1155, 1236],
-    [1254, 1611, 1122, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
+    [1269, 1635, 1605, 1500, 1422, 1614, 1092, 1395, 1155, 1236],
+    [1254, 1611, 1125, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
@@ -108,9 +109,9 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = [
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary).
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
-    [618, 985, 817, 886, 498, 902, 486, 675, 476, 501],
+    [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
-    [1244, 1545, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
+    [1244, 1546, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
 ];
 
 /// A window's mean is judged only over this many bodies.
@@ -210,10 +211,10 @@ pub const TEL_LANE_MEAN: u32 = 124;
 /// DECIM_SLOW periods): the permit lease, undervoltage and the two heats,
 /// on top of the phase's row, per regime. M: the due bodies' maximum over
 /// the phase's plain maximum that sets its row, every gated window with no
-/// TEL, 3 runs, with the rule's margin: Open 603 over 471; Closed 1146
+/// TEL, 5 runs, with the rule's margin: Open 608 over 471; Closed 1146
 /// over 1044, the maximum from the openloop window, its OpenLoop ticks
 /// booked Closed.
-pub const SLOW_DUE: [u32; EVENT_REGIMES] = [180, 150];
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [185, 150];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
 /// quadratic, the two rise multiplies, the cutoff fault and the winding
@@ -272,15 +273,15 @@ pub const WINDOW_TICKS: [usize; 4] = [2, 4, 10, 20];
 /// ticks took, events included. M: the quiet windows (Open) and the
 /// stepping windows (Closed), 3 runs, on the window-record image, with the
 /// rule's margin. The record updates after the exit stamp, outside every
-/// body; that image's plain maxima read 3 to 7 ticks over the bench
-/// image's, layout.
+/// body; that image's quiet-window plain maxima read 4 to 7 ticks over
+/// the bench image's, layout.
 pub const WINDOW_LOAD: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[2177, 3532, 7509, 13897], [3225, 6073, 13729, 27067]];
+    [[1781, 3155, 7015, 13428], [3225, 6073, 13729, 27067]];
 
 /// The same with six fields streaming at 3M. M as [`WINDOW_LOAD`]: TEL
 /// still (Open) and TEL stepping (Closed).
 pub const WINDOW_LOAD_TEL: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[2441, 4411, 9895, 18956], [4088, 7359, 16570, 32456]];
+    [[2441, 4405, 9888, 18956], [4091, 7362, 16665, 32527]];
 
 /// Bus vector bodies.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
