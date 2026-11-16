@@ -59,7 +59,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
 | 7 | PUBLISH | the shunt zero's sample; estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit |
-| 9 | SPEED | back-EMF close: the boxcar the next period's OBSERVER reads |
+| 9 | SPEED | back-EMF close with the brush term: the boxcar the next period's OBSERVER reads |
 
 Module layout:
 
@@ -75,7 +75,7 @@ Hand-off contracts: the medium half leaves the fast half a `Command` (drive kind
 
 The speed fold: in Current mode LIMITS folds the band under the speed ceiling after the composed limit and the endstop, on the blend OBSERVER computed two phases earlier: `fold = (ceiling - |omega_hat|) x v_kp_q88 >> 8`, saturating, 0 at and over the ceiling, one multiply and no divide (`speed_fold`). The side along the blend's sign takes `min(side, fold)`, both sides at a blend of 0, and the other keeps the band, so `lo <= 0 <= hi` holds and the fold never brakes. Every other mode passes `u16::MAX` and pays the mode test and one compare. With asymmetric non-zero sides the band no longer recovers its magnitude, so the fold returns the composed limit beside it: that is `i_lim_counts` and what `CEILING` compares against; `ENDSTOP` is set by the endstop branch itself, and `SPEED` (`limit_flags` bit 4) while the fold sits under the composed limit. With `v_kp_q88` 0 the fold reads 0 and Current mode delivers nothing. Pins: `current_mode_folds_under_the_speed_ceiling`, `the_speed_fold_never_closes_past_zero_and_leaves_the_braking_side`, `the_speed_fold_is_the_gain_on_the_speed_short_of_the_ceiling`, `current_mode_with_no_speed_gain_delivers_nothing`.
 
-The back-EMF boxcar: FAST adds each tick's window to the open half, and SPEED closes the half on the period's last tick, after that tick's own window is in. A half is therefore the ten rows of one period, phases 0 to 9, every row in exactly one half, and the boxcar is the two periods that end at the close. The next period's OBSERVER feeds it to the speed blend two ticks later, and PUBLISH lands the same boxcar as `omega_bemf_cps`, so a published source and boxcar belong together. The rows of phases 0 and 1 belong to the half that is still open when OBSERVER runs: a command that lands at CONTROL first shows in the phase 1 row, and reaches the blend with the next period's boxcar. The close reads the winding resistance and the Ke reciprocal as they stand on its own tick, behind a take on SPARE_A and a SLOW finish of the same period. In Open nothing drives, the close voids the half on its zero duty and folds no product. Pin: `the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead`.
+The back-EMF boxcar: FAST adds each tick's window to the open half, and SPEED closes the half on the period's last tick, after that tick's own window is in. A half is therefore the ten rows of one period, phases 0 to 9, every row in exactly one half, and the boxcar is the two periods that end at the close. The next period's OBSERVER feeds it to the speed blend two ticks later, and PUBLISH lands the same boxcar as `omega_bemf_cps`, so a published source and boxcar belong together. The rows of phases 0 and 1 belong to the half that is still open when OBSERVER runs: a command that lands at CONTROL first shows in the phase 1 row, and reaches the blend with the next period's boxcar. The close reads the winding resistance, the brush term's size and the Ke reciprocal as they stand on its own tick, behind a take on SPARE_A and a SLOW finish of the same period. In Open nothing drives, the close voids the half on its zero duty and folds no product. Pin: `the_observer_reads_the_boxcar_speed_closed_two_ticks_ahead`.
 
 The boxcar's validity is decided at the close (`BemfObs::close`); the fast half only marks a row that read no window. A half is valid when every row in it read both windows over their floors and the drive kept one sign through it, and a boxcar needs three valid halves in a row: its own two and the one ahead of them.
 
@@ -84,6 +84,27 @@ The boxcar's validity is decided at the close (`BemfObs::close`); the fast half 
 - **A zero duty** drives nothing and has no sign. A close on it is no flip, and the sign a later drive is compared with stays the last one that drove, so a drive that stops and resumes the same way flips nothing and one that resumes the other way flips once. The half is void: its last row had no window.
 
 All of it runs on SPEED; FAST sums as before. Pins: `a_boxcar_waits_out_the_startup_half`, `a_half_that_holds_a_drive_flip_is_void`, `a_zero_duty_has_no_sign_to_flip`.
+
+The brush term: at speed the spinning brushes add volts that follow the current beyond the winding's resistance, and `r_hat` does not take them off, so the boxcar would hand the velocity loop its own current as speed (control-theory "Which Velocity the Loop Closes On"). The close takes them off a valid half as well (`estimator/bemf.rs`):
+
+```text
+take:   rc  = 0 if brush_cps < BRUSH_SPAN_CPS, else min(r_brush_q12, r_q12 >> 1)
+        lo  = brush_cps - BRUSH_SPAN_CPS
+SPEED:  w   = min(256, max(0, |omega_hat| - lo) >> 2)          c/s; 0 at lo and under, 256 from brush_cps
+        xw  = (rc x w) >> 8                                     r_q12 units, at most i16::MAX
+close:  dev = sum_i - i_avg;  i_avg += dev >> BRUSH_AVG_SHIFT   (a valid half behind a valid one)
+        dev = 0;              i_avg  = sum_i                    (the first valid half after a void one)
+        half = v - (q_mul(r_hat, sum_i, 12) + ((xw x max(-dev_max, min(dev_max, dev))) >> 12))
+                                                                v the half's volts, one saturation for both drops
+```
+
+- **The size** is CALIB `r_brush_q12`, in `r_q12`'s units and never raised along copper's slope, capped at half the stored `r_q12` at the take; an unidentified winding caps it to 0. CALIB `brush_cps` is where its weight is full, and `BRUSH_SPAN_CPS` (1024 c/s, 256 steps of 4 c/s, a shift and no divide) is how far under it the weight falls to 0. A `brush_cps` under the span turns the term off.
+- **The weight** reads `omega_hat`, the speed this period's VELOCITY closed on, in either sign. It is folded into the size once a period, so the half's product is one i32 multiply.
+- **The deviation** is the half's current sum less its slow average, 2^6 valid halves (`BRUSH_AVG_SHIFT`, one octave over the speed blend's standing corner, `omega_blend::D_SHIFT - 1`, const-asserted), so the term follows only what the blend passes as fast. The average restarts on the first valid half after a void one, where the deviation is 0, and a void half leaves it alone.
+- **The bound** is board data, `KernelTiming::brush_dev_max`: 40 mA (`BRUSH_DEV_MA`) through the board's sense chain over a half's ten ticks, const-evaluated, and the board's build asserts that the bound keeps the product inside one i32 multiply (`bemf::brush_dev_max_fits`).
+- **A size of 0**, the seed and FACTORY, is the close without the term, bit for bit, at any speed.
+
+Pins: `weight_zero_is_the_close_without_the_term`, `a_small_deviation_takes_the_size_times_the_deviation`, `a_large_current_step_takes_no_more_than_the_bound`, `a_steady_current_takes_nothing_once_the_average_settles`, `the_first_valid_half_after_a_void_one_restarts_the_average`, `a_void_half_leaves_the_average_alone`, `the_weight_ramps_over_the_fade_in_either_sign`, `the_take_caps_the_size_at_half_the_winding`, `a_full_weight_speed_under_the_span_turns_the_term_off`, `both_fields_zero_turn_the_term_off`, `the_bound_is_40_ma_a_tick_through_the_dev_boards_chain`, `the_bound_keeps_the_product_one_i32_multiply`, `legal_extremes_never_wrap_at_the_largest_size_and_bound`, `the_take_resolves_the_brush_term`; on the record rig, `the_record_rig_keeps_sixty_degrees_at_the_fast_cruise_and_its_slow_cruise_and_moves`.
 
 The velocity loop's speed (`estimator/omega_blend.rs`) is the pot observer's speed plus the boxcar's fast part, never the boxcar's level. The level is not trusted: the brush contact's drop wanders, and under a driven loop the boxcar reads over the pot. The blend keeps two states and steps them at OBSERVER, behind the observer's own step:
 
@@ -140,6 +161,7 @@ The winding resistance: the control path reads one resistance, CALIB `r_q12`, th
 | back-EMF boxcar's `R x i` | `r_hat` | SPEED, at the half's close |
 | current loop on a tick with no reading | `r_hat`, through the `Command` | FAST |
 | OpenLoop's stall-safe base duty | the stored `r_q12` | LIMITS |
+| the brush term's cap, half the winding | the stored `r_q12` | the configuration take |
 
 The base duty stays on the stored value on purpose: it is a ceiling, and a winding at 25 C or warmer carries at most the limit at it. On a board below 25 C it errs high by copper's slope on the difference, 4% at 15 C and 10% at 0 C, only under the window floor, where the stall current is tens of mA. Pins: `r_hat_reads_the_25_c_resistance_at_the_estimates_temperature`, `r_hat_follows_copper_on_25_c_for_every_resistance_and_temperature`, `r_hat_rises_with_a_held_current_to_the_warm_factors_value_and_falls_as_it_cools`, `r_hat_is_the_stored_resistance_with_no_heat_unset_or_on_a_failed_ntc`, `r_hat_follows_a_new_r_q12_at_the_take_and_saturates`, `the_boxcar_reads_a_warm_winding_at_the_speed_it_read_cold`, `the_stall_safe_open_loop_duty_stays_on_the_stored_resistance`.
 
@@ -248,6 +270,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `R_AT_TEMPERATURE` | estimated addition inside `SLOW_FINISH`, the resistance read at the estimate's temperature, until the probe refills the finish |
 | `SPEED_FOLD` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, Current mode's speed fold, until the probe refills the rows |
 | `UNSET_FLAG` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, the take's `UNSET` bit ORed into `limit_flags`, until the probe refills the rows |
+| `BRUSH_TERM` | estimated addition on the SPEED column of `KERNEL` and `KERNEL_MEAN`, by regime: the brush term's weight on every SPEED tick, Open included, and on a driven one the deviation, the average's step, the bound and the product; priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
@@ -362,7 +385,7 @@ On SPARE_A, `config_due` compares the count with the one last taken:
 
 | Count | Action |
 | --- | --- |
-| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them, the belt and the `UNSET` bit (below), and the two speeds and the cap resolved in the copy: a move speed of 0 reads as the ceiling and the move speed runs at most the ceiling; an unset ceiling stays 0 and an unset cap reads as `oc_trip_counts`; so no phase tests either field |
+| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them, the belt and the `UNSET` bit (below), the brush term's size (`r_brush_q12` capped at half the stored `r_q12`, 0 while `brush_cps` is under `BRUSH_SPAN_CPS`) and the fade's low end (`brush_cps - BRUSH_SPAN_CPS`, [sec 2.2](#22-rates-and-phases)), and the two speeds and the cap resolved in the copy: a move speed of 0 reads as the ceiling and the move speed runs at most the ceiling; an unset ceiling stays 0 and an unset cap reads as `oc_trip_counts`; so no phase tests either field |
 | odd | keep the current set; check again at the next SPARE_A |
 | equal to the last taken | nothing |
 
