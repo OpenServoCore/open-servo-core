@@ -34,6 +34,8 @@ const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: 0,
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
+    // the development board's sense chain
+    brush_dev_max: bemf::brush_dev_max(60, 14_884, 3300),
 };
 
 struct FakeSensors;
@@ -1939,6 +1941,40 @@ fn an_unidentified_winding_is_commanded_through_the_loops_own_gain() {
     assert_eq!(k.fast.ticks, 120);
 }
 
+/// The take resolves the brush term from the stored pair: the size capped
+/// at half the stored winding, off under the fade's span, and the fade's
+/// low end under the full-weight speed; a commit moves both.
+#[test]
+fn the_take_resolves_the_brush_term() {
+    let sh = Shared::new();
+    seed(&sh);
+    let r = sh.table.with(|t| t.calib.motor.r_q12);
+    let mut k = kernel();
+    let rest = frame(2000, BIAS);
+    ticks(&mut k, &sh, rest, 2 * DECIM_MED as u32);
+    let span = bemf::BRUSH_SPAN_CPS;
+    assert_eq!((k.cfg.brush_rc_q12, k.cfg.brush_lo_cps), (0, -span));
+    for (x, cps, want) in [
+        (1093, 2540, (1093, 1516)),
+        (r, 2540, ((r >> 1) as i32, 1516)),
+        (1093, 1023, (0, -1)),
+        (1093, 1024, (1093, 0)),
+        (0, 2540, (0, 1516)),
+        (0, 0, (0, -span)),
+    ] {
+        write_config(&sh, |t| {
+            t.calib.motor.r_brush_q12 = x;
+            t.calib.motor.brush_cps = cps;
+        });
+        ticks(&mut k, &sh, rest, 2 * DECIM_MED as u32);
+        assert_eq!(
+            (k.cfg.brush_rc_q12, k.cfg.brush_lo_cps),
+            want,
+            "{x} at {cps}"
+        );
+    }
+}
+
 /// The winding estimate's bench MG90 constant (the NTC on a board in room
 /// air) and the dev board's 10K/10K/3950 NTC reading 25.00 C at the rig's
 /// 2048 counts, on an OpenLoop hold.
@@ -3196,7 +3232,7 @@ struct CloseAtObserver {
 impl CloseAtObserver {
     fn new() -> Self {
         Self {
-            obs: bemf::BemfObs::new(),
+            obs: bemf::BemfObs::new(TIMING.brush_dev_max),
             blend: OmegaBlend::new(),
             boxcar: None,
             duty: 0,
@@ -3215,6 +3251,7 @@ impl CloseAtObserver {
         self.boxcar = self.obs.close(
             self.duty,
             r_hat(sh),
+            0,
             k.cfg.motor.recip_ke_q,
             TIMING.recip_arr_q24,
         );
@@ -3356,7 +3393,7 @@ struct PlainPairing {
 impl PlainPairing {
     fn new() -> Self {
         Self {
-            obs: bemf::BemfObs::new(),
+            obs: bemf::BemfObs::new(TIMING.brush_dev_max),
             valid: true,
             run: 0,
         }

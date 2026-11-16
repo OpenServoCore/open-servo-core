@@ -6,7 +6,7 @@ pub use board_wiring::{
 };
 pub use chip::{AnalogChannel, DigitalPin};
 
-use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
+use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::regions::config::{
     BURST_MAX_MV, DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
@@ -74,6 +74,11 @@ impl Precomputed {
                 bemf_min_ticks: cfg.calibration.bemf_window_min_ticks,
                 bridge_min_ticks: cfg.calibration.bridge_min_ticks,
                 i_settle_gain: cfg.calibration.i_settle_gain,
+                brush_dev_max: bemf::brush_dev_max(
+                    cfg.calibration.shunt_r_mohm,
+                    cfg.wiring.current_sense.gain_milli,
+                    cfg.calibration.vdd_mv,
+                ),
             },
             current_defaults: CurrentDefaults::from_sense(
                 cfg.calibration.shunt_r_mohm,
@@ -108,6 +113,16 @@ impl Precomputed {
             ),
             vmotor_bias_top_ohm: ohm16(bias.top_ohm),
             vmotor_bias_bot_ohm: ohm16(bias.bot_ohm),
+        }
+    }
+}
+
+impl Precomputed {
+    /// The board's brush term bound keeps the half's product one i32
+    /// multiply (`bemf::brush_dev_max_fits`).
+    pub const fn assert_valid(&self) {
+        if !bemf::brush_dev_max_fits(self.kernel_timing.brush_dev_max) {
+            panic!("Precomputed: the sense chain's brush bound overflows the half's product");
         }
     }
 }

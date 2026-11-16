@@ -406,6 +406,45 @@ fn write_validation_reject_maps_to_validation() {
     assert_eq!(reply.last().result, ResultCode::Validation);
 }
 
+/// The brush resistance is refused over the stored winding's: the rule
+/// reads `r_q12` as it stands, so a write that carries both lands the
+/// winding first.
+#[test]
+fn a_brush_resistance_over_the_winding_is_refused() {
+    use crate::regions::calib::addr::motor::{R_BRUSH_Q12, R_Q12};
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut go = |addr, data: &[u8]| go(&shared, &mut staged, write(addr, data, false), true);
+    assert_eq!(
+        go(R_BRUSH_Q12, &1u16.to_le_bytes()).last().result,
+        ResultCode::Validation,
+        "no winding stored"
+    );
+    assert_eq!(go(R_BRUSH_Q12, &[0, 0]).last().result, ResultCode::Ok);
+    assert_eq!(
+        go(R_Q12, &3725u16.to_le_bytes()).last().result,
+        ResultCode::Ok
+    );
+    for (x, want) in [
+        (1093u16, ResultCode::Ok),
+        (3725, ResultCode::Ok),
+        (3726, ResultCode::Validation),
+        (u16::MAX, ResultCode::Validation),
+    ] {
+        assert_eq!(go(R_BRUSH_Q12, &x.to_le_bytes()).last().result, want, "{x}");
+    }
+    assert_eq!(shared.table.with(|t| t.calib.motor.r_brush_q12), 3725);
+    // r_q12 through ke_vpc_q, then the pair, in one write
+    let at = (R_BRUSH_Q12 - R_Q12) as usize;
+    let mut set = [0u8; 64];
+    set[..2].copy_from_slice(&5000u16.to_le_bytes());
+    set[at..at + 4].copy_from_slice(&[0x88, 0x13, 0xec, 0x09]);
+    let set = &set[..at + 4];
+    assert_eq!(go(R_Q12, set).last().result, ResultCode::Ok);
+    let m = shared.table.with(|t| t.calib.motor);
+    assert_eq!((m.r_q12, m.r_brush_q12, m.brush_cps), (5000, 5000, 2540));
+}
+
 /// osc separates write from persistence (sec 9.4): config writes are never
 /// torque-gated -- only MGMT SAVE is.
 #[test]

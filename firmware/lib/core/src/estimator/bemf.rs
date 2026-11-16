@@ -17,9 +17,20 @@
 //! first rows of a drive read fast while the current rises. And a half in
 //! which the drive's sign changed is void, so the halves behind it start
 //! up again. Both live at the close: the per-tick sample carries neither.
+//!
+//! At speed the spinning brushes add volts that follow the current beyond
+//! the winding's resistance, so the boxcar would hand the speed loop its
+//! own current as speed. The close takes that off a valid half too, the
+//! brush term: the identified brush resistance (CALIB `r_brush_q12`) times
+//! the half's current less its slow average, the deviation bounded at the
+//! board's `KernelTiming::brush_dev_max`, weighted by the speed from 0
+//! `BRUSH_SPAN_CPS` under CALIB `brush_cps` to full at it. The average
+//! restarts on the first valid half after a void one; a void half leaves
+//! it alone. A size of 0 is the close without the term, bit for bit.
 
 use crate::kernel::DECIM_MED;
 use crate::math::q_mul;
+use crate::regions::config::current_counts;
 
 /// `recip_arr` Q: chip const-evals `(1 << RECIP_ARR_SHIFT) / pwm_arr`. Q24
 /// keeps reciprocal quantization under arr/2^24 relative (arr=1200 -> 0.007%
@@ -50,6 +61,51 @@ pub const ARR_MAX: u32 = i32::MAX as u32 / (DECIM_MED as u32 * TAP_FULL_SCALE);
 /// Valid halves a boxcar needs ahead of its own two (`BemfObs::close`).
 pub const STARTUP_HALVES: u8 = 1;
 
+/// How far under CALIB `brush_cps` the brush term's weight falls to 0, c/s.
+pub const BRUSH_SPAN_CPS: i32 = 1024;
+/// 256 weight steps of 4 c/s span the fade: a shift, no divide.
+const BRUSH_W_SHIFT: u32 = 2;
+const _: () = assert!(BRUSH_SPAN_CPS == 256 << BRUSH_W_SHIFT);
+/// The brush term's current average, 2^BRUSH_AVG_SHIFT valid halves: an
+/// octave over the blend's standing corner (`omega_blend::D_SHIFT - 1`,
+/// which the blend asserts; the experiment image has no blend), so the
+/// term follows only what the blend passes as fast.
+pub const BRUSH_AVG_SHIFT: u32 = 6;
+/// The bound on the current deviation the brush term follows, mA.
+pub const BRUSH_DEV_MA: u16 = 40;
+
+/// The brush term's bound, `sum_i` units: [`BRUSH_DEV_MA`] through the
+/// board's sense chain (`current_counts`) over a half's DECIM_MED ticks.
+/// Const-eval only (`KernelTiming::brush_dev_max`).
+pub const fn brush_dev_max(shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> i32 {
+    current_counts(BRUSH_DEV_MA, shunt_r_mohm, gain_milli, vdd_mv) as i32 * DECIM_MED as i32
+}
+
+/// Whether a bound keeps the half's bounded product one i32 multiply: the
+/// size is at most `i16::MAX` (`brush_rc_q12`).
+pub const fn brush_dev_max_fits(dev_max: i32) -> bool {
+    dev_max >= 0 && i16::MAX as i64 * dev_max as i64 <= i32::MAX as i64
+}
+
+/// The take's brush resistance, `r_q12` units: `r_brush_q12` capped at half
+/// the stored winding's `r_q12`, and 0 when `brush_cps` is under the fade's
+/// span.
+pub fn brush_rc_q12(r_brush_q12: u16, brush_cps: u16, r_q12: u16) -> i32 {
+    if (brush_cps as i32) < BRUSH_SPAN_CPS {
+        return 0;
+    }
+    r_brush_q12.min(r_q12 >> 1) as i32
+}
+
+/// The brush term's size this period, `r_q12` units: `rc` weighted by
+/// |`omega_hat_q16`|, 0 at `lo` c/s and under, full from `lo +
+/// BRUSH_SPAN_CPS` up, linear between.
+#[inline(always)]
+pub fn brush_xw_q12(omega_hat_q16: i32, rc: i32, lo: i32) -> i32 {
+    let w = ((((omega_hat_q16 >> 16).unsigned_abs() as i32) - lo).max(0) >> BRUSH_W_SHIFT).min(256);
+    (rc * w) >> 8
+}
+
 /// `BemfObs::hist` of a valid half ahead of the open one: the plain
 /// pairing's.
 const PAIR: u8 = 1;
@@ -74,10 +130,17 @@ pub struct BemfObs {
     drive: i8,
     /// The last `close` saw the drive's sign change.
     flip: bool,
+    /// Slow average of the valid halves' `sum_i`, restarted at the first
+    /// valid half after a void one.
+    i_avg: i32,
+    /// The bound on the brush term's current deviation, `sum_i` units
+    /// (`brush_dev_max`).
+    dev_max: i32,
 }
 
 impl BemfObs {
-    pub const fn new() -> Self {
+    /// `dev_max` per `brush_dev_max_fits`.
+    pub const fn new(dev_max: i32) -> Self {
         Self {
             sum_tv: 0,
             sum_i: 0,
@@ -86,6 +149,8 @@ impl BemfObs {
             hist: 0,
             drive: 0,
             flip: false,
+            i_avg: 0,
+            dev_max,
         }
     }
 
@@ -110,7 +175,7 @@ impl BemfObs {
     /// vcounts/ccount Q4.12. An unset Ke (0) yields no estimate: a zero
     /// would read as "at rest" to the velocity loop, the runaway seed.
     pub fn close_half(&mut self, r_q12: u16, recip_ke_q: u16, recip_arr_q24: u32) -> Option<i32> {
-        self.fold(self.half_valid, PAIR, r_q12, recip_ke_q, recip_arr_q24)
+        self.fold(self.half_valid, PAIR, r_q12, 0, recip_ke_q, recip_arr_q24)
     }
 
     /// The kernel's close: `close_half` behind the start-up half and the
@@ -121,18 +186,20 @@ impl BemfObs {
     /// no flip, the sign a later drive is compared with stays the last one
     /// that drove, and the half is void, as its last sample had no window
     /// (`window::select`). A sign that changes and changes back between
-    /// two closes is not seen.
+    /// two closes is not seen. `xw_q12` is the brush term's size
+    /// (`brush_xw_q12`).
     pub fn close(
         &mut self,
         duty_q15: i16,
         r_q12: u16,
+        xw_q12: i32,
         recip_ke_q: u16,
         recip_arr_q24: u32,
     ) -> Option<i32> {
         let duty = duty_q15 as i32;
         if duty == 0 {
             self.flip = false;
-            return self.fold(false, STARTUP, r_q12, recip_ke_q, recip_arr_q24);
+            return self.fold(false, STARTUP, r_q12, xw_q12, recip_ke_q, recip_arr_q24);
         }
         let sign = (duty >> 31) | 1;
         let flip = sign + self.drive as i32 == 0;
@@ -142,6 +209,7 @@ impl BemfObs {
             self.half_valid & !flip,
             STARTUP,
             r_q12,
+            xw_q12,
             recip_ke_q,
             recip_arr_q24,
         )
@@ -154,13 +222,15 @@ impl BemfObs {
     }
 
     /// Folds the open half, `valid` or not, and pairs it with the one
-    /// before when the halves `need` names were valid.
+    /// before when the halves `need` names were valid. `xw` is the brush
+    /// term's size, `r_q12` units, 0 to `i16::MAX`.
     #[inline(always)]
     fn fold(
         &mut self,
         valid: bool,
         need: u8,
         r_q12: u16,
+        xw: i32,
         recip_ke_q: u16,
         recip_arr_q24: u32,
     ) -> Option<i32> {
@@ -170,7 +240,23 @@ impl BemfObs {
             // sum(v_mean) - R * sum(i): |sum_i| <= 10 * 4095 keeps the R
             // product i64-exact for any gain encoding
             let v = q_mul(self.sum_tv, recip_arr_q24 as i32, RECIP_ARR_SHIFT);
-            let half = v.saturating_sub(q_mul(r_q12 as i32, self.sum_i, 12));
+            // i_avg sits between past half sums, so |dev| is under twice
+            // the largest |sum_i|
+            let dev = if hist & 1 != 0 {
+                let dev = self.sum_i - self.i_avg;
+                self.i_avg += dev >> BRUSH_AVG_SHIFT;
+                dev
+            } else {
+                self.i_avg = self.sum_i;
+                0
+            };
+            // both drops are bounded far under i32 (|R x sum_i| < 2^26, the
+            // brush product per `brush_dev_max_fits`), so one saturation
+            // holds the pair
+            let dev_max = self.dev_max;
+            let half = v.saturating_sub(
+                q_mul(r_q12 as i32, self.sum_i, 12) + ((xw * dev.max(-dev_max).min(dev_max)) >> 12),
+            );
             let prev = self.prev_half;
             self.prev_half = half;
             if hist & need == need && recip_ke_q != 0 {
@@ -210,6 +296,8 @@ mod tests {
     // unity Ke: 1.0 c/s per vcount
     const KE_UNITY: u16 = 1 << RECIP_KE_SHIFT;
     const HALF: usize = DECIM_MED as usize;
+    /// The development board's bound (`the_bound_is_40_ma_a_tick_through_the_dev_boards_chain`).
+    const DEV_MAX: i32 = 440;
 
     /// Feed one whole half of identical samples and close it.
     fn half(obs: &mut BemfObs, ticks: u32, vdiff: Option<i32>, i: Option<i32>) -> Option<i32> {
@@ -221,7 +309,7 @@ mod tests {
 
     /// Two clean halves of a constant pair with explicit gains/reciprocal.
     fn boxcar(ticks: u32, vdiff: i32, i: i32, r_q12: u16, recip_ke: u16, recip_arr: u32) -> i32 {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(DEV_MAX);
         for n in 0..2 * HALF {
             obs.sample(ticks, Some(vdiff), Some(i));
             if n == HALF - 1 {
@@ -247,7 +335,7 @@ mod tests {
 
     #[test]
     fn first_close_has_no_previous_half() {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(DEV_MAX);
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), None);
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
     }
@@ -285,7 +373,7 @@ mod tests {
 
     #[test]
     fn one_sub_floor_tick_voids_both_boxcars() {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(DEV_MAX);
         half(&mut obs, 600, Some(3000), Some(0));
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
         // one voided sample in the third half
@@ -303,7 +391,7 @@ mod tests {
     #[test]
     fn either_window_invalid_voids_the_half() {
         for (vdiff, i) in [(None, Some(0)), (Some(3000), None)] {
-            let mut obs = BemfObs::new();
+            let mut obs = BemfObs::new(DEV_MAX);
             half(&mut obs, 600, Some(3000), Some(0));
             obs.sample(600, vdiff, i);
             for _ in 1..HALF {
@@ -315,7 +403,7 @@ mod tests {
 
     #[test]
     fn zero_recip_ke_yields_no_estimate() {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(DEV_MAX);
         half(&mut obs, 600, Some(3000), Some(0));
         for _ in 0..HALF {
             obs.sample(600, Some(3000), Some(0));
@@ -335,7 +423,7 @@ mod tests {
     #[test]
     fn close_is_the_plain_pairing_behind_the_startup_half_and_the_flip() {
         const DUTIES: [i16; 8] = [i16::MAX, 1, 0, -1, i16::MIN, 8000, 0, -8000];
-        let (mut obs, mut plain) = (BemfObs::new(), BemfObs::new());
+        let (mut obs, mut plain) = (BemfObs::new(DEV_MAX), BemfObs::new(DEV_MAX));
         let mut lcg = 0x2545_f491u32;
         let mut next = move || {
             lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -377,7 +465,7 @@ mod tests {
             } else {
                 run + 1
             };
-            assert_eq!(obs.close(duty, 4096, KE_UNITY, RECIP_ARR), want);
+            assert_eq!(obs.close(duty, 4096, 0, KE_UNITY, RECIP_ARR), want);
             assert_eq!(obs.flipped(), flip);
             boxcars += want.is_some() as u32;
             flips += flip as u32;
@@ -407,7 +495,7 @@ mod tests {
         // sum holds for times a full-scale 12-bit differential, and the
         // largest current `i_from_frame` returns
         const V: i32 = TAP_FULL_SCALE as i32;
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(DEV_MAX);
         // each half one sign, so the sums reach their extremes
         for n in 0..4 * HALF {
             let neg = (n / HALF) & 1 == 1;
@@ -422,5 +510,293 @@ mod tests {
                 obs.close_half(u16::MAX, u16::MAX, u32::MAX);
             }
         }
+    }
+
+    /// The largest bound `brush_dev_max_fits` passes.
+    const DEV_MAX_FIT: i32 = i32::MAX / i16::MAX as i32;
+
+    #[test]
+    fn legal_extremes_never_wrap_at_the_largest_size_and_bound() {
+        const V: i32 = TAP_FULL_SCALE as i32;
+        let xw = brush_xw_q12(i32::MAX, brush_rc_q12(u16::MAX, u16::MAX, u16::MAX), 0);
+        assert_eq!(xw, i16::MAX as i32);
+        assert!(brush_dev_max_fits(DEV_MAX_FIT));
+        let mut obs = BemfObs::new(DEV_MAX_FIT);
+        // one drive sign throughout, so every half after the first is
+        // valid and the deviation swings the whole current range
+        for n in 0..8 * HALF {
+            let neg = (n / HALF) & 1 == 1;
+            let v = if neg { -V } else { V };
+            let i = if neg {
+                -I_FROM_FRAME_MAX
+            } else {
+                I_FROM_FRAME_MAX
+            };
+            obs.sample(ARR_MAX, Some(v), Some(i));
+            if n % HALF == HALF - 1 {
+                obs.close(i16::MAX, u16::MAX, xw, u16::MAX, u32::MAX);
+            }
+        }
+    }
+
+    #[test]
+    fn the_bound_keeps_the_product_one_i32_multiply() {
+        assert!(brush_dev_max_fits(0) && brush_dev_max_fits(DEV_MAX));
+        assert!(!brush_dev_max_fits(DEV_MAX_FIT + 1) && !brush_dev_max_fits(-1));
+        // the widest sense chain saturates its counts and does not fit
+        assert!(!brush_dev_max_fits(brush_dev_max(u16::MAX, u16::MAX, 1)));
+    }
+
+    #[test]
+    fn the_bound_is_40_ma_a_tick_through_the_dev_boards_chain() {
+        // 60 mOhm, G 14.884, 3300 mV: 44 counts a tick, ten ticks a half
+        assert_eq!(current_counts(BRUSH_DEV_MA, 60, 14_884, 3300), 44);
+        assert_eq!(brush_dev_max(60, 14_884, 3300), DEV_MAX);
+    }
+
+    const R_RIG: u16 = 3744;
+    const KE_RIG: u16 = 3700;
+    /// The set of record's brush resistance and its full-weight speed, and
+    /// the fade's low end under it.
+    const RC: i32 = 1093;
+    const CPS: i32 = 2540;
+    const LO: i32 = CPS - BRUSH_SPAN_CPS;
+
+    /// An observer under a brush term and its size-0 twin, fed the same
+    /// halves under `close`.
+    struct Twins {
+        w: BemfObs,
+        z: BemfObs,
+        xw: i32,
+    }
+
+    impl Twins {
+        fn new(xw: i32) -> Self {
+            Self {
+                w: BemfObs::new(DEV_MAX),
+                z: BemfObs::new(DEV_MAX),
+                xw,
+            }
+        }
+
+        /// One half at `i` a tick, `step` more on its first sample, its
+        /// first sample sub-floor when `void`; what the weighted close
+        /// took off the half beyond the twin's.
+        fn half(&mut self, i: i32, step: i32, void: bool) -> i32 {
+            for n in 0..HALF {
+                let row = match (n, void) {
+                    (0, true) => (0, None, None),
+                    (0, false) => (600, Some(3000), Some(i + step)),
+                    _ => (600, Some(3000), Some(i)),
+                };
+                self.w.sample(row.0, row.1, row.2);
+                self.z.sample(row.0, row.1, row.2);
+            }
+            self.w.close(8000, R_RIG, self.xw, KE_RIG, RECIP_ARR);
+            self.z.close(8000, R_RIG, 0, KE_RIG, RECIP_ARR);
+            self.z.prev_half - self.w.prev_half
+        }
+    }
+
+    /// A weight of 0, at any speed under the fade or with no size, is the
+    /// close without the term over varied halves: the fold written out.
+    #[test]
+    fn weight_zero_is_the_close_without_the_term() {
+        let (mut plain, mut obs) = (BemfObs::new(DEV_MAX), BemfObs::new(DEV_MAX));
+        let mut lcg = 0x1234_5678u32;
+        let mut next = move || {
+            lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (lcg >> 8) as i32
+        };
+        // the half's volts less R x its current, paired with the half
+        // before when both were valid
+        let (mut prev, mut prev_valid, mut run) = (0i32, false, 0u32);
+        let (mut boxcars, mut moved) = (0u32, 0u32);
+        for n in 0..5_000 {
+            let (mut sum_tv, mut sum_i, mut valid) = (0i32, 0i32, true);
+            let level = next() % 1500;
+            for _ in 0..HALF {
+                let void = next() % 64 == 0;
+                let ticks = (next() % 1200) as u32;
+                let v = next() % 4096;
+                let i = level + next() % 600 - 300;
+                let row = if void {
+                    (0, None, None)
+                } else {
+                    (ticks, Some(v), Some(i))
+                };
+                if void {
+                    valid = false;
+                } else {
+                    sum_tv += ticks as i32 * v;
+                    sum_i += i;
+                }
+                plain.sample(row.0, row.1, row.2);
+                obs.sample(row.0, row.1, row.2);
+            }
+            let omega_q16 = (next() % (LO + 1)) << 16;
+            let xw = if n % 2 == 0 {
+                brush_xw_q12(if n % 4 == 0 { omega_q16 } else { -omega_q16 }, RC, LO)
+            } else {
+                brush_xw_q12(i32::MAX, brush_rc_q12(0, CPS as u16, R_RIG), LO)
+            };
+            assert_eq!(xw, 0);
+            let want = if valid {
+                let v = q_mul(sum_tv, RECIP_ARR as i32, RECIP_ARR_SHIFT);
+                let half = v.saturating_sub(q_mul(R_RIG as i32, sum_i, 12));
+                let out = prev_valid.then(|| {
+                    q_mul(
+                        prev.saturating_add(half),
+                        KE_RIG as i32 * RECIP_BOXCAR,
+                        RECIP_KE_SHIFT + RECIP_BOXCAR_SHIFT,
+                    )
+                });
+                prev = half;
+                out
+            } else {
+                None
+            };
+            assert_eq!(plain.close_half(R_RIG, KE_RIG, RECIP_ARR), want);
+            assert_eq!(
+                obs.close(8000, R_RIG, xw, KE_RIG, RECIP_ARR),
+                want.filter(|_| run >= 2)
+            );
+            assert_eq!(obs.prev_half, plain.prev_half);
+            moved += (obs.i_avg != 0) as u32;
+            boxcars += want.is_some() as u32;
+            prev_valid = valid;
+            run = if valid { run + 1 } else { 0 };
+        }
+        assert!(boxcars > 2000 && moved > 2000, "{boxcars} boxcars, {moved}");
+    }
+
+    #[test]
+    fn a_small_deviation_takes_the_size_times_the_deviation() {
+        let full = brush_xw_q12(CPS << 16, RC, LO);
+        let half_w = brush_xw_q12((LO + 512) << 16, RC, LO);
+        assert_eq!((full, half_w), (RC, (RC * 128) >> 8));
+        for d in [1, 37, 400, DEV_MAX, -1, -37, -400, -DEV_MAX] {
+            let mut t = Twins::new(full);
+            assert_eq!(t.half(300, 0, false), 0);
+            assert_eq!(t.half(300, 0, false), 0);
+            let took = t.half(300, d, false);
+            assert_eq!(took, (RC * d) >> 12, "dev {d}");
+            assert!(d.abs() < 4 || took != 0, "dev {d}");
+            let mut t = Twins::new(half_w);
+            t.half(300, 0, false);
+            assert_eq!(t.half(300, d, false), (half_w * d) >> 12, "dev {d}");
+        }
+    }
+
+    #[test]
+    fn a_large_current_step_takes_no_more_than_the_bound() {
+        // the product floors, so the bound's negative side is one further
+        let (lo, hi) = ((RC * -DEV_MAX) >> 12, (RC * DEV_MAX) >> 12);
+        for d in [DEV_MAX + 1, 1000, 20_000, -DEV_MAX - 1, -1000, -20_000] {
+            let mut t = Twins::new(RC);
+            t.half(300, 0, false);
+            assert_eq!(t.half(300, d, false), (RC * d.signum() * DEV_MAX) >> 12);
+            // a held step: the average closes in, the term never passes
+            // the bound
+            let mut t = Twins::new(RC);
+            t.half(300, 0, false);
+            for _ in 0..200 {
+                let took = t.half(300 + d, 0, false);
+                assert!((lo..=hi).contains(&took), "dev {d}: {took}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_steady_current_takes_nothing_once_the_average_settles() {
+        let mut t = Twins::new(RC);
+        for _ in 0..100 {
+            assert_eq!(t.half(500, 0, false), 0);
+        }
+        // the level falls and holds: the average closes on it
+        let mut t = Twins::new(RC);
+        t.half(800, 0, false);
+        let mut took = 0;
+        for _ in 0..8 << BRUSH_AVG_SHIFT {
+            took = t.half(500, 0, false);
+        }
+        assert_eq!(took, 0);
+    }
+
+    #[test]
+    fn the_first_valid_half_after_a_void_one_restarts_the_average() {
+        let mut t = Twins::new(RC);
+        for _ in 0..3 {
+            t.half(300, 0, false);
+        }
+        t.half(300, 0, true);
+        // a level 6000 counts a half away from the old average
+        assert_eq!(t.half(900, 0, false), 0);
+        assert_eq!(t.half(900, 0, false), 0);
+        assert_eq!(t.half(900, 30, false), (RC * 30) >> 12);
+    }
+
+    #[test]
+    fn a_void_half_leaves_the_average_alone() {
+        let mut t = Twins::new(RC);
+        t.half(300, 0, false);
+        let avg = t.w.i_avg;
+        t.half(5000, 0, true);
+        assert_eq!(t.w.i_avg, avg);
+    }
+
+    #[test]
+    fn the_weight_ramps_over_the_fade_in_either_sign() {
+        // a size of 256 reads the weight itself
+        for (cps, w) in [
+            (0, 0),
+            (LO - 1, 0),
+            (LO, 0),
+            (LO + 4, 1),
+            (LO + 512, 128),
+            (CPS - 1, 255),
+            (CPS, 256),
+            (CPS + 1, 256),
+            (32_767, 256),
+        ] {
+            assert_eq!(brush_xw_q12(cps << 16, 256, LO), w, "{cps}");
+            assert_eq!(brush_xw_q12((cps << 16) | 0xffff, 256, LO), w, "{cps}");
+            assert_eq!(brush_xw_q12(-(cps << 16), 256, LO), w, "{cps}");
+        }
+        assert_eq!(brush_xw_q12(i32::MAX, 256, LO), 256);
+        assert_eq!(brush_xw_q12(i32::MIN, 256, LO), 256);
+        assert_eq!((LO, LO + 512), (1516, 2028));
+    }
+
+    #[test]
+    fn the_take_caps_the_size_at_half_the_winding() {
+        for (x, r_q12, rc) in [
+            (RC as u16, R_RIG, RC),
+            (5000, R_RIG, (R_RIG >> 1) as i32),
+            (RC as u16, 2 * RC as u16, RC),
+            (RC as u16, 2 * RC as u16 - 1, RC - 1),
+            (RC as u16, 0, 0),
+            (u16::MAX, u16::MAX, i16::MAX as i32),
+            (0, R_RIG, 0),
+        ] {
+            assert_eq!(brush_rc_q12(x, CPS as u16, r_q12), rc, "{x} {r_q12}");
+        }
+    }
+
+    #[test]
+    fn a_full_weight_speed_under_the_span_turns_the_term_off() {
+        for cps in [0, 1, BRUSH_SPAN_CPS as u16 - 1] {
+            let rc = brush_rc_q12(RC as u16, cps, R_RIG);
+            assert_eq!(rc, 0, "{cps}");
+            assert_eq!(brush_xw_q12(i32::MAX, rc, cps as i32 - BRUSH_SPAN_CPS), 0);
+        }
+        assert_eq!(brush_rc_q12(RC as u16, BRUSH_SPAN_CPS as u16, R_RIG), RC);
+    }
+
+    #[test]
+    fn both_fields_zero_turn_the_term_off() {
+        let rc = brush_rc_q12(0, 0, R_RIG);
+        assert_eq!(rc, 0);
+        assert_eq!(brush_xw_q12(i32::MAX, rc, -BRUSH_SPAN_CPS), 0);
     }
 }

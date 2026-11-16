@@ -173,7 +173,7 @@ impl Fast {
             bias: BiasTracker::new(),
             oc: OcDetector::new(),
             #[cfg(not(feature = "experiment"))]
-            bemf: BemfObs::new(),
+            bemf: BemfObs::new(timing.brush_dev_max),
             #[cfg(not(feature = "experiment"))]
             cur: CurrentLoop::new(),
             #[cfg(not(feature = "experiment"))]
@@ -229,16 +229,18 @@ impl Fast {
 
     /// Medium-boundary close of the back-EMF boxcar half (`BemfObs::close`).
     /// Between this tick's `measure` and its `drive`, `duty_q15` is still
-    /// the duty that drove the half's last sample.
+    /// the duty that drove the half's last sample. `xw_q12` is the brush
+    /// term's size (`bemf::brush_xw_q12`).
     #[cfg(not(feature = "experiment"))]
     pub fn close_bemf_half(
         &mut self,
         r_q12: u16,
+        xw_q12: i32,
         recip_ke_q: u16,
         recip_arr_q24: u32,
     ) -> Option<i32> {
         self.bemf
-            .close(self.duty_q15, r_q12, recip_ke_q, recip_arr_q24)
+            .close(self.duty_q15, r_q12, xw_q12, recip_ke_q, recip_arr_q24)
     }
 
     pub fn duty_q15(&self) -> i16 {

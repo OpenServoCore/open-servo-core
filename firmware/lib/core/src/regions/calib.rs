@@ -46,6 +46,13 @@ pub struct CalibSense {
 /// and reciprocal Ke are both host-written: the chip has no divide to derive
 /// one from the other. SG90 scale ~0.28 vcounts per c/s (~1150 stored); the
 /// u16 caps at 16, 57x headroom.
+///
+/// Then the brush term (`estimator::bemf`): `r_brush_q12` the spinning
+/// brushes' resistance to a change in current beyond the winding's, in
+/// `r_q12`'s units and never raised along copper's slope, at most `r_q12`;
+/// `brush_cps` the speed it was identified at, c/s, where its weight is
+/// full. A 0 size, or a speed under `bemf::BRUSH_SPAN_CPS`, turns the term
+/// off.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibMotor {
@@ -55,6 +62,9 @@ pub struct CalibMotor {
     pub fric_fc_counts: u16,
     pub fric_fv_q016: u16,
     pub ke_vpc_q: u16,
+    #[ct_field(le = &addr::motor::R_Q12)]
+    pub r_brush_q12: u16,
+    pub brush_cps: u16,
 }
 
 /// The identification record firmware never reads: Ke as the host states
@@ -193,5 +203,5 @@ pub struct CalibRegs {
     pub gear: CalibGear,
     pub adc: CalibAdc,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 163],
+    pub _rsvd_tail: [u8; 159],
 }

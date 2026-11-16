@@ -6,7 +6,8 @@
 //! `i = (duty*vbus >> 15 - ke*omega) / R`. Units loose on purpose -
 //! deterministic qualitative behaviour, not fidelity.
 
-use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
+use crate::sim::DEV_V006_SENSE;
+use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
 use osc_servo_core::estimator::window;
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::{self, POINTS};
@@ -68,6 +69,11 @@ pub const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: 0,
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
+    brush_dev_max: bemf::brush_dev_max(
+        DEV_V006_SENSE.shunt_r_mohm,
+        DEV_V006_SENSE.gain_milli,
+        DEV_V006_SENSE.vdd_mv,
+    ),
 };
 
 pub struct FakeSensors;

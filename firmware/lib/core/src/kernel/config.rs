@@ -7,7 +7,7 @@
 
 use super::KernelTiming;
 use super::phases::loops::limits;
-use crate::estimator::{NtcCfg, ThermCfg, window};
+use crate::estimator::{NtcCfg, ThermCfg, bemf, window};
 use crate::regions::calib::{CalibMotor, CalibThermal, addr as calib_addr};
 use crate::regions::config::{
     ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition,
@@ -87,6 +87,11 @@ pub struct KernelConfig {
     /// (`Medium::r_hat`).
     pub r_loop_q12: u32,
     pub therm: ThermCfg,
+    /// The brush term's size at full weight, `r_q12` units
+    /// (`bemf::brush_rc_q12`).
+    pub brush_rc_q12: i32,
+    /// |speed| c/s at and under which the brush term's weight is 0.
+    pub brush_lo_cps: i32,
 }
 
 // The copy is a word copy of the table's bytes: every block sits at its
@@ -144,6 +149,8 @@ impl KernelConfig {
             v_floor_q15: [0; 2],
             r_loop_q12: 0,
             therm: ThermCfg::default(),
+            brush_rc_q12: 0,
+            brush_lo_cps: 0,
         }
     }
 
@@ -169,8 +176,8 @@ impl KernelConfig {
     }
 
     /// The span as the table holds it, then the belt, the two speeds, the
-    /// cap and the winding estimate's config. The caller takes it only
-    /// between commits.
+    /// cap, the brush term and the winding estimate's config. The caller
+    /// takes it only between commits.
     pub(super) fn take(&mut self, shared: &Shared) {
         let src = shared
             .table
@@ -208,6 +215,9 @@ impl KernelConfig {
             0 => (self.loop_current.i_kp_q88 as u32) << 4,
             r => r as u32,
         };
+        let m = &self.motor;
+        self.brush_rc_q12 = bemf::brush_rc_q12(m.r_brush_q12, m.brush_cps, m.r_q12);
+        self.brush_lo_cps = m.brush_cps as i32 - bemf::BRUSH_SPAN_CPS;
         let th = &self.calib_thermal;
         // a body node needs both its words: a tau alone is a gain of 0, a
         // gain alone would ride a one-period leak

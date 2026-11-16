@@ -59,6 +59,10 @@ pub struct KernelTiming {
     /// Board data: the shunt amplifier's settle gain by drive width
     /// (`window::i_from_frame`).
     pub i_settle_gain: window::SettleGain,
+    /// The brush term's bound on a half's current deviation, `sum_i` units:
+    /// `bemf::BRUSH_DEV_MA` through the board's sense chain
+    /// (`bemf::brush_dev_max`), within `bemf::brush_dev_max_fits`.
+    pub brush_dev_max: i32,
 }
 
 /// Runs in the ADC DMA TC ISR (PFIC HIGH, above the bus); one `on_tick` per
