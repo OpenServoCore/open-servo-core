@@ -95,11 +95,11 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// window's OpenLoop ticks. A report-only window feeds no row. Each cell
 /// is its measured maximum with the rule's margin; the bodies hold the
 /// tick block's work and every phase's stages. The LIMITS column carries
-/// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, which the measurement
-/// predates.
+/// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, and the SPEED column
+/// [`BRUSH_TERM`], which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
-pub const KERNEL: [[u32; PHASES]; REGIMES] = with_limits_cells([
+pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
     [684, 1002, 849, 912, 534, 915, 519, 699, 510, 537],
     [1269, 1635, 1605, 1500, 1422, 1614, 1092, 1395, 1155, 1236],
     [1254, 1611, 1125, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
@@ -110,8 +110,9 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_limits_cells([
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
-/// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], as the maximum's.
-pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_limits_cells([
+/// column with [`SPEED_FOLD`] and [`UNSET_FLAG`] and the SPEED column with
+/// [`BRUSH_TERM`], as the maximum's.
+pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
     [1244, 1546, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
@@ -138,10 +139,21 @@ pub const SPEED_FOLD: u32 = 91;
 /// under the measured phase on every steady path and keeps its row.
 pub const UNSET_FLAG: u32 = 6;
 
-const fn with_limits_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
+/// E, on the SPEED column by regime ([`Regime`] order), maximum and mean:
+/// the brush term in the back-EMF close, where the measured phase had
+/// none. The weight runs on every SPEED tick, so the Open row carries it,
+/// about 33 HCLK; a driven tick also folds the valid half's deviation, the
+/// average's step, the bound and the product, about 121 in all on the
+/// fade. Priced on the executed path of the release image with the fetch
+/// model ([`REFRESH`]); each row that plus 10%. The bench must refill the
+/// rows.
+pub const BRUSH_TERM: [u32; REGIMES] = [37, 134, 134];
+
+const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut r = 0;
     while r < REGIMES {
         rows[r][phase::LIMITS as usize] += SPEED_FOLD + UNSET_FLAG;
+        rows[r][phase::SPEED as usize] += BRUSH_TERM[r];
         r += 1;
     }
     rows
@@ -153,8 +165,9 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// The configuration take after a write, on top of [`KERNEL`], at most once
 /// per period, at phase SPARE_A: the input span's word copy, the belt and
 /// the `UNSET` bit, the two speeds' and the cap's resolution, the current
-/// loop's resistance, the winding estimate's config, the continuous rating
-/// and its leak, the winding resistance on the new `r_q12`
+/// loop's resistance, the brush term's size and fade, the winding
+/// estimate's config, the continuous rating and its leak, the winding
+/// resistance on the new `r_q12`
 /// (`Medium::r_hat`) and the terminal floor's store. It carries no TEL
 /// row: a burst starts neither on SPARE_A nor while a take is pending, and
 /// the host is silent through one. E, an upper bound: the take's longest

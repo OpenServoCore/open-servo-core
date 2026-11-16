@@ -217,11 +217,22 @@ fn fundamentals(r: &Rows, cycles: usize) -> (C, C, C) {
 /// The speed and position loop gains at half-period `n`, the bursts' cross
 /// spectra summed: each burst a record of `periods`, one up and one down.
 fn gains(plants: &[Plant], n: u16, periods: usize, kp: f64) -> (C, C) {
+    gains_with(plants, n, periods, kp, |_| {})
+}
+
+/// [`gains`] with `cfg` over every burst's rig.
+fn gains_with(
+    plants: &[Plant],
+    n: u16,
+    periods: usize,
+    kp: f64,
+    cfg: impl Fn(&mut ControlTable),
+) -> (C, C) {
     let cycles = periods / (2 * n as usize);
     let (mut uu, mut wu, mut eu, mut tu) = (0.0, C(0.0, 0.0), C(0.0, 0.0), C(0.0, 0.0));
     let open = window_open_cps();
     for &pl in plants {
-        let r = burst(pl, n, cycles * 2 * n as usize, |_| {});
+        let r = burst(pl, n, cycles * 2 * n as usize, &cfg);
         assert!(
             r.slowest >= open,
             "half-period {n}: the rotor fell to {:.1} c/s, under the window's {open:.1}",
@@ -519,9 +530,17 @@ const FAST_PERIODS: usize = 1600;
 /// The speed loop over the extended band at the fast cruise, ascending in
 /// frequency.
 fn fast_band(plants: &[Plant]) -> Vec<(f64, C)> {
+    fast_band_with(plants, |_| {})
+}
+
+/// [`fast_band`] with `cfg` over every burst's rig.
+fn fast_band_with(plants: &[Plant], cfg: impl Fn(&mut ControlTable)) -> Vec<(f64, C)> {
     EXTENDED
         .iter()
-        .map(|&n| (1000.0 / n as f64, gains(plants, n, FAST_PERIODS, 0.0).0))
+        .map(|&n| {
+            let g = gains_with(plants, n, FAST_PERIODS, 0.0, &cfg);
+            (1000.0 / n as f64, g.0)
+        })
         .collect()
 }
 
@@ -542,7 +561,9 @@ const BENCH_FAST: (f64, f64) = (282.8, 44.2);
 /// over near 46 Hz.
 #[test]
 fn the_record_rig_reads_the_benchs_speed_loop_at_the_fast_cruise() {
-    let (f, pm) = crossover(&fast_band(&bench_pair(1, FAST)));
+    let (f, pm) = crossover(&fast_band_with(&bench_pair(1, FAST), |t| {
+        t.calib.motor.r_brush_q12 = 0
+    }));
     let (bf, bpm) = BENCH_FAST;
     assert!(
         (f / bf - 1.0).abs() <= 0.25 && (pm - bpm).abs() <= 10.0,
@@ -564,7 +585,11 @@ fn the_record_rig_breaks_where_the_bench_did_with_the_small_signal_resistance() 
     for &n in &EXTENDED {
         let len = FAST_PERIODS / (2 * n as usize) * 2 * n as usize;
         for pl in bench_pair(1, FAST) {
-            swings += burst(pl, n, len, |t| t.calib.motor.r_q12 = 5470).swings;
+            swings += burst(pl, n, len, |t| {
+                t.calib.motor.r_q12 = 5470;
+                t.calib.motor.r_brush_q12 = 0;
+            })
+            .swings;
             periods += len;
         }
     }
@@ -603,4 +628,100 @@ fn the_triangle_rides_the_velocity_reference_under_the_deadman() {
         t.config.loop_position.speed_ceiling_cps = CRUISE as u16 + 50
     });
     assert!(capped.u.iter().all(|&u| u <= CRUISE as f64 + 50.0));
+}
+
+/// The fast cruise's floor, degrees. On the set of record the bench's
+/// stock loop read 45 degrees rested and 35 to 38 after minutes of fast
+/// running; with the identified contact term on top of the stored
+/// resistance it read 82 rested and 59 to 75 through a 13-sweep climb.
+/// 60 is the line that grading set before the bench ran, 20 degrees clear
+/// of the rig's reading either way.
+const FAST_FLOOR_DEG: f64 = 60.0;
+/// The slow cruise's floor, degrees: the rig's stock loop reads 61 there,
+/// where the term carries no weight.
+const SLOW_FLOOR_DEG: f64 = 58.0;
+/// The share of the current limit a large move's braking stays under. The
+/// rig's stock moves peak at 0.57 to 0.65 of it; the bench broke into a
+/// swing at the limit where a raised resistance braked into it.
+const BRAKE_SHARE: f64 = 0.8;
+/// The bench's large moves: 120 degrees between these goals, 1200 ms a
+/// goal, at the set's move speed.
+const MOVE_GOALS: [i32; 2] = [3124, 708];
+const MOVE_TICKS: usize = 24_000;
+/// The acceleration a move's peak is read after, FAST ticks: 75 ms.
+const MOVE_RUN_UP: usize = 1500;
+
+/// The largest share of the current limit the winding reaches over each
+/// move after its run-up, twelve moves from the soft range's middle.
+fn move_peaks(seed: u64) -> Vec<f64> {
+    let center = 1937;
+    let sh = mg90_d::rig(|t| {
+        t.control.lifecycle.mode = Mode::Position;
+        t.control.lifecycle.goal_position = center;
+    });
+    let mut k = mg90::kernel();
+    let mut p = mg90_d::plant(center as f64, seed);
+    let limit = sh.table.with(|t| t.config.limits.current_limit_counts) as f64;
+    let tick = |k: &mut Kernel<FakeIo>, p: &mut mg90::Mg90| {
+        let f = p.step(k.io.motor.last);
+        k.on_scan(f, &sh);
+    };
+    for _ in 0..SETTLE {
+        tick(&mut k, &mut p);
+    }
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    let mut peaks = Vec::new();
+    for m in 0..12 {
+        let goal = MOVE_GOALS[m % 2];
+        sh.table
+            .with_mut(|t| t.control.lifecycle.goal_position = goal);
+        let mut peak = 0.0f64;
+        for n in 0..MOVE_TICKS {
+            tick(&mut k, &mut p);
+            if n >= MOVE_RUN_UP {
+                peak = peak.max(p.i.abs() / limit);
+            }
+        }
+        peaks.push(peak);
+    }
+    assert_eq!(
+        sh.table.with(|t| t.telemetry.common.fault_flags),
+        0,
+        "a fault over the moves"
+    );
+    peaks
+}
+
+/// On the set of record the speed loop at the fast cruise keeps
+/// [`FAST_FLOOR_DEG`] of phase margin; the slow cruise keeps
+/// [`SLOW_FLOOR_DEG`]; and no large move's braking takes the winding past
+/// [`BRAKE_SHARE`] of the current limit. The stored resistance alone
+/// leaves the boxcar the contact's current term, which the blend's lead
+/// hands the loop as speed, and the rig reads 41 degrees at 276 Hz there,
+/// as the bench's 45. The boxcar subtracting the identified contact
+/// slope on the current's small swings at speed reads 80 at 155 Hz (the
+/// bench 82 at 186). A resistance raised by the same slope takes the
+/// braking to the limit (the bench swung there on every move into 3124).
+#[test]
+fn the_record_rig_keeps_sixty_degrees_at_the_fast_cruise_and_its_slow_cruise_and_moves() {
+    let (f, pm) = crossover(&fast_band(&bench_pair(1, FAST)));
+    assert!(
+        pm >= FAST_FLOOR_DEG,
+        "fast cruise: {f:.1} Hz {pm:.1} deg, under {FAST_FLOOR_DEG}"
+    );
+    let kp = rig_gains().kp;
+    let (f, pm) = crossover(&sweep(&bench_pair(1, CRUISE), 2000, 2000, kp).speed);
+    assert!(
+        pm >= SLOW_FLOOR_DEG,
+        "slow cruise: {f:.1} Hz {pm:.1} deg, under {SLOW_FLOOR_DEG}"
+    );
+    for seed in [1, 2] {
+        for (m, peak) in move_peaks(seed).into_iter().enumerate() {
+            assert!(
+                peak < BRAKE_SHARE,
+                "seed {seed} move {m}: braking peaked at {peak:.2} of the limit"
+            );
+        }
+    }
 }

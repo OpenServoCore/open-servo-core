@@ -90,6 +90,8 @@ pub fn set_of_record(t: &mut ControlTable) {
     cal.motor.fric_fc_counts = 54;
     cal.motor.fric_fv_q016 = 812;
     cal.motor.ke_vpc_q = 315;
+    cal.motor.r_brush_q12 = 1093;
+    cal.motor.brush_cps = 2540;
     cal.thermal.th_rise_q016 = 434;
     cal.thermal.th_rise2_q016 = 1274;
     cal.thermal.ntc_raw_ref = 2048;

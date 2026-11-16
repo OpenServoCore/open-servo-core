@@ -61,7 +61,7 @@ pub const IMAGE_VERSION: u8 = 11;
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 5;
+pub const CALIB_IMAGE_VERSION: u8 = 6;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1041,6 +1041,31 @@ mod tests {
             ImageState::Stale
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+    }
+
+    /// CALIB images SAVEd before the brush term (CALIB 5) boot stale: the
+    /// blocks behind the motor block sit 4 B earlier there.
+    #[test]
+    fn calib_images_before_the_brush_term_are_stale() {
+        use crate::regions::calib::addr::motor::{BRUSH_CPS, R_BRUSH_Q12};
+        let mut old = calib_image_of(7);
+        for (at, v) in [(R_BRUSH_Q12, 1093u16), (BRUSH_CPS, 2540)] {
+            old[HEADER_LEN + (at - CALIB_BASE_ADDR) as usize..][..2]
+                .copy_from_slice(&v.to_le_bytes());
+        }
+        reseal_version(&mut old, 5);
+        let sh = seeded_servo();
+        assert_eq!(
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Stale
+        );
+        let m = sh.table.with(|t| t.calib.motor);
+        assert_eq!(
+            (m.r_q12, m.r_brush_q12, m.brush_cps),
+            (0, 0, 0),
+            "seeds stand"
+        );
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 

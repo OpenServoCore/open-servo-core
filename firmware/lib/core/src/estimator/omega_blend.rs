@@ -21,6 +21,7 @@ use crate::math::{sat_add, sat_clamp, sat_sub};
 
 /// The standing part's corner, 2^D_SHIFT periods with a boxcar.
 pub const D_SHIFT: u32 = 7;
+const _: () = assert!(super::bemf::BRUSH_AVG_SHIFT == D_SHIFT - 1);
 /// The lead's corner, 2^C_SHIFT periods.
 const C_SHIFT: u32 = 2;
 

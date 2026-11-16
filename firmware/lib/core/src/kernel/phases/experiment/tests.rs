@@ -28,6 +28,7 @@ const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: 0,
     bridge_min_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
+    brush_dev_max: 0,
 };
 
 struct FakeSensors;
