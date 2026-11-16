@@ -941,7 +941,7 @@ to the stop the same way, and the press's rule applies there as at any
 stop. The host's direction nudge before it closes a loop (`osc cal`,
 `osc ident`, the bench harness) catches leads swapped at assembly.
 
-**Plant stamp.** `plant_stamp` (u16, RW, `0x0A6` in CALIB, persisted)
+**Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
 and calibrated fields plus the effective position table. Firmware
 recomputes it over what actually landed at every checkpoint and reports
@@ -953,11 +953,12 @@ same way.
 stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
-The covered bytes are the 40 covered fields' own table bytes in table
-order (86 B): the position limits, the loop gains, the deadband, the
+The covered bytes are the 42 covered fields' own table bytes in table
+order (90 B): the position limits, the loop gains, the deadband, the
 speed ceiling and the acceleration limit, drive polarity, the stall speed gate,
 the observer gains and the position-error threshold in CONFIG; the pot
-stops, the motor constants, the friction model, the angle map, the
+stops, the motor constants, the friction model, the brush resistance and
+its full-weight speed (sec 5.8), the angle map, the
 winding estimate's rise constant, the board NTC's reference
 point and slope, and the gear class in CALIB. The points are the position table's
 256 host-written calibration points i16 LE (sec below) while
@@ -1099,7 +1100,7 @@ map records them per board, since the converter is the chip's:
 
 | addr  | name              | width | access | notes                                                       |
 | ----- | ----------------- | ----- | ------ | ----------------------------------------------------------- |
-| 0x0CD | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
+| 0x0D1 | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
 
 A slot holds half the span the converter skips after its code, in Q4
 counts; `0` is no wide code there, and the all-zero default changes
@@ -1402,6 +1403,31 @@ within a medium period (0.5 ms) of a CONFIG or CALIB write that reaches
 the kernel (control-theory "The Winding Estimate"; pins
 `r_hat_reads_the_25_c_resistance_at_the_estimates_temperature`,
 `r_hat_follows_copper_on_25_c_for_every_resistance_and_temperature`).
+
+**Brush resistance.** CALIB `r_brush_q12` (u16, RW, `0x08C`, the units
+of `r_q12`) is the spinning brushes' resistance to a change in current
+beyond the winding's, as the back-EMF speed estimate reads it, and
+`brush_cps` (u16, RW, `0x08E`, counts per second of the linearized
+count, the unit of `omega_hat_cps`) is the speed it was identified at.
+Both sit behind `ke_vpc_q` in the motor block, both are under the plant
+stamp (sec 5.7), and both read 0 at the seed and after FACTORY. The
+estimate subtracts `r_brush_q12` times the current's swing about its
+slow average, the swing bounded at 40 mA, weighted by the speed: 0 at
+`brush_cps - 1024` and under, full from `brush_cps` up, linear between
+(control-theory "Back-EMF, a Velocity Sensor for Free"; osc-servo-kernel
+sec 2.2). The field is not raised along copper's slope: the brushes are
+not copper, and `r_hat_q12` has no counterpart for it.
+
+A write of `r_brush_q12` over the stored `r_q12` is refused, the
+table's convention for a field bounded by another; `r_q12` sits ahead
+of it, so one WRITE over both is judged against the incoming `r_q12`,
+and with no winding stored (`r_q12` 0) only 0 is accepted (unit
+`a_brush_resistance_over_the_winding_is_refused`). A later write that
+lowers `r_q12` under a stored brush resistance is accepted. The kernel resolves
+the pair at the configuration take (osc-servo-kernel sec 6.2): the size
+runs at most half the stored `r_q12`, and a `brush_cps` under 1024 turns
+the term off. A size of 0, the seed, is the estimate without the term,
+bit for bit.
 
 **Shunt burst.** The high-rate shunt capture (`arm` at `0x198` in
 CONTROL, with `duty_q15` at `0x196` and `chans` at `0x19A`; read back
@@ -1820,13 +1846,15 @@ Two images, each with its own A/B slot pair and sequence number, one
 8-byte header each: magic, layout version, seq u16, body length u16,
 CRC-16/ARC u16 over the header and the body. The CONFIG image (magic
 `C`, version 6) is the CONFIG region ++ the PROFILE region, 200 B in one
-256 B page per slot. The CALIB image (magic `K`, version 4) is the
+256 B page per slot. The CALIB image (magic `K`, version 6) is the
 CALIB region ++ the position table's 256 host-written calibration
 points i16 LE (the fixed last one is not stored): 776 B, four pages per slot, one CRC, so the
 calibration and the table it validates save and load as one unit and a
 save cannot tear between them; tables to come join this image (a layout
 change bumps its version). A CRC-valid image of another version boots
-*stale*, never migrated (sec 5.7). On the osc-servo the two CALIB slots
+*stale*, never migrated (sec 5.7): a CALIB 5 image, whose blocks behind
+the motor block sit 4 B earlier, boots stale and the seeds stand (unit
+`calib_images_before_the_brush_term_are_stale`). On the osc-servo the two CALIB slots
 sit at the front of the 4 KB CALIB flash region, 1 KB apart, with 2 KB
 spare behind them.
 
