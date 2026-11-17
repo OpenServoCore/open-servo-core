@@ -6,7 +6,7 @@
 //! included. The decel decision is a discrete per-tick test done
 //! multiply-only (wide_ge cross-compare, no divide, no v^2/2a quotient).
 
-use crate::math::{q_mul, wide_ge};
+use crate::math::{q_mul, sat_sym, wide_ge};
 use crate::regions::config::{ConfigLoopPosition, ConfigPosSoft};
 
 /// theta_ref guard, matching fusion's THETA_LIM: pot tops 4095<<16 < 2^28
@@ -168,9 +168,7 @@ impl TrajGen {
         } else {
             let travel = if omega >= 0 { step_mag } else { -step_mag };
             // |theta| <= 2^29 and |travel| <= 2^30 -> the sum is exact
-            self.theta_ref_q16 = (self.theta_ref_q16 + travel)
-                .max(-THETA_LIM_CQ16)
-                .min(THETA_LIM_CQ16);
+            self.theta_ref_q16 = sat_sym(self.theta_ref_q16 + travel, THETA_LIM_CQ16);
             self.omega_ref_q16 = omega;
             self.alpha_last_q16 = omega.saturating_sub(prev);
         }

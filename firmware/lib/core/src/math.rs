@@ -74,6 +74,20 @@ pub fn sat_clamp(x: i32, lo: i32, hi: i32) -> i32 {
     }
 }
 
+/// `x.max(-lim).min(lim)` for `lim >= 0`: one unsigned compare covers both
+/// sides, so the in-range case falls through a single branch. `x + lim`
+/// spans `0..=2 * lim` in range and wraps to above it out of range, for
+/// any `lim` an i32 holds.
+#[inline(always)]
+pub fn sat_sym(x: i32, lim: i32) -> i32 {
+    if x.wrapping_add(lim) as u32 > (lim as u32) << 1 {
+        core::hint::cold_path();
+        if x < 0 { -lim } else { lim }
+    } else {
+        x
+    }
+}
+
 /// Unsigned twin of `q_mul`. The u64 product cannot overflow for any
 /// operands; the caller picks `k` so the result fits u32.
 #[inline(always)]
@@ -189,6 +203,50 @@ mod tests {
                 for hi in EDGES {
                     assert_eq!(sat_clamp(x, lo, hi), x.max(lo).min(hi), "{x} [{lo}, {hi}]");
                 }
+            }
+        }
+    }
+
+    const SAT_SYM_LIMS: [i32; 8] = [0, 1, 2, 8192, 1 << 23, 1 << 29, i32::MAX - 1, i32::MAX];
+
+    #[test]
+    fn sat_sym_matches_max_min_at_the_edges() {
+        for lim in SAT_SYM_LIMS {
+            let edges = [
+                Some(i32::MIN),
+                Some(i32::MIN + 1),
+                (-lim).checked_sub(1),
+                Some(-lim),
+                Some(-lim + 1),
+                Some(-1),
+                Some(0),
+                Some(1),
+                lim.checked_sub(1),
+                Some(lim),
+                lim.checked_add(1),
+                Some(i32::MAX),
+            ];
+            for x in edges.into_iter().flatten() {
+                assert_eq!(sat_sym(x, lim), x.max(-lim).min(lim), "{x} lim {lim}");
+            }
+        }
+    }
+
+    #[test]
+    fn sat_sym_matches_max_min_on_a_pseudo_random_sweep() {
+        let mut r = 0x9e37_79b9u32;
+        let mut next = || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            r
+        };
+        for _ in 0..100_000 {
+            let x = next() as i32;
+            let lim = ((next() >> 1) >> (next() & 31)) as i32;
+            assert_eq!(sat_sym(x, lim), x.max(-lim).min(lim), "{x} lim {lim}");
+            for lim in SAT_SYM_LIMS {
+                assert_eq!(sat_sym(x, lim), x.max(-lim).min(lim), "{x} lim {lim}");
             }
         }
     }
