@@ -23,8 +23,9 @@ use osc_servo_core::{
 };
 
 /// The set of record's speed ceiling, c/s: the maker's 600 deg/s at
-/// 4.8 V derated by 2/3, on the set's 20.13 counts per degree.
-const CEILING_CPS: f64 = 8051.0;
+/// 4.8 V derated by 2/3, on the set's 20.13 counts per degree, 8050.65
+/// stored as 8050.
+const CEILING_CPS: f64 = 8050.0;
 /// The scorecard's test speed, the move speed these pins run at.
 const MOVE_CPS: u16 = 1500;
 /// `limit_flags` bits the design assigns from the two retired ones.
