@@ -85,7 +85,8 @@ impl VelocityLoop {
     ) -> i32 {
         let e = omega_ref_q16
             .saturating_sub(omega_hat_q16)
-            .clamp(-E_LIM_CSQ16, E_LIM_CSQ16);
+            .max(-E_LIM_CSQ16)
+            .min(E_LIM_CSQ16);
         // Q8.8 * csQ16 >> 24 -> whole ccounts; <= 2^16 * 2^30 >> 24 = 2^22
         let i_p = q_mul(gains.v_kp_q88 as i32, e, 24);
         // j term <= 2^16 * 2^31 >> 24 = 2^23 for any alpha
@@ -95,7 +96,7 @@ impl VelocityLoop {
             .saturating_add(self.integ_ccq16 >> 16)
             .saturating_add(i_ff);
         let i_ref = band.clamp(i_raw);
-        let aw = i_ref.saturating_sub(i_raw).clamp(-AW_LIM_CC, AW_LIM_CC);
+        let aw = i_ref.saturating_sub(i_raw).max(-AW_LIM_CC).min(AW_LIM_CC);
         // Q4.12 * csQ16 -> ccQ16 needs >> 12, split as >> 16 then << 4 so
         // the q_mul result stays i32-exact (<= 2^30 per E_LIM) and only the
         // shift saturates; kaw term mirrors current.rs (<= 2^29, << 4 can
@@ -108,7 +109,8 @@ impl VelocityLoop {
             .integ_ccq16
             .saturating_add(ki_term)
             .saturating_add(aw_term)
-            .clamp(-lim, lim);
+            .max(-lim)
+            .min(lim);
         i_ref
     }
 }

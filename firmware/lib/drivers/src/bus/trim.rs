@@ -111,7 +111,7 @@ impl TrimLoop {
             mag += (t >= (2 * k + 1) * d) as i32;
         }
         let steps = if ppm < 0 { -mag } else { mag };
-        let total = (self.total as i32 + steps).clamp(-TOTAL_MAX, TOTAL_MAX);
+        let total = (self.total as i32 + steps).max(-TOTAL_MAX).min(TOTAL_MAX);
         let applied = total - self.total as i32;
         if applied == 0 {
             return None;
