@@ -256,6 +256,23 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         if phase == phase::SPARE_A && config_due(shared.config_seq(), self.config_seq) {
             self.take_config(shared);
         }
+        // TRAJECTORY, the longest phase, straight from here: one call, not
+        // the step's frame and dispatch around a second
+        #[cfg(not(feature = "experiment"))]
+        let staged = if phase == phase::TRAJECTORY {
+            self.medium
+                .trajectory(&self.cfg, &self.faults, &mut self.cmd)
+        } else {
+            self.medium.step(
+                phase,
+                &self.cfg,
+                shared,
+                &mut self.faults,
+                &mut self.fast,
+                &mut self.cmd,
+            )
+        };
+        #[cfg(feature = "experiment")]
         let staged = self.medium.step(
             phase,
             &self.cfg,

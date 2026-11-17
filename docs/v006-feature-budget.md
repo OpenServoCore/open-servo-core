@@ -40,7 +40,7 @@ Columns:
 | Back-EMF observer (boxcar) | 340 | 16 | S: 96 ins, 8 muls (sums every tick, close every medium half). The sheet's image measured 244 B / 20 B / 76 ins; the start-up half and the drive flip at the close added 96 B of flash and 20 ins and took 4 B of RAM back, the delta between matched release images built the same way. The brush term at the close (CALIB `r_brush_q12` and `brush_cps`, the bound in `KernelTiming`, the size and the fade's low end resolved at the take) measured flash +264 B and RAM +24 B on the release image against the one before it; nothing above is re-counted for it. Its cost is inside the measured `budget::KERNEL` SPEED rows (priced E 37 HCLK Open, 134 Closed and OpenLoop before the refill) | FAST | core (velocity source above the floor) |
 | Speed blend (the observer's speed plus the back-EMF's fast part) | 124 | 8 | S: 76 ins, no multiply. The sheet's image measured the source switch it replaced at 164 B / 8 B / 56 ins; the blend took 40 B of flash off the image on the same 8 B of state, the delta between matched release images built the same way | MEDIUM (OBSERVER) | core |
 | Fusion (pot) observer | 666 | 12 | S: 197 ins, 10 muls (5 widening per the fusion plan) | MEDIUM (OBSERVER) | core (the only source under the floor) |
-| Trajectory + position loop | 968 | ~20 | S: 141 ins inline + `step_position` 550 B out of line | MEDIUM (TRAJECTORY) | core |
+| Trajectory + position loop | 968 | ~20 | S: `Medium::trajectory` 1,502 B out of line, the profile step inlined, called straight from the tick | MEDIUM (TRAJECTORY) | core |
 | Velocity loop | 578 | 4 | S: 175 ins, 8 muls | MEDIUM (VELOCITY) | core |
 | Limits: three-term min (cap, rail, goal), press and collision detectors, endstops | 776 LIMITS body | 16 | S (five-term image): LIMITS 248 ins, 3 muls (193 ins, 5 muls before); E: +140 HCLK including headroom. Rail fold +17 ins at RAIL, E +59 HCLK. The I2t fold those counts include is retired and nothing has re-counted them; the heats it kept are the winding estimate's, whose row carries the measured delta. Current mode's speed fold under the speed ceiling: tick ISR +108 B between matched release images, LIMITS +26 ins and one multiply on Current mode's longest path, inside the measured `budget::KERNEL` LIMITS rows (priced E 91 HCLK before the refill). Limits that must be set (the belt over an unset cap or ceiling, the `UNSET` bit, the unset cap read as the overcurrent trip, the factory block's compiled cap and move speed dropped): flash +44 B (tick ISR +40, the take +50, install's dropped stores -34), RAM 0 (two bytes in the copy's padding), LIMITS +2 ins (priced 6 HCLK, inside the measured LIMITS rows), CONTROL 9-15 HCLK under its measured row on every steady path, the take +56.25 HCLK inside `REFRESH`, matched release images. | MEDIUM (LIMITS, RAIL), SLOW | core |
 | Rail estimator (vbus) | 130 | 16 | S: 41 ins, 2 muls | MEDIUM (RAIL) | core |
@@ -147,6 +147,7 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 | 1,896 | `.L_MergedGlobals.128` (.bss: KERNEL, RING, TEL_CHANNEL, SESSION, small statics) |
 | 1,680 | `bus::decode::decode` |
 | 1,572 | `runtime::statics::SHARED` (.bss) |
+| 1,502 | `Medium::trajectory` (the profile step inlined) |
 | 1,342 | `ServoBus::route_frame` |
 | 1,144 | `runtime::burst::handshake` |
 | 1,048 | `ServoBus::drive_framer` |
@@ -160,7 +161,6 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 | 650 | `control_table::rules::check_cmp` |
 | 636 | `runtime::statics::KERNEL` (.bss) |
 | 632 | `__qingke_rt_TIM2` |
-| 550 | `TrajGen::step_position` |
 | 540 | `__qingke_rt_SysTick` |
 | 528 | `ConfigStore::save` |
 | 512 | `.L.crctable` (.rodata, the LLVM-generated CRC table) |
