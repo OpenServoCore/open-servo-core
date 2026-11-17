@@ -105,12 +105,27 @@ pub const WINDOW_ARR_MIN: u16 = 256;
 /// (kernel sec 2.2): the motor's loss conductance times the volts the
 /// window leaves across the inductance, `g x (1 - D) x V_bus` once the
 /// current settles, along the drive. `k` is Q16 counts per tick of the
-/// headroom `pwm_arr - ticks`, `k0` the whole period's with the rounding
-/// folded in; zero is no term.
-#[derive(Copy, Clone, Default)]
+/// headroom `pwm_arr - ticks`, `k0` the whole period's; zero is no term.
+/// Each take returns whole counts and keeps the dropped fraction in
+/// `carry` for the next, so the takes sum to the Q16 term within half a
+/// count: a whole-count term alone loses the part the duty's dither moves
+/// by under a count.
+#[derive(Copy, Clone)]
 pub struct WindowTerm {
     k: u32,
     k0: u32,
+    carry: u16,
+}
+
+impl Default for WindowTerm {
+    /// No term, the carry at half a count: the first take rounds.
+    fn default() -> Self {
+        Self {
+            k: 0,
+            k0: 0,
+            carry: 1 << 15,
+        }
+    }
 }
 
 impl WindowTerm {
@@ -124,19 +139,27 @@ impl WindowTerm {
     }
 
     /// The term on the rail clamp's `vbus_eff`, held at most
-    /// [`WINDOW_V_MAX`]: `k x pwm_arr <= g x V < 2^29`.
-    pub fn at_rail(g_arr: u32, vbus_eff: u16, pwm_arr: u16) -> Self {
+    /// [`WINDOW_V_MAX`]: `k x pwm_arr <= g x V < 2^29`. The carry stays:
+    /// it is under a count whatever term it was owed on.
+    pub fn set_rail(&mut self, g_arr: u32, vbus_eff: u16, pwm_arr: u16) {
         let k = q_mul_u(g_arr, vbus_eff.min(WINDOW_V_MAX) as u32, RECIP_ARR_SHIFT);
-        Self {
-            k,
-            k0: k * pwm_arr as u32 + (1 << 15),
-        }
+        self.k = k;
+        self.k0 = k * pwm_arr as u32;
     }
 
-    /// Counts at a drive width of `ticks <= pwm_arr`, rounded, >= 0.
+    /// Counts at a drive width of `ticks <= pwm_arr`, >= 0, and 0 at full
+    /// duty; the fraction left carries into the next take.
     #[inline(always)]
-    pub fn counts(&self, ticks: u32) -> i32 {
-        ((self.k0 - self.k * ticks) >> 16) as i32
+    pub fn take(&mut self, ticks: u32) -> i32 {
+        let acc = self.k0 - self.k * ticks + self.carry as u32;
+        self.carry = acc as u16;
+        (acc >> 16) as i32
+    }
+
+    /// The exact term at `ticks`, Q16 counts.
+    #[cfg(test)]
+    pub(crate) fn q16(&self, ticks: u32) -> u32 {
+        self.k0 - self.k * ticks
     }
 }
 
@@ -572,49 +595,101 @@ mod tests {
     /// Rails from none past the term's hold, vcounts.
     const RAILS: [u16; 7] = [0, 1, 922, 1238, 4095, WINDOW_V_MAX, u16::MAX];
 
+    fn at_rail(g_arr: u32, vbus_eff: u16, pwm_arr: u16) -> WindowTerm {
+        let mut w = WindowTerm::default();
+        w.set_rail(g_arr, vbus_eff, pwm_arr);
+        w
+    }
+
+    /// The take a fresh term reads first, the carry at its seed.
+    fn first(mut w: WindowTerm, ticks: u32) -> i32 {
+        w.take(ticks)
+    }
+
+    /// The carry's extremes: none and a whole count less one.
+    const CARRIES: [u16; 2] = [0, u16::MAX];
+
     /// A zero conductance, a fenced-off one and the seed take nothing at
-    /// any width or rail: the reading is the sample's, bit for bit.
+    /// any width or rail, take after take: the reading is the sample's, bit
+    /// for bit.
     #[test]
     fn a_zero_window_conductance_reads_as_today() {
         assert_eq!(WindowTerm::conductance(0, R, recip(1200)), 0);
         assert_eq!(WindowTerm::conductance(G, 0, recip(1200)), 0);
         assert_eq!(WindowTerm::conductance(u16::MAX, R, recip(1200)), 0);
+        let mut seed = WindowTerm::default();
         for arr in [WINDOW_ARR_MIN, 1200, u16::MAX] {
             for v in RAILS {
-                let w = WindowTerm::at_rail(0, v, arr);
+                let mut w = at_rail(0, v, arr);
                 for t in 0..=arr as u32 {
-                    assert_eq!(w.counts(t), 0, "arr {arr} rail {v} width {t}");
-                    assert_eq!(WindowTerm::default().counts(t), 0);
+                    assert_eq!(w.take(t), 0, "arr {arr} rail {v} width {t}");
+                    assert_eq!(seed.take(t), 0);
                 }
             }
         }
     }
 
-    /// The term is `g x V x (arr - ticks) / arr`, rounded: within half a
-    /// count and the floors' share, a Q16 count a tick of headroom and the
-    /// reciprocal's `arr / 2^24` of the term, at every width; 0 at full
-    /// duty; 25 counts at the 64-tick floor on the 5 V rail.
+    /// The term is `g x V x (arr - ticks) / arr`: in Q16 within the
+    /// floors' share, a Q16 count a tick of headroom and the reciprocal's
+    /// `arr / 2^24` of the term, at every width; a fresh term's first take
+    /// is it rounded, within half a count and the floors; 0 at full duty
+    /// whatever the carry; 25 counts at the 64-tick floor on the 5 V rail.
     #[test]
     fn the_term_is_the_conductance_on_the_headroom_and_the_rail() {
         for arr in [WINDOW_ARR_MIN, 1200, 2400] {
             let g_arr = WindowTerm::conductance(G, R, recip(arr));
             for v in RAILS {
-                let w = WindowTerm::at_rail(g_arr, v, arr);
+                let w = at_rail(g_arr, v, arr);
                 let rail = v.min(WINDOW_V_MAX) as f64;
                 for t in 0..=arr as u32 {
                     let exact = G as f64 / 65536.0 * rail * (arr as u32 - t) as f64 / arr as f64;
-                    let got = w.counts(t) as f64;
+                    let q16 = w.q16(t) as f64 / 65536.0;
+                    let got = first(w, t) as f64;
                     let floors = arr as f64 / 65536.0 + exact * arr as f64 / (1u32 << 24) as f64;
+                    assert!(
+                        (q16 - exact).abs() <= floors,
+                        "arr {arr} rail {v} width {t}: {q16:.4} for {exact:.4}"
+                    );
                     assert!(
                         (got - exact).abs() <= 0.5 + floors,
                         "arr {arr} rail {v} width {t}: {got} for {exact:.3}"
                     );
                 }
-                assert_eq!(w.counts(arr as u32), 0, "arr {arr} rail {v}: full duty");
+                for carry in CARRIES {
+                    let mut w = WindowTerm { carry, ..w };
+                    assert_eq!(w.take(arr as u32), 0, "arr {arr} rail {v}: full duty");
+                }
             }
         }
-        let w = WindowTerm::at_rail(WindowTerm::conductance(G, R, recip(1200)), 1238, 1200);
-        assert_eq!([64, 293, 1200].map(|t| w.counts(t)), [25, 20, 0]);
+        let w = at_rail(WindowTerm::conductance(G, R, recip(1200)), 1238, 1200);
+        assert_eq!([64, 293, 1200].map(|t| first(w, t)), [25, 20, 0]);
+    }
+
+    /// The takes sum to the Q16 term within half a count, the seed's half
+    /// less the carry left, over a duty that ramps 0.2 counts a tick across
+    /// the period and back on the 5 V rail. A whole-count term alone holds
+    /// each count 5 / 0.0224 ticks, 223 (0.0224 counts a tick of width),
+    /// and its running sum strays by an eighth of that, 28 counts, at
+    /// each count's middle: the pin asks for half.
+    #[test]
+    fn the_takes_sum_to_the_exact_term_over_a_slow_ramp() {
+        let mut w = at_rail(WindowTerm::conductance(G, R, recip(1200)), 1238, 1200);
+        let (mut exact, mut carried, mut whole) = (0i64, 0i64, 0i64);
+        let (mut worst, mut strays) = (0i64, 0i64);
+        let up = (0..5 * 1200).map(|n| n / 5);
+        for t in up.clone().chain(up.rev()) {
+            exact += w.q16(t) as i64;
+            carried += (w.take(t) as i64) << 16;
+            whole += ((w.q16(t) + (1 << 15)) >> 16) as i64;
+            worst = worst.max((carried - exact).abs());
+            strays = strays.max(((whole << 16) - exact).abs());
+        }
+        assert!(worst <= 1 << 15, "{} counts off", worst as f64 / 65536.0);
+        assert!(
+            strays > 14 << 16,
+            "the whole-count sum strays {} counts",
+            strays as f64 / 65536.0
+        );
     }
 
     /// Every 12-bit reading less the largest term any field values give,
@@ -627,9 +702,15 @@ mod tests {
             let g_arr = WindowTerm::conductance(u16::MAX, 1, recip(arr));
             assert_ne!(g_arr, 0, "arr {arr}");
             for v in RAILS {
-                let w = WindowTerm::at_rail(g_arr, v, arr);
-                for t in [0, 1, arr as u32 / 2, arr as u32] {
-                    let term = w.counts(t);
+                for (t, carry) in [0, 1, arr as u32 / 2, arr as u32]
+                    .into_iter()
+                    .flat_map(|t| CARRIES.map(|c| (t, c)))
+                {
+                    let term = WindowTerm {
+                        carry,
+                        ..at_rail(g_arr, v, arr)
+                    }
+                    .take(t);
                     assert!(term <= WINDOW_V_MAX as i32, "arr {arr} rail {v} width {t}");
                     for sample in [0, ADC_MAX] {
                         for bias in [0, ADC_MAX] {
