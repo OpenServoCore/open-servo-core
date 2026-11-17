@@ -71,7 +71,7 @@ impl TrajGen {
 
     /// Enable edge / mode change: the reference at rest at `theta_q16`.
     pub fn reseed(&mut self, theta_q16: i32) {
-        self.theta_ref_q16 = theta_q16.clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+        self.theta_ref_q16 = theta_q16.max(-THETA_LIM_CQ16).min(THETA_LIM_CQ16);
         self.omega_ref_q16 = 0;
         self.alpha_last_q16 = 0;
     }
@@ -80,7 +80,7 @@ impl TrajGen {
     /// `theta_q16`, at the speed it was asked for, with no acceleration
     /// applied.
     pub fn rebase(&mut self, theta_q16: i32) {
-        self.theta_ref_q16 = theta_q16.clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+        self.theta_ref_q16 = theta_q16.max(-THETA_LIM_CQ16).min(THETA_LIM_CQ16);
         self.alpha_last_q16 = 0;
     }
 
@@ -93,7 +93,8 @@ impl TrajGen {
         goal_counts
             .max(soft.pos_min_soft_counts)
             .min(soft.pos_max_soft_counts)
-            .clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS)
+            .max(-GOAL_LIM_COUNTS)
+            .min(GOAL_LIM_COUNTS)
             << 16
     }
 
@@ -141,7 +142,7 @@ impl TrajGen {
             // is meaningless until the sign flips
             (v + a).min(v_lim)
         } else {
-            let v_up = v + (v_lim - v).clamp(-a, a);
+            let v_up = v + (v_lim - v).max(-a).min(a);
             let vt = q_mul(v_up, dt_q32 as i32, 32) as u32;
             if wide_ge(v_up as u32 + a as u32, vt, 2 * (a as u32), d_abs) {
                 (v - a).max(0)
@@ -167,8 +168,9 @@ impl TrajGen {
         } else {
             let travel = if omega >= 0 { step_mag } else { -step_mag };
             // |theta| <= 2^29 and |travel| <= 2^30 -> the sum is exact
-            self.theta_ref_q16 =
-                (self.theta_ref_q16 + travel).clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+            self.theta_ref_q16 = (self.theta_ref_q16 + travel)
+                .max(-THETA_LIM_CQ16)
+                .min(THETA_LIM_CQ16);
             self.omega_ref_q16 = omega;
             self.alpha_last_q16 = omega.saturating_sub(prev);
         }
@@ -201,18 +203,18 @@ impl TrajGen {
         let th = theta_hat_q16 >> 16;
         // distance pre-clamped so the shift cannot overflow
         let cap = (VEL_CAP_CPS as i32) >> WALL_RAMP_SHIFT;
-        let goal = goal_velocity_cps.clamp(-v_cap, v_cap);
+        let goal = goal_velocity_cps.max(-v_cap).min(v_cap);
         // only the wall the goal points at caps it: both allowances are >= 0
         let goal = if goal >= 0 {
-            goal.min(soft.pos_max_soft_counts.saturating_sub(th).clamp(0, cap) << WALL_RAMP_SHIFT)
+            goal.min(soft.pos_max_soft_counts.saturating_sub(th).max(0).min(cap) << WALL_RAMP_SHIFT)
         } else {
             goal.max(
-                -(th.saturating_sub(soft.pos_min_soft_counts).clamp(0, cap) << WALL_RAMP_SHIFT),
+                -(th.saturating_sub(soft.pos_min_soft_counts).max(0).min(cap) << WALL_RAMP_SHIFT),
             )
         } << 16;
         let prev = self.omega_ref_q16;
         // goal - prev can span 2^32; saturation past +-a is clamped away
-        let omega = prev + goal.saturating_sub(prev).clamp(-a, a);
+        let omega = prev + goal.saturating_sub(prev).max(-a).min(a);
         self.omega_ref_q16 = omega;
         self.alpha_last_q16 = omega - prev;
     }

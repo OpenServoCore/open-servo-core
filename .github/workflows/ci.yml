@@ -123,6 +123,9 @@ jobs:
       - name: no mem* calls gate
         working-directory: ${{ github.workspace }}
         run: bash .github/check-no-mem.sh
+      - name: no panic path gate
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-panic.sh
       - name: hot callees 4-byte aligned gate
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-hot-align.sh
@@ -134,6 +137,9 @@ jobs:
       - name: no mem* calls gate (bench image)
         working-directory: ${{ github.workspace }}
         run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/bench/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: no panic path gate (bench image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-panic.sh firmware/boards/osc-dev-v006/target/bench/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
       - name: cargo build --release (window image)
         run: CARGO_TARGET_DIR=target/window cargo build --release -p osc-dev-v006-app --features osc-dev-v006-app/bench-window
       - name: no soft div/mod/mul gate (window image)
@@ -142,6 +148,9 @@ jobs:
       - name: no mem* calls gate (window image)
         working-directory: ${{ github.workspace }}
         run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/window/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: no panic path gate (window image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-panic.sh firmware/boards/osc-dev-v006/target/window/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
       - name: hot callees 4-byte aligned gate (window image)
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/window/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
@@ -153,6 +162,9 @@ jobs:
       - name: no mem* calls gate (experiment image)
         working-directory: ${{ github.workspace }}
         run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/experiment/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: no panic path gate (experiment image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-panic.sh firmware/boards/osc-dev-v006/target/experiment/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
       - name: hot callees 4-byte aligned gate (experiment image)
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/experiment/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
@@ -164,6 +176,9 @@ jobs:
       - name: no mem* calls gate (deadman image)
         working-directory: ${{ github.workspace }}
         run: bash .github/check-no-mem.sh firmware/boards/osc-dev-v006/target/deadman/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
+      - name: no panic path gate (deadman image)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-no-panic.sh firmware/boards/osc-dev-v006/target/deadman/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app
       - name: hot callees 4-byte aligned gate (deadman image)
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-hot-align.sh firmware/boards/osc-dev-v006/target/deadman/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app

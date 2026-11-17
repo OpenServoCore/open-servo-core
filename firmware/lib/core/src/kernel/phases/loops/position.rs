@@ -83,15 +83,16 @@ pub fn step(
     cfg: &ConfigLoopPosition,
 ) -> PosOut {
     let e_raw = theta_star_q16.saturating_sub(theta_hat_q16);
-    let e = e_raw.clamp(-E_LIM_CQ16, E_LIM_CQ16);
+    let e = e_raw.max(-E_LIM_CQ16).min(E_LIM_CQ16);
     // the speed ceiling, not the move speed: a shaft behind its profile is
     // asked for more, up to the ceiling. The table rule bounds it; the min
-    // keeps the clamp below panic-free on a corrupt one
+    // keeps the shift below from turning v_lim negative on a corrupt one
     let v_lim = (cfg.speed_ceiling_cps.min(VEL_CAP_CPS) as i32) << 16;
     // Q8.8 * cQ16 >> 8 -> csQ16, i32-exact per E_LIM
     let omega_ref = q_mul(cfg.p_kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
-        .clamp(-v_lim, v_lim);
+        .max(-v_lim)
+        .min(v_lim);
     let band = band_q16(cfg.pos_deadband_counts, band_gain_q4);
     let zone = band.saturating_add(band);
     let e_abs = e_raw.unsigned_abs();

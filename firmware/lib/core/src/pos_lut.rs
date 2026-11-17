@@ -134,8 +134,9 @@ pub fn interp_at_q4(at_q4: u32, points: &[i16; POINTS]) -> u16 {
 /// bounds), clamped for the hold band.
 #[inline(always)]
 pub fn band_gain_q4(c0: i16, c1: i16) -> u16 {
-    (GRID as i32 + c1 as i32 - c0 as i32).clamp(BAND_GAIN_MIN_Q4 as i32, BAND_GAIN_MAX_Q4 as i32)
-        as u16
+    (GRID as i32 + c1 as i32 - c0 as i32)
+        .max(BAND_GAIN_MIN_Q4 as i32)
+        .min(BAND_GAIN_MAX_Q4 as i32) as u16
 }
 
 /// What the all-zero table yields: `raw << GRID_SHIFT`.
