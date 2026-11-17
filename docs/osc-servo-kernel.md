@@ -287,15 +287,9 @@ No reference is formed into a region another context writes. Cross-context acces
 | --- | --- |
 | `KERNEL`, `KERNEL_MEAN` | plain tick body by regime (Open, Closed, OpenLoop) and phase, maximum and mean, every phase's stages and the tick block's work in it |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
-| `R_AT_TEMPERATURE` | estimated addition inside `SLOW_FINISH`, the resistance read at the estimate's temperature, until the probe refills the finish |
-| `SPEED_FOLD` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, Current mode's speed fold, until the probe refills the rows |
-| `UNSET_FLAG` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, the take's `UNSET` bit ORed into `limit_flags`, until the probe refills the rows |
-| `BRUSH_TERM` | estimated addition on the SPEED column of `KERNEL` and `KERNEL_MEAN`, by regime: the brush term's weight on every SPEED tick, Open included, and on a driven one the deviation, the average's step, the bound and the product; priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
-| `WRITE_FIRST` | estimated addition on every cell of `KERNEL` and `KERNEL_MEAN`: the measured command saved before the motor write and the voltage side's reloads after it, priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
-| `DRIVE_REVERSAL` | estimated addition on every cell of `KERNEL` and `KERNEL_MEAN`: the first window after a drive reversal taken as no reading, priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
-| `STREAM_ENTRY`, `SCAN_WAIT` | estimated additions on every cell of `KERNEL` and `KERNEL_MEAN`: the entry on the injected group with the scan poll and the late-write check, and by regime the wait for the crest scan, until the probe refills the rows |
+| `STREAM_ENTRY`, `SCAN_WAIT` | estimated terms on `FRAME_DONE` in the scan deadline: the entry on the injected group with the scan poll and the late-write check, and by regime the wait for the crest scan; the measured `KERNEL` rows hold both |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit; `ENTRY` from the injected group's end |
 | `WRITE_DONE`, `WRITE_DEADLINE` | the motor write past the entry stamp, and the trough it must beat ([sec 2.3](#23-tick-sequence)) |
 | `TROUGH_DONE`, `FRAME_DONE`, `CREST_SCAN_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |
