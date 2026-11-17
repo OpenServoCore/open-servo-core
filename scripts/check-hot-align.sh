@@ -74,11 +74,11 @@ bench_hot=(
 # the other. The deadman image carries the production set and its own
 # dead-man.
 production_hot=(
-    TrajGen::step_position
     DutyLimiter::step
     math::recip_div
     phases::Medium::r_hat
     phases::Medium::step
+    phases::Medium::trajectory
 )
 experiment_hot=(
     experiment::Medium::deadman
