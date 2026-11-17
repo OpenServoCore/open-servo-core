@@ -13,10 +13,10 @@ use osc_servo_core::regions::telemetry::tick_flag;
 use osc_servo_core::{Kernel, Mode, RegionStorage, Shared};
 
 /// Counts the winding may sit off the goal and the published current off
-/// the winding: the plant carries the onset route's 5.09 mS and the set
-/// stage 3's metered 4.75, a 7 % gap that stands in for the
-/// identification's 10 %, about 2 counts here; with no window term taken
-/// off both sit 20 to 26 counts off.
+/// the winding: the plant carries the whole-pulse fit's 3.81 mS and the set
+/// that plus the sample's lateness, 3.93, a 3 % gap, 1.3 counts here at
+/// most; the fit's spread over its choices, 6 % either way, adds about 1
+/// more. With no window term taken off both sit 16 to 20 counts off.
 const TOL: f64 = 5.0;
 
 fn tick(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut Mg90) {
@@ -66,7 +66,7 @@ fn held(goal: i16) -> (f64, f64) {
 /// current is the winding's: the stored limits, the friction line, the
 /// heat constants and the resistance are all winding currents. With no
 /// window term taken off the loop holds the reading at the goal, so the
-/// winding sits under it by the term, 26 counts at 150 and 20 at 400, and
+/// winding sits under it by the term, 20 counts at 150 and 16 at 400, and
 /// the published current over the winding by the same.
 #[test]
 fn a_held_rotor_carries_the_goal_and_reads_the_winding_current() {

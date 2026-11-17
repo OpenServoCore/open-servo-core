@@ -34,11 +34,12 @@ pub const CURRENT_COUNTS_PER_A: f64 = 1135.013429521035;
 pub const TERMINAL_COUNTS_PER_V: f64 = 248.37;
 
 /// The bench winding's iron loss conductance across its inductance,
-/// ccounts per vcount: 5.09 mS, what the firmware's own OpenLoop ramps
-/// from rest read on the servo, free horn, both directions (4.6 to 5.3
-/// over the fit's choices); stage 3's series meter read 4.75 mS on the
-/// locked servo ten days before.
-pub const WINDOW_G: f64 = 5.09e-3 * CURRENT_COUNTS_PER_A / TERMINAL_COUNTS_PER_V;
+/// ccounts per vcount: 3.81 mS, the whole-pulse fit of the firmware's own
+/// OpenLoop onsets from rest, 105 onsets over a free and a braked session
+/// (3.59 to 4.05 over the fit's choices). The set's 3.93 adds the sample's
+/// lateness, which the rig does not model. Stage 3's series meter read
+/// 4.75 mS on the locked servo.
+pub const WINDOW_G: f64 = 3.81e-3 * CURRENT_COUNTS_PER_A / TERMINAL_COUNTS_PER_V;
 
 /// The bench pot's direction-free departure through the set's table, as
 /// `(amplitude, period)` sine lines in linearized counts at the 21, 47,
@@ -48,8 +49,11 @@ pub const WINDOW_G: f64 = 5.09e-3 * CURRENT_COUNTS_PER_A / TERMINAL_COUNTS_PER_V
 /// shaft motion, not the pot.
 pub const POT_RESIDUAL: &[(f64, f64)] = &[(0.64, 21.0), (1.29, 47.0), (0.64, 86.0), (0.95, 191.0)];
 
-/// Set of record 324e326794b5, every field it stores, its resistance as
-/// the winding at 25.00 C, the field's meaning.
+/// Set of record stamped 0xec1d, every field it stores, its resistance as
+/// the winding at 25.00 C, the field's meaning. The window conductance is
+/// the whole-pulse fit with the sample's lateness in it, 3.93 mS; the
+/// friction line is the one refit under it over the 18 legs and the steady
+/// 4025 c/s leg, 37.64 mA + 12.73 mA per 1000 c/s.
 pub fn set_of_record(t: &mut ControlTable) {
     let c = &mut t.config;
     c.pos_phys.pos_min_phys_counts = 82;
@@ -66,7 +70,7 @@ pub fn set_of_record(t: &mut ControlTable) {
     c.loop_velocity.j_ff_q88 = 862;
     c.loop_position.p_kp_q88 = 5026;
     c.loop_position.pos_deadband_counts = 4;
-    c.loop_position.speed_ceiling_cps = 8051;
+    c.loop_position.speed_ceiling_cps = 8050;
     c.loop_position.velocity_limit_cps = 4025;
     c.loop_position.accel_limit_q88 = 10305;
     c.limits.current_limit_counts = 568;
@@ -96,12 +100,12 @@ pub fn set_of_record(t: &mut ControlTable) {
     cal.motor.r_q12 = 3725;
     cal.motor.recip_ke_q = 13315;
     cal.motor.b_i_q313 = 2434;
-    cal.motor.fric_fc_counts = 37;
-    cal.motor.fric_fv_q016 = 754;
+    cal.motor.fric_fc_counts = 43;
+    cal.motor.fric_fv_q016 = 947;
     cal.motor.ke_vpc_q = 315;
     cal.motor.r_brush_q12 = 1093;
     cal.motor.brush_cps = 2540;
-    cal.motor.g_window_q016 = 1423;
+    cal.motor.g_window_q016 = 1178;
     cal.thermal.th_rise_q016 = 434;
     cal.thermal.th_rise2_q016 = 1274;
     cal.thermal.ntc_raw_ref = 2048;
