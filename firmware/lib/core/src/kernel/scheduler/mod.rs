@@ -12,11 +12,11 @@ use self::table::{DECIM_MED, phase};
 use super::KernelConfig;
 use super::phases::Medium;
 use super::phases::fast::{Command, Fast};
-use super::phases::loops::faults::FaultLatch;
+use super::phases::loops::faults::{self, FaultLatch};
 #[cfg(not(feature = "experiment"))]
 use super::phases::{self, Control};
 use crate::estimator::window;
-use crate::traits::{ControlIo, Motor, TelStream};
+use crate::traits::{ControlIo, Motor, MotorCmd, Sensors, TelStream};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
 
 /// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
@@ -61,10 +61,11 @@ pub struct KernelTiming {
     pub brush_dev_max: i32,
 }
 
-/// Runs in the ADC DMA TC ISR (PFIC HIGH, above the bus); one `on_tick` per
-/// PWM period. Single-writer contracts: the transport owns every
-/// CONTROL/CONFIG/CALIB write and the position table array, and this ISR
-/// can preempt it mid-commit, so the kernel only ever reads those - volatile via
+/// Runs in the ADC ISR on the injected group's end (PFIC HIGH, above the
+/// bus); one `on_tick` per PWM period. Single-writer contracts: the
+/// transport owns every CONTROL/CONFIG/CALIB write and the position table
+/// array, and this ISR can preempt it mid-commit, so the kernel only ever
+/// reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
 /// cross-field tearing accepted (each field is independently sane). CONTROL
 /// is read once per period; CONFIG and CALIB only into `cfg`, between
@@ -157,11 +158,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.cmd.prepare_rail(&self.cfg);
     }
 
-    /// First tick: the configuration, then the observer, the winding
-    /// estimate and the bias tracker seeded at the boot measurement. The
-    /// experiment image seeds the bias alone: it reads neither the position
-    /// table nor the NTC.
-    fn boot(&mut self, shared: &Shared) {
+    /// The configuration, then the observer, the winding estimate and the
+    /// bias tracker seeded at the boot measurement, on a frame the scans
+    /// have landed. The experiment image seeds the bias alone: it reads
+    /// neither the position table nor the NTC. The chip boots before its
+    /// tick vector is live, so no tick carries it; a kernel ticked unbooted
+    /// boots on its first tick, after the write and the frame.
+    #[inline(never)]
+    #[rustc_align(4)]
+    pub fn boot(&mut self, shared: &Shared) {
         self.configure(shared);
         #[cfg(not(feature = "experiment"))]
         {
@@ -206,17 +211,24 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     /// row copies from too. The motor write comes first, on the current
     /// side of the window, the overcurrent trip and the command the last
     /// medium step left: written before the trough it loads there, and the
-    /// next crest's pulse is that one command whole (kernel sec 2.3). A
-    /// medium step's command and faults reach the next tick's write.
+    /// next crest's pulse is that one command whole (kernel sec 2.3). The
+    /// write reads the shunt alone (`Sensors::land`); the rest of the frame
+    /// is waited for after it (`Sensors::complete`). A medium step's
+    /// command and faults reach the next tick's write.
     pub fn on_tick(&mut self, shared: &Shared) {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
         let meas = self.fast.measure(&self.cfg, &mut self.faults, shared);
         let out = self.fast.drive(&meas, &self.cfg, &self.cmd, &self.faults);
-        let (_sensors, motor) = self.io.parts();
+        let (sensors, motor) = self.io.parts();
         motor.write(out);
+        self.fast.late = motor.late();
         self.fast.book(out);
-        // The first tick, phase CONTROL, writes off ahead of the
+        if !sensors.complete(shared) {
+            core::hint::cold_path();
+            self.sensor_lost(shared);
+        }
+        // Unbooted, the first tick, phase CONTROL, writes off ahead of the
         // configuration: no command exists yet, and no drive came before
         // it, so its window holds no reading.
         if !self.booted {
@@ -268,6 +280,30 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             self.tel.hold();
         }
         self.tel.on_tick_end();
+    }
+
+    /// The last write missed its load point (`Motor::late`).
+    pub fn write_late(&self) -> bool {
+        self.fast.late
+    }
+
+    /// The scan the tick waits for never landed. The sensor fault latches
+    /// and publishes, and the drive goes off now, not at the next write,
+    /// and stays off.
+    #[inline(never)]
+    #[rustc_align(4)]
+    fn sensor_lost(&mut self, shared: &Shared) {
+        self.faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
+        let (_sensors, motor) = self.io.parts();
+        motor.write(MotorCmd::Disabled);
+        self.fast.book_off();
+        let p = shared.table.region_ptr();
+        // SAFETY: sole-telemetry-writer contract (type doc): the tick;
+        // volatile stores.
+        unsafe {
+            (&raw mut (*p).telemetry.mode.fault_code).write_volatile(self.faults.code());
+            (&raw mut (*p).telemetry.common.fault_flags).write_volatile(self.faults.mask());
+        }
     }
 }
 

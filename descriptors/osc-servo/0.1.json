@@ -1280,36 +1280,43 @@
       "kind": "uint"
     },
     {
-      "name": "stack_free_min",
+      "name": "write_late_count",
       "addr": 968,
       "width": 2,
-      "access": "ro",
+      "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "window_v_floor_q15",
+      "name": "stack_free_min",
       "addr": 970,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "t_ntc_cc",
+      "name": "window_v_floor_q15",
       "addr": 972,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "t_ntc_cc",
+      "addr": 976,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
       "name": "therm_flags",
-      "addr": 974,
+      "addr": 978,
       "width": 1,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "omega_ref_cps",
-      "addr": 976,
+      "addr": 980,
       "width": 4,
       "access": "ro",
       "kind": "int"

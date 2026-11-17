@@ -230,9 +230,9 @@ pub mod telemetry {
     /// Smallest duty whose drive window the terminal taps read, Q15: a fit
     /// on `va - vb` drives at or above the higher of this and
     /// `WINDOW_FLOOR_Q15`. Firmware without it reads 0.
-    pub const WINDOW_V_FLOOR_Q15: Reg = reg(0x03ca, 2);
-    pub const T_NTC_CC: Reg = reg(0x03cc, 2);
-    pub const THERM_FLAGS: Reg = reg(0x03ce, 1);
+    pub const WINDOW_V_FLOOR_Q15: Reg = reg(0x03cc, 2);
+    pub const T_NTC_CC: Reg = reg(0x03d0, 2);
+    pub const THERM_FLAGS: Reg = reg(0x03d2, 1);
 }
 
 /// Every const above with its descriptor field name - the cross-check

@@ -70,7 +70,7 @@ fn main() -> ! {
             // VSYS.
             rail_drop_mv: 250,
             vdd_mv: 3300,
-            // Scan order is [shunt, high tap, low tap, pos, vref, vbus, ntc],
+            // Scan order is [high tap, low tap, shunt, pos, vref, vbus, ntc],
             // the taps following the drive direction. The i floor sits inside the settle gain's reach (`i_settle_gain`),
             // where the amplifier's own deficit is a calibrated gain, not an
             // error. On a motor the edge also charges the winding's terminal
@@ -78,11 +78,12 @@ fn main() -> ! {
             // reads HIGH by a fixed few counts under ~72 ticks, 10-15% of a
             // 30-count current at the floor; no gain removes an additive
             // term. The v floor is the crest taps' window: the low-side tap
-            // closes 37 ticks before the crest (injected), so it needs the ON
-            // edge's 42-tick lag plus its settle, and the high-side tap at +83
+            // closes 21 ticks before the crest (injected), so it needs the ON
+            // edge's 42-tick lag plus its settle, and the high-side tap at +87
             // must still be inside the window when the OFF edge lands 14
-            // ticks late. A 4.2 ohm grid ladder reads R within 1.1% from 84
-            // ticks forward, and within 0.9% from 96 in both directions.
+            // ticks late. A 4.2 ohm grid ladder, read with those taps at -37
+            // and +83, gives R within 1.1% from 84 ticks forward, and within
+            // 0.9% from 96 in both directions.
             i_window_min_ticks: 64,
             v_window_min_ticks: 93,
             // The drive pulse comes out ~27 ticks short of the commanded

@@ -684,15 +684,17 @@ encoding from the table.
 
 What a row means is when it was copied. osc-servo keeps a tick block
 in TELEMETRY (`0x224..0x258`). The ADC's DMA lands both scans of every
-PWM period at its front: the trough scan and the crest scan's shunt and
-taps in reserved bytes (`0x224..0x238`), the crest scan from `pos` to
-`ntc_raw` on its fields. The tick interrupt then copies the trough's
-shunt and taps out of the next scan's way, copies the crest's shunt,
-writes each tap under its terminal's name, and stamps `sample_tick`;
-the kernel writes its conclusions on the window the previous command
-drove, and both chunks are copied. The next scans land mid-tick (the
-trough) and near the tick's end (the crest), after the copies, so every
-row holds one tick's tick block. A chunk over the medium-rate registers
+PWM period at its front: the trough scan and the crest scan's taps and
+shunt in reserved bytes (`0x224..0x238`), the crest scan from `pos` to
+`ntc_raw` on its fields. The tick enters on the injected conversions
+that sample the drive's low-side tap and the shunt around the crest: it
+stamps `sample_tick`, copies that shunt to `current_raw` and the
+trough's shunt and taps out of the next scan's way, and once the crest
+scan has landed writes each crest tap under its terminal's name; the
+kernel writes its conclusions on the window the previous command drove,
+and both chunks are copied. The next scans land mid-tick (the trough)
+and a period on (the crest), after the copies, so every row holds one
+tick's tick block. A chunk over the medium-rate registers
 (the estimates) carries them as last published, up to one tick old.
 Host-written regions copy with per-field consistency only, and a bus
 read of the tick block follows the same rule: each field holds one
@@ -707,11 +709,11 @@ in sample order, high side first, so no named field lies in its way.
 | 0x23A | `vref_raw`        | u16   | the 1.2 V internal reference against VDD |
 | 0x23C | `vbus_raw`        | u16   | |
 | 0x23E | `ntc_raw`         | u16   | |
-| 0x240 | `current_raw`     | u16   | the shunt at the counter peak |
+| 0x240 | `current_raw`     | u16   | the shunt at the counter peak, 31 timer ticks past it |
 | 0x242 | `vmotor_a`        | u16   | |
 | 0x244 | `vmotor_b`        | u16   | |
 | 0x246 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
-| 0x248 | `current_trough`  | u16   | |
+| 0x248 | `current_trough`  | u16   | the shunt in the trough, 135 timer ticks past it |
 | 0x24A | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; through windows the shunt cannot read, held in OpenLoop and the current reference in the closed loops; 0 from the first tick nothing drives |
 | 0x24C | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
 | 0x24E | `vmotor_a_trough` | u16   | |
@@ -741,7 +743,7 @@ the reference it lands on:
 | ----- | --------------------- | ----- | ------ | ------------------------------------------------------------------------------------- |
 | 0x1EC | `inject_accel_q88`    | u16   | RW     | the triangle's slope, Q8.8 c/s per medium period (the unit of `accel_limit_q88`), read at most 0x7FFF; 0 off |
 | 0x1EE | `inject_half_periods` | u16   | RW     | its half-period N in medium periods, read at most 512; 0 off                          |
-| 0x3D0 | `omega_ref_cps`       | i32   | RO     | the velocity loop's reference, raw csQ16 as `omega_hat_cps`; 0 on the production image |
+| 0x3D4 | `omega_ref_cps`       | i32   | RO     | the velocity loop's reference, raw csQ16 as `omega_hat_cps`; 0 on the production image |
 
 The triangle's peak is slope x N / 2 and its frequency 1000 / N Hz, at
 most 1 kHz (Nyquist of the 2 kHz medium rate), at least 1.95 Hz. The sum
@@ -753,7 +755,7 @@ clears them: a host zeroes both before it drives and when it is done. The
 production image accepts both and ignores them.
 
 The margin row is 12 B in two chunks: `0x258` 8 B (`theta_hat_q16` and
-`omega_hat_cps`) and `0x3D0` 4 B (`omega_ref_cps`). All three are written
+`omega_hat_cps`) and `0x3D4` 4 B (`omega_ref_cps`). All three are written
 at the same medium-period publish, so every row holds one period's
 triple, and one row a period at a fixed offset of the unwrapped `tick`
 is the period's sample. With U, W and TH the fundamentals at the
@@ -897,7 +899,9 @@ newly-latched kind (`fault_code`, `0x221`):
 
 Code 8 is unassigned. Any set bit forces the drive off; the
 `torque_enable` 0 to 1 edge is the only acknowledgement, and a
-still-present condition re-latches at once.
+still-present condition re-latches at once. Besides the raw pot screen,
+`sensor` latches when the crest scan a tick waits for never lands, and
+the tick writes the drive off (osc-servo-kernel sec 2.3).
 The kernel reads `torque_enable`, `mode` and the goals once per medium
 tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
 and a new `goal_duty` take effect at the first medium tick after the
@@ -1323,10 +1327,11 @@ board constant, and `osc` refuses a servo that reports 0 (DES
 `window_floor_is_published_as_the_limiter_uses_it`).
 
 The terminal taps have a floor of their own: `window_v_floor_q15` (u16,
-RO, `0x3CA` in TELEMETRY-EXT, Q15) is CALIB `v_window_min_ticks` turned into
+RO, `0x3CC` in TELEMETRY-EXT, Q15) is CALIB `v_window_min_ticks` turned into
 a duty the same way, 2526 (7.7%) for 93 ticks on osc-dev-v006, where
-the low-side tap, sampled 37 ticks before the crest, has finished its
-rise, in either direction. It is published at the
+the low-side tap, sampled 21 ticks before the crest, has finished its
+rise, in either direction (the board README holds the instants and the
+ladder the floor rests on). It is published at the
 kernel's first tick and again within a medium period (0.5 ms) of a
 CONFIG write that reaches the kernel. A window between the two floors
 reads current but no `va - vb`, so the tick block's `vdiff_counts` holds the last
@@ -1521,7 +1526,7 @@ Under the Same Band" has the planning behind it):
 
 ### 5.9 Health (osc-servo)
 
-Five u16 registers at the front of TELEMETRY-EXT (`0x3C0..0x400`, the
+Six u16 registers at the front of TELEMETRY-EXT (`0x3C0..0x400`, the
 model's overflow of TELEMETRY) say how the servo itself is keeping up.
 Every build carries them; the chip side writes them, not the kernel.
 
@@ -1531,7 +1536,8 @@ Every build carries them; the chip side writes them, not the kernel.
 | 0x3C2 | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
 | 0x3C4 | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
 | 0x3C6 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire, each a jump in the next frame's `tick` (sec 5.6); wraps |
-| 0x3C8 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
+| 0x3C8 | `write_late_count`   | RW     | kernel ticks whose motor write landed after the trough: the width loaded at the next crest and split that pulse between two commands, and the window it drove read no current; wraps |
+| 0x3CA | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
 
 The RW registers follow the TELEMETRY-COMMON clear contract (sec 5.4):
 a host writes 0 and the servo counts on from there. The mean load

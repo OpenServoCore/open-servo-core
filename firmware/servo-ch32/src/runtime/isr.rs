@@ -1,41 +1,84 @@
 use core::cell::SyncUnsafeCell;
 
-use ch32_metapac::{DMA1, USART1};
+use ch32_metapac::USART1;
 use osc_servo_core::budget::Body;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{ControlIo, RegionStorageRaw, Sensors};
 
-use crate::hal::{pfic, systick, usart};
+use crate::hal::{adc, dma, pfic, systick, usart};
 use crate::providers::break_wake::BreakWake;
 use crate::runtime::Drivers;
 use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 use crate::runtime::tick_load::TickLoad;
 
-/// Touched only from the DMA1 CH1 vector, which never preempts itself.
+/// Touched only from the ADC and DMA1 CH1 vectors, both at PFIC HIGH, which
+/// never preempt each other.
 static TICK_LOAD: SyncUnsafeCell<TickLoad> = SyncUnsafeCell::new(TickLoad::new());
 
-/// Configures PFIC priorities and unmasks the transport + ADC IRQs. Called
-/// once during bringup, after the drivers and statics are installed.
+/// Configures PFIC priorities, boots the kernel and unmasks the kernel,
+/// transport and burst IRQs. Called once during bringup, after the drivers
+/// and statics are installed.
 ///
-/// The motor kernel (DMA1_CH1 = 22) is alone at PFIC HIGH, so a scan TC is
-/// served within one interrupt entry of the longest critical section; it
-/// also drives the TX lane while a TEL burst streams, polled. The transport
-/// vectors (TIM2 for the break wake, USART1 for TC, SysTick for the framer
-/// deadlines) share PFIC LOW, the bus level, so all `&mut` access into the
-/// `ServoBus` composite serializes - dispatch runs inline on these vectors.
+/// The motor kernel (ADC = 29, the injected group's end) is alone at PFIC
+/// HIGH in normal running, so the shunt is served within one interrupt
+/// entry of the longest critical section; it also drives the TX lane while
+/// a TEL burst streams, polled. DMA1_CH1 (22) shares HIGH for the shunt
+/// burst alone: the scan's DMA raises no interrupt, and a burst parks the
+/// injected trigger, so exactly one of the two is live in either mode. The
+/// transport vectors (TIM2 for the break wake, USART1 for TC, SysTick for
+/// the framer deadlines) share PFIC LOW, the bus level, so all `&mut`
+/// access into the `ServoBus` composite serializes - dispatch runs inline
+/// on these vectors.
 /// SysTick sits last within LOW: a pending wake or TC resolves its frames
 /// before a pending deadline acts on them. DMA1_CH5 (RX ring) runs silent
 /// circular - no HT/TC IRQ - and CH3/CH4/CH6/CH7 raise none either.
 pub fn install_irqs() {
+    pfic::set_priority(pfic::Interrupt::ADC, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::Low);
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::Low);
     pfic::set_systick_priority(pfic::Priority::LowLast);
+    start_ticks();
     pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable_systick();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
+}
+
+/// The longest wait for a crest scan's end before the tick vector is live:
+/// two periods.
+const SCAN_SYNC_CAP: u32 = 2 * crate::hal::clocks::HCLK_HZ / crate::cfg::chip::MOTOR_PWM_FREQ_HZ;
+
+/// Boots the kernel on a landed crest scan, so no tick carries the boot,
+/// then unmasks the tick right behind the next crest scan's end: the first
+/// tick's wait then finds its own period's scan, and every later tick
+/// clears the one it waited for. The injected group has ended every period
+/// since bringup with JEOCIE set, so the ADC vector is pending in the PFIC
+/// behind its mask; unmasked with that latch standing, the first tick would
+/// enter at once, past this period's scan, and its wait would run out into
+/// a sensor fault. Interrupts are still masked.
+fn start_ticks() {
+    await_crest_scan();
+    // SAFETY: pre-IRQ: `install` wrote KERNEL, and nothing else runs.
+    let kernel = unsafe { (*KERNEL.get()).assume_init_mut() };
+    kernel.boot(&SHARED);
+    await_crest_scan();
+    adc::clear_jeoc();
+    dma::clear_tc_flag(dma::Channel::CH1);
+    pfic::unpend(pfic::Interrupt::ADC);
+    pfic::enable(pfic::Interrupt::ADC);
+}
+
+/// Waits, at most `SCAN_SYNC_CAP`, for the next crest scan's end.
+fn await_crest_scan() {
+    dma::clear_tc_flag(dma::Channel::CH1);
+    let t0 = systick::ticks();
+    while !dma::is_tc_flag(dma::Channel::CH1) {
+        if systick::ticks().wrapping_sub(t0) > SCAN_SYNC_CAP {
+            return;
+        }
+    }
 }
 
 /// Bus-level dispatcher: materializes the `SESSION` borrow inside each
@@ -80,39 +123,52 @@ impl Dispatch for BusDispatcher {
     }
 }
 
-/// ADC DMA TC handler body -- wire into the vector table via [`crate::install_isrs!`].
-pub fn on_adc_dma_tc() {
+/// ADC vector body, the kernel tick: the injected group's end, the shunt in
+/// hand. Wire into the vector table via [`crate::install_isrs!`].
+pub fn on_adc_jeoc() {
     let entry = systick::ticks();
+    adc::clear_jeoc();
     // SAFETY: see TICK_LOAD.
     let load = unsafe { &mut *TICK_LOAD.get() };
-    // A shunt burst time-shares DMA1 CH1, so its HT and TC arrive on this
-    // vector; the buffer then holds raw shunt codes, not a 7-slot scan, and
-    // nothing below may run against it.
+    // A group that ended under a launching burst: the scan is suspended,
+    // and nothing below may run against it.
     if crate::runtime::burst::capturing() {
         core::hint::cold_path();
         load.skip();
-        crate::runtime::burst::on_dma_event(&SHARED);
         crate::probe::kernel_other(entry);
         return;
     }
-    DMA1.ifcr().write(|w| w.set_tcif(0, true));
 
-    unsafe {
+    let late = unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
         let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.tick.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
 
-        // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.
+        // SAFETY: PFIC unmasks ADC only after `statics::install` writes KERNEL.
         let kernel = (*KERNEL.get()).assume_init_mut();
         {
             let (sensors, _motor) = kernel.io.parts();
             sensors.land(&SHARED);
         }
         kernel.on_tick(&SHARED);
+        kernel.write_late()
+    };
+    if late {
+        core::hint::cold_path();
+        // SAFETY: table storage is 'static; this vector is the count's only
+        // chip-side writer, and it stores only on a late write, so a host
+        // clear races a store only when one is due.
+        unsafe {
+            let n = &raw mut (*SHARED.table.region_ptr())
+                .telemetry_ext
+                .health
+                .write_late_count;
+            n.write_volatile(n.read_volatile().wrapping_add(1));
+        }
     }
 
     // Trailing on purpose: the burst handshake must never displace a kernel
-    // tick, and a launch wants the scan TC's slack ahead of the next trigger.
+    // tick.
     crate::runtime::burst::poll_arm(&SHARED);
 
     let window = load.tick(entry, systick::ticks());
@@ -124,6 +180,18 @@ pub fn on_adc_dma_tc() {
     }
 
     crate::probe::kernel_exit(entry, health);
+}
+
+/// DMA1 CH1 vector body: the shunt burst's HT and TC alone; the scan's DMA
+/// raises none.
+pub fn on_dma_ch1() {
+    let entry = systick::ticks();
+    if crate::runtime::burst::capturing() {
+        // SAFETY: see TICK_LOAD.
+        unsafe { (*TICK_LOAD.get()).skip() };
+        crate::runtime::burst::on_dma_event(&SHARED);
+    }
+    crate::probe::kernel_other(entry);
 }
 
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow
@@ -213,8 +281,14 @@ macro_rules! install_isrs {
     () => {
         #[::qingke_rt::interrupt]
         #[rustc_align(4)]
+        fn ADC() {
+            $crate::runtime::isr::on_adc_jeoc();
+        }
+
+        #[::qingke_rt::interrupt]
+        #[rustc_align(4)]
         fn DMA1_CHANNEL1() {
-            $crate::runtime::isr::on_adc_dma_tc();
+            $crate::runtime::isr::on_dma_ch1();
         }
 
         #[::qingke_rt::interrupt]

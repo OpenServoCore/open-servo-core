@@ -7,31 +7,37 @@
 //! TRGO at CNT=0 before CEN=1 so the trough scan lands at offset 0 and the peak
 //! scan lands at `ADC_SCAN_LEN`. Slot indices within a scan reflect the
 //! configured RSQR sequence. The DMA lands both straight in the table's tick
-//! block (`TelemetryTick`): the trough scan and the peak scan's shunt and taps
-//! on unnamed halfwords, the peak scan's slots from `pos` on their fields.
+//! block (`TelemetryTick`): the trough scan and the peak scan's taps and
+//! shunt on unnamed halfwords, the peak scan's slots from `pos` on their
+//! fields.
 //!
 //! Budget at ADCCLK 24 MHz (TCONV = aperture + 12.5, RM sec 9.3; apertures
 //! in `cfg::chip`): a slot at `SampleTime::CYCLES15` (a 13.5-cycle aperture)
 //! converts in 26 ADCCLK = 52 HCLK = 1.083 us, the Vref slot at `CYCLES43`
 //! (41.5) in 54 ADCCLK = 2.25 us, and a 7-slot scan is 210 ADCCLK = 8.75 us.
-//! The peak scan's TC lands 8.8 us after its trigger and the trough trigger
-//! follows 25 us after that trigger, so the TC ISR has ~16 us to drain the
-//! trough slots before slot 0 is rewritten; the peak slots stand until the
-//! next peak trigger.
 //!
-//! The terminal taps follow the drive direction. The low-side tap converts on
-//! a one-channel injected group triggered `LOW_TAP_LEAD_TICKS` before the
-//! crest, closing 37 ticks before it and retiring ahead of the crest trigger;
-//! the high-side tap takes slot 1 and closes 83 ticks after it, past its
-//! post-edge sag. Slot 2 holds the low side again, closing 135 ticks in: the
-//! peak copy is unread, the trough copy is the trough's low tap. Forward (A high)
-//! injects B over `[shunt, A, B, ..]`, Reverse injects A over
-//! `[shunt, B, A, ..]`, so the shunt keeps slot 0 at +31 either way.
+//! The tick starts on the shunt's own conversion. A two-conversion injected
+//! group, triggered `INJECTED_LEAD_TICKS` before the crest, converts the
+//! drive's low-side tap, closing 21 ticks before the crest, then the shunt,
+//! closing 31 ticks after it; its end (JEOC, `JEOC_TICKS` past the crest) is
+//! the kernel's entry, and the shunt is all the motor write reads. The crest
+//! TRGO lands during the group and the regular scan is postponed behind it
+//! (RM sec 9.2.4), starting `CREST_SCAN_START_TICKS` in: `[high, low, shunt,
+//! pos, Vref, rail, NTC]`, the high tap closing 87 ticks in, past its
+//! post-edge sag, the pot at +243. The tick waits for that scan after the
+//! write. Its low tap (+139) and shunt (+191) are unread. The trough scan
+//! takes the same order from its own TRGO, closing the high tap at +31, the
+//! low tap at +83 and the shunt, the bias tracker's sample, at +135. Forward
+//! (A high) injects B over `[A, B, shunt, ..]`, Reverse injects A over
+//! `[B, A, shunt, ..]`.
 //!
-//! The motor write at the end of a tick notes a flip; the next frame swaps
-//! the order, then maps the scans already taken by the old one. That
-//! frame's window already ran in the new direction, so for one period the
-//! high side is the early sample, still read under its own tap's name.
+//! The motor write notes a flip; the same tick swaps the order once the
+//! crest scan has landed, inside the idle gap ahead of the trough scan, so
+//! the next trough scan and injected group sample the noted drive. A tick
+//! that reaches the swap outside the gap leaves it to the next, whose frame
+//! was then sampled under the old order while its window ran in the new
+//! direction: for one period the high side is the early sample, still read
+//! under its own tap's name.
 
 use core::cell::SyncUnsafeCell;
 use core::mem::{offset_of, size_of};
@@ -50,15 +56,22 @@ const CONV_CYCLES: u16 = 26;
 const VREF_CONV_CYCLES: u16 = 54;
 /// External trigger to aperture start.
 const TRIGGER_DELAY_CYCLES: u16 = 2;
-/// Idle between the injected conversion retiring and the crest TRGO. A
-/// regular trigger that lands during an injected conversion is postponed (RM
-/// sec 9.2.4), which would move every peak slot off its settle-table instant;
-/// the margin also covers the 2-ADCCLK group switch.
-const INJECTED_GUARD_CYCLES: u16 = 6;
-/// How far ahead of the crest TIM1 triggers the low-side tap's injected
-/// conversion.
-pub(crate) const LOW_TAP_LEAD_TICKS: u16 =
-    (CONV_CYCLES + TRIGGER_DELAY_CYCLES + INJECTED_GUARD_CYCLES) * TICKS_PER_ADCCLK;
+/// One `CONV_CYCLES` conversion in timer ticks.
+pub(crate) const CONV_TICKS: u16 = CONV_CYCLES * TICKS_PER_ADCCLK;
+/// How far ahead of the crest TIM1 triggers the injected group: one
+/// conversion, the low-side tap's, so the shunt's aperture opens at the
+/// trigger delay past the crest, where regular slot 0 opened when the crest
+/// TRGO started the scan.
+pub(crate) const INJECTED_LEAD_TICKS: u16 = CONV_TICKS;
+/// Past the crest, the injected group's end (JEOC): the kernel's trigger.
+const JEOC_TICKS: u16 =
+    (TRIGGER_DELAY_CYCLES + 2 * CONV_CYCLES) * TICKS_PER_ADCCLK - INJECTED_LEAD_TICKS;
+/// The group switch behind the injected group, at ADC prescaler 2 (RM sec
+/// 9.2.4).
+const GROUP_SWITCH_CYCLES: u16 = 2;
+/// Past the crest, where the postponed crest scan opens its first aperture.
+/// The RM states the postponement, not this instant.
+const CREST_SCAN_START_TICKS: u16 = JEOC_TICKS + GROUP_SWITCH_CYCLES * TICKS_PER_ADCCLK;
 /// One regular scan, trigger to retire: every slot but Vref at `CONV_CYCLES`.
 const SCAN_TICKS: u16 =
     (TRIGGER_DELAY_CYCLES + (ADC_SCAN_LEN as u16 - 1) * CONV_CYCLES + VREF_CONV_CYCLES)
@@ -67,12 +80,11 @@ const SCAN_TICKS: u16 =
 /// In `AdcPins` field order: pos, vmotor.0, vmotor.1, vbus, ntc.
 pub(crate) const ADC_SENSOR_COUNT: usize = 5;
 
-/// Slot 0 is the current-sense amplifier output, read on whichever external
-/// channel the board routes the OPA output to; then both motor terminals
-/// (drive-window-critical, so they convert early), then pos, then Vref,
-/// then the slow board taps (rail, NTC) appended last so the bench-validated
-/// terminal window floors keep their meaning. Each role's channel comes from
-/// the board's `BoardWiring` (`current_sense.opa.out`, `sensors`) via
+/// Both motor terminals first (drive-window-critical, so they convert
+/// early), then the current-sense amplifier output on whichever external
+/// channel the board routes the OPA output to, then pos, then Vref, then the
+/// slow board taps (rail, NTC). Each role's channel comes from the board's
+/// `BoardWiring` (`current_sense.opa.out`, `sensors`) via
 /// `runtime::init::configure_adc_dma_scan`.
 pub(crate) const ADC_SCAN_LEN: usize = 7;
 
@@ -85,26 +97,34 @@ static SEQ: SyncUnsafeCell<[adc::Channel; ADC_SCAN_LEN]> =
 
 const SCAN_PEAK_OFFSET: usize = ADC_SCAN_LEN;
 
-pub(super) const SCAN_IDX_SHUNT_POST: usize = 0;
 /// Each tap's slot in `seq()`, the Forward order.
-const SCAN_IDX_VMOTOR_A: usize = 1;
-const SCAN_IDX_VMOTOR_B: usize = 2;
+const SCAN_IDX_VMOTOR_A: usize = 0;
+const SCAN_IDX_VMOTOR_B: usize = 1;
 /// The programmed scan's terminal slots, whichever tap is high.
-pub(super) const SCAN_IDX_TAP_HIGH: usize = 1;
-pub(super) const SCAN_IDX_TAP_LOW: usize = 2;
+pub(super) const SCAN_IDX_TAP_HIGH: usize = 0;
+pub(super) const SCAN_IDX_TAP_LOW: usize = 1;
+pub(super) const SCAN_IDX_SHUNT: usize = 2;
 const SCAN_IDX_POS: usize = 3;
 const SCAN_IDX_VREF: usize = 4;
 const SCAN_IDX_VBUS: usize = 5;
 const SCAN_IDX_NTC: usize = 6;
 
-/// The budget's scan landings: the next trough and crest scans' first slot,
-/// past the crest scan's TC, in HCLK.
+/// The budget's geometry past the injected group's end, in HCLK: the
+/// trough's update event a write must beat, the crest scan's end the tick
+/// waits for, and the next trough and crest scans' first slot.
 const _: () = {
-    use osc_servo_core::budget::{NEXT_CREST, NEXT_TROUGH, TICK_PERIOD};
+    use osc_servo_core::budget::{
+        CREST_SCAN_DONE, NEXT_CREST, NEXT_TROUGH, TICK_PERIOD, WRITE_DEADLINE,
+    };
     assert!(TIM_CLK_HZ == crate::hal::clocks::HCLK_HZ);
-    let first = (TRIGGER_DELAY_CYCLES + CONV_CYCLES) * TICKS_PER_ADCCLK;
-    assert!(NEXT_CREST == TICK_PERIOD - SCAN_TICKS as u32 + first as u32);
-    assert!(NEXT_TROUGH == TICK_PERIOD / 2 - SCAN_TICKS as u32 + first as u32);
+    let jeoc = JEOC_TICKS as u32;
+    let start = CREST_SCAN_START_TICKS as u32;
+    let delay = (TRIGGER_DELAY_CYCLES * TICKS_PER_ADCCLK) as u32;
+    let conv = CONV_TICKS as u32;
+    assert!(WRITE_DEADLINE == TICK_PERIOD / 2 - jeoc);
+    assert!(CREST_SCAN_DONE == start + SCAN_TICKS as u32 - delay - jeoc);
+    assert!(NEXT_TROUGH == TICK_PERIOD / 2 + delay + conv - jeoc);
+    assert!(NEXT_CREST == TICK_PERIOD + start + conv - jeoc);
 };
 
 /// The tick block's front holds the DMA buffer: the trough scan and the peak
@@ -142,7 +162,9 @@ const DMA_CFG: dma::Config = dma::Config {
     minc: true,
     size: dma::Size::BITS16,
     htie: false,
-    tcie: true,
+    // the tick enters on the injected group and polls TC; the burst owns
+    // the DMA vector
+    tcie: false,
     pl: dma::Pl::HIGH,
 };
 
@@ -188,25 +210,26 @@ impl Direction {
 }
 
 /// The motor write's last drive; Brake, Coast and torque-off leave it. Both
-/// cells are touched only from the DMA1 CH1 vector (kernel tick, burst HT/TC).
+/// cells are touched only from the ADC vector (kernel tick) and the DMA1 CH1
+/// vector (burst HT/TC), both at PFIC HIGH, which never preempt each other.
 static DRIVEN: SyncUnsafeCell<Direction> = SyncUnsafeCell::new(Direction::Forward);
 /// The order the taps are programmed in; bringup programs Forward.
 static PROGRAMMED: SyncUnsafeCell<Direction> = SyncUnsafeCell::new(Direction::Forward);
 
 pub(crate) fn note_drive(d: Direction) {
-    // SAFETY: DMA1 CH1 vector only (DRIVEN doc).
+    // SAFETY: PFIC HIGH vectors only (DRIVEN doc).
     unsafe { *DRIVEN.get() = d };
 }
 
 fn driven() -> Direction {
-    // SAFETY: DMA1 CH1 vector only (DRIVEN doc).
+    // SAFETY: PFIC HIGH vectors only (DRIVEN doc).
     unsafe { *DRIVEN.get() }
 }
 
 /// The order the frame being drained was sampled under.
 #[inline(always)]
 pub(super) fn programmed() -> Direction {
-    // SAFETY: DMA1 CH1 vector only (DRIVEN doc).
+    // SAFETY: PFIC HIGH vectors only (DRIVEN doc).
     unsafe { *PROGRAMMED.get() }
 }
 
@@ -222,7 +245,7 @@ pub(super) fn follow_drive(order: Direction) {
 
 /// Only while the converter is idle between the peak scan and the trough
 /// trigger: an RSQR or ISQR write under a live conversion restarts the group
-/// (RM sec 9.2.2) and rotates every slot after it. A frame drained outside
+/// (RM sec 9.2.2) and rotates every slot after it. A frame completed outside
 /// that gap leaves the swap to the next.
 #[cold]
 #[inline(never)]
@@ -235,14 +258,16 @@ fn swap_taps(d: Direction) {
     });
 }
 
-/// Counting down from the crest, a scan's length clear of the peak scan's
-/// trigger and of the trough's.
+/// Counting down from the crest, past the postponed peak scan's end and a
+/// conversion clear of the trough's trigger. The swap runs once the peak
+/// scan has landed, after the motor write, so it must fit the stretch to
+/// the trough, not only its first half.
 fn swap_gap(down: bool, cnt: u16, arr: u16) -> bool {
-    down && (SCAN_TICKS..=arr.saturating_sub(SCAN_TICKS)).contains(&cnt)
+    down && (CONV_TICKS..=arr.saturating_sub(CREST_SCAN_START_TICKS + SCAN_TICKS)).contains(&cnt)
 }
 
 /// The whole regular sequence, its taps in the noted drive's order, and the
-/// injected tap. Converter idle only.
+/// injected pair. Converter idle only.
 pub(crate) fn program_sequence() {
     adc::set_sequence(seq());
     program_taps(driven());
@@ -250,10 +275,10 @@ pub(crate) fn program_sequence() {
 
 fn program_taps(d: Direction) {
     let (high, low) = d.taps(seq());
-    adc::set_injected_channel(low);
+    adc::set_injected_channels(low, seq()[SCAN_IDX_SHUNT]);
     adc::set_slot(SCAN_IDX_TAP_HIGH, high);
     adc::set_slot(SCAN_IDX_TAP_LOW, low);
-    // SAFETY: DMA1 CH1 vector only (DRIVEN doc).
+    // SAFETY: PFIC HIGH vectors only (DRIVEN doc).
     unsafe { *PROGRAMMED.get() = d };
 }
 
@@ -275,7 +300,7 @@ pub(crate) fn set_burst_sequence(mask: u8) {
 
 fn burst_frame(mask: u8, seq: &[adc::Channel; ADC_SCAN_LEN]) -> ([adc::Channel; FRAME_MAX], usize) {
     // Every slot starts as the shunt, so a slot skipped below is one.
-    let mut frame = [seq[SCAN_IDX_SHUNT_POST]; FRAME_MAX];
+    let mut frame = [seq[SCAN_IDX_SHUNT]; FRAME_MAX];
     let mut len = 1;
     for (bit, idx) in BURST_EXTRAS {
         if mask & bit != 0 {
@@ -331,11 +356,18 @@ fn scan_slot(tick: *const TelemetryTick, idx: usize) -> u16 {
     }
 }
 
-/// The low-side tap as the injected group last converted it: the drive
-/// window of the period whose peak scan this frame drains.
+/// The low-side tap, the injected group's first conversion: the drive
+/// window of the period whose peak scan this frame completes.
 #[inline(always)]
 pub(super) fn low_tap_injected() -> u16 {
-    adc::injected_data()
+    adc::injected_data(0)
+}
+
+/// The shunt, the injected group's second conversion, closing 31 ticks past
+/// the crest.
+#[inline(always)]
+pub(super) fn shunt_injected() -> u16 {
+    adc::injected_data(1)
 }
 
 #[cfg(test)]
@@ -346,22 +378,32 @@ mod tests {
 
     use super::*;
 
-    /// Trigger at crest - 68, aperture closes at crest - 37 (2 ADCCLK sync +
-    /// 13.5 aperture), retires at crest - 12.
+    /// Trigger at crest - 52 (2 ADCCLK sync, then a 13.5-cycle aperture per
+    /// conversion): the low tap's aperture closes at crest - 21, the
+    /// shunt's at crest + 31, the group ends (JEOC) at crest + 56 and the
+    /// postponed regular scan opens at crest + 60, its high tap closing at
+    /// +87 and its pot at +243.
     #[test]
-    fn low_tap_lead_places_the_injected_sample_before_the_crest() {
+    fn the_injected_pair_places_the_shunt_where_slot_0_was() {
         assert_eq!(TICKS_PER_ADCCLK, 2);
-        assert_eq!(LOW_TAP_LEAD_TICKS, 68);
+        assert_eq!(INJECTED_LEAD_TICKS, 52);
         let aperture_ticks = 27;
-        let close = LOW_TAP_LEAD_TICKS - TRIGGER_DELAY_CYCLES * TICKS_PER_ADCCLK - aperture_ticks;
-        assert_eq!(close, 37);
-        let retire = LOW_TAP_LEAD_TICKS - (TRIGGER_DELAY_CYCLES + CONV_CYCLES) * TICKS_PER_ADCCLK;
-        assert_eq!(retire, 12);
+        let opens = |k: u16| (TRIGGER_DELAY_CYCLES + k * CONV_CYCLES) * TICKS_PER_ADCCLK;
+        let rel = |t: u16| t as i32 - INJECTED_LEAD_TICKS as i32;
+        assert_eq!(rel(opens(0) + aperture_ticks), -21);
+        assert_eq!(rel(opens(1) + aperture_ticks), 31);
+        assert_eq!(rel(opens(2)), JEOC_TICKS as i32);
+        assert_eq!((JEOC_TICKS, CREST_SCAN_START_TICKS), (56, 60));
+        let closes = |slot: u16| {
+            CREST_SCAN_START_TICKS + slot * CONV_CYCLES * TICKS_PER_ADCCLK + aperture_ticks
+        };
+        assert_eq!(closes(SCAN_IDX_TAP_HIGH as u16), 87);
+        assert_eq!(closes(SCAN_IDX_POS as u16), 243);
     }
 
     const SEQ_FWD: [adc::Channel; ADC_SCAN_LEN] = {
         use adc::Channel::*;
-        [IN0, IN1, IN2, IN3, Vref, IN5, IN6]
+        [IN1, IN2, IN0, IN3, Vref, IN5, IN6]
     };
     /// A converter that reads each channel as its own number x 100.
     fn read(ch: adc::Channel) -> u16 {
@@ -369,7 +411,7 @@ mod tests {
     }
 
     /// Each direction converts the low side early and the high side in slot
-    /// 1, and the frame gets each tap back under its own name.
+    /// 0, and the frame gets each tap back under its own name.
     #[test]
     fn each_direction_maps_both_taps_back_to_their_terminals() {
         let (a, b) = (read(adc::Channel::IN1), read(adc::Channel::IN2));
@@ -397,16 +439,17 @@ mod tests {
         assert_ne!(Direction::Reverse.terminals(read(high), read(low)), mapped);
     }
 
-    /// The swap lands only counting down, a scan clear of the peak scan's
-    /// trigger at the crest and of the trough's at zero.
+    /// The swap lands only counting down, from the postponed peak scan's
+    /// end (484 past the crest, counter 716) to a conversion clear of the
+    /// trough's trigger at zero (counter 52).
     #[test]
     fn the_swap_waits_for_the_idle_gap() {
         let arr = 1200;
         assert_eq!(SCAN_TICKS, 424);
-        assert!(swap_gap(true, arr - SCAN_TICKS, arr));
-        assert!(!swap_gap(true, arr - SCAN_TICKS + 1, arr));
-        assert!(swap_gap(true, SCAN_TICKS, arr));
-        assert!(!swap_gap(true, SCAN_TICKS - 1, arr));
+        assert!(swap_gap(true, 716, arr));
+        assert!(!swap_gap(true, 717, arr));
+        assert!(swap_gap(true, 52, arr));
+        assert!(!swap_gap(true, 51, arr));
         assert!(!swap_gap(false, arr / 2, arr));
     }
 
@@ -416,7 +459,7 @@ mod tests {
     #[test]
     fn burst_frame_follows_the_mask() {
         use adc::Channel::*;
-        let seq = [IN0, IN1, IN2, IN3, Vref, IN5, IN6];
+        let seq = [IN1, IN2, IN0, IN3, Vref, IN5, IN6];
         let names = |mask: u8| {
             let (frame, len) = burst_frame(mask, &seq);
             assert_eq!(len, frame_len(mask) as usize, "chans {mask:#06b}");
