@@ -45,6 +45,23 @@ pub fn enable(irq: Interrupt) {
     }
 }
 
+/// Clears `irq`'s pending state (IPRRn, write-1-to-clear, RM sec 6.5.2.17).
+/// A masked source still latches pending in the PFIC, and clearing the
+/// peripheral's own flag leaves that latch standing: a source that ran
+/// while masked enters stale at its first unmask unless this precedes it.
+#[inline]
+pub fn unpend(irq: Interrupt) {
+    let n = irq as u16;
+    let bit = 1u32 << (n % 32);
+    match n / 32 {
+        0 => PFIC.iprr1().write(|w| w.0 = bit),
+        1 => PFIC.iprr2().write(|w| w.0 = bit),
+        2 => PFIC.iprr3().write(|w| w.0 = bit),
+        3 => PFIC.iprr4().write(|w| w.0 = bit),
+        _ => {}
+    }
+}
+
 /// qingke-rt v2 init sets STIE + mstatus.MIE but never writes PFIC IENR1
 /// bit 12; without this, CNTIF latches but the SysTick vector never fires.
 #[inline]
