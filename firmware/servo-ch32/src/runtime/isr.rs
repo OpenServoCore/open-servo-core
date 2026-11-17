@@ -53,9 +53,13 @@ const SCAN_SYNC_CAP: u32 = 2 * crate::hal::clocks::HCLK_HZ / crate::cfg::chip::M
 /// Boots the kernel on a landed crest scan, so no tick carries the boot,
 /// then unmasks the tick right behind the next crest scan's end: the first
 /// tick's wait then finds its own period's scan, and every later tick
-/// clears the one it waited for. Interrupts are still masked; a converter
-/// that never lands a scan leaves the kernel unticked, which the main loop
-/// faults (`runtime::entry_watch`).
+/// clears the one it waited for. The injected group has ended every period
+/// since bringup with JEOCIE set, so the ADC vector is pending in the PFIC
+/// behind its mask; unmasked with that latch standing, the first tick would
+/// enter at once, past this period's scan, and its wait would run out into
+/// a sensor fault. Interrupts are still masked; a converter that never
+/// lands a scan leaves the kernel unticked, which the main loop faults
+/// (`runtime::entry_watch`).
 fn start_ticks() {
     await_crest_scan();
     // SAFETY: pre-IRQ: `install` wrote KERNEL, and nothing else runs.
@@ -64,6 +68,7 @@ fn start_ticks() {
     await_crest_scan();
     adc::clear_jeoc();
     dma::clear_tc_flag(dma::Channel::CH1);
+    pfic::unpend(pfic::Interrupt::ADC);
     pfic::enable(pfic::Interrupt::ADC);
 }
 
