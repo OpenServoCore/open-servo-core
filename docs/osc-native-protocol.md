@@ -906,9 +906,8 @@ newly-latched kind (`fault_code`, `0x221`):
 Code 8 is unassigned. Any set bit forces the drive off; the
 `torque_enable` 0 to 1 edge is the only acknowledgement, and a
 still-present condition re-latches at once. Besides the raw pot screen,
-`sensor` latches when the converter stops: the crest scan a tick waits
-for never lands, or the ticks stop for 4 ms and the main loop writes the
-drive off (osc-servo-kernel sec 2.1).
+`sensor` latches when the crest scan a tick waits for never lands, and
+the tick writes the drive off (osc-servo-kernel sec 2.3).
 The kernel reads `torque_enable`, `mode` and the goals once per medium
 tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
 and a new `goal_duty` take effect at the first medium tick after the

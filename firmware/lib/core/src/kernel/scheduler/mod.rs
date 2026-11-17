@@ -275,20 +275,19 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.fast.late
     }
 
-    /// The frame stopped landing: the scan the tick waits for never did, or
-    /// the ticks themselves stopped (the chip's main loop calls it then,
-    /// with no tick under way). The sensor fault latches and publishes, and
-    /// the drive goes off now, not at the next write, and stays off.
+    /// The scan the tick waits for never landed. The sensor fault latches
+    /// and publishes, and the drive goes off now, not at the next write,
+    /// and stays off.
     #[inline(never)]
     #[rustc_align(4)]
-    pub fn sensor_lost(&mut self, shared: &Shared) {
+    fn sensor_lost(&mut self, shared: &Shared) {
         self.faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
         let (_sensors, motor) = self.io.parts();
         motor.write(MotorCmd::Disabled);
         self.fast.book_off();
         let p = shared.table.region_ptr();
-        // SAFETY: sole-telemetry-writer contract (type doc): the tick, or
-        // the caller with no tick under way; volatile stores.
+        // SAFETY: sole-telemetry-writer contract (type doc): the tick;
+        // volatile stores.
         unsafe {
             (&raw mut (*p).telemetry.mode.fault_code).write_volatile(self.faults.code());
             (&raw mut (*p).telemetry.common.fault_flags).write_volatile(self.faults.mask());

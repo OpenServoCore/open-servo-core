@@ -7195,29 +7195,4 @@ mod streaming {
         k.io.sensors.lost = false;
         stays_off(&mut k, &sh);
     }
-
-    /// Ticks that stop leave the bridge on the last compares; the chip's
-    /// main loop then writes the drive off with no tick under way. The
-    /// fault is in the table at once, and a kernel that ticks again keeps
-    /// the drive off until the ack.
-    #[test]
-    fn a_stopped_tick_faults_the_drive_off_from_outside_the_tick() {
-        let sh = Shared::new();
-        let mut k = driving(&sh);
-        assert!(matches!(k.io.motor.last, Some(MotorCmd::Drive { .. })));
-        k.sensor_lost(&sh);
-        assert!(matches!(k.io.motor.last, Some(MotorCmd::Disabled)));
-        assert_eq!(k.fast.duty_q15, 0);
-        sh.table.with(|t| {
-            assert_eq!(t.telemetry.mode.fault_code, faults::CODE_SENSOR);
-            assert_eq!(t.telemetry.common.fault_flags, faults::BIT_SENSOR);
-        });
-        k.on_scan(frame(2000, BIAS + 200), &sh);
-        assert_eq!(
-            tick_block(&sh).tick_flags & tick_flag::I_VALID,
-            0,
-            "the window after the drive went off read the old width"
-        );
-        stays_off(&mut k, &sh);
-    }
 }

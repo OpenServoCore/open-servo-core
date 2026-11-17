@@ -6,10 +6,9 @@ use osc_servo_core::RegionStorageRaw;
 use osc_servo_drivers::traits::Monotonic as _;
 
 use crate::cfg::{BoardConfig, Precomputed, chip};
-use crate::hal::{gpio, pfic, rcc, systick};
+use crate::hal::{gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
 use crate::runtime::control_io::Ch32ControlIo;
-use crate::runtime::entry_watch::EntryWatch;
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal and the bounds
 /// on its derived constants, then runs.
@@ -50,23 +49,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let mut tel_published: u16 = 0;
     let mut lamp_test = crate::runtime::stat::LampTest::new(Monotonic.ticks());
     let mut flash = crate::runtime::stat::Flash::default();
-    let mut entry = EntryWatch::new(systick::ticks(), sample_tick());
     loop {
-        // The stopped-tick guard (`runtime::entry_watch`). SysTick first: a
-        // tick between the two reads shows as movement.
-        let now = systick::ticks();
-        if entry.stopped(now, sample_tick()) {
-            core::hint::cold_path();
-            // Thread mode: no tick is under way, and the section keeps one
-            // from starting. It runs only once the ticks have stopped.
-            critical_section::with(|_| {
-                // SAFETY: KERNEL installed before any IRQ; the section
-                // keeps every vector that reaches it out.
-                let kernel = unsafe { (*crate::runtime::statics::KERNEL.get()).assume_init_mut() };
-                kernel.sensor_lost(&crate::runtime::statics::SHARED);
-            });
-        }
-
         // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick
         // + SW, the bus level). Main loop owns LED housekeeping, the
         // link-diagnostics publish, the deferred-reboot poll, and sleep. Its
@@ -231,18 +214,5 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         });
 
         riscv::asm::wfi();
-    }
-}
-
-/// The kernel's tick count, as the tick vector last stamped it.
-#[inline(always)]
-fn sample_tick() -> u32 {
-    // SAFETY: table storage is 'static; one aligned word, volatile.
-    unsafe {
-        (&raw const (*crate::runtime::statics::SHARED.table.region_ptr())
-            .telemetry
-            .tick
-            .sample_tick)
-            .read_volatile()
     }
 }

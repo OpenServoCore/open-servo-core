@@ -38,8 +38,6 @@ TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period its CH4 compare,
 
 `sample_tick` counts executed ticks; each executed tick advances the kernel by one period; nothing in the kernel reads a wall clock. A tick that does not run is counted in `tick_lost_count` ([protocol sec 5.9](osc-native-protocol.md#59-health-osc-servo)) and is not compensated. Ticks are lost only to a body over two periods, a flash SAVE (torque off) or a debug halt. A shunt burst runs no tick for its window ([protocol sec 5.8](osc-native-protocol.md#58-limits-and-the-stall-permit-osc-servo)).
 
-Ticks that stop altogether, a converter or timer that no longer ends the injected group, would leave the bridge on the last compares the kernel wrote. The main loop watches `sample_tick` on every wake ([sec 2.6](#26-the-main-loop)): once it has held still for 4 ms (`runtime::entry_watch::STILL_MAX`), over three times the longest hold that is not a fault, a shunt burst's under 1.3 ms, the main loop writes the drive off through the kernel and latches `sensor` (bit 4, code 5), which the kernel keeps if it ticks again. A flash SAVE never shows as a hold: the main loop stalls with the core, and the tick, the highest vector, runs before the main loop does again. Pins: `a_stopped_tick_faults_the_drive_off_from_outside_the_tick`, `a_hold_past_the_bound_trips_once_and_a_tick_rearms_it`.
-
 ### 2.2 Rates and phases
 
 | Rate | Period | Work |

@@ -128,7 +128,7 @@ pub fn ntc_cc(raw: u16, ntc: &NtcCfg) -> Option<i16> {
     }
     // a host-written reference outside the ADC range cannot overflow the quadratic
     let span = (ADC_FULL - 1) as i32;
-    let d = (ntc.raw_ref as i32 - raw as i32).clamp(-span, span);
+    let d = (ntc.raw_ref as i32 - raw as i32).max(-span).min(span);
     let t =
         ntc.t_ref_cc as i32 + q_mul(d, ntc.k1_q88 as i32, 8) + q_mul(d * d, ntc.k2_q24 as i32, 24);
     (i16::MIN as i32 + 1..=i16::MAX as i32)

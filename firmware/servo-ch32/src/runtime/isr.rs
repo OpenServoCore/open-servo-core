@@ -57,9 +57,7 @@ const SCAN_SYNC_CAP: u32 = 2 * crate::hal::clocks::HCLK_HZ / crate::cfg::chip::M
 /// since bringup with JEOCIE set, so the ADC vector is pending in the PFIC
 /// behind its mask; unmasked with that latch standing, the first tick would
 /// enter at once, past this period's scan, and its wait would run out into
-/// a sensor fault. Interrupts are still masked; a converter that never
-/// lands a scan leaves the kernel unticked, which the main loop faults
-/// (`runtime::entry_watch`).
+/// a sensor fault. Interrupts are still masked.
 fn start_ticks() {
     await_crest_scan();
     // SAFETY: pre-IRQ: `install` wrote KERNEL, and nothing else runs.

@@ -96,6 +96,8 @@ pub const CLOCK_TRIM_PPM_PER_STEP: u32 =
 /// negates. ~0.25% HSI rate per step; clamped to the register.
 #[inline]
 pub fn apply_clock_trim(slow_steps: i8) {
-    let v = (HSITRIM_DEFAULT - slow_steps as i16).clamp(0, HSITRIM_MAX) as u8;
+    let v = (HSITRIM_DEFAULT - slow_steps as i16)
+        .max(0)
+        .min(HSITRIM_MAX) as u8;
     RCC.ctlr().modify(|w| w.set_hsitrim(v));
 }

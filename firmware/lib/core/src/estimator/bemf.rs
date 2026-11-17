@@ -283,7 +283,7 @@ impl BemfObs {
 
 /// Saturating cast matching telemetry `est.omega_bemf_cps`.
 pub fn omega_cps_i16(omega: i32) -> i16 {
-    omega.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    omega.max(i16::MIN as i32).min(i16::MAX as i32) as i16
 }
 
 #[cfg(test)]

@@ -1,6 +1,9 @@
 #![no_std]
 #![feature(sync_unsafe_cell)]
 #![feature(fn_align)]
+// Ord::clamp asserts min <= max, a panic path wherever the bounds are not
+// provably ordered; firmware clamps are max().min() (check-no-panic.sh).
+#![allow(clippy::manual_clamp)]
 
 pub mod bench;
 pub mod bus;
