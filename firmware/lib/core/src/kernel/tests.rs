@@ -1693,6 +1693,199 @@ fn the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop() {
     assert!(put_out_high.duty[1] < put_out_zero.duty[1]);
 }
 
+/// One Current-mode drive reversal over the shunt floor, and the four ticks
+/// from the command that reversed.
+struct Reversal {
+    /// The width before the reversal, and the duty of the reversing
+    /// command and of the three ticks after it.
+    before: u16,
+    duty: [i16; 4],
+    /// The no-reading command on the reversal's first window's tick
+    /// (`blind_duty`), its reference and held current after it.
+    blind: i16,
+    i_ref: i32,
+    held: i16,
+    /// The tick flags on that tick, and the fault mask after the last.
+    flags: u16,
+    faults: u8,
+}
+
+/// Current mode on a still shaft at a reference of 120 counts, read as 120,
+/// until one window reads 300: on the proportional gain the command crosses
+/// zero to a width over the floor. The reversal's first window reads
+/// `first`, the next `second`, the one after `third`, each in its own drive's
+/// sign. The reference never moves, so no tick depends on when the medium
+/// step lands its command.
+fn reversal(first: u16, second: u16, third: u16, oc_trip_counts: u16) -> Reversal {
+    const FLOOR: u16 = 64;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 120;
+        t.config.loop_current.i_kp_q88 = 3 << 8;
+        t.calib.sense.i_window_min_ticks = FLOOR;
+        t.calib.sense.v_window_min_ticks = FLOOR;
+        t.config.limits.oc_trip_counts = oc_trip_counts;
+        t.config.limits.oc_trip_ticks = 2;
+    });
+    let mut k = kernel();
+    let along = frame(2000, BIAS + 120);
+    to_first_command(&mut k, &sh, along);
+    ticks(&mut k, &sh, along, 40);
+    let before = k.fast.ticks;
+    k.on_scan(frame(2000, BIAS + 300), &sh);
+    let d0 = k.fast.duty_q15;
+    k.on_scan(frame(2000, BIAS + first), &sh);
+    let (d1, blind, i_ref, held) = (
+        k.fast.duty_q15,
+        blind_duty(&k, 8192),
+        k.cmd.i_ref_cc,
+        k.fast.i_meas_last,
+    );
+    let flags = tick_block(&sh).tick_flags;
+    k.on_scan(frame(2000, BIAS + second), &sh);
+    let d2 = k.fast.duty_q15;
+    k.on_scan(frame(2000, BIAS + third), &sh);
+    Reversal {
+        before,
+        duty: [d0, d1, d2, k.fast.duty_q15],
+        blind,
+        i_ref,
+        held,
+        flags,
+        faults: k.faults.mask(),
+    }
+}
+
+/// The first drive window after the drive reverses runs against a winding
+/// that still carries the old direction's current (its L/R is about four
+/// periods), and the return-path shunt reads a current against the drive
+/// as about zero (bench: +1 count on 3,352 of 3,355 reversals). That window
+/// carries no reading for any consumer: the loop commands the reference's
+/// volts as under the floor, the held current is the reference, the tick
+/// flags name no reading, and the overcurrent trip holds its count. Here
+/// the no-reading command for the unchanged reference reverses the drive
+/// back, so the window after is a reversal's first too; the one after that
+/// is taken as any other.
+#[test]
+fn the_first_window_after_a_drive_reversal_is_no_reading() {
+    const NO_TRIP: u16 = 2400;
+    let near_zero = reversal(1, 1, 60, NO_TRIP);
+    let high = reversal(300, 1, 60, NO_TRIP);
+    assert!(near_zero.before >= 64, "{} ticks", near_zero.before);
+    assert!(near_zero.duty[0] < 0, "the drive did not reverse");
+    assert!(
+        window::drive_ticks(near_zero.duty[0], ARR) >= 64,
+        "the reversal landed under the floor"
+    );
+    assert_eq!(
+        near_zero.duty[1], high.duty[1],
+        "the loop took the reading of the first window after a drive reversal"
+    );
+    assert_eq!(near_zero.duty[1], near_zero.blind);
+    assert_eq!(near_zero.held as i32, near_zero.i_ref);
+    assert_eq!(
+        near_zero.flags & (tick_flag::I_VALID | tick_flag::V_VALID),
+        0
+    );
+    assert!(near_zero.duty[1] > 0 && window::drive_ticks(near_zero.duty[1], ARR) >= 64);
+    assert_eq!(near_zero.duty[2], reversal(1, 300, 60, NO_TRIP).duty[2]);
+    // the window after a drive that kept its direction is a reading
+    let third_high = reversal(1, 1, 200, NO_TRIP);
+    assert_ne!(
+        near_zero.duty[3], third_high.duty[3],
+        "the window was not taken"
+    );
+
+    // an overcurrent read on both sides of the reversal trips across it
+    let trip = reversal(1, 1, 300, 250);
+    assert_eq!(trip.faults, faults::BIT_OVER_CURRENT);
+}
+
+/// What the bridge does between two opposite drives.
+#[derive(Copy, Clone, Debug)]
+enum Stop {
+    Coast,
+    Brake,
+    Off,
+}
+
+/// OpenLoop at 8000 on a window reading 100 counts, then `stop` for at
+/// least `held` ticks, then -8000: the ticks the stop wrote, and whether
+/// the reversed drive's first window and the one after it read.
+fn reversal_across(stop: Stop, held: u32) -> (u32, [bool; 2]) {
+    let sh = Shared::new();
+    drive_setup(&sh);
+    sh.table
+        .with_mut(|t| t.config.limits.openloop_zero_brake = matches!(stop, Stop::Brake));
+    let mut k = kernel();
+    let f = frame(2000, BIAS + 100);
+    settle(&mut k, &sh, f);
+    sh.table.with_mut(|t| match stop {
+        Stop::Off => t.control.lifecycle.torque_enable = false,
+        _ => t.control.lifecycle.goal_duty = 0,
+    });
+    let mut stopped = 0;
+    loop {
+        if stopped >= held {
+            sh.table.with_mut(|t| {
+                t.control.lifecycle.torque_enable = true;
+                t.control.lifecycle.goal_duty = -8000;
+            });
+        }
+        k.on_scan(f, &sh);
+        match k.fast.duty_q15 {
+            0 => stopped += 1,
+            d if d < 0 => break,
+            _ => {}
+        }
+    }
+    assert!(k.fast.ticks >= 100, "the reversal landed under the floor");
+    let read = core::array::from_fn(|_| {
+        k.on_scan(f, &sh);
+        tick_block(&sh).tick_flags & tick_flag::I_VALID != 0
+    });
+    (stopped, read)
+}
+
+/// A drive that reverses across a brake, a coast or the drive off pushes
+/// against the last drive's current while the winding may still carry it:
+/// the brake carries it on L/R, the coast and the off drain it into the
+/// rail, each within the zero's settle (`fast::ZERO_SETTLE_TICKS`). Inside
+/// it the reversal's first window is no reading; past it the drive is a
+/// first one and its first window reads. So does the first drive from
+/// boot, either way.
+#[test]
+fn a_reversal_across_a_stop_is_no_reading_until_the_winding_settles() {
+    let settle_ticks = fast::ZERO_SETTLE_TICKS as u32;
+    for stop in [Stop::Coast, Stop::Brake, Stop::Off] {
+        let (n, read) = reversal_across(stop, 1);
+        assert!((1..settle_ticks).contains(&n), "{stop:?}: {n} ticks");
+        assert_eq!(read, [false, true], "{stop:?} for {n} ticks");
+        let (n, read) = reversal_across(stop, 2 * settle_ticks);
+        assert!(n > settle_ticks + 1, "{stop:?}: {n} ticks");
+        assert_eq!(read, [true, true], "{stop:?} for {n} ticks");
+    }
+    for goal in [8000, -8000] {
+        let sh = Shared::new();
+        drive_setup(&sh);
+        sh.table.with_mut(|t| t.control.lifecycle.goal_duty = goal);
+        let mut k = kernel();
+        let f = frame(2000, BIAS + 100);
+        while k.fast.ticks == 0 {
+            k.on_scan(f, &sh);
+        }
+        k.on_scan(f, &sh);
+        assert_ne!(
+            tick_block(&sh).tick_flags & tick_flag::I_VALID,
+            0,
+            "the first drive from boot at {goal}"
+        );
+    }
+}
+
 /// The timer loads a motor write at the next update event, at the crest or
 /// the trough, so a write past the trough lands inside the drive pulse the
 /// crest scan samples and builds that pulse from two commands. A write that
@@ -1942,8 +2135,11 @@ fn the_reference_held_under_the_floor_saturates_at_the_fields_width() {
     k.cmd.drive = fast::Drive::Closed { u_ff_vc: 0 };
     for (i_ref, held) in [(40_000, i16::MAX), (-40_000, i16::MIN), (-7, -7)] {
         k.cmd.i_ref_cc = i_ref;
-        k.fast
-            .drive(&fast::Measured { i_meas: None }, &k.cfg, &k.cmd, &k.faults);
+        let none = fast::Measured {
+            i_meas: None,
+            sel: window::select(0, 0, 0),
+        };
+        k.fast.drive(&none, &k.cfg, &k.cmd, &k.faults);
         assert_eq!(k.fast.i_meas_last, held, "{i_ref}");
     }
 }
@@ -3542,12 +3738,13 @@ fn to_close(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant) -> (Option<i
 
 /// A half that holds a drive flip is void, and the next is a start-up
 /// half. An OpenLoop reversal restarts at the window floor on the other
-/// side, so every row through it reads and the plain pairing closes a
-/// boxcar on rows of both signs. Here the close that sees the duty's sign
-/// differ from the last close's hands on nothing and flags the flip for
-/// that one period; the two closes behind it hand on nothing, and from the
-/// third on the boxcar is the plain pairing's again, down to the speed the
-/// other way.
+/// side, so every row through it reads but the reversal's first window,
+/// which carries no reading, and the plain pairing hands on nothing on
+/// the two closes that pair its half. Here the close that sees the duty's
+/// sign differ from the last close's hands on nothing and flags the flip
+/// for that one period; the two closes behind it hand on nothing, where
+/// the plain pairing reads again on the second, and from the third on the
+/// boxcar is the plain pairing's again, down to the speed the other way.
 #[test]
 fn a_half_that_holds_a_drive_flip_is_void() {
     const FROM: u32 = 200;
@@ -3559,6 +3756,7 @@ fn a_half_that_holds_a_drive_flip_is_void() {
     let mut closes: heapless::Vec<(Option<i32>, bool, Option<i32>), 64> = heapless::Vec::new();
     let mut signs = [false; 2];
     let mut flip_at = None;
+    let mut reversed = false;
     for tick in 0..700u32 {
         if tick == 300 {
             sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
@@ -3566,9 +3764,17 @@ fn a_half_that_holds_a_drive_flip_is_void() {
         let ran = plant_tick(&mut k, &sh, &mut plant);
         let row = bemf_row(&sh, 0);
         plain.sample(row);
-        signs[(tick_block(&sh).duty_ticks < 0) as usize] = true;
+        let back = tick_block(&sh).duty_ticks < 0;
+        signs[back as usize] = true;
         if tick >= FROM {
-            assert!(row.1.is_some() && row.2.is_some(), "tick {tick}: {row:?}");
+            // the first window of the reversal is no reading
+            let first = back && !reversed;
+            reversed |= back;
+            assert_eq!(
+                row.1.is_some() && row.2.is_some(),
+                !first,
+                "tick {tick}: {row:?}"
+            );
         }
         if ran != phase::SPEED {
             continue;
@@ -3591,7 +3797,11 @@ fn a_half_that_holds_a_drive_flip_is_void() {
         closes.len()
     );
     for (n, &(got, flipped, pair)) in closes.iter().enumerate() {
-        assert!(pair.is_some(), "close {n}: the plain pairing reads");
+        assert_eq!(
+            pair.is_some(),
+            !(at..at + 2).contains(&n),
+            "close {n}: the plain pairing"
+        );
         assert_eq!(flipped, n == at, "close {n}");
         let want = if (at..at + 3).contains(&n) {
             None
