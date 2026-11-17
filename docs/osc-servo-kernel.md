@@ -160,7 +160,7 @@ The position measurement: the observer and its seeds read the pot through one fu
 1. Clear JEOC; increment `sample_tick`; publish the shunt from the injected group and the trough scan's shunt and taps in the tick block.
 2. FAST measure, current side: the window the previous command drove, the overcurrent trip, the window term off the reading.
 3. FAST drive on the command the last medium step left: current loop, open loop, brake or off; motor write; the late-write check.
-4. Wait for the crest scan's DMA TC (polled, at most 800 HCLK, a sensor fault past it); publish its taps under their terminals' names; swap the taps for a noted drive flip inside the idle gap.
+4. Wait for the crest scan's DMA TC (polled, at most 800 HCLK, a sensor fault past it); publish its taps under their terminals' names; swap the taps for a noted drive flip inside the idle gap, on the first tick whose window gave no reading. After a live-drive flip that is the void window after the reversal (below), so every frame that is read was sampled in its drive's order. A swap that misses the converter's idle gap on that tick runs on the next, so one read frame can be sampled in the old order; it still reads each tap under its own terminal's name.
 5. FAST measure, voltage side: the terminal differential, the back-EMF sample and the tick block, on the measured command.
 6. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)); the dead-man.
 7. The configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)).

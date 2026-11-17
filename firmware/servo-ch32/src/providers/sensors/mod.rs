@@ -46,9 +46,10 @@ impl SensorsTrait for Ch32Sensors {
 
     /// After the write: waits for the crest scan, publishes its taps under
     /// the order they were sampled in, then swaps the order for a noted
-    /// drive flip, ahead of the trough scan.
+    /// drive flip, ahead of the trough scan, on a tick whose window gave
+    /// no reading (`scan::follow_drive`).
     #[inline(always)]
-    fn complete(&mut self, shared: &Shared) -> bool {
+    fn complete(&mut self, shared: &Shared, read: bool) -> bool {
         if !dma::is_tc_flag(dma::Channel::CH1) && !scan_lands() {
             return false;
         }
@@ -56,7 +57,7 @@ impl SensorsTrait for Ch32Sensors {
         let order = scan::programmed();
         // SAFETY: as in `land`.
         unsafe { publish_crest(shared.tick_block(), order, low_tap_injected()) };
-        scan::follow_drive(order);
+        scan::follow_drive(order, read);
         true
     }
 }

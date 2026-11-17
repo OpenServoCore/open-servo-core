@@ -229,7 +229,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         motor.write(out);
         self.fast.late = motor.late();
         self.fast.book(out);
-        if !sensors.complete(shared) {
+        if !sensors.complete(shared, meas.sel.i_valid) {
             core::hint::cold_path();
             self.sensor_lost(shared);
         }
