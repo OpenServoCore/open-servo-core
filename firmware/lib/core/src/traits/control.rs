@@ -8,8 +8,11 @@ pub trait Sensors {
     fn land(&mut self, shared: &Shared);
     /// After the motor write: the rest of the frame, once the scan that
     /// holds it has landed. False when it never did: the frame is not this
-    /// period's, a sensor fault.
-    fn complete(&mut self, _shared: &Shared) -> bool {
+    /// period's, a sensor fault. `read`: the window this frame sampled
+    /// gave a current reading, so the command before this tick's was a
+    /// live drive and a flip written now makes the next window the first
+    /// after a reversal, which nothing reads (kernel sec 2.3).
+    fn complete(&mut self, _shared: &Shared, _read: bool) -> bool {
         true
     }
 }

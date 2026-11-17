@@ -6961,7 +6961,7 @@ mod streaming {
     }
     impl Sensors for ProbeSensors {
         fn land(&mut self, _: &Shared) {}
-        fn complete(&mut self, _: &Shared) -> bool {
+        fn complete(&mut self, _: &Shared, _: bool) -> bool {
             !self.lost
         }
     }

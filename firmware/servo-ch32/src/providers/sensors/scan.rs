@@ -31,13 +31,14 @@
 //! (A high) injects B over `[A, B, shunt, ..]`, Reverse injects A over
 //! `[B, A, shunt, ..]`.
 //!
-//! The motor write notes a flip; the same tick swaps the order once the
-//! crest scan has landed, inside the idle gap ahead of the trough scan, so
-//! the next trough scan and injected group sample the noted drive. A tick
-//! that reaches the swap outside the gap leaves it to the next, whose frame
-//! was then sampled under the old order while its window ran in the new
-//! direction: for one period the high side is the early sample, still read
-//! under its own tap's name.
+//! The motor write notes a flip; the first tick whose window gave no reading
+//! swaps the order once the crest scan has landed, inside the idle gap ahead
+//! of the trough scan, so the next trough scan and injected group sample the
+//! noted drive. After a live drive that is the tick of the void window behind
+//! the reversal (kernel sec 2.3). A tick that reaches the swap outside the
+//! gap leaves it to the next, whose frame was then sampled under the old
+//! order while its window ran in the new direction: for one period the high
+//! side is the early sample, still read under its own tap's name.
 
 use core::cell::SyncUnsafeCell;
 use core::mem::{offset_of, size_of};
@@ -233,28 +234,53 @@ pub(super) fn programmed() -> Direction {
     unsafe { *PROGRAMMED.get() }
 }
 
-/// Swap the taps from `order` to the noted drive. The writes leave the
-/// samples already taken alone, so the frame reads them after this.
+/// A swap that found the converter busy, run again on the next tick whatever
+/// that tick read: one read frame can then be sampled in the old order.
+/// Touched only from the ADC vector.
+static RETRY: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
+
+/// Swap the taps from `order` to the noted drive, when `swap_due`. The
+/// writes leave the samples already taken alone, so the frame reads them
+/// after this.
 #[inline(always)]
-pub(super) fn follow_drive(order: Direction) {
+pub(super) fn follow_drive(order: Direction, read: bool) {
     let d = driven();
-    if d != order {
+    // SAFETY: the ADC vector only (RETRY doc).
+    if swap_due(d, order, read, unsafe { *RETRY.get() }) {
         swap_taps(d);
+    }
+}
+
+/// On the first tick whose window gave no reading (`read` false). A flip
+/// written on a tick that read its window follows a live drive, so the next
+/// window is the void one after the reversal (kernel sec 2.3): swapped on
+/// that tick, every read frame was sampled in its drive's order. A flip from
+/// no drive is written on a tick that read nothing and swaps there.
+#[inline(always)]
+fn swap_due(driven: Direction, order: Direction, read: bool, retry: bool) -> bool {
+    if driven != order {
+        core::hint::cold_path();
+        !read || retry
+    } else {
+        false
     }
 }
 
 /// Only while the converter is idle between the peak scan and the trough
 /// trigger: an RSQR or ISQR write under a live conversion restarts the group
 /// (RM sec 9.2.2) and rotates every slot after it. A frame completed outside
-/// that gap leaves the swap to the next.
+/// that gap leaves the swap to the next tick.
 #[cold]
 #[inline(never)]
 #[rustc_align(4)]
 fn swap_taps(d: Direction) {
     critical_section::with(|_| {
-        if swap_gap(timer::counting_down(), timer::counter(), timer::period()) {
+        let idle = swap_gap(timer::counting_down(), timer::counter(), timer::period());
+        if idle {
             program_taps(d);
         }
+        // SAFETY: the ADC vector only (RETRY doc).
+        unsafe { *RETRY.get() = !idle };
     });
 }
 
@@ -437,6 +463,52 @@ mod tests {
         assert_eq!(programmed(), Direction::Forward);
         assert_eq!(mapped, (read(adc::Channel::IN1), read(adc::Channel::IN2)));
         assert_ne!(Direction::Reverse.terminals(read(high), read(low)), mapped);
+    }
+
+    const DIRECTIONS: [Direction; 2] = [Direction::Forward, Direction::Reverse];
+
+    fn flipped(d: Direction) -> Direction {
+        match d {
+            Direction::Forward => Direction::Reverse,
+            Direction::Reverse => Direction::Forward,
+        }
+    }
+
+    #[test]
+    fn no_flip_never_swaps() {
+        for d in DIRECTIONS {
+            for (read, retry) in [(false, false), (false, true), (true, false), (true, true)] {
+                assert!(
+                    !swap_due(d, d, read, retry),
+                    "{d:?} read {read} retry {retry}"
+                );
+            }
+        }
+    }
+
+    /// A flip from no drive is written on a tick that read nothing.
+    #[test]
+    fn a_flip_on_a_tick_that_read_nothing_swaps() {
+        for d in DIRECTIONS {
+            assert!(swap_due(d, flipped(d), false, false), "{d:?}");
+        }
+    }
+
+    /// A flip after a live drive waits for the void window behind it.
+    #[test]
+    fn a_flip_on_a_tick_that_read_its_window_waits() {
+        for d in DIRECTIONS {
+            assert!(!swap_due(d, flipped(d), true, false), "{d:?}");
+        }
+    }
+
+    #[test]
+    fn a_pending_retry_swaps_whatever_the_tick_read() {
+        for d in DIRECTIONS {
+            for read in [false, true] {
+                assert!(swap_due(d, flipped(d), read, true), "{d:?} read {read}");
+            }
+        }
     }
 
     /// The swap lands only counting down, from the postponed peak scan's
