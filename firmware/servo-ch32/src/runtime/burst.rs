@@ -26,7 +26,7 @@ use portable_atomic::{AtomicU8, Ordering};
 use osc_servo_core::estimator::window;
 use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::regions::burst::{
-    BURST_LEN, FRAME_MAX, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
+    BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };
 use osc_servo_core::regions::{ControlTable, Mode};
 use osc_servo_core::{ControlIo as _, Motor as _, MotorCmd, RegionStorageRaw, Shared};
@@ -59,17 +59,6 @@ const ADC_SCAN_DRAIN: u32 = 9 * CYCLES_PER_US;
 /// flight finish, and that CTLR2 write can start one more frame of its own
 /// accord. 26 ADCCLK at 24 MHz = 1.08 us each.
 const ADC_SLOT_DRAIN: u32 = 3 * CYCLES_PER_US;
-
-/// The longest a capture holds the kernel unticked, HCLK: the tick that
-/// launches it, the stray scan's drain, the frame run's `BURST_LEN`
-/// conversions, the restore's slot drain, then the restore's update event
-/// to the next injected group's end, within a period.
-pub(crate) const UNTICKED_MAX: u32 = TICK_HCLK
-    + ADC_SCAN_DRAIN
-    + BURST_LEN as u32 * scan::CONV_TICKS as u32
-    + ADC_SLOT_DRAIN * FRAME_MAX as u32
-    + TICK_HCLK;
-const TICK_HCLK: u32 = HCLK_HZ / chip::MOTOR_PWM_FREQ_HZ;
 
 /// Free-running frame capture. Not circular: the run stops itself at
 /// TC and the buffer stays frozen for readback. HT is the step trigger.
