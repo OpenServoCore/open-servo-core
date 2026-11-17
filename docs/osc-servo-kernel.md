@@ -285,6 +285,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `SPEED_FOLD` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, Current mode's speed fold, until the probe refills the rows |
 | `UNSET_FLAG` | estimated addition on the LIMITS column of `KERNEL` and `KERNEL_MEAN`, every regime, the take's `UNSET` bit ORed into `limit_flags`, until the probe refills the rows |
 | `BRUSH_TERM` | estimated addition on the SPEED column of `KERNEL` and `KERNEL_MEAN`, by regime: the brush term's weight on every SPEED tick, Open included, and on a driven one the deviation, the average's step, the bound and the product; priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
+| `WRITE_FIRST` | estimated addition on every cell of `KERNEL` and `KERNEL_MEAN`: the measured command saved before the motor write and the voltage side's reloads after it, priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `DRIVE_REVERSAL` | estimated addition on every cell of `KERNEL` and `KERNEL_MEAN`: the first window after a drive reversal taken as no reading, priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
