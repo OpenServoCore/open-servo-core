@@ -186,10 +186,11 @@ fn run_to<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame, 
 }
 
 /// Ticks `f` through the first period's VELOCITY phase, where the band and
-/// the current reference first land: a servo enabled from boot drives from
-/// the last of these ticks on.
+/// the current reference first land, and the tick after it, whose write
+/// takes them first: a servo enabled from boot drives from the last of
+/// these ticks on.
 fn to_first_command(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
-    for _ in 0..=phase::VELOCITY {
+    for _ in 0..=phase::VELOCITY + 1 {
         k.on_scan(f, sh);
     }
 }
@@ -559,6 +560,16 @@ mod deadman {
             && matches!(k.io.motor.last, Some(MotorCmd::Disabled))
     }
 
+    /// The tick the countdown runs out on: RAIL raises the lapse after
+    /// that tick's write, and the next write is off.
+    fn lapses(k: &mut K, sh: &Shared, f: SensorFrame) {
+        k.on_scan(f, sh);
+        assert_eq!(k.faults.mask(), faults::BIT_DEADMAN);
+        assert!(matches!(k.io.motor.last, Some(MotorCmd::Drive { .. })));
+        k.on_scan(f, sh);
+        assert!(lapsed(k));
+    }
+
     /// Bus silence under torque latches `deadman` and the drive goes off,
     /// published as code 9 on bit 7; it stays off under torque until the
     /// enable edge acks it, which restarts the countdown from the field.
@@ -569,8 +580,7 @@ mod deadman {
         let mut k = rig(&sh, 400);
         scan(&mut k, &sh, f, 395);
         assert!(drives(&k));
-        k.on_scan(f, &sh);
-        assert!(lapsed(&k));
+        lapses(&mut k, &sh, f);
         run_to(&mut k, &sh, f, phase::SPARE_A);
         sh.table.with(|t| {
             assert_eq!(t.telemetry.mode.fault_code, faults::CODE_DEADMAN);
@@ -595,8 +605,7 @@ mod deadman {
         assert_eq!(k.faults.mask(), faults::BIT_DEADMAN);
         scan(&mut k, &sh, f, 395);
         assert!(drives(&k), "the ack clears the fault");
-        k.on_scan(f, &sh);
-        assert!(lapsed(&k));
+        lapses(&mut k, &sh, f);
     }
 
     /// An instruction dispatched at tick 300 reloads: the RAIL at 305
@@ -610,8 +619,7 @@ mod deadman {
         sh.bus_touch();
         scan(&mut k, &sh, f, 405);
         assert!(drives(&k));
-        k.on_scan(f, &sh);
-        assert!(lapsed(&k));
+        lapses(&mut k, &sh, f);
     }
 
     /// A stream from tick 100 holds the 300 ticks left; released at 1100,
@@ -628,8 +636,7 @@ mod deadman {
         k.tel.streaming = false;
         scan(&mut k, &sh, f, 295);
         assert!(drives(&k));
-        k.on_scan(f, &sh);
-        assert!(lapsed(&k));
+        lapses(&mut k, &sh, f);
     }
 
     /// From 0 at the enable edge, a write of 400 landing with its touch at
@@ -653,8 +660,7 @@ mod deadman {
         assert!(drives(&k), "a field written under torque trips nothing");
         scan(&mut k, &sh, f, 415 - 22);
         assert!(drives(&k));
-        k.on_scan(f, &sh);
-        assert!(lapsed(&k));
+        lapses(&mut k, &sh, f);
     }
 
     // --- The loop-margin stimulus ----------------------------------------
@@ -1173,6 +1179,9 @@ fn ack_clears_then_relatches_while_condition_persists() {
     }
     k.on_scan(frame(2000, BIAS + 3000), &sh);
     assert_eq!(k.faults.mask(), 0);
+    // the ack lands after that tick's write; the next one drives
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    k.on_scan(frame(2000, BIAS + 3000), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // the overcurrent persists: a fresh window re-latches
     for _ in 0..5 {
@@ -1194,7 +1203,9 @@ fn oc_gap_rearms_the_window() {
         t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
-    k.on_scan(frame(2000, BIAS + 3000), &sh); // warmup: invalid window
+    // up to the first drive: no window read yet
+    to_first_command(&mut k, &sh, frame(2000, BIAS + 3000));
+    assert_eq!(k.faults.mask(), 0);
     for _ in 0..3 {
         k.on_scan(frame(2000, BIAS + 3000), &sh);
     }
@@ -1224,12 +1235,15 @@ fn openloop_duty_passthrough_clamped() {
         MotorCmd::Drive { .. } => assert_eq!(written_duty(&k), 8000),
         other => panic!("expected Drive, got {other:?}"),
     }
-    // duty_max clamps the passthrough at the next medium boundary, at once
+    // duty_max clamps the passthrough at the next medium boundary, at once:
+    // the write after its CONTROL phase
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 5000);
     while k.phase != 0 {
         k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(written_duty(&k), 8000);
     }
+    k.on_scan(frame(2000, BIAS), &sh);
+    assert_eq!(written_duty(&k), 8000);
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(written_duty(&k), 5000);
 }
@@ -1250,7 +1264,8 @@ fn duty_max_write_caps_the_closed_loop_at_the_rail_phase() {
         k.on_scan(frame(2000, BIAS), &sh);
     }
     assert!(written_duty(&k) > 32000, "duty={}", written_duty(&k));
-    // the take leaves the clamp alone; the next RAIL phase prepares it
+    // the take leaves the clamp alone; the next RAIL phase prepares it for
+    // the write after it
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
     run_to(&mut k, &sh, frame(2000, BIAS), phase::SPARE_A);
     k.on_scan(frame(2000, BIAS), &sh);
@@ -1260,6 +1275,8 @@ fn duty_max_write_caps_the_closed_loop_at_the_rail_phase() {
         k.on_scan(frame(2000, BIAS), &sh);
         assert!(written_duty(&k) > 32000);
     }
+    k.on_scan(frame(2000, BIAS), &sh);
+    assert!(written_duty(&k) > 32000, "the RAIL tick");
     k.on_scan(frame(2000, BIAS), &sh);
     let d = written_duty(&k);
     assert!((7900..=8000).contains(&d), "duty={d}");
@@ -1275,6 +1292,8 @@ fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
         t.control.lifecycle.goal_duty = 0;
     });
     let mut k = kernel();
+    // the boot tick writes off; its CONTROL phase's command drives the next
+    k.on_scan(frame(2000, BIAS), &sh);
     k.on_scan(frame(2000, BIAS), &sh);
     match last_cmd(&k) {
         MotorCmd::Drive { .. } => assert_eq!(written_duty(&k), 0),
@@ -1300,6 +1319,7 @@ fn openloop_zero_goal_drops_the_held_current() {
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 0);
     run_to(&mut k, &sh, frame(2000, BIAS + 200), 0);
     k.on_scan(frame(2000, BIAS + 200), &sh);
+    k.on_scan(frame(2000, BIAS + 200), &sh);
     assert_eq!(drive_duty(&k), Some(0));
     assert_eq!(k.fast.i_meas_last, 0);
 }
@@ -1315,6 +1335,7 @@ fn openloop_zero_duty_brakes_when_flag_set() {
         t.config.limits.openloop_zero_brake = true;
     });
     let mut k = kernel();
+    k.on_scan(frame(2000, BIAS), &sh);
     k.on_scan(frame(2000, BIAS), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     assert_eq!(k.fast.duty_q15, 0);
@@ -1340,6 +1361,9 @@ fn openloop_endstop_brakes_instead_of_coasting() {
     );
     assert_eq!(k.fast.duty_q15, 0);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
+    // the goal lands at this CONTROL phase, after its write
+    k.on_scan(frame(4095, BIAS), &sh);
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     k.on_scan(frame(4095, BIAS), &sh);
     match last_cmd(&k) {
         MotorCmd::Drive { .. } => assert!(written_duty(&k) < 0, "duty {}", written_duty(&k)),
@@ -1388,6 +1412,7 @@ fn the_next_measure_reads_the_written_width() {
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     run_to(&mut k, &sh, frame(2000, BIAS), 0);
+    k.on_scan(frame(2000, BIAS), &sh);
     k.on_scan(frame(2000, BIAS), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     assert_eq!(k.fast.ticks, 0);
@@ -1485,12 +1510,14 @@ fn reversed_polarity_negates_vdiff() {
     to_first_command(&mut k, &sh, frame(2000, BIAS));
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.fast.vdiff_last, -(3000 - 40));
-    // the rewire lands with the fast half of the configuration
+    // the rewire lands with the take, after the take tick's measurement
     write_config(&sh, |t| t.config.limits.drive_polarity = true);
     while k.phase != phase::SPARE_A {
         k.on_scan(frame(2000, BIAS), &sh);
         assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     }
+    k.on_scan(frame(2000, BIAS), &sh);
+    assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.fast.vdiff_last, 3000 - 40);
 }
@@ -1666,6 +1693,43 @@ fn the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop() {
     assert!(put_out_high.duty[1] < put_out_zero.duty[1]);
 }
 
+/// The timer loads a motor write at the next update event, at the crest or
+/// the trough, so a write past the trough lands inside the drive pulse the
+/// crest scan samples and builds that pulse from two commands. A write that
+/// lands before the trough builds every pulse from one. The write is the
+/// tick's first act after the window take and cannot wait for the medium
+/// step: it drives the command the previous tick's medium step left, so a
+/// reference that lands at VELOCITY drives from the next tick.
+#[test]
+fn the_motor_write_never_waits_for_the_medium_step() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 120;
+        t.calib.sense.i_window_min_ticks = 64;
+    });
+    let mut k = kernel();
+    // the window reads the reference: the loop holds its command
+    let along = frame(2000, BIAS + 120);
+    to_first_command(&mut k, &sh, along);
+    ticks(&mut k, &sh, along, 40);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_current = 200);
+    run_to(&mut k, &sh, along, phase::CONTROL);
+    run_to(&mut k, &sh, along, phase::VELOCITY);
+    let held = k.fast.duty_q15;
+    k.on_scan(along, &sh);
+    assert_eq!(k.cmd.i_ref_cc, 200, "the reference did not land");
+    assert_eq!(
+        k.fast.duty_q15, held,
+        "the motor write took the reference its own tick's medium step landed"
+    );
+    k.on_scan(along, &sh);
+    assert!(k.fast.duty_q15 > held, "the new reference never drove");
+}
+
 /// Under the shunt floor no window reports, and the command is the
 /// reference through the winding's resistance on top of the Ke
 /// feed-forward: `r_q12 x i_ref`, nothing integrated. Fed a zero current
@@ -1711,7 +1775,7 @@ fn the_command_never_integrates_under_the_shunt_floor() {
         sh.table.with_mut(|t| t.control.lifecycle.goal_current = g);
         run_to(k, &sh, rest, phase::CONTROL);
         run_to(k, &sh, rest, phase::VELOCITY);
-        k.on_scan(rest, &sh);
+        ticks(k, &sh, rest, 2);
     };
     goal(0, &mut k);
     assert_eq!(k.fast.duty_q15, 0, "a zero reference kept a width");
@@ -1755,10 +1819,12 @@ fn under_the_floor_the_command_is_the_reference_through_the_winding() {
     to_first_command(&mut k, &sh, rest);
     let (mut lo, mut hi) = (i32::MAX, i32::MIN);
     for _ in 0..4000 {
+        // the write takes the command the last medium step left
+        let (want, i_ref) = (blind_duty(&k, 8192), k.cmd.i_ref_cc);
         k.on_scan(rest, &sh);
-        assert_eq!(k.fast.duty_q15, blind_duty(&k, 8192));
+        assert_eq!(k.fast.duty_q15, want);
         assert!(k.fast.ticks < 100, "{} ticks", k.fast.ticks);
-        assert_eq!(k.fast.i_meas_last as i32, k.cmd.i_ref_cc);
+        assert_eq!(k.fast.i_meas_last as i32, i_ref);
         lo = lo.min(k.cmd.i_ref_cc);
         hi = hi.max(k.cmd.i_ref_cc);
     }
@@ -1798,7 +1864,9 @@ fn the_band_under_the_floor_holds_at_most_the_floors_volts_over_r() {
         run_to(&mut k, &sh, rest, phase::VELOCITY);
         k.on_scan(rest, &sh);
         assert_eq!(k.cmd.i_ref_cc, goal as i32);
-        assert_eq!(k.fast.duty_q15, blind_duty(&k, 8192), "{goal}");
+        let want = blind_duty(&k, 8192);
+        k.on_scan(rest, &sh);
+        assert_eq!(k.fast.duty_q15, want, "{goal}");
         if k.fast.ticks >= FLOOR {
             continue;
         }
@@ -1922,7 +1990,7 @@ fn an_unidentified_winding_is_commanded_through_the_loops_own_gain() {
         .with_mut(|t| t.control.lifecycle.goal_current = 200);
     run_to(&mut k, &sh, rest, phase::CONTROL);
     run_to(&mut k, &sh, rest, phase::VELOCITY);
-    k.on_scan(rest, &sh);
+    ticks(&mut k, &sh, rest, 2);
     assert_eq!(k.fast.ticks, 120);
 }
 
@@ -2592,6 +2660,8 @@ fn position_error_latches_after_persistence() {
         }
     }
     assert_eq!(k.faults.mask(), faults::BIT_POSITION_ERROR);
+    // raised in the medium step, after this tick's write: the next is off
+    k.on_scan(frame(500, BIAS), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
 }
 
@@ -3067,17 +3137,18 @@ fn stream_rows_hold_the_last_valid_window_while_the_drive_pushes() {
     let sh = Shared::new();
     let mut k = tel_settled_at_control(&sh);
     // drive_ticks(1000) = 37, under the 100-tick floors: windows go
-    // invalid one tick later (the first tick still measures the period the
-    // last valid command drove) while the drive still pushes
+    // invalid two ticks later (the CONTROL tick's write still drives the
+    // last valid command, and the tick after measures its period) while
+    // the drive still pushes
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 1000);
     for _ in 0..16 {
         k.on_scan(frame(2000, BIAS + 300), &sh);
     }
     let r = rows(&k);
-    assert_eq!(r[0], (300, 2960, 293));
-    assert!(r[1..].iter().all(|&row| row == (300, 2960, 37)), "{r:?}");
+    assert_eq!(r[..2], [(300, 2960, 293); 2]);
+    assert!(r[2..].iter().all(|&row| row == (300, 2960, 37)), "{r:?}");
     assert!(
-        k.tel.rows[1..]
+        k.tel.rows[2..]
             .iter()
             .all(|t| t.tick_flags & tick_flag::I_VALID == 0)
     );
@@ -3087,16 +3158,17 @@ fn stream_rows_hold_the_last_valid_window_while_the_drive_pushes() {
 fn stream_current_reads_zero_once_nothing_drives() {
     let sh = Shared::new();
     let mut k = tel_settled_at_control(&sh);
-    // disable: the first tick measures the period the last drive command
-    // drove, the 15 after it read no current; vdiff keeps its hold
+    // disable: the first two ticks measure the periods the last drive
+    // command drove (the CONTROL tick's write still drives it), the 14
+    // after read no current; vdiff keeps its hold
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..16 {
         k.on_scan(frame(2000, BIAS + 200), &sh);
     }
     let r = rows(&k);
-    assert_eq!(r[0], (200, 2960, 293));
-    assert!(r[1..].iter().all(|&row| row == (0, 2960, 0)), "{r:?}");
+    assert_eq!(r[..2], [(200, 2960, 293); 2]);
+    assert!(r[2..].iter().all(|&row| row == (0, 2960, 0)), "{r:?}");
     assert_eq!(k.fast.i_meas_last, 0);
 }
 
@@ -4162,11 +4234,14 @@ fn hold_parks_releases_and_reparks() {
         .with_mut(|t| t.control.lifecycle.goal_position = 2100);
     let mut saw_move = false;
     let mut reparked = false;
+    let mut moving = false;
     for _ in 0..20_000u32 {
+        // the write takes the drive kind the last tick's TRAJECTORY left
+        let was_moving = moving;
         run_plant(&mut k, &sh, &mut plant, 1);
-        let moving = k.medium.traj.omega_star_q16() != 0;
-        if moving {
-            saw_move = true;
+        moving = k.medium.traj.omega_star_q16() != 0;
+        saw_move |= moving;
+        if was_moving {
             assert!(!matches!(last_cmd(&k), MotorCmd::Brake), "park mid-move");
         }
         if saw_move && !moving && matches!(last_cmd(&k), MotorCmd::Brake) {
@@ -5839,9 +5914,10 @@ fn fields_new(k: &Kernel<FakeIo>) -> [bool; 3] {
 /// move speed under it, and the cap at the overcurrent trip, the guard
 /// OpenLoop's limiter holds under. The take lands at SPARE_A and the belt
 /// refuses every closed mode at the next CONTROL, ahead of TRAJECTORY,
-/// LIMITS and VELOCITY, the phases that read either: the ticks between
-/// still drive on the band and reference built before the take, and none
-/// after drives at all, so no closed-loop tick runs on an unset limit.
+/// LIMITS and VELOCITY, the phases that read either: the ticks between,
+/// and the CONTROL tick's write, still drive on the band and reference
+/// built before the take, and none after drives at all, so no closed-loop
+/// tick runs on an unset limit.
 #[test]
 fn unset_limits_never_reach_a_closed_tick() {
     const _: () = assert!(
@@ -5911,8 +5987,11 @@ fn unset_limits_never_reach_a_closed_tick() {
             for n in 0..2 * DECIM_MED {
                 k.on_scan(f, &sh);
                 assert!(matches!(k.cmd.drive, fast::Drive::Off), "{case:?} tick {n}");
-                assert!(
+                // the CONTROL tick's write ran on the band built before
+                // the take
+                assert_eq!(
                     matches!(last_cmd(&k), MotorCmd::Disabled),
+                    n != 0,
                     "{case:?} tick {n}"
                 );
             }
@@ -6372,7 +6451,8 @@ struct Phased {
     k: Kernel<FakeIo>,
     cmds: [(u8, i16); PHASED_TICKS],
     twin: [(u8, i16); PHASED_TICKS],
-    /// Ticks run before the first CONTROL phase after the write.
+    /// Ticks run through the first CONTROL phase after the write: that
+    /// tick's write still drives the command before it.
     boundary: usize,
 }
 
@@ -6400,7 +6480,7 @@ fn phased(setup: fn(&mut ControlTable), write: fn(&mut ControlTable), phase: u8)
         k,
         cmds,
         twin: twin_cmds,
-        boundary: ((DECIM_MED - phase) % DECIM_MED) as usize,
+        boundary: ((DECIM_MED - phase) % DECIM_MED) as usize + 1,
     }
 }
 

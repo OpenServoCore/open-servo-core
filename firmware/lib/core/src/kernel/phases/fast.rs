@@ -97,17 +97,24 @@ impl Command {
     }
 }
 
-/// Fast -> medium, this tick's measurement.
-#[cfg(not(feature = "experiment"))]
+/// The current side of this tick's measurement, for the drive and the
+/// voltage side after the write.
 #[derive(Copy, Clone)]
 pub struct Measured {
     pub i_meas: Option<i32>,
 }
 
-/// The experiment drive reads no measurement: the trip already ran.
-#[cfg(feature = "experiment")]
+/// The measured window's command and held current as the write found them:
+/// the voltage side and the medium step run after the write and read the
+/// window this frame sampled, not the command just written.
 #[derive(Copy, Clone)]
-pub struct Measured;
+struct Seen {
+    duty_q15: i16,
+    ticks: u16,
+    bridge: Bridge,
+    settle: u8,
+    i_meas_last: i16,
+}
 
 pub struct Fast {
     pwm_arr: u16,
@@ -159,6 +166,7 @@ pub struct Fast {
     /// current loop does not take that window's reading.
     #[cfg(not(feature = "experiment"))]
     dropped: bool,
+    seen: Seen,
 }
 
 impl Fast {
@@ -187,6 +195,13 @@ impl Fast {
             dropped_max_ticks: timing.bridge_min_ticks.saturating_sub(1),
             #[cfg(not(feature = "experiment"))]
             dropped: false,
+            seen: Seen {
+                duty_q15: 0,
+                ticks: 0,
+                bridge: Bridge::Asleep,
+                settle: ZERO_SETTLE_TICKS,
+                i_meas_last: 0,
+            },
         }
     }
 
@@ -225,9 +240,8 @@ impl Fast {
         self.ol.take_pinned()
     }
 
-    /// Medium-boundary close of the back-EMF boxcar half (`BemfObs::close`).
-    /// Between this tick's `measure` and its `drive`, `duty_q15` is still
-    /// the duty that drove the half's last sample. `xw_q12` is the brush
+    /// Medium-boundary close of the back-EMF boxcar half (`BemfObs::close`)
+    /// on the duty that drove the half's last sample. `xw_q12` is the brush
     /// term's size (`bemf::brush_xw_q12`).
     #[cfg(not(feature = "experiment"))]
     pub fn close_bemf_half(
@@ -238,16 +252,17 @@ impl Fast {
         recip_arr_q24: u32,
     ) -> Option<i32> {
         self.bemf
-            .close(self.duty_q15, r_q12, xw_q12, recip_ke_q, recip_arr_q24)
+            .close(self.seen.duty_q15, r_q12, xw_q12, recip_ke_q, recip_arr_q24)
     }
 
     pub fn duty_q15(&self) -> i16 {
         self.duty_q15
     }
 
+    /// The held current as this tick's measurement left it.
     #[cfg(not(feature = "experiment"))]
     pub fn i_meas_last(&self) -> i16 {
-        self.i_meas_last
+        self.seen.i_meas_last
     }
 
     pub fn bias_counts(&self) -> u16 {
@@ -255,17 +270,17 @@ impl Fast {
     }
 
     /// The bias tracker's sample, once a period from the PUBLISH phase:
-    /// the zero moves with board temperature, over minutes. Ahead of this
-    /// tick's `drive`, so the bridge state still names the command this
-    /// frame's trough ran under.
+    /// the zero moves with board temperature, over minutes. On the bridge
+    /// state of the command this frame's trough ran under.
     #[inline(always)]
     pub fn track_bias(&mut self, shared: &Shared) {
-        let zero = match self.bridge {
+        let seen = self.seen;
+        let zero = match seen.bridge {
             Bridge::Drive => {
-                window::trough_is_brake(self.ticks as u32, self.pwm_arr, self.bias_brake_min_ticks)
+                window::trough_is_brake(seen.ticks as u32, self.pwm_arr, self.bias_brake_min_ticks)
                     .then_some(Zero::Awake)
             }
-            _ if self.settle != 0 => None,
+            _ if seen.settle != 0 => None,
             Bridge::Asleep => Some(Zero::Asleep),
             Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
         };
@@ -283,10 +298,11 @@ impl Fast {
         self.bias.age();
     }
 
-    /// One tick's measurement against the window the PREVIOUS tick's
-    /// command drove: this frame's scan sampled the period that command
-    /// drove, so terminal and sign attribution stay correct across sign
-    /// flips (bang-bang bench test pins this).
+    /// The current side of one tick's measurement against the window the
+    /// PREVIOUS tick's command drove, and the overcurrent trip: all the
+    /// motor write waits on. This frame's scan sampled the period that
+    /// command drove, so terminal and sign attribution stay correct across
+    /// sign flips (bang-bang bench test pins this).
     pub fn measure(
         &mut self,
         cfg: &KernelConfig,
@@ -319,12 +335,30 @@ impl Fast {
         if self.oc.sample(oc_over, cfg.limits.oc_trip_ticks) {
             faults.raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
         }
+        self.seen.duty_q15 = self.duty_q15;
+        self.seen.i_meas_last = self.i_meas_last;
+        Measured { i_meas }
+    }
 
+    /// The voltage side of the measurement, after the write: the terminal
+    /// differential, the back-EMF sample and the tick block, on the
+    /// measured window.
+    pub fn measure_voltage(
+        &mut self,
+        m: &Measured,
+        cfg: &KernelConfig,
+        faults: &FaultLatch,
+        shared: &Shared,
+    ) {
+        let frame = shared.frame();
+        let seen = self.seen;
+        let ticks = seen.ticks as u32;
+        let sel = window::select(ticks, cfg.i_window_min_ticks, cfg.v_floor_ticks);
         // the taps read physical va - vb; a reversed motor makes that the
         // negative of the logical drive direction every consumer expects.
-        // m is 0 or -1: (v ^ m) - m negates without a branch
-        let m = cfg.limits.drive_polarity as i32 - 1;
-        let vdiff = window::vdiff_from_frame(shared, frame, sel).map(|v| (v ^ m) - m);
+        // neg is 0 or -1: (v ^ neg) - neg negates without a branch
+        let neg = cfg.limits.drive_polarity as i32 - 1;
+        let vdiff = window::vdiff_from_frame(shared, frame, sel).map(|v| (v ^ neg) - neg);
         if let Some(vdiff) = vdiff {
             // 12-bit taps: |vdiff| <= 4095
             self.vdiff_last = vdiff as i16;
@@ -333,14 +367,13 @@ impl Fast {
         self.bemf.sample(
             ticks,
             vdiff.filter(|_| ticks >= self.bemf_min_ticks as u32),
-            i_meas,
+            m.i_meas,
         );
-        // The tick block, HERE before the medium step: `ticks` still holds
-        // the command whose window this frame's samples measured. The
-        // kernel takes the row from it next.
-        let rev = (self.duty_q15 >> 15) as i32;
+        // The tick block, before the TEL row's copy and the medium step, on
+        // the command whose window this frame's samples measured.
+        let rev = (seen.duty_q15 >> 15) as i32;
         let duty = ((ticks as i32 ^ rev) - rev) as i16;
-        let flags = (tick_flag::I_VALID * i_meas.is_some() as u16)
+        let flags = (tick_flag::I_VALID * m.i_meas.is_some() as u16)
             | (tick_flag::FAULT * (faults.mask() != 0) as u16)
             | (tick_flag::V_VALID * vdiff.is_some() as u16);
         let p = shared.table.region_ptr();
@@ -348,17 +381,11 @@ impl Fast {
         // per-field stores, ordered ahead of the row's copy.
         unsafe {
             let t = &raw mut (*p).telemetry.tick;
-            (&raw mut (*t).i_tick_counts).write_volatile(self.i_meas_last);
+            (&raw mut (*t).i_tick_counts).write_volatile(seen.i_meas_last);
             (&raw mut (*t).vdiff_counts).write_volatile(self.vdiff_last);
             (&raw mut (*t).duty_ticks).write_volatile(duty);
             (&raw mut (*t).tick_flags).write_volatile(flags);
         }
-
-        #[cfg(not(feature = "experiment"))]
-        let out = Measured { i_meas };
-        #[cfg(feature = "experiment")]
-        let out = Measured;
-        out
     }
 
     /// The motor command for this tick: the fault latch gates, then the
@@ -371,8 +398,9 @@ impl Fast {
         cmd: &Command,
         faults: &FaultLatch,
     ) -> MotorCmd {
-        // a fault raised this tick, fast or medium, disables this tick's
-        // drive; the loop-reset bookkeeping follows at the medium step
+        // a fault this tick's measurement or an earlier medium step raised
+        // disables this drive; the loop-reset bookkeeping follows at the
+        // medium step
         let drive = if faults.mask() == 0 {
             cmd.drive
         } else {
@@ -381,7 +409,7 @@ impl Fast {
         };
         // the current loop runs on the fall-through: the other kinds sit
         // off the tick-budget path
-        let out = if let Drive::Closed { u_ff_vc } = drive {
+        if let Drive::Closed { u_ff_vc } = drive {
             if cmd.i_ref_cc == 0 && m.i_meas.is_none() && (cmd.band.hi == 0 || cmd.band.lo == 0) {
                 core::hint::cold_path();
                 // endstop-clamped ref with no window: the loop below
@@ -494,29 +522,7 @@ impl Fast {
                     MotorCmd::Disabled
                 }
             }
-        };
-        let bridge = match out {
-            MotorCmd::Disabled => Bridge::Asleep,
-            MotorCmd::Brake => Bridge::Brake,
-            MotorCmd::Drive { .. } if self.duty_q15 == 0 => Bridge::Coast,
-            _ => Bridge::Drive,
-        };
-        if bridge == self.bridge {
-            self.settle = self.settle.saturating_sub(1);
-        } else {
-            self.settle = ZERO_SETTLE_TICKS;
-            self.bridge = bridge;
         }
-        // Off and the brake drive nothing: the held current drops
-        // (`i_meas_last`)
-        match out {
-            MotorCmd::Drive { ticks, .. } => self.ticks = ticks,
-            _ => {
-                self.ticks = 0;
-                self.i_meas_last = 0;
-            }
-        }
-        out
     }
 
     /// The motor command for this tick on the experiment image: the fault
@@ -530,15 +536,15 @@ impl Fast {
         cmd: &Command,
         faults: &FaultLatch,
     ) -> MotorCmd {
-        // a fault raised this tick, fast or medium, disables this tick's
-        // drive
+        // a fault this tick's measurement or an earlier medium step raised
+        // disables this drive
         let drive = if faults.mask() == 0 {
             cmd.drive
         } else {
             core::hint::cold_path();
             Drive::Off
         };
-        let out = match drive {
+        match drive {
             Drive::OpenLoop { goal_q15: goal } => {
                 // a reversal or a zero goal: the held current restarts from 0
                 if goal.signum() != (self.duty_q15 as i32).signum() {
@@ -558,18 +564,18 @@ impl Fast {
                 self.duty_q15 = 0;
                 MotorCmd::Disabled
             }
-        };
-        self.book(out);
-        out
+        }
     }
 
-    /// The bridge state `out` leaves and its settle toward a zero-current
-    /// sample; off and the brake drive nothing, so the held current drops
-    /// (`i_meas_last`). The production drive carries the same tail inline:
-    /// factored out, the tick ISR comes out 100 B larger.
-    #[cfg(feature = "experiment")]
+    /// After the write of `out`: the bridge state it leaves and its settle
+    /// toward a zero-current sample; off and the brake drive nothing, so
+    /// the held current drops (`i_meas_last`). The measured window's state
+    /// is kept first, for the voltage side and the medium step.
     #[inline(always)]
-    fn book(&mut self, out: MotorCmd) {
+    pub fn book(&mut self, out: MotorCmd) {
+        self.seen.ticks = self.ticks;
+        self.seen.bridge = self.bridge;
+        self.seen.settle = self.settle;
         let bridge = match out {
             MotorCmd::Disabled => Bridge::Asleep,
             MotorCmd::Brake => Bridge::Brake,

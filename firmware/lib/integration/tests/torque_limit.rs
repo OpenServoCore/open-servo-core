@@ -92,7 +92,8 @@ fn run(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut RlPlant, ticks: u32) -> Vec<
         .collect()
 }
 
-/// Torque-off rest, then torque on at `goal`.
+/// Torque-off rest, then torque on at `goal`, through the CONTROL tick
+/// that lands it: that tick's write is still the rest's.
 fn start(sh: &Shared, p: &mut RlPlant, goal: i16) -> Kernel<FakeIo> {
     let mut k = kernel();
     run(&mut k, sh, p, 400);
@@ -100,6 +101,7 @@ fn start(sh: &Shared, p: &mut RlPlant, goal: i16) -> Kernel<FakeIo> {
         t.control.lifecycle.goal_duty = goal;
         t.control.lifecycle.torque_enable = true;
     });
+    assert_eq!(run(&mut k, sh, p, 1)[0].0, 0);
     k
 }
 
@@ -263,9 +265,12 @@ fn openloop_reversal_restarts_from_the_floor() {
     let mut p = RlPlant::new(MID);
     p.locked = true;
     let mut k = start(&sh, &mut p, GOAL_64);
-    run(&mut k, &sh, &mut p, 2_000);
+    // up to a CONTROL phase: `start` ran the one before
+    run(&mut k, &sh, &mut p, 2_000 - 1);
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_duty = -GOAL_64);
+    // the CONTROL tick that lands the goal writes the one before it
+    assert!(run(&mut k, &sh, &mut p, 1)[0].0 > 0);
     let r = run(&mut k, &sh, &mut p, 400);
     let first = -r[0].0;
     assert!(

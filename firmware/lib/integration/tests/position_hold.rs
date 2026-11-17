@@ -240,7 +240,7 @@ impl Session {
                 lo = lo.min(self.p.out);
                 hi = hi.max(self.p.out);
                 h.wakes += (was_parked && !parked) as u32;
-                h.supply += self.p.supply(applied) / TAIL_TICKS as f64;
+                h.supply += self.p.supply() / TAIL_TICKS as f64;
                 h.i_max = h.i_max.max(self.p.i.abs());
                 h.braked += matches!(applied, Some(MotorCmd::Brake)) as u32;
             }

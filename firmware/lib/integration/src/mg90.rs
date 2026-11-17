@@ -175,6 +175,14 @@ pub struct Mg90 {
     pub tau_e: f64,
     /// The brush contact's drop while the rotor turns: `None` is none.
     pub contact: Option<Contact>,
+    /// The last write's volts, `None` an open winding. The chip's compares
+    /// are preloaded and the kernel writes before the trough, so a write
+    /// loads there, between pulses: the period up to the frame after a
+    /// write runs half on the write before it and half on it, and a period
+    /// with an open half carries no current.
+    written: Option<f64>,
+    /// The volts the last period stepped ran on.
+    drive: Option<f64>,
 }
 
 impl Mg90 {
@@ -196,6 +204,8 @@ impl Mg90 {
             residual: RESIDUAL,
             tau_e: TAU_E,
             contact: None,
+            written: None,
+            drive: None,
         }
     }
 
@@ -211,8 +221,9 @@ impl Mg90 {
         })
     }
 
-    /// One FAST tick under `cmd`, with the chip's mapping: a zero width
-    /// coasts, Brake shorts the winding, Coast and Disabled open it.
+    /// One FAST tick after the kernel wrote `cmd`, with the chip's mapping:
+    /// a zero width coasts, Brake shorts the winding, Coast and Disabled
+    /// open it. The crest sample sits in the window `cmd` drives.
     pub fn step(&mut self, cmd: Option<MotorCmd>) -> SensorFrame {
         let m = self.motor;
         let wiring = if self.swapped { -1.0 } else { 1.0 };
@@ -224,7 +235,10 @@ impl Mg90 {
             Some(MotorCmd::Brake) => Some(0.0),
             _ => None,
         };
-        self.i = match volts {
+        self.drive = core::mem::replace(&mut self.written, volts)
+            .zip(volts)
+            .map(|(a, b)| (a + b) / 2.0);
+        self.i = match self.drive {
             // the contact's drop on its tangent at this current: the winding
             // relaxes on R plus its slope, the step exact for the tangent
             Some(v) => match self.contact.filter(|_| self.omega != 0.0) {
@@ -303,12 +317,11 @@ impl Mg90 {
         }
     }
 
-    /// What the rail supplies: the winding current over the on fraction.
-    pub fn supply(&self, cmd: Option<MotorCmd>) -> f64 {
-        match cmd {
-            Some(MotorCmd::Drive { ticks, .. }) => (self.i * ticks as f64 / ARR as f64).abs(),
-            _ => 0.0,
-        }
+    /// What the rail supplied over the last period stepped: the winding
+    /// current over the on fraction.
+    pub fn supply(&self) -> f64 {
+        self.drive
+            .map_or(0.0, |v| (self.i * v / self.motor.vbus).abs())
     }
 }
 
@@ -455,16 +468,20 @@ pub(crate) mod tests {
             );
 
             let mut p = plant();
+            // the write's first period runs half on the one before: the
+            // MEDIUM tick is read from the period after it
+            p.step(drive(ticks));
+            let start = p.omega;
             let mut model = 0.0;
             for _ in 0..DECIM_MED {
                 let omega = p.omega;
                 p.step(drive(ticks));
                 model += m.b_i_q313 as f64 / 8192.0 * (p.i - fric(omega)) / DECIM_MED as f64;
             }
+            let rise = p.omega - start;
             assert!(
-                (model - p.omega).abs() <= p.omega / 16.0,
-                "{ticks} ticks: one MEDIUM tick from rest rose {:.1} c/s, the model {model:.1}",
-                p.omega
+                (model - rise).abs() <= rise / 16.0,
+                "{ticks} ticks: one MEDIUM tick from rest rose {rise:.1} c/s, the model {model:.1}"
             );
         }
 

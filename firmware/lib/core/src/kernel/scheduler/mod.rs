@@ -83,8 +83,8 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     /// The medium phase the next tick runs (`phase`).
     pub(in crate::kernel) phase: u8,
     booted: bool,
-    /// Shared by both halves: a raise on either disables the same tick's
-    /// drive.
+    /// Shared by both halves: a raise at the measurement disables the same
+    /// tick's drive, one in the medium step the next tick's.
     pub(in crate::kernel) faults: FaultLatch,
     pub(in crate::kernel) fast: Fast,
     pub(in crate::kernel) medium: Medium,
@@ -203,19 +203,28 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz). The
     /// frame is the table's tick block's (`Shared::frame`), which the TEL
-    /// row copies from too.
+    /// row copies from too. The motor write comes first, on the current
+    /// side of the window, the overcurrent trip and the command the last
+    /// medium step left: written before the trough it loads there, and the
+    /// next crest's pulse is that one command whole (kernel sec 2.3). A
+    /// medium step's command and faults reach the next tick's write.
     pub fn on_tick(&mut self, shared: &Shared) {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
-        // A take holds no TX lane, as one can run every period.
-        match phase {
-            phase::CONTROL if !self.booted => self.boot(shared),
-            phase::SPARE_A if config_due(shared.config_seq(), self.config_seq) => {
-                self.take_config(shared)
-            }
-            _ => {}
-        }
         let meas = self.fast.measure(&self.cfg, &mut self.faults, shared);
+        let out = self.fast.drive(&meas, &self.cfg, &self.cmd, &self.faults);
+        let (_sensors, motor) = self.io.parts();
+        motor.write(out);
+        self.fast.book(out);
+        // The first tick, phase CONTROL, writes off ahead of the
+        // configuration: no command exists yet, and no drive came before
+        // it, so its window holds no reading.
+        if !self.booted {
+            core::hint::cold_path();
+            self.boot(shared);
+        }
+        self.fast
+            .measure_voltage(&meas, &self.cfg, &self.faults, shared);
         // No burst starts on the take's phase, nor while a take is pending.
         // Asked only at a start: a count read every tick costs every tick.
         self.tel
@@ -225,6 +234,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         #[cfg(any(feature = "experiment", feature = "deadman"))]
         if phase == phase::RAIL {
             self.medium.deadman(self.tel.streaming(), &mut self.faults);
+        }
+        // A take holds no TX lane, as one can run every period.
+        if phase == phase::SPARE_A && config_due(shared.config_seq(), self.config_seq) {
+            self.take_config(shared);
         }
         let staged = self.medium.step(
             phase,
@@ -237,9 +250,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         if staged {
             self.tel.hold();
         }
-        let out = self.fast.drive(&meas, &self.cfg, &self.cmd, &self.faults);
-        let (_sensors, motor) = self.io.parts();
-        motor.write(out);
         self.tel.on_tick_end();
     }
 }
