@@ -89,34 +89,35 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// Kernel tick body with no event on it, per regime and phase: the longest
 /// a window may show.
 ///
-/// M, every gated window's ticks by drive arm, a closing tick booked apart,
-/// one run of the budgets hardware test on a `scripts/build-image.sh`
-/// bench image that carries this kernel with later window-current work on
-/// top, so each cell upper-bounds this kernel's: Open over the Open ticks,
-/// Closed over the Closed ticks, OpenLoop over the openloop window's
-/// OpenLoop ticks. A report-only window feeds no row. Each cell is its
-/// measured maximum with the rule's margin; the bodies hold the tick
-/// block's work, the entry on the injected group, the motor write ahead of
-/// the voltage side, the reversal's no-reading test, the wait for the
-/// crest scan and every phase's stages.
+/// M, every gated window's ticks by drive arm, the TEL windows' plain
+/// ticks among them, a closing tick booked apart, one run of the budgets
+/// hardware test on a `scripts/build-image.sh` bench image that carries
+/// this kernel with later window-current work on top, so each cell
+/// upper-bounds this kernel's: Open over the Open ticks, Closed over the
+/// Closed ticks, OpenLoop over the openloop window's OpenLoop ticks. A
+/// report-only window feeds no row. Each cell is its measured maximum
+/// with the rule's margin; the bodies hold the tick block's work, the
+/// entry on the injected group, the motor write ahead of the voltage side,
+/// the reversal's no-reading test, the wait for the crest scan and every
+/// phase's stages.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
-    [894, 1266, 1116, 1371, 789, 1215, 750, 912, 750, 801],
-    [1551, 1895, 1870, 1839, 1731, 1895, 1308, 1458, 1416, 1551],
-    [1344, 1848, 1230, 1611, 1203, 1593, 1170, 1350, 1170, 1290],
+    [942, 1176, 1053, 1374, 834, 1239, 810, 969, 795, 855],
+    [1401, 1719, 1694, 1685, 1608, 1694, 1242, 1434, 1224, 1500],
+    [1365, 1638, 1218, 1605, 1218, 1605, 1200, 1380, 1185, 1302],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
-/// maximum's row (OpenLoop phases 0, 2, 3, 5, 7 and 9: the bodies barely
-/// vary).
+/// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
+/// barely vary).
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
-    [874, 1266, 1106, 1200, 771, 1208, 730, 900, 730, 784],
-    [1409, 1787, 1787, 1700, 1650, 1705, 1222, 1382, 1227, 1487],
-    [1344, 1699, 1230, 1611, 1200, 1593, 1165, 1350, 1165, 1290],
+    [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
+    [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
+    [1365, 1579, 1212, 1605, 1212, 1605, 1196, 1380, 1178, 1300],
 ];
 
 /// A window's mean is judged only over this many bodies.
@@ -224,15 +225,16 @@ pub const TEL_LANE_MEAN: u32 = 124;
 /// on top of the phase's row, per regime. M: the due bodies' maximum over
 /// the phase's plain maximum that sets its row, every gated window with no
 /// TEL, on the image and run of [`KERNEL`], with the rule's margin: Open
-/// 843 over 702; Closed 1401 over 1260, both from the stepping window.
-pub const SLOW_DUE: [u32; EVENT_REGIMES] = [189, 189];
+/// 876 over 762, the 1M write window's; Closed 1305 over 1194, the
+/// stepping window's.
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [162, 159];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
 /// quadratic, the two rise multiplies, the cutoff fault and the winding
 /// resistance read at the estimate's temperature (`Medium::r_hat`). M as
-/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1626, the
-/// stepping window's, over 1260.
-pub const SLOW_FINISH: u32 = 415;
+/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1584, the
+/// stepping window's, over 1194.
+pub const SLOW_FINISH: u32 = 438;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
