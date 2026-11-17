@@ -78,6 +78,7 @@ production_hot=(
     DutyLimiter::step
     math::recip_div
     phases::Medium::r_hat
+    phases::Medium::step
 )
 experiment_hot=(
     experiment::Medium::deadman
