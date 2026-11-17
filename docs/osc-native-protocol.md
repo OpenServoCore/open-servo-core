@@ -963,14 +963,14 @@ same way.
 stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
-The covered bytes are the 43 covered fields' own table bytes in table
-order (92 B): the position limits, the loop gains, the deadband, the
+The covered bytes are the 44 covered fields' own table bytes in table
+order (94 B): the position limits, the loop gains, the deadband, the
 speed ceiling and the acceleration limit, drive polarity, the stall speed gate,
 the observer gains and the position-error threshold in CONFIG; the pot
 stops, the motor constants, the friction model, the brush resistance and
 its full-weight speed, the window conductance (sec 5.8), the angle map, the
 winding estimate's rise constant, the board NTC's reference
-point and slope, and the gear class in CALIB. The points are the position table's
+point, slope and curvature, and the gear class in CALIB. The points are the position table's
 256 host-written calibration points i16 LE (sec below) while
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits

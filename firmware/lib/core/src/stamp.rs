@@ -29,7 +29,7 @@ pub const TAG: &str = "osc-plant-1";
 pub const UNSTAMPED: u16 = 0;
 
 /// The covered fields, in table order.
-pub const COVERED_NAMES: [&str; 43] = [
+pub const COVERED_NAMES: [&str; 44] = [
     "pos_min_phys_counts",
     "pos_max_phys_counts",
     "pos_min_soft_counts",
@@ -65,6 +65,7 @@ pub const COVERED_NAMES: [&str; 43] = [
     "ntc_raw_ref",
     "ntc_t_ref_cc",
     "ntc_k1_q88",
+    "ntc_k2_q24",
     "ke_uvs_per_rad",
     "fric_breakaway_counts",
     "raw_min",
@@ -243,7 +244,10 @@ mod tests {
             assert!(w[0].addr + w[0].width <= w[1].addr, "table order");
         }
         let hashed: u16 = COVERED.iter().map(|s| s.width).sum();
-        assert_eq!(hashed, 92);
+        assert_eq!(hashed, 94);
+        for f in ["ntc_raw_ref", "ntc_t_ref_cc", "ntc_k1_q88", "ntc_k2_q24"] {
+            assert!(COVERED_NAMES.contains(&f), "the whole NTC curve: {f}");
+        }
         let last = COVERED[COVERED.len() - 1];
         assert!(last.addr + last.width <= CALIB_BASE_ADDR + CALIB_REGION_SIZE);
         assert!(!covers(PLANT_STAMP, 2), "the stamp does not cover itself");
