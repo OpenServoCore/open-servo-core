@@ -101,7 +101,7 @@ impl Medium {
             #[cfg(not(feature = "experiment"))]
             phase::VELOCITY => self.velocity(cfg, cmd),
             #[cfg(not(feature = "experiment"))]
-            phase::RAIL => self.rail(shared, cfg, faults, cmd),
+            phase::RAIL => self.rail(shared, cfg, faults, fast, cmd),
             #[cfg(not(feature = "experiment"))]
             phase::SLOW => {
                 return self.slow(shared.frame().ntc_raw(), cfg, shared, faults, fast, cmd);

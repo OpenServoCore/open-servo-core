@@ -107,7 +107,7 @@ The floor, the observer and the defaults (`core/src/estimator/window.rs`,
   counts on the 60 mohm chain.
 
 The current the limiter reads (`core/src/estimator/window.rs`,
-`core/src/kernel/tests.rs`):
+`core/src/kernel/tests.rs`, `integration/tests/window_current.rs`):
 
 - `settle_gain_bands_start_at_their_edge` - each 8-tick band takes its
   gain from its first tick to its last.
@@ -115,7 +115,21 @@ The current the limiter reads (`core/src/estimator/window.rs`,
   first band takes the first band, one past the last band and every
   window of an empty table read at unity.
 - `current_gain_rounds_and_keeps_the_sign_symmetric` - 300 counts at
-  33259 read 304 in both drive signs, rounded half up.
+  33259 read 304 over the zero and -304 under it, rounded half up.
+- `the_term_is_the_conductance_on_the_headroom_and_the_rail` - the
+  window term is `g x V x (arr - ticks) / arr` to half a count and the
+  floors' share at every width, 0 at full duty, 25 counts at the 64-tick
+  floor on the 5 V rail at the set of record's 4.75 mS.
+- `the_reading_takes_the_term_off_along_the_drive` - the published
+  current is the sample less the term, signed by the drive; with no
+  conductance the sample's, bit for bit.
+- `the_overcurrent_trip_reads_the_uncorrected_current` - a sample 10
+  counts over the trip latches it on the fourth window while the reading
+  sits under it.
+- `a_held_rotor_carries_the_goal_and_reads_the_winding_current` - on the
+  record rig with the plant's shunt carrying 5.09 mS, Current mode holds
+  the winding within 5 counts of 150 and 400 either way, and the
+  published current within 5 counts of the winding.
 - `current_unity_gain_is_exact` - unity returns the bias-subtracted
   sample unchanged over the whole u16 range.
 - `settle_gain_lifts_a_short_window_and_leaves_the_raw_sample` - a

@@ -53,6 +53,12 @@ pub struct CalibSense {
 /// `brush_cps` the speed it was identified at, c/s, where its weight is
 /// full. A 0 size, or a speed under `bemf::BRUSH_SPAN_CPS`, turns the term
 /// off.
+///
+/// Then the window term (`estimator::window::WindowTerm`): `g_window_q016`
+/// the motor's loss conductance across its inductance, counts of current
+/// per vcount, Q0.16, which the shunt's drive-window sample reads times
+/// `(1 - D) x V_bus` on top of the winding's current. 0 turns it off, as
+/// does a value over `g x r_q12 <= 2^25` or an unidentified winding.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibMotor {
@@ -65,6 +71,9 @@ pub struct CalibMotor {
     #[ct_field(le = &addr::motor::R_Q12)]
     pub r_brush_q12: u16,
     pub brush_cps: u16,
+    pub g_window_q016: u16,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
 }
 
 /// The identification record firmware never reads: Ke as the host states
@@ -203,5 +212,5 @@ pub struct CalibRegs {
     pub gear: CalibGear,
     pub adc: CalibAdc,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 159],
+    pub _rsvd_tail: [u8; 155],
 }

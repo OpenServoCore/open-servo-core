@@ -89,7 +89,7 @@ impl CurrentLoop {
     /// (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~= 32767`)
     /// or the duty cap is off by their mismatch. The plain sums rely on the
     /// kernel's ranges: `i_ref` inside an `IBand` (<= u16::MAX), `i_meas`
-    /// from `window::i_from_frame` (<= 131100), `u_ff_vc` from the free fn
+    /// from `Fast::measure` (<= 139291), `u_ff_vc` from the free fn
     /// `u_ff_vc` (<= 2^19) and `r_q12` <= 2^20.
     #[allow(clippy::too_many_arguments)]
     pub fn step(
@@ -148,7 +148,7 @@ impl CurrentLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::estimator::window::I_FROM_FRAME_MAX;
+    use crate::estimator::window::I_READING_MAX;
 
     const I_REF_MAX: i32 = u16::MAX as i32;
 
@@ -411,11 +411,11 @@ mod tests {
                 for omega in [i32::MIN, -(9000 << 16), 0, 9000 << 16, i32::MAX] {
                     for i_meas in [
                         None,
-                        Some(-I_FROM_FRAME_MAX),
+                        Some(-I_READING_MAX),
                         Some(-4095),
                         Some(0),
                         Some(4095),
-                        Some(I_FROM_FRAME_MAX),
+                        Some(I_READING_MAX),
                     ] {
                         let mut cur = CurrentLoop::new();
                         for _ in 0..20 {
@@ -443,12 +443,7 @@ mod tests {
             let recip = recip_for(vbus);
             for i_ref in [-I_REF_MAX, 0, I_REF_MAX] {
                 for omega in [i32::MIN, 0, i32::MAX] {
-                    for i_meas in [
-                        None,
-                        Some(-I_FROM_FRAME_MAX),
-                        Some(0),
-                        Some(I_FROM_FRAME_MAX),
-                    ] {
+                    for i_meas in [None, Some(-I_READING_MAX), Some(0), Some(I_READING_MAX)] {
                         let mut cur = CurrentLoop::new();
                         for _ in 0..20 {
                             step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);

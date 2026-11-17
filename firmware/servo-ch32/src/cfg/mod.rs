@@ -7,6 +7,7 @@ pub use board_wiring::{
 pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
+use osc_servo_core::estimator::window::WINDOW_ARR_MIN;
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::regions::config::{
     BURST_MAX_MV, DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
@@ -118,10 +119,14 @@ impl Precomputed {
 
 impl Precomputed {
     /// The board's brush term bound keeps the half's product one i32
-    /// multiply (`bemf::brush_dev_max_fits`).
+    /// multiply (`bemf::brush_dev_max_fits`), and the PWM period keeps the
+    /// window term's conductance per tick one u32 (`WINDOW_ARR_MIN`).
     pub const fn assert_valid(&self) {
         if !bemf::brush_dev_max_fits(self.kernel_timing.brush_dev_max) {
             panic!("Precomputed: the sense chain's brush bound overflows the half's product");
+        }
+        if self.kernel_timing.pwm_arr < WINDOW_ARR_MIN {
+            panic!("Precomputed: the PWM period overflows the window term's conductance");
         }
     }
 }

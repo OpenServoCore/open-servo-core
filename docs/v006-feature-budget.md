@@ -33,6 +33,7 @@ Columns:
 |---|---|---|---|---|---|
 | Kernel skeleton, config snapshot, faults, medium phase glue | 3,008 | ~260 (config snapshot 156, timing 36, command 36, latches) | M: the config snapshot saved 2.2-2.7 us/tick. S: 716 ins, 8 muls | FAST + MEDIUM | core |
 | Fast path: window select, measure, drive (settle gain, floors) | 1,134 | ~30 | M: settle-gain table +2.4 pts, two drive-window floors +1.9 pts. S: 225 + 95 ins, 4 muls | FAST | core |
+| Window term (the motor's loss conductance off the shunt reading) | 168 | 16 (`g_arr` 4, the term's pair 8, the motor block's field and pad in the config snapshot 4) | S: the tick ISR +24 B (two loads, a multiply, three ALU in the measurement), RAIL's pair 15 ins and 3 muls, the take's fence and conductance 2 muls; the delta between matched release images. Its cost is inside the measured `budget::KERNEL` rows (priced E 27 HCLK on the Closed and OpenLoop rows and 84 on the RAIL column before the refill) | FAST, MEDIUM (RAIL) | runtime (`g_window_q016` 0) |
 | Bias tracker (shunt zero, two zeros) | 214 | 12 | M: +4.9 pts as first built, -3.1 after the trim, ~+1.8 net. S: 70 ins. All as the per-tick feed; one sample a period since, not re-counted | MEDIUM (PUBLISH), SLOW | core |
 | Current loop (PI) | 378 | 4 | S: 117 ins, 12 muls (closed-loop modes only) | FAST | core |
 | Open-loop duty limiter | 200 | 4 | S: 7 ins inline + `DutyLimiter::step` 58 ins out of line (open loop only) | FAST | core |

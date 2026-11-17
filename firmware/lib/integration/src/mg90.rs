@@ -183,6 +183,11 @@ pub struct Mg90 {
     written: Option<f64>,
     /// The volts the last period stepped ran on.
     drive: Option<f64>,
+    /// The iron's loss conductance across the inductance, ccounts per
+    /// vcount: the shunt reads it times the drive window's volts across
+    /// the inductance on top of the winding current, along the drive. It
+    /// carries no torque and averages to nothing over a period. 0 is none.
+    pub window_g: f64,
 }
 
 impl Mg90 {
@@ -206,6 +211,7 @@ impl Mg90 {
             contact: None,
             written: None,
             drive: None,
+            window_g: 0.0,
         }
     }
 
@@ -287,11 +293,15 @@ impl Mg90 {
         }
         let fwd = !matches!(cmd, Some(MotorCmd::Drive { reverse: true, .. }));
         let bridge_i = wiring * self.i * Self::settle(cmd);
-        let (sample, va, vb) = if fwd {
+        let (mut sample, va, vb) = if fwd {
             (bridge_i, m.vbus as u16, 0)
         } else {
             (-bridge_i, 0, m.vbus as u16)
         };
+        if self.window_g != 0.0 {
+            let along = if fwd { wiring } else { -wiring };
+            sample += self.window(cmd, along) * Self::settle(cmd);
+        }
         SensorFrame {
             pos,
             current: (BIAS as f64 + sample).round().clamp(0.0, 4095.0) as u16,
@@ -303,6 +313,27 @@ impl Mg90 {
             vref_raw: 1489,
             vbus_raw: vbus_raw(m.vbus as u16),
             ntc_raw: NTC_RAW,
+        }
+    }
+
+    /// The current the shunt reads in `cmd`'s drive window beyond the
+    /// winding's, along the drive (`along` is the drive's sign in the
+    /// winding's frame): `window_g` times the volts the window leaves
+    /// across the inductance, the rail less the winding's resistive drop,
+    /// back-EMF and contact along the drive. Settled, that is `(1 - D)`
+    /// times the rail; a start from rest reads the whole rail. 0 with no
+    /// drive window.
+    fn window(&self, cmd: Option<MotorCmd>, along: f64) -> f64 {
+        match cmd {
+            Some(MotorCmd::Drive { ticks, .. }) if ticks != 0 => {
+                let m = self.motor;
+                let x = self
+                    .contact
+                    .filter(|_| self.omega != 0.0)
+                    .map_or(0.0, |c| c.at(self.i).0);
+                self.window_g * (m.vbus - along * (m.r * self.i + m.ke * self.omega + x))
+            }
+            _ => 0.0,
         }
     }
 
@@ -408,22 +439,32 @@ pub(crate) mod tests {
     /// past the brush contact's drop, one MEDIUM tick's rise from rest pins
     /// B. Over every width from the
     /// board's shunt floor past the last settle band, the held current the
-    /// shunt reads, scaled by the kernel's band, is the winding's to the
-    /// sample's rounding.
+    /// shunt reads, scaled by the kernel's band, is the winding's and the
+    /// plant's window term to the sample's rounding.
     #[test]
     fn the_rigs_motor_model_is_the_plants() {
-        motor_model_is_the_plants(&rig(&[0; POINTS], |_| {}), || {
-            Mg90::new(2048.0, [0; POINTS], 1)
-        });
+        motor_model_is_the_plants(
+            &rig(&[0; POINTS], |_| {}),
+            || Mg90::new(2048.0, [0; POINTS], 1),
+            None,
+        );
     }
 
     /// The pin above for the motor model `sh` stores against the plants
-    /// `plant` builds at rest.
-    pub(crate) fn motor_model_is_the_plants(sh: &Shared, plant: impl Fn() -> Mg90) {
+    /// `plant` builds at rest; the drag `(Coulomb, viscous)` where the
+    /// plant's is not the stored friction line.
+    pub(crate) fn motor_model_is_the_plants(
+        sh: &Shared,
+        plant: impl Fn() -> Mg90,
+        drag: Option<(f64, f64)>,
+    ) {
         let (m, r) = sh.table.with(|t| (t.calib.motor, stored_r(t)));
         let ke = m.ke_vpc_q as f64 / 4096.0;
         let recip = m.recip_ke_q as f64 / 1024.0;
-        let fric = |omega: f64| m.fric_fc_counts as f64 + m.fric_fv_q016 as f64 * omega / 65536.0;
+        let (fc, fv) = drag.unwrap_or((m.fric_fc_counts as f64, m.fric_fv_q016 as f64 / 65536.0));
+        let fric = |omega: f64| fc + fv * omega;
+        // the winding's current, the shunt's sample and the window term the
+        // sample carries on top
         let held = |ticks: u16| {
             let mut p = plant();
             p.locked = true;
@@ -431,11 +472,12 @@ pub(crate) mod tests {
             for _ in 0..200 {
                 f = p.step(drive(ticks));
             }
-            (p.i, f.current as f64 - BIAS as f64)
+            let w = p.window(drive(ticks), 1.0);
+            (p.i, f.current as f64 - BIAS as f64, w)
         };
         for ticks in [300u16, 600] {
             let v = ticks as f64 / ARR as f64 * plant().motor.vbus;
-            let (i, _) = held(ticks);
+            let (i, _, _) = held(ticks);
             assert!(
                 (i - v / r).abs() <= 1.0,
                 "{ticks} ticks: held {i:.1} counts, the model {:.1}",
@@ -488,11 +530,11 @@ pub(crate) mod tests {
         let floor = sh.table.with(|t| t.calib.sense.i_window_min_ticks);
         let past = DEV_V006_I_SETTLE_GAIN.start_ticks + 8 * DEV_V006_I_SETTLE_GAIN.q15.len() as u16;
         for ticks in floor..=past {
-            let (i, sample) = held(ticks);
+            let (i, sample, w) = held(ticks);
             let gain = TIMING.i_settle_gain.q15_at(ticks as u32) as f64 / 32768.0;
             assert!(
-                (sample * gain - i).abs() <= 0.5 * gain,
-                "{ticks} ticks: the shunt reads {sample}, x{gain:.4} of {i:.2} counts"
+                (sample * gain - (i + w)).abs() <= 0.5 * gain,
+                "{ticks} ticks: the shunt reads {sample}, x{gain:.4} of {i:.2} counts and {w:.2} of window"
             );
         }
     }

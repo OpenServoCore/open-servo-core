@@ -91,15 +91,16 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 ///
 /// M, every gated window's ticks by drive arm, the TEL windows' plain
 /// ticks among them, a closing tick booked apart, one run of the budgets
-/// hardware test on a `scripts/build-image.sh` bench image that carries
-/// this kernel with later window-current work on top, so each cell
-/// upper-bounds this kernel's: Open over the Open ticks, Closed over the
-/// Closed ticks, OpenLoop over the openloop window's OpenLoop ticks. A
+/// hardware test on a `scripts/build-image.sh` bench image of this stack,
+/// which carries the window-current work, so each cell upper-bounds the
+/// kernels below it: Open over the Open ticks, Closed over the Closed
+/// ticks, OpenLoop over the openloop window's OpenLoop ticks. A
 /// report-only window feeds no row. Each cell is its measured maximum
 /// with the rule's margin; the bodies hold the tick block's work, the
-/// entry on the injected group, the motor write ahead of the voltage side,
-/// the reversal's no-reading test, the wait for the crest scan and every
-/// phase's stages.
+/// entry on the injected group, the window term off the reading, the motor
+/// write ahead of the voltage side, the reversal's no-reading test, the
+/// wait for the crest scan and every phase's stages, RAIL's window term on
+/// the rail among them.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = [
@@ -138,11 +139,13 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// word) and the unset limits' 56.25 (the belt over both limits, the
 /// `UNSET` byte and the cap's resolution: 22 more instructions on the
 /// longest path, thirteen loads and stores, most of them spills, and ten
-/// ALU, one taken transfer fewer); the row keeps its earlier, larger price
-/// until the probe re-prices it.
+/// ALU, one taken transfer fewer). The window term's fence and
+/// conductance add at most 54.75 over it (the take's net on matched
+/// release disassembly: seven loads and stores, two multiplies, six ALU,
+/// no credit for three fewer transfers), so the path is under 836, the row.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
-pub const REFRESH: u32 = 824;
+pub const REFRESH: u32 = 836;
 
 /// Code layout on top of every kernel row, maximum and mean: one source
 /// compiles to tick bodies that differ by register allocation and block
@@ -278,9 +281,10 @@ pub const NEXT_CREST: u32 = 2456;
 /// release image with the fetch model ([`REFRESH`]): the Closed arm's
 /// dearest, a wide code, the settle band's lookup, an overcurrent count
 /// and every clamp of the current loop, 768.75 HCLK (709 with none);
-/// OpenLoop's, the duty limiter's call included, 704.5. Plus 10%, rounded
-/// up.
-pub const WRITE_DONE: u32 = 846;
+/// OpenLoop's, the duty limiter's call included, 704.5; and the window
+/// term ahead of the sign, two loads, a multiply, three ALU and the moved
+/// compare, 24.5. Plus 10%, rounded up.
+pub const WRITE_DONE: u32 = 873;
 
 /// Past the entry stamp, the latest a tick moves the trough's samples out
 /// of the next trough scan's way, at the tick's entry. E: priced as
@@ -291,8 +295,10 @@ pub const TROUGH_DONE: u32 = 106;
 /// tick block or arms a TEL row's copy of it, before any stage that runs
 /// ahead of the fast step: RAIL's rail and pot reads behind a head and a
 /// two-chunk row, the wait for the scan ([`SCAN_WAIT`]) apart. E: priced
-/// as [`TEL_POLL`], 1011, plus 10%.
-pub const FRAME_DONE: u32 = 1113;
+/// as [`TEL_POLL`], 1011, and the window term ahead of the write, 24.5
+/// as in [`WRITE_DONE`] (RAIL puts it on the rail after its reads), plus
+/// 10%.
+pub const FRAME_DONE: u32 = 1140;
 
 /// E, on [`FRAME_DONE`] in the scan deadline, which the measured
 /// [`KERNEL`] rows do not reach: the tick entered on the injected group's
