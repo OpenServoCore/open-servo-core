@@ -339,8 +339,9 @@ fn live_zero_limit_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case]
 }
 
 /// A running `mode` loop, `zero` committed at each phase of the medium
-/// period: the drive matches an unwritten twin up to the CONTROL after the
-/// take, then stops with the data fault, and the ack re-latches.
+/// period: the drive matches an unwritten twin through the write of the
+/// CONTROL after the take, then stops with the data fault, and the ack
+/// re-latches.
 fn stops_at_the_next_control(mode: Mode, zero: impl Fn(&mut ControlTable)) {
     const RUN: u32 = 3000;
     for phase in 0..DECIM_MED as u32 {
@@ -364,7 +365,7 @@ fn stops_at_the_next_control(mode: Mode, zero: impl Fn(&mut ControlTable)) {
         sh.config_commit_end();
         // tick n runs medium phase n % DECIM_MED; the write reaches the
         // kernel at the next SPARE_A, and the belt latches at the
-        // CONTROL phase after it
+        // CONTROL phase after it, after that tick's write
         let ticks = 200 + RUN + phase;
         let med = DECIM_MED as u32;
         let stage = (kernel_phase::SPARE_A as u32 + med - ticks % med) % med;
@@ -373,7 +374,7 @@ fn stops_at_the_next_control(mode: Mode, zero: impl Fn(&mut ControlTable)) {
         for n in 0..2 * DECIM_MED as usize {
             let cmd = rig.run(&sh, 1)[0];
             twin_rig.run(&twin, 1);
-            if n < boundary {
+            if n <= boundary {
                 assert!(
                     matches!(cmd, MotorCmd::Drive { .. }),
                     "phase {phase} tick {n}: {cmd:?}"
@@ -463,7 +464,9 @@ fn virgin_servo_drives_openloop_and_current_without_alert() {
 
     set(&sh, |t| t.control.lifecycle.mode = Mode::Velocity);
     let cmds = run(&sh, 500);
-    assert!(all_disabled(&cmds), "{cmds:?}");
+    // the next tick is CONTROL, which refuses the mode after its write
+    assert!(matches!(cmds[0], MotorCmd::Drive { .. }), "{:?}", cmds[0]);
+    assert!(all_disabled(&cmds[1..]), "{cmds:?}");
     assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
     // TEL carried no fault until the closed-loop attempt
     let samples = tel.borrow();

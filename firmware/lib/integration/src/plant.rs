@@ -205,6 +205,11 @@ pub fn vbus_raw(vmotor: u16) -> u16 {
 pub struct Plant {
     theta_q16: i64,
     omega_cps: i32,
+    /// The last write's duty. The chip's compares are preloaded and the
+    /// kernel writes before the trough, so a write loads there, between
+    /// pulses: the period up to the frame after a write runs half on the
+    /// write before it and half on it.
+    written: i16,
     /// Added to every current sample: a winding short or a sense fault.
     pub current_offset: i32,
 }
@@ -214,15 +219,17 @@ impl Plant {
         Self {
             theta_q16: (pos as i64) << 16,
             omega_cps: 0,
+            written: 0,
             current_offset: 0,
         }
     }
 
-    /// One FAST tick under the duty the kernel last wrote. The trough scan
-    /// lands in the brake phase, so the shunt reads its offset there.
+    /// One FAST tick after the kernel wrote `duty`. The trough scan lands
+    /// in the brake phase, so the shunt reads its offset there. The crest
+    /// sample sits in the window `duty` drives.
     pub fn step(&mut self, duty: i16) -> SensorFrame {
-        self.omega_cps +=
-            ((duty as i32 * DUTY_GAIN as i32) >> 15) - (self.omega_cps >> DECAY_SHIFT);
+        let drive = (core::mem::replace(&mut self.written, duty) as i32 + duty as i32) / 2;
+        self.omega_cps += ((drive * DUTY_GAIN as i32) >> 15) - (self.omega_cps >> DECAY_SHIFT);
         let coulomb = COULOMB_CPS as i32;
         if self.omega_cps > 0 {
             self.omega_cps = (self.omega_cps - coulomb).max(0);
@@ -231,7 +238,7 @@ impl Plant {
         }
         self.theta_q16 += ((self.omega_cps as i64) << 16) / 20_000;
         let pos = (self.theta_q16 >> 16).clamp(0, 4095) as u16;
-        let v = (duty as i32 * VBUS as i32) >> 15;
+        let v = (drive * VBUS as i32) >> 15;
         let i = (v - (self.omega_cps >> KE_SHIFT)) >> R_SHIFT;
         let mag = if duty >= 0 { i } else { -i };
         let sample = (BIAS as i32 + mag + self.current_offset).clamp(0, 4095) as u16;
@@ -301,6 +308,10 @@ pub struct RlPlant {
     theta_q16: i64,
     omega_q8: i32,
     i: i32,
+    /// `i` in 1/256 counts, so the lag settles on `i_ss` from either side.
+    i_q8: i32,
+    /// The last write's duty, as [`Plant`]'s.
+    written: i16,
     pub locked: bool,
     pub stop_lo: i32,
     pub stop_hi: i32,
@@ -319,6 +330,8 @@ impl RlPlant {
             theta_q16: (pos as i64) << 16,
             omega_q8: 0,
             i: 0,
+            i_q8: 0,
+            written: 0,
             locked: false,
             stop_lo: 0,
             stop_hi: 4095,
@@ -327,18 +340,21 @@ impl RlPlant {
         }
     }
 
-    /// One FAST tick under the duty the kernel last wrote. Zero duty is a
-    /// shorted winding: the back-EMF alone drives the current.
+    /// One FAST tick after the kernel wrote `duty`. Zero duty is a shorted
+    /// winding: the back-EMF alone drives the current. The crest sample
+    /// sits in the window `duty` drives.
     pub fn step(&mut self, duty: i16) -> SensorFrame {
-        let v = (duty as i32 * RL_VBUS as i32) >> 15;
+        let drive = (core::mem::replace(&mut self.written, duty) as i32 + duty as i32) / 2;
+        let v = (drive * RL_VBUS as i32) >> 15;
         let e = (self.omega_q8 >> 8) >> RL_KE_SHIFT;
         let current_at = |v: i32| ((((v - e) as i64) << 12) / self.r_q12 as i64) as i32;
         let i_ss = current_at(v);
         if self.low_l {
-            self.i = i_ss;
+            self.i_q8 = i_ss << 8;
         } else {
-            self.i += (i_ss - self.i) >> 2;
+            self.i_q8 += ((i_ss << 8) - self.i_q8) >> 2;
         }
+        self.i = (self.i_q8 + 128) >> 8;
         let rail = RL_VBUS as i32;
         let sensed = if self.low_l && duty != 0 {
             current_at(if duty > 0 { rail } else { -rail })
@@ -453,13 +469,17 @@ mod tests {
             );
 
             let mut p = Plant::new(0);
+            // the write's first period runs half on the one before: the
+            // MEDIUM tick is read from the period after it
+            p.step(duty);
+            let start = p.omega_cps();
             let mut model = 0.0;
             for _ in 0..DECIM_MED {
                 let omega = p.omega_cps();
                 let i = current(p.step(duty));
                 model += m.b_i_q313 as f64 / 8192.0 * (i as f64 - fric(omega)) / DECIM_MED as f64;
             }
-            let rise = p.omega_cps() as f64;
+            let rise = (p.omega_cps() - start) as f64;
             assert!(
                 (model - rise).abs() <= rise / 16.0,
                 "duty {duty}: one MEDIUM tick from rest rose {rise} c/s, the model {model:.1}"
@@ -490,6 +510,8 @@ mod tests {
             let mut p = RlPlant::new(MID);
             p.locked = true;
             p.low_l = true;
+            // the write's first period runs half on the one before
+            p.step(duty);
             p.step(duty);
             assert!(
                 (p.current() as f64 - v / r).abs() <= 1.0,
@@ -521,6 +543,8 @@ mod tests {
             );
 
             let mut p = RlPlant::new(MID);
+            p.step(duty);
+            let start = p.omega_cps();
             let mut model = 0.0;
             for _ in 0..DECIM_MED {
                 let omega = p.omega_cps();
@@ -528,7 +552,7 @@ mod tests {
                 model += m.b_i_q313 as f64 / 8192.0 * (p.current() as f64 - fric(omega))
                     / DECIM_MED as f64;
             }
-            let rise = p.omega_cps() as f64;
+            let rise = (p.omega_cps() - start) as f64;
             assert!(
                 (model - rise).abs() <= rise / 16.0,
                 "duty {duty}: one MEDIUM tick from rest rose {rise} c/s, the model {model:.1}"

@@ -156,9 +156,10 @@ fn torque_on(sh: &Shared, goal: i16, deadman: u16) {
     });
 }
 
-/// The goal drives as written from the first tick: no limiter slews it, no
-/// band ceilings it, and the mode byte changes nothing. `duty_max_q15` still clamps it, at the next CONTROL
-/// phase after the take.
+/// The goal drives as written from the tick after the boot tick, whose write
+/// is off: no limiter slews it, no band ceilings it, and the mode byte
+/// changes nothing. `duty_max_q15` still clamps it, from the write after
+/// the next CONTROL phase after the take.
 #[test]
 fn openloop_duty_is_the_goal() {
     let sh = Shared::new();
@@ -166,7 +167,9 @@ fn openloop_duty_is_the_goal() {
     torque_on(&sh, GOAL, 0);
     let mut k = kernel();
     k.on_scan(frame(2000, BIAS), &sh);
-    assert_eq!(k.duty_q15(), GOAL, "the first tick drives the goal");
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    k.on_scan(frame(2000, BIAS), &sh);
+    assert_eq!(k.duty_q15(), GOAL, "the second tick drives the goal");
     scan(&mut k, &sh, frame(2000, BIAS), 2 * DECIM_MED as u32);
     match last_cmd(&k) {
         MotorCmd::Drive { ticks, reverse } => {
@@ -184,7 +187,7 @@ fn openloop_duty_is_the_goal() {
     // the other way round, in the wiring's frame
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -GOAL);
     run_to(&mut k, &sh, frame(2000, BIAS), phase::CONTROL);
-    k.on_scan(frame(2000, BIAS), &sh);
+    scan(&mut k, &sh, frame(2000, BIAS), 2);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive { reverse: true, .. }
@@ -193,6 +196,7 @@ fn openloop_duty_is_the_goal() {
     // duty_max clamps the goal at the first CONTROL phase after the take
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 5000);
     run_to(&mut k, &sh, frame(2000, BIAS), phase::CONTROL);
+    k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.duty_q15(), -GOAL);
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.duty_q15(), -5000);
@@ -209,7 +213,10 @@ fn the_trip_coasts_and_the_ack_rearms() {
     torque_on(&sh, 16000, 0);
     let mut k = kernel();
     let over = frame(2000, BIAS + 3000);
-    // tick 0 measures the boot duty of 0: an invalid window
+    // the boot tick writes off and tick 1 drives the goal, both on
+    // invalid windows
+    k.on_scan(over, &sh);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     k.on_scan(over, &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     for _ in 0..3 {
@@ -237,11 +244,24 @@ fn the_trip_coasts_and_the_ack_rearms() {
     assert_eq!(fault(&k), faults::BIT_OVER_CURRENT);
     k.on_scan(over, &sh);
     assert_eq!(fault(&k), 0);
+    // the ack lands after that tick's write; the next one drives
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    k.on_scan(over, &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // the overcurrent persists: a fresh window re-latches
     scan(&mut k, &sh, over, 5);
     assert_eq!(fault(&k), faults::BIT_OVER_CURRENT);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+}
+
+/// The tick a dead-man countdown runs out on: RAIL raises the lapse after
+/// that tick's write, and the next write is off.
+fn lapses(k: &mut Kernel<FakeIo, FakeTel>, sh: &Shared, f: SensorFrame) {
+    k.on_scan(f, sh);
+    assert_eq!(fault(k), faults::BIT_DEADMAN);
+    assert!(matches!(last_cmd(k), MotorCmd::Drive { .. }));
+    k.on_scan(f, sh);
+    assert!(matches!(last_cmd(k), MotorCmd::Disabled));
 }
 
 /// The dead-man counts the medium periods of bus silence, DECIM_MED ticks
@@ -256,19 +276,16 @@ fn the_deadman_counts_bus_silence() {
     let drives = |k: &Kernel<FakeIo, FakeTel>| {
         fault(k) == 0 && matches!(last_cmd(k), MotorCmd::Drive { .. })
     };
-    let lapsed = |k: &Kernel<FakeIo, FakeTel>| {
-        fault(k) == faults::BIT_DEADMAN && matches!(last_cmd(k), MotorCmd::Disabled)
-    };
 
-    // silence from the boot tick: ticks 0..394 drive, tick 395 coasts
+    // silence from the boot tick: ticks 1..395 drive, tick 395 lapses
+    // after its write and 396 coasts
     let sh = Shared::new();
     seed(&sh);
     torque_on(&sh, 8000, 400);
     let mut k = kernel();
     scan(&mut k, &sh, f, 395);
     assert!(drives(&k));
-    k.on_scan(f, &sh);
-    assert!(lapsed(&k));
+    lapses(&mut k, &sh, f);
     run_to(&mut k, &sh, f, phase::SPARE_A);
     sh.table.with(|t| {
         assert_eq!(t.telemetry.mode.fault_code, faults::CODE_DEADMAN);
@@ -287,8 +304,7 @@ fn the_deadman_counts_bus_silence() {
     assert_eq!(fault(&k), faults::BIT_DEADMAN);
     scan(&mut k, &sh, f, 395);
     assert!(drives(&k));
-    k.on_scan(f, &sh);
-    assert!(lapsed(&k));
+    lapses(&mut k, &sh, f);
 
     // an instruction at tick 300 reloads: the RAIL at 305 starts 400
     // afresh, so tick 705 is the lapse
@@ -300,8 +316,7 @@ fn the_deadman_counts_bus_silence() {
     sh.bus_touch();
     scan(&mut k, &sh, f, 405);
     assert!(drives(&k));
-    k.on_scan(f, &sh);
-    assert!(lapsed(&k));
+    lapses(&mut k, &sh, f);
 
     // a stream from tick 100 holds the 300 ticks left; released at 1100,
     // they run out on the RAIL of tick 1395
@@ -316,8 +331,7 @@ fn the_deadman_counts_bus_silence() {
     k.tel.streaming = false;
     scan(&mut k, &sh, f, 295);
     assert!(drives(&k));
-    k.on_scan(f, &sh);
-    assert!(lapsed(&k));
+    lapses(&mut k, &sh, f);
 
     // a zero field never trips, however long the silence
     let sh = Shared::new();
@@ -342,16 +356,14 @@ fn the_deadman_reloads_a_field_written_under_torque() {
     let drives = |k: &Kernel<FakeIo, FakeTel>| {
         fault(k) == 0 && matches!(last_cmd(k), MotorCmd::Drive { .. })
     };
-    let lapsed = |k: &Kernel<FakeIo, FakeTel>| {
-        fault(k) == faults::BIT_DEADMAN && matches!(last_cmd(k), MotorCmd::Disabled)
-    };
     let write = |sh: &Shared, ticks: u16| {
         sh.table
             .with_mut(|t| t.control.lifecycle.bus_deadman_ticks = ticks);
         sh.bus_touch();
     };
 
-    // the write and its touch at tick 2: ticks 2..414 drive, 415 coasts
+    // the write and its touch at tick 2: ticks 2..415 drive, 415 lapses
+    // after its write and 416 coasts
     let sh = Shared::new();
     seed(&sh);
     torque_on(&sh, 8000, 0);
@@ -362,10 +374,9 @@ fn the_deadman_reloads_a_field_written_under_torque() {
     assert!(drives(&k), "a field written under torque trips nothing");
     scan(&mut k, &sh, f, 415 - 22);
     assert!(drives(&k));
-    k.on_scan(f, &sh);
-    assert!(lapsed(&k));
+    lapses(&mut k, &sh, f);
 
-    // a touch at tick 2 ahead of the write at 12: 425 coasts
+    // a touch at tick 2 ahead of the write at 12: 425 lapses, 426 coasts
     let sh = Shared::new();
     seed(&sh);
     torque_on(&sh, 8000, 0);
@@ -378,8 +389,7 @@ fn the_deadman_reloads_a_field_written_under_torque() {
     assert!(drives(&k), "a field written under torque trips nothing");
     scan(&mut k, &sh, f, 425 - 32);
     assert!(drives(&k));
-    k.on_scan(f, &sh);
-    assert!(lapsed(&k));
+    lapses(&mut k, &sh, f);
 }
 
 /// The dead-man's loaded countdown publishes as the permit's grant, the bit

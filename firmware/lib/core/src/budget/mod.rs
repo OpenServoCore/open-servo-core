@@ -95,8 +95,9 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// window's OpenLoop ticks. A report-only window feeds no row. Each cell
 /// is its measured maximum with the rule's margin; the bodies hold the
 /// tick block's work and every phase's stages. The LIMITS column carries
-/// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, and the SPEED column
-/// [`BRUSH_TERM`], which the measurement predates.
+/// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, the SPEED column
+/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`], which the measurement
+/// predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -110,8 +111,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
-/// column with [`SPEED_FOLD`] and [`UNSET_FLAG`] and the SPEED column with
-/// [`BRUSH_TERM`], as the maximum's.
+/// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], the SPEED column with
+/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
@@ -149,11 +150,28 @@ pub const UNSET_FLAG: u32 = 6;
 /// rows.
 pub const BRUSH_TERM: [u32; REGIMES] = [37, 134, 134];
 
+/// E, on every cell, maximum and mean: the motor write ahead of the
+/// voltage side and the medium step, where the measured tick wrote last.
+/// Every tick keeps the measured command for the work after the write: its
+/// duty and held current before the write, one load and two stores, and
+/// its width and bridge state after it, three loads and three stores; the
+/// voltage side reloads the three, takes the window floors again (two
+/// loads, four compares) and the current reading across the write (one
+/// store, one load). Priced on the executed path of the release image with
+/// the fetch model ([`REFRESH`]), 60 HCLK on every arm, plus 10%,
+/// rounded up. The bench must refill the rows.
+pub const WRITE_FIRST: u32 = 66;
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut r = 0;
     while r < REGIMES {
         rows[r][phase::LIMITS as usize] += SPEED_FOLD + UNSET_FLAG;
         rows[r][phase::SPEED as usize] += BRUSH_TERM[r];
+        let mut p = 0;
+        while p < PHASES {
+            rows[r][p] += WRITE_FIRST;
+            p += 1;
+        }
         r += 1;
     }
     rows
