@@ -2224,6 +2224,130 @@ fn the_take_resolves_the_brush_term() {
     }
 }
 
+/// The set of record's window conductance, under the rig's winding.
+const G_WINDOW: u16 = 1423;
+
+/// An OpenLoop drive at `goal` over the trip-free ceiling with `g` stored.
+fn window_rig(goal: i16, g: u16) -> Shared {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = goal;
+        // over the limit on purpose: the OpenLoop ceiling stays out of it
+        t.config.limits.current_limit_counts = u16::MAX;
+        t.calib.motor.g_window_q016 = g;
+    });
+    sh
+}
+
+/// The window term the kernel's take and rail put on a `ticks` width.
+fn window_term(k: &Kernel<FakeIo>, ticks: u32) -> i32 {
+    let v = k.cmd.vbus_counts.max(k.cfg.thermal.v_undervolt_counts);
+    window::WindowTerm::at_rail(k.cfg.g_arr, v, ARR).counts(ticks)
+}
+
+/// The published current is the sample less the window term at the
+/// measured width and the rail, signed by the drive; with no conductance
+/// the sample's, bit for bit.
+#[test]
+fn the_reading_takes_the_term_off_along_the_drive() {
+    for g in [0, G_WINDOW] {
+        for goal in [8000i16, -8000] {
+            let sh = window_rig(goal, g);
+            let mut k = kernel();
+            let f = frame(2000, BIAS + 300);
+            settle(&mut k, &sh, f);
+            ticks(&mut k, &sh, f, 2 * DECIM_MED as u32);
+            let term = window_term(&k, k.fast.ticks as u32);
+            assert_eq!(term == 0, g == 0, "{g} at {goal}: {term}");
+            let i = sh.table.with(|t| t.telemetry.tick.i_tick_counts) as i32;
+            assert_eq!(i, goal.signum() as i32 * (300 - term), "{g} at {goal}");
+            assert_eq!(k.faults.mask(), 0);
+        }
+    }
+}
+
+/// The trip compares the terminal current the bridge carries: a sample
+/// over the trip latches it on the fourth window though the reading the
+/// loops take sits under it.
+#[test]
+fn the_overcurrent_trip_reads_the_uncorrected_current() {
+    let sh = window_rig(16000, G_WINDOW);
+    let mut k = kernel();
+    let trip = sh.table.with(|t| t.config.limits.oc_trip_counts);
+    let f = frame(2000, BIAS + trip + 10);
+    to_first_command(&mut k, &sh, f);
+    for _ in 0..3 {
+        k.on_scan(f, &sh);
+        assert_eq!(k.faults.mask(), 0);
+        let i = sh.table.with(|t| t.telemetry.tick.i_tick_counts);
+        assert!(i > 0 && (i as u16) < trip, "reads {i} under a {trip} trip");
+    }
+    k.on_scan(f, &sh);
+    assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+}
+
+/// The take runs the stored conductance only while the stored winding
+/// bounds it, `0 < g x r_q12 <= 2^25`; a commit moves it, and the next
+/// RAIL phase puts it on the rail.
+#[test]
+fn the_take_fences_the_conductance_by_the_winding() {
+    let sh = window_rig(8000, 0);
+    let mut k = kernel();
+    let f = frame(2000, BIAS + 300);
+    settle(&mut k, &sh, f);
+    assert_eq!(k.cfg.g_arr, 0);
+    let recip = TIMING.recip_arr_q24;
+    for (g, r, runs) in [
+        (G_WINDOW, 8192, true),
+        (4096, 8192, true),
+        (4097, 8192, false),
+        (u16::MAX, 512, true),
+        (u16::MAX, 513, false),
+        (G_WINDOW, 0, false),
+        (0, 8192, false),
+    ] {
+        write_config(&sh, |t| {
+            t.calib.motor.g_window_q016 = g;
+            t.calib.motor.r_q12 = r;
+        });
+        ticks(&mut k, &sh, f, 2 * DECIM_MED as u32);
+        let want = if runs { g as u32 * recip } else { 0 };
+        assert_eq!(k.cfg.g_arr, want, "{g} on {r}");
+        assert_eq!(k.fast.win.counts(64) != 0, runs, "{g} on {r}: on the rail");
+    }
+}
+
+/// The term follows the rail estimate at the RAIL phase and holds between
+/// two: a rail that sags takes a smaller term, in step with the clamp.
+#[test]
+fn the_term_follows_the_rail_at_rail() {
+    let sh = window_rig(8000, G_WINDOW);
+    let mut k = kernel();
+    let mut f = frame(2000, BIAS + 300);
+    settle(&mut k, &sh, f);
+    ticks(&mut k, &sh, f, 2 * DECIM_MED as u32);
+    let width = k.fast.ticks as u32;
+    let high = k.fast.win.counts(width);
+    assert_eq!(high, window_term(&k, width));
+    f.vbus_raw = vbus_raw(2600);
+    for _ in 0..200 * DECIM_MED as u32 {
+        let (was, rail) = (k.fast.win.counts(width), k.phase == phase::RAIL);
+        k.on_scan(f, &sh);
+        let now = k.fast.win.counts(width);
+        assert_eq!(now, window_term(&k, width));
+        if !rail {
+            assert_eq!(now, was, "moved off the RAIL phase");
+        }
+    }
+    assert_eq!(k.cmd.vbus_counts, 2600);
+    let low = k.fast.win.counts(width);
+    assert!(low < high, "{low} at 2600 vcounts, {high} at 3000");
+}
+
 /// The winding estimate's bench MG90 constant (the NTC on a board in room
 /// air) and the dev board's 10K/10K/3950 NTC reading 25.00 C at the rig's
 /// 2048 counts, on an OpenLoop hold.

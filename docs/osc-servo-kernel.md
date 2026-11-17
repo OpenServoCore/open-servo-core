@@ -57,7 +57,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
 | 3 | LIMITS | limits fold, Current mode's speed fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land |
-| 5 | RAIL | rail estimate and its fold, sensor screen, position error timer |
+| 5 | RAIL | rail estimate and its fold, sensor screen, position error timer, the window term on the rail |
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
 | 7 | PUBLISH | the shunt zero's sample; estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit |
@@ -119,6 +119,26 @@ On any steady pattern of boxcars the loop's mean speed is therefore the observer
 
 The shunt zero: every current reading subtracts the zero-current output of the sense chain, which moves with board temperature, over minutes. The tracker (`estimator/bias.rs`) keeps two zeros, driver awake and driver asleep, and takes at most one sample a control period, at PUBLISH, on that tick's trough sample. The sample is named by the bridge state the previous command left: asleep, a brake or a coast once the state has held `ZERO_SETTLE_TICKS`, or a drive whose brake half is at least the board's minimum; any other period feeds nothing. Each zero is a first-order filter with a time constant of 1024 periods (0.51 s). A zero that has taken no sample for `STALE_PERIODS` (205) SLOW periods, 3.3 s, is stale and moves by the other zero's steps, so a drift seen in one state carries into the other; a fresh one holds, and the pair learns the awake step. The age counts down at the SLOW finish. The FAST measurement reads the awake zero every tick. Pins: `the_zero_takes_one_sample_a_period_at_publish`, `an_unfed_zero_is_stale_after_stale_periods_of_slow`, `the_awake_step_is_learned_and_rides_the_torque_off_drift`.
 
+The window term: the shunt's drive-window sample reads the winding's current plus the motor's loss conductance across its inductance times the volts the window leaves across it, `g x (1 - D) x V_bus` once the current settles, along the drive. It averages to nothing over a period and carries no torque, so every current the servo stores (the limits, the friction line, the heat constants, `r_q12`) is a winding current, and the FAST measurement takes the term off once, at the source (`window::WindowTerm`):
+
+```text
+take:   g_eff = g_window_q016 if r_q12 != 0 and g_window_q016 x r_q12 <= 2^25, else 0
+        g_arr = g_eff x recip_arr_q24                   Q40 counts per vcount a tick of the period
+RAIL:   k     = (g_arr x min(vbus_eff, WINDOW_V_MAX)) >> 24      Q16 counts a tick of headroom
+        k0    = k x pwm_arr + 2^15                      the whole period's, the rounding folded in
+FAST:   mag   = (sample - zero) x settle gain, rounded  the terminal current; the overcurrent trip reads it
+        i     = sign(drive) x (mag - ((k0 - k x ticks) >> 16))
+```
+
+- **Where.** On a window the validity rule takes as a reading, and in that arm alone: after the settle gain and the overcurrent compare, before the sign. A window under the floor, the first after a drive reversal and one behind a late write read nothing, and the held values the drive writes never pass through it. `ticks` is the width of the one command the window's pulse was built from, the one the settle gain reads.
+- **Who reads it.** Every consumer of the reading: the current loop, OpenLoop's ceiling, the limits and the stall check, the heat sum, the observer, the back-EMF boxcar, the lifecycle seed and TEL `i_tick_counts`. The overcurrent trip compares the magnitude before the subtraction, the current the bridge and the shunt carry, so no stored conductance can raise the trip point; `current_raw` stays raw.
+- **The rail** is the rail clamp's own `vbus_eff` (`Command::prepare_rail`), put on the term at every RAIL phase after the frame's reads and at the first tick; a take's conductance reaches the tick at the next RAIL. The hold at `WINDOW_V_MAX` (2^13 - 1 vcounts, over any 12-bit tap under a rail scale below 2.0) keeps the term at most that many counts and the reading inside i16 for any field values; `pwm_arr` at least `WINDOW_ARR_MIN` (256, const-asserted on the chip) keeps `g_arr` one u32.
+- **The fence.** The take runs the conductance only while the stored winding bounds it, g R at most 1/8; an unidentified winding or a larger value turns it off, which is the protective side (the readings run high, the limits err low).
+- **A conductance of 0**, the seed and FACTORY, a fenced-off value and the experiment image (which keeps the raw reading for its captures) are the reading without the term, bit for bit: the tick subtracts an exact 0, with no branch.
+- **The form** misses only the transient `g x L x di/dt`: at a start from rest the volts across the inductance are the whole rail for about four periods while the form takes `(1 - D) V`, under 1 mA in a loop-limited move.
+
+Pins: `a_zero_window_conductance_reads_as_today`, `the_term_is_the_conductance_on_the_headroom_and_the_rail`, `legal_extremes_keep_the_reading_inside_i16`, `the_reading_takes_the_term_off_along_the_drive`, `the_overcurrent_trip_reads_the_uncorrected_current`, `the_take_fences_the_conductance_by_the_winding`, `the_term_follows_the_rail_at_rail`; on the record rig, `a_held_rotor_carries_the_goal_and_reads_the_winding_current`.
+
 ADC wide codes: the converter can stick at a code just under a multiple of 256 while its input rises through the codes it then skips, so one code stands for a band of inputs on any channel. The wide-code map (CALIB `adc_wide_mid_q4`, per board since the converter is the chip's, host-written by calibration) gives slot `k` to code `(k << 8) | 0xff` and holds half the span the converter skips after that code, Q4 counts; 0 is no wide code there, and the all-zero map changes nothing. The kernel adds the slot on every channel it consumes, where the consumer reads the sample, so a stuck reading lands mid band, not at its edge. The fast samples take whole counts, the slot rounded half up (`Shared::adc_mid`); a consumer that carries fraction bits takes the slot in Q4 (`Shared::adc_mid_q4`, or the bare slot from `Shared::adc_wide_q4`). Every other code costs one compare.
 
 | Channel | Corrected at | Unit | Rate |
@@ -140,7 +160,7 @@ The position measurement: the observer and its seeds read the pot through one fu
 `runtime::isr::on_adc_jeoc` and `Kernel::on_tick` run, in order:
 
 1. Clear JEOC; increment `sample_tick`; publish the shunt from the injected group and the trough scan's shunt and taps in the tick block.
-2. FAST measure, current side: the window the previous command drove, the overcurrent trip.
+2. FAST measure, current side: the window the previous command drove, the overcurrent trip, the window term off the reading.
 3. FAST drive on the command the last medium step left: current loop, open loop, brake or off; motor write; the late-write check.
 4. Wait for the crest scan's DMA TC (polled, at most 800 HCLK, a sensor fault past it); publish its taps under their terminals' names; swap the taps for a noted drive flip inside the idle gap.
 5. FAST measure, voltage side: the terminal differential, the back-EMF sample and the tick block, on the measured command.
@@ -295,6 +315,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | `BRUSH_TERM` | estimated addition on the SPEED column of `KERNEL` and `KERNEL_MEAN`, by regime: the brush term's weight on every SPEED tick, Open included, and on a driven one the deviation, the average's step, the bound and the product; priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `WRITE_FIRST` | estimated addition on every cell of `KERNEL` and `KERNEL_MEAN`: the measured command saved before the motor write and the voltage side's reloads after it, priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `DRIVE_REVERSAL` | estimated addition on every cell of `KERNEL` and `KERNEL_MEAN`: the first window after a drive reversal taken as no reading, priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
+| `WINDOW_TERM`, `WINDOW_RAIL` | estimated additions on `KERNEL` and `KERNEL_MEAN`: the window term off every reading, on every cell of the Closed and OpenLoop rows, and the term put on the rail, on the RAIL column of every row; priced with the fetch model plus 10%, the RAIL cell on the release image's executed path, until the bench probe refills the rows. `WRITE_DONE`, `FRAME_DONE` and `REFRESH` carry the term's share of their paths |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `STREAM_ENTRY`, `SCAN_WAIT` | estimated additions on every cell of `KERNEL` and `KERNEL_MEAN`: the entry on the injected group with the scan poll and the late-write check, and by regime the wait for the crest scan, until the probe refills the rows |
@@ -411,7 +432,7 @@ On SPARE_A, `config_due` compares the count with the one last taken:
 
 | Count | Action |
 | --- | --- |
-| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them, the belt and the `UNSET` bit (below), the brush term's size (`r_brush_q12` capped at half the stored `r_q12`, 0 while `brush_cps` is under `BRUSH_SPAN_CPS`) and the fade's low end (`brush_cps - BRUSH_SPAN_CPS`, [sec 2.2](#22-rates-and-phases)), and the two speeds and the cap resolved in the copy: a move speed of 0 reads as the ceiling and the move speed runs at most the ceiling; an unset ceiling stays 0 and an unset cap reads as `oc_trip_counts`; so no phase tests either field |
+| even, not yet taken | `Kernel::take_config`: one word copy of the span (offsets const-asserted against the table), then the derived values, the winding resistance on the new `r_q12` among them, the belt and the `UNSET` bit (below), the brush term's size (`r_brush_q12` capped at half the stored `r_q12`, 0 while `brush_cps` is under `BRUSH_SPAN_CPS`) and the fade's low end (`brush_cps - BRUSH_SPAN_CPS`, [sec 2.2](#22-rates-and-phases)), the window term's conductance per tick, fenced by the stored winding ([sec 2.2](#22-rates-and-phases)), and the two speeds and the cap resolved in the copy: a move speed of 0 reads as the ceiling and the move speed runs at most the ceiling; an unset ceiling stays 0 and an unset cap reads as `oc_trip_counts`; so no phase tests either field |
 | odd | keep the current set; check again at the next SPARE_A |
 | equal to the last taken | nothing |
 

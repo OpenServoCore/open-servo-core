@@ -90,10 +90,12 @@ impl Command {
     /// The clamp on the undervolt-floored vbus: the same floor `VbusEst`
     /// applies to the reciprocal, so (clamp, recip) stay the contract pair
     /// even before the first seed. Runs at the first tick and at every RAIL
-    /// phase, which is where a `duty_max_q15` write reaches it.
-    pub fn prepare_rail(&mut self, cfg: &KernelConfig) {
+    /// phase, which is where a `duty_max_q15` write reaches it. Returns the
+    /// floored vbus, the window term's rail (`Fast::prepare_window`).
+    pub fn prepare_rail(&mut self, cfg: &KernelConfig) -> u16 {
         let vbus_eff = self.vbus_counts.max(cfg.thermal.v_undervolt_counts);
         self.rail = RailClamp::new(cfg.loop_current.duty_max_q15, vbus_eff);
+        vbus_eff
     }
 }
 
@@ -175,6 +177,11 @@ pub struct Fast {
     /// The last write missed its load point (`Motor::late`): the window it
     /// drives holds two commands, so its current is no reading.
     pub(in crate::kernel) late: bool,
+    /// The window term every reading sheds (`window::WindowTerm`), on the
+    /// rail the last RAIL phase read; zero on the experiment image, which
+    /// keeps the raw reading.
+    #[cfg(not(feature = "experiment"))]
+    pub(in crate::kernel) win: window::WindowTerm,
 }
 
 impl Fast {
@@ -212,6 +219,8 @@ impl Fast {
                 i_meas_last: 0,
             },
             late: false,
+            #[cfg(not(feature = "experiment"))]
+            win: window::WindowTerm::default(),
         }
     }
 
@@ -238,6 +247,13 @@ impl Fast {
         let v = crate::math::q_mul(self.duty_q15 as i32, cmd.vbus_counts as i32, 15);
         self.cur.seed(v.max(-lim).min(lim));
         self.dropped = self.ticks.wrapping_sub(1) < self.dropped_max_ticks;
+    }
+
+    /// The window term on the take's conductance (`KernelConfig::g_arr`)
+    /// and the rail `Command::prepare_rail` floored, beside it.
+    #[cfg(not(feature = "experiment"))]
+    pub fn prepare_window(&mut self, g_arr: u32, vbus_eff: u16) {
+        self.win = window::WindowTerm::at_rail(g_arr, vbus_eff, self.pwm_arr);
     }
 
     #[cfg(not(feature = "experiment"))]
@@ -309,8 +325,9 @@ impl Fast {
     }
 
     /// The current side of one tick's measurement against the window the
-    /// PREVIOUS tick's command drove, and the overcurrent trip: all the
-    /// motor write waits on. This frame's scan sampled the period that
+    /// PREVIOUS tick's command drove, the winding's current with the window
+    /// term off (kernel sec 2.2), and the overcurrent trip: all the motor
+    /// write waits on. This frame's scan sampled the period that
     /// command drove, so terminal and sign attribution stay correct across
     /// sign flips (bang-bang bench test pins this).
     pub fn measure(
@@ -344,23 +361,30 @@ impl Fast {
         sel.i_valid &= !self.late;
         // gated here, not only inside: a window under the floor skips the
         // zero's rounding and the settle-gain band lookup on the tick path
-        let i_meas = if sel.i_valid {
+        let along = if sel.i_valid {
             window::i_from_frame(
                 shared,
                 frame,
                 sel,
-                fwd,
                 self.bias.counts(),
                 self.i_settle_gain.q15_at(ticks),
             )
         } else {
             None
         };
+        // the trip guards the bridge and the shunt, which carry the window
+        // term: it reads the terminal current
+        let oc_over = along.map(|i| i.unsigned_abs() > cfg.limits.oc_trip_counts as u32);
+        let i_meas = along.map(|i| {
+            #[cfg(not(feature = "experiment"))]
+            let i = i - self.win.counts(ticks);
+            if fwd { i } else { -i }
+        });
         if let Some(i) = i_meas {
-            // 12-bit shunt codes under a settle gain < 2.0: |i| <= 8190
+            // 12-bit shunt codes under a settle gain < 2.0, less a term
+            // of at most `window::WINDOW_V_MAX`: |i| <= 16381
             self.i_meas_last = i as i16;
         }
-        let oc_over = i_meas.map(|i| i.unsigned_abs() > cfg.limits.oc_trip_counts as u32);
         if self.oc.sample(oc_over, cfg.limits.oc_trip_ticks) {
             faults.raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
         }

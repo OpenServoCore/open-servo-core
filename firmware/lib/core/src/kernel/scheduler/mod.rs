@@ -119,8 +119,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     }
 
     /// The configuration, whole, then the winding resistance on the new
-    /// `r_q12` and the terminal floor. The rail clamp
-    /// follows `duty_max_q15` at the next RAIL phase.
+    /// `r_q12` and the terminal floor. The rail clamp follows
+    /// `duty_max_q15`, and the window term `g_window_q016`, at the next
+    /// RAIL phase.
     /// The kernel preempts the bus, so no commit store lands inside the
     /// tick: at an even count the span is one committed set. At an odd one
     /// (the first tick only) the next even count differs from it and takes
@@ -131,7 +132,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.config_seq = shared.config_seq();
         // the count load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
-        self.cfg.take(shared);
+        self.cfg.take(shared, self.timing.recip_arr_q24);
         #[cfg(not(feature = "experiment"))]
         self.medium.r_hat(&self.cfg, shared, &mut self.cmd);
         let p = shared.table.region_ptr();
@@ -142,8 +143,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
-    /// The first tick's configuration: the window floors, the take and the
-    /// rail clamp. Out of line, so the tick body keeps its shape.
+    /// The first tick's configuration: the window floors, the take, the
+    /// rail clamp and the window term on it. Out of line, so the tick body
+    /// keeps its shape.
     #[inline(never)]
     #[rustc_align(4)]
     fn configure(&mut self, shared: &Shared) {
@@ -155,7 +157,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
         self.take_config(shared);
         #[cfg(not(feature = "experiment"))]
-        self.cmd.prepare_rail(&self.cfg);
+        {
+            let vbus_eff = self.cmd.prepare_rail(&self.cfg);
+            self.fast.prepare_window(self.cfg.g_arr, vbus_eff);
+        }
     }
 
     /// The configuration, then the observer, the winding estimate and the

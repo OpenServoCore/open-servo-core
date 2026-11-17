@@ -1,4 +1,4 @@
-use super::fast::Command;
+use super::fast::{Command, Fast};
 use super::loops::faults::{self, FaultLatch};
 #[cfg(feature = "deadman")]
 use super::loops::limits;
@@ -9,13 +9,14 @@ use crate::regions::control::Mode;
 
 impl Medium {
     /// RAIL: the rail estimate on this tick's tap, a wide code read as the
-    /// middle of its band, and its fold; the sensor screen on the raw pot
-    /// and the position error timer.
+    /// middle of its band, its fold and the window term on it; the sensor
+    /// screen on the raw pot and the position error timer.
     pub(in crate::kernel) fn rail(
         &mut self,
         shared: &Shared,
         cfg: &KernelConfig,
         faults: &mut FaultLatch,
+        fast: &mut Fast,
         cmd: &mut Command,
     ) {
         let frame = shared.frame();
@@ -28,7 +29,7 @@ impl Medium {
         );
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
-        cmd.prepare_rail(cfg);
+        let vbus_eff = cmd.prepare_rail(cfg);
         self.limits.update_rail(
             cmd.vbus_counts,
             cfg.thermal.v_undervolt_counts,
@@ -57,6 +58,8 @@ impl Medium {
         {
             faults.raise(faults::BIT_POSITION_ERROR, faults::CODE_POSITION_ERROR);
         }
+        // after the frame's reads, which `budget::FRAME_DONE` bounds
+        fast.prepare_window(cfg.g_arr, vbus_eff);
     }
 
     /// RAIL: the dead-man's period (`Deadman::step`) and the loop-margin

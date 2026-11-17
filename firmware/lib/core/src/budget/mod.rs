@@ -96,9 +96,9 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// is its measured maximum with the rule's margin; the bodies hold the
 /// tick block's work and every phase's stages. The LIMITS column carries
 /// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, the SPEED column
-/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`], [`DRIVE_REVERSAL`],
-/// [`STREAM_ENTRY`] and its regime's [`SCAN_WAIT`], which the measurement
-/// predates.
+/// [`BRUSH_TERM`], the RAIL column [`WINDOW_RAIL`], and every cell
+/// [`WRITE_FIRST`], [`DRIVE_REVERSAL`], [`STREAM_ENTRY`] and its regime's
+/// [`SCAN_WAIT`] and [`WINDOW_TERM`], which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -113,8 +113,9 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
 /// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], the SPEED column with
-/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`], [`DRIVE_REVERSAL`],
-/// [`STREAM_ENTRY`] and its regime's [`SCAN_WAIT`], as the maximum's.
+/// [`BRUSH_TERM`], the RAIL column with [`WINDOW_RAIL`] and every cell with
+/// [`WRITE_FIRST`], [`DRIVE_REVERSAL`], [`STREAM_ENTRY`] and its regime's
+/// [`SCAN_WAIT`] and [`WINDOW_TERM`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
@@ -196,14 +197,39 @@ pub const SCAN_WAIT: [u32; REGIMES] = [156, 120, 0];
 /// up. The bench must refill the rows.
 pub const DRIVE_REVERSAL: u32 = 30;
 
+/// E, on every cell by regime ([`Regime`] order), maximum and mean: the
+/// window term off every reading, where the measured tick took none. A
+/// driven tick loads the term's pair, multiplies the width in, takes the
+/// difference's rounded shift off the reading ahead of the sign; a tick
+/// with no drive reads no window and takes nothing. Priced with the fetch
+/// model ([`REFRESH`]) as two loads, a multiply, three ALU and the moved
+/// compare, 24.5 HCLK; the release image's measured region prices 17.25
+/// over the measured tick's, its register moves elsewhere in the body
+/// unpriced, so the larger stands. Plus 10%, rounded up. The bench must
+/// refill the rows.
+pub const WINDOW_TERM: [u32; REGIMES] = [0, 27, 27];
+
+/// E, on the RAIL column of every regime, maximum and mean: the window
+/// term put on the rail, where the measured phase had none. Two loads, the
+/// rail's hold under `WINDOW_V_MAX` (a taken compare), the u64 product's
+/// two multiplies, its shift, the width's multiply, the rounding and two
+/// stores, 67 HCLK, and the floored rail kept across the sensor screen, a
+/// store and three ALU, 9.25: 76.25 on the executed path of the release
+/// image with the fetch model ([`REFRESH`]), plus 10%, rounded up. RAIL
+/// runs torque off, so the Open row carries it. The bench must refill the
+/// rows.
+pub const WINDOW_RAIL: u32 = 84;
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut r = 0;
     while r < REGIMES {
         rows[r][phase::LIMITS as usize] += SPEED_FOLD + UNSET_FLAG;
         rows[r][phase::SPEED as usize] += BRUSH_TERM[r];
+        rows[r][phase::RAIL as usize] += WINDOW_RAIL;
         let mut p = 0;
         while p < PHASES {
-            rows[r][p] += WRITE_FIRST + DRIVE_REVERSAL + STREAM_ENTRY + SCAN_WAIT[r];
+            rows[r][p] +=
+                WRITE_FIRST + DRIVE_REVERSAL + STREAM_ENTRY + SCAN_WAIT[r] + WINDOW_TERM[r];
             p += 1;
         }
         r += 1;
@@ -229,11 +255,13 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// word) and the unset limits' 56.25 (the belt over both limits, the
 /// `UNSET` byte and the cap's resolution: 22 more instructions on the
 /// longest path, thirteen loads and stores, most of them spills, and ten
-/// ALU, one taken transfer fewer); the row keeps its earlier, larger price
-/// until the probe re-prices it.
+/// ALU, one taken transfer fewer). The window term's fence and
+/// conductance add at most 54.75 over it (the take's net on matched
+/// release disassembly: seven loads and stores, two multiplies, six ALU,
+/// no credit for three fewer transfers), so the path is under 836, the row.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
-pub const REFRESH: u32 = 824;
+pub const REFRESH: u32 = 836;
 
 /// Code layout on top of every kernel row, maximum and mean: one source
 /// compiles to tick bodies that differ by register allocation and block
@@ -379,9 +407,9 @@ pub const NEXT_CREST: u32 = 2456;
 /// release image with the fetch model ([`REFRESH`]): the Closed arm's
 /// dearest, a wide code, the settle band's lookup, an overcurrent count
 /// and every clamp of the current loop, 768.75 HCLK (709 with none);
-/// OpenLoop's, the duty limiter's call included, 704.5. Plus 10%, rounded
-/// up.
-pub const WRITE_DONE: u32 = 846;
+/// OpenLoop's, the duty limiter's call included, 704.5; and the window
+/// term ahead of the sign, [`WINDOW_TERM`]'s 24.5. Plus 10%, rounded up.
+pub const WRITE_DONE: u32 = 873;
 
 /// Past the entry stamp, the latest a tick moves the trough's samples out
 /// of the next trough scan's way, at the tick's entry. E: priced as
@@ -392,8 +420,10 @@ pub const TROUGH_DONE: u32 = 106;
 /// tick block or arms a TEL row's copy of it, before any stage that runs
 /// ahead of the fast step: RAIL's rail and pot reads behind a head and a
 /// two-chunk row, the wait for the scan ([`SCAN_WAIT`]) apart. E: priced
-/// as [`TEL_POLL`], 1011, plus 10%.
-pub const FRAME_DONE: u32 = 1113;
+/// as [`TEL_POLL`], 1011, and the window term ahead of the write,
+/// [`WINDOW_TERM`]'s 24.5 (RAIL puts it on the rail after its reads), plus
+/// 10%.
+pub const FRAME_DONE: u32 = 1140;
 
 /// A hold runs Closed this long after its goal moves, then parks. M: the
 /// longest Closed episode after a 600-count step, 2899 / 3396 ticks
