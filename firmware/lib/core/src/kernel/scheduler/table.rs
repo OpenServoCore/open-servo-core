@@ -72,7 +72,11 @@ pub const fn health_close_lands(phase: usize) -> bool {
 
 impl Medium {
     /// Phase `k` of the medium chain (`phase`), on this tick's sample;
-    /// whether a SLOW stage ran.
+    /// whether a SLOW stage ran. Out of line: inlined, the phases sit
+    /// between the fast half and its cold arms and carry every one of
+    /// those branches out of reach (v006-performance sec 3).
+    #[inline(never)]
+    #[rustc_align(4)]
     pub fn step(
         &mut self,
         k: u8,
@@ -89,8 +93,9 @@ impl Medium {
             phase::CONTROL => self.control(cfg, shared, faults, fast, cmd),
             #[cfg(not(feature = "experiment"))]
             phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
+            // `Kernel::on_tick` takes this phase straight, not through here
             #[cfg(not(feature = "experiment"))]
-            phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
+            phase::TRAJECTORY => return self.trajectory(cfg, faults, cmd),
             #[cfg(not(feature = "experiment"))]
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             #[cfg(not(feature = "experiment"))]

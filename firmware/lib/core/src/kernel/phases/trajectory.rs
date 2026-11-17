@@ -12,15 +12,22 @@ use crate::regions::control::Mode;
 use crate::regions::control::{INJECT_ACCEL_MAX_Q88, INJECT_HALF_PERIODS_MAX};
 
 impl Medium {
-    /// TRAJECTORY: the profile and the position loop.
+    /// TRAJECTORY: the profile and the position loop. One out-of-line body
+    /// with the profile step inlined, called straight from
+    /// `Kernel::on_tick`: one call where the step's frame and dispatch
+    /// would wrap a second, and `Medium::step` keeps its cold arms in
+    /// branch reach (v006-performance sec 3). Returns the step's "a SLOW
+    /// stage ran": never.
+    #[inline(never)]
+    #[rustc_align(4)]
     pub(in crate::kernel) fn trajectory(
         &mut self,
         cfg: &KernelConfig,
         faults: &FaultLatch,
         cmd: &mut Command,
-    ) {
+    ) -> bool {
         if self.life == Life::Off {
-            return;
+            return false;
         }
         let (lp, soft) = (&cfg.loop_position, &cfg.pos_soft);
         let life = &self.ctl.life;
@@ -58,6 +65,7 @@ impl Medium {
             Mode::Current | Mode::OpenLoop => self.life = Life::Run,
         }
         cmd.drive = self.drive(cfg, faults);
+        false
     }
 }
 

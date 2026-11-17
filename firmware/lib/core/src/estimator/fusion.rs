@@ -11,7 +11,7 @@
 //! linearized pot in Q4 (`pos_lut` module), so theta is in linearized
 //! counts; at identity `(raw << 4) << 12 == raw << 16`, bit-identical.
 
-use crate::math::q_mul;
+use crate::math::{q_mul, sat_add, sat_mul, sat_sub, sat_sym};
 use crate::pos_lut::GRID_SHIFT;
 use crate::regions::calib::CalibMotor;
 use crate::regions::config::ConfigFusion;
@@ -47,14 +47,12 @@ const TAU_D_LIM_CCQ16: i32 = 4095 << 16;
 /// csQ16 saturates (velocity.rs shift discipline).
 const ACCEL_LIM_CC: i32 = 8192;
 
+/// Branchless: the sign of omega outside the dead zone, times the level.
+#[inline(always)]
 fn fric_c(omega_q16: i32, fric_fc_counts: u16) -> i32 {
-    if omega_q16 > FRIC_OMEGA_EPS_CSQ16 {
-        fric_fc_counts as i32
-    } else if omega_q16 < -FRIC_OMEGA_EPS_CSQ16 {
-        -(fric_fc_counts as i32)
-    } else {
-        0
-    }
+    let sign =
+        (omega_q16 > FRIC_OMEGA_EPS_CSQ16) as i32 - (omega_q16 < -FRIC_OMEGA_EPS_CSQ16) as i32;
+    sign * fric_fc_counts as i32
 }
 
 /// States: theta cQ16 (linearized pot counts), omega csQ16, tau_d ccQ16.
@@ -116,48 +114,44 @@ impl FusionObs {
         // product itself i32-exact). Saturating subs guard a hostile
         // i_counts, everything downstream is clamp-bounded.
         let fric = fric_c(self.omega_q16, motor.fric_fc_counts);
-        let accel = i_counts
-            .saturating_sub(fric)
-            .saturating_sub(self.tau_d_q16 >> 16)
-            .max(-ACCEL_LIM_CC)
-            .min(ACCEL_LIM_CC);
+        let accel = sat_sym(
+            sat_sub(sat_sub(i_counts, fric), self.tau_d_q16 >> 16),
+            ACCEL_LIM_CC,
+        );
         let d_omega = q_mul(motor.b_i_q313 as i32, accel, 0);
-        self.omega_q16 = self
-            .omega_q16
-            .saturating_add(d_omega.saturating_mul(1 << 3))
-            .max(-OMEGA_LIM_CSQ16)
-            .min(OMEGA_LIM_CSQ16);
-        // |omega| <= 2^31, dt < 2^23 -> |delta| < 2^22
-        self.theta_q16 = self
-            .theta_q16
-            .saturating_add(q_mul(self.omega_q16, dt_q32 as i32, 32))
-            .max(-THETA_LIM_CQ16)
-            .min(THETA_LIM_CQ16);
+        self.omega_q16 = sat_sym(
+            sat_add(self.omega_q16, sat_mul(d_omega, 1 << 3)),
+            OMEGA_LIM_CSQ16,
+        );
+        // |omega| <= 2^31, dt < 2^23 -> |delta| < 2^22; theta is held
+        // inside +-2^29 by every store here and by `seed`, so the plain
+        // sum is exact
+        self.theta_q16 = sat_sym(
+            self.theta_q16 + q_mul(self.omega_q16, dt_q32 as i32, 32),
+            THETA_LIM_CQ16,
+        );
 
         // Correct. Plain sub is safe: 2^28 + 2^29 < 2^31 (theta clamp).
-        let e = (((pos_q4 as i32) << Q4_TO_Q16) - self.theta_q16)
-            .max(-E_LIM_CQ16)
-            .min(E_LIM_CQ16);
-        self.theta_q16 = self
-            .theta_q16
-            .saturating_add(q_mul(gains.l1_q016 as i32, e, 16))
-            .max(-THETA_LIM_CQ16)
-            .min(THETA_LIM_CQ16);
-        self.omega_q16 = self
-            .omega_q16
-            .saturating_add(q_mul(gains.l2_q88 as i32, e, 8))
-            .max(-OMEGA_LIM_CSQ16)
-            .min(OMEGA_LIM_CSQ16);
+        let e = sat_sym(((pos_q4 as i32) << Q4_TO_Q16) - self.theta_q16, E_LIM_CQ16);
+        // a Q0.16 gain on |e| <= 2^23 stays under 2^23: exact on theta
+        self.theta_q16 = sat_sym(
+            self.theta_q16 + q_mul(gains.l1_q016 as i32, e, 16),
+            THETA_LIM_CQ16,
+        );
+        self.omega_q16 = sat_sym(
+            sat_add(self.omega_q16, q_mul(gains.l2_q88 as i32, e, 8)),
+            OMEGA_LIM_CSQ16,
+        );
         // No model, no disturbance: with b_i unset predict explains nothing,
         // so tau_d would integrate plain position error and trip the
         // collision check in a free run.
         self.tau_d_q16 = if motor.b_i_q313 == 0 {
             0
         } else {
-            self.tau_d_q16
-                .saturating_sub(q_mul(gains.l3_q88 as i32, e, 8))
-                .max(-TAU_D_LIM_CCQ16)
-                .min(TAU_D_LIM_CCQ16)
+            sat_sym(
+                sat_sub(self.tau_d_q16, q_mul(gains.l3_q88 as i32, e, 8)),
+                TAU_D_LIM_CCQ16,
+            )
         };
     }
 
