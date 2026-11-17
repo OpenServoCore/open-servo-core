@@ -179,7 +179,9 @@ pub struct Fast {
     pub(in crate::kernel) late: bool,
     /// The window term every reading sheds (`window::WindowTerm`), on the
     /// rail the last RAIL phase read; zero on the experiment image, which
-    /// keeps the raw reading.
+    /// keeps the raw reading. Its carry advances on each reading alone and
+    /// holds across a take, a rail and a drive change: it is under a count
+    /// of the magnitude, taken ahead of the sign.
     #[cfg(not(feature = "experiment"))]
     pub(in crate::kernel) win: window::WindowTerm,
 }
@@ -253,7 +255,7 @@ impl Fast {
     /// and the rail `Command::prepare_rail` floored, beside it.
     #[cfg(not(feature = "experiment"))]
     pub fn prepare_window(&mut self, g_arr: u32, vbus_eff: u16) {
-        self.win = window::WindowTerm::at_rail(g_arr, vbus_eff, self.pwm_arr);
+        self.win.set_rail(g_arr, vbus_eff, self.pwm_arr);
     }
 
     #[cfg(not(feature = "experiment"))]
@@ -377,7 +379,7 @@ impl Fast {
         let oc_over = along.map(|i| i.unsigned_abs() > cfg.limits.oc_trip_counts as u32);
         let i_meas = along.map(|i| {
             #[cfg(not(feature = "experiment"))]
-            let i = i - self.win.counts(ticks);
+            let i = i - self.win.take(ticks);
             if fwd { i } else { -i }
         });
         if let Some(i) = i_meas {

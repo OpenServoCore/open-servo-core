@@ -123,14 +123,17 @@ The window term: the shunt's drive-window sample reads the winding's current plu
 take:   g_eff = g_window_q016 if r_q12 != 0 and g_window_q016 x r_q12 <= 2^25, else 0
         g_arr = g_eff x recip_arr_q24                   Q40 counts per vcount a tick of the period
 RAIL:   k     = (g_arr x min(vbus_eff, WINDOW_V_MAX)) >> 24      Q16 counts a tick of headroom
-        k0    = k x pwm_arr + 2^15                      the whole period's, the rounding folded in
+        k0    = k x pwm_arr                             the whole period's
 FAST:   mag   = (sample - zero) x settle gain, rounded  the terminal current; the overcurrent trip reads it
-        i     = sign(drive) x (mag - ((k0 - k x ticks) >> 16))
+        acc   = k0 - k x ticks + carry                  carry: the fraction the last reading left, 2^15 from boot
+        carry = acc & 0xFFFF
+        i     = sign(drive) x (mag - (acc >> 16))
 ```
 
 - **Where.** On a window the validity rule takes as a reading, and in that arm alone: after the settle gain and the overcurrent compare, before the sign. A window under the floor, the first after a drive reversal and one behind a late write read nothing, and the held values the drive writes never pass through it. `ticks` is the width of the one command the window's pulse was built from, the one the settle gain reads.
 - **Who reads it.** Every consumer of the reading: the current loop, OpenLoop's ceiling, the limits and the stall check, the heat sum, the observer, the back-EMF boxcar, the lifecycle seed and TEL `i_tick_counts`. The overcurrent trip compares the magnitude before the subtraction, the current the bridge and the shunt carry, so no stored conductance can raise the trip point; `current_raw` stays raw.
 - **The rail** is the rail clamp's own `vbus_eff` (`Command::prepare_rail`), put on the term at every RAIL phase after the frame's reads and at the first tick; a take's conductance reaches the tick at the next RAIL. The hold at `WINDOW_V_MAX` (2^13 - 1 vcounts, over any 12-bit tap under a rail scale below 2.0) keeps the term at most that many counts and the reading inside i16 for any field values; `pwm_arr` at least `WINDOW_ARR_MIN` (256, const-asserted on the chip) keeps `g_arr` one u32.
+- **The carry.** Each reading takes the term in whole counts and keeps the fraction it dropped for the next, so the readings sum to the Q16 term within half a count. A whole-count term alone loses what the duty's dither moves it by under a count: at a cruise the term sits near 17 counts and moves about 0.2 a tick, and a 1-count staircase passes only what the duty's own tick noise carries across a step, which inflates every slope fit against the current's dither. The carry advances on a reading alone and holds across a take, a rail and a drive change: it is under a count of the magnitude, ahead of the sign. Pins: `the_takes_sum_to_the_exact_term_over_a_slow_ramp`, `the_dither_slope_reads_the_exact_window_term`.
 - **The fence.** The take runs the conductance only while the stored winding bounds it, g R at most 1/8; an unidentified winding or a larger value turns it off, which is the protective side (the readings run high, the limits err low).
 - **A conductance of 0**, the seed and FACTORY, a fenced-off value and the experiment image (which keeps the raw reading for its captures) are the reading without the term, bit for bit: the tick subtracts an exact 0, with no branch.
 - **The form** misses only the transient `g x L x di/dt`: at a start from rest the volts across the inductance are the whole rail for about four periods while the form takes `(1 - D) V`, under 1 mA in a loop-limited move.

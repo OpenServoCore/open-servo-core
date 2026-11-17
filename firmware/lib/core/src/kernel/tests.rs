@@ -2242,15 +2242,20 @@ fn window_rig(goal: i16, g: u16) -> Shared {
     sh
 }
 
-/// The window term the kernel's take and rail put on a `ticks` width.
-fn window_term(k: &Kernel<FakeIo>, ticks: u32) -> i32 {
+/// The window term the kernel's take and rail put on a `ticks` width, Q16
+/// counts.
+fn window_term(k: &Kernel<FakeIo>, ticks: u32) -> u32 {
     let v = k.cmd.vbus_counts.max(k.cfg.thermal.v_undervolt_counts);
-    window::WindowTerm::at_rail(k.cfg.g_arr, v, ARR).counts(ticks)
+    let mut w = window::WindowTerm::default();
+    w.set_rail(k.cfg.g_arr, v, ARR);
+    w.q16(ticks)
 }
 
 /// The published current is the sample less the window term at the
-/// measured width and the rail, signed by the drive; with no conductance
-/// the sample's, bit for bit.
+/// measured width and the rail, signed by the drive: each reading takes
+/// the term's whole count or the next one up, and over a run they take the
+/// Q16 term within one count, the carry's span; with no conductance the
+/// sample's, bit for bit.
 #[test]
 fn the_reading_takes_the_term_off_along_the_drive() {
     for g in [0, G_WINDOW] {
@@ -2262,8 +2267,22 @@ fn the_reading_takes_the_term_off_along_the_drive() {
             ticks(&mut k, &sh, f, 2 * DECIM_MED as u32);
             let term = window_term(&k, k.fast.ticks as u32);
             assert_eq!(term == 0, g == 0, "{g} at {goal}: {term}");
-            let i = sh.table.with(|t| t.telemetry.tick.i_tick_counts) as i32;
-            assert_eq!(i, goal.signum() as i32 * (300 - term), "{g} at {goal}");
+            let n = 100 * DECIM_MED as i64;
+            let mut taken = 0;
+            for _ in 0..n {
+                k.on_scan(f, &sh);
+                let i = sh.table.with(|t| t.telemetry.tick.i_tick_counts) as i32;
+                let off = 300 - goal.signum() as i32 * i;
+                let whole = (term >> 16) as i32;
+                assert!(off == whole || off == whole + 1, "{g} at {goal}: {off}");
+                assert!(g != 0 || off == 0, "{g} at {goal}: {off}");
+                taken += (off as i64) << 16;
+            }
+            assert!(
+                (taken - n * term as i64).abs() < 1 << 16,
+                "{g} at {goal}: {} counts over the term",
+                (taken - n * term as i64) as f64 / 65536.0
+            );
             assert_eq!(k.faults.mask(), 0);
         }
     }
@@ -2317,7 +2336,7 @@ fn the_take_fences_the_conductance_by_the_winding() {
         ticks(&mut k, &sh, f, 2 * DECIM_MED as u32);
         let want = if runs { g as u32 * recip } else { 0 };
         assert_eq!(k.cfg.g_arr, want, "{g} on {r}");
-        assert_eq!(k.fast.win.counts(64) != 0, runs, "{g} on {r}: on the rail");
+        assert_eq!(k.fast.win.q16(64) != 0, runs, "{g} on {r}: on the rail");
     }
 }
 
@@ -2331,20 +2350,20 @@ fn the_term_follows_the_rail_at_rail() {
     settle(&mut k, &sh, f);
     ticks(&mut k, &sh, f, 2 * DECIM_MED as u32);
     let width = k.fast.ticks as u32;
-    let high = k.fast.win.counts(width);
+    let high = k.fast.win.q16(width);
     assert_eq!(high, window_term(&k, width));
     f.vbus_raw = vbus_raw(2600);
     for _ in 0..200 * DECIM_MED as u32 {
-        let (was, rail) = (k.fast.win.counts(width), k.phase == phase::RAIL);
+        let (was, rail) = (k.fast.win.q16(width), k.phase == phase::RAIL);
         k.on_scan(f, &sh);
-        let now = k.fast.win.counts(width);
+        let now = k.fast.win.q16(width);
         assert_eq!(now, window_term(&k, width));
         if !rail {
             assert_eq!(now, was, "moved off the RAIL phase");
         }
     }
     assert_eq!(k.cmd.vbus_counts, 2600);
-    let low = k.fast.win.counts(width);
+    let low = k.fast.win.q16(width);
     assert!(low < high, "{low} at 2600 vcounts, {high} at 3000");
 }
 

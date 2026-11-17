@@ -117,12 +117,24 @@ The current the limiter reads (`core/src/estimator/window.rs`,
 - `current_gain_rounds_and_keeps_the_sign_symmetric` - 300 counts at
   33259 read 304 over the zero and -304 under it, rounded half up.
 - `the_term_is_the_conductance_on_the_headroom_and_the_rail` - the
-  window term is `g x V x (arr - ticks) / arr` to half a count and the
-  floors' share at every width, 0 at full duty, 25 counts at the 64-tick
-  floor on the 5 V rail at the set of record's 4.75 mS.
+  window term is `g x V x (arr - ticks) / arr` in Q16 to the floors'
+  share at every width, a fresh term's first take to half a count more,
+  0 at full duty whatever the carry, 25 counts at the 64-tick floor on
+  the 5 V rail at the set of record's 4.75 mS.
+- `the_takes_sum_to_the_exact_term_over_a_slow_ramp` - over a duty
+  ramping 0.2 counts a tick across the period and back, the carried
+  takes sum to the Q16 term within half a count, where a whole-count
+  term's running sum strays past 14 counts.
 - `the_reading_takes_the_term_off_along_the_drive` - the published
-  current is the sample less the term, signed by the drive; with no
-  conductance the sample's, bit for bit.
+  current is the sample less the term's whole count or the next one up,
+  signed by the drive, and over 100 periods the readings take the Q16
+  term within one count; with no conductance the sample's, bit for bit.
+- `the_dither_slope_reads_the_exact_window_term` - on the record rig at
+  the 2500 c/s cruise, worked and rested contacts, the learner's dither
+  slope on the published current lands within its derived noise bound
+  (five sd of the shunt code's rounding through the fit, about 0.02 ohm)
+  of the slope on the exact term, and a whole-count term on the same run
+  lands outside it (0.11 and 0.05 ohm high).
 - `the_overcurrent_trip_reads_the_uncorrected_current` - a sample 10
   counts over the trip latches it on the fourth window while the reading
   sits under it.

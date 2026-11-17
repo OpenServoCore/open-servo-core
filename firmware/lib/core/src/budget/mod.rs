@@ -100,26 +100,48 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// entry on the injected group, the window term off the reading, the motor
 /// write ahead of the voltage side, the reversal's no-reading test, the
 /// wait for the crest scan and every phase's stages, RAIL's window term on
-/// the rail among them.
+/// the rail among them. The Closed and OpenLoop rows carry
+/// [`WINDOW_CARRY`] on top, which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
-pub const KERNEL: [[u32; PHASES]; REGIMES] = [
+pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
     [942, 1176, 1053, 1374, 834, 1239, 810, 969, 795, 855],
     [1401, 1719, 1694, 1685, 1608, 1694, 1242, 1434, 1224, 1500],
     [1365, 1638, 1218, 1605, 1218, 1605, 1200, 1380, 1185, 1302],
-];
+]);
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
-/// barely vary).
-pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
+/// barely vary); the Closed and OpenLoop rows with [`WINDOW_CARRY`], as
+/// the maximum's.
+pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
     [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
     [1365, 1579, 1212, 1605, 1212, 1605, 1196, 1380, 1178, 1300],
-];
+]);
+
+/// E, on every Closed and OpenLoop cell, maximum and mean, and on
+/// [`WRITE_DONE`] and [`FRAME_DONE`]: the window term's carry
+/// (`WindowTerm::take`) on the reading ahead of the write. An Open tick
+/// measures a window its own arm left undriven and takes no reading. The
+/// take loads the carry, adds it and stores the new one, a halfword each:
+/// 8.5 HCLK priced on the executed path of the release image with the
+/// fetch model ([`REFRESH`]), no credit for the rounding RAIL no longer
+/// adds; plus 10%, rounded up. The bench must refill the rows.
+pub const WINDOW_CARRY: u32 = 10;
+
+const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
+    let mut p = 0;
+    while p < PHASES {
+        rows[Regime::Closed as usize][p] += WINDOW_CARRY;
+        rows[Regime::OpenLoop as usize][p] += WINDOW_CARRY;
+        p += 1;
+    }
+    rows
+}
 
 /// A window's mean is judged only over this many bodies.
 pub const MEAN_MIN_BODIES: u32 = 100;
@@ -283,8 +305,8 @@ pub const NEXT_CREST: u32 = 2456;
 /// and every clamp of the current loop, 768.75 HCLK (709 with none);
 /// OpenLoop's, the duty limiter's call included, 704.5; and the window
 /// term ahead of the sign, two loads, a multiply, three ALU and the moved
-/// compare, 24.5. Plus 10%, rounded up.
-pub const WRITE_DONE: u32 = 873;
+/// compare, 24.5. Plus 10%, rounded up; and [`WINDOW_CARRY`].
+pub const WRITE_DONE: u32 = 873 + WINDOW_CARRY;
 
 /// Past the entry stamp, the latest a tick moves the trough's samples out
 /// of the next trough scan's way, at the tick's entry. E: priced as
@@ -297,8 +319,8 @@ pub const TROUGH_DONE: u32 = 106;
 /// two-chunk row, the wait for the scan ([`SCAN_WAIT`]) apart. E: priced
 /// as [`TEL_POLL`], 1011, and the window term ahead of the write, 24.5
 /// as in [`WRITE_DONE`] (RAIL puts it on the rail after its reads), plus
-/// 10%.
-pub const FRAME_DONE: u32 = 1140;
+/// 10%; and [`WINDOW_CARRY`].
+pub const FRAME_DONE: u32 = 1140 + WINDOW_CARRY;
 
 /// E, on [`FRAME_DONE`] in the scan deadline, which the measured
 /// [`KERNEL`] rows do not reach: the tick entered on the injected group's
