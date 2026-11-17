@@ -8,9 +8,10 @@
 //! one DMA request per conversion (RM sec 9.2.4, 9.2.2), so each slot is
 //! sampled its slot index x 1.083 us after the frame's first.
 //!
-//! The burst time-shares DMA1 CH1 with the scan, so its HT and TC land on the
-//! kernel's own vector: `runtime::isr` routes them here while `capturing()`
-//! and the kernel receives no ticks for the ~1.04 ms window. Silicon
+//! The burst time-shares DMA1 CH1 with the scan; its HT and TC land on the
+//! DMA1 CH1 vector, which the scan's DMA leaves silent, and `runtime::isr`
+//! routes them here. The park stops the injected trigger the kernel ticks
+//! on, so the kernel receives no ticks for the ~1.04 ms window. Silicon
 //! constraints the swap is built around (RM sec 9.3.3, 9.2.2, and the V006
 //! latching-request fact): any CTLR2 write with ADON set starts a conversion,
 //! ADON off->on costs tSTAB so ADON is never touched here, and a DMA request
@@ -25,7 +26,7 @@ use portable_atomic::{AtomicU8, Ordering};
 use osc_servo_core::estimator::window;
 use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::regions::burst::{
-    BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
+    BURST_LEN, FRAME_MAX, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };
 use osc_servo_core::regions::{ControlTable, Mode};
 use osc_servo_core::{ControlIo as _, Motor as _, MotorCmd, RegionStorageRaw, Shared};
@@ -59,6 +60,17 @@ const ADC_SCAN_DRAIN: u32 = 9 * CYCLES_PER_US;
 /// accord. 26 ADCCLK at 24 MHz = 1.08 us each.
 const ADC_SLOT_DRAIN: u32 = 3 * CYCLES_PER_US;
 
+/// The longest a capture holds the kernel unticked, HCLK: the tick that
+/// launches it, the stray scan's drain, the frame run's `BURST_LEN`
+/// conversions, the restore's slot drain, then the restore's update event
+/// to the next injected group's end, within a period.
+pub(crate) const UNTICKED_MAX: u32 = TICK_HCLK
+    + ADC_SCAN_DRAIN
+    + BURST_LEN as u32 * scan::CONV_TICKS as u32
+    + ADC_SLOT_DRAIN * FRAME_MAX as u32
+    + TICK_HCLK;
+const TICK_HCLK: u32 = HCLK_HZ / chip::MOTOR_PWM_FREQ_HZ;
+
 /// Free-running frame capture. Not circular: the run stops itself at
 /// TC and the buffer stays frozen for readback. HT is the step trigger.
 const DMA_CFG: dma::Config = dma::Config {
@@ -74,11 +86,13 @@ const DMA_CFG: dma::Config = dma::Config {
 
 static BURST_BUF: SyncUnsafeCell<[u16; BURST_LEN]> = SyncUnsafeCell::new([0; BURST_LEN]);
 
-/// The FSM state, atomic because the ISR prologue and the main loop both read
-/// it while the DMA1 CH1 vector writes it. Written only from that vector.
+/// The FSM state, atomic because the ISR prologues and the main loop read it
+/// while the PFIC HIGH vectors write it. Written only from those (the ADC
+/// vector's tick tail and the DMA1 CH1 vector), which never preempt each
+/// other.
 static STATE: AtomicU8 = AtomicU8::new(state::IDLE);
 
-/// The rest of the FSM: DMA1 CH1 vector (PFIC HIGH) only, never the main loop;
+/// The rest of the FSM: the PFIC HIGH vectors only, never the main loop;
 /// `install` writes it once, pre-IRQ.
 struct Fsm {
     /// `sample_tick` at the last accepted arm.
@@ -103,8 +117,8 @@ static FSM: SyncUnsafeCell<Fsm> = SyncUnsafeCell::new(Fsm {
 
 #[inline(always)]
 fn fsm() -> &'static mut Fsm {
-    // SAFETY: see the FSM doc -- reached only from the DMA1 CH1 vector, which
-    // never preempts itself.
+    // SAFETY: see the FSM doc -- reached only from the PFIC HIGH vectors,
+    // which never preempt each other.
     unsafe { &mut *FSM.get() }
 }
 
@@ -242,6 +256,7 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
 /// DMA1 CH1 events while the scan is suspended: HT applies the step, TC
 /// restores the scan. Both flags are polled because a delayed vector entry can
 /// find them together.
+#[inline(never)]
 #[rustc_align(4)]
 pub fn on_dma_event(shared: &Shared) {
     let p = shared.table.region_ptr();
@@ -256,13 +271,12 @@ pub fn on_dma_event(shared: &Shared) {
     }
 }
 
-/// Suspend the scan and open the capture. This body can outlast the TC's
-/// ~16 us of slack, which costs nothing: the tap is shut and both triggers
-/// parked in the first write, so no TRGO starts anything after it, and no
-/// injected tap conversion resets a frame slot mid-capture and slips the
-/// sample grid once a period. That is
-/// also why `start_cnt` / `start_dir` record the phase of the launch write
-/// itself rather than the phase of the TC that led to it.
+/// Suspend the scan and open the capture. Where it lands against the scans
+/// costs nothing: the tap is shut and both triggers parked in the first
+/// write, so no TRGO starts anything after it, and no injected conversion
+/// resets a frame slot mid-capture and slips the sample grid once a period.
+/// That is also why `start_cnt` / `start_dir` record the phase of the
+/// launch write itself rather than the phase of the tick that led to it.
 fn launch(p: *mut ControlTable) {
     let f = fsm();
     // Source first, channel second: a request can only latch if it is
@@ -321,8 +335,8 @@ fn launch(p: *mut ControlTable) {
 /// next update event, <= 25 us out and never mid-pulse.
 fn step(p: *mut ControlTable) {
     let f = fsm();
-    // SAFETY: the kernel is not ticking (no scan TC reaches it while
-    // capturing) and this is the vector that owns it.
+    // SAFETY: the kernel is not ticking (the park stopped the injected
+    // trigger it enters on) and this vector shares its level.
     let kernel = unsafe { (*KERNEL.get()).assume_init_mut() };
     let (_sensors, motor) = kernel.io.parts();
     motor.write(MotorCmd::Drive {
@@ -387,8 +401,8 @@ pub fn poll_page(shared: &Shared) {
     }
     let p = shared.table.region_ptr();
     // SAFETY: `page` is transport-owned, read raw-volatile; the BURST window
-    // is RO to the host and written only here and from the DMA1 CH1 vector, which
-    // touches nothing in it while Done stands.
+    // is RO to the host and written only here and from the PFIC HIGH vectors,
+    // which touch nothing in it while Done stands.
     unsafe {
         let page = (&raw const (*p).control.burst.page).read_volatile();
         if (&raw const (*p).burst.window.page_echo).read_volatile() == page {

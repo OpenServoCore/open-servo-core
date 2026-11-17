@@ -186,30 +186,49 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 /// The scans the ADC DMA lands in the tick block hold still for the tick
 /// that reads them: at budget, the trough's samples leave the next trough
 /// scan's way, and every read of the crest scan and every row's one DMA
-/// copy of it is armed, behind the dearest stage that runs ahead of the
-/// fast step, before the next crest scan lands, the copy's own time
-/// included. The DMA copies the row's longer chunk, at most the whole row
-/// of one chunk; the CPU copies the shorter behind the arm, while the DMA
-/// runs, inside FRAME_DONE. CH6 is idle at every arm: a row's copy lands
-/// before the next tick's entry, and a late tick's row arms an exit and
-/// an entry behind the last at least.
+/// copy of it is armed, behind the wait for that scan and the dearest
+/// stage that runs ahead of the fast step, before the next crest scan
+/// lands, the copy's own time included. The DMA copies the row's longer
+/// chunk, at most the whole row of one chunk; the CPU copies the shorter
+/// behind the arm, while the DMA runs, inside FRAME_DONE. CH6 is idle at
+/// every arm: a row's copy lands before the next tick's entry, and a late
+/// tick's row arms an exit and an entry behind the last at least.
 ///
 /// Two ticks bound the crest, apart: the scheduler's publish gate starts
 /// no burst on SPARE_A nor while a take is pending, so a refresh tick
 /// carries no row and a row rides no stage ahead of the fast step.
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
-    use budget::{ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, TROUGH_DONE};
+    use budget::{
+        ENTRY, ENTRY_EXIT, FRAME_DONE, NEXT_CREST, NEXT_TROUGH, REFRESH, SCAN_WAIT, STREAM_ENTRY,
+        TROUGH_DONE,
+    };
     let copy = osc_servo_core::tel::ROW_BYTES_MAX as u32 * ROW_COPY_TICKS_PER_BYTE;
     const { assert!(ENTRY + TROUGH_DONE <= NEXT_TROUGH) };
-    let refresh = ENTRY + REFRESH + FRAME_DONE;
+    let wait = SCAN_WAIT.into_iter().max().unwrap();
+    let read = ENTRY + wait + STREAM_ENTRY + FRAME_DONE;
+    let refresh = read + REFRESH;
     assert!(
         refresh <= NEXT_CREST,
         "refresh tick {refresh} past {NEXT_CREST}"
     );
-    let row = ENTRY + FRAME_DONE + copy;
+    let row = read + copy;
     assert!(row <= NEXT_CREST, "row tick {row} past {NEXT_CREST}");
     assert!(copy <= ENTRY_EXIT, "a {copy} copy outlasts {ENTRY_EXIT}");
+}
+
+/// The tick's motor write, the first work after the shunt, lands before
+/// the trough's update event at budget, the layout allowance on top, so
+/// its compares load between pulses and the next crest's pulse is one
+/// command (kernel sec 2.3).
+#[test]
+fn the_motor_write_lands_before_the_trough_at_budget() {
+    use budget::{ENTRY, LAYOUT, WRITE_DEADLINE, WRITE_DONE};
+    let write = ENTRY + WRITE_DONE + LAYOUT;
+    assert!(
+        write <= WRITE_DEADLINE,
+        "the write lands {write} past the injected group's end, the trough {WRITE_DEADLINE}"
+    );
 }
 
 /// What any tick may carry: nothing, a TEL row, a row and its bank.

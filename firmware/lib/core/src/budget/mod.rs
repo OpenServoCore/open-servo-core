@@ -96,8 +96,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// is its measured maximum with the rule's margin; the bodies hold the
 /// tick block's work and every phase's stages. The LIMITS column carries
 /// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, the SPEED column
-/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`], which the measurement
-/// predates.
+/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`], [`STREAM_ENTRY`] and
+/// its regime's [`SCAN_WAIT`], which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -112,7 +112,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
 /// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], the SPEED column with
-/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`], as the maximum's.
+/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`], [`STREAM_ENTRY`] and
+/// its regime's [`SCAN_WAIT`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
@@ -162,6 +163,26 @@ pub const BRUSH_TERM: [u32; REGIMES] = [37, 134, 134];
 /// rounded up. The bench must refill the rows.
 pub const WRITE_FIRST: u32 = 66;
 
+/// E, on every cell, maximum and mean: the tick entered on the injected
+/// group's end, where the measured tick entered on the scan's DMA. The
+/// entry clears JEOC and takes the shunt from the group; after the write
+/// it reads the timer's direction and keeps it, polls and clears the
+/// scan's TC, lands the crest taps and checks for a tap swap; the window
+/// take and the tail each test the late write. Priced on the executed path
+/// of the release image with the fetch model ([`REFRESH`]): 141.25 HCLK
+/// against the old entry's 99.75, plus 10%, rounded up. The bench must
+/// refill the rows.
+pub const STREAM_ENTRY: u32 = 46;
+
+/// E, on every cell by regime ([`Regime`] order), maximum and mean: the
+/// wait for the crest scan after the write, where the measured tick never
+/// waited. At most [`CREST_SCAN_DONE`] less the least [`ENTRY`], 37, less
+/// the shortest path to the poll, priced as [`STREAM_ENTRY`] less 10%: a
+/// faulted Off tick's 257.5 HCLK, a Closed tick's endstop brake's 297.75;
+/// OpenLoop's shortest path passes the scan's end. Rounded up. The bench
+/// must refill the rows.
+pub const SCAN_WAIT: [u32; REGIMES] = [156, 120, 0];
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut r = 0;
     while r < REGIMES {
@@ -169,7 +190,7 @@ const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REG
         rows[r][phase::SPEED as usize] += BRUSH_TERM[r];
         let mut p = 0;
         while p < PHASES {
-            rows[r][p] += WRITE_FIRST;
+            rows[r][p] += WRITE_FIRST + STREAM_ENTRY + SCAN_WAIT[r];
             p += 1;
         }
         r += 1;
@@ -319,26 +340,46 @@ pub const CATCH_UP: u32 = 111;
 
 /// Interrupt entry and exit around a stamped body: trampoline and prologue
 /// to the entry stamp, epilogue and exit after the exit stamp. M: 37 + 43
-/// (interrupt timing images, two runs, min == max).
+/// (interrupt timing images, two runs, min == max), on the scan DMA's
+/// vector; the tick's ADC vector is the same trampoline.
 pub const ENTRY_EXIT: u32 = 80;
-/// Its entry share, the scan TC to the entry stamp.
-pub const ENTRY: u32 = 37;
+/// The injected group's end (JEOC), which starts a tick, to the entry
+/// stamp. E: the stamps of a streaming-entry bench image, 93 to 110 HCLK
+/// past the crest over about 930,000 driven ticks, less JEOC's 56 past it
+/// by the reference manual's arithmetic (`providers::sensors::scan`); the
+/// least, 37, is the trampoline's measured share above.
+pub const ENTRY: u32 = 54;
 
-/// The next scans land in the tick block this long after the scan TC that
-/// starts a tick, each at its first slot (`providers::sensors::scan` on the
-/// chip asserts the geometry): the trough scan half a period on, the crest
-/// scan a period on, each less the crest scan's length.
-pub const NEXT_TROUGH: u32 = 832;
-pub const NEXT_CREST: u32 = 2032;
+/// Past the injected group's end, each at the HCLK the chip's geometry
+/// asserts (`providers::sensors::scan`): the trough's update event, which
+/// loads a motor write that lands before it; the crest scan's end, which
+/// the tick waits for after its write; and the next trough and crest
+/// scans' first slot in the tick block.
+pub const WRITE_DEADLINE: u32 = 1144;
+pub const CREST_SCAN_DONE: u32 = 424;
+pub const NEXT_TROUGH: u32 = 1200;
+pub const NEXT_CREST: u32 = 2456;
+
+/// Past the entry stamp, the latest the tick's motor write lands: the shunt
+/// from the injected group, the window take, the overcurrent trip, the
+/// drive arm and the compare stores. E: priced on the executed path of the
+/// release image with the fetch model ([`REFRESH`]): the Closed arm's
+/// dearest, a wide code, the settle band's lookup, an overcurrent count
+/// and every clamp of the current loop, 768.75 HCLK (709 with none);
+/// OpenLoop's, the duty limiter's call included, 704.5. Plus 10%, rounded
+/// up.
+pub const WRITE_DONE: u32 = 846;
 
 /// Past the entry stamp, the latest a tick moves the trough's samples out
-/// of the next trough scan's way. E: priced as [`TEL_POLL`], 96, plus 10%.
+/// of the next trough scan's way, at the tick's entry. E: priced as
+/// [`TEL_POLL`], 96, plus 10%.
 pub const TROUGH_DONE: u32 = 106;
 
 /// Past the entry stamp, the latest a tick reads the crest scan in the
 /// tick block or arms a TEL row's copy of it, before any stage that runs
 /// ahead of the fast step: RAIL's rail and pot reads behind a head and a
-/// two-chunk row. E: priced as [`TEL_POLL`], 1011, plus 10%.
+/// two-chunk row, the wait for the scan ([`SCAN_WAIT`]) apart. E: priced
+/// as [`TEL_POLL`], 1011, plus 10%.
 pub const FRAME_DONE: u32 = 1113;
 
 /// A hold runs Closed this long after its goal moves, then parks. M: the

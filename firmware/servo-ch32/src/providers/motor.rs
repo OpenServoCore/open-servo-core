@@ -44,6 +44,13 @@ impl Ch32Motor {
 }
 
 impl MotorTrait for Ch32Motor {
+    /// TIM1 counts up: past the trough, so the compares load at the next
+    /// crest, mid-pulse.
+    #[inline(always)]
+    fn late(&self) -> bool {
+        !timer::counting_down()
+    }
+
     fn write(&mut self, cmd: MotorCmd) {
         match cmd {
             MotorCmd::Disabled => {

@@ -95,30 +95,53 @@ pub fn set_external_trigger(source: Extsel) {
     });
 }
 
-/// A one-conversion injected group on `channel`, started by `source`. With
-/// JL = 0 only JSQ4 converts (RM sec 9.3.11). Write before `enable`: a CTLR2
-/// write with ADON set starts a regular conversion.
-pub fn set_injected(channel: Channel, source: Jextsel) {
-    set_injected_channel(channel);
+/// A two-conversion injected group, `first` then `second`, started by
+/// `source`. With JL = 1 the group converts JSQ3 then JSQ4 (RM sec 9.3.11).
+/// Write before `enable`: a CTLR2 write with ADON set starts a regular
+/// conversion.
+pub fn set_injected(first: Channel, second: Channel, source: Jextsel) {
+    set_injected_channels(first, second);
     ADC.ctlr2().modify(|w| {
         w.set_jextsel(source);
         w.set_jexttrig(true);
     });
 }
 
-/// The one-conversion injected group converts `channel`. A write under a
-/// live conversion restarts the group (RM sec 9.2.2).
-pub fn set_injected_channel(channel: Channel) {
+/// The injected group converts `first` then `second`. A write under a live
+/// conversion restarts the group (RM sec 9.2.2).
+pub fn set_injected_channels(first: Channel, second: Channel) {
     ADC.isqr().write(|w| {
-        w.set_jl(0);
-        w.set_jsq(3, channel as u8);
+        w.set_jl(1);
+        w.set_jsq(2, first as u8);
+        w.set_jsq(3, second as u8);
     });
 }
 
-/// The injected group's last conversion (IDATAR1, no offset programmed).
+/// IDATAR(n + 1), no offset programmed: at JL = 1 IDATAR1 holds the first
+/// conversion (JSQ3) and IDATAR2 the second (JSQ4), as the tick block's
+/// rest readings show (`providers::sensors`).
 #[inline(always)]
-pub fn injected_data() -> u16 {
-    ADC.idatar(0).read().jdata()
+pub fn injected_data(n: usize) -> u16 {
+    ADC.idatar(n).read().jdata()
+}
+
+/// CTLR1.JEOCIE: the ADC vector on the injected group's end. EOCIE stays
+/// clear: the injected group sets EOC too.
+pub fn set_jeoc_irq(enable: bool) {
+    ADC.ctlr1().modify(|w| w.set_jeocie(enable));
+}
+
+/// Clears STATR.JEOC alone. Each flag clears on a 0 and holds on a 1 (RM
+/// sec 9.3.1), so the regular scan running behind the group keeps its EOC
+/// and STRT.
+#[inline(always)]
+pub fn clear_jeoc() {
+    ADC.statr().write(|w| {
+        w.set_awd(true);
+        w.set_eoc(true);
+        w.set_jstrt(true);
+        w.set_strt(true);
+    });
 }
 
 pub fn set_scan_mode(enable: bool) {

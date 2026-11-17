@@ -21,7 +21,7 @@ pub(crate) static TEL_CHANNEL: TelChannel = TelChannel::new();
 
 type Ch32Kernel = Kernel<Ch32ControlIo, TelLane<V006Providers>>;
 
-/// Initialised by `install`; the ADC DMA TC IRQ is PFIC-masked until then.
+/// Initialised by `install`; the ADC IRQ, the tick, is PFIC-masked until then.
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Ch32Kernel>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 

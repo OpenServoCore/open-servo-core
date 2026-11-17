@@ -75,7 +75,7 @@ The cost lands on hot-to-cold branches. The original branch was not taken on the
 
 > **A large inlined interrupt body sits near this cliff.**
 
-The kernel tick is inlined whole into the ADC DMA handler, 9,606 B ([v006-feature-budget.md](v006-feature-budget.md#budget-lines)). Its hot code falls through and its cold arms (`core::hint::cold_path`) are placed toward the end of the body, so many hot-to-cold spans run to several KiB. An edit that changes nothing on the hot path but grows the body can carry one of those spans past the limit, and the tick gets slower with no change to the code it runs.
+The kernel tick is inlined whole into the ADC handler, 9,606 B ([v006-feature-budget.md](v006-feature-budget.md#budget-lines)). Its hot code falls through and its cold arms (`core::hint::cold_path`) are placed toward the end of the body, so many hot-to-cold spans run to several KiB. An edit that changes nothing on the hot path but grows the body can carry one of those spans past the limit, and the tick gets slower with no change to the code it runs.
 
 ### 3.1 Checking
 
@@ -83,7 +83,7 @@ Disassemble the handler with `llvm-objdump` from the `llvm-tools` rustup compone
 
 ```sh
 llvm-objdump -d --no-show-raw-insn \
-  --disassemble-symbols=__qingke_rt_DMA1_CHANNEL1 <elf> > isr.s
+  --disassemble-symbols=__qingke_rt_ADC <elf> > isr.s
 ```
 
 A relaxed pair is a conditional branch whose target is the instruction right after the `j` that follows it. This lists them with their spans:

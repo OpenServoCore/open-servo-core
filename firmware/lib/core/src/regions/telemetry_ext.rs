@@ -12,6 +12,8 @@ pub struct TelemetryLimitsExt {
     /// refresh.
     #[ct_field(access = ro)]
     pub window_v_floor_q15: u16,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
 }
 
 /// Servo health, written by the chip side (the tick interrupt, the main
@@ -37,6 +39,11 @@ pub struct TelemetryHealth {
     /// the wire. Wraps.
     #[ct_field(access = rw)]
     pub tel_drop_count: u16,
+    /// Kernel ticks whose motor write landed after the trough, so the
+    /// width loaded at the next crest and split that pulse between two
+    /// commands; the window it drove read no current. Wraps.
+    #[ct_field(access = rw)]
+    pub write_late_count: u16,
     /// Smallest free stack seen since boot, bytes.
     #[ct_field(access = ro)]
     pub stack_free_min: u16,
@@ -79,5 +86,5 @@ pub struct TelemetryExtRegs {
     pub therm: TelemetryTherm,
     pub inject: TelemetryInject,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 44],
+    pub _rsvd_tail: [u8; 40],
 }

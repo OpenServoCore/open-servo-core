@@ -12,7 +12,7 @@ One core runs four execution contexts:
 
 | Context | Trigger | Priority | Code | Job |
 | --- | --- | --- | --- | --- |
-| **Kernel tick** | DMA1 CH1 TC, once per PWM period | PFIC HIGH | `lib/core/src/kernel/`, `runtime/isr.rs` | sensing, control, motor write, TEL lane |
+| **Kernel tick** | the ADC's injected group end (JEOC), once per PWM period | PFIC HIGH | `lib/core/src/kernel/`, `runtime/isr.rs` | sensing, control, motor write, TEL lane |
 | **Bus vectors** | TIM2, USART1, SysTick | PFIC LOW | `lib/drivers/src/bus/`, `runtime/isr.rs` | frame service, dispatch, replies |
 | **Main loop** | `wfi` wake | thread mode | `runtime/run.rs` | cold work |
 | **DMA** | peripheral requests | DMA priority ladder | [transport sec 2](osc-servo-transport.md#2-hardware-ledger) | scans, copies, TX, CRC feed |
@@ -32,11 +32,13 @@ The platform facts the design assumes:
 
 ### 2.1 The tick
 
-TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period it triggers two ADC scans, at the trough and at the crest; DMA1 CH1 lands both in the control table's tick block ([sec 7.2](#72-adc-scans-land-in-the-tick-block)). The TC (transfer complete) interrupt after the crest scan is the kernel tick. No software starts or re-arms it.
+TIM1 runs center-aligned PWM at `TICK_HZ` (20 kHz). Each period its CH4 compare, 52 ticks before the crest, starts the ADC's injected group, the drive's low-side terminal tap and then the shunt; the group's end (JEOC), 56 ticks past the crest, is the kernel tick. The crest's update event lands during the group, and the regular crest scan runs behind it; the trough's update event starts the trough scan. DMA1 CH1 lands both scans in the control table's tick block ([sec 7.2](#72-adc-scans-land-in-the-tick-block)) and raises no interrupt. No software starts or re-arms the tick. The kernel boots before the tick vector is unmasked, on a landed crest scan, so no tick carries the boot.
 
 > **The tick index is the kernel's only clock.**
 
 `sample_tick` counts executed ticks; each executed tick advances the kernel by one period; nothing in the kernel reads a wall clock. A tick that does not run is counted in `tick_lost_count` ([protocol sec 5.9](osc-native-protocol.md#59-health-osc-servo)) and is not compensated. Ticks are lost only to a body over two periods, a flash SAVE (torque off) or a debug halt. A shunt burst runs no tick for its window ([protocol sec 5.8](osc-native-protocol.md#58-limits-and-the-stall-permit-osc-servo)).
+
+Ticks that stop altogether, a converter or timer that no longer ends the injected group, would leave the bridge on the last compares the kernel wrote. The main loop watches `sample_tick` on every wake ([sec 2.6](#26-the-main-loop)): once it has held still for 4 ms (`runtime::entry_watch::STILL_MAX`), over three times the longest hold that is not a fault, a shunt burst's under 1.3 ms, the main loop writes the drive off through the kernel and latches `sensor` (bit 4, code 5), which the kernel keeps if it ticks again. A flash SAVE never shows as a hold: the main loop stalls with the core, and the tick, the highest vector, runs before the main loop does again. Pins: `a_stopped_tick_faults_the_drive_off_from_outside_the_tick`, `a_hold_past_the_bound_trips_once_and_a_tick_rearms_it`.
 
 ### 2.2 Rates and phases
 
@@ -135,19 +137,24 @@ The position measurement: the observer and its seeds read the pot through one fu
 
 ### 2.3 Tick sequence
 
-`runtime::isr::on_adc_dma_tc` and `Kernel::on_tick` run, in order:
+`runtime::isr::on_adc_jeoc` and `Kernel::on_tick` run, in order:
 
-1. Increment `sample_tick`; publish the scan's shunt and taps in the tick block.
+1. Clear JEOC; increment `sample_tick`; publish the shunt from the injected group and the trough scan's shunt and taps in the tick block.
 2. FAST measure, current side: the window the previous command drove, the overcurrent trip.
-3. FAST drive on the command the last medium step left: current loop, open loop, brake or off; motor write. The first tick writes the drive off, then boots.
-4. FAST measure, voltage side: the terminal differential, the back-EMF sample and the tick block, on the measured command.
-5. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)); the dead-man.
-6. The configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)).
-7. The medium phase.
-8. At most one TEL lane step.
-9. Shunt-burst handshake poll; tick-load accounting.
+3. FAST drive on the command the last medium step left: current loop, open loop, brake or off; motor write; the late-write check.
+4. Wait for the crest scan's DMA TC (polled, at most 800 HCLK, a sensor fault past it); publish its taps under their terminals' names; swap the taps for a noted drive flip inside the idle gap.
+5. FAST measure, voltage side: the terminal differential, the back-EMF sample and the tick block, on the measured command.
+6. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)); the dead-man.
+7. The configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)).
+8. The medium phase.
+9. At most one TEL lane step.
+10. Shunt-burst handshake poll; the late-write count; tick-load accounting.
 
-> **The motor write comes first.** The compares are preloaded and load at the crest and the trough. A write before the trough loads there, between pulses, so every drive pulse is built from one command and the crest scan samples the middle of that pulse.
+> **The motor write comes first.** The compares are preloaded and load at the crest and the trough. A write before the trough loads there, between pulses, so every drive pulse is built from one command and the crest's injected group samples the shunt in the middle of that pulse.
+
+The tick enters on the shunt's own conversion, so the write reads nothing the crest scan has not landed yet: the shunt, the window the last command drove and the command. At budget it lands `ENTRY` + `WRITE_DONE` + `LAYOUT` past the group's end, under `WRITE_DEADLINE`, the trough (`the_motor_write_lands_before_the_trough_at_budget`). A write that misses it anyway, TIM1 counting up when it is checked, loads at the next crest and splits that pulse between two commands: the tick counts it in `write_late_count` ([protocol sec 5.9](osc-native-protocol.md#59-health-osc-servo)) and the next measurement takes that window as no current reading (`a_late_write_voids_the_next_windows_current`). A crest scan that never lands faults `sensor` and writes the drive off in the same tick (`a_scan_that_never_lands_faults_and_writes_the_drive_off`).
+
+The sample instants, from the crest, with the ADC's trigger delay: the injected low-side tap closes at -21 and the shunt at +31; the crest scan's high-side tap at +87, its low-side tap at +139 and its shunt at +191, both unread, and the pot at +243, Vref at +351, the rail at +403 and the NTC at +455. The trough scan closes its high-side tap at +31, its low-side tap at +83 and its shunt, the zero tracker's sample, at +135, all past the trough. The board README holds the table.
 
 Everything after the write reads the measured command the fast half kept before it (the voltage side, the back-EMF close, the shunt zero's sample, the held current), and a medium step's command, faults and edges reach the next tick's write:
 
@@ -160,7 +167,7 @@ Pin: `the_motor_write_never_waits_for_the_medium_step`.
 
 > **The tick finishes with its scan before the next scan lands.**
 
-The next trough scan lands mid-period and the next crest scan near the period's end, in the same block. The tick moves the trough samples out by `TROUGH_DONE` and finishes crest reads and the row's DMA arm by `FRAME_DONE` (`the_tick_reads_its_scan_before_the_next_lands`).
+The next trough scan lands mid-period and the next crest scan a period on, in the same block. The tick moves the trough samples out at its entry, by `TROUGH_DONE`, and finishes crest reads and the row's DMA arm, behind the wait for the crest scan, by `FRAME_DONE` (`the_tick_reads_its_scan_before_the_next_lands`).
 
 The current loop in step 3 takes the reading step 2 measured, with two exceptions that it takes as no reading. A window under the shunt floor reports nothing. The first window read after a command the bridge drops reads far over the winding current, and on the proportional gain that one reading steps the drive across zero. A board names the narrowest commanded width that comes out as a pulse (`KernelTiming::bridge_min_ticks`); the loop skips the first read window after a command of 1 tick up to one under it, in either direction. Zero duty is not a dropped command, so a lift from rest, the park and its wake read as before, and a board constant of 0 turns the gate off. Only the loop skips the reading: the overcurrent trip, the held current, the tick block and the observers see every read window (`the_first_reading_after_a_dropped_pulse_never_reaches_the_current_loop`).
 
@@ -201,7 +208,7 @@ Arbitration is the first `match` in `on_tick`: boot, then the take.
 
 ### 2.6 The main loop
 
-`runtime/run.rs` runs the work with no deadline inside a tick, then sleeps in `wfi`: status LED, link-counter and TEL-drop publish, clock trim, shunt-burst page copy, the data job (software CRC), deferred reboot, rescue-pulse sampler.
+`runtime/run.rs` runs the work with no deadline inside a tick, then sleeps in `wfi`: the stopped-tick guard ([sec 2.1](#21-the-tick)), status LED, link-counter and TEL-drop publish, clock trim, shunt-burst page copy, the data job (software CRC), deferred reboot, rescue-pulse sampler. The guard sees a hold only on a wake: its own wake source is the tick, so with the tick stopped it runs on the bus vectors' wakes.
 
 > **The main loop masks the bus level only (`pfic::mask_bus`), never the kernel.**
 
@@ -233,7 +240,8 @@ PFIC (programmable fast interrupt controller) levels, set in `runtime::isr::inst
 
 | Vector | Level | Job |
 | --- | --- | --- |
-| DMA1 CH1 TC | HIGH | kernel tick; TEL lane while a burst streams |
+| ADC (JEOC) | HIGH | kernel tick; TEL lane while a burst streams |
+| DMA1 CH1 | HIGH | the shunt burst's HT and TC; the scan raises none, and a burst parks the injected trigger, so one of the two HIGH vectors is live in either mode |
 | TIM2 | LOW | break wake ([transport sec 7](osc-servo-transport.md#7-the-dma-priority-ladder-and-receive-side-discipline)) |
 | USART1 | LOW | TX arm drained |
 | SysTick | LOW, taken last | deadline mux, dispatch inline |
@@ -260,7 +268,7 @@ A bus body can exceed a tick period (the `Deadline` body and every `frame` row e
 | CONFIG, CALIB | bus | only through the take ([sec 6](#6-the-configuration-take)), the ADC wide-code map aside |
 | position table | bus | volatile reads (`Shared::pos_lut_q4`) |
 | ADC wide-code map (CALIB `adc_wide_mid_q4`) | bus | one volatile byte read where a consumer's sample sits on a wide code, on any channel (`Shared::adc_wide_q4`); a slot is one byte, so it never tears |
-| tick block | ADC DMA and tick ISR (scan, `sample_tick`), then kernel | sole writer after the landing |
+| tick block | ADC DMA and tick ISR (scans, the injected shunt and taps, `sample_tick`), then kernel | sole writer after the landing |
 | estimates, references, mode, limits, fault byte | kernel | sole writer |
 | health block | chip side (ISR wrapper, main loop) | none |
 | TEL channel | split per field between `TelPost` and `TelLane` ([sec 5](#5-cut-through-tel)) | kernel half |
@@ -285,8 +293,10 @@ No reference is formed into a region another context writes. Cross-context acces
 | `BRUSH_TERM` | estimated addition on the SPEED column of `KERNEL` and `KERNEL_MEAN`, by regime: the brush term's weight on every SPEED tick, Open included, and on a driven one the deviation, the average's step, the bound and the product; priced on the release image's executed path with the fetch model plus 10%, until the bench probe refills the rows |
 | `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
-| `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit |
-| `TROUGH_DONE`, `FRAME_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |
+| `STREAM_ENTRY`, `SCAN_WAIT` | estimated additions on every cell of `KERNEL` and `KERNEL_MEAN`: the entry on the injected group with the scan poll and the late-write check, and by regime the wait for the crest scan, until the probe refills the rows |
+| `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit; `ENTRY` from the injected group's end |
+| `WRITE_DONE`, `WRITE_DEADLINE` | the motor write past the entry stamp, and the trough it must beat ([sec 2.3](#23-tick-sequence)) |
+| `TROUGH_DONE`, `FRAME_DONE`, `CREST_SCAN_DONE`, `NEXT_TROUGH`, `NEXT_CREST` | scan deadlines ([sec 2.3](#23-tick-sequence)) |
 | `body`, `body_mean`, `frame`, `frame_mean`, `CONFIG_COUNT` | bus vector bodies and frame types at `BUDGET_BAUD_HZ` (3 Mbaud) |
 
 Users:
@@ -343,7 +353,7 @@ Remedies: ask for less (fields, rate, batch), make the work cheaper, or change t
 
 ### 4.6 Health
 
-The tick ISR is stamped at entry and exit (`runtime/tick_load.rs`); the health block reports mean load, overruns and lost ticks ([protocol sec 5.9](osc-native-protocol.md#59-health-osc-servo)). Every build carries it.
+The tick ISR is stamped at entry and exit (`runtime/tick_load.rs`); the health block reports mean load, overruns, lost ticks and late motor writes ([protocol sec 5.9](osc-native-protocol.md#59-health-osc-servo)). Every build carries it.
 
 ---
 
@@ -436,14 +446,14 @@ Kernel-side channels (full map and priority ladder in [transport sec 2](osc-serv
 
 | Channel | Moves | Kernel use |
 | --- | --- | --- |
-| DMA1 CH1 | ADC scans to the tick block | sensing; its TC is the tick |
+| DMA1 CH1 | ADC scans to the tick block | sensing; the tick polls its TC; the shunt burst's HT and TC interrupt |
 | DMA1 CH6 | memory to memory | TEL row's longer chunk (reply snapshots outside bursts) |
 | DMA1 CH3 | halfwords to SPI1 | CRC feed for TEL frames |
 | DMA1 CH4 | frame image to USART1 | TEL frame TX |
 
 ### 7.2 ADC scans land in the tick block
 
-DMA1 CH1 writes both scans of each PWM period into the tick block, laid out in scan order so the crest scan's slots from `pos` on are the published fields ([protocol sec 5.6](osc-native-protocol.md#56-telemetry-stream-tel-bursts)). The terminal taps land in sample order, so the scans' shunt and tap slots are unnamed: the tick moves the trough samples out of the next scan's way, copies the crest's shunt, writes each tap under its terminal's name and stamps `sample_tick`. A bus read never sees a tap under the other terminal's name. Bus reads and TEL rows copy from the same block.
+DMA1 CH1 writes both scans of each PWM period into the tick block, laid out in scan order, `[high, low, shunt, pos, Vref, rail, NTC]`, so the crest scan's slots from `pos` on are the published fields ([protocol sec 5.6](osc-native-protocol.md#56-telemetry-stream-tel-bursts)). The terminal taps land in sample order, so the scans' tap and shunt slots are unnamed. At its entry the tick stamps `sample_tick`, copies the injected group's shunt to `current_raw` and moves the trough samples out of the next scan's way; after the write and the wait it writes the crest taps under their terminals' names, the low side from the injected group. A bus read never sees a tap under the other terminal's name. Bus reads and TEL rows copy from the same block. The crest scan's own low-side tap and shunt are not read.
 
 ### 7.3 The two-chunk TEL row
 

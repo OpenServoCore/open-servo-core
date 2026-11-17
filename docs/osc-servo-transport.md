@@ -41,12 +41,14 @@ Every hardware resource the transport touches, and its duty cycle:
 | DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
 | DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly), or while a TEL burst streams the row copies, table chunks -> the frame image, halfwords, armed by the kernel; HIGH, above CH3 | ~0.125 us/B, zero CPU |
-| DMA1 CH1        | ADC sample set -> the control table's tick block; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick, alone at PFIC HIGH | 14-40 us body (rest to moving) |
+| DMA1 CH1        | ADC sample set -> the control table's tick block; DMA HIGH (wins HIGH ties by channel number); no interrupt from the scans, the kernel polls TC; its vector serves the shunt burst's HT and TC | zero CPU |
+| ADC             | the injected group's end (JEOC) vector = motor kernel tick, alone at PFIC HIGH outside a shunt burst | 14-40 us body (rest to moving) |
 | PC0 CNF         | AF open-drain for good: the servo only pulls low, the host pull-up (and the board keeper) holds mark (protocol sec 2) | set once at init |
 | main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state under one bus mask per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 us/wake |
 
 PFIC preemption is two-level (IPRIOR bit 7; bit 6 orders pending vectors
-within a level). The motor kernel (DMA1_CH1 = 22) is alone at HIGH: its
+within a level). The motor kernel (ADC = 29) is alone at HIGH outside a
+shunt burst, which hands HIGH to DMA1_CH1 (22) for its window: its
 entry waits only for a running critical section, whatever the wire
 carries. TIM2 + USART1 + SysTick + SW share LOW, the
 bus level, and therefore serialize against each other; a pending wake or

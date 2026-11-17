@@ -26,6 +26,7 @@ hot=(
     scan::swap_taps
     burst::on_dma_event
     burst::handshake
+    __qingke_rt_ADC
     __qingke_rt_DMA1_CHANNEL1
     __qingke_rt_TIM2
     __qingke_rt_USART1

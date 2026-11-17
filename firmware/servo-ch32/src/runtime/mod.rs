@@ -4,6 +4,7 @@ pub mod burst;
 pub mod control_io;
 #[cfg(feature = "defmt")]
 pub mod diag;
+pub(crate) mod entry_watch;
 pub mod init;
 pub mod isr;
 #[cfg(target_arch = "riscv32")]

@@ -167,6 +167,9 @@ pub struct Fast {
     #[cfg(not(feature = "experiment"))]
     dropped: bool,
     seen: Seen,
+    /// The last write missed its load point (`Motor::late`): the window it
+    /// drives holds two commands, so its current is no reading.
+    pub(in crate::kernel) late: bool,
 }
 
 impl Fast {
@@ -202,6 +205,7 @@ impl Fast {
                 settle: ZERO_SETTLE_TICKS,
                 i_meas_last: 0,
             },
+            late: false,
         }
     }
 
@@ -312,7 +316,8 @@ impl Fast {
         let frame = shared.frame();
         let ticks = self.ticks as u32;
         let fwd = self.duty_q15 >= 0;
-        let sel = window::select(ticks, cfg.i_window_min_ticks, cfg.v_floor_ticks);
+        let mut sel = window::select(ticks, cfg.i_window_min_ticks, cfg.v_floor_ticks);
+        sel.i_valid &= !self.late;
         // gated here, not only inside: a window under the floor skips the
         // zero's rounding and the settle-gain band lookup on the tick path
         let i_meas = if sel.i_valid {
@@ -576,6 +581,18 @@ impl Fast {
         self.seen.ticks = self.ticks;
         self.seen.bridge = self.bridge;
         self.seen.settle = self.settle;
+        self.follow(out);
+    }
+
+    /// The drive written off outside the tick's own write: the measured
+    /// window's state stays as the tick's write kept it.
+    pub fn book_off(&mut self) {
+        self.duty_q15 = 0;
+        self.follow(MotorCmd::Disabled);
+    }
+
+    #[inline(always)]
+    fn follow(&mut self, out: MotorCmd) {
         let bridge = match out {
             MotorCmd::Disabled => Bridge::Asleep,
             MotorCmd::Brake => Bridge::Brake,

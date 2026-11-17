@@ -6740,3 +6740,150 @@ fn a_held_shaft_is_asked_over_the_move_speed_up_to_the_ceiling() {
     );
     assert!(asked <= 3000 << 16, "{asked}");
 }
+
+/// The chip side's reports around the motor write: a write past its load
+/// point, a scan that never completed the frame, and ticks that stopped.
+mod streaming {
+    use super::*;
+
+    struct ProbeSensors {
+        lost: bool,
+    }
+    impl Sensors for ProbeSensors {
+        fn land(&mut self, _: &Shared) {}
+        fn complete(&mut self, _: &Shared) -> bool {
+            !self.lost
+        }
+    }
+
+    struct ProbeMotor {
+        late: bool,
+        last: Option<MotorCmd>,
+        writes: u32,
+    }
+    impl Motor for ProbeMotor {
+        fn write(&mut self, cmd: MotorCmd) {
+            self.last = Some(cmd);
+            self.writes += 1;
+        }
+        fn late(&self) -> bool {
+            self.late
+        }
+    }
+
+    struct ProbeIo {
+        sensors: ProbeSensors,
+        motor: ProbeMotor,
+    }
+    impl ControlIo for ProbeIo {
+        type Sensors = ProbeSensors;
+        type Motor = ProbeMotor;
+        fn parts(&mut self) -> (&mut ProbeSensors, &mut ProbeMotor) {
+            (&mut self.sensors, &mut self.motor)
+        }
+    }
+
+    /// OpenLoop at 8000 on a +200 shunt, past the slew: every window reads.
+    fn driving(sh: &Shared) -> Kernel<ProbeIo> {
+        drive_setup(sh);
+        let mut k = Kernel::new(
+            ProbeIo {
+                sensors: ProbeSensors { lost: false },
+                motor: ProbeMotor {
+                    late: false,
+                    last: None,
+                    writes: 0,
+                },
+            },
+            TIMING,
+        );
+        for _ in 0..200 {
+            k.on_scan(frame(2000, BIAS + 200), sh);
+        }
+        assert_ne!(tick_block(sh).tick_flags & tick_flag::I_VALID, 0);
+        k
+    }
+
+    fn stays_off(k: &mut Kernel<ProbeIo>, sh: &Shared) {
+        for _ in 0..2 * DECIM_MED {
+            k.on_scan(frame(2000, BIAS + 200), sh);
+            assert!(matches!(k.io.motor.last, Some(MotorCmd::Disabled)));
+        }
+        assert_eq!(k.faults.mask(), faults::BIT_SENSOR);
+        sh.table.with(|t| {
+            assert_eq!(t.telemetry.mode.fault_code, faults::CODE_SENSOR);
+            assert_eq!(t.telemetry.common.fault_flags, faults::BIT_SENSOR);
+        });
+    }
+
+    /// A write that lands counting up loads at the next crest, mid-pulse:
+    /// the window that pulse drives is no current reading, and the next
+    /// write on time restores it.
+    #[test]
+    fn a_late_write_voids_the_next_windows_current() {
+        let sh = Shared::new();
+        let mut k = driving(&sh);
+        k.io.motor.late = true;
+        k.on_scan(frame(2000, BIAS + 200), &sh);
+        assert!(k.write_late());
+        assert_ne!(
+            tick_block(&sh).tick_flags & tick_flag::I_VALID,
+            0,
+            "the late write's own tick measured an earlier window"
+        );
+        for _ in 0..3 {
+            k.on_scan(frame(2000, BIAS + 200), &sh);
+            assert_eq!(tick_block(&sh).tick_flags & tick_flag::I_VALID, 0);
+        }
+        k.io.motor.late = false;
+        k.on_scan(frame(2000, BIAS + 200), &sh);
+        assert!(!k.write_late());
+        assert_eq!(tick_block(&sh).tick_flags & tick_flag::I_VALID, 0);
+        k.on_scan(frame(2000, BIAS + 200), &sh);
+        assert_ne!(tick_block(&sh).tick_flags & tick_flag::I_VALID, 0);
+        assert_eq!(k.faults.mask(), 0);
+    }
+
+    /// A scan that never lands may be a converter that never ticks the
+    /// kernel again: the sensor fault latches and publishes, and the drive
+    /// goes off in the same tick, after the write it already made, and
+    /// stays off.
+    #[test]
+    fn a_scan_that_never_lands_faults_and_writes_the_drive_off() {
+        let sh = Shared::new();
+        let mut k = driving(&sh);
+        let before = k.io.motor.writes;
+        k.io.sensors.lost = true;
+        k.on_scan(frame(2000, BIAS + 200), &sh);
+        assert_eq!(k.io.motor.writes, before + 2);
+        assert!(matches!(k.io.motor.last, Some(MotorCmd::Disabled)));
+        assert_eq!(k.faults.mask(), faults::BIT_SENSOR);
+        k.io.sensors.lost = false;
+        stays_off(&mut k, &sh);
+    }
+
+    /// Ticks that stop leave the bridge on the last compares; the chip's
+    /// main loop then writes the drive off with no tick under way. The
+    /// fault is in the table at once, and a kernel that ticks again keeps
+    /// the drive off until the ack.
+    #[test]
+    fn a_stopped_tick_faults_the_drive_off_from_outside_the_tick() {
+        let sh = Shared::new();
+        let mut k = driving(&sh);
+        assert!(matches!(k.io.motor.last, Some(MotorCmd::Drive { .. })));
+        k.sensor_lost(&sh);
+        assert!(matches!(k.io.motor.last, Some(MotorCmd::Disabled)));
+        assert_eq!(k.fast.duty_q15, 0);
+        sh.table.with(|t| {
+            assert_eq!(t.telemetry.mode.fault_code, faults::CODE_SENSOR);
+            assert_eq!(t.telemetry.common.fault_flags, faults::BIT_SENSOR);
+        });
+        k.on_scan(frame(2000, BIAS + 200), &sh);
+        assert_eq!(
+            tick_block(&sh).tick_flags & tick_flag::I_VALID,
+            0,
+            "the window after the drive went off read the old width"
+        );
+        stays_off(&mut k, &sh);
+    }
+}
