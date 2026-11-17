@@ -30,7 +30,7 @@ mod tests;
 
 use osc_protocol::wire::LAW_BREAK_BIT_TIMES;
 
-use crate::kernel::{DECIM_MED, TICK_HZ, phase};
+use crate::kernel::{DECIM_MED, TICK_HZ};
 
 /// The clock every budget counts: the chip's HCLK (the chip asserts it).
 pub const CLOCK_HZ: u32 = 48_000_000;
@@ -89,114 +89,34 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// Kernel tick body with no event on it, per regime and phase: the longest
 /// a window may show.
 ///
-/// M, every gated window's ticks by drive arm, on the image the table
-/// ships with, a closing tick booked apart, 5 runs: Open over the Open
-/// ticks, Closed over the Closed ticks, OpenLoop over the openloop
-/// window's OpenLoop ticks. A report-only window feeds no row. Each cell
-/// is its measured maximum with the rule's margin; the bodies hold the
-/// tick block's work and every phase's stages. The LIMITS column carries
-/// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, the SPEED column
-/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`], [`STREAM_ENTRY`] and
-/// its regime's [`SCAN_WAIT`], which the measurement predates.
+/// M, every gated window's ticks by drive arm, a closing tick booked apart,
+/// one run of the budgets hardware test on a `scripts/build-image.sh`
+/// bench image that carries this kernel with later window-current work on
+/// top, so each cell upper-bounds this kernel's: Open over the Open ticks,
+/// Closed over the Closed ticks, OpenLoop over the openloop window's
+/// OpenLoop ticks. A report-only window feeds no row. Each cell is its
+/// measured maximum with the rule's margin; the bodies hold the tick
+/// block's work, the entry on the injected group, the motor write ahead of
+/// the voltage side, the wait for the crest scan and every phase's stages.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
-pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
-    [684, 1002, 849, 912, 534, 915, 519, 699, 510, 537],
-    [1269, 1635, 1605, 1500, 1422, 1614, 1092, 1395, 1155, 1236],
-    [1254, 1611, 1125, 1446, 1089, 1455, 1062, 1269, 1053, 1134],
-]);
+pub const KERNEL: [[u32; PHASES]; REGIMES] = [
+    [894, 1266, 1116, 1371, 789, 1215, 750, 912, 750, 801],
+    [1551, 1895, 1870, 1839, 1731, 1895, 1308, 1458, 1416, 1551],
+    [1344, 1848, 1230, 1611, 1203, 1593, 1170, 1350, 1170, 1290],
+];
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
-/// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
-/// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], the SPEED column with
-/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`], [`STREAM_ENTRY`] and
-/// its regime's [`SCAN_WAIT`], as the maximum's.
-pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
-    [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
-    [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
-    [1244, 1546, 1111, 1446, 1074, 1455, 1045, 1263, 1036, 1121],
-]);
-
-/// E, on the LIMITS column of every regime, maximum and mean: Current
-/// mode's speed fold under the speed ceiling, where the measured phase
-/// had none. Matched release builds, each path through the phase priced
-/// as [`REFRESH`]: Current mode's longest, the stall permit's with the
-/// fold binding, 26 more instructions (five loads and stores, sixteen
-/// ALU, one multiply, four more taken transfers), 82.25 HCLK, with no
-/// permit 80.25; Position and Velocity take the mode test and the fold's
-/// one compare, 15.75, and OpenLoop 27. Torque off in Current mode runs
-/// the fold too, so the Open row carries it. The longest delta plus 10%,
-/// rounded up; the bench must refill the rows.
-pub const SPEED_FOLD: u32 = 91;
-
-/// E, on the LIMITS column of every regime, maximum and mean: the `UNSET`
-/// bit the configuration take leaves for `limit_flags`, where the measured
-/// phase composed none. Matched release builds, priced as [`REFRESH`]: one
-/// load and one OR on the tail every path through the phase shares, 5.25
-/// HCLK. The delta plus 10%, rounded up; the bench must refill the rows.
-/// CONTROL's belt, one shift where a mode match was, prices 9.25 to 15.25
-/// under the measured phase on every steady path and keeps its row.
-pub const UNSET_FLAG: u32 = 6;
-
-/// E, on the SPEED column by regime ([`Regime`] order), maximum and mean:
-/// the brush term in the back-EMF close, where the measured phase had
-/// none. The weight runs on every SPEED tick, so the Open row carries it,
-/// about 33 HCLK; a driven tick also folds the valid half's deviation, the
-/// average's step, the bound and the product, about 121 in all on the
-/// fade. Priced on the executed path of the release image with the fetch
-/// model ([`REFRESH`]); each row that plus 10%. The bench must refill the
-/// rows.
-pub const BRUSH_TERM: [u32; REGIMES] = [37, 134, 134];
-
-/// E, on every cell, maximum and mean: the motor write ahead of the
-/// voltage side and the medium step, where the measured tick wrote last.
-/// Every tick keeps the measured command for the work after the write: its
-/// duty and held current before the write, one load and two stores, and
-/// its width and bridge state after it, three loads and three stores; the
-/// voltage side reloads the three, takes the window floors again (two
-/// loads, four compares) and the current reading across the write (one
-/// store, one load). Priced on the executed path of the release image with
-/// the fetch model ([`REFRESH`]), 60 HCLK on every arm, plus 10%,
-/// rounded up. The bench must refill the rows.
-pub const WRITE_FIRST: u32 = 66;
-
-/// E, on every cell, maximum and mean: the tick entered on the injected
-/// group's end, where the measured tick entered on the scan's DMA. The
-/// entry clears JEOC and takes the shunt from the group; after the write
-/// it reads the timer's direction and keeps it, polls and clears the
-/// scan's TC, lands the crest taps and checks for a tap swap; the window
-/// take and the tail each test the late write. Priced on the executed path
-/// of the release image with the fetch model ([`REFRESH`]): 141.25 HCLK
-/// against the old entry's 99.75, plus 10%, rounded up. The bench must
-/// refill the rows.
-pub const STREAM_ENTRY: u32 = 46;
-
-/// E, on every cell by regime ([`Regime`] order), maximum and mean: the
-/// wait for the crest scan after the write, where the measured tick never
-/// waited. At most [`CREST_SCAN_DONE`] less the least [`ENTRY`], 37, less
-/// the shortest path to the poll, priced as [`STREAM_ENTRY`] less 10%: a
-/// faulted Off tick's 257.5 HCLK, a Closed tick's endstop brake's 297.75;
-/// OpenLoop's shortest path passes the scan's end. Rounded up. The bench
-/// must refill the rows.
-pub const SCAN_WAIT: [u32; REGIMES] = [156, 120, 0];
-
-const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
-    let mut r = 0;
-    while r < REGIMES {
-        rows[r][phase::LIMITS as usize] += SPEED_FOLD + UNSET_FLAG;
-        rows[r][phase::SPEED as usize] += BRUSH_TERM[r];
-        let mut p = 0;
-        while p < PHASES {
-            rows[r][p] += WRITE_FIRST + STREAM_ENTRY + SCAN_WAIT[r];
-            p += 1;
-        }
-        r += 1;
-    }
-    rows
-}
+/// maximum's row (OpenLoop phases 0, 2, 3, 5, 7 and 9: the bodies barely
+/// vary).
+pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = [
+    [874, 1266, 1106, 1200, 771, 1208, 730, 900, 730, 784],
+    [1409, 1787, 1787, 1700, 1650, 1705, 1222, 1382, 1227, 1487],
+    [1344, 1699, 1230, 1611, 1200, 1593, 1165, 1350, 1165, 1290],
+];
 
 /// A window's mean is judged only over this many bodies.
 pub const MEAN_MIN_BODIES: u32 = 100;
@@ -302,27 +222,16 @@ pub const TEL_LANE_MEAN: u32 = 124;
 /// DECIM_SLOW periods): the permit lease, undervoltage and the two heats,
 /// on top of the phase's row, per regime. M: the due bodies' maximum over
 /// the phase's plain maximum that sets its row, every gated window with no
-/// TEL, 5 runs, with the rule's margin: Open 608 over 471; Closed 1146
-/// over 1044, the maximum from the openloop window, its OpenLoop ticks
-/// booked Closed.
-pub const SLOW_DUE: [u32; EVENT_REGIMES] = [185, 150];
+/// TEL, on the image and run of [`KERNEL`], with the rule's margin: Open
+/// 843 over 702; Closed 1401 over 1260, both from the stepping window.
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [189, 189];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
 /// quadratic, the two rise multiplies, the cutoff fault and the winding
-/// resistance (`Medium::r_hat`: two multiplies and three stores). M as
-/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1416, the
-/// openloop window's, over 1044; plus [`R_AT_TEMPERATURE`], which the
-/// measurement predates.
-pub const SLOW_FINISH: u32 = 420 + R_AT_TEMPERATURE;
-
-/// E, over the measured finish: the winding resistance read at the
-/// estimate's temperature over 25.00 C, where the measured stage raised
-/// the stored value by the rise alone. Matched release builds, the
-/// stage's common path priced as [`REFRESH`]: 13 more instructions (one
-/// load, ten ALU, one fewer taken transfer, and the caller's two loads),
-/// 25.75 HCLK. The delta plus 10%, rounded up; the bench must refill the
-/// finish.
-pub const R_AT_TEMPERATURE: u32 = 29;
+/// resistance read at the estimate's temperature (`Medium::r_hat`). M as
+/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1626, the
+/// stepping window's, over 1260.
+pub const SLOW_FINISH: u32 = 415;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
@@ -381,6 +290,25 @@ pub const TROUGH_DONE: u32 = 106;
 /// two-chunk row, the wait for the scan ([`SCAN_WAIT`]) apart. E: priced
 /// as [`TEL_POLL`], 1011, plus 10%.
 pub const FRAME_DONE: u32 = 1113;
+
+/// E, on [`FRAME_DONE`] in the scan deadline, which the measured
+/// [`KERNEL`] rows do not reach: the tick entered on the injected group's
+/// end, where the priced reads entered on the scan's DMA. The entry clears
+/// JEOC and takes the shunt from the group; after the write it reads the
+/// timer's direction and keeps it, polls and clears the scan's TC, lands
+/// the crest taps and checks for a tap swap; the window take and the tail
+/// each test the late write. Priced on the executed path of the release
+/// image with the fetch model ([`REFRESH`]): 141.25 HCLK against the old
+/// entry's 99.75, plus 10%, rounded up.
+pub const STREAM_ENTRY: u32 = 46;
+
+/// E, on [`FRAME_DONE`] in the scan deadline by regime ([`Regime`] order):
+/// the wait for the crest scan after the write. At most
+/// [`CREST_SCAN_DONE`] less the least [`ENTRY`], 37, less the shortest
+/// path to the poll, priced as [`STREAM_ENTRY`] less 10%: a faulted Off
+/// tick's 257.5 HCLK, a Closed tick's endstop brake's 297.75; OpenLoop's
+/// shortest path passes the scan's end. Rounded up.
+pub const SCAN_WAIT: [u32; REGIMES] = [156, 120, 0];
 
 /// A hold runs Closed this long after its goal moves, then parks. M: the
 /// longest Closed episode after a 600-count step, 2899 / 3396 ticks
