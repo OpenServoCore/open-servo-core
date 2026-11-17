@@ -54,11 +54,9 @@ pub struct ThermCfg {
     pub ntc: NtcCfg,
 }
 
-/// The board NTC's counts-to-centi-C curve, host-derived from the beta
-/// model (`CalibSenseExt` pull-up / R25 / beta) as a quadratic about the
-/// 25 C point: `t = t_ref + k1 d + k2 d^2`, `d = raw_ref - raw`. Within
-/// 0.7 C of the beta curve from 15 to 50 C on 10K/10K/3950 (the tangent
-/// alone reads 2.3 C low at 45 C); `k1 == 0` = no curve.
+/// The board NTC's counts-to-centi-C curve, a host-written quadratic
+/// about a reference point: `t = t_ref + k1 d + k2 d^2`,
+/// `d = raw_ref - raw`; `k1 == 0` = no curve.
 #[derive(Copy, Clone, Default)]
 pub struct NtcCfg {
     pub raw_ref: u16,
@@ -268,7 +266,7 @@ mod tests {
         }
     }
 
-    /// The dev-v006 board's NTC.
+    /// A quadratic about 25 C on the beta model of a 10K/10K/3950 divider.
     const NTC: NtcCfg = NtcCfg {
         raw_ref: 2048,
         t_ref_cc: 2500,

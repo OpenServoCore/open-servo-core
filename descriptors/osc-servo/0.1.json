@@ -45,6 +45,7 @@
       "ntc_raw_ref",
       "ntc_t_ref_cc",
       "ntc_k1_q88",
+      "ntc_k2_q24",
       "ke_uvs_per_rad",
       "fric_breakaway_counts",
       "raw_min",
