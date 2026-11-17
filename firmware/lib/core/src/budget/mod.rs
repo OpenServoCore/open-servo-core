@@ -96,8 +96,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// is its measured maximum with the rule's margin; the bodies hold the
 /// tick block's work and every phase's stages. The LIMITS column carries
 /// [`SPEED_FOLD`] and [`UNSET_FLAG`] on top, the SPEED column
-/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`], which the measurement
-/// predates.
+/// [`BRUSH_TERM`], and every cell [`WRITE_FIRST`] and [`DRIVE_REVERSAL`],
+/// which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -112,7 +112,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (OpenLoop phase 5: the bodies barely vary); the LIMITS
 /// column with [`SPEED_FOLD`] and [`UNSET_FLAG`], the SPEED column with
-/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`], as the maximum's.
+/// [`BRUSH_TERM`] and every cell with [`WRITE_FIRST`] and
+/// [`DRIVE_REVERSAL`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [618, 985, 818, 886, 498, 902, 486, 675, 476, 501],
     [1201, 1543, 1547, 1443, 1388, 1460, 1015, 1179, 1005, 1176],
@@ -162,6 +163,18 @@ pub const BRUSH_TERM: [u32; REGIMES] = [37, 134, 134];
 /// rounded up. The bench must refill the rows.
 pub const WRITE_FIRST: u32 = 66;
 
+/// E, on every cell, maximum and mean: the first window after a drive
+/// reversal taken as no reading, where the measured tick took every
+/// window over the floor. Every tick loads and stores the last drive's
+/// way and tests the measured command's against it; a driven tick then
+/// takes both window floors ahead of the write, and a tick with no drive
+/// loads the bridge's settle and state instead. Priced on the executed
+/// path of the release image with the fetch model ([`REFRESH`]), the
+/// driven path's 26.5 HCLK over the measured tick's, with no credit for
+/// the terminal floor the voltage side no longer takes, plus 10%, rounded
+/// up. The bench must refill the rows.
+pub const DRIVE_REVERSAL: u32 = 30;
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut r = 0;
     while r < REGIMES {
@@ -169,7 +182,7 @@ const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REG
         rows[r][phase::SPEED as usize] += BRUSH_TERM[r];
         let mut p = 0;
         while p < PHASES {
-            rows[r][p] += WRITE_FIRST;
+            rows[r][p] += WRITE_FIRST + DRIVE_REVERSAL;
             p += 1;
         }
         r += 1;

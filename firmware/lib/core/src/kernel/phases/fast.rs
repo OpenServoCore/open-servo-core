@@ -102,6 +102,7 @@ impl Command {
 #[derive(Copy, Clone)]
 pub struct Measured {
     pub i_meas: Option<i32>,
+    pub(in crate::kernel) sel: window::WindowSel,
 }
 
 /// The measured window's command and held current as the write found them:
@@ -146,6 +147,10 @@ pub struct Fast {
     /// a change, 0 once settled).
     bridge: Bridge,
     settle: u8,
+    /// The way the last drive pushed while the winding may still carry its
+    /// current: 1 forward, 2 reverse, 0 none, from boot and once a state
+    /// without drive has settled.
+    way: u8,
     /// Last window-valid measurement, 0 from the first tick nothing drives:
     /// the current the observer, the limits and the tick block's
     /// `i_tick_counts` read. A window under the floor holds it under
@@ -189,6 +194,7 @@ impl Fast {
             ticks: 0,
             bridge: Bridge::Asleep,
             settle: ZERO_SETTLE_TICKS,
+            way: 0,
             i_meas_last: 0,
             vdiff_last: 0,
             #[cfg(not(feature = "experiment"))]
@@ -312,7 +318,25 @@ impl Fast {
         let frame = shared.frame();
         let ticks = self.ticks as u32;
         let fwd = self.duty_q15 >= 0;
-        let sel = window::select(ticks, cfg.i_window_min_ticks, cfg.v_floor_ticks);
+        // The first window a drive reverses into pushes against the last
+        // drive's current, which the winding still carries, and the
+        // return-path shunt reads a current against the drive as about
+        // zero: no reading for any consumer, as under the floor. A brake
+        // carries that current on L/R, a coast or off drains it into the
+        // rail, both within the zero's settle; past it the next drive is
+        // a first one.
+        let way = 2 - fwd as u8;
+        let reversed = ticks != 0 && (self.way | way) == 3;
+        if ticks != 0 {
+            self.way = way;
+        } else if self.settle == 0 && self.bridge != Bridge::Drive {
+            self.way = 0;
+        }
+        let sel = window::select(
+            if reversed { 0 } else { ticks },
+            cfg.i_window_min_ticks,
+            cfg.v_floor_ticks,
+        );
         // gated here, not only inside: a window under the floor skips the
         // zero's rounding and the settle-gain band lookup on the tick path
         let i_meas = if sel.i_valid {
@@ -337,7 +361,7 @@ impl Fast {
         }
         self.seen.duty_q15 = self.duty_q15;
         self.seen.i_meas_last = self.i_meas_last;
-        Measured { i_meas }
+        Measured { i_meas, sel }
     }
 
     /// The voltage side of the measurement, after the write: the terminal
@@ -353,7 +377,7 @@ impl Fast {
         let frame = shared.frame();
         let seen = self.seen;
         let ticks = seen.ticks as u32;
-        let sel = window::select(ticks, cfg.i_window_min_ticks, cfg.v_floor_ticks);
+        let sel = m.sel;
         // the taps read physical va - vb; a reversed motor makes that the
         // negative of the logical drive direction every consumer expects.
         // neg is 0 or -1: (v ^ neg) - neg negates without a branch
