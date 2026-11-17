@@ -8,7 +8,7 @@ use crate::kernel::phases::loops::faults;
 use crate::kernel::phases::loops::limits::flag;
 use crate::kernel::{DECIM_MED, DECIM_SLOW, Kernel, KernelTiming, phase};
 use crate::regions::control::Mode;
-use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
+use crate::traits::{ControlIo, Motor, MotorCmd, Sensors, TelStream};
 use crate::{ControlTable, RegionStorage, SensorFrame, Shared, adc};
 
 const BIAS: u16 = 2048;
@@ -24,7 +24,6 @@ const TIMING: KernelTiming = KernelTiming {
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
     vbus_scale_q15: 34952,
     bias_brake_min_ticks: 600,
-    v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
     bridge_min_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
@@ -94,7 +93,6 @@ fn seed(shared: &Shared) {
         c.limits.drive_polarity = true;
         c.limits.oc_trip_counts = 2400;
         c.limits.oc_trip_ticks = 4;
-        c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = false;
         let cal = &mut t.calib;
         cal.sense.i_window_min_ticks = 100;
@@ -112,8 +110,8 @@ fn write_config(sh: &Shared, f: impl FnOnce(&mut ControlTable)) {
     sh.config_commit_end();
 }
 
-/// Slow-decay frames: the trough scan lands in the brake phase, so the shunt
-/// reads its offset there.
+/// The trough scan lands in the brake phase, so the shunt reads its offset
+/// there.
 fn frame(pos: u16, current: u16) -> SensorFrame {
     SensorFrame {
         pos,
@@ -159,29 +157,21 @@ fn torque_on(sh: &Shared, goal: i16, deadman: u16) {
 }
 
 /// The goal drives as written from the first tick: no limiter slews it, no
-/// band ceilings it, the configured decay carries it, and the mode byte
-/// changes nothing. `duty_max_q15` still clamps it, at the next CONTROL
+/// band ceilings it, and the mode byte changes nothing. `duty_max_q15` still clamps it, at the next CONTROL
 /// phase after the take.
 #[test]
 fn openloop_duty_is_the_goal() {
     let sh = Shared::new();
     seed(&sh);
     torque_on(&sh, GOAL, 0);
-    sh.table
-        .with_mut(|t| t.config.limits.openloop_decay = DecayMode::Fast);
     let mut k = kernel();
     k.on_scan(frame(2000, BIAS), &sh);
     assert_eq!(k.duty_q15(), GOAL, "the first tick drives the goal");
     scan(&mut k, &sh, frame(2000, BIAS), 2 * DECIM_MED as u32);
     match last_cmd(&k) {
-        MotorCmd::Drive {
-            ticks,
-            reverse,
-            decay,
-        } => {
+        MotorCmd::Drive { ticks, reverse } => {
             assert_eq!(ticks, window::drive_ticks(GOAL, ARR) as u16);
             assert!(!reverse);
-            assert!(matches!(decay, DecayMode::Fast));
         }
         other => panic!("expected Drive, got {other:?}"),
     }

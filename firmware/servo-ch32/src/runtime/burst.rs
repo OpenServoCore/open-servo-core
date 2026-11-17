@@ -28,7 +28,7 @@ use osc_servo_core::regions::burst::{
     BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };
 use osc_servo_core::regions::{ControlTable, Mode};
-use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
+use osc_servo_core::{ControlIo as _, Motor as _, MotorCmd, RegionStorageRaw, Shared};
 
 use crate::cfg::chip;
 use crate::hal::clocks::HCLK_HZ;
@@ -90,7 +90,6 @@ struct Fsm {
     /// The step in the wiring's frame: `drive_polarity` is applied at the
     /// arm, since the kernel's output negation never sees the step.
     duty_q15: i16,
-    decay: DecayMode,
     chans: u8,
 }
 
@@ -99,7 +98,6 @@ static FSM: SyncUnsafeCell<Fsm> = SyncUnsafeCell::new(Fsm {
     v_max_counts: 0,
     settle: 0,
     duty_q15: 0,
-    decay: DecayMode::Slow,
     chans: 0,
 });
 
@@ -217,7 +215,6 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
             let duty = (req.duty_q15 as i32).clamp(-max, max) as i16;
             f.duty_q15 = if lim_cfg.drive_polarity { duty } else { -duty };
-            f.decay = lim_cfg.openloop_decay;
             f.chans = req.chans;
             f.settle = BURST_SETTLE_TICKS;
             f.armed_at = now;
@@ -331,7 +328,6 @@ fn step(p: *mut ControlTable) {
     motor.write(MotorCmd::Drive {
         ticks: window::drive_ticks(f.duty_q15, timer::period()) as u16,
         reverse: f.duty_q15 < 0,
-        decay: f.decay,
     });
     // Measured, not assumed: the ISR entry latency lands in the index.
     let at = BURST_LEN as u16 - dma::remaining(CH);
@@ -455,7 +451,6 @@ mod tests {
             v_max_counts: 0,
             settle: 0,
             duty_q15: 0,
-            decay: DecayMode::Slow,
             chans: 0,
         };
         install(V_MAX);

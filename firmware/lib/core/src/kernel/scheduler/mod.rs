@@ -40,13 +40,9 @@ pub struct KernelTiming {
     pub dt_med_q32: u32,
     /// Rail-tap -> vmotor-tap counts, Q15 (`VbusEst::new`).
     pub vbus_scale_q15: u32,
-    /// Board data: the shortest Slow-decay brake half whose trough shunt
-    /// sample feeds the bias tracker (`window::trough_is_brake`).
+    /// Board data: the shortest brake half whose trough shunt sample feeds
+    /// the bias tracker (`window::trough_is_brake`).
     pub bias_brake_min_ticks: u16,
-    /// Board data: the shortest Fast-decay window whose trough scan samples
-    /// both terminal taps inside it. It raises CALIB `v_window_min_ticks` for
-    /// Fast decay only (`window::v_floors`).
-    pub v_trough_min_ticks: u16,
     /// Board data: the shortest window whose terminal differential the
     /// back-EMF observer takes. Under it the drive pulse comes out short of
     /// the commanded width by enough to bias the period-average voltage the
@@ -122,7 +118,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     }
 
     /// The configuration, whole, then the winding resistance on the new
-    /// `r_q12` and the terminal floor at the OpenLoop decay. The rail clamp
+    /// `r_q12` and the terminal floor. The rail clamp
     /// follows `duty_max_q15` at the next RAIL phase.
     /// The kernel preempts the bus, so no commit store lands inside the
     /// tick: at an even count the span is one committed set. At an odd one
@@ -137,11 +133,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.cfg.take(shared);
         #[cfg(not(feature = "experiment"))]
         self.medium.r_hat(&self.cfg, shared, &mut self.cmd);
-        let v_floor = self.cfg.v_floor_q15[self.cfg.limits.openloop_decay as usize];
         let p = shared.table.region_ptr();
         // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
         unsafe {
-            (&raw mut (*p).telemetry_ext.limits_ext.window_v_floor_q15).write_volatile(v_floor);
+            (&raw mut (*p).telemetry_ext.limits_ext.window_v_floor_q15)
+                .write_volatile(self.cfg.v_floor_q15);
         }
     }
 

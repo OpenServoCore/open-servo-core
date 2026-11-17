@@ -38,8 +38,7 @@ enum CaptureCmd {
     /// Measure the servo under its current limit and write the dataset's
     /// envelope.toml: per grid duty its climb, speed, braked stop and window,
     /// the coast ladder and every chain the session drives, each run on the
-    /// servo only while it fits the runway; the grid again under fast decay
-    /// for a recording that drives under it.
+    /// servo only while it fits the runway.
     Pilot(pilot::Args),
     /// Print the session procedure and, per capture, the block order, block
     /// map and each recording's schedule, expanded against the dataset's
@@ -176,12 +175,8 @@ fn print_plan(a: &PlanArgs) -> Result<()> {
         ),
         None => println!("  battery: {} is not gated", a.supply.as_str()),
     }
-    let fast = env
-        .fast
-        .as_ref()
-        .map_or("none".to_string(), |g| format!("{}%", g.top_pct));
     println!(
-        "envelope: {} (grid top {}%, under fast decay {fast}, coast top {}%)",
+        "envelope: {} (grid top {}%, coast top {}%)",
         dir.join("envelope.toml").display(),
         env.grid.top_pct,
         env.coast.top_pct
@@ -191,9 +186,8 @@ fn print_plan(a: &PlanArgs) -> Result<()> {
         for r in plan::expand(&p, &env, n)? {
             let order: Vec<&str> = r.blocks.iter().map(|b| b.name.as_str()).collect();
             println!(
-                "  {} ({} decay, {} steps, {:.1} s streamed each way): {}",
+                "  {} ({} steps, {:.1} s streamed each way): {}",
                 r.recording,
-                r.decay.as_str(),
                 r.schedule.len(),
                 streamed_ms(&r.schedule) as f64 / 1000.0,
                 order.join(" ")

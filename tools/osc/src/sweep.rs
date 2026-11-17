@@ -77,22 +77,6 @@ impl Dirs {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Decay {
-    Slow,
-    Fast,
-}
-
-impl Decay {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Decay::Slow => "slow",
-            Decay::Fast => "fast",
-        }
-    }
-}
-
 /// One schedule entry: a drive rung, a chained drive, or a zero-duty
 /// coast/brake segment. Drive and Then carry an optional per-step window in
 /// ms, overriding `--window-ms`. A rung is one unpolled burst that nothing can
@@ -186,7 +170,6 @@ pub(crate) fn feeds(steps: &[Step], k: usize) -> bool {
 pub(crate) struct Cfg {
     pub(crate) steps: Vec<Step>,
     pub(crate) dirs: Dirs,
-    pub(crate) decay: Decay,
     pub(crate) window_ms: u32,
     pub(crate) rest_ms: u32,
     pub(crate) baseline_ms: u32,
@@ -437,8 +420,8 @@ fn seek_stop<S: Servo>(
     bail!("no end stop in 10 s driving {dir:+} at {duty} q15")
 }
 
-/// Dynamic brake after a rung: with openloop_decay Slow, a token duty holds
-/// the idle H-bridge leg HIGH for the rest of each PWM period - the winding
+/// Dynamic brake after a rung: a token duty holds the idle H-bridge leg
+/// HIGH for the rest of each PWM period (slow decay) - the winding
 /// shorts through the driver and momentum dies in a few hundred counts.
 /// A plain duty-0 write is COAST (motor.rs maps zero ticks to both-low);
 /// at battery volts the freewheel from a top rung crosses the remaining
@@ -532,7 +515,6 @@ pub(crate) fn meta<P: Pipe>(
     let servo = servo_meta(c, id)?;
     let mut m = serde_json::json!({
         "schedule": cfg.steps.iter().map(Step::to_string).collect::<Vec<_>>(),
-        "decay": cfg.decay.as_str(),
         "dirs": cfg.dirs.signs(),
         "window_ms": cfg.window_ms,
         "rung_tries": cfg.rung_tries,
@@ -617,7 +599,6 @@ pub(crate) fn drive(
 
 /// The descriptor-placed registers the run toggles.
 struct Regs {
-    decay: Reg,
     zero_brake: Reg,
 }
 
@@ -636,7 +617,6 @@ fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
         })
     };
     Ok(Regs {
-        decay: field_reg("openloop_decay")?,
         zero_brake: field_reg("openloop_zero_brake")?,
     })
 }
@@ -652,11 +632,9 @@ pub(crate) fn record<S: Servo>(
     let id = s.id();
     let regs = resolve_regs(s.client(), id)?;
     let r = guard(s, |s| chains(s, cfg, &regs, &mut on_seg));
-    // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
-    // guards back on. The permit is RAM-only so a power cycle clears it
+    // Belt for a run cut mid-burst: brake flag clear, guards back on. The permit is RAM-only so a power cycle clears it
     // anyway, but a servo left unguarded until someone reboots it is a trap.
     let _ = s.write(regs.zero_brake, 0);
-    let _ = s.write(regs.decay, Decay::Slow as i32);
     let _ = s.write(control::STALL_PERMIT, 0);
     let segments = r?;
     let rows_dropped = segments
@@ -686,7 +664,6 @@ fn chains<S: Servo>(
         Ok(())
     };
 
-    s.write(regs.decay, Decay::Slow as i32)?;
     s.write(regs.zero_brake, 0)?;
     let mut lease = Lease::new(cfg.stall || cfg.static_load, s.experiment()?);
 
@@ -786,19 +763,11 @@ fn chains<S: Servo>(
                     if matches!(step, Step::Brake(_)) {
                         s.write(regs.zero_brake, 1)?;
                     }
-                    // Fast decay only inside the burst: the seek and the post-step
-                    // brake need slow decay to move and to stop.
-                    if cfg.decay == Decay::Fast {
-                        s.write(regs.decay, Decay::Fast as i32)?;
-                    }
                     let samples = samples_of_ms(ms, tick_hz);
                     lease.keep(s)?;
                     lease.check_stream(samples)?;
                     let (frames, st) =
                         s.stream(samples, Some((control::GOAL_DUTY, duty)), chunks)?;
-                    if cfg.decay == Decay::Fast {
-                        s.write(regs.decay, Decay::Slow as i32)?;
-                    }
                     if matches!(step, Step::Brake(_)) {
                         s.write(regs.zero_brake, 0)?;
                     }

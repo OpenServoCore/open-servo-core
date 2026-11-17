@@ -294,7 +294,6 @@ pub(crate) mod bench {
 
     use super::*;
     use crate::capture::Supply;
-    use crate::sweep::Decay;
 
     /// The in-process servo stack, calibrated and identified like the bench
     /// servo: limit 280, stall yield 168 released under 84, soft limits
@@ -360,14 +359,6 @@ pub(crate) mod bench {
         /// the limiter holds the applied duty 1000 under the goal from this
         /// many ticks into a stream on. None never does.
         pub(crate) late_load: Option<(i16, usize)>,
-        /// Under fast decay the shaft stays still under this duty and the
-        /// limiter never holds it: while the decay is fast the breakaway
-        /// rises to it and the current limit is lifted. None drives as
-        /// under slow decay.
-        pub(crate) fast_breakaway_q15: Option<i16>,
-        /// The breakaway and current limit a fast decay write set aside.
-        slow: Option<(i16, Option<u16>)>,
-        decay: u16,
         pub(crate) cap: BurstCap,
         /// The image the bench servo answers for.
         pub(crate) experiment: bool,
@@ -383,7 +374,6 @@ pub(crate) mod bench {
             };
             let (mut c, id) = table(vbus_raw);
             let d = crate::state::descriptor(&mut c, id).unwrap();
-            let decay = crate::descriptor::field(&d, "openloop_decay").unwrap().addr;
             let mut servo = bench_mg90(vbus);
             servo.ends = (232.0, 3849.0);
             servo.pos = 2029.0;
@@ -397,9 +387,6 @@ pub(crate) mod bench {
                 bus: Bus::BENCH,
                 chatter: 0,
                 late_load: None,
-                fast_breakaway_q15: None,
-                slow: None,
-                decay,
                 cap,
                 experiment: false,
                 writes: Vec::new(),
@@ -433,17 +420,6 @@ pub(crate) mod bench {
             self.busy(half, 0.5);
             self.writes.push((reg, value));
             self.servo.write(reg, value);
-            if reg.addr == self.decay
-                && let Some(q15) = self.fast_breakaway_q15
-            {
-                let s = &mut self.servo;
-                if value == Decay::Fast as i32 {
-                    self.slow.get_or_insert((s.breakaway_q15, s.current_limit));
-                    (s.breakaway_q15, s.current_limit) = (q15, None);
-                } else if let Some(slow) = self.slow.take() {
-                    (s.breakaway_q15, s.current_limit) = slow;
-                }
-            }
             self.busy(half, 0.5);
             Ok(())
         }

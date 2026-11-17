@@ -16,7 +16,7 @@
 
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::POINTS;
-use osc_servo_core::{ControlTable, DecayMode, RegionStorage, Shared, StallResponse};
+use osc_servo_core::{ControlTable, RegionStorage, Shared, StallResponse};
 
 use crate::mg90::{Contact, Mg90, Motor, stored_r};
 use crate::plant::{lut_live, seed};
@@ -69,7 +69,6 @@ pub fn set_of_record(t: &mut ControlTable) {
     c.limits.stall_tau_trip_counts = 65535;
     c.limits.oc_trip_counts = 2497;
     c.limits.oc_trip_ticks = 8;
-    c.limits.openloop_decay = DecayMode::Slow;
     c.limits.openloop_zero_brake = false;
     c.limits.thermal_tau_s = 2;
     c.thermal.cutoff_cc = 9000;

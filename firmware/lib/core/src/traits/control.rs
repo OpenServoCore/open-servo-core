@@ -1,5 +1,3 @@
-use control_table::Enum;
-
 use crate::Shared;
 
 /// What the kernel control loop reads from the board hardware.
@@ -61,26 +59,9 @@ pub enum MotorCmd {
     /// `drv_en` HIGH, both low-side FETs on. Short-circuit braking.
     Brake,
     /// `drv_en` HIGH, PWM drive: `ticks` of the period on (`window::drive_ticks`),
-    /// `reverse` in the wiring's frame, selectable off-window decay. Zero
-    /// ticks coast.
-    Drive {
-        ticks: u16,
-        reverse: bool,
-        decay: DecayMode,
-    },
-}
-
-/// Also CONFIG `openloop_decay`, OpenLoop's off-window decay (closed-loop
-/// modes force Slow): `repr(u8)`, and a discriminant outside `ALLOWED` is
-/// UB, so table writes gate on it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
-#[repr(u8)]
-pub enum DecayMode {
-    /// Off-window = BRAKE (idle leg HIGH). DRV8212P-correct for usable torque.
-    #[default]
-    Slow = 0,
-    /// Off-window = COAST (idle leg LOW). Low EMI, near-zero avg current on DRV8212P.
-    Fast = 1,
+    /// `reverse` in the wiring's frame, the off-window a brake (slow decay,
+    /// idle leg HIGH). Zero ticks coast.
+    Drive { ticks: u16, reverse: bool },
 }
 
 bitflags::bitflags! {

@@ -1,48 +1,34 @@
 //! Drive-window selection for the twin per-period ADC scans. Center-aligned
-//! PWMMODE1 with the chip-side CCR mapping (Slow: STATIC_HIGH + arr-ticks,
-//! Fast: ticks + 0) puts the drive window at the counter PEAK under Slow
-//! decay and at the TROUGH under Fast, for either drive direction - decay
-//! alone picks the scan half. The shunt is direction-blind, so the signed
+//! PWMMODE1 with the chip-side CCR mapping (STATIC_HIGH + arr-ticks) puts
+//! the drive window at the counter PEAK for either drive direction, and the
+//! trough in the brake half. The shunt is direction-blind, so the signed
 //! current takes its sign from the commanded duty.
 
 use crate::estimator::bemf::RECIP_ARR_SHIFT;
 use crate::math::{q_mul, q_mul_u};
-use crate::traits::DecayMode;
 use crate::{Frame, Shared};
 
-/// Which scan half carries the drive window and whether it is wide enough
-/// for each sense path to have settled.
+/// Whether the drive window is wide enough for each sense path to have
+/// settled.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct WindowSel {
     pub i_valid: bool,
     pub v_valid: bool,
-    pub use_trough: bool,
 }
 
 /// `drive_ticks` is the TIM1 compare width the motor write used; the caller
 /// passes 0 for Coast/Brake/Disabled or zero duty, which invalidates both
 /// paths even against a zero floor. Floors are board-data minimum widths
 /// (`i_window_min_ticks` / `v_window_min_ticks`).
-pub fn select(decay: DecayMode, drive_ticks: u32, i_floor: u16, v_floor: u16) -> WindowSel {
+pub fn select(drive_ticks: u32, i_floor: u16, v_floor: u16) -> WindowSel {
     WindowSel {
         i_valid: drive_ticks != 0 && drive_ticks >= i_floor as u32,
         v_valid: drive_ticks != 0 && drive_ticks >= v_floor as u32,
-        use_trough: matches!(decay, DecayMode::Fast),
     }
 }
 
 /// Band width of `SettleGain`, 8 ticks.
 const SETTLE_BAND_SHIFT: u32 = 3;
-
-/// The terminal floor `select` takes per decay, indexed by `DecayMode as
-/// usize`: CALIB `v_window_min_ticks`, raised under Fast decay to
-/// `trough_floor`, where the trough scan's taps close later in the window
-/// than the crest taps Slow decay reads.
-pub fn v_floors(v_floor: u16, trough_floor: u16) -> [u16; 2] {
-    let mut floors = [v_floor; 2];
-    floors[DecayMode::Fast as usize] = v_floor.max(trough_floor);
-    floors
-}
 
 /// Board data: the inverse of the shunt amplifier's step response at the
 /// sample instant, by drive width. A window shorter than the amplifier
@@ -85,11 +71,7 @@ pub fn i_from_frame(
     if !sel.i_valid {
         return None;
     }
-    let sample = shared.adc_mid(if sel.use_trough {
-        frame.current_trough()
-    } else {
-        frame.current()
-    });
+    let sample = shared.adc_mid(frame.current());
     // round half up: floor((floor(2x) + 1) / 2) == floor(x + 1/2)
     let mag = (q_mul(sample as i32 - bias as i32, gain_q15 as i32, 14) + 1) >> 1;
     Some(if duty_sign_positive { mag } else { -mag })
@@ -113,37 +95,26 @@ pub fn vdiff_from_frame(shared: &Shared, frame: Frame<'_>, sel: WindowSel) -> Op
     if !sel.v_valid {
         return None;
     }
-    let (va, vb) = if sel.use_trough {
-        (frame.vmotor_a_trough(), frame.vmotor_b_trough())
-    } else {
-        (frame.vmotor_a(), frame.vmotor_b())
-    };
-    let (va, vb) = (shared.adc_mid(va), shared.adc_mid(vb));
+    let (va, vb) = (
+        shared.adc_mid(frame.vmotor_a()),
+        shared.adc_mid(frame.vmotor_b()),
+    );
     Some(va as i32 - vb as i32)
 }
 
 /// A settled brake trough carries no drive current: both low-side FETs on,
 /// the winding current recirculating inside the bridge and none of it
 /// crossing the return-path shunt, so the reading is pure amplifier offset.
-/// Fast decay puts the drive window at the trough and zero ticks is
-/// Coast/Brake/Disabled (no PWM edge), so both are out.
+/// Zero ticks is Coast/Brake/Disabled (no PWM edge), so it is out.
 ///
 /// The amplifier leaves the drive pulse saturated and its tail outlasts the
 /// drive window's floor by far, so only a brake half of at least
 /// `brake_min_ticks` (board data, `KernelTiming::bias_brake_min_ticks`)
 /// reads the rest offset. A narrower one would teach the tracker a bias
 /// tens of counts high and poison every current reading.
-pub fn trough_is_brake(
-    decay: DecayMode,
-    drive_ticks: u32,
-    pwm_arr: u16,
-    brake_min_ticks: u16,
-) -> bool {
+pub fn trough_is_brake(drive_ticks: u32, pwm_arr: u16, brake_min_ticks: u16) -> bool {
     let brake_ticks = (pwm_arr as u32).saturating_sub(drive_ticks);
-    matches!(decay, DecayMode::Slow)
-        && drive_ticks != 0
-        && brake_ticks != 0
-        && brake_ticks >= brake_min_ticks as u32
+    drive_ticks != 0 && brake_ticks != 0 && brake_ticks >= brake_min_ticks as u32
 }
 
 /// Mirrors chip-side `effort_to_ticks` (`mag * arr / 32767` approximated as
@@ -209,82 +180,50 @@ mod tests {
     fn frame() -> SensorFrame {
         SensorFrame {
             current: 2500,
-            current_trough: 1500,
             vmotor_a: 3000,
-            vmotor_a_trough: 2900,
             vmotor_b: 100,
-            vmotor_b_trough: 90,
             ..Default::default()
         }
     }
 
     const UNITY: u32 = 1 << 15;
 
-    fn valid(use_trough: bool) -> WindowSel {
-        WindowSel {
-            i_valid: true,
-            v_valid: true,
-            use_trough,
-        }
-    }
-
-    #[test]
-    fn slow_decay_selects_peak_fast_selects_trough() {
-        assert!(!select(DecayMode::Slow, 500, 240, 220).use_trough);
-        assert!(select(DecayMode::Fast, 500, 240, 220).use_trough);
-    }
+    const VALID: WindowSel = WindowSel {
+        i_valid: true,
+        v_valid: true,
+    };
 
     #[test]
     fn floor_boundaries() {
-        let s = select(DecayMode::Slow, 239, 240, 220);
+        let s = select(239, 240, 220);
         assert!(!s.i_valid);
         assert!(s.v_valid);
-        let s = select(DecayMode::Slow, 240, 240, 220);
+        let s = select(240, 240, 220);
         assert!(s.i_valid);
         assert!(s.v_valid);
-        let s = select(DecayMode::Slow, 219, 240, 220);
+        let s = select(219, 240, 220);
         assert!(!s.i_valid);
         assert!(!s.v_valid);
-    }
-
-    #[test]
-    fn fast_decay_takes_the_higher_trough_floor() {
-        let v_floor = |decay: DecayMode, v, trough| v_floors(v, trough)[decay as usize];
-        assert_eq!(v_floor(DecayMode::Slow, 93, 160), 93);
-        assert_eq!(v_floor(DecayMode::Fast, 93, 160), 160);
-        assert_eq!(v_floor(DecayMode::Fast, 200, 160), 200);
-        assert_eq!(v_floor(DecayMode::Fast, 93, 0), 93);
-        let at = |decay, ticks| select(decay, ticks, 64, v_floor(decay, 93, 160)).v_valid;
-        assert!(at(DecayMode::Slow, 93));
-        assert!(!at(DecayMode::Slow, 92));
-        assert!(!at(DecayMode::Fast, 159));
-        assert!(at(DecayMode::Fast, 160));
     }
 
     #[test]
     fn zero_ticks_invalid_even_with_zero_floors() {
-        let s = select(DecayMode::Slow, 0, 0, 0);
+        let s = select(0, 0, 0);
         assert!(!s.i_valid);
         assert!(!s.v_valid);
-    }
-
-    #[test]
-    fn current_peak_vs_trough_pick() {
-        let f = frame();
-        assert_eq!(i_from_frame(&f, valid(false), true, 0, UNITY), Some(2500));
-        assert_eq!(i_from_frame(&f, valid(true), true, 0, UNITY), Some(1500));
     }
 
     #[test]
     fn current_bias_and_sign() {
         let f = frame();
-        assert_eq!(i_from_frame(&f, valid(false), true, 2048, UNITY), Some(452));
-        assert_eq!(
-            i_from_frame(&f, valid(false), false, 2048, UNITY),
-            Some(-452)
-        );
+        assert_eq!(i_from_frame(&f, VALID, true, 2048, UNITY), Some(452));
+        assert_eq!(i_from_frame(&f, VALID, false, 2048, UNITY), Some(-452));
         // sample below bias with positive duty reads negative
-        assert_eq!(i_from_frame(&f, valid(true), true, 2048, UNITY), Some(-548));
+        let under = SensorFrame {
+            current: 1500,
+            ..Default::default()
+        };
+        assert_eq!(i_from_frame(&under, VALID, true, 2048, UNITY), Some(-548));
     }
 
     const GAIN: SettleGain = SettleGain {
@@ -322,18 +261,12 @@ mod tests {
             ..Default::default()
         };
         // 300 x 33259 / 32768 = 304.49
-        assert_eq!(i_from_frame(&f, valid(false), true, 2048, 33259), Some(304));
-        assert_eq!(
-            i_from_frame(&f, valid(false), false, 2048, 33259),
-            Some(-304)
-        );
+        assert_eq!(i_from_frame(&f, VALID, true, 2048, 33259), Some(304));
+        assert_eq!(i_from_frame(&f, VALID, false, 2048, 33259), Some(-304));
         // 300 x 33300 / 32768 = 304.87
-        assert_eq!(i_from_frame(&f, valid(false), true, 2048, 33300), Some(305));
+        assert_eq!(i_from_frame(&f, VALID, true, 2048, 33300), Some(305));
         // under the bias: -300 x 33259 / 32768 = -304.49
-        assert_eq!(
-            i_from_frame(&f, valid(false), true, 2648, 33259),
-            Some(-304)
-        );
+        assert_eq!(i_from_frame(&f, VALID, true, 2648, 33259), Some(-304));
     }
 
     #[test]
@@ -344,14 +277,8 @@ mod tests {
                 ..Default::default()
             };
             let want = sample as i32 - 2048;
-            assert_eq!(
-                i_from_frame(&f, valid(false), true, 2048, UNITY),
-                Some(want)
-            );
-            assert_eq!(
-                i_from_frame(&f, valid(false), false, 2048, UNITY),
-                Some(-want)
-            );
+            assert_eq!(i_from_frame(&f, VALID, true, 2048, UNITY), Some(want));
+            assert_eq!(i_from_frame(&f, VALID, false, 2048, UNITY), Some(-want));
         }
     }
 
@@ -361,27 +288,19 @@ mod tests {
         let sel = WindowSel {
             i_valid: false,
             v_valid: true,
-            use_trough: false,
         };
         assert_eq!(i_from_frame(&f, sel, true, 0, UNITY), None);
     }
 
     #[test]
-    fn vdiff_peak_vs_trough_pick() {
-        let f = frame();
-        assert_eq!(vdiff_from_frame(&f, valid(false)), Some(2900));
-        assert_eq!(vdiff_from_frame(&f, valid(true)), Some(2810));
-    }
-
-    #[test]
     fn vdiff_sign_tracks_drive_direction() {
-        assert!(vdiff_from_frame(&frame(), valid(false)).unwrap() > 0);
+        assert!(vdiff_from_frame(&frame(), VALID).unwrap() > 0);
         let rev = SensorFrame {
             vmotor_a: 100,
             vmotor_b: 3000,
             ..Default::default()
         };
-        assert_eq!(vdiff_from_frame(&rev, valid(false)), Some(-2900));
+        assert_eq!(vdiff_from_frame(&rev, VALID), Some(-2900));
     }
 
     #[test]
@@ -390,28 +309,21 @@ mod tests {
         let sel = WindowSel {
             i_valid: true,
             v_valid: false,
-            use_trough: false,
         };
         assert_eq!(vdiff_from_frame(&f, sel), None);
     }
 
     #[test]
     fn trough_is_brake_only_inside_a_settled_slow_brake_phase() {
-        assert!(trough_is_brake(DecayMode::Slow, 1, 1200, 960));
+        assert!(trough_is_brake(1, 1200, 960));
         // 960 brake ticks, the last duty whose trough is settled; one tick
         // more of drive and the feed shuts off.
-        assert!(trough_is_brake(DecayMode::Slow, 240, 1200, 960));
-        assert!(!trough_is_brake(DecayMode::Slow, 241, 1200, 960));
-        assert!(!trough_is_brake(DecayMode::Slow, 600, 1200, 960));
-        assert!(!trough_is_brake(DecayMode::Fast, 600, 1200, 960));
-        assert!(!trough_is_brake(DecayMode::Slow, 0, 1200, 960));
-        assert!(!trough_is_brake(DecayMode::Slow, 1200, 1200, 0));
-        assert!(!trough_is_brake(
-            DecayMode::Slow,
-            drive_ticks(i16::MAX, 1200),
-            1200,
-            0
-        ));
+        assert!(trough_is_brake(240, 1200, 960));
+        assert!(!trough_is_brake(241, 1200, 960));
+        assert!(!trough_is_brake(600, 1200, 960));
+        assert!(!trough_is_brake(0, 1200, 960));
+        assert!(!trough_is_brake(1200, 1200, 0));
+        assert!(!trough_is_brake(drive_ticks(i16::MAX, 1200), 1200, 0));
     }
 
     const ADC_MAX: u16 = 4095;
@@ -432,12 +344,12 @@ mod tests {
                 ..Default::default()
             };
             for fwd in [true, false] {
-                let i = i_from_frame(&f, valid(false), fwd, bias, u16::MAX as u32).unwrap();
+                let i = i_from_frame(&f, VALID, fwd, bias, u16::MAX as u32).unwrap();
                 assert_eq!(i.abs(), RAW_MAX, "{sample} {bias} {fwd}");
                 let i = super::i_from_frame(
                     &widest,
                     Frame::of(&block(&f)),
-                    valid(false),
+                    VALID,
                     fwd,
                     bias,
                     u16::MAX as u32,
@@ -458,16 +370,13 @@ mod tests {
                     for fwd in [true, false] {
                         let f = SensorFrame {
                             current: sample,
-                            current_trough: sample,
                             ..Default::default()
                         };
-                        for trough in [false, true] {
-                            let i = i_from_frame(&f, valid(trough), fwd, bias, gain).unwrap();
-                            assert!(
-                                i16::try_from(i).is_ok(),
-                                "{sample} {bias} {gain} {fwd}: {i}"
-                            );
-                        }
+                        let i = i_from_frame(&f, VALID, fwd, bias, gain).unwrap();
+                        assert!(
+                            i16::try_from(i).is_ok(),
+                            "{sample} {bias} {gain} {fwd}: {i}"
+                        );
                     }
                 }
             }
@@ -480,14 +389,10 @@ mod tests {
             let f = SensorFrame {
                 vmotor_a: va,
                 vmotor_b: vb,
-                vmotor_a_trough: va,
-                vmotor_b_trough: vb,
                 ..Default::default()
             };
-            for trough in [false, true] {
-                let v = vdiff_from_frame(&f, valid(trough)).unwrap();
-                assert!(i16::try_from(v).is_ok(), "{va} - {vb}: {v}");
-            }
+            let v = vdiff_from_frame(&f, VALID).unwrap();
+            assert!(i16::try_from(v).is_ok(), "{va} - {vb}: {v}");
         }
     }
 
@@ -514,7 +419,7 @@ mod tests {
     }
 
     fn is_floor(d: u16, floor: u16, arr: u16) -> bool {
-        let valid = |d: u16| select(DecayMode::Slow, drive_ticks(d as i16, arr), floor, 0).i_valid;
+        let valid = |d: u16| select(drive_ticks(d as i16, arr), floor, 0).i_valid;
         valid(d) && (d == 0 || !valid(d - 1))
     }
 
@@ -548,9 +453,9 @@ mod tests {
         assert_eq!(floor_duty(u16::MAX, 1200, recip(1200)), i16::MAX as u16);
     }
 
-    /// The shunt sample and each tap, in each scan half, with every other
-    /// field of the frame on a code of its own off the wide ones.
-    fn on_channel(code: u16) -> [(SensorFrame, bool, &'static str); 6] {
+    /// The shunt sample and each tap, with every other field of the frame
+    /// on a code of its own off the wide ones.
+    fn on_channel(code: u16) -> [(SensorFrame, &'static str); 3] {
         let rest = SensorFrame {
             current: 0x812,
             current_trough: 0x834,
@@ -560,55 +465,39 @@ mod tests {
             vmotor_b_trough: 0x0bc,
             ..Default::default()
         };
-        let mut out = [
-            (rest, false, "crest shunt"),
-            (rest, true, "trough shunt"),
-            (rest, false, "crest tap a"),
-            (rest, true, "trough tap a"),
-            (rest, false, "crest tap b"),
-            (rest, true, "trough tap b"),
-        ];
+        let mut out = [(rest, "shunt"), (rest, "tap a"), (rest, "tap b")];
         out[0].0.current = code;
-        out[1].0.current_trough = code;
-        out[2].0.vmotor_a = code;
-        out[3].0.vmotor_a_trough = code;
-        out[4].0.vmotor_b = code;
-        out[5].0.vmotor_b_trough = code;
+        out[1].0.vmotor_a = code;
+        out[2].0.vmotor_b = code;
         out
     }
 
     /// The current and the differential a frame reads with no correction
-    /// at all, in the scan half `trough`.
-    fn raw_reads(f: &SensorFrame, trough: bool, bias: u16) -> (i32, i32) {
-        let (i, a, b) = if trough {
-            (f.current_trough, f.vmotor_a_trough, f.vmotor_b_trough)
-        } else {
-            (f.current, f.vmotor_a, f.vmotor_b)
-        };
-        (i as i32 - bias as i32, a as i32 - b as i32)
+    /// at all.
+    fn raw_reads(f: &SensorFrame, bias: u16) -> (i32, i32) {
+        (
+            f.current as i32 - bias as i32,
+            f.vmotor_a as i32 - f.vmotor_b as i32,
+        )
     }
 
-    fn reads(sh: &Shared, f: &SensorFrame, trough: bool, bias: u16) -> (i32, i32) {
+    fn reads(sh: &Shared, f: &SensorFrame, bias: u16) -> (i32, i32) {
         let t = block(f);
         (
-            super::i_from_frame(sh, Frame::of(&t), valid(trough), true, bias, UNITY).unwrap(),
-            super::vdiff_from_frame(sh, Frame::of(&t), valid(trough)).unwrap(),
+            super::i_from_frame(sh, Frame::of(&t), VALID, true, bias, UNITY).unwrap(),
+            super::vdiff_from_frame(sh, Frame::of(&t), VALID).unwrap(),
         )
     }
 
     /// An all-zero map changes no reading: for every 12-bit code on the
-    /// shunt sample and on each tap, in each scan half, the current and
-    /// the differential are the raw subtractions.
+    /// shunt sample and on each tap, the current and the differential are
+    /// the raw subtractions.
     #[test]
     fn a_zero_map_reads_every_window_code_raw() {
         let sh = Shared::new();
         for code in 0..=ADC_MAX {
-            for (f, trough, name) in on_channel(code) {
-                assert_eq!(
-                    reads(&sh, &f, trough, 2048),
-                    raw_reads(&f, trough, 2048),
-                    "{name} {code}"
-                );
+            for (f, name) in on_channel(code) {
+                assert_eq!(reads(&sh, &f, 2048), raw_reads(&f, 2048), "{name} {code}");
             }
         }
     }
@@ -628,14 +517,14 @@ mod tests {
         for code in 0..=ADC_MAX {
             let mid = ((wide_q4(code, &map) as i32) + 8) >> 4;
             added += (mid != 0) as u32;
-            for (n, (f, trough, name)) in on_channel(code).into_iter().enumerate() {
-                let (i, v) = raw_reads(&f, trough, 2048);
+            for (n, (f, name)) in on_channel(code).into_iter().enumerate() {
+                let (i, v) = raw_reads(&f, 2048);
                 let want = match n {
-                    0 | 1 => (i + mid, v),
-                    2 | 3 => (i, v + mid),
+                    0 => (i + mid, v),
+                    1 => (i, v + mid),
                     _ => (i, v - mid),
                 };
-                assert_eq!(reads(&sh, &f, trough, 2048), want, "{name} {code}");
+                assert_eq!(reads(&sh, &f, 2048), want, "{name} {code}");
             }
         }
         // slots 0, 1 and 7 round to nothing; the other thirteen add

@@ -380,7 +380,7 @@ fn bring_up_bus(brr: u32, break_reload: u16) {
 fn start_center_aligned_pwm(psc: u16, arr: u16) {
     timer::init_center_aligned_pwm(psc, arr);
     // Start both channels active-high; the control loop owns CCP per-cycle
-    // from the first tick for direction / decay-mode control.
+    // from the first tick for direction control.
     timer::configure_pwm_channel(chip::MOTOR_IN1_CH, timer::Polarity::ActiveHigh);
     timer::configure_pwm_channel(chip::MOTOR_IN2_CH, timer::Polarity::ActiveHigh);
     timer::set_duty(chip::MOTOR_IN1_CH, 0);

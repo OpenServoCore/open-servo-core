@@ -21,7 +21,7 @@ use crate::kernel::config::KernelConfig;
 #[cfg(not(feature = "experiment"))]
 use crate::math::sat_clamp;
 use crate::regions::telemetry::tick_flag;
-use crate::traits::{DecayMode, MotorCmd};
+use crate::traits::MotorCmd;
 use crate::{RegionStorageRaw, Shared};
 
 /// What the drive does until the medium half commands otherwise.
@@ -134,7 +134,6 @@ pub struct Fast {
     /// The drive width the motor write programmed for `duty_q15`
     /// (`window::drive_ticks`), 0 while Brake/Disabled: next tick's window.
     pub(in crate::kernel) ticks: u16,
-    decay: DecayMode,
     /// The last command's bridge state, and the ticks it has left before
     /// its shunt sample counts as zero current (`ZERO_SETTLE_TICKS` from
     /// a change, 0 once settled).
@@ -180,7 +179,6 @@ impl Fast {
             ol: DutyLimiter::new(),
             duty_q15: 0,
             ticks: 0,
-            decay: DecayMode::Slow,
             bridge: Bridge::Asleep,
             settle: ZERO_SETTLE_TICKS,
             i_meas_last: 0,
@@ -263,13 +261,10 @@ impl Fast {
     #[inline(always)]
     pub fn track_bias(&mut self, shared: &Shared) {
         let zero = match self.bridge {
-            Bridge::Drive => window::trough_is_brake(
-                self.decay,
-                self.ticks as u32,
-                self.pwm_arr,
-                self.bias_brake_min_ticks,
-            )
-            .then_some(Zero::Awake),
+            Bridge::Drive => {
+                window::trough_is_brake(self.ticks as u32, self.pwm_arr, self.bias_brake_min_ticks)
+                    .then_some(Zero::Awake)
+            }
             _ if self.settle != 0 => None,
             Bridge::Asleep => Some(Zero::Asleep),
             Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
@@ -301,12 +296,7 @@ impl Fast {
         let frame = shared.frame();
         let ticks = self.ticks as u32;
         let fwd = self.duty_q15 >= 0;
-        let sel = window::select(
-            self.decay,
-            ticks,
-            cfg.i_window_min_ticks,
-            cfg.v_floor_ticks[self.decay as usize],
-        );
+        let sel = window::select(ticks, cfg.i_window_min_ticks, cfg.v_floor_ticks);
         // gated here, not only inside: a window under the floor skips the
         // zero's rounding and the settle-gain band lookup on the tick path
         let i_meas = if sel.i_valid {
@@ -398,13 +388,12 @@ impl Fast {
                 // would command the feed-forward alone, and a zero duty
                 // holds nothing. Brake shorts the winding, passively
                 // holding against whatever momentum remains; it must be
-                // commanded explicitly - chip-side Drive{0, Slow} maps to
-                // coast. Scoped to a collapsed band so a transient i_ref
-                // zero crossing in normal travel can never reset the loop
+                // commanded explicitly - chip-side Drive{0} maps to coast.
+                // Scoped to a collapsed band so a transient i_ref zero
+                // crossing in normal travel can never reset the loop
                 // mid-reversal.
                 self.cur.reset();
                 self.duty_q15 = 0;
-                self.decay = DecayMode::Slow;
                 MotorCmd::Brake
             } else {
                 // No window only happens under the sampling floor, where
@@ -439,9 +428,7 @@ impl Fast {
                     cmd.r_loop_q12,
                 );
                 self.duty_q15 = duty;
-                // closed-loop decay is fixed Slow (spec: config enum
-                // exists for OpenLoop identification only)
-                self.drive_cmd(duty, DecayMode::Slow, cfg.limits.drive_polarity)
+                self.drive_cmd(duty, cfg.limits.drive_polarity)
             }
         } else if let Drive::Brake = drive {
             // anti-hunt: park instead of dithering on friction. The first
@@ -494,12 +481,11 @@ impl Fast {
                     // a zeroed push still coasts on its momentum into the
                     // physical stop, so the wall brakes whatever the flag says
                     if blocked || (duty == 0 && cfg.limits.openloop_zero_brake) {
-                        // chip-side Drive{0, Slow} maps to coast; a winding short
+                        // chip-side Drive{0} maps to coast; a winding short
                         // must be commanded explicitly
-                        self.decay = DecayMode::Slow;
                         MotorCmd::Brake
                     } else {
-                        self.drive_cmd(duty, cfg.limits.openloop_decay, cfg.limits.drive_polarity)
+                        self.drive_cmd(duty, cfg.limits.drive_polarity)
                     }
                 }
                 // Off; Closed took the branch above
@@ -561,12 +547,11 @@ impl Fast {
                 let duty = goal as i16;
                 self.duty_q15 = duty;
                 if duty == 0 && cfg.limits.openloop_zero_brake {
-                    // chip-side Drive{0, Slow} maps to coast; a winding short
+                    // chip-side Drive{0} maps to coast; a winding short
                     // must be commanded explicitly
-                    self.decay = DecayMode::Slow;
                     MotorCmd::Brake
                 } else {
-                    self.drive_cmd(duty, cfg.limits.openloop_decay, cfg.limits.drive_polarity)
+                    self.drive_cmd(duty, cfg.limits.drive_polarity)
                 }
             }
             Drive::Off => {
@@ -609,12 +594,10 @@ impl Fast {
     /// The drive of `duty` (logical: +duty moves counts up) in the wiring's
     /// frame; `duty_q15` and the published duty stay logical. A zero width
     /// coasts whatever its `reverse`.
-    fn drive_cmd(&mut self, duty: i16, decay: DecayMode, drive_polarity: bool) -> MotorCmd {
-        self.decay = decay;
+    fn drive_cmd(&self, duty: i16, drive_polarity: bool) -> MotorCmd {
         MotorCmd::Drive {
             ticks: window::drive_ticks(duty, self.pwm_arr) as u16,
             reverse: (duty < 0) == drive_polarity,
-            decay,
         }
     }
 }

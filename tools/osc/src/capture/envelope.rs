@@ -41,8 +41,7 @@ const HEADER: &str = "\
 # peak's distance inside soft. chains: every other chain the session drives,
 # run both ways, its excursion from the start and the peak's distance inside
 # soft; an ends chain is its duty at the window the pilot derived from the
-# climb and v_ss fit; refused_chains did not fit. fast: the grid ladder again under fast
-# decay, for a recording that drives under it.
+# climb and v_ss fit; refused_chains did not fit.
 ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -68,10 +67,6 @@ pub(crate) struct Envelope {
     pub(crate) coast: Coast,
     pub(crate) chains: Vec<ChainRun>,
     pub(crate) refused_chains: Vec<ChainRefused>,
-    /// The grid ladder again under fast decay, for a recording that drives
-    /// under it; none when the procedure has no such recording.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) fast: Option<Grid>,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -519,7 +514,7 @@ pub(super) fn mg90() -> Envelope {
             rev: Fit::rounded(0.2081, -0.867, 1.0),
         },
         windows_ms: GRID.iter().map(|g| (g.0, g.6)).collect(),
-        grid: grid.clone(),
+        grid,
         coast: Coast {
             coast_ms: 400,
             margin: 0.1,
@@ -580,7 +575,6 @@ pub(super) fn mg90() -> Envelope {
             chain("ends", "20@1072", 3619, 3239, -101),
         ],
         refused_chains: Vec::new(),
-        fast: Some(grid),
     }
 }
 

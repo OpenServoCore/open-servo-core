@@ -24,7 +24,7 @@
 //! crest, closing 37 ticks before it and retiring ahead of the crest trigger;
 //! the high-side tap takes slot 1 and closes 83 ticks after it, past its
 //! post-edge sag. Slot 2 holds the low side again, closing 135 ticks in: the
-//! peak copy is unread, the trough copy serves Fast decay. Forward (A high)
+//! peak copy is unread, the trough copy is the trough's low tap. Forward (A high)
 //! injects B over `[shunt, A, B, ..]`, Reverse injects A over
 //! `[shunt, B, A, ..]`, so the shunt keeps slot 0 at +31 either way.
 //!

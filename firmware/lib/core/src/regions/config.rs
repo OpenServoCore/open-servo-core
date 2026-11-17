@@ -1,7 +1,6 @@
 use control_table::{Block, Enum, Section};
 
 use crate::kernel::phases::loops::trajectory::{GOAL_LIM_COUNTS, VEL_CAP_CPS};
-use crate::traits::DecayMode;
 
 // Wire vocabulary, hoisted to the foundation crate so the host column can
 // name it (grid law 2). The table field below stays a raw index because the
@@ -173,16 +172,15 @@ pub struct ConfigLimits {
     pub stall_tau_trip_counts: u16,
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
-    pub openloop_decay: DecayMode,
     /// true = Brake at zero commanded duty in OpenLoop (default coast).
     pub openloop_zero_brake: bool,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
     /// The rotor heat node's time constant in seconds. The kernel runs it
     /// at the nearest power of two of its 16 ms period
     /// (`kernel::phases::loops::limits::tau_shift`), capped at the longest
     /// leak, 524 s; 0 runs one period (16 ms) and 1 s runs 64 (1.02 s).
     pub thermal_tau_s: u16,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
 }
 
 // Boot limits until the host supplies nameplate and thermal values.

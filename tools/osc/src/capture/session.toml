@@ -1,8 +1,7 @@
-# osc capture session: one capture = two recordings that between them hold
-# every free-shaft procedure the notebooks read.
+# osc capture session: one capture = one recording that holds every
+# free-shaft procedure the notebooks read.
 #
 #   slow  one sweep: grid + coast + step + reversal + breakaway + ends blocks
-#   fast  the grid again under fast decay, sized by its own pilot pass
 #
 # Every procedure of a capture runs within minutes of the others, on the same
 # rail and the same gear temperature. notebooks/oscnb/session.py slices a
@@ -53,13 +52,7 @@ cell_warn_mv = 3700
 # Recordings of one capture, in run order.
 [[recording]]
 name = "slow"
-decay = "slow"
 blocks = ["grid", "coast", "step", "reversal", "breakaway", "ends"]
-
-[[recording]]
-name = "fast"
-decay = "fast"
-blocks = ["grid"]
 
 # Duty ladder, every rung from a still shaft, each at the envelope's window
 # for its duty; the duties over the highest one the pilot kept are dropped.

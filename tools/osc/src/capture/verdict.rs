@@ -17,7 +17,7 @@ use osc_ident::limits::Ma;
 use osc_ident::runway::{SETTLE_MS, STEADY_MIN_MS};
 
 use super::envelope::{Dir, Envelope, Grid};
-use super::plan::{Block, pass};
+use super::plan::Block;
 use crate::sweep::{Cfg, Recording, Segment, Step};
 
 /// Segments a sweep commits: the baseline, then one per step per direction.
@@ -54,7 +54,8 @@ pub(crate) struct Abort {
     pub(crate) rail: f64,
     /// Winding R, vcounts per ccount.
     pub(crate) r_vpc: f64,
-    /// Fast decay: the driven half reads in the trough.
+    /// Recorded under fast decay, as older recordings' meta names it: the
+    /// driven half reads in the trough. A capture drives slow decay only.
     pub(crate) fast: bool,
     pub(crate) tick_hz: f64,
     pub(crate) ma: Ma,
@@ -126,8 +127,7 @@ pub(crate) fn verdict(
             let why = format!("seg {}: {fall}", s.seg);
             if block == Some("grid")
                 && let Step::Drive(pct, _) = step
-                && let Ok(grid) = pass(env, cfg.decay)
-                && let Some((travel, want)) = short(s, grid, pct, abort.tick_hz)
+                && let Some((travel, want)) = short(s, &env.grid, pct, abort.tick_hz)
             {
                 return Verdict::Blocked(format!(
                     "{why}; it travelled {travel} counts of the {want:.0} the pilot measured \
@@ -233,9 +233,9 @@ fn fell(s: &Segment, n: usize, tick_hz: f64) -> Option<f64> {
     None
 }
 
-/// A grid rung's travel, and what the pilot's pass under the recording's
-/// decay, `grid`, measured its duty to cross in the same window, when the
-/// rung covered under half of it.
+/// A grid rung's travel, and what the pilot's grid pass, `grid`, measured
+/// its duty to cross in the same window, when the rung covered under half
+/// of it.
 fn short(s: &Segment, grid: &Grid, pct: u8, tick_hz: f64) -> Option<(u16, f64)> {
     let rung = grid.rungs.iter().find(|r| r.pct == pct)?;
     let dir = if s.dir > 0 { Dir::Fwd } else { Dir::Rev };
@@ -319,7 +319,7 @@ pub(crate) fn to_endstop(s: &Segment, soft: [u16; 2], tick_hz: f64) -> Result<us
 }
 
 /// The driven half's current, raw: the crest under slow decay, the trough
-/// under fast.
+/// under fast (`Abort::fast`).
 fn current(f: &osc_ident::frame::TelFrame, fast: bool) -> Option<u16> {
     if fast {
         f.current_trough
@@ -432,7 +432,7 @@ pub(super) mod bench {
     use crate::capture::Supply;
     use crate::capture::front;
     use crate::rig::servo::bench::Bench;
-    use crate::sweep::{Decay, Dirs};
+    use crate::sweep::Dirs;
 
     /// A recording's schedule both ways from a torque-off baseline, at the
     /// bench servo's seek.
@@ -440,7 +440,6 @@ pub(super) mod bench {
         Cfg {
             steps,
             dirs,
-            decay: Decay::Slow,
             window_ms: 150,
             rest_ms: 500,
             baseline_ms: 200,
@@ -475,7 +474,7 @@ pub(super) mod bench {
     }
 
     pub(crate) fn abort() -> Abort {
-        front::bench().abort(Decay::Slow)
+        front::bench().abort()
     }
 }
 
@@ -487,14 +486,13 @@ mod tests {
     use crate::capture::store::fixture::{PWM_PERIOD_TICKS, cnt, plan, sweep_meta, tmp};
     use crate::capture::store::{Capture, CaptureMeta, Store};
     use crate::rig::pump::BurstStats;
-    use crate::sweep::{Decay, Dirs, Segment};
+    use crate::sweep::{Dirs, Segment};
     use osc_ident::frame::TelFrame;
 
     fn cfg(dirs: Dirs, baseline_ms: u32) -> Cfg {
         Cfg {
             steps: vec![Step::Drive(20, Some(80)), Step::Coast(400)],
             dirs,
-            decay: Decay::Slow,
             window_ms: 150,
             rest_ms: 1500,
             baseline_ms,
@@ -835,35 +833,6 @@ mod tests {
             &abort(),
         );
         assert!(matches!(v, Verdict::Rejected(_)), "{v:?}");
-    }
-
-    /// A fast recording is judged by the pilot's pass under fast decay: a
-    /// rung that pass measured still wants no travel, so a shaft stopped
-    /// short there is rejected and retried, never called blocked.
-    #[test]
-    fn a_rung_the_fast_pass_measured_still_is_never_blocked() {
-        let mut c = bench_cfg(vec![Step::Drive(40, Some(361))], Dirs::Fwd);
-        c.baseline_ms = 0;
-        c.decay = Decay::Fast;
-        let jammed = record(&c, |b| {
-            b.servo.pos = 600.0;
-            b.servo.jam = Some(1200.0);
-        });
-        let judge = |env: &Envelope| verdict(&jammed, &c, &one_block("grid", &c), env, &abort());
-        // a fast pass that moved at 40% calls it blocked
-        let mut env = envelope::mg90();
-        assert!(matches!(judge(&env), Verdict::Blocked(_)));
-        // the slow pass's travel does not stand in for a still fast one
-        let fast = env.fast.as_mut().unwrap();
-        let rung = fast.rungs.iter_mut().find(|r| r.pct == 40).unwrap();
-        for run in [&mut rung.fwd, &mut rung.rev] {
-            (run.t_goal_ms, run.travel, run.v_ss, run.stop) = (0.0, 0, 0.0, 0);
-        }
-        let why = match judge(&env) {
-            Verdict::Rejected(why) => why,
-            v => panic!("{v:?}"),
-        };
-        assert!(why.ends_with("after reaching it: the load changed mid rung"));
     }
 
     /// An ends rung in a 1277 ms window at 20 kHz as the MG90 on 2S drove

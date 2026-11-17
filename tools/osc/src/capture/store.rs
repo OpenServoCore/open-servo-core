@@ -345,7 +345,7 @@ pub(super) mod fixture {
     use super::*;
     use crate::capture::plan::Block;
     use crate::rig::pump::BurstStats;
-    use crate::sweep::{Decay, Step};
+    use crate::sweep::Step;
     pub(crate) use osc_ident::exp::testkit::PWM_PERIOD_TICKS;
     use osc_ident::frame::TelFrame;
 
@@ -364,7 +364,6 @@ pub(super) mod fixture {
     pub(crate) fn plan() -> Plan {
         Plan {
             recording: "slow".into(),
-            decay: Decay::Slow,
             schedule: vec![Step::Drive(20, Some(80)), Step::Coast(400)],
             blocks: vec![Block {
                 name: "coast".into(),

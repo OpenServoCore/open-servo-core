@@ -1,7 +1,7 @@
 //! The settled constant-duty rungs of a dataset: every driven segment that
 //! opened on a still shaft and held one duty to the end of its window, the
-//! input `osc lut build` stitches. Fast-decay recordings and stall ladders
-//! never qualify. A session block map names the rungs (its `grid` block); a
+//! input `osc lut build` stitches. Recordings made under fast decay and
+//! stall ladders never qualify. A session block map names the rungs (its `grid` block); a
 //! bare `osc sweep` recording's are its drive steps that feed no chained
 //! step. The current is the recording's own torque-off baseline removed;
 //! the duty carries the direction's sign.
@@ -15,7 +15,7 @@ use flate2::read::GzDecoder;
 use serde::Deserialize;
 
 use super::plan::Block;
-use crate::sweep::{Decay, Step, feeds};
+use crate::sweep::{Step, feeds};
 
 pub(crate) struct Rung {
     pub(crate) experiment: String,
@@ -33,7 +33,10 @@ pub(crate) struct Rung {
 struct Meta {
     schedule: Vec<Step>,
     dirs: Vec<i8>,
-    decay: Decay,
+    /// "slow" or "fast" in a recording made while captures could drive
+    /// fast decay; absent from one made since, all slow.
+    #[serde(default)]
+    decay: Option<String>,
     tick_hz: f64,
     #[serde(default)]
     stall: bool,
@@ -138,7 +141,7 @@ fn recordings(dir: &Path) -> Result<Vec<(String, PathBuf, PathBuf)>> {
 /// when a session block map names one, else every drive step nothing
 /// chains to; each once per direction, numbered as the sweep commits them.
 fn settled(m: &Meta) -> BTreeSet<u32> {
-    if m.stall || m.decay != Decay::Slow {
+    if m.stall || m.decay.as_deref().is_some_and(|d| d != "slow") {
         return BTreeSet::new();
     }
     let n = m.schedule.len();
@@ -253,7 +256,6 @@ mod tests {
         let bare = meta(json!({
             "schedule": ["15@1277", "20@897", "20@80", "coast:400", "20@60", "then:-20@60"],
             "dirs": [1, -1],
-            "decay": "slow",
             "tick_hz": 20000
         }));
         assert_eq!(settled(&bare), [1, 2, 7, 8].into());

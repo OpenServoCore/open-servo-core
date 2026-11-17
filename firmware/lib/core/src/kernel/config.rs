@@ -70,14 +70,13 @@ pub struct KernelConfig {
     tau_shift: u8,
     tau2_shift: u8,
     pub i_window_min_ticks: u16,
-    /// The terminal floor per decay (`window::v_floors`), indexed by
-    /// `DecayMode as usize`.
-    pub v_floor_ticks: [u16; 2],
+    /// CALIB `v_window_min_ticks`, the terminal floor.
+    pub v_floor_ticks: u16,
     /// Smallest duty with a valid shunt window: where the OpenLoop ceiling
     /// restarts, published as `window_floor_q15`.
     pub ol_floor_q15: u16,
-    /// `v_floor_ticks` as duties, published at the OpenLoop decay.
-    pub v_floor_q15: [u16; 2],
+    /// `v_floor_ticks` as a duty, published as `window_v_floor_q15`.
+    pub v_floor_q15: u16,
     /// The take's choice of the resistance the current loop commands
     /// through on a tick with no reading, Q.12 vcounts per ccount:
     /// `motor.r_q12` as stored, or the loop's own `i_kp_q88` where the
@@ -144,9 +143,9 @@ impl KernelConfig {
             tau_shift: 0,
             tau2_shift: 0,
             i_window_min_ticks: 0,
-            v_floor_ticks: [0; 2],
+            v_floor_ticks: 0,
             ol_floor_q15: 0,
-            v_floor_q15: [0; 2],
+            v_floor_q15: 0,
             r_loop_q12: 0,
             therm: ThermCfg::default(),
             brush_rc_q12: 0,
@@ -167,12 +166,11 @@ impl KernelConfig {
             )
         };
         self.i_window_min_ticks = i_window_min_ticks;
-        let [v0, v1] = window::v_floors(v_window_min_ticks, timing.v_trough_min_ticks);
-        self.v_floor_ticks = [v0, v1];
-        let [i, v0, v1] = [i_window_min_ticks, v0, v1]
+        self.v_floor_ticks = v_window_min_ticks;
+        let [i, v] = [i_window_min_ticks, v_window_min_ticks]
             .map(|ticks| window::floor_duty(ticks, timing.pwm_arr, timing.recip_arr_q24));
         self.ol_floor_q15 = i;
-        self.v_floor_q15 = [v0, v1];
+        self.v_floor_q15 = v;
     }
 
     /// The span as the table holds it, then the belt, the two speeds, the

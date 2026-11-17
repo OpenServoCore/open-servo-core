@@ -1,9 +1,9 @@
 //! Chip-side motor service. Translates `osc_servo_core::MotorCmd` into TIM1
 //! H-bridge writes per the DRV8212P truth table:
 //! (1,1)=BRAKE, (0,0)=COAST, (1,0)=fwd, (0,1)=rev.
-//! Slow decay holds the idle leg HIGH; Fast decay holds it LOW.
+//! A drive holds the idle leg HIGH: slow decay, the off-window a brake.
 
-use osc_servo_core::{DecayMode, Motor as MotorTrait, MotorCmd};
+use osc_servo_core::{Motor as MotorTrait, MotorCmd};
 use osc_servo_drivers::Level;
 
 use crate::hal::Pin;
@@ -62,13 +62,9 @@ impl MotorTrait for Ch32Motor {
                 self.in1.write(STATIC_HIGH);
                 self.in2.write(STATIC_HIGH);
             }
-            MotorCmd::Drive {
-                ticks,
-                reverse,
-                decay,
-            } => {
+            MotorCmd::Drive { ticks, reverse } => {
                 self.drv_en_on.apply();
-                let (in1, in2) = legs(ticks, reverse, decay, self.pwm_arr);
+                let (in1, in2) = legs(ticks, reverse, self.pwm_arr);
                 self.in1.write(in1);
                 self.in2.write(in2);
                 scan::note_drive(if reverse {
@@ -81,15 +77,16 @@ impl MotorTrait for Ch32Motor {
     }
 }
 
-/// `(in1, in2)` compares for a drive of `ticks`: the PWM leg's compare and
-/// the idle leg held per `decay`.
+/// `(in1, in2)` compares for a drive of `ticks`: the idle leg held HIGH and
+/// the PWM leg's compare.
 #[inline(always)]
-fn legs(ticks: u16, reverse: bool, decay: DecayMode, pwm_arr: u16) -> (u16, u16) {
-    let fwd = match decay {
-        DecayMode::Slow => (STATIC_HIGH, pwm_arr.saturating_sub(ticks)),
-        DecayMode::Fast => (ticks, 0),
-    };
-    if reverse { (fwd.1, fwd.0) } else { fwd }
+fn legs(ticks: u16, reverse: bool, pwm_arr: u16) -> (u16, u16) {
+    let pwm = pwm_arr.saturating_sub(ticks);
+    if reverse {
+        (pwm, STATIC_HIGH)
+    } else {
+        (STATIC_HIGH, pwm)
+    }
 }
 
 #[cfg(test)]
@@ -100,9 +97,7 @@ mod tests {
     fn legs_follow_the_truth_table() {
         let arr = 1200;
         let t = 300;
-        assert_eq!(legs(t, false, DecayMode::Slow, arr), (STATIC_HIGH, arr - t));
-        assert_eq!(legs(t, true, DecayMode::Slow, arr), (arr - t, STATIC_HIGH));
-        assert_eq!(legs(t, false, DecayMode::Fast, arr), (t, 0));
-        assert_eq!(legs(t, true, DecayMode::Fast, arr), (0, t));
+        assert_eq!(legs(t, false, arr), (STATIC_HIGH, arr - t));
+        assert_eq!(legs(t, true, arr), (arr - t, STATIC_HIGH));
     }
 }

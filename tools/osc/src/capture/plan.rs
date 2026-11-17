@@ -1,19 +1,18 @@
 //! A session procedure expanded against the envelope into the schedules one
 //! capture records, with the block map session.py slices them back by. Only
 //! what the pilot ran on the servo is planned: grid duties up to the highest
-//! it kept, at the windows it measured under the recording's decay, coast
-//! duties its coast ladder ran, and chains it ran both ways. What the pilot
-//! found does not fit this servo is dropped, and the plan says so; what it
-//! never ran, or a decay it has no pass under, sends the operator back to
-//! it.
+//! it kept, at the windows it measured, coast duties its coast ladder ran,
+//! and chains it ran both ways. What the pilot found does not fit this
+//! servo is dropped, and the plan says so; what it never ran sends the
+//! operator back to it.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use super::envelope::{Envelope, Grid};
+use super::envelope::Envelope;
 use super::pilot::{chain_name, chains_of};
 use super::procs::{Blocks, Procedure};
-use crate::sweep::{Decay, Step, parse_step};
+use crate::sweep::{Step, parse_step};
 
 /// Where one block landed in a recording's schedule.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -27,7 +26,6 @@ pub(crate) struct Block {
 #[derive(Debug)]
 pub(crate) struct Plan {
     pub(crate) recording: String,
-    pub(crate) decay: Decay,
     pub(crate) schedule: Vec<Step>,
     pub(crate) blocks: Vec<Block>,
     /// What the procedure asks and the envelope does not cover, dropped.
@@ -43,7 +41,6 @@ pub(crate) fn expand(p: &Procedure, env: &Envelope, n: u32) -> Result<Vec<Plan>>
     p.recording
         .iter()
         .map(|r| {
-            let pass = pass(env, r.decay).with_context(|| format!("recording {}", r.name))?;
             let rot = if p.rotate {
                 (n as usize - 1) % r.blocks.len()
             } else {
@@ -53,7 +50,7 @@ pub(crate) fn expand(p: &Procedure, env: &Envelope, n: u32) -> Result<Vec<Plan>>
             let mut blocks = Vec::new();
             let mut dropped = Vec::new();
             for name in r.blocks.iter().cycle().skip(rot).take(r.blocks.len()) {
-                let steps = block_steps(&p.block, name, env, pass, &mut dropped)
+                let steps = block_steps(&p.block, name, env, &mut dropped)
                     .with_context(|| format!("recording {}", r.name))?;
                 if steps.is_empty() {
                     dropped.push(format!(
@@ -80,7 +77,6 @@ pub(crate) fn expand(p: &Procedure, env: &Envelope, n: u32) -> Result<Vec<Plan>>
             }
             Ok(Plan {
                 recording: r.name.clone(),
-                decay: r.decay,
                 schedule,
                 blocks,
                 dropped,
@@ -89,29 +85,16 @@ pub(crate) fn expand(p: &Procedure, env: &Envelope, n: u32) -> Result<Vec<Plan>>
         .collect()
 }
 
-/// The grid pass the pilot measured under `decay`.
-pub(super) fn pass(env: &Envelope, decay: Decay) -> Result<&Grid> {
-    match decay {
-        Decay::Slow => Ok(&env.grid),
-        Decay::Fast => env.fast.as_ref().ok_or_else(|| {
-            anyhow!(
-                "it drives under fast decay and the envelope holds no pilot pass under it: run \
-                 `osc capture pilot` again"
-            )
-        }),
-    }
-}
-
 /// A block's steps against the envelope, what it drops noted in `dropped`.
 fn block_steps(
     b: &Blocks,
     name: &str,
     env: &Envelope,
-    pass: &Grid,
     dropped: &mut Vec<String>,
 ) -> Result<Vec<Step>> {
     Ok(match name {
         "grid" => {
+            let pass = &env.grid;
             let over: Vec<String> = b
                 .grid
                 .duties
@@ -509,15 +492,14 @@ mod tests {
     fn a_short_envelope_plans_what_it_covers() {
         let mut env = mg90();
         let why = "rev 25% did not hold its goal duty for 60 ms past the settle in 109 ms";
-        for g in [&mut env.grid, env.fast.as_mut().unwrap()] {
-            g.rungs.retain(|r| r.pct <= 20);
-            g.top_pct = 20;
-            g.refused = Some(envelope::LadderRefused {
-                pct: 25,
-                dir: envelope::Dir::Rev,
-                why: why.into(),
-            });
-        }
+        let g = &mut env.grid;
+        g.rungs.retain(|r| r.pct <= 20);
+        g.top_pct = 20;
+        g.refused = Some(envelope::LadderRefused {
+            pct: 25,
+            dir: envelope::Dir::Rev,
+            why: why.into(),
+        });
         env.coast.ladder.retain(|r| r.pct <= 20);
         env.coast.top_pct = 20;
         env.chains.retain(|c| !c.chain.starts_with("40@60"));
@@ -528,7 +510,7 @@ mod tests {
             why: "its excursion does not fit the room to the soft limit".into(),
         });
         let plans = expand(&default(), &env, 1).unwrap();
-        let [slow, fast] = plans.as_slice() else {
+        let [slow] = plans.as_slice() else {
             panic!("{} recordings", plans.len());
         };
         assert_eq!(
@@ -549,8 +531,6 @@ mod tests {
         );
         let counts: Vec<usize> = slow.blocks.iter().map(|b| b.count).collect();
         assert_eq!(counts, [2, 4, 10, 4, 18, 2]);
-        let grid: Vec<String> = fast.schedule.iter().map(Step::to_string).collect();
-        assert_eq!(grid, ["15@1064", "20@735"]);
 
         // a block with nothing left is left out, and the plan says so
         env.chains.retain(|c| c.block != "ends");
@@ -570,50 +550,17 @@ mod tests {
         );
     }
 
-    /// The fast recording's grid is sized by the pilot's pass under fast
-    /// decay: without one it is refused, with one its rungs stop at that
-    /// pass's top, at that pass's windows.
-    #[test]
-    fn fast_recording_needs_its_own_pilot_pass() {
-        let p = default();
-        let mut env = mg90();
-        env.fast = None;
-        assert_eq!(
-            err(&p, &env),
-            "recording fast: it drives under fast decay and the envelope holds no pilot pass \
-             under it: run `osc capture pilot` again"
-        );
-
-        let mut env = mg90();
-        let fast = env.fast.as_mut().unwrap();
-        fast.rungs.retain(|r| r.pct <= 45);
-        fast.top_pct = 45;
-        for r in &mut fast.rungs {
-            r.window_ms -= 10;
-        }
-        let plans = expand(&p, &env, 1).unwrap();
-        let grid: Vec<String> = plans[1].schedule.iter().map(Step::to_string).collect();
-        assert_eq!(grid.len(), 7);
-        assert_eq!(grid.last().unwrap(), "45@319");
-        let slow = &plans[0];
-        assert_eq!(
-            slow.schedule[slow.blocks[0].count - 1].to_string(),
-            "55@286"
-        );
-    }
-
     /// session.py's contract: views are the block names plus `step:W`, which
-    /// finds `30@W` followed by a coast exactly once in the slow schedule;
-    /// `fast` reads the fast recording whole.
+    /// finds `30@W` followed by a coast exactly once in the slow schedule.
     #[test]
     fn plans_keep_the_session_py_contract() {
         let (p, env) = (default(), mg90());
         for n in 1..=6 {
             let plans = expand(&p, &env, n).unwrap();
-            let [slow, fast] = plans.as_slice() else {
+            let [slow] = plans.as_slice() else {
                 panic!("{} recordings", plans.len());
             };
-            assert_eq!((slow.recording.as_str(), slow.decay), ("slow", Decay::Slow));
+            assert_eq!(slow.recording, "slow");
             let mut views = names(slow);
             views.sort_unstable();
             assert_eq!(
@@ -629,17 +576,6 @@ mod tests {
                     .count();
                 assert_eq!(hits, 1, "capture {n}: {drive}");
             }
-
-            assert_eq!((fast.recording.as_str(), fast.decay), ("fast", Decay::Fast));
-            let grid: Vec<Step> = env
-                .fast
-                .as_ref()
-                .unwrap()
-                .rungs
-                .iter()
-                .map(|r| Step::Drive(r.pct, Some(r.window_ms)))
-                .collect();
-            assert_eq!(fast.schedule, grid);
         }
     }
 }

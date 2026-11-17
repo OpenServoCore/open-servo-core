@@ -45,7 +45,7 @@ pub mod config {
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x005a, 2);
     /// The rotor heat node's time constant, s; the kernel runs the nearest
     /// power of two of its 16 ms period.
-    pub const THERMAL_TAU_S: Reg = reg(0x0062, 2);
+    pub const THERMAL_TAU_S: Reg = reg(0x0060, 2);
     /// The winding estimate's one limit: the overtemperature fault latches
     /// while the estimate reads this or more.
     pub const CUTOFF_CC: Reg = reg(0x0064, 2);
