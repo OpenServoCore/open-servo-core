@@ -213,7 +213,7 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             // The field rule already caps |duty_q15| at duty_max_q15; clamping
             // again costs one tick and cannot be skipped by a stale rule.
             let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
-            let duty = (req.duty_q15 as i32).clamp(-max, max) as i16;
+            let duty = (req.duty_q15 as i32).max(-max).min(max) as i16;
             f.duty_q15 = if lim_cfg.drive_polarity { duty } else { -duty };
             f.chans = req.chans;
             f.settle = BURST_SETTLE_TICKS;

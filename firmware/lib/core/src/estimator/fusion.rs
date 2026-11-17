@@ -119,28 +119,35 @@ impl FusionObs {
         let accel = i_counts
             .saturating_sub(fric)
             .saturating_sub(self.tau_d_q16 >> 16)
-            .clamp(-ACCEL_LIM_CC, ACCEL_LIM_CC);
+            .max(-ACCEL_LIM_CC)
+            .min(ACCEL_LIM_CC);
         let d_omega = q_mul(motor.b_i_q313 as i32, accel, 0);
         self.omega_q16 = self
             .omega_q16
             .saturating_add(d_omega.saturating_mul(1 << 3))
-            .clamp(-OMEGA_LIM_CSQ16, OMEGA_LIM_CSQ16);
+            .max(-OMEGA_LIM_CSQ16)
+            .min(OMEGA_LIM_CSQ16);
         // |omega| <= 2^31, dt < 2^23 -> |delta| < 2^22
         self.theta_q16 = self
             .theta_q16
             .saturating_add(q_mul(self.omega_q16, dt_q32 as i32, 32))
-            .clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+            .max(-THETA_LIM_CQ16)
+            .min(THETA_LIM_CQ16);
 
         // Correct. Plain sub is safe: 2^28 + 2^29 < 2^31 (theta clamp).
-        let e = (((pos_q4 as i32) << Q4_TO_Q16) - self.theta_q16).clamp(-E_LIM_CQ16, E_LIM_CQ16);
+        let e = (((pos_q4 as i32) << Q4_TO_Q16) - self.theta_q16)
+            .max(-E_LIM_CQ16)
+            .min(E_LIM_CQ16);
         self.theta_q16 = self
             .theta_q16
             .saturating_add(q_mul(gains.l1_q016 as i32, e, 16))
-            .clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+            .max(-THETA_LIM_CQ16)
+            .min(THETA_LIM_CQ16);
         self.omega_q16 = self
             .omega_q16
             .saturating_add(q_mul(gains.l2_q88 as i32, e, 8))
-            .clamp(-OMEGA_LIM_CSQ16, OMEGA_LIM_CSQ16);
+            .max(-OMEGA_LIM_CSQ16)
+            .min(OMEGA_LIM_CSQ16);
         // No model, no disturbance: with b_i unset predict explains nothing,
         // so tau_d would integrate plain position error and trip the
         // collision check in a free run.
@@ -149,7 +156,8 @@ impl FusionObs {
         } else {
             self.tau_d_q16
                 .saturating_sub(q_mul(gains.l3_q88 as i32, e, 8))
-                .clamp(-TAU_D_LIM_CCQ16, TAU_D_LIM_CCQ16)
+                .max(-TAU_D_LIM_CCQ16)
+                .min(TAU_D_LIM_CCQ16)
         };
     }
 
@@ -164,7 +172,9 @@ impl FusionObs {
     /// Whole current counts. The state clamp already bounds to +-4095; the
     /// i16 clamp is the saturating ABI cast.
     pub fn tau_d_counts(&self) -> i16 {
-        (self.tau_d_q16 >> 16).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        (self.tau_d_q16 >> 16)
+            .max(i16::MIN as i32)
+            .min(i16::MAX as i32) as i16
     }
 }
 
