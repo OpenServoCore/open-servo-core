@@ -44,6 +44,15 @@ pub mod seed {
     pub const POS_MIN_SOFT_COUNTS: i32 = 228;
     pub const POS_MAX_SOFT_COUNTS: i32 = 3872;
     pub const DRIVE_POLARITY: bool = true;
+    // The cap and the ceiling a calibration writes: while either reads 0
+    // every closed mode is refused.
+    pub const CURRENT_LIMIT_COUNTS: u16 = osc_servo_core::regions::config::current_counts(
+        500,
+        SENSE.shunt_r_mohm,
+        SENSE.gain_milli,
+        SENSE.vdd_mv,
+    );
+    pub const SPEED_CEILING_CPS: u16 = 1500;
     // The identified motor (an `osc ident` fit on a 2S rail): nonzero Ke is
     // what lets the closed loops open once the set is stamped.
     pub const R_Q12: u16 = 7270;
@@ -204,6 +213,8 @@ impl FakePipe {
             t.config.pos_soft.pos_min_soft_counts = seed::POS_MIN_SOFT_COUNTS;
             t.config.pos_soft.pos_max_soft_counts = seed::POS_MAX_SOFT_COUNTS;
             t.config.limits.drive_polarity = seed::DRIVE_POLARITY;
+            t.config.limits.current_limit_counts = seed::CURRENT_LIMIT_COUNTS;
+            t.config.loop_position.speed_ceiling_cps = seed::SPEED_CEILING_CPS;
             if therm != Therm::Off {
                 let th = &mut t.calib.thermal;
                 th.th_rise_q016 = seed::TH_RISE_Q016;
