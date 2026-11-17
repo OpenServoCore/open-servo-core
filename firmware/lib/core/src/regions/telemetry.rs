@@ -175,7 +175,7 @@ pub struct TelemetryRefs {
     /// Zero-current sense-chain output in use, raw ADC counts, driver
     /// awake: the boot rest measurement, then tracked from one sample a
     /// control period while the shunt carries no current - torque off, a
-    /// settled brake or coast, a Slow-decay brake trough
+    /// settled brake or coast, a drive's settled brake trough
     /// (`estimator::bias`). Published at the medium boundary.
     #[ct_field(access = ro)]
     pub current_bias_counts: u16,

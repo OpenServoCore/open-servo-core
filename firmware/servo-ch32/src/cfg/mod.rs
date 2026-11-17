@@ -70,7 +70,6 @@ impl Precomputed {
                 dt_med_q32: ((1u64 << 32) / med_hz as u64) as u32,
                 vbus_scale_q15,
                 bias_brake_min_ticks: cfg.calibration.bias_brake_min_ticks,
-                v_trough_min_ticks: cfg.calibration.v_trough_window_min_ticks,
                 bemf_min_ticks: cfg.calibration.bemf_window_min_ticks,
                 bridge_min_ticks: cfg.calibration.bridge_min_ticks,
                 i_settle_gain: cfg.calibration.i_settle_gain,

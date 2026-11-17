@@ -14,7 +14,7 @@ use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::stamp;
 use osc_servo_core::{
-    ControlIo, ControlTable, DecayMode, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd,
+    ControlIo, ControlTable, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd,
     RegionStorage, SensorFrame, Sensors, Shared, StallResponse, TelStream,
 };
 
@@ -65,7 +65,6 @@ pub const TIMING: KernelTiming = KernelTiming {
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 960,
-    v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
@@ -150,7 +149,6 @@ pub fn seed(shared: &Shared) {
         // inside the 12-bit span above BIAS: the plant's samples clamp at 4095
         c.limits.oc_trip_counts = 1800;
         c.limits.oc_trip_ticks = 4;
-        c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = true;
         c.limits.thermal_tau_s = 4;
         c.thermal.cutoff_cc = 10000;
@@ -220,9 +218,8 @@ impl Plant {
         }
     }
 
-    /// One FAST tick under the duty the kernel last wrote. Slow-decay
-    /// frames: the trough scan lands in the brake phase, so the shunt reads
-    /// its offset there.
+    /// One FAST tick under the duty the kernel last wrote. The trough scan
+    /// lands in the brake phase, so the shunt reads its offset there.
     pub fn step(&mut self, duty: i16) -> SensorFrame {
         self.omega_cps +=
             ((duty as i32 * DUTY_GAIN as i32) >> 15) - (self.omega_cps >> DECAY_SHIFT);

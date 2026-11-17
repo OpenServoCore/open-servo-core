@@ -9,7 +9,7 @@ pub struct TelemetryLimitsExt {
     /// (`window::floor_duty` of `v_window_min_ticks`), Q15: a drive whose
     /// fit needs `va - vb` runs at or above the higher of the two floors.
     /// Published at the kernel's first tick and at every configuration
-    /// refresh, at the OpenLoop decay.
+    /// refresh.
     #[ct_field(access = ro)]
     pub window_v_floor_q15: u16,
 }

@@ -12,9 +12,8 @@
 //! both ways at the window a session drives it, judged as the session
 //! judges a grid rung, its braked stop fitting as before. The coast ladder
 //! and every other chain the session drives then run the same way, each
-//! excursion recorded so a plan refuses a chain the pilot never ran, and
-//! for a recording under fast decay the grid ladder runs again under it.
-//! The capture front runs first, and the pack is read at rest before every
+//! excursion recorded so a plan refuses a chain the pilot never ran. The
+//! capture front runs first, and the pack is read at rest before every
 //! recording.
 
 use std::collections::BTreeMap;
@@ -44,7 +43,7 @@ use crate::rig::park::park;
 use crate::rig::pump;
 use crate::rig::servo::{Servo, Wire, guard};
 use crate::rig::{battery, blocked};
-use crate::sweep::{self, BAND_HALF, Cfg, Decay, Dirs, Recording, Segment, Step, feeds, pct_q15};
+use crate::sweep::{self, BAND_HALF, Cfg, Dirs, Recording, Segment, Step, feeds, pct_q15};
 
 /// `osc capture pilot` args.
 #[derive(clap::Args, Debug)]
@@ -200,7 +199,6 @@ fn measure_all<S: Servo>(
         lim,
         proved: p_ok,
         hz: front.tick_hz as f64 / 1000.0,
-        decay: Decay::Slow,
         burst_ms: cap.ms(),
     };
 
@@ -221,22 +219,6 @@ fn measure_all<S: Servo>(
 
     let coast = coast_ladder(s, &rig, &p.block.coast, &coast_duties, &grid, &v_ss)?;
     let (chains, refused_chains) = chains(s, &rig, p, &v_ss, &coast, &grid, &runways)?;
-    let fast = if p
-        .recording
-        .iter()
-        .any(|r| r.decay == Decay::Fast && r.blocks.iter().any(|b| b == "grid"))
-    {
-        println!(
-            "[fast] the grid ladder again under fast decay, for the recording that drives under it"
-        );
-        let fast = Rig {
-            decay: Decay::Fast,
-            ..rig
-        };
-        Some(grid_ladder(s, &fast, &grid_duties)?.grid())
-    } else {
-        None
-    };
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -256,19 +238,17 @@ fn measure_all<S: Servo>(
         coast,
         chains,
         refused_chains,
-        fast,
     })
 }
 
 /// The servo the pilot drives: its limits, the seek its jam check proved,
-/// its fast ticks per ms, the decay its rungs drive under, and the longest
-/// window one of its TEL bursts holds, ms.
+/// its fast ticks per ms, and the longest window one of its TEL bursts
+/// holds, ms.
 #[derive(Copy, Clone)]
 struct Rig {
     lim: Limits,
     proved: Proved,
     hz: f64,
-    decay: Decay,
     burst_ms: f64,
 }
 
@@ -1208,7 +1188,6 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, rig: &Rig) -> Cfg {
     Cfg {
         steps,
         dirs,
-        decay: rig.decay,
         window_ms,
         rest_ms: REST_MS,
         baseline_ms: 0,
@@ -1474,7 +1453,6 @@ mod tests {
                     .stall_plan(front.sc.r_vpc(CLASS_R_MIN), Some(0.13)),
             },
             hz: front.tick_hz as f64 / 1000.0,
-            decay: Decay::Slow,
             burst_ms: cap(front).ms(),
         }
     }
@@ -1576,12 +1554,6 @@ mod tests {
                 );
             }
             assert_eq!(env.chains.len(), 6 + ends_ran.len(), "{supply:?}");
-            // the fast recording's own pass climbs the same way; the decay
-            // write back after each rung lands before the brake, so its
-            // stops run longer and it may stop a duty lower
-            let fast = env.fast.as_ref().unwrap();
-            assert!((top - 5..=top).contains(&fast.top_pct), "{}", fast.top_pct);
-            assert!(fast.refused.is_some());
             for c in &env.chains {
                 for d in DIRS {
                     let e = c.get(d);
@@ -1856,8 +1828,8 @@ mod tests {
 
     /// A load that takes the applied duty under its goal 300 ms into a
     /// rung, from 40% up: the rungs that size 40% run shorter and hold
-    /// their goal, the window a session drives it does not. Both passes keep
-    /// 35% and refuse 40% in the session's words, and no plan built from
+    /// their goal, the window a session drives it does not. The pass keeps
+    /// 35% and refuses 40% in the session's words, and no plan built from
     /// the envelope schedules a grid rung at 40% or over.
     #[test]
     fn the_ladder_ends_at_a_duty_the_session_would_reject() {
@@ -1866,23 +1838,21 @@ mod tests {
         let (env, parked) = pilot(&mut b, &front, Supply::TwoS, &procedure(), 64);
         let env = env.unwrap();
         parked.unwrap();
-        let fast = env.fast.as_ref().unwrap();
-        for pass in [&env.grid, fast] {
-            let kept: Vec<u8> = pass.rungs.iter().map(|r| r.pct).collect();
-            assert_eq!(kept, [15, 20, 25, 30, 35]);
-            assert_eq!(pass.top_pct, 35);
-            let refused = pass.refused.as_ref().unwrap();
-            assert_eq!((refused.pct, refused.dir), (40, Dir::Fwd));
-            assert!(refused.why.starts_with("fwd 40% in "), "{}", refused.why);
-            assert!(
-                refused.why.ends_with(
-                    " ms: the applied duty fell under its goal 300.0 ms into the window, after \
-                     reaching it: the load changed mid rung"
-                ),
-                "{}",
-                refused.why
-            );
-        }
+        let pass = &env.grid;
+        let kept: Vec<u8> = pass.rungs.iter().map(|r| r.pct).collect();
+        assert_eq!(kept, [15, 20, 25, 30, 35]);
+        assert_eq!(pass.top_pct, 35);
+        let refused = pass.refused.as_ref().unwrap();
+        assert_eq!((refused.pct, refused.dir), (40, Dir::Fwd));
+        assert!(refused.why.starts_with("fwd 40% in "), "{}", refused.why);
+        assert!(
+            refused.why.ends_with(
+                " ms: the applied duty fell under its goal 300.0 ms into the window, after \
+                 reaching it: the load changed mid rung"
+            ),
+            "{}",
+            refused.why
+        );
 
         let plans = crate::capture::plan::expand(&procedure(), &env, 1).unwrap();
         for p in &plans {
@@ -1959,70 +1929,6 @@ mod tests {
         let refused = ladder.refused.unwrap();
         assert_eq!((refused.pct, refused.dir), (60, Dir::Rev));
         assert!(!b.servo.torque);
-    }
-
-    /// The bench MG90 under fast decay: still through 30%, running from
-    /// 35%. The still rungs are below breakaway and skipped: no window, no
-    /// speed fit, no session rung. Nothing sizes 35%, but the rung before
-    /// it left the shaft still, so it runs short and sizes the rest. A grid
-    /// that never moves the shaft is an error.
-    #[test]
-    fn ladder_skips_rungs_below_breakaway_and_climbs_past_them() {
-        let (mut b, front) = bench(Supply::TwoS);
-        b.fast_breakaway_q15 = Some(pct_q15(35));
-        let rig = Rig {
-            decay: Decay::Fast,
-            ..bench_rig(&front)
-        };
-        let duties = ladder_duties(&procedure().block.grid.duties, None).unwrap();
-        let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
-        let kept: Vec<u8> = ladder.rungs.iter().map(|r| r.pct).collect();
-        assert!(kept.starts_with(&[35, 40, 45]), "{kept:?}");
-        assert_eq!(ladder.below_breakaway, [5, 10, 15, 20, 25, 30]);
-        for r in &ladder.rungs {
-            for d in DIRS {
-                let v = r.get(d).v_ss;
-                assert!(v > V_SS_MIN, "{}% {d} v_ss {v}", r.pct);
-            }
-        }
-        assert!(!b.servo.torque);
-
-        // the fast recording drives every kept rung at its window and drops
-        // the still ones, saying why
-        let schedule: Vec<Step> = ladder
-            .rungs
-            .iter()
-            .map(|r| Step::Drive(r.pct, Some(r.window_ms)))
-            .collect();
-        let mut env = crate::capture::envelope::mg90();
-        env.fast = Some(Grid {
-            top_pct: *kept.last().unwrap(),
-            below_breakaway: ladder.below_breakaway,
-            rungs: ladder.rungs,
-            refused: ladder.refused,
-        });
-        let plans = crate::capture::plan::expand(&procedure(), &env, 1).unwrap();
-        let fast = plans.iter().find(|p| p.decay == Decay::Fast).unwrap();
-        assert_eq!(fast.schedule, schedule);
-        assert!(
-            fast.dropped.iter().any(|l| l
-                == "grid: 5, 10, 15, 20, 25, 30% dropped, below breakaway: the pilot saw the \
-                  shaft stay still both ways"),
-            "{:?}",
-            fast.dropped
-        );
-
-        let (mut b, _) = bench(Supply::TwoS);
-        b.fast_breakaway_q15 = Some(pct_q15(35));
-        let e = grid_ladder(&mut b, &rig, &[5, 10, 15, 20])
-            .err()
-            .unwrap()
-            .to_string();
-        assert_eq!(
-            e,
-            "no grid duty of [5, 10, 15, 20]% moved the shaft either way: the grid has nothing \
-             to drive"
-        );
     }
 
     /// A rung nothing sizes, over FIRST_MAX_PCT, with no rung run under it

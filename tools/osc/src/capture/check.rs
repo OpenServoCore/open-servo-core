@@ -27,7 +27,7 @@ use super::verdict::{
     Abort, block_of, dropped, expected_segments, over_abort, settled, to_endstop,
 };
 use crate::rig::pump::BurstStats;
-use crate::sweep::{Decay, Segment, Step};
+use crate::sweep::{Segment, Step};
 
 /// `osc capture check` args.
 #[derive(clap::Args, Debug)]
@@ -51,8 +51,10 @@ struct SweepMeta {
     drive: Option<DriveMeta>,
     #[serde(default)]
     vbus_counts: Option<f64>,
+    /// "fast" in a recording made under fast decay; absent from one a
+    /// capture makes now, which drives slow decay only.
     #[serde(default)]
-    decay: Option<Decay>,
+    decay: Option<String>,
     #[serde(default)]
     session: Option<SessionMeta>,
     /// Absent in a recording made before tools read the counter.
@@ -454,7 +456,7 @@ fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta, pwm_period_ticks: u16)
             floor_q15,
             rail,
             r_vpc: r_q12 as f64 / 4096.0,
-            fast: m.decay == Some(Decay::Fast),
+            fast: m.decay.as_deref() == Some("fast"),
             tick_hz: hz,
             ma: Ma(0.0),
         };
@@ -948,7 +950,6 @@ mod tests {
         let mut meta = sweep_meta();
         meta["schedule"] = json!([step.to_string()]);
         meta["baseline_ms"] = json!(c.baseline_ms);
-        meta["decay"] = json!("slow");
         meta["vbus_counts"] = json!(3204);
         meta["drive"] = json!({
             "rule": "limit",
@@ -966,7 +967,6 @@ mod tests {
         }
         let plan = Plan {
             recording: "slow".into(),
-            decay: Decay::Slow,
             schedule: vec![step],
             blocks: bench::one_block(block, &c),
             dropped: Vec::new(),

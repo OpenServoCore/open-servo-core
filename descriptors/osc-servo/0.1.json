@@ -328,32 +328,15 @@
       "kind": "uint"
     },
     {
-      "name": "openloop_decay",
-      "addr": 95,
-      "width": 1,
-      "access": "rw",
-      "kind": "enum",
-      "variants": [
-        {
-          "name": "Slow",
-          "value": 0
-        },
-        {
-          "name": "Fast",
-          "value": 1
-        }
-      ]
-    },
-    {
       "name": "openloop_zero_brake",
-      "addr": 96,
+      "addr": 95,
       "width": 1,
       "access": "rw",
       "kind": "bool"
     },
     {
       "name": "thermal_tau_s",
-      "addr": 98,
+      "addr": 96,
       "width": 2,
       "access": "rw",
       "kind": "uint"

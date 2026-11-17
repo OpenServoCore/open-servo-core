@@ -4,18 +4,14 @@
 //! window one tick late.
 
 use osc_integration::plant::{
-    FakeIo, FakeMotor, FakeSensors, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd,
-    rl_motor, seed, stamp,
+    FakeIo, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd, rl_motor, seed, stamp,
 };
-use osc_integration::sim::DEV_V006_V_TROUGH_MIN_TICKS;
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::phases::loops::duty_limit::UP_Q15;
 use osc_servo_core::kernel::phases::loops::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
-use osc_servo_core::{
-    DecayMode, Kernel, KernelTiming, Mode, MotorCmd, RegionStorage, Shared, StallResponse,
-};
+use osc_servo_core::{Kernel, Mode, MotorCmd, RegionStorage, Shared, StallResponse};
 
 const LIM: u16 = 280;
 /// 160 of ARR 1200: the window floor is 13.3% duty.
@@ -515,42 +511,6 @@ fn window_v_floor_is_published_beside_the_current_floor() {
     let mut k = kernel();
     run(&mut k, &sh, &mut p, 1);
     assert_eq!(floors(), (1734, 4356));
-}
-
-/// Fast-decay OpenLoop publishes the trough scan's floor where it is the
-/// higher one, Slow the CALIB floor alone.
-#[test]
-fn window_v_floor_follows_the_openloop_decay() {
-    let sh = rig(LIM);
-    sh.table.with_mut(|t| {
-        t.calib.sense.i_window_min_ticks = 64;
-        t.calib.sense.v_window_min_ticks = 93;
-    });
-    stamp(&sh);
-    let v_floor = || {
-        sh.table
-            .with(|t| t.telemetry_ext.limits_ext.window_v_floor_q15)
-    };
-    let duty = |ticks| floor_duty(ticks, TIMING.pwm_arr, TIMING.recip_arr_q24);
-    let mut p = RlPlant::new(MID);
-    let mut k = Kernel::new(
-        FakeIo {
-            sensors: FakeSensors,
-            motor: FakeMotor { last: None },
-        },
-        KernelTiming {
-            v_trough_min_ticks: DEV_V006_V_TROUGH_MIN_TICKS,
-            ..TIMING
-        },
-    );
-    run(&mut k, &sh, &mut p, 1);
-    assert_eq!(v_floor(), duty(93));
-    sh.config_commit_begin();
-    sh.table
-        .with_mut(|t| t.config.limits.openloop_decay = DecayMode::Fast);
-    sh.config_commit_end();
-    run(&mut k, &sh, &mut p, 10);
-    assert_eq!(v_floor(), duty(DEV_V006_V_TROUGH_MIN_TICKS));
 }
 
 /// `rig` with the window floor at `floor_ticks` and the trip over a

@@ -66,6 +66,6 @@ pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
 pub use traits::{
-    Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reboot, Reply,
-    Request, RequestCtx, SendError, Sensors, Status, TelStream,
+    Capabilities, ControlIo, Dispatch, Dispatched, Motor, MotorCmd, Reboot, Reply, Request,
+    RequestCtx, SendError, Sensors, Status, TelStream,
 };

@@ -23,9 +23,7 @@ use osc_servo_core::{
 };
 
 use crate::plant::{self, BIAS, FakeIo, FakeMotor, FakeSensors, lut_live, seed, vbus_raw};
-use crate::sim::{
-    DEV_V006_BEMF_MIN_TICKS, DEV_V006_I_SETTLE_GAIN, DEV_V006_SENSE, DEV_V006_V_TROUGH_MIN_TICKS,
-};
+use crate::sim::{DEV_V006_BEMF_MIN_TICKS, DEV_V006_I_SETTLE_GAIN, DEV_V006_SENSE};
 
 /// 7.1 V in vmotor-tap counts.
 pub const VBUS: f64 = 2880.0;
@@ -99,10 +97,9 @@ pub const MOTOR: Motor = Motor {
     fv: FV,
 };
 
-/// The generic rig's timing with the board's Fast-decay trough and
-/// back-EMF observer floors and its shunt settle bands.
+/// The generic rig's timing with the board's back-EMF observer floor and
+/// its shunt settle bands.
 pub const TIMING: KernelTiming = KernelTiming {
-    v_trough_min_ticks: DEV_V006_V_TROUGH_MIN_TICKS,
     bemf_min_ticks: DEV_V006_BEMF_MIN_TICKS,
     i_settle_gain: DEV_V006_I_SETTLE_GAIN,
     ..plant::TIMING
@@ -385,13 +382,11 @@ pub fn stored_r(t: &ControlTable) -> f64 {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use osc_servo_core::DecayMode;
 
     fn drive(ticks: u16) -> Option<MotorCmd> {
         Some(MotorCmd::Drive {
             ticks,
             reverse: false,
-            decay: DecayMode::Slow,
         })
     }
 

@@ -12,7 +12,7 @@ use crate::math::q_mul;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
 use crate::regions::telemetry::tick_flag;
-use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd, Sensors, TelStream};
+use crate::traits::{ControlIo, Motor, MotorCmd, Sensors, TelStream};
 use crate::{ControlTable, RegionStorage, SensorFrame, Shared, TelemetryTick};
 use crate::{adc, pos_lut};
 
@@ -30,7 +30,6 @@ const TIMING: KernelTiming = KernelTiming {
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 600,
-    v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
@@ -107,7 +106,6 @@ fn seed(shared: &Shared) {
         c.limits.stall_tau_trip_counts = 1200;
         c.limits.oc_trip_counts = 2400;
         c.limits.oc_trip_ticks = 4;
-        c.limits.openloop_decay = DecayMode::Slow;
         c.limits.openloop_zero_brake = false;
         c.limits.thermal_tau_s = 4;
         c.thermal.cutoff_cc = 10000;
@@ -150,8 +148,8 @@ fn vbus_raw(vmotor: u16) -> u16 {
     ((vmotor as u32 * 32768).div_ceil(VBUS_SCALE_Q15)) as u16
 }
 
-/// Slow-decay frames: the trough scan lands in the brake phase, so the shunt
-/// reads its offset there.
+/// The trough scan lands in the brake phase, so the shunt reads its offset
+/// there.
 fn frame(pos: u16, current: u16) -> SensorFrame {
     SensorFrame {
         pos,
@@ -1212,22 +1210,18 @@ fn oc_gap_rearms_the_window() {
 }
 
 #[test]
-fn openloop_duty_passthrough_clamped_with_decay() {
+fn openloop_duty_passthrough_clamped() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
-        t.config.limits.openloop_decay = DecayMode::Fast;
     });
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS));
     match last_cmd(&k) {
-        MotorCmd::Drive { decay, .. } => {
-            assert_eq!(written_duty(&k), 8000);
-            assert!(matches!(decay, DecayMode::Fast));
-        }
+        MotorCmd::Drive { .. } => assert_eq!(written_duty(&k), 8000),
         other => panic!("expected Drive, got {other:?}"),
     }
     // duty_max clamps the passthrough at the next medium boundary, at once
@@ -1283,10 +1277,7 @@ fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
     let mut k = kernel();
     k.on_scan(frame(2000, BIAS), &sh);
     match last_cmd(&k) {
-        MotorCmd::Drive { decay, .. } => {
-            assert_eq!(written_duty(&k), 0);
-            assert!(matches!(decay, DecayMode::Slow));
-        }
+        MotorCmd::Drive { .. } => assert_eq!(written_duty(&k), 0),
         other => panic!("expected Drive, got {other:?}"),
     }
 }
@@ -1524,13 +1515,7 @@ fn current_mode_clamps_goal_to_i_lim() {
     let mut k = kernel();
     to_first_command(&mut k, &sh, frame(2000, BIAS));
     assert_eq!(k.medium.i_ref_cc, 1200);
-    assert!(matches!(
-        last_cmd(&k),
-        MotorCmd::Drive {
-            decay: DecayMode::Slow,
-            ..
-        }
-    ));
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // the goal is read at the next CONTROL phase and clamped at the VELOCITY
     // phase after it
     sh.table
@@ -2680,44 +2665,21 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
         f.current_trough = BIAS + 500;
         f
     };
-    // Fast decay: the trough IS the drive window. The decay lands at a
-    // medium boundary, so it goes in ahead of the drive.
-    write_config(&sh, |t| t.config.limits.openloop_decay = DecayMode::Fast);
-    ticks(&mut k, &sh, frame(2000, BIAS), DECIM_MED as u32);
+    // full scale: the idle leg never leaves CCR 0, no off phase. The slew
+    // up to it passes through brake troughs, so it runs on the bias.
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
-        t.control.lifecycle.goal_duty = 8000;
+        t.control.lifecycle.goal_duty = i16::MAX;
     });
-    ticks(&mut k, &sh, shifted(), 3000);
-    assert!(matches!(
-        last_cmd(&k),
-        MotorCmd::Drive {
-            decay: DecayMode::Fast,
-            ..
-        }
-    ));
-    assert_eq!(published_bias(&sh), BIAS);
-    // full-scale Slow: idle leg never leaves CCR 0, no off phase. Reached
-    // under Fast: a Slow slew up to it passes through brake troughs.
-    sh.table
-        .with_mut(|t| t.control.lifecycle.goal_duty = i16::MAX);
-    settle(&mut k, &sh, shifted());
-    assert_eq!(published_bias(&sh), BIAS);
-    write_config(&sh, |t| t.config.limits.openloop_decay = DecayMode::Slow);
+    settle(&mut k, &sh, frame(2000, BIAS));
     ticks(&mut k, &sh, shifted(), 3000);
     assert_eq!(drive_duty(&k), Some(i16::MAX));
     assert_eq!(published_bias(&sh), BIAS);
-    // a partial Slow window: the trough is the brake phase, the tracker follows
+    // a partial window: the trough is the brake phase, the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     periods(&mut k, &sh, shifted(), BIAS_SETTLE_PERIODS);
-    assert!(matches!(
-        last_cmd(&k),
-        MotorCmd::Drive {
-            decay: DecayMode::Slow,
-            ..
-        }
-    ));
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     assert_eq!(published_bias(&sh), BIAS + 500);
 }
 
@@ -6039,7 +6001,6 @@ const SPAN_BYTES: usize = (SPAN_END - SPAN_START) as usize;
 /// The next committed set: the table's span new in every word, every value
 /// still valid for its field.
 fn next_set(sh: &Shared) -> [u32; SPAN_BYTES / 4] {
-    use crate::regions::config::addr::limits::OPENLOOP_ZERO_BRAKE;
     let mut words = [0u32; SPAN_BYTES / 4];
     sh.table.with(|t| {
         // SAFETY: the table is repr(C) bytes, the span word-aligned.
@@ -6048,12 +6009,9 @@ fn next_set(sh: &Shared) -> [u32; SPAN_BYTES / 4] {
             *w = unsafe { p.add(SPAN_START as usize / 4 + i).read() };
         }
     });
-    let bool_word = (OPENLOOP_ZERO_BRAKE - SPAN_START) as usize / 4;
-    for (i, w) in words.iter_mut().enumerate() {
-        // byte 0 of each word is a plain integer, but for the one bool, whose
-        // neighbour is reserved
-        let shift = if i == bool_word { 8 } else { 0 };
-        *w = w.wrapping_add(1 << shift);
+    for w in words.iter_mut() {
+        // byte 0 of each word is a plain integer
+        *w = w.wrapping_add(1);
     }
     words
 }

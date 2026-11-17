@@ -23,7 +23,7 @@ use osc_servo_core::kernel::phases::loops::faults::{
 };
 use osc_servo_core::pos_lut::{GRID_SHIFT, POINTS, interp_q4};
 use osc_servo_core::regions::{TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE};
-use osc_servo_core::{ControlTable, DecayMode, Mode, MotorCmd, RegionStorage, Shared};
+use osc_servo_core::{ControlTable, Mode, MotorCmd, RegionStorage, Shared};
 
 mod support;
 
@@ -36,22 +36,14 @@ const START_POS: u16 = 1500;
 const CMD_DISABLED: u8 = 0;
 const CMD_COAST: u8 = 1;
 const CMD_BRAKE: u8 = 2;
-const CMD_DRIVE_SLOW: u8 = 3;
-const CMD_DRIVE_FAST: u8 = 4;
+const CMD_DRIVE: u8 = 3;
 
 fn cmd_code(cmd: MotorCmd) -> u8 {
     match cmd {
         MotorCmd::Disabled => CMD_DISABLED,
         MotorCmd::Coast => CMD_COAST,
         MotorCmd::Brake => CMD_BRAKE,
-        MotorCmd::Drive {
-            decay: DecayMode::Slow,
-            ..
-        } => CMD_DRIVE_SLOW,
-        MotorCmd::Drive {
-            decay: DecayMode::Fast,
-            ..
-        } => CMD_DRIVE_FAST,
+        MotorCmd::Drive { .. } => CMD_DRIVE,
     }
 }
 
@@ -266,7 +258,7 @@ fn assert_script_phases(rows: &[Row]) {
     for t in [14_990, 17_990, 19_590, 21_590] {
         let r = row_at(rows, t);
         assert_eq!(r.fault_flags, 0, "tick {t}: {r:?}");
-        assert_eq!(r.cmd, CMD_DRIVE_SLOW, "tick {t}: {r:?}");
+        assert_eq!(r.cmd, CMD_DRIVE, "tick {t}: {r:?}");
     }
     let braked = row_at(rows, 21_990);
     assert_eq!(braked.cmd, CMD_BRAKE, "zero duty brakes: {braked:?}");
@@ -277,7 +269,7 @@ fn assert_script_phases(rows: &[Row]) {
     let acked = row_at(rows, 23_990);
     assert_eq!(acked.fault_flags, 0, "ack cleared the latch: {acked:?}");
     assert_eq!(acked.fault_code, CODE_NONE);
-    assert_eq!(acked.cmd, CMD_DRIVE_SLOW);
+    assert_eq!(acked.cmd, CMD_DRIVE);
     assert_eq!(row_at(rows, TICKS - 10).cmd, CMD_DISABLED);
 }
 
@@ -393,7 +385,7 @@ fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
 fn row_codec_round_trips() {
     let r = Row {
         fast_crc: 0xBB3D,
-        cmd: CMD_DRIVE_FAST,
+        cmd: CMD_DRIVE,
         mode_active: Mode::Velocity as u8,
         fault_code: 3,
         omega_hat_src: 1,

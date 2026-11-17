@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use super::Supply;
 use crate::rig::battery::SupplyCfg;
-use crate::sweep::{Decay, Step};
+use crate::sweep::Step;
 
 const DEFAULT: &str = include_str!("session.toml");
 
@@ -44,7 +44,6 @@ pub(crate) struct Procedure {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordingCfg {
     pub(crate) name: String,
-    pub(crate) decay: Decay,
     pub(crate) blocks: Vec<String>,
 }
 
@@ -178,21 +177,17 @@ mod tests {
         let p = Procedure::parse(DEFAULT).unwrap();
         assert_eq!(p.captures, 5);
         assert_eq!(p.tel_chunks, osc_ident::frame::TEL_RAW);
-        let recs: Vec<(&str, Decay, Vec<&str>)> = p
+        let recs: Vec<(&str, Vec<&str>)> = p
             .recording
             .iter()
             .map(|r| {
-                let b = r.blocks.iter().map(String::as_str).collect();
-                (r.name.as_str(), r.decay, b)
+                (
+                    r.name.as_str(),
+                    r.blocks.iter().map(String::as_str).collect(),
+                )
             })
             .collect();
-        assert_eq!(
-            recs,
-            [
-                ("slow", Decay::Slow, Blocks::NAMES.to_vec()),
-                ("fast", Decay::Fast, vec!["grid"]),
-            ]
-        );
+        assert_eq!(recs, [("slow", Blocks::NAMES.to_vec())]);
         let two_s = &p.supply[&Supply::TwoS];
         assert_eq!((two_s.cells, two_s.cell_floor_mv), (2, 3500));
         assert_eq!(
@@ -219,7 +214,7 @@ mod tests {
                 .to_string()
         };
         let rec = |name: &str, blocks: &str| {
-            format!("[[recording]]\nname = \"{name}\"\ndecay = \"slow\"\nblocks = [{blocks}]\n")
+            format!("[[recording]]\nname = \"{name}\"\nblocks = [{blocks}]\n")
         };
         assert!(Procedure::parse(&with_recordings(&rec("slow", "\"grid\""))).is_ok());
         assert!(err(&rec("slow", "\"ramp\"")).contains("no block \"ramp\""));

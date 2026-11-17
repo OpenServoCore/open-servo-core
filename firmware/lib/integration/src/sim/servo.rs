@@ -57,10 +57,8 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
     vmotor_bias_bot_ohm: 100,
 };
 
-/// The same `Calibration`'s `v_trough_window_min_ticks` and
-/// `bemf_window_min_ticks`, the two floors the board hands the kernel
-/// through `KernelTiming` and not through CALIB.
-pub const DEV_V006_V_TROUGH_MIN_TICKS: u16 = 160;
+/// The same `Calibration`'s `bemf_window_min_ticks`, the floor the board
+/// hands the kernel through `KernelTiming` and not through CALIB.
 pub const DEV_V006_BEMF_MIN_TICKS: u16 = 160;
 
 /// The same `Calibration`'s `i_settle_gain`, the shunt amplifier's settle

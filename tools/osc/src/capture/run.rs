@@ -385,7 +385,6 @@ fn cfg(p: &Procedure, env: &Envelope, plan: &Plan, proved: &Proved) -> Cfg {
     Cfg {
         steps: plan.schedule.clone(),
         dirs: Dirs::Both,
-        decay: plan.decay,
         window_ms: WINDOW_MS,
         rest_ms: p.rest_ms,
         baseline_ms: p.baseline_ms,
@@ -706,7 +705,7 @@ impl<S: Servo> Session<'_, S> {
     ) -> Result<Outcome, Stop> {
         let (id, supply) = (self.id, self.ctx.supply);
         let drive = self.front.drive(proved);
-        let abort = self.front.abort(cfg.decay);
+        let abort = self.front.abort();
         let env = self.ctx.env;
         let s = self.servo()?;
         let meta = match sweep::meta(s.client(), id, cfg, drive) {
@@ -1017,7 +1016,7 @@ mod tests {
     use crate::capture::store::fixture::tmp;
     use crate::capture::verdict::expected_segments;
     use crate::rig::servo::bench::Bench;
-    use crate::sweep::{Decay, Step};
+    use crate::sweep::Step;
     use osc_client::ResultCode;
     use osc_ident::exp::AbortReason;
     use osc_ident::exp::jam::PROBE_STEP_MV;
@@ -1238,9 +1237,8 @@ mod tests {
         let p = Procedure::parse(include_str!("session.toml")).unwrap();
         let env = envelope::mg90();
         let plans = plan::expand(&p, &env, 2).unwrap();
-        let c = cfg(&p, &env, &plans[1], &proved(0.13));
-        assert_eq!(c.steps, plans[1].schedule);
-        assert_eq!(c.decay, Decay::Fast);
+        let c = cfg(&p, &env, &plans[0], &proved(0.13));
+        assert_eq!(c.steps, plans[0].schedule);
         assert_eq!(c.dirs, Dirs::Both);
         assert_eq!(c.guard, (532, 3526));
         // the bench session's pacing
@@ -1250,7 +1248,7 @@ mod tests {
         assert!(!c.stall && !c.static_load);
         assert_eq!(
             expected_segments(c.baseline_ms > 0, c.dirs.signs().len(), c.steps.len()),
-            19
+            111
         );
     }
 

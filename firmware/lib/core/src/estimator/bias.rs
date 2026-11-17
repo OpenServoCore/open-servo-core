@@ -8,7 +8,7 @@ pub enum Zero {
     /// `MotorCmd::Disabled`: the driver asleep, torque off or a fault.
     Asleep,
     /// The driver awake with no winding current crossing the shunt: a
-    /// brake, a coast, or a settled Slow-decay brake trough.
+    /// brake, a coast, or a drive's settled brake trough.
     Awake,
 }
 

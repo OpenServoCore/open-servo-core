@@ -85,8 +85,6 @@ fn main() -> ! {
             // ticks forward, and within 0.9% from 96 in both directions.
             i_window_min_ticks: 64,
             v_window_min_ticks: 93,
-            // The trough scan's low-side tap closes 135 ticks into the window.
-            v_trough_window_min_ticks: 160,
             // The drive pulse comes out ~27 ticks short of the commanded
             // width and the observer scales by the commanded one.
             bemf_window_min_ticks: 160,
