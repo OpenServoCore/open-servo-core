@@ -395,18 +395,19 @@ mod tests {
         assert_eq!(motor::KE_VPC_Q, 0x08A);
         assert_eq!(motor::R_BRUSH_Q12, 0x08C);
         assert_eq!(motor::BRUSH_CPS, 0x08E);
-        assert_eq!(thermal::TH_RISE_Q016, 0x090);
-        assert_eq!(thermal::NTC_K2_Q24, 0x09A);
-        assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x09C);
-        assert_eq!(pot::RAW_MIN, 0x0A0);
-        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0A8);
-        assert_eq!(stamp::PLANT_STAMP, 0x0AA);
-        assert_eq!(sense::SHUNT_R_MOHM, 0x0AC);
-        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C8);
-        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CA);
-        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0CC);
-        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0CE);
-        assert_eq!(gear::GEAR_CLASS, 0x0D0);
+        assert_eq!(motor::G_WINDOW_Q016, 0x090);
+        assert_eq!(thermal::TH_RISE_Q016, 0x094);
+        assert_eq!(thermal::NTC_K2_Q24, 0x09E);
+        assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x0A0);
+        assert_eq!(pot::RAW_MIN, 0x0A4);
+        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0AC);
+        assert_eq!(stamp::PLANT_STAMP, 0x0AE);
+        assert_eq!(sense::SHUNT_R_MOHM, 0x0B0);
+        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0CC);
+        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CE);
+        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0D0);
+        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0D2);
+        assert_eq!(gear::GEAR_CLASS, 0x0D4);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
@@ -425,11 +426,11 @@ mod tests {
     fn calib_adc_appends_after_gear() {
         use super::calib::addr::{adc, gear};
         use crate::adc::ADC_WIDE_SLOTS;
-        assert_eq!(gear::GEAR_CLASS, 0x0D0);
-        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D1);
+        assert_eq!(gear::GEAR_CLASS, 0x0D4);
+        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D5);
         let f = ControlTable::FIELDS;
         let w = f.iter().find(|d| d.name == "adc_wide_mid_q4").unwrap();
-        assert_eq!(w.addr, 0x0D1);
+        assert_eq!(w.addr, 0x0D5);
         assert_eq!(w.width, ADC_WIDE_SLOTS as u16);
         assert_eq!(w.kind, FieldKind::Bytes);
         assert!(w.writable);

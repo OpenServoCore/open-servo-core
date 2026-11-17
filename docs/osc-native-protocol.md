@@ -612,6 +612,12 @@ The angle map (`angle_min_cdeg` at `raw_min`, `angle_max_cdeg` at
 `raw_max`) may descend: degrees are counterclockwise-positive facing the
 horn (ROS REP 103), while counts follow the pot.
 
+A conductance between the two sense chains is a ratio of their counts:
+`g_window_q016` (sec 5.8) is counts of shunt current per count of the
+terminal taps, Q0.16, so a host converts it with both chains' primitives,
+`g [S] = g_window_q016 / 65536 x (current counts per A)^-1 x (terminal
+counts per V)`. On the osc-dev-v006 1 mS is about 300.
+
 ### 5.6 Telemetry stream (TEL bursts)
 
 High-rate telemetry rides the bus as a bounded burst of status frames
@@ -709,12 +715,12 @@ in sample order, high side first, so no named field lies in its way.
 | 0x23A | `vref_raw`        | u16   | the 1.2 V internal reference against VDD |
 | 0x23C | `vbus_raw`        | u16   | |
 | 0x23E | `ntc_raw`         | u16   | |
-| 0x240 | `current_raw`     | u16   | the shunt at the counter peak, 31 timer ticks past it |
+| 0x240 | `current_raw`     | u16   | the shunt at the counter peak, 31 timer ticks past it; raw, the window term in it |
 | 0x242 | `vmotor_a`        | u16   | |
 | 0x244 | `vmotor_b`        | u16   | |
 | 0x246 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
 | 0x248 | `current_trough`  | u16   | the shunt in the trough, 135 timer ticks past it |
-| 0x24A | `i_tick_counts`   | i16   | bias-subtracted window current times the board's settle gain for the drive width; through windows the shunt cannot read, held in OpenLoop and the current reference in the closed loops; 0 from the first tick nothing drives |
+| 0x24A | `i_tick_counts`   | i16   | the winding's current: bias-subtracted window current times the board's settle gain for the drive width, less the window term `g_window_q016` names (sec 5.8); through windows the shunt cannot read, held in OpenLoop and the current reference in the closed loops; 0 from the first tick nothing drives |
 | 0x24C | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
 | 0x24E | `vmotor_a_trough` | u16   | |
 | 0x250 | `vmotor_b_trough` | u16   | |
@@ -945,7 +951,7 @@ to the stop the same way, and the press's rule applies there as at any
 stop. The host's direction nudge before it closes a loop (`osc cal`,
 `osc ident`, the bench harness) catches leads swapped at assembly.
 
-**Plant stamp.** `plant_stamp` (u16, RW, `0x0AA` in CALIB, persisted)
+**Plant stamp.** `plant_stamp` (u16, RW, `0x0AE` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
 and calibrated fields plus the effective position table. Firmware
 recomputes it over what actually landed at every checkpoint and reports
@@ -957,12 +963,12 @@ same way.
 stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
-The covered bytes are the 42 covered fields' own table bytes in table
-order (90 B): the position limits, the loop gains, the deadband, the
+The covered bytes are the 43 covered fields' own table bytes in table
+order (92 B): the position limits, the loop gains, the deadband, the
 speed ceiling and the acceleration limit, drive polarity, the stall speed gate,
 the observer gains and the position-error threshold in CONFIG; the pot
 stops, the motor constants, the friction model, the brush resistance and
-its full-weight speed (sec 5.8), the angle map, the
+its full-weight speed, the window conductance (sec 5.8), the angle map, the
 winding estimate's rise constant, the board NTC's reference
 point and slope, and the gear class in CALIB. The points are the position table's
 256 host-written calibration points i16 LE (sec below) while
@@ -1104,7 +1110,7 @@ map records them per board, since the converter is the chip's:
 
 | addr  | name              | width | access | notes                                                       |
 | ----- | ----------------- | ----- | ------ | ----------------------------------------------------------- |
-| 0x0D1 | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
+| 0x0D5 | `adc_wide_mid_q4` | 16 B  | RW     | `[u8; 16]` in CALIB; slot `k` is ADC code `(k << 8) \| 0xff` |
 
 A slot holds half the span the converter skips after its code, in Q4
 counts; `0` is no wide code there, and the all-zero default changes
@@ -1430,6 +1436,32 @@ the pair at the configuration take (osc-servo-kernel sec 6.2): the size
 runs at most half the stored `r_q12`, and a `brush_cps` under 1024 turns
 the term off. A size of 0, the seed, is the estimate without the term,
 bit for bit.
+
+**Window conductance.** CALIB `g_window_q016` (u16, RW, `0x090`, counts
+of current per count of the terminal taps, Q0.16, sec 5.5) is the
+motor's loss conductance across its inductance, the iron's eddy loss.
+The shunt's drive-window sample reads it times the volts the window
+leaves across the inductance on top of the winding's current, `g x (1 -
+D) x V_bus` once the current settles, along the drive, and averaging to
+nothing over a period, so a meter in series never sees it. The servo
+takes that term off every reading at the source (osc-servo-kernel sec
+2.2), on the rail estimate and the measured width: the loops, the
+limits and detectors, the winding estimate's heat, the observer, the
+back-EMF speed and TEL `i_tick_counts` read the winding's current, so
+every stored current limit means winding current. The overcurrent trip
+compares the current before the subtraction, the one the bridge and the
+shunt carry, and `current_raw` stays the raw sample. The field sits
+behind `brush_cps` in the motor block, is under the plant stamp (sec
+5.7), and reads 0 at the seed and after FACTORY: 0 is the reading
+without the term, bit for bit. A host identifies it from the servo's
+own OpenLoop starts from rest, free horn, where the winding is empty and
+the first readings are the rise plus the term; nothing the servo stores
+predicts it. The kernel runs it only while the stored winding bounds it,
+`0 < g_window_q016 x r_q12 <= 2^25` (g R at most 1/8), and turns it off
+otherwise, the protective side: the readings run high and the limits
+err low. A value past that bound is not refused at the write, as the
+table's write rules compare a field with a bound or one other field,
+never a product (unit `the_take_fences_the_conductance_by_the_winding`).
 
 **Shunt burst.** The high-rate shunt capture (`arm` at `0x198` in
 CONTROL, with `duty_q15` at `0x196` and `chans` at `0x19A`; read back

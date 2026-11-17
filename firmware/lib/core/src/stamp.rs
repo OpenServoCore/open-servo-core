@@ -29,7 +29,7 @@ pub const TAG: &str = "osc-plant-1";
 pub const UNSTAMPED: u16 = 0;
 
 /// The covered fields, in table order.
-pub const COVERED_NAMES: [&str; 42] = [
+pub const COVERED_NAMES: [&str; 43] = [
     "pos_min_phys_counts",
     "pos_max_phys_counts",
     "pos_min_soft_counts",
@@ -59,6 +59,7 @@ pub const COVERED_NAMES: [&str; 42] = [
     "ke_vpc_q",
     "r_brush_q12",
     "brush_cps",
+    "g_window_q016",
     "th_rise_q016",
     "th_rise2_q016",
     "ntc_raw_ref",
@@ -175,7 +176,7 @@ const TABLE_WORDS: usize = core::mem::size_of::<ControlTable>() / 32;
 
 /// [`COVERED`] as one bit per table byte: `covers` runs on every commit
 /// under the reply deadline, and a scan of the spans costs ~25 us on the
-/// chip (42 spans, two taken branches each, from flash).
+/// chip (43 spans, two taken branches each, from flash).
 const COVERED_BITS: [u32; TABLE_WORDS] = {
     let mut bits = [0u32; TABLE_WORDS];
     let mut i = 0;
@@ -242,7 +243,7 @@ mod tests {
             assert!(w[0].addr + w[0].width <= w[1].addr, "table order");
         }
         let hashed: u16 = COVERED.iter().map(|s| s.width).sum();
-        assert_eq!(hashed, 90);
+        assert_eq!(hashed, 92);
         let last = COVERED[COVERED.len() - 1];
         assert!(last.addr + last.width <= CALIB_BASE_ADDR + CALIB_REGION_SIZE);
         assert!(!covers(PLANT_STAMP, 2), "the stamp does not cover itself");

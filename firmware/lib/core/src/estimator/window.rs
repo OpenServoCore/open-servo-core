@@ -56,15 +56,16 @@ impl SettleGain {
     }
 }
 
-/// Signed bias-subtracted shunt current from the drive-window scan, scaled
-/// by the window's settle gain (`SettleGain::q15_at`), or `None` when the
-/// window is too narrow for a settled sample. The sample reads a wide code
-/// as the middle of its band (`Shared::adc_mid`), ahead of the bias.
+/// Bias-subtracted shunt current from the drive-window scan along the
+/// drive, scaled by the window's settle gain (`SettleGain::q15_at`), or
+/// `None` when the window is too narrow for a settled sample: the terminal
+/// current, ahead of the window term and the drive's sign. The sample
+/// reads a wide code as the middle of its band (`Shared::adc_mid`), ahead
+/// of the bias.
 pub fn i_from_frame(
     shared: &Shared,
     frame: Frame<'_>,
     sel: WindowSel,
-    duty_sign_positive: bool,
     bias: u16,
     gain_q15: u32,
 ) -> Option<i32> {
@@ -73,8 +74,7 @@ pub fn i_from_frame(
     }
     let sample = shared.adc_mid(frame.current());
     // round half up: floor((floor(2x) + 1) / 2) == floor(x + 1/2)
-    let mag = (q_mul(sample as i32 - bias as i32, gain_q15 as i32, 14) + 1) >> 1;
-    Some(if duty_sign_positive { mag } else { -mag })
+    Some((q_mul(sample as i32 - bias as i32, gain_q15 as i32, 14) + 1) >> 1)
 }
 
 /// The largest |i| `i_from_frame` returns: any u16 sample, a wide one
@@ -84,6 +84,61 @@ pub(crate) const I_FROM_FRAME_MAX: i32 =
     ((((u16::MAX as i64 + crate::adc::ADC_WIDE_MID_MAX as i64) * u16::MAX as i64) >> 14) as i32
         + 1)
         >> 1;
+
+/// The largest |i| the kernel's reading takes: `i_from_frame`'s, less the
+/// largest window term on the drive's side.
+#[cfg(test)]
+pub(crate) const I_READING_MAX: i32 = I_FROM_FRAME_MAX + WINDOW_V_MAX as i32;
+
+/// The rail the window term reads is held at most this, vcounts: a 12-bit
+/// tap under a rail scale below 2.0 reads under it. A conductance under one
+/// count a vcount keeps the term at most it, and a 12-bit reading less the
+/// term inside i16.
+pub const WINDOW_V_MAX: u16 = (1 << 13) - 1;
+
+/// The narrowest PWM period whose conductance per tick
+/// (`WindowTerm::conductance`) a u32 holds: under it `recip_arr_q24`
+/// passes 2^16.
+pub const WINDOW_ARR_MIN: u16 = 256;
+
+/// The current the shunt's drive-window sample reads beyond the winding's
+/// (kernel sec 2.2): the motor's loss conductance times the volts the
+/// window leaves across the inductance, `g x (1 - D) x V_bus` once the
+/// current settles, along the drive. `k` is Q16 counts per tick of the
+/// headroom `pwm_arr - ticks`, `k0` the whole period's with the rounding
+/// folded in; zero is no term.
+#[derive(Copy, Clone, Default)]
+pub struct WindowTerm {
+    k: u32,
+    k0: u32,
+}
+
+impl WindowTerm {
+    /// The take's conductance per tick of the period, Q40 counts per
+    /// vcount: CALIB `g_window_q016` while the winding bounds it,
+    /// `0 < g x r_q12 <= 2^25` (g R at most 1/8), else 0. Needs
+    /// `pwm_arr >= WINDOW_ARR_MIN`.
+    pub fn conductance(g_q016: u16, r_q12: u16, recip_arr_q24: u32) -> u32 {
+        let fits = r_q12 != 0 && g_q016 as u32 * r_q12 as u32 <= 1 << 25;
+        g_q016 as u32 * fits as u32 * recip_arr_q24
+    }
+
+    /// The term on the rail clamp's `vbus_eff`, held at most
+    /// [`WINDOW_V_MAX`]: `k x pwm_arr <= g x V < 2^29`.
+    pub fn at_rail(g_arr: u32, vbus_eff: u16, pwm_arr: u16) -> Self {
+        let k = q_mul_u(g_arr, vbus_eff.min(WINDOW_V_MAX) as u32, RECIP_ARR_SHIFT);
+        Self {
+            k,
+            k0: k * pwm_arr as u32 + (1 << 15),
+        }
+    }
+
+    /// Counts at a drive width of `ticks <= pwm_arr`, rounded, >= 0.
+    #[inline(always)]
+    pub fn counts(&self, ticks: u32) -> i32 {
+        ((self.k0 - self.k * ticks) >> 16) as i32
+    }
+}
 
 /// Drive-window terminal differential `va - vb`. Positive duty drives IN1
 /// (TIM1 CH3, PC6) -> DRV8212P OUT1 -> MOT_A -> VSNA -> `vmotor_a`, so
@@ -163,14 +218,8 @@ mod tests {
         t
     }
 
-    fn i_from_frame(
-        f: &SensorFrame,
-        sel: WindowSel,
-        fwd: bool,
-        bias: u16,
-        gain: u32,
-    ) -> Option<i32> {
-        super::i_from_frame(&Shared::new(), Frame::of(&block(f)), sel, fwd, bias, gain)
+    fn i_from_frame(f: &SensorFrame, sel: WindowSel, bias: u16, gain: u32) -> Option<i32> {
+        super::i_from_frame(&Shared::new(), Frame::of(&block(f)), sel, bias, gain)
     }
 
     fn vdiff_from_frame(f: &SensorFrame, sel: WindowSel) -> Option<i32> {
@@ -214,16 +263,15 @@ mod tests {
     }
 
     #[test]
-    fn current_bias_and_sign() {
+    fn current_bias_along_the_drive() {
         let f = frame();
-        assert_eq!(i_from_frame(&f, VALID, true, 2048, UNITY), Some(452));
-        assert_eq!(i_from_frame(&f, VALID, false, 2048, UNITY), Some(-452));
-        // sample below bias with positive duty reads negative
+        assert_eq!(i_from_frame(&f, VALID, 2048, UNITY), Some(452));
+        // a sample below the bias reads against the drive
         let under = SensorFrame {
             current: 1500,
             ..Default::default()
         };
-        assert_eq!(i_from_frame(&under, VALID, true, 2048, UNITY), Some(-548));
+        assert_eq!(i_from_frame(&under, VALID, 2048, UNITY), Some(-548));
     }
 
     const GAIN: SettleGain = SettleGain {
@@ -261,12 +309,11 @@ mod tests {
             ..Default::default()
         };
         // 300 x 33259 / 32768 = 304.49
-        assert_eq!(i_from_frame(&f, VALID, true, 2048, 33259), Some(304));
-        assert_eq!(i_from_frame(&f, VALID, false, 2048, 33259), Some(-304));
+        assert_eq!(i_from_frame(&f, VALID, 2048, 33259), Some(304));
         // 300 x 33300 / 32768 = 304.87
-        assert_eq!(i_from_frame(&f, VALID, true, 2048, 33300), Some(305));
+        assert_eq!(i_from_frame(&f, VALID, 2048, 33300), Some(305));
         // under the bias: -300 x 33259 / 32768 = -304.49
-        assert_eq!(i_from_frame(&f, VALID, true, 2648, 33259), Some(-304));
+        assert_eq!(i_from_frame(&f, VALID, 2648, 33259), Some(-304));
     }
 
     #[test]
@@ -277,8 +324,7 @@ mod tests {
                 ..Default::default()
             };
             let want = sample as i32 - 2048;
-            assert_eq!(i_from_frame(&f, VALID, true, 2048, UNITY), Some(want));
-            assert_eq!(i_from_frame(&f, VALID, false, 2048, UNITY), Some(-want));
+            assert_eq!(i_from_frame(&f, VALID, 2048, UNITY), Some(want));
         }
     }
 
@@ -289,7 +335,7 @@ mod tests {
             i_valid: false,
             v_valid: true,
         };
-        assert_eq!(i_from_frame(&f, sel, true, 0, UNITY), None);
+        assert_eq!(i_from_frame(&f, sel, 0, UNITY), None);
     }
 
     #[test]
@@ -343,21 +389,13 @@ mod tests {
                 current: sample,
                 ..Default::default()
             };
-            for fwd in [true, false] {
-                let i = i_from_frame(&f, VALID, fwd, bias, u16::MAX as u32).unwrap();
-                assert_eq!(i.abs(), RAW_MAX, "{sample} {bias} {fwd}");
-                let i = super::i_from_frame(
-                    &widest,
-                    Frame::of(&block(&f)),
-                    VALID,
-                    fwd,
-                    bias,
-                    u16::MAX as u32,
-                )
-                .unwrap();
-                assert!(i.abs() <= I_FROM_FRAME_MAX, "{sample} {bias} {fwd}");
-                assert_eq!(i.abs() == I_FROM_FRAME_MAX, sample == u16::MAX);
-            }
+            let i = i_from_frame(&f, VALID, bias, u16::MAX as u32).unwrap();
+            assert_eq!(i.abs(), RAW_MAX, "{sample} {bias}");
+            let i =
+                super::i_from_frame(&widest, Frame::of(&block(&f)), VALID, bias, u16::MAX as u32)
+                    .unwrap();
+            assert!(i.abs() <= I_FROM_FRAME_MAX, "{sample} {bias}");
+            assert_eq!(i.abs() == I_FROM_FRAME_MAX, sample == u16::MAX);
         }
         const { assert!(RAW_MAX < I_FROM_FRAME_MAX) };
     }
@@ -367,17 +405,12 @@ mod tests {
         for sample in [0, ADC_MAX] {
             for bias in [0, ADC_MAX] {
                 for gain in [0, UNITY, u16::MAX as u32] {
-                    for fwd in [true, false] {
-                        let f = SensorFrame {
-                            current: sample,
-                            ..Default::default()
-                        };
-                        let i = i_from_frame(&f, VALID, fwd, bias, gain).unwrap();
-                        assert!(
-                            i16::try_from(i).is_ok(),
-                            "{sample} {bias} {gain} {fwd}: {i}"
-                        );
-                    }
+                    let f = SensorFrame {
+                        current: sample,
+                        ..Default::default()
+                    };
+                    let i = i_from_frame(&f, VALID, bias, gain).unwrap();
+                    assert!(i16::try_from(i).is_ok(), "{sample} {bias} {gain}: {i}");
                 }
             }
         }
@@ -484,7 +517,7 @@ mod tests {
     fn reads(sh: &Shared, f: &SensorFrame, bias: u16) -> (i32, i32) {
         let t = block(f);
         (
-            super::i_from_frame(sh, Frame::of(&t), VALID, true, bias, UNITY).unwrap(),
+            super::i_from_frame(sh, Frame::of(&t), VALID, bias, UNITY).unwrap(),
             super::vdiff_from_frame(sh, Frame::of(&t), VALID).unwrap(),
         )
     }
@@ -529,5 +562,93 @@ mod tests {
         }
         // slots 0, 1 and 7 round to nothing; the other thirteen add
         assert_eq!(added, 13);
+    }
+
+    /// The set of record's conductance (4.75 mS on the board's scales) and
+    /// winding.
+    const G: u16 = 1423;
+    const R: u16 = 3725;
+
+    /// Rails from none past the term's hold, vcounts.
+    const RAILS: [u16; 7] = [0, 1, 922, 1238, 4095, WINDOW_V_MAX, u16::MAX];
+
+    /// A zero conductance, a fenced-off one and the seed take nothing at
+    /// any width or rail: the reading is the sample's, bit for bit.
+    #[test]
+    fn a_zero_window_conductance_reads_as_today() {
+        assert_eq!(WindowTerm::conductance(0, R, recip(1200)), 0);
+        assert_eq!(WindowTerm::conductance(G, 0, recip(1200)), 0);
+        assert_eq!(WindowTerm::conductance(u16::MAX, R, recip(1200)), 0);
+        for arr in [WINDOW_ARR_MIN, 1200, u16::MAX] {
+            for v in RAILS {
+                let w = WindowTerm::at_rail(0, v, arr);
+                for t in 0..=arr as u32 {
+                    assert_eq!(w.counts(t), 0, "arr {arr} rail {v} width {t}");
+                    assert_eq!(WindowTerm::default().counts(t), 0);
+                }
+            }
+        }
+    }
+
+    /// The term is `g x V x (arr - ticks) / arr`, rounded: within half a
+    /// count and the floors' share, a Q16 count a tick of headroom and the
+    /// reciprocal's `arr / 2^24` of the term, at every width; 0 at full
+    /// duty; 25 counts at the 64-tick floor on the 5 V rail.
+    #[test]
+    fn the_term_is_the_conductance_on_the_headroom_and_the_rail() {
+        for arr in [WINDOW_ARR_MIN, 1200, 2400] {
+            let g_arr = WindowTerm::conductance(G, R, recip(arr));
+            for v in RAILS {
+                let w = WindowTerm::at_rail(g_arr, v, arr);
+                let rail = v.min(WINDOW_V_MAX) as f64;
+                for t in 0..=arr as u32 {
+                    let exact = G as f64 / 65536.0 * rail * (arr as u32 - t) as f64 / arr as f64;
+                    let got = w.counts(t) as f64;
+                    let floors = arr as f64 / 65536.0 + exact * arr as f64 / (1u32 << 24) as f64;
+                    assert!(
+                        (got - exact).abs() <= 0.5 + floors,
+                        "arr {arr} rail {v} width {t}: {got} for {exact:.3}"
+                    );
+                }
+                assert_eq!(w.counts(arr as u32), 0, "arr {arr} rail {v}: full duty");
+            }
+        }
+        let w = WindowTerm::at_rail(WindowTerm::conductance(G, R, recip(1200)), 1238, 1200);
+        assert_eq!([64, 293, 1200].map(|t| w.counts(t)), [25, 20, 0]);
+    }
+
+    /// Every 12-bit reading less the largest term any field values give,
+    /// the widest conductance on the narrowest period at any rail, stays
+    /// inside i16, and every product inside its u32 (debug overflow
+    /// checks).
+    #[test]
+    fn legal_extremes_keep_the_reading_inside_i16() {
+        for arr in [WINDOW_ARR_MIN, 1200, u16::MAX] {
+            let g_arr = WindowTerm::conductance(u16::MAX, 1, recip(arr));
+            assert_ne!(g_arr, 0, "arr {arr}");
+            for v in RAILS {
+                let w = WindowTerm::at_rail(g_arr, v, arr);
+                for t in [0, 1, arr as u32 / 2, arr as u32] {
+                    let term = w.counts(t);
+                    assert!(term <= WINDOW_V_MAX as i32, "arr {arr} rail {v} width {t}");
+                    for sample in [0, ADC_MAX] {
+                        for bias in [0, ADC_MAX] {
+                            for gain in [0, UNITY, u16::MAX as u32] {
+                                let f = SensorFrame {
+                                    current: sample,
+                                    ..Default::default()
+                                };
+                                let i = i_from_frame(&f, VALID, bias, gain).unwrap() - term;
+                                assert!(
+                                    i16::try_from(i).is_ok() && i16::try_from(-i).is_ok(),
+                                    "{sample} {bias} {gain} less {term}: {i}"
+                                );
+                                assert!(i.abs() <= I_READING_MAX);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

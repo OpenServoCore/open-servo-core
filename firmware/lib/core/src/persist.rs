@@ -61,7 +61,7 @@ pub const IMAGE_VERSION: u8 = 11;
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 6;
+pub const CALIB_IMAGE_VERSION: u8 = 7;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1066,6 +1066,25 @@ mod tests {
             (0, 0, 0),
             "seeds stand"
         );
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+    }
+
+    /// CALIB images SAVEd before the window term (CALIB 6) boot stale: the
+    /// blocks behind the motor block sit 4 B earlier there.
+    #[test]
+    fn calib_images_before_the_window_term_are_stale() {
+        use crate::regions::calib::addr::motor::G_WINDOW_Q016;
+        let mut old = calib_image_of(7);
+        old[HEADER_LEN + (G_WINDOW_Q016 - CALIB_BASE_ADDR) as usize..][..2]
+            .copy_from_slice(&1423u16.to_le_bytes());
+        reseal_version(&mut old, 6);
+        let sh = seeded_servo();
+        assert_eq!(
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Stale
+        );
+        let m = sh.table.with(|t| t.calib.motor);
+        assert_eq!((m.r_q12, m.g_window_q016), (0, 0), "seeds stand");
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 

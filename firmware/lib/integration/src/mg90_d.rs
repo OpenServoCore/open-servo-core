@@ -29,6 +29,16 @@ pub const VBUS: u16 = 1238;
 pub const COUNTS_PER_DEG: f64 = 20.126631678008682;
 /// The set's shunt scale, the board's measured counts per A.
 pub const CURRENT_COUNTS_PER_A: f64 = 1135.013429521035;
+/// The board's terminal taps, vcounts per V: the stage 1 terminal chain's
+/// slope.
+pub const TERMINAL_COUNTS_PER_V: f64 = 248.37;
+
+/// The bench winding's iron loss conductance across its inductance,
+/// ccounts per vcount: 5.09 mS, what the firmware's own OpenLoop ramps
+/// from rest read on the servo, free horn, both directions (4.6 to 5.3
+/// over the fit's choices); stage 3's series meter read 4.75 mS on the
+/// locked servo ten days before.
+pub const WINDOW_G: f64 = 5.09e-3 * CURRENT_COUNTS_PER_A / TERMINAL_COUNTS_PER_V;
 
 /// The bench pot's direction-free departure through the set's table, as
 /// `(amplitude, period)` sine lines in linearized counts at the 21, 47,
@@ -86,11 +96,12 @@ pub fn set_of_record(t: &mut ControlTable) {
     cal.motor.r_q12 = 3725;
     cal.motor.recip_ke_q = 13315;
     cal.motor.b_i_q313 = 2434;
-    cal.motor.fric_fc_counts = 54;
-    cal.motor.fric_fv_q016 = 812;
+    cal.motor.fric_fc_counts = 37;
+    cal.motor.fric_fv_q016 = 754;
     cal.motor.ke_vpc_q = 315;
     cal.motor.r_brush_q12 = 1093;
     cal.motor.brush_cps = 2540;
+    cal.motor.g_window_q016 = 1423;
     cal.thermal.th_rise_q016 = 434;
     cal.thermal.th_rise2_q016 = 1274;
     cal.thermal.ntc_raw_ref = 2048;
@@ -108,10 +119,19 @@ pub fn set_of_record(t: &mut ControlTable) {
     cal.gear.gear_class = 2;
 }
 
+/// The bench winding's drag as a torque, in winding current: Coulomb
+/// ccounts and viscous ccounts per c/s, stage 3's friction rungs with the
+/// window term off. The plant's, not a stored field: the set's friction
+/// words hold the current the velocity loop holds in the time mean, its
+/// braking and blind-band ticks in it, not the drag.
+pub const DRAG_FC: f64 = 54.0;
+pub const DRAG_FV: f64 = 812.0 / 65536.0;
+
 /// The motor model the set's fields hold, read back the way
 /// [`mg90::rig`](crate::mg90::rig) stores a plant's, on the rig's rail:
 /// the winding at the temperature the set's NTC curve reads on the plant's
-/// board, 24.30 C ([`stored_r`]).
+/// board, 24.30 C ([`stored_r`]); the drag is the bench winding's
+/// ([`DRAG_FC`], [`DRAG_FV`]).
 pub fn motor() -> Motor {
     let sh = Shared::new();
     sh.table.with_mut(set_of_record);
@@ -121,8 +141,8 @@ pub fn motor() -> Motor {
         r,
         ke: m.ke_vpc_q as f64 / 4096.0,
         b: m.b_i_q313 as f64 / 8192.0 / DECIM_MED as f64,
-        fc: m.fric_fc_counts as f64,
-        fv: m.fric_fv_q016 as f64 / 65536.0,
+        fc: DRAG_FC,
+        fv: DRAG_FV,
     }
 }
 
@@ -138,10 +158,9 @@ pub const L: f64 = 4.858;
 /// slope at DC with no loop over 58 to 89 mA, at a level a passive drop
 /// through zero current meets only from about 37 mA up. Where the slope
 /// ends the bench's break with the small-signal resistance installed
-/// places, in the sweeps' own session
-/// (`the_record_rig_breaks_where_the_bench_did_with_the_small_signal_resistance`);
-/// the run-ups' 0.5 ohm over 0.14 to 0.39 A, another session's, would put
-/// it nearer 0.2 A. Locked it reads the stored resistance.
+/// places, in the sweeps' own session; the run-ups' 0.5 ohm over 0.14 to
+/// 0.39 A, another session's, would put it nearer 0.2 A. Locked it reads
+/// the stored resistance.
 pub const CONTACT: Contact = Contact {
     from: 42.0,
     to: 180.0,
@@ -149,13 +168,15 @@ pub const CONTACT: Contact = Contact {
 };
 
 /// The plant at rest at `lin`, on the set's motor model with the bench
-/// winding's inductance and contact, and the bench pot's residual.
+/// winding's inductance, contact and loss conductance, and the bench pot's
+/// residual.
 pub fn plant(lin: f64, seed: u64) -> Mg90 {
     let m = motor();
     let mut p = Mg90::new(lin, [0; POINTS], seed).with_motor(m);
     p.residual = POT_RESIDUAL;
     p.tau_e = L / m.r;
     p.contact = Some(CONTACT);
+    p.window_g = WINDOW_G;
     p
 }
 
@@ -180,9 +201,9 @@ mod tests {
     use crate::mg90::tests::motor_model_is_the_plants;
 
     /// The record rig's motor model is its plant's, under the same pin as
-    /// the generic rig's.
+    /// the generic rig's, the drag the plant's own.
     #[test]
     fn the_record_rigs_motor_model_is_the_plants() {
-        motor_model_is_the_plants(&rig(|_| {}), || plant(2048.0, 1));
+        motor_model_is_the_plants(&rig(|_| {}), || plant(2048.0, 1), Some((DRAG_FC, DRAG_FV)));
     }
 }

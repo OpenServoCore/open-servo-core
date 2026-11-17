@@ -91,6 +91,10 @@ pub struct KernelConfig {
     pub brush_rc_q12: i32,
     /// |speed| c/s at and under which the brush term's weight is 0.
     pub brush_lo_cps: i32,
+    /// The window term's conductance per tick of the period
+    /// (`window::WindowTerm::conductance`), fenced by the winding; RAIL puts
+    /// it on the rail.
+    pub g_arr: u32,
 }
 
 // The copy is a word copy of the table's bytes: every block sits at its
@@ -150,6 +154,7 @@ impl KernelConfig {
             therm: ThermCfg::default(),
             brush_rc_q12: 0,
             brush_lo_cps: 0,
+            g_arr: 0,
         }
     }
 
@@ -174,9 +179,9 @@ impl KernelConfig {
     }
 
     /// The span as the table holds it, then the belt, the two speeds, the
-    /// cap, the brush term and the winding estimate's config. The caller
-    /// takes it only between commits.
-    pub(super) fn take(&mut self, shared: &Shared) {
+    /// cap, the brush term, the window term's conductance and the winding
+    /// estimate's config. The caller takes it only between commits.
+    pub(super) fn take(&mut self, shared: &Shared, recip_arr_q24: u32) {
         let src = shared
             .table
             .region_ptr()
@@ -216,6 +221,7 @@ impl KernelConfig {
         let m = &self.motor;
         self.brush_rc_q12 = bemf::brush_rc_q12(m.r_brush_q12, m.brush_cps, m.r_q12);
         self.brush_lo_cps = m.brush_cps as i32 - bemf::BRUSH_SPAN_CPS;
+        self.g_arr = window::WindowTerm::conductance(m.g_window_q016, m.r_q12, recip_arr_q24);
         let th = &self.calib_thermal;
         // a body node needs both its words: a tau alone is a gain of 0, a
         // gain alone would ride a one-period leak

@@ -155,10 +155,10 @@ impl BemfObs {
     }
 
     /// One FAST-tick sample. `ticks` is the drive width the window select
-    /// used, `vdiff` from `vdiff_from_frame`, `i` from `i_from_frame`;
-    /// either `None` voids the open half. A half is DECIM_MED samples of a
-    /// width <= ARR times a 12-bit differential, so `sum_tv` holds for any
-    /// ARR up to `ARR_MAX`; `sum_i` stays under 2^21.
+    /// used, `vdiff` from `vdiff_from_frame`, `i` the reading
+    /// `Fast::measure` takes; either `None` voids the open half. A half is
+    /// DECIM_MED samples of a width <= ARR times a 12-bit differential, so
+    /// `sum_tv` holds for any ARR up to `ARR_MAX`; `sum_i` stays under 2^21.
     pub fn sample(&mut self, ticks: u32, vdiff: Option<i32>, i: Option<i32>) {
         match (vdiff, i) {
             (Some(v), Some(i)) => {
@@ -289,7 +289,7 @@ pub fn omega_cps_i16(omega: i32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::estimator::window::I_FROM_FRAME_MAX;
+    use crate::estimator::window::I_READING_MAX;
 
     const ARR: u32 = 1200;
     const RECIP_ARR: u32 = (1u32 << RECIP_ARR_SHIFT) / ARR;
@@ -493,18 +493,14 @@ mod tests {
     fn legal_extremes_never_wrap() {
         // debug overflow checks are the wrap detector: the widest window the
         // sum holds for times a full-scale 12-bit differential, and the
-        // largest current `i_from_frame` returns
+        // largest reading `Fast::measure` takes
         const V: i32 = TAP_FULL_SCALE as i32;
         let mut obs = BemfObs::new(DEV_MAX);
         // each half one sign, so the sums reach their extremes
         for n in 0..4 * HALF {
             let neg = (n / HALF) & 1 == 1;
             let v = if neg { -V } else { V };
-            let i = if neg {
-                -I_FROM_FRAME_MAX
-            } else {
-                I_FROM_FRAME_MAX
-            };
+            let i = if neg { -I_READING_MAX } else { I_READING_MAX };
             obs.sample(ARR_MAX, Some(v), Some(i));
             if n % HALF == HALF - 1 {
                 obs.close_half(u16::MAX, u16::MAX, u32::MAX);
@@ -527,11 +523,7 @@ mod tests {
         for n in 0..8 * HALF {
             let neg = (n / HALF) & 1 == 1;
             let v = if neg { -V } else { V };
-            let i = if neg {
-                -I_FROM_FRAME_MAX
-            } else {
-                I_FROM_FRAME_MAX
-            };
+            let i = if neg { -I_READING_MAX } else { I_READING_MAX };
             obs.sample(ARR_MAX, Some(v), Some(i));
             if n % HALF == HALF - 1 {
                 obs.close(i16::MAX, u16::MAX, xw, u16::MAX, u32::MAX);
