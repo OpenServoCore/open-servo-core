@@ -56,12 +56,13 @@ pub struct TelemetryMode {
 
 /// One control tick (protocol sec 5.6). The chip's ADC DMA lands both scans
 /// of each PWM period at the front: the trough scan and the crest scan's
-/// shunt and taps in `_scan`, the crest's `pos` to `ntc_raw` on their
+/// taps and shunt in `_scan`, the crest's `pos` to `ntc_raw` on their
 /// fields. The DMA writes the taps in sample order, so no published name
-/// lies in its way: the tick ISR copies the crest's shunt and the trough's
-/// out, writes each tap under its terminal's name and stamps `sample_tick`;
-/// the kernel writes its conclusions on the window the scan measured, and
-/// the TEL row is copied. The next scans land mid-tick and late in it
+/// lies in its way: the tick ISR stamps `sample_tick`, copies the injected
+/// group's shunt and the trough's samples out, and once the crest scan has
+/// landed writes each crest tap under its terminal's name; the kernel
+/// writes its conclusions on the window the scan measured, and the TEL row
+/// is copied. The next scans land mid-tick and a period on
 /// (`budget::NEXT_TROUGH`, `budget::NEXT_CREST`), after every read of this
 /// one, so inside the tick every field is this tick's. Counts-domain
 /// throughout.
@@ -82,7 +83,7 @@ pub struct TelemetryTick {
     /// NTC divider tap.
     #[ct_field(access = ro)]
     pub ntc_raw: u16,
-    /// The shunt at the counter peak.
+    /// The shunt at the counter peak, from the injected group.
     #[ct_field(access = ro)]
     pub current_raw: u16,
     #[ct_field(access = ro)]

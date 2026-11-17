@@ -574,17 +574,23 @@ mod tests {
         assert_eq!(limits::WINDOW_FLOOR_Q15, 0x27E);
         assert_eq!(super::TELEMETRY_EXT_BASE_ADDR, 0x3C0);
         assert_eq!(health::TICK_LOAD_MEAN_Q15, 0x3C0);
-        assert_eq!(health::STACK_FREE_MIN, 0x3C8);
-        assert_eq!(limits_ext::WINDOW_V_FLOOR_Q15, 0x3CA);
-        assert_eq!([therm::T_NTC_CC, therm::THERM_FLAGS], [0x3CC, 0x3CE]);
-        assert_eq!(inject::OMEGA_REF_CPS, 0x3D0);
+        assert_eq!(health::WRITE_LATE_COUNT, 0x3C8);
+        assert_eq!(health::STACK_FREE_MIN, 0x3CA);
+        assert_eq!(limits_ext::WINDOW_V_FLOOR_Q15, 0x3CC);
+        assert_eq!([therm::T_NTC_CC, therm::THERM_FLAGS], [0x3D0, 0x3D2]);
+        assert_eq!(inject::OMEGA_REF_CPS, 0x3D4);
         assert_eq!(
             core::mem::size_of::<super::TelemetryRegs>(),
             super::TELEMETRY_REGION_SIZE as usize
         );
         let f = ControlTable::FIELDS;
         let by = |n: &str| f.iter().find(|d| d.name == n).unwrap();
-        for name in ["tick_over_count", "tick_lost_count", "tel_drop_count"] {
+        for name in [
+            "tick_over_count",
+            "tick_lost_count",
+            "tel_drop_count",
+            "write_late_count",
+        ] {
             assert!(by(name).writable, "{name} is host-clearable");
         }
         for name in [

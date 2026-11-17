@@ -162,7 +162,7 @@ fn calib_sense_ext(cal: &Calibration, pre: &Precomputed) -> CalibSenseExt {
     }
 }
 
-// Order mirrors the scan tail in `configure_adc_dma_scan` (Vref aside).
+// Order mirrors the scan in `configure_adc_dma_scan` (the shunt and Vref aside).
 fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
     [s.vmotor.0, s.vmotor.1, s.pos, s.vbus, s.ntc]
 }
@@ -317,9 +317,9 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_low_power(true);
 
     scan::seed_seq([
-        current,
         sensors.vmotor.0.channel(),
         sensors.vmotor.1.channel(),
+        current,
         sensors.pos.channel(),
         adc::Channel::Vref,
         sensors.vbus.channel(),
@@ -328,7 +328,8 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_scan_mode(true);
     adc::set_dma(true);
     adc::set_external_trigger(Extsel::TIM1_TRGO);
-    adc::set_injected(sensors.vmotor.1.channel(), chip::LOW_TAP_TRIGGER);
+    adc::set_injected(sensors.vmotor.1.channel(), current, chip::LOW_TAP_TRIGGER);
+    adc::set_jeoc_irq(true);
     adc::enable();
 
     scan::arm_dma();
@@ -387,7 +388,7 @@ fn start_center_aligned_pwm(psc: u16, arr: u16) {
     timer::set_duty(chip::MOTOR_IN2_CH, 0);
     timer::configure_compare_trigger(
         chip::LOW_TAP_TRIGGER_CH,
-        arr.saturating_sub(scan::LOW_TAP_LEAD_TICKS),
+        arr.saturating_sub(scan::INJECTED_LEAD_TICKS),
     );
     timer::set_repetition(0);
     timer::set_trgo_update();

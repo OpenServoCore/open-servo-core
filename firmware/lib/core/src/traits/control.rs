@@ -2,14 +2,30 @@ use crate::Shared;
 
 /// What the kernel control loop reads from the board hardware.
 pub trait Sensors {
-    /// Acquisition only: complete the scan's frame in device counts in the
-    /// table's tick block (`Shared::frame`), at the tick's entry.
+    /// Acquisition only, at the tick's entry: the frame's fields the motor
+    /// write reads (the shunt) in device counts in the table's tick block
+    /// (`Shared::frame`).
     fn land(&mut self, shared: &Shared);
+    /// After the motor write: the rest of the frame, once the scan that
+    /// holds it has landed. False when it never did: the frame is not this
+    /// period's, a sensor fault. `read`: the window this frame sampled
+    /// gave a current reading, so the command before this tick's was a
+    /// live drive and a flip written now makes the next window the first
+    /// after a reversal, which nothing reads (kernel sec 2.3).
+    fn complete(&mut self, _shared: &Shared, _read: bool) -> bool {
+        true
+    }
 }
 
 /// What the kernel control loop writes to the motor driver.
 pub trait Motor {
     fn write(&mut self, cmd: MotorCmd);
+    /// Right after a write: it landed too late to load ahead of the pulse
+    /// it is centered on, so the window that pulse drives holds two
+    /// commands.
+    fn late(&self) -> bool {
+        false
+    }
 }
 
 /// Bag of chip-side capabilities the control loop needs. Splits into
