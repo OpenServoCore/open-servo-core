@@ -51,13 +51,11 @@ pub struct ControlLifecycle {
     #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]
     pub goal_current: i16,
     /// Bus dead-man, kernel ticks (20 kHz: 20000 is one second, 65535 about
-    /// 3.3 s). On the experiment image (kernel sec 2.7) a nonzero value with
-    /// torque on is a countdown that every instruction the bus dispatches
-    /// to this servo reloads and a TEL burst holds; at zero the kernel
-    /// latches `deadman` and the drive coasts until the torque enable ack.
-    /// Torque off clears the countdown; a fresh enable starts it from the
-    /// field. 0 is off. The production image accepts and ignores it unless
-    /// built with `deadman`, where it counts the same.
+    /// 3.3 s; kernel sec 2.7). A nonzero value with torque on is a countdown
+    /// that every instruction the bus dispatches to this servo reloads and
+    /// a TEL burst holds; at zero the kernel latches `deadman` and the drive
+    /// coasts until the torque enable ack. Torque off clears the countdown;
+    /// a fresh enable starts it from the field. 0 is off.
     pub bus_deadman_ticks: u16,
 }
 
@@ -144,8 +142,8 @@ pub struct ControlTel {
 /// permit set; 0 in either field is off. The kernel reads the slope at most
 /// [`INJECT_ACCEL_MAX_Q88`] and the half-period at most
 /// [`INJECT_HALF_PERIODS_MAX`]. Read only by an image built with
-/// `deadman`; the production image accepts and ignores both. Volatile: a
-/// host zeroes both when it is done.
+/// `loop-margin`, a bench image; the production and experiment images
+/// accept and ignore both. Volatile: a host zeroes both when it is done.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Block)]
 pub struct ControlInject {

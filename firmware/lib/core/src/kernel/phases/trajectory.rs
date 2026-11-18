@@ -1,14 +1,14 @@
 use super::fast::Command;
 use super::loops::faults::FaultLatch;
 use super::loops::position::{self, HOLD_SETTLE_TICKS};
-#[cfg(feature = "deadman")]
+#[cfg(feature = "loop-margin")]
 use super::loops::trajectory;
 use super::{Life, Medium};
 use crate::kernel::config::KernelConfig;
-#[cfg(feature = "deadman")]
+#[cfg(feature = "loop-margin")]
 use crate::regions::config::ConfigLoopPosition;
 use crate::regions::control::Mode;
-#[cfg(feature = "deadman")]
+#[cfg(feature = "loop-margin")]
 use crate::regions::control::{INJECT_ACCEL_MAX_Q88, INJECT_HALF_PERIODS_MAX};
 
 impl Medium {
@@ -56,7 +56,7 @@ impl Medium {
                 self.traj
                     .step_velocity(life.goal_velocity, theta_hat, lp, soft);
                 self.omega_ref_q16 = self.traj.omega_star_q16();
-                #[cfg(feature = "deadman")]
+                #[cfg(feature = "loop-margin")]
                 if self.inj_on {
                     self.inject(lp);
                 }
@@ -69,7 +69,7 @@ impl Medium {
     }
 }
 
-#[cfg(feature = "deadman")]
+#[cfg(feature = "loop-margin")]
 impl Medium {
     /// The loop-margin stimulus (kernel sec 2.7): the triangle summed into
     /// the velocity loop's reference, inside the speed ceiling that bounds

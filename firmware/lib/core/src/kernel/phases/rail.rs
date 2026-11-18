@@ -1,7 +1,5 @@
 use super::fast::{Command, Fast};
 use super::loops::faults::{self, FaultLatch};
-#[cfg(feature = "deadman")]
-use super::loops::limits;
 use super::{Life, Medium};
 use crate::Shared;
 use crate::kernel::config::KernelConfig;
@@ -60,29 +58,5 @@ impl Medium {
         }
         // after the frame's reads, which `budget::FRAME_DONE` bounds
         fast.prepare_window(cfg.g_arr, vbus_eff);
-    }
-
-    /// RAIL: the dead-man's period (`Deadman::step`) and the loop-margin
-    /// stimulus's gate for the next TRAJECTORY, on this period's LIMITS
-    /// flags. Either field 0 closes it, so an unasked stimulus leaves the
-    /// Velocity arm the production image's. Out of line, so the tick body
-    /// keeps its shape.
-    #[cfg(feature = "deadman")]
-    #[inline(never)]
-    #[rustc_align(4)]
-    pub(in crate::kernel) fn deadman(&mut self, streaming: bool, faults: &mut FaultLatch) {
-        let life = &self.ctl.life;
-        self.deadman.step(
-            life.torque_enable,
-            life.bus_deadman_ticks,
-            streaming,
-            faults,
-        );
-        let inj = &self.ctl.inject;
-        self.inj_on = streaming
-            && self.deadman.loaded()
-            && self.limit_flags & !limits::flag::PERMIT == 0
-            && inj.inject_accel_q88 != 0
-            && inj.inject_half_periods != 0;
     }
 }

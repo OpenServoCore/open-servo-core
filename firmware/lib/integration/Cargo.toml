@@ -15,9 +15,9 @@ log = "0.4"
 
 [features]
 bench = ["osc-host/bench"]
-# The production kernel with the bench dead-man and the loop-margin
-# injection (kernel sec 2.7), for the tests that read the loops' margins.
-deadman = ["osc-servo-core/deadman"]
+# The loop-margin stimulus (kernel sec 2.7), for the tests that read the
+# loops' margins.
+loop-margin = ["osc-servo-core/loop-margin"]
 
 [dev-dependencies]
 env_logger   = "0.11"
@@ -52,4 +52,4 @@ path = "tests/burst.rs"
 [[test]]
 name = "loop_margin"
 path = "tests/loop_margin.rs"
-required-features = ["deadman"]
+required-features = ["loop-margin"]

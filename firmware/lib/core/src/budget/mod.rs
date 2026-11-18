@@ -101,7 +101,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// write ahead of the voltage side, the reversal's no-reading test, the
 /// wait for the crest scan and every phase's stages, RAIL's window term on
 /// the rail among them. The Closed and OpenLoop rows carry
-/// [`WINDOW_CARRY`] on top, which the measurement predates.
+/// [`WINDOW_CARRY`] on top, and every row [`DEADMAN`], which the
+/// measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -115,8 +116,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
-/// barely vary); the Closed and OpenLoop rows with [`WINDOW_CARRY`], as
-/// the maximum's.
+/// barely vary); with [`WINDOW_CARRY`] and [`DEADMAN`], as the
+/// maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
     [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
@@ -133,11 +134,27 @@ pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// adds; plus 10%, rounded up. The bench must refill the rows.
 pub const WINDOW_CARRY: u32 = 10;
 
+/// E, on every cell by phase, maximum and mean: the bus dead-man (kernel
+/// sec 2.7), against the image without it. Priced on the executed path of
+/// the release image with the fetch model ([`REFRESH`]): the streaming
+/// flag the step takes, a load and a load, 6.5 HCLK on every phase but
+/// TRAJECTORY's, whose path is unchanged; CONTROL on top the generation's
+/// read, 8.5, the countdown's period inline, 56.75 on its dearest path (a
+/// lapse), and its start on the enable edge, 11.75, with no credit for the
+/// branch the period shares with the edge's test. Plus 10%, rounded up.
+/// The bench must refill the rows.
+pub const DEADMAN: [u32; PHASES] = [92, 8, 0, 8, 8, 8, 8, 8, 8, 8];
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut p = 0;
     while p < PHASES {
         rows[Regime::Closed as usize][p] += WINDOW_CARRY;
         rows[Regime::OpenLoop as usize][p] += WINDOW_CARRY;
+        let mut r = 0;
+        while r < REGIMES {
+            rows[r][p] += DEADMAN[p];
+            r += 1;
+        }
         p += 1;
     }
     rows
@@ -317,10 +334,11 @@ pub const TROUGH_DONE: u32 = 106;
 /// tick block or arms a TEL row's copy of it, before any stage that runs
 /// ahead of the fast step: RAIL's rail and pot reads behind a head and a
 /// two-chunk row, the wait for the scan ([`SCAN_WAIT`]) apart. E: priced
-/// as [`TEL_POLL`], 1011, and the window term ahead of the write, 24.5
-/// as in [`WRITE_DONE`] (RAIL puts it on the rail after its reads), plus
-/// 10%; and [`WINDOW_CARRY`].
-pub const FRAME_DONE: u32 = 1140 + WINDOW_CARRY;
+/// as [`TEL_POLL`], 1011, the window term ahead of the write, 24.5 as in
+/// [`WRITE_DONE`] (RAIL puts it on the rail after its reads), and the
+/// streaming flag the step takes ahead of the reads, 6.5 as in
+/// [`DEADMAN`], plus 10%; and [`WINDOW_CARRY`].
+pub const FRAME_DONE: u32 = 1147 + WINDOW_CARRY;
 
 /// E, on [`FRAME_DONE`] in the scan deadline, which the measured
 /// [`KERNEL`] rows do not reach: the tick entered on the injected group's
@@ -382,12 +400,14 @@ impl Body {
 ///
 /// M: r3-refill, each body's net maximum over every window, a 1M window's
 /// Deadline less [`spin_extra`], 3 runs: BreakWake 978 (TEL stepping),
-/// TxDone 305 (stepping), Deadline 5953 (the TEL chunk WRITE, arm10).
+/// TxDone 305 (stepping), Deadline 5953 (the TEL chunk WRITE, arm10); the
+/// Deadline with [`BUS_TOUCH`] and [`COMMIT_TOUCH`], which the measurement
+/// predates.
 pub const fn body(b: Body) -> u32 {
     match b {
         Body::BreakWake => 1026,
         Body::TxDone => 353,
-        Body::Deadline => 6132,
+        Body::Deadline => 6132 + BUS_TOUCH + COMMIT_TOUCH,
     }
 }
 
@@ -399,14 +419,25 @@ pub const fn body(b: Body) -> u32 {
 /// build-image.sh image: cargo hashes the path of every path dependency
 /// into the crate metadata, so the release layout links the ISR bodies in
 /// another function order than a checkout build, and the checkout's 243
-/// (stepping) does not transfer.
+/// (stepping) does not transfer. The Deadline with the touches, as the
+/// maximum's.
 pub const fn body_mean(b: Body) -> u32 {
     match b {
         Body::BreakWake => 794,
         Body::TxDone => 275,
-        Body::Deadline => 4721,
+        Body::Deadline => 4721 + BUS_TOUCH + COMMIT_TOUCH,
     }
 }
+
+/// E, on every frame dispatched to this servo and on the Deadline body that
+/// dispatches it, maximum and mean: the bus generation the dead-man reloads
+/// on (`Shared::bus_touch`). Priced on the executed path of the release
+/// image with the fetch model ([`REFRESH`]): the dispatch's arms join at
+/// one exit for it, a taken transfer and the base address's reload, 10,
+/// and the touch, 10.5; COMMIT_TOUCH, a commit's own touch, 10.5 on its
+/// longest path. Plus 10%, rounded up. The bench must refill the rows.
+pub const BUS_TOUCH: u32 = 23;
+pub const COMMIT_TOUCH: u32 = 12;
 
 /// Frame types, each the bus CPU of one exchange: every bus body from its
 /// break wake to the next frame's.
@@ -446,15 +477,16 @@ impl Frame {
 /// Read32 plus 5 us (payload streams by DMA). Write, E: Read32 plus the
 /// goal rules and commit (37 us) plus 8 us. GreadSlot, E: Read32 plus the
 /// chain bookkeeping and reclaim deadline (15 us). ConfigWrite, E: Write
-/// plus [`CONFIG_COUNT`].
+/// plus [`CONFIG_COUNT`]. Each with [`BUS_TOUCH`], a Write's and a
+/// ConfigWrite's with [`COMMIT_TOUCH`] too.
 pub const fn frame(f: Frame) -> u32 {
     match f {
-        Frame::Ping => 5520,
-        Frame::Read32 => 6000,
-        Frame::Read240 => 6240,
-        Frame::Write => 8160,
-        Frame::GreadSlot => 6720,
-        Frame::ConfigWrite => 8160 + CONFIG_COUNT,
+        Frame::Ping => 5520 + BUS_TOUCH,
+        Frame::Read32 => 6000 + BUS_TOUCH,
+        Frame::Read240 => 6240 + BUS_TOUCH,
+        Frame::Write => 8160 + BUS_TOUCH + COMMIT_TOUCH,
+        Frame::GreadSlot => 6720 + BUS_TOUCH,
+        Frame::ConfigWrite => 8160 + CONFIG_COUNT + BUS_TOUCH + COMMIT_TOUCH,
     }
 }
 
@@ -467,15 +499,16 @@ pub const CONFIG_COUNT: u32 = 23;
 
 /// The same frames' mean over a window. E: Read32 112 us (the v1 118.9 us
 /// less the third arm, which two-arm replies dropped); Ping, Read240, Write,
-/// GreadSlot and ConfigWrite shifted from it as in [`frame`].
+/// GreadSlot and ConfigWrite shifted from it as in [`frame`], with the
+/// touches.
 pub const fn frame_mean(f: Frame) -> u32 {
     match f {
-        Frame::Ping => 5136,
-        Frame::Read32 => 5376,
-        Frame::Read240 => 5616,
-        Frame::Write => 7152,
-        Frame::GreadSlot => 6096,
-        Frame::ConfigWrite => 7152 + CONFIG_COUNT,
+        Frame::Ping => 5136 + BUS_TOUCH,
+        Frame::Read32 => 5376 + BUS_TOUCH,
+        Frame::Read240 => 5616 + BUS_TOUCH,
+        Frame::Write => 7152 + BUS_TOUCH + COMMIT_TOUCH,
+        Frame::GreadSlot => 6096 + BUS_TOUCH,
+        Frame::ConfigWrite => 7152 + CONFIG_COUNT + BUS_TOUCH + COMMIT_TOUCH,
     }
 }
 

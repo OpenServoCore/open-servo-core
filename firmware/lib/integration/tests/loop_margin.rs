@@ -1,6 +1,6 @@
 //! The loops' stability margins on the bench servo of record's rig
-//! ([`mg90_d`]), read the way a host reads them on the servo. The `deadman`
-//! image's stimulus rides a triangle on the velocity loop's reference in
+//! ([`mg90_d`]), read the way a host reads them on the servo. The loop-margin
+//! stimulus rides a triangle on the velocity loop's reference in
 //! Velocity mode while a TEL burst streams under the bus dead-man; one row
 //! a medium period carries `theta_hat_q16`, `omega_hat_cps` and
 //! `omega_ref_cps`, and at the

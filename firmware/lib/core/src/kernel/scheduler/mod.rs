@@ -246,9 +246,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // Asked only at a start: a count read every tick costs every tick.
         self.tel
             .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
-        // the dead-man counts bus silence by the medium period, and a burst
-        // is the host silent by design: the TEL stream is in hand here
-        #[cfg(any(feature = "experiment", feature = "deadman"))]
+        // the experiment's dead-man counts bus silence by the medium period,
+        // and a burst is the host silent by design: the TEL stream is in
+        // hand here; the production half counts at CONTROL (`Medium::step`)
+        #[cfg(feature = "experiment")]
         if phase == phase::RAIL {
             self.medium.deadman(self.tel.streaming(), &mut self.faults);
         }
@@ -270,6 +271,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 &mut self.faults,
                 &mut self.fast,
                 &mut self.cmd,
+                self.tel.streaming(),
             )
         };
         #[cfg(feature = "experiment")]
