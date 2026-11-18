@@ -499,30 +499,13 @@ fn deadman_seed(sh: &Shared, field: u16) {
 mod deadman {
     use super::*;
 
-    /// A TEL stream the test switches on and off.
-    #[derive(Default)]
-    struct StreamTel {
-        streaming: bool,
-    }
-    impl TelStream for StreamTel {
-        fn on_publish(&mut self, _: impl FnOnce() -> bool) {}
-        fn streaming(&self) -> bool {
-            self.streaming
-        }
-    }
+    type K = Kernel<FakeIo>;
 
-    type K = Kernel<FakeIo, StreamTel>;
-
+    /// The servo under `field`; a burst streams while the test sets
+    /// `Shared::set_tel_active`, as the bus side's lend does.
     fn rig(sh: &Shared, field: u16) -> K {
         deadman_seed(sh, field);
-        Kernel::with_tel(
-            FakeIo {
-                sensors: FakeSensors,
-                motor: FakeMotor { last: None },
-            },
-            StreamTel::default(),
-            TIMING,
-        )
+        kernel()
     }
 
     fn scan(k: &mut K, sh: &Shared, f: SensorFrame, n: u32) {
@@ -610,10 +593,10 @@ mod deadman {
         let sh = Shared::new();
         let mut k = rig(&sh, 400);
         scan(&mut k, &sh, f, 100);
-        k.tel.streaming = true;
+        sh.set_tel_active(true);
         scan(&mut k, &sh, f, 1000);
         assert!(drives(&k));
-        k.tel.streaming = false;
+        sh.set_tel_active(false);
         scan(&mut k, &sh, f, 300);
         assert!(drives(&k));
         lapses(&mut k, &sh, f);
@@ -672,7 +655,7 @@ mod deadman {
                 t.control.inject.inject_half_periods = HALF;
                 cfg(t);
             });
-            k.tel.streaming = true;
+            sh.set_tel_active(true);
             let f = frame(2000, BIAS);
             for _ in 0..40 {
                 period(&mut k, sh, f);
@@ -719,8 +702,8 @@ mod deadman {
             let off = |cfg: fn(&mut ControlTable), streaming: bool| {
                 let sh = Shared::new();
                 let mut k = inject_rig(&sh, cfg);
-                k.tel.streaming = streaming;
-                // the gate is RAIL's, for the next period
+                sh.set_tel_active(streaming);
+                // the gate is CONTROL's, for its period
                 period(&mut k, &sh, frame(2000, BIAS));
                 injected::<{ 2 * CYCLE }>(&mut k, &sh)
             };
@@ -777,10 +760,10 @@ mod deadman {
             let sh = Shared::new();
             let mut k = inject_rig(&sh, |_| {});
             let before = injected::<7>(&mut k, &sh);
-            k.tel.streaming = false;
+            sh.set_tel_active(false);
             // the period whose CONTROL first reads no burst injects nothing
             assert_eq!(injected::<6>(&mut k, &sh), [0; 6]);
-            k.tel.streaming = true;
+            sh.set_tel_active(true);
             // and the first one after the burst resumes injects again
             let after = injected::<CYCLE>(&mut k, &sh);
 

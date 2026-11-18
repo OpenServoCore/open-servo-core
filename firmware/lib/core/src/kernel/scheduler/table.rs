@@ -74,9 +74,7 @@ impl Medium {
     /// Phase `k` of the medium chain (`phase`), on this tick's sample;
     /// whether a SLOW stage ran. Out of line: inlined, the phases sit
     /// between the fast half and its cold arms and carry every one of
-    /// those branches out of reach (v006-performance sec 3). `streaming`: a
-    /// TEL burst streams this tick, which holds the dead-man at CONTROL.
-    #[allow(clippy::too_many_arguments)]
+    /// those branches out of reach (v006-performance sec 3).
     #[inline(never)]
     #[rustc_align(4)]
     pub fn step(
@@ -87,19 +85,10 @@ impl Medium {
         faults: &mut FaultLatch,
         fast: &mut Fast,
         cmd: &mut Command,
-        #[cfg(not(feature = "experiment"))] streaming: bool,
     ) -> bool {
         match k {
             #[cfg(not(feature = "experiment"))]
-            phase::CONTROL => self.control(
-                shared.frame().pos(),
-                cfg,
-                shared,
-                faults,
-                fast,
-                cmd,
-                streaming,
-            ),
+            phase::CONTROL => self.control(shared.frame().pos(), cfg, shared, faults, fast, cmd),
             #[cfg(feature = "experiment")]
             phase::CONTROL => self.control(cfg, shared, faults, fast, cmd),
             #[cfg(not(feature = "experiment"))]

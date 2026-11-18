@@ -34,11 +34,11 @@ pub struct Shared {
     /// not taken. Dispatch is the sole writer.
     config_seq: AtomicU8,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
-    /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
+    /// (osc-native sec 9.2) - internal identity, not a table register; MGMT ENUM
     /// is its only wire reader.
     uid: SyncUnsafeCell<[u8; UID_LEN]>,
     /// The sec 9.4 persistence store; MGMT SAVE/FACTORY are its only callers
-    /// (cold path -- `dyn` costs nothing that matters here).
+    /// (cold path - `dyn` costs nothing that matters here).
     store: SyncUnsafeCell<Option<&'static dyn ConfigStore>>,
     /// The position table (`pos_lut` module), all-zero = identity; the CONTROL
     /// window loads it a page at a time. Boot, then the bus dispatcher
@@ -47,8 +47,13 @@ pub struct Shared {
     /// Bumped by dispatch behind every instruction addressed to this servo,
     /// and behind the store of every write it commits; the bus dead-man
     /// reloads when it moves (`bus_touch`). Dispatch is the sole writer.
-    /// Last, so no field above it moves.
     bus_gen: AtomicU8,
+    /// The kernel owns the bus TX lane: a TEL burst streams (protocol sec
+    /// 5.6). The TEL channel's lend and take-back write it beside their own
+    /// flag, its only writers, so the dead-man reads it at CONTROL from a
+    /// fixed address and the tick pays nothing for it. Last, so no field
+    /// above it moves.
+    tel_active: SyncUnsafeCell<bool>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -64,6 +69,7 @@ impl Shared {
             store: SyncUnsafeCell::new(None),
             pos_lut: SyncUnsafeCell::new([0; POINTS]),
             bus_gen: AtomicU8::new(0),
+            tel_active: SyncUnsafeCell::new(false),
         }
     }
 
@@ -138,6 +144,20 @@ impl Shared {
 
     pub fn bus_gen(&self) -> u8 {
         self.bus_gen.load(Ordering::Relaxed)
+    }
+
+    /// The kernel owns the TX lane. Any context: the bus side is its only
+    /// writer.
+    pub fn tel_active(&self) -> bool {
+        // SAFETY: single-byte volatile read of a bus-written flag.
+        unsafe { self.tel_active.get().read_volatile() }
+    }
+
+    /// The bus side: the lane is lent (`true`) or taken back.
+    pub fn set_tel_active(&self, on: bool) {
+        // SAFETY: single-byte volatile store; the bus side is the sole
+        // writer (field doc).
+        unsafe { self.tel_active.get().write_volatile(on) };
     }
 
     /// Bus dispatch, ahead of a commit reaching the kernel's inputs: the

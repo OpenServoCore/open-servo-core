@@ -24,16 +24,7 @@ use osc_integration::mg90::{self, Motor, TAU_E};
 use osc_integration::mg90_d;
 use osc_integration::plant::{FakeIo, FakeMotor, FakeSensors};
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::{ControlTable, Kernel, Mode, RegionStorage, TelStream};
-
-/// A burst streams for the whole run.
-struct Burst;
-impl TelStream for Burst {
-    fn on_publish(&mut self, _: impl FnOnce() -> bool) {}
-    fn streaming(&self) -> bool {
-        true
-    }
-}
+use osc_servo_core::{ControlTable, Kernel, Mode, RegionStorage};
 
 /// The cruise, c/s: high enough that the triangle and the loop's answer
 /// to the pot's residual leave the rotor above [`window_open_cps`] through
@@ -104,14 +95,15 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
         t.control.inject.inject_half_periods = n;
         cfg(t);
     });
-    let mut k = Kernel::with_tel(
+    let mut k = Kernel::new(
         FakeIo {
             sensors: FakeSensors,
             motor: FakeMotor { last: None },
         },
-        Burst,
         mg90::TIMING,
     );
+    // a burst streams for the whole run, lent as the bus side lends it
+    sh.set_tel_active(true);
     let mut p = mg90_d::plant(if plant.up { UP } else { DOWN }, plant.seed);
     if plant.quiet {
         p.sigma_raw = 0.0;

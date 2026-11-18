@@ -62,8 +62,7 @@ impl Medium {
 
 impl Medium {
     /// CONTROL: the read, the dead-man's period on it, the edges, and the
-    /// drive kind they imply. `streaming`: a TEL burst streams this tick.
-    #[allow(clippy::too_many_arguments)]
+    /// drive kind they imply.
     pub(in crate::kernel) fn control(
         &mut self,
         raw_pos: u16,
@@ -72,10 +71,11 @@ impl Medium {
         faults: &mut FaultLatch,
         fast: &mut Fast,
         cmd: &mut Command,
-        streaming: bool,
     ) {
         self.deadman.see(shared);
         self.ctl = Control::read(shared);
+        // a burst is the host silent by design: it holds the countdown
+        let streaming = shared.tel_active();
         // ahead of the edge: torque off has cleared the countdown by the
         // edge, so the edge's start counts from the next period
         let life = &self.ctl.life;

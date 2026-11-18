@@ -1410,7 +1410,6 @@ use crate::mocks::bus::{FakeCrc, TestProviders};
 use crate::tel::{TelChannel, TelLane};
 use osc_protocol::crc::osc_crc;
 use osc_protocol::wire::STREAM_FLAG_LAST;
-use osc_servo_core::ControlTableCell;
 use osc_servo_core::TelStream as _;
 use osc_servo_core::regions::control::addr::tel::{CHUNK0_ADDR, TEL_COUNT};
 use osc_servo_core::regions::telemetry::addr::tick::POS;
@@ -1427,12 +1426,12 @@ fn tel_shared() -> &'static Shared {
     std::boxed::Box::leak(std::boxed::Box::new(shared_seeded()))
 }
 
-/// The kernel half over the harness's wire and ring and `table`, the bus
+/// The kernel half over the harness's wire and ring and `shared`, the bus
 /// half attached.
 fn tel_split(
     h: &Harness,
     bus: &mut crate::bus::ServoBus<TestProviders>,
-    table: &'static ControlTableCell,
+    shared: &'static Shared,
 ) -> Lane {
     let ch: &'static TelChannel = std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()));
     let (lane, post) = ch.split::<TestProviders>(
@@ -1440,7 +1439,7 @@ fn tel_split(
         FakeCrc::new(),
         h.ring.clone(),
         h.deadline.clone(),
-        table,
+        shared,
     );
     bus.attach_tel(post);
     lane
@@ -1570,7 +1569,7 @@ fn tel_lane_passes_at_the_ack_release() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let mut lane = tel_split(&h, &mut bus, &shared.table);
+    let mut lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1613,7 +1612,7 @@ fn tel_count_reads_zero_after_last() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let mut lane = tel_split(&h, &mut bus, &shared.table);
+    let mut lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1677,7 +1676,7 @@ fn tel_arm_with_no_ack_lends_at_the_arm() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let mut lane = tel_split(&h, &mut bus, &shared.table);
+    let mut lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1705,7 +1704,7 @@ fn tel_count_reads_zero_after_a_dropped_lend() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let lane = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1734,7 +1733,7 @@ fn tel_count_reads_zero_after_an_arm_below_three_megabaud() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = tel_shared();
-    let lane = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1760,7 +1759,7 @@ fn tel_count_reads_zero_after_an_arm_that_is_no_row() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let lane = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1811,7 +1810,7 @@ fn tel_count_reads_zero_after_an_arm_with_an_odd_chunk() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let lane = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 
@@ -1837,7 +1836,7 @@ fn tel_count_arms_up_to_the_field_max() {
     let h = Harness::new();
     let mut bus = h.build(ID, TEL_RATE, 60);
     let shared = tel_shared();
-    let lane = tel_split(&h, &mut bus, &shared.table);
+    let lane = tel_split(&h, &mut bus, shared);
     let mut session = Session::new();
     let mut d = session.dispatcher(shared);
 

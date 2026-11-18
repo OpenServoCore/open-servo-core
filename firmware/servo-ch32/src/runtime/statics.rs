@@ -37,8 +37,7 @@ pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
 /// frame, under the painted stack, for the program's life.
 #[inline(never)]
 pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
-    let (lane, post) =
-        TEL_CHANNEL.split::<V006Providers>(TxWire, Crc, RxRing, Deadline, &SHARED.table);
+    let (lane, post) = TEL_CHANNEL.split::<V006Providers>(TxWire, Crc, RxRing, Deadline, &SHARED);
     unsafe {
         // SAFETY: pre-IRQ (install_irqs runs after) and `Drivers::install`
         // already built the bus in bringup, so the reach-in is single-context.

@@ -298,7 +298,7 @@ impl SimServo {
                 seed.idx,
                 h.clock_lag.clone(),
             ),
-            &shared.table,
+            shared,
         );
         bus.attach_tel(post);
         (shared, bus, lane, tel)

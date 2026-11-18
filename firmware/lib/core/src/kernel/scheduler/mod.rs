@@ -248,7 +248,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
         // the experiment's dead-man counts bus silence by the medium period,
         // and a burst is the host silent by design: the TEL stream is in
-        // hand here; the production half counts at CONTROL (`Medium::step`)
+        // hand here; the production half counts at CONTROL
         #[cfg(feature = "experiment")]
         if phase == phase::RAIL {
             self.medium.deadman(self.tel.streaming(), &mut self.faults);
@@ -271,7 +271,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 &mut self.faults,
                 &mut self.fast,
                 &mut self.cmd,
-                self.tel.streaming(),
             )
         };
         #[cfg(feature = "experiment")]

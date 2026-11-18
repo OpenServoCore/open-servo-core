@@ -1,7 +1,7 @@
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use osc_servo_core::tel::Chunks;
-use osc_servo_core::{ControlTableCell, RegionStorageRaw};
+use osc_servo_core::{RegionStorageRaw, Shared};
 
 use super::*;
 
@@ -12,7 +12,7 @@ use super::*;
 /// back, in its first body after LAST has left the wire.
 pub struct TelPost {
     pub(super) ch: &'static TelChannel,
-    pub(super) table: &'static ControlTableCell,
+    pub(super) shared: &'static Shared,
     /// The arm the next lend streams; its chunks are posted.
     pub(super) count: u16,
     /// The lent burst's epoch.
@@ -37,7 +37,7 @@ impl TelPost {
     /// burst is armed or streams (protocol sec 5.6). Bus side, outside any
     /// table borrow: the bus is CONTROL's writer.
     pub(crate) fn end(&mut self) {
-        let p = self.table.region_ptr();
+        let p = self.shared.table.region_ptr();
         // SAFETY: in-bounds field of the static table; this context writes
         // CONTROL, and the kernel only reads it.
         unsafe { (&raw mut (*p).control.tel.tel_count).write_volatile(0) };
@@ -45,7 +45,7 @@ impl TelPost {
 
     /// Post a burst's row, while the lane is the bus's.
     fn post(&mut self, chunks: Chunks) {
-        let plan = RowPlan::of(chunks, self.table.region_ptr().cast());
+        let plan = RowPlan::of(chunks, self.shared.table.region_ptr().cast());
         // SAFETY: sole mailbox writer, and the kernel reads the plan only
         // at the pickup a later `start` keys (type doc).
         unsafe { *self.ch.arm_row.get() = plan };
@@ -69,6 +69,7 @@ impl TelPost {
             ch.active.get().write_volatile(true);
             seq
         };
+        self.shared.set_tel_active(true);
     }
 
     /// The RX ring cursor to resume at, once the LAST frame has left the
@@ -91,6 +92,7 @@ impl TelPost {
     pub(crate) fn stop(&mut self) {
         // SAFETY: sole writer of `active` (type doc).
         unsafe { self.ch.active.get().write_volatile(false) };
+        self.shared.set_tel_active(false);
         self.end();
     }
 }

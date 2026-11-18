@@ -12,7 +12,8 @@
 //!
 //! Cross-side traffic is single-writer-per-field volatile load/store plus
 //! compiler fences (single core, no atomic RMW on rv32ec). The bus writes
-//! the arm mailbox only while the lane is its own, then `active`; the
+//! the arm mailbox only while the lane is its own, then `active` and its
+//! mirror `Shared::tel_active`; the
 //! kernel, which the bus never preempts, takes the arm whole. The row plan
 //! is plain memory, ordered by the fences around `arm_seq`.
 
@@ -20,7 +21,7 @@ use core::cell::SyncUnsafeCell;
 
 use osc_protocol::frame::Header;
 use osc_protocol::wire;
-use osc_servo_core::ControlTableCell;
+use osc_servo_core::Shared;
 use osc_servo_core::tel::{STREAM_HDR, STREAM_PAYLOAD_MAX};
 
 use crate::bench;
@@ -64,7 +65,8 @@ fn covered(img: &[u8; IMAGE_LEN]) -> usize {
 
 /// The shared storage. Field writers: the images, `drops`, `last_out` and
 /// `resume` belong to the kernel side ([`TelLane`]); the mailbox and
-/// `active` to the bus side ([`TelPost`]).
+/// `active` to the bus side ([`TelPost`]), which mirrors `active` into
+/// `Shared::tel_active` for the kernel's dead-man at CONTROL.
 pub struct TelChannel {
     images: [SyncUnsafeCell<Image>; 2],
     /// The kernel owns the TX lane.
@@ -123,7 +125,7 @@ impl TelChannel {
         crc: P::Crc,
         ring: P::Ring,
         clock: P::Deadline,
-        table: &'static ControlTableCell,
+        shared: &'static Shared,
     ) -> (TelLane<P>, TelPost) {
         bench::tel_calibrate(&clock);
         (
@@ -135,7 +137,7 @@ impl TelChannel {
                 clock,
                 #[cfg(feature = "bench-telcost")]
                 stamp: false,
-                table,
+                table: &shared.table,
                 epoch: 0,
                 id: 0,
                 plan: RowPlan::NONE,
@@ -153,7 +155,7 @@ impl TelChannel {
             },
             TelPost {
                 ch: self,
-                table,
+                shared,
                 count: 0,
                 epoch: 0,
             },

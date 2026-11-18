@@ -7,7 +7,9 @@ use osc_protocol::wire::{Inst, ResultCode};
 use osc_servo_core::regions::telemetry::addr::{estimates, tick};
 use osc_servo_core::regions::telemetry::tick_flag;
 use osc_servo_core::tel::{Chunk, Chunks};
-use osc_servo_core::{RegionStorage, RegionStorageRaw, TelStream, TelemetryTick};
+use osc_servo_core::{
+    ControlTableCell, RegionStorage, RegionStorageRaw, Shared, TelStream, TelemetryTick,
+};
 
 use crate::bench::TelStep;
 use crate::traits::bus::TxWire;
@@ -30,6 +32,7 @@ struct Rig {
     ring: FakeRing,
     ch: &'static TelChannel,
     table: &'static ControlTableCell,
+    shared: &'static Shared,
     /// The kernel's `hold_start` on every tick.
     hold_start: bool,
     /// Each tick's row step and, while the lane is the kernel's, the lane's
@@ -43,12 +46,12 @@ fn rig() -> Rig {
 
 fn rig_with(crc: FakeCrc) -> Rig {
     let ch: &'static TelChannel = std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()));
-    let table: &'static ControlTableCell =
-        std::boxed::Box::leak(std::boxed::Box::new(ControlTableCell::new()));
+    let shared: &'static Shared = std::boxed::Box::leak(std::boxed::Box::new(Shared::new()));
+    let table = &shared.table;
     let wire = FakeWire::new();
     let ring = FakeRing::new();
     let (lane, post) =
-        ch.split::<TestProviders>(wire.clone(), crc, ring.clone(), FakeDeadline::new(), table);
+        ch.split::<TestProviders>(wire.clone(), crc, ring.clone(), FakeDeadline::new(), shared);
     Rig {
         lane,
         post,
@@ -56,6 +59,7 @@ fn rig_with(crc: FakeCrc) -> Rig {
         ring,
         ch,
         table,
+        shared,
         hold_start: false,
         steps: None,
     }
@@ -425,6 +429,18 @@ fn lane_runs_only_while_lent() {
         r.tick(i);
     }
     assert!(r.wire.idle() && r.wire.log().is_empty());
+}
+
+/// The dead-man's copy of the lend, which it reads at CONTROL, follows the
+/// lane's own flag through the lend and the take-back.
+#[test]
+fn the_shared_flag_follows_the_lend() {
+    let mut r = rig();
+    assert!(!r.shared.tel_active());
+    r.arm(POS, 64);
+    assert!(r.lane.active() && r.shared.tel_active());
+    r.post.stop();
+    assert!(!r.lane.active() && !r.shared.tel_active());
 }
 
 /// The bus posts the chunks where it dispatches the arm and lends at the
