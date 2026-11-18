@@ -6,6 +6,33 @@ To get files at a specific revision, check out the corresponding tag (e.g. `git 
 
 ---
 
+## Rev 2B - 2026-11-18
+
+**Status:** Schematic and layout done, not fabricated yet. The sense chain is what Rev. 2A board #1 and the reworked bench boards already run, now in copper. Board silk reads `Dev V006 Rev. 2B`.
+
+### Removed
+
+- Every DNP experiment footprint: comp caps `Cc1` - `Cc4`, input cap `Ci1`, output cap `Co1`, kelvin filter `Ck1` and VREF shift `Rd3`. Board #1 measured its lowest current floor with the comp caps out, and 0 - 47 pF across the op-amp inputs made no difference.
+- `Rk1` / `Rk2` 0R kelvin swap points. The taps run straight from the net ties to Rg1 / Rg2.
+- `Rh2` 0R and the `+3V3_DRV` net. The DRV8212P VCC and Ch1 sit straight on `+3V3`.
+
+### Added
+
+- **Op-amp input pull-ups** `Ri1` / `Ri2`, 1K5 0.5 % 25 ppm thin film from `+3V3` to `OPA_P` and `OPA_N`. They lift the input common mode from about 0.06 V to about 0.75 V, off the ramp of the op-amp's offset curve near GND. The Rev. 2A bodges were 1 % thick film, and each 1 % of mismatch against Rg moves the current zero about 0.11 V, so these match the Rg family.
+
+### Changed
+
+- **VREF 0.52 V -> 1.09 V.** Rd2 300 -> 820, one part where board #1 stacked two 1K6. Range is about -1.2 A to +2.2 A at the measured 0.915 V/A.
+- **Bus ESD clamp** PESD5V0L1BA (SOD-323, 75 pF) -> RCLAMP0521T-ES (DFN1006-2L, 0.35 pF), so 32 nodes add about 11 pF to the wire instead of about 2400 pF.
+- `Rx1` 33 -> 22 Ohm, for faster `DATA` edges at 3 Mbps.
+- `Rx2` 10K DNP -> 100K fitted, a weak idle keeper so `DATA` never floats with no host attached. The real pull-up stays at the host end.
+- LED resistors picked so the four lamps look about as bright as each other: Rl1 20K -> 68K (`VSYS`, still visible on LinkE 5 V), Rl2 10K -> 20K, Rl3 4K7 -> 1K (the blue `DAT` lamp was too faint), Rl4 4K7 -> 10K.
+- The 19 via-in-pad vias at 0.5 mm drill -> 0.4 mm drill, 0.8 mm size. JLCPCB left every 0.5 mm via on the Rev. 2A boards unfilled.
+- GND via added at the VREF divider and Dx1's ground path shortened.
+- Silk and title blocks take the revision from the `${REV}` project variable.
+
+---
+
 ## Rev 2A - 2026-08-02
 
 **Status:** Built and brought up. Board #1 runs an MG90 on 2S through calibration, identification and closed-loop verify; the encoder inputs, Qwiic and `POS2` are not exercised yet. Value changes that need no routing change stay Rev. 2A. Board silk reads `Dev V006 Rev. 2A`.

@@ -78,7 +78,7 @@
       ],
       "drc_exclusions": [
         [
-          "clearance|132245946|124260811|047bb5c3-fb97-4c7a-a14b-01d5712c557c|6d5d7a16-35f6-4bc9-8e10-897c2aaee9d2",
+          "clearance|129500000|128620000|047bb5c3-fb97-4c7a-a14b-01d5712c557c|b22af06e-417e-4db0-b481-7731c4ec99a5",
           ""
         ],
         [
@@ -91,6 +91,10 @@
         ],
         [
           "clearance|137867568|123858750|047bb5c3-fb97-4c7a-a14b-01d5712c557c|782e4eed-dbea-4609-9905-7407eaf962ab",
+          ""
+        ],
+        [
+          "clearance|139100000|125560000|047bb5c3-fb97-4c7a-a14b-01d5712c557c|ebff0114-b2b4-4b8d-8404-6d6804dcdb26",
           ""
         ]
       ],
@@ -195,6 +199,7 @@
         {
           "td_allow_use_two_tracks": true,
           "td_curve_segcount": 0,
+          "td_enabled": false,
           "td_height_ratio": 1.0,
           "td_length_ratio": 0.5,
           "td_maxheight": 2.0,
@@ -206,6 +211,7 @@
         {
           "td_allow_use_two_tracks": true,
           "td_curve_segcount": 0,
+          "td_enabled": false,
           "td_height_ratio": 1.0,
           "td_length_ratio": 0.5,
           "td_maxheight": 2.0,
@@ -217,6 +223,7 @@
         {
           "td_allow_use_two_tracks": true,
           "td_curve_segcount": 0,
+          "td_enabled": false,
           "td_height_ratio": 1.0,
           "td_length_ratio": 0.5,
           "td_maxheight": 2.0,
@@ -528,6 +535,7 @@
       "pin_to_pin": "error",
       "power_pin_not_driven": "error",
       "same_local_global_label": "warning",
+      "same_local_global_power": "warning",
       "similar_label_and_power": "warning",
       "similar_labels": "warning",
       "similar_power": "warning",
@@ -635,8 +643,8 @@
     "meta": {
       "version": 5
     },
-    "net_colors": null,
-    "netclass_assignments": null,
+    "net_colors": {},
+    "netclass_assignments": {},
     "netclass_patterns": [
       {
         "netclass": "Motor",
@@ -976,7 +984,7 @@
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],
-    "used_designators": "#FLG1-7,Ra2,Ca2,Rh2,Cn1,NT1-4,Rn1-2,CN1,JP1-4,J1-16,J1101-1102,TH1-2,Cv1-5,Rv1-8,FB1-2,C1-19,C501,SW1,U1-3,U5,Cd1,RS1-3,LED1-2,Rg1-2,#PWR1-78,#PWR1101-1108,D1-8,D1101-1102,Rf1-2,Rd1-3,TP1-3,TP5-9,LOGO1,R1-31,R501,R1101-1104,Cin1,H1-4,Cc1-4,Cc7",
+    "used_designators": "#FLG1-7,#PWR1-80,#PWR1101-1108,C1-19,C501,CN1,Ca2,Cc1-4,Cc7,Cd1,Cin1,Cn1,Cv1-5,D1-8,D1101-1102,FB1-2,H1-4,J1-16,J1101-1102,JP1-4,LED1-2,LOGO1,NT1-4,R1-31,R501,R1101-1104,RS1-3,Ra2,Rd1-3,Rf1-2,Rg1-2,Rh2,Ri1-2,Rn1-2,Rv1-8,SW1,TH1-2,TP1-3,TP5-9,U1-3,U5",
     "variants": []
   },
   "sheets": [
@@ -1010,7 +1018,7 @@
     "DRU": "osc-dev-v006.kicad_dru",
     "FAB": "JLCPCB",
     "PROJECT": "open-servo-core",
-    "REV": "V2A",
+    "REV": "Rev. 2B",
     "STACKUP": "6L 1.6mm JLC06161H-3313"
   },
   "tuning_profiles": {

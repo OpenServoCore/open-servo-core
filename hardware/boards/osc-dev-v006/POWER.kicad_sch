@@ -2731,7 +2731,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "20K"
+		(property "Value" "68K"
 			(at 71.12 102.8699 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2753,7 +2753,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907011.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907063.html"
 			(at 68.58 101.6 0)
 			(hide yes)
 			(show_name no)
@@ -2775,7 +2775,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2907011"
+		(property "LCSC" "C2907063"
 			(at 71.12 100.3299 0)
 			(hide yes)
 			(show_name no)
@@ -2786,7 +2786,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0603F2002TS"
+		(property "MFPN" "FRC0603F6802TS"
 			(at 71.12 100.3299 0)
 			(hide yes)
 			(show_name no)
@@ -4729,7 +4729,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10K"
+		(property "Value" "20K"
 			(at 95.25 102.8699 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4751,7 +4751,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2906982.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907011.html"
 			(at 92.71 101.6 0)
 			(hide yes)
 			(show_name no)
@@ -4773,7 +4773,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2906982"
+		(property "LCSC" "C2907011"
 			(at 95.25 100.3299 0)
 			(hide yes)
 			(show_name no)
@@ -4784,7 +4784,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0603F1002TS"
+		(property "MFPN" "FRC0603F2002TS"
 			(at 95.25 100.3299 0)
 			(hide yes)
 			(show_name no)

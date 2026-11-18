@@ -947,7 +947,7 @@
 		)
 		(uuid "cc681932-950b-421c-a08f-c79b33b8dbc5")
 	)
-	(text_box "One wire, TTL level. USART1 half-duplex drives DATA directly, so no buffer and no TX_EN this time. Telemetry rides this same wire as bounded CRC'd bursts, so there is no second UART on the board.\n\n- Rx1 is 33R instead of the usual 100R. DATA is the one line where edge speed matters (3Mbps over the whole chain), so it trades protection for speed and lets the TVS do the heavy lifting.\n- Rx2 is DNP. The bus wants exactly ONE pull-up, at the host end, and servos self-bias internally. Populate it only when this board is the end of the wire on the bench.\n- Dx1 clamps at the connector, BEFORE the series R. Order matters: connector -> TVS -> 33R -> pin.\n- Pinout is G,V,D with V in the center, so a reversed bench header only swaps DATA and GND, never power. V+ is VSYS straight through, unprotected."
+	(text_box "One wire, TTL level. USART1 half-duplex drives DATA directly, so no buffer and no TX_EN this time. Telemetry rides this same wire as bounded CRC'd bursts, so there is no second UART on the board.\n\n- Rx1 is 22R instead of the usual 100R. DATA is the one line where edge speed matters (3Mbps over the whole chain), so it trades protection for speed and lets the TVS do the heavy lifting.\n- Rx2 100K is only an idle keeper, so DATA never floats with no host on the wire. The real bus pull-up lives at the host end.\n- Dx1 clamps at the connector, BEFORE the series R. Order matters: connector -> TVS -> 22R -> pin. It is a 0.35pF part, so 32 nodes add about 11pF to the wire, not the 2400pF a 75pF TVS would.\n- Pinout is G,V,D with V in the center, so a reversed bench header only swaps DATA and GND, never power. V+ is VSYS straight through, unprotected."
 		(exclude_from_sim yes)
 		(at 209.55 29.21 0)
 		(size 72.39 64.77)
@@ -1577,7 +1577,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp yes)
+		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "286019a1-1153-493a-b50b-3a54312fe7e8")
 		(property "Reference" "Rx2"
@@ -1591,7 +1591,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10K"
+		(property "Value" "100K"
 			(at 50.8 52.0699 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1613,7 +1613,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2906982.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2906980.html"
 			(at 48.26 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1635,7 +1635,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2906982"
+		(property "LCSC" "C2906980"
 			(at 50.8 49.5299 0)
 			(hide yes)
 			(show_name no)
@@ -1646,7 +1646,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0603F1002TS"
+		(property "MFPN" "FRC0603F1003TS"
 			(at 50.8 49.5299 0)
 			(hide yes)
 			(show_name no)
@@ -1694,7 +1694,7 @@
 				)
 			)
 		)
-		(property "Value" "33"
+		(property "Value" "22"
 			(at 40.64 58.166 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1715,7 +1715,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C108661.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C203424.html"
 			(at 40.64 55.88 0)
 			(hide yes)
 			(show_name no)
@@ -1737,7 +1737,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C108661"
+		(property "LCSC" "C203424"
 			(at 41.9101 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -1748,7 +1748,7 @@
 				)
 			)
 		)
-		(property "MFPN" "RC0603FR-0733RL"
+		(property "MFPN" "CR0603-FX-22R0ELF"
 			(at 41.9101 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -2060,7 +2060,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "PESD5V0L1BA"
+		(property "Value" "RCLAMP0521T-ES"
 			(at 50.8 62.2299 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2071,7 +2071,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-323_HandSoldering"
+		(property "Footprint" "Diode_SMD:D_SOD-882"
 			(at 43.18 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -2082,7 +2082,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2687118.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C5180263.html"
 			(at 53.34 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -2093,7 +2093,7 @@
 				)
 			)
 		)
-		(property "Description" "Low capacitance unidirectional ESD protection diode, 5V, SOD-323"
+		(property "Description" "Bidirectional ESD protection diode, 5V, 0.35pF, DFN1006-2L"
 			(at 55.88 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -2104,7 +2104,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2687118"
+		(property "LCSC" "C5180263"
 			(at 48.26 60.96 90)
 			(hide yes)
 			(show_name no)
@@ -2115,7 +2115,7 @@
 				)
 			)
 		)
-		(property "MFPN" "PESD5V0L1BA"
+		(property "MFPN" "RCLAMP0521T-ES"
 			(at 48.26 60.96 90)
 			(hide yes)
 			(show_name no)

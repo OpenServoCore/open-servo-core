@@ -3702,7 +3702,7 @@
 				(justify left bottom)
 			)
 		)
-		(property "Value" "4K7"
+		(property "Value" "10K"
 			(at 53.594 155.702 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3724,7 +3724,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907034.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2906982.html"
 			(at 52.07 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -3746,7 +3746,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2907034"
+		(property "LCSC" "C2906982"
 			(at 53.848 154.432 0)
 			(hide yes)
 			(show_name no)
@@ -3757,7 +3757,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0603F4701TS"
+		(property "MFPN" "FRC0603F1002TS"
 			(at 53.848 154.432 0)
 			(hide yes)
 			(show_name no)
@@ -4815,7 +4815,7 @@
 				(justify left bottom)
 			)
 		)
-		(property "Value" "4K7"
+		(property "Value" "1K"
 			(at 35.814 155.702 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4837,7 +4837,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907034.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22548.html"
 			(at 34.29 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -4859,7 +4859,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2907034"
+		(property "LCSC" "C22548"
 			(at 36.068 154.432 0)
 			(hide yes)
 			(show_name no)
@@ -4870,7 +4870,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0603F4701TS"
+		(property "MFPN" "RC0603FR-071KL"
 			(at 36.068 154.432 0)
 			(hide yes)
 			(show_name no)
