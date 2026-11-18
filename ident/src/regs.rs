@@ -128,10 +128,9 @@ pub mod control {
     pub const GOAL_POSITION: Reg = reg(0x0188, 4);
     pub const GOAL_VELOCITY: Reg = reg(0x018c, 4);
     pub const GOAL_CURRENT: Reg = reg(0x0190, 2);
-    /// Bus dead-man, kernel ticks: on the experiment image a nonzero value
-    /// under torque counts down to a `deadman` fault unless an instruction
-    /// reloads it or a TEL burst holds it; the production image ignores it
-    /// ([`crate::limits::DEADMAN_TICKS`]).
+    /// Bus dead-man, kernel ticks: a nonzero value under torque counts down
+    /// to a `deadman` fault unless an instruction reloads it or a TEL burst
+    /// holds it; 0 is off ([`crate::limits::DEADMAN_TICKS`]).
     pub const BUS_DEADMAN_TICKS: Reg = reg(0x0192, 2);
     pub const BURST_DUTY_Q15: Reg = reg(0x0196, 2);
     pub const BURST_ARM: Reg = reg(0x0198, 1);

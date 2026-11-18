@@ -31,7 +31,7 @@ impl Medium {
             let th = &raw mut (*p).telemetry_ext.therm;
             (&raw mut (*th).t_ntc_cc).write_volatile(self.thermal.t_ntc_cc());
             (&raw mut (*th).therm_flags).write_volatile(self.thermal.flags());
-            #[cfg(feature = "deadman")]
+            #[cfg(feature = "loop-margin")]
             (&raw mut (*p).telemetry_ext.inject.omega_ref_cps).write_volatile(self.omega_ref_q16);
         }
     }

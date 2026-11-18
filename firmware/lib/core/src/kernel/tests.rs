@@ -492,30 +492,10 @@ fn deadman_seed(sh: &Shared, field: u16) {
     });
 }
 
-/// The production image accepts the field and ignores it: a nonzero count
-/// with torque on and a silent bus never lapses.
-#[cfg(not(feature = "deadman"))]
-#[test]
-fn the_deadman_field_is_ignored_without_the_feature() {
-    let f = frame(2000, BIAS);
-    let sh = Shared::new();
-    deadman_seed(&sh, 400);
-    let mut k = kernel();
-    to_first_command(&mut k, &sh, f);
-    for _ in 0..5000 {
-        k.on_scan(f, &sh);
-        assert_eq!(k.faults.mask(), 0);
-        assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
-    }
-    sh.table
-        .with(|t| assert_eq!(t.telemetry.mode.fault_code, faults::CODE_NONE));
-}
-
-/// The `deadman` image's guard, on the experiment image's clock: the
-/// countdown steps DECIM_MED ticks on each RAIL phase, so a field of 400
-/// lapses on the 40th RAIL after the enable edge, tick 395 from an enable
-/// at the boot tick.
-#[cfg(feature = "deadman")]
+/// The production half's guard: the countdown steps DECIM_MED ticks on
+/// each CONTROL phase after the enable edge's, so a field of 400 lapses on
+/// the 40th CONTROL after the edge, tick 400 from an enable at the boot
+/// tick.
 mod deadman {
     use super::*;
 
@@ -560,7 +540,7 @@ mod deadman {
             && matches!(k.io.motor.last, Some(MotorCmd::Disabled))
     }
 
-    /// The tick the countdown runs out on: RAIL raises the lapse after
+    /// The tick the countdown runs out on: CONTROL raises the lapse after
     /// that tick's write, and the next write is off.
     fn lapses(k: &mut K, sh: &Shared, f: SensorFrame) {
         k.on_scan(f, sh);
@@ -578,7 +558,7 @@ mod deadman {
         let f = frame(2000, BIAS);
         let sh = Shared::new();
         let mut k = rig(&sh, 400);
-        scan(&mut k, &sh, f, 395);
+        scan(&mut k, &sh, f, 400);
         assert!(drives(&k));
         lapses(&mut k, &sh, f);
         run_to(&mut k, &sh, f, phase::SPARE_A);
@@ -593,8 +573,8 @@ mod deadman {
             assert!(lapsed(&k), "the lapse holds under torque");
         }
 
-        // torque off, then the enable edge at the CONTROL of tick 1410:
-        // the 40th RAIL after it is tick 1805
+        // torque off, then the enable edge at the CONTROL of tick 1420:
+        // the 40th CONTROL after it is tick 1820
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = false);
         run_to(&mut k, &sh, f, phase::SLOW);
@@ -603,13 +583,13 @@ mod deadman {
             .with_mut(|t| t.control.lifecycle.torque_enable = true);
         run_to(&mut k, &sh, f, phase::CONTROL);
         assert_eq!(k.faults.mask(), faults::BIT_DEADMAN);
-        scan(&mut k, &sh, f, 395);
+        scan(&mut k, &sh, f, 400);
         assert!(drives(&k), "the ack clears the fault");
         lapses(&mut k, &sh, f);
     }
 
-    /// An instruction dispatched at tick 300 reloads: the RAIL at 305
-    /// starts 400 afresh, so tick 705 is the lapse.
+    /// An instruction dispatched ahead of tick 300 reloads: the CONTROL at
+    /// 300 starts 400 afresh, so tick 700 is the lapse.
     #[test]
     fn the_deadman_reloads_on_a_dispatched_instruction() {
         let f = frame(2000, BIAS);
@@ -617,13 +597,13 @@ mod deadman {
         let mut k = rig(&sh, 400);
         scan(&mut k, &sh, f, 300);
         sh.bus_touch();
-        scan(&mut k, &sh, f, 405);
+        scan(&mut k, &sh, f, 400);
         assert!(drives(&k));
         lapses(&mut k, &sh, f);
     }
 
-    /// A stream from tick 100 holds the 300 ticks left; released at 1100,
-    /// they run out on the RAIL of tick 1395.
+    /// A stream from tick 100 holds the 310 ticks left; released at 1100,
+    /// they run out on the CONTROL of tick 1400.
     #[test]
     fn the_deadman_holds_while_a_burst_streams() {
         let f = frame(2000, BIAS);
@@ -634,14 +614,14 @@ mod deadman {
         scan(&mut k, &sh, f, 1000);
         assert!(drives(&k));
         k.tel.streaming = false;
-        scan(&mut k, &sh, f, 295);
+        scan(&mut k, &sh, f, 300);
         assert!(drives(&k));
         lapses(&mut k, &sh, f);
     }
 
     /// From 0 at the enable edge, a write of 400 landing with its touch at
-    /// tick 2 is carried by the CONTROL at 10 and loaded on the RAIL at
-    /// 15, so the silence lapses at tick 415; a zero field never trips.
+    /// tick 2 is carried and loaded by the CONTROL at 10, so the silence
+    /// lapses at tick 410; a zero field never trips.
     #[test]
     fn the_deadman_takes_a_field_written_under_torque() {
         let f = frame(2000, BIAS);
@@ -658,241 +638,241 @@ mod deadman {
         sh.bus_touch();
         scan(&mut k, &sh, f, 2 * DECIM_MED as u32);
         assert!(drives(&k), "a field written under torque trips nothing");
-        scan(&mut k, &sh, f, 415 - 22);
+        scan(&mut k, &sh, f, 410 - 22);
         assert!(drives(&k));
         lapses(&mut k, &sh, f);
     }
 
-    // --- The loop-margin stimulus ----------------------------------------
+    /// The loop-margin stimulus, built with `loop-margin`.
+    #[cfg(feature = "loop-margin")]
+    mod stimulus {
+        use super::*;
 
-    /// The cruise, c/s, and the stimulus the rig sets: 2 c/s per period
-    /// over half-periods of 10, a 10 c/s peak.
-    const CRUISE: i32 = 1000;
-    const SLOPE: i32 = 2;
-    const HALF: u16 = 10;
-    /// Periods in one cycle of the triangle.
-    const CYCLE: usize = 2 * HALF as usize;
+        /// The cruise, c/s, and the stimulus the rig sets: 2 c/s per period
+        /// over half-periods of 10, a 10 c/s peak.
+        const CRUISE: i32 = 1000;
+        const SLOPE: i32 = 2;
+        const HALF: u16 = 10;
+        /// Periods in one cycle of the triangle.
+        const CYCLE: usize = 2 * HALF as usize;
 
-    /// Velocity mode at the cruise from the boot tick, a burst streaming
-    /// under a loaded dead-man, the velocity loop's gains 0 so the current
-    /// reference is the feed-forward alone and no limit binds, then `cfg`;
-    /// run to the cruise.
-    fn inject_rig(sh: &Shared, cfg: impl FnOnce(&mut ControlTable)) -> K {
-        let mut k = rig(sh, u16::MAX);
-        sh.table.with_mut(|t| {
-            let l = &mut t.control.lifecycle;
-            l.mode = Mode::Velocity;
-            l.goal_velocity = CRUISE;
-            t.config.loop_velocity.v_kp_q88 = 0;
-            t.config.loop_velocity.v_ki_q412 = 0;
-            t.control.inject.inject_accel_q88 = (SLOPE << 8) as u16;
-            t.control.inject.inject_half_periods = HALF;
-            cfg(t);
-        });
-        k.tel.streaming = true;
-        let f = frame(2000, BIAS);
-        for _ in 0..40 {
-            period(&mut k, sh, f);
-        }
-        k
-    }
-
-    /// One medium period to its PUBLISH; the reference less the profile's
-    /// speed, csQ16.
-    fn period(k: &mut K, sh: &Shared, f: SensorFrame) -> i32 {
-        k.on_scan(f, sh);
-        run_to(k, sh, f, phase::SPARE_A);
-        let u = sh.table.with(|t| t.telemetry_ext.inject.omega_ref_cps);
-        assert_eq!(u, k.medium.omega_ref_q16, "PUBLISH carries the reference");
-        u - k.medium.traj.omega_star_q16()
-    }
-
-    fn injected<const N: usize>(k: &mut K, sh: &Shared) -> [i32; N] {
-        core::array::from_fn(|_| period(k, sh, frame(2000, BIAS)))
-    }
-
-    /// The stimulus is the triangle on the cruise: steps of the slope every
-    /// period, turning at +/-slope x half / 2, a cycle of two halves, mean
-    /// 0; the profile stays at the cruise under it.
-    #[test]
-    fn the_stimulus_rides_the_velocity_reference_as_a_triangle() {
-        let sh = Shared::new();
-        let mut k = inject_rig(&sh, |_| {});
-        assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
-        let d = injected::<{ 2 * CYCLE }>(&mut k, &sh);
-        let peak = (SLOPE * HALF as i32 / 2) << 16;
-        assert_eq!(d.iter().max(), Some(&peak));
-        assert_eq!(d.iter().min(), Some(&-peak));
-        assert!(d.windows(2).all(|w| (w[1] - w[0]).abs() == SLOPE << 16));
-        assert!(d.windows(CYCLE + 1).all(|w| w[0] == w[CYCLE]));
-        assert_eq!(d[..CYCLE].iter().sum::<i32>(), 0);
-        assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
-    }
-
-    /// Off is the profile's speed exactly: no burst, no loaded dead-man,
-    /// either field 0, a limit flag but the permit, a mode but Velocity.
-    #[test]
-    fn the_stimulus_needs_a_burst_a_loaded_deadman_and_no_limit_but_the_permit() {
-        let off = |cfg: fn(&mut ControlTable), streaming: bool| {
-            let sh = Shared::new();
-            let mut k = inject_rig(&sh, cfg);
-            k.tel.streaming = streaming;
-            // the gate is RAIL's, for the next period
-            period(&mut k, &sh, frame(2000, BIAS));
-            injected::<{ 2 * CYCLE }>(&mut k, &sh)
-        };
-        let none = [0; 2 * CYCLE];
-        assert_eq!(off(|_| {}, false), none, "no burst");
-        assert_eq!(
-            off(|t| t.control.lifecycle.bus_deadman_ticks = 0, true),
-            none,
-            "no dead-man"
-        );
-        assert_eq!(off(|t| t.control.inject.inject_accel_q88 = 0, true), none);
-        assert_eq!(
-            off(|t| t.control.inject.inject_half_periods = 0, true),
-            none
-        );
-        // a goal under the feed-forward caps the reference: GOAL and CEILING
-        assert_eq!(
-            off(|t| t.control.lifecycle.goal_current = 1, true),
-            none,
-            "a limit holds the command"
-        );
-        assert_ne!(off(|_| {}, true), none);
-
-        // the permit lease alone leaves it on
-        let sh = Shared::new();
-        let mut k = inject_rig(&sh, |_| {});
-        write_permit(&sh);
-        period(&mut k, &sh, frame(2000, BIAS));
-        assert_eq!(limit_flags(&sh), limits::flag::PERMIT);
-        assert_ne!(injected::<{ 2 * CYCLE }>(&mut k, &sh), none);
-
-        // Position mode never injects: the reference is the position loop's
-        let f = frame(2000, BIAS);
-        let run = |accel: u16| {
-            let sh = Shared::new();
-            let mut k = inject_rig(&sh, |t| {
-                t.control.lifecycle.mode = Mode::Position;
-                t.control.lifecycle.goal_position = 2400;
-                t.control.inject.inject_accel_q88 = accel;
+        /// Velocity mode at the cruise from the boot tick, a burst streaming
+        /// under a loaded dead-man, the velocity loop's gains 0 so the current
+        /// reference is the feed-forward alone and no limit binds, then `cfg`;
+        /// run to the cruise.
+        fn inject_rig(sh: &Shared, cfg: impl FnOnce(&mut ControlTable)) -> K {
+            let mut k = rig(sh, u16::MAX);
+            sh.table.with_mut(|t| {
+                let l = &mut t.control.lifecycle;
+                l.mode = Mode::Velocity;
+                l.goal_velocity = CRUISE;
+                t.config.loop_velocity.v_kp_q88 = 0;
+                t.config.loop_velocity.v_ki_q412 = 0;
+                t.control.inject.inject_accel_q88 = (SLOPE << 8) as u16;
+                t.control.inject.inject_half_periods = HALF;
+                cfg(t);
             });
-            core::array::from_fn::<i32, { 2 * CYCLE }, _>(|_| {
-                run_to(&mut k, &sh, f, phase::SPARE_A);
-                k.on_scan(f, &sh);
-                k.medium.omega_ref_q16
-            })
-        };
-        assert_eq!(run((SLOPE << 8) as u16), run(0));
-    }
-
-    /// The phase steps only on a period that injects: a gated stretch
-    /// holds it, and the triangle resumes where it stopped.
-    #[test]
-    fn a_gated_period_holds_the_stimulus_phase() {
-        let sh = Shared::new();
-        let mut k = inject_rig(&sh, |_| {});
-        let before = injected::<7>(&mut k, &sh);
-        k.tel.streaming = false;
-        // the period whose RAIL first reads no burst still injects
-        let last = period(&mut k, &sh, frame(2000, BIAS));
-        assert_eq!(injected::<5>(&mut k, &sh), [0; 5]);
-        k.tel.streaming = true;
-        // nor does the first one after the burst resumes
-        assert_eq!(period(&mut k, &sh, frame(2000, BIAS)), 0);
-        let after = injected::<CYCLE>(&mut k, &sh);
-
-        let sh = Shared::new();
-        let mut k = inject_rig(&sh, |_| {});
-        let plain = injected::<{ 8 + CYCLE }>(&mut k, &sh);
-        assert_eq!(plain[..7], before[..]);
-        assert_eq!(plain[7], last);
-        assert_eq!(plain[8..], after[..]);
-    }
-
-    /// The summed reference stays inside the speed ceiling at every field
-    /// value.
-    #[test]
-    fn the_stimulus_is_clamped_to_the_speed_ceiling() {
-        let lim = CRUISE + 5;
-        let sh = Shared::new();
-        let mut k = inject_rig(&sh, |t| {
-            t.config.loop_position.speed_ceiling_cps = lim as u16;
-        });
-        let d = injected::<{ 2 * CYCLE }>(&mut k, &sh);
-        assert_eq!(d.iter().max(), Some(&((lim - CRUISE) << 16)));
-        assert_eq!(d.iter().min(), Some(&((-SLOPE * HALF as i32 / 2) << 16)));
-
-        for (accel, half) in [
-            (u16::MAX, u16::MAX),
-            (u16::MAX, 512),
-            (u16::MAX, 511),
-            (1, 1),
-        ] {
-            let sh = Shared::new();
-            let mut k = inject_rig(&sh, |t| {
-                t.control.inject.inject_accel_q88 = accel;
-                t.control.inject.inject_half_periods = half;
-            });
-            for _ in 0..600 {
-                period(&mut k, &sh, frame(2000, BIAS));
-                let u = k.medium.omega_ref_q16;
-                assert!(u.unsigned_abs() <= 3000 << 16, "{accel} {half}: {u}");
-            }
-        }
-    }
-
-    /// The kernel reads the slope at most 0x7FFF and the half-period at
-    /// most 512: at both ceilings the triangle's peak is 0x7FFF x 256 in
-    /// Q8.8, exactly i32's last whole c/s in csQ16 (32767 c/s), and a field
-    /// above either ceiling runs as the ceiling. A 0 cruise under the
-    /// table's widest speed ceiling shows the whole triangle unclamped.
-    #[test]
-    fn the_stimulus_reads_its_fields_at_most_at_their_ceilings() {
-        let wide = |accel: u16, half: u16| {
-            let sh = Shared::new();
-            let mut k = inject_rig(&sh, |t| {
-                t.control.lifecycle.goal_velocity = 0;
-                t.config.loop_position.speed_ceiling_cps = 32767;
-                t.control.inject.inject_accel_q88 = accel;
-                t.control.inject.inject_half_periods = half;
-            });
-            injected::<1100>(&mut k, &sh)
-        };
-        let peak = 0x7FFF << 16;
-        for (accel, half) in [(0x7FFF, 512), (0x8000, 512), (u16::MAX, 600)] {
-            let d = wide(accel, half);
-            assert_eq!(d.iter().max(), Some(&peak), "{accel} {half}");
-            assert_eq!(d.iter().min(), Some(&-peak), "{accel} {half}");
-            assert!(d.windows(1025).all(|w| w[0] == w[1024]), "{accel} {half}");
-            assert!(d.windows(2).all(|w| (w[1] - w[0]).abs() == 0x7FFF << 8));
-        }
-        assert_eq!(wide(u16::MAX, 2), wide(0x7FFF, 2));
-        assert_eq!(wide(256, 600), wide(256, 512));
-    }
-
-    /// Either field 0 is the production image's Velocity arm exactly, the
-    /// gate's other inputs all open: nothing sums and nothing clamps, so a
-    /// profile above a speed ceiling lowered mid-run comes down at the
-    /// accel limit as the default image's does.
-    #[test]
-    fn a_stimulus_not_asked_for_leaves_the_velocity_arm_alone() {
-        for (accel, half) in [(0, 0), (0, HALF), ((SLOPE << 8) as u16, 0)] {
-            let sh = Shared::new();
-            let mut k = inject_rig(&sh, |t| {
-                t.control.inject.inject_accel_q88 = accel;
-                t.control.inject.inject_half_periods = half;
-            });
-            assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
-            write_config(&sh, |t| t.config.loop_position.speed_ceiling_cps = 500);
-            let mut above = 0;
+            k.tel.streaming = true;
+            let f = frame(2000, BIAS);
             for _ in 0..40 {
-                assert_eq!(period(&mut k, &sh, frame(2000, BIAS)), 0, "{accel} {half}");
-                above += (k.medium.omega_ref_q16 > 500 << 16) as u32;
+                period(&mut k, sh, f);
             }
-            assert!(above > 1, "{accel} {half}: the profile came down at once");
-            assert_eq!(k.medium.omega_ref_q16, 500 << 16);
+            k
+        }
+
+        /// One medium period to its PUBLISH; the reference less the profile's
+        /// speed, csQ16.
+        fn period(k: &mut K, sh: &Shared, f: SensorFrame) -> i32 {
+            k.on_scan(f, sh);
+            run_to(k, sh, f, phase::SPARE_A);
+            let u = sh.table.with(|t| t.telemetry_ext.inject.omega_ref_cps);
+            assert_eq!(u, k.medium.omega_ref_q16, "PUBLISH carries the reference");
+            u - k.medium.traj.omega_star_q16()
+        }
+
+        fn injected<const N: usize>(k: &mut K, sh: &Shared) -> [i32; N] {
+            core::array::from_fn(|_| period(k, sh, frame(2000, BIAS)))
+        }
+
+        /// The stimulus is the triangle on the cruise: steps of the slope every
+        /// period, turning at +/-slope x half / 2, a cycle of two halves, mean
+        /// 0; the profile stays at the cruise under it.
+        #[test]
+        fn the_stimulus_rides_the_velocity_reference_as_a_triangle() {
+            let sh = Shared::new();
+            let mut k = inject_rig(&sh, |_| {});
+            assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
+            let d = injected::<{ 2 * CYCLE }>(&mut k, &sh);
+            let peak = (SLOPE * HALF as i32 / 2) << 16;
+            assert_eq!(d.iter().max(), Some(&peak));
+            assert_eq!(d.iter().min(), Some(&-peak));
+            assert!(d.windows(2).all(|w| (w[1] - w[0]).abs() == SLOPE << 16));
+            assert!(d.windows(CYCLE + 1).all(|w| w[0] == w[CYCLE]));
+            assert_eq!(d[..CYCLE].iter().sum::<i32>(), 0);
+            assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
+        }
+
+        /// Off is the profile's speed exactly: no burst, no loaded dead-man,
+        /// either field 0, a limit flag but the permit, a mode but Velocity.
+        #[test]
+        fn the_stimulus_needs_a_burst_a_loaded_deadman_and_no_limit_but_the_permit() {
+            let off = |cfg: fn(&mut ControlTable), streaming: bool| {
+                let sh = Shared::new();
+                let mut k = inject_rig(&sh, cfg);
+                k.tel.streaming = streaming;
+                // the gate is RAIL's, for the next period
+                period(&mut k, &sh, frame(2000, BIAS));
+                injected::<{ 2 * CYCLE }>(&mut k, &sh)
+            };
+            let none = [0; 2 * CYCLE];
+            assert_eq!(off(|_| {}, false), none, "no burst");
+            assert_eq!(
+                off(|t| t.control.lifecycle.bus_deadman_ticks = 0, true),
+                none,
+                "no dead-man"
+            );
+            assert_eq!(off(|t| t.control.inject.inject_accel_q88 = 0, true), none);
+            assert_eq!(
+                off(|t| t.control.inject.inject_half_periods = 0, true),
+                none
+            );
+            // a goal under the feed-forward caps the reference: GOAL and CEILING
+            assert_eq!(
+                off(|t| t.control.lifecycle.goal_current = 1, true),
+                none,
+                "a limit holds the command"
+            );
+            assert_ne!(off(|_| {}, true), none);
+
+            // the permit lease alone leaves it on
+            let sh = Shared::new();
+            let mut k = inject_rig(&sh, |_| {});
+            write_permit(&sh);
+            period(&mut k, &sh, frame(2000, BIAS));
+            assert_eq!(limit_flags(&sh), limits::flag::PERMIT);
+            assert_ne!(injected::<{ 2 * CYCLE }>(&mut k, &sh), none);
+
+            // Position mode never injects: the reference is the position loop's
+            let f = frame(2000, BIAS);
+            let run = |accel: u16| {
+                let sh = Shared::new();
+                let mut k = inject_rig(&sh, |t| {
+                    t.control.lifecycle.mode = Mode::Position;
+                    t.control.lifecycle.goal_position = 2400;
+                    t.control.inject.inject_accel_q88 = accel;
+                });
+                core::array::from_fn::<i32, { 2 * CYCLE }, _>(|_| {
+                    run_to(&mut k, &sh, f, phase::SPARE_A);
+                    k.on_scan(f, &sh);
+                    k.medium.omega_ref_q16
+                })
+            };
+            assert_eq!(run((SLOPE << 8) as u16), run(0));
+        }
+
+        /// The phase steps only on a period that injects: a gated stretch
+        /// holds it, and the triangle resumes where it stopped.
+        #[test]
+        fn a_gated_period_holds_the_stimulus_phase() {
+            let sh = Shared::new();
+            let mut k = inject_rig(&sh, |_| {});
+            let before = injected::<7>(&mut k, &sh);
+            k.tel.streaming = false;
+            // the period whose CONTROL first reads no burst injects nothing
+            assert_eq!(injected::<6>(&mut k, &sh), [0; 6]);
+            k.tel.streaming = true;
+            // and the first one after the burst resumes injects again
+            let after = injected::<CYCLE>(&mut k, &sh);
+
+            let sh = Shared::new();
+            let mut k = inject_rig(&sh, |_| {});
+            let plain = injected::<{ 7 + CYCLE }>(&mut k, &sh);
+            assert_eq!(plain[..7], before[..]);
+            assert_eq!(plain[7..], after[..]);
+        }
+
+        /// The summed reference stays inside the speed ceiling at every field
+        /// value.
+        #[test]
+        fn the_stimulus_is_clamped_to_the_speed_ceiling() {
+            let lim = CRUISE + 5;
+            let sh = Shared::new();
+            let mut k = inject_rig(&sh, |t| {
+                t.config.loop_position.speed_ceiling_cps = lim as u16;
+            });
+            let d = injected::<{ 2 * CYCLE }>(&mut k, &sh);
+            assert_eq!(d.iter().max(), Some(&((lim - CRUISE) << 16)));
+            assert_eq!(d.iter().min(), Some(&((-SLOPE * HALF as i32 / 2) << 16)));
+
+            for (accel, half) in [
+                (u16::MAX, u16::MAX),
+                (u16::MAX, 512),
+                (u16::MAX, 511),
+                (1, 1),
+            ] {
+                let sh = Shared::new();
+                let mut k = inject_rig(&sh, |t| {
+                    t.control.inject.inject_accel_q88 = accel;
+                    t.control.inject.inject_half_periods = half;
+                });
+                for _ in 0..600 {
+                    period(&mut k, &sh, frame(2000, BIAS));
+                    let u = k.medium.omega_ref_q16;
+                    assert!(u.unsigned_abs() <= 3000 << 16, "{accel} {half}: {u}");
+                }
+            }
+        }
+
+        /// The kernel reads the slope at most 0x7FFF and the half-period at
+        /// most 512: at both ceilings the triangle's peak is 0x7FFF x 256 in
+        /// Q8.8, exactly i32's last whole c/s in csQ16 (32767 c/s), and a field
+        /// above either ceiling runs as the ceiling. A 0 cruise under the
+        /// table's widest speed ceiling shows the whole triangle unclamped.
+        #[test]
+        fn the_stimulus_reads_its_fields_at_most_at_their_ceilings() {
+            let wide = |accel: u16, half: u16| {
+                let sh = Shared::new();
+                let mut k = inject_rig(&sh, |t| {
+                    t.control.lifecycle.goal_velocity = 0;
+                    t.config.loop_position.speed_ceiling_cps = 32767;
+                    t.control.inject.inject_accel_q88 = accel;
+                    t.control.inject.inject_half_periods = half;
+                });
+                injected::<1100>(&mut k, &sh)
+            };
+            let peak = 0x7FFF << 16;
+            for (accel, half) in [(0x7FFF, 512), (0x8000, 512), (u16::MAX, 600)] {
+                let d = wide(accel, half);
+                assert_eq!(d.iter().max(), Some(&peak), "{accel} {half}");
+                assert_eq!(d.iter().min(), Some(&-peak), "{accel} {half}");
+                assert!(d.windows(1025).all(|w| w[0] == w[1024]), "{accel} {half}");
+                assert!(d.windows(2).all(|w| (w[1] - w[0]).abs() == 0x7FFF << 8));
+            }
+            assert_eq!(wide(u16::MAX, 2), wide(0x7FFF, 2));
+            assert_eq!(wide(256, 600), wide(256, 512));
+        }
+
+        /// Either field 0 is the plain Velocity arm exactly, the gate's other
+        /// inputs all open: nothing sums and nothing clamps, so a profile above
+        /// a speed ceiling lowered mid-run comes down at the accel limit.
+        #[test]
+        fn a_stimulus_not_asked_for_leaves_the_velocity_arm_alone() {
+            for (accel, half) in [(0, 0), (0, HALF), ((SLOPE << 8) as u16, 0)] {
+                let sh = Shared::new();
+                let mut k = inject_rig(&sh, |t| {
+                    t.control.inject.inject_accel_q88 = accel;
+                    t.control.inject.inject_half_periods = half;
+                });
+                assert_eq!(k.medium.traj.omega_star_q16(), CRUISE << 16);
+                write_config(&sh, |t| t.config.loop_position.speed_ceiling_cps = 500);
+                let mut above = 0;
+                for _ in 0..40 {
+                    assert_eq!(period(&mut k, &sh, frame(2000, BIAS)), 0, "{accel} {half}");
+                    above += (k.medium.omega_ref_q16 > 500 << 16) as u32;
+                }
+                assert!(above > 1, "{accel} {half}: the profile came down at once");
+                assert_eq!(k.medium.omega_ref_q16, 500 << 16);
+            }
         }
     }
 }
@@ -900,7 +880,7 @@ mod deadman {
 /// The production image accepts the loop-margin stimulus's fields and
 /// ignores them: a Velocity cruise under a loaded dead-man keeps the
 /// profile's speed as its reference, and `omega_ref_cps` reads 0.
-#[cfg(not(feature = "deadman"))]
+#[cfg(not(feature = "loop-margin"))]
 #[test]
 fn the_injection_fields_are_ignored_without_the_feature() {
     let f = frame(2000, BIAS);

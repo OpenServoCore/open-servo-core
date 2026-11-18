@@ -1,6 +1,6 @@
 //! The bus dead-man (kernel sec 2.7): the countdown of `bus_deadman_ticks`
 //! both medium halves carry, the experiment image's and the production
-//! image's built with `deadman`.
+//! image's.
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
@@ -73,6 +73,7 @@ impl Deadman {
         }
     }
 
+    #[cfg(any(feature = "experiment", feature = "loop-margin"))]
     #[inline(always)]
     pub(in crate::kernel) fn loaded(&self) -> bool {
         self.ticks != 0

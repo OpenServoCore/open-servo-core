@@ -7,12 +7,10 @@
 //! written by the phase that computes it and read by the later phases and
 //! by the fast half. The experiment image (`experiment`, kernel sec 2.7)
 //! swaps in a medium half of CONTROL, the bus dead-man, the bias
-//! tracker's aging and PUBLISH alone; `deadman` gives the production half
-//! the same dead-man.
+//! tracker's aging and PUBLISH alone; both halves carry the same dead-man.
 
 #[cfg(not(feature = "experiment"))]
 mod control;
-#[cfg(any(feature = "experiment", feature = "deadman"))]
 mod deadman;
 #[cfg(feature = "experiment")]
 mod experiment;
@@ -145,16 +143,15 @@ pub(in crate::kernel) struct Medium {
     permit_ticks: u8,
     permit_gen: u8,
     det: Detectors,
-    #[cfg(feature = "deadman")]
     deadman: deadman::Deadman,
-    /// The loop-margin stimulus runs on the next TRAJECTORY (RAIL's
-    /// `deadman`): both fields nonzero, a burst streams under a loaded
-    /// dead-man and no limit flag but PERMIT is set.
-    #[cfg(feature = "deadman")]
+    /// The loop-margin stimulus runs on this period's TRAJECTORY (CONTROL's
+    /// gate): both fields nonzero, a burst streams under a loaded dead-man
+    /// and no limit flag but PERMIT is set.
+    #[cfg(feature = "loop-margin")]
     inj_on: bool,
     /// The stimulus's phase, medium periods into its cycle of
     /// `2 x inject_half_periods`.
-    #[cfg(feature = "deadman")]
+    #[cfg(feature = "loop-margin")]
     inj_p: u16,
     te_prev: bool,
     mode_prev: Mode,
@@ -196,11 +193,10 @@ impl Medium {
             permit_ticks: 0,
             permit_gen: 0,
             det: Detectors::new(),
-            #[cfg(feature = "deadman")]
             deadman: deadman::Deadman::new(),
-            #[cfg(feature = "deadman")]
+            #[cfg(feature = "loop-margin")]
             inj_on: false,
-            #[cfg(feature = "deadman")]
+            #[cfg(feature = "loop-margin")]
             inj_p: 0,
             te_prev: false,
             mode_prev: Mode::OpenLoop,

@@ -72,8 +72,7 @@ bench_hot=(
 
 # The loops, folds and estimates the experiment image compiles out
 # (kernel sec 2.7), and the dead-man it runs in their place; one set or
-# the other. The deadman image carries the production set and its own
-# dead-man.
+# the other.
 production_hot=(
     DutyLimiter::step
     math::recip_div
@@ -83,9 +82,6 @@ production_hot=(
 )
 experiment_hot=(
     experiment::Medium::deadman
-)
-deadman_hot=(
-    phases::Medium::deadman
 )
 
 elf="${1:-firmware/boards/osc-dev-v006/target/riscv32ec_zmmul-unknown-none-elf/release/osc-dev-v006-app}"
@@ -117,9 +113,6 @@ if grep -q 'experiment::Medium::deadman$' <<<"$syms"; then
   hot+=("${experiment_hot[@]}")
 else
   hot+=("${production_hot[@]}")
-  if grep -q 'phases::Medium::deadman$' <<<"$syms"; then
-    hot+=("${deadman_hot[@]}")
-  fi
 fi
 
 fail=0

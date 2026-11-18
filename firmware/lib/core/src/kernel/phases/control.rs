@@ -3,9 +3,11 @@ use super::fast::{Command, Drive, Fast};
 use super::lifecycle::Life;
 use super::loops::current;
 use super::loops::faults::{self, FaultLatch};
+#[cfg(feature = "loop-margin")]
+use super::loops::limits;
 use crate::kernel::config::{KernelConfig, belt};
 use crate::pos_lut;
-#[cfg(feature = "deadman")]
+#[cfg(feature = "loop-margin")]
 use crate::regions::control::ControlInject;
 use crate::regions::control::{ControlLifecycle, Mode};
 use crate::{RegionStorageRaw, Shared};
@@ -16,7 +18,7 @@ pub struct Control {
     pub life: ControlLifecycle,
     /// `pos_lut_state` reads LIVE: the position table applies.
     pub lut_live: bool,
-    #[cfg(feature = "deadman")]
+    #[cfg(feature = "loop-margin")]
     pub inject: ControlInject,
 }
 
@@ -36,14 +38,32 @@ impl Control {
             life,
             lut_live: pos_lut_state == pos_lut::state::LIVE,
             // SAFETY: as above.
-            #[cfg(feature = "deadman")]
+            #[cfg(feature = "loop-margin")]
             inject: unsafe { (&raw const (*p).control.inject).read_volatile() },
         }
     }
 }
 
+#[cfg(feature = "loop-margin")]
 impl Medium {
-    /// CONTROL: the read, the edges, and the drive kind they imply.
+    /// The loop-margin stimulus's gate for this period's TRAJECTORY, on the
+    /// last LIMITS flags. Either field 0 closes it, so an unasked stimulus
+    /// leaves the Velocity arm the production image's.
+    #[inline(always)]
+    fn gate_inject(&mut self, streaming: bool) {
+        let inj = &self.ctl.inject;
+        self.inj_on = streaming
+            && self.deadman.loaded()
+            && self.limit_flags & !limits::flag::PERMIT == 0
+            && inj.inject_accel_q88 != 0
+            && inj.inject_half_periods != 0;
+    }
+}
+
+impl Medium {
+    /// CONTROL: the read, the dead-man's period on it, the edges, and the
+    /// drive kind they imply. `streaming`: a TEL burst streams this tick.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::kernel) fn control(
         &mut self,
         raw_pos: u16,
@@ -52,11 +72,22 @@ impl Medium {
         faults: &mut FaultLatch,
         fast: &mut Fast,
         cmd: &mut Command,
+        streaming: bool,
     ) {
-        #[cfg(feature = "deadman")]
         self.deadman.see(shared);
         self.ctl = Control::read(shared);
+        // ahead of the edge: torque off has cleared the countdown by the
+        // edge, so the edge's start counts from the next period
+        let life = &self.ctl.life;
+        self.deadman.step(
+            life.torque_enable,
+            life.bus_deadman_ticks,
+            streaming,
+            faults,
+        );
         self.admit(cfg, shared, faults, fast);
+        #[cfg(feature = "loop-margin")]
+        self.gate_inject(streaming);
         self.edges(raw_pos, cfg, shared, faults, fast, cmd);
         cmd.drive = self.drive(cfg, faults);
         // the resets of an edge reach the fast half with the drive they
@@ -84,7 +115,6 @@ impl Medium {
             fast.ack();
             self.limits.ack();
             self.cutoff(cfg, faults);
-            #[cfg(feature = "deadman")]
             self.deadman.start(life.bus_deadman_ticks);
         }
         self.te_prev = life.torque_enable;

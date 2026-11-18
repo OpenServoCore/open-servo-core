@@ -66,7 +66,8 @@ pub struct TelemetryTherm {
 
 /// The velocity loop's reference as its VELOCITY phase reads it, raw csQ16
 /// as `omega_hat_cps`, published at PUBLISH beside the estimates by an
-/// image built with `deadman`; 0 in the production image.
+/// image built with `loop-margin`; 0 on the production and experiment
+/// images.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryInject {
