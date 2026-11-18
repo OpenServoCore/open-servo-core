@@ -30,7 +30,7 @@ mod tests;
 
 use osc_protocol::wire::LAW_BREAK_BIT_TIMES;
 
-use crate::kernel::{DECIM_MED, TICK_HZ};
+use crate::kernel::{DECIM_MED, TICK_HZ, phase};
 
 /// The clock every budget counts: the chip's HCLK (the chip asserts it).
 pub const CLOCK_HZ: u32 = 48_000_000;
@@ -101,8 +101,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// write ahead of the voltage side, the reversal's no-reading test, the
 /// wait for the crest scan and every phase's stages, RAIL's window term on
 /// the rail among them. The Closed and OpenLoop rows carry
-/// [`WINDOW_CARRY`] on top, and every row [`DEADMAN`], which the
-/// measurement predates.
+/// [`WINDOW_CARRY`] on top, every row [`DEADMAN`] and phase TRAJECTORY
+/// [`PARK_GATE`], which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -116,8 +116,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
-/// barely vary); with [`WINDOW_CARRY`] and [`DEADMAN`], as the
-/// maximum's.
+/// barely vary); with [`WINDOW_CARRY`], [`DEADMAN`] and [`PARK_GATE`], as
+/// the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
     [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
@@ -145,6 +145,19 @@ pub const WINDOW_CARRY: u32 = 10;
 /// The bench must refill the rows.
 pub const DEADMAN: [u32; PHASES] = [92, 8, 0, 8, 8, 8, 8, 8, 8, 8];
 
+/// E, on phase TRAJECTORY of every regime, maximum and mean: the hold's
+/// load gate (`position::unloaded`), against the image without it. Priced
+/// on the executed path of the release image with the fetch model
+/// ([`REFRESH`]): within twice the band of a stopped goal, the disturbance
+/// and the friction level loaded, a word and a halfword, and eight ALU
+/// (three for the magnitude, the shift, the compare, its sense, the join,
+/// and one the allocation moved into the dwell's compare), 22.5 HCLK; off
+/// that path the same instructions as before. Every regime, since a Position
+/// hold can run on an Open tick (parked) and on an OpenLoop one (the first
+/// TRAJECTORY after a mode change from OpenLoop). Plus 10%, rounded up.
+/// The bench must refill the rows.
+pub const PARK_GATE: u32 = 25;
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut p = 0;
     while p < PHASES {
@@ -156,6 +169,11 @@ const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REG
             r += 1;
         }
         p += 1;
+    }
+    let mut r = 0;
+    while r < REGIMES {
+        rows[r][phase::TRAJECTORY as usize] += PARK_GATE;
+        r += 1;
     }
     rows
 }

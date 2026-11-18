@@ -41,11 +41,12 @@ pub struct CalibSense {
 /// `estimator::thermal::ALPHA_Q26`; 0 = never measured),
 /// reciprocal Ke (c/s per vcount Q6.10, estimator::bemf convention), fusion
 /// current gain (bakes Ts/J, Q3.13: rig B runs ~3.4 so Q0.16 saturated), the
-/// friction model (Coulomb ccounts, viscous Q0.16), and forward Ke (vcounts
-/// per c/s Q4.12, the current loop's bemf decoupling feedforward). Forward
-/// and reciprocal Ke are both host-written: the chip has no divide to derive
-/// one from the other. SG90 scale ~0.28 vcounts per c/s (~1150 stored); the
-/// u16 caps at 16, 57x headroom.
+/// friction model (Coulomb ccounts, viscous Q0.16; the Coulomb level is
+/// also the load past which the position hold never parks), and forward Ke
+/// (vcounts per c/s Q4.12, the current loop's bemf decoupling feedforward).
+/// Forward and reciprocal Ke are both host-written: the chip has no divide
+/// to derive one from the other. SG90 scale ~0.28 vcounts per c/s (~1150
+/// stored); the u16 caps at 16, 57x headroom.
 ///
 /// Then the brush term (`estimator::bemf`): `r_brush_q12` the spinning
 /// brushes' resistance to a change in current beyond the winding's, in

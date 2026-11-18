@@ -4294,6 +4294,10 @@ struct Plant {
     omega_cps: i32,
     vbus: u16,
     frozen: bool,
+    /// A standing torque on the shaft, c/s per FAST tick: the drive term
+    /// of a held current, which Coulomb friction meets as it meets the
+    /// drive.
+    load_cps: i32,
 }
 
 impl Plant {
@@ -4303,6 +4307,7 @@ impl Plant {
             omega_cps: 0,
             vbus: PLANT_VBUS,
             frozen: false,
+            load_cps: 0,
         }
     }
 
@@ -4311,7 +4316,7 @@ impl Plant {
         if self.frozen {
             self.omega_cps = 0;
         } else {
-            self.omega_cps += ((duty as i32 * PLANT_DUTY_GAIN as i32) >> 15)
+            self.omega_cps += ((duty as i32 * PLANT_DUTY_GAIN as i32) >> 15) + self.load_cps
                 - (self.omega_cps >> PLANT_DECAY_SHIFT);
             let coulomb = PLANT_COULOMB_CPS as i32;
             if self.omega_cps > 0 {
@@ -4460,6 +4465,110 @@ fn position_step_settles_without_limit_cycle() {
     }
     assert!(hi - lo <= 2, "limit cycle: spread {}", hi - lo);
     assert!(parked >= 1500, "parked ticks {parked}");
+}
+
+/// A standing load of 3 Coulomb levels against the counts: the park
+/// drops the shaft.
+const PLANT_LOAD_CPS: i32 = -3 * PLANT_COULOMB_CPS as i32;
+
+/// The plant at rest at 2000 under `load_cps` and a goal on it, torque on,
+/// for 6 s. Torque on at rest parks at once, and a load past the friction
+/// level drops the shaft out of the zone before the loop drives it back:
+/// the return is slow, the observer's speed reading on a still shaft
+/// whose current ramps.
+fn loaded_hold(sh: &Shared, load_cps: i32) -> (Kernel<FakeIo>, Plant) {
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 2000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant {
+        load_cps,
+        ..Plant::new(2000)
+    };
+    run_plant(&mut k, sh, &mut plant, 120_000);
+    (k, plant)
+}
+
+/// Under a load past the friction level the hold never parks: the velocity
+/// loop keeps the current its integral holds, and the shaft rests in the
+/// band instead of dropping out of the zone at each park.
+#[test]
+fn a_loaded_hold_keeps_driving_inside_the_band() {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = loaded_hold(&sh, PLANT_LOAD_CPS);
+    let db = sh
+        .table
+        .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
+    // the load's 3 levels less or plus the friction's 1 hold the shaft,
+    // and the loop's ripple rides on them
+    let fc = PLANT_FRIC_FC_COUNTS as i32;
+    for n in 0..20_000 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        assert!(k.medium.life == phases::Life::Run, "parked at tick {n}");
+        assert!(
+            !matches!(last_cmd(&k), MotorCmd::Brake),
+            "braked at tick {n}"
+        );
+        assert!(
+            (plant.pos() - 2000).abs() <= db,
+            "out of the band at tick {n}: {}",
+            plant.pos()
+        );
+        assert!(
+            (2 * fc..=5 * fc).contains(&k.medium.i_ref_cc),
+            "tick {n}: i_ref {} is not the load's",
+            k.medium.i_ref_cc
+        );
+        assert!(
+            !phases::loops::position::unloaded(k.medium.fusion.tau_d_q16(), fc as u16),
+            "tick {n}: the load reads {} counts",
+            k.medium.fusion.tau_d_counts()
+        );
+    }
+    assert_eq!(k.faults.mask(), 0);
+}
+
+/// The same hold once the load goes away: the integral it held throws the
+/// shaft past the goal and unwinds, the disturbance falls inside the
+/// friction level and the hold parks for good in the zone.
+#[test]
+fn a_loaded_hold_parks_once_the_load_goes_away() {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = loaded_hold(&sh, PLANT_LOAD_CPS);
+    assert!(k.medium.life == phases::Life::Run, "precondition: driving");
+    plant.load_cps = 0;
+    run_plant(&mut k, &sh, &mut plant, 80_000);
+    let db = sh
+        .table
+        .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
+    for n in 0..20_000 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        assert!(k.medium.life == phases::Life::Parked, "woke at tick {n}");
+        assert!((plant.pos() - 2000).abs() <= 2 * db, "{}", plant.pos());
+    }
+    assert_eq!(k.faults.mask(), 0);
+}
+
+/// A load inside the friction level is a free shaft's: torque on at rest
+/// parks at once and friction holds the shaft there.
+#[test]
+fn a_load_inside_the_friction_level_parks() {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = loaded_hold(&sh, -(PLANT_COULOMB_CPS as i32) / 2);
+    for n in 0..20_000 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        assert!(k.medium.life == phases::Life::Parked, "woke at tick {n}");
+    }
+    assert_eq!(plant.pos(), 2000);
+    assert_eq!(k.faults.mask(), 0);
 }
 
 #[test]
