@@ -42,6 +42,7 @@ impl Medium {
                     theta_hat,
                     self.band_gain_q4,
                     self.near_ticks == HOLD_SETTLE_TICKS,
+                    position::unloaded(self.fusion.tau_d_q16(), cfg.motor.fric_fc_counts),
                     lp,
                 );
                 self.omega_ref_q16 = out.omega_ref_q16;

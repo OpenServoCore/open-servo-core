@@ -163,6 +163,11 @@ impl FusionObs {
         self.omega_q16
     }
 
+    /// ccQ16, inside +-4095 counts.
+    pub fn tau_d_q16(&self) -> i32 {
+        self.tau_d_q16
+    }
+
     /// Whole current counts. The state clamp already bounds to +-4095; the
     /// i16 clamp is the saturating ABI cast.
     pub fn tau_d_counts(&self) -> i16 {

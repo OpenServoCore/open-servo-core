@@ -23,14 +23,24 @@
 //! that has stayed inside the zone for the dwell is parked where it is, so
 //! that oscillation ends with the dwell.
 //!
-//! Hold gates on POSITION rest alone (profile stopped, error inside the
-//! deadband) - never on omega_hat. The fused omega is pot-noise driven at
-//! rest and the velocity loop amplifies it (bench + integer-sim: a ~3x
-//! blow-up when driving), so an omega gate that clears the parked noise
-//! floor sits below the driving floor: hold latches from rest but can never
-//! re-catch once the loop is shaking. Position is the clean rest signal;
-//! the braked winding and friction absorb the residual velocity inside the
-//! band.
+//! Only a shaft that holds no load parks. The park drops the current and
+//! the velocity integral, so a shaft that needed that current to stay put
+//! springs back out of the zone, is driven again from an empty integral and
+//! parks again short of the goal: it rests on the zone's far edge on the
+//! load's side. The hold therefore also needs the observer's disturbance
+//! estimate within the friction level (`fric_fc_counts`): a free output at
+//! rest carries none and parks as before, and under a standing load the
+//! velocity loop keeps its integral and holds the shaft in the band. With
+//! no motor model the estimate is held at 0 and the gate is open.
+//!
+//! Hold gates on POSITION rest (profile stopped, error inside the
+//! deadband) and the load estimate - never on omega_hat. The fused omega is
+//! pot-noise driven at rest and the velocity loop amplifies it (bench +
+//! integer-sim: a ~3x blow-up when driving), so an omega gate that clears
+//! the parked noise floor sits below the driving floor: hold latches from
+//! rest but can never re-catch once the loop is shaking. Position is the
+//! clean rest signal; the braked winding and friction absorb the residual
+//! velocity inside the band.
 
 use super::trajectory::VEL_CAP_CPS;
 use crate::math::{q_mul, sat_add, sat_sub, sat_sym};
@@ -69,17 +79,27 @@ pub fn band_q16(deadband_counts: u16, band_gain_q4: u16) -> u32 {
     (deadband_counts as u32 * band_gain_q4 as u32).min(u32::MAX >> 12) << 12
 }
 
+/// Whether a shaft carries no load a park would drop: the observer's
+/// disturbance `tau_d_q16` (ccQ16) within the friction level (ccounts).
+#[inline(always)]
+pub fn unloaded(tau_d_q16: i32, fric_fc_counts: u16) -> bool {
+    // ccounts -> ccQ16 fits u32 for any level
+    tau_d_q16.unsigned_abs() <= (fric_fc_counts as u32) << 16
+}
+
 /// One MEDIUM-tick update; stateless. theta*/omega* come from the
 /// trajectory generator, theta_hat/omega_hat from fusion. `band_gain_q4` is
 /// linearized counts per raw count at the present position, Q4 (16 at the
 /// identity), clamped (`pos_lut::band_gain_q4`). `settled`: `near` has held
-/// for `HOLD_SETTLE_TICKS`, so the gate is twice the band.
+/// for `HOLD_SETTLE_TICKS`, so the gate is twice the band. `unloaded`:
+/// [`unloaded`] on this period's estimate.
 pub fn step(
     theta_star_q16: i32,
     omega_star_q16: i32,
     theta_hat_q16: i32,
     band_gain_q4: u16,
     settled: bool,
+    unloaded: bool,
     cfg: &ConfigLoopPosition,
 ) -> PosOut {
     let e_raw = sat_sub(theta_star_q16, theta_hat_q16);
@@ -100,7 +120,7 @@ pub fn step(
     PosOut {
         omega_ref_q16: omega_ref,
         // the band sits inside the zone
-        hold: near && (settled || e_abs <= band),
+        hold: near && unloaded && (settled || e_abs <= band),
         near,
     }
 }
@@ -111,6 +131,26 @@ mod tests {
 
     /// The identity's band gain.
     const ID: u16 = crate::pos_lut::GRID as u16;
+
+    /// The step on an unloaded shaft.
+    fn step(
+        theta_star_q16: i32,
+        omega_star_q16: i32,
+        theta_hat_q16: i32,
+        band_gain_q4: u16,
+        settled: bool,
+        cfg: &ConfigLoopPosition,
+    ) -> PosOut {
+        super::step(
+            theta_star_q16,
+            omega_star_q16,
+            theta_hat_q16,
+            band_gain_q4,
+            settled,
+            true,
+            cfg,
+        )
+    }
 
     /// The block as the take leaves it: the move speed at the ceiling.
     fn c(kp: u16, db: u16, ceiling: u16) -> ConfigLoopPosition {
@@ -198,6 +238,39 @@ mod tests {
         let off = c(1 << 8, 0, 32767);
         for settled in [false, true] {
             assert!(!step(0, 0, 0, ID, settled, &off).hold);
+        }
+    }
+
+    #[test]
+    fn unloaded_is_the_disturbance_within_the_friction_level() {
+        let level = 43 << 16;
+        for tau in [0, 1, -1, level, -level] {
+            assert!(unloaded(tau, 43), "tau {tau}");
+        }
+        for tau in [level + 1, -level - 1, i32::MAX, i32::MIN] {
+            assert!(!unloaded(tau, 43), "tau {tau}");
+        }
+        // the largest level spans every disturbance, a level of 0 only none
+        assert!(unloaded(i32::MIN, u16::MAX));
+        assert!(unloaded(0, 0));
+        assert!(!unloaded(1, 0));
+        assert!(!unloaded(-1, 0));
+    }
+
+    #[test]
+    fn a_loaded_shaft_never_parks() {
+        let cfg = c(1 << 8, 12, 32767);
+        for settled in [false, true] {
+            for e in [0, 12 << 16, -(12 << 16)] {
+                let free = super::step(e, 0, 0, ID, settled, true, &cfg);
+                let loaded = super::step(e, 0, 0, ID, settled, false, &cfg);
+                assert!(free.hold, "e {e}, settled {settled}");
+                assert!(!loaded.hold, "e {e}, settled {settled}");
+                // the dwell counts on position alone, and the loop's output
+                // is the free shaft's
+                assert!(loaded.near);
+                assert_eq!(loaded.omega_ref_q16, free.omega_ref_q16);
+            }
         }
     }
 
