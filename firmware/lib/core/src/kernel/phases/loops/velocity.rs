@@ -58,6 +58,11 @@ impl VelocityLoop {
         self.integ_ccq16 = 0;
     }
 
+    #[cfg(test)]
+    pub fn integ_ccq16(&self) -> i32 {
+        self.integ_ccq16
+    }
+
     /// One MEDIUM-tick update -> i_ref, whole ccounts clamped into `band`.
     /// `omega_ref_q16` is the position loop's output; alpha_star/omega_star
     /// come from the trajectory generator; `band` from the limits fold
@@ -66,7 +71,9 @@ impl VelocityLoop {
     /// integrator is also clamped to the band's widest side << 16 - a belt
     /// on top of back-calc, and when the band shrinks mid-run (rail fold,
     /// stall fold) the clamp drains the stale charge to the new ceiling in
-    /// one tick: intended, the fold propagates instantly. The friction
+    /// one tick: intended, the fold propagates instantly. `frozen` (a
+    /// loaded position hold) stops the integral's charge and back-calc;
+    /// the P term, the model and the band's drain still act. The friction
     /// model is CALIB `motor`'s. Always inline: left to the compiler it
     /// comes out of line as the tick's other phases change, and its one
     /// call then costs the VELOCITY tick the call, two stack arguments and
@@ -82,6 +89,7 @@ impl VelocityLoop {
         band: super::limits::IBand,
         gains: &ConfigLoopVelocity,
         motor: &CalibMotor,
+        frozen: bool,
     ) -> i32 {
         let e = omega_ref_q16
             .saturating_sub(omega_hat_q16)
@@ -102,15 +110,14 @@ impl VelocityLoop {
         // shift saturates; kaw term mirrors current.rs (<= 2^29, << 4 can
         // reach 2^33). Integrator clamp: i_lim <= 65535 so the << 16 can
         // saturate too (12-bit shunt scale keeps real limits far below).
-        let ki_term = q_mul(gains.v_ki_q412 as i32, e, 16).saturating_mul(1 << 4);
-        let aw_term = q_mul(gains.v_kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
         let lim = band.hi.abs().max(band.lo.abs()).saturating_mul(1 << 16);
-        self.integ_ccq16 = self
-            .integ_ccq16
-            .saturating_add(ki_term)
-            .saturating_add(aw_term)
-            .max(-lim)
-            .min(lim);
+        let mut integ = self.integ_ccq16;
+        if !frozen {
+            let ki_term = q_mul(gains.v_ki_q412 as i32, e, 16).saturating_mul(1 << 4);
+            let aw_term = q_mul(gains.v_kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
+            integ = integ.saturating_add(ki_term).saturating_add(aw_term);
+        }
+        self.integ_ccq16 = integ.max(-lim).min(lim);
         i_ref
     }
 }
@@ -157,7 +164,7 @@ mod tests {
         band: IBand,
         g: &Gains,
     ) -> i32 {
-        vel.step(o_ref, o_hat, alpha, omega, band, &g.lv, &g.motor)
+        vel.step(o_ref, o_hat, alpha, omega, band, &g.lv, &g.motor, false)
     }
 
     /// First-order toy plant: drive b = 2^10 csQ16 per ccount per tick,
@@ -343,6 +350,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_frozen_step_keeps_the_integral() {
+        let gains = g(64, 200, 2048, 0, 0, 0);
+        let frozen = |vel: &mut VelocityLoop, o_ref: i32, band: IBand| {
+            vel.step(o_ref, 0, 0, 0, band, &gains.lv, &gains.motor, true)
+        };
+        let mut vel = VelocityLoop::new();
+        for _ in 0..50 {
+            step(&mut vel, 500 << 16, 0, 0, 0, band(I_LIM as i32), &gains);
+        }
+        let held = vel.integ_ccq16;
+        assert!(held > 100 << 16, "charged {}", held >> 16);
+        // the P term on the held integral, with no charge on a standing
+        // error, and no back-calc on a clip
+        for _ in 0..1000 {
+            assert_eq!(
+                frozen(&mut vel, 100 << 16, band(I_LIM as i32)),
+                25 + (held >> 16)
+            );
+            assert_eq!(vel.integ_ccq16, held);
+        }
+        let over = (held >> 16) + 10;
+        assert_eq!(frozen(&mut vel, 4000 << 16, band(over)), over);
+        assert_eq!(vel.integ_ccq16, held);
+        // a fold under the integral still drains it
+        assert_eq!(frozen(&mut vel, 0, band(100)), 100);
+        assert_eq!(vel.integ_ccq16, 100 << 16);
+        // and the next unfrozen step charges it again
+        step(&mut vel, 500 << 16, 0, 0, 0, band(I_LIM as i32), &gains);
+        assert!(vel.integ_ccq16 > 100 << 16);
     }
 
     #[test]

@@ -15,7 +15,9 @@
 //! | run off | CONTROL | current integral, reference, velocity integral, blend, position loop output: 0; limiter at the floor; Off |
 //! | mode change under run | CONTROL | limiter at the floor; Run. Between Velocity and Position: profile at the estimate, its speed kept. Otherwise: profile at rest at the estimate, velocity integral 0. From OpenLoop: current integral at the applied volts, reference at the held current inside the band, the dropped-pulse gate on OpenLoop's last width |
 //! | park in | TRAJECTORY | Parked; every parked period at VELOCITY: reference, velocity integral, blend 0 |
-//! | park out | TRAJECTORY | Run |
+//! | park out | TRAJECTORY | Run, or Held under a load |
+//! | held in | TRAJECTORY | Held (loaded, where a free shaft parks); every held period at VELOCITY: the velocity loop steps with its integral frozen |
+//! | held out | TRAJECTORY | Run, or Parked once the load is gone |
 //! | fault | any tick | the latch; FAST drives Off that tick, run off follows at CONTROL |
 //! | OpenLoop sign change | FAST (`fast.rs`) | limiter at the floor, held current 0 |
 //!
@@ -41,6 +43,21 @@ pub(in crate::kernel) enum Life {
     Off,
     Run,
     Parked,
+    Held,
+}
+
+impl Life {
+    /// A Position period's state from the hold's flags, which are
+    /// exclusive (`position::PosOut`). Counted, not chosen: a select chain
+    /// lays TRAJECTORY's blocks out past its budget.
+    #[inline(always)]
+    pub(super) fn of_hold(park: bool, hold: bool) -> Self {
+        match (park | hold) as u8 + hold as u8 {
+            0 => Life::Run,
+            1 => Life::Parked,
+            _ => Life::Held,
+        }
+    }
 }
 
 impl Medium {

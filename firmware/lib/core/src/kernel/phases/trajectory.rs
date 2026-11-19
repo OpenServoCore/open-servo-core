@@ -46,7 +46,7 @@ impl Medium {
                     lp,
                 );
                 self.omega_ref_q16 = out.omega_ref_q16;
-                self.life = if out.hold { Life::Parked } else { Life::Run };
+                self.life = Life::of_hold(out.park, out.hold);
                 self.near_ticks = if out.near {
                     self.near_ticks + (self.near_ticks < HOLD_SETTLE_TICKS) as u8
                 } else {

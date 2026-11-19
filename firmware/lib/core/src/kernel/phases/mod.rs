@@ -122,7 +122,7 @@ pub(in crate::kernel) struct Medium {
     pub(in crate::kernel) omega_bemf: Option<i32>,
     /// Linearized counts per raw count at the observer's sample.
     band_gain_q4: u16,
-    vel: VelocityLoop,
+    pub(in crate::kernel) vel: VelocityLoop,
     pub(in crate::kernel) limits: LimitState,
     pub(in crate::kernel) i_band: IBand,
     /// The composed magnitude `i_band` was built from (`limits::Fold::lim`).
