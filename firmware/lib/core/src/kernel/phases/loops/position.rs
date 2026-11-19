@@ -2,8 +2,9 @@
 //! error times kp gives a velocity command, add the omega* feedforward,
 //! clamp to the speed ceiling. NO integrator ever (one integrator per band; a
 //! position integrator over Coulomb friction limit-cycles). The anti-hunt
-//! hold predicate tells the kernel to park (Brake) inside the deadband
-//! instead of dithering against friction.
+//! hold predicate tells the kernel to stop correcting inside the deadband
+//! instead of dithering against friction: it parks (Brake) a free shaft and
+//! keeps a loaded one's current.
 //!
 //! The deadband is raw counts of the position sensor, where its noise and
 //! quantisation live, while the error is linearized: the band is the
@@ -27,11 +28,19 @@
 //! the velocity integral, so a shaft that needed that current to stay put
 //! springs back out of the zone, is driven again from an empty integral and
 //! parks again short of the goal: it rests on the zone's far edge on the
-//! load's side. The hold therefore also needs the observer's disturbance
+//! load's side. The park therefore also needs the observer's disturbance
 //! estimate within the friction level (`fric_fc_counts`): a free output at
-//! rest carries none and parks as before, and under a standing load the
-//! velocity loop keeps its integral and holds the shaft in the band. With
-//! no motor model the estimate is held at 0 and the gate is open.
+//! rest carries none and parks as before. With no motor model the estimate
+//! is held at 0 and the gate is open.
+//!
+//! A loaded shaft is held instead, in the region a free one parks in: the
+//! velocity loop keeps its integral frozen, so the drive keeps the current
+//! it settled on. Left integrating, a still shaft's in-band error winds the
+//! current up until it breaks loose of the train's static friction and
+//! jumps past the goal, where it sticks again: a stick-slip the integrator
+//! drives. Once settled the zone is the gate, so the noise on the estimate
+//! at the band's edge never wakes the integral; a held shaft whose load
+//! goes away parks where it is.
 //!
 //! Hold gates on POSITION rest (profile stopped, error inside the
 //! deadband) and the load estimate - never on omega_hat. The fused omega is
@@ -59,13 +68,17 @@ const E_LIM_CQ16: i32 = 1 << 23;
 /// stopped, not coasting through.
 pub const HOLD_SETTLE_TICKS: u8 = 128;
 
-/// omega_ref for the velocity loop, the anti-hunt flag (kernel maps hold ->
-/// Brake) and whether the error is within twice the band of a stopped goal
-/// (the kernel counts it toward `HOLD_SETTLE_TICKS`).
+/// omega_ref for the velocity loop, the anti-hunt flags and whether the
+/// error is within twice the band of a stopped goal (the kernel counts it
+/// toward `HOLD_SETTLE_TICKS`). Inside the band of a stopped goal, or once
+/// settled the zone: `park` for an unloaded shaft (the kernel maps it to
+/// Brake), `hold` for a loaded one (it keeps its current, its velocity
+/// integral frozen). At most one of the two is set.
 #[derive(Copy, Clone)]
 pub struct PosOut {
     pub omega_ref_q16: i32,
     pub hold: bool,
+    pub park: bool,
     pub near: bool,
 }
 
@@ -113,14 +126,25 @@ pub fn step(
         sat_add(q_mul(cfg.p_kp_q88 as i32, e, 8), omega_star_q16),
         v_lim,
     );
+    // a moving profile skips the band's multiply
+    if cfg.pos_deadband_counts == 0 || omega_star_q16 != 0 {
+        return PosOut {
+            omega_ref_q16: omega_ref,
+            hold: false,
+            park: false,
+            near: false,
+        };
+    }
     let band = band_q16(cfg.pos_deadband_counts, band_gain_q4);
     let zone = band.saturating_add(band);
     let e_abs = e_raw.unsigned_abs();
-    let near = cfg.pos_deadband_counts != 0 && omega_star_q16 == 0 && e_abs <= zone;
+    let near = e_abs <= zone;
+    // the band sits inside the zone
+    let hit = near && (e_abs <= band || settled);
     PosOut {
         omega_ref_q16: omega_ref,
-        // the band sits inside the zone
-        hold: near && unloaded && (settled || e_abs <= band),
+        hold: hit && !unloaded,
+        park: hit && unloaded,
         near,
     }
 }
@@ -182,17 +206,17 @@ mod tests {
         // gain 26/16: 12 raw counts span 19.5 linearized, twice is 39
         let cfg = c(1 << 8, 12, 32767);
         for (settled, gate) in [(false, 39 << 15), (true, 39 << 16)] {
-            assert!(step(gate, 0, 0, 26, settled, &cfg).hold);
-            assert!(step(0, 0, gate, 26, settled, &cfg).hold);
-            assert!(!step(gate + 1, 0, 0, 26, settled, &cfg).hold);
-            assert!(!step(0, 0, gate + 1, 26, settled, &cfg).hold);
+            assert!(step(gate, 0, 0, 26, settled, &cfg).park);
+            assert!(step(0, 0, gate, 26, settled, &cfg).park);
+            assert!(!step(gate + 1, 0, 0, 26, settled, &cfg).park);
+            assert!(!step(0, 0, gate + 1, 26, settled, &cfg).park);
         }
         // the largest deadband at the ceiling saturates either gate past
         // any error
         let cfg = c(1 << 8, 65535, 32767);
         for settled in [false, true] {
-            assert!(step(i32::MAX, 0, i32::MIN, 64, settled, &cfg).hold);
-            assert!(step(i32::MIN, 0, i32::MAX, 64, settled, &cfg).hold);
+            assert!(step(i32::MAX, 0, i32::MIN, 64, settled, &cfg).park);
+            assert!(step(i32::MIN, 0, i32::MAX, 64, settled, &cfg).park);
         }
     }
 
@@ -220,24 +244,24 @@ mod tests {
     fn a_settled_park_releases_past_two_bands() {
         let cfg = c(1 << 8, 12, 32767);
         // entry and an un-settled park: the band, not past it
-        assert!(step(12 << 16, 0, 0, ID, false, &cfg).hold);
-        assert!(step(0, 0, 12 << 16, ID, false, &cfg).hold);
-        assert!(!step((12 << 16) + 1, 0, 0, ID, false, &cfg).hold);
-        assert!(!step(18 << 16, 0, 0, ID, false, &cfg).hold);
+        assert!(step(12 << 16, 0, 0, ID, false, &cfg).park);
+        assert!(step(0, 0, 12 << 16, ID, false, &cfg).park);
+        assert!(!step((12 << 16) + 1, 0, 0, ID, false, &cfg).park);
+        assert!(!step(18 << 16, 0, 0, ID, false, &cfg).park);
         // settled: twice the band, not past it
-        assert!(step(18 << 16, 0, 0, ID, true, &cfg).hold);
-        assert!(step(0, 0, 24 << 16, ID, true, &cfg).hold);
-        assert!(!step((24 << 16) + 1, 0, 0, ID, true, &cfg).hold);
-        assert!(!step(0, 0, (24 << 16) + 1, ID, true, &cfg).hold);
+        assert!(step(18 << 16, 0, 0, ID, true, &cfg).park);
+        assert!(step(0, 0, 24 << 16, ID, true, &cfg).park);
+        assert!(!step((24 << 16) + 1, 0, 0, ID, true, &cfg).park);
+        assert!(!step(0, 0, (24 << 16) + 1, ID, true, &cfg).park);
         // a moving profile drops either, even at zero error
         for settled in [false, true] {
-            assert!(!step(0, 1, 0, ID, settled, &cfg).hold);
-            assert!(!step(0, -1, 0, ID, settled, &cfg).hold);
+            assert!(!step(0, 1, 0, ID, settled, &cfg).park);
+            assert!(!step(0, -1, 0, ID, settled, &cfg).park);
         }
         // deadband 0 never parks, settled or not
         let off = c(1 << 8, 0, 32767);
         for settled in [false, true] {
-            assert!(!step(0, 0, 0, ID, settled, &off).hold);
+            assert!(!step(0, 0, 0, ID, settled, &off).park);
         }
     }
 
@@ -258,18 +282,41 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_shaft_never_parks() {
+    fn a_loaded_shaft_is_held_but_never_parks() {
         let cfg = c(1 << 8, 12, 32767);
-        for settled in [false, true] {
-            for e in [0, 12 << 16, -(12 << 16)] {
-                let free = super::step(e, 0, 0, ID, settled, true, &cfg);
-                let loaded = super::step(e, 0, 0, ID, settled, false, &cfg);
-                assert!(free.hold, "e {e}, settled {settled}");
-                assert!(!loaded.hold, "e {e}, settled {settled}");
-                // the dwell counts on position alone, and the loop's output
-                // is the free shaft's
-                assert!(loaded.near);
-                assert_eq!(loaded.omega_ref_q16, free.omega_ref_q16);
+        let step = |e: i32, settled: bool, unloaded: bool| {
+            super::step(e, 0, 0, ID, settled, unloaded, &cfg)
+        };
+        // the free shaft's park region holds a loaded one: the band, and
+        // once settled the zone
+        for (e, settled) in [
+            (0, false),
+            (12 << 16, false),
+            (-(12 << 16), false),
+            (0, true),
+            ((12 << 16) + 1, true),
+            (24 << 16, true),
+            (-(24 << 16), true),
+        ] {
+            let free = step(e, settled, true);
+            let loaded = step(e, settled, false);
+            assert!(free.park && !free.hold, "e {e}, settled {settled}");
+            assert!(loaded.hold && !loaded.park, "e {e}, settled {settled}");
+            // the dwell counts on position alone, and the loop's output is
+            // the free shaft's
+            assert!(loaded.near);
+            assert_eq!(loaded.omega_ref_q16, free.omega_ref_q16);
+        }
+        // past the band before the dwell, past the zone, and on a moving
+        // profile, neither
+        for unloaded in [false, true] {
+            for (e, omega_star, settled) in [
+                ((12 << 16) + 1, 0, false),
+                (25 << 16, 0, true),
+                (0, 1, true),
+            ] {
+                let out = super::step(e, omega_star, 0, ID, settled, unloaded, &cfg);
+                assert!(!out.hold && !out.park, "e {e}, unloaded {unloaded}");
             }
         }
     }
@@ -352,13 +399,13 @@ mod tests {
     fn hold_predicate_each_condition() {
         let cfg = c(1 << 8, 5, 32767);
         // both hold conditions true: within deadband and profile at rest
-        assert!(step(5 << 16, 0, 0, ID, false, &cfg).hold);
+        assert!(step(5 << 16, 0, 0, ID, false, &cfg).park);
         // deadband 0 disables hold outright, even at perfect rest
-        assert!(!step(0, 0, 0, ID, false, &c(1 << 8, 0, 32767)).hold);
+        assert!(!step(0, 0, 0, ID, false, &c(1 << 8, 0, 32767)).park);
         // error one cQ16 past the deadband
-        assert!(!step((5 << 16) + 1, 0, 0, ID, false, &cfg).hold);
+        assert!(!step((5 << 16) + 1, 0, 0, ID, false, &cfg).park);
         // omega* nonzero: profile still moving
-        assert!(!step(5 << 16, 1, 0, ID, false, &cfg).hold);
+        assert!(!step(5 << 16, 1, 0, ID, false, &cfg).park);
     }
 
     #[test]
@@ -367,7 +414,7 @@ mod tests {
         // deadband: the predicate must see the raw magnitude and hold
         let cfg = c(1 << 8, 65535, 32767);
         let out = step(3000 << 16, 0, -(3000 << 16), ID, false, &cfg);
-        assert!(out.hold);
+        assert!(out.park);
         // while the drive command stays E_LIM/ceiling-clamped
         assert_eq!(out.omega_ref_q16, 128 << 16);
         // and a small deadband rejects the same error
@@ -380,7 +427,7 @@ mod tests {
                 false,
                 &c(1 << 8, 5, 32767)
             )
-            .hold
+            .park
         );
     }
 }

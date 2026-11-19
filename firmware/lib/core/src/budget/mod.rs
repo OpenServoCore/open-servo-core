@@ -101,8 +101,9 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// write ahead of the voltage side, the reversal's no-reading test, the
 /// wait for the crest scan and every phase's stages, RAIL's window term on
 /// the rail among them. The Closed and OpenLoop rows carry
-/// [`WINDOW_CARRY`] on top, every row [`DEADMAN`] and phase TRAJECTORY
-/// [`PARK_GATE`], which the measurement predates.
+/// [`WINDOW_CARRY`] on top, every row [`DEADMAN`], phase TRAJECTORY
+/// [`PARK_GATE`] and phases TRAJECTORY and VELOCITY [`HELD`], which the
+/// measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -116,8 +117,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
-/// barely vary); with [`WINDOW_CARRY`], [`DEADMAN`] and [`PARK_GATE`], as
-/// the maximum's.
+/// barely vary); with [`WINDOW_CARRY`], [`DEADMAN`], [`PARK_GATE`] and
+/// [`HELD`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
     [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
@@ -158,6 +159,28 @@ pub const DEADMAN: [u32; PHASES] = [92, 8, 0, 8, 8, 8, 8, 8, 8, 8];
 /// The bench must refill the rows.
 pub const PARK_GATE: u32 = 25;
 
+/// E, on phases TRAJECTORY and VELOCITY of every regime, maximum and mean:
+/// the loaded hold (`Life::Held`, the velocity integral frozen), against
+/// the image with the load gate. Priced on the executed path of the
+/// release image with the fetch model ([`REFRESH`]), from the phase's entry
+/// to its return. TRAJECTORY, dearest at rest where the hold is taken: the
+/// hold's kind out of the two flags, two ALU (403.25 HCLK against 401.25
+/// held or driven in the zone, 364.75 against 362.75 parked); past the
+/// zone 401.25 as before, and a moving profile skips the band's multiply
+/// for the same 576. VELOCITY, on a driven period: the freeze's test, two
+/// ALU, and the integral's saturation one taken transfer where the image
+/// without it falls through, less a taken transfer in its clamp, 6 HCLK; a
+/// held period skips the charge. Every regime, as [`PARK_GATE`]. Plus 10%,
+/// rounded up. The bench must refill the rows.
+pub const HELD: [u32; PHASES] = held_cells();
+
+const fn held_cells() -> [u32; PHASES] {
+    let mut cells = [0; PHASES];
+    cells[phase::TRAJECTORY as usize] = 3;
+    cells[phase::VELOCITY as usize] = 7;
+    cells
+}
+
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
     let mut p = 0;
     while p < PHASES {
@@ -173,6 +196,11 @@ const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REG
     let mut r = 0;
     while r < REGIMES {
         rows[r][phase::TRAJECTORY as usize] += PARK_GATE;
+        let mut p = 0;
+        while p < PHASES {
+            rows[r][p] += HELD[p];
+            p += 1;
+        }
         r += 1;
     }
     rows

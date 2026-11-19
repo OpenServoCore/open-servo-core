@@ -3,7 +3,7 @@
 //! bench's gravity arm loads a hold with. A park drops the current that
 //! holds the shaft, so the hold parks only a shaft that carries no load
 //! past the friction level (`position::unloaded`), and a loaded one rests
-//! in the band on the velocity loop's integral.
+//! on the velocity loop's integral, frozen while it is held.
 
 use osc_integration::mg90::{self, Mg90};
 use osc_integration::mg90_d::{self, COUNTS_PER_DEG, CURRENT_COUNTS_PER_A};
@@ -18,6 +18,8 @@ const TICKS_PER_MS: u32 = 20;
 const HOLD_MS: u32 = 1500;
 const DRIVEN_MS: u32 = 1000;
 const REST_MS: u32 = 500;
+/// The long hold, as the bench's past-the-rating cells hold each.
+const LONG_MS: u32 = 3000;
 
 #[derive(Debug)]
 struct Hold {
@@ -36,8 +38,8 @@ fn median(v: &mut [f64]) -> f64 {
 }
 
 /// The rig at rest at its soft range's middle under `load`, torque on,
-/// then a 30-degree step out and back each way, each goal held `HOLD_MS`.
-fn holds(load: f64, seed: u64) -> Vec<(i32, Hold)> {
+/// then a 30-degree step out and back each way, each goal held `hold_ms`.
+fn holds(load: f64, seed: u64, hold_ms: u32) -> Vec<(i32, Hold)> {
     let sh = mg90_d::rig(|_| {});
     let center = sh.table.with(|t| {
         let s = &t.config.pos_soft;
@@ -69,7 +71,7 @@ fn holds(load: f64, seed: u64) -> Vec<(i32, Hold)> {
                 .with_mut(|t| t.control.lifecycle.goal_position = goal);
             let (mut errs, mut i) = (Vec::new(), Vec::new());
             let mut braked = 0;
-            let ticks = HOLD_MS * TICKS_PER_MS;
+            let ticks = hold_ms * TICKS_PER_MS;
             for n in 0..ticks {
                 let cmd = step(&mut p);
                 if n >= ticks - DRIVEN_MS * TICKS_PER_MS {
@@ -91,23 +93,27 @@ fn holds(load: f64, seed: u64) -> Vec<(i32, Hold)> {
         .collect()
 }
 
-/// Each way round, over three pot-noise seeds: every hold rests within the
-/// band of its goal (the set's deadband on the identity table) with the
-/// drive on through its last second, the current holding the load within
-/// the friction's level. Parked as a free shaft is, the shaft rests 7 to
-/// 11 counts short on the load's side, as the bench's gravity arm does.
-#[test]
-fn a_loaded_hold_rests_in_the_band_with_the_drive_on() {
-    let band = mg90_d::rig(|_| {})
-        .table
-        .with(|t| t.config.loop_position.pos_deadband_counts) as f64;
+/// Every hold of `hold_ms`, each way round, over three pot-noise seeds:
+/// it rests within the zone of its goal, twice the set's deadband on the
+/// identity table, with the drive on through its last second and the
+/// current holding the load within the friction's level. The zone is the
+/// region a free hold parks in once settled, and a loaded one is held
+/// there, so the noise on the estimate at the band's edge never wakes its
+/// integral. Parked as a free shaft is, the shaft
+/// rests 7 to 11 counts short on the load's side, as the bench's gravity
+/// arm does.
+fn rests_in_the_zone(hold_ms: u32) {
+    let zone = 2.0
+        * mg90_d::rig(|_| {})
+            .table
+            .with(|t| t.config.loop_position.pos_deadband_counts) as f64;
     for seed in 1..=3u64 {
         for load in [-LOAD, LOAD] {
-            for (goal, h) in holds(load, seed) {
+            for (goal, h) in holds(load, seed, hold_ms) {
                 let at = format!("seed {seed} load {load:.0} goal {goal}: {h:?}");
                 assert_eq!(h.faults, 0, "{at}");
                 assert_eq!(h.braked, 0, "parked: {at}");
-                assert!(h.err.abs() <= band, "rest outside the band: {at}");
+                assert!(h.err.abs() <= zone, "rest outside the zone: {at}");
                 assert!(
                     (h.i_mean + load).abs() <= mg90_d::DRAG_FC,
                     "the current is not the load's: {at}"
@@ -115,4 +121,14 @@ fn a_loaded_hold_rests_in_the_band_with_the_drive_on() {
             }
         }
     }
+}
+
+#[test]
+fn a_loaded_hold_rests_in_the_zone_with_the_drive_on() {
+    rests_in_the_zone(HOLD_MS);
+}
+
+#[test]
+fn a_long_loaded_hold_rests_in_the_zone_with_the_drive_on() {
+    rests_in_the_zone(LONG_MS);
 }

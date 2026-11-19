@@ -4298,6 +4298,9 @@ struct Plant {
     /// of a held current, which Coulomb friction meets as it meets the
     /// drive.
     load_cps: i32,
+    /// Static friction, c/s per FAST tick: a shaft at rest stays there
+    /// while the drive and the load together stay within it.
+    stick_cps: i32,
 }
 
 impl Plant {
@@ -4308,16 +4311,17 @@ impl Plant {
             vbus: PLANT_VBUS,
             frozen: false,
             load_cps: 0,
+            stick_cps: 0,
         }
     }
 
     /// One FAST tick; frozen = hard wall (theta pinned, omega 0).
     fn step(&mut self, duty: i16) -> SensorFrame {
-        if self.frozen {
+        let push = ((duty as i32 * PLANT_DUTY_GAIN as i32) >> 15) + self.load_cps;
+        if self.frozen || self.omega_cps == 0 && push.abs() <= self.stick_cps {
             self.omega_cps = 0;
         } else {
-            self.omega_cps += ((duty as i32 * PLANT_DUTY_GAIN as i32) >> 15) + self.load_cps
-                - (self.omega_cps >> PLANT_DECAY_SHIFT);
+            self.omega_cps += push - (self.omega_cps >> PLANT_DECAY_SHIFT);
             let coulomb = PLANT_COULOMB_CPS as i32;
             if self.omega_cps > 0 {
                 self.omega_cps = (self.omega_cps - coulomb).max(0);
@@ -4491,30 +4495,49 @@ fn loaded_hold(sh: &Shared, load_cps: i32) -> (Kernel<FakeIo>, Plant) {
     (k, plant)
 }
 
-/// Under a load past the friction level the hold never parks: the velocity
-/// loop keeps the current its integral holds, and the shaft rests in the
-/// band instead of dropping out of the zone at each park.
+/// The plant of [`loaded_hold`] once its shaft has static friction past the
+/// load's own and a goal where it stuck, 0.5 s on: the press fold stays out
+/// of the way (the gravity arm's hold with `i_cont` at the cap).
+fn stuck_loaded_hold(sh: &Shared) -> (Kernel<FakeIo>, Plant) {
+    let (mut k, mut plant) = loaded_hold(sh, PLANT_LOAD_CPS);
+    plant.stick_cps = 6 * PLANT_COULOMB_CPS as i32;
+    write_config(sh, |t| {
+        t.config.limits.i_cont_counts = t.config.limits.current_limit_counts;
+    });
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = plant.pos());
+    run_plant(&mut k, sh, &mut plant, 10_000);
+    (k, plant)
+}
+
+/// Under a load past the friction level the hold never parks: the still
+/// shaft rests in the band on the current its velocity integral held,
+/// frozen from the first held period to the last, instead of dropping out
+/// of the zone at each park.
 #[test]
-fn a_loaded_hold_keeps_driving_inside_the_band() {
+fn a_loaded_hold_keeps_its_current_inside_the_band() {
     let sh = Shared::new();
     seed(&sh);
-    let (mut k, mut plant) = loaded_hold(&sh, PLANT_LOAD_CPS);
+    let (mut k, mut plant) = stuck_loaded_hold(&sh);
     let db = sh
         .table
         .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
     // the load's 3 levels less or plus the friction's 1 hold the shaft,
     // and the loop's ripple rides on them
     let fc = PLANT_FRIC_FC_COUNTS as i32;
+    let goal = sh.table.with(|t| t.control.lifecycle.goal_position);
+    let integ = k.medium.vel.integ_ccq16();
     for n in 0..20_000 {
         let f = plant.step(k.fast.duty_q15);
         k.on_scan(f, &sh);
-        assert!(k.medium.life == phases::Life::Run, "parked at tick {n}");
+        assert!(k.medium.life == phases::Life::Held, "not held at tick {n}");
         assert!(
             !matches!(last_cmd(&k), MotorCmd::Brake),
             "braked at tick {n}"
         );
+        assert_eq!(k.medium.vel.integ_ccq16(), integ, "tick {n}: integrated");
         assert!(
-            (plant.pos() - 2000).abs() <= db,
+            (plant.pos() - goal).abs() <= db,
             "out of the band at tick {n}: {}",
             plant.pos()
         );
@@ -4532,25 +4555,174 @@ fn a_loaded_hold_keeps_driving_inside_the_band() {
     assert_eq!(k.faults.mask(), 0);
 }
 
-/// The same hold once the load goes away: the integral it held throws the
-/// shaft past the goal and unwinds, the disturbance falls inside the
-/// friction level and the hold parks for good in the zone.
+/// A still shaft under a load, at a steady error inside the band, keeps the
+/// current it settled on. Integrating that error winds the current up until
+/// the shaft breaks loose of its static friction and jumps past the goal: a
+/// stick-slip.
 #[test]
-fn a_loaded_hold_parks_once_the_load_goes_away() {
+fn a_stuck_loaded_hold_does_not_wind_its_current_up() {
     let sh = Shared::new();
     seed(&sh);
-    let (mut k, mut plant) = loaded_hold(&sh, PLANT_LOAD_CPS);
-    assert!(k.medium.life == phases::Life::Run, "precondition: driving");
-    plant.load_cps = 0;
-    run_plant(&mut k, &sh, &mut plant, 80_000);
+    let (mut k, mut plant) = stuck_loaded_hold(&sh);
+    // half the band off the shaft
     let db = sh
         .table
         .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
+    let goal = plant.pos() + if plant.pos() > 2000 { -db / 2 } else { db / 2 };
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = goal);
+    run_plant(&mut k, &sh, &mut plant, 10_000);
+    let pos = plant.pos();
+    assert!((pos - goal).abs() <= db, "precondition: still at {pos}");
+    // the mean current over the first and over each later 0.25 s, for 3 s
+    const WINDOW: i32 = 5_000;
+    let mut first = None;
+    for w in 0..12 {
+        let mut sum = 0;
+        for n in 0..WINDOW {
+            let f = plant.step(k.fast.duty_q15);
+            k.on_scan(f, &sh);
+            assert_eq!(plant.pos(), pos, "broke loose at tick {}", w * WINDOW + n);
+            sum += k.medium.i_ref_cc;
+        }
+        let mean = sum / WINDOW;
+        let at = *first.get_or_insert(mean);
+        assert!(
+            (mean - at).abs() <= 2,
+            "the current wound from {at} to {mean} by {} ms, the error {}",
+            (w + 1) * WINDOW / 20,
+            goal - pos
+        );
+    }
+    assert_eq!(k.faults.mask(), 0);
+}
+
+/// A held shaft pushed past the band stays held inside the zone; pushed out
+/// of the zone it drives again on the integral it held: no reset on the way
+/// out, and it integrates on.
+#[test]
+fn a_held_shaft_out_of_the_zone_integrates_again() {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = stuck_loaded_hold(&sh);
+    assert!(k.medium.life == phases::Life::Held, "precondition: held");
+    let held = k.medium.vel.integ_ccq16();
+    let db = sh
+        .table
+        .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
+    // past the band on the load's side, inside the zone: still held
+    let goal = sh.table.with(|t| t.control.lifecycle.goal_position);
+    plant.theta_q16 = ((goal - db - db / 2) as i64) << 16;
+    for n in 0..2_000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        assert!(k.medium.life == phases::Life::Held, "released at tick {n}");
+        assert_eq!(k.medium.vel.integ_ccq16(), held, "tick {n}: integrated");
+    }
+    // past the zone
+    plant.theta_q16 = ((goal - 2 * db - db / 2) as i64) << 16;
+    // the observer's estimate follows within 50 ms
+    for _ in 0..1_000 {
+        if k.medium.life == phases::Life::Run {
+            break;
+        }
+        run_plant(&mut k, &sh, &mut plant, 1);
+    }
+    assert!(k.medium.life == phases::Life::Run, "still held");
+    for _ in 0..DECIM_MED {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.phase == phase::VELOCITY + 1 {
+            break;
+        }
+    }
+    let first = k.medium.vel.integ_ccq16();
+    assert!(
+        first > held && first - held < 1 << 16,
+        "the first step out charged {held} to {first}"
+    );
+    run_plant(&mut k, &sh, &mut plant, 2_000);
+    assert!(
+        k.medium.vel.integ_ccq16() > first,
+        "integrated {first} to {}",
+        k.medium.vel.integ_ccq16()
+    );
+    assert_eq!(k.faults.mask(), 0);
+}
+
+/// A held shaft past the band, settled inside the zone, whose load falls
+/// inside the friction level (the level raised past the held current)
+/// parks where it is: the zone is a free shaft's park region once settled.
+#[test]
+fn a_held_shaft_that_loses_its_load_inside_the_zone_parks_there() {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = stuck_loaded_hold(&sh);
+    let db = sh
+        .table
+        .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
+    let goal = sh.table.with(|t| t.control.lifecycle.goal_position);
+    let pos = goal - db - db / 2;
+    plant.theta_q16 = (pos as i64) << 16;
+    run_plant(&mut k, &sh, &mut plant, 2_000);
+    assert!(k.medium.life == phases::Life::Held, "precondition: held");
+    assert_eq!(
+        k.medium.near_ticks,
+        phases::loops::position::HOLD_SETTLE_TICKS
+    );
+    write_config(&sh, |t| t.calib.motor.fric_fc_counts = 1000);
+    run_plant(&mut k, &sh, &mut plant, 2 * DECIM_MED as u32);
+    for n in 0..20_000 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        assert!(
+            k.medium.life == phases::Life::Parked,
+            "not parked at tick {n}"
+        );
+        assert_eq!(plant.pos(), pos, "moved at tick {n}");
+    }
+    assert_eq!(k.faults.mask(), 0);
+}
+
+/// A held shaft inside the band whose load falls inside the friction level
+/// (the level raised past the held current) before the dwell has passed
+/// parks at once, where it is: the band is a free shaft's park region from
+/// the first period.
+#[test]
+fn a_held_shaft_that_loses_its_load_inside_the_band_parks_at_once() {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = stuck_loaded_hold(&sh);
+    let db = sh
+        .table
+        .with(|t| t.config.loop_position.pos_deadband_counts) as i32;
+    let pos = plant.pos();
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = pos + db / 2);
+    // the new goal's profile restarts the dwell
+    for _ in 0..1_000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.medium.near_ticks == 0 {
+            break;
+        }
+    }
+    assert_eq!(k.medium.near_ticks, 0, "precondition: a profile ran");
+    for _ in 0..1_000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.medium.life == phases::Life::Held {
+            break;
+        }
+    }
+    assert!(k.medium.life == phases::Life::Held, "precondition: held");
+    assert!(k.medium.near_ticks < phases::loops::position::HOLD_SETTLE_TICKS / 2);
+    assert_eq!(plant.pos(), pos, "precondition: still");
+    write_config(&sh, |t| t.calib.motor.fric_fc_counts = 1000);
+    run_plant(&mut k, &sh, &mut plant, 2 * DECIM_MED as u32);
+    assert!(k.medium.life == phases::Life::Parked, "not parked");
+    assert!(k.medium.near_ticks < phases::loops::position::HOLD_SETTLE_TICKS);
     for n in 0..20_000 {
         let f = plant.step(k.fast.duty_q15);
         k.on_scan(f, &sh);
         assert!(k.medium.life == phases::Life::Parked, "woke at tick {n}");
-        assert!((plant.pos() - 2000).abs() <= 2 * db, "{}", plant.pos());
+        assert_eq!(plant.pos(), pos, "moved at tick {n}");
     }
     assert_eq!(k.faults.mask(), 0);
 }
@@ -5754,6 +5926,7 @@ fn hold_freezes_and_drains_the_velocity_loop() {
                 k.medium.i_band,
                 &lv,
                 &motor,
+                false,
             );
             assert_ne!(fresh, 0, "the wake must command something");
             assert_eq!(k.medium.i_ref_cc, fresh, "the hold left integrator charge");
@@ -6724,6 +6897,7 @@ fn a_velocity_loop_entered_from_current_mode_carries_no_earlier_charge() {
         k.medium.i_band,
         &lv,
         &motor,
+        false,
     );
     assert_eq!(
         k.medium.i_ref_cc, fresh,

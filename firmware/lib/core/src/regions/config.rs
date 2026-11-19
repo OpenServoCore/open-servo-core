@@ -116,8 +116,9 @@ pub struct ConfigLoopPosition {
     pub p_kp_q88: u16,
     /// Raw counts of the position sensor, scaled by the position table's
     /// local gain into the linearized error. 0 = hold disabled. Hold brakes
-    /// on position rest, and only a shaft whose load estimate sits within
-    /// `fric_fc_counts` (position.rs).
+    /// on position rest a shaft whose load estimate sits within
+    /// `fric_fc_counts`, and keeps a loaded one's current with its velocity
+    /// integral frozen (position.rs).
     pub pos_deadband_counts: u16,
     /// The hard speed limit calibration writes: the position loop's output
     /// and the Velocity goal clamp at it, and Current mode's band folds

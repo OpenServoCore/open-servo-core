@@ -20,6 +20,7 @@ impl Medium {
                         self.i_band,
                         &cfg.loop_velocity,
                         &cfg.motor,
+                        self.life == Life::Held,
                     );
                 }
                 // directional band: an endstop blocks only inward goals;
