@@ -7,6 +7,7 @@
 
 use super::KernelTiming;
 use super::phases::loops::limits;
+use crate::estimator::pot_current::PotGains;
 use crate::estimator::{NtcCfg, ThermCfg, bemf, window};
 use crate::regions::calib::{CalibMotor, CalibThermal, addr as calib_addr};
 use crate::regions::config::{
@@ -56,7 +57,6 @@ pub struct KernelConfig {
     pub thermal: ConfigThermal,
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
-    pub _rsvd_config_tail: [u8; 4],
     pub motor: CalibMotor,
     pub calib_thermal: CalibThermal,
     /// The physics belt: bit `mode as u8` set refuses that mode
@@ -95,6 +95,9 @@ pub struct KernelConfig {
     /// (`window::WindowTerm::conductance`), fenced by the winding; RAIL puts
     /// it on the rail.
     pub g_arr: u32,
+    /// The position reading's current terms' gains, k and the board's
+    /// amps per count folded (`PotGains::new`).
+    pub pot_gains: PotGains,
 }
 
 // The copy is a word copy of the table's bytes: every block sits at its
@@ -119,10 +122,6 @@ const _: () = {
     assert!(offset_of!(KernelConfig, thermal) + s == offset_of!(ControlTable, config.thermal));
     assert!(offset_of!(KernelConfig, fusion) + s == offset_of!(ControlTable, config.fusion));
     assert!(offset_of!(KernelConfig, fault_cfg) + s == offset_of!(ControlTable, config.fault_cfg));
-    assert!(
-        offset_of!(KernelConfig, _rsvd_config_tail) + s
-            == offset_of!(ControlTable, config._rsvd_tail)
-    );
     assert!(offset_of!(KernelConfig, motor) + s == offset_of!(ControlTable, calib.motor));
     assert!(offset_of!(KernelConfig, calib_thermal) + s == offset_of!(ControlTable, calib.thermal));
     assert!(offset_of!(KernelConfig, calib_thermal) + size_of::<CalibThermal>() == 4 * SPAN_WORDS);
@@ -139,7 +138,6 @@ impl KernelConfig {
             thermal: ConfigThermal::new(),
             fusion: ConfigFusion::new(),
             fault_cfg: ConfigFaultCfg::new(),
-            _rsvd_config_tail: [0; 4],
             motor: CalibMotor::new(),
             calib_thermal: CalibThermal::new(),
             belt: belt::KE_UNSET | belt::LIMITS_UNSET,
@@ -155,6 +153,7 @@ impl KernelConfig {
             brush_rc_q12: 0,
             brush_lo_cps: 0,
             g_arr: 0,
+            pot_gains: PotGains { steady: 0, fast: 0 },
         }
     }
 
@@ -179,9 +178,9 @@ impl KernelConfig {
     }
 
     /// The span as the table holds it, then the belt, the two speeds, the
-    /// cap, the brush term, the window term's conductance and the winding
-    /// estimate's config. The caller takes it only between commits.
-    pub(super) fn take(&mut self, shared: &Shared, recip_arr_q24: u32) {
+    /// cap, the brush term, the window term's conductance, the position
+    /// reading's current terms' gains and the winding estimate's config. The caller takes it only between commits.
+    pub(super) fn take(&mut self, shared: &Shared, recip_arr_q24: u32, amps_q17: u32) {
         let src = shared
             .table
             .region_ptr()
@@ -222,6 +221,9 @@ impl KernelConfig {
         self.brush_rc_q12 = bemf::brush_rc_q12(m.r_brush_q12, m.brush_cps, m.r_q12);
         self.brush_lo_cps = m.brush_cps as i32 - bemf::BRUSH_SPAN_CPS;
         self.g_arr = window::WindowTerm::conductance(m.g_window_q016, m.r_q12, recip_arr_q24);
+        let f = &self.fusion;
+        self.pot_gains =
+            PotGains::new(f.pot_steady_counts_per_a, f.pot_fast_counts_per_a, amps_q17);
         let th = &self.calib_thermal;
         // a body node needs both its words: a tau alone is a gain of 0, a
         // gain alone would ride a one-period leak

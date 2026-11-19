@@ -238,14 +238,28 @@ pub const DEFAULT_CUTOFF_CC: i16 = 9000;
 // Reaches the chip in vcounts through `vmotor_counts`.
 pub const DEFAULT_V_UNDERVOLT_MV: u16 = 2900;
 
-/// Fusion observer correction gains.
+/// Fusion observer correction gains, and the position reading's two
+/// current terms ahead of it (`estimator::pot_current`): tuning parameters
+/// for the load at hand, in linearized pot counts per amp of the current
+/// reference, 0 = off.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigFusion {
     pub l1_q016: u16,
     pub l2_q88: u16,
     pub l3_q88: u16,
+    /// Credits a steady push: counts per amp of the current's slow average.
+    #[ct_field(le = POT_COUNTS_PER_A_MAX)]
+    pub pot_steady_counts_per_a: u16,
+    /// Follows a current change: counts per amp of the fast average's lead
+    /// over the slow one.
+    #[ct_field(le = POT_COUNTS_PER_A_MAX)]
+    pub pot_fast_counts_per_a: u16,
 }
+
+/// The bound on both current terms: the observer's arithmetic stays one
+/// i32 under it (`estimator::pot_current`).
+pub const POT_COUNTS_PER_A_MAX: u16 = 2000;
 
 // Observer corrections are not loop gains: at 0 the observer is an open
 // integrator on the shunt current, theta_hat rails within a second of
@@ -311,8 +325,6 @@ pub struct ConfigRegs {
     pub thermal: ConfigThermal,
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
-    #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 4],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.
