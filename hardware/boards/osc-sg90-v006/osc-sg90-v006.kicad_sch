@@ -2865,7 +2865,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "shared:H7133-1_C277537"
+		(symbol "shared:BCT2014ELS33"
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
@@ -2881,7 +2881,7 @@
 					)
 				)
 			)
-			(property "Value" "H7133-1_C277537"
+			(property "Value" "BCT2014ELS33"
 				(at 0 6.35 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -2891,7 +2891,7 @@
 					)
 				)
 			)
-			(property "Footprint" "shared:SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR"
+			(property "Footprint" "Package_SON:Texas_X2SON-4_1x1mm_P0.65mm"
 				(at 0 -10.16 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -2902,7 +2902,7 @@
 					)
 				)
 			)
-			(property "Datasheet" "https://lcsc.com/product-detail/Low-Dropout-Regulators-LDO_Shanghai-Siproin-Microelectronics-H7133-1_C277537.html"
+			(property "Datasheet" "https://www.lcsc.com/product-detail/C2887828.html"
 				(at 0 -12.7 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -2913,7 +2913,7 @@
 					)
 				)
 			)
-			(property "Description" ""
+			(property "Description" "3.3V 300mA LDO, 2.5-15V in, 0.7uA Iq, UTDFN1x1-4L; center pad is NC"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -2924,7 +2924,7 @@
 					)
 				)
 			)
-			(property "LCSC Part" "C277537"
+			(property "LCSC" "C2887828"
 				(at 0 -15.24 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -2935,7 +2935,18 @@
 					)
 				)
 			)
-			(symbol "H7133-1_C277537_0_1"
+			(property "MFPN" "BCT2014ELS33-TR"
+				(at 0 -17.78 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "BCT2014ELS33_0_1"
 				(rectangle
 					(start -7.62 5.08)
 					(end 7.62 -5.08)
@@ -2947,10 +2958,10 @@
 						(type background)
 					)
 				)
-				(pin power_in line
-					(at 0 -7.62 90)
+				(pin power_out line
+					(at 10.16 0 180)
 					(length 2.54)
-					(name "GND"
+					(name "VOUT"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -2965,10 +2976,10 @@
 						)
 					)
 				)
-				(pin power_out line
-					(at 10.16 0 180)
+				(pin power_in line
+					(at 0 -7.62 90)
 					(length 2.54)
-					(name "VOUT"
+					(name "GND"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -2976,6 +2987,24 @@
 						)
 					)
 					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin input line
+					(at -10.16 -2.54 0)
+					(length 2.54)
+					(name "EN"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -2993,7 +3022,25 @@
 							)
 						)
 					)
-					(number "3"
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin no_connect line
+					(at 5.08 -7.62 90)
+					(length 2.54)
+					(name "NC"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "5"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -3909,7 +3956,7 @@
 		(uuid "9ab93a07-5215-4ba1-9abd-1b3d51bfe2e9")
 	)
 	(symbol
-		(lib_id "shared:H7133-1_C277537")
+		(lib_id "shared:BCT2014ELS33")
 		(at 55.88 45.72 0)
 		(unit 1)
 		(body_style 1)
@@ -3929,7 +3976,7 @@
 				)
 			)
 		)
-		(property "Value" "H7133-1_C277537"
+		(property "Value" "BCT2014ELS33"
 			(at 55.88 38.1 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3939,7 +3986,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR"
+		(property "Footprint" "Package_SON:Texas_X2SON-4_1x1mm_P0.65mm"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -3950,7 +3997,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C277537.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2887828.html"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -3961,7 +4008,7 @@
 				)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "3.3V 300mA LDO, 2.5-15V in, 0.7uA Iq, UTDFN1x1-4L; center pad is NC"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -3983,7 +4030,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C277537"
+		(property "LCSC" "C2887828"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -3994,7 +4041,7 @@
 				)
 			)
 		)
-		(property "MFPN" "H7133-1"
+		(property "MFPN" "BCT2014ELS33-TR"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -4006,13 +4053,19 @@
 			)
 		)
 		(pin "1"
-			(uuid "e1314606-ff47-45c1-b30e-32a0ad22b4ef")
+			(uuid "053f840f-7cc0-4001-975f-42ded923bceb")
 		)
 		(pin "2"
-			(uuid "cfb1e7ee-2ac9-43d1-a513-6fa3f303c8d0")
+			(uuid "5914fa8c-7ed5-426c-8009-9165735e5114")
 		)
 		(pin "3"
-			(uuid "ee84a2be-b78c-40bc-8400-4cfaecf1d10c")
+			(uuid "860a2fe9-8729-4439-ab3b-e4c83f704879")
+		)
+		(pin "4"
+			(uuid "b09f452e-0692-49f4-94b4-13780c1ae340")
+		)
+		(pin "5"
+			(uuid "135246d2-1840-4670-aa0e-3f44225779b0")
 		)
 		(instances
 			(project "osc-sg90-v006"
@@ -4025,13 +4078,49 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 45.72) (xy 38.1 45.72)
+			(xy 45.72 45.72) (xy 43.18 45.72)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "1a35e3be-b9e2-47f4-bb33-787d34abbb35")
+		(uuid "45751280-7f95-4b7e-81b7-de5eca984034")
+	)
+	(wire
+		(pts
+			(xy 43.18 45.72) (xy 38.1 45.72)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "cffb5c68-2789-49d3-bfc0-5028c0652638")
+	)
+	(wire
+		(pts
+			(xy 45.72 48.26) (xy 43.18 48.26)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c8f93bfa-e799-40c1-9da1-e6f45c05663e")
+	)
+	(wire
+		(pts
+			(xy 43.18 48.26) (xy 43.18 45.72)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "085fda73-6507-41f0-8945-7d04fe6247f2")
+	)
+	(junction
+		(at 43.18 45.72)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "d2ef28a6-631b-4f1b-b576-be2d8fc902d9")
 	)
 	(wire
 		(pts
@@ -4158,7 +4247,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "1uF"
 			(at 35.56 52.07 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4169,7 +4258,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4180,7 +4269,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C96446.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C52923.html"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4191,7 +4280,7 @@
 				)
 			)
 		)
-		(property "Description" "10uF 25V X5R ±20% 0603 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS"
+		(property "Description" "1uF 25V X5R 0402"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4202,7 +4291,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C96446"
+		(property "LCSC" "C52923"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4213,7 +4302,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL10A106MA8NRNC"
+		(property "MFPN" "CL05A105KA5NQNC"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4462,7 +4551,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "4.7uF"
 			(at 76.2 52.07 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4473,7 +4562,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4484,7 +4573,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C96446.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C6119770.html"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4495,7 +4584,7 @@
 				)
 			)
 		)
-		(property "Description" "10uF 25V X5R ±20% 0603 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS"
+		(property "Description" "4.7uF 10V X5R 0402"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4506,7 +4595,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C96446"
+		(property "LCSC" "C6119770"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4517,7 +4606,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL10A106MA8NRNC"
+		(property "MFPN" "CGA0402X5R475M100GT"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -12395,7 +12484,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 43.18 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12406,7 +12495,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C96446.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C15525.html"
 			(at 43.18 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12417,7 +12506,7 @@
 				)
 			)
 		)
-		(property "Description" "10uF 25V X5R 20% 0603"
+		(property "Description" "10uF 6.3V X5R 0402"
 			(at 43.18 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12428,7 +12517,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C96446"
+		(property "LCSC" "C15525"
 			(at 43.18 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12439,7 +12528,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL10A106MA8NRNC"
+		(property "MFPN" "CL05A106MQ5NUNC"
 			(at 43.18 223.52 0)
 			(hide yes)
 			(show_name no)
