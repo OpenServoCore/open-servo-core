@@ -57,7 +57,7 @@ pub mod config {
     pub const L3_Q88: Reg = reg(0x006e, 2);
     /// The rail fold's slope, counts of ceiling per vcount of rail over
     /// `V_UNDERVOLT_COUNTS`, Q8; 0 = off.
-    pub const RAIL_FOLD_Q8: Reg = reg(0x007a, 2);
+    pub const RAIL_FOLD_Q8: Reg = reg(0x007e, 2);
 }
 
 pub mod calib {

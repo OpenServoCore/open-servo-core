@@ -212,6 +212,7 @@ mod tests {
                 l1_q016: 16384,
                 l2_q88: 1024,
                 l3_q88,
+                ..ConfigFusion::new()
             },
             motor: CalibMotor {
                 b_i_q313,
@@ -379,6 +380,7 @@ mod tests {
                 l1_q016: u16::MAX,
                 l2_q88: u16::MAX,
                 l3_q88: u16::MAX,
+                ..ConfigFusion::new()
             },
             motor: CalibMotor {
                 b_i_q313: u16::MAX,

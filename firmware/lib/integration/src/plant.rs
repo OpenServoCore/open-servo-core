@@ -8,7 +8,7 @@
 
 use crate::sim::DEV_V006_SENSE;
 use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
-use osc_servo_core::estimator::window;
+use osc_servo_core::estimator::{pot_current, window};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
@@ -69,6 +69,11 @@ pub const TIMING: KernelTiming = KernelTiming {
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
     brush_dev_max: bemf::brush_dev_max(
+        DEV_V006_SENSE.shunt_r_mohm,
+        DEV_V006_SENSE.gain_milli,
+        DEV_V006_SENSE.vdd_mv,
+    ),
+    amps_per_count_q17: pot_current::amps_per_count_q17(
         DEV_V006_SENSE.shunt_r_mohm,
         DEV_V006_SENSE.gain_milli,
         DEV_V006_SENSE.vdd_mv,

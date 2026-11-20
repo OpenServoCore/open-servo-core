@@ -396,6 +396,28 @@ The measurement source is whatever the best position sensor is. Swapping sensors
 
 What this observer owns is worth listing, because it is not everything. It owns $\hat\theta$, which the position loop closes on. It owns $\hat\tau_d$, so contact detection, the collision trip and the position hold's park read it. And it owns its own $\hat\omega$ for every decision that is shaped around rest rather than around speed: the press detector pairs held current above `i_cont` with $|\hat\omega|$ under a threshold. That estimate is always there and it reads small at rest, and rest is exactly where the back-EMF has no drive window to measure in. The velocity loop closes on this estimate plus the back-EMF's fast part, below.
 
+#### The Output Gear's Push on the Pot
+
+On a servo whose output gear rides on the pot shaft, the gear's side force moves the shaft, and the pot reads that as rotation. The force follows the motor's torque. Near a hold where the torque reverses, the loop chases a reading that moves with its own current, and the shaft shakes at several hertz. Two terms on the current reference correct the reading before it reaches the observer (kernel sec 2.2). The steady term, on the reference's slow average, credits a steady push. The fast term, on how far the fast average leads the slow one, follows current changes and returns to zero as the slow average catches up; through the observer's speed estimate the loop feels it as damping.
+
+How far the shaft moves per amp depends on the load the servo carries: k_fast mostly on its inertia, k_steady on the torque it holds. So both are **tuning parameters**, set by the user for the application: CONFIG `pot_steady_counts_per_a` (k_steady) and `pot_fast_counts_per_a` (k_fast), in linearized pot counts per amp of the current reference, 0 to 2000. Both default to 0, where the reading is the pot's and the servo behaves as without them. The firmware converts amps through the board's own sense chain, so a value carries to a board with another shunt. Neither is under the plant stamp, and identification never writes them.
+
+Tuning, with the servo holding its working load:
+
+1. Raise k_fast from 0 until landings near the position where the load needs no torque settle within about half a second. Stop before holds sag or a slow 3-5 Hz sway appears.
+2. Then raise k_steady until late breakaway jumps stop.
+
+Both trade away some small-step arrival: the steady term reads a push into a shaft that has not moved yet as motion, so a small step can stop short of its goal.
+
+Reference data from one MG90 bench rig, an arm weighted with US quarters, as a place to start and not a value for another load:
+
+| Load | Hold shake with both terms 0 | k_steady | k_fast |
+| --- | --- | --- | --- |
+| light arm, 20 quarters | 13.3 Hz | 110 | 440 |
+| heavy arm, 44 quarters | 9.3 Hz | 330 | 220 |
+
+The values sized for the light arm left a 4 Hz sway on the heavy one.
+
 ### Which Velocity the Loop Closes On
 
 ![omega blend](control/omega-blend.svg)

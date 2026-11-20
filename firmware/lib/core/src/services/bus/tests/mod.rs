@@ -445,6 +445,31 @@ fn a_brush_resistance_over_the_winding_is_refused() {
     assert_eq!((m.r_q12, m.r_brush_q12, m.brush_cps), (5000, 5000, 2540));
 }
 
+/// The position reading's current terms take their bound and refuse a
+/// value over it, leaving the stored one.
+#[test]
+fn the_current_terms_are_refused_over_their_bound() {
+    use crate::regions::config::POT_COUNTS_PER_A_MAX;
+    use crate::regions::config::addr::fusion::{POT_FAST_COUNTS_PER_A, POT_STEADY_COUNTS_PER_A};
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut go = |addr, data: &[u8]| go(&shared, &mut staged, write(addr, data, false), true);
+    for addr in [POT_STEADY_COUNTS_PER_A, POT_FAST_COUNTS_PER_A] {
+        for (x, want) in [
+            (POT_COUNTS_PER_A_MAX, ResultCode::Ok),
+            (POT_COUNTS_PER_A_MAX + 1, ResultCode::Validation),
+            (u16::MAX, ResultCode::Validation),
+        ] {
+            assert_eq!(go(addr, &x.to_le_bytes()).last().result, want, "{addr} {x}");
+        }
+    }
+    let f = shared.table.with(|t| t.config.fusion);
+    assert_eq!(
+        (f.pot_steady_counts_per_a, f.pot_fast_counts_per_a),
+        (POT_COUNTS_PER_A_MAX, POT_COUNTS_PER_A_MAX)
+    );
+}
+
 /// osc separates write from persistence (sec 9.4): config writes are never
 /// torque-gated -- only MGMT SAVE is.
 #[test]

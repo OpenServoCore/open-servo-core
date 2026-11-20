@@ -587,6 +587,14 @@ Durations the kernel times are counts as well: `stall_time_ticks` and
 `pos_error_time_ticks` (u32) are kernel ticks at CALIB `tick_hz`, and a
 host converts milliseconds with it.
 
+One pair is per amp instead: the position reading's current terms
+`pot_steady_counts_per_a` and `pot_fast_counts_per_a` are linearized
+pot counts per amp of the current reference, tuning parameters a user
+sets for the load (kernel sec 2.2), so a value tuned on one servo carries
+to a board with another shunt. The servo converts through its own sense
+chain with a reciprocal fixed at build time, one multiply per sample and
+no divide.
+
 Servo-side conversion would spend scarce cycles on a divide-free chip
 to produce numbers the servo itself never consumes; counts keep the
 loop math native and the calibration honest. It is also the established
@@ -975,7 +983,8 @@ point, slope and curvature, and the gear class in CALIB. The points are the posi
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
 (current, thermal, undervolt, `duty_max_q15`), the move speed
-`velocity_limit_cps` (a user setting, sec 5.8), the raw sensor screen,
+`velocity_limit_cps` (a user setting, sec 5.8), the position reading's
+current terms (tuning parameters, sec 5.5), the raw sensor screen,
 the ADC wide-code map, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,

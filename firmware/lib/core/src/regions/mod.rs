@@ -444,6 +444,41 @@ mod tests {
         );
     }
 
+    /// The position reading's current terms close the fusion block, ahead
+    /// of the fault thresholds, which run to the region's end; both export
+    /// their bound and stay outside the plant stamp, as tuning parameters.
+    #[test]
+    fn config_current_terms_close_the_fusion_block() {
+        use super::config::addr::{fault_cfg, fusion};
+        use super::config::{ConfigRegs, POT_COUNTS_PER_A_MAX};
+        assert_eq!(fusion::L3_Q88, 0x06E);
+        assert_eq!(
+            [
+                fusion::POT_STEADY_COUNTS_PER_A,
+                fusion::POT_FAST_COUNTS_PER_A
+            ],
+            [0x070, 0x072]
+        );
+        assert_eq!(fault_cfg::POS_ERROR_TIME_TICKS, 0x074);
+        assert_eq!(fault_cfg::RAIL_FOLD_Q8 + 2, super::CALIB_BASE_ADDR);
+        assert_eq!(
+            core::mem::size_of::<ConfigRegs>(),
+            super::CONFIG_REGION_SIZE as usize
+        );
+        let f = ControlTable::FIELDS;
+        for name in ["pot_steady_counts_per_a", "pot_fast_counts_per_a"] {
+            let d = f.iter().find(|d| d.name == name).unwrap();
+            assert!(d.writable, "{name}");
+            assert_eq!(d.kind, FieldKind::UInt, "{name}");
+            assert_eq!(
+                (d.min, d.max),
+                (None, Some(POT_COUNTS_PER_A_MAX as i32)),
+                "{name}"
+            );
+            assert!(!crate::stamp::COVERED_NAMES.contains(&name), "{name}");
+        }
+    }
+
     /// The burst block is an ABI pin: it stays put behind the two reserved
     /// bytes `boot_mode` left, two-byte aligned without repr(C) inserting
     /// invisible padding.

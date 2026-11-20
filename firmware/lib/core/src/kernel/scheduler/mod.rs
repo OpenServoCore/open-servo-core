@@ -59,6 +59,10 @@ pub struct KernelTiming {
     /// `bemf::BRUSH_DEV_MA` through the board's sense chain
     /// (`bemf::brush_dev_max`), within `bemf::brush_dev_max_fits`.
     pub brush_dev_max: i32,
+    /// Amps per current count, Q17, the position reading's current terms'
+    /// unit: the board's sense chain (`pot_current::amps_per_count_q17`),
+    /// within `pot_current::amps_fits`.
+    pub amps_per_count_q17: u32,
 }
 
 /// Runs in the ADC ISR on the injected group's end (PFIC HIGH, above the
@@ -132,7 +136,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.config_seq = shared.config_seq();
         // the count load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
-        self.cfg.take(shared, self.timing.recip_arr_q24);
+        self.cfg.take(
+            shared,
+            self.timing.recip_arr_q24,
+            self.timing.amps_per_count_q17,
+        );
         #[cfg(not(feature = "experiment"))]
         self.medium.r_hat(&self.cfg, shared, &mut self.cmd);
         let p = shared.table.region_ptr();

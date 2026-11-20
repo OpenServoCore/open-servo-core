@@ -7,6 +7,7 @@ pub use board_wiring::{
 pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
+use osc_servo_core::estimator::pot_current;
 use osc_servo_core::estimator::window::WINDOW_ARR_MIN;
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::regions::config::{
@@ -79,6 +80,11 @@ impl Precomputed {
                     cfg.wiring.current_sense.gain_milli,
                     cfg.calibration.vdd_mv,
                 ),
+                amps_per_count_q17: pot_current::amps_per_count_q17(
+                    cfg.calibration.shunt_r_mohm,
+                    cfg.wiring.current_sense.gain_milli,
+                    cfg.calibration.vdd_mv,
+                ),
             },
             current_defaults: CurrentDefaults::from_sense(
                 cfg.calibration.shunt_r_mohm,
@@ -119,11 +125,16 @@ impl Precomputed {
 
 impl Precomputed {
     /// The board's brush term bound keeps the half's product one i32
-    /// multiply (`bemf::brush_dev_max_fits`), and the PWM period keeps the
-    /// window term's conductance per tick one u32 (`WINDOW_ARR_MIN`).
+    /// multiply (`bemf::brush_dev_max_fits`), its amps per count the
+    /// position reading's current terms (`pot_current::amps_fits`), and the
+    /// PWM period keeps the window term's conductance per tick one u32
+    /// (`WINDOW_ARR_MIN`).
     pub const fn assert_valid(&self) {
         if !bemf::brush_dev_max_fits(self.kernel_timing.brush_dev_max) {
             panic!("Precomputed: the sense chain's brush bound overflows the half's product");
+        }
+        if !pot_current::amps_fits(self.kernel_timing.amps_per_count_q17) {
+            panic!("Precomputed: the sense chain's amps per count overflow the reading's terms");
         }
         if self.kernel_timing.pwm_arr < WINDOW_ARR_MIN {
             panic!("Precomputed: the PWM period overflows the window term's conductance");

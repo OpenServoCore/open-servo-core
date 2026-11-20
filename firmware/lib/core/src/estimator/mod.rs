@@ -6,6 +6,7 @@ pub mod bias;
 pub mod fusion;
 #[cfg(not(feature = "experiment"))]
 pub mod omega_blend;
+pub mod pot_current;
 pub mod thermal;
 #[cfg(not(feature = "experiment"))]
 pub mod vbus;
@@ -17,6 +18,7 @@ pub use bias::BiasTracker;
 pub use fusion::FusionObs;
 #[cfg(not(feature = "experiment"))]
 pub use omega_blend::OmegaBlend;
+pub use pot_current::PotCurrent;
 pub use thermal::{NtcCfg, ThermCfg, WindingTherm};
 #[cfg(not(feature = "experiment"))]
 pub use vbus::VbusEst;

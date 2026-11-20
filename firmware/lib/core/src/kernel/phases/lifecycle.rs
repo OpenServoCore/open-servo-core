@@ -11,8 +11,8 @@
 //! | --- | --- | --- |
 //! | boot | first tick | all at rest; the shunt zero at the install's rest reading, the observer at the first sample |
 //! | enable edge (`torque_enable` 0 -> 1) | CONTROL (`admit`) | latch, OC count, detectors, the limits' stall, yield and pending: acknowledged |
-//! | run on | CONTROL | current integral, reference, velocity integral, blend, position loop output: 0; limiter at the floor; observer at the sample, or at rest on an in-band goal; profile at rest at the goal or the estimate; Run |
-//! | run off | CONTROL | current integral, reference, velocity integral, blend, position loop output: 0; limiter at the floor; Off |
+//! | run on | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output: 0; limiter at the floor; observer at the sample, or at rest on an in-band goal; profile at rest at the goal or the estimate; Run |
+//! | run off | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output: 0; limiter at the floor; Off |
 //! | mode change under run | CONTROL | limiter at the floor; Run. Between Velocity and Position: profile at the estimate, its speed kept. Otherwise: profile at rest at the estimate, velocity integral 0. From OpenLoop: current integral at the applied volts, reference at the held current inside the band, the dropped-pulse gate on OpenLoop's last width |
 //! | park in | TRAJECTORY | Parked; every parked period at VELOCITY: reference, velocity integral, blend 0 |
 //! | park out | TRAJECTORY | Run, or Held under a load |
@@ -101,6 +101,7 @@ impl Medium {
         fast.reset_current_loop();
         self.vel.reset();
         self.omega_blend.reset();
+        self.pot_current.reset();
         fast.reset_limiter(cfg.ol_floor_q15);
         self.i_ref_cc = 0;
         self.omega_ref_q16 = 0;

@@ -5,7 +5,8 @@ use crate::regions::control::Mode;
 
 impl Medium {
     /// VELOCITY: the current reference, which lands in the command with
-    /// the band and the base duty.
+    /// the band and the base duty, and the position reading's current
+    /// terms on it for the next OBSERVER.
     pub(in crate::kernel) fn velocity(&mut self, cfg: &KernelConfig, cmd: &mut Command) {
         if self.life != Life::Off {
             let life = &self.ctl.life;
@@ -32,5 +33,7 @@ impl Medium {
         cmd.i_ref_cc = self.i_ref_cc;
         cmd.band = self.i_band;
         cmd.ol_base_q15 = self.ol_base_q15;
+        // every period, on whatever reference this one leaves
+        self.pot_current.step(self.i_ref_cc, &cfg.pot_gains);
     }
 }

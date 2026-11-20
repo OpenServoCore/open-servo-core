@@ -7,7 +7,7 @@ use super::phases::fast;
 use super::phases::loops::{self, duty_limit, faults, limits};
 use super::*;
 use crate::budget::Events;
-use crate::estimator::{FusionObs, OmegaBlend, bemf, bias, omega_blend, window};
+use crate::estimator::{FusionObs, OmegaBlend, bemf, bias, omega_blend, pot_current, window};
 use crate::math::q_mul;
 use crate::regions::config::{StallResponse, ms_ticks};
 use crate::regions::control::Mode;
@@ -35,6 +35,7 @@ const TIMING: KernelTiming = KernelTiming {
     i_settle_gain: window::SettleGain::UNITY,
     // the development board's sense chain
     brush_dev_max: bemf::brush_dev_max(60, 14_884, 3300),
+    amps_per_count_q17: pot_current::amps_per_count_q17(60, 14_884, 3300),
 };
 
 struct FakeSensors;
@@ -5238,6 +5239,205 @@ fn observer_measures_what_pos_q4_reads() {
             assert_eq!(k.medium.fusion.omega_q16(), 0, "live {live} raw {raw}");
         }
     }
+}
+
+// --- The position reading's current terms ---------------------------------
+
+/// Half an amp through the development board's sense chain
+/// (`current_counts(500, 60, 14_884, 3300)`).
+const HALF_AMP_CC: i32 = 554;
+
+/// The development board's counts per amp, unrounded.
+const CC_PER_A: f64 = 14_884.0 * 60.0 * 4096.0 / 3_300_000.0;
+
+/// A booted kernel, torque off, with the observer's gains and the two
+/// current terms written.
+fn pot_current_rig(sh: &Shared, steady: u16, fast: u16) -> Kernel<FakeIo> {
+    sh.table.with_mut(|t| {
+        t.config.fusion.l1_q016 = 1 << 14;
+        t.config.fusion.l2_q88 = 1 << 8;
+        t.config.fusion.pot_steady_counts_per_a = steady;
+        t.config.fusion.pot_fast_counts_per_a = fast;
+    });
+    let mut k = kernel();
+    ticks(&mut k, sh, frame(2000, BIAS), 4 * DECIM_MED as u32);
+    k
+}
+
+/// `n` VELOCITY steps of the terms on `i_ref`, then the reading's shift
+/// off the pot, Q4.
+fn shift_after(k: &mut Kernel<FakeIo>, sh: &Shared, i_ref: i32, n: u32) -> i32 {
+    k.medium.i_ref_cc = i_ref;
+    for _ in 0..n {
+        k.medium.pot_current.step(i_ref, &k.cfg.pot_gains);
+    }
+    k.medium.reading(2000, sh).0 as i32 - phases::pos_q4(sh, false, 2000) as i32
+}
+
+/// `k` counts per amp at `i_ref` current counts, Q4.
+fn counts_q4(k: u16, i_ref: i32) -> f64 {
+    k as f64 * i_ref as f64 / CC_PER_A * 16.0
+}
+
+/// Both terms at 0: the observer's measurement is `pos_q4`'s, bit for
+/// bit, on every code under every reference the band allows.
+#[test]
+fn the_current_terms_at_zero_leave_the_reading_alone() {
+    let sh = Shared::new();
+    let mut k = pot_current_rig(&sh, 0, 0);
+    let lim = u16::MAX as i32;
+    for i_ref in [0, 1, -1, HALF_AMP_CC, -HALF_AMP_CC, 1200, lim, -lim] {
+        k.medium.pot_current.step(i_ref, &k.cfg.pot_gains);
+        for raw in 0..=4095u16 {
+            assert_eq!(
+                k.medium.reading(raw, &sh),
+                phases::pos_q4_band_gain(&sh, false, raw),
+                "i_ref {i_ref} raw {raw}"
+            );
+        }
+    }
+}
+
+/// The steady term alone: a held current shifts the reading by the term
+/// times the current, either sign, within one count.
+#[test]
+fn the_steady_term_reads_its_gain_times_a_held_current() {
+    for i_ref in [HALF_AMP_CC, -HALF_AMP_CC] {
+        let sh = Shared::new();
+        let mut k = pot_current_rig(&sh, 440, 0);
+        let got = shift_after(&mut k, &sh, i_ref, 4096);
+        let want = counts_q4(440, i_ref);
+        assert!(
+            (got as f64 - want).abs() <= 16.0,
+            "{i_ref}: {got} vs {want}"
+        );
+    }
+}
+
+/// The fast term alone: a step of the current moves the reading at once,
+/// by more than half the term times the step at its peak, and the reading
+/// returns to the pot as the slow average catches up.
+#[test]
+fn the_fast_term_follows_a_current_step_and_returns_to_the_pot() {
+    let sh = Shared::new();
+    let mut k = pot_current_rig(&sh, 0, 440);
+    let full = counts_q4(440, HALF_AMP_CC);
+    let first = shift_after(&mut k, &sh, HALF_AMP_CC, 1);
+    assert!(first > 0, "{first}");
+    let peak = (0..128)
+        .map(|_| shift_after(&mut k, &sh, HALF_AMP_CC, 1))
+        .max()
+        .unwrap();
+    assert!(peak as f64 > full / 2.0, "{peak} vs {full}");
+    let rest = shift_after(&mut k, &sh, HALF_AMP_CC, 4096);
+    assert!(rest.abs() <= 16, "{rest}");
+}
+
+/// The corrected reading saturates at both ends of its range.
+#[test]
+fn the_corrected_reading_saturates_at_its_ends() {
+    let lim = u16::MAX as i32;
+    let sh = Shared::new();
+    let mut k = pot_current_rig(&sh, 2000, 2000);
+    for _ in 0..4096 {
+        k.medium.pot_current.step(lim, &k.cfg.pot_gains);
+        assert_eq!(k.medium.reading(4095, &sh).0, u16::MAX);
+    }
+    for _ in 0..4096 {
+        k.medium.pot_current.step(-lim, &k.cfg.pot_gains);
+    }
+    assert_eq!(k.medium.reading(0, &sh).0, 0);
+}
+
+/// The observer innovates on the corrected reading: seeded there, one
+/// step on the same sample leaves the estimate where it was.
+#[test]
+fn the_observer_measures_the_corrected_reading() {
+    let sh = Shared::new();
+    let mut k = pot_current_rig(&sh, 440, 0);
+    let shift = shift_after(&mut k, &sh, HALF_AMP_CC, 4096);
+    assert!(shift > 0);
+    let pos = (phases::pos_q4(&sh, false, 2000) as i32 + shift) as u16;
+    k.medium.fusion.seed(pos);
+    k.medium.observe(2000, &k.cfg, &sh, &k.fast);
+    assert_eq!(k.medium.fusion.theta_q16(), FusionObs::seed_theta_q16(pos));
+    assert_eq!(k.medium.fusion.omega_q16(), 0);
+}
+
+/// The term OBSERVER adds at period n is built from the references
+/// VELOCITY left at periods up to n - 1, one step a period: a reference
+/// model fed each VELOCITY's reference matches the kernel's term ahead of
+/// every OBSERVER, OBSERVER leaves the term as it found it, and its
+/// reading is the pot with the model's term on it.
+#[test]
+fn the_observer_takes_the_term_the_last_velocity_built() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.config.fusion.pot_steady_counts_per_a = 330;
+        t.config.fusion.pot_fast_counts_per_a = 440;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.torque_enable = true;
+    });
+    let mut k = kernel();
+    let mut model = pot_current::PotCurrent::new();
+    let f = frame(2000, BIAS);
+    let (mut last, mut moved) = (0, 0u32);
+    for period in 0..400i32 {
+        let goal = ((period * 37) % 601 - 300) as i16;
+        sh.table
+            .with_mut(|t| t.control.lifecycle.goal_current = goal);
+        for _ in 0..DECIM_MED {
+            let p = k.phase;
+            if p == phase::OBSERVER {
+                assert_eq!(k.medium.pot_current.term_q4(), model.term_q4(), "{period}");
+                let pot = phases::pos_q4(&sh, false, f.pos);
+                assert_eq!(k.medium.reading(f.pos, &sh).0, model.reading(pot));
+            }
+            k.on_scan(f, &sh);
+            if p == phase::OBSERVER {
+                assert_eq!(k.medium.pot_current.term_q4(), model.term_q4(), "{period}");
+            }
+            if p == phase::VELOCITY {
+                model.step(k.medium.i_ref_cc, &k.cfg.pot_gains);
+                moved += (k.medium.i_ref_cc != last) as u32;
+                last = k.medium.i_ref_cc;
+            }
+        }
+    }
+    assert_eq!(k.faults.mask(), 0);
+    assert!(moved > 300, "the reference moved {moved} times");
+    assert_ne!(model.term_q4(), 0);
+}
+
+/// The torque edge clears the stored term and both averages with the
+/// reference: the OBSERVER after torque off reads the pot, and so does
+/// every one after it, not a decaying push.
+#[test]
+fn the_torque_edge_clears_the_current_terms() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.config.fusion.pot_steady_counts_per_a = 440;
+        t.config.fusion.pot_fast_counts_per_a = 440;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = HALF_AMP_CC as i16;
+        t.control.lifecycle.torque_enable = true;
+    });
+    let f = frame(2000, BIAS);
+    let mut k = kernel();
+    ticks(&mut k, &sh, f, 400 * DECIM_MED as u32);
+    assert!(k.medium.i_ref_cc > 0, "{}", k.medium.i_ref_cc);
+    assert_ne!(k.medium.pot_current.term_q4(), 0);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_scan(f, &sh);
+    assert_eq!(k.medium.i_ref_cc, 0);
+    assert_eq!(k.medium.pot_current.term_q4(), 0);
+    run_to(&mut k, &sh, f, phase::SPEED);
+    assert_eq!(k.medium.pot_current.term_q4(), 0);
+    assert_eq!(shift_after(&mut k, &sh, 0, 0), 0);
 }
 
 /// What a held OpenLoop drive publishes from `f` under `map`: the held

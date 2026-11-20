@@ -386,36 +386,52 @@
       "kind": "uint"
     },
     {
-      "name": "pos_error_time_ticks",
+      "name": "pot_steady_counts_per_a",
       "addr": 112,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 2000
+    },
+    {
+      "name": "pot_fast_counts_per_a",
+      "addr": 114,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 2000
+    },
+    {
+      "name": "pos_error_time_ticks",
+      "addr": 116,
       "width": 4,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "pos_error_counts",
-      "addr": 116,
+      "addr": 120,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "sensor_delta_max",
-      "addr": 118,
+      "addr": 122,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "sensor_bad_count",
-      "addr": 120,
+      "addr": 124,
       "width": 1,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "rail_fold_q8",
-      "addr": 122,
+      "addr": 126,
       "width": 2,
       "access": "rw",
       "kind": "uint"

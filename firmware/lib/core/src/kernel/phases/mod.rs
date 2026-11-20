@@ -59,7 +59,7 @@ use super::{DECIM_SLOW, KernelTiming};
 #[cfg(not(feature = "experiment"))]
 use crate::Shared;
 #[cfg(not(feature = "experiment"))]
-use crate::estimator::{FusionObs, OmegaBlend, VbusEst, WindingTherm};
+use crate::estimator::{FusionObs, OmegaBlend, PotCurrent, VbusEst, WindingTherm};
 #[cfg(not(feature = "experiment"))]
 use crate::pos_lut;
 #[cfg(not(feature = "experiment"))]
@@ -114,6 +114,9 @@ pub(in crate::kernel) struct Medium {
     pub(in crate::kernel) life: Life,
     pub(in crate::kernel) traj: TrajGen,
     pub(in crate::kernel) fusion: FusionObs,
+    /// The current reference's averages and the term the observer's
+    /// reading carries: stepped at VELOCITY, read at the next OBSERVER.
+    pub(in crate::kernel) pot_current: PotCurrent,
     /// The velocity loop's speed, from the observer phase: the observer's
     /// plus the blend's lead.
     pub(in crate::kernel) omega_hat: i32,
@@ -177,6 +180,7 @@ impl Medium {
             life: Life::Off,
             traj: TrajGen::new(),
             fusion: FusionObs::new(),
+            pot_current: PotCurrent::new(),
             omega_hat: 0,
             omega_bemf: None,
             band_gain_q4: pos_lut::GRID as u16,

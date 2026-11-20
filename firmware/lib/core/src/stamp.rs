@@ -10,6 +10,7 @@
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep
 //! no second list. Not covered: identity and comms, the user-owned safety
 //! limits (current, thermal, undervolt, `duty_max_q15`), the move speed,
+//! the position reading's current terms (tuning parameters),
 //! the raw sensor screen, and the RO board facts install re-seeds.
 //!
 //! The LUT hashes as its 256 points LE, zeros while no table is live: a LUT
