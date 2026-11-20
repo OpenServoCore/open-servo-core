@@ -913,7 +913,16 @@ newly-latched kind (`fault_code`, `0x221`):
 
 Code 8 is unassigned. Any set bit forces the drive off; the
 `torque_enable` 0 to 1 edge is the only acknowledgement, and a
-still-present condition re-latches at once. Besides the raw pot screen,
+still-present condition re-latches at once. `position_error` latches in
+Position when the profile's lead over the observer stays past
+`pos_error_counts` for `pos_error_time_ticks`. The timer does not count
+while the press fold is latched under `stall_response` Yield (`YIELD`,
+sec 5.8): the fold sags the shaft on purpose, so the servo holds at
+`i_cont_counts` instead of turning the drive off, and the timer starts
+over, so once the fold releases the error gets the whole time at full
+torque (DES
+`a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back`,
+`a_hold_capped_under_the_rating_latches_position_error`). Besides the raw pot screen,
 `sensor` latches when the crest scan a tick waits for never lands, and
 the tick writes the drive off (osc-servo-kernel sec 2.3).
 The kernel reads `torque_enable`, `mode` and the goals once per medium
@@ -945,16 +954,21 @@ closed loop, and the soft-limit walls with it: the walls judge a current
 by its sign, so past a limit they close the side that would bring the
 shaft back. In Position and Velocity the loop drives the shaft away from
 its goal and through the soft limit toward the hard stop, at the current
-limit, until a timer acts. In Position that is `position_error`,
-`pos_error_time_ticks` after the error passed `pos_error_counts`, on the
-stop or short of it, and the drive goes off. In Velocity it is the
-press's verdict on the stop, `stall_time_ticks` after the observer reads
-the shaft still (sec 5.8): `stall` under `stall_response` Fault, and the
-drive goes off; under Yield the fold to `i_cont_counts`, which the servo
-then holds against the stop. DES
+limit, until a timer acts. In Velocity it is the press's verdict on
+the stop, `stall_time_ticks` after the observer reads the shaft still
+(sec 5.8): `stall` under `stall_response` Fault, and the drive goes off;
+under Yield the fold to `i_cont_counts`, which the servo then holds
+against the stop. In Position the position error timer runs too, from
+the error passing `pos_error_counts`, early in the run. When it ends
+before the press's verdict, as it does whenever `pos_error_time_ticks`
+is under the run plus `stall_time_ticks` on the stop, `position_error`
+latches on the stop or short of it and the drive goes off, under either
+response. Under Yield a fold that comes first stops the timer, and the
+servo holds against the stop at `i_cont_counts`, as in Velocity. DES
 `a_reversed_motor_runs_to_its_stop_and_a_timer_latches` has the travel,
 the times and the currents on the bench MG90's plant, `stall_response`
-Fault. In OpenLoop and Current the drive is the host's: the shaft runs
+Fault; `a_reversed_motor_under_yield_holds_its_stop_once_folded` has
+Yield at a 500 ms and a 2 s timer. In OpenLoop and Current the drive is the host's: the shaft runs
 to the stop the same way, and the press's rule applies there as at any
 stop. The host's direction nudge before it closes a loop (`osc cal`,
 `osc ident`, the bench harness) catches leads swapped at assembly.
@@ -1318,7 +1332,13 @@ every medium tick (2 kHz), torque on or off.
 Bits 6 and 7 name the ceiling that binds before the press fold: neither
 set means the peak cap does, and a tie sets both. The press trigger is the held current over `i_cont_counts` on
 a still shaft, not bit 0, so bit 0 alone on a still shaft under
-`i_cont_counts` is a hold the loop is content with. The permit drops
+`i_cont_counts` is a hold the loop is content with. While bit 1 is
+set in Position the position error timer does not count (sec 5.7): a
+load over `i_cont_counts` sags the shaft to where the fold meets it,
+past `pos_error_counts` if need be, with the drive on and the bit set,
+and the shaft climbs back when the load lightens. Under Fault the
+verdict latches `stall` instead (DES
+`a_hold_over_the_rating_latches_stall_under_fault`). The permit drops
 the fold and the endstop, so bit 3 never appears with bits 1 or 2, and
 it drops no ceiling, so it does appear with bits 6 and 7 (unit
 `limit_flags_name_the_governor`). Bit 4 is never set in Position,

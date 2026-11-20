@@ -55,7 +55,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
 | 3 | LIMITS | limits fold, Current mode's speed fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land; the reading's current terms on the reference |
-| 5 | RAIL | rail estimate and its fold, sensor screen, position error timer, the window term on the rail |
+| 5 | RAIL | rail estimate and its fold, sensor screen, position error timer, at zero while the press fold is latched under Yield, as this period's LIMITS left it (`a_wall_held_under_yield_never_latches_position_error`, `a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back`), the window term on the rail |
 | 6 | SLOW | the slow block's due stage when due; its finish one period later, with the shunt zero's aging step |
 | 7 | PUBLISH | the shunt zero's sample; estimates, mode, limits and sensors publish; tick-load close |
 | 8 | SPARE_A | configuration take after a commit |

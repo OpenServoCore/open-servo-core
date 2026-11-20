@@ -42,6 +42,8 @@ impl Medium {
             faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
         }
         // tracking-error persistence: only meaningful with a live profile
+        // at full torque. A latched yield sags by design and restarts the
+        // timer, so the error gets the whole time once the fold releases.
         let pos_err_over = self.life != Life::Off
             && self.ctl.life.mode == Mode::Position
             && self
@@ -49,7 +51,8 @@ impl Medium {
                 .theta_star_q16()
                 .saturating_sub(self.fusion.theta_q16())
                 .unsigned_abs()
-                > (fault_cfg.pos_error_counts as u32) << 16;
+                > (fault_cfg.pos_error_counts as u32) << 16
+            && !self.limits.stalled();
         if self
             .det
             .pos_err_sample(pos_err_over, fault_cfg.pos_error_time_ticks)

@@ -4806,6 +4806,30 @@ fn hard_wall_stall_yields() {
     assert_eq!(k.faults.mask(), 0, "Yield never latches");
 }
 
+/// The same wall with the position error check live: the profile's lead
+/// passes `pos_error_counts` early in the run, but the fold lands inside
+/// the timer's 500 ms and the timer does not run while it is latched, so
+/// the wall is held with no fault for the whole 1.2 s.
+#[test]
+fn a_wall_held_under_yield_never_latches_position_error() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 3500;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(500);
+    plant.frozen = true;
+    let mut folded = false;
+    for n in 0..24_000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        folded |= k.medium.limits.stalled();
+        assert_eq!(k.faults.mask(), 0, "tick {n}");
+    }
+    assert!(folded, "the press never folded");
+}
+
 #[test]
 fn hard_wall_stall_faults() {
     let sh = Shared::new();
