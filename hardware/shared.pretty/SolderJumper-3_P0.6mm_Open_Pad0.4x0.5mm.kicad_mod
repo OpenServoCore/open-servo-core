@@ -1,0 +1,108 @@
+(footprint "SolderJumper-3_P0.6mm_Open_Pad0.4x0.5mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Open 3-pad solder jumper, pads 0.4x0.5mm, 0.2mm gaps, one mask opening, no paste; bridge 1-2 or 2-3 by hand under magnification")
+	(tags "solder jumper open 3")
+	(property "Reference" "JP**"
+		(at 0 -0.85 0)
+		(layer "F.Fab")
+		(uuid "b49e0ae9-fc07-41d7-a781-6b93617f83a8")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Value" "SolderJumper-3_P0.6mm_Open_Pad0.4x0.5mm"
+		(at 0 0.85 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "dc139b8b-f5e3-43d3-853c-b73ee8303833")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0a2c1763-cbc7-43dc-bed2-54658a68f42c")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "1496304a-ae00-4e5d-8a6c-55f32c26f5fb")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
+	(fp_rect
+		(start -0.85 -0.3)
+		(end 0.85 0.3)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Mask")
+		(uuid "979a3d79-f1f4-4061-b3f2-f6d2a84b98f9")
+	)
+	(fp_rect
+		(start -0.8 -0.25)
+		(end 0.8 0.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "ed7ab595-64dd-45d4-89ce-c4038ce58f08")
+	)
+	(fp_rect
+		(start -0.9 -0.35)
+		(end 0.9 0.35)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "2f0d9fca-6a69-48df-98aa-71054b8c42c9")
+	)
+	(pad "1" smd rect
+		(at -0.6 0)
+		(size 0.4 0.5)
+		(layers "F.Cu" "F.Mask")
+		(uuid "a0b64b25-a355-4f9e-bbed-87d6674a12fe")
+	)
+	(pad "2" smd rect
+		(at 0 0)
+		(size 0.4 0.5)
+		(layers "F.Cu" "F.Mask")
+		(uuid "96e6d5bb-ac68-482d-b4f0-e352d0fbaf4e")
+	)
+	(pad "3" smd rect
+		(at 0.6 0)
+		(size 0.4 0.5)
+		(layers "F.Cu" "F.Mask")
+		(uuid "65ab74ef-44a5-48b0-b8b1-a120a5c1932d")
+	)
+	(embedded_fonts no)
+)

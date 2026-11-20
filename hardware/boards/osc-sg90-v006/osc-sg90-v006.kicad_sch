@@ -10092,7 +10092,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Jumper:SolderJumper-2_P1.3mm_Open_TrianglePad1.0x1.5mm"
+		(property "Footprint" "shared:SolderJumper-2_P0.6mm_Open_Pad0.4x0.5mm"
 			(at 35.56 177.8 0)
 			(hide yes)
 			(show_name no)
@@ -11844,7 +11844,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Jumper:SolderJumper-3_P1.3mm_Open_RoundedPad1.0x1.5mm"
+		(property "Footprint" "shared:SolderJumper-3_P0.6mm_Open_Pad0.4x0.5mm"
 			(at 345.44 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -14633,7 +14633,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:Wire_Pads_1x03_P2.0mm"
+		(property "Footprint" "shared:Wire_Pads_1x03_P1.5mm"
 			(at 251.46 213.36 0)
 			(hide yes)
 			(show_name no)
@@ -14911,7 +14911,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:Wire_Pads_1x02_P2.54mm"
+		(property "Footprint" "shared:Wire_Pads_1x02_P2.0mm"
 			(at 287.02 213.36 0)
 			(hide yes)
 			(show_name no)
@@ -15316,7 +15316,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:Wire_Pads_1x04_P1.27mm"
+		(property "Footprint" "shared:Wire_Pads_1x04_P1.0mm"
 			(at 337.82 213.36 0)
 			(hide yes)
 			(show_name no)

@@ -1,0 +1,117 @@
+(footprint "Wire_Pads_1x04_P1.0mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Sensor wire solder pads (pot or magnetic encoder), 1x4, 1.0mm pitch, pads 0.6x1.2mm, no paste; hand solder under magnification")
+	(tags "wire solder pad")
+	(property "Reference" "J**"
+		(at 0 -1.2 0)
+		(layer "F.Fab")
+		(uuid "7355a2a1-3e17-470c-8345-31245a6818c4")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Value" "Wire_Pads_1x04_P1.0mm"
+		(at 0 1.2 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "c0c5e41c-cb5a-430a-af80-0b457ff7f5f4")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8fb08395-9450-4948-a015-85d5f69d3354")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "5f5c65c8-8e8a-459d-aac4-9c29c4be045e")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -1.95 -0.6)
+		(end -1.95 0.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "1f1361f0-80d5-4ce2-bff3-580837a5db8a")
+	)
+	(fp_rect
+		(start -1.8 -0.6)
+		(end 1.8 0.6)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "11c582b2-e12c-4d05-acff-86669d3fe81c")
+	)
+	(fp_rect
+		(start -2 -0.7)
+		(end 1.9 0.7)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "53600027-413c-4970-8902-84f47d8cd752")
+	)
+	(pad "1" smd roundrect
+		(at -1.5 0)
+		(size 0.6 1.2)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "ab6d180b-74b7-47c5-8bdd-a92924e849fc")
+	)
+	(pad "2" smd roundrect
+		(at -0.5 0)
+		(size 0.6 1.2)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "f64014ff-80eb-44c2-a719-5d9385f6be87")
+	)
+	(pad "3" smd roundrect
+		(at 0.5 0)
+		(size 0.6 1.2)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "79c3cc36-85bd-4041-8834-b9cb74b1583f")
+	)
+	(pad "4" smd roundrect
+		(at 1.5 0)
+		(size 0.6 1.2)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "b461e66b-f7d0-4f65-8ea7-5b0cdc991779")
+	)
+	(embedded_fonts no)
+)
