@@ -3950,7 +3950,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://lcsc.com/product-detail/Low-Dropout-Regulators-LDO_Shanghai-Siproin-Microelectronics-H7133-1_C277537.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C277537.html"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -3973,6 +3973,28 @@
 			)
 		)
 		(property "LCSC Part" "C277537"
+			(at 55.88 45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C277537"
+			(at 55.88 45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "H7133-1"
 			(at 55.88 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -6710,7 +6732,7 @@
 		)
 		(uuid "779ad7b6-f5a4-4223-b417-73582e324961")
 	)
-	(text_box "Rs1 1% 50ppm: sole PGND-GND tie"
+	(text_box "Rs1 1% 100ppm: sole PGND-GND tie"
 		(exclude_from_sim no)
 		(at 208.28 92.5717 0)
 		(size 40.64 3.9483)
@@ -6987,7 +7009,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C20160563.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C186573.html"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -6998,7 +7020,7 @@
 				)
 			)
 		)
-		(property "Description" "100mOhm 1% 50ppm 250mW 0805 current sense resistor"
+		(property "Description" "100mOhm 1% 100ppm 330mW 0805 current sense resistor"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -7009,7 +7031,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C20160563"
+		(property "LCSC" "C186573"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -7020,7 +7042,7 @@
 				)
 			)
 		)
-		(property "MFPN" "PE0805FRE7W0R1Z"
+		(property "MFPN" "SR732ATTDR100F"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -7283,7 +7305,7 @@
 		)
 		(uuid "54a49d9f-4344-401b-b83d-292ad275c284")
 	)
-	(text_box "Rg, Rf, Ri: thin film 0.5% 25ppm; Ri lifts the inputs to about 0.75 V common mode"
+	(text_box "Rg 0.1%, Rf and Ri 0.5%, all thin film 25ppm; Ri lifts the inputs to about 0.75 V common mode"
 		(exclude_from_sim no)
 		(at 254 92.5717 0)
 		(size 152.4 3.9483)
@@ -7424,7 +7446,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -7446,7 +7468,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2686471"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -7457,7 +7479,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC1601"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -7553,7 +7575,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689479.html"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7575,7 +7597,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2689479"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7586,7 +7608,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC8200"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7991,7 +8013,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8002,7 +8024,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.5% 25ppm"
+		(property "Description" "430 0402 thin film 0.1% 25ppm"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8013,7 +8035,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C317913"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8024,7 +8046,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "AR02BTC4300"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8104,7 +8126,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686468.html"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -8126,7 +8148,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2686468"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -8137,7 +8159,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC1501"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -8282,7 +8304,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 307.34 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8304,7 +8326,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8315,7 +8337,7 @@
 				)
 			)
 		)
-		(property "Description" "6K4 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8326,7 +8348,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2689474"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8337,7 +8359,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC6801"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8491,7 +8513,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8502,7 +8524,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.5% 25ppm"
+		(property "Description" "430 0402 thin film 0.1% 25ppm"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8513,7 +8535,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C317913"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8524,7 +8546,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "AR02BTC4300"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -8604,7 +8626,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686468.html"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -8626,7 +8648,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2686468"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -8637,7 +8659,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC1501"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -8782,7 +8804,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 347.98 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8804,7 +8826,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8815,7 +8837,7 @@
 				)
 			)
 		)
-		(property "Description" "6K4 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8826,7 +8848,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2689474"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8837,7 +8859,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC6801"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -8995,7 +9017,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "CH32V006F8U6"
+		(property "Value" "CH32V006F8U7"
 			(at 57.15 119.38 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9017,7 +9039,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C42431288.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C55112440.html"
 			(at 78.74 147.32 0)
 			(hide yes)
 			(show_name no)
@@ -9028,7 +9050,7 @@
 				)
 			)
 		)
-		(property "Description" "QFN-20(3x3) Microcontrollers (MCU/MPU/SOC) ROHS"
+		(property "Description" "CH32V006 105C grade, QFN-20(3x3) Microcontrollers (MCU/MPU/SOC) ROHS"
 			(at 78.74 147.32 0)
 			(hide yes)
 			(show_name no)
@@ -9039,7 +9061,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C42431288"
+		(property "LCSC" "C55112440"
 			(at 78.74 147.32 0)
 			(hide yes)
 			(show_name no)
@@ -9061,7 +9083,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CH32V006F8U6"
+		(property "MFPN" "CH32V006F8U7"
 			(at 78.74 147.32 0)
 			(hide yes)
 			(show_name no)
@@ -10181,7 +10203,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C25092.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C881322.html"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10203,7 +10225,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25092"
+		(property "LCSC" "C881322"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10214,7 +10236,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402WGF220JTCE"
+		(property "MFPN" "CR0402F22R0Q10Z"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -11878,7 +11900,7 @@
 		)
 		(uuid "6042d26e-33f4-4576-86c0-f793ee209e3d")
 	)
-	(text_box "Rb1: thin film 0.5% 25ppm"
+	(text_box "Rb1: thin film 0.1% 25ppm"
 		(exclude_from_sim no)
 		(at 15.24 244.972 0)
 		(size 63.5 3.9483)
@@ -12019,7 +12041,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12030,7 +12052,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.5% 25ppm"
+		(property "Description" "430 0402 thin film 0.1% 25ppm"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12041,7 +12063,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C317913"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12052,7 +12074,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "AR02BTC4300"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12852,7 +12874,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 109.22 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12874,7 +12896,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12885,7 +12907,7 @@
 				)
 			)
 		)
-		(property "Description" "6K4 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12896,7 +12918,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2689474"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -12907,7 +12929,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC6801"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13013,7 +13035,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13035,7 +13057,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2686471"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13046,7 +13068,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC1601"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13357,7 +13379,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 162.56 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13379,7 +13401,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13390,7 +13412,7 @@
 				)
 			)
 		)
-		(property "Description" "6K4 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13401,7 +13423,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2689474"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13412,7 +13434,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC6801"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13518,7 +13540,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13540,7 +13562,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2686471"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13551,7 +13573,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC1601"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13919,7 +13941,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 215.9 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13941,7 +13963,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13952,7 +13974,7 @@
 				)
 			)
 		)
-		(property "Description" "6K4 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13963,7 +13985,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2689474"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13974,7 +13996,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC6801"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -14080,7 +14102,7 @@
 				)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14102,7 +14124,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C2686471"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14113,7 +14135,7 @@
 				)
 			)
 		)
-		(property "MFPN" ""
+		(property "MFPN" "ARG02DTC1601"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
