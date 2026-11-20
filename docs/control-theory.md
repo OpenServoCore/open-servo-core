@@ -409,14 +409,16 @@ Tuning, with the servo holding its working load:
 
 Both trade away some small-step arrival: the steady term reads a push into a shaft that has not moved yet as motion, so a small step can stop short of its goal.
 
-Reference data from one MG90 bench rig, an arm weighted with US quarters, as a place to start and not a value for another load:
+Reference data from one MG90 bench rig, as a place to start and not a value for another load. The arm lies flat and carries US quarters in four pockets. Where the coins sit matters as much as how many: the shake frequency with both terms at 0 tracks the arm's inertia better than its coin count. The 20 and 44 quarter rows ran with the arm's 7 g lid on, the other two without it.
 
-| Load | Hold shake with both terms 0 | k_steady | k_fast |
+| Load on the arm | Hold shake with both terms 0 | k_steady | k_fast |
 | --- | --- | --- | --- |
-| light arm, 20 quarters | 13.3 Hz | 110 | 440 |
-| heavy arm, 44 quarters | 9.3 Hz | 330 | 220 |
+| none (arm only) | 22 Hz | 107 | 430 |
+| 20 quarters, all in the two top pockets | 13.3 Hz | 107 | 430 |
+| 32 quarters, 8 in each pocket | 9.8 Hz | 215 | 325 |
+| 44 quarters, 11 in each pocket | 9.3 Hz | 322 | 215 |
 
-The values sized for the light arm left a 4 Hz sway on the heavy one.
+Up to a light load one pair serves. As the load grows, k_steady rises and k_fast falls: the values sized for the light arm left a 4 Hz sway on the heaviest one, and shaking at 32 quarters.
 
 ### Which Velocity the Loop Closes On
 
