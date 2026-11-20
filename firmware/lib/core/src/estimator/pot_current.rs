@@ -1,7 +1,6 @@
 //! The position reading's current terms. Where the output gear rides on
-//! the pot shaft, the gear's side force moves the shaft and the pot reads
-//! that as rotation; the force follows the motor's torque, so it follows
-//! the current reference. Two terms on the reference, each a tuning
+//! the pot shaft, the pot reading shifts against the torque the output
+//! gear carries, and the current reference stands in for that torque. Two terms on the reference, each a tuning
 //! parameter in linearized pot counts per amp (CONFIG
 //! `pot_steady_counts_per_a`, `pot_fast_counts_per_a`), go onto the
 //! linearized sample ahead of the fusion observer:
