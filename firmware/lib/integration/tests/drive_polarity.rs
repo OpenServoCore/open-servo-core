@@ -302,6 +302,53 @@ fn a_reversed_motor_runs_to_its_stop_and_a_timer_latches() {
     }
 }
 
+/// The reversed motor in Position under Yield, each way, 16 seeds. The
+/// position error timer starts on the run, so it ends the press whenever
+/// `pos_error_time_ticks` is under the run plus `stall_time_ticks` on the
+/// stop: at the rig's equal 500 ms, `position_error` latches with no fold,
+/// as under Fault. With the timer at 2 s the fold comes first, and the
+/// timer does not run while it is latched: the servo holds the stop at
+/// `i_cont_counts`, YIELD set, drive on and no fault, to 3 s.
+#[test]
+fn a_reversed_motor_under_yield_holds_its_stop_once_folded() {
+    for (error_ms, code) in [(500, CODE_POSITION_ERROR), (2000, CODE_NONE)] {
+        for dir in [1i32, -1] {
+            let stop = if dir > 0 { STOPS.0 } else { STOPS.1 };
+            for seed in 1..=SEEDS {
+                let case = format!("timer {error_ms} ms dir {dir} seed {seed}");
+                let mut s = Servo::new(seed, MID, Mode::Position, |t| {
+                    bench_limits(t);
+                    t.config.fault_cfg.pos_error_time_ticks = error_ms * MS;
+                    t.control.lifecycle.goal_position = MID as i32 + 200 * dir;
+                });
+                let i_cont = s.sh.table.with(|t| t.config.limits.i_cont_counts);
+                s.p.swapped = true;
+                s.stops = true;
+                s.control(|c| c.torque_enable = true);
+                let mut folded = false;
+                for _ in 0..3000 * MS {
+                    s.tick();
+                    folded |= s.limit_flags() & flag::YIELD != 0;
+                }
+                assert_eq!(s.code(), code, "{case}");
+                assert!((s.p.out - stop).abs() <= 2.0, "{case}: at {:.1}", s.p.out);
+                if code == CODE_NONE {
+                    assert!(s.limit_flags() & flag::YIELD != 0, "{case}: no fold");
+                    let i_lim = s.sh.table.with(|t| t.telemetry.estimates.i_lim_counts);
+                    assert_eq!(i_lim, i_cont, "{case}");
+                    assert!(
+                        matches!(s.k.io.motor.last, Some(MotorCmd::Drive { .. })),
+                        "{case}: {:?}",
+                        s.k.io.motor.last
+                    );
+                } else {
+                    assert!(!folded, "{case}: folded before the latch");
+                }
+            }
+        }
+    }
+}
+
 /// Gravity on a held shaft at 80% of the current limit, let go at the
 /// enable and again after the hold has parked, at the bench inertia and
 /// twice it, 16 seeds each: the shaft drops against the drive until the
