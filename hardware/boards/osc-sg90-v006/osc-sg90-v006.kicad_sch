@@ -4258,7 +4258,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4269,7 +4269,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C52923.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307385.html"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4280,7 +4280,7 @@
 				)
 			)
 		)
-		(property "Description" "1uF 25V X5R 0402"
+		(property "Description" "1uF 16V X5R 0201"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4291,7 +4291,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C52923"
+		(property "LCSC" "C307385"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -4302,7 +4302,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05A105KA5NQNC"
+		(property "MFPN" "CL03A105MO3NRNH"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -5644,7 +5644,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -5655,7 +5655,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -5666,7 +5666,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R ±10% 0402 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -5677,7 +5677,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -5688,7 +5688,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -5994,7 +5994,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -6005,7 +6005,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -6016,7 +6016,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R ±10% 0402 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -6027,7 +6027,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -6049,7 +6049,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -6532,7 +6532,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -6543,7 +6543,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C473048.html"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -6554,7 +6554,7 @@
 				)
 			)
 		)
-		(property "Description" "-55℃~+155℃ 10kΩ 50V 62.5mW Thick Film Resistor ±1% ±100ppm/℃ 0402 Chip Resistor - Surface Mount ROHS"
+		(property "Description" "10K 1% 200ppm 0201 thick film"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -6565,7 +6565,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C473048"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -6587,7 +6587,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402WGF1002TCE"
+		(property "MFPN" "0201WMF1002TEE"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -7756,7 +7756,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7767,7 +7767,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7778,7 +7778,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R 0402"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7789,7 +7789,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -7800,7 +7800,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9903,7 +9903,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -9914,7 +9914,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -9925,7 +9925,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R ±10% 0402 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -9936,7 +9936,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -9958,7 +9958,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -10281,7 +10281,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10292,7 +10292,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C881322.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C270355.html"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10303,7 +10303,7 @@
 				)
 			)
 		)
-		(property "Description" "22 1% 100ppm 0402 thick film"
+		(property "Description" "22 1% 200ppm 0201 thick film"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10314,7 +10314,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C881322"
+		(property "LCSC" "C270355"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10325,7 +10325,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CR0402F22R0Q10Z"
+		(property "MFPN" "0201WMF220JTEE"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -10656,7 +10656,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -10667,7 +10667,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C25900.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C270346.html"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -10678,7 +10678,7 @@
 				)
 			)
 		)
-		(property "Description" "-55℃~+155℃ 4.7kΩ 50V 62.5mW Thick Film Resistor ±1% ±100ppm/℃ 0402 Chip Resistor - Surface Mount ROHS"
+		(property "Description" "4K7 1% 200ppm 0201 thick film"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -10689,7 +10689,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25900"
+		(property "LCSC" "C270346"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -10711,7 +10711,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402WGF4701TCE"
+		(property "MFPN" "0201WMF4701TEE"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -10806,7 +10806,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -10817,7 +10817,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -10828,7 +10828,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R ±10% 0402 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -10839,7 +10839,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -10850,7 +10850,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -11035,7 +11035,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -11046,7 +11046,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C25900.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C270346.html"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -11057,7 +11057,7 @@
 				)
 			)
 		)
-		(property "Description" "4K7 1% 100ppm 0402 thick film"
+		(property "Description" "4K7 1% 200ppm 0201 thick film"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -11068,7 +11068,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25900"
+		(property "LCSC" "C270346"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -11079,7 +11079,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402WGF4701TCE"
+		(property "MFPN" "0201WMF4701TEE"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -11174,7 +11174,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -11185,7 +11185,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -11196,7 +11196,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R 0402"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -11207,7 +11207,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -11218,7 +11218,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -11495,7 +11495,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -11506,7 +11506,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C473048.html"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -11517,7 +11517,7 @@
 				)
 			)
 		)
-		(property "Description" "-55℃~+155℃ 10kΩ 50V 62.5mW Thick Film Resistor ±1% ±100ppm/℃ 0402 Chip Resistor - Surface Mount ROHS"
+		(property "Description" "10K 1% 200ppm 0201 thick film"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -11528,7 +11528,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C473048"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -11550,7 +11550,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402WGF1002TCE"
+		(property "MFPN" "0201WMF1002TEE"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -12248,7 +12248,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -12259,7 +12259,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C25076.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C270366.html"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -12270,7 +12270,7 @@
 				)
 			)
 		)
-		(property "Description" "100 1% 100ppm 0402 thick film"
+		(property "Description" "100 1% 200ppm 0201 thick film"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -12281,7 +12281,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25076"
+		(property "LCSC" "C270366"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -12292,7 +12292,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402WGF1000TCE"
+		(property "MFPN" "0201WMF1000TEE"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -12690,7 +12690,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12701,7 +12701,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1525.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12712,7 +12712,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X7R 0402"
+		(property "Description" "100nF 16V X5R 0201"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12723,7 +12723,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307380"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12734,7 +12734,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL05B104KO5NNNC"
+		(property "MFPN" "CL03A104KO3NNNC"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -13226,7 +13226,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13237,7 +13237,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1546.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C62550.html"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13248,7 +13248,7 @@
 				)
 			)
 		)
-		(property "Description" "100pF 50V C0G 5% 0402"
+		(property "Description" "100pF 50V C0G 5% 0201"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13259,7 +13259,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1546"
+		(property "LCSC" "C62550"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13270,7 +13270,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402CG101J500NT"
+		(property "MFPN" "0201CG101J500NT"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13731,7 +13731,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13742,7 +13742,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1546.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C62550.html"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13753,7 +13753,7 @@
 				)
 			)
 		)
-		(property "Description" "100pF 50V C0G 5% 0402"
+		(property "Description" "100pF 50V C0G 5% 0201"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13764,7 +13764,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1546"
+		(property "LCSC" "C62550"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -13775,7 +13775,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402CG101J500NT"
+		(property "MFPN" "0201CG101J500NT"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14293,7 +14293,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14304,7 +14304,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1546.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C62550.html"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14315,7 +14315,7 @@
 				)
 			)
 		)
-		(property "Description" "100pF 50V C0G 5% 0402"
+		(property "Description" "100pF 50V C0G 5% 0201"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14326,7 +14326,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1546"
+		(property "LCSC" "C62550"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14337,7 +14337,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0402CG101J500NT"
+		(property "MFPN" "0201CG101J500NT"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
