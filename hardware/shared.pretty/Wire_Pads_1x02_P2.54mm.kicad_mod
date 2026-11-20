@@ -1,0 +1,112 @@
+(footprint "Wire_Pads_1x02_P2.54mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Motor lead wire solder pads, 1x2, 2.54mm pitch, no paste")
+	(tags "wire solder pad")
+	(property "Reference" "REF**"
+		(at 0 -2.1 0)
+		(layer "F.Fab")
+		(uuid "e460b28b-8421-41e3-ab86-8f000f58a45a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "Wire_Pads_1x02_P2.54mm"
+		(at 0 2.1 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "32e72fc8-6487-4b24-9187-ba419757da69")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "45ec0e79-d417-482b-bace-cc4c0fba5bf0")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "10037724-a898-4bbe-9cd0-2b7ae6a2ce99")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -2.27 -1.1)
+		(end -2.27 1.1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "ba402a5c-21c8-499a-83ff-b5f08c49b114")
+	)
+	(fp_line
+		(start -2.27 -1.1)
+		(end -2.07 -1.1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "e569324c-cabf-4099-adeb-4dfe684be729")
+	)
+	(fp_line
+		(start -2.27 1.1)
+		(end -2.07 1.1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "39ecc69f-66fb-44fc-bd44-3f8b2be53ba6")
+	)
+	(fp_rect
+		(start -2.32 -1.35)
+		(end 2.32 1.35)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "62259289-98f1-4ac2-a3c4-b1b1e18eb1a2")
+	)
+	(pad "1" smd roundrect
+		(at -1.27 0)
+		(size 1.6 2.2)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "e2fda678-86aa-4d51-bf4e-69ebd23ac87f")
+	)
+	(pad "2" smd roundrect
+		(at 1.27 0)
+		(size 1.6 2.2)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "656f0fa5-abbf-4ab3-969d-385ccfd565ad")
+	)
+	(embedded_fonts no)
+)
