@@ -1,0 +1,104 @@
+(footprint "Wire_Pads_1x02_P8.1mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Motor wire solder pads, 1x2, 8.1mm pitch, pads 1.1x1.6mm, no paste; one pad per board corner with the motor flex landing between them; hand solder under magnification; courtyard 0.075 mm outside the pads, so touching courtyards mean 0.15 mm pad-to-pad")
+	(tags "motor wire solder pad")
+	(property "Reference" "J**"
+		(at 0 -1.4 0)
+		(layer "F.Fab")
+		(uuid "7691b6aa-439d-49c3-9f07-8e716b092940")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Value" "Wire_Pads_1x02_P8.1mm"
+		(at 0 1.4 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "219c4cc7-8ca2-4129-b8d4-57db19a0cc6c")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "c5998ee5-ec19-4779-a864-13a6a4c92e0f")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "5d1ecba9-7abd-449b-b9dd-e4cbf2cef12f")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_rect
+		(start -4.6 -0.8)
+		(end 4.6 0.8)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "111f34f7-6909-4924-85a1-fcd4b5396333")
+	)
+	(pad "1" smd roundrect
+		(at -4.05 0)
+		(size 1.1 1.6)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "20e3fe89-1a0f-42b6-a26e-04609aafd5df")
+	)
+	(pad "2" smd roundrect
+		(at 4.05 0)
+		(size 1.1 1.6)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "69fe6333-daa2-4886-92ef-0f453e420cf3")
+	)
+	(fp_rect
+		(start -4.675 -0.875)
+		(end -3.425 0.875)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "6486e6a5-afc8-49a3-9fb9-837b32b02b84")
+	)
+	(fp_rect
+		(start 3.425 -0.875)
+		(end 4.675 0.875)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "2648f112-5089-49e8-a96a-5d28c637d803")
+	)
+	(embedded_fonts no)
+)

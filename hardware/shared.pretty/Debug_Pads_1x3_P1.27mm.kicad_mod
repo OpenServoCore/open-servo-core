@@ -1,0 +1,116 @@
+(footprint "Debug_Pads_1x3_P1.27mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Minimal 1x3 debug pads for pogo pins (3V3, GND, SWDIO), 1.27mm pitch; courtyard 0.075 mm outside the pads, so touching courtyards mean 0.15 mm pad-to-pad")
+	(tags "debug pogo swd test pad")
+	(property "Reference" "J_DBG"
+		(at 0 -2 0)
+		(layer "F.Fab")
+		(uuid "1250aa49-6552-4875-bd17-24c90cb021c3")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "Debug"
+		(at 0 2 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b19e2ae8-6249-48c7-aa9c-ca38de3b0bd3")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "da6dc676-db86-4690-8b89-2e64bc3ccfb6")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "1e9e996c-7e12-4c44-9c24-5cc5216ff201")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -1.865 -0.6)
+		(end -1.865 0.6)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "b7ec0ee7-ef38-4dd2-9851-1b7ea6ecc477")
+	)
+	(fp_line
+		(start -1.865 -0.6)
+		(end -1.665 -0.6)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "6046f18d-84bb-4634-9696-6712e04deb42")
+	)
+	(fp_line
+		(start -1.865 0.6)
+		(end -1.665 0.6)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "9a7f6ba2-35e9-4519-b1f4-087f8e2f6c82")
+	)
+	(pad "1" smd circle
+		(at -1.27 0)
+		(size 1 1)
+		(layers "F.Cu" "F.Mask")
+		(uuid "14887503-ec8a-4517-a51d-d2a64cfa63b7")
+	)
+	(pad "2" smd circle
+		(at 0 0)
+		(size 1 1)
+		(layers "F.Cu" "F.Mask")
+		(uuid "d6052883-16cf-410b-8cb7-ee310d775f55")
+	)
+	(pad "3" smd circle
+		(at 1.27 0)
+		(size 1 1)
+		(layers "F.Cu" "F.Mask")
+		(uuid "f7afdd8b-21dc-48f5-9ffc-7ab7207769cd")
+	)
+	(fp_rect
+		(start -1.845 -0.575)
+		(end 1.845 0.575)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "377c598d-db57-4059-a99a-b8149c1e0ec8")
+	)
+	(embedded_fonts no)
+)

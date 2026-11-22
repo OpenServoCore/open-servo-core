@@ -1,0 +1,133 @@
+(footprint "Wire_Pads_1x03_P1.5mm_DualSide"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "Servo cable wire solder pads, 1x3, 1.5mm pitch, pads 0.9x1.5mm on both sides for a pass-through cable (tie each pair with board vias), no paste; hand solder under magnification; courtyard 0.075 mm outside the pads, so touching courtyards mean 0.15 mm pad-to-pad")
+	(tags "wire solder pad")
+	(property "Reference" "J**"
+		(at 0 -0.05 0)
+		(layer "F.Fab")
+		(uuid "09c32e0b-6de6-4b09-bb96-7c1ee13cc98e")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Value" "Wire_Pads_1x03_P1.5mm_DualSide"
+		(at 0 1.35 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "e164b1c3-f603-43ad-b704-9c23160e1502")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "568931d0-d15e-4db1-bc48-2386ba198754")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "e47d1332-ae6a-49ba-a19b-7c08cd5ac9d9")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_rect
+		(start -1.95 -0.75)
+		(end 1.95 0.75)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "03e7be2b-af9d-486a-9188-0f57850eb7d2")
+	)
+	(pad "1" smd roundrect
+		(at -1.5 0)
+		(size 0.9 1.5)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "2d1dd62c-2b3d-431b-836e-9154956232e4")
+	)
+	(pad "1" smd roundrect
+		(at -1.5 0)
+		(size 0.9 1.5)
+		(layers "B.Cu" "B.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "efa5c45c-c865-41cc-91e8-5ed208d4b672")
+	)
+	(pad "2" smd roundrect
+		(at 0 0)
+		(size 0.9 1.5)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "a4835570-ed52-440a-a5c6-11077c914052")
+	)
+	(pad "2" smd roundrect
+		(at 0 0)
+		(size 0.9 1.5)
+		(layers "B.Cu" "B.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "be822452-202a-4122-aa06-41e0315916ac")
+	)
+	(pad "3" smd roundrect
+		(at 1.5 0)
+		(size 0.9 1.5)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "1934ddfa-31b2-4e58-920c-7019fee0b2b2")
+	)
+	(pad "3" smd roundrect
+		(at 1.5 0)
+		(size 0.9 1.5)
+		(layers "B.Cu" "B.Mask")
+		(roundrect_rratio 0.25)
+		(uuid "15e2e40a-c1fe-434a-baf4-ede87fe6c794")
+	)
+	(fp_rect
+		(start -2.025 -0.825)
+		(end 2.025 0.825)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "fb25a106-3ade-464f-ac45-5c974ac95fec")
+	)
+	(fp_rect
+		(start -2.025 -0.825)
+		(end 2.025 0.825)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "B.CrtYd")
+		(uuid "a3339cd7-9657-474e-80c8-5ee8b4479419")
+	)
+	(embedded_fonts no)
+)

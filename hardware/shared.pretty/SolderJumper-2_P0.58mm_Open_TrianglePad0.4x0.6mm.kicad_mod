@@ -1,0 +1,124 @@
+(footprint "SolderJumper-2_P0.58mm_Open_TrianglePad0.4x0.6mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Open solder jumper, KiCad SolderJumper-2_P1.3mm_Open_TrianglePad1.0x1.5mm scaled 0.4x: pads 0.4x0.6mm, 0.127 mm chevron gap (0.155 mm along x), one mask opening, no paste; bridge by hand under magnification; courtyard 0.075 mm outside the pads, so touching courtyards mean 0.15 mm pad-to-pad")
+	(tags "solder jumper open triangle")
+	(property "Reference" "JP**"
+		(at 0 -0.6 0)
+		(layer "F.Fab")
+		(uuid "942e1e16-7f16-4c12-b86c-f19bbcab02a5")
+		(effects
+			(font
+				(size 0.4 0.4)
+				(thickness 0.06)
+			)
+		)
+	)
+	(property "Value" "SolderJumper-2_P0.58mm_Open_TrianglePad0.4x0.6mm"
+		(at 0 0.6 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "7b1104ed-db02-490c-a3d7-96c1da6e0019")
+		(effects
+			(font
+				(size 0.4 0.4)
+				(thickness 0.06)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6274c9bb-1e22-44fb-8ac9-25803f8bc9a9")
+		(effects
+			(font
+				(size 0.4 0.4)
+				(thickness 0.06)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0d6224bc-30c5-4ca7-9e03-ac095f62fd21")
+		(effects
+			(font
+				(size 0.4 0.4)
+				(thickness 0.06)
+			)
+		)
+	)
+	(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
+	(fp_rect
+		(start -0.49 -0.3)
+		(end 0.49 0.3)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.Mask")
+		(uuid "7f8349b8-991a-4efd-87cd-2e8d71170f16")
+	)
+	(fp_rect
+		(start -0.49 -0.3)
+		(end 0.49 0.3)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "3b418bd4-06bd-4a4b-837c-367739b4a5da")
+	)
+	(pad "1" smd custom
+		(at -0.29 0)
+		(size 0.12 0.12)
+		(layers "F.Cu" "F.Mask")
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts (xy 0.3825 0) (xy 0.1825 0.3) (xy -0.2 0.3) (xy -0.2 -0.3) (xy 0.1825 -0.3))
+				(width 0)
+				(fill yes)
+			)
+		)
+		(uuid "999db46f-4d18-4c4a-a280-7aafb5d5e652")
+	)
+	(pad "2" smd custom
+		(at 0.29 0)
+		(size 0.12 0.12)
+		(layers "F.Cu" "F.Mask")
+		(options
+			(clearance outline)
+			(anchor rect)
+		)
+		(primitives
+			(gr_poly
+				(pts (xy 0.2 0.3) (xy -0.2425 0.3) (xy -0.0425 0) (xy -0.2425 -0.3) (xy 0.2 -0.3))
+				(width 0)
+				(fill yes)
+			)
+		)
+		(uuid "84e2f7e3-7172-447d-b72a-b9229b6a1fcd")
+	)
+	(fp_rect
+		(start -0.565 -0.375)
+		(end 0.565 0.375)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "fb48a5f8-eb7d-4e04-b3ac-53f768555669")
+	)
+	(embedded_fonts no)
+)
