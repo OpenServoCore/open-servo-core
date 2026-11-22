@@ -1,7 +1,8 @@
 (version 1)
 
-# JLCPCB 4-layer, 1 oz outer: 0.09/0.09 mm trace/space, routed edge 0.2 mm.
-# Vias stay in the no-surcharge tier: 0.2 mm drill needs a >= 0.45 mm pad.
+# JLCPCB 6-layer, 1 oz outer: 0.09/0.09 mm trace/space, routed edge 0.2 mm.
+# Vias: 0.3 mm drill (no small-via surcharge); via-in-pad is fine, JLC 6-layer
+# boards get epoxy filled and capped vias.
 
 (rule "Track width minimum"
   (condition "A.Type == 'Track'")
@@ -13,9 +14,20 @@
   (constraint clearance (min 0.09mm))
 )
 
+(rule "Pad to track"
+  (condition "A.Type == 'Pad' && (B.Type == 'Track' || B.Type == 'Arc') && A.Net != B.Net")
+  (constraint clearance (min 0.1mm))
+)
+
 (rule "Pad to pad"
   (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Net != B.Net")
   (constraint clearance (min 0.15mm))
+)
+
+# Solder jumpers: no paste, the chevron gap is meant to be bridged by hand.
+(rule "Jumper gap"
+  (condition "A.memberOfFootprint('JP*') && B.memberOfFootprint('JP*')")
+  (constraint clearance (min 0.09mm))
 )
 
 # TI X2SON land pattern: centre pad sits 0.12 mm from the corner pads.
@@ -26,9 +38,9 @@
 
 (rule "Via drill + pad"
   (condition "A.Type == 'Via'")
-  (constraint hole_size (min 0.20mm))
+  (constraint hole_size (min 0.30mm))
   (constraint via_diameter (min 0.45mm))
-  (constraint annular_width (min 0.125mm))
+  (constraint annular_width (min 0.075mm))
 )
 
 (rule "Hole to copper"
