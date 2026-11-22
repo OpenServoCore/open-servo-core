@@ -59,11 +59,16 @@
 (rule "Silk text thickness"
   (layer "?.Silkscreen")
   (condition "A.Type == 'Text' || A.Type == 'Text Box'")
-  (constraint text_thickness (min 0.12mm))
+  (constraint text_thickness (min 0.10mm))
 )
 
 (rule "Silk text height"
   (layer "?.Silkscreen")
   (condition "A.Type == 'Text' || A.Type == 'Text Box'")
-  (constraint text_height (min 0.80mm))
+  (constraint text_height (min 0.60mm))
+)
+
+(rule "Pad to silkscreen"
+  (condition "A.Type == 'Pad' && ((A.existsOnLayer('F.Mask') && B.Layer == 'F.Silkscreen') || (A.existsOnLayer('B.Mask') && B.Layer == 'B.Silkscreen'))")
+  (constraint silk_clearance (min 0.15mm))
 )

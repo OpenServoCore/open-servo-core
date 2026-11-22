@@ -3,7 +3,7 @@
 	(generator "pcbnew")
 	(generator_version "9.0")
 	(layer "F.Cu")
-	(descr "Minimal 1x4 debug pads for pogo pins, 1.27mm pitch")
+	(descr "Minimal 1x4 debug pads for pogo pins, 1.27mm pitch; courtyard 0.075 mm outside the pads, so touching courtyards mean 0.15 mm pad-to-pad")
 	(tags "debug pogo swd test pad")
 	(property "Reference" "J_DBG"
 		(at 0 -2 0)
@@ -84,8 +84,8 @@
 		(uuid "da845ad4-6520-4d9b-a2ee-7d6a175ab39d")
 	)
 	(fp_rect
-		(start -2.655 -0.75)
-		(end 2.655 0.75)
+		(start -2.48 -0.575)
+		(end 2.48 0.575)
 		(stroke
 			(width 0.05)
 			(type solid)

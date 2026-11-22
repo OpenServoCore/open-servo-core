@@ -45,9 +45,9 @@
         },
         "silk_line_width": 0.15,
         "silk_text_italic": false,
-        "silk_text_size_h": 1.0,
-        "silk_text_size_v": 1.0,
-        "silk_text_thickness": 0.15,
+        "silk_text_size_h": 0.8,
+        "silk_text_size_v": 0.8,
+        "silk_text_thickness": 0.1,
         "silk_text_upright": false,
         "zones": {
           "border_display_style": 2,
@@ -156,8 +156,8 @@
         "min_microvia_drill": 0.1,
         "min_resolved_spokes": 2,
         "min_silk_clearance": 0.0,
-        "min_text_height": 0.8,
-        "min_text_thickness": 0.12,
+        "min_text_height": 0.6,
+        "min_text_thickness": 0.1,
         "min_through_hole_diameter": 0.3,
         "min_track_width": 0.09,
         "min_via_annular_width": 0.075,
@@ -830,7 +830,7 @@
     "FAB": "JLCPCB",
     "PROJECT": "open-servo-core",
     "REV": "v0.0",
-    "STACKUP": "4L 1.6mm"
+    "STACKUP": "6L 1.6mm JLC06161H-3313"
   },
   "tuning_profiles": {
     "meta": {
