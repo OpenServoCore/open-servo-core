@@ -3,7 +3,7 @@
 	(generator "pcbnew")
 	(generator_version "9.0")
 	(layer "F.Cu")
-	(descr "Motor wire solder pads, 1x2, 2.0mm pitch, pads 1.2x1.6mm, no paste; sits beside the driver so the outputs run straight out; hand solder under magnification")
+	(descr "Motor wire solder pads, 1x2, 2.0mm pitch, pads 1.2x1.6mm, no paste; sits beside the driver so the outputs run straight out; hand solder under magnification; courtyard 0.075 mm outside the pads, so touching courtyards mean 0.15 mm pad-to-pad")
 	(tags "motor wire solder pad")
 	(property "Reference" "J**"
 		(at 0 -1.4 0)
@@ -74,17 +74,6 @@
 		(layer "F.Fab")
 		(uuid "d78d59fa-c496-46b2-a4a7-2cd6d32aac20")
 	)
-	(fp_rect
-		(start -1.8 -0.9)
-		(end 1.7 0.9)
-		(stroke
-			(width 0.05)
-			(type solid)
-		)
-		(fill no)
-		(layer "F.CrtYd")
-		(uuid "2373b8b8-4054-49e8-a02f-1f00494a8c6e")
-	)
 	(pad "1" smd roundrect
 		(at -1 0)
 		(size 1.2 1.6)
@@ -98,6 +87,17 @@
 		(layers "F.Cu" "F.Mask")
 		(roundrect_rratio 0.25)
 		(uuid "c9459d5a-293d-4bbe-906d-d6d21a28de9b")
+	)
+	(fp_rect
+		(start -1.675 -0.875)
+		(end 1.675 0.875)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "df9e3151-b1e7-4877-816f-122f826b55bf")
 	)
 	(embedded_fonts no)
 )

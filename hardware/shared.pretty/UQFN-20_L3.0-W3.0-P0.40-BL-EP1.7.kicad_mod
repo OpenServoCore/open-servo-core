@@ -314,6 +314,18 @@
 		)
 		(uuid "3f4b5c85-3585-4060-a9f8-d3e4e1bca3a4")
 	)
+	(fp_poly
+		(pts
+			(xy -0.975 -1.975) (xy 0.975 -1.975) (xy 0.975 -1.5) (xy 1.5 -1.5) (xy 1.5 -0.975) (xy 1.975 -0.975) (xy 1.975 0.975) (xy 1.5 0.975) (xy 1.5 1.5) (xy 0.975 1.5) (xy 0.975 1.975) (xy -0.975 1.975) (xy -0.975 1.5) (xy -1.5 1.5) (xy -1.5 0.975) (xy -1.975 0.975) (xy -1.975 -0.975) (xy -1.5 -0.975) (xy -1.5 -1.5) (xy -0.975 -1.5)
+		)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "11a1bdaa-aa27-4abe-bf35-0e17bac9942e")
+	)
 	(embedded_fonts no)
 	(model "${KIPRJMOD}/../../shared.3dshapes/UQFN-20_L3.0-W3.0-P0.40-BL-EP1.7.wrl"
 		(offset
