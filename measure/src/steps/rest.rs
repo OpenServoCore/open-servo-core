@@ -55,6 +55,17 @@ const NTC_C: (f64, f64) = (-10.0, 60.0);
 const FOLD_MAX: f64 = 1.0;
 /// The most the position may move between the two seconds, counts.
 const STILL_MAX: f64 = 5.0;
+/// The raw pos band `vref_raw` is good to 2 counts in, on the dev board's
+/// CH32V006. The ADC reads the reference right after the pot, and outside
+/// the band the reference reading follows the pos code: up to 13 % high
+/// near the top of the pot's range, 2 to 7 counts low under 700, while
+/// the supply itself, the rail and the NTC readings stay put.
+pub const VREF_POS_BAND: (f64, f64) = (700.0, 2750.0);
+
+/// `vref_raw` reads the supply with the pot at `pos`.
+pub fn vref_trusted(pos: f64) -> bool {
+    (VREF_POS_BAND.0..=VREF_POS_BAND.1).contains(&pos)
+}
 
 /// The board's sense chain as the servo's CALIB holds it.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -142,7 +153,8 @@ impl Sense {
     }
 }
 
-/// The rail now, V, from a few reads of the rail tap and the reference.
+/// The rail now, V, from a few reads of the pot, the reference and the
+/// rail tap.
 pub async fn rail_now<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -150,15 +162,26 @@ pub async fn rail_now<P: Pipe>(
     s: &Sense,
 ) -> Result<f64, Error> {
     let lo = field(d, "pos")?.addr;
-    let (mut vbus, mut vref) = (0.0, 0.0);
+    let (mut pos, mut vbus, mut vref) = (0.0, 0.0, 0.0);
     for _ in 0..POS_READS {
         let b = c.read(id, lo, 6).await?;
         let w = |k: usize| u16::from_le_bytes([b[k], b[k + 1]]) as f64;
+        pos += w(0);
         vref += w(2);
         vbus += w(4);
     }
     let n = POS_READS as f64;
-    Ok(s.rail_v(vbus / n, (vref > 0.0).then_some(vref / n)))
+    Ok(rail_of(s, pos / n, vref / n, vbus / n))
+}
+
+/// The rail from the means of `pos`, `vref_raw` and `vbus_raw`: the
+/// measured supply when the reference is trusted at `pos`, else the
+/// nominal.
+pub fn rail_of(s: &Sense, pos: f64, vref_raw: f64, vbus_raw: f64) -> f64 {
+    s.rail_v(
+        vbus_raw,
+        (vref_raw > 0.0 && vref_trusted(pos)).then_some(vref_raw),
+    )
 }
 
 pub(crate) async fn pos_now<P: Pipe>(
@@ -251,6 +274,8 @@ pub struct Channels {
     /// The torque-off capture's `vref_raw` folded by tick modulo 16, its
     /// mean removed, and that mean; None without a whole pattern.
     pub vref: Option<(Pattern, f64)>,
+    /// The reference was read at a position it is trusted at.
+    pub trusted: bool,
     pub rest: Vec<(&'static str, Channel)>,
     pub raw: Vec<(&'static str, Channel)>,
 }
@@ -279,7 +304,26 @@ impl Channels {
     /// same.
     pub fn of(rest: &[TelFrame], raw: &[TelFrame]) -> Self {
         let vs = ripple::series(rest, "vref_raw");
-        let vref = ripple::fold(&vs).zip(stats_of(&vs).map(|s| s.mean));
+        Self::by(
+            rest,
+            raw,
+            ripple::fold(&vs).zip(stats_of(&vs).map(|s| s.mean)),
+            true,
+        )
+    }
+
+    /// Every channel as received, no reference pattern and every gain 0:
+    /// the reference is not trusted at the capture's position.
+    pub fn untrusted(rest: &[TelFrame], raw: &[TelFrame]) -> Self {
+        Self::by(rest, raw, None, false)
+    }
+
+    fn by(
+        rest: &[TelFrame],
+        raw: &[TelFrame],
+        vref: Option<(Pattern, f64)>,
+        trusted: bool,
+    ) -> Self {
         let one = |rows: &[TelFrame], name: &'static str| {
             let s = ripple::series(rows, name);
             let (gain, comp) = match &vref {
@@ -299,6 +343,7 @@ impl Channels {
             rest: REST_CHANNELS.iter().map(|n| one(rest, n)).collect(),
             raw: RAW_CHANNELS.iter().map(|n| one(raw, n)).collect(),
             vref,
+            trusted,
         }
     }
 
@@ -317,8 +362,8 @@ impl Channels {
     }
 
     /// The frame's own pattern a channel keeps once VDD's is out: flat
-    /// within a count, every channel, else refused. A channel no row
-    /// carried (NaN) is no flatness.
+    /// within a count, every channel, else refused; not judged without a
+    /// trusted reference. A channel no row carried (NaN) is no flatness.
     pub fn pattern_check(&self) -> Check {
         let (worst, fold) = self
             .rest
@@ -332,13 +377,24 @@ impl Channels {
             .fold((String::new(), 0.0), |a, b| {
                 if b.1.is_nan() || b.1 > a.1 { b } else { a }
             });
+        let worst = if worst.is_empty() { "none" } else { &worst };
+        let bound = format!("flat within {FOLD_MAX} count");
+        if !self.trusted {
+            return Check {
+                name: "the frame's own pattern".into(),
+                value: format!(
+                    "no trusted reference pattern at this position: tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}), nothing taken out"
+                ),
+                bound,
+                verdict: Verdict::NotJudged,
+            };
+        }
         Check {
             name: "the frame's own pattern".into(),
             value: format!(
-                "tick-modulo-16 means at most {fold:.2} counts off the mean ({}) once the VDD frame ripple is out",
-                if worst.is_empty() { "none" } else { &worst }
+                "tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}) once the VDD frame ripple is out"
             ),
-            bound: format!("flat within {FOLD_MAX} count"),
+            bound,
             verdict: if fold <= FOLD_MAX {
                 Verdict::Pass
             } else {
@@ -627,7 +683,17 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         })
     };
     let pass = |ok: bool| if ok { Verdict::Pass } else { Verdict::Fail };
-    let ch = Channels::of(&rest.rows, &raw.rows);
+    let rest_pos = stats(&rest.rows, "pos").map_or(f64::NAN, |x| x.mean);
+    let trusted = vref_trusted(rest_pos);
+    let ch = if trusted {
+        Channels::of(&rest.rows, &raw.rows)
+    } else {
+        Channels::untrusted(&rest.rows, &raw.rows)
+    };
+    let band = format!(
+        "the horn is at pos {rest_pos:.0}, outside {:.0} to {:.0}, where this chip's reference reading follows the position",
+        VREF_POS_BAND.0, VREF_POS_BAND.1
+    );
     let (r_pos, r_vref, r_vbus, r_ntc, r_zero, r_a) = (
         ch.rest("pos"),
         ch.rest("vref_raw").raw,
@@ -724,18 +790,33 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         ),
         pass(worst_bias <= BIAS_SHARE),
     );
-    let vdd = s.vdd_v(r_vref.mean);
-    let vdd_off = (vdd * 1000.0 - s.vdd_mv).abs() / s.vdd_mv;
-    check(
-        "chip supply",
-        format!(
-            "{vdd:.3} V from vref_raw {:.1}, {:.2}% off",
-            r_vref.mean,
-            100.0 * vdd_off
-        ),
-        format!("within {:.0}% of vdd_mv {}", 100.0 * VDD_SHARE, s.vdd_mv),
-        pass(vdd_off <= VDD_SHARE),
-    );
+    let vdd_bound = format!("within {:.0}% of vdd_mv {}", 100.0 * VDD_SHARE, s.vdd_mv);
+    let vdd = if trusted {
+        let vdd = s.vdd_v(r_vref.mean);
+        let vdd_off = (vdd * 1000.0 - s.vdd_mv).abs() / s.vdd_mv;
+        check(
+            "chip supply",
+            format!(
+                "{vdd:.3} V from vref_raw {:.1}, {:.2}% off",
+                r_vref.mean,
+                100.0 * vdd_off
+            ),
+            vdd_bound,
+            pass(vdd_off <= VDD_SHARE),
+        );
+        vdd
+    } else {
+        check(
+            "chip supply",
+            format!(
+                "{band}: vref_raw {:.1} is not read as the supply; the nominal vdd_mv {} is used",
+                r_vref.mean, s.vdd_mv
+            ),
+            vdd_bound,
+            Verdict::NotJudged,
+        );
+        s.vdd_mv / 1000.0
+    };
     let ntc_c = s.ntc.c_of_raw(r_ntc.mean);
     let ntc_railed = r_ntc.min <= RAIL_COUNTS || r_ntc.max >= ADC_TOP - RAIL_COUNTS;
     check(
@@ -749,7 +830,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
     );
     let cpa = s.counts_per_a();
     let room_a = (ADC_TOP - w_zero.mean) / cpa;
-    let rail = s.rail_v(r_vbus.mean, Some(r_vref.mean));
+    let rail = s.rail_v(r_vbus.mean, trusted.then_some(r_vref.mean));
     let supply = s.supply_v(rail);
     let stall = np
         .map(|n| Facts::new(n, rail))
@@ -818,13 +899,28 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         .map(|(p, mean)| ripple::vdd_ripple_mv_pp(p, *mean, vdd));
     check(
         "VDD frame ripple",
-        ripple_mv.map_or("no whole vref_raw pattern".into(), |mv| {
-            format!("{mv:.2} mV pp once a 16-row frame, from vref_raw folded by tick modulo 16")
-        }),
+        match ripple_mv {
+            Some(mv) => {
+                format!("{mv:.2} mV pp once a 16-row frame, from vref_raw folded by tick modulo 16")
+            }
+            None if trusted => "no whole vref_raw pattern".into(),
+            None => "no trusted vref_raw pattern at this position".into(),
+        },
         "reported; every channel's share of it is taken out".into(),
         Verdict::NotJudged,
     );
     checks.push(ch.pattern_check());
+    if !trusted {
+        checks.push(Check {
+            name: "the reference reading".into(),
+            value: format!("{band}: the chip supply and the frame's own pattern were not judged"),
+            bound: format!(
+                "run the step again with the horn inside pos {:.0} to {:.0}",
+                VREF_POS_BAND.0, VREF_POS_BAND.1
+            ),
+            verdict: Verdict::Warn,
+        });
+    }
     let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
         checks.push(Check {
             name: name.into(),
@@ -897,8 +993,16 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             "tap_b_counts": est(w_b.mean, "counts", "raw row vmotor_b, torque on"),
             "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, "counts", "rest row pos, torque off, the VDD frame ripple out"),
             "vdd_frame_ripple_mv_pp": ripple_mv.map_or(Value::Null, |mv| est(mv, "mV", "rest row vref_raw folded by tick modulo 16, reported, not judged")),
-            "vdd_v": est(vdd, "V", "rest row vref_raw, the 1.2 V reference"),
-            "rail_v": est(rail, "V", "rest row vbus_raw through the rail divider, the measured supply"),
+            "vdd_v": if trusted {
+                est(vdd, "V", "rest row vref_raw, the 1.2 V reference")
+            } else {
+                est(vdd, "V", "nominal vdd_mv: the reference is not trusted at the rest position")
+            },
+            "rail_v": est(rail, "V", if trusted {
+                "rest row vbus_raw through the rail divider, the measured supply"
+            } else {
+                "rest row vbus_raw through the rail divider, the nominal supply"
+            }),
             "supply_v": est(supply, "V", "the rail and the board's input drop"),
             "board_ntc_c": est(ntc_c, "C", "rest row ntc_raw through the part's nominal beta"),
             "stall_room_a": est(room_a, "A", "the awake zero to the converter's top, nominal counts per A"),
@@ -908,6 +1012,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         "ntc_words": ntc_words,
         "channels": ch.json(),
         "frame_ripple": {
+            "vref_trusted": trusted,
             "vref_pattern_counts": ch.vref.as_ref().map_or(Value::Null, |(p, _)| json!(p.to_vec())),
             "vref_mean_counts": ch.vref.as_ref().map_or(Value::Null, |(_, m)| json!(m)),
             "vdd_ripple_mv_pp": ripple_mv,
@@ -939,14 +1044,19 @@ mod tests {
     /// ripple at the bench's gains, and `extra` adds a frame pattern of
     /// its own to the rest row's pos.
     fn rows(extra: impl Fn(u64) -> f64) -> (Vec<TelFrame>, Vec<TelFrame>) {
+        rows_at(2041.0, 1490.0, extra)
+    }
+
+    /// [`rows`] with the pot at `pos` and the reference reading `vref`.
+    fn rows_at(pos: f64, vref: f64, extra: impl Fn(u64) -> f64) -> (Vec<TelFrame>, Vec<TelFrame>) {
         let n = |i: u64, k: u64, base: f64, g: f64| {
             (base + g * vdd(i) + 0.4 * noise(i, k)).round() as u16
         };
         let rest = (0..20_000u64)
             .map(|i| TelFrame {
                 tick: i,
-                vref_raw: Some(n(i, 1, 1490.0, 1.0)),
-                pos: Some((2041.0 + 1.15 * vdd(i) + extra(i) + 0.4 * noise(i, 2)).round() as u16),
+                vref_raw: Some(n(i, 1, vref, 1.0)),
+                pos: Some((pos + 1.15 * vdd(i) + extra(i) + 0.4 * noise(i, 2)).round() as u16),
                 vbus_raw: Some(n(i, 3, 1241.0, 0.73)),
                 ntc_raw: Some(n(i, 4, 2010.0, 1.59)),
                 current_raw: Some(n(i, 5, 1206.0, 0.16)),
@@ -957,7 +1067,7 @@ mod tests {
         let raw = (0..20_000u64)
             .map(|i| TelFrame {
                 tick: i,
-                pos: Some(n(i, 7, 2041.0, 1.15)),
+                pos: Some(n(i, 7, pos, 1.15)),
                 current_raw: Some(n(i, 8, 1206.0, 0.16)),
                 vmotor_a: Some(n(i, 9, 773.0, 0.5)),
                 vmotor_b: Some(n(i, 10, 772.0, 0.5)),
@@ -995,5 +1105,164 @@ mod tests {
         let c = Channels::of(&rest, &raw).pattern_check();
         assert_eq!(c.verdict, Verdict::Fail, "{}", c.value);
         assert!(c.value.contains("(rest pos)"), "{}", c.value);
+    }
+
+    /// The dev board's sense chain, its NTC words the stage 1 design.
+    fn sense() -> Sense {
+        let ntc = Parts {
+            pullup_ohm: 10_000.0,
+            r25_ohm: 10_000.0,
+            beta: 3950.0,
+        };
+        Sense {
+            shunt_r_mohm: 60.0,
+            gain_milli: 14_884.0,
+            vdd_mv: 3300.0,
+            vmotor_div_top: 6400.0,
+            vmotor_div_bot: 1600.0,
+            vbus_div_top: 6400.0,
+            vbus_div_bot: 1600.0,
+            rail_drop_mv: 250.0,
+            bias_nom: 773.0,
+            tick_hz: 20_000.0,
+            words: ntc::design(&ntc, &ntc::STAGE_1).expect("designs"),
+            ntc,
+        }
+    }
+
+    fn burst(layout: Layout, rows: Vec<TelFrame>) -> Burst {
+        Burst {
+            layout,
+            armed: ROWS,
+            frames: rows.len() / 16,
+            rows,
+            holes: 0,
+            skipped: 0,
+            garble: 0,
+            laps: 0,
+            timed_out: false,
+            alert: false,
+            dropped: 0,
+            first_stamp: None,
+        }
+    }
+
+    /// [`judge`] on the rows of [`rows_at`].
+    fn judged(pos: f64, vref: f64) -> Judged {
+        let (rest, raw) = rows_at(pos, vref, |_| 0.0);
+        let b = Before {
+            line: Line {
+                caps: 0,
+                baud: osc_client::BaudRate::B3000000,
+                row_bytes_max: 32,
+            },
+            sense: sense(),
+            servo: Map::new(),
+            pos,
+            rail_v: 5.0,
+            deadman_ticks: 10_000,
+            rungs: [Rung::still("rest", 1.0, pos), Rung::still("raw", 1.0, pos)],
+        };
+        judge(
+            &b,
+            &burst(Layout::Rest, rest),
+            &burst(Layout::Raw, raw),
+            None,
+        )
+    }
+
+    fn named<'a>(j: &'a Judged, name: &str) -> &'a Check {
+        j.checks
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no {name} check"))
+    }
+
+    fn failed(j: &Judged) -> Vec<String> {
+        j.checks
+            .iter()
+            .filter(|c| c.verdict == Verdict::Fail)
+            .map(|c| format!("{}: {}", c.name, c.value))
+            .collect()
+    }
+
+    #[test]
+    fn the_reference_is_trusted_inside_its_pos_band() {
+        assert!(vref_trusted(700.0) && vref_trusted(2750.0) && vref_trusted(2041.0));
+        assert!(!vref_trusted(699.9) && !vref_trusted(2750.1));
+        assert!(!vref_trusted(f64::NAN));
+    }
+
+    /// Near the top of the pot's range the reference reads 13 % high: the
+    /// rail is the nominal supply's, not the reference's.
+    #[test]
+    fn the_rail_is_read_through_the_reference_only_inside_the_band() {
+        let s = sense();
+        assert_eq!(rail_of(&s, 3517.0, 1700.0, 1241.0), s.rail_v(1241.0, None));
+        assert_eq!(
+            rail_of(&s, 2041.0, 1495.0, 1241.0),
+            s.rail_v(1241.0, Some(1495.0))
+        );
+        assert_ne!(rail_of(&s, 2041.0, 1495.0, 1241.0), s.rail_v(1241.0, None));
+        assert_eq!(rail_of(&s, 2041.0, 0.0, 1241.0), s.rail_v(1241.0, None));
+    }
+
+    /// The horn at pos 3517, the reference reading 1700 for the supply's
+    /// 1495: the supply and the frame pattern are not judged, the nominal
+    /// supply is used, and the step is not refused for it.
+    #[test]
+    fn a_rest_outside_the_reference_band_uses_the_nominal_supply_and_is_not_refused() {
+        let j = judged(3517.0, 1700.0);
+        assert!(failed(&j).is_empty(), "{:?}", failed(&j));
+        let vdd = named(&j, "chip supply");
+        assert_eq!(vdd.verdict, Verdict::NotJudged, "{}", vdd.value);
+        assert!(
+            vdd.value.contains("pos 3517") && vdd.value.contains("700 to 2750"),
+            "{}",
+            vdd.value
+        );
+        let frame = named(&j, "the frame's own pattern");
+        assert_eq!(frame.verdict, Verdict::NotJudged, "{}", frame.value);
+        assert!(
+            frame.value.contains("no trusted reference pattern"),
+            "{}",
+            frame.value
+        );
+        let warn = named(&j, "the reference reading");
+        assert_eq!(warn.verdict, Verdict::Warn, "{}", warn.value);
+        assert!(warn.bound.contains("run the step again"), "{}", warn.bound);
+        let est = &j.result["estimates"];
+        assert_eq!(j.result["frame_ripple"]["vref_trusted"], false);
+        assert_eq!(est["vdd_v"]["value"], 3.3);
+        assert!(
+            est["vdd_v"]["source"]
+                .as_str()
+                .is_some_and(|s| s.contains("nominal")),
+            "{}",
+            est["vdd_v"]
+        );
+        let s = sense();
+        let rail = est["rail_v"]["value"].as_f64().expect("rail");
+        let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]
+            .as_f64()
+            .expect("vbus");
+        assert_eq!(rail, s.rail_v(vbus, None));
+        let fr = &j.result["frame_ripple"];
+        assert!(fr["vref_pattern_counts"].is_null() && fr["vref_mean_counts"].is_null());
+        assert!(fr["vdd_ripple_mv_pp"].is_null() && est["vdd_frame_ripple_mv_pp"].is_null());
+        assert_eq!(j.result["channels"]["raw"]["pos"]["vdd_gain"], 0.0);
+    }
+
+    #[test]
+    fn a_rest_inside_the_band_judges_the_supply_from_the_reference() {
+        let j = judged(2041.0, 1490.0);
+        assert!(failed(&j).is_empty(), "{:?}", failed(&j));
+        assert_eq!(named(&j, "chip supply").verdict, Verdict::Pass);
+        assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
+        assert!(!j.checks.iter().any(|c| c.name == "the reference reading"));
+        let est = &j.result["estimates"];
+        assert_eq!(j.result["frame_ripple"]["vref_trusted"], true);
+        assert!(est["vdd_v"]["value"].as_f64().is_some_and(|v| v != 3.3));
+        assert!(j.result["frame_ripple"]["vref_pattern_counts"].is_array());
     }
 }

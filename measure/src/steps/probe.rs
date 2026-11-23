@@ -78,9 +78,10 @@ pub const NO_CURRENT_A: f64 = 0.02;
 pub const FULL_RAIL: f64 = 1.5;
 /// The current back at zero after a burst, A of the rest zero.
 pub const AFTER_MAX_A: f64 = 0.02;
-/// The share of the free rotor's planning R part B is priced at: its
-/// current overstated by over 10 %, past the few percent a free rotor
-/// reads over a seated one.
+/// The share of the free rotor's planning R part B is priced at. The
+/// pooled fit with an intercept reads about a tenth over a seated rotor's
+/// R, so the share prices at about the seated R; the margin is the
+/// ladder's ceiling, half the stop-hold line.
 pub const PRICE_SHARE: f64 = 0.9;
 /// Periods at a burst's end its current is read over.
 const LATE: usize = 3;
@@ -1453,5 +1454,29 @@ mod tests {
             (at(1.6, Some((4.8, 12.0))) - 0.4).abs() < 1e-12,
             "a stated stall over both"
         );
+    }
+
+    /// A rest outside the reference's pos band keeps no pattern: the probe
+    /// reads its pot rows as they come, never refused for it.
+    #[test]
+    fn a_rest_without_a_reference_pattern_compensates_nothing() {
+        let est = |v: f64| serde_json::json!({"value": v});
+        let rest = serde_json::json!({
+            "verdict": "accepted",
+            "estimates": {
+                "current_zero_awake_counts": est(1206.0),
+                "pot_rest_sd_counts": est(0.8),
+                "tap_a_counts": est(773.0),
+                "tap_b_counts": est(772.0),
+            },
+            "channels": {"raw": {"pos": {"vdd_gain": 0.0}}},
+            "frame_ripple": {
+                "vref_trusted": false,
+                "vref_pattern_counts": null,
+                "vref_mean_counts": null,
+            },
+        });
+        let r = FromRest::of(&rest).expect("not refused");
+        assert_eq!((r.pattern, r.pos_gain), (None, 0.0));
     }
 }
