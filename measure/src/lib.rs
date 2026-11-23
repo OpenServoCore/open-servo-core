@@ -16,6 +16,7 @@ pub mod nameplate;
 pub mod ntc;
 pub mod policy;
 pub mod pyjson;
+pub mod ripple;
 pub mod rules;
 pub mod set;
 pub mod sink;
