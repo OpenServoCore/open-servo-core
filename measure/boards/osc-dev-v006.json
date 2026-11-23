@@ -1,0 +1,15 @@
+{
+  "name": "osc-dev-v006",
+  "tick_hz": 20000,
+  "vdd_mv": 3300,
+  "oc_trip_ma": 2200,
+  "ntc_site": "air",
+  "ntc_curve": {"raw_ref": 2048, "t_ref_cc": 2430, "k1_q88": 474, "k2_q24": 19934},
+  "source": {
+    "tick_hz": "the kernel tick, read-only CALIB tick_hz on the servo",
+    "vdd_mv": "the board's nominal chip supply, the word a capture is matched to its board by (notebooks oscnb/boards.py, sha1 d549ec8ce94ced790c81bd6f032b55e21b3d3421)",
+    "oc_trip_ma": "a wiring or bridge fault detector above the locked-rotor current on a full 2S pack and under where the sense chain saturates (firmware regions/config.rs DEFAULT_OC_TRIP_MA)",
+    "ntc_site": "in room air beside the bridge, not on the motor can",
+    "ntc_curve": "the stage 1 design quadratic of the part's nominal beta through the board's pull-up, pinned at 90 C (notebooks stages/1-board/ntc-curve/results/dev-v006-2A-D.json design_*, sha1 bbc7941d1137b2ed3bba5758b1f80393ac915d93)"
+  }
+}
