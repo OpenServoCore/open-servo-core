@@ -125,7 +125,7 @@ enum StepName {
         out: PathBuf,
     },
     /// Step 3, the stops and the seated R and L: the rest step and the
-    /// probe first, then four seats at the two stops, shunt bursts at
+    /// probe first, then two seats at each stop, shunt bursts at
     /// each, and the shaft left near mid travel. Presses the end stops;
     /// metal gears only, for now.
     Stops {

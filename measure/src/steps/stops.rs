@@ -1,13 +1,15 @@
 //! Step 3, the stops and the seated R and L, on the probe's result: its
 //! proven sign, its pricing R and its ceiling. Metal trains only, for now.
 //!
-//! The two stops are found by [`super::seek`]: four seats, the low stop
-//! and the high alternated, every drive open loop and host-polled every
-//! [`seek::POLL_S`] under a [`POLL_DEADMAN_S`] bus dead-man, at three
-//! duties from the probe: the approach (the level that proved the sign and
-//! one ladder step, at most the ceiling), the ceiling (the volts whose
-//! blocked current is half the gear's stop-hold ceiling at the pricing R)
-//! and the seat (half the ceiling). No drive exceeds the ceiling.
+//! The two stops are found by [`super::seek`]: two seats a stop, the low
+//! stop and the high alternated, every drive open loop and host-polled
+//! every [`seek::POLL_S`] under a [`POLL_DEADMAN_S`] bus dead-man, at
+//! three duties from the probe: the approach (the level that proved the
+//! sign and one ladder step, at most the ceiling), which every press
+//! toward a stop runs at and never above; the seat (half the ceiling);
+//! and the ceiling (the volts whose blocked current is half the gear's
+//! stop-hold ceiling at the pricing R), which only a leave rises to. No
+//! drive exceeds the ceiling.
 //!
 //! At each seat, once the stop is read, the duty goes to zero with torque
 //! kept on and the train wound against the stop; with the current back at
@@ -82,8 +84,10 @@ pub const COUNTS_PER_DEG: (f64, f64) = (10.0, 30.0);
 /// A stop this close to a converter rail is flagged.
 pub const RAIL_NEAR_COUNTS: f64 = 8.0;
 pub const KEPT_MIN: usize = 6;
-/// The two stops' R within this share of their mean.
-pub const STOPS_R_SHARE: f64 = 0.06;
+/// The two stops' R within this share of their mean: the winding's R
+/// moves a few percent with the rotor's angle, and the two stops are two
+/// angles.
+pub const STOPS_R_SHARE: f64 = 0.10;
 /// The burst-to-burst sd of R inside the groups, over the median.
 pub const R_SD_MAX: f64 = 0.03;
 const ADC_TOP: f64 = 4095.0;
@@ -425,13 +429,22 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
             cfg.approach_q15,
             seek::WINDOW_S,
         ),
-        ("a window at the ceiling", cfg.ceiling_q15, seek::WINDOW_S),
         ("a seat hold", cfg.seat_q15, seek::HOLD_S),
     ] {
         env.price(&window_rung(
             name, q, s, true, pos, &cfg, stated_v, rated_cps,
         ))?;
     }
+    env.price(&window_rung(
+        "a leave window at the ceiling",
+        cfg.ceiling_q15,
+        seek::WINDOW_S,
+        false,
+        pos,
+        &cfg,
+        stated_v,
+        rated_cps,
+    ))?;
     for share in LEVELS {
         level_q15(&mut env, share, rail_v, -1, pos, trip_a, stall)?;
     }
@@ -1196,7 +1209,7 @@ fn keep_bursts(
     Ok(())
 }
 
-/// Step 3 on the servo: the four seats and their bursts, then the way
+/// Step 3 on the servo: two seats a stop and their bursts, then the way
 /// out. Refused with nothing written when it cannot start; once it has
 /// written, it ends through the guard whatever happens, and keeps its
 /// captures and result.
@@ -1267,6 +1280,12 @@ pub async fn stops<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result
         ),
         _ => (Way::Done, None),
     };
+    if let Some(w) = why.as_mut() {
+        w.push_str(&format!(
+            "; the shaft ends at {} counts",
+            after.map_or("a position not read".into(), |p| format!("{p:.0}"))
+        ));
+    }
     let result = result_json(&b, &found, &read, &checks, way, &exit, after);
     let mut text = serde_json::to_vec_pretty(&result).unwrap_or_default();
     text.push(b'\n');
@@ -1316,7 +1335,8 @@ fn result_json(
             "start_counts": s.start_pos(),
             "seats": s.seats().iter().map(|x| json!({"n": x.n, "stop": x.stop.word(), "pos_counts": x.pos, "range_counts": x.range, "walk_counts": x.walk})).collect::<Vec<_>>(),
             "legs": s.legs().iter().map(|l| json!({"n": l.n, "kind": l.kind.word(), "toward": l.toward.word(), "from_counts": l.from, "to_counts": l.to, "secs": l.secs, "top_q15": l.top_q15, "top_v": s.cfg().volts(l.top_q15)})).collect::<Vec<_>>(),
-            "sticky_spots": s.sticky().iter().map(|x| json!({"at_counts": x.at, "toward": x.toward.word(), "leg": x.kind.word(), "freed_q15": x.q15, "freed_v": s.cfg().volts(x.q15)})).collect::<Vec<_>>(),
+            "approaches": s.approaches(),
+            "leave_raises": s.leave_raises().iter().map(|x| json!({"at_counts": x.at, "from": x.from.word(), "to_q15": x.q15, "to_v": s.cfg().volts(x.q15)})).collect::<Vec<_>>(),
             "path": s.path(),
         })
     });
@@ -1476,11 +1496,16 @@ mod tests {
 
     /// The shaft at rest at 2041 counts, the zero at 1206.
     fn still() -> Vec<TelSample> {
+        still_at(2041)
+    }
+
+    /// The shaft at rest at `pos`.
+    fn still_at(pos: u16) -> Vec<TelSample> {
         (0..4096u32)
             .map(|i| TelSample {
                 tick: TelemetryTick {
                     _scan: [0; 10],
-                    pos: 2041,
+                    pos,
                     vref_raw: 1490,
                     vbus_raw: 1241,
                     ntc_raw: 2010,
@@ -1637,7 +1662,17 @@ mod tests {
     #[test]
     fn an_approach_and_seat_write_in_order_under_the_ceiling() {
         let stop = AtomicBool::new(false);
-        let r = run(false, |_| Box::new(|_, _, _| {}), &stop);
+        // the first duty carries the shaft 141 counts on, where it rests
+        let arrive = |d: &Descriptor| -> OnWrite {
+            let (duty, mut moved) = (addr(d, "goal_duty"), false);
+            Box::new(move |a, b, pipe| {
+                if a == duty && b != [0, 0] && !moved {
+                    moved = true;
+                    pipe.set_track(0, still_at(1900));
+                }
+            })
+        };
+        let r = run(false, arrive, &stop);
         let e = &r.stopped.ended;
         assert_eq!(e.way, Way::Error, "no shunt burst on the fake: {:?}", e.why);
         assert!(
@@ -1674,14 +1709,7 @@ mod tests {
             .filter(|w| w.0 == "goal_duty")
             .map(|w| q(&w.1))
             .collect();
-        let mut want = vec![-c.approach_q15];
-        let mut x = c.approach_q15;
-        while x < c.ceiling_q15 {
-            x = (x + c.step_q15).min(c.ceiling_q15);
-            want.push(-x);
-        }
-        want.push(-c.seat_q15);
-        assert_eq!(duties, want);
+        assert_eq!(duties, [-c.approach_q15, -c.seat_q15], "never raised");
         assert!(
             r.writes[at + 1..end - 1]
                 .iter()
@@ -1704,7 +1732,7 @@ mod tests {
             [0, 0]
         );
         let lines = e.lines.join("\n");
-        assert!(lines.contains("seat 1: the low stop reads 2041"), "{lines}");
+        assert!(lines.contains("seat 1: the low stop reads 1900"), "{lines}");
         assert!(
             lines.contains("leg 1, approach toward the low stop"),
             "{lines}"
@@ -1726,7 +1754,12 @@ mod tests {
         };
         let r = run(false, latch, &AtomicBool::new(false));
         let e = &r.stopped.ended;
-        assert_eq!((e.way, e.why.as_deref()), (Way::Refused, Some(STALLED)));
+        assert_eq!(e.way, Way::Refused);
+        let why = e.why.as_deref().unwrap_or("");
+        assert!(
+            why.starts_with(STALLED) && why.ends_with("the shaft ends at 2041 counts"),
+            "{why}"
+        );
         assert!(e.exit.torque_off, "{}", e.exit);
 
         let stop = Rc::new(AtomicBool::new(false));
@@ -1985,7 +2018,7 @@ mod tests {
             .collect()
     }
 
-    /// The two stops' R within 6 % pass; 8 % apart refuses and names both;
+    /// The two stops' R within 10 % pass; 11 % apart refuses and names both;
     /// under six kept bursts at a stop refuses.
     #[test]
     fn the_seated_r_is_judged_across_the_stops() {
@@ -1993,13 +2026,16 @@ mod tests {
             bursts: [burst_reads(0, a, n), burst_reads(1, b, n)].concat(),
             period_s: 50e-6,
         };
-        let ok = judge_r(&read(4.20, 4.30, 3), &[]);
-        assert!(ok.iter().all(|c| c.verdict == Verdict::Pass), "{ok:?}");
-        let apart = judge_r(&read(4.20, 4.55, 3), &[]);
+        // the two seats of a bench run: about 7 % apart, two rotor angles
+        for (a, b) in [(4.20, 4.30), (4.40, 4.12)] {
+            let ok = judge_r(&read(a, b, 3), &[]);
+            assert!(ok.iter().all(|c| c.verdict == Verdict::Pass), "{ok:?}");
+        }
+        let apart = judge_r(&read(4.20, 4.70, 3), &[]);
         let (v, said) = verdict(&apart, "the two stops read the same R");
         assert_eq!(v, Verdict::Fail);
         assert!(
-            said.contains("low 4.2") && said.contains("high 4.5"),
+            said.contains("low 4.2") && said.contains("high 4.7"),
             "{said}"
         );
         let few = judge_r(&read(4.20, 4.25, 1), &[]);

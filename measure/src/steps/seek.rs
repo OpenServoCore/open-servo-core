@@ -1,22 +1,31 @@
 //! The stop finder's decisions, pure: fed the pot at each poll, it gives
 //! the duty for the next poll period, a seat to take the seated bursts
-//! at, or its end. Four seats, the low stop, the high, the low and the
-//! high again, then a drive to the middle of the two.
+//! at, or its end. Approaches alternate between the stops, the low one
+//! first, until each stop has two seats; then a drive to the middle of
+//! the two.
 //!
 //! An approach drives toward its stop at the approach duty with the stall
-//! permit held. A window of [`WINDOW_S`] whose every reading lies within
-//! the still band of its median is still: the duty rises one step and the
-//! next window watches. If the shaft moves on it was a sticky spot: the
-//! raised duty stays for the rest of the approach, never lowered and
-//! never off. Still for a window at the ceiling is seated. The duty then
-//! backs down to the seat duty toward the stop for [`HOLD_S`], and the
-//! median of the last [`READ_S`] is the stop's reading; a stop read more
-//! than [`WALK_MAX_COUNTS`] from its earlier seat ends all pressing.
+//! permit held, and that duty is never raised: a soft stopper gives under
+//! a harder press, and on this servo's low stop it carries the shaft past
+//! the pot's range. A window of [`WINDOW_S`] whose every reading lies
+//! within the still band of its median is still. Still after at least
+//! [`TRAVEL_MIN_COUNTS`] of the leg's travel is seated: the duty backs
+//! down to the seat duty toward the stop for [`HOLD_S`], and the median of
+//! the last [`READ_S`] is the stop's reading; a stop read more than
+//! [`WALK_MAX_COUNTS`] from its earlier seat ends all pressing. Still
+//! short of that travel on the first approach means the start was at or
+//! by that stop: no seat, and the finder leaves for the other one. On a
+//! later approach it is a shaft blocked between the stops.
 //!
 //! A leave drives away at the approach duty, without the permit, a step up
 //! a still window to the ceiling, until the shaft is [`LEAVE_COUNTS`] off
 //! the stop; the next approach carries on from there with no zero between.
 //! A leg is at most [`LEG_MAX_S`].
+//!
+//! A refusal taken with the shaft at a seat it just read, the walk or a
+//! blocked approach, first drives off that stop by a leave: to the middle
+//! when both stops are known, else [`CLEAR_COUNTS`] off it. Every other
+//! refusal stops at once.
 //!
 //! The kernel's sign rule with the sign proven: a logical +duty moves the
 //! counts up, so the low stop is pressed by -duty.
@@ -33,14 +42,24 @@ pub const READ_S: f64 = 0.100;
 /// [`STILL_MIN_COUNTS`].
 pub const STILL_SD: f64 = 3.0;
 pub const STILL_MIN_COUNTS: f64 = 3.0;
+/// Travel an approach must make before a still shaft is a seat, counts:
+/// the deprecated `ident` finder's `SEEK_TRAVEL_MIN`. A few counts of
+/// elastic wind-up at a stop pass any stillness test, and a finder that
+/// takes them for travel seats against the stop it started on.
+pub const TRAVEL_MIN_COUNTS: f64 = 100.0;
 pub const LEAVE_COUNTS: f64 = 150.0;
+/// How far a refusal's leave drives off a stop when the other is not
+/// known, counts.
+pub const CLEAR_COUNTS: f64 = 4.0 * LEAVE_COUNTS;
 pub const LEG_MAX_S: f64 = 30.0;
 pub const WALK_MAX_COUNTS: f64 = 10.0;
 /// A leg whose shaft falls back this far from the farthest it got toward
 /// its end runs the wrong way.
 pub const WRONG_WAY_COUNTS: f64 = LEAVE_COUNTS;
-/// The seats in order.
-pub const ORDER: [Stop; 4] = [Stop::Low, Stop::High, Stop::Low, Stop::High];
+pub const SEATS_A_STOP: usize = 2;
+/// The most approaches a run makes: one that finds the start at a stop,
+/// then two seats a stop.
+pub const APPROACHES_MAX: usize = 1 + 2 * SEATS_A_STOP;
 const Q15: f64 = 32768.0;
 
 /// The logical duty's sign that drives toward `s`.
@@ -116,20 +135,20 @@ pub struct Leg {
     pub top_q15: i16,
 }
 
-/// A spot that held the shaft at one duty and let it go one step up.
+/// A leave that went still and took a step up.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Sticky {
+pub struct LeaveRaise {
     pub at: f64,
-    pub toward: Stop,
-    pub kind: LegKind,
-    /// The duty that moved it on, Q15.
+    /// The stop it was leaving.
+    pub from: Stop,
+    /// The duty it rose to, Q15.
     pub q15: i16,
 }
 
 /// A stop seated and read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Seat {
-    /// 1 to 4, in [`ORDER`].
+    /// From 1, in the order taken.
     pub n: usize,
     pub stop: Stop,
     /// The median of the hold's last [`READ_S`], counts.
@@ -170,7 +189,7 @@ pub enum Act {
     /// Seated and read: the duty goes to zero, the seated bursts are
     /// taken, then [`Seek::resume`].
     Seated(Seat),
-    /// The four seats read and the shaft at the middle: zero.
+    /// Every seat read and the shaft at the middle: zero.
     Done,
     /// Refused: zero, nothing more drives.
     Stopped { kind: Refusal, why: String },
@@ -200,13 +219,21 @@ impl Window {
     }
 }
 
+/// Where a leave ends.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum End {
+    /// [`LEAVE_COUNTS`] off the stop, then the next approach.
+    Approach,
+    /// Past the middle of the stops.
+    Center(f64),
+    /// This far off the stop.
+    Off(f64),
+}
+
 enum Phase {
     Idle,
     Approach {
         stop: Stop,
-        q15: i16,
-        /// Where a still window last raised the duty, until it moves on.
-        held_at: Option<f64>,
     },
     Hold {
         stop: Stop,
@@ -218,8 +245,9 @@ enum Phase {
         from: Stop,
         seat: f64,
         q15: i16,
-        /// The middle of the stops, on the last leave.
-        center: Option<f64>,
+        end: End,
+        /// The refusal this leave drives off the stop ahead of.
+        then: Option<(Refusal, String)>,
     },
     Over,
 }
@@ -236,9 +264,10 @@ pub struct Seek {
     leg_top: i16,
     best: f64,
     start: Option<f64>,
+    approaches: usize,
     seats: Vec<Seat>,
     legs: Vec<Leg>,
-    sticky: Vec<Sticky>,
+    raises: Vec<LeaveRaise>,
     path: Vec<String>,
     refused: Option<(Refusal, String)>,
 }
@@ -254,9 +283,10 @@ impl Seek {
             leg_top: 0,
             best: 0.0,
             start: None,
+            approaches: 0,
             seats: Vec::new(),
             legs: Vec::new(),
-            sticky: Vec::new(),
+            raises: Vec::new(),
             path: Vec::new(),
             refused: None,
         }
@@ -278,8 +308,13 @@ impl Seek {
         &self.legs
     }
 
-    pub fn sticky(&self) -> &[Sticky] {
-        &self.sticky
+    /// The approaches driven.
+    pub fn approaches(&self) -> usize {
+        self.approaches
+    }
+
+    pub fn leave_raises(&self) -> &[LeaveRaise] {
+        &self.raises
     }
 
     /// The decisions taken, in order, a line each.
@@ -291,7 +326,7 @@ impl Seek {
         self.refused.as_ref()
     }
 
-    /// All four seats read and the shaft brought to the middle.
+    /// Every seat read and the shaft brought to the middle.
     pub fn finished(&self) -> bool {
         matches!(self.phase, Phase::Over) && self.refused.is_none()
     }
@@ -300,11 +335,50 @@ impl Seek {
         self.cfg.volts(q15)
     }
 
+    fn seats_at(&self, s: Stop) -> Vec<f64> {
+        self.seats
+            .iter()
+            .filter(|x| x.stop == s)
+            .map(|x| x.pos)
+            .collect()
+    }
+
+    /// The middle of the stops, once each has a seat.
+    fn middle(&self) -> Option<f64> {
+        Some((median(&self.seats_at(Stop::Low))? + median(&self.seats_at(Stop::High))?) / 2.0)
+    }
+
     fn stop(&mut self, kind: Refusal, why: String) -> Act {
         self.path.push(format!("refused: {why}"));
         self.refused = Some((kind, why.clone()));
         self.phase = Phase::Over;
         Act::Stopped { kind, why }
+    }
+
+    /// Refuse, first driving off the stop of the last seat when the shaft
+    /// is still at it.
+    fn refuse_off(&mut self, kind: Refusal, why: String, t: f64, pos: f64) -> Act {
+        let Some(last) = self
+            .seats
+            .last()
+            .filter(|s| (pos - s.pos).abs() <= LEAVE_COUNTS)
+            .cloned()
+        else {
+            return self.stop(kind, why);
+        };
+        let end = match self.middle() {
+            Some(m) => End::Center(m),
+            None => End::Off(CLEAR_COUNTS),
+        };
+        self.path.push(format!(
+            "refusing: {why}; first a leave off the {} stop, {}",
+            last.stop.word(),
+            match end {
+                End::Center(m) => format!("to the middle at {m:.0}"),
+                _ => format!("{CLEAR_COUNTS} counts off it"),
+            }
+        ));
+        self.leave(last.stop, last.pos, end, Some((kind, why)), t, pos)
     }
 
     fn begin_leg(&mut self, t: f64, pos: f64, q15: i16) {
@@ -329,21 +403,47 @@ impl Seek {
 
     fn approach(&mut self, stop: Stop, t: f64, pos: f64) -> Act {
         let q15 = self.cfg.approach_q15;
+        self.approaches += 1;
         self.begin_leg(t, pos, q15);
-        self.phase = Phase::Approach {
-            stop,
-            q15,
-            held_at: None,
-        };
+        self.phase = Phase::Approach { stop };
         self.path.push(format!(
-            "seat {}: approach the {} stop from {pos:.0} at {:.3} V, the permit held",
-            self.seats.len() + 1,
+            "approach {}: toward the {} stop from {pos:.0} at {:.3} V, the permit held",
+            self.approaches,
             stop.word(),
             self.v(q15)
         ));
+        self.press(stop, q15, Some(WINDOW_S))
+    }
+
+    fn press(&self, stop: Stop, q15: i16, price: Option<f64>) -> Act {
         Act::Drive {
             q15: q15 * toward(stop) as i16,
             permit: true,
+            price,
+        }
+    }
+
+    fn leave(
+        &mut self,
+        from: Stop,
+        seat: f64,
+        end: End,
+        then: Option<(Refusal, String)>,
+        t: f64,
+        pos: f64,
+    ) -> Act {
+        let q15 = self.cfg.approach_q15;
+        self.begin_leg(t, pos, q15);
+        self.phase = Phase::Leave {
+            from,
+            seat,
+            q15,
+            end,
+            then,
+        };
+        Act::Drive {
+            q15: q15 * toward(other(from)) as i16,
+            permit: false,
             price: Some(WINDOW_S),
         }
     }
@@ -351,29 +451,20 @@ impl Seek {
     /// The first approach, from the pot read before any duty.
     pub fn start(&mut self, t: f64, pos: f64) -> Act {
         if !pos.is_finite() {
-            return self.dead(pos);
+            return self.stop(Refusal::DeadPot, dead(pos));
         }
         self.start = Some(pos);
-        self.approach(ORDER[0], t, pos)
-    }
-
-    fn dead(&mut self, pos: f64) -> Act {
-        self.stop(
-            Refusal::DeadPot,
-            format!(
-                "the pot reads {pos}, no number: a dead or slipped pot. Nothing more drives; {HANDS}; if it is refused again, check the pot's wiring"
-            ),
-        )
+        self.approach(Stop::Low, t, pos)
     }
 
     /// The leg's checks common to every drive: the pot reads, the leg is
     /// inside its time, the shaft does not run back from where it got.
-    fn leg_checks(&mut self, t: f64, pos: f64, dir: f64, what: &str) -> Option<Act> {
+    fn leg_checks(&mut self, t: f64, pos: f64, dir: f64, what: &str) -> Option<(Refusal, String)> {
         if !pos.is_finite() {
-            return Some(self.dead(pos));
+            return Some((Refusal::DeadPot, dead(pos)));
         }
         if t - self.leg_t0 > LEG_MAX_S {
-            return Some(self.stop(
+            return Some((
                 Refusal::TimeOut,
                 format!(
                     "the {what} ran {LEG_MAX_S} s from {:.0} and ended at {pos:.0} without its end: the shaft runs too slowly or something holds it. Nothing more drives; {HANDS}",
@@ -384,7 +475,7 @@ impl Seek {
         let along = (pos - self.leg_from) * dir;
         self.best = self.best.max(along);
         if self.best - along > WRONG_WAY_COUNTS {
-            return Some(self.stop(
+            return Some((
                 Refusal::WrongWay,
                 format!(
                     "the {what} drove {} counts and the shaft ran {:.0} counts the other way: the drive's sign is not the one the probe proved, or something turns the horn. Nothing more drives; {HANDS}",
@@ -398,218 +489,233 @@ impl Seek {
 
     /// The pot read at `t` after a poll period at the last duty given.
     pub fn feed(&mut self, t: f64, pos: f64) -> Act {
-        let band = self.cfg.still_counts;
         match std::mem::replace(&mut self.phase, Phase::Over) {
-            Phase::Approach { stop, q15, held_at } => {
-                let dir = toward(stop);
-                let what = format!("approach to the {} stop", stop.word());
-                if let Some(a) = self.leg_checks(t, pos, dir as f64, &what) {
-                    return a;
-                }
-                let Some(still) = self.window.judge(t, pos, band) else {
-                    self.phase = Phase::Approach { stop, q15, held_at };
-                    return Act::Drive {
-                        q15: q15 * dir as i16,
-                        permit: true,
-                        price: None,
-                    };
-                };
-                self.window = Window::new(t, pos);
-                if !still {
-                    let held_at = match held_at {
-                        Some(at) => {
-                            self.sticky.push(Sticky {
-                                at,
-                                toward: stop,
-                                kind: LegKind::Approach,
-                                q15,
-                            });
-                            self.path.push(format!(
-                                "the shaft moved on at {:.3} V: a sticky spot at {at:.0}; the raised duty stays for the rest of this approach",
-                                self.v(q15)
-                            ));
-                            None
-                        }
-                        None => None,
-                    };
-                    self.phase = Phase::Approach { stop, q15, held_at };
-                    return Act::Drive {
-                        q15: q15 * dir as i16,
-                        permit: true,
-                        price: Some(WINDOW_S),
-                    };
-                }
-                if q15 < self.cfg.ceiling_q15 {
-                    let up = self.cfg.raised(q15);
-                    self.leg_top = self.leg_top.max(up);
-                    self.path.push(format!(
-                        "still at {pos:.0} for {WINDOW_S} s at {:.3} V: raised to {:.3} V",
-                        self.v(q15),
-                        self.v(up)
-                    ));
-                    self.phase = Phase::Approach {
-                        stop,
-                        q15: up,
-                        held_at: held_at.or(Some(pos)),
-                    };
-                    return Act::Drive {
-                        q15: up * dir as i16,
-                        permit: true,
-                        price: Some(WINDOW_S),
-                    };
-                }
-                self.end_leg(LegKind::Approach, stop, t, pos);
-                self.path.push(format!(
-                    "still at {pos:.0} for {WINDOW_S} s at the ceiling's {:.3} V: seated; backed down to {:.3} V for {HOLD_S} s",
-                    self.v(q15),
-                    self.v(self.cfg.seat_q15)
-                ));
-                self.phase = Phase::Hold {
-                    stop,
-                    t0: t,
-                    rows: Vec::new(),
-                };
-                Act::Drive {
-                    q15: self.cfg.seat_q15 * dir as i16,
-                    permit: true,
-                    price: Some(HOLD_S),
-                }
-            }
-            Phase::Hold { stop, t0, mut rows } => {
-                if !pos.is_finite() {
-                    return self.dead(pos);
-                }
-                rows.push((t, pos));
-                if t - t0 < HOLD_S - 1e-9 {
-                    self.phase = Phase::Hold { stop, t0, rows };
-                    return Act::Drive {
-                        q15: self.cfg.seat_q15 * toward(stop) as i16,
-                        permit: true,
-                        price: None,
-                    };
-                }
-                let tail: Vec<f64> = rows
-                    .iter()
-                    .filter(|(at, _)| *at >= t - READ_S - 1e-9)
-                    .map(|(_, p)| *p)
-                    .collect();
-                let read = median(&tail).unwrap_or(pos);
-                let range = tail.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-                    - tail.iter().copied().fold(f64::INFINITY, f64::min);
-                let n = self.seats.len() + 1;
-                let walk = self
-                    .seats
-                    .iter()
-                    .find(|s| s.stop == stop)
-                    .map(|s| read - s.pos);
-                self.seats.push(Seat {
-                    n,
-                    stop,
-                    pos: read,
-                    range,
-                    walk,
-                });
-                if let Some(w) = walk.filter(|w| w.abs() > WALK_MAX_COUNTS) {
-                    return self.stop(
-                        Refusal::Walked,
-                        format!(
-                            "seat {n} reads the {} stop at {read:.0}, {w:+.0} counts off its earlier seat, over {WALK_MAX_COUNTS}: a stopper that yields, or a stall that was no stop. All pressing ends; {HANDS}, and check the horn and the stop for damage",
-                            stop.word()
-                        ),
-                    );
-                }
-                self.path.push(format!(
-                    "seat {n}: the {} stop reads {read:.0} (the median of the last {READ_S} s){}",
-                    stop.word(),
-                    walk.map_or(String::new(), |w| format!(
-                        ", {w:+.0} counts off its earlier seat"
-                    ))
-                ));
-                self.phase = Phase::AtSeat;
-                Act::Seated(self.seats[n - 1].clone())
-            }
+            Phase::Approach { stop } => self.on_approach(stop, t, pos),
+            Phase::Hold { stop, t0, rows } => self.on_hold(stop, t0, rows, t, pos),
             Phase::Leave {
                 from,
                 seat,
                 q15,
-                center,
-            } => {
-                let to = other(from);
-                let dir = toward(to);
-                let kind = if center.is_some() {
-                    LegKind::Center
-                } else {
-                    LegKind::Leave
-                };
-                let what = format!("leave from the {} stop", from.word());
-                if let Some(a) = self.leg_checks(t, pos, dir as f64, &what) {
-                    return a;
-                }
-                let arrived = match center {
-                    Some(m) => (pos - m) * dir as f64 >= 0.0,
-                    None => (pos - seat).abs() >= LEAVE_COUNTS,
-                };
-                if arrived {
-                    self.end_leg(kind, to, t, pos);
-                    if center.is_some() {
-                        self.path
-                            .push(format!("at {pos:.0}, the middle of the stops: zero"));
-                        self.phase = Phase::Over;
-                        return Act::Done;
-                    }
-                    return self.approach(to, t, pos);
-                }
-                let mut q = q15;
-                if let Some(still) = self.window.judge(t, pos, band) {
-                    self.window = Window::new(t, pos);
-                    if still {
-                        if q15 >= self.cfg.ceiling_q15 {
-                            return self.stop(
-                                Refusal::Blocked,
-                                format!(
-                                    "the shaft does not leave the {} stop at the ceiling's {:.3} V (still at {pos:.0}): a shaft blocked there or a dead pot. Nothing more drives; {HANDS}",
-                                    from.word(),
-                                    self.v(q15)
-                                ),
-                            );
-                        }
-                        q = self.cfg.raised(q15);
-                        self.leg_top = self.leg_top.max(q);
-                        self.path.push(format!(
-                            "leaving the {} stop: still at {pos:.0} at {:.3} V: raised to {:.3} V",
-                            from.word(),
-                            self.v(q15),
-                            self.v(q)
-                        ));
-                    }
-                    self.phase = Phase::Leave {
-                        from,
-                        seat,
-                        q15: q,
-                        center,
-                    };
-                    return Act::Drive {
-                        q15: q * dir as i16,
-                        permit: false,
-                        price: Some(WINDOW_S),
-                    };
-                }
-                self.phase = Phase::Leave {
-                    from,
-                    seat,
-                    q15: q,
-                    center,
-                };
-                Act::Drive {
-                    q15: q * dir as i16,
-                    permit: false,
-                    price: None,
-                }
-            }
+                end,
+                then,
+            } => self.on_leave(from, seat, q15, end, then, t, pos),
             other_phase => {
                 self.phase = other_phase;
                 self.after()
             }
+        }
+    }
+
+    fn on_approach(&mut self, stop: Stop, t: f64, pos: f64) -> Act {
+        let q15 = self.cfg.approach_q15;
+        let what = format!("approach to the {} stop", stop.word());
+        if let Some((kind, why)) = self.leg_checks(t, pos, toward(stop) as f64, &what) {
+            return self.stop(kind, why);
+        }
+        let Some(still) = self.window.judge(t, pos, self.cfg.still_counts) else {
+            self.phase = Phase::Approach { stop };
+            return self.press(stop, q15, None);
+        };
+        self.window = Window::new(t, pos);
+        if !still {
+            self.phase = Phase::Approach { stop };
+            return self.press(stop, q15, Some(WINDOW_S));
+        }
+        let travel = (pos - self.leg_from).abs();
+        self.end_leg(LegKind::Approach, stop, t, pos);
+        if travel < TRAVEL_MIN_COUNTS {
+            if self.approaches == 1 {
+                self.path.push(format!(
+                    "still at {pos:.0} after {travel:.0} counts of travel, under {TRAVEL_MIN_COUNTS}: the start was at or by the {} stop; no seat there, the finder leaves for the {} stop",
+                    stop.word(),
+                    other(stop).word()
+                ));
+                return self.leave(stop, pos, End::Approach, None, t, pos);
+            }
+            return self.refuse_off(
+                Refusal::Blocked,
+                format!(
+                    "the approach to the {} stop went still at {pos:.0} after {travel:.0} counts from {:.0}, under {TRAVEL_MIN_COUNTS}: the shaft is blocked between the stops. Nothing more presses; {HANDS}, and check that nothing holds the horn",
+                    stop.word(),
+                    self.leg_from
+                ),
+                t,
+                pos,
+            );
+        }
+        self.path.push(format!(
+            "still at {pos:.0} for {WINDOW_S} s at {:.3} V after {travel:.0} counts: seated; backed down to {:.3} V for {HOLD_S} s",
+            self.v(q15),
+            self.v(self.cfg.seat_q15)
+        ));
+        self.phase = Phase::Hold {
+            stop,
+            t0: t,
+            rows: Vec::new(),
+        };
+        self.press(stop, self.cfg.seat_q15, Some(HOLD_S))
+    }
+
+    fn on_hold(&mut self, stop: Stop, t0: f64, mut rows: Vec<(f64, f64)>, t: f64, pos: f64) -> Act {
+        if !pos.is_finite() {
+            return self.stop(Refusal::DeadPot, dead(pos));
+        }
+        rows.push((t, pos));
+        if t - t0 < HOLD_S - 1e-9 {
+            self.phase = Phase::Hold { stop, t0, rows };
+            return self.press(stop, self.cfg.seat_q15, None);
+        }
+        let tail: Vec<f64> = rows
+            .iter()
+            .filter(|(at, _)| *at >= t - READ_S - 1e-9)
+            .map(|(_, p)| *p)
+            .collect();
+        let read = median(&tail).unwrap_or(pos);
+        let range = tail.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - tail.iter().copied().fold(f64::INFINITY, f64::min);
+        let n = self.seats.len() + 1;
+        let walk = self
+            .seats
+            .iter()
+            .find(|s| s.stop == stop)
+            .map(|s| read - s.pos);
+        self.seats.push(Seat {
+            n,
+            stop,
+            pos: read,
+            range,
+            walk,
+        });
+        if let Some(w) = walk.filter(|w| w.abs() > WALK_MAX_COUNTS) {
+            return self.refuse_off(
+                Refusal::Walked,
+                format!(
+                    "seat {n} reads the {} stop at {read:.0}, {w:+.0} counts off its earlier seat, over {WALK_MAX_COUNTS}: a stopper that yields, or a stall that was no stop. All pressing ends; check the horn and the stop for damage, then {HANDS}",
+                    stop.word()
+                ),
+                t,
+                pos,
+            );
+        }
+        self.path.push(format!(
+            "seat {n}: the {} stop reads {read:.0} (the median of the last {READ_S} s){}",
+            stop.word(),
+            walk.map_or(String::new(), |w| format!(
+                ", {w:+.0} counts off its earlier seat"
+            ))
+        ));
+        self.phase = Phase::AtSeat;
+        Act::Seated(self.seats[n - 1].clone())
+    }
+
+    /// A leave failed: a plain refusal, or, ahead of one, the refusal it
+    /// was driving off the stop for, the horn left there.
+    fn leave_failed(
+        &mut self,
+        from: Stop,
+        then: Option<(Refusal, String)>,
+        kind: Refusal,
+        why: String,
+    ) -> Act {
+        match then {
+            None => self.stop(kind, why),
+            Some((k0, w0)) => self.stop(
+                if kind.aborts() { kind } else { k0 },
+                format!(
+                    "{w0}. The leave off the stop failed ({why}): the horn was left at the {} stop",
+                    from.word()
+                ),
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn on_leave(
+        &mut self,
+        from: Stop,
+        seat: f64,
+        q15: i16,
+        end: End,
+        then: Option<(Refusal, String)>,
+        t: f64,
+        pos: f64,
+    ) -> Act {
+        let to = other(from);
+        let dir = toward(to);
+        let kind = match end {
+            End::Center(_) => LegKind::Center,
+            _ => LegKind::Leave,
+        };
+        let what = format!("leave from the {} stop", from.word());
+        if let Some((k, why)) = self.leg_checks(t, pos, dir as f64, &what) {
+            return self.leave_failed(from, then, k, why);
+        }
+        let arrived = match end {
+            End::Approach => (pos - seat).abs() >= LEAVE_COUNTS,
+            End::Center(m) => (pos - m) * dir as f64 >= 0.0,
+            End::Off(c) => (pos - seat).abs() >= c,
+        };
+        if arrived {
+            self.end_leg(kind, to, t, pos);
+            if let Some((k0, w0)) = then {
+                return self.stop(
+                    k0,
+                    format!(
+                        "{w0}. The horn was driven off the {} stop first",
+                        from.word()
+                    ),
+                );
+            }
+            if end == End::Approach {
+                return self.approach(to, t, pos);
+            }
+            self.path
+                .push(format!("at {pos:.0}, the middle of the stops: zero"));
+            self.phase = Phase::Over;
+            return Act::Done;
+        }
+        let mut q = q15;
+        let price = match self.window.judge(t, pos, self.cfg.still_counts) {
+            None => None,
+            Some(still) => {
+                self.window = Window::new(t, pos);
+                if still {
+                    if q15 >= self.cfg.ceiling_q15 {
+                        let why = format!(
+                            "the shaft does not leave the {} stop at the ceiling's {:.3} V (still at {pos:.0}): a shaft blocked there or a dead pot. Nothing more drives; {HANDS}",
+                            from.word(),
+                            self.v(q15)
+                        );
+                        return self.leave_failed(from, then, Refusal::Blocked, why);
+                    }
+                    q = self.cfg.raised(q15);
+                    self.leg_top = self.leg_top.max(q);
+                    self.raises.push(LeaveRaise {
+                        at: pos,
+                        from,
+                        q15: q,
+                    });
+                    self.path.push(format!(
+                        "leaving the {} stop: still at {pos:.0} at {:.3} V: raised to {:.3} V",
+                        from.word(),
+                        self.v(q15),
+                        self.v(q)
+                    ));
+                }
+                Some(WINDOW_S)
+            }
+        };
+        self.phase = Phase::Leave {
+            from,
+            seat,
+            q15: q,
+            end,
+            then,
+        };
+        Act::Drive {
+            q15: q * dir as i16,
+            permit: false,
+            price,
         }
     }
 
@@ -620,46 +726,41 @@ impl Seek {
             return self.after();
         }
         if !pos.is_finite() {
-            return self.dead(pos);
+            return self.stop(Refusal::DeadPot, dead(pos));
         }
         let Some(last) = self.seats.last().cloned() else {
             return self.after();
         };
-        let center = (self.seats.len() == ORDER.len()).then(|| {
-            let at = |s: Stop| {
-                self.seats
-                    .iter()
-                    .filter(|x| x.stop == s)
-                    .map(|x| x.pos)
-                    .collect::<Vec<_>>()
-            };
-            (median(&at(Stop::Low)).unwrap_or(pos) + median(&at(Stop::High)).unwrap_or(pos)) / 2.0
-        });
-        let q15 = self.cfg.approach_q15;
-        self.begin_leg(t, pos, q15);
-        self.path.push(match center {
-            Some(m) => format!(
+        let done = [Stop::Low, Stop::High]
+            .iter()
+            .all(|s| self.seats_at(*s).len() >= SEATS_A_STOP);
+        let end = match self.middle().filter(|_| done) {
+            Some(m) => End::Center(m),
+            None => End::Approach,
+        };
+        if end == End::Approach && self.approaches >= APPROACHES_MAX {
+            return self.refuse_off(
+                Refusal::Blocked,
+                format!(
+                    "{APPROACHES_MAX} approaches gave no {SEATS_A_STOP} seats at each stop. Nothing more presses; {HANDS}"
+                ),
+                t,
+                pos,
+            );
+        }
+        self.path.push(match end {
+            End::Center(m) => format!(
                 "leave the {} stop at {:.3} V, without the permit, to the middle at {m:.0}",
                 last.stop.word(),
-                self.v(q15)
+                self.v(self.cfg.approach_q15)
             ),
-            None => format!(
+            _ => format!(
                 "leave the {} stop at {:.3} V, without the permit, until {LEAVE_COUNTS} counts off it",
                 last.stop.word(),
-                self.v(q15)
+                self.v(self.cfg.approach_q15)
             ),
         });
-        self.phase = Phase::Leave {
-            from: last.stop,
-            seat: last.pos,
-            q15,
-            center,
-        };
-        Act::Drive {
-            q15: q15 * toward(other(last.stop)) as i16,
-            permit: false,
-            price: Some(WINDOW_S),
-        }
+        self.leave(last.stop, last.pos, end, None, t, pos)
     }
 
     fn after(&self) -> Act {
@@ -671,6 +772,13 @@ impl Seek {
             None => Act::Done,
         }
     }
+}
+
+/// A pot that read no number.
+fn dead(pos: f64) -> String {
+    format!(
+        "the pot reads {pos}, no number: a dead or slipped pot. Nothing more drives; {HANDS}; if it is refused again, check the pot's wiring"
+    )
 }
 
 #[cfg(test)]
@@ -695,20 +803,23 @@ mod tests {
     }
 
     /// A shaft between stops at `lo` and `hi`: it turns at `cps_per_v`
-    /// counts/s a volt over `breakaway_v`; a sticky spot over `sticky`
-    /// needs `sticky_v`; a jam at `jam` stops it going down at any duty;
-    /// the low stop moves `walk` counts after its first seat; a dead pot
-    /// reads `dead` whatever the shaft does; the pot reads with a +/-1
-    /// count wobble.
+    /// counts/s a volt over `breakaway_v`; a jam at `jam` stops it going
+    /// down at any duty; a soft low stop `soft` (contact, blind, volts)
+    /// holds it at its contact under the volts and carries it on to the
+    /// blind end at or over them; the low stop moves `walk` counts after
+    /// its first seat, and with `freeze` the shaft never moves once it
+    /// meets the walked stop; a dead pot reads `dead` whatever the shaft
+    /// does; the pot reads with a +/-1 count wobble.
     struct Shaft {
         pos: f64,
         lo: f64,
         hi: f64,
         cps_per_v: f64,
         breakaway_v: f64,
-        sticky: Option<(f64, f64, f64)>,
         jam: Option<f64>,
+        soft: Option<(f64, f64, f64)>,
         walk: f64,
+        freeze: bool,
         dead: Option<f64>,
         k: u64,
         seats_low: u32,
@@ -722,9 +833,10 @@ mod tests {
                 hi: 3626.0,
                 cps_per_v: 3000.0,
                 breakaway_v: 0.4,
-                sticky: None,
                 jam: None,
+                soft: None,
                 walk: 0.0,
+                freeze: false,
                 dead: None,
                 k: 0,
                 seats_low: 0,
@@ -734,16 +846,22 @@ mod tests {
         fn drive(&mut self, c: &SeekCfg, q15: i16, s: f64) {
             let v = c.volts(q15);
             let dir = (q15 as f64).signum();
-            let need = match self.sticky {
-                Some((a, b, sv)) if (a..=b).contains(&self.pos) => sv,
-                _ => self.breakaway_v,
-            };
-            if v < need || q15 == 0 {
+            if v < self.breakaway_v || q15 == 0 {
                 return;
             }
-            let mut to = self.pos + dir * self.cps_per_v * (v - need).max(0.05) * s;
+            if self.freeze && self.seats_low >= 1 && self.pos <= self.lo + 0.5 {
+                return;
+            }
+            let mut to = self.pos + dir * self.cps_per_v * (v - self.breakaway_v).max(0.05) * s;
             if let Some(j) = self.jam.filter(|j| dir < 0.0 && self.pos >= *j) {
                 to = to.max(j);
+            }
+            if let Some((contact, _, push_v)) = self.soft
+                && dir < 0.0
+                && v < push_v
+                && self.pos >= contact
+            {
+                to = to.max(contact);
             }
             self.pos = to.clamp(self.lo, self.hi);
         }
@@ -755,15 +873,22 @@ mod tests {
         }
     }
 
+    /// Every act of a run, the duty and the leg it drove in.
+    struct Ran {
+        m: Seek,
+        duties: Vec<i16>,
+        last: Act,
+    }
+
     /// The machine run on `shaft` to its end, polled every POLL_S; each
     /// seat's bursts take a second, then the stopper walks if it does.
-    fn run(shaft: &mut Shaft) -> (Seek, Vec<i16>) {
+    fn run(shaft: &mut Shaft) -> Ran {
         let c = cfg();
         let mut m = Seek::new(c.clone());
         let mut t = 0.0;
         let mut duties = Vec::new();
         let mut act = m.start(t, shaft.read());
-        for _ in 0..20_000 {
+        for _ in 0..50_000 {
             match act {
                 Act::Drive { q15, .. } => {
                     duties.push(q15);
@@ -782,7 +907,13 @@ mod tests {
                     t += 1.0;
                     act = m.resume(t, shaft.read());
                 }
-                Act::Done | Act::Stopped { .. } => return (m, duties),
+                Act::Done | Act::Stopped { .. } => {
+                    return Ran {
+                        m,
+                        duties,
+                        last: act,
+                    };
+                }
             }
         }
         panic!("never ends: {:?}", m.path());
@@ -794,27 +925,47 @@ mod tests {
             .unwrap_or_else(|| panic!("not refused: {:?}", m.path()))
     }
 
-    #[test]
-    fn four_seats_alternate_the_stops_and_end_at_the_middle() {
-        let mut s = Shaft::bench();
-        let (m, duties) = run(&mut s);
-        assert!(m.finished(), "{:?}", m.path());
-        let seats: Vec<(Stop, f64)> = m.seats().iter().map(|x| (x.stop, x.pos)).collect();
-        assert_eq!(seats.len(), 4);
-        for (k, (stop, pos)) in seats.iter().enumerate() {
-            assert_eq!(*stop, ORDER[k]);
-            let want = if *stop == Stop::Low { 432.0 } else { 3626.0 };
-            assert!((pos - want).abs() <= 1.0, "seat {k} at {pos}");
-        }
-        assert!((s.pos - 2029.0).abs() < 100.0, "near the middle: {}", s.pos);
+    fn seats(m: &Seek, s: Stop) -> Vec<f64> {
+        m.seats()
+            .iter()
+            .filter(|x| x.stop == s)
+            .map(|x| x.pos)
+            .collect()
+    }
+
+    /// No approach duty is over the approach's: every press toward a stop
+    /// is at the approach duty or the seat's.
+    fn presses_at_most_the_approach(r: &Ran) {
         let c = cfg();
+        for l in r.m.legs().iter().filter(|l| l.kind == LegKind::Approach) {
+            assert_eq!(l.top_q15, c.approach_q15, "{l:?}");
+        }
         assert!(
-            duties
+            r.duties
                 .iter()
                 .all(|q| q.unsigned_abs() <= c.ceiling_q15 as u16)
         );
-        assert!(m.sticky().is_empty());
-        // an approach to the stop, the leaves and the last leg
+    }
+
+    #[test]
+    fn four_seats_alternate_the_stops_and_end_at_the_middle() {
+        let mut s = Shaft::bench();
+        let r = run(&mut s);
+        let m = &r.m;
+        assert!(m.finished(), "{:?}", m.path());
+        assert_eq!(m.approaches(), 4);
+        let order: Vec<Stop> = m.seats().iter().map(|x| x.stop).collect();
+        assert_eq!(order, [Stop::Low, Stop::High, Stop::Low, Stop::High]);
+        for (stop, want) in [(Stop::Low, 432.0), (Stop::High, 3626.0)] {
+            assert!(
+                seats(m, stop).iter().all(|p| (p - want).abs() <= 1.0),
+                "{:?}",
+                m.seats()
+            );
+        }
+        assert!((s.pos - 2029.0).abs() < 100.0, "near the middle: {}", s.pos);
+        presses_at_most_the_approach(&r);
+        assert!(m.leave_raises().is_empty());
         let kinds: Vec<LegKind> = m.legs().iter().map(|l| l.kind).collect();
         use LegKind::*;
         assert_eq!(
@@ -825,68 +976,155 @@ mod tests {
         );
     }
 
-    /// An approach that meets a spot it cannot pass at the approach duty:
-    /// one step up moves it on, the raised duty stays to the stop and is
-    /// never lowered, and the spot is noted.
+    /// The bench servo's low stop: first contact at 108, and any press at
+    /// the ceiling carries the shaft on to a blind 4. Never raised, the
+    /// approach seats at 108 both times.
     #[test]
-    fn a_sticky_spot_at_mid_travel_rides_one_step_up() {
+    fn a_soft_stop_is_seated_at_its_contact() {
         let c = cfg();
         let mut s = Shaft {
-            sticky: Some((1400.0, 1500.0, c.volts(c.approach_q15) + 0.05)),
+            lo: 4.0,
+            soft: Some((108.0, 4.0, c.volts(c.ceiling_q15))),
             ..Shaft::bench()
         };
-        let (m, duties) = run(&mut s);
-        assert!(m.finished(), "{:?}", m.path());
-        let first = &m.sticky()[0];
-        assert!((1390.0..=1510.0).contains(&first.at), "{first:?}");
-        assert_eq!(first.q15, c.raised(c.approach_q15));
-        // the first approach's duties never fall until the seat
-        let first_leg: Vec<i16> = duties
-            .iter()
-            .take_while(|q| q.unsigned_abs() != c.seat_q15 as u16)
-            .map(|q| -q)
-            .collect();
-        assert!(first_leg.windows(2).all(|w| w[1] >= w[0]), "{first_leg:?}");
+        let r = run(&mut s);
+        assert!(r.m.finished(), "{:?}", r.m.path());
+        let low = seats(&r.m, Stop::Low);
+        assert_eq!(low.len(), 2);
+        assert!(low.iter().all(|p| (p - 108.0).abs() <= 1.0), "{low:?}");
+        presses_at_most_the_approach(&r);
         assert!(
-            m.seats()
-                .iter()
-                .all(|x| (x.pos - 432.0).abs() <= 1.0 || (x.pos - 3626.0).abs() <= 1.0)
+            !r.m.path().iter().any(|p| p.contains("raised")),
+            "{:?}",
+            r.m.path()
         );
     }
 
-    /// A jam short of the low stop that no duty frees seats there; the
-    /// machine finds four seats, and the span check refuses it later.
+    /// A start resting at the low stop: the first approach goes still with
+    /// no travel, takes no seat, and leaves; two good seats a stop follow,
+    /// the high stop first. A start 300 counts above the low stop travels
+    /// enough and seats there first.
+    #[test]
+    fn a_start_at_a_stop_takes_no_seat_there() {
+        let mut s = Shaft {
+            pos: 432.0,
+            ..Shaft::bench()
+        };
+        let r = run(&mut s);
+        let m = &r.m;
+        assert!(m.finished(), "{:?}", m.path());
+        assert_eq!(m.approaches(), APPROACHES_MAX);
+        let order: Vec<Stop> = m.seats().iter().map(|x| x.stop).collect();
+        assert_eq!(order, [Stop::High, Stop::Low, Stop::High, Stop::Low]);
+        assert!(seats(m, Stop::Low).iter().all(|p| (p - 432.0).abs() <= 1.0));
+        assert!(
+            m.path().iter().any(|p| p.contains("no seat there")),
+            "{:?}",
+            m.path()
+        );
+        assert_eq!(m.legs()[0].kind, LegKind::Approach);
+        assert_eq!(m.legs()[1].kind, LegKind::Leave);
+        presses_at_most_the_approach(&r);
+
+        let mut s = Shaft {
+            pos: 732.0,
+            ..Shaft::bench()
+        };
+        let r = run(&mut s);
+        assert!(r.m.finished(), "{:?}", r.m.path());
+        assert_eq!(r.m.approaches(), 4);
+        assert_eq!(r.m.seats()[0].stop, Stop::Low);
+        assert!(
+            seats(&r.m, Stop::Low)
+                .iter()
+                .all(|p| (p - 432.0).abs() <= 1.0)
+        );
+    }
+
+    /// A later approach that goes still short of the travel a seat needs:
+    /// the shaft is blocked between the stops, and the step refuses at
+    /// once, the shaft off any seat.
+    #[test]
+    fn a_later_approach_blocked_short_refuses() {
+        // the leave from the high stop ends at 3476; a jam at 3420 holds
+        // the next approach down after 56 counts
+        let mut s = Shaft {
+            jam: Some(3420.0),
+            ..Shaft::bench()
+        };
+        let r = run(&mut s);
+        assert_eq!(refusal(&r.m), Refusal::Blocked, "{:?}", r.m.path());
+        let why = &r.m.refused().expect("refused").1;
+        assert!(
+            why.contains("blocked between the stops") && why.contains(HANDS),
+            "{why}"
+        );
+        assert!(!why.contains("driven off"), "no seat by it: {why}");
+        assert_eq!(r.m.seats().len(), 2);
+        assert!((s.pos - 3420.0).abs() <= 1.0);
+    }
+
+    /// A stall short of the stop after real travel seats there; the
+    /// acceptance checks judge it.
     #[test]
     fn a_stall_short_of_the_stop_seats_there() {
         let mut s = Shaft {
             jam: Some(1900.0),
             ..Shaft::bench()
         };
-        let (m, _) = run(&mut s);
-        assert!(m.finished(), "{:?}", m.path());
-        let low: Vec<f64> = m
-            .seats()
-            .iter()
-            .filter(|x| x.stop == Stop::Low)
-            .map(|x| x.pos)
-            .collect();
+        let r = run(&mut s);
+        assert!(r.m.finished(), "{:?}", r.m.path());
+        let low = seats(&r.m, Stop::Low);
         assert!(low.iter().all(|p| (p - 1900.0).abs() <= 1.0), "{low:?}");
     }
 
+    /// A stopper that walks 15 counts: seat 3 refuses, all pressing ends,
+    /// and the horn is first driven off the stop to the middle.
     #[test]
-    fn a_stopper_that_walks_ends_all_pressing() {
+    fn a_stopper_that_walks_refuses_off_the_stop() {
         let mut s = Shaft {
             walk: -15.0,
             ..Shaft::bench()
         };
-        let (m, _) = run(&mut s);
-        assert_eq!(refusal(&m), Refusal::Walked);
-        assert_eq!(m.seats().len(), 3);
-        let why = &m.refused().expect("refused").1;
+        let r = run(&mut s);
+        assert_eq!(refusal(&r.m), Refusal::Walked);
+        assert_eq!(r.m.seats().len(), 3);
+        let why = &r.m.refused().expect("refused").1;
         assert!(
-            why.contains("-15 counts") && why.contains("All pressing ends"),
+            why.contains("-15 counts")
+                && why.contains("All pressing ends")
+                && why.contains("driven off the low stop first"),
             "{why}"
         );
+        let mid = (417.0 + 432.0) / 2.0 / 2.0 + 3626.0 / 2.0;
+        assert!(
+            (s.pos - mid).abs() < 50.0,
+            "near the middle: {} against {mid}",
+            s.pos
+        );
+        let last = r.m.legs().last().expect("legs");
+        assert_eq!(last.kind, LegKind::Center);
+        assert!(matches!(
+            r.last,
+            Act::Stopped {
+                kind: Refusal::Walked,
+                ..
+            }
+        ));
+        presses_at_most_the_approach(&r);
+
+        // the same, the shaft stuck at the stop: the leave off it fails,
+        // and the refusal says the horn was left there
+        let mut s = Shaft {
+            walk: -15.0,
+            freeze: true,
+            ..Shaft::bench()
+        };
+        let r = run(&mut s);
+        assert_eq!(refusal(&r.m), Refusal::Walked);
+        let why = &r.m.refused().expect("refused").1;
+        assert!(why.contains("the horn was left at the low stop"), "{why}");
+        assert!((s.pos - 417.0).abs() <= 1.0);
     }
 
     #[test]
@@ -897,42 +1135,47 @@ mod tests {
             cps_per_v: 50.0 / (c.volts(c.approach_q15) - 0.4),
             ..Shaft::bench()
         };
-        let (m, _) = run(&mut s);
-        assert_eq!(refusal(&m), Refusal::TimeOut);
-        assert!(m.seats().is_empty());
-        assert!(m.refused().expect("refused").1.contains(HANDS));
+        let r = run(&mut s);
+        assert_eq!(refusal(&r.m), Refusal::TimeOut);
+        assert!(r.m.seats().is_empty());
+        assert!(r.m.refused().expect("refused").1.contains(HANDS));
     }
 
-    /// A pot stuck at one reading seats the first approach where it reads,
-    /// then no duty leaves it; a pot that reads no number refuses at once.
+    /// A pot stuck at one reading looks like a start at the low stop: no
+    /// seat, then no duty leaves it; a pot that reads no number refuses at
+    /// once.
     #[test]
     fn a_dead_pot_is_refused() {
         let mut s = Shaft {
             dead: Some(2000.0),
             ..Shaft::bench()
         };
-        let (m, duties) = run(&mut s);
-        assert_eq!(refusal(&m), Refusal::Blocked, "{:?}", m.path());
-        assert_eq!(m.seats().len(), 1);
+        let r = run(&mut s);
+        assert_eq!(refusal(&r.m), Refusal::Blocked, "{:?}", r.m.path());
+        assert!(r.m.seats().is_empty());
         let c = cfg();
         assert!(
-            duties
+            r.duties
                 .iter()
                 .all(|q| q.unsigned_abs() <= c.ceiling_q15 as u16)
         );
-        assert!(m.refused().expect("refused").1.contains("dead pot"));
+        assert!(r.m.refused().expect("refused").1.contains("dead pot"));
+        assert!(
+            !r.m.leave_raises().is_empty(),
+            "the leave rose to the ceiling"
+        );
 
         let mut s = Shaft {
             dead: Some(f64::NAN),
             ..Shaft::bench()
         };
-        let (m, duties) = run(&mut s);
-        assert_eq!(refusal(&m), Refusal::DeadPot);
-        assert!(duties.is_empty(), "nothing drives");
+        let r = run(&mut s);
+        assert_eq!(refusal(&r.m), Refusal::DeadPot);
+        assert!(r.duties.is_empty(), "nothing drives");
     }
 
     /// A shaft that runs the other way from the duty: the sign is not the
-    /// proven one, and the step aborts.
+    /// proven one, and the step aborts at once.
     #[test]
     fn a_shaft_that_runs_the_wrong_way_aborts() {
         let c = cfg();
