@@ -4,5 +4,6 @@
 
 pub mod burst;
 pub mod meta;
+pub mod ripple;
 pub mod rows;
 pub mod tel;

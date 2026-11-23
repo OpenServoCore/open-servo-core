@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use super::{Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, take, write};
 use crate::capture::meta;
+use crate::capture::ripple::{self, Pattern};
 use crate::capture::rows::{Layout, TelFrame};
 use crate::capture::tel::{self, Burst, Line};
 use crate::envelope::{Envelope, Facts, Rung};
@@ -171,10 +172,11 @@ pub struct Stats {
 }
 
 pub fn stats(rows: &[TelFrame], name: &str) -> Option<Stats> {
-    let v: Vec<(u64, f64)> = rows
-        .iter()
-        .filter_map(|f| Some((f.tick, f.channel(name)?)))
-        .collect();
+    stats_of(&ripple::series(rows, name))
+}
+
+/// [`Stats`] of a `(tick, value)` series.
+pub fn stats_of(v: &[(u64, f64)]) -> Option<Stats> {
     if v.is_empty() {
         return None;
     }
@@ -182,7 +184,7 @@ pub fn stats(rows: &[TelFrame], name: &str) -> Option<Stats> {
     let mean = v.iter().map(|(_, x)| x).sum::<f64>() / n;
     let sd = (v.iter().map(|(_, x)| (x - mean).powi(2)).sum::<f64>() / n).sqrt();
     let mut sums = [(0.0, 0usize); FOLD as usize];
-    for (t, x) in &v {
+    for (t, x) in v {
         let b = &mut sums[(t % FOLD) as usize];
         b.0 += x;
         b.1 += 1;
@@ -200,6 +202,153 @@ pub fn stats(rows: &[TelFrame], name: &str) -> Option<Stats> {
         max: v.iter().map(|(_, x)| *x).fold(f64::NEG_INFINITY, f64::max),
         fold,
     })
+}
+
+const NO_STATS: Stats = Stats {
+    n: 0,
+    mean: f64::NAN,
+    sd: f64::NAN,
+    min: f64::NAN,
+    max: f64::NAN,
+    fold: f64::NAN,
+};
+
+/// One channel of a capture: as received, with the VDD frame ripple taken
+/// out, and its gain on the reference's pattern.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Channel {
+    pub raw: Stats,
+    pub comp: Stats,
+    pub gain: f64,
+}
+
+const NO_CHANNEL: Channel = Channel {
+    raw: NO_STATS,
+    comp: NO_STATS,
+    gain: 0.0,
+};
+
+/// Both captures' channels and the frame ripple they were compensated by.
+#[derive(Clone, Debug)]
+pub struct Channels {
+    /// The torque-off capture's `vref_raw` folded by tick modulo 16, its
+    /// mean removed, and that mean; None without a whole pattern.
+    pub vref: Option<(Pattern, f64)>,
+    pub rest: Vec<(&'static str, Channel)>,
+    pub raw: Vec<(&'static str, Channel)>,
+}
+
+pub const REST_CHANNELS: [&str; 6] = [
+    "pos",
+    "vref_raw",
+    "vbus_raw",
+    "ntc_raw",
+    "current_raw",
+    "vmotor_a",
+];
+pub const RAW_CHANNELS: [&str; 6] = [
+    "pos",
+    "current_raw",
+    "vmotor_a",
+    "vmotor_b",
+    "duty_ticks",
+    "current_trough",
+];
+
+impl Channels {
+    /// Every channel of both captures, each compensated by the rest
+    /// capture's reference pattern: the raw row carries no `vref_raw`, and
+    /// both bursts start a frame at their first row, so the phase is the
+    /// same.
+    pub fn of(rest: &[TelFrame], raw: &[TelFrame]) -> Self {
+        let vs = ripple::series(rest, "vref_raw");
+        let vref = ripple::fold(&vs).zip(stats_of(&vs).map(|s| s.mean));
+        let one = |rows: &[TelFrame], name: &'static str| {
+            let s = ripple::series(rows, name);
+            let (gain, comp) = match &vref {
+                Some((p, _)) => ripple::fit(&s, p),
+                None => (0.0, s.clone()),
+            };
+            (
+                name,
+                Channel {
+                    raw: stats_of(&s).unwrap_or(NO_STATS),
+                    comp: stats_of(&comp).unwrap_or(NO_STATS),
+                    gain,
+                },
+            )
+        };
+        Channels {
+            rest: REST_CHANNELS.iter().map(|n| one(rest, n)).collect(),
+            raw: RAW_CHANNELS.iter().map(|n| one(raw, n)).collect(),
+            vref,
+        }
+    }
+
+    pub fn rest(&self, name: &str) -> Channel {
+        self.rest
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(NO_CHANNEL, |c| c.1)
+    }
+
+    pub fn raw(&self, name: &str) -> Channel {
+        self.raw
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(NO_CHANNEL, |c| c.1)
+    }
+
+    /// The frame's own pattern a channel keeps once VDD's is out: flat
+    /// within a count, every channel, else refused. A channel no row
+    /// carried (NaN) is no flatness.
+    pub fn pattern_check(&self) -> Check {
+        let (worst, fold) = self
+            .rest
+            .iter()
+            .map(|(n, c)| (format!("rest {n}"), c.comp.fold))
+            .chain(
+                self.raw
+                    .iter()
+                    .map(|(n, c)| (format!("raw {n}"), c.comp.fold)),
+            )
+            .fold((String::new(), 0.0), |a, b| {
+                if b.1.is_nan() || b.1 > a.1 { b } else { a }
+            });
+        Check {
+            name: "the frame's own pattern".into(),
+            value: format!(
+                "tick-modulo-16 means at most {fold:.2} counts off the mean ({}) once the VDD frame ripple is out",
+                if worst.is_empty() { "none" } else { &worst }
+            ),
+            bound: format!("flat within {FOLD_MAX} count"),
+            verdict: if fold <= FOLD_MAX {
+                Verdict::Pass
+            } else {
+                Verdict::Fail
+            },
+        }
+    }
+
+    pub fn json(&self) -> Value {
+        let block = |cs: &[(&'static str, Channel)]| -> Value {
+            cs.iter()
+                .map(|(n, c)| {
+                    (
+                        n.to_string(),
+                        json!({
+                            "n": c.raw.n, "mean": c.raw.mean, "min": c.raw.min, "max": c.raw.max,
+                            "sd_raw": c.raw.sd, "sd": c.comp.sd,
+                            "fold_16_raw": c.raw.fold, "fold_16": c.comp.fold,
+                            "vdd_gain": c.gain,
+                        }),
+                    )
+                })
+                .collect::<Map<String, Value>>()
+                .into()
+        };
+        json!({"rest": block(&self.rest), "raw": block(&self.raw)})
+    }
 }
 
 /// Step 1's outcome once it had written: how it ended, its checks, and
@@ -466,57 +615,39 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         })
     };
     let pass = |ok: bool| if ok { Verdict::Pass } else { Verdict::Fail };
-    let mut channels = Map::new();
-    let mut st = |rows: &Burst, name: &str| -> Stats {
-        let x = stats(&rows.rows, name).unwrap_or(Stats {
-            n: 0,
-            mean: f64::NAN,
-            sd: f64::NAN,
-            min: f64::NAN,
-            max: f64::NAN,
-            fold: f64::NAN,
-        });
-        let block = channels
-            .entry(rows.layout.name())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if let Some(m) = block.as_object_mut() {
-            m.insert(name.into(), json!({"n": x.n, "mean": x.mean, "sd": x.sd, "min": x.min, "max": x.max, "fold_16": x.fold}));
-        }
-        x
-    };
-    let rest_names = [
-        "pos",
-        "vref_raw",
-        "vbus_raw",
-        "ntc_raw",
-        "current_raw",
-        "vmotor_a",
-    ];
-    let raw_names = [
-        "pos",
-        "current_raw",
-        "vmotor_a",
-        "vmotor_b",
-        "duty_ticks",
-        "current_trough",
-    ];
-    let r: Vec<Stats> = rest_names.iter().map(|n| st(rest, n)).collect();
-    let w: Vec<Stats> = raw_names.iter().map(|n| st(raw, n)).collect();
-    let [r_pos, r_vref, r_vbus, r_ntc, r_zero, r_a] = [r[0], r[1], r[2], r[3], r[4], r[5]];
-    let [w_pos, w_zero, w_a, w_b] = [w[0], w[1], w[2], w[3]];
+    let ch = Channels::of(&rest.rows, &raw.rows);
+    let (r_pos, r_vref, r_vbus, r_ntc, r_zero, r_a) = (
+        ch.rest("pos"),
+        ch.rest("vref_raw").raw,
+        ch.rest("vbus_raw").raw,
+        ch.rest("ntc_raw").raw,
+        ch.rest("current_raw"),
+        ch.rest("vmotor_a"),
+    );
+    let (w_pos, w_zero, w_a, w_b) = (
+        ch.raw("pos"),
+        ch.raw("current_raw"),
+        ch.raw("vmotor_a"),
+        ch.raw("vmotor_b"),
+    );
 
-    let sd = |x: Stats| format!("sd {:.2} counts", x.sd);
+    let sd = |x: Channel| {
+        format!(
+            "sd {:.2} counts ({:.2} before the VDD frame ripple is taken out)",
+            x.comp.sd, x.raw.sd
+        )
+    };
     check(
         "current zero noise, torque off",
         sd(r_zero),
         format!("<= {ZERO_SD_MAX}"),
-        pass(r_zero.sd <= ZERO_SD_MAX),
+        pass(r_zero.comp.sd <= ZERO_SD_MAX),
     );
     check(
         "current zero noise, torque on",
         sd(w_zero),
         format!("<= {ZERO_SD_MAX}"),
-        pass(w_zero.sd <= ZERO_SD_MAX),
+        pass(w_zero.comp.sd <= ZERO_SD_MAX),
     );
     for (name, x) in [
         ("tap a noise, torque off", r_a),
@@ -527,14 +658,17 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             name,
             sd(x),
             format!("<= {TAP_SD_MAX}"),
-            pass(x.sd <= TAP_SD_MAX),
+            pass(x.comp.sd <= TAP_SD_MAX),
         );
     }
     check(
         "pot noise at rest",
         sd(r_pos),
         format!("{} to {}", POT_SD.0, POT_SD.1),
-        pass((POT_SD.0..=POT_SD.1).contains(&r_pos.sd)),
+        pass((POT_SD.0..=POT_SD.1).contains(&r_pos.comp.sd)),
+    );
+    let (r_pos, r_zero, r_a, w_pos, w_zero, w_a, w_b) = (
+        r_pos.raw, r_zero.raw, r_a.raw, w_pos.raw, w_zero.raw, w_a.raw, w_b.raw,
     );
     let pot_lo = r_pos.min.min(w_pos.min);
     let pot_hi = r_pos.max.max(w_pos.max);
@@ -666,30 +800,27 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             Verdict::NotJudged,
         ),
     }
-    let all: Vec<(String, Stats)> = rest_names
-        .iter()
-        .zip(&r)
-        .map(|(n, x)| (format!("rest {n}"), *x))
-        .chain(
-            raw_names
-                .iter()
-                .zip(&w)
-                .map(|(n, x)| (format!("raw {n}"), *x)),
-        )
-        .collect();
-    let (worst, fold) = all
-        .iter()
-        .map(|(n, x)| (n.clone(), x.fold))
-        .fold((String::new(), 0.0), |a, b| if b.1 > a.1 { b } else { a });
+    let ripple_mv = ch
+        .vref
+        .as_ref()
+        .map(|(p, mean)| ripple::vdd_ripple_mv_pp(p, *mean, vdd));
     check(
-        "the frame's own pattern",
-        format!(
-            "tick-modulo-16 means at most {fold:.2} counts off the mean ({})",
-            if worst.is_empty() { "none" } else { &worst }
-        ),
-        format!("flat within {FOLD_MAX} count"),
-        pass(fold <= FOLD_MAX),
+        "VDD frame ripple",
+        ripple_mv.map_or("no whole vref_raw pattern".into(), |mv| {
+            format!("{mv:.2} mV pp once a 16-row frame, from vref_raw folded by tick modulo 16")
+        }),
+        "reported; every channel's share of it is taken out".into(),
+        Verdict::NotJudged,
     );
+    checks.push(ch.pattern_check());
+    let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
+        checks.push(Check {
+            name: name.into(),
+            value,
+            bound,
+            verdict,
+        })
+    };
     let moved = (w_pos.mean - r_pos.mean).abs();
     check(
         "nothing moved",
@@ -749,10 +880,11 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         "estimates": {
             "current_zero_asleep_counts": est(r_zero.mean, "counts", "rest row current_raw, torque off"),
             "current_zero_awake_counts": est(w_zero.mean, "counts", "raw row current_raw, torque on at zero duty"),
-            "current_zero_sd_counts": est(r_zero.sd.max(w_zero.sd), "counts", "the larger of the two rows"),
+            "current_zero_sd_counts": est(ch.rest("current_raw").comp.sd.max(ch.raw("current_raw").comp.sd), "counts", "the larger of the two rows, the VDD frame ripple out"),
             "tap_a_counts": est(w_a.mean, "counts", "raw row vmotor_a, torque on"),
             "tap_b_counts": est(w_b.mean, "counts", "raw row vmotor_b, torque on"),
-            "pot_rest_sd_counts": est(r_pos.sd, "counts", "rest row pos, torque off"),
+            "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, "counts", "rest row pos, torque off, the VDD frame ripple out"),
+            "vdd_frame_ripple_mv_pp": ripple_mv.map_or(Value::Null, |mv| est(mv, "mV", "rest row vref_raw folded by tick modulo 16, reported, not judged")),
             "vdd_v": est(vdd, "V", "rest row vref_raw, the 1.2 V reference"),
             "rail_v": est(rail, "V", "rest row vbus_raw through the rail divider, the measured supply"),
             "supply_v": est(supply, "V", "the rail and the board's input drop"),
@@ -762,7 +894,94 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         "counts_per_a_nominal": cpa,
         "ntc_parts": parts,
         "ntc_words": ntc_words,
-        "channels": Value::Object(channels),
+        "channels": ch.json(),
+        "frame_ripple": {
+            "vref_pattern_counts": ch.vref.as_ref().map_or(Value::Null, |(p, _)| json!(p.to_vec())),
+            "vref_mean_counts": ch.vref.as_ref().map_or(Value::Null, |(_, m)| json!(m)),
+            "vdd_ripple_mv_pp": ripple_mv,
+            "fold": ripple::FOLD,
+            "phase": "tick modulo 16 from a burst's first row",
+            "compensation": "each channel less its vdd_gain x vref_pattern_counts[tick % 16]",
+        },
     });
     Judged { checks, result }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bench's frame ripple on the reference, counts: about 3 pp.
+    fn vdd(k: u64) -> f64 {
+        let x = 2.0 * core::f64::consts::PI * (k % 16) as f64 / 16.0;
+        -1.6 * x.cos() - 0.6 * (2.0 * x).sin()
+    }
+
+    fn noise(i: u64, k: u64) -> f64 {
+        let h =
+            (i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xC2B2_AE3D_27D4_EB4F)) >> 13;
+        (h % 7) as f64 - 3.0
+    }
+
+    /// Rows of both captures: every channel follows the reference's
+    /// ripple at the bench's gains, and `extra` adds a frame pattern of
+    /// its own to the rest row's pos.
+    fn rows(extra: impl Fn(u64) -> f64) -> (Vec<TelFrame>, Vec<TelFrame>) {
+        let n = |i: u64, k: u64, base: f64, g: f64| {
+            (base + g * vdd(i) + 0.4 * noise(i, k)).round() as u16
+        };
+        let rest = (0..20_000u64)
+            .map(|i| TelFrame {
+                tick: i,
+                vref_raw: Some(n(i, 1, 1490.0, 1.0)),
+                pos: Some((2041.0 + 1.15 * vdd(i) + extra(i) + 0.4 * noise(i, 2)).round() as u16),
+                vbus_raw: Some(n(i, 3, 1241.0, 0.73)),
+                ntc_raw: Some(n(i, 4, 2010.0, 1.59)),
+                current_raw: Some(n(i, 5, 1206.0, 0.16)),
+                vmotor_a: Some(n(i, 6, 773.0, 0.5)),
+                ..TelFrame::default()
+            })
+            .collect();
+        let raw = (0..20_000u64)
+            .map(|i| TelFrame {
+                tick: i,
+                pos: Some(n(i, 7, 2041.0, 1.15)),
+                current_raw: Some(n(i, 8, 1206.0, 0.16)),
+                vmotor_a: Some(n(i, 9, 773.0, 0.5)),
+                vmotor_b: Some(n(i, 10, 772.0, 0.5)),
+                duty_counts: Some(0),
+                current_trough: Some(n(i, 11, 1206.0, 0.16)),
+                ..TelFrame::default()
+            })
+            .collect();
+        (rest, raw)
+    }
+
+    #[test]
+    fn the_vdd_frame_ripple_is_taken_out_and_the_frame_passes() {
+        let (rest, raw) = rows(|_| 0.0);
+        let ch = Channels::of(&rest, &raw);
+        let pos = ch.rest("pos");
+        assert!(pos.raw.fold > 1.0, "the ripple shows: {}", pos.raw.fold);
+        assert!(pos.comp.fold < 0.3 && pos.comp.sd < pos.raw.sd, "{pos:?}");
+        let ntc = ch.rest("ntc_raw").gain;
+        assert!((ntc - 1.59).abs() < 0.05 * 1.59, "{ntc}");
+        let raw_pos = ch.raw("pos").gain;
+        assert!(
+            (raw_pos - 1.15).abs() < 0.05 * 1.15,
+            "the raw row by the rest's pattern: {raw_pos}"
+        );
+        let c = ch.pattern_check();
+        assert_eq!(c.verdict, Verdict::Pass, "{}", c.value);
+    }
+
+    /// A frame pattern that is not VDD's is still refused.
+    #[test]
+    fn a_frame_pattern_unlike_vdds_is_still_refused() {
+        let own = |i: u64| 2.0 * (2.0 * core::f64::consts::PI * 3.0 * (i % 16) as f64 / 16.0).sin();
+        let (rest, raw) = rows(own);
+        let c = Channels::of(&rest, &raw).pattern_check();
+        assert_eq!(c.verdict, Verdict::Fail, "{}", c.value);
+        assert!(c.value.contains("(rest pos)"), "{}", c.value);
+    }
 }
