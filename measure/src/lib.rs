@@ -6,15 +6,20 @@
 //! and, built for wasm, in the browser.
 
 pub mod board;
+pub mod capture;
+pub mod envelope;
+pub mod guard;
 pub mod inputs;
 pub mod install;
 pub mod nameplate;
+pub mod ntc;
 pub mod policy;
 pub mod pyjson;
 pub mod rules;
 pub mod set;
 pub mod sink;
 pub mod state;
+pub mod steps;
 
 pub use board::Board;
 pub use inputs::{Inputs, Measured, Quantity, Source, ThermalInputs, Tuning};

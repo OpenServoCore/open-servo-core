@@ -1,0 +1,5 @@
+{
+  "raw-row.sweep.csv": {"from": "notebooks telemetry/mg90-d__dev-v006-2A-D/window-term/onsets-A/ol-1/sweep.csv", "sha1": "3b8452259eb21505144d12c8186541ea47e7dfad", "rows": "the header, seg 0 ticks 0 to 199, seg 1 ticks 0 to 299", "tel_chunks": [[568, 2], [576, 10]], "i_window_min_ticks": 64},
+  "rest-row.sweep.csv": {"from": "notebooks telemetry/dev-v006-2A-D/pos-coupling/capture-2/sweeps/9/sweep.csv", "sha1": "644bd955fd689e3fea7bcda1494a123a6e1780c9", "rows": "the header, seg 0 ticks 0 to 299", "tel_chunks": [[568, 12]]},
+  "burst-0.csv": {"from": "notebooks telemetry/dev-v006-2A-D/sample-timing/capture-1/bursts/burst-0.csv", "sha1": "0fa4ce36d0d50cb8e4b72965d373820d9d4b25da", "rows": "whole"}
+}

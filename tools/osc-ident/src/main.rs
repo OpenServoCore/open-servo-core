@@ -1,11 +1,14 @@
 //! osc-ident: a servo's constant set, and the safe path that puts a set on
-//! a servo. `rules` touches no servo; `check` only reads; `install`,
-//! `save` and `restore` write with torque off and never drive the motor.
+//! a servo. `rules` touches no servo; `check` and `plan` only read;
+//! `install`, `save` and `restore` write with torque off and never drive
+//! the motor; `step` runs one measurement step into a run folder.
 
 mod files;
+mod steps;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -91,7 +94,55 @@ enum Cmd {
         #[arg(long, num_args = 1..)]
         loosen: Vec<String>,
     },
+    /// The run this tool would do on the servo, with its numbers and the five budgets. Reads only.
+    Plan {
+        #[command(flatten)]
+        i: StepArgs,
+    },
+    /// One measurement step into a run folder `<out>/<servo uid>/<UTC time>/`.
+    Step {
+        #[command(subcommand)]
+        step: StepName,
+    },
 }
+
+#[derive(Subcommand, Debug)]
+enum StepName {
+    /// Step 1, rest and board check: nothing drives.
+    Rest {
+        #[command(flatten)]
+        i: StepArgs,
+        #[arg(long, default_value = "osc-ident-runs")]
+        out: PathBuf,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct StepArgs {
+    /// The servo's nameplate file (JSON, the rules' nameplate.json).
+    #[arg(long)]
+    nameplate: Option<PathBuf>,
+    /// The user's thermal values (JSON, the rules' thermal.json).
+    #[arg(long)]
+    thermal: Option<PathBuf>,
+    /// The board's description; the dev board's if omitted.
+    #[arg(long)]
+    board: Option<PathBuf>,
+}
+
+impl StepArgs {
+    fn load(&self) -> Result<steps::StepInputs> {
+        steps::StepInputs::load(
+            self.nameplate.as_deref(),
+            self.thermal.as_deref(),
+            self.board.as_deref(),
+        )
+    }
+}
+
+/// Set by Ctrl-C: a step reads it between rungs, so a running burst is
+/// never cut short.
+static STOP: AtomicBool = AtomicBool::new(false);
 
 #[derive(clap::Args, Debug)]
 struct WriteArgs {
@@ -272,7 +323,9 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
             let origin = json!({"from": "a record restored", "file": from.display().to_string(), "sha1": set::file_sha1(&bytes)});
             install::restore(c, id, d, &text, origin, loosen, &mut steps).await
         }
-        Cmd::Rules { .. } | Cmd::Check { .. } => bail!("not a write verb"),
+        Cmd::Rules { .. } | Cmd::Check { .. } | Cmd::Plan { .. } | Cmd::Step { .. } => {
+            bail!("not a write verb")
+        }
     };
     print_steps(&steps);
     done?;
@@ -315,6 +368,34 @@ fn run(cli: &Cli) -> Result<bool> {
             let (mut c, d) = connect(&cli.baud, id).await?;
             check(&mut c, id, &d, set).await
         }),
+        Cmd::Plan { i } => {
+            let inputs = i.load()?;
+            block_on(async {
+                let (mut c, d) = connect(&cli.baud, id).await?;
+                let (lines, starts) = steps::plan(&mut c, id, &d, &inputs).await?;
+                for l in &lines {
+                    println!("{l}");
+                }
+                Ok(starts)
+            })
+        }
+        Cmd::Step {
+            step: StepName::Rest { i, out },
+        } => {
+            let inputs = i.load()?;
+            ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
+                .context("installing the Ctrl-C handler")?;
+            block_on(async {
+                let (mut c, d) = connect(&cli.baud, id).await?;
+                let servo = servo_name(&mut c, id).await;
+                let (lines, accepted, _) =
+                    steps::step_rest(&mut c, id, &d, &inputs, out, &servo, &STOP).await?;
+                for l in &lines {
+                    println!("{l}");
+                }
+                Ok(accepted)
+            })
+        }
         cmd => block_on(async {
             let (mut c, d) = connect(&cli.baud, id).await?;
             write_verb(&mut c, id, &d, cmd).await?;
@@ -424,5 +505,108 @@ mod tests {
         .expect("installs");
         assert_eq!(steps, [], "the servo already holds it");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn fake(rate: BaudRate) -> (Client<FakePipe>, Descriptor) {
+        let mut pipe = FakePipe::new(rate, &[1]);
+        pipe.seed_calibrated(0);
+        let c = block_on(Client::connect(pipe)).expect("connect");
+        (c, descriptor_builtin().expect("descriptor"))
+    }
+
+    fn inputs() -> steps::StepInputs {
+        steps::StepInputs::load(
+            Some(&testdata("nameplate.json")),
+            Some(&testdata("thermal.json")),
+            None,
+        )
+        .expect("inputs")
+    }
+
+    /// `plan` names steps 0 and 1 with the servo's numbers and the five
+    /// budgets, and none of the steps the run no longer has.
+    #[test]
+    fn plan_prints_steps_0_and_1_and_the_five_budgets() {
+        let (mut c, d) = fake(BaudRate::B3000000);
+        let (lines, starts) =
+            block_on(steps::plan(&mut c, Id::new(1), &d, &inputs())).expect("plan");
+        let text = lines.join("\n");
+        println!("{text}");
+        assert!(starts);
+        assert!(
+            text.contains("production image (capability_flags"),
+            "{text}"
+        );
+        assert!(
+            text.contains("step 0: connect") && text.contains("passes"),
+            "{text}"
+        );
+        assert!(text.contains("step 1: rest and board check"), "{text}");
+        for b in ["current:", "duty:", "time:", "travel:", "temperature:"] {
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|l| l.trim_start().starts_with(b))
+                    .count(),
+                1,
+                "{b}: {text}"
+            );
+        }
+        assert!(text.contains("mg90-d") && text.contains("4.8 V"), "{text}");
+        for gone in ["step 2", "heat slope", "spinning"] {
+            assert!(!text.contains(gone), "{gone}: {text}");
+        }
+
+        let (mut c, d) = fake(BaudRate::B2000000);
+        let (lines, starts) =
+            block_on(steps::plan(&mut c, Id::new(1), &d, &inputs())).expect("plan");
+        assert!(!starts);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("step 0") && l.contains("REFUSED")),
+            "{lines:?}"
+        );
+    }
+
+    /// `step rest` keeps its run folder: the manifest, the captures and the
+    /// result, the servo torque off after it whatever the verdict.
+    #[test]
+    fn step_rest_keeps_a_run_folder() {
+        let (mut c, d) = fake(BaudRate::B3000000);
+        let out = scratch("step-rest");
+        let stop = AtomicBool::new(false);
+        let (lines, _, root) = block_on(steps::step_rest(
+            &mut c,
+            Id::new(1),
+            &d,
+            &inputs(),
+            &out,
+            "uid",
+            &stop,
+        ))
+        .expect("runs");
+        assert!(root.starts_with(out.join("uid")), "{}", root.display());
+        for f in [
+            "run.json",
+            "results/rest.json",
+            "captures/rest/01-rest.csv.gz",
+            "captures/rest/02-raw.meta.json",
+        ] {
+            assert!(root.join(f).exists(), "{f}: {lines:?}");
+        }
+        let run: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read"))
+                .expect("json");
+        assert_eq!(run["image"], "production");
+        assert!(run["steps"]["rest"]["state"].is_string());
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("torque_enable 0, read back 0")),
+            "{lines:?}"
+        );
+        assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
+        let _ = std::fs::remove_dir_all(out);
     }
 }

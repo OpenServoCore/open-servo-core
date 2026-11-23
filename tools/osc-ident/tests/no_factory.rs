@@ -19,5 +19,5 @@ fn the_cli_has_no_factory_path() {
         }
         n += 1;
     }
-    assert_eq!(n, 2);
+    assert_eq!(n, 3);
 }

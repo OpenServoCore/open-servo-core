@@ -9,6 +9,7 @@ description = "Sans-io servo identification: measured inputs, the nameplate, the
 license     = "MIT OR Apache-2.0"
 
 [dependencies]
+flate2         = { version = "1", default-features = false, features = ["rust_backend"] }
 osc-client     = { path = "../client", default-features = false }
 osc-protocol   = { path = "../firmware/lib/osc-protocol" }
 osc-servo-core = { path = "../firmware/lib/core" }

@@ -26,27 +26,12 @@ fn stated<T: Copy>(
     }
     c.fact(name, ());
     let op = get!(c, nameplate, operating_v)?;
-    let inside: Vec<T> = rows
-        .iter()
-        .copied()
-        .filter(|r| (op.min..=op.max).contains(&volts_of(r)))
-        .collect();
-    let volts = if op.min == op.max {
-        op.min
+    let run = if op.min == op.max {
+        None
     } else {
-        let run = get!(c, nameplate, run_v)?;
-        let near = |v: f64| ((v - run).abs() * 1e9).round_ties_even();
-        let best = inside
-            .iter()
-            .map(volts_of)
-            .min_by(|a, b| near(*a).total_cmp(&near(*b)).then(a.total_cmp(b)));
-        best.ok_or_else(|| Fail::missing(name))?
+        Some(get!(c, nameplate, run_v)?)
     };
-    let mut at = inside.iter().filter(|r| volts_of(r) == volts);
-    match (at.next(), at.next()) {
-        (Some(row), None) => Ok(*row),
-        _ => Err(Fail::missing(name)),
-    }
+    crate::nameplate::stated(op, run, rows, volts_of).ok_or_else(|| Fail::missing(name))
 }
 
 /// The speed ceiling, deg/s: the stated no-load speed at the nameplate's

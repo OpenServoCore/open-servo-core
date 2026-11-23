@@ -28,6 +28,50 @@ pub struct Nameplate {
     pub derate_other: Option<f64>,
 }
 
+/// The row the maker states at the stated voltage nearest the one the
+/// servo runs on (`run_v`), the lower of two as near, of the rows inside
+/// the operating range; with a single operating voltage, the row at it.
+/// None when no one row binds.
+pub fn stated<T: Copy>(
+    op: VoltRange,
+    run_v: Option<f64>,
+    rows: &[T],
+    volts_of: fn(&T) -> f64,
+) -> Option<T> {
+    let inside: Vec<T> = rows
+        .iter()
+        .copied()
+        .filter(|r| (op.min..=op.max).contains(&volts_of(r)))
+        .collect();
+    let volts = if op.min == op.max {
+        op.min
+    } else {
+        let run = run_v?;
+        let near = |v: f64| ((v - run).abs() * 1e9).round_ties_even();
+        inside
+            .iter()
+            .map(volts_of)
+            .min_by(|a, b| near(*a).total_cmp(&near(*b)).then(a.total_cmp(b)))?
+    };
+    let mut at = inside.iter().filter(|r| volts_of(r) == volts);
+    match (at.next(), at.next()) {
+        (Some(row), None) => Some(*row),
+        _ => None,
+    }
+}
+
+impl Nameplate {
+    /// The no-load row that binds ([`stated`]).
+    pub fn speed_row(&self) -> Option<NoLoad> {
+        stated(self.operating_v?, self.run_v, &self.no_load, |r| r.at_v)
+    }
+
+    /// The stall row that binds ([`stated`]).
+    pub fn stall_row(&self) -> Option<Stall> {
+        stated(self.operating_v?, self.run_v, &self.stall, |r| r.at_v)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GearClass {

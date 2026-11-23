@@ -15,6 +15,16 @@ use serde::de::DeserializeOwned;
 /// `--board` names another.
 const DEV_BOARD: &str = include_str!("../../../measure/boards/osc-dev-v006.json");
 
+/// The board named, else the dev board.
+pub fn board(path: Option<&Path>) -> Result<Board> {
+    match path {
+        Some(p) => {
+            serde_json::from_slice(&read(p)?).with_context(|| format!("parsing {}", p.display()))
+        }
+        None => serde_json::from_str(DEV_BOARD).context("the built-in board"),
+    }
+}
+
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     std::fs::read(path).with_context(|| format!("reading {}", path.display()))
 }
