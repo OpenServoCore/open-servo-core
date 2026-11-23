@@ -9,6 +9,7 @@ pub mod rest;
 pub mod seek;
 pub mod shunt;
 pub mod stops;
+pub mod verify;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

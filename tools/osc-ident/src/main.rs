@@ -134,6 +134,16 @@ enum StepName {
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
     },
+    /// The closed-loop check of the installed, stamped set: the position
+    /// loop turned on, small steps, then moves of 1, 10 and 33 % of the
+    /// travel scored. Drives the motor under its own loops; changes no
+    /// constant.
+    Verify {
+        #[command(flatten)]
+        i: StepArgs,
+        #[arg(long, default_value = "osc-ident-runs")]
+        out: PathBuf,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -401,7 +411,8 @@ fn run(cli: &Cli) -> Result<bool> {
         Cmd::Step { step } => {
             let (StepName::Rest { i, out }
             | StepName::Probe { i, out }
-            | StepName::Stops { i, out }) = step;
+            | StepName::Stops { i, out }
+            | StepName::Verify { i, out }) = step;
             let inputs = i.load()?;
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
                 .context("installing the Ctrl-C handler")?;
@@ -417,6 +428,9 @@ fn run(cli: &Cli) -> Result<bool> {
                     }
                     StepName::Stops { .. } => {
                         steps::step_stops(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                    }
+                    StepName::Verify { .. } => {
+                        steps::step_verify(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
                     }
                 };
                 for l in &lines {
@@ -765,6 +779,56 @@ mod tests {
         assert!(format!("{e:#}").contains("--nameplate"), "{e:#}");
         assert!(!dir.join("uid").exists(), "no run folder");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `step verify` on a servo whose shaft rests by a soft limit: refused
+    /// before any write, the refusal printed and kept in the run folder's
+    /// manifest; with no nameplate, refused before the bus is touched.
+    #[test]
+    fn step_verify_is_refused_by_a_soft_limit_and_keeps_a_run_folder() {
+        let (mut c, d) = fake(BaudRate::B3000000);
+        c.pipe_mut()
+            .sim_mut()
+            .servo_table_mut(0, |t| t.telemetry.estimates.theta_hat_q16 = 240 << 16);
+        let out = scratch("step-verify");
+        let stop = AtomicBool::new(false);
+        let (lines, accepted, root) = block_on(steps::step_verify(
+            &mut c,
+            Id::new(1),
+            &d,
+            &inputs(),
+            &out,
+            "uid",
+            &stop,
+        ))
+        .expect("runs");
+        let text = lines.join("\n");
+        assert!(!accepted, "{text}");
+        assert!(
+            text.contains("refused before any write") && text.contains("turn the horn"),
+            "{text}"
+        );
+        let run: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read"))
+                .expect("json");
+        assert_eq!(run["steps"]["verify"]["state"], "refused", "{run}");
+        assert!(!root.join("results/verify.json").exists());
+        assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
+
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let e = block_on(steps::step_verify(
+            &mut c,
+            Id::new(1),
+            &d,
+            &none,
+            &out,
+            "other",
+            &stop,
+        ))
+        .expect_err("refused");
+        assert!(format!("{e:#}").contains("--nameplate"), "{e:#}");
+        assert!(!out.join("other").exists(), "no run folder");
+        let _ = std::fs::remove_dir_all(out);
     }
 
     /// A user's nameplate short of a required value never loads: the

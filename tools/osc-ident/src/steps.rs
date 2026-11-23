@@ -18,6 +18,7 @@ use osc_measure::state;
 use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
 use osc_measure::steps::stops::{self, StopsInputs};
+use osc_measure::steps::verify::{self, VerifyInputs};
 use osc_measure::steps::{Ended, Rig};
 use osc_measure::{Board, sink::Sink};
 use serde_json::{Value, json};
@@ -407,6 +408,62 @@ pub async fn step_probe<P: Pipe>(
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let accepted = matches!(&probed, Some(Ok(p)) if p.accepted());
+    lines.push(format!("run folder: {}", root.display()));
+    Ok((lines, accepted, root))
+}
+
+/// `step verify` into `<out>/<servo>/<UTC time>/`: the closed-loop check
+/// of the installed, stamped set. The lines it prints, and whether the set
+/// was accepted.
+pub async fn step_verify<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    let np = i
+        .nameplate
+        .as_ref()
+        .context("step verify drives the motor: it needs the servo's nameplate (--nameplate)")?;
+    let root = files::run_folder(out, servo)?;
+    let mut sink = DirSink { root: root.clone() };
+    let t0 = unix_s();
+    let clock = unix_s;
+    let ran = {
+        let mut rig = Rig {
+            c,
+            id,
+            d,
+            sink: &mut sink,
+            stop,
+            clock: &clock,
+        };
+        verify::verify(&mut rig, &VerifyInputs { nameplate: np }).await
+    };
+    let entry = Ran {
+        step: verify::STEP,
+        ended: ran.as_ref().ok().map(|r| &r.ended),
+        result: ran.as_ref().ok().and_then(|r| r.result.as_ref()),
+        refused: ran.as_ref().err().map(|e| e.0.clone()),
+        times: (t0, unix_s()),
+    };
+    let mut text = serde_json::to_vec_pretty(&manifest(servo, &[entry]))?;
+    text.push(b'\n');
+    sink.write("run.json", &text)?;
+    let mut lines = Vec::new();
+    let accepted = match ran {
+        Err(e) => {
+            lines.push(format!("refused before any write: {e}"));
+            false
+        }
+        Ok(r) => {
+            said(verify::STEP, &r.ended, &r.checks, &mut lines);
+            r.accepted()
+        }
+    };
     lines.push(format!("run folder: {}", root.display()));
     Ok((lines, accepted, root))
 }

@@ -18,6 +18,7 @@ pub mod policy;
 pub mod pyjson;
 pub mod ripple;
 pub mod rules;
+pub mod scorecard;
 pub mod set;
 pub mod sink;
 pub mod state;
