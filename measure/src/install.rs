@@ -506,7 +506,11 @@ async fn await_boot<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(), Error> {
     Err(last)
 }
 
-async fn reboot<P: Pipe>(c: &mut Client<P>, id: Id, steps: &mut Vec<Step>) -> Result<(), Error> {
+pub(crate) async fn reboot<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    steps: &mut Vec<Step>,
+) -> Result<(), Error> {
     mgmt::reboot(c, id).await?;
     await_boot(c, id).await?;
     steps.push(Step::Rebooted);
