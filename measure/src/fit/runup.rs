@@ -77,6 +77,18 @@ pub struct Scales {
 }
 
 impl Scales {
+    /// The conversions a driven row is read through.
+    pub fn row(&self) -> RowScales {
+        RowScales {
+            counts_per_a: self.counts_per_a,
+            drive_offset_counts: self.drive_offset_counts,
+            counts_per_v: self.counts_per_v,
+            terminal_offset_counts: self.terminal_offset_counts,
+            pwm_arr: self.pwm_arr,
+            window_s: self.window_s,
+        }
+    }
+
     fn coast(&self) -> coast::Scales {
         coast::Scales {
             counts_per_v: self.counts_per_v,
@@ -84,6 +96,48 @@ impl Scales {
             fs: self.fs,
         }
     }
+}
+
+/// The conversions of [`Scales`] a driven row's current and volts are read
+/// through.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RowScales {
+    pub counts_per_a: f64,
+    pub drive_offset_counts: f64,
+    pub counts_per_v: f64,
+    pub terminal_offset_counts: f64,
+    pub pwm_arr: f64,
+    pub window_s: f64,
+}
+
+/// One driven row as read: the crest over the rest zero less the in-drive
+/// offset, A; the winding current, the crest less the window term, A; the
+/// tap difference V_on and the applied volts `D V_on`, V; the duty share.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Driven {
+    pub crest_a: f64,
+    pub i_a: f64,
+    pub v_on_v: f64,
+    pub u_v: f64,
+    pub duty: f64,
+}
+
+/// A driven row of a drive of sign `dir` (the bridge's) over the rest zero
+/// `zero_i`; None when the row lacks a channel.
+pub fn driven(f: &TelFrame, dir: i8, zero_i: f64, s: &RowScales) -> Option<Driven> {
+    let (raw, a, b, d) = (f.current_raw?, f.vmotor_a?, f.vmotor_b?, f.duty_counts?);
+    let (a_per_count, v_per_count) = (1.0 / s.counts_per_a, 1.0 / s.counts_per_v);
+    let taps = (i32::from(a) - i32::from(b)) * i32::from(dir);
+    let v_on = (f64::from(taps) - s.terminal_offset_counts) * v_per_count;
+    let duty = f64::from(d.unsigned_abs()) / s.pwm_arr;
+    let crest = (f64::from(raw) - zero_i - s.drive_offset_counts) * a_per_count;
+    Some(Driven {
+        crest_a: crest,
+        i_a: crest - s.window_s * (1.0 - duty) * v_on,
+        v_on_v: v_on,
+        u_v: duty * v_on,
+        duty,
+    })
 }
 
 /// One run-up from rest: the spin's rows, the coast's (opening with the
@@ -131,21 +185,14 @@ fn drive(run: &Run, s: &Scales) -> Result<(Vec<f64>, Vec<f64>), String> {
         .iter()
         .position(|f| f.duty_counts.is_some_and(|d| d != 0))
         .ok_or("the spin never drives")?;
-    let (a_per_count, v_per_count) = (1.0 / s.counts_per_a, 1.0 / s.counts_per_v);
+    let rs = s.row();
     let mut i = Vec::with_capacity(run.spin.len() - on);
     let mut u = Vec::with_capacity(run.spin.len() - on);
     for (k, f) in run.spin[on..].iter().enumerate() {
-        let (Some(raw), Some(a), Some(b), Some(d)) =
-            (f.current_raw, f.vmotor_a, f.vmotor_b, f.duty_counts)
-        else {
-            return Err(format!("driven row {k} lacks a channel"));
-        };
-        let taps = (i32::from(a) - i32::from(b)) * i32::from(run.dir);
-        let v_on = (f64::from(taps) - s.terminal_offset_counts) * v_per_count;
-        let duty = f64::from(d.unsigned_abs()) / s.pwm_arr;
-        let crest = (f64::from(raw) - run.zero_i - s.drive_offset_counts) * a_per_count;
-        i.push(crest - s.window_s * (1.0 - duty) * v_on);
-        u.push(duty * v_on);
+        let r = driven(f, run.dir, run.zero_i, &rs)
+            .ok_or_else(|| format!("driven row {k} lacks a channel"))?;
+        i.push(r.i_a);
+        u.push(r.u_v);
     }
     Ok((i, u))
 }

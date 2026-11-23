@@ -1079,13 +1079,19 @@ pub(crate) async fn correct<P: Pipe>(
     Ok(())
 }
 
-async fn body<P: Pipe>(
+/// The open-loop setup a drive step on the stops runs under: torque off,
+/// the fields it changes kept for the way out, the probe's sign volatile
+/// where it found the stored one wrong, the peak cap unset, the soft limits out
+/// to the physical range `soft`, OpenLoop, zero duty, the step's dead-man,
+/// then torque on. Whether the sign was corrected.
+pub(crate) async fn open_loop<P: Pipe>(
     rig: &mut Rig<'_, P>,
-    b: &mut Before,
     ledger: &mut Ledger,
-    found: &mut Found,
+    probe: &FromProbe,
+    soft: &[Vec<u8>; 2],
+    deadman_ticks: u16,
     lines: &mut Vec<String>,
-) -> Result<(), Halt> {
+) -> Result<bool, Halt> {
     ledger.touched = true;
     write(rig, "torque_enable", &[0]).await?;
     let open_loop = mode_value(rig.d, "OpenLoop")?;
@@ -1097,18 +1103,28 @@ async fn body<P: Pipe>(
     ] {
         ledger.keep(rig.c, rig.id, rig.d, name).await?;
     }
-    if b.probe.found != b.stored {
-        correct(rig, ledger, &b.probe, lines).await?;
-        found.corrected = true;
+    let corrected = probe.found != probe.stored;
+    if corrected {
+        correct(rig, ledger, probe, lines).await?;
     }
     write(rig, "current_limit_counts", &[0, 0]).await?;
-    let [lo, hi] = b.soft.clone();
-    write(rig, "pos_min_soft_counts", &lo).await?;
-    write(rig, "pos_max_soft_counts", &hi).await?;
+    write(rig, "pos_min_soft_counts", &soft[0]).await?;
+    write(rig, "pos_max_soft_counts", &soft[1]).await?;
     write(rig, "mode", &[open_loop]).await?;
     write(rig, "goal_duty", &[0, 0]).await?;
-    write(rig, "bus_deadman_ticks", &b.deadman_ticks.to_le_bytes()).await?;
+    write(rig, "bus_deadman_ticks", &deadman_ticks.to_le_bytes()).await?;
     write(rig, "torque_enable", &[1]).await?;
+    Ok(corrected)
+}
+
+async fn body<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    b: &mut Before,
+    ledger: &mut Ledger,
+    found: &mut Found,
+    lines: &mut Vec<String>,
+) -> Result<(), Halt> {
+    found.corrected = open_loop(rig, ledger, &b.probe, &b.soft, b.deadman_ticks, lines).await?;
     let c = &b.cfg;
     lines.push(format!(
         "volatile: the peak cap unset, the soft limits out to the physical range {:.0}..{:.0}, OpenLoop; dead-man {} ticks ({} s), then torque on at zero duty",

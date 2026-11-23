@@ -144,6 +144,18 @@ enum StepName {
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
     },
+    /// Step 5, free spins and their coasts: rest, the probe, the stops
+    /// and the window term first, then a pilot spin and twelve spins
+    /// between the stops at 25, 50 and 75 % of the stated voltage, each
+    /// from rest at a guard and cut short of the far one, for Ke, J and the
+    /// open-loop friction line; the shaft left at mid travel. Drives the motor fast between
+    /// its stops; metal gears only, for now.
+    Spins {
+        #[command(flatten)]
+        i: StepArgs,
+        #[arg(long, default_value = "osc-ident-runs")]
+        out: PathBuf,
+    },
     /// The closed-loop check of the installed, stamped set: the position
     /// loop turned on, small steps, then moves of 1, 10 and 33 % of the
     /// travel scored. Drives the motor under its own loops; changes no
@@ -423,6 +435,7 @@ fn run(cli: &Cli) -> Result<bool> {
             | StepName::Probe { i, out }
             | StepName::Stops { i, out }
             | StepName::Window { i, out }
+            | StepName::Spins { i, out }
             | StepName::Verify { i, out }) = step;
             let inputs = i.load()?;
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
@@ -442,6 +455,9 @@ fn run(cli: &Cli) -> Result<bool> {
                     }
                     StepName::Window { .. } => {
                         steps::step_window(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                    }
+                    StepName::Spins { .. } => {
+                        steps::step_spins(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
                     }
                     StepName::Verify { .. } => {
                         steps::step_verify(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
@@ -846,6 +862,65 @@ mod tests {
         assert!(
             e.contains("step window") && e.contains("--nameplate"),
             "{e}"
+        );
+        assert!(!dir.join("uid").exists(), "no run folder");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `step spins` chains rest, the probe, the stops and the window step
+    /// into one folder; the simulated servo runs no shunt burst, so the
+    /// probe aborts and nothing after it starts; with no nameplate, refused
+    /// before the bus is touched.
+    #[test]
+    fn step_spins_starts_only_on_an_accepted_chain() {
+        let (mut c, d) = fake(BaudRate::B3000000);
+        c.pipe_mut().set_track(0, resting());
+        let out = scratch("step-spins");
+        let stop = AtomicBool::new(false);
+        let (lines, accepted, root) = block_on(steps::step_spins(
+            &mut c,
+            Id::new(1),
+            &d,
+            &inputs(),
+            &out,
+            "uid",
+            &stop,
+        ))
+        .expect("runs");
+        let text = lines.join("\n");
+        assert!(!accepted, "{text}");
+        assert!(root.join("results/probe.json").exists(), "{text}");
+        assert!(!root.join("results/spins.json").exists(), "{text}");
+        let run: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read"))
+                .expect("json");
+        assert_eq!(run["steps"]["probe"]["state"], "aborted", "{run}");
+        for later in ["stops", "window", "spins"] {
+            assert!(run["steps"][later].is_null(), "{later}: {run}");
+        }
+        assert!(
+            text.contains("step stops not run: it needs an accepted probe"),
+            "{text}"
+        );
+        assert!(!text.contains("step spins refused"), "{text}");
+        assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
+        let _ = std::fs::remove_dir_all(out);
+
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let dir = scratch("step-spins-none");
+        let e = block_on(steps::step_spins(
+            &mut c,
+            Id::new(1),
+            &d,
+            &none,
+            &dir,
+            "uid",
+            &stop,
+        ))
+        .expect_err("refused");
+        assert!(
+            format!("{e:#}").contains("step spins drives the motor"),
+            "{e:#}"
         );
         assert!(!dir.join("uid").exists(), "no run folder");
         let _ = std::fs::remove_dir_all(dir);

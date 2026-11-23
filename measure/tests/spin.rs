@@ -499,3 +499,82 @@ fn the_whole_datasets_match_the_notebooks() {
         got.j.mean
     );
 }
+
+/// The step's judge on the ladder fixture, its rows cut as the step cuts
+/// its own captures (a spin's drive rows, its coast's rows from the zero
+/// duty's COMMIT): the coasts' Ke pools to the fixture's, and the ripple,
+/// the pot, the bench stops and the gear ratio derive six events a
+/// revolution.
+#[test]
+fn the_spin_steps_judge_reads_the_fixtures_ke() {
+    use osc_measure::fit::runup::RowScales;
+    use osc_measure::steps::spins::{self, JudgeCfg, PerRevFrom, Spin};
+    let e = json("expected.json");
+    let sc = &e["scales"];
+    let files = e["ladder"]["files"].as_array().expect("files");
+    let cfg = |zero_i: f64, zero_e: f64, per_rev: PerRevFrom| JudgeCfg {
+        fs: f(&sc["fs"]),
+        polarity: true,
+        zero_i,
+        zero_e,
+        row: RowScales {
+            counts_per_a: f(&sc["counts_per_a"]),
+            drive_offset_counts: f(&sc["drive_offset_counts"]),
+            counts_per_v: f(&sc["counts_per_v"]),
+            terminal_offset_counts: f(&sc["terminal_offset_counts"]),
+            pwm_arr: f(&sc["pwm_arr"]),
+            window_s: 0.0,
+        },
+        window: None,
+        r_ohm: f(&sc["r_ohm"]),
+        l_h: f(&sc["l_h"]),
+        per_rev,
+        i_drag0_a: None,
+    };
+    let derive = PerRevFrom::Derive {
+        counts_per_deg: (3792.0 - 82.0) / 184.3328808989794,
+        gear_ratio: 308.0533,
+    };
+    let mut coasts = Vec::new();
+    let mut raws = Vec::new();
+    for file in files {
+        let segs = fixture(file);
+        let ps = pairs(&segs);
+        let spins: Vec<Spin> = ps
+            .iter()
+            .enumerate()
+            .map(|(k, (d, sp, co))| Spin {
+                n: k + 1,
+                level: 0.25,
+                dir: *d,
+                drive: sp,
+                coast: co,
+            })
+            .collect();
+        let (zi, ze) = (f(&file["zero_i"]), f(&file["zero_e"]));
+        let j = spins::judge(&spins, &cfg(zi, ze, PerRevFrom::Stated(6)));
+        assert_eq!(j.per_rev.value, Some(6));
+        let want = file["coasts"].as_array().expect("coasts");
+        for (k, ((_, got), w)) in j.coasts.iter().zip(want).enumerate() {
+            check_coast(
+                got.as_ref().expect("a coast reads"),
+                w,
+                &format!("{} judged coast {k}", file["from"]),
+            );
+            coasts.push(got.clone().expect("reads"));
+        }
+        let d = spins::judge(&spins, &cfg(zi, ze, derive));
+        raws.extend(d.steady.iter().filter_map(|s| s.per_rev_raw));
+    }
+    let p = coast::pooled(&coasts).expect("pooled");
+    check_ke_pooled(&p, &e["ladder"]["pooled"]);
+    let raw = median(&raws).expect("derived");
+    assert_eq!(spins::nearest_even(raw), 6.0, "{raws:?}");
+    assert!((raw / 6.0 - 1.0).abs() < 0.10, "{raw}: {raws:?}");
+    println!(
+        "judged Ke {:.4} mV per rev/s over {} gated coasts; events a revolution derived {raw:.3} over {} spins",
+        coast::mv_per_rev_s(p.all.mean),
+        p.all.n,
+        raws.len()
+    );
+}
