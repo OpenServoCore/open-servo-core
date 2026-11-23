@@ -17,7 +17,7 @@ OpenServoCore swap board for SG90 and MG90 class hobby servos. It replaces the f
 - **Position feedback** - potentiometer or analog magnetic encoder on J4 (one or two channels). The J5 flex landing also brings out two encoder inputs, but only for experiments (see J5).
 - **Supply and terminal sense** - `VSYS` measured through its own divider, plus both motor terminals referenced to a common bias (`VB`) so back-EMF is readable while the bridge coasts.
 - **Temperature** - onboard NTC (TH1, 10K 3950) or an external NTC on J5, selected with JP2.
-- **Board** - 12 x 10 mm, 6-layer 1.6 mm (JLCPCB JLC06161H-3313 stackup), ENIG. All parts on the front. The back only has wire pads, pogo pads and solder jumpers.
+- **Board** - 13 x 10 mm, 6-layer 1.6 mm (JLCPCB JLC06161H-3313 stackup), ENIG. All parts on the front. The back only has wire pads, pogo pads and solder jumpers.
 
 ## MCU pinout
 

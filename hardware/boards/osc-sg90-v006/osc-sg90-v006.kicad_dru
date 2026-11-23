@@ -1,6 +1,6 @@
 (version 1)
 
-# JLCPCB 6-layer, 1 oz outer: 0.09/0.09 mm trace/space, routed edge 0.2 mm.
+# JLCPCB 6-layer, 1 oz outer: 0.09/0.09 mm trace/space, V-cut edges.
 # Vias: 0.3 mm drill (no small-via surcharge); via-in-pad is fine, JLC 6-layer
 # boards get epoxy filled and capped vias.
 
@@ -52,8 +52,9 @@
   (constraint hole_to_hole (min 0.20mm))
 )
 
+# V-cut edges: JLC asks for 0.4 mm from the score centre line.
 (rule "Copper to board edge"
-  (constraint edge_clearance (min 0.20mm))
+  (constraint edge_clearance (min 0.40mm))
 )
 
 (rule "Silk text thickness"
