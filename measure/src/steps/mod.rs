@@ -7,8 +7,10 @@ pub mod drive;
 pub mod polarity;
 pub mod probe;
 pub mod rest;
+pub mod runway;
 pub mod seek;
 pub mod shunt;
+pub mod spins;
 pub mod stops;
 #[cfg(test)]
 pub(crate) mod testkit;

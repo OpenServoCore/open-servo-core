@@ -22,6 +22,13 @@ pub struct Nameplate {
     pub no_load: Vec<NoLoad>,
     #[serde(default)]
     pub stall: Vec<Stall>,
+    /// Commutation events a motor revolution, the ripple the speed is
+    /// counted in, where the sheet or a teardown gives it: rotor slots
+    /// times brushes (a three-slot, two-brush motor: 6). Optional: without
+    /// it the spin step derives it from the ripple, the pot and the gear
+    /// ratio.
+    #[serde(default)]
+    pub ripple_per_rev: Option<u32>,
     /// The voltage the servo will run on: the stated row nearest it binds.
     pub run_v: Option<f64>,
     /// The share of the stated no-load speed the servo may ever turn at,

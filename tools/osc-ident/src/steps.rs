@@ -17,6 +17,7 @@ use osc_measure::nameplate::Nameplate;
 use osc_measure::state;
 use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
+use osc_measure::steps::spins::{self as spin, SpinsInputs};
 use osc_measure::steps::stops::{self, StopsInputs};
 use osc_measure::steps::verify::{self, VerifyInputs};
 use osc_measure::steps::window::{self, WindowInputs};
@@ -418,6 +419,7 @@ pub async fn step_probe<P: Pipe>(
 enum Last {
     Stops,
     Window,
+    Spins,
 }
 
 /// A step as the chain keeps it: its end and result, or its refusal.
@@ -492,7 +494,6 @@ pub async fn step_verify<P: Pipe>(
 /// on its result, then the stops on both, into the same folder, each
 /// started only on the one before it accepted. The lines it prints, and
 /// whether all three were accepted.
-#[allow(clippy::too_many_arguments)]
 pub async fn step_stops<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -522,6 +523,22 @@ pub async fn step_window<P: Pipe>(
     chain(c, id, d, i, out, servo, stop, Last::Window).await
 }
 
+/// `step spins` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
+/// stops, the window term, then the spins on all four, into the same
+/// folder, each started only on the one before it accepted. The lines it
+/// prints, and whether all five were accepted.
+pub async fn step_spins<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    chain(c, id, d, i, out, servo, stop, Last::Spins).await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn chain<P: Pipe>(
     c: &mut Client<P>,
@@ -536,6 +553,7 @@ async fn chain<P: Pipe>(
     let name = match last {
         Last::Stops => stops::STEP,
         Last::Window => window::STEP,
+        Last::Spins => spin::STEP,
     };
     let np = i.nameplate.as_ref().with_context(|| {
         format!("step {name} drives the motor: it needs the servo's nameplate (--nameplate)")
@@ -668,7 +686,8 @@ async fn chain<P: Pipe>(
         lines.push("step stops not run: it needs an accepted probe".into());
     }
     let mut accepted = stops_ok;
-    if last == Last::Window {
+    let mut t4 = t3;
+    if last != Last::Stops {
         accepted = false;
         if stops_ok {
             let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
@@ -696,7 +715,7 @@ async fn chain<P: Pipe>(
                 )
                 .await
             };
-            let t4 = unix_s();
+            t4 = unix_s();
             match &windowed {
                 Err(e) => lines.push(format!("step window refused before any write: {e}")),
                 Ok(w) => {
@@ -715,6 +734,57 @@ async fn chain<P: Pipe>(
             ));
         } else if probe_ok {
             lines.push("step window not run: it needs an accepted stops step".into());
+        }
+    }
+    if last == Last::Spins {
+        let window_ok = accepted;
+        accepted = false;
+        if window_ok {
+            let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
+            let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
+            let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
+            let window_result = result_of(&mut sink, window::RESULT, "window")?;
+            let spun = {
+                let mut rig = Rig {
+                    c: &mut *c,
+                    id,
+                    d,
+                    sink: &mut sink,
+                    stop,
+                    clock: &clock,
+                };
+                spin::spins(
+                    &mut rig,
+                    &SpinsInputs {
+                        nameplate: np,
+                        board: &i.board,
+                        thermal: i.thermal.as_ref(),
+                        rest: &rest_result,
+                        probe: &probe_result,
+                        stops: &stops_result,
+                        window: Some(&window_result),
+                    },
+                )
+                .await
+            };
+            let t5 = unix_s();
+            match &spun {
+                Err(e) => lines.push(format!("step spins refused before any write: {e}")),
+                Ok(s) => {
+                    said(spin::STEP, &s.ended, &s.checks, &mut lines);
+                    accepted = s.accepted();
+                }
+            }
+            ran.push((
+                spin::STEP,
+                spun.as_ref()
+                    .ok()
+                    .map(|s| (s.ended.clone(), s.result.clone())),
+                spun.as_ref().err().map(|e| e.0.clone()),
+                (t4, t5),
+            ));
+        } else if stops_ok {
+            lines.push("step spins not run: it needs an accepted window step".into());
         }
     }
     let entries: Vec<Ran> = ran
