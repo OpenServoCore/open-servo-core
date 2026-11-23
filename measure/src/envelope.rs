@@ -42,6 +42,10 @@ pub const RISE_MAX_C: f64 = 30.0;
 /// The stop-hold ceilings: bench safety ceilings by gear class.
 pub const HOLD_PLASTIC_A: f64 = 0.3;
 pub const HOLD_METAL_A: f64 = 0.5;
+/// The longest unwedge press, s: breaking a wedge takes force, not time,
+/// and a stiff shaft freed at mid travel must not run into a stop. The
+/// duty ramp takes about 13 ms of it to reach the press's duty.
+pub const UNWEDGE_MAX_S: f64 = 0.050;
 
 /// The stop-hold ceiling of a gear class; unknown is plastic.
 pub fn hold_a(gear: Option<GearClass>) -> f64 {
@@ -71,6 +75,9 @@ pub struct Facts {
     /// The stops, raw counts, once found.
     pub stops: Option<(f64, f64)>,
     pub polarity_proven: bool,
+    /// The drive steps found the shaft wedged: neither direction moved at
+    /// the stall-safe ceiling. Only then may an unwedge rung run.
+    pub wedged: bool,
     pub ntc_c: Option<f64>,
 }
 
@@ -93,6 +100,7 @@ impl Facts {
             speed_v: np.speed_row().map(|r| r.at_v),
             stops: None,
             polarity_proven: false,
+            wedged: false,
             ntc_c: None,
         }
     }
@@ -251,6 +259,19 @@ pub struct Rung {
     /// distance from it, counts.
     pub speed_cps: f64,
     pub stop_counts: f64,
+    pub kind: Kind,
+}
+
+/// What a rung is for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Drive,
+    /// A press at the speed voltage to free a wedged metal train: admitted
+    /// only from the wedged verdict, at most [`UNWEDGE_MAX_S`] with the
+    /// permit held, one a direction a run. The heat budget and the speed
+    /// voltage price it; the press ceiling and the stall current do not,
+    /// since it is meant to press harder than both.
+    Unwedge,
 }
 
 impl Rung {
@@ -265,6 +286,7 @@ impl Rung {
             start,
             speed_cps: 0.0,
             stop_counts: 0.0,
+            kind: Kind::Drive,
         }
     }
 }
@@ -298,6 +320,8 @@ pub struct Envelope {
     pub heat: Result<HeatModel, String>,
     /// (amps, seconds) of every admitted rung and gap, the run's start on.
     history: Vec<(f64, f64)>,
+    /// The duty signs of the unwedge rungs admitted.
+    unwedges: Vec<f64>,
 }
 
 impl Envelope {
@@ -306,6 +330,7 @@ impl Envelope {
             facts,
             heat,
             history: Vec::new(),
+            unwedges: Vec::new(),
         }
     }
 
@@ -343,6 +368,31 @@ impl Envelope {
                 }
             }
         };
+        let unwedge = r.kind == Kind::Unwedge;
+        if unwedge {
+            if f.gear != Some(GearClass::Metal) {
+                no.push(format!(
+                    "unwedge: only a metal train is freed by a hard press, and this one is {}",
+                    gear_word(f.gear)
+                ));
+            }
+            if !f.wedged {
+                no.push("unwedge: the shaft was not found wedged".into());
+            }
+            if !r.permit {
+                no.push("unwedge: the stall permit is not held for it".into());
+            }
+            if r.time_s > UNWEDGE_MAX_S {
+                no.push(format!(
+                    "unwedge: {:.3} s, over the {UNWEDGE_MAX_S} s a press to free the shaft may last",
+                    r.time_s
+                ));
+            }
+            let dir = r.duty.signum();
+            if self.unwedges.len() >= 2 || self.unwedges.contains(&dir) {
+                no.push("unwedge: a run tries once, one press each way, and this one has".into());
+            }
+        }
         if d > 0.0 {
             match f.speed_v {
                 Some(v) if volts > v => no.push(format!(
@@ -353,6 +403,8 @@ impl Envelope {
                 Some(_) => {}
                 None => no.push("duty: the nameplate states no voltage for its no-load speed".into()),
             }
+        }
+        if d > 0.0 && !unwedge {
             if r.permit {
                 let hold = hold_a(f.gear);
                 if current_a > hold {
@@ -399,9 +451,22 @@ impl Envelope {
                         ));
                     }
                 }
-                None => no.push(
-                    "travel: the stops are not found yet, and this rung moves the shaft".into(),
-                ),
+                // before the stops a rung may arrive at one: only a light
+                // press, stall-safe by its duty alone, is that safe
+                None if unwedge => {}
+                None => {
+                    let light = hold_a(f.gear) / 2.0;
+                    if f.r.is_none() {
+                        no.push(
+                            "travel: the stops are not found yet, and this rung moves the shaft"
+                                .into(),
+                        );
+                    } else if current_a > light {
+                        no.push(format!(
+                            "travel: the stops are not found yet, and this rung moves the shaft with {current_a:.3} A blocked, over the {light} A (half the stop-hold ceiling) a rung may arrive at a stop with"
+                        ));
+                    }
+                }
             }
         }
         let mut rise_c = 0.0;
@@ -441,9 +506,23 @@ impl Envelope {
         }
     }
 
+    /// The same run's envelope on what is known now: the heat of every rung
+    /// admitted so far is kept.
+    pub fn rebased(self, facts: Facts, heat: Result<HeatModel, String>) -> Self {
+        Envelope {
+            facts,
+            heat,
+            history: self.history,
+            unwedges: self.unwedges,
+        }
+    }
+
     /// Price `r` and, when it fits, keep its heat and the gap after it.
     pub fn admit(&mut self, r: &Rung) -> Result<Price, Refused> {
         let p = self.price(r)?;
+        if r.kind == Kind::Unwedge {
+            self.unwedges.push(r.duty.signum());
+        }
         self.history.push((p.current_a, r.time_s));
         if r.gap_s > 0.0 {
             self.history.push((0.0, r.gap_s));
@@ -478,7 +557,10 @@ impl Envelope {
                 "start, worst case and stop inside {glo:.0}..{ghi:.0}, {:.0}% of the stops {lo:.0}..{hi:.0} in from each",
                 100.0 * GUARD_SHARE
             ),
-            _ => "the stops are not found yet: only a rung that moves nothing".into(),
+            _ => format!(
+                "the stops are not found yet: only a rung that moves nothing, or one stall-safe by its duty alone (at most {} A blocked, half the stop-hold ceiling)",
+                hold_a(f.gear) / 2.0
+            ),
         };
         let r = f.r.as_ref().map_or("R unknown".into(), |r| {
             format!("R {:.3} ohm from {}", r.ohm, r.source)
@@ -560,6 +642,7 @@ mod tests {
             start,
             speed_cps,
             stop_counts: 50.0,
+            kind: Kind::Drive,
         }
     }
 
@@ -641,6 +724,85 @@ mod tests {
         };
         assert!(admitted >= 2, "{admitted}");
         assert!(last.contains("raises the winding"), "{last}");
+    }
+
+    /// Before the stops a moving rung is admitted only while its blocked
+    /// current is at most half the stop-hold ceiling, whatever its travel.
+    #[test]
+    fn before_stops_only_stall_safe_rungs_move() {
+        let mut e = envelope(false);
+        e.facts.stops = None;
+        // metal: 0.25 A blocked at most; 4.177 ohm on a 5 V rail
+        let at = |d: f64| rung(d, 0.15, 2048.0, false, 5000.0);
+        let light = 0.25 * 4.177 / 5.0;
+        let p = e.price(&at(light * 0.999)).expect("stall-safe by duty");
+        assert!(
+            p.current_a <= 0.25 && (p.travel - (1.25 * 5000.0 * 0.15 + 50.0)).abs() < 1e-9,
+            "{p:?}"
+        );
+        let why = refused(&e, &at(light * 1.01));
+        assert!(
+            why.contains("stops are not found") && why.contains("half the stop-hold ceiling"),
+            "{why}"
+        );
+        assert_eq!(why.matches("; ").count(), 0, "the travel alone: {why}");
+        e.facts.gear = Some(GearClass::Plastic);
+        assert!(refused(&e, &at(light * 0.999)).contains("0.15 A"));
+    }
+
+    fn unwedge(duty: f64, time_s: f64) -> Rung {
+        Rung {
+            name: "unwedge".into(),
+            permit: true,
+            kind: Kind::Unwedge,
+            ..rung(duty, time_s, 2048.0, true, 5000.0)
+        }
+    }
+
+    /// An unwedge press is admitted only from the wedged verdict, on a metal
+    /// train, at most 0.05 s with the permit held, at most the speed voltage,
+    /// past the press ceiling and the stall current; its heat is priced.
+    #[test]
+    fn an_unwedge_press_is_admitted_only_from_the_wedged_verdict() {
+        let mut e = envelope(false);
+        e.facts.stops = None;
+        e.facts.r = Some(Resistance {
+            ohm: 0.9 * 4.177,
+            source: "planning R".into(),
+        });
+        let why = refused(&e, &unwedge(0.96, 0.05));
+        assert!(why.contains("not found wedged"), "{why}");
+        assert_eq!(why.matches("; ").count(), 0, "the verdict alone: {why}");
+        e.facts.wedged = true;
+        let why = refused(&e, &unwedge(1.0, 0.05));
+        assert!(why.contains("over the 4.8 V"), "full duty on 5 V: {why}");
+        let p = e.admit(&unwedge(0.96, 0.05)).expect("a wedged metal train");
+        assert!(
+            p.current_a > 1.149 && (p.volts - 4.8).abs() < 1e-9,
+            "past the hold and the stall: {p:?}"
+        );
+        assert!(p.rise_c > 0.0, "the heat is priced: {p:?}");
+        assert!(refused(&e, &unwedge(-0.96, 0.06)).contains("over the 0.05 s"));
+        let mut held = unwedge(-0.96, 0.05);
+        held.permit = false;
+        assert!(refused(&e, &held).contains("permit is not held"));
+        e.facts.gear = Some(GearClass::Plastic);
+        assert!(refused(&e, &unwedge(-0.96, 0.05)).contains("only a metal train"));
+    }
+
+    /// One attempt a run: one press each way, then no more.
+    #[test]
+    fn a_second_unwedge_in_one_run_is_refused() {
+        let mut e = envelope(false);
+        e.facts.stops = None;
+        e.facts.wedged = true;
+        e.admit(&unwedge(0.96, 0.05)).expect("+");
+        assert!(refused(&e, &unwedge(0.96, 0.05)).contains("tries once"));
+        e.admit(&unwedge(-0.96, 0.05)).expect("-");
+        for d in [1.0, -1.0] {
+            let why = refused(&e, &unwedge(0.96 * d, 0.05));
+            assert!(why.contains("a run tries once"), "{why}");
+        }
     }
 
     #[test]

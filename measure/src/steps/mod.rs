@@ -3,9 +3,12 @@
 //! when it cannot start, and once it has written it always ends through
 //! [`crate::guard::exit`].
 
+pub mod polarity;
+pub mod probe;
 pub mod rest;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use osc_client::descriptor::Descriptor;
 use osc_client::{Client, Error, Id, pipe::Pipe};
@@ -172,6 +175,43 @@ pub(crate) fn keep_all(
     Ok(())
 }
 
+/// One burst read to LAST, kept in `taken` whole or not. A fault latched
+/// in it aborts the step; the reasons it is not whole, if any, come back
+/// with it, for the caller to repeat or abort on.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn take_once<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    taken: &mut Vec<Taken>,
+    layout: Layout,
+    rows: u16,
+    cmd_duty_q15: i16,
+    plan: &Value,
+    servo: &Map<String, Value>,
+) -> Result<(Burst, Vec<String>), Halt> {
+    let t0 = (rig.clock)();
+    let b = tel::stream(rig.c, rig.id, rig.d, layout, rows).await?;
+    let t1 = (rig.clock)();
+    let faults = read_u8(rig, "fault_flags").await?;
+    let nn = taken.len() as u32 + 1;
+    let m = meta::tel(servo, &b, plan.clone(), (t0, t1));
+    let lost = b.lost();
+    let alert = b.alert;
+    taken.push(Taken {
+        nn,
+        burst: b.clone(),
+        cmd_duty_q15,
+        meta: m,
+    });
+    if faults != 0 || alert {
+        let code = read_u8(rig, "fault_code").await.unwrap_or(0);
+        return Err(Halt::Error(format!(
+            "a fault latched during the {} burst (capture {nn:02}): fault_flags {faults:#04x}, fault_code {code}",
+            layout.name()
+        )));
+    }
+    Ok((b, lost))
+}
+
 /// One rung's burst, read to LAST. A fault latched in it aborts the step;
 /// a burst that lost a row is no evidence: it is said so, the rung taken
 /// once more, and a second such burst aborts the step. Every burst goes
@@ -190,27 +230,8 @@ pub(crate) async fn take<P: Pipe>(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let t0 = (rig.clock)();
-        let b = tel::stream(rig.c, rig.id, rig.d, layout, rows).await?;
-        let t1 = (rig.clock)();
-        let faults = read_u8(rig, "fault_flags").await?;
-        let nn = taken.len() as u32 + 1;
-        let m = meta::tel(servo, &b, plan.clone(), (t0, t1));
-        let lost = b.lost();
-        let alert = b.alert;
-        taken.push(Taken {
-            nn,
-            burst: b.clone(),
-            cmd_duty_q15,
-            meta: m,
-        });
-        if faults != 0 || alert {
-            let code = read_u8(rig, "fault_code").await.unwrap_or(0);
-            return Err(Halt::Error(format!(
-                "a fault latched during the {} burst (capture {nn:02}): fault_flags {faults:#04x}, fault_code {code}",
-                layout.name()
-            )));
-        }
+        let (b, lost) = take_once(rig, taken, layout, rows, cmd_duty_q15, plan, servo).await?;
+        let nn = taken.len();
         if lost.is_empty() {
             lines.push(format!(
                 "{} row: {} rows, whole (capture {nn:02})",
@@ -244,4 +265,50 @@ pub(crate) async fn read_u8<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result
         .first()
         .copied()
         .unwrap_or(0))
+}
+
+/// The longest silence a wait with torque on allows itself, s: well
+/// inside the dead-man every step arms.
+const KEEP_ALIVE_S: f64 = 0.2;
+
+/// Wait `s` with torque on: a read every [`KEEP_ALIVE_S`] reloads the bus
+/// dead-man, which any instruction to the servo does.
+pub(crate) async fn keep_alive<P: Pipe>(rig: &mut Rig<'_, P>, s: f64) -> Result<(), Halt> {
+    let mut left = s;
+    while left > 0.0 {
+        let step = left.min(KEEP_ALIVE_S);
+        rig.c.pause(Duration::from_secs_f64(step)).await;
+        read_u16(rig, "pos").await?;
+        left -= step;
+    }
+    Ok(())
+}
+
+pub(crate) async fn read_u16<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u16, Halt> {
+    let f = field(rig.d, name)?;
+    let b = rig.c.read(rig.id, f.addr, 2).await?;
+    Ok(u16::from_le_bytes([b[0], b[1]]))
+}
+
+/// The mean of `n` reads of a u16 register.
+pub(crate) async fn mean_u16<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    name: &str,
+    n: u32,
+) -> Result<f64, Halt> {
+    let mut sum = 0.0;
+    for _ in 0..n {
+        sum += read_u16(rig, name).await? as f64;
+    }
+    Ok(sum / n.max(1) as f64)
+}
+
+/// A mode's value by its name in the descriptor.
+pub(crate) fn mode_value(d: &Descriptor, name: &str) -> Result<u8, Halt> {
+    field(d, "mode")?
+        .variants
+        .iter()
+        .find(|v| v.name == name)
+        .map(|v| v.value)
+        .ok_or_else(|| Halt::Refused(format!("the servo's mode names no {name}")))
 }

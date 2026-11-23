@@ -43,7 +43,7 @@ fn soft_max(c: &mut Ctx) -> Result<f64, Fail> {
     soft(c, true)
 }
 
-fn travel_deg(c: &mut Ctx) -> Result<f64, Fail> {
+fn travel_from_stops_deg(c: &mut Ctx) -> Result<f64, Fail> {
     let (lo, hi) = stops(c)?;
     Ok((hi - lo) / counts_per_deg(c)?)
 }
@@ -56,7 +56,7 @@ fn angle(c: &mut Ctx, at_high: bool) -> Result<f64, Fail> {
     let cw = get!(c, policy, angle_cw_stop_deg)?;
     let ccw_high = get!(c, nameplate, count_rises_ccw)?;
     let past = if ccw_high == at_high {
-        travel_deg(c)?
+        travel_from_stops_deg(c)?
     } else {
         0.0
     };

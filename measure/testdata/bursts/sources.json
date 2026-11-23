@@ -1,0 +1,119 @@
+{
+ "method": "the stage 3 inductance notebook's period-pair fit (notebooks stages/3-servo/inductance/inductance.ipynb sha1 fe82bd5f08a9ee39f93639a9e1136ba89accf37e, cells 29 and 73; oscnb/bursts.py sha1 60ddf761e61b8e082f536617f3c169becc57e8ee, period_table) run on each burst whole, at notebooks main 34add9d; edge_volt_ticks is the notebook's EDGES value of the burst's seat, duty and sign pool",
+ "scales": {
+  "counts_per_a": {
+   "value": 1135.013429521035,
+   "source": "notebooks stages/1-board/current-scale/results/dev-v006-2A-D.json counts_per_a, sha1 5fbdb93bd77174824fffb47a5b58e6d50e8d66e1"
+  },
+  "terminal_counts_per_v": {
+   "value": 248.36571049939795,
+   "source": "notebooks stages/1-board/terminal-chain/results/dev-v006-2A-D.json terminal_counts_per_v, sha1 e1249f71a80bcad5c4c1d64301560f66c0bd8582"
+  },
+  "terminal_offset_counts": {
+   "value": 2.3816859542540265,
+   "source": "notebooks stages/1-board/terminal-chain/results/dev-v006-2A-D.json terminal_offset_counts, sha1 e1249f71a80bcad5c4c1d64301560f66c0bd8582"
+  },
+  "window_scale": {
+   "value": 1.006331915441961,
+   "source": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json window_scale, sha1 6de39d5aa7818cba119048a5ef59028760a03420"
+  },
+  "lags": {
+   "on": {
+    "value": 44.0,
+    "source": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json the mean of on_edge_lag_7v4 and on_edge_lag_3v7 (oscnb scales.edge_lags), sha1 6de39d5aa7818cba119048a5ef59028760a03420"
+   },
+   "tap_on": {
+    "value": 39.5,
+    "source": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json the mean of tap_on_edge_lag_7v4 and tap_on_edge_lag_3v7 (oscnb scales.edge_lags), sha1 6de39d5aa7818cba119048a5ef59028760a03420"
+   },
+   "off": {
+    "value": 14.0,
+    "source": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json the mean of off_edge_lag_7v4 and off_edge_lag_3v7 (oscnb scales.edge_lags), sha1 6de39d5aa7818cba119048a5ef59028760a03420"
+   },
+   "settle": {
+    "value": 72.0,
+    "source": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json the mean of shunt_settle_7v4 and shunt_settle_3v7 (oscnb scales.edge_lags), sha1 6de39d5aa7818cba119048a5ef59028760a03420"
+   }
+  }
+ },
+ "bursts": {
+  "locked-g1-fwd-25-burst-1.csv": {
+   "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/inductance/locked-4/g1-fwd-25/burst-1.csv",
+   "sha1": "00e5b78a0ce797b49a254a200aef4145781e01bb",
+   "sign": 1,
+   "pct": 25,
+   "notebook": {
+    "r_ohm": 4.1902731858295095,
+    "l_mh": 0.7829907060707156,
+    "tau_us": 186.85910711468665,
+    "pairs": 8,
+    "edge_volt_ticks": -34.65957511884817
+   }
+  },
+  "locked-g2-fwd-40-burst-2.csv": {
+   "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/inductance/locked-4/g2-fwd-40/burst-2.csv",
+   "sha1": "07688d0113381623d87566c15a30ce340e5ef767",
+   "sign": 1,
+   "pct": 40,
+   "notebook": {
+    "r_ohm": 4.272450977349381,
+    "l_mh": 0.872900031963818,
+    "tau_us": 204.30896377548686,
+    "pairs": 8,
+    "edge_volt_ticks": -37.289769112562105
+   }
+  },
+  "locked-g3-rev-40-burst-1.csv": {
+   "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/inductance/locked-4/g3-rev-40/burst-1.csv",
+   "sha1": "db85c5c7875f251b54bd7dde1ed613606acce0f8",
+   "sign": -1,
+   "pct": 40,
+   "notebook": {
+    "r_ohm": 4.270886334108976,
+    "l_mh": 0.8924423478944294,
+    "tau_us": 208.95951755190353,
+    "pairs": 8,
+    "edge_volt_ticks": -30.944287697953563
+   }
+  },
+  "locked-g4-rev-25-burst-3.csv": {
+   "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/inductance/locked-4/g4-rev-25/burst-3.csv",
+   "sha1": "43ef03984251f1f8bae5038a6b75424624a2ad96",
+   "sign": -1,
+   "pct": 25,
+   "notebook": {
+    "r_ohm": 4.146582113987514,
+    "l_mh": 0.8049697094863465,
+    "tau_us": 194.12848639147205,
+    "pairs": 8,
+    "edge_volt_ticks": -46.62378706269949
+   }
+  },
+  "stop-g2-fwd-40-burst-1.csv": {
+   "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/inductance/stop-6/g2-fwd-40/burst-1.csv",
+   "sha1": "db870b4d1f88a9fa90657bfb8481e1b2396f3d8b",
+   "sign": 1,
+   "pct": 40,
+   "notebook": {
+    "r_ohm": 4.3467667449321095,
+    "l_mh": 0.8861953813771852,
+    "tau_us": 203.87461149379584,
+    "pairs": 8,
+    "edge_volt_ticks": 5.429493456598838
+   }
+  },
+  "wound-g3-rev-40-burst-2.csv": {
+   "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/inductance/wound-5/g3-rev-40/burst-2.csv",
+   "sha1": "7107dd700dd8b0264865691797a545cdc4e3eb71",
+   "sign": -1,
+   "pct": 40,
+   "notebook": {
+    "r_ohm": 4.333529614213599,
+    "l_mh": 0.8645341665831817,
+    "tau_us": 199.49884817853447,
+    "pairs": 8,
+    "edge_volt_ticks": -16.199901314516495
+   }
+  }
+ }
+}

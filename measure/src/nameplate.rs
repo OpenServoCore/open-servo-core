@@ -14,6 +14,9 @@ pub struct Nameplate {
     /// Whether the count rises as the horn turns counterclockwise, facing
     /// it: which stop is the counterclockwise end.
     pub count_rises_ccw: Option<bool>,
+    /// The output's travel from stop to stop, deg, as the sheet states it or
+    /// the user measured it.
+    pub travel_deg: Option<f64>,
     pub operating_v: Option<VoltRange>,
     #[serde(default)]
     pub no_load: Vec<NoLoad>,
@@ -70,6 +73,65 @@ impl Nameplate {
     pub fn stall_row(&self) -> Option<Stall> {
         stated(self.operating_v?, self.run_v, &self.stall, |r| r.at_v)
     }
+
+    /// A user's nameplate as the steps load it: every value they need is
+    /// there, else refused naming the first missing one. A stated stall
+    /// current is optional: the rules take stated V over the seated R.
+    pub fn check_user(&self) -> Result<(), String> {
+        let missing = |field: &str, what: &str| {
+            Err(format!(
+                "the nameplate has no usable {field} ({what}): enter it from the maker's sheet or your own measurement"
+            ))
+        };
+        if self.gear_class.is_none() {
+            return missing("gear_class", "plastic, metal or unknown");
+        }
+        if !self.gear_ratio.is_some_and(|r| r > 0.0) {
+            return missing("gear_ratio", "motor revolutions per output revolution");
+        }
+        if !self.travel_deg.is_some_and(|t| t > 0.0 && t <= 360.0) {
+            return missing("travel_deg", "the output's travel from stop to stop, deg");
+        }
+        if self.count_rises_ccw.is_none() {
+            return missing(
+                "count_rises_ccw",
+                "whether the count rises as the horn turns counterclockwise, facing it",
+            );
+        }
+        let Some(op) = self.operating_v.filter(|o| o.min > 0.0 && o.min <= o.max) else {
+            return missing("operating_v", "the operating voltage range, min and max");
+        };
+        if !self.run_v.is_some_and(|v| v > 0.0) {
+            return missing("run_v", "the voltage the servo will run on");
+        }
+        if self
+            .speed_row()
+            .is_none_or(|r| !(r.seconds > 0.0 && r.per_deg > 0.0))
+        {
+            return missing(
+                "no_load",
+                &format!(
+                    "a no-load speed row inside the operating range {} to {} V, nearest the {} V it runs on",
+                    op.min,
+                    op.max,
+                    self.run_v.unwrap_or(0.0)
+                ),
+            );
+        }
+        if self.derate_speed.is_none_or(|[n, d]| n == 0 || n > d) {
+            return missing(
+                "derate_speed",
+                "the share of the stated speed it may turn at, [numerator, denominator]",
+            );
+        }
+        if !self.derate_other.is_some_and(|d| d > 0.0 && d <= 1.0) {
+            return missing(
+                "derate_other",
+                "the share any other stated value is taken at",
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -111,4 +173,51 @@ pub struct Stall {
     pub at_v: f64,
     #[serde(default)]
     pub current_a: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bench() -> Nameplate {
+        serde_json::from_str(include_str!("../testdata/mg90-d/nameplate.json")).expect("nameplate")
+    }
+
+    /// The bench nameplate passes; each required value taken out is refused
+    /// naming it. The stall current is not one.
+    #[test]
+    fn a_nameplate_missing_a_required_field_is_refused_naming_it() {
+        assert_eq!(bench().check_user(), Ok(()));
+        type Take = fn(&mut Nameplate);
+        let cases: [(&str, Take); 9] = [
+            ("gear_class", |n| n.gear_class = None),
+            ("gear_ratio", |n| n.gear_ratio = None),
+            ("travel_deg", |n| n.travel_deg = None),
+            ("count_rises_ccw", |n| n.count_rises_ccw = None),
+            ("operating_v", |n| n.operating_v = None),
+            ("run_v", |n| n.run_v = None),
+            ("no_load", |n| n.no_load.clear()),
+            ("derate_speed", |n| n.derate_speed = None),
+            ("derate_other", |n| n.derate_other = None),
+        ];
+        for (field, take) in cases {
+            let mut n = bench();
+            take(&mut n);
+            let why = n.check_user().expect_err(field);
+            assert!(
+                why.starts_with(&format!("the nameplate has no usable {field} (")),
+                "{field}: {why}"
+            );
+        }
+        let mut n = bench();
+        n.stall.clear();
+        assert_eq!(n.check_user(), Ok(()), "a stall current is optional");
+        let mut n = bench();
+        n.no_load = vec![NoLoad {
+            at_v: 9.0,
+            seconds: 0.1,
+            per_deg: 60.0,
+        }];
+        assert!(n.check_user().expect_err("outside").contains("no_load"));
+    }
 }

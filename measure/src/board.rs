@@ -15,6 +15,24 @@ pub struct Board {
     pub ntc_site: NtcSite,
     /// The board NTC's fixed-point quadratic as the CALIB words hold it.
     pub ntc_curve: NtcCurve,
+    /// The bridge's shortest pulse, timer ticks of drive width: a board
+    /// constant compiled into the image, with no register.
+    #[serde(default)]
+    pub bridge_min_ticks: Option<f64>,
+    /// The bridge's slow-decay edges a shunt burst is read by.
+    #[serde(default)]
+    pub burst_edges: Option<BurstEdges>,
+}
+
+/// The bridge's edges in timer ticks after the commanded ones: where the
+/// current turns on and where the driven tap does, where both turn off,
+/// and how long the shunt takes to settle from the on edge.
+#[derive(Copy, Clone, Debug, Deserialize)]
+pub struct BurstEdges {
+    pub on_ticks: f64,
+    pub tap_on_ticks: f64,
+    pub off_ticks: f64,
+    pub settle_ticks: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

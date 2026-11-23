@@ -15,8 +15,9 @@ use osc_measure::envelope::{Envelope, Facts, HeatModel, Rung};
 use osc_measure::inputs::ThermalInputs;
 use osc_measure::nameplate::Nameplate;
 use osc_measure::state;
-use osc_measure::steps::Rig;
+use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
+use osc_measure::steps::{Ended, Rig};
 use osc_measure::{Board, sink::Sink};
 use serde_json::{Value, json};
 
@@ -40,9 +41,7 @@ impl StepInputs {
                 .with_context(|| format!("parsing {}", p.display()))
         };
         Ok(StepInputs {
-            nameplate: nameplate
-                .map(|p| Ok::<_, anyhow::Error>(serde_json::from_value(json(p)?)?))
-                .transpose()?,
+            nameplate: nameplate.map(files::nameplate).transpose()?,
             thermal: thermal
                 .map(|p| Ok::<_, anyhow::Error>(serde_json::from_value(json(p)?)?))
                 .transpose()?,
@@ -204,30 +203,56 @@ pub async fn plan<P: Pipe>(
     Ok((out, admit.is_ok()))
 }
 
-/// The run folder's minimal manifest for one step.
-fn manifest(
-    uid: &str,
-    step: &str,
-    rested: Option<&rest::Rested>,
-    refused: Option<&str>,
+/// One step as the manifest records it.
+struct Ran<'a> {
+    step: &'static str,
+    ended: Option<&'a Ended>,
+    result: Option<&'a Value>,
+    refused: Option<String>,
     times: (f64, f64),
-) -> Value {
-    let result = rested.and_then(|r| r.result.as_ref());
-    let state = rested.map_or("refused", |r| r.ended.way.name());
+}
+
+/// The run folder's minimal manifest: every step it ran, in order.
+fn manifest(uid: &str, ran: &[Ran]) -> Value {
+    let result = ran.iter().find_map(|r| r.result);
+    let steps: serde_json::Map<String, Value> = ran
+        .iter()
+        .map(|r| {
+            (
+                r.step.to_string(),
+                json!({
+                    "state": r.ended.map_or("refused", |e| e.way.name()),
+                    "why": r.ended.and_then(|e| e.why.clone()).or(r.refused.clone()),
+                    "started": r.times.0,
+                    "ended": r.times.1,
+                }),
+            )
+        })
+        .collect();
     json!({
         "tool": format!("osc-ident {}", env!("CARGO_PKG_VERSION")),
         "servo_uid": uid,
         "image": result.map_or(Value::Null, |r| r["image"].clone()),
         "capability_flags": result.map_or(Value::Null, |r| r["capability_flags"].clone()),
-        "steps": {
-            step: {
-                "state": state,
-                "why": rested.and_then(|r| r.ended.why.clone()).or(refused.map(str::to_string)),
-                "started": times.0,
-                "ended": times.1,
-            }
-        }
+        "steps": steps,
     })
+}
+
+/// A step's lines as the CLI prints them: what it did, its checks, the
+/// way out, its verdict.
+fn said(step: &str, ended: &Ended, checks: &[osc_measure::steps::Check], lines: &mut Vec<String>) {
+    lines.extend(ended.lines.iter().cloned());
+    lines.extend(checks.iter().map(|c| format!("  {}", c.said())));
+    lines.push("the way out:".into());
+    lines.extend(ended.exit.lines.iter().map(|l| format!("  {l}")));
+    lines.push(format!(
+        "step {step} {}{}",
+        ended.way.name(),
+        ended
+            .why
+            .as_ref()
+            .map_or(String::new(), |w| format!(": {w}"))
+    ));
 }
 
 /// `step rest` into `<out>/<servo>/<UTC time>/`: the lines it prints, and
@@ -258,11 +283,14 @@ pub async fn step_rest<P: Pipe>(
     };
     let times = (t0, unix_s());
     let mut lines = Vec::new();
-    let (rested, refused) = match &ran {
-        Ok(r) => (Some(r), None),
-        Err(e) => (None, Some(e.0.as_str())),
+    let entry = Ran {
+        step: rest::STEP,
+        ended: ran.as_ref().ok().map(|r| &r.ended),
+        result: ran.as_ref().ok().and_then(|r| r.result.as_ref()),
+        refused: ran.as_ref().err().map(|e| e.0.clone()),
+        times,
     };
-    let mut text = serde_json::to_vec_pretty(&manifest(servo, rest::STEP, rested, refused, times))?;
+    let mut text = serde_json::to_vec_pretty(&manifest(servo, &[entry]))?;
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let accepted = match ran {
@@ -271,21 +299,113 @@ pub async fn step_rest<P: Pipe>(
             false
         }
         Ok(r) => {
-            lines.extend(r.ended.lines.iter().cloned());
-            lines.extend(r.checks.iter().map(|c| format!("  {}", c.said())));
-            lines.push("the way out:".into());
-            lines.extend(r.ended.exit.lines.iter().map(|l| format!("  {l}")));
-            lines.push(format!(
-                "step rest {}{}",
-                r.ended.way.name(),
-                r.ended
-                    .why
-                    .as_ref()
-                    .map_or(String::new(), |w| format!(": {w}"))
-            ));
+            said(rest::STEP, &r.ended, &r.checks, &mut lines);
             r.accepted()
         }
     };
+    lines.push(format!("run folder: {}", root.display()));
+    Ok((lines, accepted, root))
+}
+
+/// `step probe` into `<out>/<servo>/<UTC time>/`: the rest step first, into
+/// the same folder, for its zeros, pot noise and frame ripple; then the
+/// probe on its result. The lines it prints, and whether both were
+/// accepted.
+#[allow(clippy::too_many_arguments)]
+pub async fn step_probe<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    let np = i
+        .nameplate
+        .as_ref()
+        .context("step probe drives the motor: it needs the servo's nameplate (--nameplate)")?;
+    let root = files::run_folder(out, servo)?;
+    let mut sink = DirSink { root: root.clone() };
+    let clock = unix_s;
+    let mut lines = Vec::new();
+    let t0 = unix_s();
+    let rested = {
+        let mut rig = Rig {
+            c: &mut *c,
+            id,
+            d,
+            sink: &mut sink,
+            stop,
+            clock: &clock,
+        };
+        rest::rest(&mut rig, Some(np)).await
+    };
+    let t1 = unix_s();
+    let rest_ok = match &rested {
+        Err(e) => {
+            lines.push(format!("step rest refused before any write: {e}"));
+            false
+        }
+        Ok(r) => {
+            said(rest::STEP, &r.ended, &r.checks, &mut lines);
+            r.accepted()
+        }
+    };
+    let mut probed = None;
+    let mut t2 = t1;
+    if rest_ok {
+        let text = sink.read(rest::RESULT)?;
+        let rest_result: Value = serde_json::from_slice(&text).context("the rest result")?;
+        let ran = {
+            let mut rig = Rig {
+                c: &mut *c,
+                id,
+                d,
+                sink: &mut sink,
+                stop,
+                clock: &clock,
+            };
+            probe::probe(
+                &mut rig,
+                &ProbeInputs {
+                    nameplate: np,
+                    board: &i.board,
+                    thermal: i.thermal.as_ref(),
+                    rest: &rest_result,
+                },
+            )
+            .await
+        };
+        t2 = unix_s();
+        match &ran {
+            Err(e) => lines.push(format!("step probe refused before any write: {e}")),
+            Ok(p) => said(probe::STEP, &p.ended, &p.checks, &mut lines),
+        }
+        probed = Some(ran);
+    } else {
+        lines.push("step probe not run: it needs an accepted rest step".into());
+    }
+    let mut ran = vec![Ran {
+        step: rest::STEP,
+        ended: rested.as_ref().ok().map(|r| &r.ended),
+        result: rested.as_ref().ok().and_then(|r| r.result.as_ref()),
+        refused: rested.as_ref().err().map(|e| e.0.clone()),
+        times: (t0, t1),
+    }];
+    if let Some(p) = &probed {
+        ran.push(Ran {
+            step: probe::STEP,
+            ended: p.as_ref().ok().map(|p| &p.ended),
+            result: p.as_ref().ok().and_then(|p| p.result.as_ref()),
+            refused: p.as_ref().err().map(|e| e.0.clone()),
+            times: (t1, t2),
+        });
+    }
+    let mut text = serde_json::to_vec_pretty(&manifest(servo, &ran))?;
+    text.push(b'\n');
+    sink.write("run.json", &text)?;
+    let accepted = matches!(&probed, Some(Ok(p)) if p.accepted());
     lines.push(format!("run folder: {}", root.display()));
     Ok((lines, accepted, root))
 }

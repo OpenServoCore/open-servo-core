@@ -12,7 +12,9 @@ use osc_client::descriptor::Descriptor;
 use osc_client::{Client, Error, Id, pipe::Pipe};
 use serde_json::{Map, Value, json};
 
-use super::{Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, take, write};
+use super::{
+    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mode_value, take, write,
+};
 use crate::capture::meta;
 use crate::capture::ripple::{self, Pattern};
 use crate::capture::rows::{Layout, TelFrame};
@@ -60,6 +62,8 @@ pub struct Sense {
     pub shunt_r_mohm: f64,
     pub gain_milli: f64,
     pub vdd_mv: f64,
+    pub vmotor_div_top: f64,
+    pub vmotor_div_bot: f64,
     pub vbus_div_top: f64,
     pub vbus_div_bot: f64,
     pub rail_drop_mv: f64,
@@ -83,6 +87,8 @@ impl Sense {
             shunt_r_mohm: n("shunt_r_mohm")?,
             gain_milli: n("gain_milli")?,
             vdd_mv: n("vdd_mv")?,
+            vmotor_div_top: n("vmotor_div_top")?,
+            vmotor_div_bot: n("vmotor_div_bot")?,
             vbus_div_top: n("vbus_div_top_ohm")?,
             vbus_div_bot: n("vbus_div_bot_ohm")?,
             rail_drop_mv: n("rail_drop_mv")?,
@@ -107,6 +113,13 @@ impl Sense {
         self.gain_milli / 1000.0 * self.shunt_r_mohm
             / 1000.0
             / (self.vdd_mv / 1000.0 / ntc::ADC_COUNTS)
+    }
+
+    /// Counts of terminal tap difference a volt across the motor, the
+    /// parts' nominal.
+    pub fn terminal_counts_per_v(&self) -> f64 {
+        ntc::ADC_COUNTS / (self.vdd_mv / 1000.0) * self.vmotor_div_bot
+            / (self.vmotor_div_top + self.vmotor_div_bot)
     }
 
     /// The chip supply, V, from the internal reference's count.
@@ -148,7 +161,11 @@ pub async fn rail_now<P: Pipe>(
     Ok(s.rail_v(vbus / n, (vref > 0.0).then_some(vref / n)))
 }
 
-async fn pos_now<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<f64, Error> {
+pub(crate) async fn pos_now<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+) -> Result<f64, Error> {
     let f = field(d, "pos")?;
     let mut sum = 0.0;
     for _ in 0..POS_READS {
@@ -458,12 +475,7 @@ async fn body<P: Pipe>(
     )
     .await?;
     interrupted(rig.stop)?;
-    let open_loop = field(rig.d, "mode")?
-        .variants
-        .iter()
-        .find(|v| v.name == "OpenLoop")
-        .map(|v| v.value)
-        .ok_or_else(|| Halt::Refused("the servo's mode names no OpenLoop".into()))?;
+    let open_loop = mode_value(rig.d, "OpenLoop")?;
     ledger.keep(rig.c, rig.id, rig.d, "mode").await?;
     write(rig, "mode", &[open_loop]).await?;
     write(rig, "goal_duty", &[0, 0]).await?;
