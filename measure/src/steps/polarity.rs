@@ -52,8 +52,13 @@ pub const MOVE_SD: f64 = 12.0;
 /// USB round trip of about a millisecond.
 pub const EMF_ROWS: usize = 40;
 pub const EMF_MIN_COUNTS: f64 = 2.0;
+/// A coast's back-EMF counts as the motor turning at this many times the
+/// run's floor, the largest a level-0 pulse that left the pot still shows:
+/// a still shaft's taps read a few counts of either sign.
+pub const EMF_FLOOR_GAIN: f64 = 2.5;
 /// The least time from one unwedge press to the next, s.
 pub const UNWEDGE_GAP_S: f64 = 1.0;
+const START_ROWS: usize = 10;
 const BLOCK_ROWS: usize = 20;
 const Q15: f64 = 32768.0;
 
@@ -178,7 +183,8 @@ impl Planned {
 /// What a pulse did, read off its rows.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Seen {
-    /// The pot before the pulse, counts.
+    /// The pot over the drive's first rows, before the duty's ramp moves
+    /// it, counts.
     pub start: f64,
     /// The pot's farthest move from the start over the pulse and its
     /// coast, signed, and where it ended, counts.
@@ -201,9 +207,9 @@ pub struct Comp {
     pub counts_per_a: f64,
 }
 
-/// A pulse's [`Seen`] from the pot read before its duty went on, its drive
-/// rows and its coast rows; None when a burst carries too few rows to read.
-pub fn seen(start: f64, drive: &[TelFrame], coast: &[TelFrame], c: &Comp) -> Option<Seen> {
+/// A pulse's [`Seen`] from its drive rows and its coast rows; None when a
+/// burst carries too few rows to read.
+pub fn seen(drive: &[TelFrame], coast: &[TelFrame], c: &Comp) -> Option<Seen> {
     let pos = |rows: &[TelFrame]| -> Vec<f64> {
         let s = ripple::series(rows, "pos");
         match &c.pattern {
@@ -216,9 +222,14 @@ pub fn seen(start: f64, drive: &[TelFrame], coast: &[TelFrame], c: &Comp) -> Opt
     };
     let d = pos(drive);
     let all: Vec<f64> = d.iter().copied().chain(pos(coast)).collect();
-    if d.is_empty() || all.len() < BLOCK_ROWS {
+    if d.len() < START_ROWS || all.len() < BLOCK_ROWS {
         return None;
     }
+    // Not the pot read before the writes: that read sits a few counts off
+    // the streamed rows, more the higher the pos, which would bias the
+    // moving threshold by direction. The duty ramps over about 13 ms, so
+    // these rows are before any motion.
+    let start = mean(&d[..START_ROWS])?;
     let blocks: Vec<f64> = all.chunks(BLOCK_ROWS).filter_map(mean).collect();
     let peak = blocks
         .iter()
@@ -302,15 +313,17 @@ pub struct Pulse {
     pub planned: Planned,
     pub seen: Seen,
     pub motion: Motion,
-    /// The coast's back-EMF has the drive's sign and clears the minimum.
+    /// The coast's back-EMF has the drive's sign and clears the bound.
     pub emf_agrees: bool,
+    /// The least back-EMF that counted as the motor turning, counts.
+    pub emf_bound: f64,
 }
 
 impl Pulse {
     pub fn said(&self) -> String {
         let p = &self.planned;
         format!(
-            "{}: peak travel {:+.1} counts, end {:+.1}, priced bound {:.0} counts ({:.0}% of it); current peak {:.3} A; coast back-EMF {:+.1} counts (drive's sign {}, at least {EMF_MIN_COUNTS}): {}",
+            "{}: peak travel {:+.1} counts, end {:+.1}, priced bound {:.0} counts ({:.0}% of it); current peak {:.3} A; coast back-EMF {:+.1} counts (drive's sign {}, at least {:.1}): {}",
             p.said(),
             self.seen.peak,
             self.seen.end,
@@ -319,6 +332,7 @@ impl Pulse {
             self.seen.current_peak_a,
             self.seen.emf,
             if self.emf_agrees { "yes" } else { "no" },
+            self.emf_bound,
             self.motion.word()
         )
     }
@@ -406,6 +420,8 @@ pub struct Ladder {
     /// The press due next, by its duty's sign.
     unwedging: Option<i8>,
     unwedge_used: bool,
+    /// The largest |back-EMF| of a level-0 pulse that left the pot still.
+    emf_floor: f64,
 }
 
 impl Ladder {
@@ -422,6 +438,7 @@ impl Ladder {
             path: Vec::new(),
             unwedging: None,
             unwedge_used: false,
+            emf_floor: 0.0,
         }
     }
 
@@ -440,6 +457,12 @@ impl Ladder {
 
     pub fn outcome(&self) -> Option<&Outcome> {
         self.done.as_ref()
+    }
+
+    /// The least coast back-EMF the next pulse counts as the motor turning:
+    /// the larger of the minimum and [`EMF_FLOOR_GAIN`] x the run's floor.
+    pub fn emf_bound(&self) -> f64 {
+        self.cfg.emf_min.max(EMF_FLOOR_GAIN * self.emf_floor)
     }
 
     /// The ladder found the shaft wedged and spent its one unwedge.
@@ -495,9 +518,10 @@ impl Ladder {
         {
             return self.refuse(Refusal::DeadPot, unread(planned.n));
         }
+        let bound = self.emf_bound();
         let c = &self.cfg;
         let wiring = c.wiring(planned.dir);
-        let emf_strong = seen.emf.abs() >= c.emf_min;
+        let emf_strong = seen.emf.abs() >= bound;
         let emf_agrees = emf_strong && seen.emf.signum() == wiring;
         let motion = if seen.peak.abs() >= c.threshold {
             if seen.peak > 0.0 {
@@ -515,8 +539,12 @@ impl Ladder {
             seen,
             motion,
             emf_agrees,
+            emf_bound: bound,
         };
         self.pulses.push(pulse);
+        if planned.level == 0 && !planned.unwedge && !motion.moved() {
+            self.emf_floor = self.emf_floor.max(seen.emf.abs());
+        }
         if seen.peak.abs() > planned.priced_counts {
             return self.refuse(
                 Refusal::OverTravel,
@@ -576,7 +604,7 @@ impl Ladder {
                     self.path.push(format!(
                         "{volts:.3} V repeated: {said}: two repeats agree on the sign"
                     ));
-                    self.decide(fi.0, [fi.1, i.1], volts);
+                    self.decide(fi.0, [fi.1, i.1], volts, last);
                 }
                 _ => self.refuse(
                     Refusal::Disagree,
@@ -670,13 +698,23 @@ impl Ladder {
     }
 
     /// `still`: the duty that stayed still in the first pair and in the
-    /// repeat, if one did.
-    fn decide(&mut self, right: bool, still: [Option<i8>; 2], volts: f64) {
+    /// repeat, if one did. Below the last level, evidence the back-EMF
+    /// does not carry raises a level.
+    fn decide(&mut self, right: bool, still: [Option<i8>; 2], volts: f64, last: bool) {
         let tail = self.pulses.len().saturating_sub(4);
         if !self.pulses[tail..]
             .iter()
             .any(|p| p.motion.moved() && p.emf_agrees)
         {
+            if !last {
+                self.path.push(format!(
+                    "at {volts:.3} V the pot moved but no coast showed back-EMF of the drive's sign over the floor (at least {:.1} counts): raised a level",
+                    self.emf_bound()
+                ));
+                self.first = None;
+                self.level += 1;
+                return;
+            }
             return self.refuse(
                 Refusal::NoEmf,
                 format!(
@@ -732,8 +770,7 @@ pub(crate) struct OnServo {
 }
 
 /// The pot read before pulse `n`'s duty went on, refused unless it is a
-/// number: the envelope's travel check and the pulse's travel are read
-/// from it.
+/// number: the envelope's travel check is read from it.
 fn start_of(n: usize, pos: f64) -> Result<f64, Halt> {
     if pos.is_finite() {
         Ok(pos)
@@ -793,7 +830,7 @@ pub(crate) async fn body<P: Pipe>(
         let drive_rows = rows_of(p.drive_s(), tick_hz);
         let coast_rows = rows_of(COAST_S, tick_hz);
         let mut attempt = 0;
-        let (start, drive, coast, on_s) = loop {
+        let (drive, coast, on_s) = loop {
             attempt += 1;
             let start = start_of(p.n, rest::pos_now(rig.c, rig.id, rig.d).await?)?;
             let rung = Rung {
@@ -856,7 +893,7 @@ pub(crate) async fn body<P: Pipe>(
             .await?;
             let lost: Vec<String> = lost_d.into_iter().chain(lost_c).collect();
             if lost.is_empty() {
-                break (start, drive, coast, on_s);
+                break (drive, coast, on_s);
             }
             lines.push(format!(
                 "pulse {}, attempt {attempt}: lost rows ({}), no evidence",
@@ -883,7 +920,7 @@ pub(crate) async fn body<P: Pipe>(
                 p.n, p.time_s
             )));
         }
-        let Some(s) = seen(start, &drive.rows, &coast.rows, comp) else {
+        let Some(s) = seen(&drive.rows, &coast.rows, comp) else {
             return Err(Halt::Error(format!(
                 "pulse {}: the bursts carry too few rows to read",
                 p.n
@@ -1060,18 +1097,13 @@ mod tests {
         assert_eq!(still_seen, 4, "a duty still at each stop in half its cases");
     }
 
-    /// The ladder fed a first pair and its repeat at the shortest pulse,
-    /// each pulse doing what its motion says.
-    fn fed(pairs: [[Motion; 2]; 2]) -> Ladder {
-        let mut l = Ladder::new(cfg(true));
-        for m in pairs.into_iter().flatten() {
-            let Next::Pulse(p) = l.next() else {
+    /// The ladder on `c` fed `pulses` in order, each its peak and its
+    /// coast's back-EMF.
+    fn fed_seen(c: LadderCfg, pulses: &[(f64, f64)]) -> Ladder {
+        let mut l = Ladder::new(c);
+        for &(peak, emf) in pulses {
+            let Next::Pulse(_) = l.next() else {
                 panic!("done early: {:?}", l.path())
-            };
-            let (peak, emf) = match m {
-                Motion::Up => (30.0, 40.0 * p.dir as f64),
-                Motion::Down => (-30.0, 40.0 * p.dir as f64),
-                _ => (0.0, 0.0),
             };
             l.feed(Seen {
                 start: 2000.0,
@@ -1082,6 +1114,22 @@ mod tests {
             });
         }
         l
+    }
+
+    /// The ladder fed a first pair and its repeat at the shortest pulse,
+    /// each pulse doing what its motion says.
+    fn fed(pairs: [[Motion; 2]; 2]) -> Ladder {
+        let pulses: Vec<(f64, f64)> = pairs
+            .into_iter()
+            .flatten()
+            .zip([1.0, -1.0].into_iter().cycle())
+            .map(|(m, dir)| match m {
+                Motion::Up => (30.0, 40.0 * dir),
+                Motion::Down => (-30.0, 40.0 * dir),
+                _ => (0.0, 0.0),
+            })
+            .collect();
+        fed_seen(cfg(true), &pulses)
     }
 
     /// A start at mid travel with a pulse at the motor's breakaway leaves
@@ -1112,6 +1160,148 @@ mod tests {
         assert_eq!(proven(&l), (false, Some(Stop::High)));
         let l = fed([[Up, Down], [Up, Down]]);
         assert_eq!(proven(&l), (true, None));
+    }
+
+    /// Run 4's pulses on the bench, the stored sign wrong: a move at the
+    /// breakaway whose back-EMF of the other sign is inside the still
+    /// pulses' noise is no disagreement; a repeat with weak back-EMF raises
+    /// a level, where solid moves prove the sign.
+    #[test]
+    fn weak_back_emf_of_the_other_sign_raises_a_level() {
+        let l = fed_seen(
+            cfg(false),
+            &[
+                (-1.0, -0.1),
+                (-1.0, -2.5),
+                (-1.8, 1.0),
+                (22.6, -3.9),
+                (-1.5, 1.2),
+                (24.0, 3.0),
+                (-95.0, -27.6),
+                (80.0, 40.0),
+                (-94.0, -27.6),
+                (84.0, 40.0),
+            ],
+        );
+        assert_eq!(proven(&l), (false, None), "{:?}", l.path());
+        assert_eq!(l.pulses().len(), 10);
+        assert_eq!(l.emf_bound(), 2.5 * 2.5);
+        assert_eq!(l.pulses()[3].motion, Motion::Up);
+        assert!(!l.pulses()[3].emf_agrees);
+        let at = |what: &str| l.path().iter().position(|p| p.contains(what));
+        let raised = at("over the floor (at least 6.2 counts): raised a level").expect("raised");
+        assert!(at("two repeats agree").expect("agreed") < raised);
+        assert!(l.pulses()[6..].iter().all(|p| p.planned.level == 2));
+        assert!(
+            !l.path().iter().any(|p| p.contains("disagree")),
+            "{:?}",
+            l.path()
+        );
+    }
+
+    /// Run 5's pulses: two pairs that agree, their moves' back-EMF under
+    /// the floor's bound: raised a level, proven at the next. At the last
+    /// level the same evidence refuses.
+    #[test]
+    fn moves_without_back_emf_raise_a_level_below_the_last() {
+        let weak = [
+            (-6.4, -2.7),
+            (-5.6, -0.1),
+            (-9.0, -3.9),
+            (-24.1, 0.8),
+            (12.1, -3.4),
+            (-24.3, 0.5),
+        ];
+        let solid = [
+            (94.0, 22.3),
+            (-107.1, -33.8),
+            (103.8, 23.8),
+            (-112.0, -33.6),
+        ];
+        let all: Vec<(f64, f64)> = weak.iter().chain(&solid).copied().collect();
+        let l = fed_seen(cfg(true), &all);
+        assert_eq!(proven(&l), (true, None), "{:?}", l.path());
+        assert!(
+            l.path()
+                .iter()
+                .any(|p| p.contains("0.305 V the pot moved") && p.ends_with("raised a level")),
+            "{:?}",
+            l.path()
+        );
+        assert!(
+            l.pulses()[6..]
+                .iter()
+                .all(|p| p.planned.level == 2 && p.emf_agrees)
+        );
+
+        let mut c = cfg(true);
+        c.ceiling_q15 = c.start_q15 + c.step_q15;
+        assert_eq!(c.levels().len(), 2);
+        let l = fed_seen(c, &weak);
+        let (kind, why) = refused(&l);
+        assert_eq!(kind, Refusal::NoEmf, "{why}");
+        assert!(why.contains("no coast showed back-EMF"), "{why}");
+        assert!(!kind.aborts());
+    }
+
+    /// A move whose back-EMF has the other sign well over the bound is a
+    /// real disagreement.
+    #[test]
+    fn a_strong_back_emf_of_the_other_sign_aborts() {
+        let l = fed_seen(cfg(true), &[(-1.0, 2.8), (-1.0, -2.8), (40.0, -30.0)]);
+        let (kind, why) = refused(&l);
+        assert!(kind == Refusal::Disagree && kind.aborts(), "{why}");
+        assert!(
+            why.contains("pulse 3") && why.contains("other sign"),
+            "{why}"
+        );
+    }
+
+    /// The floor is read from the level-0 pulses that left the pot still,
+    /// never from a move or a higher level; with none, the bound is the
+    /// minimum.
+    #[test]
+    fn the_back_emf_bound_comes_from_the_still_level_0_pulses() {
+        let l = fed_seen(cfg(true), &[(-1.0, 2.8), (-1.0, -2.8)]);
+        assert_eq!(l.emf_bound(), 2.5 * 2.8);
+        let next = fed_seen(cfg(true), &[(-1.0, 2.8), (-1.0, -2.8), (-1.0, 1.0)]);
+        assert!(
+            next.pulses()[2].said().contains("at least 7.0"),
+            "{}",
+            next.pulses()[2].said()
+        );
+        assert_eq!(next.pulses()[0].emf_bound, EMF_MIN_COUNTS);
+
+        let l = fed_seen(cfg(true), &[(30.0, 40.0), (-1.0, 2.0)]);
+        assert_eq!(l.emf_bound(), 5.0, "the move at level 0 is not noise");
+        let l = fed_seen(cfg(true), &[(30.0, 40.0), (-30.0, -40.0)]);
+        assert_eq!(l.emf_bound(), EMF_MIN_COUNTS);
+        assert_eq!(Ladder::new(cfg(true)).emf_bound(), EMF_MIN_COUNTS);
+        let l = fed_seen(
+            cfg(true),
+            &[(-1.0, 0.4), (-1.0, 0.0), (-1.0, 3.9), (-1.0, 3.3)],
+        );
+        assert_eq!(l.pulses()[3].planned.level, 1);
+        assert_eq!(l.emf_bound(), EMF_MIN_COUNTS, "level 1 is not the floor");
+    }
+
+    /// A pot still at every level and back-EMF of the drive's sign far
+    /// over the bound at the ceiling: a dead pot.
+    #[test]
+    fn a_dead_pot_under_the_floor_is_refused() {
+        let c = cfg(true);
+        let n = c.levels().len();
+        let mut pulses = vec![(-1.0, 2.8), (-1.0, -2.8)];
+        pulses.extend(std::iter::repeat_n((-1.0, 1.0), 2 * (n - 2)));
+        pulses.extend([(-1.0, 30.0), (-1.0, -30.0)]);
+        let l = fed_seen(c, &pulses);
+        let (kind, why) = refused(&l);
+        assert_eq!(kind, Refusal::DeadPot, "{why}");
+        let top = &l.pulses()[l.pulses().len() - 2..];
+        assert!(
+            top.iter()
+                .all(|p| p.planned.level == n - 1 && p.motion == Motion::Turned)
+        );
     }
 
     #[test]
@@ -1627,7 +1817,7 @@ mod tests {
             assert_eq!(time_s(&taken[0]), PULSE_S + DRIVE_DEADMAN_S);
             let pulse = ladder.pulses()[0];
             assert_eq!(pulse.planned.time_s, PULSE_S + DRIVE_DEADMAN_S);
-            assert_eq!(pulse.seen.start, 2041.0, "the pot read before the duty");
+            assert_eq!(pulse.seen.start, 2041.0, "the drive's first rows");
             assert_eq!(pulse.seen.peak, 0.0);
         }
 
