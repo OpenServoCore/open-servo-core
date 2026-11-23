@@ -30,6 +30,14 @@ pub const TAIL_DRIVEN_SHARE: f64 = 0.02;
 /// most the larger of [`OVERSHOOT_DEG`] and [`OVERSHOOT_SHARE`] of the
 /// step, following error under [`FOLLOW_SHARE`] of the position-error
 /// screen, rest error at most [`REST_DEG`].
+/// A check on gross failure, not a scorecard: a set that runs well still
+/// overshoots a small step once in a while and hunts on a hold now and
+/// then, so a few moves over a bound warn and only these refuse: one move
+/// over [`GROSS`] x its overshoot bound, more than [`OVER_ALLOWED`] moves
+/// over it, more than [`HUNT_ALLOWED`] holds that hunt.
+pub const GROSS: f64 = 2.0;
+pub const OVER_ALLOWED: usize = 2;
+pub const HUNT_ALLOWED: usize = 1;
 pub const OVERSHOOT_DEG: f64 = 1.0;
 pub const OVERSHOOT_SHARE: f64 = 0.02;
 pub const FOLLOW_SHARE: f64 = 0.5;
@@ -453,6 +461,20 @@ pub fn small_check(steps: &[Small]) -> Check {
 /// The acceptance of a set over its self-test moves: `fault` a fault the
 /// moves latched, `screen_counts` the position-error screen. With no move
 /// scored, the moves' checks have nothing to judge.
+/// Not judged with no move scored; refused on a gross failure or more
+/// than `most` moves over; a warning with some over, inside `most`.
+fn allowed(n: usize, over: usize, most: usize, gross: bool) -> Verdict {
+    if n == 0 {
+        Verdict::NotJudged
+    } else if gross || over > most {
+        Verdict::Fail
+    } else if over > 0 {
+        Verdict::Warn
+    } else {
+        Verdict::Pass
+    }
+}
+
 pub fn accept(
     moves: &[(String, Scores)],
     u: &Units,
@@ -505,10 +527,15 @@ pub fn accept(
             named(over.clone())
         ),
         bound: format!(
-            "at most the larger of {OVERSHOOT_DEG} deg and {:.0}% of the step",
+            "the larger of {OVERSHOOT_DEG} deg and {:.0}% of the step: at most {OVER_ALLOWED} moves over it, none over {GROSS} x it",
             100.0 * OVERSHOOT_SHARE
         ),
-        verdict: judged(moves.len(), over.is_empty()),
+        verdict: allowed(
+            moves.len(),
+            over.len(),
+            OVER_ALLOWED,
+            w.is_some_and(|(_, r)| r > GROSS),
+        ),
     });
     let hunting: Vec<String> = moves
         .iter()
@@ -527,10 +554,10 @@ pub fn accept(
             named(hunting.clone())
         ),
         bound: format!(
-            "at most {:.0}% of the rows driven",
+            "at most {:.0}% of the rows driven, on all but {HUNT_ALLOWED} hold",
             100.0 * TAIL_DRIVEN_SHARE
         ),
-        verdict: judged(moves.len(), hunting.is_empty()),
+        verdict: allowed(moves.len(), hunting.len(), HUNT_ALLOWED, false),
     });
     let half = FOLLOW_SHARE * screen_counts;
     let lag: Vec<String> = moves
@@ -646,13 +673,43 @@ mod tests {
         }
     }
 
-    fn failed(m: &Move) -> Vec<String> {
-        let s = score(m, &units(), Some(&profile()));
-        accept(&[(m.name.clone(), s)], &units(), SCREEN, None)
+    fn named(ms: &[&Move], verdict: Verdict) -> Vec<String> {
+        let scored: Vec<(String, Scores)> = ms
+            .iter()
+            .map(|m| (m.name.clone(), score(m, &units(), Some(&profile()))))
+            .collect();
+        accept(&scored, &units(), SCREEN, None)
             .into_iter()
-            .filter(|c| c.verdict == Verdict::Fail)
+            .filter(|c| c.verdict == verdict)
             .map(|c| c.name)
             .collect()
+    }
+
+    fn failed(m: &Move) -> Vec<String> {
+        named(&[m], Verdict::Fail)
+    }
+
+    /// `deg` past the goal once landed, back well inside the hold.
+    fn overshooting(deg: f64) -> Move {
+        a_move(move |r, past| {
+            r + if (0.0..0.2).contains(&past) {
+                deg * CPD * (std::f64::consts::PI * past / 0.2).sin()
+            } else {
+                0.0
+            }
+        })
+    }
+
+    /// Driven on every fifth row of its last 500 ms: the loop hunts.
+    fn hunting() -> Move {
+        let mut m = a_move(|r, _| r);
+        let end = m.rows.last().expect("rows").t;
+        for (k, r) in m.rows.iter_mut().enumerate() {
+            if r.t > end - 0.4 && k % 5 == 0 {
+                r.duty = 40;
+            }
+        }
+        m
     }
 
     #[test]
@@ -674,30 +731,27 @@ mod tests {
         assert!(s.settle_s > 0.0 && s.settle_s < 0.2, "{s:?}");
     }
 
-    /// 2 deg past the goal once landed, back well inside the hold.
+    /// One move 1.5 x its bound warns; over twice its bound, or three
+    /// moves over, refuses: the check is on gross failure.
     #[test]
-    fn an_overshoot_over_the_bound_fails_its_check_alone() {
-        let m = a_move(|r, past| {
-            r + if (0.0..0.2).contains(&past) {
-                40.0 * (std::f64::consts::PI * past / 0.2).sin()
-            } else {
-                0.0
-            }
-        });
-        assert_eq!(failed(&m), [OVERSHOOT]);
+    fn an_overshoot_refuses_when_gross_or_on_many_moves() {
+        let (clean, over, gross) = (a_move(|r, _| r), overshooting(1.5), overshooting(3.0));
+        assert!(named(&[&over, &clean], Verdict::Fail).is_empty());
+        assert_eq!(named(&[&over, &clean], Verdict::Warn), [OVERSHOOT]);
+        assert_eq!(failed(&gross), [OVERSHOOT]);
+        assert_eq!(
+            named(&[&over, &over, &over, &clean], Verdict::Fail),
+            [OVERSHOOT]
+        );
     }
 
-    /// Driven on every fifth row of its last 500 ms: the loop hunts.
+    /// One hold that hunts warns, two refuse.
     #[test]
-    fn a_hold_that_hunts_fails_its_check_alone() {
-        let mut m = a_move(|r, _| r);
-        let end = m.rows.last().expect("rows").t;
-        for (k, r) in m.rows.iter_mut().enumerate() {
-            if r.t > end - 0.4 && k % 5 == 0 {
-                r.duty = 40;
-            }
-        }
-        assert_eq!(failed(&m), [QUIET]);
+    fn holds_that_hunt_refuse_past_the_one_allowed() {
+        let (clean, hunts) = (a_move(|r, _| r), hunting());
+        assert!(named(&[&hunts, &clean], Verdict::Fail).is_empty());
+        assert_eq!(named(&[&hunts, &clean], Verdict::Warn), [QUIET]);
+        assert_eq!(named(&[&hunts, &hunts, &clean], Verdict::Fail), [QUIET]);
     }
 
     /// 0.6 deg short of the goal through the hold.
