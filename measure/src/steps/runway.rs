@@ -11,15 +11,41 @@
 //! ```text
 //! bound_speed x (T + DRIVE_DEADMAN_S) + bound_coast <= runway
 //! runway      = from the start to the far guard, less SHORT_COUNTS
+//! ```
+//!
+//! The pilot and the lowest level are bounded by the nameplate and what
+//! the run has measured, the larger, so no measurement lowers the bound:
+//!
+//! ```text
 //! bound_speed = SPEED_GAIN x max(the nameplate's speed at the level's
 //!               volts, each speed measured this run scaled by volts)
 //! bound_coast = COAST_GAIN x each coast measured this run scaled by
 //!               (bound_speed / its spin's speed)^2, the largest
 //! ```
 //!
+//! A higher level in direction d is bounded by the next lower level's
+//! spins in d alone, the pilot among them, and is left out in d until one
+//! has run:
+//!
+//! ```text
+//! bound_speed = SPEED_GAIN x the fastest of them x the volts' ratio
+//! bound_coast = COAST_GAIN x each of their coasts scaled by
+//!               (bound_speed / its spin's speed)^2, the largest
+//! ```
+//!
+//! The servo's own speed replaces the nameplate's there because the
+//! nameplate's is far from it (1.3 to 1.6 times this servo's at 25 %),
+//! and squared in the coast bound it leaves no runway. Speed against volts
+//! is a line with a positive friction offset, so the volts' ratio under-
+//! reads the next level's speed by at most the offset's share (about 8 %
+//! from 25 to 50 % on the bench servo), inside [`SPEED_GAIN`]; and a coast
+//! under a constant or rising drag grows no faster than the square of its
+//! speed. A servo faster than that is caught by the checks after its first
+//! spin over the bound.
+//!
 //! A spin's drive lasts the lesser of that T and [`RISE_TIMES`] of the
 //! pilot's 90 % rise time plus [`RISE_PAD_S`]; a level whose T comes out
-//! under [`T_MIN_S`] is left out. The pilot runs before any coast is
+//! under [`T_MIN_S`] in a direction is left out in it. The pilot runs before any coast is
 //! measured: its coast is bounded by the notebooks' spin-down rule, its
 //! bound speed for [`COAST_TAU_S`] (oscnb `sitting.COAST_TAU_S`), and it
 //! drives half the runway's T. Nothing stops a spin mid-drive but the
@@ -132,10 +158,42 @@ pub fn order() -> Vec<Slot> {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Seen {
     pub level: f64,
+    /// The logical sign it drove.
+    pub dir: i8,
     /// The steady speed by the pot, counts/s.
     pub speed_cps: f64,
     /// The coast's travel, counts.
     pub coast_counts: f64,
+}
+
+/// Where a window's bounds came from.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum BoundFrom {
+    /// The nameplate and every spin of the run, the larger.
+    Nameplate,
+    /// The spins of this level that ran in this sign.
+    Spins { level: f64, dir: i8, n: usize },
+    /// No spin of this level ran in this sign: left out.
+    Missing { level: f64, dir: i8 },
+}
+
+impl BoundFrom {
+    pub fn said(&self) -> String {
+        let way = |d: i8| if d > 0 { "up" } else { "down" };
+        match *self {
+            BoundFrom::Nameplate => "the nameplate and the run's spins".into(),
+            BoundFrom::Spins { level, dir, n } => {
+                format!("the {:.0}% level's {n} spins {}", 100.0 * level, way(dir))
+            }
+            BoundFrom::Missing { level, dir } => {
+                format!(
+                    "no spin of the {:.0}% level ran {}",
+                    100.0 * level,
+                    way(dir)
+                )
+            }
+        }
+    }
 }
 
 /// A spin's drive as sized.
@@ -153,6 +211,7 @@ pub struct Window {
     /// The longest T the runway allows.
     pub t_runway_s: f64,
     pub t_s: f64,
+    pub from: BoundFrom,
 }
 
 impl Window {
@@ -169,7 +228,7 @@ impl Window {
 
     pub fn said(&self) -> String {
         format!(
-            "T {:.0} ms (rise {}, runway {:.0} ms over {:.0} counts), bound {:.0} counts/s and coast {:.0} counts: at most {:.0} counts",
+            "T {:.0} ms (rise {}, runway {:.0} ms over {:.0} counts), bound {:.0} counts/s and coast {:.0} counts from {}: at most {:.0} counts",
             1e3 * self.t_s,
             self.t_rise_s
                 .map_or("not yet read".into(), |t| format!("{:.0} ms", 1e3 * t)),
@@ -177,6 +236,7 @@ impl Window {
             self.runway,
             self.bound_speed,
             self.bound_coast,
+            self.from.said(),
             self.travel_bound()
         )
     }
@@ -220,6 +280,7 @@ impl Planner {
         self.rated_cps * level
     }
 
+    /// The nameplate's rule, for the pilot and the lowest level.
     pub fn bound_speed(&self, level: f64) -> f64 {
         let measured = self
             .seen
@@ -242,13 +303,55 @@ impl Planner {
             .fold(0.0, f64::max)
     }
 
+    /// The bounds of `level` in `dir`, and where they came from: the
+    /// nameplate's rule at the lowest level, else the next lower level's
+    /// spins in `dir`.
+    pub fn bounds(&self, level: f64, dir: i8) -> (f64, f64, BoundFrom) {
+        let lower = LEVELS
+            .iter()
+            .copied()
+            .filter(|l| *l < level)
+            .fold(None, |m: Option<f64>, l| Some(m.map_or(l, |m| m.max(l))));
+        let Some(lower) = lower else {
+            let bs = self.bound_speed(level);
+            return (bs, self.bound_coast(bs), BoundFrom::Nameplate);
+        };
+        let them: Vec<&Seen> = self
+            .seen
+            .iter()
+            .filter(|s| s.level == lower && s.dir == dir && s.speed_cps > 0.0)
+            .collect();
+        if them.is_empty() {
+            return (f64::NAN, f64::NAN, BoundFrom::Missing { level: lower, dir });
+        }
+        let fastest = them.iter().map(|s| s.speed_cps).fold(0.0, f64::max);
+        let bs = SPEED_GAIN * fastest * level / lower;
+        let bc = them
+            .iter()
+            .map(|s| {
+                let k = bs / s.speed_cps;
+                COAST_GAIN * s.coast_counts.max(0.0) * k * k
+            })
+            .fold(0.0, f64::max);
+        let n = them.len();
+        (
+            bs,
+            bc,
+            BoundFrom::Spins {
+                level: lower,
+                dir,
+                n,
+            },
+        )
+    }
+
     fn sized(&self, level: f64, dir: i8, start: f64, rise: Option<f64>, share: f64) -> Window {
         let runway = self.travel.runway(dir, start);
-        let bound_speed = self.bound_speed(level);
-        let bound_coast = self.bound_coast(bound_speed);
+        let (bound_speed, bound_coast, from) = self.bounds(level, dir);
         let t_runway_s = (runway - bound_coast) / bound_speed - DRIVE_DEADMAN_S;
         let t = share * t_runway_s;
         let t_s = match rise {
+            _ if matches!(from, BoundFrom::Missing { .. }) => f64::NEG_INFINITY,
             Some(r) => r.min(t),
             None => t,
         };
@@ -266,6 +369,7 @@ impl Planner {
             } else {
                 f64::NEG_INFINITY
             },
+            from,
         }
     }
 
@@ -315,9 +419,10 @@ pub struct SpinRead {
 }
 
 impl SpinRead {
-    pub fn seen(&self, level: f64) -> Seen {
+    pub fn seen(&self, level: f64, dir: i8) -> Seen {
         Seen {
             level,
+            dir,
             speed_cps: self.speed_cps,
             coast_counts: self.coast_counts,
         }
@@ -398,9 +503,18 @@ pub fn after(w: &Window, r: &SpinRead, travel: &Travel, what: &str) -> Result<()
             r.drive_travel
         ));
     }
+    let what_now = match w.from {
+        BoundFrom::Nameplate => {
+            "The nameplate's speed is too low for this servo; nothing more drives: enter the servo's own no-load speed and start again".to_string()
+        }
+        _ => format!(
+            "Its speed rose with the volts faster than {} predict, past the {SPEED_GAIN} margin; nothing more drives: check that nothing changed on the horn, then start again",
+            w.from.said()
+        ),
+    };
     let too_fast = |why: String| {
         format!(
-            "{what} {why}: it ran {:.0} counts from {:.0} to {:.0} against a bound of {:.0}, at {:.0} counts/s against a bound of {:.0}. The nameplate's speed is too low for this servo; nothing more drives: enter the servo's own no-load speed and start again",
+            "{what} {why}: it ran {:.0} counts from {:.0} to {:.0} against a bound of {:.0}, at {:.0} counts/s against a bound of {:.0}. {what_now}",
             r.travel,
             r.start,
             r.end,
@@ -676,16 +790,17 @@ mod tests {
         assert_eq!(TRAVEL.runway(-1, 3542.0), 3542.0 - 332.0 - 300.0);
     }
 
-    fn seen(level: f64, speed: f64, coast: f64) -> Seen {
+    fn seen(level: f64, dir: i8, speed: f64, coast: f64) -> Seen {
         Seen {
             level,
+            dir,
             speed_cps: speed,
             coast_counts: coast,
         }
     }
 
-    /// A table of runs: (level, start, what was seen) -> T and its bounds,
-    /// and the left-out case.
+    /// A table of runs: (level, sign, start, what was seen) -> T and its
+    /// bounds, and the left-out cases.
     #[test]
     fn the_window_is_the_lesser_of_the_rise_and_the_runway() {
         let mut p = Planner::new(TRAVEL, RATED);
@@ -694,6 +809,7 @@ mod tests {
         let bs = 1.25 * RATED * 0.25;
         assert!((w.bound_speed - bs).abs() < 1e-9);
         assert!((w.bound_coast - bs * 0.1).abs() < 1e-9);
+        assert_eq!(w.from, BoundFrom::Nameplate);
         let runway = 2910.0;
         assert_eq!(w.runway, runway);
         let t_run = (runway - bs * 0.1) / bs - DRIVE_DEADMAN_S;
@@ -701,41 +817,85 @@ mod tests {
         assert!((w.t_s - 0.5 * t_run).abs() < 1e-12);
         assert!(w.travel_bound() <= runway);
 
-        // the bench servo's pilot as the ladder recorded one near 1.2 V:
-        // 2200 counts/s, rising in 40 ms, coasting 54 counts
-        p.feed_pilot(seen(0.25, 2200.0, 54.0), 0.040);
-        let rise = 3.0 * 0.040 + 0.1;
-        for (level, dir, start, fits) in [
-            (0.25, 1, 332.0, true),
-            (0.25, -1, 3542.0, true),
-            (0.5, 1, 332.0, true),
-            (0.5, -1, 3542.0, true),
-            // the nameplate's speed over the pilot's, squared, leaves the
-            // top level's coast bound most of the runway
-            (0.75, 1, 332.0, false),
-        ] {
-            let w = p.window(level, dir, start);
-            let bs = 1.25 * (RATED * level).max(2200.0 * level / 0.25);
-            let k = bs / 2200.0;
-            let bc = 1.5 * 54.0 * k * k;
-            assert!((w.bound_speed - bs).abs() < 1e-9, "{level}");
-            assert!((w.bound_coast - bc).abs() < 1e-9, "{level}");
-            let t_run = (2910.0 - bc) / bs - DRIVE_DEADMAN_S;
-            assert!((w.t_s - t_run.min(rise)).abs() < 1e-9, "{level}: {w:?}");
-            assert_eq!(w.fits(), fits, "{level}: {}", w.said());
-            if fits {
-                assert!(w.travel_bound() <= w.runway + 1e-9);
-            }
+        // the bench run's pilot: 2207 counts/s up, rising in 11.5 ms,
+        // coasting 70 counts
+        p.feed_pilot(seen(0.25, 1, 2207.0, 70.0), 0.0115);
+        let rise = 3.0 * 0.0115 + 0.1;
+        // the lowest level keeps the nameplate's rule, which the pilot's
+        // slower speed does not lower
+        for (dir, start) in [(1, 332.0), (-1, 3542.0)] {
+            let w = p.window(0.25, dir, start);
+            let bs = 1.25 * RATED * 0.25;
+            let bc = 1.5 * 70.0 * (bs / 2207.0).powi(2);
+            assert!((w.bound_speed - bs).abs() < 1e-9 && (w.bound_coast - bc).abs() < 1e-9);
+            assert_eq!(w.from, BoundFrom::Nameplate);
+            assert_eq!(w.t_s, rise, "the rise binds: {}", w.said());
         }
-        assert_eq!(p.window(0.25, 1, 332.0).t_s, rise, "the rise binds");
-        // a measured speed over the nameplate's rules the bound, and its
-        // coast scaled by the square of the speeds
-        p.feed(seen(0.5, 12_000.0, 900.0));
-        let w = p.window(0.5, 1, 332.0);
-        assert!((w.bound_speed - 1.25 * 12_000.0).abs() < 1e-9);
-        let bc = (1.5 * 900.0 * (w.bound_speed / 12_000.0).powi(2))
-            .max(1.5 * 54.0 * (w.bound_speed / 2200.0).powi(2));
-        assert!((w.bound_coast - bc).abs() < 1e-6);
+        // a higher level waits for the level below it in its direction
+        let w = p.window(0.5, -1, 3542.0);
+        assert!(!w.fits(), "{}", w.said());
+        assert_eq!(
+            w.from,
+            BoundFrom::Missing {
+                level: 0.25,
+                dir: -1
+            }
+        );
+        assert!(w.said().contains("no spin of the 25% level ran down"));
+        assert!(!p.window(0.75, 1, 332.0).fits(), "no 50 % spin yet");
+        // the bench run's four 25 % spins
+        for (d, v, c) in [
+            (1, 2550.0, 43.0),
+            (-1, 2063.0, 78.0),
+            (1, 2427.0, 41.0),
+            (-1, 2069.0, 82.0),
+        ] {
+            p.feed(seen(0.25, d, v, c));
+        }
+        let want = |dir: i8, seen: &[(f64, f64)]| {
+            let fastest = seen.iter().map(|s| s.0).fold(0.0, f64::max);
+            let bs = 1.25 * fastest * 2.0;
+            let bc = seen
+                .iter()
+                .map(|(v, c)| 1.5 * c * (bs / v).powi(2))
+                .fold(0.0, f64::max);
+            (dir, bs, bc)
+        };
+        for (dir, bs, bc) in [
+            want(1, &[(2207.0, 70.0), (2550.0, 43.0), (2427.0, 41.0)]),
+            want(-1, &[(2063.0, 78.0), (2069.0, 82.0)]),
+        ] {
+            let w = p.window(0.5, dir, TRAVEL.start(dir));
+            assert!((w.bound_speed - bs).abs() < 1e-9, "{dir}: {}", w.said());
+            assert!((w.bound_coast - bc).abs() < 1e-9, "{dir}: {}", w.said());
+            let n = if dir > 0 { 3 } else { 2 };
+            assert_eq!(
+                w.from,
+                BoundFrom::Spins {
+                    level: 0.25,
+                    dir,
+                    n
+                }
+            );
+            let t_run = (2910.0 - bc) / bs - DRIVE_DEADMAN_S;
+            assert!((w.t_s - t_run.min(rise)).abs() < 1e-9);
+            assert!(
+                w.fits() && w.travel_bound() <= w.runway + 1e-9,
+                "{}",
+                w.said()
+            );
+        }
+        // the top level from the 50 % spins of its own direction only
+        p.feed(seen(0.5, 1, 5200.0, 180.0));
+        let w = p.window(0.75, 1, 332.0);
+        let bs = 1.25 * 5200.0 * 1.5;
+        assert!((w.bound_speed - bs).abs() < 1e-9);
+        assert!((w.bound_coast - 1.5 * 180.0 * (bs / 5200.0).powi(2)).abs() < 1e-9);
+        assert!(w.fits(), "{}", w.said());
+        assert!(!p.window(0.75, -1, 3542.0).fits(), "no 50 % spin down");
+        // a coast that leaves no runway leaves the level out
+        p.feed(seen(0.5, 1, 5200.0, 1200.0));
+        let w = p.window(0.75, 1, 332.0);
         assert!(!w.fits() && w.t_s < T_MIN_S, "{}", w.said());
         // from a start near the far guard nothing fits
         let w = p.window(0.25, 1, 3000.0);

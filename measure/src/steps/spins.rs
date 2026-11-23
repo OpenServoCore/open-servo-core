@@ -85,6 +85,8 @@ pub const PER_REV_SHARE: f64 = 0.10;
 /// most, 20 ms at least (the ladder notebook's `spin_window`).
 pub const STEADY_S: f64 = 0.100;
 pub const STEADY_MIN_S: f64 = 0.020;
+/// The levels the open-loop friction line needs.
+pub const LINE_LEVELS: usize = 2;
 
 /// What the step takes from the stops step's result.
 #[derive(Clone, Debug, PartialEq)]
@@ -471,7 +473,8 @@ pub struct Taken1 {
 struct Found {
     corrected: bool,
     spins: Vec<Taken1>,
-    left_out: Vec<(f64, String)>,
+    /// (level, logical sign, why).
+    left_out: Vec<(f64, i8, String)>,
     path: Vec<String>,
     t90_assumed: bool,
 }
@@ -666,16 +669,19 @@ async fn spin<P: Pipe>(
     let read = runway::read_spin(w.dir, w.start, d, c, end, b.still_counts, b.tick_hz)
         .ok_or_else(|| Halt::Error(format!("{what}: its bursts carry too few rows to read")))?;
     lines.push(format!(
-        "{what}: {:.0}% {} from {:.0} for {:.0} ms: {:.0} counts/s, coast {:.0}, at rest at {:.0} ({:.0} of {:.0} counts)",
+        "{what}: {:.0}% {} from {:.0} for {:.0} ms: {:.0} of {:.0} counts/s, coast {:.0} of {:.0}, at rest at {:.0} ({:.0} of {:.0} counts), bounds from {}",
         100.0 * w.level,
-        if w.dir > 0 { "up" } else { "down" },
+        way(w.dir),
         w.start,
         1e3 * w.t_s,
         read.speed_cps,
+        w.bound_speed,
         read.coast_counts,
+        w.bound_coast,
         end,
         read.travel,
-        w.travel_bound()
+        w.travel_bound(),
+        w.from.said()
     ));
     runway::after(&w, &read, &b.travel, &what).map_err(Halt::Refused)?;
     Ok(Some(Taken1 {
@@ -736,7 +742,7 @@ async fn spin_from<P: Pipe>(
                     1e3 * PILOT_MIN_S
                 )));
             }
-            found.left_out.push((level, why));
+            found.left_out.push((level, dir, why));
             return Ok(None);
         }
         found
@@ -750,6 +756,10 @@ async fn spin_from<P: Pipe>(
     Err(Halt::Error(format!(
         "{what}: two attempts lost rows: the line is not clean enough; check the cable and its contacts"
     )))
+}
+
+fn way(dir: i8) -> &'static str {
+    if dir > 0 { "up" } else { "down" }
 }
 
 async fn body<P: Pipe>(
@@ -796,10 +806,14 @@ async fn body<P: Pipe>(
             pilot.window.t_s
         }
     };
-    plan.feed_pilot(pilot.read.seen(PILOT_LEVEL), t90);
+    plan.feed_pilot(pilot.read.seen(PILOT_LEVEL, 1), t90);
     found.spins.push(pilot);
     for slot in runway::order() {
-        if found.left_out.iter().any(|(l, _)| *l == slot.level) {
+        if found
+            .left_out
+            .iter()
+            .any(|(l, d, _)| *l == slot.level && *d == slot.dir)
+        {
             continue;
         }
         let w = plan.window(slot.level, slot.dir, b.travel.start(slot.dir));
@@ -807,10 +821,11 @@ async fn body<P: Pipe>(
             let why = format!("spin {} from its guard: {}", slot.n, w.said());
             found.path.push(format!("left out: {why}"));
             lines.push(format!(
-                "the {:.0}% level is left out: {why}",
-                100.0 * slot.level
+                "the {:.0}% level is left out {}: {why}",
+                100.0 * slot.level,
+                way(slot.dir)
             ));
-            found.left_out.push((slot.level, why));
+            found.left_out.push((slot.level, slot.dir, why));
             continue;
         }
         let got = spin_from(
@@ -819,13 +834,14 @@ async fn body<P: Pipe>(
         .await?;
         match got {
             Some(t) => {
-                plan.feed(t.read.seen(slot.level));
+                plan.feed(t.read.seen(slot.level, slot.dir));
                 found.spins.push(t);
             }
             None => lines.push(format!(
-                "the {:.0}% level is left out: {}",
+                "the {:.0}% level is left out {}: {}",
                 100.0 * slot.level,
-                found.left_out.last().map_or("", |(_, w)| w.as_str())
+                way(slot.dir),
+                found.left_out.last().map_or("", |(_, _, w)| w.as_str())
             )),
         }
     }
@@ -1082,7 +1098,7 @@ pub fn per_rev(c: &JudgeCfg, steady: &[Steady]) -> (PerRev, Check) {
                 .zip(even)
                 .is_some_and(|(r, e)| (r / e - 1.0).abs() <= PER_REV_SHARE);
             let source = format!(
-                "derived: ripple cycles a pot count over each spin's steady stretch, times {counts_per_deg:.3} counts/deg (the stops over the nameplate's travel), times 360, over the gear ratio {gear_ratio}, the median over {} spins rounded to the nearest even integer",
+                "derived: ripple cycles a pot count over each spin's steady stretch, times {counts_per_deg:.3} counts/deg (the stops over the nameplate's travel), times 360, over the gear ratio {gear_ratio}, the median over {} spins of both directions rounded to the nearest even integer; the pot's local slope varies by region, and the up spins read the low end of the travel, the down spins the high end",
                 raws.len()
             );
             (
@@ -1095,11 +1111,23 @@ pub fn per_rev(c: &JudgeCfg, steady: &[Steady]) -> (PerRev, Check) {
                 check(
                     name,
                     match (raw, even) {
-                        (Some(r), Some(e)) => format!(
-                            "{r:.2} over {} spins, nearest even {e:.0}: {:.1}% off",
-                            raws.len(),
-                            100.0 * (r / e - 1.0).abs()
-                        ),
+                        (Some(r), Some(e)) => {
+                            let by = |d: i8| {
+                                let v: Vec<f64> = steady
+                                    .iter()
+                                    .filter(|s| s.dir == d)
+                                    .filter_map(|s| s.per_rev_raw)
+                                    .collect();
+                                median(&v).map_or("none".into(), |m| format!("{m:.2}"))
+                            };
+                            format!(
+                                "{r:.2}, the median over {} spins of both directions (up {}, down {}: the pot's local slope varies by region), nearest even {e:.0}: {:.1}% off",
+                                raws.len(),
+                                by(1),
+                                by(-1),
+                                100.0 * (r / e - 1.0).abs()
+                            )
+                        }
                         _ => "no spin read both a ripple line and a pot slope".into(),
                     },
                     format!("within {:.0}% of an even integer", 100.0 * PER_REV_SHARE),
@@ -1110,7 +1138,9 @@ pub fn per_rev(c: &JudgeCfg, steady: &[Steady]) -> (PerRev, Check) {
     }
 }
 
-/// The open-loop line through each level and direction's steady mean.
+/// The open-loop line through each level and direction's steady mean,
+/// over [`LINE_LEVELS`] levels at least: one level's two directions are
+/// two regions of the pot, not two speeds.
 fn open_line(steady: &[Steady]) -> Option<OpenLine> {
     let mut keys: Vec<(f64, i8)> = steady.iter().map(|s| (s.level, s.dir)).collect();
     keys.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
@@ -1131,11 +1161,12 @@ fn open_line(steady: &[Steady]) -> Option<OpenLine> {
             points.push((level, dir, w, i, raw, g.len()));
         }
     }
-    let (w, i): (Vec<f64>, Vec<f64>) = points.iter().map(|p| (p.2, p.3)).unzip();
-    let distinct = w.iter().any(|x| (x - w[0]).abs() > 1e-9);
-    if !distinct {
+    let mut levels: Vec<f64> = points.iter().map(|p| p.0).collect();
+    levels.dedup();
+    if levels.len() < LINE_LEVELS {
         return None;
     }
+    let (w, i): (Vec<f64>, Vec<f64>) = points.iter().map(|p| (p.2, p.3)).unzip();
     let [a, b] = polyfit::<2>(&w, &i)?;
     Some(OpenLine {
         coulomb_ma: a,
@@ -1346,13 +1377,25 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
                 l.viscous_ma_s_per_rad,
                 l.points.len()
             ),
-            "two speeds at least".into(),
+            format!("{LINE_LEVELS} levels at least"),
             Verdict::Pass,
         ),
         None => check(
             "the open-loop friction line",
-            "no two steady speeds read".into(),
-            "two speeds at least".into(),
+            {
+                let mut l: Vec<f64> = st
+                    .iter()
+                    .filter(|s| s.rad_s().is_some() && s.i_ma.is_some())
+                    .map(|s| s.level)
+                    .collect();
+                l.dedup();
+                format!(
+                    "steady spins at {} level{}: the higher levels did not run, so no line is fitted",
+                    l.len(),
+                    if l.len() == 1 { "" } else { "s" }
+                )
+            },
+            format!("{LINE_LEVELS} levels at least"),
             Verdict::Fail,
         ),
     });
@@ -1485,7 +1528,9 @@ pub fn advice(name: &str) -> &'static str {
         "the level J is read at" => {
             "no level ran its spins both ways: check the stops and the nameplate's speed, then run the step again"
         }
-        "the open-loop friction line" => "the steady spins gave no line: run the step again",
+        "the open-loop friction line" => {
+            "the friction line needs two levels and the higher levels did not run: check the stops and that the horn turns freely, then run the step again"
+        }
         _ => "check the servo, then run the step again",
     }
 }
@@ -1563,11 +1608,14 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
                 found
                     .left_out
                     .iter()
-                    .map(|(l, _)| format!("{:.0}%", 100.0 * l))
+                    .map(|(l, d, _)| format!("{:.0}% {}", 100.0 * l, way(*d)))
                     .collect::<Vec<_>>()
                     .join(", ")
             },
-            format!("every level's T at least {:.0} ms", 1e3 * runway::T_MIN_S),
+            format!(
+                "every level's T at least {:.0} ms both ways, a higher level's bounds from the level below it",
+                1e3 * runway::T_MIN_S
+            ),
             if found.left_out.is_empty() {
                 Verdict::Pass
             } else {
@@ -1680,7 +1728,7 @@ fn result_json(
             json!({
                 "n": s.n, "pilot": s.pilot, "level_share": w.level, "dir": w.dir, "duty_q15": s.q15,
                 "volts": w.level * b.stated_v, "start_counts": w.start, "attempt": s.attempt,
-                "planned": {"t_s": w.t_s, "t_rise_s": w.t_rise_s, "t_runway_s": w.t_runway_s, "runway_counts": w.runway,
+                "planned": {"bounds_from": w.from.said(), "t_s": w.t_s, "t_rise_s": w.t_rise_s, "t_runway_s": w.t_runway_s, "runway_counts": w.runway,
                             "bound_speed_cps": w.bound_speed, "bound_coast_counts": w.bound_coast, "travel_bound_counts": w.travel_bound()},
                 "on_s": s.on_s,
                 "end_counts": r.end, "travel_counts": r.travel, "drive_travel_counts": r.drive_travel,
@@ -1823,7 +1871,7 @@ fn result_json(
         "estimates": estimates,
         "fits": fits,
         "spins": spins,
-        "left_out": found.left_out.iter().map(|(l, w)| json!({"level_share": l, "why": w})).collect::<Vec<_>>(),
+        "left_out": found.left_out.iter().map(|(l, d, w)| json!({"level_share": l, "dir": d, "why": w})).collect::<Vec<_>>(),
         "path": found.path,
         "drives": {
             "stops_counts": [b.stops.lo, b.stops.hi], "guards_counts": [glo, ghi], "guard_counts": GUARD_COUNTS,
@@ -2348,6 +2396,32 @@ mod tests {
         );
     }
 
+    /// The open-loop line needs two levels: one level's two directions
+    /// fit nothing, and its check refuses saying the higher levels did not
+    /// run.
+    #[test]
+    fn the_friction_line_needs_two_levels() {
+        let at = |level: f64, dir: i8, w: f64, i: f64| Steady {
+            level,
+            dir,
+            rev_s: Some(w / (2.0 * core::f64::consts::PI)),
+            i_ma: Some(i),
+            crest_ma: Some(i + 3.0),
+            ..steady_of(None)
+        };
+        let one = [at(0.25, 1, 560.0, 45.0), at(0.25, -1, 600.0, 44.0)];
+        assert_eq!(open_line(&one), None);
+        let two = [
+            at(0.25, 1, 560.0, 45.0),
+            at(0.25, -1, 600.0, 44.0),
+            at(0.5, 1, 1200.0, 75.0),
+            at(0.5, -1, 1260.0, 76.0),
+        ];
+        let l = open_line(&two).expect("a line");
+        assert!(l.viscous_ma_s_per_rad > 0.0 && l.points.len() == 4, "{l:?}");
+        assert!(advice("the open-loop friction line").contains("higher levels did not run"));
+    }
+
     /// J's level is the highest that ran both ways: the top passes, a
     /// lower one warns, a level that ran one way only is passed over, none
     /// refuses.
@@ -2382,22 +2456,24 @@ mod tests {
         Envelope::new(f, HeatModel::new(&board, &thermal, 3.78, 1108.45, 20_000.0))
     }
 
-    /// A motor of `k` times the nameplate's speed: a first-order rise of
-    /// 20 ms to it, a constant-deceleration coast whose travel is 1e-5
-    /// counts per (count/s)^2, the ladder's own (about 1e-5 over 15 to
-    /// 60 % on 3.7 to 7.4 V). Each spin is driven its T and its dead-man,
-    /// a host that stalls after the drive's rows; the planner sees what the
-    /// step would read. The spins' ends, the margin to the far guard of
-    /// each, the levels left out, and where it refused.
+    /// A motor of `k` times the nameplate's speed at the lowest level,
+    /// its speed `step` times the volts' ratio more at each level above
+    /// (1.0: speed in proportion to volts): a first-order rise of 20 ms
+    /// to it, a constant-deceleration coast whose travel is 1e-5 counts
+    /// per (count/s)^2, the ladder's own (about 1e-5 over 15 to 60 % on
+    /// 3.7 to 7.4 V). Each spin is driven its T and its dead-man, a host
+    /// that stalls after the drive's rows; the planner sees what the step
+    /// would read; the go-to to each start runs at the approach duty, its
+    /// windows priced. The spins' ends and their margins to the far guard, the
+    /// twelve's that ran, those left out, and where it refused.
     struct Sim {
         ends: Vec<(String, f64)>,
-        /// The twelve's that ran, (level, sign).
         ran: Vec<(f64, i8)>,
-        left_out: Vec<f64>,
+        left_out: Vec<(f64, i8)>,
         refused: Option<String>,
     }
 
-    fn simulate(k: f64) -> Sim {
+    fn simulate(k: f64, step: f64) -> Sim {
         let travel = Travel {
             lo: 82.0,
             hi: 3792.0,
@@ -2412,20 +2488,48 @@ mod tests {
             left_out: Vec::new(),
             refused: None,
         };
-        let mut drive = |w: &Window, name: &str, env: &mut Envelope| -> SpinRead {
+        let speed = |level: f64| {
+            let i = LEVELS.iter().position(|l| *l == level).unwrap_or(0);
+            k * rated * level * step.powi(i as i32)
+        };
+        // the go-to at the stops step's approach duty from the probe's
+        // 0.48 V and one step, its windows priced as the step prices them
+        let app = 0.48 + 0.04 * 4.8;
+        let app_q = level_q15(app / 4.8, 4.8, 5.0);
+        let mut pos = 2041.0f64;
+        let mut drive = |w: &Window, name: &str, env: &mut Envelope| -> Result<SpinRead, String> {
+            let v_app = k * rated * app / 4.8;
+            let windows = ((w.start - pos).abs() / (v_app * WINDOW_S)).ceil().max(1.0) as usize;
+            for _ in 0..windows {
+                let r = Rung {
+                    name: "a go-to window".into(),
+                    duty: (w.start - pos).signum() * app_q as f64 / Q15,
+                    time_s: WINDOW_S + POLL_DEADMAN_S,
+                    permit: false,
+                    gap_s: 0.0,
+                    start: pos,
+                    speed_cps: rated * app / 4.8,
+                    stop_counts: 0.0,
+                    kind: Kind::Drive,
+                };
+                let stops = env.facts.stops.take();
+                let got = env.admit(&r);
+                env.facts.stops = stops;
+                got.map_err(|e| e.0)?;
+            }
             let q = level_q15(w.level, 4.8, 5.0) * w.dir as i16;
-            env.admit(&spin_rung(name, q, w))
-                .expect("the envelope admits it");
-            let v = k * rated * w.level;
+            env.admit(&spin_rung(name, q, w)).map_err(|e| e.0)?;
+            let v = speed(w.level);
             let t = w.t_s + DRIVE_DEADMAN_S;
             let x = v * (t - tau * (1.0 - (-t / tau).exp()));
             let v_cut = v * (1.0 - (-t / tau).exp());
             let coast = coast_k * v_cut * v_cut;
             let end = w.start + w.dir as f64 * (x + coast);
+            pos = end;
             let (glo, ghi) = travel.guards();
             let margin = if w.dir > 0 { ghi - end } else { end - glo };
             out.ends.push((name.into(), margin));
-            SpinRead {
+            Ok(SpinRead {
                 start: w.start,
                 end,
                 drive_travel: x,
@@ -2435,78 +2539,128 @@ mod tests {
                 cut_pos: end - w.dir as f64 * coast,
                 coast_counts: coast,
                 coast_s: Some(0.1),
-            }
+            })
         };
         let w = plan.pilot(travel.start(1));
-        let r = drive(&w, "the pilot", &mut env);
+        let r = match drive(&w, "the pilot", &mut env) {
+            Ok(r) => r,
+            Err(e) => {
+                out.refused = Some(e);
+                return out;
+            }
+        };
         if let Err(e) = after(&w, &r, &travel, "the pilot") {
             out.refused = Some(e);
             return out;
         }
-        plan.feed_pilot(r.seen(PILOT_LEVEL), r.t90_s.expect("rise"));
+        plan.feed_pilot(r.seen(PILOT_LEVEL, 1), r.t90_s.expect("rise"));
         for s in runway::order() {
-            if out.left_out.contains(&s.level) {
+            if out.left_out.contains(&(s.level, s.dir)) {
                 continue;
             }
             let w = plan.window(s.level, s.dir, travel.start(s.dir));
             if !w.fits() {
-                out.left_out.push(s.level);
+                out.left_out.push((s.level, s.dir));
                 continue;
             }
-            let name = format!("spin {}", s.n);
-            let r = drive(&w, &name, &mut env);
+            let name = format!("spin {} ({:.0}% {})", s.n, 100.0 * s.level, way(s.dir));
+            let r = match drive(&w, &name, &mut env) {
+                Ok(r) => r,
+                Err(e) => {
+                    out.refused = Some(e);
+                    return out;
+                }
+            };
             if let Err(e) = after(&w, &r, &travel, &name) {
                 out.refused = Some(e);
                 return out;
             }
-            plan.feed(r.seen(s.level));
+            plan.feed(r.seen(s.level, s.dir));
             out.ran.push((s.level, s.dir));
         }
         out
     }
 
-    /// At the nameplate's speed no spin's travel passes the far guard, the
-    /// worst ending its SHORT_COUNTS short or more; at 1.5 times it the
-    /// pilot runs faster than its bound and the step refuses before any
-    /// other spin, the pilot itself still short of the far guard.
+    fn said(k: f64, step: f64, s: &Sim) -> f64 {
+        let worst = s.ends.iter().map(|(_, m)| *m).fold(f64::INFINITY, f64::min);
+        println!(
+            "{k} x the nameplate, {step} x the volts' ratio a level: {} spins, the least margin to the far guard {worst:.0} counts, ran {:?}, left out {:?}, refused: {}",
+            s.ends.len(),
+            s.ran,
+            s.left_out,
+            s.refused.as_deref().unwrap_or("no")
+        );
+        for (name, m) in &s.ends {
+            println!("  {name}: {m:.0} counts short of the far guard");
+        }
+        worst
+    }
+
+    /// At 0.6 times the nameplate's speed, the bench servo's case, every
+    /// level runs both ways and J is read at the top; at 1.0 times the top
+    /// level's coast bound leaves it no runway, J comes from the 50 %
+    /// level with a warning; at 1.5 times the pilot runs over its bound
+    /// and the step refuses before any other spin. No spin's travel, at
+    /// its T and its dead-man, passes the far guard; every one that ran
+    /// ends its SHORT_COUNTS short or more.
     #[test]
     fn a_simulated_run_never_passes_the_far_guard() {
-        for k in [1.0, 1.5] {
-            let s = simulate(k);
-            let worst = s.ends.iter().map(|(_, m)| *m).fold(f64::INFINITY, f64::min);
-            println!(
-                "{k} x the nameplate: {} spins, the least margin to the far guard {worst:.0} counts, levels left out {:?}, refused: {}",
-                s.ends.len(),
-                s.left_out,
-                s.refused.as_deref().unwrap_or("no")
-            );
-            for (name, m) in &s.ends {
-                println!("  {name}: {m:.0} counts short of the far guard");
-            }
+        for k in [0.6, 1.0, 1.5] {
+            let s = simulate(k, 1.0);
+            let worst = said(k, 1.0, &s);
             assert!(worst > 0.0, "{k}: {worst}");
-            if k == 1.0 {
-                assert!(s.refused.is_none(), "{:?}", s.refused);
-                assert!(worst >= SHORT_COUNTS, "{worst}");
-                // the pilot's coast scaled by (1.25 x the nameplate's speed
-                // over the pilot's)^2 bounds the top level's coast at most
-                // of the runway: the rule leaves it out, J is read at the
-                // 50 % level, and the step is accepted with two warnings
-                assert_eq!(s.left_out, [0.75]);
-                let jl = j_level(s.ran.iter().copied());
-                assert_eq!(jl, Some(0.5));
-                let ck = j_level_check(jl);
-                assert_eq!(ck.verdict, Verdict::Warn, "{}", ck.said());
-                assert!(
-                    ck.value
-                        .contains("75% level was left out by the runway rule"),
-                    "{}",
-                    ck.said()
-                );
-            } else {
-                let why = s.refused.expect("refused");
-                assert!(why.contains("the pilot ran faster than its bound"), "{why}");
-                assert_eq!(s.ends.len(), 1, "after the pilot");
+            let jl = j_level(s.ran.iter().copied());
+            match k {
+                0.6 => {
+                    assert!(s.refused.is_none(), "{:?}", s.refused);
+                    assert!(
+                        s.left_out.is_empty() && s.ran.len() == 12,
+                        "{:?}",
+                        s.left_out
+                    );
+                    assert_eq!(jl, Some(0.75));
+                    assert!(worst >= SHORT_COUNTS, "{worst}");
+                }
+                1.0 => {
+                    assert!(s.refused.is_none(), "{:?}", s.refused);
+                    assert!(worst >= SHORT_COUNTS, "{worst}");
+                    assert_eq!(s.left_out, [(0.75, 1), (0.75, -1)]);
+                    assert_eq!(jl, Some(0.5));
+                    let ck = j_level_check(jl);
+                    assert_eq!(ck.verdict, Verdict::Warn, "{}", ck.said());
+                    assert!(
+                        ck.value
+                            .contains("75% level was left out by the runway rule"),
+                        "{}",
+                        ck.said()
+                    );
+                }
+                _ => {
+                    let why = s.refused.expect("refused");
+                    assert!(why.contains("the pilot ran faster than its bound"), "{why}");
+                    assert_eq!(s.ends.len(), 1, "after the pilot");
+                }
             }
         }
+    }
+
+    /// A servo whose speed rises 30 % faster than the volts' ratio from a
+    /// level to the next outruns the bound the level below sets: the
+    /// check after its first spin over the bound ends the step there, that
+    /// spin's travel still short of the far guard.
+    #[test]
+    fn a_servo_faster_than_the_volts_ratio_is_stopped_after_its_first_spin() {
+        let s = simulate(0.6, 1.3);
+        let worst = said(0.6, 1.3, &s);
+        let why = s.refused.as_deref().expect("refused");
+        assert!(
+            why.contains("spin 5 (50% up) ran faster than its bound"),
+            "{why}"
+        );
+        assert!(why.contains("the 25% level's 3 spins up predict"), "{why}");
+        assert_eq!(s.ran.len(), 4, "the 25 % level ran: {:?}", s.ran);
+        let (last, m) = s.ends.last().expect("a spin");
+        assert!(last.starts_with("spin 5") && *m > 0.0, "{last}: {m}");
+        assert!(worst > 0.0);
     }
 }
