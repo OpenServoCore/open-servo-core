@@ -314,6 +314,21 @@ pub async fn stream<P: Pipe>(
     layout: Layout,
     rows: u16,
 ) -> Result<Burst, Error> {
+    stream_with(c, id, d, cfg, layout, rows, None).await
+}
+
+/// [`stream`] with `held`, a write at its address, staged under HOLD with
+/// the arm and applied by one broadcast COMMIT that carries the burst: a
+/// goal and its capture start in the same instant (protocol sec 5.6).
+pub async fn stream_with<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    cfg: &StreamCfg,
+    layout: Layout,
+    rows: u16,
+    held: Option<(u16, &[u8])>,
+) -> Result<Burst, Error> {
     let chunks = layout.chunks();
     let StreamCfg {
         i_window_min_ticks: floor,
@@ -331,21 +346,39 @@ pub async fn stream<P: Pipe>(
     let mut p = [0u8; 4 + 4 * tel::CHUNKS_MAX + 2];
     let n = build::write(&mut p, chunk0, &arm).ok_or(Error::Servo(ResultCode::Limit))?;
     let window = window(rows, tick_hz);
+    if let Some((addr, bytes)) = held {
+        c.write_hold(id, addr, bytes).await?;
+        c.write_hold(id, chunk0, &arm).await?;
+    }
     let guard = c.guard();
     c.set_guard(window + Duration::from_secs(1));
-    let reply = c
-        .exchange_stream(id, Inst::instruction(Opcode::Write, 0), &p[..n], window)
-        .await;
+    let reply = match held {
+        Some(_) => {
+            c.exchange_stream(
+                Id::BROADCAST,
+                Inst::instruction(Opcode::Commit, 0),
+                &[],
+                window,
+            )
+            .await
+        }
+        None => {
+            c.exchange_stream(id, Inst::instruction(Opcode::Write, 0), &p[..n], window)
+                .await
+        }
+    };
     c.set_guard(guard);
     let reply = reply?;
-    match &reply.ack {
-        Some(a) if a.result == Some(ResultCode::Ok) => {}
-        Some(a) => {
+    match (&reply.ack, held) {
+        // a broadcast COMMIT owes no ack
+        (None, Some(_)) => {}
+        (Some(a), _) if a.result == Some(ResultCode::Ok) => {}
+        (Some(a), _) => {
             return Err(a
                 .result
                 .map_or(Error::Link(osc_client::LinkError::Malformed), Error::Servo));
         }
-        None => return Err(Error::Timeout { slot: 0 }),
+        (None, None) => return Err(Error::Timeout { slot: 0 }),
     }
     let mut asm =
         StreamAssembler::new(chunks, floor).ok_or_else(|| Error::Descriptor("no row".into()))?;
