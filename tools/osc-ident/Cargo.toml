@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+
+[package]
+name        = "osc-ident-cli"
+version     = "0.1.0"
+edition     = "2024"
+description = "The identification tool's CLI: a servo's constant set from measured inputs by rules, and the safe path that checks, installs, saves and restores a set."
+license     = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "osc-ident"
+path = "src/main.rs"
+
+[dependencies]
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+futures-lite = "2"
+osc-client   = { path = "../../client" }
+osc-measure  = { path = "../../measure" }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+
+[dev-dependencies]
+osc-client = { path = "../../client", features = ["fake-adapter"] }

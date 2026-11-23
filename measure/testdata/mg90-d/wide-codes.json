@@ -1,0 +1,4 @@
+{
+  "slots": [0, 48, 0, 80, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0],
+  "source": {"file": "notebooks/stages/1-board/wide-codes/results/dev-v006-2A-D.json", "key": "adc_wide_mid_q4", "sha1": "68f01864e8cba762cf8c680f3078df4ecd4b77fc"}
+}

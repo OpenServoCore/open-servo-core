@@ -5,12 +5,18 @@ resolver = "2"
 name        = "osc-measure"
 version     = "0.1.0"
 edition     = "2024"
-description = "Sans-io servo identification: measured inputs, the nameplate, the board and a policy to the servo's constant set, by rules. Compiles to wasm for the GUI."
+description = "Sans-io servo identification: measured inputs, the nameplate, the board and a policy to the servo's constant set, by rules, and the set file with the safe path that installs it. Compiles to wasm for the GUI."
 license     = "MIT OR Apache-2.0"
 
 [dependencies]
-serde          = { version = "1", features = ["derive"] }
+osc-client     = { path = "../client", default-features = false }
+osc-protocol   = { path = "../firmware/lib/osc-protocol" }
 osc-servo-core = { path = "../firmware/lib/core" }
+serde          = { version = "1", features = ["derive"] }
+serde_json     = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+sha1           = "0.10"
+sha2           = "0.10"
 
 [dev-dependencies]
-serde_json = "1"
+futures-lite = "2"
+osc-client   = { path = "../client", default-features = false, features = ["fake-adapter"] }
