@@ -7,7 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::path;
+use common::{path, sweep};
 use osc_measure::capture::meta::gunzip;
 use osc_measure::capture::rows::TelFrame;
 use osc_measure::fit::window::{
@@ -54,48 +54,6 @@ fn scales(src: &Value, tick_hz: f64, pwm_arr: u16, rail_v: f64) -> Scales {
                 .collect(),
         },
     }
-}
-
-/// An osc-lab sweep.csv as its segments: (seg, commanded duty, rows).
-fn sweep(text: &str) -> Vec<(u32, i16, Vec<TelFrame>)> {
-    let mut lines = text.lines();
-    let head: Vec<&str> = lines.next().expect("header").split(',').collect();
-    let col = |name: &str| head.iter().position(|h| *h == name).expect(name);
-    let [seg, cmd, tick, valid, pos, trough, duty, crest, va, vb] = [
-        "seg",
-        "cmd_duty_q15",
-        "tick",
-        "window_valid",
-        "pos",
-        "current_trough",
-        "duty_counts",
-        "current_raw",
-        "vmotor_a",
-        "vmotor_b",
-    ]
-    .map(col);
-    let mut out: Vec<(u32, i16, Vec<TelFrame>)> = Vec::new();
-    for line in lines {
-        let c: Vec<&str> = line.split(',').collect();
-        let int = |k: usize| (!c[k].is_empty()).then(|| c[k].parse::<i64>().expect(line));
-        let row = TelFrame {
-            tick: int(tick).expect("tick") as u64,
-            window_valid: int(valid) == Some(1),
-            pos: int(pos).map(|v| v as u16),
-            current_trough: int(trough).map(|v| v as u16),
-            duty_counts: int(duty).map(|v| v as i16),
-            current_raw: int(crest).map(|v| v as u16),
-            vmotor_a: int(va).map(|v| v as u16),
-            vmotor_b: int(vb).map(|v| v as u16),
-            ..TelFrame::default()
-        };
-        let (s, d) = (int(seg).expect("seg") as u32, int(cmd).expect("cmd") as i16);
-        match out.last_mut() {
-            Some((ls, _, rows)) if *ls == s => rows.push(row),
-            _ => out.push((s, d, vec![row])),
-        }
-    }
-    out
 }
 
 fn segments(sw: &[(u32, i16, Vec<TelFrame>)]) -> Vec<Segment<'_>> {

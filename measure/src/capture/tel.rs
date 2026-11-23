@@ -314,7 +314,41 @@ pub async fn stream<P: Pipe>(
     layout: Layout,
     rows: u16,
 ) -> Result<Burst, Error> {
-    stream_with(c, id, d, cfg, layout, rows, None).await
+    let drops_before = read_u16(c, id, d, "tel_drop_count").await?;
+    let (chunk0, arm) = arm(d, layout, rows)?;
+    let mut p = [0u8; 4 + 4 * tel::CHUNKS_MAX + 2];
+    let n = build::write(&mut p, chunk0, &arm).ok_or(Error::Servo(ResultCode::Limit))?;
+    let inst = Inst::instruction(Opcode::Write, 0);
+    let mut b = carry(c, id, inst, &p[..n], true, cfg, layout, rows).await?;
+    let drops_after = read_u16(c, id, d, "tel_drop_count").await?;
+    b.dropped = drops_after.wrapping_sub(drops_before);
+    Ok(b)
+}
+
+/// One burst of `rows` rows of `layout` whose arm is staged under HOLD
+/// after `held`, each an address and its bytes, so one broadcast COMMIT
+/// applies them all on one tick: the capture starts at the commit and a
+/// goal among them lands inside it, at the first medium tick after
+/// (protocol sec 5.6). Read to its LAST frame with the host silent.
+/// `dropped` is left 0: the caller reads `tel_drop_count` around its
+/// drive, since a read here would hold the drive's duty a round trip
+/// longer.
+pub async fn stream_committed<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    cfg: &StreamCfg,
+    layout: Layout,
+    rows: u16,
+    held: &[(u16, &[u8])],
+) -> Result<Burst, Error> {
+    let (chunk0, arm) = arm(d, layout, rows)?;
+    for (addr, bytes) in held {
+        c.write_hold(id, *addr, bytes).await?;
+    }
+    c.write_hold(id, chunk0, &arm).await?;
+    let inst = Inst::instruction(Opcode::Commit, 0);
+    carry(c, Id::BROADCAST, inst, &[], false, cfg, layout, rows).await
 }
 
 /// [`stream`] with `held`, a write at its address, staged under HOLD with
@@ -329,56 +363,64 @@ pub async fn stream_with<P: Pipe>(
     rows: u16,
     held: Option<(u16, &[u8])>,
 ) -> Result<Burst, Error> {
-    let chunks = layout.chunks();
-    let StreamCfg {
-        i_window_min_ticks: floor,
-        tick_hz,
-    } = *cfg;
+    let Some(held) = held else {
+        return stream(c, id, d, cfg, layout, rows).await;
+    };
     let drops_before = read_u16(c, id, d, "tel_drop_count").await?;
+    let mut b = stream_committed(c, id, d, cfg, layout, rows, &[held]).await?;
+    let drops_after = read_u16(c, id, d, "tel_drop_count").await?;
+    b.dropped = drops_after.wrapping_sub(drops_before);
+    Ok(b)
+}
+
+/// The arm's address and bytes: the chunks of `layout` and the count, one
+/// 10 B run from `chunk0_addr`.
+fn arm(d: &Descriptor, layout: Layout, rows: u16) -> Result<(u16, Vec<u8>), Error> {
     let chunk0 = field(d, "chunk0_addr")?.addr;
     if chunk0 + 4 * tel::CHUNKS_MAX as u16 != field(d, "tel_count")?.addr {
         return Err(Error::Descriptor(
             "tel_count does not follow the chunks".into(),
         ));
     }
-    let mut arm = chunks.to_le_bytes().to_vec();
+    let mut arm = layout.chunks().to_le_bytes().to_vec();
     arm.extend(rows.to_le_bytes());
-    let mut p = [0u8; 4 + 4 * tel::CHUNKS_MAX + 2];
-    let n = build::write(&mut p, chunk0, &arm).ok_or(Error::Servo(ResultCode::Limit))?;
+    Ok((chunk0, arm))
+}
+
+/// `inst` sent to `id` as a burst's carrier, the burst read to LAST and
+/// assembled, `dropped` 0; `ack` whether a status is owed ahead of the
+/// frames (a broadcast COMMIT owes none).
+#[allow(clippy::too_many_arguments)]
+async fn carry<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    inst: Inst,
+    payload: &[u8],
+    ack: bool,
+    cfg: &StreamCfg,
+    layout: Layout,
+    rows: u16,
+) -> Result<Burst, Error> {
+    let chunks = layout.chunks();
+    let StreamCfg {
+        i_window_min_ticks: floor,
+        tick_hz,
+    } = *cfg;
     let window = window(rows, tick_hz);
-    if let Some((addr, bytes)) = held {
-        c.write_hold(id, addr, bytes).await?;
-        c.write_hold(id, chunk0, &arm).await?;
-    }
     let guard = c.guard();
     c.set_guard(window + Duration::from_secs(1));
-    let reply = match held {
-        Some(_) => {
-            c.exchange_stream(
-                Id::BROADCAST,
-                Inst::instruction(Opcode::Commit, 0),
-                &[],
-                window,
-            )
-            .await
-        }
-        None => {
-            c.exchange_stream(id, Inst::instruction(Opcode::Write, 0), &p[..n], window)
-                .await
-        }
-    };
+    let reply = c.exchange_stream(id, inst, payload, window).await;
     c.set_guard(guard);
     let reply = reply?;
-    match (&reply.ack, held) {
-        // a broadcast COMMIT owes no ack
-        (None, Some(_)) => {}
-        (Some(a), _) if a.result == Some(ResultCode::Ok) => {}
-        (Some(a), _) => {
+    match &reply.ack {
+        Some(a) if a.result == Some(ResultCode::Ok) => {}
+        Some(a) => {
             return Err(a
                 .result
                 .map_or(Error::Link(osc_client::LinkError::Malformed), Error::Servo));
         }
-        (None, None) => return Err(Error::Timeout { slot: 0 }),
+        None if ack => return Err(Error::Timeout { slot: 0 }),
+        None => {}
     }
     let mut asm =
         StreamAssembler::new(chunks, floor).ok_or_else(|| Error::Descriptor("no row".into()))?;
@@ -391,7 +433,6 @@ pub async fn stream_with<P: Pipe>(
             &mut out,
         );
     }
-    let drops_after = read_u16(c, id, d, "tel_drop_count").await?;
     Ok(Burst {
         layout,
         armed: rows,
@@ -403,7 +444,7 @@ pub async fn stream_with<P: Pipe>(
         laps: reply.laps,
         timed_out: matches!(reply.outcome, Outcome::Timeout { .. }),
         alert: asm.alert(),
-        dropped: drops_after.wrapping_sub(drops_before),
+        dropped: 0,
         first_stamp: asm.first_stamp(),
     })
 }

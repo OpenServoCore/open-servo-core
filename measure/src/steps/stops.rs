@@ -584,7 +584,7 @@ struct OnServo {
 
 /// The pot after a poll period: a dead-man latched refuses with
 /// [`STALLED`], any other fault aborts.
-async fn poll<P: Pipe>(rig: &mut Rig<'_, P>) -> Result<f64, Halt> {
+pub(crate) async fn poll<P: Pipe>(rig: &mut Rig<'_, P>) -> Result<f64, Halt> {
     let pos = read_u16(rig, "pos").await? as f64;
     let faults = read_u8(rig, "fault_flags").await?;
     if faults & BIT_DEADMAN != 0 {
@@ -861,23 +861,23 @@ async fn drive<P: Pipe>(
 
 /// The probe's sign written volatile for this step's drives, its stored
 /// value kept so the way out puts it back, and read back.
-async fn correct<P: Pipe>(
+pub(crate) async fn correct<P: Pipe>(
     rig: &mut Rig<'_, P>,
     ledger: &mut Ledger,
-    b: &Before,
+    p: &FromProbe,
     lines: &mut Vec<String>,
 ) -> Result<(), Halt> {
     ledger.keep(rig.c, rig.id, rig.d, "drive_polarity").await?;
-    write(rig, "drive_polarity", &[b.probe.found as u8]).await?;
-    if read_u8(rig, "drive_polarity").await? != b.probe.found as u8 {
+    write(rig, "drive_polarity", &[p.found as u8]).await?;
+    if read_u8(rig, "drive_polarity").await? != p.found as u8 {
         return Err(Halt::Error(format!(
             "drive_polarity {} did not read back after the write",
-            b.probe.found
+            p.found
         )));
     }
     lines.push(format!(
         "the probe found the stored drive_polarity {} wrong: {} written volatile for this step's drives and read back; nothing is saved, and the way out puts the stored {} back",
-        b.stored, b.probe.found, b.stored
+        p.stored, p.found, p.stored
     ));
     Ok(())
 }
@@ -901,7 +901,7 @@ async fn body<P: Pipe>(
         ledger.keep(rig.c, rig.id, rig.d, name).await?;
     }
     if b.probe.found != b.stored {
-        correct(rig, ledger, b, lines).await?;
+        correct(rig, ledger, &b.probe, lines).await?;
         found.corrected = true;
     }
     write(rig, "current_limit_counts", &[0, 0]).await?;

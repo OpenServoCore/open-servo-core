@@ -7,6 +7,12 @@
   "ntc_curve": {"raw_ref": 2048, "t_ref_cc": 2430, "k1_q88": 474, "k2_q24": 19934},
   "bridge_min_ticks": 27,
   "burst_edges": {"on_ticks": 44.0, "tap_on_ticks": 39.5, "off_ticks": 14.0, "settle_ticks": 72.0},
+  "window_read": {
+    "sample_ticks": 31.0,
+    "r_brake_ohm": 0.30083616429222926,
+    "settle_start_ticks": 40,
+    "settle_q15": [37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785]
+  },
   "source": {
     "tick_hz": "the kernel tick, read-only CALIB tick_hz on the servo",
     "vdd_mv": "the board's nominal chip supply, the word a capture is matched to its board by (notebooks oscnb/boards.py, sha1 d549ec8ce94ced790c81bd6f032b55e21b3d3421)",
@@ -18,6 +24,11 @@
       "tap_on_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) tap_on_edge_lag_7v4 (42) and tap_on_edge_lag_3v7 (37), their mean",
       "off_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) off_edge_lag_7v4 (15) and off_edge_lag_3v7 (13), their mean",
       "settle_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) shunt_settle_7v4 (75) and shunt_settle_3v7 (69), their mean"
+    },
+    "window_read": {
+      "sample_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) crest_sample_ticks shunt",
+      "r_brake_ohm": "notebooks stages/1-board/bridge-states/results/dev-v006-2A-D.json (sha1 d5e050edaf991630ba778cb78f44f3073b8f40cb) low_side_loop_ohm",
+      "settle": "the osc-dev-v006 app's Calibration i_settle_gain (firmware boards/osc-dev-v006/app/src/main.rs), as notebooks oscnb/boards.py (sha1 d549ec8ce94ced790c81bd6f032b55e21b3d3421) holds it"
     },
     "ntc_curve": "the stage 1 design quadratic of the part's nominal beta through the board's pull-up, pinned at 90 C (notebooks stages/1-board/ntc-curve/results/dev-v006-2A-D.json design_*, sha1 bbc7941d1137b2ed3bba5758b1f80393ac915d93)"
   }
