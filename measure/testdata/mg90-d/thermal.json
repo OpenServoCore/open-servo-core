@@ -1,0 +1,6 @@
+{
+  "fast_tau_s": {"value": 2.3752191114749404, "unit": "s", "source": {"file": "notebooks/stages/4-estimators/winding-temperature/results/mg90-d__dev-v006-2A-D.json", "sha1": "97572d64c5fd200d635e678a51c50794db66cee6", "key": "one_node_tau_s"}},
+  "fast_gain_c_per_w": {"value": 20.44571009950305, "unit": "C/W", "source": {"file": "notebooks/stages/4-estimators/winding-temperature/results/mg90-d__dev-v006-2A-D.json", "sha1": "97572d64c5fd200d635e678a51c50794db66cee6", "key": "joined_high_fast_gain_c_per_w"}},
+  "slow_tau_s": {"value": 128.92, "unit": "s", "source": {"file": "notebooks/stages/4-estimators/winding-temperature/results/mg90-d__dev-v006-2A-D.json", "sha1": "97572d64c5fd200d635e678a51c50794db66cee6", "key": "family_slow_tau_s"}},
+  "slow_gain_c_per_w": {"value": 76.7616, "unit": "C/W", "source": {"file": "notebooks/stages/4-estimators/winding-temperature/results/mg90-d__dev-v006-2A-D.json", "sha1": "97572d64c5fd200d635e678a51c50794db66cee6", "key": "joined_high_fast_gain_c_per_w.slow_gain_c_per_w x policy winding_slow_basis_ratio (policy.json sha1 c6a292c59dd228b0f03cac972e6978213aa6f117)"}}
+}

@@ -360,3 +360,28 @@ jobs:
         run: cargo test
       - name: cargo check (wasm32, the lib must stay sans-io)
         run: cargo check --target wasm32-unknown-unknown
+
+  osc-measure:
+    name: build + test (measure)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: measure
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt + wasm)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: measure
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test
+      - name: cargo build (wasm32, the lib must stay sans-io)
+        run: cargo build --target wasm32-unknown-unknown
