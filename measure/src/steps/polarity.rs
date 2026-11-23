@@ -7,11 +7,17 @@
 //! so arriving at a stop is a light press, not a strike.
 //!
 //! A metal train that moves neither way at the ceiling may be wedged on a
-//! stop: one press at the speed voltage of at most 0.05 s each way, the
+//! stop: one press at the speed voltage of at most 0.03 s each way, the
 //! stall permit held for it alone, frees it, and the ladder starts again
 //! from the shortest pulse. The press is short so a stiff shaft it frees
 //! at mid travel cannot reach a stop at speed. A press proves no sign; the
 //! ladder does. One attempt a run.
+//!
+//! Every drive here is timed by the host: it runs from the duty write to
+//! the zero write. Each runs under a short bus dead-man,
+//! [`DRIVE_DEADMAN_S`], written just before the duty, the step's own
+//! written back after the zero, so the servo cuts a drive the host stalls
+//! in. Each drive is priced at its own time plus that dead-man.
 //!
 //! [`Ladder`] is the decision, pure: fed what each pulse did, it gives the
 //! next pulse or a verdict. [`seen`] reads a pulse's rows. [`body`] only
@@ -24,31 +30,30 @@
 //! says which way the output went.
 
 use osc_client::pipe::Pipe;
+use osc_servo_core::kernel::phases::loops::faults::BIT_DEADMAN;
 use serde_json::{Map, Value, json};
 
-use super::{Halt, Rig, Taken, interrupted, keep_alive, rest, take_once, write};
+use super::{Halt, Rig, Taken, faulted, interrupted, keep_alive, rest, take_read, write};
 use crate::capture::ripple::{self, Pattern};
 use crate::capture::rows::{Layout, TelFrame};
-use crate::envelope::{Envelope, FREE_MARGIN, Kind, Rung, UNWEDGE_MAX_S};
+use crate::capture::tel::{Burst, StreamCfg};
+use crate::envelope::{DRIVE_DEADMAN_S, Envelope, FREE_MARGIN, Kind, Rung, UNWEDGE_MAX_S};
 use crate::fit::mean;
 
 pub const PULSE_S: f64 = 0.150;
 pub const COAST_S: f64 = 0.150;
-/// The host's turn around a pulse's rows, priced on top of them: the
-/// reads before the arm, and after LAST the reads and the zero write, each
-/// a USB round trip of about a millisecond.
-pub const HOST_S: f64 = 0.020;
 /// A level's rise, a share of the stated voltage.
 pub const STEP_SHARE: f64 = 0.04;
 pub const MOVE_MIN_COUNTS: f64 = 20.0;
 pub const MOVE_SD: f64 = 12.0;
-/// The coast rows the back-EMF is read over: the first 2 ms, before the
-/// rotor has slowed.
+/// The coast rows the back-EMF is read over: the coast burst's first 2 ms,
+/// counted from its arm, which follows the zero write by the step's
+/// dead-man written back (and a press's permit off) and one read, each a
+/// USB round trip of about a millisecond.
 pub const EMF_ROWS: usize = 40;
 pub const EMF_MIN_COUNTS: f64 = 2.0;
 /// The least time from one unwedge press to the next, s.
 pub const UNWEDGE_GAP_S: f64 = 1.0;
-const START_ROWS: usize = 10;
 const BLOCK_ROWS: usize = 20;
 const Q15: f64 = 32768.0;
 
@@ -101,10 +106,10 @@ impl LadderCfg {
     }
 
     /// The worst-case travel of a pulse at `q15`: its volts over the
-    /// stated voltage, times the rated speed, times the pulse and the
-    /// host's turn, times the free margin.
+    /// stated voltage, times the rated speed, times the pulse and its
+    /// dead-man, times the free margin.
     pub fn priced(&self, q15: i16) -> f64 {
-        FREE_MARGIN * self.speed_cps(q15) * (PULSE_S + HOST_S)
+        FREE_MARGIN * self.speed_cps(q15) * (PULSE_S + DRIVE_DEADMAN_S)
     }
 
     /// An unwedge press's stopping distance: its free speed held over the
@@ -114,9 +119,10 @@ impl LadderCfg {
     }
 
     /// The worst-case travel of an unwedge press: free at its duty for its
-    /// time, then [`Self::unwedge_stop`].
+    /// time and its dead-man, then [`Self::unwedge_stop`].
     pub fn unwedge_priced(&self, q15: i16) -> f64 {
-        FREE_MARGIN * self.speed_cps(q15) * UNWEDGE_MAX_S + self.unwedge_stop(q15)
+        FREE_MARGIN * self.speed_cps(q15) * (UNWEDGE_MAX_S + DRIVE_DEADMAN_S)
+            + self.unwedge_stop(q15)
     }
 
     /// The bridge's sign of a logical duty sign.
@@ -137,12 +143,17 @@ pub struct Planned {
     pub dir: i8,
     pub duty_q15: i16,
     pub volts: f64,
-    /// The drive's time as priced, s.
+    /// The drive's time as priced, its dead-man in it, s.
     pub time_s: f64,
     pub priced_counts: f64,
 }
 
 impl Planned {
+    /// The drive's own time, its rows', s.
+    pub fn drive_s(&self) -> f64 {
+        if self.unwedge { UNWEDGE_MAX_S } else { PULSE_S }
+    }
+
     pub fn said(&self) -> String {
         let what = if self.unwedge {
             "unwedge press".to_string()
@@ -159,7 +170,7 @@ impl Planned {
             if self.dir > 0 { "+" } else { "-" },
             self.volts,
             100.0 * self.duty_q15.unsigned_abs() as f64 / Q15,
-            if self.unwedge { UNWEDGE_MAX_S } else { PULSE_S }
+            self.drive_s()
         )
     }
 }
@@ -190,9 +201,9 @@ pub struct Comp {
     pub counts_per_a: f64,
 }
 
-/// A pulse's [`Seen`] from its drive rows and its coast rows; None when a
-/// burst carries too few rows to read.
-pub fn seen(drive: &[TelFrame], coast: &[TelFrame], c: &Comp) -> Option<Seen> {
+/// A pulse's [`Seen`] from the pot read before its duty went on, its drive
+/// rows and its coast rows; None when a burst carries too few rows to read.
+pub fn seen(start: f64, drive: &[TelFrame], coast: &[TelFrame], c: &Comp) -> Option<Seen> {
     let pos = |rows: &[TelFrame]| -> Vec<f64> {
         let s = ripple::series(rows, "pos");
         match &c.pattern {
@@ -205,10 +216,9 @@ pub fn seen(drive: &[TelFrame], coast: &[TelFrame], c: &Comp) -> Option<Seen> {
     };
     let d = pos(drive);
     let all: Vec<f64> = d.iter().copied().chain(pos(coast)).collect();
-    if d.len() < START_ROWS || all.len() < BLOCK_ROWS {
+    if d.is_empty() || all.len() < BLOCK_ROWS {
         return None;
     }
-    let start = mean(&d[..START_ROWS])?;
     let blocks: Vec<f64> = all.chunks(BLOCK_ROWS).filter_map(mean).collect();
     let peak = blocks
         .iter()
@@ -370,6 +380,17 @@ pub enum Next {
 
 pub const HANDS: &str = "turn the horn to mid travel by hand, then start again";
 
+/// A drive's dead-man ran out: the servo latched it and cut the drive.
+pub const STALLED: &str =
+    "the computer stalled during a drive, and the servo's dead-man cut the drive itself";
+
+/// A pot that read no number around pulse `n`.
+fn unread(n: usize) -> String {
+    format!(
+        "pulse {n}: the pot reads no number: a dead or slipped pot. Nothing more drives; {HANDS}; if it is refused again, check the pot's wiring"
+    )
+}
+
 /// The pulse ladder's decision, pure.
 #[derive(Clone, Debug)]
 pub struct Ladder {
@@ -439,7 +460,7 @@ impl Ladder {
                 dir,
                 duty_q15: q * dir as i16,
                 volts: self.cfg.volts(q),
-                time_s: UNWEDGE_MAX_S,
+                time_s: UNWEDGE_MAX_S + DRIVE_DEADMAN_S,
                 priced_counts: self.cfg.unwedge_priced(q),
             });
         }
@@ -453,7 +474,7 @@ impl Ladder {
             dir,
             duty_q15: q * dir as i16,
             volts: self.cfg.volts(q),
-            time_s: PULSE_S + HOST_S,
+            time_s: PULSE_S + DRIVE_DEADMAN_S,
             priced_counts: self.cfg.priced(q),
         })
     }
@@ -468,6 +489,12 @@ impl Ladder {
         let Next::Pulse(planned) = self.next() else {
             return;
         };
+        if ![seen.start, seen.peak, seen.end]
+            .iter()
+            .all(|x| x.is_finite())
+        {
+            return self.refuse(Refusal::DeadPot, unread(planned.n));
+        }
         let c = &self.cfg;
         let wiring = c.wiring(planned.dir);
         let emf_strong = seen.emf.abs() >= c.emf_min;
@@ -695,21 +722,65 @@ fn rows_of(s: f64, tick_hz: f64) -> u16 {
     (s * tick_hz).round().clamp(1.0, u16::MAX as f64) as u16
 }
 
+/// What the ladder's drives run under on the servo: the burst's numbers,
+/// read once a step, the step's own dead-man and a drive's, in ticks.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OnServo {
+    pub stream: StreamCfg,
+    pub deadman_ticks: u16,
+    pub drive_deadman_ticks: u16,
+}
+
+/// The pot read before pulse `n`'s duty went on, refused unless it is a
+/// number: the envelope's travel check and the pulse's travel are read
+/// from it.
+fn start_of(n: usize, pos: f64) -> Result<f64, Halt> {
+    if pos.is_finite() {
+        Ok(pos)
+    } else {
+        Err(Halt::Refused(unread(n)))
+    }
+}
+
+/// One burst of a pulse read to LAST: a dead-man latched in it refuses
+/// with [`STALLED`], any other fault aborts.
+async fn take_drive<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    stream: &StreamCfg,
+    taken: &mut Vec<Taken>,
+    rows: u16,
+    duty_q15: i16,
+    plan: &Value,
+    servo: &Map<String, Value>,
+) -> Result<(Burst, Vec<String>), Halt> {
+    let (b, faults) =
+        take_read(rig, stream, taken, Layout::Raw, rows, duty_q15, plan, servo).await?;
+    if faults & BIT_DEADMAN != 0 {
+        return Err(Halt::Refused(STALLED.into()));
+    }
+    faulted(rig, taken, &b, faults).await?;
+    let lost = b.lost();
+    Ok((b, lost))
+}
+
 /// The ladder on the servo: each pulse priced in `env` before its write,
-/// driven, its rows captured to LAST, its coast captured, then fed. A
-/// pulse whose bursts lost a row is driven once more, twice aborts; an
-/// unwedge press is never driven twice, so a lost row in one aborts.
+/// its start read, driven under the drive's dead-man, its rows captured to
+/// LAST, the zero written and the step's dead-man put back, its coast
+/// captured, then fed. A pulse whose bursts lost a row is driven once
+/// more, twice aborts; an unwedge press is never driven twice, so a lost
+/// row in one aborts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn body<P: Pipe>(
     rig: &mut Rig<'_, P>,
     env: &mut Envelope,
     ladder: &mut Ladder,
     comp: &Comp,
-    tick_hz: f64,
+    on: &OnServo,
     servo: &Map<String, Value>,
     taken: &mut Vec<Taken>,
     lines: &mut Vec<String>,
 ) -> Result<(), Halt> {
+    let tick_hz = on.stream.tick_hz as f64;
     loop {
         interrupted(rig.stop)?;
         let p = match ladder.next() {
@@ -719,12 +790,12 @@ pub(crate) async fn body<P: Pipe>(
         if p.unwedge {
             env.facts.wedged = ladder.wedged();
         }
-        let drive_rows = rows_of(p.time_s - HOST_S, tick_hz);
+        let drive_rows = rows_of(p.drive_s(), tick_hz);
         let coast_rows = rows_of(COAST_S, tick_hz);
         let mut attempt = 0;
-        let (drive, coast, on_s) = loop {
+        let (start, drive, coast, on_s) = loop {
             attempt += 1;
-            let start = rest::pos_now(rig.c, rig.id, rig.d).await?;
+            let start = start_of(p.n, rest::pos_now(rig.c, rig.id, rig.d).await?)?;
             let rung = Rung {
                 name: format!("pulse {}", p.n),
                 duty: p.duty_q15 as f64 / Q15,
@@ -749,12 +820,18 @@ pub(crate) async fn body<P: Pipe>(
                 lines.push(format!("priced: {}", price.said(&rung)));
                 write(rig, "stall_permit", &[1]).await?;
             }
+            write(
+                rig,
+                "bus_deadman_ticks",
+                &on.drive_deadman_ticks.to_le_bytes(),
+            )
+            .await?;
             write(rig, "goal_duty", &p.duty_q15.to_le_bytes()).await?;
             let t_on = (rig.clock)();
-            let (drive, lost_d) = take_once(
+            let (drive, lost_d) = take_drive(
                 rig,
+                &on.stream,
                 taken,
-                Layout::Raw,
                 drive_rows,
                 p.duty_q15,
                 &plan(&p, "drive", drive_rows, p.duty_q15),
@@ -763,13 +840,14 @@ pub(crate) async fn body<P: Pipe>(
             .await?;
             write(rig, "goal_duty", &[0, 0]).await?;
             let on_s = (rig.clock)() - t_on;
+            write(rig, "bus_deadman_ticks", &on.deadman_ticks.to_le_bytes()).await?;
             if p.unwedge {
                 write(rig, "stall_permit", &[0]).await?;
             }
-            let (coast, lost_c) = take_once(
+            let (coast, lost_c) = take_drive(
                 rig,
+                &on.stream,
                 taken,
-                Layout::Raw,
                 coast_rows,
                 0,
                 &plan(&p, "coast", coast_rows, 0),
@@ -778,7 +856,7 @@ pub(crate) async fn body<P: Pipe>(
             .await?;
             let lost: Vec<String> = lost_d.into_iter().chain(lost_c).collect();
             if lost.is_empty() {
-                break (drive, coast, on_s);
+                break (start, drive, coast, on_s);
             }
             lines.push(format!(
                 "pulse {}, attempt {attempt}: lost rows ({}), no evidence",
@@ -805,7 +883,7 @@ pub(crate) async fn body<P: Pipe>(
                 p.n, p.time_s
             )));
         }
-        let Some(s) = seen(&drive.rows, &coast.rows, comp) else {
+        let Some(s) = seen(start, &drive.rows, &coast.rows, comp) else {
             return Err(Halt::Error(format!(
                 "pulse {}: the bursts carry too few rows to read",
                 p.n
@@ -1197,7 +1275,8 @@ mod tests {
         assert!(
             presses
                 .iter()
-                .all(|p| p.planned.duty_q15.unsigned_abs() == press && p.planned.time_s == 0.05)
+                .all(|p| p.planned.duty_q15.unsigned_abs() == press
+                    && p.planned.time_s == UNWEDGE_MAX_S + DRIVE_DEADMAN_S)
         );
         assert!(
             l.path().iter().any(|p| p.contains("starts again")),
@@ -1235,5 +1314,473 @@ mod tests {
         let (kind, why) = refused(&l);
         assert_eq!(kind, Refusal::Blocked);
         assert!(why.contains("one unwedge is spent"), "{why}");
+    }
+
+    /// The ladder's drives on the client's simulated servo, which has a
+    /// bus and a table but no motor.
+    mod on_servo {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        use futures_lite::future::block_on;
+        use osc_client::descriptor::Descriptor;
+        use osc_client::fake::{FakePipe, TelSample, TelemetryTick};
+        use osc_client::pipe::{Pipe, PipeError};
+        use osc_client::{BaudRate, Client, Id, Inst, Opcode};
+
+        use super::*;
+        use crate::envelope::{Facts, HeatModel, Resistance};
+        use crate::guard::{self, Ledger};
+        use crate::inputs::ThermalInputs;
+        use crate::nameplate::Nameplate;
+        use crate::sink::MemSink;
+        use crate::state::field;
+        use crate::{Board, steps};
+
+        const OSC_EXCHANGE: u8 = 0x20;
+        const ID: Id = Id::new(1);
+        const LONG: u16 = 10_000;
+        const SHORT: u16 = 1_000;
+
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        enum Ev {
+            Read(u16),
+            Write(u16, Vec<u8>),
+        }
+
+        type Log = Rc<RefCell<Vec<Ev>>>;
+        /// A hook on every write, its address and bytes: it may reach into
+        /// the rig.
+        type OnWrite = Box<dyn FnMut(u16, &[u8], &mut FakePipe)>;
+
+        /// The fake adapter, every read and write logged.
+        struct Spy {
+            inner: FakePipe,
+            log: Log,
+            on_write: OnWrite,
+        }
+
+        impl Pipe for Spy {
+            async fn send(&mut self, bytes: &[u8]) -> Result<(), PipeError> {
+                if let [
+                    _,
+                    _,
+                    OSC_EXCHANGE,
+                    _,
+                    _,
+                    _,
+                    _,
+                    inst,
+                    _,
+                    _,
+                    _,
+                    _,
+                    payload @ ..,
+                ] = bytes
+                    && payload.len() >= 2
+                {
+                    let addr = u16::from_le_bytes([payload[0], payload[1]]);
+                    match Inst(*inst).opcode() {
+                        Some(Opcode::Read) => self.log.borrow_mut().push(Ev::Read(addr)),
+                        Some(Opcode::Write) => {
+                            self.log
+                                .borrow_mut()
+                                .push(Ev::Write(addr, payload[2..].to_vec()));
+                            (self.on_write)(addr, &payload[2..], &mut self.inner);
+                        }
+                        _ => {}
+                    }
+                }
+                self.inner.send(bytes).await
+            }
+
+            async fn recv(&mut self) -> Result<Vec<u8>, PipeError> {
+                self.inner.recv().await
+            }
+
+            async fn pause(&mut self, d: Duration) {
+                self.inner.pause(d).await
+            }
+        }
+
+        fn descriptor() -> Descriptor {
+            Descriptor::parse(
+                &std::fs::read_to_string(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../descriptors/osc-servo/0.1.json"
+                ))
+                .expect("descriptor"),
+            )
+            .expect("parses")
+        }
+
+        fn addr(d: &Descriptor, name: &str) -> u16 {
+            field(d, name).expect(name).addr
+        }
+
+        /// The shaft at rest at 2041 counts, the zero at 1206, the taps at
+        /// their bias.
+        fn still() -> Vec<TelSample> {
+            (0..4096u32)
+                .map(|i| TelSample {
+                    tick: TelemetryTick {
+                        _scan: [0; 10],
+                        pos: 2041,
+                        vref_raw: 1490,
+                        vbus_raw: 1241,
+                        ntc_raw: 2010,
+                        current_raw: 1206,
+                        vmotor_a: 773,
+                        vmotor_b: 772,
+                        duty_ticks: 0,
+                        current_trough: 1206,
+                        i_tick_counts: 0,
+                        vdiff_counts: 0,
+                        vmotor_a_trough: 773,
+                        vmotor_b_trough: 772,
+                        tick_flags: 0,
+                        sample_tick: i,
+                    },
+                    vbus_counts: 2000,
+                })
+                .collect()
+        }
+
+        /// The servo with torque on in OpenLoop under the step's dead-man,
+        /// as part B finds it, every write from here on logged.
+        fn servo(d: &Descriptor, on_write: OnWrite) -> (Client<Spy>, Log) {
+            let mut inner = FakePipe::new(BaudRate::B3000000, &[1]);
+            inner.seed_calibrated(0);
+            inner.set_track(0, still());
+            let log = Log::default();
+            let mut c = block_on(Client::connect(Spy {
+                inner,
+                log: log.clone(),
+                on_write: Box::new(|_, _, _| {}),
+            }))
+            .expect("connect");
+            let open_loop = steps::mode_value(d, "OpenLoop").expect("OpenLoop");
+            for (name, bytes) in [
+                ("mode", vec![open_loop]),
+                ("goal_duty", vec![0, 0]),
+                ("bus_deadman_ticks", LONG.to_le_bytes().to_vec()),
+                ("torque_enable", vec![1]),
+            ] {
+                block_on(c.write(ID, addr(d, name), &bytes)).expect(name);
+            }
+            c.pipe_mut().on_write = on_write;
+            log.borrow_mut().clear();
+            (c, log)
+        }
+
+        /// The bench servo's class, priced at the ladder's R, the stops not
+        /// found, the sign not proven.
+        fn envelope(c: &LadderCfg) -> Envelope {
+            let np: Nameplate =
+                serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
+                    .expect("nameplate");
+            let board: Board = serde_json::from_str(include_str!("../../boards/osc-dev-v006.json"))
+                .expect("board");
+            let thermal: ThermalInputs =
+                serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
+                    .expect("thermal");
+            let mut f = Facts::new(&np, c.rail_v);
+            f.r = Some(Resistance {
+                ohm: c.r_ohm,
+                source: "the pricing R".into(),
+            });
+            let heat = HeatModel::new(&board, &thermal, c.r_ohm, 1108.5, 20_000.0);
+            Envelope::new(f, heat)
+        }
+
+        fn comp() -> Comp {
+            Comp {
+                pattern: None,
+                pos_gain: 0.0,
+                tap_offset: 1.0,
+                zero_counts: 1206.0,
+                counts_per_a: 1108.5,
+            }
+        }
+
+        /// What `body` did with `ladder` on `c`: its end, the bursts it
+        /// took and its lines. The interrupt flag is set at the step's
+        /// dead-man written back, so it stops after one drive.
+        fn drive(
+            c: &mut Client<Spy>,
+            d: &Descriptor,
+            ladder: &mut Ladder,
+            stop: &AtomicBool,
+        ) -> (Result<(), Halt>, Vec<Taken>, Vec<String>) {
+            let stream = block_on(StreamCfg::read(c, ID, d)).expect("stream cfg");
+            let on = OnServo {
+                stream,
+                deadman_ticks: LONG,
+                drive_deadman_ticks: SHORT,
+            };
+            let mut env = envelope(ladder.cfg());
+            let (mut taken, mut lines) = (Vec::new(), Vec::new());
+            let clock = || 0.0;
+            let mut sink = MemSink::default();
+            let mut rig = Rig {
+                c,
+                id: ID,
+                d,
+                sink: &mut sink,
+                stop,
+                clock: &clock,
+            };
+            let ran = block_on(body(
+                &mut rig,
+                &mut env,
+                ladder,
+                &comp(),
+                &on,
+                &serde_json::Map::new(),
+                &mut taken,
+                &mut lines,
+            ));
+            (ran, taken, lines)
+        }
+
+        /// Interrupt after the first drive: the flag is set when the
+        /// step's dead-man goes back.
+        fn after_one(d: &Descriptor, stop: &Rc<AtomicBool>) -> OnWrite {
+            let (dm, set) = (addr(d, "bus_deadman_ticks"), stop.clone());
+            Box::new(move |a, b, _| {
+                if a == dm && b == LONG.to_le_bytes() {
+                    set.store(true, Ordering::SeqCst);
+                }
+            })
+        }
+
+        /// The writes to the drive's fields, in order.
+        fn drive_writes(log: &Log, d: &Descriptor) -> Vec<(&'static str, Vec<u8>)> {
+            let names = ["bus_deadman_ticks", "goal_duty", "stall_permit"];
+            log.borrow()
+                .iter()
+                .filter_map(|e| match e {
+                    Ev::Write(a, b) => names
+                        .iter()
+                        .find(|n| addr(d, n) == *a)
+                        .map(|n| (*n, b.clone())),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn time_s(t: &Taken) -> f64 {
+            t.meta["plan"]["time_s"].as_f64().expect("time_s")
+        }
+
+        /// A ladder pulse: its start read before any write, then the
+        /// drive's dead-man, the duty, its rows, the zero and the step's
+        /// dead-man back, then the coast. Inside the drive the host reads
+        /// only what the burst cannot know before it: no burst constant.
+        #[test]
+        fn a_pulse_runs_under_the_drives_dead_man() {
+            let d = descriptor();
+            let stop = Rc::new(AtomicBool::new(false));
+            let (mut c, log) = servo(&d, after_one(&d, &stop));
+            let mut ladder = Ladder::new(cfg(true));
+            let Next::Pulse(p) = ladder.next() else {
+                panic!("a pulse first")
+            };
+            let (ran, taken, lines) = drive(&mut c, &d, &mut ladder, &stop);
+            assert_eq!(ran, Err(Halt::Interrupted), "{lines:?}");
+            assert_eq!(
+                drive_writes(&log, &d),
+                vec![
+                    ("bus_deadman_ticks", SHORT.to_le_bytes().to_vec()),
+                    ("goal_duty", p.duty_q15.to_le_bytes().to_vec()),
+                    ("goal_duty", vec![0, 0]),
+                    ("bus_deadman_ticks", LONG.to_le_bytes().to_vec()),
+                ]
+            );
+            let ev = log.borrow();
+            let at = |want: &Ev| ev.iter().position(|e| e == want).expect("logged");
+            let short = at(&Ev::Write(
+                addr(&d, "bus_deadman_ticks"),
+                SHORT.to_le_bytes().to_vec(),
+            ));
+            let zero = at(&Ev::Write(addr(&d, "goal_duty"), vec![0, 0]));
+            let pos = addr(&d, "pos");
+            assert!(
+                ev[..short].iter().filter(|e| **e == Ev::Read(pos)).count() >= 1,
+                "the start is read before the dead-man and the duty: {ev:?}"
+            );
+            let fixed = [addr(&d, "i_window_min_ticks"), addr(&d, "tick_hz")];
+            assert!(
+                !ev[short..]
+                    .iter()
+                    .any(|e| matches!(e, Ev::Read(a) if fixed.contains(a))),
+                "{ev:?}"
+            );
+            assert!(short < zero);
+            drop(ev);
+
+            assert_eq!(taken.len(), 2, "the drive and its coast");
+            assert_eq!(taken[0].burst.rows.len(), 3000, "PULSE_S of rows");
+            assert_eq!(taken[1].burst.rows.len(), 3000, "COAST_S of rows");
+            assert_eq!(time_s(&taken[0]), PULSE_S + DRIVE_DEADMAN_S);
+            let pulse = ladder.pulses()[0];
+            assert_eq!(pulse.planned.time_s, PULSE_S + DRIVE_DEADMAN_S);
+            assert_eq!(pulse.seen.start, 2041.0, "the pot read before the duty");
+            assert_eq!(pulse.seen.peak, 0.0);
+        }
+
+        /// The ladder at its unwedge press: the shaft did not move at any
+        /// level.
+        fn wedged() -> Ladder {
+            let mut l = Ladder::new(cfg(true));
+            while let Next::Pulse(p) = l.next() {
+                if p.unwedge {
+                    return l;
+                }
+                l.feed(Seen {
+                    start: 2000.0,
+                    peak: 0.0,
+                    end: 0.0,
+                    emf: 0.0,
+                    current_peak_a: 0.0,
+                });
+            }
+            panic!("no press: {:?}", l.path())
+        }
+
+        /// The unwedge press: the permit, the drive's dead-man, the duty,
+        /// UNWEDGE_MAX_S of rows, the zero, the step's dead-man back, the
+        /// permit off; priced at the press and its dead-man.
+        #[test]
+        fn the_unwedge_press_runs_under_the_drives_dead_man() {
+            let d = descriptor();
+            let stop = Rc::new(AtomicBool::new(false));
+            let (mut c, log) = servo(&d, after_one(&d, &stop));
+            let mut ladder = wedged();
+            let Next::Pulse(p) = ladder.next() else {
+                panic!("the press")
+            };
+            let (ran, taken, lines) = drive(&mut c, &d, &mut ladder, &stop);
+            assert_eq!(ran, Err(Halt::Interrupted), "{lines:?}");
+            assert_eq!(
+                drive_writes(&log, &d),
+                vec![
+                    ("stall_permit", vec![1]),
+                    ("bus_deadman_ticks", SHORT.to_le_bytes().to_vec()),
+                    ("goal_duty", p.duty_q15.to_le_bytes().to_vec()),
+                    ("goal_duty", vec![0, 0]),
+                    ("bus_deadman_ticks", LONG.to_le_bytes().to_vec()),
+                    ("stall_permit", vec![0]),
+                ]
+            );
+            assert_eq!(taken[0].burst.rows.len(), 600, "UNWEDGE_MAX_S of rows");
+            let priced = UNWEDGE_MAX_S + DRIVE_DEADMAN_S;
+            assert_eq!(time_s(&taken[0]), priced);
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.starts_with("priced: pulse") && l.contains("for 0.08 s")),
+                "the envelope priced the press and its dead-man: {lines:?}"
+            );
+            let c = ladder.cfg();
+            let q = p.duty_q15.unsigned_abs() as i16;
+            assert_eq!(
+                p.priced_counts,
+                FREE_MARGIN * c.speed_cps(q) * priced + c.unwedge_stop(q)
+            );
+        }
+
+        /// The dead-man latched during a pulse, seen at the fault read
+        /// after either burst: the step refuses with the stall sentence,
+        /// and the way out ends torque off.
+        #[test]
+        fn a_dead_man_latched_in_a_pulse_refuses_and_ends_torque_off() {
+            let d = descriptor();
+            let duty = addr(&d, "goal_duty");
+            for (at_zero, writes) in [(false, 2), (true, 4)] {
+                let latch: OnWrite = Box::new(move |a, b, pipe| {
+                    if a == duty && (b == [0, 0]) == at_zero {
+                        pipe.sim_mut()
+                            .servo_table_mut(0, |t| t.telemetry.common.fault_flags = BIT_DEADMAN);
+                    }
+                });
+                let (mut c, log) = servo(&d, latch);
+                let mut ladder = Ladder::new(cfg(true));
+                let stop = AtomicBool::new(false);
+                let (ran, taken, lines) = drive(&mut c, &d, &mut ladder, &stop);
+                assert_eq!(ran, Err(Halt::Refused(STALLED.into())), "{lines:?}");
+                assert_eq!(drive_writes(&log, &d).len(), writes, "at_zero {at_zero}");
+                assert_eq!(taken.len(), if at_zero { 2 } else { 1 });
+                assert!(ladder.pulses().is_empty(), "nothing is fed");
+
+                let ledger = Ledger {
+                    touched: true,
+                    ..Ledger::default()
+                };
+                let exit = block_on(guard::exit(&mut c, ID, &d, &ledger));
+                assert!(exit.torque_off && !exit.rebooted, "{exit}");
+                let read = |c: &mut Client<Spy>, name: &str, n: u16| {
+                    block_on(c.read(ID, addr(&d, name), n)).expect(name)
+                };
+                assert_eq!(read(&mut c, "torque_enable", 1), [0]);
+                assert_eq!(read(&mut c, "goal_duty", 2), [0, 0]);
+                assert_eq!(read(&mut c, "bus_deadman_ticks", 2), [0, 0]);
+            }
+        }
+    }
+
+    /// The ladder's pulses and its press are priced at their drive time
+    /// and the drive's dead-man, as time and as travel.
+    #[test]
+    fn a_drive_is_priced_with_its_dead_man() {
+        let c = cfg(true);
+        let l = Ladder::new(c.clone());
+        let Next::Pulse(p) = l.next() else {
+            panic!("a pulse first")
+        };
+        assert_eq!(p.time_s, PULSE_S + DRIVE_DEADMAN_S);
+        assert_eq!(p.drive_s(), PULSE_S);
+        assert_eq!(
+            p.priced_counts,
+            FREE_MARGIN * c.speed_cps(p.duty_q15) * (PULSE_S + DRIVE_DEADMAN_S)
+        );
+        let q = c.unwedge_q15.expect("metal");
+        assert_eq!(
+            c.unwedge_priced(q),
+            FREE_MARGIN * c.speed_cps(q) * (UNWEDGE_MAX_S + DRIVE_DEADMAN_S) + c.unwedge_stop(q)
+        );
+    }
+
+    /// A pot that reads no number refuses as a dead pot, before the pulse
+    /// is driven and when a pulse's reading has none; a NaN never passes
+    /// the over-travel check.
+    #[test]
+    fn a_non_finite_start_refuses() {
+        let Err(Halt::Refused(why)) = start_of(3, f64::NAN) else {
+            panic!("refused")
+        };
+        assert!(
+            why.contains("pulse 3") && why.contains("dead or slipped pot") && why.contains(HANDS),
+            "{why}"
+        );
+        assert_eq!(start_of(3, 2041.0), Ok(2041.0));
+        assert!(start_of(3, f64::INFINITY).is_err());
+
+        for (start, peak) in [(f64::NAN, 0.0), (2000.0, f64::NAN)] {
+            let mut l = Ladder::new(cfg(true));
+            l.feed(Seen {
+                start,
+                peak,
+                end: peak,
+                emf: 40.0,
+                current_peak_a: 0.0,
+            });
+            let (kind, why) = refused(&l);
+            assert_eq!(kind, Refusal::DeadPot, "{why}");
+            assert!(why.contains("dead or slipped pot"), "{why}");
+            assert!(matches!(l.next(), Next::Done(_)), "nothing more drives");
+        }
     }
 }

@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::capture::meta;
 use crate::capture::rows::Layout;
-use crate::capture::tel::{self, Burst};
+use crate::capture::tel::{self, Burst, StreamCfg};
 use crate::guard::{Exit, Way};
 use crate::install::Refused;
 use crate::sink::{Sink, SinkError};
@@ -175,12 +175,60 @@ pub(crate) fn keep_all(
     Ok(())
 }
 
+/// One burst read to LAST and kept in `taken` whole or not, and the
+/// `fault_flags` read after it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn take_read<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    sc: &StreamCfg,
+    taken: &mut Vec<Taken>,
+    layout: Layout,
+    rows: u16,
+    cmd_duty_q15: i16,
+    plan: &Value,
+    servo: &Map<String, Value>,
+) -> Result<(Burst, u8), Halt> {
+    let t0 = (rig.clock)();
+    let b = tel::stream(rig.c, rig.id, rig.d, sc, layout, rows).await?;
+    let t1 = (rig.clock)();
+    let faults = read_u8(rig, "fault_flags").await?;
+    let nn = taken.len() as u32 + 1;
+    let m = meta::tel(servo, &b, plan.clone(), (t0, t1));
+    taken.push(Taken {
+        nn,
+        burst: b.clone(),
+        cmd_duty_q15,
+        meta: m,
+    });
+    Ok((b, faults))
+}
+
+/// The step aborts when a fault latched in the burst [`take_read`] last
+/// kept in `taken`.
+pub(crate) async fn faulted<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    taken: &[Taken],
+    b: &Burst,
+    faults: u8,
+) -> Result<(), Halt> {
+    if faults == 0 && !b.alert {
+        return Ok(());
+    }
+    let code = read_u8(rig, "fault_code").await.unwrap_or(0);
+    Err(Halt::Error(format!(
+        "a fault latched during the {} burst (capture {:02}): fault_flags {faults:#04x}, fault_code {code}",
+        b.layout.name(),
+        taken.len()
+    )))
+}
+
 /// One burst read to LAST, kept in `taken` whole or not. A fault latched
 /// in it aborts the step; the reasons it is not whole, if any, come back
 /// with it, for the caller to repeat or abort on.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn take_once<P: Pipe>(
     rig: &mut Rig<'_, P>,
+    sc: &StreamCfg,
     taken: &mut Vec<Taken>,
     layout: Layout,
     rows: u16,
@@ -188,27 +236,9 @@ pub(crate) async fn take_once<P: Pipe>(
     plan: &Value,
     servo: &Map<String, Value>,
 ) -> Result<(Burst, Vec<String>), Halt> {
-    let t0 = (rig.clock)();
-    let b = tel::stream(rig.c, rig.id, rig.d, layout, rows).await?;
-    let t1 = (rig.clock)();
-    let faults = read_u8(rig, "fault_flags").await?;
-    let nn = taken.len() as u32 + 1;
-    let m = meta::tel(servo, &b, plan.clone(), (t0, t1));
+    let (b, faults) = take_read(rig, sc, taken, layout, rows, cmd_duty_q15, plan, servo).await?;
+    faulted(rig, taken, &b, faults).await?;
     let lost = b.lost();
-    let alert = b.alert;
-    taken.push(Taken {
-        nn,
-        burst: b.clone(),
-        cmd_duty_q15,
-        meta: m,
-    });
-    if faults != 0 || alert {
-        let code = read_u8(rig, "fault_code").await.unwrap_or(0);
-        return Err(Halt::Error(format!(
-            "a fault latched during the {} burst (capture {nn:02}): fault_flags {faults:#04x}, fault_code {code}",
-            layout.name()
-        )));
-    }
     Ok((b, lost))
 }
 
@@ -219,6 +249,7 @@ pub(crate) async fn take_once<P: Pipe>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn take<P: Pipe>(
     rig: &mut Rig<'_, P>,
+    sc: &StreamCfg,
     taken: &mut Vec<Taken>,
     layout: Layout,
     rows: u16,
@@ -230,7 +261,7 @@ pub(crate) async fn take<P: Pipe>(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let (b, lost) = take_once(rig, taken, layout, rows, cmd_duty_q15, plan, servo).await?;
+        let (b, lost) = take_once(rig, sc, taken, layout, rows, cmd_duty_q15, plan, servo).await?;
         let nn = taken.len();
         if lost.is_empty() {
             lines.push(format!(

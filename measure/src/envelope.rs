@@ -45,7 +45,12 @@ pub const HOLD_METAL_A: f64 = 0.5;
 /// The longest unwedge press, s: breaking a wedge takes force, not time,
 /// and a stiff shaft freed at mid travel must not run into a stop. The
 /// duty ramp takes about 13 ms of it to reach the press's duty.
-pub const UNWEDGE_MAX_S: f64 = 0.050;
+pub const UNWEDGE_MAX_S: f64 = 0.030;
+/// The bus dead-man a host-timed drive runs under, s: the servo cuts the
+/// drive this long after the host's last instruction, so a host that
+/// stalls after the drive's rows holds it no longer. Such a drive is
+/// priced at its own time plus this.
+pub const DRIVE_DEADMAN_S: f64 = 0.050;
 
 /// The stop-hold ceiling of a gear class; unknown is plastic.
 pub fn hold_a(gear: Option<GearClass>) -> f64 {
@@ -267,10 +272,11 @@ pub struct Rung {
 pub enum Kind {
     Drive,
     /// A press at the speed voltage to free a wedged metal train: admitted
-    /// only from the wedged verdict, at most [`UNWEDGE_MAX_S`] with the
-    /// permit held, one a direction a run. The heat budget and the speed
-    /// voltage price it; the press ceiling and the stall current do not,
-    /// since it is meant to press harder than both.
+    /// only from the wedged verdict, at most [`UNWEDGE_MAX_S`] and its
+    /// [`DRIVE_DEADMAN_S`] with the permit held, one a direction a run.
+    /// The heat budget and the speed voltage price it; the press ceiling
+    /// and the stall current do not, since it is meant to press harder
+    /// than both.
     Unwedge,
 }
 
@@ -382,9 +388,9 @@ impl Envelope {
             if !r.permit {
                 no.push("unwedge: the stall permit is not held for it".into());
             }
-            if r.time_s > UNWEDGE_MAX_S {
+            if r.time_s > UNWEDGE_MAX_S + DRIVE_DEADMAN_S {
                 no.push(format!(
-                    "unwedge: {:.3} s, over the {UNWEDGE_MAX_S} s a press to free the shaft may last",
+                    "unwedge: {:.3} s, over the {UNWEDGE_MAX_S} s a press to free the shaft may last and the {DRIVE_DEADMAN_S} s dead-man after it",
                     r.time_s
                 ));
             }
@@ -760,8 +766,9 @@ mod tests {
     }
 
     /// An unwedge press is admitted only from the wedged verdict, on a metal
-    /// train, at most 0.05 s with the permit held, at most the speed voltage,
-    /// past the press ceiling and the stall current; its heat is priced.
+    /// train, at most 0.03 s and its 0.05 s dead-man with the permit held,
+    /// at most the speed voltage, past the press ceiling and the stall
+    /// current; its heat is priced.
     #[test]
     fn an_unwedge_press_is_admitted_only_from_the_wedged_verdict() {
         let mut e = envelope(false);
@@ -782,7 +789,9 @@ mod tests {
             "past the hold and the stall: {p:?}"
         );
         assert!(p.rise_c > 0.0, "the heat is priced: {p:?}");
-        assert!(refused(&e, &unwedge(-0.96, 0.06)).contains("over the 0.05 s"));
+        e.price(&unwedge(-0.96, 0.08))
+            .expect("the press and its dead-man");
+        assert!(refused(&e, &unwedge(-0.96, 0.09)).contains("over the 0.03 s"));
         let mut held = unwedge(-0.96, 0.05);
         held.permit = false;
         assert!(refused(&e, &held).contains("permit is not held"));

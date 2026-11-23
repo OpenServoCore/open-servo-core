@@ -18,7 +18,7 @@ use super::{
 use crate::capture::meta;
 use crate::capture::ripple::{self, Pattern};
 use crate::capture::rows::{Layout, TelFrame};
-use crate::capture::tel::{self, Burst, Line};
+use crate::capture::tel::{self, Burst, Line, StreamCfg};
 use crate::envelope::{Envelope, Facts, Rung};
 use crate::guard::{self, Ledger, Way};
 use crate::install::Refused;
@@ -451,6 +451,7 @@ struct Before {
     pos: f64,
     rail_v: f64,
     deadman_ticks: u16,
+    stream: StreamCfg,
     rungs: [Rung; 2],
 }
 
@@ -498,6 +499,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
             sense.tick_hz
         )));
     }
+    let stream = StreamCfg::read(rig.c, rig.id, rig.d).await?;
     Ok(Before {
         line,
         sense,
@@ -505,6 +507,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
         pos,
         rail_v,
         deadman_ticks: deadman as u16,
+        stream,
         rungs,
     })
 }
@@ -525,6 +528,7 @@ async fn body<P: Pipe>(
     lines.push("torque off, a second of the rest row".into());
     let rest = take(
         rig,
+        &b.stream,
         taken,
         Layout::Rest,
         ROWS,
@@ -547,6 +551,7 @@ async fn body<P: Pipe>(
     ));
     let raw = take(
         rig,
+        &b.stream,
         taken,
         Layout::Raw,
         ROWS,
@@ -1165,6 +1170,10 @@ mod tests {
             pos,
             rail_v: 5.0,
             deadman_ticks: 10_000,
+            stream: StreamCfg {
+                i_window_min_ticks: 0,
+                tick_hz: 20_000,
+            },
             rungs: [Rung::still("rest", 1.0, pos), Rung::still("raw", 1.0, pos)],
         };
         judge(

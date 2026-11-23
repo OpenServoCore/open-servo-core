@@ -31,7 +31,7 @@ use std::time::Duration;
 use osc_client::pipe::Pipe;
 use serde_json::{Map, Value, json};
 
-use super::polarity::{self, Comp, Ladder, LadderCfg, Outcome};
+use super::polarity::{self, Comp, Ladder, LadderCfg, OnServo, Outcome};
 use super::{
     Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mean_u16, mode_value, read_u8,
     read_u16, rest, write,
@@ -41,8 +41,10 @@ use crate::capture::burst::{self, ArmSeen, CHANS_DIFF, Capture, CaptureCfg, Pre}
 use crate::capture::meta;
 use crate::capture::ripple::{FOLD, Pattern};
 use crate::capture::rows::Layout;
-use crate::capture::tel::{self, Line};
-use crate::envelope::{Envelope, Facts, HeatModel, Kind, Resistance, Rung, hold_a};
+use crate::capture::tel::{self, Line, StreamCfg};
+use crate::envelope::{
+    DRIVE_DEADMAN_S, Envelope, Facts, HeatModel, Kind, Resistance, Rung, hold_a,
+};
 use crate::fit::rise::{self, Lags, Period, Rise, Scales};
 use crate::fit::{mean, median};
 use crate::guard::{self, Ledger, Way};
@@ -555,6 +557,8 @@ struct Before {
     pos: f64,
     rail_v: f64,
     deadman_ticks: u16,
+    drive_deadman_ticks: u16,
+    stream: StreamCfg,
     polarity: bool,
     rest: FromRest,
     scales: Scales,
@@ -706,14 +710,20 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result<Be
             kind: Kind::Drive,
         })?;
     }
-    let deadman = (rest::DEADMAN_S * sense.tick_hz).round();
-    if !(1.0..=u16::MAX as f64).contains(&deadman) {
-        return Err(Refused(format!(
-            "a {} s dead-man is no u16 of ticks at {} Hz",
-            rest::DEADMAN_S,
-            sense.tick_hz
-        )));
-    }
+    let ticks = |s: f64| {
+        let t = (s * sense.tick_hz).round();
+        if (1.0..=u16::MAX as f64).contains(&t) {
+            Ok(t as u16)
+        } else {
+            Err(Refused(format!(
+                "a {s} s dead-man is no u16 of ticks at {} Hz",
+                sense.tick_hz
+            )))
+        }
+    };
+    let deadman_ticks = ticks(rest::DEADMAN_S)?;
+    let drive_deadman_ticks = ticks(DRIVE_DEADMAN_S)?;
+    let stream = StreamCfg::read(rig.c, rig.id, rig.d).await?;
     let soft = [
         state
             .bytes(field(rig.d, "pos_min_phys_counts")?)
@@ -730,7 +740,9 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result<Be
         servo,
         pos,
         rail_v,
-        deadman_ticks: deadman as u16,
+        deadman_ticks,
+        drive_deadman_ticks,
+        stream,
         polarity,
         rest,
         scales,
@@ -859,6 +871,10 @@ pub fn ladder_cfg(
     }
 }
 
+/// What the step says when the stored sign is wrong: the servo keeps the
+/// stored value once the step ends.
+pub const STORED_WRONG: &str = "the stored drive_polarity is wrong: the motor leads are reversed against it. The corrected sign is in the result and was applied only for this step; nothing is saved, and the way out puts the stored value back";
+
 /// The stored sign found wrong: `drive_polarity` written the other way,
 /// volatile, its stored value kept in the ledger so the way out puts it
 /// back, and read back.
@@ -879,11 +895,9 @@ pub(crate) async fn correct<P: Pipe>(
             !stored
         )));
     }
-    lines.push(
-        "the motor leads are reversed against the stored calibration; the sign is corrected".into(),
-    );
+    lines.push(STORED_WRONG.into());
     lines.push(format!(
-        "drive_polarity {} volatile, read back; the way out puts the stored {stored} back, the corrected sign is in the result",
+        "drive_polarity {} written volatile and read back; the way out puts the stored {stored} back",
         !stored
     ));
     Ok(!stored)
@@ -1006,7 +1020,7 @@ async fn body<P: Pipe>(
         )));
     }
     lines.push(format!(
-        "part B: pulses of {} s with {} s of coast from {:.3} V up {:.3} V a level to the ceiling, +duty then -duty, the first pair that moves repeated; moving is {:.0} counts (the larger of {} and {} x the rest sd {:.2}); travel priced at {:.0} counts/s at {} V (the nameplate's {:.0} deg/s, {:.2} counts/deg: the converter's {ADC_COUNTS} counts over the nameplate's {:.1} deg travel); back-EMF read over the coast's first {} rows, at least {} counts; a wedged train gets one press each way at {:.2}% duty ({:.3} V, the speed voltage or the servo's duty_max_q15) for at most {} s",
+        "part B: pulses of {} s with {} s of coast from {:.3} V up {:.3} V a level to the ceiling, +duty then -duty, the first pair that moves repeated; moving is {:.0} counts (the larger of {} and {} x the rest sd {:.2}); travel priced at {:.0} counts/s at {} V (the nameplate's {:.0} deg/s, {:.2} counts/deg: the converter's {ADC_COUNTS} counts over the nameplate's {:.1} deg travel); back-EMF read over the coast's first {} rows, at least {} counts; a wedged train gets one press each way at {:.2}% duty ({:.3} V, the speed voltage or the servo's duty_max_q15) for at most {} s; every drive under a dead-man of {} ticks ({} s), priced into its time",
         polarity::PULSE_S,
         polarity::COAST_S,
         cfg.volts(cfg.start_q15),
@@ -1024,7 +1038,9 @@ async fn body<P: Pipe>(
         cfg.emf_min,
         100.0 * cfg.unwedge_q15.unwrap_or(0) as f64 / Q15,
         cfg.volts(cfg.unwedge_q15.unwrap_or(0)),
-        crate::envelope::UNWEDGE_MAX_S
+        crate::envelope::UNWEDGE_MAX_S,
+        b.drive_deadman_ticks,
+        DRIVE_DEADMAN_S
     ));
     let mut facts = b.facts.clone();
     facts.r = Some(Resistance {
@@ -1048,12 +1064,17 @@ async fn body<P: Pipe>(
         counts_per_a: b.counts_per_a,
     };
     let mut ladder = Ladder::new(cfg);
+    let on = OnServo {
+        stream: b.stream,
+        deadman_ticks: b.deadman_ticks,
+        drive_deadman_ticks: b.drive_deadman_ticks,
+    };
     let ran = polarity::body(
         rig,
         &mut env,
         &mut ladder,
         &comp,
-        b.tick_hz,
+        &on,
         &b.servo,
         taken,
         lines,
@@ -1423,9 +1444,10 @@ mod tests {
             block_on(correct(&mut rig, &mut ledger, stored, &mut lines)).expect("corrects")
         };
         assert_eq!(found, !stored);
-        assert_eq!(
-            lines[0],
-            "the motor leads are reversed against the stored calibration; the sign is corrected"
+        assert_eq!(lines[0], STORED_WRONG);
+        assert!(
+            !lines.iter().any(|l| l.contains("is corrected")),
+            "{lines:?}"
         );
         assert_eq!(
             block_on(c.read(id, addr, 1)).expect("read"),

@@ -284,21 +284,41 @@ async fn read_u16<P: Pipe>(
     Ok(u16::from_le_bytes([b[0], b[1]]))
 }
 
+/// What every burst of a step is read by, read once a step so a burst
+/// inside a drive costs no round trip for it: the servo's own
+/// `i_window_min_ticks`, which judges a row's window, and its tick rate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct StreamCfg {
+    pub i_window_min_ticks: u16,
+    pub tick_hz: u16,
+}
+
+impl StreamCfg {
+    pub async fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<Self, Error> {
+        Ok(StreamCfg {
+            i_window_min_ticks: read_u16(c, id, d, "i_window_min_ticks").await?,
+            tick_hz: read_u16(c, id, d, "tick_hz").await?,
+        })
+    }
+}
+
 /// One burst of `rows` rows of `layout`, armed by the acked WRITE of the
 /// chunks and the count (one 10 B write, protocol sec 5.6), read to its
-/// LAST frame with the host silent. The servo's own `i_window_min_ticks`
-/// judges a row's window, its `tel_drop_count` before and after counts
-/// the rows it dropped.
+/// LAST frame with the host silent. The servo's `tel_drop_count` before
+/// and after counts the rows it dropped.
 pub async fn stream<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
+    cfg: &StreamCfg,
     layout: Layout,
     rows: u16,
 ) -> Result<Burst, Error> {
     let chunks = layout.chunks();
-    let floor = read_u16(c, id, d, "i_window_min_ticks").await?;
-    let tick_hz = read_u16(c, id, d, "tick_hz").await?;
+    let StreamCfg {
+        i_window_min_ticks: floor,
+        tick_hz,
+    } = *cfg;
     let drops_before = read_u16(c, id, d, "tel_drop_count").await?;
     let chunk0 = field(d, "chunk0_addr")?.addr;
     if chunk0 + 4 * tel::CHUNKS_MAX as u16 != field(d, "tel_count")?.addr {
