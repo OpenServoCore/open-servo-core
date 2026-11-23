@@ -14,7 +14,7 @@ OpenServoCore swap board for SG90 and MG90 class hobby servos. It replaces the f
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 22 Ohm series resistor (Rx1). No buffer. Dx1 (RClamp0521T) clamps the line at the connector, ahead of Rx1. Rx2 is a 100K idle keeper to `+3V3` on the MCU side, so `DATA` never floats with no host on the wire. It is too weak to be the bus pull-up, which lives at the host end.
 - **Power input** - 2S Li-ion (up to 8.4 V) on the servo cable. There is no bulk capacitor, only about 10 uF of ceramic, so avoid hot-plugging into a stiff 2S supply until bringup has scoped it.
 - **Debug** - WCH-LinkE over the CH32V006 1-wire SWDIO, on four pogo pads on the back (J3).
-- **Position feedback** - potentiometer or analog magnetic encoder on J4 (one or two channels), or an encoder on the J5 flex.
+- **Position feedback** - potentiometer or analog magnetic encoder on J4 (one or two channels). The J5 flex landing also brings out two encoder inputs, but only for experiments (see J5).
 - **Supply and terminal sense** - `VSYS` measured through its own divider, plus both motor terminals referenced to a common bias (`VB`) so back-EMF is readable while the bridge coasts.
 - **Temperature** - onboard NTC (TH1, 10K 3950) or an external NTC on J5, selected with JP2.
 - **Board** - 12 x 10 mm, 6-layer 1.6 mm (JLCPCB JLC06161H-3313 stackup), ENIG. All parts on the front. The back only has wire pads, pogo pads and solder jumpers.
@@ -94,7 +94,7 @@ Each channel goes through a 4K7 + 100 nF RC filter (fc about 340 Hz). Both filte
 
 ### Flex - J5 (6 pads, back, left edge)
 
-Landing for an encoder flex that can also carry an external NTC.
+Landing for a flex that carries an external NTC, which works today. The two encoder inputs are experimental: there is no firmware for a motor-side encoder on this board, and the CH32V006 has no timers or CPU time left for one. A reflective IR pair at its benched 20 mA per LED draws about 40 mA, well past the `+3V3` budget at 8.4 V. For experiments, run the board from a lower supply (about 5 V or one cell), where the LDO drops much less.
 
 |Pin|Net|Notes|
 |---|---|---|
