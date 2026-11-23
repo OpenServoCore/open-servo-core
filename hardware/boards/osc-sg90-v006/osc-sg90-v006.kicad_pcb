@@ -8729,7 +8729,7 @@
 				(pins "1" "2" "3")
 			)
 		)
-		(attr exclude_from_bom allow_soldermask_bridges)
+		(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_poly
 			(pts
@@ -8903,7 +8903,7 @@
 				(pins "1" "2")
 			)
 		)
-		(attr smd exclude_from_bom)
+		(attr smd exclude_from_pos_files exclude_from_bom)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_rect
 			(start -4.675 -0.875)
@@ -9028,7 +9028,7 @@
 				(pins "1" "2")
 			)
 		)
-		(attr exclude_from_bom allow_soldermask_bridges)
+		(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_rect
 			(start -0.49 0.3)
@@ -9177,7 +9177,7 @@
 				(pins "1" "2" "3" "4" "5" "6")
 			)
 		)
-		(attr smd exclude_from_bom)
+		(attr smd exclude_from_pos_files exclude_from_bom)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
 			(start -3.2 -1.1)
@@ -9363,7 +9363,7 @@
 		(path "/a7f78610-6db0-437c-aef1-f2329f251f0c")
 		(sheetname "/")
 		(sheetfile "osc-sg90-v006.kicad_sch")
-		(attr smd exclude_from_bom)
+		(attr smd exclude_from_pos_files exclude_from_bom)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
 			(start -2.5 0.6)
