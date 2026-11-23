@@ -1,6 +1,8 @@
 //! The stops step's seated read on recorded bursts: the record's seated
 //! set, the reverse groups at the low stop of bench capture B, through the
-//! period-pair fit on stage 1's scales and the board's edge lags.
+//! period-pair fit on stage 1's scales and the board's edge lags; and a
+//! stops step's own bursts whose high stop read bridged, replayed through
+//! the bridged rule and the step's judge.
 
 mod common;
 
@@ -9,7 +11,11 @@ use std::path::{Path, PathBuf};
 use common::path;
 use osc_measure::capture::burst;
 use osc_measure::fit::rise::{Lags, Scales};
-use osc_measure::fit::seated::{self, Shot};
+use osc_measure::fit::seated::{self, SeatedRead, Shot};
+use osc_measure::steps::Verdict;
+use osc_measure::steps::polarity::Stop;
+use osc_measure::steps::shunt::Shunted;
+use osc_measure::steps::stops::{self, SeatShot};
 use serde_json::Value;
 
 /// The seated set of record: B's three seatings, the groups that press
@@ -63,7 +69,16 @@ fn shots(root: &Path) -> Vec<Shot> {
 fn pooled(root: &Path) -> f64 {
     let all = shots(root);
     assert_eq!(all.len(), 45, "five bursts a group");
-    let r = seated::read(&all, &stage1());
+    let mut r = seated::read(&all, &stage1());
+    let kept: Vec<usize> = r.kept().map(|b| 5 * b.group + b.k).collect();
+    let before = r.r(|_| true).expect("a pool");
+    r.set_aside_bridged();
+    assert_eq!(r.bridged().count(), 0, "a clean run keeps every burst");
+    assert_eq!(
+        kept,
+        r.kept().map(|b| 5 * b.group + b.k).collect::<Vec<_>>()
+    );
+    assert_eq!(Some(before), r.r(|_| true));
     for b in &r.bursts {
         println!(
             "group {} burst {}: {} R {:.4} ohm, first window {:.4} A ({:+.1}%){}",
@@ -127,4 +142,204 @@ fn the_seated_pool_matches_the_record_on_the_full_capture() {
     }
     let r = pooled(&full);
     assert!((r / R_RECORD_OHM - 1.0).abs() < 0.01, "pooled R {r:.4}");
+}
+
+/// A stops step's own run, its bursts as `burst-K.csv` beside its
+/// `stops.json`: each burst's shot and seat as the step took it, and the
+/// scales it read them on.
+fn step_run(root: &Path) -> (Value, Vec<Shot>, Vec<SeatShot>, Scales) {
+    let res: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("stops.json")).expect("result"))
+            .expect("json");
+    let sc = &res["seated"]["scales"];
+    let n = |v: &Value| v.as_f64().expect("a number");
+    let scales = Scales {
+        counts_per_a: n(&sc["counts_per_a"]),
+        terminal_counts_per_v: n(&sc["terminal_counts_per_v"]),
+        terminal_offset_counts: n(&sc["terminal_offset_counts"]),
+        window_scale: n(&sc["window_scale"]),
+        lags: Lags {
+            on: n(&sc["lags_ticks"]["on"]),
+            tap_on: n(&sc["lags_ticks"]["tap_on"]),
+            off: n(&sc["lags_ticks"]["off"]),
+            settle: n(&sc["lags_ticks"]["settle"]),
+        },
+    };
+    let (mut shots, mut seats) = (Vec::new(), Vec::new());
+    for (k, b) in res["seated"]["bursts"]
+        .as_array()
+        .expect("bursts")
+        .iter()
+        .enumerate()
+    {
+        let text = std::fs::read_to_string(root.join(format!("burst-{k}.csv"))).expect("burst");
+        let cap = burst::from_csv(&text).expect("a burst");
+        let seat = b["seat"].as_u64().expect("seat") as usize;
+        let level = stops::LEVELS
+            .iter()
+            .position(|l| *l == n(&b["level_share"]))
+            .expect("level");
+        let stop = if b["stop"] == "low" {
+            Stop::Low
+        } else {
+            Stop::High
+        };
+        shots.push(Shot {
+            group: (seat - 1) * stops::LEVELS.len() + level,
+            stop: (stop == Stop::High) as usize,
+            level,
+            ntc_c: n(&b["ntc_c"]),
+            cap: cap.clone(),
+        });
+        seats.push(SeatShot {
+            seat,
+            stop,
+            level,
+            ntc_c: n(&b["ntc_c"]),
+            permit: b["permit"] == true,
+            shunted: Shunted {
+                cap,
+                after_counts: 0.0,
+                times: (0.0, 0.0),
+            },
+            after_a: n(&b["after_a"]),
+        });
+    }
+    (res, shots, seats, scales)
+}
+
+/// The stops' and the pooled R, ohm.
+fn rs(r: &SeatedRead) -> [f64; 3] {
+    [
+        r.r(|b| b.stop == 0).expect("low").median,
+        r.r(|b| b.stop == 1).expect("high").median,
+        r.r(|_| true).expect("pooled").median,
+    ]
+}
+
+fn verdict(checks: &[osc_measure::steps::Check], name: &str) -> (Verdict, String) {
+    let c = checks
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("{name}: {checks:?}"));
+    (c.verdict, c.value.clone())
+}
+
+/// The run refused by the two stops' R: its bursts replay to the R the
+/// step printed, the bridged rule sets aside the five 40 % bursts at the
+/// high stop that read 2.90 to 3.52 ohm and nothing at the low stop, and
+/// the judge then accepts.
+#[test]
+fn the_bridged_rule_replays_a_run_refused_by_the_stops_r() {
+    let root = path("testdata/seated/bridged-high");
+    let src: Value =
+        serde_json::from_str(&common::text("testdata/seated/bridged-high/sources.json"))
+            .expect("sources");
+    for (name, sha) in src["sha1"].as_object().expect("sha1") {
+        assert_eq!(
+            osc_measure::set::file_sha1(&std::fs::read(root.join(name)).expect("file")),
+            sha.as_str().expect("sha1"),
+            "{name} is the recorded file"
+        );
+    }
+    let (res, shots, seats, scales) = step_run(&root);
+    assert_eq!(shots.len(), 32);
+    let mut r = seated::read(&shots, &scales);
+    for (b, x) in r
+        .bursts
+        .iter()
+        .zip(res["seated"]["bursts"].as_array().expect("bursts"))
+    {
+        let f = b.fit.as_ref().expect("a fit");
+        assert!((f.r_ohm - x["r_ohm"].as_f64().expect("r")).abs() < 1e-9);
+        assert_eq!(b.kept(), x["kept"] == true);
+    }
+    let was = rs(&r);
+    let judged = stops::judge_r(&r, &seats);
+    assert_eq!(
+        verdict(&judged, "the two stops read the same R").0,
+        Verdict::Fail,
+        "the step's refusal"
+    );
+    r.set_aside_bridged();
+    let now = rs(&r);
+    println!("burst seat stop level k R_ohm kept why_not");
+    for (k, (b, s)) in r.bursts.iter().zip(&seats).enumerate() {
+        println!(
+            "{k:2} {} {:4} {:.0}% {} {:.4} {} {}",
+            s.seat,
+            s.stop.word(),
+            100.0 * stops::LEVELS[b.level],
+            b.k,
+            b.fit.as_ref().map_or(f64::NAN, |f| f.r_ohm),
+            b.kept(),
+            b.aside.as_ref().map_or(String::new(), |a| a.said())
+        );
+    }
+    println!(
+        "R low {:.4} -> {:.4}, high {:.4} -> {:.4}, pooled {:.4} -> {:.4} ohm; kept {}",
+        was[0],
+        now[0],
+        was[1],
+        now[1],
+        was[2],
+        now[2],
+        r.kept().count()
+    );
+    let cut: Vec<usize> = r
+        .bursts
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b.aside, Some(seated::Aside::Bridged { .. })))
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(
+        cut,
+        [14, 15, 29, 30, 31],
+        "the 40 % bursts at the high stop that read low"
+    );
+    assert_eq!(now[0], was[0], "nothing set aside at the low stop");
+    assert!((now[1] - 4.0295).abs() < 5e-4, "high {:.4}", now[1]);
+    let judged = stops::judge_r(&r, &seats);
+    for c in &judged {
+        println!("  {}", c.said());
+    }
+    assert!(
+        judged.iter().all(|c| c.verdict != Verdict::Fail),
+        "{judged:?}"
+    );
+    assert_eq!(
+        verdict(&judged, "the two stops read the same R").0,
+        Verdict::Pass
+    );
+    let (v, said) = verdict(&judged, "few bursts read a bridged brush");
+    assert!(said.starts_with("5 of 22"), "{said}");
+    assert_eq!(v, Verdict::Pass, "5 of 22 is under a quarter: {said}");
+}
+
+/// The same rule on a clean stops run of the bench servo, its own
+/// bursts, when `OSC_BRINGUP` names the checkout: nothing is set aside.
+#[test]
+fn the_bridged_rule_keeps_a_clean_step_run_whole() {
+    let Some(root) = std::env::var_os("OSC_BRINGUP") else {
+        println!("OSC_BRINGUP unset: skipped");
+        return;
+    };
+    let run = PathBuf::from(root)
+        .join("captures/ident-onsets/run2/runs/00000000ffffffff76e5bc220ef6abcd/20261123T115428Z");
+    let dir = std::env::temp_dir().join(format!("osc-clean-run-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::copy(run.join("results/stops.json"), dir.join("stops.json")).expect("result");
+    for k in 0..24 {
+        let n = format!("burst-{k}.csv");
+        std::fs::copy(run.join("captures/stops").join(&n), dir.join(&n)).expect(&n);
+    }
+    let (_, shots, _, scales) = step_run(&dir);
+    let mut r = seated::read(&shots, &scales);
+    let (kept, was) = (r.kept().count(), r.r(|_| true));
+    r.set_aside_bridged();
+    println!("{kept} kept, pooled {:?}", was.map(|s| s.median));
+    assert_eq!(r.bridged().count(), 0, "{:?}", r.bursts);
+    assert_eq!(r.r(|_| true), was);
+    let _ = std::fs::remove_dir_all(&dir);
 }
