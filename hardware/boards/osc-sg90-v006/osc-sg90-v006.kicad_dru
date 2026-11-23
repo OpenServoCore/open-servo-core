@@ -1,63 +1,74 @@
 (version 1)
 
+# JLCPCB 6-layer, 1 oz outer: 0.09/0.09 mm trace/space, routed edge 0.2 mm.
+# Vias: 0.3 mm drill (no small-via surcharge); via-in-pad is fine, JLC 6-layer
+# boards get epoxy filled and capped vias.
+
 (rule "Track width minimum"
   (condition "A.Type == 'Track'")
-  (constraint track_width (min 0.10mm))
+  (constraint track_width (min 0.09mm))
 )
 
 (rule "Copper clearance"
   (condition "A.Net != B.Net")
-  (constraint clearance (min 0.10mm))
+  (constraint clearance (min 0.09mm))
 )
 
-(rule "Global drill size limits"
-  (constraint hole_size (min 0.30mm) (max 6.00mm))
+(rule "Pad to track"
+  (condition "A.Type == 'Pad' && (B.Type == 'Track' || B.Type == 'Arc') && A.Net != B.Net")
+  (constraint clearance (min 0.1mm))
 )
 
-(rule "Via drill + annular ring"
+(rule "Pad to pad"
+  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Net != B.Net")
+  (constraint clearance (min 0.15mm))
+)
+
+# Solder jumpers: no paste, the chevron gap is meant to be bridged by hand.
+(rule "Jumper gap"
+  (condition "A.memberOfFootprint('JP*') && B.memberOfFootprint('JP*')")
+  (constraint clearance (min 0.09mm))
+)
+
+# TI X2SON land pattern: centre pad sits 0.12 mm from the corner pads.
+(rule "U1 land pattern"
+  (condition "A.memberOfFootprint('U1') && B.memberOfFootprint('U1')")
+  (constraint clearance (min 0.1mm))
+)
+
+(rule "Via drill + pad"
   (condition "A.Type == 'Via'")
   (constraint hole_size (min 0.30mm))
-  (constraint annular_width (min 0.125mm))
+  (constraint via_diameter (min 0.45mm))
+  (constraint annular_width (min 0.075mm))
 )
 
-(rule "PTH drill limits"
-  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.isPlated()")
-  (constraint hole_size (min 0.30mm) (max 6.00mm))
+(rule "Hole to copper"
+  (constraint hole_clearance (min 0.20mm))
 )
 
-(rule "PTH annular ring"
-  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.isPlated()")
-  (constraint annular_width (min 0.125mm))
-)
-
-(rule "Hole-to-hole spacing"
-  (condition "A.Net != B.Net")
-  (constraint hole_to_hole (min 0.30mm))
-)
-
-(rule "Via-to-via stitching"
-  (condition "A.Type == 'Via' && B.Type == 'Via' && A.Net == B.Net")
+(rule "Via to via"
+  (condition "A.Type == 'Via' && B.Type == 'Via'")
   (constraint hole_to_hole (min 0.20mm))
 )
 
 (rule "Copper to board edge"
-  (condition "A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Pad'")
-  (constraint edge_clearance (min 0.4mm))
+  (constraint edge_clearance (min 0.20mm))
 )
 
 (rule "Silk text thickness"
   (layer "?.Silkscreen")
   (condition "A.Type == 'Text' || A.Type == 'Text Box'")
-  (constraint text_thickness (min 0.12mm))
+  (constraint text_thickness (min 0.10mm))
 )
 
 (rule "Silk text height"
   (layer "?.Silkscreen")
   (condition "A.Type == 'Text' || A.Type == 'Text Box'")
-  (constraint text_height (min 0.80mm))
+  (constraint text_height (min 0.60mm))
 )
 
-(rule "One-sided PTH annulus for Potentiometer"
-  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.memberOfFootprint('shared:Pot_Wire_Pads')")
-  (constraint annular_width (min 0.0mm))
+(rule "Pad to silkscreen"
+  (condition "A.Type == 'Pad' && ((A.existsOnLayer('F.Mask') && B.Layer == 'F.Silkscreen') || (A.existsOnLayer('B.Mask') && B.Layer == 'B.Silkscreen'))")
+  (constraint silk_clearance (min 0.15mm))
 )

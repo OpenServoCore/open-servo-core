@@ -297,7 +297,7 @@
 	(pad "21" smd custom
 		(at 0 0)
 		(size 0.01 0.01)
-		(layers "F.Cu" "F.Mask" "F.Paste")
+		(layers "F.Cu" "F.Mask")
 		(thermal_bridge_angle 90)
 		(options
 			(clearance outline)
@@ -313,6 +313,46 @@
 			)
 		)
 		(uuid "3f4b5c85-3585-4060-a9f8-d3e4e1bca3a4")
+	)
+	(pad "" smd roundrect
+		(at -0.4625 0)
+		(size 0.775 0.7)
+		(layers "F.Paste")
+		(roundrect_rratio 0.1)
+		(uuid "d6209b69-0dc2-4291-b76a-731aba2a91e3")
+	)
+	(pad "" smd roundrect
+		(at 0.4625 0)
+		(size 0.775 0.7)
+		(layers "F.Paste")
+		(roundrect_rratio 0.1)
+		(uuid "0f408c8c-e17b-4e73-b86b-0b8028d0f6ba")
+	)
+	(pad "" smd roundrect
+		(at 0 -0.675)
+		(size 0.7 0.35)
+		(layers "F.Paste")
+		(roundrect_rratio 0.1)
+		(uuid "0499d3f3-5fda-4c6f-ab5c-a417ba6c39db")
+	)
+	(pad "" smd roundrect
+		(at 0 0.675)
+		(size 0.7 0.35)
+		(layers "F.Paste")
+		(roundrect_rratio 0.1)
+		(uuid "a4941122-d3cd-4216-88be-099703a43177")
+	)
+	(fp_poly
+		(pts
+			(xy -0.975 -1.975) (xy 0.975 -1.975) (xy 0.975 -1.5) (xy 1.5 -1.5) (xy 1.5 -0.975) (xy 1.975 -0.975) (xy 1.975 0.975) (xy 1.5 0.975) (xy 1.5 1.5) (xy 0.975 1.5) (xy 0.975 1.975) (xy -0.975 1.975) (xy -0.975 1.5) (xy -1.5 1.5) (xy -1.5 0.975) (xy -1.975 0.975) (xy -1.975 -0.975) (xy -1.5 -0.975) (xy -1.5 -1.5) (xy -0.975 -1.5)
+		)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "11a1bdaa-aa27-4abe-bf35-0e17bac9942e")
 	)
 	(embedded_fonts no)
 	(model "${KIPRJMOD}/../../shared.3dshapes/UQFN-20_L3.0-W3.0-P0.40-BL-EP1.7.wrl"
