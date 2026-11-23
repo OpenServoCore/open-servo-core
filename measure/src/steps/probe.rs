@@ -33,11 +33,11 @@ use serde_json::{Map, Value, json};
 
 use super::polarity::{self, Comp, Ladder, LadderCfg, OnServo, Outcome};
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mean_u16, mode_value, read_u8,
-    read_u16, rest, write,
+    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mode_value, read_u8, rest,
+    shunt, write,
 };
 use crate::Board;
-use crate::capture::burst::{self, ArmSeen, CHANS_DIFF, Capture, CaptureCfg, Pre};
+use crate::capture::burst::{self, CHANS_DIFF, Capture};
 use crate::capture::meta;
 use crate::capture::ripple::{FOLD, Pattern};
 use crate::capture::rows::Layout;
@@ -87,7 +87,6 @@ pub const AFTER_MAX_A: f64 = 0.02;
 pub const PRICE_SHARE: f64 = 0.9;
 /// Periods at a burst's end its current is read over.
 const LATE: usize = 3;
-const AFTER_READS: u32 = 4;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "planning R (free rotor, x0.9 for pricing), not the stored R";
 
@@ -779,64 +778,20 @@ async fn shot<P: Pipe>(
     b: &Before,
     s: &Shot,
 ) -> Result<(Read, (f64, f64)), Halt> {
-    let pre = Pre {
-        pre_q15: 0,
-        vbus_raw: read_u16(rig, "vbus_raw").await?,
-        bias: read_u16(rig, "current_bias_counts").await?,
-        vmotor_bias: read_u16(rig, "vmotor_bias_counts").await?,
-        pos: read_u16(rig, "pos").await?,
+    let arm = shunt::Arm {
+        polarity: b.polarity,
         seated: false,
-        drive_polarity: b.polarity,
+        mv_per_count: b.mv_per_count,
+        soft: b.soft.clone(),
     };
-    let t0 = (rig.clock)();
-    let cap = match burst::shunt(
-        rig.c,
-        rig.id,
-        rig.d,
-        s.duty_q15,
-        CHANS_DIFF,
-        pre,
-        &CaptureCfg::default(),
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(burst::Error::Rejected) => {
-            let word = |v: &[u8]| i32::from_le_bytes(v[..4].try_into().unwrap_or([0; 4]));
-            let seen = ArmSeen {
-                vbus_counts: read_u16(rig, "vbus_counts").await?,
-                mv_per_count: b.mv_per_count,
-                pos: pre.pos,
-                soft: (word(&b.soft[0]), word(&b.soft[1])),
-                limit_flags: read_u8(rig, "limit_flags").await?,
-                fault_flags: read_u8(rig, "fault_flags").await?,
-            };
-            return Err(Halt::Refused(format!(
-                "burst {}: {}",
-                s.k,
-                burst::rejected(s.duty_q15, &seen)
-            )));
-        }
-        Err(burst::Error::Io(e)) => return Err(Halt::from(e)),
-        Err(e) => return Err(Halt::Error(format!("shunt burst {}: {e}", s.k))),
-    };
-    let t1 = (rig.clock)();
-    let after_counts = mean_u16(rig, "current_raw", AFTER_READS).await?;
-    let faults = read_u8(rig, "fault_flags").await?;
-    if faults != 0 {
-        let code = read_u8(rig, "fault_code").await.unwrap_or(0);
-        return Err(Halt::Error(format!(
-            "a fault latched during burst {}: fault_flags {faults:#04x}, fault_code {code}",
-            s.k
-        )));
-    }
+    let t = shunt::shot(rig, &arm, s.duty_q15, &format!("burst {}", s.k)).await?;
     Ok((
         Read {
             shot: *s,
-            cap,
-            after_counts,
+            cap: t.cap,
+            after_counts: t.after_counts,
         },
-        (t0, t1),
+        t.times,
     ))
 }
 

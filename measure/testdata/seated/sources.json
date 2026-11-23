@@ -1,0 +1,8 @@
+{
+ "from": "osc-dev-v006-bringup captures/ident-slice2/B/seated/seat-N/GROUP/burst-K.csv, the groups that press into the low stop (g3-rev-40, g4-rev-25, g5-rev-25-rested) of seats 1 to 3, copied unchanged; the test that reads OSC_BRINGUP checks each against the checkout",
+ "record": {
+  "r_ohm": 4.2174,
+  "source": "osc-dev-v006-bringup kb/scratch/ident-plan/new-methods/bench-followup.md, Q3: the seated pooled median of the 36 held bursts (the first of each group out), the inductance notebook's period-pair fit with its edge fold"
+ },
+ "scales": "measure/testdata/bursts/sources.json, the stage 1 scales"
+}

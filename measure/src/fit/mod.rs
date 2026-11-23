@@ -3,6 +3,7 @@
 pub mod coast;
 pub mod rise;
 pub mod runup;
+pub mod seated;
 pub mod window;
 
 /// The median; the mean of the middle two on an even count. None when
