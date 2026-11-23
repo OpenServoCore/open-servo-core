@@ -597,9 +597,22 @@ impl Ladder {
                     .push(format!("{volts:.3} V: {said}: raised a level"));
                 self.level += 1;
             }
+            // A repeat at the breakaway may not break away again: that is
+            // no evidence either way.
+            Some(_) if !decisive && last => {
+                self.first = None;
+                self.at_ceiling(m, volts)
+            }
+            Some(_) if !decisive => {
+                self.path.push(format!(
+                    "{volts:.3} V repeated: {said}: the repeat did not move at these volts: raised a level"
+                ));
+                self.first = None;
+                self.level += 1;
+            }
             // The repeat agrees when it says the same sign, whichever duty
             // stayed still.
-            Some((fm, fi)) => match implies(m).filter(|_| decisive) {
+            Some((fm, fi)) => match implies(m) {
                 Some(i) if i.0 == fi.0 => {
                     self.path.push(format!(
                         "{volts:.3} V repeated: {said}: two repeats agree on the sign"
@@ -1445,6 +1458,94 @@ mod tests {
         assert!(kind == Refusal::Disagree && kind.aborts(), "{why}");
         assert!(why.contains("two repeats"), "{why}");
         assert_eq!(k, 4);
+    }
+
+    /// The bench's pulses at the motor's breakaway: the first pair moves
+    /// up and stays still, the repeat stays still both ways. That is no
+    /// disagreement: raised a level, where solid moves prove the sign.
+    #[test]
+    fn a_repeat_that_did_not_move_raises_a_level() {
+        let bench = [
+            (0.5, -2.4),
+            (0.8, -0.2),
+            (30.3, 8.9),
+            (-12.8, 0.6),
+            (10.4, -3.4),
+            (-6.0, 1.7),
+        ];
+        let solid = [(92.0, 30.0), (-95.0, -30.0), (90.0, 30.0), (-94.0, -30.0)];
+        let all: Vec<(f64, f64)> = bench.iter().chain(&solid).copied().collect();
+        let l = fed_seen(cfg(true), &all);
+        assert_eq!(proven(&l), (true, None), "{:?}", l.path());
+        let m: Vec<Motion> = l.pulses()[2..6].iter().map(|p| p.motion).collect();
+        assert_eq!(m, [Motion::Up, Motion::Still, Motion::Still, Motion::Still]);
+        assert!(
+            l.path()
+                .iter()
+                .any(|p| p.contains("V repeated: +duty still, -duty still")
+                    && p.ends_with("the repeat did not move at these volts: raised a level")),
+            "{:?}",
+            l.path()
+        );
+        assert!(l.pulses()[6..].iter().all(|p| p.planned.level == 2));
+        assert!(!l.pulses()[6].planned.repeat, "a new first pair");
+        assert!(
+            !l.path().iter().any(|p| p.contains("disagree")),
+            "{:?}",
+            l.path()
+        );
+    }
+
+    /// A decisive repeat of the other sign, or one whose duties moved the
+    /// same way, still aborts.
+    #[test]
+    fn a_decisive_repeat_of_the_other_sign_aborts() {
+        use Motion::*;
+        for pairs in [[[Up, Still], [Down, Still]], [[Up, Still], [Up, Up]]] {
+            let l = fed(pairs);
+            let (kind, why) = refused(&l);
+            assert!(
+                kind == Refusal::Disagree && kind.aborts(),
+                "{pairs:?}: {why}"
+            );
+            assert!(why.contains("two repeats"), "{why}");
+        }
+    }
+
+    /// The same repeat at the last level goes the ceiling's way: a press to
+    /// free a wedged train, then the blocked refusal when none is left.
+    #[test]
+    fn a_repeat_that_did_not_move_at_the_last_level_takes_the_ceiling() {
+        let mut c = cfg(true);
+        c.ceiling_q15 = c.start_q15 + c.step_q15;
+        assert_eq!(c.levels().len(), 2);
+        let pulses = [
+            (0.5, -2.4),
+            (0.8, -0.2),
+            (30.3, 8.9),
+            (-1.0, 0.6),
+            (1.0, -3.4),
+            (-1.0, 1.7),
+        ];
+        let l = fed_seen(c.clone(), &pulses);
+        assert!(l.outcome().is_none(), "{:?}", l.path());
+        assert!(
+            l.path()
+                .last()
+                .is_some_and(|p| p.contains("the ceiling") && p.contains("may be wedged")),
+            "{:?}",
+            l.path()
+        );
+        let Next::Pulse(p) = l.next() else {
+            panic!("a press next: {:?}", l.path())
+        };
+        assert!(p.unwedge && p.dir > 0);
+
+        c.unwedge_q15 = None;
+        let l = fed_seen(c, &pulses);
+        let (kind, why) = refused(&l);
+        assert_eq!(kind, Refusal::Blocked, "{why}");
+        assert!(!l.path().iter().any(|p| p.contains("disagree")));
     }
 
     /// A wedged metal train: the + press does not free it, the - press
