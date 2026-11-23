@@ -177,16 +177,27 @@ pub fn needs_permit(pos: f64, soft: (f64, f64), band: f64) -> bool {
     !(pos > soft.0 + band && pos < soft.1 - band)
 }
 
-/// The step's three duties, Q15, from the probe's volts on `rail_v`.
+/// The least share of the ceiling an approach runs at: a sign proven at
+/// the motor's breakaway leaves an approach one step over it, which the
+/// higher friction near an end of the travel can stall short of the stop.
+pub const APPROACH_MIN_SHARE: f64 = 0.6;
+
+/// The step's three duties, Q15, from the probe's volts on `rail_v`: the
+/// approach one ladder step over the volts that proved the sign and at
+/// least [`APPROACH_MIN_SHARE`] of the ceiling, the seat half the ceiling
+/// and never over the approach.
 pub fn duties(p: &FromProbe, rail_v: f64, stated_v: f64, still_counts: f64) -> SeekCfg {
     let q = |v: f64| (v / rail_v * Q15).floor().clamp(0.0, i16::MAX as f64) as i16;
     let ceiling = q(p.ceiling_v);
+    let approach = q(p.proven_v + polarity::STEP_SHARE * stated_v)
+        .max(q(APPROACH_MIN_SHARE * p.ceiling_v))
+        .min(ceiling);
     SeekCfg {
         rail_v,
-        approach_q15: q(p.proven_v + polarity::STEP_SHARE * stated_v).min(ceiling),
+        approach_q15: approach,
         step_q15: q(polarity::STEP_SHARE * stated_v).max(1),
         ceiling_q15: ceiling,
-        seat_q15: q(p.ceiling_v / 2.0),
+        seat_q15: q(p.ceiling_v / 2.0).min(approach),
         still_counts,
     }
 }
