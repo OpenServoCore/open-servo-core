@@ -541,14 +541,14 @@ impl Ladder {
                     .push(format!("{volts:.3} V: {said}: raised a level"));
                 self.level += 1;
             }
-            // A pair started at a stop moves off it and back: the repeat
-            // agrees when it says the same sign, whichever duty pressed.
+            // The repeat agrees when it says the same sign, whichever duty
+            // stayed still.
             Some((fm, fi)) => match implies(m).filter(|_| decisive) {
                 Some(i) if i.0 == fi.0 => {
                     self.path.push(format!(
                         "{volts:.3} V repeated: {said}: two repeats agree on the sign"
                     ));
-                    self.decide(fi.0, fi.1.or(i.1), volts);
+                    self.decide(fi.0, [fi.1, i.1], volts);
                 }
                 _ => self.refuse(
                     Refusal::Disagree,
@@ -641,7 +641,9 @@ impl Ladder {
         );
     }
 
-    fn decide(&mut self, right: bool, pressed_dir: Option<i8>, volts: f64) {
+    /// `still`: the duty that stayed still in the first pair and in the
+    /// repeat, if one did.
+    fn decide(&mut self, right: bool, still: [Option<i8>; 2], volts: f64) {
         let tail = self.pulses.len().saturating_sub(4);
         if !self.pulses[tail..]
             .iter()
@@ -654,6 +656,19 @@ impl Ladder {
                 ),
             );
         }
+        // A pair started at a stop leaves the duty toward it still and moves
+        // the other away; its repeat has that room, so both move. A duty
+        // still in the repeat had room and did not move: breakaway.
+        let pressed_dir = match still {
+            [Some(d), None] => Some(d),
+            [None, None] => None,
+            _ => {
+                self.path.push(format!(
+                    "a duty stayed still with room to move: {volts:.3} V is at the motor's breakaway, so no stop is claimed"
+                ));
+                None
+            }
+        };
         let pressed = pressed_dir.map(|d| {
             let counts = if right { d } else { -d };
             if counts > 0 { Stop::High } else { Stop::Low }
@@ -973,6 +988,64 @@ mod tests {
             }
         }
         assert_eq!(pressed_seen, 4, "each stop pressed in half its cases");
+    }
+
+    /// The ladder fed a first pair and its repeat at the shortest pulse,
+    /// each pulse doing what its motion says.
+    fn fed(pairs: [[Motion; 2]; 2]) -> Ladder {
+        let mut l = Ladder::new(cfg(true));
+        for m in pairs.into_iter().flatten() {
+            let Next::Pulse(p) = l.next() else {
+                panic!("done early: {:?}", l.path())
+            };
+            let (peak, emf) = match m {
+                Motion::Up => (30.0, 40.0 * p.dir as f64),
+                Motion::Down => (-30.0, 40.0 * p.dir as f64),
+                _ => (0.0, 0.0),
+            };
+            l.feed(Seen {
+                start: 2000.0,
+                peak,
+                end: peak,
+                emf,
+                current_peak_a: 0.0,
+            });
+        }
+        l
+    }
+
+    /// A start at mid travel, the pulse at the motor's breakaway: the
+    /// duty that stayed still differs between the pairs, so it had room
+    /// and did not move. The sign stands; no stop is claimed.
+    #[test]
+    fn a_still_duty_that_changes_between_pairs_is_breakaway_not_a_stop() {
+        use Motion::*;
+        let l = fed([[Still, Up], [Down, Still]]);
+        assert_eq!(proven(&l), (false, None));
+        assert!(
+            l.path().iter().any(|p| p.contains("breakaway")),
+            "{:?}",
+            l.path()
+        );
+        assert!(
+            !l.path().iter().any(|p| p.contains("the start was at the")),
+            "{:?}",
+            l.path()
+        );
+    }
+
+    /// The same duty still in both pairs: the repeat's had room to move
+    /// back, so no stop is claimed either.
+    #[test]
+    fn the_same_duty_still_in_both_pairs_claims_no_stop() {
+        use Motion::*;
+        let l = fed([[Still, Up], [Still, Up]]);
+        assert_eq!(proven(&l), (false, None));
+        assert!(
+            l.path().iter().any(|p| p.contains("breakaway")),
+            "{:?}",
+            l.path()
+        );
     }
 
     #[test]
