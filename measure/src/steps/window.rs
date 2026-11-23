@@ -75,6 +75,8 @@ pub const SET: usize = 2 * NOTEBOOK_Q15.len() * EACH;
 pub const SETS_MAX: usize = 2;
 pub const ONSET_S: f64 = 0.050;
 pub const COAST_S: f64 = 0.500;
+/// The longest wait past [`COAST_S`] for a shaft that is not yet still.
+pub const STILL_MAX_S: f64 = 2.0;
 /// The band around the middle of the stops the shaft stays in, a share of
 /// their travel.
 pub const BAND_SHARE: f64 = 0.20;
@@ -741,29 +743,35 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &WindowInputs<'_>) -> Result<B
 
 /// [`COAST_S`] at zero duty with torque on, the pot and the faults polled
 /// every [`seek::POLL_S`]; the shaft still over the last
-/// [`seek::WINDOW_S`] by the stops step's rule, else refused. The median
-/// of those readings.
+/// [`seek::WINDOW_S`] by the stops step's rule, waited for up to
+/// [`STILL_MAX_S`] more, else refused with the readings. The median of
+/// the still readings.
 async fn coast<P: Pipe>(rig: &mut Rig<'_, P>, b: &Before, next: usize) -> Result<f64, Halt> {
     let n = (COAST_S / seek::POLL_S).round() as usize;
+    let more = (STILL_MAX_S / seek::POLL_S).round() as usize;
     let k = ((seek::WINDOW_S / seek::POLL_S).ceil() as usize).min(n);
-    let mut seen = Vec::with_capacity(n);
-    for _ in 0..n {
+    let mut seen = Vec::with_capacity(n + more);
+    for i in 0..n + more {
         rig.c.pause(Duration::from_secs_f64(seek::POLL_S)).await;
         seen.push(stops::poll(rig).await?);
+        if i + 1 >= n && still(&seen[seen.len() - k..], b.still_counts) {
+            return Ok(median(&seen[seen.len() - k..]).unwrap_or(f64::NAN));
+        }
     }
-    let tail = &seen[n - k..];
-    let m = median(tail).unwrap_or(f64::NAN);
-    if !still(tail, b.still_counts) {
-        let hi = tail.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let lo = tail.iter().copied().fold(f64::INFINITY, f64::min);
-        return Err(Halt::Refused(format!(
-            "before onset {next} the shaft was not still after {COAST_S} s at zero duty: the pot spans {:.0} counts over the last {} s, past the still band of {:.1}; check that nothing touches the horn, then run the steps again",
-            hi - lo,
-            seek::WINDOW_S,
-            b.still_counts
-        )));
-    }
-    Ok(m)
+    let tail = &seen[seen.len() - k..];
+    let hi = tail.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lo = tail.iter().copied().fold(f64::INFINITY, f64::min);
+    Err(Halt::Refused(format!(
+        "before onset {next} the shaft was not still after {:.1} s at zero duty: the pot spans {:.0} counts over the last {} s, past the still band of {:.1} (readings {}); check that nothing touches the horn, then run the steps again",
+        COAST_S + STILL_MAX_S,
+        hi - lo,
+        seek::WINDOW_S,
+        b.still_counts,
+        tail.iter()
+            .map(|v| format!("{v:.0}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )))
 }
 
 /// One set's onsets on the servo, each after its coast, found still and
