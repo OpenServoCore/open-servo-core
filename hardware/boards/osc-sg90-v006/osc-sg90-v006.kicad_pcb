@@ -1788,7 +1788,7 @@
 				)
 			)
 		)
-		(property "Value" "BCT2014ELS33"
+		(property "Value" "PJ54M33DE"
 			(at 0 1.5 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -1800,7 +1800,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2887828.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22470321.html"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -1813,7 +1813,7 @@
 				)
 			)
 		)
-		(property "Description" "3.3V 300mA LDO, 2.5-15V in, 0.7uA Iq, UTDFN1x1-4L; center pad is NC"
+		(property "Description" "3.3V 300mA LDO, 3-45V in (55V abs max), 2.1uA Iq, thermal shutdown, DFN1x1-4L; center pad is NC"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -1826,7 +1826,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2887828"
+		(property "LCSC" "C22470321"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -1839,7 +1839,7 @@
 				)
 			)
 		)
-		(property "MFPN" "BCT2014ELS33-TR"
+		(property "MFPN" "PJ54M33DE"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
