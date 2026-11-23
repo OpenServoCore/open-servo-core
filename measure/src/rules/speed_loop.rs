@@ -19,7 +19,7 @@
 
 use super::units::{b_gain, ke_v_s_per_rad, medium_hz};
 use super::{Ctx, Fail, Format, Kind, Rule, get, q, table};
-use crate::inputs::{ShelfRecord, ShelfSweep};
+use crate::inputs::{Inputs, ShelfRecord, ShelfSweep};
 
 pub const SNAP_COUNTS: f64 = 4.0;
 /// What the speed gains wait for without a margin record.
@@ -138,6 +138,14 @@ pub fn starting_kp(c: &mut Ctx) -> Result<f64, Fail> {
         Ok(record) => Ok(kp.min(shelf_cap(c, record)?)),
         Err(_) => Ok(kp),
     }
+}
+
+/// [`starting_kp`] on `inputs`, outside any field, at the low end of its
+/// inputs' bands: the gain a closed-loop check starts from and lowers.
+/// `speed_pi` holds a verified gain against the starting gain at every
+/// end of the bands, so a gain over the lowest is refused.
+pub fn starting_gain(inputs: &Inputs) -> Result<f64, Fail> {
+    super::lowest(inputs, starting_kp)
 }
 
 /// The speed PI and the crossover it puts the loop at.

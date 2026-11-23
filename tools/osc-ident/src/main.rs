@@ -1,10 +1,14 @@
 //! osc-ident: a servo's constant set, and the safe path that puts a set on
 //! a servo. `rules` touches no servo; `check` and `plan` only read;
 //! `install`, `save` and `restore` write with torque off and never drive
-//! the motor; `step` runs one measurement step into a run folder.
+//! the motor; `step` runs one measurement step into a run folder; `gather`
+//! turns a run folder into inputs; `tune` settles the speed gain on the
+//! servo with the closed-loop check.
 
 mod files;
+mod gather;
 mod steps;
+mod tune;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -103,6 +107,36 @@ enum Cmd {
     Step {
         #[command(subcommand)]
         step: StepName,
+    },
+    /// A run folder's step results to an inputs folder for `rules` and `tune`. Touches no servo.
+    Gather {
+        /// The run folder: `<out>/<servo uid>/<UTC time>/` of a `step stops` run.
+        #[arg(long)]
+        run: PathBuf,
+        /// The servo's nameplate file.
+        #[arg(long)]
+        nameplate: PathBuf,
+        /// The user's thermal values, copied into the inputs folder.
+        #[arg(long)]
+        thermal: Option<PathBuf>,
+        /// The policy file: this tool has no built-in one.
+        #[arg(long)]
+        policy: PathBuf,
+        /// The inputs folder to write, new.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Settle the speed gain: the rules at a gain, the set installed volatile, the closed-loop
+    /// check; each try lower until the check accepts. Drives the motor under its own loops; never saves.
+    Tune {
+        /// The inputs folder, as `rules` reads it.
+        #[arg(long)]
+        inputs: PathBuf,
+        /// The run folder to write, new.
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = osc_measure::tune::TRIES)]
+        tries: u32,
     },
 }
 
@@ -374,7 +408,12 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
             let origin = json!({"from": "a record restored", "file": from.display().to_string(), "sha1": set::file_sha1(&bytes)});
             install::restore(c, id, d, &text, origin, loosen, &mut steps).await
         }
-        Cmd::Rules { .. } | Cmd::Check { .. } | Cmd::Plan { .. } | Cmd::Step { .. } => {
+        Cmd::Rules { .. }
+        | Cmd::Check { .. }
+        | Cmd::Plan { .. }
+        | Cmd::Step { .. }
+        | Cmd::Gather { .. }
+        | Cmd::Tune { .. } => {
             bail!("not a write verb")
         }
     };
@@ -463,6 +502,31 @@ fn run(cli: &Cli) -> Result<bool> {
                         steps::step_verify(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
                     }
                 };
+                for l in &lines {
+                    println!("{l}");
+                }
+                Ok(accepted)
+            })
+        }
+        Cmd::Gather {
+            run,
+            nameplate,
+            thermal,
+            policy,
+            out,
+        } => {
+            for l in gather::gather(run, nameplate, thermal.as_deref(), policy, out)? {
+                println!("{l}");
+            }
+            Ok(true)
+        }
+        Cmd::Tune { inputs, out, tries } => {
+            ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
+                .context("installing the Ctrl-C handler")?;
+            block_on(async {
+                let (mut c, d) = connect(&cli.baud, id).await?;
+                let (lines, accepted) =
+                    tune::tune(&mut c, id, &d, inputs, out, *tries, &STOP).await?;
                 for l in &lines {
                     println!("{l}");
                 }

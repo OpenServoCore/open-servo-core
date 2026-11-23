@@ -1,0 +1,25 @@
+{
+ "method": "rest.json, probe.json and stops.json copied unchanged from one accepted `osc-ident step stops` run on the bench servo (mg90-d on dev-v006); window.json and spins.json are synthetic, the window and spins steps' estimate shape carrying the record's values",
+ "files": {
+  "rest.json": {
+   "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/rest.json",
+   "sha1": "527928b2900a33475dc826e258e72534d8f69623"
+  },
+  "probe.json": {
+   "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/probe.json",
+   "sha1": "5d094b0fc7fc8ed83374bb843ad6c566dfb56904"
+  },
+  "stops.json": {
+   "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/stops.json",
+   "sha1": "38ddfcdc4b5a3ed49fdc4d5d893d031f6a270ecf"
+  },
+  "window.json": {
+   "from": "synthetic, from measure/testdata/mg90-d/measured.json",
+   "sha1": "e95c1fea119f5e1c927ab4ea67948745da7e71b9"
+  },
+  "spins.json": {
+   "from": "synthetic, from measure/testdata/mg90-d/measured.json",
+   "sha1": "039309c0cb5612fd61de9442e71f4ab5551bb371"
+  }
+ }
+}
