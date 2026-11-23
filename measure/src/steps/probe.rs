@@ -3,11 +3,15 @@
 //! frame ripple. Metal trains only, for now.
 //!
 //! Part A, the electrical probe: shunt bursts from rest at 20 % and 32 %
-//! of the stated voltage, both signs, twice each, 0.52 ms of drive each
-//! and at least 100 ms apart. Each is read by the period-pair rise fit
-//! ([`crate::fit::rise`]) on the nominal scales and the board's edge lags,
-//! and one fit with an intercept over the bursts that are not the first
-//! after a sign change gives the free rotor's planning R and L. Before
+//! of the stated voltage, both signs, [`BURSTS_A_GROUP`] at each sign and
+//! level, 0.52 ms of drive each and at least 100 ms apart. Each is read by the period-pair
+//! rise fit ([`crate::fit::rise`]) on the nominal scales and the board's
+//! edge lags. The first burst after a sign change is out of the fit, and
+//! so is one whose first window current is off its group's others by the
+//! seated read's rule ([`crate::fit::seated::SET_ASIDE_SHARE`]): a rotor
+//! resting where a brush bridges two segments reads the winding low. One
+//! fit with an intercept over the kept bursts gives the free rotor's
+//! planning R and L. Before
 //! any R a burst is priced blocked at the lower of the board's overcurrent
 //! trip and V over the 0.5 ohm acceptance floor, or at the nameplate's
 //! stated stall where that reads more. [`judge`] is part A's acceptance,
@@ -33,11 +37,11 @@ use serde_json::{Map, Value, json};
 
 use super::polarity::{self, Comp, Ladder, LadderCfg, OnServo, Outcome};
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mean_u16, mode_value, read_u8,
-    read_u16, rest, write,
+    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mode_value, read_u8, rest,
+    shunt, write,
 };
 use crate::Board;
-use crate::capture::burst::{self, ArmSeen, CHANS_DIFF, Capture, CaptureCfg, Pre};
+use crate::capture::burst::{self, CHANS_DIFF, Capture};
 use crate::capture::meta;
 use crate::capture::ripple::{FOLD, Pattern};
 use crate::capture::rows::Layout;
@@ -46,6 +50,7 @@ use crate::envelope::{
     DRIVE_DEADMAN_S, Envelope, Facts, HeatModel, Kind, Resistance, Rung, hold_a,
 };
 use crate::fit::rise::{self, Lags, Period, Rise, Scales};
+use crate::fit::seated::{self, Aside};
 use crate::fit::{mean, median};
 use crate::guard::{self, Ledger, Way};
 use crate::inputs::ThermalInputs;
@@ -61,6 +66,12 @@ const METHOD: &str = "probe-rise-and-polarity";
 const REVISION: u32 = 1;
 /// Part A's levels, shares of the stated voltage.
 pub const LEVELS: [f64; 2] = [0.20, 0.32];
+/// Bursts at each sign and level, one after another.
+pub const BURSTS_A_GROUP: usize = 4;
+/// A sign and level keeping fewer bursts reads no current to compare.
+pub const KEPT_MIN: usize = 2;
+/// This many bursts set aside warns that the planning R may read low.
+pub const ASIDE_WARN: usize = 3;
 /// The drive a burst applies: the half of its 960 samples after the step.
 pub const BURST_S: f64 = 0.000_52;
 /// Between bursts: the firmware wants 100 ms.
@@ -87,7 +98,6 @@ pub const AFTER_MAX_A: f64 = 0.02;
 pub const PRICE_SHARE: f64 = 0.9;
 /// Periods at a burst's end its current is read over.
 const LATE: usize = 3;
-const AFTER_READS: u32 = 4;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "planning R (free rotor, x0.9 for pricing), not the stored R";
 
@@ -105,19 +115,13 @@ pub struct Shot {
     pub in_fit: bool,
 }
 
-/// Part A's eight bursts at `stated_v` on `rail_v`: +low, +low, +high,
-/// +high, -high, -high, -low, -low.
+/// Part A's bursts at `stated_v` on `rail_v`, [`BURSTS_A_GROUP`] of each
+/// in turn: +low, +high, -high, -low.
 pub fn shots(stated_v: f64, rail_v: f64) -> Vec<Shot> {
-    let order = [
-        (1, 0),
-        (1, 0),
-        (1, 1),
-        (1, 1),
-        (-1, 1),
-        (-1, 1),
-        (-1, 0),
-        (-1, 0),
-    ];
+    let order: Vec<(i8, usize)> = [(1, 0), (1, 1), (-1, 1), (-1, 0)]
+        .into_iter()
+        .flat_map(|g| std::iter::repeat_n(g, BURSTS_A_GROUP))
+        .collect();
     order
         .iter()
         .enumerate()
@@ -182,6 +186,12 @@ pub struct ShotRead {
     pub shot: Shot,
     pub periods: Result<Vec<Period>, String>,
     pub fit: Option<Rise>,
+    /// The first period's window current, A, and its share off the median
+    /// of its sign and level's other bursts.
+    pub i_first_a: f64,
+    pub move_share: f64,
+    /// Out of the fit though not the first after a sign change.
+    pub aside: Option<Aside>,
     /// The window current over the last periods, A.
     pub i_late_a: f64,
     /// The window's tap difference in the bridge's sign, V, and its sign
@@ -203,6 +213,10 @@ pub struct PartA {
 }
 
 impl PartA {
+    pub fn aside(&self) -> impl Iterator<Item = &ShotRead> {
+        self.reads.iter().filter(|r| r.aside.is_some())
+    }
+
     pub fn accepted(&self) -> bool {
         self.checks.iter().all(|c| c.verdict != Verdict::Fail)
     }
@@ -225,27 +239,31 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
         .first()
         .map_or(f64::NAN, |r| rise::pwm_period_s(r.cap.meta.pwm_arr));
     let wiring = |dir: i8| dir as f64 * if f.polarity { 1.0 } else { -1.0 };
-    let rs: Vec<ShotRead> = reads
+    let mut rs: Vec<ShotRead> = reads
         .iter()
         .map(|r| {
             let sign = wiring(r.shot.dir);
             let periods = rise::periods(&r.cap, sign, s, 0.0);
-            let (fit, i_late, v_on, v_mean) = match &periods {
+            let (fit, i_first, i_late, v_on, v_mean) = match &periods {
                 Ok(t) => {
                     let late = &t[t.len().saturating_sub(LATE)..];
                     (
                         rise::fit(t, period_s, s.window_scale),
+                        t.first().map_or(f64::NAN, |p| p.i_a),
                         mean(&late.iter().map(|p| p.i_a).collect::<Vec<_>>()).unwrap_or(f64::NAN),
                         median(&t.iter().map(|p| p.v_on_v).collect::<Vec<_>>()).unwrap_or(f64::NAN),
                         mean(&t.iter().map(|p| p.v_v).collect::<Vec<_>>()).unwrap_or(f64::NAN),
                     )
                 }
-                Err(_) => (None, f64::NAN, f64::NAN, f64::NAN),
+                Err(_) => (None, f64::NAN, f64::NAN, f64::NAN, f64::NAN),
             };
             ShotRead {
                 shot: r.shot,
                 periods,
                 fit,
+                i_first_a: i_first,
+                move_share: f64::NAN,
+                aside: None,
                 i_late_a: i_late,
                 v_on_v: v_on,
                 // read in the bridge's sign: as the taps read it, that
@@ -256,6 +274,15 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
             }
         })
         .collect();
+    let shares = seated::off_others(
+        &rs.iter()
+            .map(|r| ((r.shot.dir, r.shot.level), r.i_first_a))
+            .collect::<Vec<_>>(),
+    );
+    for (r, m) in rs.iter_mut().zip(shares) {
+        r.move_share = m;
+        r.aside = seated::moved(m).filter(|_| r.shot.in_fit);
+    }
     let mut checks = Vec::new();
     let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
         checks.push(Check {
@@ -284,27 +311,52 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
         "a window line and a tap pair every full period".into(),
         pass(broken.is_empty() && !rs.is_empty()),
     );
-    let current = |level: usize, dir: i8| {
-        let v: Vec<f64> = rs
-            .iter()
-            .filter(|r| r.shot.level == level && r.shot.dir == dir && r.shot.in_fit)
+    let late = |level: usize, dir: i8, keep: &dyn Fn(&ShotRead) -> bool| {
+        rs.iter()
+            .filter(|r| r.shot.level == level && r.shot.dir == dir && keep(r))
             .map(|r| r.i_late_a)
-            .collect();
-        median(&v).unwrap_or(f64::NAN)
+            .collect::<Vec<f64>>()
     };
+    let current =
+        |level: usize, dir: i8| median(&late(level, dir, &|r| r.shot.in_fit)).unwrap_or(f64::NAN);
     let mut fault = Vec::new();
     let mut apart = Vec::new();
     let mut said = Vec::new();
+    let mut unheld = Vec::new();
     for (level, share) in LEVELS.iter().enumerate() {
         let (p, n) = (current(level, 1), current(level, -1));
         let (lo, hi) = (p.min(n), p.max(n));
+        let kept = [1, -1].map(|dir| late(level, dir, &ShotRead::kept));
+        let [kp, kn] = kept.clone().map(|v| median(&v).unwrap_or(f64::NAN));
+        let (klo, khi) = (kp.min(kn), kp.max(kn));
+        let ma = |x: f64, n: usize| {
+            if x.is_finite() {
+                format!("{:.1} mA ({n} kept)", 1e3 * x)
+            } else {
+                "none kept".into()
+            }
+        };
+        let both = kp.is_finite() && kn.is_finite();
         said.push(format!(
-            "{:.0}%: + {:.1} mA, - {:.1} mA, {:.1}% apart",
+            "{:.0}%: + {}, - {}, {}",
             100.0 * share,
-            1e3 * p,
-            1e3 * n,
-            100.0 * (hi - lo) / hi
+            ma(kp, kept[0].len()),
+            ma(kn, kept[1].len()),
+            if both {
+                format!("{:.1}% apart", 100.0 * (khi - klo) / khi)
+            } else {
+                "not compared".into()
+            }
         ));
+        for (v, word) in kept.iter().zip(["+", "-"]) {
+            if v.len() < KEPT_MIN {
+                unheld.push(format!(
+                    "the rotor did not hold still for the bursts at {:.0}% and the {word} sign: {} of them kept, under {KEPT_MIN}; turn the horn a little and start again",
+                    100.0 * share,
+                    v.len()
+                ));
+            }
+        }
         if hi.is_nan() || hi < NO_CURRENT_A {
             fault.push(format!(
                 "no current either way at {:.0}%: an open winding or a dead bridge",
@@ -319,7 +371,9 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
                 100.0 * share
             ));
         }
-        apart.push((hi - lo) / hi);
+        if both {
+            apart.push((khi - klo) / khi);
+        }
     }
     for r in &rs {
         let d = r.shot.duty_q15.unsigned_abs() as f64 / Q15;
@@ -351,9 +405,50 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
     let worst = apart.iter().copied().fold(0.0, f64::max);
     check(
         "both signs read the same current",
-        said.join("; "),
-        format!("within {:.0}%", 100.0 * SIGNS_SHARE),
-        pass(worst <= SIGNS_SHARE),
+        if unheld.is_empty() {
+            said.join("; ")
+        } else {
+            format!("{}; {}", unheld.join("; "), said.join("; "))
+        },
+        format!(
+            "the median of each sign's kept bursts within {:.0}%, at least {KEPT_MIN} kept a sign and level",
+            100.0 * SIGNS_SHARE
+        ),
+        pass(unheld.is_empty() && worst <= SIGNS_SHARE),
+    );
+    let aside: Vec<String> = rs
+        .iter()
+        .filter_map(|r| {
+            r.aside
+                .as_ref()
+                .map(|a| format!("burst {}: {}", r.shot.k, a.said()))
+        })
+        .collect();
+    check(
+        "few bursts set aside",
+        if aside.len() >= ASIDE_WARN {
+            format!(
+                "{} of {} set aside ({}): the rotor rests where a brush bridges two segments, and the planning R may read low; a low R prices the current high, the safe side",
+                aside.len(),
+                rs.len(),
+                aside.join("; ")
+            )
+        } else if aside.is_empty() {
+            format!("none of {} set aside", rs.len())
+        } else {
+            format!(
+                "{} of {} set aside ({})",
+                aside.len(),
+                rs.len(),
+                aside.join("; ")
+            )
+        },
+        format!("under {ASIDE_WARN}; a warning, never a refusal"),
+        if aside.len() >= ASIDE_WARN {
+            Verdict::Warn
+        } else {
+            Verdict::Pass
+        },
     );
     let taps: Vec<String> = rs
         .iter()
@@ -397,7 +492,7 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
     );
     let tables: Vec<&[Period]> = rs
         .iter()
-        .filter(|r| r.shot.in_fit)
+        .filter(|r| r.kept())
         .filter_map(|r| r.periods.as_ref().ok().map(|t| &t[..]))
         .collect();
     let pooled = rise::pooled(&tables, period_s, s.window_scale);
@@ -449,6 +544,11 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
 }
 
 impl ShotRead {
+    /// In the pooled fit: not the first after a sign change, not set aside.
+    pub fn kept(&self) -> bool {
+        self.shot.in_fit && self.aside.is_none()
+    }
+
     pub fn said(&self, rail_v: f64, period_s: f64) -> String {
         let s = &self.shot;
         let fit = self.fit.as_ref().map_or("no fit".into(), |f| {
@@ -460,16 +560,18 @@ impl ShotRead {
             )
         });
         format!(
-            "burst {} ({}): {}{:.3} V ({:.2}% duty) on a {rail_v:.2} V rail: window current {:.1} mA at the end, tap difference {:.3} V in the window ({:.1}% of the rail, sign {}), {fit}; {:.1} mA off the zero after{}",
+            "burst {} ({}): {}{:.3} V ({:.2}% duty) on a {rail_v:.2} V rail: window current {:.1} mA first ({:+.1}% off its sign and level's others), {:.1} mA at the end, tap difference {:.3} V in the window ({:.1}% of the rail, sign {}), {fit}; {:.1} mA off the zero after{}",
             s.k,
-            if s.in_fit {
-                "in the fit"
-            } else {
-                "first after a sign change, out of the fit"
+            match &self.aside {
+                Some(a) => format!("set aside: {}", a.said()),
+                None if s.in_fit => "in the fit".into(),
+                None => "first after a sign change, out of the fit".into(),
             },
             if s.dir > 0 { "+" } else { "-" },
             s.volts,
             100.0 * s.duty_q15.unsigned_abs() as f64 / Q15,
+            1e3 * self.i_first_a,
+            100.0 * self.move_share,
             1e3 * self.i_late_a,
             self.v_on_v,
             100.0 * self.v_on_v / rail_v,
@@ -779,64 +881,20 @@ async fn shot<P: Pipe>(
     b: &Before,
     s: &Shot,
 ) -> Result<(Read, (f64, f64)), Halt> {
-    let pre = Pre {
-        pre_q15: 0,
-        vbus_raw: read_u16(rig, "vbus_raw").await?,
-        bias: read_u16(rig, "current_bias_counts").await?,
-        vmotor_bias: read_u16(rig, "vmotor_bias_counts").await?,
-        pos: read_u16(rig, "pos").await?,
+    let arm = shunt::Arm {
+        polarity: b.polarity,
         seated: false,
-        drive_polarity: b.polarity,
+        mv_per_count: b.mv_per_count,
+        soft: b.soft.clone(),
     };
-    let t0 = (rig.clock)();
-    let cap = match burst::shunt(
-        rig.c,
-        rig.id,
-        rig.d,
-        s.duty_q15,
-        CHANS_DIFF,
-        pre,
-        &CaptureCfg::default(),
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(burst::Error::Rejected) => {
-            let word = |v: &[u8]| i32::from_le_bytes(v[..4].try_into().unwrap_or([0; 4]));
-            let seen = ArmSeen {
-                vbus_counts: read_u16(rig, "vbus_counts").await?,
-                mv_per_count: b.mv_per_count,
-                pos: pre.pos,
-                soft: (word(&b.soft[0]), word(&b.soft[1])),
-                limit_flags: read_u8(rig, "limit_flags").await?,
-                fault_flags: read_u8(rig, "fault_flags").await?,
-            };
-            return Err(Halt::Refused(format!(
-                "burst {}: {}",
-                s.k,
-                burst::rejected(s.duty_q15, &seen)
-            )));
-        }
-        Err(burst::Error::Io(e)) => return Err(Halt::from(e)),
-        Err(e) => return Err(Halt::Error(format!("shunt burst {}: {e}", s.k))),
-    };
-    let t1 = (rig.clock)();
-    let after_counts = mean_u16(rig, "current_raw", AFTER_READS).await?;
-    let faults = read_u8(rig, "fault_flags").await?;
-    if faults != 0 {
-        let code = read_u8(rig, "fault_code").await.unwrap_or(0);
-        return Err(Halt::Error(format!(
-            "a fault latched during burst {}: fault_flags {faults:#04x}, fault_code {code}",
-            s.k
-        )));
-    }
+    let t = shunt::shot(rig, &arm, s.duty_q15, &format!("burst {}", s.k)).await?;
     Ok((
         Read {
             shot: *s,
-            cap,
-            after_counts,
+            cap: t.cap,
+            after_counts: t.after_counts,
         },
-        (t0, t1),
+        t.times,
     ))
 }
 
@@ -938,7 +996,7 @@ async fn body<P: Pipe>(
         rest::DEADMAN_S
     ));
     lines.push(format!(
-        "part A: {} shunt bursts at {:.0}% and {:.0}% of the stated {} V, both signs, {} s of drive each, {} s apart",
+        "part A: {} shunt bursts at {:.0}% and {:.0}% of the stated {} V, both signs, {BURSTS_A_GROUP} at each, {} s of drive each, {} s apart",
         b.shots.len(),
         100.0 * LEVELS[0],
         100.0 * LEVELS[1],
@@ -1270,7 +1328,7 @@ pub async fn probe<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result
 pub fn estimates(pooled: Option<&Rise>, r_price: Option<f64>) -> Map<String, Value> {
     let mut m = Map::new();
     if let Some(p) = pooled {
-        let src = "part A's period-pair fit with an intercept over the bursts not first after a sign change, nominal scales, the rotor free: planning grade, never a set field nor a rules input";
+        let src = "part A's period-pair fit with an intercept over the bursts not first after a sign change and not set aside (a first window current over 12 % off its sign and level's others), nominal scales, the rotor free: planning grade, never a set field nor a rules input";
         m.insert("r_plan_free_ohm".into(), est(p.r_ohm, "ohm", src));
         m.insert("l_plan_free_h".into(), est(p.l_h, "H", src));
         m.insert("tau_plan_free_s".into(), est(p.tau_s, "s", src));
@@ -1292,8 +1350,9 @@ fn result_json(
     let part_a = found.part_a.as_ref().map_or(Value::Null, |a| {
         json!({
             "bursts": a.reads.iter().map(|r| json!({
-                "k": r.shot.k, "dir": r.shot.dir, "volts": r.shot.volts, "duty_q15": r.shot.duty_q15, "in_fit": r.shot.in_fit,
-                "i_late_a": r.i_late_a, "v_on_v": r.v_on_v, "v_on_sign": r.v_on_sign, "v_mean_v": r.v_mean_v, "after_a": r.after_a,
+                "k": r.shot.k, "dir": r.shot.dir, "level": r.shot.level, "volts": r.shot.volts, "duty_q15": r.shot.duty_q15, "in_fit": r.shot.in_fit,
+                "kept": r.kept(), "aside": r.aside.as_ref().map(Aside::said),
+                "i_first_a": r.i_first_a, "move_share": r.move_share, "i_late_a": r.i_late_a, "v_on_v": r.v_on_v, "v_on_sign": r.v_on_sign, "v_mean_v": r.v_mean_v, "after_a": r.after_a,
                 "fit": r.fit.as_ref().map_or(Value::Null, rise_json),
                 "error": r.periods.as_ref().err(),
             })).collect::<Vec<_>>(),

@@ -6,6 +6,9 @@
 pub mod polarity;
 pub mod probe;
 pub mod rest;
+pub mod seek;
+pub mod shunt;
+pub mod stops;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

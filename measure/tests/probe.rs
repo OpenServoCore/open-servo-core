@@ -94,7 +94,8 @@ fn the_rise_fit_matches_the_notebook_on_recorded_bursts() {
 mod synthetic {
     use osc_measure::capture::burst::{CHANS_DIFF, Capture, Meta, SAMPLES, frame_len};
     use osc_measure::fit::rise::{self, Lags, Scales};
-    use osc_measure::steps::probe::{AFacts, Read, judge, shots};
+    use osc_measure::steps::Verdict;
+    use osc_measure::steps::probe::{AFacts, BURSTS_A_GROUP, PartA, Read, Shot, judge, shots};
 
     const ARR: u16 = 1200;
     const ZERO: f64 = 1206.0;
@@ -196,21 +197,61 @@ mod synthetic {
     }
 
     fn reads(r: f64, l: f64, dead_minus: bool, full_rail: bool) -> Vec<Read> {
+        reads_by(|_| (r, l), dead_minus, full_rail)
+    }
+
+    /// Part A's bursts, each on the winding `rl` gives its shot.
+    fn reads_by(rl: impl Fn(&Shot) -> (f64, f64), dead_minus: bool, full_rail: bool) -> Vec<Read> {
         shots(4.8, RAIL)
             .into_iter()
-            .map(|s| Read {
-                shot: s,
-                cap: burst(
-                    s.duty_q15,
-                    s.dir as f64,
-                    r,
-                    l,
-                    dead_minus && s.dir < 0,
-                    full_rail,
-                ),
-                after_counts: ZERO,
+            .map(|s| {
+                let (r, l) = rl(&s);
+                Read {
+                    shot: s,
+                    cap: burst(
+                        s.duty_q15,
+                        s.dir as f64,
+                        r,
+                        l,
+                        dead_minus && s.dir < 0,
+                        full_rail,
+                    ),
+                    after_counts: ZERO,
+                }
             })
             .collect()
+    }
+
+    const R: f64 = 4.2;
+    const L: f64 = 0.82e-3;
+    /// A rotor resting where a brush bridges two segments: the winding
+    /// reads low, R and L alike, as the bench's outlier bursts did.
+    const LOW: f64 = 0.81;
+
+    /// Part A with the bursts `low` read on the low winding.
+    fn with_low(low: &[usize]) -> PartA {
+        judge(
+            &facts(),
+            &reads_by(
+                |s| {
+                    if low.contains(&s.k) {
+                        (LOW * R, LOW * L)
+                    } else {
+                        (R, L)
+                    }
+                },
+                false,
+                false,
+            ),
+        )
+    }
+
+    fn check<'a>(a: &'a PartA, name: &str) -> &'a osc_measure::steps::Check {
+        a.checks.iter().find(|c| c.name == name).expect(name)
+    }
+
+    fn aside(a: &PartA) -> Vec<usize> {
+        a.aside().map(|r| r.shot.k).collect()
     }
 
     #[test]
@@ -233,7 +274,107 @@ mod synthetic {
         assert!((p.r_ohm / r - 1.0).abs() < 0.10, "R {}", p.r_ohm);
         assert!((p.l_h / l - 1.0).abs() < 0.10, "L {}", p.l_h);
         assert!((a.period_s - 50e-6).abs() < 1e-15, "{}", a.period_s);
-        assert_eq!(a.reads.iter().filter(|r| r.shot.in_fit).count(), 6);
+        assert_eq!(a.reads.len(), 4 * BURSTS_A_GROUP);
+        assert_eq!(a.reads.iter().filter(|r| r.shot.in_fit).count(), 14);
+        assert_eq!(a.reads.iter().filter(|r| r.kept()).count(), 14);
+        assert_eq!(aside(&a), [0usize; 0]);
+        assert_eq!(check(&a, "few bursts set aside").verdict, Verdict::Pass);
+    }
+
+    /// The bursts of a sign and level run in a row, the first after each
+    /// sign change out of the fit.
+    #[test]
+    fn part_a_fires_four_bursts_a_sign_and_level() {
+        let s = shots(4.8, RAIL);
+        let at: Vec<(i8, usize)> = s.iter().map(|s| (s.dir, s.level)).collect();
+        let want: Vec<(i8, usize)> = [(1, 0), (1, 1), (-1, 1), (-1, 0)]
+            .into_iter()
+            .flat_map(|g| [g; BURSTS_A_GROUP])
+            .collect();
+        assert_eq!(at, want);
+        let out: Vec<usize> = s.iter().filter(|s| !s.in_fit).map(|s| s.k).collect();
+        assert_eq!(out, [0, 8]);
+    }
+
+    /// One burst on the low winding in a group of four is set aside and
+    /// named; the signs read alike, and the planning R is the clean one.
+    #[test]
+    fn one_low_burst_is_set_aside_and_the_r_stays_clean() {
+        let clean = with_low(&[]);
+        let a = with_low(&[5]);
+        for r in &a.reads {
+            println!("{}", r.said(RAIL, a.period_s));
+        }
+        for c in &a.checks {
+            println!("{}", c.said());
+        }
+        assert_eq!(aside(&a), [5]);
+        let five = &a.reads[5];
+        assert!(five.move_share > 0.2, "{}", five.move_share);
+        assert!(
+            five.said(RAIL, a.period_s)
+                .contains("(set aside: its first window current is +"),
+            "{}",
+            five.said(RAIL, a.period_s)
+        );
+        assert_eq!(
+            check(&a, "both signs read the same current").verdict,
+            Verdict::Pass
+        );
+        assert_eq!(check(&a, "few bursts set aside").verdict, Verdict::Pass);
+        assert!(a.accepted());
+        let (p, c) = (
+            a.r_plan_free().expect("priced"),
+            clean.r_plan_free().expect("priced"),
+        );
+        println!("R {:.4} ohm against the clean {:.4}", p.r_ohm, c.r_ohm);
+        assert!(
+            (p.r_ohm / c.r_ohm - 1.0).abs() < 1e-3,
+            "{} {}",
+            p.r_ohm,
+            c.r_ohm
+        );
+        assert!((p.l_h / c.l_h - 1.0).abs() < 1e-3, "{} {}", p.l_h, c.l_h);
+        assert!((p.v0_v - c.v0_v).abs() < 1e-3, "{} {}", p.v0_v, c.v0_v);
+    }
+
+    /// Two low bursts in one group of four leave it no current to compare:
+    /// the signs check fails and says what to do.
+    #[test]
+    fn two_low_bursts_in_a_group_refuse_with_the_sentence() {
+        let a = with_low(&[5, 6]);
+        let c = check(&a, "both signs read the same current");
+        println!("{}", c.said());
+        assert_eq!(c.verdict, Verdict::Fail);
+        assert!(
+            c.value
+                .contains("the rotor did not hold still for the bursts at 32% and the + sign")
+                && c.value.contains("turn the horn a little and start again"),
+            "{}",
+            c.value
+        );
+        assert!(!a.accepted() && !a.bridge_fault);
+        assert!(a.r_plan_free().is_none());
+    }
+
+    /// Three set aside across the groups warn, never refuse.
+    #[test]
+    fn three_set_aside_warn() {
+        let a = with_low(&[2, 5, 13]);
+        assert_eq!(aside(&a), [2, 5, 13]);
+        let c = check(&a, "few bursts set aside");
+        println!("{}", c.said());
+        assert_eq!(c.verdict, Verdict::Warn);
+        assert!(
+            c.value.contains("brush bridges two segments") && c.value.contains("the safe side"),
+            "{}",
+            c.value
+        );
+        assert_eq!(
+            check(&a, "both signs read the same current").verdict,
+            Verdict::Pass
+        );
+        assert!(a.accepted() && a.r_plan_free().is_some());
     }
 
     #[test]
@@ -257,6 +398,69 @@ mod synthetic {
             assert!(!a.accepted());
             assert!(a.r_plan_free().is_none(), "no R prices part B: {word}");
         }
+    }
+}
+
+/// The two bench runs the old signs check refused, each for one burst
+/// reading about 0.81 x its neighbors' R: on its first window current that
+/// burst alone is over the set aside share off the same level's others,
+/// both signs. The old layout ran two bursts a sign and level, too few for
+/// the rule as part A now applies it.
+#[test]
+fn the_recorded_low_burst_is_the_one_the_first_window_rule_flags() {
+    use osc_measure::fit::seated::{self, SET_ASIDE_SHARE};
+
+    let s: Value =
+        serde_json::from_str(&common::text("testdata/probe/sources.json")).expect("sources");
+    let v = |k: &str| s["scales"][k].as_f64().expect(k);
+    let lag = |k: &str| s["scales"]["lags_ticks"][k].as_f64().expect(k);
+    let scales = Scales {
+        counts_per_a: v("counts_per_a"),
+        terminal_counts_per_v: v("terminal_counts_per_v"),
+        terminal_offset_counts: v("terminal_offset_counts"),
+        window_scale: v("window_scale"),
+        lags: Lags {
+            on: lag("on"),
+            tap_on: lag("tap_on"),
+            off: lag("off"),
+            settle: lag("settle"),
+        },
+    };
+    for (run, x) in s["runs"].as_object().expect("runs") {
+        let outlier = x["outlier"].as_u64().expect("outlier") as usize;
+        let mut firsts = Vec::new();
+        let mut rs = Vec::new();
+        for (k, level) in x["levels"].as_array().expect("levels").iter().enumerate() {
+            let name = format!("burst-{k}.csv");
+            let text = std::fs::read(path(&format!("testdata/probe/{run}/{name}"))).expect(&name);
+            assert_eq!(
+                osc_measure::set::file_sha1(&text),
+                x["sha1"][&name].as_str().expect("sha1"),
+                "{run}/{name} is the recorded file"
+            );
+            let cap = burst::from_csv(std::str::from_utf8(&text).expect("text")).expect(&name);
+            let t = rise::periods(&cap, seated::wiring_sign(&cap), &scales, 0.0).expect("periods");
+            let f = rise::fit(&t, rise::pwm_period_s(cap.meta.pwm_arr), 1.0).expect("fit");
+            firsts.push((level.as_u64().expect("level"), t[0].i_a));
+            rs.push(f.r_ohm);
+        }
+        let shares = seated::off_others(&firsts);
+        for (k, m) in shares.iter().enumerate() {
+            println!(
+                "{run} burst {k}: first window {:.1} mA ({:+.1}% off its level's others), R {:.3} ohm",
+                1e3 * firsts[k].1,
+                100.0 * m,
+                rs[k]
+            );
+        }
+        let flagged: Vec<usize> = (0..shares.len())
+            .filter(|k| seated::moved(shares[*k]).is_some())
+            .collect();
+        assert_eq!(flagged, [outlier], "{run}: {shares:?}");
+        assert!(
+            shares[outlier] > SET_ASIDE_SHARE,
+            "{run}: reads the winding low"
+        );
     }
 }
 

@@ -17,6 +17,7 @@ use osc_measure::nameplate::Nameplate;
 use osc_measure::state;
 use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
+use osc_measure::steps::stops::{self, StopsInputs};
 use osc_measure::steps::{Ended, Rig};
 use osc_measure::{Board, sink::Sink};
 use serde_json::{Value, json};
@@ -406,6 +407,170 @@ pub async fn step_probe<P: Pipe>(
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let accepted = matches!(&probed, Some(Ok(p)) if p.accepted());
+    lines.push(format!("run folder: {}", root.display()));
+    Ok((lines, accepted, root))
+}
+
+/// `step stops` into `<out>/<servo>/<UTC time>/`: the rest step, the probe
+/// on its result, then the stops on both, into the same folder, each
+/// started only on the one before it accepted. The lines it prints, and
+/// whether all three were accepted.
+#[allow(clippy::too_many_arguments)]
+pub async fn step_stops<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    let np = i
+        .nameplate
+        .as_ref()
+        .context("step stops drives the motor: it needs the servo's nameplate (--nameplate)")?;
+    let root = files::run_folder(out, servo)?;
+    let mut sink = DirSink { root: root.clone() };
+    let clock = unix_s;
+    let mut lines = Vec::new();
+    let mut ran = Vec::new();
+    let t0 = unix_s();
+    let rested = {
+        let mut rig = Rig {
+            c: &mut *c,
+            id,
+            d,
+            sink: &mut sink,
+            stop,
+            clock: &clock,
+        };
+        rest::rest(&mut rig, Some(np)).await
+    };
+    let t1 = unix_s();
+    let rest_ok = match &rested {
+        Err(e) => {
+            lines.push(format!("step rest refused before any write: {e}"));
+            false
+        }
+        Ok(r) => {
+            said(rest::STEP, &r.ended, &r.checks, &mut lines);
+            r.accepted()
+        }
+    };
+    ran.push((
+        rest::STEP,
+        rested
+            .as_ref()
+            .ok()
+            .map(|r| (r.ended.clone(), r.result.clone())),
+        rested.as_ref().err().map(|e| e.0.clone()),
+        (t0, t1),
+    ));
+    let mut probe_ok = false;
+    let mut t2 = t1;
+    if rest_ok {
+        let rest_result: Value =
+            serde_json::from_slice(&sink.read(rest::RESULT)?).context("the rest result")?;
+        let probed = {
+            let mut rig = Rig {
+                c: &mut *c,
+                id,
+                d,
+                sink: &mut sink,
+                stop,
+                clock: &clock,
+            };
+            probe::probe(
+                &mut rig,
+                &ProbeInputs {
+                    nameplate: np,
+                    board: &i.board,
+                    thermal: i.thermal.as_ref(),
+                    rest: &rest_result,
+                },
+            )
+            .await
+        };
+        t2 = unix_s();
+        match &probed {
+            Err(e) => lines.push(format!("step probe refused before any write: {e}")),
+            Ok(p) => {
+                said(probe::STEP, &p.ended, &p.checks, &mut lines);
+                probe_ok = p.accepted();
+            }
+        }
+        ran.push((
+            probe::STEP,
+            probed
+                .as_ref()
+                .ok()
+                .map(|p| (p.ended.clone(), p.result.clone())),
+            probed.as_ref().err().map(|e| e.0.clone()),
+            (t1, t2),
+        ));
+    } else {
+        lines.push("step probe not run: it needs an accepted rest step".into());
+    }
+    let mut accepted = false;
+    if probe_ok {
+        let rest_result: Value =
+            serde_json::from_slice(&sink.read(rest::RESULT)?).context("the rest result")?;
+        let probe_result: Value =
+            serde_json::from_slice(&sink.read(probe::RESULT)?).context("the probe result")?;
+        let found = {
+            let mut rig = Rig {
+                c: &mut *c,
+                id,
+                d,
+                sink: &mut sink,
+                stop,
+                clock: &clock,
+            };
+            stops::stops(
+                &mut rig,
+                &StopsInputs {
+                    nameplate: np,
+                    board: &i.board,
+                    thermal: i.thermal.as_ref(),
+                    rest: &rest_result,
+                    probe: &probe_result,
+                },
+            )
+            .await
+        };
+        let t3 = unix_s();
+        match &found {
+            Err(e) => lines.push(format!("step stops refused before any write: {e}")),
+            Ok(s) => {
+                said(stops::STEP, &s.ended, &s.checks, &mut lines);
+                accepted = s.accepted();
+            }
+        }
+        ran.push((
+            stops::STEP,
+            found
+                .as_ref()
+                .ok()
+                .map(|s| (s.ended.clone(), s.result.clone())),
+            found.as_ref().err().map(|e| e.0.clone()),
+            (t2, t3),
+        ));
+    } else if rest_ok {
+        lines.push("step stops not run: it needs an accepted probe".into());
+    }
+    let entries: Vec<Ran> = ran
+        .iter()
+        .map(|(step, e, refused, times)| Ran {
+            step,
+            ended: e.as_ref().map(|(e, _)| e),
+            result: e.as_ref().and_then(|(_, r)| r.as_ref()),
+            refused: refused.clone(),
+            times: *times,
+        })
+        .collect();
+    let mut text = serde_json::to_vec_pretty(&manifest(servo, &entries))?;
+    text.push(b'\n');
+    sink.write("run.json", &text)?;
     lines.push(format!("run folder: {}", root.display()));
     Ok((lines, accepted, root))
 }
