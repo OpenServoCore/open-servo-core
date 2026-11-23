@@ -362,8 +362,12 @@ impl Channels {
     }
 
     /// The frame's own pattern a channel keeps once VDD's is out: flat
-    /// within a count, every channel, else refused; not judged without a
-    /// trusted reference. A channel no row carried (NaN) is no flatness.
+    /// within a count, every channel, else warned; not judged without a
+    /// trusted reference. Never a refusal: the supply's frame ripple does
+    /// not keep one shape from capture to capture, so the torque-on
+    /// second can keep over a count of it against the rest second's
+    /// pattern on a healthy board. A channel no row carried (NaN) is no
+    /// flatness.
     pub fn pattern_check(&self) -> Check {
         let (worst, fold) = self
             .rest
@@ -398,7 +402,7 @@ impl Channels {
             verdict: if fold <= FOLD_MAX {
                 Verdict::Pass
             } else {
-                Verdict::Fail
+                Verdict::Warn
             },
         }
     }
@@ -1097,13 +1101,13 @@ mod tests {
         assert_eq!(c.verdict, Verdict::Pass, "{}", c.value);
     }
 
-    /// A frame pattern that is not VDD's is still refused.
+    /// A frame pattern that is not VDD's is said, not refused.
     #[test]
-    fn a_frame_pattern_unlike_vdds_is_still_refused() {
+    fn a_frame_pattern_unlike_vdds_is_warned() {
         let own = |i: u64| 2.0 * (2.0 * core::f64::consts::PI * 3.0 * (i % 16) as f64 / 16.0).sin();
         let (rest, raw) = rows(own);
         let c = Channels::of(&rest, &raw).pattern_check();
-        assert_eq!(c.verdict, Verdict::Fail, "{}", c.value);
+        assert_eq!(c.verdict, Verdict::Warn, "{}", c.value);
         assert!(c.value.contains("(rest pos)"), "{}", c.value);
     }
 
