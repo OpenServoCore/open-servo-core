@@ -1145,19 +1145,19 @@ pub async fn probe<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result
         checks.push(match l.outcome() {
             Some(Outcome::Proven {
                 stored_right,
-                pressed,
+                still_toward,
                 volts,
             }) => Check {
                 name: "polarity".into(),
                 value: format!(
                     "two repeats agree at {volts:.3} V: the stored drive_polarity is {}{}",
                     if *stored_right { "right" } else { "wrong" },
-                    pressed.map_or(String::new(), |s| format!(
-                        "; the start was at the {} stop",
+                    still_toward.map_or(String::new(), |s| format!(
+                        "; a duty toward the {} end stayed still, a stop there or static friction",
                         s.word()
                     ))
                 ),
-                bound: "opposite duties move opposite ways, or one presses a stop".into(),
+                bound: "opposite duties move opposite ways, or one stays still".into(),
                 verdict: Verdict::Pass,
             },
             Some(Outcome::Refused { kind, why }) => {
@@ -1167,7 +1167,7 @@ pub async fn probe<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result
                 Check {
                     name: "polarity".into(),
                     value: why.clone(),
-                    bound: "opposite duties move opposite ways, or one presses a stop".into(),
+                    bound: "opposite duties move opposite ways, or one stays still".into(),
                     verdict: Verdict::Fail,
                 }
             }
@@ -1305,14 +1305,14 @@ fn result_json(
     let polarity = match found.ladder.as_ref().and_then(Ladder::outcome) {
         Some(Outcome::Proven {
             stored_right,
-            pressed,
+            still_toward,
             ..
         }) => json!({
             "stored": b.polarity,
             "found": if *stored_right { b.polarity } else { !b.polarity },
             "stored_right": stored_right,
             "corrected_volatile": found.corrected,
-            "pressed_stop": pressed.map(|s| s.word()),
+            "still_toward": still_toward.map(|s| s.word()),
         }),
         _ => json!({"stored": b.polarity, "found": null}),
     };

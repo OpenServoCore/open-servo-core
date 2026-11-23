@@ -268,7 +268,7 @@ impl Motion {
 }
 
 /// What a +duty, -duty pair says: whether the stored sign is right, and
-/// the logical duty that pressed a stop, if one did.
+/// the logical duty that stayed still, if one did.
 type Says = (bool, Option<i8>);
 
 /// [`Says`] of a pair; None when opposite duties did not move opposite
@@ -350,10 +350,11 @@ impl Refusal {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     /// The sign the pulses proved: whether the stored `drive_polarity` is
-    /// right, and the stop one duty pressed when the start was at one.
+    /// right, and the end a duty that stayed still pointed at. A stop
+    /// there or the motor's static friction: the pulses do not tell.
     Proven {
         stored_right: bool,
-        pressed: Option<Stop>,
+        still_toward: Option<Stop>,
         volts: f64,
     },
     Refused {
@@ -656,26 +657,17 @@ impl Ladder {
                 ),
             );
         }
-        // A pair started at a stop leaves the duty toward it still and moves
-        // the other away; its repeat has that room, so both move. A duty
-        // still in the repeat had room and did not move: breakaway.
-        let pressed_dir = match still {
-            [Some(d), None] => Some(d),
-            [None, None] => None,
-            _ => {
-                self.path.push(format!(
-                    "a duty stayed still with room to move: {volts:.3} V is at the motor's breakaway, so no stop is claimed"
-                ));
-                None
-            }
-        };
-        let pressed = pressed_dir.map(|d| {
+        // A first pulse from rest can stick under the motor's static
+        // friction at mid travel exactly as it does against a stop, and
+        // the repeat then moves either way: the pulses name the end, no
+        // stop is claimed.
+        let still_toward = still[0].or(still[1]).map(|d| {
             let counts = if right { d } else { -d };
             if counts > 0 { Stop::High } else { Stop::Low }
         });
-        if let Some(s) = pressed {
+        if let Some(s) = still_toward {
             self.path.push(format!(
-                "the start was at the {} stop: the duty toward it pressed it (no motion, no back-EMF in its coast)",
+                "a duty toward the {} end stayed still at {volts:.3} V (no motion, no back-EMF in its coast): a stop there or the motor's static friction, the pulses do not tell which",
                 s.word()
             ));
         }
@@ -686,7 +678,7 @@ impl Ladder {
         });
         self.done = Some(Outcome::Proven {
             stored_right: right,
-            pressed,
+            still_toward,
             volts,
         });
     }
@@ -932,9 +924,9 @@ mod tests {
         match l.outcome() {
             Some(Outcome::Proven {
                 stored_right,
-                pressed,
+                still_toward,
                 ..
-            }) => (*stored_right, *pressed),
+            }) => (*stored_right, *still_toward),
             o => panic!("{o:?}: {:?}", l.path()),
         }
     }
@@ -948,11 +940,11 @@ mod tests {
 
     /// Mid travel, at the low stop and at the high stop, the stored sign
     /// right and wrong, both wirings: the right sign every time. A start
-    /// at a stop shows as a press when +duty drives toward it; when +duty
-    /// drives away, -duty brings the shaft back and both move.
+    /// at a stop leaves +duty still when it drives toward the stop; when
+    /// +duty drives away, -duty brings the shaft back and both move.
     #[test]
     fn the_sign_is_found_from_either_stored_value_and_three_start_positions() {
-        let mut pressed_seen = 0;
+        let mut still_seen = 0;
         for wired in [1.0, -1.0] {
             for stored in [true, false] {
                 for start in [2000.0, 432.0, 3626.0] {
@@ -964,22 +956,22 @@ mod tests {
                     let right = (wired > 0.0) == stored;
                     // +duty's way in counts: up when the stored sign is right
                     let plus_up = right;
-                    let pressed = match start {
+                    let still = match start {
                         432.0 if !plus_up => Some(Stop::Low),
                         3626.0 if plus_up => Some(Stop::High),
                         _ => None,
                     };
                     assert_eq!(
                         proven(&l),
-                        (right, pressed),
+                        (right, still),
                         "wired {wired}, stored {stored}, from {start}: {:?}",
                         l.path()
                     );
                     assert!(l.pulses().iter().all(|p| !p.planned.unwedge));
-                    if pressed.is_some() {
-                        pressed_seen += 1;
+                    if still.is_some() {
+                        still_seen += 1;
                         assert!(
-                            l.path().iter().any(|p| p.contains("the start was at the")),
+                            l.path().iter().any(|p| p.contains("stayed still")),
                             "{:?}",
                             l.path()
                         );
@@ -987,7 +979,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(pressed_seen, 4, "each stop pressed in half its cases");
+        assert_eq!(still_seen, 4, "a duty still at each stop in half its cases");
     }
 
     /// The ladder fed a first pair and its repeat at the shortest pulse,
@@ -1014,38 +1006,34 @@ mod tests {
         l
     }
 
-    /// A start at mid travel, the pulse at the motor's breakaway: the
-    /// duty that stayed still differs between the pairs, so it had room
-    /// and did not move. The sign stands; no stop is claimed.
+    /// A start at mid travel with a pulse at the motor's breakaway leaves
+    /// a duty still exactly as a stop does, whatever the repeat does: the
+    /// sign stands, the end is named, no stop is claimed.
     #[test]
-    fn a_still_duty_that_changes_between_pairs_is_breakaway_not_a_stop() {
+    fn a_still_duty_names_its_end_and_claims_no_stop() {
         use Motion::*;
-        let l = fed([[Still, Up], [Down, Still]]);
-        assert_eq!(proven(&l), (false, None));
-        assert!(
-            l.path().iter().any(|p| p.contains("breakaway")),
-            "{:?}",
-            l.path()
-        );
-        assert!(
-            !l.path().iter().any(|p| p.contains("the start was at the")),
-            "{:?}",
-            l.path()
-        );
-    }
-
-    /// The same duty still in both pairs: the repeat's had room to move
-    /// back, so no stop is claimed either.
-    #[test]
-    fn the_same_duty_still_in_both_pairs_claims_no_stop() {
-        use Motion::*;
-        let l = fed([[Still, Up], [Still, Up]]);
-        assert_eq!(proven(&l), (false, None));
-        assert!(
-            l.path().iter().any(|p| p.contains("breakaway")),
-            "{:?}",
-            l.path()
-        );
+        for pairs in [
+            [[Still, Up], [Down, Still]],
+            [[Still, Up], [Down, Up]],
+            [[Still, Up], [Still, Up]],
+        ] {
+            let l = fed(pairs);
+            assert_eq!(proven(&l), (false, Some(Stop::Low)), "{pairs:?}");
+            assert!(
+                l.path().iter().any(|p| p.contains("do not tell which")),
+                "{:?}",
+                l.path()
+            );
+            assert!(
+                !l.path().iter().any(|p| p.contains("the start was at the")),
+                "{:?}",
+                l.path()
+            );
+        }
+        let l = fed([[Down, Up], [Down, Still]]);
+        assert_eq!(proven(&l), (false, Some(Stop::High)));
+        let l = fed([[Up, Down], [Up, Down]]);
+        assert_eq!(proven(&l), (true, None));
     }
 
     #[test]
