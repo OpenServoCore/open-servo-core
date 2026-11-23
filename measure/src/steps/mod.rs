@@ -3,13 +3,17 @@
 //! when it cannot start, and once it has written it always ends through
 //! [`crate::guard::exit`].
 
+pub mod drive;
 pub mod polarity;
 pub mod probe;
 pub mod rest;
 pub mod seek;
 pub mod shunt;
 pub mod stops;
+#[cfg(test)]
+pub(crate) mod testkit;
 pub mod verify;
+pub mod window;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

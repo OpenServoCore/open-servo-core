@@ -19,6 +19,7 @@ use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
 use osc_measure::steps::stops::{self, StopsInputs};
 use osc_measure::steps::verify::{self, VerifyInputs};
+use osc_measure::steps::window::{self, WindowInputs};
 use osc_measure::steps::{Ended, Rig};
 use osc_measure::{Board, sink::Sink};
 use serde_json::{Value, json};
@@ -412,6 +413,25 @@ pub async fn step_probe<P: Pipe>(
     Ok((lines, accepted, root))
 }
 
+/// The step a chained run ends on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Last {
+    Stops,
+    Window,
+}
+
+/// A step as the chain keeps it: its end and result, or its refusal.
+type Kept = (
+    &'static str,
+    Option<(Ended, Option<Value>)>,
+    Option<String>,
+    (f64, f64),
+);
+
+fn result_of(sink: &mut DirSink, rel: &str, what: &str) -> Result<Value> {
+    serde_json::from_slice(&sink.read(rel)?).with_context(|| format!("the {what} result"))
+}
+
 /// `step verify` into `<out>/<servo>/<UTC time>/`: the closed-loop check
 /// of the installed, stamped set. The lines it prints, and whether the set
 /// was accepted.
@@ -482,15 +502,49 @@ pub async fn step_stops<P: Pipe>(
     servo: &str,
     stop: &AtomicBool,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    let np = i
-        .nameplate
-        .as_ref()
-        .context("step stops drives the motor: it needs the servo's nameplate (--nameplate)")?;
+    chain(c, id, d, i, out, servo, stop, Last::Stops).await
+}
+
+/// `step window` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
+/// stops, then the window term's onsets on all three, into the same
+/// folder, each started only on the one before it accepted. The lines it
+/// prints, and whether all four were accepted.
+#[allow(clippy::too_many_arguments)]
+pub async fn step_window<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    chain(c, id, d, i, out, servo, stop, Last::Window).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn chain<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+    last: Last,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    let name = match last {
+        Last::Stops => stops::STEP,
+        Last::Window => window::STEP,
+    };
+    let np = i.nameplate.as_ref().with_context(|| {
+        format!("step {name} drives the motor: it needs the servo's nameplate (--nameplate)")
+    })?;
     let root = files::run_folder(out, servo)?;
     let mut sink = DirSink { root: root.clone() };
     let clock = unix_s;
     let mut lines = Vec::new();
-    let mut ran = Vec::new();
+    let mut ran: Vec<Kept> = Vec::new();
     let t0 = unix_s();
     let rested = {
         let mut rig = Rig {
@@ -526,8 +580,7 @@ pub async fn step_stops<P: Pipe>(
     let mut probe_ok = false;
     let mut t2 = t1;
     if rest_ok {
-        let rest_result: Value =
-            serde_json::from_slice(&sink.read(rest::RESULT)?).context("the rest result")?;
+        let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
         let probed = {
             let mut rig = Rig {
                 c: &mut *c,
@@ -568,12 +621,11 @@ pub async fn step_stops<P: Pipe>(
     } else {
         lines.push("step probe not run: it needs an accepted rest step".into());
     }
-    let mut accepted = false;
+    let mut stops_ok = false;
+    let mut t3 = t2;
     if probe_ok {
-        let rest_result: Value =
-            serde_json::from_slice(&sink.read(rest::RESULT)?).context("the rest result")?;
-        let probe_result: Value =
-            serde_json::from_slice(&sink.read(probe::RESULT)?).context("the probe result")?;
+        let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
+        let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
         let found = {
             let mut rig = Rig {
                 c: &mut *c,
@@ -595,12 +647,12 @@ pub async fn step_stops<P: Pipe>(
             )
             .await
         };
-        let t3 = unix_s();
+        t3 = unix_s();
         match &found {
             Err(e) => lines.push(format!("step stops refused before any write: {e}")),
             Ok(s) => {
                 said(stops::STEP, &s.ended, &s.checks, &mut lines);
-                accepted = s.accepted();
+                stops_ok = s.accepted();
             }
         }
         ran.push((
@@ -614,6 +666,56 @@ pub async fn step_stops<P: Pipe>(
         ));
     } else if rest_ok {
         lines.push("step stops not run: it needs an accepted probe".into());
+    }
+    let mut accepted = stops_ok;
+    if last == Last::Window {
+        accepted = false;
+        if stops_ok {
+            let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
+            let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
+            let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
+            let windowed = {
+                let mut rig = Rig {
+                    c: &mut *c,
+                    id,
+                    d,
+                    sink: &mut sink,
+                    stop,
+                    clock: &clock,
+                };
+                window::window(
+                    &mut rig,
+                    &WindowInputs {
+                        nameplate: np,
+                        board: &i.board,
+                        thermal: i.thermal.as_ref(),
+                        rest: &rest_result,
+                        probe: &probe_result,
+                        stops: &stops_result,
+                    },
+                )
+                .await
+            };
+            let t4 = unix_s();
+            match &windowed {
+                Err(e) => lines.push(format!("step window refused before any write: {e}")),
+                Ok(w) => {
+                    said(window::STEP, &w.ended, &w.checks, &mut lines);
+                    accepted = w.accepted();
+                }
+            }
+            ran.push((
+                window::STEP,
+                windowed
+                    .as_ref()
+                    .ok()
+                    .map(|w| (w.ended.clone(), w.result.clone())),
+                windowed.as_ref().err().map(|e| e.0.clone()),
+                (t3, t4),
+            ));
+        } else if probe_ok {
+            lines.push("step window not run: it needs an accepted stops step".into());
+        }
     }
     let entries: Vec<Ran> = ran
         .iter()

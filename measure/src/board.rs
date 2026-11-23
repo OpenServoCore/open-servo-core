@@ -22,6 +22,23 @@ pub struct Board {
     /// The bridge's slow-decay edges a shunt burst is read by.
     #[serde(default)]
     pub burst_edges: Option<BurstEdges>,
+    /// What the window-term fit reads a crest shunt sample by.
+    #[serde(default)]
+    pub window_read: Option<WindowRead>,
+}
+
+/// The crest sample's place, the loop the winding decays through between
+/// pulses, and the amplifier's settle gain by drive width: board facts
+/// with no register, the last one compiled into the image.
+#[derive(Clone, Debug, Deserialize)]
+pub struct WindowRead {
+    /// Where the crest shunt sample closes after the crest, timer ticks.
+    pub sample_ticks: f64,
+    /// The low-side loop of the bridge's brake state.
+    pub r_brake_ohm: f64,
+    pub settle_start_ticks: u16,
+    /// Q15 gains, one per 8-tick band of drive width from the start.
+    pub settle_q15: Vec<u16>,
 }
 
 /// The bridge's edges in timer ticks after the commanded ones: where the
