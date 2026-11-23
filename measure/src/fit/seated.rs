@@ -57,6 +57,28 @@ impl Aside {
     }
 }
 
+/// Each first window current's share off the median of the others of its
+/// group, `(group, current)` in; NaN for one with no other read.
+pub fn off_others<G: PartialEq>(v: &[(G, f64)]) -> Vec<f64> {
+    v.iter()
+        .enumerate()
+        .map(|(j, (g, i))| {
+            let others: Vec<f64> = v
+                .iter()
+                .enumerate()
+                .filter(|(k, (h, x))| *k != j && h == g && x.is_finite())
+                .map(|(_, (_, x))| *x)
+                .collect();
+            median(&others).map_or(f64::NAN, |m| i / m - 1.0)
+        })
+        .collect()
+}
+
+/// The set aside a burst `share` off its group's others earns, if any.
+pub fn moved(share: f64) -> Option<Aside> {
+    (share.abs() > SET_ASIDE_SHARE).then_some(Aside::Moved(share))
+}
+
 /// One burst's read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BurstRead {
@@ -177,18 +199,14 @@ pub fn read(shots: &[Shot], s: &Scales) -> SeatedRead {
             aside: aside.or((k == 0).then_some(Aside::First)),
         });
     }
-    for j in 0..out.len() {
-        let others: Vec<f64> = out
-            .iter()
-            .enumerate()
-            .filter(|(i, b)| *i != j && b.group == out[j].group && b.i_first_a.is_finite())
-            .map(|(_, b)| b.i_first_a)
-            .collect();
-        let m = median(&others).map_or(f64::NAN, |m| out[j].i_first_a / m - 1.0);
-        out[j].move_share = m;
-        if out[j].aside.is_none() && m.abs() > SET_ASIDE_SHARE {
-            out[j].aside = Some(Aside::Moved(m));
-        }
+    let shares = off_others(
+        &out.iter()
+            .map(|b| (b.group, b.i_first_a))
+            .collect::<Vec<_>>(),
+    );
+    for (b, m) in out.iter_mut().zip(shares) {
+        b.move_share = m;
+        b.aside = b.aside.take().or(moved(m));
     }
     SeatedRead {
         bursts: out,

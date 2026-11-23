@@ -1,0 +1,41 @@
+{
+ "from": "osc-dev-v006-bringup captures/ident-stops/run2-probe-refused-outlier-burst (outlier-a) and run2-probe-refused-outlier-burst-b (outlier-b), runs/*/*/captures/probe/burst-K.csv, copied unchanged: two probe runs of the old 8-burst layout (+20 %, +20 %, +32 %, +32 %, -32 %, -32 %, -20 %, -20 % of the stated 4.8 V) refused by the signs check, one burst each reading the winding low",
+ "scales": {
+  "counts_per_a": 1108.4520727272727,
+  "terminal_counts_per_v": 248.24242424242425,
+  "terminal_offset_counts": 0.0,
+  "window_scale": 1.0,
+  "lags_ticks": {"on": 44.0, "tap_on": 39.5, "off": 14.0, "settle": 72.0},
+  "source": "each run's results/probe.json part_a.scales: the nominal sense block read off the servo and the board's burst_edges"
+ },
+ "runs": {
+  "outlier-a": {
+   "outlier": 5,
+   "levels": [0, 0, 1, 1, 1, 1, 0, 0],
+   "sha1": {
+    "burst-0.csv": "dd4b43b5749870c8e2c507da6f20ff8432162000",
+    "burst-1.csv": "b19d92b219f9745ad923946e38053d08b23bece7",
+    "burst-2.csv": "6b2e090d4b1da3105f18c9b8378f506caaf30b5d",
+    "burst-3.csv": "a925553f123a451f5d449ea295d6a3ab486ccfe2",
+    "burst-4.csv": "97ea6921ee44c3ff76b1440c2fa05c91697e2ce6",
+    "burst-5.csv": "a95f96d0dccf14137a54666bf8d9713fbfcf0747",
+    "burst-6.csv": "ee601b498684af789d7c2d036807fb6f93cbf919",
+    "burst-7.csv": "1880e90f1161ba2df9898125259bf77ff1bdd170"
+   }
+  },
+  "outlier-b": {
+   "outlier": 1,
+   "levels": [0, 0, 1, 1, 1, 1, 0, 0],
+   "sha1": {
+    "burst-0.csv": "567dee443cced473def125fca004d8d0ee9cd299",
+    "burst-1.csv": "1bb5028c27ccebbb84043ff5afef0f4333a568c3",
+    "burst-2.csv": "239524a07ce1db489f4b5599e0d314f9dde10d21",
+    "burst-3.csv": "dafc5a6210c30e77bcb4ea92ba966f7962c11c25",
+    "burst-4.csv": "a623e8d057c082557c346e392775d8a4fdd7356b",
+    "burst-5.csv": "a816c8e1c598a04372f0a33743881a25e2a3b441",
+    "burst-6.csv": "f5689ce985698126aecd35c1b63b014709244a2d",
+    "burst-7.csv": "e952b0a1130ed87e06ab27ac6bd2875c5f284aad"
+   }
+  }
+ }
+}
