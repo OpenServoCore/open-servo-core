@@ -1,6 +1,10 @@
 //! The rest step on the client's simulated servo at 3 Mbps: what it
 //! accepts and refuses, the line it refuses before any write, the burst it
-//! will not take as evidence, and the one way out every exit runs.
+//! will not take as evidence, and the one way out every exit runs. Then
+//! the probe step's ways out on the same servo: the simulated servo runs
+//! no shunt burst, so the probe reaches its refusals before any write, a
+//! burst that never completes, an arm the servo refuses, a bus error and
+//! the interrupt flag, and no further.
 
 mod common;
 
@@ -14,6 +18,7 @@ use futures_lite::future::block_on;
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick};
 use osc_client::pipe::{Pipe, PipeError};
 use osc_client::{BaudRate, Client, Inst, Opcode, mgmt};
+use osc_measure::capture::burst;
 use osc_measure::capture::meta::gunzip;
 use osc_measure::guard::Way;
 use osc_measure::install;
@@ -33,12 +38,17 @@ type Hook = Box<dyn FnMut(usize, &mut FakePipe) -> bool>;
 /// Every write on the bus, its address and bytes.
 type Writes = Rc<RefCell<Vec<(u16, Vec<u8>)>>>;
 
+/// A hook on every write, its address and bytes: it may reach into the
+/// rig, and fail the write's own send.
+type OnWrite = Box<dyn FnMut(u16, &[u8], &mut FakePipe) -> bool>;
+
 /// The fake adapter, every write logged with its bytes.
 struct Bus {
     inner: FakePipe,
     writes: Writes,
     arms: usize,
     hook: Hook,
+    on_write: OnWrite,
 }
 
 impl Pipe for Bus {
@@ -63,6 +73,9 @@ impl Pipe for Bus {
         {
             let addr = u16::from_le_bytes([payload[0], payload[1]]);
             self.writes.borrow_mut().push((addr, payload[2..].to_vec()));
+            if (self.on_write)(addr, &payload[2..], &mut self.inner) {
+                return Err(PipeError::Io("the cable came out".into()));
+            }
             if addr == CHUNK0 && payload.len() >= 12 {
                 self.arms += 1;
                 if (self.hook)(self.arms, &mut self.inner) {
@@ -135,6 +148,7 @@ fn servo(rate: BaudRate, track: Vec<TelSample>, hook: Hook) -> (Client<Bus>, Wri
         writes: writes.clone(),
         arms: 0,
         hook: Box::new(|_, _| false),
+        on_write: Box::new(|_, _, _| false),
     }))
     .expect("connect");
     let rec = record();
@@ -416,4 +430,296 @@ fn every_exit_path_ends_torque_off() {
         "{:?}",
         r.ended.lines
     );
+}
+
+mod probe {
+    use super::*;
+    use osc_measure::Board;
+    use osc_measure::inputs::ThermalInputs;
+    use osc_measure::nameplate::GearClass;
+    use osc_measure::steps::probe::{self, NOT_METAL, ProbeInputs, Probed};
+
+    const DUTY_Q15: u16 = 0x196;
+    const ARM: u16 = 0x198;
+    const SOFT: u16 = 0x028;
+    const CURRENT_LIMIT: u16 = 0x04c;
+    const DRIVE_POLARITY: u16 = 0x04f;
+
+    fn board() -> Board {
+        common::load("boards/osc-dev-v006.json")
+    }
+
+    fn thermal() -> ThermalInputs {
+        common::load("testdata/mg90-d/thermal.json")
+    }
+
+    /// The servo of record with the rest step run and accepted on it, and
+    /// its result; the writes log cleared.
+    fn rested(rate: BaudRate) -> (Client<Bus>, Writes, serde_json::Value) {
+        let (mut c, writes) = servo(BaudRate::B3000000, track(None, 1), Box::new(|_, _| false));
+        let mut sink = MemSink::default();
+        let r = run(&mut c, &AtomicBool::new(false), &mut sink).expect("rest starts");
+        assert_eq!(r.ended.way, Way::Done, "{:?}", r.ended.why);
+        let rest: serde_json::Value =
+            serde_json::from_slice(&sink.files[rest::RESULT]).expect("rest.json");
+        if rate != BaudRate::B3000000 {
+            block_on(mgmt::set_baud(&mut c, &[ID], rate)).expect("baud");
+        }
+        writes.borrow_mut().clear();
+        (c, writes, rest)
+    }
+
+    fn probe_on(
+        c: &mut Client<Bus>,
+        np: &Nameplate,
+        thermal: Option<&ThermalInputs>,
+        rest: &serde_json::Value,
+        stop: &AtomicBool,
+        sink: &mut MemSink,
+    ) -> Result<Probed, install::Refused> {
+        let d = descriptor();
+        let clock = || 1.7e9;
+        let b = board();
+        let mut rig = Rig {
+            c,
+            id: ID,
+            d: &d,
+            sink,
+            stop,
+            clock: &clock,
+        };
+        block_on(probe::probe(
+            &mut rig,
+            &ProbeInputs {
+                nameplate: np,
+                board: &b,
+                thermal,
+                rest,
+            },
+        ))
+    }
+
+    fn table_bytes(c: &mut Client<Bus>) -> Vec<Vec<u8>> {
+        [
+            (SOFT, 8),
+            (CURRENT_LIMIT, 2),
+            (DRIVE_POLARITY, 1),
+            (0x184, 1),
+        ]
+        .iter()
+        .map(|&(a, n)| block_on(c.read(ID, a, n)).expect("read"))
+        .collect()
+    }
+
+    fn armed(w: &Writes) -> bool {
+        w.borrow().iter().any(|(a, _)| *a == ARM || *a == DUTY_Q15)
+    }
+
+    #[test]
+    fn a_non_metal_servo_is_refused_before_any_write() {
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        for gear in [Some(GearClass::Plastic), Some(GearClass::Unknown)] {
+            let mut np = nameplate();
+            np.gear_class = gear;
+            let mut sink = MemSink::default();
+            let e = probe_on(
+                &mut c,
+                &np,
+                Some(&thermal()),
+                &rest,
+                &AtomicBool::new(false),
+                &mut sink,
+            )
+            .expect_err("refused");
+            assert!(e.0.contains(NOT_METAL), "{e}");
+            assert_eq!(*writes.borrow(), [], "nothing written");
+            assert!(sink.files.is_empty());
+        }
+    }
+
+    /// A nameplate short of a value, no thermal values, a rest step not
+    /// accepted, a line under 3 Mbps: each refused naming it, nothing
+    /// written.
+    #[test]
+    fn the_probe_refuses_before_any_write() {
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        let mut np = nameplate();
+        np.travel_deg = None;
+        let mut not_rested = rest.clone();
+        not_rested["verdict"] = "refused".into();
+        let full = nameplate();
+        let t = thermal();
+        let cases: [(&Nameplate, Option<&ThermalInputs>, &serde_json::Value, &str); 3] = [
+            (&np, Some(&t), &rest, "travel_deg"),
+            (&full, None, &rest, "no thermal values"),
+            (&full, Some(&t), &not_rested, "an accepted rest step"),
+        ];
+        for (np, th, r, want) in cases {
+            let mut sink = MemSink::default();
+            let e = probe_on(&mut c, np, th, r, &AtomicBool::new(false), &mut sink)
+                .expect_err("refused");
+            assert!(e.0.contains(want), "{want}: {e}");
+            assert_eq!(*writes.borrow(), [], "{want}: nothing written");
+        }
+        let (mut c, writes, rest) = rested(BaudRate::B2000000);
+        let e = probe_on(
+            &mut c,
+            &full,
+            Some(&t),
+            &rest,
+            &AtomicBool::new(false),
+            &mut MemSink::default(),
+        )
+        .expect_err("refused");
+        assert!(e.0.contains("3 Mbaud"), "{e}");
+        assert_eq!(*writes.borrow(), []);
+    }
+
+    /// What every way out after a write leaves: torque off and read back,
+    /// the dead-man and the telemetry count 0, every volatile field the
+    /// step wrote back as it was.
+    fn ends(c: &mut Client<Bus>, before: &[Vec<u8>], p: &Probed) {
+        assert_eq!(torque(c), 0, "{:?}", p.ended);
+        assert!(p.ended.exit.torque_off, "{}", p.ended.exit);
+        assert_eq!(block_on(c.read(ID, 0x192, 2)).expect("dead-man"), [0, 0]);
+        assert_eq!(block_on(c.read(ID, 0x1ea, 2)).expect("tel_count"), [0, 0]);
+        assert_eq!(table_bytes(c), before, "{}", p.ended.exit);
+        for name in [
+            "current_limit_counts",
+            "pos_min_soft_counts",
+            "pos_max_soft_counts",
+            "mode",
+        ] {
+            assert!(
+                p.ended
+                    .exit
+                    .lines
+                    .iter()
+                    .any(|l| l == &format!("{name} put back, read back")),
+                "{name}: {}",
+                p.ended.exit
+            );
+        }
+        assert!(
+            p.ended.lines.iter().any(|l| l.starts_with("end position")),
+            "{:?}",
+            p.ended.lines
+        );
+    }
+
+    /// The simulated servo never completes a burst: the poll runs out and
+    /// the step aborts through the way out.
+    #[test]
+    fn a_burst_that_never_completes_ends_through_the_way_out() {
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        let before = table_bytes(&mut c);
+        let mut sink = MemSink::default();
+        let p = probe_on(
+            &mut c,
+            &nameplate(),
+            Some(&thermal()),
+            &rest,
+            &AtomicBool::new(false),
+            &mut sink,
+        )
+        .expect("starts");
+        assert_eq!(p.ended.way, Way::Error, "{:?}", p.ended.why);
+        let why = p.ended.why.clone().unwrap_or_default();
+        assert!(
+            why.contains("shunt burst 0") && why.contains("after 200 polls"),
+            "{why}"
+        );
+        assert!(armed(&writes) && torque_went_on(&writes));
+        ends(&mut c, &before, &p);
+        let result: serde_json::Value =
+            serde_json::from_slice(&sink.files[probe::RESULT]).expect("probe.json");
+        assert_eq!(result["verdict"], "aborted");
+        assert!(
+            result["estimates"]
+                .as_object()
+                .is_some_and(|m| m.is_empty())
+        );
+    }
+
+    /// The servo refuses the arm: refused after the step's writes, the rule
+    /// named, through the way out.
+    #[test]
+    fn a_refused_arm_ends_through_the_way_out() {
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        c.pipe_mut().on_write = Box::new(|addr, _, p| {
+            if addr == ARM {
+                p.sim_mut()
+                    .servo_table_mut(0, |t| t.burst.window.state = burst::STATE_REJECTED);
+            }
+            false
+        });
+        let before = table_bytes(&mut c);
+        let p = probe_on(
+            &mut c,
+            &nameplate(),
+            Some(&thermal()),
+            &rest,
+            &AtomicBool::new(false),
+            &mut MemSink::default(),
+        )
+        .expect("starts");
+        assert_eq!(p.ended.way, Way::Refused, "{:?}", p.ended.why);
+        let why = p.ended.why.clone().unwrap_or_default();
+        assert!(
+            why.contains("burst 0: the servo refused the burst"),
+            "{why}"
+        );
+        assert!(torque_went_on(&writes));
+        ends(&mut c, &before, &p);
+    }
+
+    /// The cable comes out on the first burst's duty write: an error, the
+    /// bus back for the way out.
+    #[test]
+    fn a_bus_error_mid_probe_ends_through_the_way_out() {
+        let (mut c, _, rest) = rested(BaudRate::B3000000);
+        let mut cut = true;
+        c.pipe_mut().on_write = Box::new(move |addr, _, _| {
+            let now = addr == DUTY_Q15 && cut;
+            cut &= !now;
+            now
+        });
+        let before = table_bytes(&mut c);
+        let p = probe_on(
+            &mut c,
+            &nameplate(),
+            Some(&thermal()),
+            &rest,
+            &AtomicBool::new(false),
+            &mut MemSink::default(),
+        )
+        .expect("starts");
+        assert_eq!(p.ended.way, Way::Error, "{:?}", p.ended.why);
+        assert!(
+            p.ended.why.clone().unwrap_or_default().contains("bus"),
+            "{:?}",
+            p.ended.why
+        );
+        ends(&mut c, &before, &p);
+    }
+
+    /// The flag set before the first burst: the step stops there, no burst
+    /// armed, through the way out.
+    #[test]
+    fn the_interrupt_flag_stops_the_probe_before_a_burst() {
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        let before = table_bytes(&mut c);
+        let p = probe_on(
+            &mut c,
+            &nameplate(),
+            Some(&thermal()),
+            &rest,
+            &AtomicBool::new(true),
+            &mut MemSink::default(),
+        )
+        .expect("starts");
+        assert_eq!(p.ended.way, Way::Interrupted, "{:?}", p.ended.why);
+        assert!(!armed(&writes), "no burst armed");
+        ends(&mut c, &before, &p);
+    }
 }

@@ -596,6 +596,54 @@ pub fn to_csv(cap: &Capture) -> String {
     s
 }
 
+/// A `burst-K.csv` read back into its capture.
+pub fn from_csv(text: &str) -> Result<Capture, String> {
+    let mut lines = text.lines();
+    if lines.next() != Some(CSV_HEADER) {
+        return Err("not a burst-K.csv: the header differs".into());
+    }
+    let first: Vec<i64> = lines
+        .next()
+        .ok_or("no row 0")?
+        .split(',')
+        .map(|v| v.parse().map_err(|_| format!("row 0: {v} is no integer")))
+        .collect::<Result<_, _>>()?;
+    if first.len() != 17 {
+        return Err(format!("row 0 has {} columns, not 17", first.len()));
+    }
+    let mut samples = vec![first[1] as u16];
+    for (k, line) in lines.enumerate() {
+        let (i, v) = line
+            .split_once(',')
+            .ok_or_else(|| format!("row {}: no k,code", k + 1))?;
+        if i.parse::<usize>().ok() != Some(k + 1) {
+            return Err(format!("row {}: k reads {i}", k + 1));
+        }
+        samples.push(v.parse().map_err(|_| format!("row {}: code {v}", k + 1))?);
+    }
+    let m = |i: usize| first[i];
+    Ok(Capture {
+        samples,
+        meta: Meta {
+            pre_q15: m(2) as i16,
+            step_q15: m(3) as i16,
+            step_index: m(4) as u16,
+            start_cnt: m(5) as u16,
+            pwm_arr: m(6) as u16,
+            start_dir: m(7) as u8,
+            restore_dir: m(8) as u8,
+            vbus_raw: m(9) as u16,
+            bias: m(10) as u16,
+            chans: m(11) as u8,
+            frame_len: m(12) as u8,
+            vmotor_bias: m(13) as u16,
+            pos: m(14) as u16,
+            seated: m(15) != 0,
+            drive_polarity: m(16) != 0,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,42 +916,7 @@ mod tests {
     fn a_burst_csv_is_byte_compatible_with_a_committed_capture() {
         let p = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/captures/burst-0.csv");
         let text = std::fs::read_to_string(p).expect("fixture");
-        let mut lines = text.lines();
-        assert_eq!(lines.next(), Some(CSV_HEADER));
-        let first: Vec<i64> = lines
-            .next()
-            .expect("row 0")
-            .split(',')
-            .map(|v| v.parse().expect("int"))
-            .collect();
-        assert_eq!(first.len(), 17);
-        let mut samples = vec![first[1] as u16];
-        for (k, line) in lines.enumerate() {
-            let (i, v) = line.split_once(',').expect("k,code");
-            assert_eq!(i.parse::<usize>().expect("k"), k + 1);
-            samples.push(v.parse().expect("code"));
-        }
-        let m = |i: usize| first[i];
-        let cap = Capture {
-            samples,
-            meta: Meta {
-                pre_q15: m(2) as i16,
-                step_q15: m(3) as i16,
-                step_index: m(4) as u16,
-                start_cnt: m(5) as u16,
-                pwm_arr: m(6) as u16,
-                start_dir: m(7) as u8,
-                restore_dir: m(8) as u8,
-                vbus_raw: m(9) as u16,
-                bias: m(10) as u16,
-                chans: m(11) as u8,
-                frame_len: m(12) as u8,
-                vmotor_bias: m(13) as u16,
-                pos: m(14) as u16,
-                seated: m(15) != 0,
-                drive_polarity: m(16) != 0,
-            },
-        };
+        let cap = from_csv(&text).expect("parses");
         assert_eq!(cap.samples.len(), SAMPLES);
         assert!(to_csv(&cap) == text, "burst-K.csv drifted");
     }

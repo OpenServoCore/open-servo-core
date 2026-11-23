@@ -8,6 +8,7 @@
 pub mod board;
 pub mod capture;
 pub mod envelope;
+pub mod fit;
 pub mod guard;
 pub mod inputs;
 pub mod install;

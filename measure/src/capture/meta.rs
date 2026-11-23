@@ -11,6 +11,7 @@ use flate2::write::GzEncoder;
 use osc_client::descriptor::Descriptor;
 use serde_json::{Map, Value, json};
 
+use super::burst::{self, Capture};
 use super::rows::{chunks_pairs, chunks_text, csv};
 use super::tel::{Burst, Line};
 use crate::sink::{Sink, SinkError};
@@ -91,6 +92,57 @@ pub fn tel(servo: &Map<String, Value>, b: &Burst, plan: Value, host_s: (f64, f64
     Value::Object(m)
 }
 
+/// A shunt burst's meta: the servo's block, the burst's header and its
+/// pre-arm reads, the plan it ran under and the host's clock around it.
+pub fn burst(servo: &Map<String, Value>, cap: &Capture, plan: Value, host_s: (f64, f64)) -> Value {
+    let mut m = servo.clone();
+    let h = &cap.meta;
+    m.insert("capture".into(), "shunt burst".into());
+    m.insert("samples".into(), cap.samples.len().into());
+    m.insert(
+        "header".into(),
+        json!({
+            "pre_q15": h.pre_q15, "step_q15": h.step_q15, "step_index": h.step_index,
+            "start_cnt": h.start_cnt, "pwm_arr": h.pwm_arr, "start_dir": h.start_dir,
+            "restore_dir": h.restore_dir, "chans": h.chans, "frame_len": h.frame_len,
+        }),
+    );
+    m.insert(
+        "pre_arm".into(),
+        json!({
+            "vbus_raw": h.vbus_raw, "bias": h.bias, "vmotor_bias": h.vmotor_bias, "pos": h.pos,
+            "seated": h.seated, "drive_polarity": h.drive_polarity,
+        }),
+    );
+    m.insert("plan".into(), plan);
+    m.insert("host_t_start".into(), host_s.0.into());
+    m.insert("host_t_end".into(), host_s.1.into());
+    Value::Object(m)
+}
+
+/// Where burst `k` of `step` lands: osc-lab's `burst-K.csv`, plain so
+/// `oscnb.bursts.load` reads the folder, and its meta beside it.
+pub fn burst_paths(step: &str, k: u32) -> (String, String) {
+    let base = format!("captures/{step}/burst-{k}");
+    (format!("{base}.csv"), format!("{base}.meta.json"))
+}
+
+/// Keep one shunt burst: its codes as osc-lab writes them, then its meta.
+pub fn keep_burst(
+    sink: &mut dyn Sink,
+    step: &str,
+    k: u32,
+    cap: &Capture,
+    meta: &Value,
+) -> Result<(String, String), SinkError> {
+    let (csv, m) = burst_paths(step, k);
+    sink.write(&csv, burst::to_csv(cap).as_bytes())?;
+    let mut text = serde_json::to_vec_pretty(meta).map_err(|e| SinkError(e.to_string()))?;
+    text.push(b'\n');
+    sink.write(&m, &text)?;
+    Ok((sink.shown(&csv), sink.shown(&m)))
+}
+
 /// Deterministic gzip: no name, no time, so equal rows are equal bytes.
 pub fn gzip(bytes: &[u8]) -> Vec<u8> {
     let mut e = GzEncoder::new(Vec::new(), Compression::default());
@@ -135,6 +187,26 @@ pub fn keep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A committed `burst-0.csv` kept through a sink is the same bytes, and
+    /// its meta carries the header.
+    #[test]
+    fn a_kept_burst_is_byte_compatible_with_osc_lab() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/captures/burst-0.csv"
+        ))
+        .expect("fixture");
+        let cap = burst::from_csv(&text).expect("parses");
+        let mut sink = crate::sink::MemSink::default();
+        let m = burst(&Map::new(), &cap, json!({"rung": "burst 0"}), (1.0, 2.0));
+        keep_burst(&mut sink, "probe", 0, &cap, &m).expect("kept");
+        assert!(sink.files["captures/probe/burst-0.csv"] == text.as_bytes());
+        let back: Value =
+            serde_json::from_slice(&sink.files["captures/probe/burst-0.meta.json"]).expect("meta");
+        assert_eq!(back["header"]["pwm_arr"], cap.meta.pwm_arr);
+        assert_eq!(back["plan"]["rung"], "burst 0");
+    }
 
     #[test]
     fn gzip_is_deterministic_and_round_trips() {

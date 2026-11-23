@@ -25,6 +25,19 @@ pub fn board(path: Option<&Path>) -> Result<Board> {
     }
 }
 
+/// A user's nameplate file: parsed, then refused naming the first value it
+/// lacks ([`Nameplate::check_user`]).
+pub fn nameplate(path: &Path) -> Result<Nameplate> {
+    nameplate_of(path, &read(path)?)
+}
+
+fn nameplate_of(path: &Path, bytes: &[u8]) -> Result<Nameplate> {
+    let np: Nameplate = json(path, bytes)?;
+    np.check_user()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    Ok(np)
+}
+
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     std::fs::read(path).with_context(|| format!("reading {}", path.display()))
 }
@@ -110,7 +123,7 @@ pub fn rules_inputs(
         measured.shelf = Some(json::<ShelfRecord>(&p, &b)?);
     }
     let p = dir.join("nameplate.json");
-    let nameplate: Nameplate = json(&p, &need("nameplate", take("nameplate", p.clone())?, &p)?)?;
+    let nameplate = nameplate_of(&p, &need("nameplate", take("nameplate", p.clone())?, &p)?)?;
     let p = policy.map_or_else(|| dir.join("policy.json"), Path::to_path_buf);
     let policy: Policy = json(&p, &need("policy", take("policy", p.clone())?, &p)?)?;
     let p = dir.join("thermal.json");

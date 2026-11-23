@@ -115,6 +115,15 @@ enum StepName {
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
     },
+    /// Step 2, the first probe and polarity on a free shaft: the rest step
+    /// first, then shunt bursts, then open-loop pulses. Drives the motor;
+    /// metal gears only, for now.
+    Probe {
+        #[command(flatten)]
+        i: StepArgs,
+        #[arg(long, default_value = "osc-ident-runs")]
+        out: PathBuf,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -379,17 +388,22 @@ fn run(cli: &Cli) -> Result<bool> {
                 Ok(starts)
             })
         }
-        Cmd::Step {
-            step: StepName::Rest { i, out },
-        } => {
+        Cmd::Step { step } => {
+            let (StepName::Rest { i, out } | StepName::Probe { i, out }) = step;
             let inputs = i.load()?;
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
                 .context("installing the Ctrl-C handler")?;
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
                 let servo = servo_name(&mut c, id).await;
-                let (lines, accepted, _) =
-                    steps::step_rest(&mut c, id, &d, &inputs, out, &servo, &STOP).await?;
+                let (lines, accepted, _) = match step {
+                    StepName::Rest { .. } => {
+                        steps::step_rest(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                    }
+                    StepName::Probe { .. } => {
+                        steps::step_probe(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                    }
+                };
                 for l in &lines {
                     println!("{l}");
                 }
@@ -608,5 +622,118 @@ mod tests {
         );
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
+    }
+
+    /// `step probe` runs the rest step first into the same folder, then the
+    /// probe; the simulated servo runs no shunt burst, so the probe aborts
+    /// at its first one, through the way out, and both steps are recorded.
+    /// A servo at rest on the bench, a count or so of noise on each
+    /// channel: what the rest step accepts.
+    fn resting() -> Vec<osc_client::fake::TelSample> {
+        use osc_client::fake::{TelSample, TelemetryTick};
+        let noise = |i: u32, k: u32| {
+            let mut h = i.wrapping_mul(0x9E37_79B9) ^ k.wrapping_mul(0x85EB_CA6B);
+            h ^= h >> 15;
+            h = h.wrapping_mul(0x2C1B_3C6D);
+            h ^= h >> 12;
+            (h % 3) as i32 - 1
+        };
+        (0..4096u32)
+            .map(|i| {
+                let at = |base: i32, k: u32| (base + noise(i, k)) as u16;
+                TelSample {
+                    tick: TelemetryTick {
+                        _scan: [0; 10],
+                        pos: at(2041, 1),
+                        vref_raw: at(1490, 2),
+                        vbus_raw: at(1241, 3),
+                        ntc_raw: at(2010, 4),
+                        current_raw: at(1206, 5),
+                        vmotor_a: at(773, 6),
+                        vmotor_b: at(772, 7),
+                        duty_ticks: 0,
+                        current_trough: at(1206, 8),
+                        i_tick_counts: 0,
+                        vdiff_counts: 0,
+                        vmotor_a_trough: at(773, 9),
+                        vmotor_b_trough: at(772, 10),
+                        tick_flags: 0,
+                        sample_tick: i,
+                    },
+                    vbus_counts: 2000,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn step_probe_runs_rest_first_into_the_same_folder() {
+        let (mut c, d) = fake(BaudRate::B3000000);
+        c.pipe_mut().set_track(0, resting());
+        let out = scratch("step-probe");
+        let stop = AtomicBool::new(false);
+        let (lines, accepted, root) = block_on(steps::step_probe(
+            &mut c,
+            Id::new(1),
+            &d,
+            &inputs(),
+            &out,
+            "uid",
+            &stop,
+        ))
+        .expect("runs");
+        let text = lines.join("\n");
+        assert!(!accepted, "{text}");
+        for f in ["run.json", "results/rest.json", "results/probe.json"] {
+            assert!(root.join(f).exists(), "{f}: {text}");
+        }
+        let run: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read"))
+                .expect("json");
+        assert_eq!(run["steps"]["rest"]["state"], "accepted", "{run}");
+        assert_eq!(run["steps"]["probe"]["state"], "aborted", "{run}");
+        assert!(text.contains("step probe aborted"), "{text}");
+        assert!(text.contains("torque_enable 0, read back 0"), "{text}");
+        assert!(text.contains("end position"), "{text}");
+        assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
+        let _ = std::fs::remove_dir_all(out);
+    }
+
+    /// A user's nameplate short of a required value never loads: the
+    /// refusal names the file and the field; `step probe` with none given
+    /// is refused before the bus is touched.
+    #[test]
+    fn a_nameplate_file_missing_a_field_is_refused_naming_it() {
+        let dir = scratch("nameplate");
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&files::read(&testdata("nameplate.json")).expect("read"))
+                .expect("json");
+        v.as_object_mut().expect("object").remove("travel_deg");
+        let p = dir.join("nameplate.json");
+        std::fs::write(&p, serde_json::to_vec(&v).expect("json")).expect("write");
+        let e = steps::StepInputs::load(Some(&p), None, None)
+            .err()
+            .expect("refused");
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("nameplate.json") && e.contains("no usable travel_deg"),
+            "{e}"
+        );
+
+        let (mut c, d) = fake(BaudRate::B3000000);
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let e = block_on(steps::step_probe(
+            &mut c,
+            Id::new(1),
+            &d,
+            &none,
+            &dir,
+            "uid",
+            &AtomicBool::new(false),
+        ))
+        .expect_err("refused");
+        assert!(format!("{e:#}").contains("--nameplate"), "{e:#}");
+        assert!(!dir.join("uid").exists(), "no run folder");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
