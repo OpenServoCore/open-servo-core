@@ -76,13 +76,20 @@ fn set_at(
     Ok((file, bytes))
 }
 
-/// The protection fields an install refusal names to loosen.
-fn to_loosen(why: &str) -> Vec<String> {
-    why.split("--loosen ")
+/// The protection fields an install refusal names to loosen, each once.
+pub fn to_loosen(why: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in why
+        .split("--loosen ")
         .skip(1)
         .filter_map(|s| s.split_whitespace().next())
-        .map(str::to_string)
-        .collect()
+        .map(|s| s.trim_matches('`').to_string())
+    {
+        if !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
 }
 
 /// One try as tune.json keeps it.
@@ -205,10 +212,19 @@ where
             break;
         }
         let kp = tune::gain(k0, n);
-        let (file, measured_bytes) = set_at(&r, &measured, kp, &pair, d)?;
         let dir = format!("tries/{:02}", n + 1);
-        sink.write(&format!("{dir}/measured.json"), &measured_bytes)?;
-        sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
+        let prepared = set_at(&r, &measured, kp, &pair, d).and_then(|(file, bytes)| {
+            sink.write(&format!("{dir}/measured.json"), &bytes)?;
+            sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
+            Ok(file)
+        });
+        let file = match prepared {
+            Ok(f) => f,
+            Err(e) => {
+                ended = format!("try {}: {e:#}", n + 1);
+                break;
+            }
+        };
         let head = format!(
             "try {}: kp {kp:.4} (v_kp_q88 {}, {:.0}% of the starting gain), set {}",
             n + 1,
@@ -312,11 +328,17 @@ where
     }
 
     let shown = |rel: &str| root.join(rel).display().to_string();
+    let mut unkept = Vec::new();
     let mut put_back = Value::Null;
     let ok = accepted.is_some();
     match &accepted {
         Some((n, kp, file)) => {
-            sink.write("set.json", file.render().as_bytes())?;
+            if let Err(e) = sink.write("set.json", file.render().as_bytes()) {
+                unkept.push(format!(
+                    "set.json not kept ({e}): tries/{:02}/set.json is the same set",
+                    n + 1
+                ));
+            }
             lines.push(format!(
                 "accepted on try {}: kp {kp:.4}, {:.0}% of the starting gain {k0:.4}",
                 n + 1,
@@ -397,13 +419,14 @@ where
         "ended": if ok { Value::Null } else { ended.into() },
         "put_back": put_back,
     });
-    let mut bytes = serde_json::to_vec_pretty(&doc)?;
+    let mut bytes = serde_json::to_vec_pretty(&doc).unwrap_or_default();
     bytes.push(b'\n');
-    sink.write("tune.json", &bytes)?;
-    lines.insert(
-        lines.len().saturating_sub(1),
-        format!("run folder: {}", root.display()),
-    );
+    if let Err(e) = sink.write("tune.json", &bytes) {
+        unkept.push(format!("tune.json not kept: {e}"));
+    }
+    unkept.push(format!("run folder: {}", root.display()));
+    let at = lines.len().saturating_sub(1);
+    lines.splice(at..at, unkept);
     Ok((lines, ok))
 }
 

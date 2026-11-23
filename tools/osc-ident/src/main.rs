@@ -3,10 +3,12 @@
 //! `install`, `save` and `restore` write with torque off and never drive
 //! the motor; `step` runs one measurement step into a run folder; `gather`
 //! turns a run folder into inputs; `tune` settles the speed gain on the
-//! servo with the closed-loop check.
+//! servo with the closed-loop check; `run` does the steps, the gather and
+//! the tune in one.
 
 mod files;
 mod gather;
+mod run;
 mod steps;
 mod tune;
 
@@ -140,6 +142,27 @@ enum Cmd {
         /// The protection fields the tune's sets may move to protect less than the servo holds.
         #[arg(long, num_args = 1..)]
         loosen: Vec<String>,
+    },
+    /// The whole identification: the steps through the spins into a run folder, then, every step
+    /// accepted, the gather into its `inputs/` and the tune into its `tune/`. Never saves.
+    Run {
+        /// The servo's nameplate file.
+        #[arg(long)]
+        nameplate: PathBuf,
+        /// The user's thermal values.
+        #[arg(long)]
+        thermal: PathBuf,
+        /// The policy file.
+        #[arg(long)]
+        policy: PathBuf,
+        /// Where the run folder `<servo uid>/<UTC time>/` goes.
+        #[arg(long)]
+        out: PathBuf,
+        /// The protection fields the tune's sets may move to protect less than the servo holds.
+        #[arg(long, num_args = 1..)]
+        loosen: Vec<String>,
+        #[arg(long, default_value_t = osc_measure::tune::TRIES)]
+        tries: u32,
     },
 }
 
@@ -416,7 +439,8 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
         | Cmd::Plan { .. }
         | Cmd::Step { .. }
         | Cmd::Gather { .. }
-        | Cmd::Tune { .. } => {
+        | Cmd::Tune { .. }
+        | Cmd::Run { .. } => {
             bail!("not a write verb")
         }
     };
@@ -535,6 +559,35 @@ fn run(cli: &Cli) -> Result<bool> {
                 let (mut c, d) = connect(&cli.baud, id).await?;
                 let (lines, accepted) =
                     tune::tune(&mut c, id, &d, inputs, out, *tries, loosen, &STOP).await?;
+                for l in &lines {
+                    println!("{l}");
+                }
+                Ok(accepted)
+            })
+        }
+        Cmd::Run {
+            nameplate,
+            thermal,
+            policy,
+            out,
+            loosen,
+            tries,
+        } => {
+            let a = run::RunArgs {
+                nameplate,
+                thermal,
+                policy,
+                out,
+                loosen,
+                tries: *tries,
+            };
+            run::admit(&a)?;
+            ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
+                .context("installing the Ctrl-C handler")?;
+            block_on(async {
+                let (mut c, d) = connect(&cli.baud, id).await?;
+                let servo = servo_name(&mut c, id).await;
+                let (lines, accepted) = run::run(&mut c, id, &d, &a, &servo, &STOP).await?;
                 for l in &lines {
                     println!("{l}");
                 }
