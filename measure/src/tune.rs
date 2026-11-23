@@ -13,7 +13,7 @@ use crate::steps::{Check, Verdict};
 
 /// Each try's gain over the try before's.
 pub const SHARE: f64 = 0.8;
-pub const TRIES: u32 = 4;
+pub const TRIES: u32 = 6;
 /// The checks a lower speed gain answers.
 pub const SCORES: [&str; 4] = [sc::OVERSHOOT, sc::QUIET, sc::REST, sc::FOLLOW];
 
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn each_try_is_four_fifths_of_the_one_before() {
         let s = schedule(0.5, TRIES);
-        assert_eq!(s.len(), 4);
+        assert_eq!(s.len(), 6);
         assert_eq!(s[0], 0.5);
         for (k, pair) in s.windows(2).enumerate() {
             assert!((pair[1] / pair[0] - SHARE).abs() < 1e-12, "{k}: {pair:?}");

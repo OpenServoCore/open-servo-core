@@ -148,6 +148,11 @@ pub fn starting_gain(inputs: &Inputs) -> Result<f64, Fail> {
     super::lowest(inputs, starting_kp)
 }
 
+/// [`starting_kp`] on `inputs` at their values, the bands not read.
+pub fn nominal_starting_gain(inputs: &Inputs) -> Result<f64, Fail> {
+    starting_kp(&mut Ctx::new(inputs))
+}
+
 /// The speed PI and the crossover it puts the loop at.
 #[derive(Clone, Copy, Debug)]
 pub struct SpeedPi {

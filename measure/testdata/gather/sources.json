@@ -1,9 +1,11 @@
 {
- "method": "rest.json, probe.json and stops.json copied unchanged from one accepted `osc-ident step stops` run on the bench servo (mg90-d on dev-v006); window.json and spins.json are synthetic, the window and spins steps' estimate shape carrying the record's values",
+ "method": "rest.json, probe.json and stops.json copied from one accepted `osc-ident step stops` run on the bench servo (mg90-d on dev-v006), probe.json and stops.json unchanged; window.json and spins.json are synthetic, the window and spins steps' estimate shape carrying the record's values",
  "files": {
   "rest.json": {
    "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/rest.json",
-   "sha1": "527928b2900a33475dc826e258e72534d8f69623"
+   "sha1": "b465af70b34d330b22d2135606926b20fc3d3fb1",
+   "sha1_as_run": "527928b2900a33475dc826e258e72534d8f69623",
+   "edited": "one key added by hand after counts_per_a_nominal: rail_counts_per_v_nominal 248.24242424242425, what Sense::rail_counts_per_v gives on the run's sense block (vdd_mv 3300, vbus_div_top_ohm 6400, vbus_div_bot_ohm 1600, captures/rest/01-rest.meta.json); the run's rest step predates the key"
   },
   "probe.json": {
    "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/probe.json",

@@ -297,6 +297,34 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             stops.source(&format!("{tcpv_key} ({nominal})")),
         ),
     );
+    let rail_key = "rail_counts_per_v_nominal";
+    match at(&rest.r.doc, rail_key) {
+        None => o.lines.push(format!(
+            "rail_counts_per_v, rail_offset_counts: missing, {} holds no {rail_key} (a rest step older than the key)",
+            rest.r.file
+        )),
+        Some(_) => {
+            let parts = "the board's parts, nominal";
+            o.put(
+                "rail_counts_per_v",
+                quantity(
+                    rest.num(rail_key)?,
+                    None,
+                    "counts/V",
+                    rest.source(&format!("{rail_key} ({parts})")),
+                ),
+            );
+            o.put(
+                "rail_offset_counts",
+                quantity(
+                    0.0,
+                    None,
+                    "counts",
+                    rest.source(&format!("{rail_key} ({parts}: the divider has no offset)")),
+                ),
+            );
+        }
+    }
 
     let found = probe.flag("drive_polarity.found")?;
     let stored = probe.flag("drive_polarity.stored")?;
@@ -438,9 +466,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         ));
     }
     o.lines.extend([
-        "rail_counts_per_v, rail_offset_counts: missing, no result records the rail tap's scale"
-            .to_string(),
-        "breakaway_ma: not gathered, no step measures it".into(),
+        "breakaway_ma: not gathered, no step measures it".to_string(),
         "shelf: none, a margin record is no step of a run".into(),
         "speed_kp_verified: not gathered, `osc-ident tune` settles it".into(),
         "wide-code slots: not gathered, the servo keeps the slots it holds".into(),

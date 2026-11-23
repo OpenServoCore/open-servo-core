@@ -137,6 +137,9 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, default_value_t = osc_measure::tune::TRIES)]
         tries: u32,
+        /// The protection fields the tune's sets may move to protect less than the servo holds.
+        #[arg(long, num_args = 1..)]
+        loosen: Vec<String>,
     },
 }
 
@@ -520,13 +523,18 @@ fn run(cli: &Cli) -> Result<bool> {
             }
             Ok(true)
         }
-        Cmd::Tune { inputs, out, tries } => {
+        Cmd::Tune {
+            inputs,
+            out,
+            tries,
+            loosen,
+        } => {
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
                 .context("installing the Ctrl-C handler")?;
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
                 let (lines, accepted) =
-                    tune::tune(&mut c, id, &d, inputs, out, *tries, &STOP).await?;
+                    tune::tune(&mut c, id, &d, inputs, out, *tries, loosen, &STOP).await?;
                 for l in &lines {
                     println!("{l}");
                 }

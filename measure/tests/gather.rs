@@ -98,7 +98,14 @@ fn the_gathered_inputs_load_and_the_rules_give_a_set() {
     let text = gather::render(&g.measured);
     let measured: Measured = serde_json::from_str(&text).expect("loads as Measured");
     assert!(measured.speed_kp_verified.is_none() && measured.shelf.is_none());
-    assert!(measured.breakaway_ma.is_none() && measured.rail_counts_per_v.is_none());
+    assert!(measured.breakaway_ma.is_none());
+    let rail = measured.rail_counts_per_v.as_ref().expect("rail");
+    assert_eq!(rail.value, 248.24242424242425);
+    assert_eq!(rail.source.file, "results/rest.json");
+    assert_eq!(
+        measured.rail_offset_counts.as_ref().map(|q| q.value),
+        Some(0.0)
+    );
     let r = measured.r_ohm.as_ref().expect("r");
     assert!((r.value - 4.187787930981532).abs() < 1e-12);
     // the larger of the burst spread (0.0058 x R) and half the stops' gap
@@ -172,15 +179,7 @@ fn the_gathered_inputs_load_and_the_rules_give_a_set() {
         .filter(|(_, o)| matches!(o, Outcome::Held(_)))
         .map(|(n, _)| *n)
         .collect();
-    assert_eq!(
-        held,
-        [
-            "fric_breakaway_counts",
-            "v_undervolt_counts",
-            "rail_fold_q8"
-        ],
-        "held"
-    );
+    assert_eq!(held, ["fric_breakaway_counts"], "held");
     assert_eq!(rules.value("pos_min_phys_counts"), Some(107));
     assert_eq!(rules.value("pos_max_phys_counts"), Some(3729));
     assert_eq!(rules.value("drive_polarity"), Some(1));
@@ -217,6 +216,34 @@ fn a_run_without_window_or_spins_says_what_is_missing() {
         "b_i_q313",
         "v_kp_q88",
     ] {
+        assert!(matches!(set.get(f), Some(Outcome::Held(_))), "{f}");
+    }
+}
+
+/// A rest result older than its rail scale leaves the two rail fields out,
+/// said in a line; the rules then hold the undervolt floor and the fold.
+#[test]
+fn a_rest_result_without_the_rail_scale_leaves_the_rail_out() {
+    let mut r = run();
+    r.rest = Some(edited("rest", |v| {
+        v.as_object_mut()
+            .expect("object")
+            .remove("rail_counts_per_v_nominal");
+    }));
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    assert!(
+        g.lines
+            .iter()
+            .any(|l| l.starts_with("rail_counts_per_v, rail_offset_counts: missing")),
+        "{:?}",
+        g.lines
+    );
+    let m = g.measured.as_object().expect("object");
+    assert!(!m.contains_key("rail_counts_per_v") && !m.contains_key("rail_offset_counts"));
+    let set = build(&inputs_of(
+        serde_json::from_value(g.measured).expect("loads"),
+    ));
+    for f in ["v_undervolt_counts", "rail_fold_q8"] {
         assert!(matches!(set.get(f), Some(Outcome::Held(_))), "{f}");
     }
 }

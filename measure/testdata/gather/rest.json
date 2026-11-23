@@ -91,6 +91,7 @@
     }
   },
   "counts_per_a_nominal": 1108.4520727272727,
+  "rail_counts_per_v_nominal": 248.24242424242425,
   "ntc_parts": {
     "ntc_pullup_ohm": 10000.0,
     "ntc_r25_ohm": 10000.0,

@@ -374,6 +374,18 @@ fn plan<'d>(
     }
 }
 
+/// The refusals an install of `set` over `state` makes before its first
+/// write, the protection gate among them, without writing.
+pub fn gate(
+    set: &SetFile,
+    state: &State,
+    d: &Descriptor,
+    points: Option<&[i16; INTERVALS]>,
+    loosen: &[String],
+) -> Result<(), Refused> {
+    plan(set, state, d, points, loosen).map(|_| ())
+}
+
 /// One field written and read back. `Ok(false)`: the servo refused the
 /// value, which may land once the rest is in.
 async fn put<P: Pipe>(c: &mut Client<P>, id: Id, f: &Field, bytes: &[u8]) -> Result<bool, Refused> {
