@@ -10,7 +10,7 @@ OpenServoCore swap board for SG90 and MG90 class hobby servos. It replaces the f
 - **MCU** - CH32V006F8U7 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM, UQFN-20, 105 C grade).
 - **Motor driver** - TI DRV8837 (U3). H-bridge with IN1/IN2 PWM, 1.8 A peak, VM up to 11 V. The exposed pad sits on `PGND` with two vias into a small back-side pour.
 - **Current sense** - 100 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 6200 / 680 = 9.1. Rg1 / Rg2 (680) bring the shunt taps into the op-amp inputs, Rf2 (6K2) is the feedback resistor, and Rf1 (6K2) ties the + input to `VREF`, a 1K6 / 820 divider off `+3V3` (Rd1 / Rd2, about 1.12 V). Two pull-ups (Ri1 / Ri2, 1K5) lift the op-amp inputs to about 1.04 V. With the divider's source resistance and the pull-ups included, the chain works out to about 0.917 V/A with zero current at about 1.11 V, so both current directions are visible. The output saturates near +2.21 A and -1.18 A nominal.
-- **LDO** - Broadchip BCT2014ELS33 (U1), 300 mA, 1 x 1 mm, 2.5-15 V input. The board itself draws about 20 mA from `+3V3`, which is about 0.1 W in the LDO at 8.4 V. Keep the J5 flex load under about 30 mA or the LDO runs hot.
+- **LDO** - PJSEMI PJ54M33DE (U1), 300 mA, 1 x 1 mm, 3-45 V input (55 V absolute max), with thermal shutdown. It runs straight off `VSYS`, so at 8.4 V each milliamp of `+3V3` costs about 5 mW in the LDO. The `+3V3` budget is about 35 mA: the board itself draws about 20 mA, which leaves about 15 mA for the J5 flex.
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 22 Ohm series resistor (Rx1). No buffer. Dx1 (RClamp0521T) clamps the line at the connector, ahead of Rx1. Rx2 is a 100K idle keeper to `+3V3` on the MCU side, so `DATA` never floats with no host on the wire. It is too weak to be the bus pull-up, which lives at the host end.
 - **Power input** - 2S Li-ion (up to 8.4 V) on the servo cable. There is no bulk capacitor, only about 10 uF of ceramic, so avoid hot-plugging into a stiff 2S supply until bringup has scoped it.
 - **Debug** - WCH-LinkE over the CH32V006 1-wire SWDIO, on four pogo pads on the back (J3).
@@ -99,7 +99,7 @@ Landing for an encoder flex that can also carry an external NTC.
 |Pin|Net|Notes|
 |---|---|---|
 |1|`GND`||
-|2|`+3V3`|Keep the load under about 30 mA|
+|2|`+3V3`|Keep the load under about 15 mA, enough for two IR LEDs at about 4-5 mA each|
 |3|`ENCA`||
 |4|`ENCB`||
 |5|`VNTC_EXT`|External NTC, needs its own pull-up on the flex|
@@ -125,8 +125,9 @@ These are the targets the board was laid out around. None are measured.
 
 - 6-layer JLCPCB stackup JLC06161H-3313, 1.6 mm, ENIG.
 - 0.09 / 0.09 mm track and space, 0.3 / 0.45 mm vias.
-- Via-in-pad is used under U2, U3, U1 and on the connector pads. Order with epoxy filled and capped vias.
+- Via-in-pad is used under U2, U3 and on the connector pads. Order with epoxy filled and capped vias.
 - Single-sided assembly. Every part is on the front.
+- U1 has no silkscreen outline or pin-1 dot, since there is no room for them between its neighbors. Check its rotation in JLCPCB's placement preview.
 - The design rules live in `osc-sg90-v006.kicad_dru`.
 
 ## Mechanical fit
