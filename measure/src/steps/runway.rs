@@ -23,22 +23,37 @@
 //!               (bound_speed / its spin's speed)^2, the largest
 //! ```
 //!
-//! A higher level in direction d is bounded by the next lower level's
-//! spins in d alone, the pilot among them, and is left out in d until one
-//! has run:
+//! A higher level in direction d is bounded by the lower levels' spins in
+//! d alone, the pilot among them, and is left out in d until the level
+//! just below it has run in d. With one lower level:
 //!
 //! ```text
-//! bound_speed = SPEED_GAIN x the fastest of them x the volts' ratio
-//! bound_coast = COAST_GAIN x each of their coasts scaled by
-//!               (bound_speed / its spin's speed)^2, the largest
+//! bound_speed = SPEED_GAIN_ONE x its fastest x the volts' ratio
+//! ```
+//!
+//! With two or more, the line through the two nearest lower levels'
+//! fastest speeds against their volts, at this level's volts, never under
+//! the one-level ratio scaling:
+//!
+//! ```text
+//! bound_speed = SPEED_GAIN x max(the line at this level,
+//!                                the level below's fastest x the ratio)
+//! bound_coast = COAST_GAIN x each coast of the level just below scaled
+//!               by (bound_speed / its spin's speed)^2, the largest
 //! ```
 //!
 //! The servo's own speed replaces the nameplate's there because the
-//! nameplate's is far from it (1.3 to 1.6 times this servo's at 25 %),
-//! and squared in the coast bound it leaves no runway. Speed against volts
-//! is a line with a positive friction offset, so the volts' ratio under-
-//! reads the next level's speed by at most the offset's share (about 8 %
-//! from 25 to 50 % on the bench servo), inside [`SPEED_GAIN`]; and a coast
+//! nameplate's is far from it (1.3 to 1.6 times the bench servo's at
+//! 25 %), and squared in the coast bound it leaves no runway. Speed
+//! against volts is a line with an offset (about 0.37 V on the bench
+//! servo, more than its friction alone), and the pot's local slope over
+//! the short stretch a low level crosses differs from the longer one the
+//! next crosses: doubling the volts from 25 to 50 % raised the pot speed
+//! 2.0 to 2.47 times on the bench servo, past a 1.25 margin on the ratio
+//! (a spin at 98.8 % of such a bound). So one lower level is scaled with
+//! [`SPEED_GAIN_ONE`]; from two on, the line carries the offset, and the
+//! 75 % spins on the same servo ran at 0.91 to 1.08 times the line's
+//! speed through 25 and 50 %, inside [`SPEED_GAIN`]. A coast
 //! under a constant or rising drag grows no faster than the square of its
 //! speed. A servo faster than that is caught by the checks after its first
 //! spin over the bound.
@@ -73,6 +88,9 @@ pub const RISE_SHARE: f64 = 0.9;
 pub const RISE_TIMES: f64 = 3.0;
 pub const RISE_PAD_S: f64 = 0.100;
 pub const SPEED_GAIN: f64 = 1.25;
+/// The speed margin on a level bounded by one lower level's spins, scaled
+/// by the volts' ratio alone.
+pub const SPEED_GAIN_ONE: f64 = 1.5;
 pub const COAST_GAIN: f64 = 1.5;
 /// The pilot's spin-down as its bound speed for this long: a bare MG90
 /// rotor coasting from full speed covers what 93 ms at that speed would.
@@ -171,8 +189,15 @@ pub struct Seen {
 pub enum BoundFrom {
     /// The nameplate and every spin of the run, the larger.
     Nameplate,
-    /// The spins of this level that ran in this sign.
+    /// The spins of this level that ran in this sign, by the volts' ratio.
     Spins { level: f64, dir: i8, n: usize },
+    /// The line through these two levels' fastest spins in this sign, and
+    /// its speed at the level, counts/s.
+    Line {
+        levels: (f64, f64),
+        dir: i8,
+        speed_cps: f64,
+    },
     /// No spin of this level ran in this sign: left out.
     Missing { level: f64, dir: i8 },
 }
@@ -185,6 +210,16 @@ impl BoundFrom {
             BoundFrom::Spins { level, dir, n } => {
                 format!("the {:.0}% level's {n} spins {}", 100.0 * level, way(dir))
             }
+            BoundFrom::Line {
+                levels: (a, b),
+                dir,
+                speed_cps,
+            } => format!(
+                "the line through the {:.0}% and {:.0}% levels' fastest spins {}, {speed_cps:.0} counts/s here",
+                100.0 * a,
+                100.0 * b,
+                way(dir)
+            ),
             BoundFrom::Missing { level, dir } => {
                 format!(
                     "no spin of the {:.0}% level ran {}",
@@ -307,25 +342,51 @@ impl Planner {
     /// nameplate's rule at the lowest level, else the next lower level's
     /// spins in `dir`.
     pub fn bounds(&self, level: f64, dir: i8) -> (f64, f64, BoundFrom) {
-        let lower = LEVELS
-            .iter()
-            .copied()
-            .filter(|l| *l < level)
-            .fold(None, |m: Option<f64>, l| Some(m.map_or(l, |m| m.max(l))));
-        let Some(lower) = lower else {
+        let mut below: Vec<f64> = LEVELS.iter().copied().filter(|l| *l < level).collect();
+        below.sort_by(|a, b| b.total_cmp(a));
+        let Some(&next) = below.first() else {
             let bs = self.bound_speed(level);
             return (bs, self.bound_coast(bs), BoundFrom::Nameplate);
         };
-        let them: Vec<&Seen> = self
-            .seen
-            .iter()
-            .filter(|s| s.level == lower && s.dir == dir && s.speed_cps > 0.0)
-            .collect();
+        let at = |l: f64| -> Vec<&Seen> {
+            self.seen
+                .iter()
+                .filter(|s| s.level == l && s.dir == dir && s.speed_cps > 0.0)
+                .collect()
+        };
+        let fastest = |v: &[&Seen]| v.iter().map(|s| s.speed_cps).fold(0.0, f64::max);
+        let them = at(next);
         if them.is_empty() {
-            return (f64::NAN, f64::NAN, BoundFrom::Missing { level: lower, dir });
+            return (f64::NAN, f64::NAN, BoundFrom::Missing { level: next, dir });
         }
-        let fastest = them.iter().map(|s| s.speed_cps).fold(0.0, f64::max);
-        let bs = SPEED_GAIN * fastest * level / lower;
+        let f1 = fastest(&them);
+        let ratio = f1 * level / next;
+        let second = below[1..]
+            .iter()
+            .copied()
+            .find(|l| !at(*l).is_empty())
+            .map(|l| (l, fastest(&at(l))));
+        let (bs, from) = match second {
+            None => (
+                SPEED_GAIN_ONE * ratio,
+                BoundFrom::Spins {
+                    level: next,
+                    dir,
+                    n: them.len(),
+                },
+            ),
+            Some((l2, f2)) => {
+                let line = f1 + (f1 - f2) / (next - l2) * (level - next);
+                (
+                    SPEED_GAIN * line.max(ratio),
+                    BoundFrom::Line {
+                        levels: (l2, next),
+                        dir,
+                        speed_cps: line,
+                    },
+                )
+            }
+        };
         let bc = them
             .iter()
             .map(|s| {
@@ -333,16 +394,7 @@ impl Planner {
                 COAST_GAIN * s.coast_counts.max(0.0) * k * k
             })
             .fold(0.0, f64::max);
-        let n = them.len();
-        (
-            bs,
-            bc,
-            BoundFrom::Spins {
-                level: lower,
-                dir,
-                n,
-            },
-        )
+        (bs, bc, from)
     }
 
     fn sized(&self, level: f64, dir: i8, start: f64, rise: Option<f64>, share: f64) -> Window {
@@ -508,8 +560,12 @@ pub fn after(w: &Window, r: &SpinRead, travel: &Travel, what: &str) -> Result<()
             "The nameplate's speed is too low for this servo; nothing more drives: enter the servo's own no-load speed and start again".to_string()
         }
         _ => format!(
-            "Its speed rose with the volts faster than {} predict, past the {SPEED_GAIN} margin; nothing more drives: check that nothing changed on the horn, then start again",
-            w.from.said()
+            "Its speed rose with the volts faster than {} predict, past the {} margin; nothing more drives: check that nothing changed on the horn, then start again",
+            w.from.said(),
+            match w.from {
+                BoundFrom::Spins { .. } => SPEED_GAIN_ONE,
+                _ => SPEED_GAIN,
+            }
         ),
     };
     let too_fast = |why: String| {
@@ -817,7 +873,7 @@ mod tests {
         assert!((w.t_s - 0.5 * t_run).abs() < 1e-12);
         assert!(w.travel_bound() <= runway);
 
-        // the bench run's pilot: 2207 counts/s up, rising in 11.5 ms,
+        // the bench run 1 pilot: 2207 counts/s up, rising in 11.5 ms,
         // coasting 70 counts
         p.feed_pilot(seen(0.25, 1, 2207.0, 70.0), 0.0115);
         let rise = 3.0 * 0.0115 + 0.1;
@@ -831,7 +887,7 @@ mod tests {
             assert_eq!(w.from, BoundFrom::Nameplate);
             assert_eq!(w.t_s, rise, "the rise binds: {}", w.said());
         }
-        // a higher level waits for the level below it in its direction
+        // a higher level waits for the level just below it in its sign
         let w = p.window(0.5, -1, 3542.0);
         assert!(!w.fits(), "{}", w.said());
         assert_eq!(
@@ -843,63 +899,92 @@ mod tests {
         );
         assert!(w.said().contains("no spin of the 25% level ran down"));
         assert!(!p.window(0.75, 1, 332.0).fits(), "no 50 % spin yet");
-        // the bench run's four 25 % spins
-        for (d, v, c) in [
-            (1, 2550.0, 43.0),
-            (-1, 2063.0, 78.0),
-            (1, 2427.0, 41.0),
-            (-1, 2069.0, 82.0),
-        ] {
-            p.feed(seen(0.25, d, v, c));
-        }
-        let want = |dir: i8, seen: &[(f64, f64)]| {
-            let fastest = seen.iter().map(|s| s.0).fold(0.0, f64::max);
-            let bs = 1.25 * fastest * 2.0;
-            let bc = seen
-                .iter()
-                .map(|(v, c)| 1.5 * c * (bs / v).powi(2))
-                .fold(0.0, f64::max);
-            (dir, bs, bc)
-        };
-        for (dir, bs, bc) in [
-            want(1, &[(2207.0, 70.0), (2550.0, 43.0), (2427.0, 41.0)]),
-            want(-1, &[(2063.0, 78.0), (2069.0, 82.0)]),
-        ] {
-            let w = p.window(0.5, dir, TRAVEL.start(dir));
-            assert!((w.bound_speed - bs).abs() < 1e-9, "{dir}: {}", w.said());
-            assert!((w.bound_coast - bc).abs() < 1e-9, "{dir}: {}", w.said());
-            let n = if dir > 0 { 3 } else { 2 };
-            assert_eq!(
-                w.from,
-                BoundFrom::Spins {
-                    level: 0.25,
-                    dir,
-                    n
-                }
-            );
-            let t_run = (2910.0 - bc) / bs - DRIVE_DEADMAN_S;
-            assert!((w.t_s - t_run.min(rise)).abs() < 1e-9);
-            assert!(
-                w.fits() && w.travel_bound() <= w.runway + 1e-9,
-                "{}",
-                w.said()
-            );
-        }
-        // the top level from the 50 % spins of its own direction only
-        p.feed(seen(0.5, 1, 5200.0, 180.0));
-        let w = p.window(0.75, 1, 332.0);
-        let bs = 1.25 * 5200.0 * 1.5;
-        assert!((w.bound_speed - bs).abs() < 1e-9);
-        assert!((w.bound_coast - 1.5 * 180.0 * (bs / 5200.0).powi(2)).abs() < 1e-9);
-        assert!(w.fits(), "{}", w.said());
-        assert!(!p.window(0.75, -1, 3542.0).fits(), "no 50 % spin down");
         // a coast that leaves no runway leaves the level out
-        p.feed(seen(0.5, 1, 5200.0, 1200.0));
-        let w = p.window(0.75, 1, 332.0);
+        p.feed(seen(0.25, -1, 2100.0, 400.0));
+        let w = p.window(0.5, -1, 3542.0);
         assert!(!w.fits() && w.t_s < T_MIN_S, "{}", w.said());
         // from a start near the far guard nothing fits
         let w = p.window(0.25, 1, 3000.0);
         assert!(w.runway < 300.0 && !w.fits(), "{}", w.said());
+    }
+
+    /// Bench run 2's own spins through the rule: one lower level scaled
+    /// with 1.5, two through their line with 1.25, never under the level
+    /// below's scaling.
+    #[test]
+    fn the_bounds_of_bench_run_2() {
+        let travel = Travel {
+            lo: 108.5,
+            hi: 3729.25,
+        };
+        let mut p = Planner::new(travel, RATED);
+        p.feed_pilot(seen(0.25, 1, 2248.0, 66.0), 0.0115);
+        for (d, v, c) in [
+            (1, 2484.0, 41.0),
+            (-1, 2114.0, 84.0),
+            (1, 2433.0, 41.0),
+            (-1, 2113.0, 84.0),
+        ] {
+            p.feed(seen(0.25, d, v, c));
+        }
+        let rise = 3.0 * 0.0115 + 0.1;
+        let runway = 3479.25 - 300.0 - 358.5;
+        let w = p.window(0.5, -1, 3479.25);
+        assert!((w.bound_speed - 6342.0).abs() < 1e-9, "{}", w.said());
+        assert_eq!(w.t_s, rise, "{}", w.said());
+        assert_eq!(
+            w.from,
+            BoundFrom::Spins {
+                level: 0.25,
+                dir: -1,
+                n: 2
+            }
+        );
+        let w = p.window(0.5, 1, 358.5);
+        assert!((w.bound_speed - 1.5 * 2484.0 * 2.0).abs() < 1e-9);
+        assert_eq!(w.t_s, rise, "{}", w.said());
+        for (d, v, c) in [
+            (1, 4926.0, 230.0),
+            (-1, 5224.0, 235.0),
+            (1, 4947.0, 228.0),
+            (-1, 5106.0, 239.0),
+        ] {
+            p.feed(seen(0.5, d, v, c));
+        }
+        // down: the line through (25 %, 2114) and (50 %, 5224) at 75 %
+        let w = p.window(0.75, -1, 3479.25);
+        let line = 5224.0 + (5224.0 - 2114.0);
+        assert!((w.bound_speed - 1.25 * line).abs() < 1e-9, "{}", w.said());
+        let bc = [(5224.0, 235.0), (5106.0, 239.0)]
+            .iter()
+            .map(|(v, c)| 1.5 * c * (w.bound_speed / v).powi(2))
+            .fold(0.0, f64::max);
+        assert!((w.bound_coast - bc).abs() < 1e-9);
+        let t = (runway - bc) / w.bound_speed - DRIVE_DEADMAN_S;
+        assert!((w.t_s - t).abs() < 1e-12 && w.fits(), "{}", w.said());
+        println!("75% down: {}", w.said());
+        assert!(matches!(
+            w.from,
+            BoundFrom::Line {
+                levels: (0.25, 0.5),
+                dir: -1,
+                ..
+            }
+        ));
+        // up: the line through (25 %, 2484) and (50 %, 4947) gives 7410,
+        // under 1.5 x 4947, which holds
+        let w = p.window(0.75, 1, 358.5);
+        assert!(
+            (w.bound_speed - 1.25 * 1.5 * 4947.0).abs() < 1e-9,
+            "{}",
+            w.said()
+        );
+        println!("75% up: {}", w.said());
+        assert!(w.fits() && w.t_s <= rise);
+        // what the 75 % spins then ran at, inside both bounds
+        for (d, v) in [(1, 8014.0), (-1, 7566.0)] {
+            assert!(v < p.window(0.75, d, travel.start(d)).bound_speed);
+        }
     }
 
     fn row(tick: u64, pos: f64, duty: i16) -> TelFrame {

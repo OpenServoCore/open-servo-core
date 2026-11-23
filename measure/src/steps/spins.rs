@@ -87,6 +87,10 @@ pub const STEADY_S: f64 = 0.100;
 pub const STEADY_MIN_S: f64 = 0.020;
 /// The levels the open-loop friction line needs.
 pub const LINE_LEVELS: usize = 2;
+/// A level and direction whose pot counts a ripple revolution lie further
+/// than this share from the run's median is left out of the line: its
+/// tach or its pot read another speed than the rest.
+pub const COUNTS_PER_REV_SHARE: f64 = 0.15;
 
 /// What the step takes from the stops step's result.
 #[derive(Clone, Debug, PartialEq)]
@@ -921,9 +925,20 @@ pub struct Steady {
     /// Ripple cycles a pot count, through the stops and the gear ratio to
     /// events a motor revolution.
     pub per_rev_raw: Option<f64>,
+    /// Hz, where the line was looked for: the pot's speed over the lower
+    /// levels' counts a ripple cycle; None for a free search.
+    pub seed_hz: Option<f64>,
 }
 
 impl Steady {
+    /// Pot counts a ripple cycle.
+    pub fn counts_per_cycle(&self) -> Option<f64> {
+        self.pot_cps
+            .zip(self.line_hz)
+            .map(|(c, h)| c / h)
+            .filter(|v| v.is_finite() && *v > 0.0)
+    }
+
     pub fn rad_s(&self) -> Option<f64> {
         self.rev_s.map(|r| 2.0 * core::f64::consts::PI * r)
     }
@@ -945,8 +960,21 @@ pub struct PerRev {
 pub struct OpenLine {
     pub coulomb_ma: f64,
     pub viscous_ma_s_per_rad: f64,
-    /// (level, logical sign, rad/s, mA corrected, mA raw, spins).
-    pub points: Vec<(f64, i8, f64, f64, f64, usize)>,
+    pub points: Vec<LinePoint>,
+}
+
+/// A level and direction's steady mean.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinePoint {
+    pub level: f64,
+    pub dir: i8,
+    pub rad_s: f64,
+    /// mA, corrected and raw.
+    pub i_ma: f64,
+    pub raw_ma: f64,
+    pub spins: usize,
+    /// Pot counts a motor revolution: its pot speed over its ripple speed.
+    pub counts_per_rev: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -1003,7 +1031,12 @@ pub fn steady_rows(drive: &[TelFrame], fs: f64) -> Option<Vec<&TelFrame>> {
 }
 
 /// One spin's steady stretch read.
-fn steady(s: &Spin, c: &JudgeCfg) -> Steady {
+/// One spin's steady stretch read. With `seed`, pot counts a ripple cycle
+/// the lower levels read, the line is looked for within
+/// [`ripple::BAND_FRAC`] of the pot's speed over it; else the tallest line
+/// in [`ripple::BAND_HZ`], which at speed can be the half line (three
+/// events a revolution of six) and read the motor at half its speed.
+fn steady(s: &Spin, c: &JudgeCfg, seed: Option<f64>) -> Steady {
     let mut out = Steady {
         n: s.n,
         level: s.level,
@@ -1015,6 +1048,7 @@ fn steady(s: &Spin, c: &JudgeCfg) -> Steady {
         crest_ma: None,
         i_ma: None,
         per_rev_raw: None,
+        seed_hz: None,
     };
     let Some(rows) = steady_rows(s.drive, c.fs) else {
         return out;
@@ -1029,15 +1063,6 @@ fn steady(s: &Spin, c: &JudgeCfg) -> Steady {
         out.crest_ma = mean(&r.iter().map(|x| x.crest_a).collect::<Vec<_>>()).map(|a| 1e3 * a);
         out.i_ma = mean(&r.iter().map(|x| x.i_a).collect::<Vec<_>>()).map(|a| 1e3 * a);
     }
-    let raw: Option<Vec<f64>> = rows.iter().map(|f| f.current_raw.map(f64::from)).collect();
-    if let Some(raw) = raw {
-        let m = mean(&raw).unwrap_or(0.0);
-        let x: Vec<f64> = raw.iter().map(|v| v - m).collect();
-        let (lo, hi) = ripple::BAND_HZ;
-        out.line_hz = ripple::line_freq(&x, lo, hi, c.fs)
-            .and_then(|f0| ripple::count_cycles(&x, f0, ripple::BAND_FRAC, c.fs))
-            .map(|k| k.hz);
-    }
     let pts: Option<Vec<(f64, f64)>> = rows
         .iter()
         .map(|f| f.pos.map(|p| (f.tick as f64 / c.fs, f64::from(p))))
@@ -1046,6 +1071,22 @@ fn steady(s: &Spin, c: &JudgeCfg) -> Steady {
         let t0 = p.first().map_or(0.0, |x| x.0);
         let (t, y): (Vec<f64>, Vec<f64>) = p.iter().map(|(t, y)| (t - t0, *y)).unzip();
         out.pot_cps = polyfit::<2>(&t, &y).map(|[_, b]| b * s.dir as f64);
+    }
+    out.seed_hz = seed
+        .zip(out.pot_cps)
+        .map(|(cpc, cps)| cps / cpc)
+        .filter(|f| f.is_finite() && *f > 0.0);
+    let raw: Option<Vec<f64>> = rows.iter().map(|f| f.current_raw.map(f64::from)).collect();
+    if let Some(raw) = raw {
+        let m = mean(&raw).unwrap_or(0.0);
+        let x: Vec<f64> = raw.iter().map(|v| v - m).collect();
+        let (lo, hi) = match out.seed_hz {
+            Some(f) => (f * (1.0 - ripple::BAND_FRAC), f * (1.0 + ripple::BAND_FRAC)),
+            None => ripple::BAND_HZ,
+        };
+        out.line_hz = ripple::line_freq(&x, lo, hi, c.fs)
+            .and_then(|f0| ripple::count_cycles(&x, f0, ripple::BAND_FRAC, c.fs))
+            .map(|k| k.hz);
     }
     if let (
         PerRevFrom::Derive {
@@ -1060,6 +1101,38 @@ fn steady(s: &Spin, c: &JudgeCfg) -> Steady {
         out.per_rev_raw = Some(hz / cps * counts_per_deg * 360.0 / gear_ratio);
     }
     out
+}
+
+/// Every spin's steady stretch, the lowest level by a free search and each
+/// level above seeded by the levels under it: their median pot counts a
+/// ripple cycle, of its own direction where they ran.
+fn steadies(spins: &[Spin], c: &JudgeCfg) -> Vec<Steady> {
+    let mut levels: Vec<f64> = spins.iter().map(|s| s.level).collect();
+    levels.sort_by(f64::total_cmp);
+    levels.dedup();
+    let mut done: Vec<Steady> = Vec::new();
+    for l in levels {
+        let mut now = Vec::new();
+        for s in spins.iter().filter(|s| s.level == l) {
+            let under = |same: bool| -> Vec<f64> {
+                done.iter()
+                    .filter(|x| x.level < l && (!same || x.dir == s.dir))
+                    .filter_map(Steady::counts_per_cycle)
+                    .collect()
+            };
+            let mine = under(true);
+            let seed = if mine.is_empty() {
+                median(&under(false))
+            } else {
+                median(&mine)
+            };
+            now.push(steady(s, c, seed));
+        }
+        done.extend(now);
+    }
+    let order = |x: &Steady| spins.iter().position(|s| s.n == x.n && s.level == x.level);
+    done.sort_by_key(|x| order(x));
+    done
 }
 
 /// The nearest even integer.
@@ -1141,7 +1214,7 @@ pub fn per_rev(c: &JudgeCfg, steady: &[Steady]) -> (PerRev, Check) {
 /// The open-loop line through each level and direction's steady mean,
 /// over [`LINE_LEVELS`] levels at least: one level's two directions are
 /// two regions of the pot, not two speeds.
-fn open_line(steady: &[Steady]) -> Option<OpenLine> {
+fn open_line(steady: &[Steady]) -> (Option<OpenLine>, Vec<(LinePoint, f64)>) {
     let mut keys: Vec<(f64, i8)> = steady.iter().map(|s| (s.level, s.dir)).collect();
     keys.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
     keys.dedup();
@@ -1150,29 +1223,54 @@ fn open_line(steady: &[Steady]) -> Option<OpenLine> {
         let g: Vec<&Steady> = steady
             .iter()
             .filter(|s| s.level == level && s.dir == dir)
-            .filter(|s| s.rad_s().is_some() && s.i_ma.is_some() && s.crest_ma.is_some())
+            .filter(|s| {
+                s.rad_s().is_some()
+                    && s.i_ma.is_some()
+                    && s.crest_ma.is_some()
+                    && s.pot_cps.is_some()
+            })
             .collect();
         let m = |f: &dyn Fn(&Steady) -> Option<f64>| {
             mean(&g.iter().filter_map(|s| f(s)).collect::<Vec<_>>())
         };
-        if let (Some(w), Some(i), Some(raw)) =
-            (m(&Steady::rad_s), m(&|s| s.i_ma), m(&|s| s.crest_ma))
-        {
-            points.push((level, dir, w, i, raw, g.len()));
+        if let (Some(w), Some(i), Some(raw), Some(cps), Some(rev)) = (
+            m(&Steady::rad_s),
+            m(&|s| s.i_ma),
+            m(&|s| s.crest_ma),
+            m(&|s| s.pot_cps),
+            m(&|s| s.rev_s),
+        ) {
+            points.push(LinePoint {
+                level,
+                dir,
+                rad_s: w,
+                i_ma: i,
+                raw_ma: raw,
+                spins: g.len(),
+                counts_per_rev: cps / rev,
+            });
         }
     }
-    let mut levels: Vec<f64> = points.iter().map(|p| p.0).collect();
+    let med = median(&points.iter().map(|p| p.counts_per_rev).collect::<Vec<_>>());
+    let (kept, aside): (Vec<LinePoint>, Vec<LinePoint>) = points.into_iter().partition(|p| {
+        med.is_some_and(|m| (p.counts_per_rev / m - 1.0).abs() <= COUNTS_PER_REV_SHARE)
+    });
+    let aside: Vec<(LinePoint, f64)> = aside
+        .into_iter()
+        .map(|p| (p, med.unwrap_or(f64::NAN)))
+        .collect();
+    let mut levels: Vec<f64> = kept.iter().map(|p| p.level).collect();
     levels.dedup();
     if levels.len() < LINE_LEVELS {
-        return None;
+        return (None, aside);
     }
-    let (w, i): (Vec<f64>, Vec<f64>) = points.iter().map(|p| (p.2, p.3)).unzip();
-    let [a, b] = polyfit::<2>(&w, &i)?;
-    Some(OpenLine {
+    let (w, i): (Vec<f64>, Vec<f64>) = kept.iter().map(|p| (p.rad_s, p.i_ma)).unzip();
+    let line = polyfit::<2>(&w, &i).map(|[a, b]| OpenLine {
         coulomb_ma: a,
         viscous_ma_s_per_rad: b,
-        points,
-    })
+        points: kept,
+    });
+    (line, aside)
 }
 
 fn split(a: f64, b: f64) -> f64 {
@@ -1226,7 +1324,8 @@ pub fn j_level_check(level: Option<f64>) -> Check {
 /// and the acceptance checks (plan sec 2.7 and 2.9).
 pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
     let mut checks = Vec::new();
-    let mut st: Vec<Steady> = spins.iter().map(|s| steady(s, c)).collect();
+    let st = steadies(spins, c);
+    let mut st = st;
     let (pr, ck) = per_rev(c, &st);
     checks.push(ck);
     checks.push(match &c.window {
@@ -1367,7 +1466,36 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
             Verdict::Fail,
         )),
     }
-    let line = open_line(&st);
+    let (line, aside) = open_line(&st);
+    checks.push(check(
+        "the friction line's points agree",
+        if aside.is_empty() {
+            "every level and direction within the share".into()
+        } else {
+            format!(
+                "set aside: {}",
+                aside
+                    .iter()
+                    .map(|(p, m)| format!(
+                        "{:.0}% {} at {:.1} pot counts a revolution against the median {m:.1}",
+                        100.0 * p.level,
+                        way(p.dir),
+                        p.counts_per_rev
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        },
+        format!(
+            "pot counts a ripple revolution within {:.0}% of the run's median",
+            100.0 * COUNTS_PER_REV_SHARE
+        ),
+        if aside.is_empty() {
+            Verdict::Pass
+        } else {
+            Verdict::Warn
+        },
+    ));
     checks.push(match &line {
         Some(l) => check(
             "the open-loop friction line",
@@ -1845,9 +1973,9 @@ fn result_json(
             "steady": per_level,
             "steady_spins": j.steady.iter().map(|s| json!({"n": s.n, "level_share": s.level, "dir": s.dir, "rows": s.rows,
                 "line_hz": s.line_hz, "rev_s": s.rev_s, "pot_cps": s.pot_cps, "current_raw_ma": s.crest_ma,
-                "current_ma": s.i_ma, "per_rev_raw": s.per_rev_raw})).collect::<Vec<_>>(),
+                "current_ma": s.i_ma, "per_rev_raw": s.per_rev_raw, "seed_hz": s.seed_hz})).collect::<Vec<_>>(),
             "open_loop_line": j.line.as_ref().map(|l| json!({"coulomb_ma": l.coulomb_ma, "viscous_ma_s_per_rad": l.viscous_ma_s_per_rad,
-                "points": l.points.iter().map(|p| json!({"level_share": p.0, "dir": p.1, "rad_s": p.2, "current_ma": p.3, "current_raw_ma": p.4, "spins": p.5})).collect::<Vec<_>>()})),
+                "points": l.points.iter().map(|p| json!({"level_share": p.level, "dir": p.dir, "rad_s": p.rad_s, "current_ma": p.i_ma, "current_raw_ma": p.raw_ma, "spins": p.spins, "pot_counts_per_rev": p.counts_per_rev})).collect::<Vec<_>>()})),
             "i_drag0_a": j.i_drag0_a,
             "inertia": inertia,
             "runups": j.runups.iter().map(|(n, d, r)| match r {
@@ -2328,6 +2456,7 @@ mod tests {
             crest_ma: Some(60.0),
             i_ma: Some(55.0),
             per_rev_raw: raw,
+            seed_hz: None,
         }
     }
 
@@ -2370,6 +2499,7 @@ mod tests {
                 coast: &[],
             },
             &c,
+            None,
         );
         assert_eq!(s.per_rev_raw, None, "no rows, no stretch");
         let want: f64 = 1200.0 / 4700.0 * (3710.0 / 184.33) * 360.0 / 308.05;
@@ -2398,27 +2528,43 @@ mod tests {
 
     /// The open-loop line needs two levels: one level's two directions
     /// fit nothing, and its check refuses saying the higher levels did not
-    /// run.
+    /// run. A point whose pot counts a ripple revolution lie more than
+    /// 15 % from the run's median is set aside, and the line still needs
+    /// two levels without it.
     #[test]
-    fn the_friction_line_needs_two_levels() {
-        let at = |level: f64, dir: i8, w: f64, i: f64| Steady {
+    fn the_friction_line_needs_two_levels_that_agree() {
+        let at = |level: f64, dir: i8, w: f64, i: f64, cpr: f64| Steady {
             level,
             dir,
             rev_s: Some(w / (2.0 * core::f64::consts::PI)),
+            pot_cps: Some(cpr * w / (2.0 * core::f64::consts::PI)),
             i_ma: Some(i),
             crest_ma: Some(i + 3.0),
             ..steady_of(None)
         };
-        let one = [at(0.25, 1, 560.0, 45.0), at(0.25, -1, 600.0, 44.0)];
-        assert_eq!(open_line(&one), None);
-        let two = [
-            at(0.25, 1, 560.0, 45.0),
-            at(0.25, -1, 600.0, 44.0),
-            at(0.5, 1, 1200.0, 75.0),
-            at(0.5, -1, 1260.0, 76.0),
+        let one = [
+            at(0.25, 1, 560.0, 45.0, 25.0),
+            at(0.25, -1, 600.0, 44.0, 22.5),
         ];
-        let l = open_line(&two).expect("a line");
-        assert!(l.viscous_ma_s_per_rad > 0.0 && l.points.len() == 4, "{l:?}");
+        assert_eq!(open_line(&one), (None, vec![]));
+        let mut run2 = vec![
+            at(0.25, 1, 545.0, 89.2, 25.7),
+            at(0.25, -1, 602.0, 74.6, 22.2),
+            at(0.5, 1, 1330.0, 118.8, 23.0),
+            at(0.5, -1, 1379.0, 105.5, 24.6),
+        ];
+        let (l, aside) = open_line(&run2);
+        let l = l.expect("a line");
+        assert!(aside.is_empty() && l.points.len() == 4, "{l:?}");
+        // the 75 % up point read at half its speed: 48 counts a revolution
+        run2.push(at(0.75, 1, 1029.0, 143.8, 48.0));
+        let (l, aside) = open_line(&run2);
+        assert_eq!(l.expect("still two levels").points.len(), 4);
+        assert_eq!(aside.len(), 1);
+        assert_eq!((aside[0].0.level, aside[0].0.dir), (0.75, 1));
+        // without the 50 % level what is left is one level: no line
+        let (l, aside) = open_line(&[run2[0].clone(), run2[1].clone(), run2[4].clone()]);
+        assert!(l.is_none() && aside.len() == 1, "{aside:?}");
         assert!(advice("the open-loop friction line").contains("higher levels did not run"));
     }
 
@@ -2644,20 +2790,23 @@ mod tests {
         }
     }
 
-    /// A servo whose speed rises 30 % faster than the volts' ratio from a
-    /// level to the next outruns the bound the level below sets: the
+    /// A servo whose speed rises 60 % faster than the volts' ratio from a
+    /// level to the next outruns the 1.5 margin the level below sets: the
     /// check after its first spin over the bound ends the step there, that
     /// spin's travel still short of the far guard.
     #[test]
     fn a_servo_faster_than_the_volts_ratio_is_stopped_after_its_first_spin() {
-        let s = simulate(0.6, 1.3);
-        let worst = said(0.6, 1.3, &s);
+        let s = simulate(0.6, 1.6);
+        let worst = said(0.6, 1.6, &s);
         let why = s.refused.as_deref().expect("refused");
         assert!(
             why.contains("spin 5 (50% up) ran faster than its bound"),
             "{why}"
         );
-        assert!(why.contains("the 25% level's 3 spins up predict"), "{why}");
+        assert!(
+            why.contains("the 25% level's 3 spins up predict, past the 1.5 margin"),
+            "{why}"
+        );
         assert_eq!(s.ran.len(), 4, "the 25 % level ran: {:?}", s.ran);
         let (last, m) = s.ends.last().expect("a spin");
         assert!(last.starts_with("spin 5") && *m > 0.0, "{last}: {m}");
