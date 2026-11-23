@@ -2971,7 +2971,7 @@
 				)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "680"
 			(at 0 1.17 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -2983,7 +2983,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317914.html"
 			(at 0 0 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -2994,7 +2994,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.1% 25ppm"
+		(property "Description" "680 0402 thin film 0.1% 25ppm"
 			(at 0 0 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -3005,7 +3005,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317913"
+		(property "LCSC" "C317914"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -3018,7 +3018,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC4300"
+		(property "MFPN" "AR02BTC6800"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -6175,7 +6175,7 @@
 				)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "6K2"
 			(at 0 1.17 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -6187,7 +6187,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C319496.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -6198,7 +6198,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K2 0402 thin film 0.1% 25ppm"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -6209,7 +6209,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C319496"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -6222,7 +6222,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "AR02BTC6201"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -7368,7 +7368,7 @@
 				)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "680"
 			(at 0 1.17 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -7380,7 +7380,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317914.html"
 			(at 0 0 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -7391,7 +7391,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.1% 25ppm"
+		(property "Description" "680 0402 thin film 0.1% 25ppm"
 			(at 0 0 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -7402,7 +7402,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317913"
+		(property "LCSC" "C317914"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -7415,7 +7415,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC4300"
+		(property "MFPN" "AR02BTC6800"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -7712,7 +7712,7 @@
 				)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "6K2"
 			(at 0 1.17 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -7724,7 +7724,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C319496.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -7735,7 +7735,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K2 0402 thin film 0.1% 25ppm"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -7746,7 +7746,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C319496"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -7759,7 +7759,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "AR02BTC6201"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")

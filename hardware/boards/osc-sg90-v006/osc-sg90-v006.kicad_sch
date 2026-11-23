@@ -9033,7 +9033,7 @@
 				)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "680"
 			(at 339.09 52.07 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9054,7 +9054,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317914.html"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9065,7 +9065,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.1% 25ppm"
+		(property "Description" "680 0402 thin film 0.1% 25ppm"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9076,7 +9076,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317913"
+		(property "LCSC" "C317914"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9087,7 +9087,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC4300"
+		(property "MFPN" "AR02BTC6800"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9662,7 +9662,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "6K2"
 			(at 307.34 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9684,7 +9684,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C319496.html"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9695,7 +9695,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K2 0402 thin film 0.1% 25ppm"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9706,7 +9706,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C319496"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9717,7 +9717,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "AR02BTC6201"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -14845,7 +14845,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "6K2"
 			(at 347.98 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14867,7 +14867,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C319496.html"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -14878,7 +14878,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "6K2 0402 thin film 0.1% 25ppm"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -14889,7 +14889,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C319496"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -14900,7 +14900,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "AR02BTC6201"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -15318,7 +15318,7 @@
 				)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "680"
 			(at 298.45 52.07 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15339,7 +15339,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C317914.html"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15350,7 +15350,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.1% 25ppm"
+		(property "Description" "680 0402 thin film 0.1% 25ppm"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15361,7 +15361,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317913"
+		(property "LCSC" "C317914"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15372,7 +15372,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC4300"
+		(property "MFPN" "AR02BTC6800"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
