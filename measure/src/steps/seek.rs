@@ -22,6 +22,12 @@
 //! the stop; the next approach carries on from there with no zero between.
 //! A leg is at most [`LEG_MAX_S`].
 //!
+//! A leg that falls back more than [`WRONG_WAY_COUNTS`] from the farthest
+//! it got runs the wrong way, but only on two polls in a row: a single
+//! poll over the line is held out of every decision while the drive runs
+//! on one more poll period at the duty in force, and is counted as an odd
+//! read when the next poll is back inside.
+//!
 //! A refusal taken with the shaft at a seat it just read, the walk or a
 //! blocked approach, first drives off that stop by a leave: to the middle
 //! when both stops are known, else [`CLEAR_COUNTS`] off it. Every other
@@ -145,6 +151,26 @@ pub struct LeaveRaise {
     pub q15: i16,
 }
 
+/// A poll over the wrong-way line that the next poll did not confirm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OddRead {
+    pub leg: usize,
+    pub kind: LegKind,
+    pub toward: Stop,
+    /// The polls before and after it, counts.
+    pub before: f64,
+    pub read: f64,
+    pub after: f64,
+}
+
+/// What a leg's checks made of a poll.
+enum Fed {
+    Go,
+    /// Over the wrong-way line once: held out until the next poll.
+    Suspect,
+    Stop(Refusal, String),
+}
+
 /// A stop seated and read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Seat {
@@ -263,6 +289,11 @@ pub struct Seek {
     leg_from: f64,
     leg_top: i16,
     best: f64,
+    /// The leg's last poll believed, and one over the wrong-way line
+    /// waiting on the next: its reading and the one before it.
+    last: f64,
+    suspect: Option<(f64, f64)>,
+    odd: Vec<OddRead>,
     start: Option<f64>,
     approaches: usize,
     seats: Vec<Seat>,
@@ -282,6 +313,9 @@ impl Seek {
             leg_from: 0.0,
             leg_top: 0,
             best: 0.0,
+            last: 0.0,
+            suspect: None,
+            odd: Vec::new(),
             start: None,
             approaches: 0,
             seats: Vec::new(),
@@ -320,6 +354,30 @@ impl Seek {
     /// The decisions taken, in order, a line each.
     pub fn path(&self) -> &[String] {
         &self.path
+    }
+
+    /// The single polls over the wrong-way line the next poll put back.
+    pub fn odd_reads(&self) -> &[OddRead] {
+        &self.odd
+    }
+
+    /// The leg the next poll fed belongs to, its number and word: the
+    /// hold and the read after a seat's bursts name the approach that
+    /// seated.
+    pub fn leg_now(&self) -> (usize, &'static str) {
+        let n = self.legs.len();
+        match &self.phase {
+            Phase::Idle => (1, "start"),
+            Phase::Approach { .. } => (n + 1, LegKind::Approach.word()),
+            Phase::Hold { .. } => (n, "hold"),
+            Phase::AtSeat => (n, "seated"),
+            Phase::Leave {
+                end: End::Center(_),
+                ..
+            } => (n + 1, LegKind::Center.word()),
+            Phase::Leave { .. } => (n + 1, LegKind::Leave.word()),
+            Phase::Over => (n, "over"),
+        }
     }
 
     pub fn refused(&self) -> Option<&(Refusal, String)> {
@@ -386,6 +444,8 @@ impl Seek {
         self.leg_from = pos;
         self.leg_top = q15;
         self.best = 0.0;
+        self.last = pos;
+        self.suspect = None;
         self.window = Window::new(t, pos);
     }
 
@@ -458,33 +518,53 @@ impl Seek {
     }
 
     /// The leg's checks common to every drive: the pot reads, the leg is
-    /// inside its time, the shaft does not run back from where it got.
-    fn leg_checks(&mut self, t: f64, pos: f64, dir: f64, what: &str) -> Option<(Refusal, String)> {
+    /// inside its time, the shaft does not run back from where it got on
+    /// two polls in a row.
+    fn leg_checks(&mut self, t: f64, pos: f64, kind: LegKind, to: Stop, what: &str) -> Fed {
         if !pos.is_finite() {
-            return Some((Refusal::DeadPot, dead(pos)));
+            return Fed::Stop(Refusal::DeadPot, dead(pos));
         }
         if t - self.leg_t0 > LEG_MAX_S {
-            return Some((
+            return Fed::Stop(
                 Refusal::TimeOut,
                 format!(
                     "the {what} ran {LEG_MAX_S} s from {:.0} and ended at {pos:.0} without its end: the shaft runs too slowly or something holds it. Nothing more drives; {HANDS}",
                     self.leg_from
                 ),
-            ));
+            );
         }
+        let dir = toward(to) as f64;
         let along = (pos - self.leg_from) * dir;
-        self.best = self.best.max(along);
         if self.best - along > WRONG_WAY_COUNTS {
-            return Some((
+            let Some((first, _)) = self.suspect else {
+                self.suspect = Some((pos, self.last));
+                return Fed::Suspect;
+            };
+            return Fed::Stop(
                 Refusal::WrongWay,
                 format!(
-                    "the {what} drove {} counts and the shaft ran {:.0} counts the other way: the drive's sign is not the one the probe proved, or something turns the horn. Nothing more drives; {HANDS}",
+                    "the {what} drove {} counts and the shaft ran {:.0} counts the other way on two polls in a row ({first:.0}, then {pos:.0}): the drive's sign is not the one the probe proved, or something turns the horn. Nothing more drives; {HANDS}",
                     if dir > 0.0 { "up" } else { "down" },
                     self.best - along
                 ),
-            ));
+            );
         }
-        None
+        if let Some((read, before)) = self.suspect.take() {
+            self.path.push(format!(
+                "the {what}: one poll read {read:.0} between {before:.0} and {pos:.0}, over the wrong-way line; set aside"
+            ));
+            self.odd.push(OddRead {
+                leg: self.legs.len() + 1,
+                kind,
+                toward: to,
+                before,
+                read,
+                after: pos,
+            });
+        }
+        self.best = self.best.max(along);
+        self.last = pos;
+        Fed::Go
     }
 
     /// The pot read at `t` after a poll period at the last duty given.
@@ -509,8 +589,13 @@ impl Seek {
     fn on_approach(&mut self, stop: Stop, t: f64, pos: f64) -> Act {
         let q15 = self.cfg.approach_q15;
         let what = format!("approach to the {} stop", stop.word());
-        if let Some((kind, why)) = self.leg_checks(t, pos, toward(stop) as f64, &what) {
-            return self.stop(kind, why);
+        match self.leg_checks(t, pos, LegKind::Approach, stop, &what) {
+            Fed::Go => {}
+            Fed::Suspect => {
+                self.phase = Phase::Approach { stop };
+                return self.press(stop, q15, None);
+            }
+            Fed::Stop(kind, why) => return self.stop(kind, why),
         }
         let Some(still) = self.window.judge(t, pos, self.cfg.still_counts) else {
             self.phase = Phase::Approach { stop };
@@ -647,8 +732,23 @@ impl Seek {
             _ => LegKind::Leave,
         };
         let what = format!("leave from the {} stop", from.word());
-        if let Some((k, why)) = self.leg_checks(t, pos, dir as f64, &what) {
-            return self.leave_failed(from, then, k, why);
+        match self.leg_checks(t, pos, kind, to, &what) {
+            Fed::Go => {}
+            Fed::Suspect => {
+                self.phase = Phase::Leave {
+                    from,
+                    seat,
+                    q15,
+                    end,
+                    then,
+                };
+                return Act::Drive {
+                    q15: q15 * dir as i16,
+                    permit: false,
+                    price: None,
+                };
+            }
+            Fed::Stop(k, why) => return self.leave_failed(from, then, k, why),
         }
         let arrived = match end {
             End::Approach => (pos - seat).abs() >= LEAVE_COUNTS,
@@ -809,7 +909,9 @@ mod tests {
     /// blind end at or over them; the low stop moves `walk` counts after
     /// its first seat, and with `freeze` the shaft never moves once it
     /// meets the walked stop; a dead pot reads `dead` whatever the shaft
-    /// does; the pot reads with a +/-1 count wobble.
+    /// does; once the shaft has met the high stop, the first read at or
+    /// under `spike.0` reads `spike.1` off it, that one read alone; the pot
+    /// reads with a +/-1 count wobble.
     struct Shaft {
         pos: f64,
         lo: f64,
@@ -821,6 +923,9 @@ mod tests {
         walk: f64,
         freeze: bool,
         dead: Option<f64>,
+        spike: Option<(f64, f64)>,
+        high_met: bool,
+        spiked: bool,
         k: u64,
         seats_low: u32,
     }
@@ -838,6 +943,9 @@ mod tests {
                 walk: 0.0,
                 freeze: false,
                 dead: None,
+                spike: None,
+                high_met: false,
+                spiked: false,
                 k: 0,
                 seats_low: 0,
             }
@@ -864,12 +972,21 @@ mod tests {
                 to = to.max(contact);
             }
             self.pos = to.clamp(self.lo, self.hi);
+            self.high_met |= self.pos >= self.hi;
         }
 
         fn read(&mut self) -> f64 {
             self.k += 1;
-            self.dead
-                .unwrap_or(self.pos + if self.k % 2 == 0 { 1.0 } else { -1.0 })
+            let wobble = if self.k % 2 == 0 { 1.0 } else { -1.0 };
+            if let Some((at, by)) = self.spike
+                && self.high_met
+                && !self.spiked
+                && self.pos <= at
+            {
+                self.spiked = true;
+                return self.pos + by + wobble;
+            }
+            self.dead.unwrap_or(self.pos + wobble)
         }
     }
 
@@ -1174,20 +1291,68 @@ mod tests {
         assert!(r.duties.is_empty(), "nothing drives");
     }
 
+    /// One poll reading 400 counts the wrong way on the leave from the
+    /// high stop, the next back inside: the run goes on, never ends the
+    /// leave on that read, and counts it.
+    #[test]
+    fn a_single_wrong_way_read_on_a_leave_is_survived_and_counted() {
+        let mut s = Shaft {
+            spike: Some((3560.0, 400.0)),
+            ..Shaft::bench()
+        };
+        let r = run(&mut s);
+        let m = &r.m;
+        assert!(s.spiked);
+        assert!(m.finished(), "{:?}", m.path());
+        assert_eq!(m.seats().len(), 4);
+        let odd = m.odd_reads();
+        assert_eq!(odd.len(), 1, "{odd:?}");
+        let o = &odd[0];
+        assert_eq!((o.leg, o.kind, o.toward), (4, LegKind::Leave, Stop::Low));
+        assert!((o.read - o.before - 400.0).abs() < 30.0, "{o:?}");
+        // two poll periods of travel at the approach duty, about 33 counts
+        assert!((o.before - o.after - 33.0).abs() < 5.0, "{o:?}");
+        let leave = &m.legs()[3];
+        assert!(
+            (leave.to - (3626.0 - LEAVE_COUNTS)).abs() < 30.0,
+            "the leave ends on a believed read: {leave:?}"
+        );
+        assert!(
+            m.path().iter().any(|p| p.contains("set aside")),
+            "{:?}",
+            m.path()
+        );
+    }
+
     /// A shaft that runs the other way from the duty: the sign is not the
-    /// proven one, and the step aborts at once.
+    /// proven one, and the step aborts on the second poll over the line.
     #[test]
     fn a_shaft_that_runs_the_wrong_way_aborts() {
         let c = cfg();
         let mut m = Seek::new(c.clone());
         let mut s = Shaft::bench();
         let mut t = 0.0;
-        let mut act = m.start(t, s.read());
+        let from = s.read();
+        let mut act = m.start(t, from);
+        let (mut best, mut first_over, mut polls) = (0.0f64, None, 0);
         while let Act::Drive { q15, .. } = act {
             s.drive(&c, -q15, POLL_S);
             t += POLL_S;
-            act = m.feed(t, s.read());
+            let pos = s.read();
+            polls += 1;
+            let along = from - pos;
+            best = best.max(along);
+            if first_over.is_none() && best - along > WRONG_WAY_COUNTS {
+                first_over = Some(polls);
+            }
+            act = m.feed(t, pos);
         }
+        assert_eq!(
+            Some(polls - 1),
+            first_over,
+            "one poll after the first over the line"
+        );
+        assert!(m.odd_reads().is_empty());
         assert!(
             matches!(
                 act,

@@ -4,8 +4,10 @@
 //! stage 3 identification notebook reads its bursts at a held seat. The
 //! first burst of each group is set aside, and so is a burst whose first
 //! window current is more than [`SET_ASIDE_SHARE`] off the median of its
-//! group's others (the inductance notebook's rule); the rest pool by
-//! medians.
+//! group's others (the inductance notebook's rule). After it,
+//! [`SeatedRead::set_aside_bridged`] sets aside a burst whose own R reads
+//! more than [`BRIDGED_SHARE`] under the run's median at its level; the
+//! rest pool by medians.
 
 use crate::capture::burst::Capture;
 use crate::rules::units::ALPHA_CU;
@@ -16,6 +18,13 @@ use super::rise::{self, Rise, Scales};
 /// A burst whose first window current is this share off its group's
 /// others is set aside.
 pub const SET_ASIDE_SHARE: f64 = 0.12;
+/// A kept burst whose own R reads this share under the median R of the
+/// run's kept bursts at its level, both stops together, is set aside: a
+/// brush bridging two commutator bars shorts a coil, so it only ever reads
+/// low.
+pub const BRIDGED_SHARE: f64 = 0.08;
+/// The bridged rule's passes, the median taken again before each.
+pub const BRIDGED_PASSES: usize = 2;
 /// The temperature R is also stated at, C.
 pub const R_AT_C: f64 = 25.0;
 
@@ -40,6 +49,11 @@ pub enum Aside {
     First,
     /// Its first window current against its group's others, a share.
     Moved(f64),
+    /// Its own R and the share under its level's median.
+    Bridged {
+        r_ohm: f64,
+        under: f64,
+    },
     Unread(String),
 }
 
@@ -51,6 +65,10 @@ impl Aside {
                 "its first window current is {:+.1}% off its group's others, over {:.0}%",
                 100.0 * m,
                 100.0 * SET_ASIDE_SHARE
+            ),
+            Aside::Bridged { r_ohm, under } => format!(
+                "reads R {r_ohm:.2} ohm, {:.0}% under the run's median at this level: a brush bridging two bars",
+                100.0 * under
             ),
             Aside::Unread(e) => format!("unread: {e}"),
         }
@@ -217,6 +235,36 @@ pub fn read(shots: &[Shot], s: &Scales) -> SeatedRead {
 impl SeatedRead {
     pub fn kept(&self) -> impl Iterator<Item = &BurstRead> {
         self.bursts.iter().filter(|b| b.kept())
+    }
+
+    /// The bridged rule over the kept bursts, a level at a time, both
+    /// stops together: [`BRIDGED_PASSES`] passes, each on the median of
+    /// the bursts the pass before kept.
+    pub fn set_aside_bridged(&mut self) {
+        let mut levels: Vec<usize> = self.bursts.iter().map(|b| b.level).collect();
+        levels.sort_unstable();
+        levels.dedup();
+        for _ in 0..BRIDGED_PASSES {
+            for &lv in &levels {
+                let Some(m) = self.r(|b| b.level == lv).map(|s| s.median) else {
+                    continue;
+                };
+                for b in self.bursts.iter_mut().filter(|b| b.level == lv && b.kept()) {
+                    let r_ohm = Self::rise_of(b).r_ohm;
+                    let under = 1.0 - r_ohm / m;
+                    if under > BRIDGED_SHARE {
+                        b.aside = Some(Aside::Bridged { r_ohm, under });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The bursts the bridged rule set aside.
+    pub fn bridged(&self) -> impl Iterator<Item = &BurstRead> {
+        self.bursts
+            .iter()
+            .filter(|b| matches!(b.aside, Some(Aside::Bridged { .. })))
     }
 
     fn of(
