@@ -1,6 +1,7 @@
 //! Estimators over captures, pure: no bus, no files.
 
 pub mod rise;
+pub mod window;
 
 /// The median; the mean of the middle two on an even count. None when
 /// empty.
