@@ -1,0 +1,98 @@
+{
+ "method": "the stage 3 window-term notebook's cells [1, 2, 4, 6, 8, 11, 21, 23, 25, 27, 35, 37, 41, 43, 45] executed as written, at notebooks 34add9d",
+ "notebook_sha1": "70c060faaa769ef5e0f9ed577a00429b1e92b9a5",
+ "windowterm_sha1": "e08ab22369816eaf337eeb95012af837780c2c6f",
+ "subset": "session A, the first four kept onsets of each duty and direction in record order: the plan's 24",
+ "scales": {
+  "counts_per_a": 1135.013429521035,
+  "terminal_counts_per_v": 248.36571049939795,
+  "terminal_offset_counts": 2.3816859542540265,
+  "sample_ticks": 31.0,
+  "r_brake_ohm": 0.30083616429222926,
+  "v_window_min_ticks": 93,
+  "settle_start_ticks": 40,
+  "settle_q15": [
+   37138,
+   35303,
+   34342,
+   33918,
+   33643,
+   33470,
+   33374,
+   33259,
+   33213,
+   33156,
+   33103,
+   33052,
+   33020,
+   32982,
+   32938,
+   32900,
+   32868,
+   32841,
+   32824,
+   32806,
+   32785
+  ],
+  "rail_line": [
+   {
+    "v": 3.7,
+    "tap_on": 37.0,
+    "off": 13.0
+   },
+   {
+    "v": 7.4,
+    "tap_on": 42.0,
+    "off": 15.0
+   }
+  ]
+ },
+ "caps": {
+  "A/ol-1": {
+   "file": "A-ol-1.sweep.csv.gz",
+   "from": "telemetry/mg90-d__dev-v006-2A-D/window-term/onsets-A/ol-1/sweep.csv",
+   "sha1": "3b8452259eb21505144d12c8186541ea47e7dfad",
+   "segments": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+   ],
+   "tick_hz": 20000,
+   "pwm_period_ticks": 1200,
+   "vbus_counts": 1240,
+   "r_q12": 3725
+  },
+  "A/ol-2": {
+   "file": "A-ol-2.sweep.csv.gz",
+   "from": "telemetry/mg90-d__dev-v006-2A-D/window-term/onsets-A/ol-2/sweep.csv",
+   "sha1": "366d70e9970caa1b0a7f676f093360c298f63bc4",
+   "segments": [
+    1,
+    2,
+    3,
+    10,
+    11,
+    12
+   ],
+   "tick_hz": 20000,
+   "pwm_period_ticks": 1200,
+   "vbus_counts": 1238,
+   "r_q12": 3725
+  }
+ }
+}
