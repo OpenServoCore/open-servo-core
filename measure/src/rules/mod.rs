@@ -340,6 +340,28 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// `f` on `inputs` at its value and at each end of every banded input it
+/// reads, the lowest of them: the rules evaluate a field at every end of
+/// its inputs' bands, so a value one compares against must sit under
+/// each.
+pub(crate) fn lowest(inputs: &Inputs, f: RuleFn) -> Result<f64, Fail> {
+    let mut c = Ctx::new(inputs);
+    let mut low = f(&mut c)?;
+    let mut banded: Vec<&'static str> = Vec::new();
+    for read in &c.reads {
+        if read.banded && !banded.contains(&read.name) {
+            banded.push(read.name);
+        }
+    }
+    for name in banded {
+        for end in [End::Lo, End::Hi] {
+            c.side = Some((name, end));
+            low = low.min(f(&mut c)?);
+        }
+    }
+    Ok(low)
+}
+
 /// `q!(c, block, name)`: the quantity `inputs.block.name`, read as
 /// `block.name`.
 macro_rules! q {

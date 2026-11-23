@@ -218,7 +218,7 @@ pub async fn check<P: Pipe>(
 
 /// Refused with nothing written: torque on, or saved settings no write
 /// verb may touch.
-fn writable_now(state: &State) -> Result<(), Refused> {
+pub fn writable_now(state: &State) -> Result<(), Refused> {
     if state.torque {
         return Err(Refused(
             "torque_enable is on: this tool writes a servo only with torque off".into(),
@@ -372,6 +372,18 @@ fn plan<'d>(
             no.join("\n  ")
         )))
     }
+}
+
+/// The refusals an install of `set` over `state` makes before its first
+/// write, the protection gate among them, without writing.
+pub fn gate(
+    set: &SetFile,
+    state: &State,
+    d: &Descriptor,
+    points: Option<&[i16; INTERVALS]>,
+    loosen: &[String],
+) -> Result<(), Refused> {
+    plan(set, state, d, points, loosen).map(|_| ())
 }
 
 /// One field written and read back. `Ok(false)`: the servo refused the
@@ -563,6 +575,92 @@ pub async fn install<P: Pipe>(
     }
 }
 
+/// Reboot the servo onto its stored state and keep the record of it in
+/// [`STORED`], which must read back the same before anything else is
+/// written: the state a save, and a tune that ends without a set, go back
+/// to. The stored state as read.
+pub async fn backup<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    sink: &mut dyn Sink,
+    steps: &mut Vec<Step>,
+) -> Result<State, Refused> {
+    reboot(c, id, steps).await?;
+    let stored = state::read(c, id, d).await?;
+    let mut bytes =
+        serde_json::to_vec_pretty(&stored.record(d)).map_err(|e| Refused(e.to_string()))?;
+    bytes.push(b'\n');
+    sink.write(STORED, &bytes)?;
+    let back = sink.read(STORED)?;
+    let parsed: Value = serde_json::from_slice(&back).unwrap_or(Value::Null);
+    if back != bytes
+        || parsed.get("hash").and_then(Value::as_str) != Some(state_hash(&parsed).as_str())
+    {
+        return Err(Refused(format!(
+            "{} does not read back as the backup written: nothing was written",
+            sink.shown(STORED)
+        )));
+    }
+    steps.push(Step::Backup(sink.shown(STORED)));
+    Ok(stored)
+}
+
+/// Put the servo back on its stored state by a reboot, which writes no
+/// field and so needs no protection gate, then read it against
+/// `stored`, the state [`backup`] kept: a line a difference, none when it
+/// is that state.
+pub async fn put_back<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    stored: &State,
+    steps: &mut Vec<Step>,
+) -> Result<Vec<String>, Refused> {
+    reboot(c, id, steps).await?;
+    let now = state::read(c, id, d).await?;
+    if now.record(d)["hash"] == stored.record(d)["hash"] {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<String> = d
+        .fields
+        .iter()
+        .filter(|f| now.bytes(f).is_some() && now.bytes(f) != stored.bytes(f))
+        .map(|f| {
+            format!(
+                "{}: stored {}, now {}",
+                f.name,
+                dumps(&stored.text(f)),
+                dumps(&now.text(f))
+            )
+        })
+        .collect();
+    if (now.table_state(), now.points_sha1()) != (stored.table_state(), stored.points_sha1()) {
+        out.push(format!(
+            "position table: stored {} ({}), now {} ({})",
+            stored.table_state(),
+            stored.points_sha1(),
+            now.table_state(),
+            now.points_sha1()
+        ));
+    }
+    if now.data_said() != stored.data_said() {
+        out.push(format!(
+            "data state: stored {}, now {}",
+            stored.data_said(),
+            now.data_said()
+        ));
+    }
+    if out.is_empty() {
+        out.push(format!(
+            "the state read is not the backup's: stamp stored {}, now {}",
+            stored.stamp_said(),
+            now.stamp_said()
+        ));
+    }
+    Ok(out)
+}
+
 /// Persist the set. Refused with the bus untouched for a derived set,
 /// then unless torque is off. The servo is rebooted onto its stored state,
 /// which is written to [`STORED`] and must read back the same before
@@ -586,23 +684,7 @@ pub async fn save<P: Pipe>(
         )));
     }
     writable_now(&state::read(c, id, d).await?)?;
-    reboot(c, id, steps).await?;
-    let stored = state::read(c, id, d).await?;
-    let mut bytes =
-        serde_json::to_vec_pretty(&stored.record(d)).map_err(|e| Refused(e.to_string()))?;
-    bytes.push(b'\n');
-    sink.write(STORED, &bytes)?;
-    let back = sink.read(STORED)?;
-    let parsed: Value = serde_json::from_slice(&back).unwrap_or(Value::Null);
-    if back != bytes
-        || parsed.get("hash").and_then(Value::as_str) != Some(state_hash(&parsed).as_str())
-    {
-        return Err(Refused(format!(
-            "{} does not read back as the backup written: nothing was written",
-            sink.shown(STORED)
-        )));
-    }
-    steps.push(Step::Backup(sink.shown(STORED)));
+    backup(c, id, d, sink, steps).await?;
     let put_back = format!(
         "`osc-ident restore --from {}` installs it again, volatile",
         sink.shown(STORED)

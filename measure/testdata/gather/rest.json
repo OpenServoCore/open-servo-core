@@ -1,0 +1,409 @@
+{
+  "step": "rest",
+  "method": "rest-noise",
+  "revision": 1,
+  "image": "production",
+  "capability_flags": 1,
+  "estimates": {
+    "current_zero_asleep_counts": {
+      "value": 1205.9102,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "rest row current_raw, torque off"
+    },
+    "current_zero_awake_counts": {
+      "value": 1211.6823,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "raw row current_raw, torque on at zero duty"
+    },
+    "current_zero_sd_counts": {
+      "value": 1.0726598338938858,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "the larger of the two rows, the VDD frame ripple out"
+    },
+    "tap_a_counts": {
+      "value": 772.85045,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "raw row vmotor_a, torque on"
+    },
+    "tap_b_counts": {
+      "value": 771.77395,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "raw row vmotor_b, torque on"
+    },
+    "pot_rest_sd_counts": {
+      "value": 1.2576436825890236,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "rest row pos, torque off, the VDD frame ripple out"
+    },
+    "vdd_frame_ripple_mv_pp": {
+      "value": 4.714170204762811,
+      "lo": null,
+      "hi": null,
+      "unit": "mV",
+      "source": "rest row vref_raw folded by tick modulo 16, reported, not judged"
+    },
+    "vdd_v": {
+      "value": 3.291764471010697,
+      "lo": null,
+      "hi": null,
+      "unit": "V",
+      "source": "rest row vref_raw, the 1.2 V reference"
+    },
+    "rail_v": {
+      "value": 4.9781898168470455,
+      "lo": null,
+      "hi": null,
+      "unit": "V",
+      "source": "rest row vbus_raw through the rail divider, the measured supply"
+    },
+    "supply_v": {
+      "value": 5.2281898168470455,
+      "lo": null,
+      "hi": null,
+      "unit": "V",
+      "source": "the rail and the board's input drop"
+    },
+    "board_ntc_c": {
+      "value": 21.11885990249789,
+      "lo": null,
+      "hi": null,
+      "unit": "C",
+      "source": "rest row ntc_raw through the part's nominal beta"
+    },
+    "stall_room_a": {
+      "value": 2.601210977851111,
+      "lo": null,
+      "hi": null,
+      "unit": "A",
+      "source": "the awake zero to the converter's top, nominal counts per A"
+    }
+  },
+  "counts_per_a_nominal": 1108.4520727272727,
+  "rail_counts_per_v_nominal": 248.24242424242425,
+  "ntc_parts": {
+    "ntc_pullup_ohm": 10000.0,
+    "ntc_r25_ohm": 10000.0,
+    "ntc_beta": 3950.0
+  },
+  "ntc_words": {
+    "ntc_raw_ref": 2048,
+    "ntc_t_ref_cc": 2430,
+    "ntc_k1_q88": 474,
+    "ntc_k2_q24": 19934,
+    "servo": {
+      "ntc_raw_ref": 2048,
+      "ntc_t_ref_cc": 2430,
+      "ntc_k1_q88": 474,
+      "ntc_k2_q24": 19934
+    },
+    "equal": true,
+    "form_error_c": {
+      "under": -1.0196808462391687,
+      "over": 5.498122490754298,
+      "range_c": [
+        15.0,
+        90.0
+      ]
+    },
+    "design": {
+      "pin_c": 90.0,
+      "floor_c": -1.0,
+      "low_range_c": [
+        15.0,
+        50.0
+      ]
+    }
+  },
+  "channels": {
+    "rest": {
+      "pos": {
+        "n": 20000,
+        "mean": 1889.3127,
+        "min": 1884.0,
+        "max": 1894.0,
+        "sd_raw": 1.570228871852666,
+        "sd": 1.2576436825890236,
+        "fold_16_raw": 1.5865000000001146,
+        "fold_16": 0.3789304077997713,
+        "vdd_gain": 1.3300358920328692
+      },
+      "vref_raw": {
+        "n": 20000,
+        "mean": 1493.18095,
+        "min": 1488.0,
+        "max": 1498.0,
+        "sd_raw": 1.321365618403658,
+        "sd": 1.1163852919131234,
+        "fold_16_raw": 1.0758500000001732,
+        "fold_16": 1.0322764865122736e-10,
+        "vdd_gain": 1.0
+      },
+      "vbus_raw": {
+        "n": 20000,
+        "mean": 1238.8897,
+        "min": 1234.0,
+        "max": 1243.0,
+        "sd_raw": 1.4187085359579028,
+        "sd": 1.3139716876615621,
+        "fold_16_raw": 0.9479000000001179,
+        "fold_16": 0.1862457684776473,
+        "vdd_gain": 0.7568213996819501
+      },
+      "ntc_raw": {
+        "n": 20000,
+        "mean": 2226.4737,
+        "min": 2222.0,
+        "max": 2230.0,
+        "sd_raw": 1.1962475956089285,
+        "sd": 0.7225343579522732,
+        "fold_16_raw": 1.8766999999998006,
+        "fold_16": 0.43863385113445474,
+        "vdd_gain": 1.3487138558549725
+      },
+      "current_raw": {
+        "n": 20000,
+        "mean": 1205.9102,
+        "min": 1201.0,
+        "max": 1210.0,
+        "sd_raw": 1.0783023509202643,
+        "sd": 1.0726598338938858,
+        "fold_16_raw": 0.7313999999998941,
+        "fold_16": 0.6559316412374301,
+        "vdd_gain": 0.1558483012633701
+      },
+      "vmotor_a": {
+        "n": 20000,
+        "mean": 773.05265,
+        "min": 771.0,
+        "max": 775.0,
+        "sd_raw": 0.6852575993740933,
+        "sd": 0.5818476751276219,
+        "fold_16_raw": 0.6889499999999771,
+        "fold_16": 0.20095091101495655,
+        "vdd_gain": 0.5120786926755837
+      }
+    },
+    "raw": {
+      "pos": {
+        "n": 20000,
+        "mean": 1890.3381,
+        "min": 1886.0,
+        "max": 1894.0,
+        "sd_raw": 1.118967555383014,
+        "sd": 0.7134524350864138,
+        "fold_16_raw": 1.4610999999999876,
+        "fold_16": 0.3386876511610808,
+        "vdd_gain": 1.21945360720464
+      },
+      "current_raw": {
+        "n": 20000,
+        "mean": 1211.6823,
+        "min": 1207.0,
+        "max": 1217.0,
+        "sd_raw": 1.0772031888180986,
+        "sd": 1.0691929766814525,
+        "fold_16_raw": 0.7600999999999658,
+        "fold_16": 0.7851442818487158,
+        "vdd_gain": 0.18549243267053633
+      },
+      "vmotor_a": {
+        "n": 20000,
+        "mean": 772.85045,
+        "min": 771.0,
+        "max": 775.0,
+        "sd_raw": 0.6675213835525906,
+        "sd": 0.585000279118055,
+        "fold_16_raw": 0.6087499999999864,
+        "fold_16": 0.22115002161888242,
+        "vdd_gain": 0.45480411440889645
+      },
+      "vmotor_b": {
+        "n": 20000,
+        "mean": 771.77395,
+        "min": 770.0,
+        "max": 774.0,
+        "sd_raw": 0.6978190291902252,
+        "sd": 0.5952192550428487,
+        "fold_16_raw": 0.6332499999999754,
+        "fold_16": 0.10847206068706328,
+        "vdd_gain": 0.5152620301213953
+      },
+      "duty_ticks": {
+        "n": 20000,
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "sd_raw": 0.0,
+        "sd": 0.0,
+        "fold_16_raw": 0.0,
+        "fold_16": 0.0,
+        "vdd_gain": 0.0
+      },
+      "current_trough": {
+        "n": 20000,
+        "mean": 1212.1631,
+        "min": 1208.0,
+        "max": 1217.0,
+        "sd_raw": 1.134327285222342,
+        "sd": 1.1258318593115537,
+        "fold_16_raw": 0.7409000000000106,
+        "fold_16": 0.5300065658673248,
+        "vdd_gain": 0.19602494223546252
+      }
+    }
+  },
+  "frame_ripple": {
+    "vref_trusted": true,
+    "vref_pattern_counts": [
+      -0.22174999999992906,
+      0.7102500000000873,
+      0.5942500000001019,
+      0.6182499999999891,
+      -0.5849499999999352,
+      -0.4329499999998916,
+      -1.0017499999999018,
+      -1.0625499999998738,
+      -0.41534999999998945,
+      1.0662500000000819,
+      1.0758500000001732,
+      0.9646500000001197,
+      -0.19934999999986758,
+      -0.20974999999998545,
+      -0.7305499999999938,
+      -0.17055000000004839
+    ],
+    "vref_mean_counts": 1493.18095,
+    "vdd_ripple_mv_pp": 4.714170204762811,
+    "fold": 16,
+    "phase": "tick modulo 16 from a burst's first row",
+    "compensation": "each channel less its vdd_gain x vref_pattern_counts[tick % 16]"
+  },
+  "verdict": "accepted",
+  "checks": [
+    {
+      "name": "current zero noise, torque off",
+      "value": "sd 1.07 counts (1.08 before the VDD frame ripple is taken out)",
+      "bound": "<= 2",
+      "verdict": "pass"
+    },
+    {
+      "name": "current zero noise, torque on",
+      "value": "sd 1.07 counts (1.08 before the VDD frame ripple is taken out)",
+      "bound": "<= 2",
+      "verdict": "pass"
+    },
+    {
+      "name": "tap a noise, torque off",
+      "value": "sd 0.58 counts (0.69 before the VDD frame ripple is taken out)",
+      "bound": "<= 1.5",
+      "verdict": "pass"
+    },
+    {
+      "name": "tap a noise, torque on",
+      "value": "sd 0.59 counts (0.67 before the VDD frame ripple is taken out)",
+      "bound": "<= 1.5",
+      "verdict": "pass"
+    },
+    {
+      "name": "tap b noise, torque on",
+      "value": "sd 0.60 counts (0.70 before the VDD frame ripple is taken out)",
+      "bound": "<= 1.5",
+      "verdict": "pass"
+    },
+    {
+      "name": "pot noise at rest",
+      "value": "sd 1.26 counts (1.57 before the VDD frame ripple is taken out)",
+      "bound": "0.3 to 3",
+      "verdict": "pass"
+    },
+    {
+      "name": "pot off the converter rails",
+      "value": "1884 to 1894 counts",
+      "bound": "over 8 and under 4087: a pot lead off reads full scale",
+      "verdict": "pass"
+    },
+    {
+      "name": "taps agree, torque on",
+      "value": "a 772.9, b 771.8 counts, 1.1 apart",
+      "bound": "<= 5 apart",
+      "verdict": "pass"
+    },
+    {
+      "name": "taps at the divider bias",
+      "value": "a 773.1 / 772.9, b 771.8 counts, at most 0.16% off 773",
+      "bound": "within 3% of vmotor_bias_nom_counts",
+      "verdict": "pass"
+    },
+    {
+      "name": "chip supply",
+      "value": "3.292 V from vref_raw 1493.2, 0.25% off",
+      "bound": "within 3% of vdd_mv 3300",
+      "verdict": "pass"
+    },
+    {
+      "name": "board NTC",
+      "value": "21.1 C from ntc_raw 2226.5 (the part's nominal beta)",
+      "bound": "-10 to 60 C, off both rails",
+      "verdict": "pass"
+    },
+    {
+      "name": "the zero leaves room for the stall current",
+      "value": "2.601 A over the zero 1211.7 before the chain saturates",
+      "bound": "the nameplate states no stall current",
+      "verdict": "not judged"
+    },
+    {
+      "name": "supply inside the nameplate's range",
+      "value": "5.23 V at the connector (rail 4.98 V and the 250 mV input drop)",
+      "bound": "4.8 to 6.6 V",
+      "verdict": "pass"
+    },
+    {
+      "name": "VDD frame ripple",
+      "value": "4.71 mV pp once a 16-row frame, from vref_raw folded by tick modulo 16",
+      "bound": "reported; every channel's share of it is taken out",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the frame's own pattern",
+      "value": "tick-modulo-16 means at most 0.79 counts off the mean (raw current_raw) once the VDD frame ripple is out",
+      "bound": "flat within 1 count",
+      "verdict": "pass"
+    },
+    {
+      "name": "nothing moved",
+      "value": "pot mean 1889.3 torque off, 1890.3 torque on, 1.0 apart",
+      "bound": "<= 5 counts",
+      "verdict": "pass"
+    },
+    {
+      "name": "NTC words",
+      "value": "designed 2048 2430 474 19934, the servo holds 2048 2430 474 19934",
+      "bound": "the servo's equal the design (a difference is the rules' to install)",
+      "verdict": "pass"
+    }
+  ],
+  "position_before_counts": 1887.125,
+  "position_after_counts": 1894.25,
+  "exit": [
+    "goal_duty 0",
+    "torque_enable 0, read back 0",
+    "stall_permit 0",
+    "bus_deadman_ticks 0",
+    "tel_count 0",
+    "mode put back, read back"
+  ],
+  "torque_off": true
+}

@@ -9,6 +9,7 @@ pub mod board;
 pub mod capture;
 pub mod envelope;
 pub mod fit;
+pub mod gather;
 pub mod guard;
 pub mod inputs;
 pub mod install;
@@ -23,6 +24,7 @@ pub mod set;
 pub mod sink;
 pub mod state;
 pub mod steps;
+pub mod tune;
 
 pub use board::Board;
 pub use inputs::{Inputs, Measured, Quantity, Source, ThermalInputs, Tuning};

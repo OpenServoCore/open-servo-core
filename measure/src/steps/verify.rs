@@ -286,8 +286,14 @@ fn rows_for(s: f64, tick_hz: f64) -> usize {
     (s * tick_hz).ceil() as usize
 }
 
-async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<Before, Refused> {
-    let line = tel::line(rig.c, rig.id).await?;
+/// The refusals before any write that no installed set changes: the bus
+/// and the image, torque on, a latched fault. The line and the state read.
+pub async fn admit<P: Pipe>(
+    c: &mut osc_client::Client<P>,
+    id: osc_client::Id,
+    d: &osc_client::descriptor::Descriptor,
+) -> Result<(Line, State), Refused> {
+    let line = tel::line(c, id).await?;
     line.admit(Layout::Raw)?;
     if line.image() != Image::Production {
         return Err(Refused(format!(
@@ -295,26 +301,26 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
             line.said()
         )));
     }
-    let state = state::read(rig.c, rig.id, rig.d).await?;
+    let state = state::read(c, id, d).await?;
     if state.torque {
         return Err(Refused(
             "torque_enable is on: this step starts only with torque off".into(),
         ));
     }
     let faults = {
-        let f = field(rig.d, "fault_flags")?;
-        rig.c
-            .read(rig.id, f.addr, 1)
-            .await?
-            .first()
-            .copied()
-            .unwrap_or(0)
+        let f = field(d, "fault_flags")?;
+        c.read(id, f.addr, 1).await?.first().copied().unwrap_or(0)
     };
     if faults != 0 {
         return Err(Refused(format!(
             "a fault is latched (fault_flags {faults:#04x}): `osc status` names it"
         )));
     }
+    Ok((line, state))
+}
+
+async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<Before, Refused> {
+    let (line, state) = admit(rig.c, rig.id, rig.d).await?;
     if state.stamp.stored == osc_client::stamp::UNSTAMPED || !state.stamp.matches() {
         return Err(Refused(format!(
             "the stamp says {}: the live set is not the one installed and stamped, and a closed loop would run on constants that do not belong together; install the set (`osc-ident install`) first",

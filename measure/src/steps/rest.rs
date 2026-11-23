@@ -141,10 +141,14 @@ impl Sense {
     /// The rail behind the board's input drop, V, the measured supply in
     /// place of the nominal when `vref_raw` is given.
     pub fn rail_v(&self, vbus_raw: f64, vref_raw: Option<f64>) -> f64 {
-        let nominal = self.vdd_mv / 1000.0;
-        let v = vbus_raw * nominal / ntc::ADC_COUNTS * (self.vbus_div_top + self.vbus_div_bot)
-            / self.vbus_div_bot;
-        vref_raw.map_or(v, |r| v * self.vdd_v(r) / nominal)
+        let v = vbus_raw / self.rail_counts_per_v();
+        vref_raw.map_or(v, |r| v * self.vdd_v(r) / (self.vdd_mv / 1000.0))
+    }
+
+    /// Counts of the rail tap a volt of rail, the parts' nominal: no offset.
+    pub fn rail_counts_per_v(&self) -> f64 {
+        ntc::ADC_COUNTS / (self.vdd_mv / 1000.0) * self.vbus_div_bot
+            / (self.vbus_div_top + self.vbus_div_bot)
     }
 
     /// The supply at the connector: the rail and the input drop.
@@ -1017,6 +1021,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             "stall_room_a": est(room_a, "A", "the awake zero to the converter's top, nominal counts per A"),
         },
         "counts_per_a_nominal": cpa,
+        "rail_counts_per_v_nominal": s.rail_counts_per_v(),
         "ntc_parts": parts,
         "ntc_words": ntc_words,
         "channels": ch.json(),
@@ -1114,6 +1119,18 @@ mod tests {
         let c = Channels::of(&rest, &raw).pattern_check();
         assert_eq!(c.verdict, Verdict::Warn, "{}", c.value);
         assert!(c.value.contains("(rest pos)"), "{}", c.value);
+    }
+
+    /// The rail's nominal scale is the one `rail_v` reads through, and on
+    /// the bench servo's sense block the value the gather fixture's rest
+    /// result carries (`testdata/gather/rest.json`).
+    #[test]
+    fn the_rail_scale_is_the_divider_rail_v_reads_through() {
+        let s = sense();
+        assert_eq!(s.counts_per_a(), 1108.4520727272727);
+        assert_eq!(s.rail_counts_per_v(), 248.24242424242425);
+        let v = s.rail_v(5.0 * s.rail_counts_per_v(), None);
+        assert!((v - 5.0).abs() < 1e-12, "{v}");
     }
 
     /// The dev board's sense chain, its NTC words the stage 1 design.
