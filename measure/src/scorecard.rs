@@ -38,6 +38,9 @@ pub const TAIL_DRIVEN_SHARE: f64 = 0.02;
 pub const GROSS: f64 = 2.0;
 pub const OVER_ALLOWED: usize = 2;
 pub const HUNT_ALLOWED: usize = 1;
+/// A hold hunts when over this share of its last 500 ms is driven; one
+/// driven for less, over [`TAIL_DRIVEN_SHARE`], is restless and warns.
+pub const HUNT_SHARE: f64 = 0.5;
 pub const OVERSHOOT_DEG: f64 = 1.0;
 pub const OVERSHOOT_SHARE: f64 = 0.02;
 pub const FOLLOW_SHARE: f64 = 0.5;
@@ -537,27 +540,44 @@ pub fn accept(
             w.is_some_and(|(_, r)| r > GROSS),
         ),
     });
-    let hunting: Vec<String> = moves
-        .iter()
-        .filter(|(_, s)| !s.quiet)
-        .map(|(n, s)| format!("{n} ({:.1}% driven)", 100.0 * s.tail_driven_share))
-        .collect();
+    let driven = |from: f64, to: f64| -> Vec<String> {
+        moves
+            .iter()
+            .filter(|(_, s)| s.tail_driven_share > from && s.tail_driven_share <= to)
+            .map(|(n, s)| format!("{n} ({:.1}% driven)", 100.0 * s.tail_driven_share))
+            .collect()
+    };
+    let hunting = driven(HUNT_SHARE, f64::INFINITY);
+    let restless = driven(TAIL_DRIVEN_SHARE, HUNT_SHARE);
     let w = worst(&|s| s.tail_driven_share);
     out.push(Check {
         name: QUIET.into(),
         value: format!(
-            "most driven {}{}",
+            "most driven {}{}{}",
             w.map_or("none".into(), |(n, v)| format!(
                 "{n}, {:.1}% of its rows",
                 100.0 * v
             )),
-            named(hunting.clone())
+            if hunting.is_empty() {
+                String::new()
+            } else {
+                format!("; hunting on {}", hunting.join(", "))
+            },
+            if restless.is_empty() {
+                String::new()
+            } else {
+                format!("; restless on {}", restless.join(", "))
+            }
         ),
         bound: format!(
-            "at most {:.0}% of the rows driven, on all but {HUNT_ALLOWED} hold",
-            100.0 * TAIL_DRIVEN_SHARE
+            "quiet is at most {:.0}% of the rows driven; a hold over {:.0}% hunts, and at most {HUNT_ALLOWED} may",
+            100.0 * TAIL_DRIVEN_SHARE,
+            100.0 * HUNT_SHARE
         ),
-        verdict: allowed(moves.len(), hunting.len(), HUNT_ALLOWED, false),
+        verdict: match allowed(moves.len(), hunting.len(), HUNT_ALLOWED, false) {
+            Verdict::Pass if !restless.is_empty() => Verdict::Warn,
+            v => v,
+        },
     });
     let half = FOLLOW_SHARE * screen_counts;
     let lag: Vec<String> = moves
@@ -700,12 +720,12 @@ mod tests {
         })
     }
 
-    /// Driven on every fifth row of its last 500 ms: the loop hunts.
-    fn hunting() -> Move {
+    /// Driven on `of_five` rows in five through its last 500 ms.
+    fn driven_hold(of_five: usize) -> Move {
         let mut m = a_move(|r, _| r);
         let end = m.rows.last().expect("rows").t;
         for (k, r) in m.rows.iter_mut().enumerate() {
-            if r.t > end - 0.4 && k % 5 == 0 {
+            if r.t > end - 0.5 && k % 5 < of_five {
                 r.duty = 40;
             }
         }
@@ -745,13 +765,15 @@ mod tests {
         );
     }
 
-    /// One hold that hunts warns, two refuse.
+    /// One hold that hunts warns, two refuse; restless holds only warn.
     #[test]
     fn holds_that_hunt_refuse_past_the_one_allowed() {
-        let (clean, hunts) = (a_move(|r, _| r), hunting());
+        let (clean, hunts, restless) = (a_move(|r, _| r), driven_hold(4), driven_hold(1));
         assert!(named(&[&hunts, &clean], Verdict::Fail).is_empty());
         assert_eq!(named(&[&hunts, &clean], Verdict::Warn), [QUIET]);
         assert_eq!(named(&[&hunts, &hunts, &clean], Verdict::Fail), [QUIET]);
+        assert!(named(&[&restless, &restless, &hunts], Verdict::Fail).is_empty());
+        assert_eq!(named(&[&restless, &clean], Verdict::Warn), [QUIET]);
     }
 
     /// 0.6 deg short of the goal through the hold.
