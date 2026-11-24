@@ -64,13 +64,13 @@ pub const EDGE_SHARE: f64 = 0.05;
 /// holds a stall at it; over it this long, rows or polls in a row, s.
 pub const CAP_GAIN: f64 = 1.25;
 pub const CAP_S: f64 = 0.1;
-const POLL_S: f64 = 0.05;
+pub(crate) const POLL_S: f64 = 0.05;
 /// The end move arrives when the shaft reads within the deadband plus
 /// this many counts of the middle for [`CENTER_STILL`] polls in a row,
 /// within [`CENTER_POLLS`] polls.
-const CENTER_TOL: f64 = 20.0;
-const CENTER_STILL: u32 = 4;
-const CENTER_POLLS: u32 = 200;
+pub(crate) const CENTER_TOL: f64 = 20.0;
+pub(crate) const CENTER_STILL: u32 = 4;
+pub(crate) const CENTER_POLLS: u32 = 200;
 /// A move whose profile does not land inside this is refused, s.
 const PROFILE_MAX_S: f64 = 10.0;
 /// The most rows one burst carries: `tel_count` is a u16.
@@ -267,14 +267,22 @@ fn num(state: &State, d: &osc_client::descriptor::Descriptor, name: &str) -> Res
 
 /// The servo's own position estimate, rounded to the count: a `pos` read
 /// over the bus rings the pot channel a few counts off the rest.
-async fn theta_of<P: Pipe>(
+pub(crate) async fn theta_of<P: Pipe>(
     c: &mut osc_client::Client<P>,
     id: osc_client::Id,
     d: &osc_client::descriptor::Descriptor,
 ) -> Result<i32, osc_client::Error> {
     let f = field(d, "theta_hat_q16")?;
     let b = c.read(id, f.addr, 4).await?;
-    let q = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let [q0, q1, q2, q3, ..] = b[..] else {
+        return Err(osc_client::Error::Pipe(osc_client::pipe::PipeError::Io(
+            format!(
+                "the read of theta_hat_q16 came back with {} of its 4 bytes",
+                b.len()
+            ),
+        )));
+    };
+    let q = i32::from_le_bytes([q0, q1, q2, q3]);
     Ok(((q as i64 + (1 << 15)) >> 16) as i32)
 }
 
@@ -455,7 +463,11 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
 /// capture: each burst starts past the end of the one before by the
 /// shortest wrap of its first row's 16-bit stamp, as the scorecard puts
 /// segments on its axis.
-fn chain<'a>(bursts: impl IntoIterator<Item = &'a Burst>, lin: &Lin, tick_hz: f64) -> Vec<Row> {
+pub(crate) fn chain<'a>(
+    bursts: impl IntoIterator<Item = &'a Burst>,
+    lin: &Lin,
+    tick_hz: f64,
+) -> Vec<Row> {
     let mut out = Vec::new();
     let mut end: Option<u64> = None;
     let mut origin = None;

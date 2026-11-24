@@ -1,7 +1,9 @@
 //! `run`: the whole identification in one command. The measurement chain
 //! through the spins (`step spins`'s own), then, every step accepted, the
 //! gather into `<run folder>/inputs/` and the tune into
-//! `<run folder>/tune/`. Every argument is checked before the bus is
+//! `<run folder>/tune/`; on the set the tune accepts, the cruise step, the
+//! gather again and the final set's check into `<run folder>/final/`
+//! ([`crate::finish`]). Every argument is checked before the bus is
 //! touched.
 
 use std::path::Path;
@@ -92,12 +94,25 @@ fn record(root: &Path, gather: Value, tune: Value) -> Result<()> {
     std::fs::write(&p, text).with_context(|| format!("writing {}", p.display()))
 }
 
+/// The cruise step and the final check beside the tune in `run.json`.
+fn record_finish(root: &Path, cruise: Value, last: Value) -> Result<()> {
+    let p = root.join("run.json");
+    let mut doc: Value = serde_json::from_slice(&files::read(&p)?)
+        .with_context(|| format!("parsing {}", p.display()))?;
+    doc["cruise"] = cruise;
+    doc["final"] = last;
+    let mut text = serde_json::to_vec_pretty(&doc)?;
+    text.push(b'\n');
+    std::fs::write(&p, text).with_context(|| format!("writing {}", p.display()))
+}
+
 fn not_run(why: &str) -> Value {
     json!({"state": "not run", "why": why})
 }
 
 /// `run` on the servo: the lines it prints, and whether the tune accepted
-/// a set. The arguments are [`admit`]ted before anything goes on the bus.
+/// a set; the final set's verdict is in the lines and in `run.json`. The
+/// arguments are [`admit`]ted before anything goes on the bus.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<P: Pipe>(
     c: &mut Client<P>,
@@ -113,6 +128,7 @@ pub async fn run<P: Pipe>(
     if !measured {
         let why = "not every step was accepted";
         record(&root, not_run(why), not_run(why))?;
+        record_finish(&root, not_run(why), not_run(why))?;
         lines.push(format!(
             "the run stops: {why}, so nothing is gathered or tuned; to run it again: {}",
             again(id, a)
@@ -121,6 +137,22 @@ pub async fn run<P: Pipe>(
     }
     let (more, accepted) = gather_and_tune(c, id, d, a, &root, stop).await?;
     lines.extend(more);
+    if !accepted {
+        let why = "the tune accepted no set";
+        record_finish(&root, not_run(why), not_run(why))?;
+        return Ok((lines, false));
+    }
+    match crate::finish::finish(c, id, d, a, &root, stop).await {
+        Ok(f) => {
+            record_finish(&root, f.cruise, f.last)?;
+            lines.extend(f.lines);
+        }
+        Err(e) => {
+            let why = format!("the run folder could not be read for the cruise: {e:#}");
+            record_finish(&root, not_run(&why), not_run(&why))?;
+            lines.push(format!("{why}; nothing was written, the tune's set stays"));
+        }
+    }
     Ok((lines, accepted))
 }
 

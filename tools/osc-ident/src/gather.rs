@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use osc_measure::gather::{self, RunResults, SPINS_RESULT, StepResult, WINDOW_RESULT};
+use osc_measure::gather::{
+    self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, WINDOW_RESULT,
+};
 use osc_measure::inputs::ThermalInputs;
 use osc_measure::steps::{probe, rest, stops};
 use osc_measure::{Policy, sink::Sink};
@@ -55,6 +57,7 @@ pub fn gather(
         stops: result(run, stops::RESULT)?,
         window: result(run, WINDOW_RESULT)?,
         spins: result(run, SPINS_RESULT)?,
+        cruise: result(run, CRUISE_RESULT)?,
     };
     let g = gather::gather(&results, &np).map_err(|e| anyhow::anyhow!("{e}"))?;
     if out.exists() {

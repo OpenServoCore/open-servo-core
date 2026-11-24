@@ -1,6 +1,7 @@
 //! Estimators over captures, pure: no bus, no files.
 
 pub mod coast;
+pub mod cruise;
 pub mod rise;
 pub mod runup;
 pub mod seated;

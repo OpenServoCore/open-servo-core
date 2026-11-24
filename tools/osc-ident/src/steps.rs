@@ -15,6 +15,7 @@ use osc_measure::envelope::{Envelope, Facts, HeatModel, Rung};
 use osc_measure::inputs::ThermalInputs;
 use osc_measure::nameplate::Nameplate;
 use osc_measure::state;
+use osc_measure::steps::cruise::{self, CruiseInputs};
 use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
 use osc_measure::steps::spins::{self as spin, SpinsInputs};
@@ -244,7 +245,12 @@ fn manifest(uid: &str, ran: &[Ran]) -> Value {
 
 /// A step's lines as the CLI prints them: what it did, its checks, the
 /// way out, its verdict.
-fn said(step: &str, ended: &Ended, checks: &[osc_measure::steps::Check], lines: &mut Vec<String>) {
+pub(crate) fn said(
+    step: &str,
+    ended: &Ended,
+    checks: &[osc_measure::steps::Check],
+    lines: &mut Vec<String>,
+) {
     lines.extend(ended.lines.iter().cloned());
     lines.extend(checks.iter().map(|c| format!("  {}", c.said())));
     lines.push("the way out:".into());
@@ -483,6 +489,80 @@ pub async fn step_verify<P: Pipe>(
         }
         Ok(r) => {
             said(verify::STEP, &r.ended, &r.checks, &mut lines);
+            r.accepted()
+        }
+    };
+    lines.push(format!("run folder: {}", root.display()));
+    Ok((lines, accepted, root))
+}
+
+/// `step cruise` into `<out>/<servo>/<UTC time>/`: the friction line from
+/// closed-loop cruises on the installed, stamped set, the travel the stops
+/// step's of the run folder `run` where given, else the set's. The lines it
+/// prints, and whether the line was accepted.
+#[allow(clippy::too_many_arguments)]
+pub async fn step_cruise<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    stop: &AtomicBool,
+    run: Option<&Path>,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    let np = i
+        .nameplate
+        .as_ref()
+        .context("step cruise drives the motor: it needs the servo's nameplate (--nameplate)")?;
+    let stops = run
+        .map(|r| -> Result<Value> {
+            let p = r.join(stops::RESULT);
+            serde_json::from_slice(&files::read(&p)?)
+                .with_context(|| format!("parsing {}", p.display()))
+        })
+        .transpose()?;
+    let root = files::run_folder(out, servo)?;
+    let mut sink = DirSink { root: root.clone() };
+    let t0 = unix_s();
+    let clock = unix_s;
+    let ran = {
+        let mut rig = Rig {
+            c,
+            id,
+            d,
+            sink: &mut sink,
+            stop,
+            clock: &clock,
+        };
+        cruise::cruise(
+            &mut rig,
+            &CruiseInputs {
+                nameplate: np,
+                board: &i.board,
+                stops: stops.as_ref(),
+            },
+        )
+        .await
+    };
+    let entry = Ran {
+        step: cruise::STEP,
+        ended: ran.as_ref().ok().map(|r| &r.ended),
+        result: ran.as_ref().ok().and_then(|r| r.result.as_ref()),
+        refused: ran.as_ref().err().map(|e| e.0.clone()),
+        times: (t0, unix_s()),
+    };
+    let mut text = serde_json::to_vec_pretty(&manifest(servo, &[entry]))?;
+    text.push(b'\n');
+    sink.write("run.json", &text)?;
+    let mut lines = Vec::new();
+    let accepted = match ran {
+        Err(e) => {
+            lines.push(format!("refused before any write: {e}"));
+            false
+        }
+        Ok(r) => {
+            said(cruise::STEP, &r.ended, &r.checks, &mut lines);
             r.accepted()
         }
     };

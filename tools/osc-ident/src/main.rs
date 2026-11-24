@@ -4,9 +4,11 @@
 //! the motor; `step` runs one measurement step into a run folder; `gather`
 //! turns a run folder into inputs; `tune` settles the speed gain on the
 //! servo with the closed-loop check; `run` does the steps, the gather and
-//! the tune in one.
+//! the tune in one, then the cruises for the friction line and the final
+//! set's check.
 
 mod files;
+mod finish;
 mod gather;
 mod run;
 mod steps;
@@ -144,7 +146,9 @@ enum Cmd {
         loosen: Vec<String>,
     },
     /// The whole identification: the steps through the spins into a run folder, then, every step
-    /// accepted, the gather into its `inputs/` and the tune into its `tune/`. Never saves.
+    /// accepted, the gather into its `inputs/` and the tune into its `tune/`; on the set the tune
+    /// accepts, the cruise step for the friction line, the gather again into `final/inputs/` and
+    /// the final set installed volatile and checked in `final/`. Never saves.
     Run {
         /// The servo's nameplate file.
         #[arg(long)]
@@ -225,6 +229,21 @@ enum StepName {
         i: StepArgs,
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
+    },
+    /// The friction line from closed-loop Velocity cruises at mid travel on
+    /// the installed, stamped set: four speeds from 0.075 of the move speed
+    /// to all of it, two legs each way a speed, each leg sized and centered
+    /// from the travel, the shaft left at the middle. Drives the motor under
+    /// its own loops; changes no constant.
+    Cruise {
+        #[command(flatten)]
+        i: StepArgs,
+        #[arg(long, default_value = "osc-ident-runs")]
+        out: PathBuf,
+        /// A run folder whose stops step gives the travel; the stops the
+        /// installed set holds if omitted.
+        #[arg(long)]
+        run: Option<PathBuf>,
     },
 }
 
@@ -502,7 +521,8 @@ fn run(cli: &Cli) -> Result<bool> {
             | StepName::Stops { i, out }
             | StepName::Window { i, out }
             | StepName::Spins { i, out }
-            | StepName::Verify { i, out }) = step;
+            | StepName::Verify { i, out }
+            | StepName::Cruise { i, out, .. }) = step;
             let inputs = i.load()?;
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
                 .context("installing the Ctrl-C handler")?;
@@ -527,6 +547,19 @@ fn run(cli: &Cli) -> Result<bool> {
                     }
                     StepName::Verify { .. } => {
                         steps::step_verify(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                    }
+                    StepName::Cruise { run, .. } => {
+                        steps::step_cruise(
+                            &mut c,
+                            id,
+                            &d,
+                            &inputs,
+                            out,
+                            &servo,
+                            &STOP,
+                            run.as_deref(),
+                        )
+                        .await?
                     }
                 };
                 for l in &lines {

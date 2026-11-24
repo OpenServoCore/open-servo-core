@@ -3,6 +3,7 @@
 //! when it cannot start, and once it has written it always ends through
 //! [`crate::guard::exit`].
 
+pub mod cruise;
 pub mod drive;
 pub mod polarity;
 pub mod probe;
@@ -299,13 +300,16 @@ pub(crate) async fn take<P: Pipe>(
 
 pub(crate) async fn read_u8<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u8, Halt> {
     let f = field(rig.d, name)?;
-    Ok(rig
-        .c
-        .read(rig.id, f.addr, 1)
-        .await?
-        .first()
-        .copied()
-        .unwrap_or(0))
+    let b = rig.c.read(rig.id, f.addr, 1).await?;
+    b.first().copied().ok_or_else(|| short(name, 1, b.len()))
+}
+
+/// A reply shorter than the field: no value, the step ends through the
+/// guard rather than read a fault or a word that is not there.
+fn short(name: &str, want: usize, got: usize) -> Halt {
+    Halt::Error(format!(
+        "the read of {name} came back with {got} of its {want} bytes"
+    ))
 }
 
 /// The longest silence a wait with torque on allows itself, s: well
@@ -328,7 +332,10 @@ pub(crate) async fn keep_alive<P: Pipe>(rig: &mut Rig<'_, P>, s: f64) -> Result<
 pub(crate) async fn read_u16<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u16, Halt> {
     let f = field(rig.d, name)?;
     let b = rig.c.read(rig.id, f.addr, 2).await?;
-    Ok(u16::from_le_bytes([b[0], b[1]]))
+    match b[..] {
+        [lo, hi, ..] => Ok(u16::from_le_bytes([lo, hi])),
+        _ => Err(short(name, 2, b.len())),
+    }
 }
 
 /// The mean of `n` reads of a u16 register.
