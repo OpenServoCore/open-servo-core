@@ -328,11 +328,13 @@ No hardware-timed kickoff: TX start is "enable the channel when ready" —
 the break makes reply timing non-critical, which deletes the TIM-compare
 kickoff machinery, the RDT register, and its whole tuning surface.
 
-Payloads at or below a small threshold copy into the reply buffer
-directly — cheaper than arming a DMA channel for a couple of bytes. Larger
-payloads (the READ/GREAD case) are **copy-once**: staging the reply kicks
-off a fire-and-forget copy DMA that streams the table span into a
-dedicated 256 B engine-owned snapshot buffer; the CRC feed and the wire TX
+Payloads of two bytes or less copy into the reply buffer directly -
+cheaper than arming a DMA channel for a couple of bytes. A field of two
+bytes or less read on its own is copied in one access, so it arrives
+whole, from one instant. Larger payloads (the READ/GREAD case) are
+**copy-once**: staging the reply kicks off a fire-and-forget copy DMA
+that streams the table span into a dedicated 256 B engine-owned
+snapshot buffer; the CRC feed and the wire TX
 arm, armed separately when the reply triggers, both read from that
 snapshot instead of the table. Copy, CRC feed, and wire shift-out are
 three independent DMA/hardware engines running concurrently, not a
@@ -349,10 +351,14 @@ all three engines run in hardware, freeing the core to run the motor
 kernel tick underneath. The one copy still buys two things a
 direct-from-table stream couldn't: the table address's parity becomes
 irrelevant to the wire/CRC engines (the snapshot is always
-halfword-based regardless of where the source span sits), and every
-large reply carries a consistent point-in-time image even if a
-control-loop write lands mid-span. Reads over 252 B split into multiple
-frames (§5.1), each independently snapshotted and CRC'd.
+halfword-based regardless of where the source span sits), and the wire
+and the CRC read the same bytes. It is not a point-in-time image: the
+copy moves a byte at a time while the control tick keeps running, so the
+fields of one reply may come from different ticks, and a multi-byte
+field that changes during the copy can arrive with bytes from two ticks.
+Values that must be consistent are read through a TEL row (sec 5.6).
+Reads over 252 B split into multiple frames (sec 5.1), each independently
+snapshotted and CRC'd.
 
 ## 5. Instruction set
 
@@ -387,11 +393,11 @@ Notes:
   2 bytes, `count` is 2 bytes for reads (kept u16 for field alignment in
   the payload view; values cap at 252, §5.1) and 1 byte per GWRITE slice.
 - **READ/GREAD addressing is unconstrained** — any `addr`, any `count`.
-  Every reply payload streams from the snapshot buffer (§4.2), which is
-  halfword-aligned by construction, so the table address carries no
-  constraint at all [F12 satisfied structurally]. WRITE addressing is
-  likewise unconstrained: inbound payloads validate through the ring
-  anchor, not the table address.
+  Every reply payload streams from a copy - the reply buffer or the
+  snapshot buffer (sec 4.2), both halfword-aligned by construction - so the
+  table address carries no constraint at all [F12 satisfied
+  structurally]. WRITE addressing is likewise unconstrained: inbound
+  payloads validate through the ring anchor, not the table address.
 
 ### 5.1 Size limits
 
@@ -449,8 +455,8 @@ live table byte-serially, so a field updated mid-span by a control ISR can
 emit a torn multi-byte value in the snapshot — the wire and CRC then read
 that frozen copy, so tearing is bounded to the one copy rather than
 compounding per consumer, but it is not eliminated. Field-aligned spans
-and the single-writer discipline bound tearing to one field; consumers
-that care re-read.
+and the single-writer discipline bound tearing to one field; values that
+must be consistent are read through a TEL row (sec 5.6).
 
 ### 5.3 Errors: three layers
 
@@ -710,12 +716,13 @@ and both chunks are copied. The next scans land mid-tick (the trough)
 and a period on (the crest), after the copies, so every row holds one
 tick's tick block. A chunk over the medium-rate registers
 (the estimates) carries them as last published, up to one tick old.
-Host-written regions copy with per-field consistency only, and a bus
-read of the tick block follows the same rule: each field holds one
-tick's value under its own name, and two fields may come from adjacent
+Host-written regions copy with per-field consistency only. A bus read
+of the tick block is weaker (sec 4.2): two fields may come from adjacent
 ticks (`pos` to `ntc_raw` change when the next crest scan lands, the
-rest when the next tick writes them). The DMA writes the terminal taps
-in sample order, high side first, so no named field lies in its way.
+rest when the next tick writes them), and only a read of a single field
+of two bytes or less is sure to deliver it whole. The DMA writes the
+terminal taps in sample order, high side first, so no named field lies
+in its way.
 
 | addr  | name              | width | notes                                                       |
 | ----- | ----------------- | ----- | ----------------------------------------------------------- |
