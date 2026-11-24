@@ -286,8 +286,8 @@ impl Dispatcher<'_> {
             return;
         }
         // model_number + firmware_version are contiguous at the common-block front:
-        // reply straight from the table so the TX engine streams in place (a
-        // stack copy would force the slow copy-stage path).
+        // reply straight from the table, which outlives the snapshot copy that
+        // may still be reading it after this returns (a stack copy would not).
         let data = RegisterFile::read(
             &self.shared.table,
             crate::regions::config::addr::common::MODEL_NUMBER,

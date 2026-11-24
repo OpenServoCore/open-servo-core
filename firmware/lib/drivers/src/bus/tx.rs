@@ -12,9 +12,9 @@ use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Inst, ResultCode};
 use osc_servo_core::traits::SendError;
 
-/// Payloads at or below this are copied into the staging buffer. Kept minimal:
-/// the copy costs ~0.3 us/byte of turnaround (bench-measured at 3M), so
-/// anything the DMA can stream in place should stream.
+/// Payloads at or below this are copied into the staging buffer by the CPU;
+/// longer ones go through the CRC engine's snapshot copy. Kept minimal: the
+/// CPU copy costs ~0.3 us/byte of turnaround (bench-measured at 3M).
 const SMALL_COPY_MAX: usize = 2;
 
 const CRC_LEN: usize = core::mem::size_of::<u16>();
@@ -221,14 +221,28 @@ impl<W: TxWire> TxEngine<W> {
         // for the software fold at patch (sec 3.2); odd POINTERS are the CRC
         // provider's concern (it stages them through its copy channel, sec 5).
         let base: *const u8 = if total <= SMALL_COPY_MAX {
-            // Byte stores: `copy_from_slice` per span is a memcpy call.
-            for (d, s) in self
-                .buf
-                .payload_mut()
-                .iter_mut()
-                .zip(spans.iter().flat_map(|s| s.iter()))
-            {
-                *d = *s;
+            let pay = self.buf.payload_mut();
+            if let ([s], [d0, d1, ..]) = (spans, &mut *pay) {
+                // A plain reply, branched by length so acks and single bytes
+                // skip the loop. One load for a pair: the kernel preempts the
+                // bus, so a field copied in two byte loads can carry two
+                // ticks' bytes. Every two-byte field sits at an even address,
+                // so an odd pair covers none.
+                match **s {
+                    [] => {}
+                    [b] => *d0 = b,
+                    [_, _, ..] if s.as_ptr().addr() & 1 == 0 => {
+                        // SAFETY: two readable bytes at an even address.
+                        let v = unsafe { s.as_ptr().cast::<u16>().read_volatile() };
+                        [*d0, *d1] = v.to_ne_bytes();
+                    }
+                    [b0, b1, ..] => [*d0, *d1] = [b0, b1],
+                }
+            } else {
+                // Byte stores: `copy_from_slice` per span is a memcpy call.
+                for (d, s) in pay.iter_mut().zip(spans.iter().flat_map(|s| s.iter())) {
+                    *d = *s;
+                }
             }
             self.body = Arm::Buf {
                 off: 1,
@@ -243,10 +257,10 @@ impl<W: TxWire> TxEngine<W> {
             // Snapshot reads (sec 4.2): header and payload are copied ONCE
             // into the engine's stable snapshot buffer, header first (a later
             // copy waits out the one in flight), and both the wire arm and the
-            // CRC feed stream the snapshot: the CRC provably covers the
-            // transmitted bytes, and the reply carries an atomic point-in-time
-            // image (`stage` runs kernel-exclusive; the provider orders the
-            // copies ahead of both consumers).
+            // CRC feed stream the snapshot, so the CRC covers the transmitted
+            // bytes (the provider orders the copies ahead of both consumers).
+            // The copy runs in byte beats while the kernel keeps ticking: a
+            // field in it may carry bytes from two ticks.
             let base = crc.snapshot(0, &self.buf.bytes()[..Header::SIZE]);
             let mut off = Header::SIZE as u16;
             for s in spans {

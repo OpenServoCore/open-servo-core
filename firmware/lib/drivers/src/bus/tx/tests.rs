@@ -291,6 +291,36 @@ fn gather_tiny_total_takes_copy_path() {
 }
 
 #[test]
+fn copy_path_stages_the_source_bytes() {
+    let src = Aligned([0x11, 0x22, 0x33, 0x44]);
+    let cases: [&[&[u8]]; 5] = [
+        // Even pair: the one halfword load.
+        &[&src.0[..2]],
+        // Odd pair, gathered bytes, one byte, empty: byte loads.
+        &[&src.0[1..3]],
+        &[&src.0[..1], &src.0[3..]],
+        &[&src.0[2..3]],
+        &[&[]],
+    ];
+    for spans in cases {
+        let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
+        eng.stage_gather(&mut crc, 2, ResultCode::Ok, false, spans)
+            .unwrap();
+        run(&mut eng, &mut crc, None);
+        let log = log.borrow();
+        let concat = spans.concat();
+        assert_eq!(sends(&log)[0][3..], concat, "{spans:02x?}");
+        assert_eq!(
+            wire_bytes(&log),
+            reference(2, ResultCode::Ok, false, &concat)[1..],
+            "{spans:02x?}"
+        );
+        assert_eq!(crc.copies, 0);
+    }
+}
+
+#[test]
 fn gather_overflow_rejected() {
     let (mut eng, _log) = engine();
     let mut crc = FakeCrc::new();
