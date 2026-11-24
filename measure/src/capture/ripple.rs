@@ -1,11 +1,11 @@
 //! The TEL stream's own load ripples the chip supply once a 16-row frame,
-//! and every channel the ADC reads against VDD follows it. The chip's
-//! 1.2 V reference reads that ripple directly: folded by tick modulo 16
-//! over a whole capture it is a 16-point pattern, and each channel's share
-//! of it is the least-squares gain of the channel's own folded pattern on
-//! the reference's. A row's own `vref_raw` is too noisy to correct that row
-//! by; the folded pattern is not. A pattern a channel carries that does
-//! not follow VDD is left in its residual.
+//! and every channel the ADC reads against VDD follows it. A steady channel
+//! folded by tick modulo 16 over a whole capture reads that ripple as a
+//! 16-point pattern in its own counts, and each channel's share of it is
+//! the least-squares gain of the channel's own folded pattern on that one.
+//! A row's own reading is too noisy to correct that row by; the folded
+//! pattern is not. A pattern a channel carries that does not follow VDD is
+//! left in its residual.
 
 use super::rows::TelFrame;
 
@@ -41,40 +41,46 @@ pub fn fold(s: &[(u64, f64)]) -> Option<Pattern> {
     Some(p)
 }
 
-/// The least-squares gain of `pattern` on `vref`; 0 on a flat reference.
-pub fn gain(pattern: &Pattern, vref: &Pattern) -> f64 {
-    let vv: f64 = vref.iter().map(|v| v * v).sum();
-    if vv == 0.0 {
+/// The least-squares gain of `channel` on `pattern`; 0 on a flat pattern.
+pub fn gain(channel: &Pattern, pattern: &Pattern) -> f64 {
+    let pp: f64 = pattern.iter().map(|v| v * v).sum();
+    if pp == 0.0 {
         return 0.0;
     }
-    pattern.iter().zip(vref).map(|(p, v)| p * v).sum::<f64>() / vv
+    channel.iter().zip(pattern).map(|(c, p)| c * p).sum::<f64>() / pp
 }
 
-/// `s` with `gain` x `vref` taken out of every row at its phase.
-pub fn compensate(s: &[(u64, f64)], vref: &Pattern, gain: f64) -> Vec<(u64, f64)> {
+/// `s` with `gain` x `pattern` taken out of every row at its phase.
+pub fn compensate(s: &[(u64, f64)], pattern: &Pattern, gain: f64) -> Vec<(u64, f64)> {
     s.iter()
-        .map(|&(t, x)| (t, x - gain * vref[(t % FOLD as u64) as usize]))
+        .map(|&(t, x)| (t, x - gain * pattern[(t % FOLD as u64) as usize]))
         .collect()
 }
 
-/// A channel's gain on `vref` and its rows compensated; gain 0 and the
+/// A channel's gain on `pattern` and its rows compensated; gain 0 and the
 /// rows as they are when the channel misses a phase.
-pub fn fit(s: &[(u64, f64)], vref: &Pattern) -> (f64, Vec<(u64, f64)>) {
+pub fn fit(s: &[(u64, f64)], pattern: &Pattern) -> (f64, Vec<(u64, f64)>) {
     match fold(s) {
         Some(p) => {
-            let g = gain(&p, vref);
-            (g, compensate(s, vref, g))
+            let g = gain(&p, pattern);
+            (g, compensate(s, pattern, g))
         }
         None => (0.0, s.to_vec()),
     }
 }
 
-/// The supply's frame ripple peak to peak, mV: VDD reads the reference
-/// lower as it rises, `dVDD = -VDD x dvref / vref_mean`.
+/// A pattern's peak to peak.
+pub fn pp(p: &Pattern) -> f64 {
+    let hi = p.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lo = p.iter().copied().fold(f64::INFINITY, f64::min);
+    hi - lo
+}
+
+/// The supply's frame ripple peak to peak, mV, from the 1.2 V reference's
+/// pattern: VDD reads the reference lower as it rises,
+/// `dVDD = -VDD x dvref / vref_mean`.
 pub fn vdd_ripple_mv_pp(vref: &Pattern, vref_mean: f64, vdd_v: f64) -> f64 {
-    let hi = vref.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let lo = vref.iter().copied().fold(f64::INFINITY, f64::min);
-    1000.0 * vdd_v * (hi - lo) / vref_mean
+    1000.0 * vdd_v * pp(vref) / vref_mean
 }
 
 #[cfg(test)]
@@ -156,7 +162,7 @@ mod tests {
         assert_eq!(
             gain(&pv, &[0.0; FOLD]),
             0.0,
-            "a flat reference takes nothing out"
+            "a flat pattern takes nothing out"
         );
     }
 }

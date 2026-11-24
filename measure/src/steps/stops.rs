@@ -1907,8 +1907,8 @@ mod tests {
                 "tap_a_counts": est(773.0),
                 "tap_b_counts": est(772.0),
             },
-            "channels": {"raw": {"pos": {"vdd_gain": 0.0}}},
-            "frame_ripple": {"vref_pattern_counts": null},
+            "channels": {"raw": {"pos": {"pattern_gain": 0.0}}},
+            "frame_ripple": {"pattern_counts": null},
         })
     }
 

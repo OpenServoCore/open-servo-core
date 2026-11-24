@@ -1,0 +1,4 @@
+{
+  "rest-mid.csv.gz": {"from": "osc-dev-v006-bringup captures/ident-stops/run3/runs/00000000ffffffff76e5bc220ef6abcd/20261123T112222Z/captures/rest/01-rest.csv.gz", "sha1": "be27ea878971d16a9e6a7c10681bd319e26663f9", "rows": "the header and the first 4096 rows (ticks 0 to 4095, whole frames from the burst's first row), recompressed with gzip -9n", "pos_mean": 1890.7, "why": "the horn mid travel, inside the reference's pos band"},
+  "rest-end.csv.gz": {"from": "osc-dev-v006-bringup captures/ident-slice6/run5/runs/00000000ffffffff76e5bc220ef6abcd/20261123T092926Z/captures/rest/01-rest.csv.gz", "sha1": "bc745741555090192f3b885078468d15086e2a60", "rows": "the header and the first 4096 rows (ticks 0 to 4095, whole frames from the burst's first row), recompressed with gzip -9n", "pos_mean": 3510.2, "why": "the horn at the top of travel, outside the reference's pos band: the largest uncorrected pos ripple of the 30 recorded rest captures"}
+}

@@ -608,7 +608,18 @@ impl FromRest {
                 .as_f64()
                 .ok_or_else(|| Refused(format!("the rest result holds no {k}")))
         };
-        let pattern = rest["frame_ripple"]["vref_pattern_counts"]
+        let fr = &rest["frame_ripple"];
+        let gain = &rest["channels"]["raw"]["pos"]["pattern_gain"];
+        if fr.get("pattern_counts").is_none() || gain.is_null() {
+            return Err(Refused(format!(
+                "the rest result is revision {}, older than this tool's {}: it holds no frame_ripple.pattern_counts; run the rest step again",
+                rest["revision"]
+                    .as_u64()
+                    .map_or("unknown".into(), |r| r.to_string()),
+                rest::REVISION
+            )));
+        }
+        let pattern = fr["pattern_counts"]
             .as_array()
             .filter(|a| a.len() == FOLD)
             .map(|a| {
@@ -623,9 +634,7 @@ impl FromRest {
             pot_sd: est("pot_rest_sd_counts")?,
             tap_offset: est("tap_a_counts")? - est("tap_b_counts")?,
             pattern,
-            pos_gain: rest["channels"]["raw"]["pos"]["vdd_gain"]
-                .as_f64()
-                .unwrap_or(0.0),
+            pos_gain: gain.as_f64().unwrap_or(0.0),
         })
     }
 }
@@ -1540,27 +1549,61 @@ mod tests {
         );
     }
 
-    /// A rest outside the reference's pos band keeps no pattern: the probe
-    /// reads its pot rows as they come, never refused for it.
-    #[test]
-    fn a_rest_without_a_reference_pattern_compensates_nothing() {
+    /// The rest result's fields the probe reads, as a revision 2 rest
+    /// step writes them.
+    fn rest_result(pattern: Value, gain: f64) -> Value {
         let est = |v: f64| serde_json::json!({"value": v});
-        let rest = serde_json::json!({
+        serde_json::json!({
             "verdict": "accepted",
+            "revision": 2,
             "estimates": {
                 "current_zero_awake_counts": est(1206.0),
                 "pot_rest_sd_counts": est(0.8),
                 "tap_a_counts": est(773.0),
                 "tap_b_counts": est(772.0),
             },
-            "channels": {"raw": {"pos": {"vdd_gain": 0.0}}},
+            "channels": {"raw": {"pos": {"pattern_gain": gain}}},
             "frame_ripple": {
-                "vref_trusted": false,
-                "vref_pattern_counts": null,
-                "vref_mean_counts": null,
+                "pattern_source": if pattern.is_null() { Value::Null } else { "vbus_raw".into() },
+                "pattern_counts": pattern,
+                "pattern_mean_counts": null,
             },
-        });
-        let r = FromRest::of(&rest).expect("not refused");
+        })
+    }
+
+    /// A rest that found no steady channel keeps no pattern: the probe
+    /// reads its pot rows as they come, never refused for it.
+    #[test]
+    fn a_rest_without_a_supply_pattern_compensates_nothing() {
+        let r = FromRest::of(&rest_result(Value::Null, 0.0)).expect("not refused");
         assert_eq!((r.pattern, r.pos_gain), (None, 0.0));
+    }
+
+    #[test]
+    fn a_rest_pattern_and_the_pots_gain_on_it_are_taken() {
+        let p: Vec<f64> = (0..FOLD).map(|k| k as f64 - 7.5).collect();
+        let r = FromRest::of(&rest_result(serde_json::json!(p), 1.6)).expect("not refused");
+        assert_eq!(r.pattern.map(|x| x.to_vec()), Some(p));
+        assert_eq!(r.pos_gain, 1.6);
+    }
+
+    /// A revision 1 rest result names its pattern `vref_pattern_counts`
+    /// and its gains `vdd_gain`: refused, never run uncorrected.
+    #[test]
+    fn an_older_rest_result_is_refused_with_a_rerun() {
+        let mut old = rest_result(Value::Null, 0.0);
+        old["revision"] = 1.into();
+        old["channels"] = serde_json::json!({"raw": {"pos": {"vdd_gain": 1.3}}});
+        old["frame_ripple"] = serde_json::json!({
+            "vref_trusted": true,
+            "vref_pattern_counts": vec![0.0; FOLD],
+            "vref_mean_counts": 1493.0,
+        });
+        let e = FromRest::of(&old).expect_err("refused");
+        assert!(
+            e.0.contains("revision 1") && e.0.contains("run the rest step again"),
+            "{}",
+            e.0
+        );
     }
 }
