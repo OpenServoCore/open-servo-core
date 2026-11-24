@@ -12,10 +12,10 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_protocol::crc::osc_crc_continue;
-use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 
 use crate::bus::ServoBus;
+use crate::bus::snapshot::{Beat, Buf, gather};
 use crate::traits::bus::{BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
 
 /// Ring length -- even and larger than `FRAME_MAX` (matches the V006 512 B ring).
@@ -135,7 +135,7 @@ impl Deadline for FakeDeadline {
 /// (F12) exactly like the `tx` engine tests.
 pub struct FakeCrc {
     state: u16,
-    snap: Vec<u8>,
+    snap: Box<Buf>,
     sick: bool,
     copies: usize,
     probe: Option<Box<dyn FnMut(*mut u8, *const u8)>>,
@@ -145,7 +145,7 @@ impl FakeCrc {
     pub fn new() -> Self {
         FakeCrc {
             state: 0,
-            snap: std::vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+            snap: Box::new(Buf::new()),
             sick: false,
             copies: 0,
             probe: None,
@@ -191,10 +191,13 @@ impl CrcEngine for FakeCrc {
         self.state = osc_crc_continue(self.state, span);
     }
 
-    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
-        let off = off as usize;
-        self.snap[off..off + src.len()].copy_from_slice(src);
-        unsafe { self.snap.as_ptr().add(off) }
+    unsafe fn snapshot(&mut self, spans: &[&[u8]]) -> *mut u8 {
+        // SAFETY: the caller's total.
+        unsafe {
+            gather(&mut *self.snap, spans, |s, d, beat, beats| {
+                aligned_copy(s, d, beat, beats)
+            })
+        }
     }
 
     unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
@@ -210,6 +213,18 @@ impl CrcEngine for FakeCrc {
     fn result(&mut self) -> Option<u16> {
         (!self.sick).then_some(self.state)
     }
+}
+
+/// The copy channel's arm, landed at once, refusing the unaligned beat the
+/// silicon would silently misplace (RM sec 8.3.5).
+///
+/// # Safety
+/// `src` readable and `dst` writable for `beats` beats of `beat`.
+pub unsafe fn aligned_copy(src: *const u8, dst: *mut u8, beat: Beat, beats: u16) {
+    let w = beat as usize;
+    assert_eq!((src.addr() | dst.addr()) % w, 0, "unaligned {w}-byte beat");
+    // SAFETY: the caller's.
+    unsafe { core::ptr::copy_nonoverlapping(src, dst, w * beats as usize) };
 }
 
 /// One recorded TX-wire operation.

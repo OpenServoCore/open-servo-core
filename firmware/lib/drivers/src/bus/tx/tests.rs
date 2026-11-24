@@ -2,8 +2,11 @@
 //! wire/CRC, asserting the streamed bytes match a software-sealed reference.
 
 use super::*;
+use crate::bus::snapshot::{self, Beat, Buf};
+use crate::mocks::bus::aligned_copy;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 use osc_protocol::wire::Id;
+use std::boxed::Box;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec;
@@ -12,16 +15,20 @@ use std::vec::Vec;
 struct FakeCrc {
     state: u16,
     /// Fixed like the chip's static buffer: snapshot addresses stay put.
-    snap: Vec<u8>,
+    /// Starts dirty, so a byte the frame needs and nobody writes shows.
+    snap: Box<Buf>,
     copies: usize,
+    /// Every channel arm of the copies, in order.
+    arms: Vec<(Beat, u16)>,
 }
 
 impl FakeCrc {
     fn new() -> Self {
         FakeCrc {
             state: 0,
-            snap: vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+            snap: Box::new(Buf([0xA5; snapshot::LEN])),
             copies: 0,
+            arms: Vec::new(),
         }
     }
 }
@@ -32,14 +39,23 @@ impl CrcEngine for FakeCrc {
     }
     fn feed(&mut self, span: &[u8]) {
         assert_eq!(span.len() % 2, 0, "CRC feed must be even-length (F12)");
-        // Odd ADDRESSES are legal: the chip provider stages them (sec 5).
+        assert_eq!(
+            span.as_ptr().addr() % 2,
+            0,
+            "CRC feed must be even-addressed (F12)"
+        );
         self.state = osc_crc_continue(self.state, span);
     }
-    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
-        let off = off as usize;
-        self.snap[off..off + src.len()].copy_from_slice(src);
+    unsafe fn snapshot(&mut self, spans: &[&[u8]]) -> *mut u8 {
         self.copies += 1;
-        unsafe { self.snap.as_ptr().add(off) }
+        let arms = &mut self.arms;
+        // SAFETY: the caller's total.
+        unsafe {
+            snapshot::gather(&mut *self.snap, spans, |s, d, beat, beats| {
+                arms.push((beat, beats));
+                aligned_copy(s, d, beat, beats);
+            })
+        }
     }
     unsafe fn copy(&mut self, _dst: *mut u8, _src: *const u8, _units: u16) {}
     fn result(&mut self) -> Option<u16> {
@@ -84,7 +100,7 @@ fn engine() -> (TxEngine<FakeWire>, Rc<RefCell<Vec<Event>>>) {
 /// Built in its own full-size buffer - REPLY_BUF only fits the copy
 /// path, and the reference is a whole linearized frame.
 fn reference(id: u8, result: ResultCode, alert: bool, data: &[u8]) -> Vec<u8> {
-    let mut b = FrameBuf::<64>::new();
+    let mut b = FrameBuf::<{ wire::MAX_PAYLOAD as usize + 8 }>::new();
     b.start(Id::new(id), Inst::status(result, alert));
     b.payload_mut()[..data.len()].copy_from_slice(data);
     b.finish(data.len() as u8);
@@ -120,7 +136,7 @@ fn wire_bytes(log: &[Event]) -> Vec<u8> {
     sends(log).concat()
 }
 
-#[repr(align(2))]
+#[repr(align(4))]
 struct Aligned<const N: usize>([u8; N]);
 
 #[test]
@@ -218,7 +234,7 @@ fn snapshot_reply_streams_in_two_arms() {
     // ID..payload in one arm from the snapshot, then the CRC arm.
     assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![43, 2]);
     let reference = reference(9, ResultCode::Ok, false, &data.0);
-    assert_eq!(crc.snap[..44], reference[..44]);
+    assert_eq!(crc.snap.0[..44], reference[..44]);
     assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
     assert_eq!(wire_bytes(&log), reference[1..]);
     // CRC over the covered span matches the reference flavor (the leading
@@ -292,17 +308,23 @@ fn gather_tiny_total_takes_copy_path() {
 
 #[test]
 fn copy_path_stages_the_source_bytes() {
-    let src = Aligned([0x11, 0x22, 0x33, 0x44]);
-    let cases: [&[&[u8]]; 5] = [
+    let src = Aligned([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+    // The spans, and the snapshot copies they take: 0 is the staging buffer.
+    let cases: [(&[&[u8]], usize); 8] = [
         // Even pair: the one halfword load.
-        &[&src.0[..2]],
+        (&[&src.0[..2]], 0),
         // Odd pair, gathered bytes, one byte, empty: byte loads.
-        &[&src.0[1..3]],
-        &[&src.0[..1], &src.0[3..]],
-        &[&src.0[2..3]],
-        &[&[]],
+        (&[&src.0[1..3]], 0),
+        (&[&src.0[..1], &src.0[3..4]], 0),
+        (&[&src.0[2..3]], 0),
+        (&[&[]], 0),
+        // A 4-aligned word: the one word load.
+        (&[&src.0[4..8]], 0),
+        // A word at 2 mod 4, or gathered: the snapshot.
+        (&[&src.0[2..6]], 1),
+        (&[&src.0[..2], &src.0[4..6]], 1),
     ];
-    for spans in cases {
+    for (spans, copies) in cases {
         let (mut eng, log) = engine();
         let mut crc = FakeCrc::new();
         eng.stage_gather(&mut crc, 2, ResultCode::Ok, false, spans)
@@ -316,8 +338,111 @@ fn copy_path_stages_the_source_bytes() {
             reference(2, ResultCode::Ok, false, &concat)[1..],
             "{spans:02x?}"
         );
-        assert_eq!(crc.copies, 0);
+        assert_eq!(crc.copies, copies, "{spans:02x?}");
     }
+}
+
+/// A snapshot reply at each of the four frame shifts, odd and even
+/// lengths, with and without the alert flag and the INST override: ID, LEN,
+/// INST, payload and CRC match the sealed reference byte for byte.
+#[test]
+fn every_shift_streams_the_reference_frame() {
+    let src = Aligned(core::array::from_fn::<u8, 264, _>(|i| {
+        (i as u8).wrapping_mul(7) ^ 0x3C
+    }));
+    let overs = [None, Some(ResultCode::PredecessorSilent)];
+    for a in 0..4 {
+        for len in (3..=13).chain([40, 41, 251, 252]) {
+            for alert in [false, true] {
+                for over in overs {
+                    let data = &src.0[a..a + len];
+                    let (mut eng, log) = engine();
+                    let mut crc = FakeCrc::new();
+                    eng.stage(&mut crc, 0x2B, ResultCode::Ok, alert, data)
+                        .unwrap();
+                    run(&mut eng, &mut crc, over);
+                    let log = log.borrow();
+                    let case = (a, len, alert, over);
+                    let reference = reference(0x2B, over.unwrap_or(ResultCode::Ok), alert, data);
+                    assert_eq!(wire_bytes(&log), reference[1..], "{case:?}");
+                    if (a, len) == (0, 4) {
+                        assert_eq!(crc.copies, 0, "{case:?}");
+                        continue;
+                    }
+                    assert_eq!(crc.copies, 1, "{case:?}");
+                    // The frame sits at the source's alignment, a zero
+                    // under an odd base for the feed.
+                    assert_eq!(crc.snap.0[a..a + 4 + len], reference[..4 + len], "{case:?}");
+                    if a % 2 == 1 {
+                        assert_eq!(crc.snap.0[a - 1], 0, "{case:?}");
+                    }
+                    assert!(
+                        crc.arms.iter().all(|&(b, _)| b == Beat::Word),
+                        "{case:?}: {:?}",
+                        crc.arms
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Each row of the gathered plan (`snapshot::plan`) in a profile read: the
+/// streamed frame matches the sealed reference of the concatenation, and
+/// each span took the arm its row names.
+#[test]
+fn every_gather_row_streams_the_reference_frame() {
+    let src = Aligned(core::array::from_fn::<u8, 128, _>(|i| !(i as u8) ^ 0x11));
+    let s = &src.0;
+    type Row<'a> = (&'a [&'a [u8]], &'a [(Beat, u16)]);
+    let cases: [Row; 7] = [
+        // A later span at its own alignment: word beats, CPU ends.
+        (
+            &[&s[0..12], &s[64..76]],
+            &[(Beat::Word, 3), (Beat::Word, 3)],
+        ),
+        (&[&s[1..4], &s[64..75]], &[(Beat::Word, 2)]),
+        // Up to CPU_SPAN_MAX, at any alignment: the CPU alone.
+        (&[&s[0..3], &s[64..68], &s[70..72], &s[73..74]], &[]),
+        (&[&s[0..1], &s[64..71], &s[66..72], &s[4..8]], &[]),
+        // Mismatched, longer, same parity: halfword beats, CPU bytes.
+        (&[&s[0..2], &s[64..73]], &[(Beat::Half, 4)]),
+        (&[&s[1..3], &s[65..74]], &[(Beat::Half, 4)]),
+        // Opposite parity: byte beats.
+        (&[&s[0..1], &s[64..73]], &[(Beat::Byte, 9)]),
+    ];
+    for (spans, arms) in cases {
+        let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
+        eng.stage_gather(&mut crc, 6, ResultCode::Ok, true, spans)
+            .unwrap();
+        run(&mut eng, &mut crc, None);
+        let log = log.borrow();
+        let concat = spans.concat();
+        assert_eq!(
+            wire_bytes(&log),
+            reference(6, ResultCode::Ok, true, &concat)[1..],
+            "{spans:02x?}"
+        );
+        assert_eq!(crc.arms, arms, "{spans:02x?}");
+    }
+}
+
+/// CH6 is the TEL lane's while the engine is lent (sec 5.6), and the
+/// snapshot arms it with whole-register writes and no critical section:
+/// a lent engine must refuse a read before touching the copy channel.
+#[test]
+fn a_lent_engine_stages_no_snapshot() {
+    let (mut eng, _log) = engine();
+    let mut crc = FakeCrc::new();
+    eng.lend();
+    assert!(eng.lent());
+    let data = Aligned(core::array::from_fn::<u8, 40, _>(|i| i as u8));
+    assert_eq!(
+        eng.stage(&mut crc, 1, ResultCode::Ok, false, &data.0),
+        Err(SendError::Busy)
+    );
+    assert_eq!((crc.copies, crc.arms.len()), (0, 0));
 }
 
 #[test]
@@ -406,7 +531,7 @@ fn inst_override_lands_in_the_snapshot() {
         .unwrap();
     run(&mut eng, &mut crc, Some(ResultCode::PredecessorSilent));
     let inst = Inst::status(ResultCode::PredecessorSilent, false).0;
-    assert_eq!(crc.snap[3], inst);
+    assert_eq!(crc.snap.0[3], inst);
     let log = log.borrow();
     let reference = reference(9, ResultCode::PredecessorSilent, false, &data.0);
     assert_eq!(wire_bytes(&log), reference[1..]);

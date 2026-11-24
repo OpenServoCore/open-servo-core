@@ -285,9 +285,8 @@ impl Dispatcher<'_> {
         if !ctx.may_reply {
             return;
         }
-        // model_number + firmware_version are contiguous at the common-block front:
-        // reply straight from the table, which outlives the snapshot copy that
-        // may still be reading it after this returns (a stack copy would not).
+        // model_number + firmware_version are contiguous at the common-block
+        // front, 4-aligned: the TX engine copies them with one word load.
         let data = RegisterFile::read(
             &self.shared.table,
             crate::regions::config::addr::common::MODEL_NUMBER,

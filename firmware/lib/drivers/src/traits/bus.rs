@@ -28,24 +28,29 @@ pub trait Deadline {
     fn cancel(&mut self);
 }
 
-/// Hardware CRC engine, DMA-fed -- zero CPU per byte (sec 3.2, F6). Feed spans
+/// Hardware CRC engine, DMA-fed: zero CPU per byte (sec 3.2, F6). Feed spans
 /// must be even-LENGTH (the sec 3.2 fold covers trailing odd bytes) and
-/// even-ADDRESSED (F12) -- which every source satisfies by construction: the
-/// reply buffer head and the snapshot buffer are halfword-aligned, and
-/// arbitrary-parity spans reach the engine through [`Self::snapshot`]. Feeds
-/// accumulate across calls until [`Self::reset`].
+/// even-ADDRESSED (F12), which every source satisfies by construction: the
+/// reply buffer head is word-aligned, a snapshot feed starts on the even byte
+/// at or below its frame base, and arbitrary-parity spans reach the engine
+/// through [`Self::snapshot`]. Feeds accumulate across calls until
+/// [`Self::reset`].
 pub trait CrcEngine {
     fn reset(&mut self);
     fn feed(&mut self, span: &[u8]);
-    /// Stream `src` into the engine's stable snapshot buffer at byte offset
-    /// `off` and return the copy's address. Best-effort and asynchronous:
-    /// the copy may still be in flight on return -- the engine's transfer
-    /// ordering guarantees no downstream consumer (CRC feed, wire arm)
-    /// overtakes it. Both the wire and the CRC consume the snapshot, so a
-    /// reply's CRC always covers exactly the transmitted bytes (sec 4.2);
-    /// offsets let a caller linearize a ring-wrapped span. Contents stay
-    /// valid until the next `snapshot` call over the same range.
-    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8;
+    /// Copy `spans`, concatenated, into the engine's stable snapshot buffer
+    /// by [`crate::bus::snapshot::gather`] and return the frame base it
+    /// picked. The copy may still be in flight on return: the engine's
+    /// transfer ordering guarantees no downstream consumer (CRC feed, wire
+    /// arm) overtakes it.
+    /// Both the wire and the CRC consume the snapshot, so a reply's CRC
+    /// always covers exactly the transmitted bytes (sec 4.2). The header in
+    /// front of the payload and the byte below an odd base are the caller's
+    /// to write. Contents stay valid until the next `snapshot` call.
+    ///
+    /// # Safety
+    /// `spans` total at most `wire::MAX_PAYLOAD` bytes.
+    unsafe fn snapshot(&mut self, spans: &[&[u8]]) -> *mut u8;
     /// Copy `units` halfwords from `src` to `dst` on the snapshot's
     /// transfer path: started now, it lands ahead of any feed armed after
     /// it. Fire and forget, with no wait: one a control tick, and each

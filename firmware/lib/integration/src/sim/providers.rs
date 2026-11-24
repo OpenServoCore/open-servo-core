@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use osc_protocol::crc::osc_crc_continue;
-use osc_protocol::wire;
 use osc_servo_core::BaudRate;
+use osc_servo_drivers::bus::snapshot::{Buf, gather};
 use osc_servo_drivers::traits::bus::{
     BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
@@ -352,7 +352,7 @@ const CRC_ENGINE_TICKS_PER_BYTE: u64 = 18;
 /// absolute-parity guarantee even where the driver's offsets are correct.
 pub struct SimCrc {
     state: Rc<Cell<u16>>,
-    snap: Vec<u8>,
+    snap: Box<Buf>,
     lane: Option<LaneEngine>,
 }
 
@@ -366,7 +366,7 @@ impl SimCrc {
     pub fn new(state: Rc<Cell<u16>>) -> Self {
         Self {
             state,
-            snap: vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+            snap: Box::new(Buf::new()),
             lane: None,
         }
     }
@@ -399,10 +399,17 @@ impl CrcEngine for SimCrc {
         }
     }
 
-    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
-        let off = off as usize;
-        self.snap[off..off + src.len()].copy_from_slice(src);
-        unsafe { self.snap.as_ptr().add(off) }
+    /// Every arm lands at once, as `copy`'s; an unaligned beat, which the
+    /// chip's channel would silently misplace, fails the run.
+    unsafe fn snapshot(&mut self, spans: &[&[u8]]) -> *mut u8 {
+        // SAFETY: the caller's total.
+        unsafe {
+            gather(&mut *self.snap, spans, |src, dst, beat, beats| {
+                let w = beat as usize;
+                assert_eq!((src.addr() | dst.addr()) % w, 0, "unaligned {w}-byte beat");
+                core::ptr::copy_nonoverlapping(src, dst, w * beats as usize);
+            })
+        }
     }
 
     /// The copy lands at once: the chip's runs ahead of any later feed

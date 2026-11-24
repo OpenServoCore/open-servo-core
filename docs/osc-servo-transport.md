@@ -40,7 +40,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | DMA1 CH4        | TX arms -> USART1 DR (header, snapshot payload, CRC tail; a TEL frame's whole image); HIGH | zero CPU; TC surfaces as USART TC, polled by the kernel for TEL frames |
 | DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
-| DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly), or while a TEL burst streams the row copies, table chunks -> the frame image, halfwords, armed by the kernel; HIGH, above CH3 | ~0.125 us/B, zero CPU |
+| DMA1 CH6        | snapshot copy -> the snapshot buffer, word beats over a reply span's 4-aligned middle, the CPU copying the ends (reply payloads only - RX CRC feeds the ring directly), or while a TEL burst streams the row copies, table chunks -> the frame image, halfwords, armed by the kernel; HIGH, above CH3 | ~0.125 us a beat whatever its width (240 B of reply in about 380 HCLK), zero CPU beyond the ends |
 | DMA1 CH1        | ADC sample set -> the control table's tick block; DMA HIGH (wins HIGH ties by channel number); no interrupt from the scans, the kernel polls TC; its vector serves the shunt burst's HT and TC | zero CPU |
 | ADC             | the injected group's end (JEOC) vector = motor kernel tick, alone at PFIC HIGH outside a shunt burst | 14-40 us body (rest to moving) |
 | PC0 CNF         | AF open-drain for good: the servo only pulls low, the host pull-up (and the board keeper) holds mark (protocol sec 2) | set once at init |
@@ -179,10 +179,11 @@ and ISR-entry overheads.
    off by falling through within one ISR invocation or the next event's
    entry, no cross-priority round-trip. The kernel above preempts it and
    loses nothing; the bus pays in latency (sec 2).
-6. **Copy-once TX.** Reply payloads are DMA-snapshotted once
-   (~0.125 us/B, fire-and-forget) and streamed from the snapshot by both
-   the wire and the CRC — snapshot-consistent reads for the price of one
-   copy hidden under reply gap (protocol sec 4.2).
+6. **Copy-once TX.** Reply payloads are DMA-snapshotted once (word
+   beats, ~0.125 us per 4 B, fire-and-forget, the CPU copying the ends)
+   and streamed from the snapshot by both the wire and the CRC - every
+   field whole for the price of one copy hidden under reply gap
+   (protocol sec 4.2).
 7. **One comparator, muxed.** Every deadline (framer A/B/covered, chain
    trigger, rescue) folds onto SysTick CMP with pend-on-past semantics;
    the drain loop consumes every slot due at the same wake.

@@ -328,37 +328,47 @@ No hardware-timed kickoff: TX start is "enable the channel when ready" —
 the break makes reply timing non-critical, which deletes the TIM-compare
 kickoff machinery, the RDT register, and its whole tuning surface.
 
-Payloads of two bytes or less copy into the reply buffer directly -
-cheaper than arming a DMA channel for a couple of bytes. A field of two
-bytes or less read on its own is copied in one access, so it arrives
-whole, from one instant. Larger payloads (the READ/GREAD case) are
-**copy-once**: staging the reply kicks off a fire-and-forget copy DMA
-that streams the table span into a dedicated 256 B engine-owned
-snapshot buffer; the CRC feed and the wire TX
-arm, armed separately when the reply triggers, both read from that
-snapshot instead of the table. Copy, CRC feed, and wire shift-out are
-three independent DMA/hardware engines running concurrently, not a
-blocking chain — nothing polls or waits on the copy. Correctness comes
-from relative speed and scheduling order instead: the copy is kicked off
-earliest (at stage time, ahead of the trigger) and is also the fastest of
-the three (plain M2M DMA outruns the CRC engine, which itself runs ~8×
-wire speed, F6), and its channel (CH6) sits above the CRC-feed channel on
-the bus-arbitration ladder (the RX ring alone owns the top — see
-`osc-servo-transport.md`, DMA priority ladder) — so the copy is
+Payloads of two bytes or less, and a 4-byte payload from a 4-byte
+boundary, copy into the reply buffer directly - cheaper than arming a DMA
+channel for a few bytes: a field of up to 4 bytes read on its own is
+copied by one CPU load.
+Larger payloads (the READ/GREAD case) are **copy-once**: staging the reply
+copies the table span into a dedicated engine-owned snapshot buffer, and
+the CRC feed and the wire TX arm, armed separately when the reply
+triggers, both read from that snapshot instead of the table. The copy DMA
+(CH6) takes the span's 4-byte-aligned middle in word beats, fire and
+forget, and the CPU copies the up to three bytes at either end, one
+naturally aligned load each; the frame sits in the snapshot shifted so
+the payload lies at the same address mod 4 as its source. A span of up
+to 7 bytes the CPU copies alone, one naturally aligned load per field.
+Copy, CRC feed, and wire shift-out are three independent DMA/hardware engines
+running concurrently, not a blocking chain - nothing polls or waits on
+the copy. Correctness comes from relative speed and scheduling order
+instead: the copy is kicked off earliest (at stage time, ahead of the
+trigger) and is also the fastest of the three (a word beat costs what a
+byte beat does, so 240 B take about 380 HCLK, and the CRC engine itself
+runs ~8x wire speed, F6), and its channel (CH6) sits above the CRC-feed
+channel on the bus-arbitration ladder (the RX ring alone owns the top -
+see `osc-servo-transport.md`, DMA priority ladder) - so the copy is
 guaranteed done before either downstream consumer reaches the bytes it
-needs, by construction, not by synchronization. None of this costs CPU:
-all three engines run in hardware, freeing the core to run the motor
-kernel tick underneath. The one copy still buys two things a
-direct-from-table stream couldn't: the table address's parity becomes
-irrelevant to the wire/CRC engines (the snapshot is always
-halfword-based regardless of where the source span sits), and the wire
-and the CRC read the same bytes. It is not a point-in-time image: the
-copy moves a byte at a time while the control tick keeps running, so the
-fields of one reply may come from different ticks, and a multi-byte
-field that changes during the copy can arrive with bytes from two ticks.
-Values that must be consistent are read through a TEL row (sec 5.6).
-Reads over 252 B split into multiple frames (sec 5.1), each independently
-snapshotted and CRC'd.
+needs, by construction, not by synchronization. The CPU's ends are
+written before the trigger, so neither consumer can reach them first.
+The one copy still buys two things a direct-from-table stream couldn't:
+the table address's parity becomes irrelevant to the wire/CRC engines,
+and the wire and the CRC read the same bytes. With an odd frame base the
+CRC feed starts one byte below it, on a byte kept 0, which leaves the
+CRC unchanged as the alignment byte does (sec 3.2).
+
+A read never delivers a field torn: every field it covers whole is
+copied in one access, whatever its width. Fields of one read may come
+from different control ticks. In a profile read (sec 5.2) the promise
+holds for the first span, for every span of up to 7 bytes, and for a
+longer span that starts at a 4-byte boundary when every span ahead of it
+starts at one too and runs a multiple of 4 bytes; other longer spans
+promise nothing, read such fields alone or through a TEL row. Values
+that must be consistent with each other are read through a TEL row
+(sec 5.6). Reads over 252 B split into multiple frames (sec 5.1), each
+independently snapshotted and CRC'd.
 
 ## 5. Instruction set
 
@@ -393,8 +403,9 @@ Notes:
   2 bytes, `count` is 2 bytes for reads (kept u16 for field alignment in
   the payload view; values cap at 252, §5.1) and 1 byte per GWRITE slice.
 - **READ/GREAD addressing is unconstrained** — any `addr`, any `count`.
-  Every reply payload streams from a copy - the reply buffer or the
-  snapshot buffer (sec 4.2), both halfword-aligned by construction - so the
+  Every reply payload streams from a copy - the word-aligned reply buffer,
+  or the snapshot buffer, which places the payload at its source's
+  address mod 4 and feeds the CRC from an even byte (sec 4.2) - so the
   table address carries no constraint at all [F12 satisfied
   structurally]. WRITE addressing is likewise unconstrained: inbound
   payloads validate through the ring anchor, not the table address.
@@ -435,14 +446,16 @@ different table sections) is met span-granularly instead:
   hot-loop instruction stays minimal; the span list costs wire bytes once
   at setup and zero per cycle (the reason profiles beat inline
   scatter-gather lists for cyclic telemetry).
-- Execution is §4.2's existing copy-once TX: each span is snapshotted at
-  its cumulative offset and the wire and CRC arms stream the one
-  contiguous copy, engine accumulating across arms [F6] — a scattered
+- Execution is sec 4.2's existing copy-once TX: each span is snapshotted
+  at its cumulative offset and the wire and CRC arms stream the one
+  contiguous copy, engine accumulating across arms [F6] - a scattered
   read costs the same one-copy-per-reply as a single-span read. Spans
-  carry **no parity constraint** (addresses and lengths may be odd): the
-  snapshot buffer is halfword-based by construction and only the total's
-  parity engages the standard tail fold (§3.2) — same as §5's
-  unconstrained plain reads.
+  carry **no parity constraint** (addresses and lengths may be odd): only
+  the total's parity engages the standard tail fold (sec 3.2) - same as
+  sec 5's unconstrained plain reads. Alignment decides only how whole the
+  fields arrive: the frame is shifted for the first span, so a later span
+  lands at its own address mod 4 only when the spans ahead of it add up
+  to that.
 - Errors are read-time (§5.3): a slot index past the region, an empty
   slot, or a span leaving the table is `range`; a slot totalling past the
   252 B reply ceiling (§5.1) is `limit`.
@@ -450,13 +463,14 @@ different table sections) is met span-granularly instead:
   `COMMIT` is already atomic — inline scatter-writes would add cross-span
   validation complexity for no capability gain.
 
-Implementation note (tearing): the copy-once snapshot DMA (§4.2) reads the
-live table byte-serially, so a field updated mid-span by a control ISR can
-emit a torn multi-byte value in the snapshot — the wire and CRC then read
-that frozen copy, so tearing is bounded to the one copy rather than
-compounding per consumer, but it is not eliminated. Field-aligned spans
-and the single-writer discipline bound tearing to one field; values that
-must be consistent are read through a TEL row (sec 5.6).
+Implementation note (tearing): a span of up to 7 bytes is copied by the
+CPU at any alignment, one natural load per field. A longer later span
+whose payload offset matches its address mod 4 copies like a plain read,
+every field whole. A longer mismatched span is copied in halfword beats
+when both ends have the same parity, which can tear its 4-byte fields,
+and in byte beats otherwise, which can tear any of its multi-byte
+fields. Hence the sec 4.2 promise: read such fields alone or through a
+TEL row (sec 5.6).
 
 ### 5.3 Errors: three layers
 
@@ -717,12 +731,11 @@ and a period on (the crest), after the copies, so every row holds one
 tick's tick block. A chunk over the medium-rate registers
 (the estimates) carries them as last published, up to one tick old.
 Host-written regions copy with per-field consistency only. A bus read
-of the tick block is weaker (sec 4.2): two fields may come from adjacent
-ticks (`pos` to `ntc_raw` change when the next crest scan lands, the
-rest when the next tick writes them), and only a read of a single field
-of two bytes or less is sure to deliver it whole. The DMA writes the
-terminal taps in sample order, high side first, so no named field lies
-in its way.
+of the tick block is weaker (sec 4.2): each field it covers arrives
+whole, but two fields may come from adjacent ticks (`pos` to `ntc_raw`
+change when the next crest scan lands, the rest when the next tick
+writes them). The DMA writes the terminal taps in sample order, high
+side first, so no named field lies in its way.
 
 | addr  | name              | width | notes                                                       |
 | ----- | ----------------- | ----- | ----------------------------------------------------------- |
