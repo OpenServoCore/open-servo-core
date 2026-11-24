@@ -1,0 +1,26 @@
+{
+  "step": "cruise",
+  "method": "closed-loop-velocity-cruises",
+  "revision": 1,
+  "verdict": "accepted",
+  "estimates": {
+    "friction_coulomb_ma": {
+      "value": 39.4237,
+      "lo": 38.2465,
+      "hi": 40.6009,
+      "unit": "mA",
+      "source": "synthetic: the analyst's closed-loop line (osc-dev-v006-bringup kb/scratch/friction-spins-vs-cruise/sitting/line.csv, its valid 1500, 2150 and 4025 counts/s legs)"
+    },
+    "friction_viscous_ma_s_per_rad": {
+      "value": 0.040364,
+      "lo": 0.038648,
+      "hi": 0.042081,
+      "unit": "mA per motor rad/s",
+      "source": "synthetic: the analyst's closed-loop line (osc-dev-v006-bringup kb/scratch/friction-spins-vs-cruise/sitting/line.csv, its valid 1500, 2150 and 4025 counts/s legs)"
+    }
+  },
+  "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "counts_per_a_source": "the stops step's nominal sense block"
+  }
+}

@@ -41,6 +41,7 @@ fn run() -> RunResults {
         stops: Some(result("stops")),
         window: Some(result("window")),
         spins: Some(result("spins")),
+        cruise: None,
     }
 }
 
@@ -349,4 +350,63 @@ fn the_stops_round_inward() {
     }));
     let e = gather::gather(&r, &nameplate()).expect_err("no travel");
     assert!(e.0.contains("no travel"), "{e}");
+}
+
+/// The friction line is the cruise step's where the run holds it
+/// accepted, a line saying so; else the spins', a line saying why and
+/// that the spin line reads high at low speed. A cruise on another sense
+/// block, or another step's file, is refused.
+#[test]
+fn the_friction_line_is_the_cruise_steps_where_it_was_accepted() {
+    let mut r = run();
+    r.cruise = Some(result("cruise"));
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    let m = &g.measured;
+    assert_eq!(m["cruise_coulomb_ma"]["value"], 39.4237);
+    assert_eq!(m["cruise_coulomb_ma"]["lo"], 38.2465);
+    assert_eq!(m["cruise_viscous_ma_s_per_rad"]["value"], 0.040364);
+    assert_eq!(
+        m["cruise_coulomb_ma"]["source"]["file"],
+        "results/cruise.json"
+    );
+    let text = g.lines.join("\n");
+    assert!(
+        text.contains("friction line: from the cruise step's closed-loop cruises")
+            && text.contains("reads high at low speed"),
+        "{text}"
+    );
+
+    for (edit, why) in [
+        (
+            Some(edited("cruise", |v| v["verdict"] = "refused".into())),
+            "as the cruise step's results/cruise.json is refused",
+        ),
+        (None, "as the run holds no results/cruise.json"),
+    ] {
+        let mut r = run();
+        r.cruise = edit;
+        let g = gather::gather(&r, &nameplate()).expect("gathers");
+        assert_eq!(
+            g.measured["cruise_coulomb_ma"]["source"]["file"],
+            "results/spins.json"
+        );
+        let text = g.lines.join("\n");
+        assert!(
+            text.contains(&format!(
+                "friction line: from the spin step's open-loop spins, {why}"
+            )) && text.contains("reads high at low speed"),
+            "{text}"
+        );
+    }
+
+    let mut r = run();
+    r.cruise = Some(edited("cruise", |v| {
+        v["scales"]["counts_per_a"] = 1135.0.into()
+    }));
+    let e = gather::gather(&r, &nameplate()).expect_err("refused");
+    assert!(e.0.contains("another sense block"), "{e}");
+    let mut r = run();
+    r.cruise = Some(edited("cruise", |v| v["step"] = "spins".into()));
+    let e = gather::gather(&r, &nameplate()).expect_err("refused");
+    assert!(e.0.contains("not the cruise step's"), "{e}");
 }

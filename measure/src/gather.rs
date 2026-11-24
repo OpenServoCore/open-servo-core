@@ -10,13 +10,18 @@ use serde_json::{Map, Value, json};
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::set::file_sha1;
-use crate::steps::{probe, rest, stops};
+use crate::steps::{cruise, probe, rest, stops};
 
-/// The two steps the gather reads where a run has them.
+/// The later steps the gather reads where a run has them.
 pub const WINDOW_STEP: &str = "window";
 pub const WINDOW_RESULT: &str = "results/window.json";
 pub const SPINS_STEP: &str = "spins";
 pub const SPINS_RESULT: &str = "results/spins.json";
+/// The friction line's source where the run has it accepted, else the
+/// spins'.
+pub const CRUISE_RESULT: &str = cruise::RESULT;
+/// Why the cruise line is the one the loop needs over the spins'.
+const SPIN_LINE_HIGH: &str = "the spin line reads high at low speed: its spins are short, still speeding up and at the low end of the travel, and its lowest point is a fast spin, so its offset is an extrapolation";
 
 const STOPS_RUN: &str =
     "run `osc-ident step stops`, which runs the rest step and the probe first, into one run folder";
@@ -51,6 +56,7 @@ pub struct RunResults {
     pub stops: Option<StepResult>,
     pub window: Option<StepResult>,
     pub spins: Option<StepResult>,
+    pub cruise: Option<StepResult>,
 }
 
 /// What the gather gives: the rules' `measured.json`, the table file
@@ -235,7 +241,9 @@ fn same(a: f64, b: f64) -> bool {
 /// The rules' inputs from a run's results and the servo's nameplate.
 /// Refused, naming the step to run, when the rest step, the probe or the
 /// stops step has no accepted result, or when any result there is is not
-/// accepted.
+/// accepted, but the cruise step's: the friction line is the cruise
+/// step's where it was accepted, else the spin step's, a line saying
+/// which.
 pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refused> {
     let rest = need(
         Taken::of(run.rest.as_ref(), rest::STEP, rest::RESULT, STOPS_RUN)?,
@@ -451,19 +459,68 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         "pot_rest_sd_counts",
         rest.estimate("pot_rest_sd_counts", 1.0, None)?,
     );
-    if let Some(s) = &spins {
-        o.put(
-            "cruise_coulomb_ma",
-            s.estimate("friction_coulomb_ma", 1.0, None)?,
-        );
-        o.put(
-            "cruise_viscous_ma_s_per_rad",
-            s.estimate("friction_viscous_ma_s_per_rad", 1.0, None)?,
-        );
-    } else {
-        o.lines.push(format!(
-            "cruise_coulomb_ma, cruise_viscous_ma_s_per_rad: missing, the run holds no {SPINS_RESULT}"
-        ));
+    let cruised = match run.cruise.as_ref() {
+        None => Err(format!("the run holds no {CRUISE_RESULT}")),
+        Some(r) => {
+            if let Some(s) = r.doc.get("step").and_then(Value::as_str)
+                && s != cruise::STEP
+            {
+                return Err(Refused(format!(
+                    "{} is the {s} step's result, not the {} step's",
+                    r.file,
+                    cruise::STEP
+                )));
+            }
+            match r.doc.get("verdict").and_then(Value::as_str).unwrap_or("") {
+                "accepted" => Ok(Taken {
+                    r,
+                    run: "run the cruise step again",
+                }),
+                v => Err(format!(
+                    "the cruise step's {} is {}",
+                    r.file,
+                    if v.is_empty() { "of no verdict" } else { v }
+                )),
+            }
+        }
+    };
+    match (cruised, &spins) {
+        (Ok(c), _) => {
+            let key = "scales.counts_per_a";
+            if !same(c.num(key)?, cpa) {
+                return Err(Refused(format!(
+                    "{} read another sense block than the stops step: run the cruise step on the servo the run measured",
+                    c.r.file
+                )));
+            }
+            o.put(
+                "cruise_coulomb_ma",
+                c.estimate("friction_coulomb_ma", 1.0, None)?,
+            );
+            o.put(
+                "cruise_viscous_ma_s_per_rad",
+                c.estimate("friction_viscous_ma_s_per_rad", 1.0, None)?,
+            );
+            o.lines.push(format!(
+                "friction line: from the cruise step's closed-loop cruises at mid travel; the spin step's open-loop line stays in {SPINS_RESULT} as a cross-check, and {SPIN_LINE_HIGH}"
+            ));
+        }
+        (Err(why), Some(s)) => {
+            o.put(
+                "cruise_coulomb_ma",
+                s.estimate("friction_coulomb_ma", 1.0, None)?,
+            );
+            o.put(
+                "cruise_viscous_ma_s_per_rad",
+                s.estimate("friction_viscous_ma_s_per_rad", 1.0, None)?,
+            );
+            o.lines.push(format!(
+                "friction line: from the spin step's open-loop spins, as {why}; {SPIN_LINE_HIGH}: the cruise step on a tuned set gives the line the loop needs"
+            ));
+        }
+        (Err(why), None) => o.lines.push(format!(
+            "cruise_coulomb_ma, cruise_viscous_ma_s_per_rad: missing, the run holds no {SPINS_RESULT} and {why}"
+        )),
     }
     o.lines.extend([
         "breakaway_ma: not gathered, no step measures it".to_string(),

@@ -33,7 +33,7 @@ fn unix_s() -> f64 {
 
 /// The set the rules give at the speed gain `kp`, and the measured file it
 /// was given with: the inputs' own, `speed_kp_verified` set to `kp`.
-fn set_at(
+pub(crate) fn set_at(
     r: &RulesInputs,
     measured: &Value,
     kp: f64,
