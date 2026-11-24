@@ -28,7 +28,8 @@ then inside the window both directions of the speed crossed; the reading
 over the polled bias with the board's settle gain and the window term on
 the tap difference's median; the all-tick estimate of the sitting's
 `allticks.py` under 98 % of rows read; inertia from the table speed's
-halves through the set's j_ff; the steadiness rule; the line weighted so
+halves through the set's j_ff; the steadiness rule (the speed held, the
+inertia correction bounded; the halves reported, not judged); the line weighted so
 each speed counts once, each standard error the larger of the legs'
 scatter and the speeds' means about the line.
 """
@@ -73,8 +74,9 @@ TAU_US = (50, 70, 100, 130, 160, 200, 250)
 LAGS = (0, 1)
 HELD_SHARE = 0.05
 INERTIA_MAX_MA = 1.5
-HALVES_MAX = 0.015
-HALVES_FROM_SHARE = 0.2
+# the comparison line without the slowest speed: legs from this share of
+# the ceiling up
+LOW_SHARE = 0.2
 TICK_HZ = 20000.0
 MEDIUM_HZ = TICK_HZ / 10
 
@@ -179,7 +181,6 @@ def read_leg(l, window, fields, cpmr):
     accel = (v2 - v1) / (n / 2 / TICK_HZ)
     i_acc = fields["j_ff_q88"] / 256.0 * accel / MEDIUM_HZ
     ma = 1e3 / CPA
-    share = abs(l["goal"]) / CEILING
     held = abs(cps / abs(l["goal"]) - 1)
     out.update({
         "kept_rows": n, "first_kept": int(idx[a]), "pos_lo": float(pk.min()), "pos_hi": float(pk.max()),
@@ -194,8 +195,6 @@ def read_leg(l, window, fields, cpmr):
         why.append("held")
     if abs(out["i_inertia_ma"]) > INERTIA_MAX_MA:
         why.append("inertia")
-    if share >= HALVES_FROM_SHARE and abs(out["halves"]) > HALVES_MAX:
-        why.append("halves")
     out["valid"] = not why
     if why:
         out["fail"] = ",".join(why)
@@ -203,7 +202,7 @@ def read_leg(l, window, fields, cpmr):
 
 
 def line(legs, with_low):
-    v = [l for l in legs if l.get("valid") and (with_low or abs(l["goal"]) / CEILING >= HALVES_FROM_SHARE)]
+    v = [l for l in legs if l.get("valid") and (with_low or abs(l["goal"]) / CEILING >= LOW_SHARE)]
     if len({abs(l["goal"]) for l in v}) < 2:
         return None
     n = pd.Series([abs(l["goal"]) for l in v]).value_counts().to_dict()

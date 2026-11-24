@@ -11,12 +11,16 @@ use osc_measure::Board;
 use osc_measure::capture::meta::gunzip;
 use osc_measure::capture::rows::TelFrame;
 use osc_measure::fit::cruise::{
-    self, HALVES_FROM_SHARE, Leg, LegRead, Line, Point, Reading, band, settled_span,
+    self, INERTIA_MAX_MA, Leg, LegRead, Line, Point, Reading, band, settled_span,
 };
 use osc_measure::fit::window::Settle;
 use osc_measure::scorecard::Lin;
 use osc_measure::steps::Verdict;
 use serde_json::Value;
+
+/// The comparison line without the slowest speed takes the legs from this
+/// share of the ceiling up, as the analyst's line over 1500 to 4025 c/s.
+const LOW_SHARE: f64 = 0.2;
 
 fn dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/mg90-d/cruise")
@@ -207,8 +211,8 @@ fn line_of(
         .iter()
         .zip(reads)
         .filter_map(|(s, l)| l.as_ref().ok().map(|l| (s, l)))
-        .filter(|(_, l)| l.fails(r).is_empty())
-        .filter(|(s, _)| low || s.goal.abs() >= HALVES_FROM_SHARE * r.ceiling_cps)
+        .filter(|(_, l)| l.fails().is_empty())
+        .filter(|(s, _)| low || s.goal.abs() >= LOW_SHARE * r.ceiling_cps)
         .map(|(s, l)| Point {
             goal_cps: s.goal.abs(),
             dir: l.dir,
@@ -325,7 +329,7 @@ fn each_leg_reads_as_the_reference() {
                     1e-6,
                 );
                 close(&format!("{at} current"), l.i_ma, n("i_ma"), 1e-6);
-                let fails = l.fails(&r);
+                let fails = l.fails();
                 assert_eq!(fails.is_empty(), x["valid"] == true, "{at}: {fails:?}");
                 println!(
                     "{at}: {:.0} rows, {:.1} rad/s, read {:.2}{}, {:.2} mA, inertia {:+.2}, halves {:+.2}%: {}",
@@ -368,7 +372,7 @@ fn the_line_reproduces_the_analysts_within_its_error_bars() {
         .filter_map(|(s, l)| {
             l.as_ref()
                 .ok()
-                .filter(|l| l.fails(&r).is_empty())
+                .filter(|l| l.fails().is_empty())
                 .map(|l| (s, l))
         })
         .map(|(s, l)| Point {
@@ -470,4 +474,49 @@ fn the_line_reproduces_the_analysts_within_its_error_bars() {
         checks.iter().all(|c| c.verdict == Verdict::Pass),
         "{checks:?}"
     );
+}
+
+/// The steadiness rule on recorded legs: a 2150 c/s leg still easing
+/// toward its speed, its halves 3% apart, past the 1.5% a halves rule
+/// would allow, and its inertia correction inside the bound, counts; a
+/// leg whose correction passes the bound is set aside, the halves never
+/// the reason.
+#[test]
+fn a_leg_easing_toward_its_speed_counts_inside_the_inertia_bound() {
+    let e = expected();
+    let (lin, r) = (lin(&e), reading(&e));
+    let stored = legs();
+    let reads = read_all(&stored, &lin, &r, (110.0, 3730.0));
+    let at = |run: &str, seg: i64| {
+        let k = stored
+            .iter()
+            .position(|s| s.run == run && s.seg == seg)
+            .unwrap_or_else(|| panic!("{run} seg {seg}"));
+        reads[k].1.as_ref().expect("read").clone()
+    };
+    let easing = at("K2-cl-b", 4);
+    assert!(easing.halves.abs() > 0.015, "{easing:?}");
+    assert!(easing.i_inertia_ma.abs() <= INERTIA_MAX_MA, "{easing:?}");
+    assert!(easing.fails().is_empty(), "{:?}", easing.fails());
+    for (run, seg) in [("K1-cl", 0), ("H-cl", 0)] {
+        let l = at(run, seg);
+        assert!(l.i_inertia_ma.abs() > INERTIA_MAX_MA, "{run} {seg}: {l:?}");
+        let f = l.fails();
+        assert!(
+            f.iter().any(|m| m.contains("inertia current")),
+            "{run} {seg}: {f:?}"
+        );
+        assert!(f.iter().all(|m| !m.contains("halves")), "{f:?}");
+    }
+    let kept: Vec<f64> = stored
+        .iter()
+        .zip(&reads)
+        .filter_map(|(s, (_, l))| {
+            let l = l.as_ref().ok()?;
+            (l.fails().is_empty() && l.halves.abs() > 0.015 && s.goal.abs() > 1000.0)
+                .then_some(l.i_ma)
+        })
+        .collect();
+    println!("legs kept with halves past 1.5%: {kept:?}");
+    assert_eq!(kept.len(), 5, "{kept:?}");
 }

@@ -1245,7 +1245,7 @@ fn judge(b: &Before, found: &Found, taken: &[Taken]) -> Judged {
                 None => Err("its speed has no window both directions crossed".into()),
             };
             let fails = match &got {
-                Ok(r) => r.fails(&b.reading),
+                Ok(r) => r.fails(),
                 Err(e) => vec![e.clone()],
             };
             reads.push(((*l).clone(), w, got, fails));
@@ -1666,7 +1666,7 @@ fn result_json(
         "bounds": {
             "band_share": fit::BAND_SHARE, "settle_share": fit::SETTLE_SHARE, "kept_min_s": fit::KEPT_MIN_S,
             "read_share_min": fit::READ_SHARE_MIN, "held_share": fit::HELD_SHARE, "inertia_max_ma": fit::INERTIA_MAX_MA,
-            "halves_max": fit::HALVES_MAX, "halves_from_share": fit::HALVES_FROM_SHARE, "speeds_min": fit::SPEEDS_MIN,
+            "speeds_min": fit::SPEEDS_MIN,
             "low_share_max": fit::LOW_SHARE_MAX, "residual_max_ma": fit::RESIDUAL_MAX_MA, "dirs_max_ma": fit::DIRS_MAX_MA, "dirs_speeds_min": fit::DIRS_SPEEDS_MIN,
         },
         "enable_goal_counts": found.goal0,

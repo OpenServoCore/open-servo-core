@@ -33,14 +33,16 @@ reference of the step's method. Run read-only from a notebooks checkout:
 
 ## The numbers
 
-The step's line is every valid leg's, the 300 c/s legs anchoring the offset.
+The step's line is every valid leg's, the 300 c/s legs anchoring the offset;
+a leg is valid when its speed is held and its inertia correction is inside
+1.5 mA, its speed's halves reported but not judged.
 Each standard error is the larger of the legs' scatter about the line (legs
 less two degrees of freedom) and the speeds' means about it (speeds less two),
 which one said. All on the fixture's 1135.01 counts/A.
 
 | line | coulomb, mA | viscous, mA per rad/s | legs | rad/s |
 |---|---:|---:|---:|---|
-| the step's: 300, 2150 and 4025 c/s | 37.32 +/- 1.30 (speeds; legs 0.50) | 0.04313 +/- 0.00185 (speeds; legs 0.00071) | 16 | 79 to 1074 |
-| without the 300 c/s legs | 40.21 +/- 0.91 (legs) | 0.03994 +/- 0.00106 (legs) | 12 | 565 to 1074 |
+| the step's: 300, 2150 and 4025 c/s | 37.37 +/- 1.43 (speeds; legs 0.45) | 0.04313 +/- 0.00203 (speeds; legs 0.00064) | 21 | 79 to 1074 |
+| without the 300 c/s legs | 40.53 +/- 0.76 (legs) | 0.03965 +/- 0.00089 (legs) | 17 | 565 to 1074 |
 | the analyst, with 300 c/s | 37.33 +/- 0.64 | 0.04318 +/- 0.00112 | | |
 | the analyst, 1500 to 4025 c/s | 39.42 +/- 1.18 | 0.04036 +/- 0.00172 | | 400 to 1076 |

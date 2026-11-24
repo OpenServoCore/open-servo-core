@@ -19,6 +19,15 @@
 //! read rows regressed on the duty through a first-order winding lag, the
 //! line's mean over every row. Inertia comes off through the installed
 //! `j_ff` on the table speed's change between the stretch's halves.
+//!
+//! A leg counts when its speed is held near the goal and its inertia
+//! correction is small ([`INERTIA_MAX_MA`]). The correction takes the
+//! stretch's mean acceleration times the inertia off the stretch's mean
+//! current, which is exact for that mean whatever the shape of the speed's
+//! change; what is left is the inertia's own error times the correction,
+//! which the bound keeps small. A leg still easing toward its speed is
+//! therefore no worse than a flat one: the speed's halves are reported,
+//! not judged.
 
 use std::ops::Range;
 
@@ -46,19 +55,13 @@ pub const READ_SHARE_MIN: f64 = 0.98;
 /// winding's L/R and one row of the duty's own lag, bracketed.
 pub const TAU_US: [f64; 7] = [50.0, 70.0, 100.0, 130.0, 160.0, 200.0, 250.0];
 pub const LAGS: [usize; 2] = [0, 1];
-/// The steadiness rule. Every leg: the stretch's speed within this share
-/// of the goal (the record's held test), and its inertia current under
-/// [`INERTIA_MAX_MA`], the size of a leg's mean's repeat, so what the
-/// inertia correction takes off is no larger than the scatter it hides in.
+/// The steadiness rule, at every speed: the stretch's speed within this
+/// share of the goal (the record's held test), and its inertia current
+/// under [`INERTIA_MAX_MA`], the size of a leg's mean's repeat, so the
+/// error the correction can carry, a share of the correction, stays well
+/// under the scatter it hides in.
 pub const HELD_SHARE: f64 = 0.05;
 pub const INERTIA_MAX_MA: f64 = 1.5;
-/// From [`HALVES_FROM_SHARE`] of the ceiling up, the table speed's halves
-/// within this share: a leg still speeding up or slowing down. Under it
-/// the pot's texture swings
-/// the table speed 3 to 13 % between halves at 300 c/s while the inertia
-/// it implies stays under 0.2 mA: there the halves are said, not judged.
-pub const HALVES_MAX: f64 = 0.015;
-pub const HALVES_FROM_SHARE: f64 = 0.2;
 /// The line's checks: this many speeds with a valid leg; the lowest at
 /// most this share of the ceiling, so the offset is no long
 /// extrapolation; each speed's mean residual, and its two directions'
@@ -194,7 +197,7 @@ pub struct LegRead {
 
 impl LegRead {
     /// The steadiness rule's reasons against the leg; none when it counts.
-    pub fn fails(&self, r: &Reading) -> Vec<String> {
+    pub fn fails(&self) -> Vec<String> {
         let mut why = Vec::new();
         let held = (self.speed_cps / self.goal_cps.abs() - 1.0).abs();
         if held.is_nan() || held > HELD_SHARE {
@@ -210,15 +213,6 @@ impl LegRead {
             why.push(format!(
                 "inertia current {:.2} mA (bound {INERTIA_MAX_MA} mA)",
                 self.i_inertia_ma
-            ));
-        }
-        if self.goal_cps.abs() >= HALVES_FROM_SHARE * r.ceiling_cps
-            && (self.halves.is_nan() || self.halves.abs() > HALVES_MAX)
-        {
-            why.push(format!(
-                "speed halves {:+.2}% apart (bound {:.1}%)",
-                100.0 * self.halves,
-                100.0 * HALVES_MAX
             ));
         }
         why
@@ -839,14 +833,14 @@ mod tests {
             r.ma(want)
         );
         assert!((got.i_ma - (got.i_used_ma - got.i_inertia_ma)).abs() < 1e-12);
-        let why = got.fails(&r);
+        let why = got.fails();
         assert!(why.iter().any(|w| w.contains("inertia")), "{why:?}");
         // steady at the same speed: nothing comes off and the leg counts
         let rows = leg_rows(6000, 1300.0, 2000.0, 0.0, 300, 60.0);
         let leg = Leg { rows: &rows, ..leg };
         let got = read(&leg, &identity(), (1000.0, 3000.0), &r).expect("read");
         assert!(got.i_inertia_ma.abs() < 0.05, "{}", got.i_inertia_ma);
-        assert!(got.fails(&r).is_empty(), "{:?}", got.fails(&r));
+        assert!(got.fails().is_empty(), "{:?}", got.fails());
     }
 
     /// The reading is the firmware's: the settle gain at the width, the
@@ -918,11 +912,10 @@ mod tests {
         assert!(all_ticks(&i, &de, &vec![false; n], 0..n, 20000.0).is_none());
     }
 
-    /// Under the halves' speed the halves are said, not judged; from it on
-    /// they are; a leg off its goal fails at any speed.
+    /// The halves are said, never judged; a leg off its goal or past the
+    /// inertia bound fails at any speed.
     #[test]
     fn the_steadiness_rule_by_speed() {
-        let r = reading();
         let leg = |goal: f64, speed: f64, halves: f64| LegRead {
             dir: 1,
             goal_cps: goal,
@@ -942,13 +935,17 @@ mod tests {
             i_inertia_ma: 0.1,
             i_ma: 49.9,
         };
-        assert!(leg(300.0, 300.0, 0.13).fails(&r).is_empty());
-        assert_eq!(leg(1500.0, 1500.0, 0.02).fails(&r).len(), 1);
-        assert!(leg(1500.0, 1500.0, 0.01).fails(&r).is_empty());
-        assert_eq!(leg(300.0, 330.0, 0.0).fails(&r).len(), 1);
-        let mut l = leg(4025.0, 4025.0, f64::NAN);
+        // the halves never set a leg aside, at any speed
+        assert!(leg(300.0, 300.0, 0.13).fails().is_empty());
+        assert!(leg(1500.0, 1500.0, 0.05).fails().is_empty());
+        assert!(leg(4025.0, 4025.0, f64::NAN).fails().is_empty());
+        assert_eq!(leg(300.0, 330.0, 0.0).fails().len(), 1);
+        let mut l = leg(2150.0, 2150.0, 0.0);
+        l.i_inertia_ma = -1.6;
+        assert_eq!(l.fails().len(), 1, "past the inertia bound");
+        let mut l = leg(4025.0, f64::NAN, 0.0);
         l.i_inertia_ma = f64::NAN;
-        assert_eq!(l.fails(&r).len(), 2, "a NaN never passes");
+        assert_eq!(l.fails().len(), 2, "a NaN never passes");
     }
 
     fn points(c: f64, v: f64, wiggle: &[(f64, i8, f64)]) -> Vec<Point> {

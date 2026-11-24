@@ -400,7 +400,7 @@
    "i_ma": 60.877869208111655,
    "held": 0.004715803658686291,
    "valid": false,
-   "fail": "inertia,halves"
+   "fail": "inertia"
   },
   {
    "run": "K1-cl",
@@ -472,8 +472,7 @@
    "i_inertia_ma": 0.731810761320799,
    "i_ma": 64.62196405058916,
    "held": 0.012279222136027057,
-   "valid": false,
-   "fail": "halves"
+   "valid": true
   },
   {
    "run": "K2-cl-a",
@@ -497,8 +496,7 @@
    "i_inertia_ma": -0.22518952546119061,
    "i_ma": 63.54010689875761,
    "held": 0.0009035582230112471,
-   "valid": false,
-   "fail": "halves"
+   "valid": true
   },
   {
    "run": "K2-cl-a",
@@ -522,8 +520,7 @@
    "i_inertia_ma": 0.43859005927542266,
    "i_ma": 63.830310040811696,
    "held": 0.009543152894293971,
-   "valid": false,
-   "fail": "halves"
+   "valid": true
   },
   {
    "run": "K2-cl-b",
@@ -547,8 +544,7 @@
    "i_inertia_ma": 1.3219426848635212,
    "i_ma": 61.52706029150794,
    "held": 0.005281814595958001,
-   "valid": false,
-   "fail": "halves"
+   "valid": true
   },
   {
    "run": "K2-cl-b",
@@ -596,8 +592,7 @@
    "i_inertia_ma": 0.7242624354231283,
    "i_ma": 63.55664941238656,
    "held": 0.01216314262626772,
-   "valid": false,
-   "fail": "halves"
+   "valid": true
   },
   {
    "run": "K3-cl",
@@ -694,7 +689,7 @@
    "i_ma": 80.42862481089864,
    "held": 0.01883297320728705,
    "valid": false,
-   "fail": "inertia,halves"
+   "fail": "inertia"
   },
   {
    "run": "H-cl",
@@ -938,46 +933,46 @@
   }
  ],
  "line": {
-  "coulomb_ma": 40.20940697472766,
-  "coulomb_se_ma": 0.9115769699140092,
+  "coulomb_ma": 40.52651331923148,
+  "coulomb_se_ma": 0.7622301752351922,
   "coulomb_se_from": "legs",
-  "viscous_ma_s_per_rad": 0.03993937424113454,
-  "viscous_se": 0.0010607672757433524,
+  "viscous_ma_s_per_rad": 0.03964669560274134,
+  "viscous_se": 0.0008868120283934836,
   "viscous_se_from": "legs",
-  "coulomb_se_legs_ma": 0.9115769699140092,
-  "viscous_se_legs": 0.0010607672757433524,
+  "coulomb_se_legs_ma": 0.7622301752351922,
+  "viscous_se_legs": 0.0008868120283934836,
   "coulomb_se_speeds_ma": null,
   "viscous_se_speeds": null,
-  "legs": 12,
+  "legs": 17,
   "rad_s": [
    565.1947592549392,
    1074.178777524412
   ],
   "residual_ma": {
-   "2150": -0.006022506292746736,
-   "4025": 0.006022506292737262
+   "2150": -0.002796255028933749,
+   "4025": 0.0027962550289331034
   }
  },
  "line_with_low": {
-  "coulomb_ma": 37.317167775740124,
-  "coulomb_se_ma": 1.303773782393054,
+  "coulomb_ma": 37.365633892310306,
+  "coulomb_se_ma": 1.427845449234765,
   "coulomb_se_from": "speeds",
-  "viscous_ma_s_per_rad": 0.04312959890573229,
-  "viscous_se": 0.0018541220520430154,
+  "viscous_ma_s_per_rad": 0.0431330430789181,
+  "viscous_se": 0.002030191600172108,
   "viscous_se_from": "speeds",
-  "coulomb_se_legs_ma": 0.49601508276393863,
-  "viscous_se_legs": 0.0007053885316045148,
-  "coulomb_se_speeds_ma": 1.303773782393054,
-  "viscous_se_speeds": 0.0018541220520430154,
-  "legs": 16,
+  "coulomb_se_legs_ma": 0.44958180906562933,
+  "viscous_se_legs": 0.0006392360538222138,
+  "coulomb_se_speeds_ma": 1.427845449234765,
+  "viscous_se_speeds": 0.002030191600172108,
+  "legs": 21,
   "rad_s": [
    79.47394678004059,
    1074.178777524412
   ],
   "residual_ma": {
-   "300": -0.5392990793708403,
-   "2150": 1.0623598890438768,
-   "4025": -0.5230608096730028
+   "300": -0.5880407226850242,
+   "2150": 1.1632613158341387,
+   "4025": -0.5752205931490764
   }
  },
  "full": {
@@ -996,91 +991,91 @@
    ]
   },
   "line": {
-   "coulomb_ma": 40.21841152973682,
-   "coulomb_se_ma": 0.9170573273547372,
+   "coulomb_ma": 40.533922873273,
+   "coulomb_se_ma": 0.765411872806993,
    "coulomb_se_from": "legs",
-   "viscous_ma_s_per_rad": 0.03993092421103136,
-   "viscous_se": 0.0010671445582157797,
+   "viscous_ma_s_per_rad": 0.03963973295434797,
+   "viscous_se": 0.0008905137549441447,
    "viscous_se_from": "legs",
-   "coulomb_se_legs_ma": 0.9170573273547372,
-   "viscous_se_legs": 0.0010671445582157797,
+   "coulomb_se_legs_ma": 0.765411872806993,
+   "viscous_se_legs": 0.0008905137549441447,
    "coulomb_se_speeds_ma": null,
    "viscous_se_speeds": null,
-   "legs": 12,
+   "legs": 17,
    "rad_s": [
     565.1947592549392,
     1074.178777524412
    ],
    "residual_ma": {
-    "2150": -0.006069520601201361,
-    "4025": 0.006069520601198993
+    "2150": -0.002843143607964681,
+    "4025": 0.0028431436079756622
    }
   },
   "line_with_low": {
-   "coulomb_ma": 37.31522205933159,
-   "coulomb_se_ma": 1.308679119000921,
+   "coulomb_ma": 37.363433644987346,
+   "coulomb_se_ma": 1.432138262812124,
    "coulomb_se_from": "speeds",
-   "viscous_ma_s_per_rad": 0.043133229161512854,
-   "viscous_se": 0.0018610980266332133,
+   "viscous_ma_s_per_rad": 0.04313668143999004,
+   "viscous_se": 0.0020362953658636467,
    "viscous_se_from": "speeds",
-   "coulomb_se_legs_ma": 0.4977514106920131,
-   "viscous_se_legs": 0.0007078577827424913,
-   "coulomb_se_speeds_ma": 1.308679119000921,
-   "viscous_se_speeds": 0.0018610980266332133,
-   "legs": 16,
+   "coulomb_se_legs_ma": 0.45068731173622645,
+   "viscous_se_legs": 0.000640807908266483,
+   "coulomb_se_speeds_ma": 1.432138262812124,
+   "viscous_se_speeds": 0.0020362953658636467,
+   "legs": 21,
    "rad_s": [
     79.47394678004059,
     1074.178777524412
    ],
    "residual_ma": {
-    "300": -0.5413379283314299,
-    "2150": 1.0663568264059116,
-    "4025": -0.5250188980744994
+    "300": -0.5898256891377613,
+    "2150": 1.166758532207453,
+    "4025": -0.5769328430696987
    }
   }
  },
  "every_leg": {
   "line": {
-   "coulomb_ma": 40.21841152973682,
-   "coulomb_se_ma": 0.9170573273547372,
+   "coulomb_ma": 40.533922873273,
+   "coulomb_se_ma": 0.765411872806993,
    "coulomb_se_from": "legs",
-   "viscous_ma_s_per_rad": 0.03993092421103136,
-   "viscous_se": 0.0010671445582157797,
+   "viscous_ma_s_per_rad": 0.03963973295434797,
+   "viscous_se": 0.0008905137549441447,
    "viscous_se_from": "legs",
-   "coulomb_se_legs_ma": 0.9170573273547372,
-   "viscous_se_legs": 0.0010671445582157797,
+   "coulomb_se_legs_ma": 0.765411872806993,
+   "viscous_se_legs": 0.0008905137549441447,
    "coulomb_se_speeds_ma": null,
    "viscous_se_speeds": null,
-   "legs": 12,
+   "legs": 17,
    "rad_s": [
     565.1947592549392,
     1074.178777524412
    ],
    "residual_ma": {
-    "2150": -0.006069520601201361,
-    "4025": 0.006069520601198993
+    "2150": -0.002843143607964681,
+    "4025": 0.0028431436079756622
    }
   },
   "line_with_low": {
-   "coulomb_ma": 37.08300837287369,
-   "coulomb_se_ma": 1.4148391640970168,
+   "coulomb_ma": 37.13115716626511,
+   "coulomb_se_ma": 1.5382793147014053,
    "coulomb_se_from": "speeds",
-   "viscous_ma_s_per_rad": 0.04338910598709649,
-   "viscous_se": 0.002012019167624563,
+   "viscous_ma_s_per_rad": 0.043392595424937966,
+   "viscous_se": 0.0021871571769254802,
    "viscous_se_from": "speeds",
-   "coulomb_se_legs_ma": 0.5271712690340363,
-   "viscous_se_legs": 0.0007496770199015084,
-   "coulomb_se_speeds_ma": 1.4148391640970168,
-   "viscous_se_speeds": 0.002012019167624563,
-   "legs": 18,
+   "coulomb_se_legs_ma": 0.4812118882995529,
+   "viscous_se_legs": 0.0006841917560191263,
+   "coulomb_se_speeds_ma": 1.5382793147014053,
+   "viscous_se_speeds": 0.0021871571769254802,
+   "legs": 23,
    "rad_s": [
     79.69383763039532,
     1074.178777524412
    ],
    "residual_ma": {
-    "300": -0.585067709458496,
-    "2150": 1.152285301538053,
-    "4025": -0.5672175920796102
+    "300": -0.6334972899362535,
+    "2150": 1.2526058859117535,
+    "4025": -0.6191085959755279
    }
   }
  },
