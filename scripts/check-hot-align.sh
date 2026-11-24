@@ -45,6 +45,7 @@ hot=(
     Reply::tel_arm
     decode::decode
     TxEngine::stage_gather
+    TxEngine::stage_snapshot
     Shared::permit_after_commit
     Shared::pos_lut_after_commit
     Shared::data_state_after_commit

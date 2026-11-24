@@ -8,6 +8,7 @@ mod clock;
 mod decode;
 pub mod framer;
 mod servo_bus;
+pub mod snapshot;
 mod trim;
 pub mod tx;
 

@@ -5,6 +5,8 @@
 //! the boundary before it (the engine outruns the wire 8:1, F6, and DMA
 //! fetches just-in-time, so the patch beats the read).
 
+use core::sync::atomic::{Ordering, compiler_fence};
+
 use crate::traits::bus::{CrcEngine, TxWire};
 use osc_protocol::crc::osc_crc_byte;
 use osc_protocol::frame::Header;
@@ -12,20 +14,27 @@ use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Inst, ResultCode};
 use osc_servo_core::traits::SendError;
 
-/// Payloads at or below this are copied into the staging buffer by the CPU;
-/// longer ones go through the CRC engine's snapshot copy. Kept minimal: the
-/// CPU copy costs ~0.3 us/byte of turnaround (bench-measured at 3M).
+/// Payloads at or below this, and a lone aligned [`WORD_COPY`], are copied
+/// into the staging buffer by the CPU; the rest go through the CRC engine's
+/// snapshot copy. Kept minimal: the CPU copy costs ~0.3 us/byte of
+/// turnaround (bench-measured at 3M).
 const SMALL_COPY_MAX: usize = 2;
+
+/// A one-span payload of this length at a 4-aligned address is copied by one
+/// word load: PING's reply, and any 4-byte field read alone.
+const WORD_COPY: usize = core::mem::size_of::<u32>();
 
 const CRC_LEN: usize = core::mem::size_of::<u16>();
 
 /// The CRC tail's slot in the staging buffer, behind the copy path's payload.
-const CRC_AT: usize = Header::SIZE + SMALL_COPY_MAX;
+const CRC_AT: usize = Header::SIZE + WORD_COPY;
 
 /// Staging buffer size: header, the copy path's payload and the CRC tail.
 pub const REPLY_BUF: usize = CRC_AT + CRC_LEN;
 
 const INST_AT: usize = Header::SIZE - 1;
+
+const _: () = assert!(wire::covered_len(wire::len_for(0)) == Header::SIZE);
 
 const CRC_ARM: Arm = Arm::Buf {
     off: CRC_AT as u16,
@@ -75,12 +84,12 @@ pub struct TxEngine<W: TxWire> {
     buf: FrameBuf<REPLY_BUF>,
     /// ID..payload: the first arm.
     body: Arm,
-    /// The covered span's even bulk, fed at trigger.
+    /// The covered span's even bulk from an even start, fed at trigger.
     feed: Arm,
     state: State,
-    /// The covered byte the even-bulk feed leaves un-fed when the span is odd
-    /// (sec 3.2): read and folded into the engine result at patch time (the
-    /// pointer targets engine-stable storage -- buffer or snapshot).
+    /// The covered byte the even-bulk feed leaves un-fed when the fed span is
+    /// odd (sec 3.2): read and folded into the engine result at patch time
+    /// (the pointer targets engine-stable storage: buffer or snapshot).
     tail: Option<*const u8>,
     alert: bool,
     /// The frame in hand passes the wire to the TEL lane at its release.
@@ -189,11 +198,10 @@ impl<W: TxWire> TxEngine<W> {
 
     /// Gathered form of [`stage`](Self::stage): the payload is `spans`
     /// concatenated in order (sec 5.2 profile reads; a plain reply is the
-    /// one-span case). Payload totals above [`SMALL_COPY_MAX`] are
-    /// snapshotted through the CRC engine's stable buffer behind the header,
-    /// at cumulative offsets - wire and CRC both stream the one contiguous
-    /// snapshot, so a scattered read costs the same single copy as a plain
-    /// read (sec 4.2).
+    /// one-span case). A payload the staging buffer does not take is
+    /// snapshotted through the CRC engine's stable buffer behind the header -
+    /// wire and CRC both stream the one contiguous snapshot, so a scattered
+    /// read costs the same single copy as a plain read (sec 4.2).
     #[rustc_align(4)]
     pub fn stage_gather<C: CrcEngine>(
         &mut self,
@@ -210,24 +218,103 @@ impl<W: TxWire> TxEngine<W> {
         if total > wire::MAX_PAYLOAD as usize {
             return Err(SendError::Overflow);
         }
-        let p = total as u8;
-        let cov = wire::covered_len(wire::len_for(p));
+        let len = wire::len_for(total as u8);
+        // `covered_len(len)` without the round trip through the u8 `LEN`.
+        let cov = Header::SIZE + total;
         let b = self.buf.bytes_mut();
         b[0] = wire::ALIGN_BYTE;
         b[1] = id;
-        b[2] = wire::len_for(p);
+        b[2] = len;
         b[INST_AT] = Inst::status(result, alert).0;
+        if !self.copy_small(spans, total) {
+            return self.stage_snapshot(crc, spans, alert);
+        }
+        self.body = Arm::Buf {
+            off: 1,
+            len: (cov - 1) as u16,
+        };
+        self.feed = Arm::Buf {
+            off: 0,
+            len: (cov & !1) as u16,
+        };
         // An odd covered span feeds its even bulk and leaves the last byte
-        // for the software fold at patch (sec 3.2); odd POINTERS are the CRC
-        // provider's concern (it stages them through its copy channel, sec 5).
-        let base: *const u8 = if total <= SMALL_COPY_MAX {
+        // for the software fold at patch (sec 3.2).
+        self.tail = (cov & 1 == 1).then(|| self.buf.bytes().as_ptr().wrapping_add(cov - 1));
+        self.finish_stage(alert);
+        Ok(())
+    }
+
+    /// The snapshot half of [`stage_gather`](Self::stage_gather) (sec 4.2):
+    /// the payload is copied ONCE into the engine's stable buffer, the header
+    /// staged in the reply buffer is written in front of it, and both the
+    /// wire arm and the CRC feed stream the snapshot, so the CRC covers the
+    /// transmitted bytes (the provider orders the copy ahead of both
+    /// consumers). Out of line: inlined, its registers spill on the
+    /// short-reply paths.
+    #[inline(never)]
+    #[rustc_align(4)]
+    fn stage_snapshot<C: CrcEngine>(
+        &mut self,
+        crc: &mut C,
+        spans: &[&[u8]],
+        alert: bool,
+    ) -> Result<(), SendError> {
+        // SAFETY: `stage_gather` checked the total against MAX_PAYLOAD.
+        let base = unsafe { crc.snapshot(spans) };
+        // SAFETY: the reply buffer is 4-aligned and holds the staged header.
+        let hdr = unsafe { self.buf.bytes().as_ptr().cast::<u32>().read() };
+        let cov = wire::covered_len(self.buf.bytes()[2]);
+        // The feed starts on an even address: below an odd base, on a byte
+        // kept 0, which leaves CRC-16/ARC from 0 unchanged as the ALIGN byte
+        // does (sec 3.2).
+        let lead = base.addr() & 1;
+        // SAFETY: the header and the byte below an odd base are the caller's
+        // in the engine's buffer (trait contract).
+        unsafe {
+            base.sub(lead).write(0);
+            base.write(hdr as u8);
+            base.add(1).write((hdr >> 8) as u8);
+            base.add(2).write((hdr >> 16) as u8);
+            base.add(INST_AT).write((hdr >> 24) as u8);
+        }
+        self.body = Arm::Ext {
+            ptr: base.wrapping_add(1),
+            len: (cov - 1) as u16,
+        };
+        self.feed = Arm::Ext {
+            ptr: base.wrapping_sub(lead),
+            len: ((cov + lead) & !1) as u16,
+        };
+        // The fold byte is read at patch time, not here: the snapshot copy
+        // may still be streaming - by the patch boundary it has long
+        // completed (sec 4.2).
+        self.tail = ((cov + lead) & 1 == 1).then(|| base.cast_const().wrapping_add(cov - 1));
+        self.finish_stage(alert);
+        Ok(())
+    }
+
+    /// Placeholder CRC (what ships if the patch window is missed) and the
+    /// staged state.
+    #[inline(always)]
+    fn finish_stage(&mut self, alert: bool) {
+        self.buf.bytes_mut()[CRC_AT..].fill(0);
+        self.alert = alert;
+        self.lend = false;
+        self.state = State::Staged { slot_key: None };
+    }
+
+    /// Copy a payload the staging buffer takes and say so: up to
+    /// [`SMALL_COPY_MAX`] bytes, or one span of [`WORD_COPY`] at a 4-aligned
+    /// address. The kernel preempts the bus, so a field copied in narrower
+    /// loads than its width can carry two ticks' bytes.
+    #[inline(always)]
+    fn copy_small(&mut self, spans: &[&[u8]], total: usize) -> bool {
+        if total <= SMALL_COPY_MAX {
             let pay = self.buf.payload_mut();
             if let ([s], [d0, d1, ..]) = (spans, &mut *pay) {
                 // A plain reply, branched by length so acks and single bytes
-                // skip the loop. One load for a pair: the kernel preempts the
-                // bus, so a field copied in two byte loads can carry two
-                // ticks' bytes. Every two-byte field sits at an even address,
-                // so an odd pair covers none.
+                // skip the loop. Every two-byte field sits at an even
+                // address, so an odd pair covers none.
                 match **s {
                     [] => {}
                     [b] => *d0 = b,
@@ -244,52 +331,22 @@ impl<W: TxWire> TxEngine<W> {
                     *d = *s;
                 }
             }
-            self.body = Arm::Buf {
-                off: 1,
-                len: (cov - 1) as u16,
-            };
-            self.feed = Arm::Buf {
-                off: 0,
-                len: (cov & !1) as u16,
-            };
-            self.buf.bytes().as_ptr()
-        } else {
-            // Snapshot reads (sec 4.2): header and payload are copied ONCE
-            // into the engine's stable snapshot buffer, header first (a later
-            // copy waits out the one in flight), and both the wire arm and the
-            // CRC feed stream the snapshot, so the CRC covers the transmitted
-            // bytes (the provider orders the copies ahead of both consumers).
-            // The copy runs in byte beats while the kernel keeps ticking: a
-            // field in it may carry bytes from two ticks.
-            let base = crc.snapshot(0, &self.buf.bytes()[..Header::SIZE]);
-            let mut off = Header::SIZE as u16;
-            for s in spans {
-                if s.is_empty() {
-                    continue;
-                }
-                crc.snapshot(off, s);
-                off += s.len() as u16;
+            return true;
+        }
+        if total == WORD_COPY
+            && let [s] = spans
+            && s.as_ptr().addr() & 3 == 0
+        {
+            // SAFETY: four readable bytes at a 4-aligned address; the payload
+            // sits 4 into the 4-aligned staging buffer, with room for a word.
+            unsafe {
+                let v = s.as_ptr().cast::<u32>().read_volatile();
+                let d = self.buf.bytes_mut().as_mut_ptr().add(Header::SIZE);
+                d.cast::<u32>().write(v);
             }
-            self.body = Arm::Ext {
-                ptr: base.wrapping_add(1),
-                len: (cov - 1) as u16,
-            };
-            self.feed = Arm::Ext {
-                ptr: base,
-                len: (cov & !1) as u16,
-            };
-            base
-        };
-        // The fold byte is read at patch time, not here: the snapshot is
-        // best-effort asynchronous and may still be streaming - by the
-        // patch boundary the copy has long completed (sec 4.2).
-        self.tail = (cov & 1 == 1).then(|| base.wrapping_add(cov - 1));
-        // Placeholder CRC: what ships if the patch window is missed.
-        self.buf.bytes_mut()[CRC_AT..].fill(0);
-        self.alert = alert;
-        self.lend = false;
-        self.state = State::Staged { slot_key: None };
-        Ok(())
+            return true;
+        }
+        false
     }
 
     /// Finalize and start: optional result override (chain reclaim's
@@ -303,11 +360,16 @@ impl<W: TxWire> TxEngine<W> {
             return;
         }
         if let Some(r) = over {
-            self.buf.bytes_mut()[INST_AT] = Inst::status(r, self.alert).0;
-            // A snapshot reply streams its INST from the snapshot; a copy-path
-            // reply ignores this byte.
-            crc.snapshot(INST_AT as u16, &self.buf.bytes()[INST_AT..Header::SIZE]);
+            let inst = Inst::status(r, self.alert).0;
+            match self.body {
+                // SAFETY: a snapshot body starts one past its frame base in
+                // the engine's stable buffer (`stage_gather`).
+                Arm::Ext { ptr, .. } => unsafe { ptr.cast_mut().add(INST_AT - 1).write(inst) },
+                Arm::Buf { .. } => self.buf.bytes_mut()[INST_AT] = inst,
+            }
         }
+        // The arms read the frame the CPU wrote.
+        compiler_fence(Ordering::Release);
         crc.reset();
         self.wire.start_frame();
         self.wire.send(resolve(&self.buf, self.body));

@@ -20,7 +20,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use ch32_metapac::SPI1;
 use ch32_metapac::spi::regs::Ctlr1;
 use ch32_metapac::spi::vals::BaudRate as SpiBaud;
-use osc_protocol::wire;
+use osc_servo_drivers::bus::snapshot;
 use osc_servo_drivers::traits::bus;
 
 use crate::hal::{afio, dma, rcc};
@@ -34,17 +34,12 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// and drops, which is the sanctioned "spin miss = fail" outcome (protocol sec 3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
 
-/// The snapshot buffer (protocol sec 4.2): a reply's header and payload are CH6-copied
-/// here once, and both the CRC feed (CH3) and the wire arm (CH4) stream the copy - the
-/// reply CRC covers exactly the transmitted bytes. RX CRC feeds the ring directly
-/// (no staging), so this holds only one reply's covered span.
-/// Even base (`repr(align(2))`): the feed reads halfwords from it.
-const SNAPSHOT_LEN: usize = wire::covered_len(wire::len_for(wire::MAX_PAYLOAD));
-
-#[repr(align(2))]
-struct Snapshot([u8; SNAPSHOT_LEN]);
-
-static SNAPSHOT: SyncUnsafeCell<Snapshot> = SyncUnsafeCell::new(Snapshot([0; SNAPSHOT_LEN]));
+/// The snapshot buffer (protocol sec 4.2): a reply's header and payload are
+/// staged here once, and both the CRC feed (CH3) and the wire arm (CH4)
+/// stream the copy - the reply CRC covers exactly the transmitted bytes. RX
+/// CRC feeds the ring directly (no staging), so this holds only one reply's
+/// covered span.
+static SNAPSHOT: SyncUnsafeCell<snapshot::Buf> = SyncUnsafeCell::new(snapshot::Buf::new());
 
 const FEED_DMA: dma::Config = dma::Config {
     dir: dma::Dir::FROMMEMORY,
@@ -59,17 +54,23 @@ const FEED_DMA: dma::Config = dma::Config {
     pl: dma::Pl::MEDIUM,
 };
 
-/// The TEL row copy: halfword M2M on the snapshot's channel. HIGH, above
-/// the feed, as the snapshot.
-const ROW_COPY_DMA: dma::Config = dma::Config {
+/// A reply snapshot's arm, its beat size set per span: M2M, HIGH, above
+/// the feed.
+const SNAPSHOT_DMA: dma::Config = dma::Config {
     dir: dma::Dir::FROMPERIPHERAL,
     circ: false,
     pinc: true,
     minc: true,
-    size: dma::Size::BITS16,
+    size: dma::Size::BITS8,
     htie: false,
     tcie: false,
     pl: dma::Pl::HIGH,
+};
+
+/// The TEL row copy: halfword M2M on the snapshot's channel.
+const ROW_COPY_DMA: dma::Config = dma::Config {
+    size: dma::Size::BITS16,
+    ..SNAPSHOT_DMA
 };
 
 /// Production binding to SPI1 + DMA1_CH3.
@@ -166,37 +167,41 @@ impl bus::CrcEngine for Crc {
         Self::arm(span.as_ptr() as u32, (span.len() / 2) as u16);
     }
 
-    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
-        // Best-effort streaming copy of a reply payload, fire-and-forget: CH6
-        // runs HIGH, above CH3 (the CRC feed, MEDIUM), so the feed can't
-        // overtake the copy it reads (producer -> consumer, see `hal::dma`). The
-        // wire (CH4) reads it too but only reaches the payload arm byte-times
-        // later, by which point this us-scale copy is long done. No spin, no
-        // lock: a kernel tick tearing the image by a us-window is fine -- wire
-        // and CRC both read the copy, so the reply stays CRC-consistent (protocol sec 4.2).
-        // RX CRC no longer snapshots (it feeds the ring directly), so this
-        // holds one reply per exchange - the header and a gathered payload (protocol
-        // sec 5.2) land as several spans at cumulative offsets; only the LAST copy stays
-        // fire-and-forget, so drain any prior span still in flight before
-        // re-pointing the channel (bounded; M2M outruns this spin by design).
-        debug_assert!(off as usize + src.len() <= SNAPSHOT_LEN);
-        let mut budget = FEED_DRAIN_SPIN;
-        while dma::remaining(dma::Channel::CH6) != 0 && budget != 0 {
-            budget -= 1;
-            core::hint::spin_loop();
+    // Inlined into the TX engine's out-of-line snapshot half.
+    #[inline(always)]
+    unsafe fn snapshot(&mut self, spans: &[&[u8]]) -> *mut u8 {
+        // Fire-and-forget: CH6 runs HIGH, above CH3 (the CRC feed, MEDIUM),
+        // so the feed can't overtake the copy it reads (producer -> consumer,
+        // see `hal::dma`). The wire (CH4) reads it too but only reaches the
+        // payload arm byte-times later, by which point this us-scale copy is
+        // long done. Only the LAST span's arm stays in flight: a gathered
+        // read (protocol sec 5.2) drains the one before re-pointing the
+        // channel (bounded; M2M outruns this spin by design). CH6 is the
+        // kernel's only while the lane is lent, when no reply is staged
+        // (`copy`), so whole-register writes, no critical section.
+        // SAFETY: the caller's total; snapshot calls are serialized by the
+        // bus driver, and consumers are ordered behind CH6 by the ladder.
+        unsafe {
+            snapshot::gather(SNAPSHOT.get(), spans, |src, dst, beat, beats| {
+                let mut budget = FEED_DRAIN_SPIN;
+                while dma::remaining(dma::Channel::CH6) != 0 && budget != 0 {
+                    budget -= 1;
+                    core::hint::spin_loop();
+                }
+                let cfg = dma::Config {
+                    // Byte, Half, Word (1, 2, 4) -> BITS8, BITS16, BITS32 (0, 1, 2).
+                    size: dma::Size::from_bits(beat as u8 >> 1),
+                    ..SNAPSHOT_DMA
+                };
+                dma::rearm(
+                    dma::Channel::CH6,
+                    dma::cr_m2m(&cfg),
+                    src as u32,
+                    dst as u32,
+                    beats,
+                );
+            })
         }
-        // SAFETY: single writer per exchange -- snapshot calls are serialized
-        // by the bus driver, and consumers are ordered behind CH6 by the ladder.
-        let dst = unsafe { (*SNAPSHOT.get()).0.as_ptr().add(off as usize) };
-        dma::disable(dma::Channel::CH6);
-        dma::configure_m2m(
-            dma::Channel::CH6,
-            src.as_ptr() as u32,
-            dst as u32,
-            src.len() as u16,
-            dma::Pl::HIGH,
-        );
-        dst
     }
 
     unsafe fn copy(&mut self, dst: *mut u8, src: *const u8, units: u16) {
