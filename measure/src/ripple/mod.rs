@@ -252,7 +252,7 @@ pub const REPAIR_FIXES: usize = 500;
 
 /// The rolling median of `n` intervals centered on each, three at least,
 /// as pandas reads it; NaN where fewer.
-fn rolling_median(iv: &[f64], n: usize) -> Vec<f64> {
+pub fn rolling_median(iv: &[f64], n: usize) -> Vec<f64> {
     let h = n / 2;
     (0..iv.len())
         .map(|j| {
