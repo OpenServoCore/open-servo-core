@@ -131,7 +131,7 @@ impl Bench {
         assert!(
             moved > -DRIVE_CHECK_MIN_COUNTS,
             "drive reversed: duty {pulse} moved pos {from} -> {to}; motor leads swapped or \
-             drive_polarity wrong (osc cal relearns it)"
+             drive_polarity wrong (osc-ident run relearns it)"
         );
         assert!(
             moved >= DRIVE_CHECK_MIN_COUNTS,

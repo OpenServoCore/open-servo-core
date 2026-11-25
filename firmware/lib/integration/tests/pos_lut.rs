@@ -198,7 +198,7 @@ fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
     assert_eq!(
         data_flags(&mut sim),
         STAMP_MISMATCH,
-        "the hashed points changed: run osc ident"
+        "the hashed points changed: run osc-ident run"
     );
     stamp(&mut sim, s, Some(&MG90_A));
     assert_eq!(data_flags(&mut sim), 0);

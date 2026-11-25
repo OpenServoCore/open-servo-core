@@ -1,5 +1,6 @@
-//! osc-ident: a servo's constant set, and the safe path that puts a set on
-//! a servo. `rules` touches no servo; `check` and `plan` only read;
+//! osc-ident: the identification, calibration and tuning tool. A servo's
+//! constant set, and the safe path that puts a set on a servo. `rules`
+//! touches no servo; `check`, `plan` and `table` only read;
 //! `install`, `save` and `restore` write with torque off and never drive
 //! the motor; `step` runs one measurement step into a run folder; `gather`
 //! turns a run folder into inputs; `tune` settles the speed gain on the
@@ -12,6 +13,7 @@ mod finish;
 mod gather;
 mod run;
 mod steps;
+mod table;
 mod tune;
 
 use std::path::{Path, PathBuf};
@@ -39,7 +41,7 @@ const DESCRIPTORS: &[&str] = &[include_str!("../../../descriptors/osc-servo/0.1.
 #[command(
     name = "osc-ident",
     version,
-    about = "A servo's constant set, and the safe path that puts it on the servo"
+    about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo"
 )]
 struct Cli {
     /// The servo's bus id.
@@ -76,6 +78,12 @@ enum Cmd {
     Check {
         #[arg(long)]
         set: PathBuf,
+    },
+    /// The servo's position table: state, stops, nonzero calibration points, grade. Writes nothing.
+    Table {
+        /// The table and its report as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Make the servo equal the set, volatile, every write read back, then stamp it.
     Install {
@@ -472,6 +480,7 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
         }
         Cmd::Rules { .. }
         | Cmd::Check { .. }
+        | Cmd::Table { .. }
         | Cmd::Plan { .. }
         | Cmd::Step { .. }
         | Cmd::Gather { .. }
@@ -520,6 +529,19 @@ fn run(cli: &Cli) -> Result<bool> {
         Cmd::Check { set } => block_on(async {
             let (mut c, d) = connect(&cli.baud, id).await?;
             check(&mut c, id, &d, set).await
+        }),
+        Cmd::Table { json } => block_on(async {
+            let (mut c, d) = connect(&cli.baud, id).await?;
+            let t = table::read(&mut c, id, &d).await?;
+            if let Some(w) = t.warning() {
+                eprintln!("{w}");
+            }
+            if *json {
+                println!("{}", t.json()?);
+            } else {
+                print!("{}", t.text());
+            }
+            Ok(true)
         }),
         Cmd::Plan { i } => {
             let inputs = i.load()?;
@@ -698,6 +720,8 @@ mod tests {
                 step: StepName::Table { .. }
             }
         ));
+        let cli = Cli::try_parse_from(["osc-ident", "table", "--json"]).expect("table parses");
+        assert!(matches!(cli.cmd, Cmd::Table { json: true }));
     }
 
     /// `rules` on the mg90-d inputs writes a set that `check` reads as the

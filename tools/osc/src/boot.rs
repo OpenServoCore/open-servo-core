@@ -14,7 +14,7 @@ use osc_client::mgmt::Found;
 use osc_client::nusb::NusbPipe;
 use osc_client::{BaudRate, BusMode, DEFAULT_GUARD, Error, Id, TbExpect, TbReply};
 
-use crate::{hex, parse_hex, parse_rate, rig};
+use crate::{bus, hex, parse_hex, parse_rate};
 
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum BootCmd {
@@ -125,7 +125,7 @@ pub(crate) enum Expect {
     Collect,
 }
 
-pub(crate) fn flash(a: &FlashArgs, bus: &rig::Bus) -> Result<()> {
+pub(crate) fn flash(a: &FlashArgs, bus: &bus::Bus) -> Result<()> {
     let rate = parse_rate(&a.rate)?;
     let image = read_image(&a.file)?;
     let chosen = if a.ids.is_empty() {
@@ -133,7 +133,7 @@ pub(crate) fn flash(a: &FlashArgs, bus: &rig::Bus) -> Result<()> {
     } else {
         Chosen::Ids(a.ids.iter().map(|&i| Id::new(i)).collect())
     };
-    let mut c = rig::connect(bus, &[])?;
+    let mut c = bus::connect(bus, &[])?;
     println!(
         "image: {} B, fw {}; bootloaders at {}",
         image.bytes().len(),
@@ -153,11 +153,11 @@ pub(crate) fn flash(a: &FlashArgs, bus: &rig::Bus) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn boot(cmd: &BootCmd, bus: &rig::Bus) -> Result<()> {
+pub(crate) fn boot(cmd: &BootCmd, bus: &bus::Bus) -> Result<()> {
     match cmd {
         BootCmd::Enter { rate } => {
             let rate = parse_rate(rate)?;
-            for f in rig::connect(bus, &[])?.boot_enter(rate)? {
+            for f in bus::connect(bus, &[])?.boot_enter(rate)? {
                 println!("{}", roster_line(&f));
             }
             println!("bootloaders at {} baud", rate.as_hz());

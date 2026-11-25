@@ -839,8 +839,8 @@ drive mode, OpenLoop included, sec 5.8), soft-position clamps, the
 stall timer and fault latches run in firmware regardless of the bus -
 and the host's supervisory reads resume between bursts. The one thing a
 silent host cannot do is renew a stall permit: a burst that needs one
-has to end inside the lease (sec 5.8), and `osc` refuses a burst longer
-than 750 ms while it holds a permit.
+has to end inside the lease (sec 5.8), and the `ident` crate refuses a
+burst longer than 750 ms while it holds a permit.
 
 ### 5.7 Data state, plant stamp and position table (osc-servo)
 
@@ -965,8 +965,8 @@ unless a stall permit is live.
 
 **Drive polarity.** `drive_polarity` is a calibration fact: which way
 the motor turns the pot's counts under a positive drive. The firmware
-does not check it against the motor at run time. `osc cal` finds it from
-a pulse each way and leaves it in the set it stamps, and the field is
+does not check it against the motor at run time. `osc-ident` finds it
+from pulses each way and leaves it in the set it stamps, and the field is
 under the plant stamp (below), so a write that changes it reads as
 `STAMP_MISMATCH` and the next enable of a closed loop is refused until a
 tool stamps the set again (DES
@@ -996,8 +996,8 @@ the times and the currents on the bench MG90's plant, `stall_response`
 Fault; `a_reversed_motor_under_yield_holds_its_stop_once_folded` has
 Yield at a 500 ms and a 2 s timer. In OpenLoop and Current the drive is the host's: the shaft runs
 to the stop the same way, and the press's rule applies there as at any
-stop. The host's direction nudge before it closes a loop (`osc cal`,
-`osc ident`, the bench harness) catches leads swapped at assembly.
+stop. The host's direction check before it closes a loop (`osc-ident`'s
+probe, the bench harness) catches leads swapped at assembly.
 
 **Plant stamp.** `plant_stamp` (u16, RW, `0x0AE` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
@@ -1063,18 +1063,14 @@ over the intended set, not over a read-back, and write `plant_stamp`;
 poll `data_flags` until `STAMP_MISMATCH` clears (20 ms is ample) - a
 `STAMP_MISMATCH` still standing means a write did not land; SAVE, since
 the virgin and stale reasons clear only on SAVE; only then verify closed
-loop. `osc ident` (write, rollback), `osc cal` and
-`osc recover --from` all commit this way, and `osc stamp [--save]`
-blesses a hand-tuned set explicitly. The drives that measure a set
-come before this sequence and write only the CONTROL fields a drive
-uses (sec 5.8, around a drive): `osc ident run` writes none of the
-set, write-back is its own command, and an `osc cal` that is refused
-or ends early writes none of it either, the drive polarity aside once
-both stops are read. Nothing restamps as a side effect:
-`osc set` of a covered field leaves the mismatch standing until the
-value is put back, and `osc lut write` never stamps, because a new
-table redefines the domain the constants were fitted in - the way out
-is `osc ident`.
+loop. `osc-ident` (install, save, restore) and `osc recover --from`
+commit this way, and `osc stamp [--save]` blesses a hand-tuned set
+explicitly. The drives that measure a set come before this sequence
+and write only the CONTROL fields a drive uses (sec 5.8, around a
+drive). Nothing restamps as a side effect: `osc set` of a covered
+field leaves the mismatch standing until the value is put back, and a
+new table redefines the domain the constants were fitted in, so it is
+installed with its set under one stamp.
 
 **Position table.** The kernel corrects each raw pot sample through a
 per-unit position linearization table on a fixed grid over the 12-bit
@@ -1140,7 +1136,7 @@ to themselves whether or not they sit on a calibration point; stops
 unset admit only the identity), and every interval's Q4 gain `16 + c[k+1] - c[k]` lies in
 `1..=255`, local gain in `[1/16, 16)`: strictly monotone, and the u16
 word cannot overflow. Ends are judged before shape. Grading a table is
-the host's job (`osc lut grade`).
+the host's job (`osc-ident table`).
 
 A host linearizes a streamed `pos` with the same table and
 interpolation (`osc-servo-core::pos_lut::interp_q4`). SAVE persists
@@ -1247,7 +1243,7 @@ host's *request*; the *grant* is a lease the servo keeps:
   grants at its COMMIT.
 - Each rewrite of true under torque restarts the lease from the
   rewrite. A host holding the permit rewrites it well inside the second
-  (`osc` does it every 250 ms).
+  (the `ident` crate's drives do it every 250 ms).
 - A write of false revokes within one medium tick (0.5 ms). Torque off
   revokes, and turning torque back on does not revive the lease: only a
   fresh write does.
@@ -1279,8 +1275,8 @@ fresh enable starts it from the field. It counts once a medium period
 sooner than the field rounded up to a whole period after the last
 instruction, and at most one period later (osc-servo-kernel sec 2.7).
 0 is off and the boot value:
-CONTROL is RAM, so a reboot clears it. `osc` writes 20000 after
-every torque enable on the experiment image and rewrites it every
+CONTROL is RAM, so a reboot clears it. The `ident` crate's drives write
+20000 after every torque enable on the experiment image and rewrite it every
 250 ms while torque is on, so a host that dies mid-drive leaves a servo
 that coasts within a second on either image.
 
@@ -1387,7 +1383,7 @@ changes after boot (unit `floor_inputs_are_read_only`).
 0 means the servo publishes no floor: the kernel has not ticked yet, or
 the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a
-board constant, and `osc` refuses a servo that reports 0 (DES
+board constant, and the `ident` crate refuses a servo that reports 0 (DES
 `window_floor_is_published_as_the_limiter_uses_it`).
 
 The terminal taps have a floor of their own: `window_v_floor_q15` (u16,
@@ -1403,7 +1399,7 @@ differential read there. Which
 floor a host plans against follows what its fit reads: a drive judged
 on current alone (the limiter's slew, an overcurrent abort, a current
 step) takes `window_floor_q15`; a drive whose fit takes the differential
-(`osc`'s resistance stop ladder) takes the higher of the two. Firmware
+(the `ident` crate's resistance stop ladder) takes the higher of the two. Firmware
 that predates the register reads 0 there, and a host then takes
 `window_floor_q15` for both (DES
 `window_v_floor_is_published_beside_the_current_floor`).
@@ -1570,9 +1566,10 @@ each tap every 4.33 us. The BURST header echoes `chans_echo` and
 `step_index` counts raw codes, not frames (unit
 `burst_frame_follows_the_mask`).
 
-**Around a drive.** What `osc` does with these registers, the
-reference for any host that drives OpenLoop (control-theory "Open Loop
-Under the Same Band" has the planning behind it):
+**Around a drive.** What the `ident` crate's drives do with these
+registers, the reference for any host that drives OpenLoop
+(control-theory "Open Loop Under the Same Band" has the planning behind
+it):
 
 - Before any drive it reads what it plans against:
   `current_limit_counts`, `i_cont_counts`,
@@ -1583,7 +1580,7 @@ Under the Same Band" has the planning behind it):
   0 refuses every drive; a continuous current not under the limit, or
   a collision trip over twice it (the boot value, off, excepted), is
   warned about. Identification also refuses soft limits that span the
-  whole pot (a servo `osc cal` never ran on) and an abort threshold
+  whole pot (a servo never calibrated) and an abort threshold
   more than a quarter over the limit.
 - A `current_limit_counts` of 0 is unset (sec 5.7): the servo's
   OpenLoop band is then the overcurrent trip, not a limit fit for the
@@ -1594,10 +1591,10 @@ Under the Same Band" has the planning behind it):
   windows, at most 250 ms long. The host folds each window into floor
   means and the current's extremes, judges every row and window as the
   burst lands, and reads TELEMETRY between bursts for what the stream
-  does not carry (`limit_flags`, the fault code, the estimates). `osc`
-  refuses a line under 3 M, which streams no TEL, before it drives.
+  does not carry (`limit_flags`, the fault code, the estimates). The
+  host refuses a line under 3 M, which streams no TEL, before it drives.
 - Each drive writes its `mode`, then `torque_enable` 1, then, only
-  for a drive that stalls on purpose (cal's stop approach, the
+  for a drive that stalls on purpose (the stop approach, the
   resistance stop ladder, the held burst route, the current verify's
   stop stalls), `stall_permit` 1. A held permit is rewritten every
   250 ms, between commands and between watch bursts.
@@ -1610,7 +1607,7 @@ Under the Same Band" has the planning behind it):
 - A shunt burst stages `duty_q15`, `chans` and `arm` 1 under HOLD and
   fires one COMMIT, then polls BURST `state`: 3 `DONE` walks the
   pages, 4 `REJECTED` is a refused arm. `REJECTED` does not say which
-  rule refused it. `osc` plans every arm inside the rules above, so it
+  rule refused it. The host plans every arm inside the rules above, so it
   treats a rejection as a failure: it writes `arm` 0 to release the
   section, and the run ends (unit `a_rejected_arm_reports_and_releases`).
 
