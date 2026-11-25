@@ -80,14 +80,44 @@ pub enum SegmentError {
     FewCrossings(usize),
 }
 
+/// Where a rung's ripple count is seeded.
+#[derive(Copy, Clone)]
+pub enum Seed<'a> {
+    /// The strongest line inside [`BAND_HZ`] over [`SEED_ROWS`] in the
+    /// middle of the rung.
+    Middle,
+    /// The tallest line within [`SEED_WINDOW_SHARE`] of the pot's speed
+    /// over the first [`SEED_ROWS`] tracked, over the counts a cycle this
+    /// gives at the pot there: a slow rung's, its counts a cycle from
+    /// rungs already counted.
+    Near(&'a dyn Fn(f64) -> f64),
+}
+
+/// The share either side of the line the pot's speed implies a seed is
+/// looked for in.
+pub const SEED_WINDOW_SHARE: f64 = 0.3;
+
 /// A rung's rows (raw pot codes, raw current, signed duty) read against
-/// the ripple in its current, the pot given `slots`, rows at `fs`.
+/// the ripple in its current, the pot given `slots`, rows at `fs`, seeded
+/// at the middle.
 pub fn segment(
     pos: &[u16],
     current_raw: &[u16],
     duty: &[i16],
     slots: &[u8; ADC_WIDE_SLOTS],
     fs: f64,
+) -> Result<Segment, SegmentError> {
+    segment_seeded(pos, current_raw, duty, slots, fs, Seed::Middle)
+}
+
+/// [`segment`] with the seed chosen by `seed`.
+pub fn segment_seeded(
+    pos: &[u16],
+    current_raw: &[u16],
+    duty: &[i16],
+    slots: &[u8; ADC_WIDE_SLOTS],
+    fs: f64,
+    seed: Seed,
 ) -> Result<Segment, SegmentError> {
     let n = pos.len().min(current_raw.len()).min(duty.len());
     let edge = duty[..n]
@@ -104,9 +134,28 @@ pub fn segment(
         return Err(SegmentError::Short);
     }
     let x: Vec<f64> = current_raw[..n].iter().map(|&v| v as f64).collect();
-    let half = (SEED_ROWS / 2).min(n / 2);
-    let f_seed = line_freq(&x[n / 2 - half..n / 2 + half], BAND_HZ.0, BAND_HZ.1, fs)
-        .ok_or(SegmentError::NoLine)?;
+    let f_seed = match seed {
+        Seed::Middle => {
+            let half = (SEED_ROWS / 2).min(n / 2);
+            line_freq(&x[n / 2 - half..n / 2 + half], BAND_HZ.0, BAND_HZ.1, fs)
+        }
+        Seed::Near(counts_per_cycle) => {
+            let b = (start + SEED_ROWS).min(stop);
+            let cps = (p[b - 1] - p[start]).abs() / ((b - 1 - start) as f64 / fs);
+            let f = cps / counts_per_cycle((p[b - 1] + p[start]) / 2.0);
+            (f.is_finite() && f > 0.0)
+                .then(|| {
+                    line_freq(
+                        &x[start..b],
+                        (1.0 - SEED_WINDOW_SHARE) * f,
+                        (1.0 + SEED_WINDOW_SHARE) * f,
+                        fs,
+                    )
+                })
+                .flatten()
+        }
+    }
+    .ok_or(SegmentError::NoLine)?;
     let tc = tracked_crossings(&x, start, stop as f64, f_seed, TRACK_CYCLES, fs);
     if tc.len() < 3 {
         return Err(SegmentError::FewCrossings(tc.len()));

@@ -1882,6 +1882,9 @@ pub struct RungSegment {
     pub dir: i8,
     /// The segment, or why the rung is left out.
     pub read: Result<Segment, String>,
+    /// Its cycles over those the fast rungs' own table counts over the
+    /// same counts.
+    pub ratio: Option<f64>,
 }
 
 /// The table with one fast pass left out, against the full one.
@@ -2260,7 +2263,12 @@ pub fn table_said(e: &TableError) -> String {
 /// A rung's rows as the table reads them: a slow rung's cut where the pot
 /// first comes within [`NEAR_STOP_COUNTS`] of the stop it drives toward,
 /// and any rung's samples within that band of either stop dropped.
-fn rung_segment(r: &RungRows, slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> RungSegment {
+fn rung_segment(
+    r: &RungRows,
+    slots: &[u8; ADC_WIDE_SLOTS],
+    c: &JudgeCfg,
+    seed: postable::Seed,
+) -> RungSegment {
     let (lo, hi) = (
         c.raw_min as f64 + NEAR_STOP_COUNTS,
         c.raw_max as f64 - NEAR_STOP_COUNTS,
@@ -2284,6 +2292,7 @@ fn rung_segment(r: &RungRows, slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> Run
                     read: Err(format!(
                         "it starts within {NEAR_STOP_COUNTS} counts of the stop it drives toward"
                     )),
+                    ratio: None,
                 };
             }
             Some(k) => &r.rows[..on + k],
@@ -2298,7 +2307,7 @@ fn rung_segment(r: &RungRows, slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> Run
             duty.push(d);
         }
     }
-    let read = postable::segment(&pos, &cur, &duty, slots, c.fs)
+    let read = postable::segment_seeded(&pos, &cur, &duty, slots, c.fs, seed)
         .and_then(|mut s| {
             let keep: Vec<bool> = s.x.iter().map(|&x| (lo..=hi).contains(&x)).collect();
             let pick = |v: &[f64]| -> Vec<f64> {
@@ -2314,14 +2323,83 @@ fn rung_segment(r: &RungRows, slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> Run
             }
             Ok(s)
         })
-        .map_err(|e| segment_said(&e));
+        .map_err(|e| match (e, seed) {
+            (SegmentError::NoLine, postable::Seed::Near(_)) => format!(
+                "no ripple line within {:.0} % of the line its pot speed implies at the fast rungs' counts a cycle",
+                100.0 * postable::SEED_WINDOW_SHARE
+            ),
+            _ => segment_said(&e),
+        });
     RungSegment {
         n: r.n,
         pass: r.pass,
         pass_kind: r.pass_kind,
         dir: r.dir,
         read,
+        ratio: None,
     }
+}
+
+/// A slow rung whose cycles over the counts it shares with a
+/// same-direction fast rung are about twice or half the fast rung's
+/// counted another ripple line.
+pub const MISCOUNT_BANDS: [(f64, f64); 2] = [(1.8, 2.2), (0.45, 0.55)];
+
+/// The rungs read: the fast ones seeded at their middle; their own
+/// pooled table, whose local counts a cycle seed each slow rung at the
+/// start of its tracking ([`postable::Seed::Near`]); every rung's cycles
+/// against that table; a slow rung that counted another line set aside.
+/// `from_fast` false seeds every rung at its middle and sets none aside,
+/// the rule before it.
+fn read_rungs(
+    rungs: &[RungRows],
+    slots: &[u8; ADC_WIDE_SLOTS],
+    c: &JudgeCfg,
+    from_fast: bool,
+) -> (Vec<RungSegment>, Option<Table>) {
+    let fast = |r: &RungRows| r.pass_kind == PassKind::Fast;
+    let mut read: Vec<Option<RungSegment>> = rungs
+        .iter()
+        .map(|r| fast(r).then(|| rung_segment(r, slots, c, postable::Seed::Middle)))
+        .collect();
+    let fast_segs: Vec<Segment> = read
+        .iter()
+        .flatten()
+        .filter_map(|r| r.read.as_ref().ok().cloned())
+        .collect();
+    let table = postable::pooled_span(&fast_segs)
+        .and_then(|sp| postable::fit_pooled(&fast_segs, &sp, SMOOTH_WEIGHT))
+        .ok()
+        .map(|f| f.table);
+    let counts_per_cycle = |x: f64| {
+        let t = table.as_ref().expect("seeded only with a table");
+        let h = postable::SLOPE_HALF;
+        2.0 * h / (t.angle_at(x + h) - t.angle_at(x - h)).abs()
+    };
+    let seed = match (&table, from_fast) {
+        (Some(_), true) => postable::Seed::Near(&counts_per_cycle),
+        _ => postable::Seed::Middle,
+    };
+    for (slot, r) in read.iter_mut().zip(rungs) {
+        if slot.is_none() {
+            *slot = Some(rung_segment(r, slots, c, seed));
+        }
+    }
+    let mut read: Vec<RungSegment> = read.into_iter().flatten().collect();
+    if let Some(t) = &table {
+        for r in &mut read {
+            r.ratio = r.read.as_ref().ok().and_then(|s| {
+                let (x0, x1) = (*s.x.first()?, *s.x.last()?);
+                let (y0, y1) = (*s.y.first()?, *s.y.last()?);
+                let want = (t.angle_at(x1) - t.angle_at(x0)).abs();
+                (want > 0.0).then(|| (y1 - y0).abs() / want)
+            });
+        }
+    }
+    if from_fast {
+        set_aside_miscounts(&mut read);
+    }
+    (read, table)
 }
 
 /// Where only one direction's samples reach inside `fit`'s span.
@@ -2358,10 +2436,46 @@ fn one_way(fit: &PooledFit) -> Vec<OneWay> {
     out
 }
 
+/// Each slow rung whose cycles over the counts it shares with a
+/// same-direction fast rung fall in [`MISCOUNT_BANDS`] set aside, named.
+fn set_aside_miscounts(read: &mut [RungSegment]) {
+    let fast_read: Vec<(usize, Segment)> = read
+        .iter()
+        .filter(|r| r.pass_kind == PassKind::Fast)
+        .filter_map(|r| r.read.as_ref().ok().map(|s| (r.n, s.clone())))
+        .collect();
+    for r in read.iter_mut().filter(|r| r.pass_kind != PassKind::Fast) {
+        let Ok(s) = &r.read else { continue };
+        let off = fast_read.iter().find_map(|(n, f)| {
+            let a = postable::agreement(s, f)?;
+            let k = a.a / a.b;
+            MISCOUNT_BANDS
+                .iter()
+                .any(|(lo, hi)| (*lo..=*hi).contains(&k))
+                .then_some((*n, k, a))
+        });
+        if let Some((n, k, a)) = off {
+            r.read = Err(format!(
+                "set aside: {k:.2}x the cycles of fast rung {n} over {:.0}..{:.0}, a count of another ripple line",
+                a.from, a.to
+            ));
+        }
+    }
+}
+
 /// The rungs to the table: each read against its ripple with `slots`,
 /// the pooled fit over every rung read, and what is judged on it.
 pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> TableRead {
-    let read: Vec<RungSegment> = rungs.iter().map(|r| rung_segment(r, slots, c)).collect();
+    read_table_with(rungs, slots, c, true)
+}
+
+fn read_table_with(
+    rungs: &[RungRows],
+    slots: &[u8; ADC_WIDE_SLOTS],
+    c: &JudgeCfg,
+    from_fast: bool,
+) -> TableRead {
+    let (read, _) = read_rungs(rungs, slots, c, from_fast);
     let used: Vec<(&RungSegment, &Segment)> = read
         .iter()
         .filter_map(|r| r.read.as_ref().ok().map(|s| (r, s)))
@@ -2476,6 +2590,10 @@ pub const SCALE_TRAVEL: &str = "the stops' span over the nameplate's travel_deg"
 /// stops, its halves the odd and the even slow passes; the pooled fit on
 /// every rung given the slots found.
 pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
+    judge_with(rungs, c, true)
+}
+
+fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let slow = |odd: Option<bool>| -> Vec<u16> {
         let codes: Vec<u16> = rungs
             .iter()
@@ -2543,7 +2661,7 @@ pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
         ),
     });
     let slots = finding.as_ref().map_or([0; ADC_WIDE_SLOTS], |f| f.slots);
-    let table = read_table(rungs, &slots, c);
+    let table = read_table_with(rungs, &slots, c, from_fast);
     checks.extend(table_checks(&table, c));
     Judged {
         finding,
@@ -3056,7 +3174,8 @@ fn result_json(
 }
 
 fn segment_json(r: &RungSegment) -> Value {
-    let head = json!({"n": r.n, "pass": r.pass, "pass_kind": r.pass_kind.word(), "dir": r.dir});
+    let head = json!({"n": r.n, "pass": r.pass, "pass_kind": r.pass_kind.word(), "dir": r.dir,
+                      "counted_over_expected": r.ratio});
     let mut o = head.as_object().cloned().unwrap_or_default();
     match &r.read {
         Ok(s) => {
@@ -3103,6 +3222,8 @@ fn table_json(t: &TableRead) -> Value {
     json!({
         "method": "one pooled fit, pos = T(phase) + one offset a rung (stage 4 position.fit_pwl form), the motor's ripple the ruler",
         "near_stop_counts": NEAR_STOP_COUNTS,
+        "seed": format!("fast rungs at the middle of the rung; slow rungs on the tallest line within {:.0} % of the pot's speed over its first {} rows tracked over the fast rungs' table's local counts a cycle; a slow rung at {:?} of a fast rung's cycles set aside",
+            100.0 * postable::SEED_WINDOW_SHARE, postable::SEED_ROWS, MISCOUNT_BANDS),
         "rungs": t.rungs.iter().map(segment_json).collect::<Vec<_>>(),
         "fit": fit,
         "gain_q4": t.gains.map(|g| [g.0, g.1]),
@@ -3220,6 +3341,7 @@ mod tests {
             zero: 1206.0,
             level: 300.0,
             ripple: 20.0,
+            ripple2: (0.0, 0.0),
             pwm_arr: 1200.0,
         }
     }
@@ -3816,6 +3938,81 @@ mod tests {
         assert!(j.rows_a_code < ROWS_A_CODE_MIN, "{}", j.rows_a_code);
     }
 
+    /// A twice-rate line taller than the commutation line at the approach
+    /// duty: seeded at the middle the slow rungs count it, about twice the
+    /// fast rungs' cycles, and are set aside; seeded from the fast rungs'
+    /// table they count the commutation line.
+    #[test]
+    fn slow_rungs_seed_on_the_line_the_fast_rungs_imply() {
+        let mut m = motor();
+        m.ripple2 = (30.0, 0.15);
+        let slow = slow_rows(&m, 1);
+        let (up, down) = (
+            fast_rows(&m, 1211.0, 1, 0.5),
+            fast_rows(&m, 3119.0, -1, 0.7),
+        );
+        let mut rungs: Vec<RungRows> = slow
+            .iter()
+            .map(|(pass, dir, rows)| RungRows {
+                n: *pass,
+                pass: *pass,
+                pass_kind: if *pass == 1 {
+                    PassKind::Half
+                } else {
+                    PassKind::Slow
+                },
+                dir: *dir,
+                rows,
+            })
+            .collect();
+        for (k, dir, rows) in [(4, 1, &up), (5, -1, &down)] {
+            rungs.push(RungRows {
+                n: k,
+                pass: k,
+                pass_kind: PassKind::Fast,
+                dir,
+                rows,
+            });
+        }
+        let slots = [0u8; 16];
+        let c = cfg(&m);
+        let slow_ratios = |read: &[RungSegment]| -> Vec<f64> {
+            read.iter()
+                .filter(|r| r.pass_kind != PassKind::Fast && r.read.is_ok())
+                .filter_map(|r| r.ratio)
+                .collect()
+        };
+        let (new, _) = read_rungs(&rungs, &slots, &c, true);
+        let r = slow_ratios(&new);
+        assert!(
+            !r.is_empty() && r.iter().all(|k| (0.95..=1.05).contains(k)),
+            "{r:?}"
+        );
+        let (mut old, _) = read_rungs(&rungs, &slots, &c, false);
+        let r = slow_ratios(&old);
+        assert!(
+            !r.is_empty() && r.iter().all(|k| (1.8..=2.2).contains(k)),
+            "{r:?}"
+        );
+        set_aside_miscounts(&mut old);
+        let aside = old
+            .iter()
+            .filter(|r| {
+                r.read
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.starts_with("set aside"))
+            })
+            .count();
+        assert!(
+            aside >= 2,
+            "{:?}",
+            old.iter()
+                .map(|r| r.read.as_ref().err())
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// One fast pass's rows on `m` from `x` for `secs`, no bus.
     fn fast_rows(m: &Motor, x: f64, dir: i8, secs: f64) -> Vec<TelFrame> {
         let rows = (secs * 20_000.0) as usize;
@@ -3898,5 +4095,118 @@ mod tests {
             "{}",
             wide.value
         );
+    }
+
+    /// A bench run's table captures read again by this judge: the run
+    /// folder named by `OSC_TABLE_RUN`, its `results/table.json` naming
+    /// each rung's drive capture. Every line is printed with the seed from
+    /// the fast rungs and with the earlier middle seed. Ignored: the
+    /// captures are not in the repository; skipped when the variable is
+    /// not set.
+    #[test]
+    #[ignore]
+    fn a_bench_run_read_again() {
+        let Ok(dir) = std::env::var("OSC_TABLE_RUN") else {
+            eprintln!("OSC_TABLE_RUN is not set: skipped");
+            return;
+        };
+        let root = std::path::PathBuf::from(dir);
+        let res: Value =
+            serde_json::from_slice(&std::fs::read(root.join(RESULT)).expect("table.json"))
+                .expect("json");
+        let mut kept: Vec<(usize, usize, PassKind, i8, Vec<TelFrame>)> = Vec::new();
+        for r in res["rungs"].as_array().expect("rungs") {
+            let k = r["captures"][0].as_u64().expect("capture");
+            let p = root.join(format!("captures/table/{k:02}-raw.csv.gz"));
+            let gz = std::fs::read(&p).expect("capture");
+            let text =
+                String::from_utf8(crate::capture::meta::gunzip(&gz).expect("gzip")).expect("utf8");
+            let mut lines = text.lines();
+            let head: Vec<&str> = lines.next().expect("header").split(',').collect();
+            let col = |name: &str| head.iter().position(|h| *h == name).expect(name);
+            let (tick, pos, cur, duty) = (
+                col("tick"),
+                col("pos"),
+                col("current_raw"),
+                col("duty_counts"),
+            );
+            let rows: Vec<TelFrame> = lines
+                .map(|l| {
+                    let v: Vec<&str> = l.split(',').collect();
+                    TelFrame {
+                        tick: v[tick].parse().unwrap_or(0),
+                        pos: v[pos].parse().ok(),
+                        current_raw: v[cur].parse().ok(),
+                        duty_counts: v[duty].parse().ok(),
+                        ..TelFrame::default()
+                    }
+                })
+                .collect();
+            let kind = match r["pass_kind"].as_str() {
+                Some("fast") => PassKind::Fast,
+                Some("half") => PassKind::Half,
+                _ => PassKind::Slow,
+            };
+            kept.push((
+                r["n"].as_u64().expect("n") as usize,
+                r["pass"].as_u64().expect("pass") as usize,
+                kind,
+                r["dir"].as_i64().expect("dir") as i8,
+                rows,
+            ));
+        }
+        let rungs: Vec<RungRows> = kept
+            .iter()
+            .map(|(n, pass, kind, dir, rows)| RungRows {
+                n: *n,
+                pass: *pass,
+                pass_kind: *kind,
+                dir: *dir,
+                rows,
+            })
+            .collect();
+        let np = testkit::nameplate();
+        let c = JudgeCfg {
+            fs: 20_000.0,
+            raw_min: n(&res["stops_used"]["raw_min"]) as u16,
+            raw_max: n(&res["stops_used"]["raw_max"]) as u16,
+            ripple_per_rev: np.ripple_per_rev,
+            gear_ratio: np.gear_ratio,
+            travel_deg: np.travel_deg.expect("travel"),
+        };
+        for from_fast in [false, true] {
+            let j = judge_with(&rungs, &c, from_fast);
+            println!(
+                "== {}",
+                if from_fast {
+                    "slow rungs seeded from the fast rungs"
+                } else {
+                    "every rung seeded at its middle (as run)"
+                }
+            );
+            for k in &j.checks {
+                println!("  {}", k.said());
+            }
+            let t = &j.table;
+            println!(
+                "  scales {:?}, written {:?}",
+                t.scales.map(|s| (s.travel, s.ripple.map(|r| (r.0, r.1)))),
+                t.scale
+            );
+            println!("  one fast pass alone {:?}", t.single_fast);
+            for r in &t.rungs {
+                println!(
+                    "  rung {} {} {:+}: {}, counted/expected {}",
+                    r.n,
+                    r.pass_kind.word(),
+                    r.dir,
+                    match &r.read {
+                        Ok(s) => format!("seed {:.0} Hz, odd {:.3}", s.f_seed, s.odd),
+                        Err(e) => e.clone(),
+                    },
+                    r.ratio.map_or("-".into(), |v| format!("{v:.3}"))
+                );
+            }
+        }
     }
 }
