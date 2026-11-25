@@ -1670,7 +1670,7 @@ fn config_commits_step_the_count_one_pair_per_frame() {
     use crate::regions::calib::addr::stamp::PLANT_STAMP;
     use crate::regions::calib::addr::thermal::NTC_K2_Q24;
     use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
-    use crate::regions::config::addr::pos_soft::POS_MIN_SOFT_COUNTS;
+    use crate::regions::config::addr::pos_phys::POS_MIN_PHYS_COUNTS;
     use crate::regions::control::addr::lifecycle::GOAL_DUTY;
     let shared = Shared::new();
     shared.table.with_mut(|t| {
@@ -1700,14 +1700,17 @@ fn config_commits_step_the_count_one_pair_per_frame() {
     assert_eq!(shared.config_seq(), 6);
     go(write(NTC_K2_Q24, &[0, 1], false));
     assert_eq!(shared.config_seq(), 8, "the last kernel input");
-    go(write(POS_MIN_SOFT_COUNTS, &[1, 0, 0, 0], false));
-    assert_eq!(shared.config_seq(), 10, "the first");
+    go(write(POS_MIN_PHYS_COUNTS, &[1, 0, 0, 0], false));
+    assert_eq!(
+        shared.config_seq(),
+        10,
+        "the first: the stops stand in for off soft limits"
+    );
 }
 
 #[test]
 fn a_common_block_write_leaves_the_kernel_configuration_alone() {
     use crate::regions::config::addr::common::{BAUD_RATE_IDX, ID, RESPONSE_DEADLINE_US};
-    use crate::regions::config::addr::pos_phys::POS_MAX_PHYS_COUNTS;
     let shared = shared_with_uid();
     let mut staged = StagedWrites::new();
     let mut pending = None;
@@ -1717,7 +1720,6 @@ fn a_common_block_write_leaves_the_kernel_configuration_alone() {
     go(write(ID, &[7], false));
     go(write(BAUD_RATE_IDX, &[1], false));
     go(write(RESPONSE_DEADLINE_US, &[100, 0], false));
-    go(write(POS_MAX_PHYS_COUNTS, &[100, 0, 0, 0], false));
     go(Request::Assign {
         uid: FrameBytes::from(&UID[..]),
         new_id: 42,
@@ -1728,7 +1730,7 @@ fn a_common_block_write_leaves_the_kernel_configuration_alone() {
             (c.common.baud_rate_idx, c.common.response_deadline_us),
             (1, 100)
         );
-        assert_eq!((c.common.id, c.pos_phys.pos_max_phys_counts), (42, 100));
+        assert_eq!(c.common.id, 42);
     });
     assert_eq!(shared.config_seq(), 0);
 }

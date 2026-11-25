@@ -174,6 +174,67 @@ fn ct_check_write_outcomes() {
     assert_eq!(t.write(a::RO, &[0]), Err(Error::AccessError));
 }
 
+mod off_pair {
+    use control_table::{Block, Error, RegisterFile, Table, ValidationKind};
+
+    // A pair whose all-zero value means off: each side ordered against the
+    // other and inside 100..=200, or both 0.
+    #[repr(C)]
+    #[derive(Block)]
+    struct Span {
+        #[ct_field(within = (100i16, 200i16), lt = &ot::addr::span::HI, off_pair)]
+        lo: i16,
+        #[ct_field(within = (100i16, 200i16), gt = &ot::addr::span::LO, off_pair)]
+        hi: i16,
+    }
+
+    mod ot {
+        use super::Span;
+        use control_table::Section;
+
+        #[repr(C)]
+        #[derive(Section)]
+        #[ct_section(base = 0, size = 4)]
+        pub struct Sect {
+            pub span: Span,
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Table)]
+    #[ct_table(size = 4)]
+    struct Ot {
+        pub ot: ot::Sect,
+    }
+
+    #[test]
+    fn off_pair_takes_the_all_zero_pair_and_keeps_every_other_rule() {
+        use ot::addr::span as a;
+        let pair = |lo: i16, hi: i16| {
+            let mut b = [0u8; 4];
+            b[..2].copy_from_slice(&lo.to_le_bytes());
+            b[2..].copy_from_slice(&hi.to_le_bytes());
+            b
+        };
+        let t = OtCell::new();
+        let refused = Err(Error::ValidationError(ValidationKind::Compare));
+        assert_eq!(t.write(a::LO, &pair(120, 180)), Ok(()));
+        assert_eq!(t.write(a::LO, &pair(0, 0)), Ok(()));
+        assert_eq!(t.write(a::LO, &pair(0, 180)), refused);
+        assert_eq!(t.write(a::LO, &pair(120, 0)), refused);
+        assert_eq!(t.write(a::LO, &pair(180, 120)), refused);
+        // one side to 0 alone: its partner is live and nonzero, so the rules
+        assert_eq!(t.write(a::LO, &pair(120, 180)), Ok(()));
+        assert_eq!(t.write(a::LO, &0i16.to_le_bytes()), refused);
+        assert_eq!(t.write(a::HI, &0i16.to_le_bytes()), refused);
+        assert!(
+            Span::CT_CMP_RULES
+                .iter()
+                .all(|r| r.spec & control_table::rules::SPEC_OFF_PAIR != 0)
+        );
+    }
+}
+
 #[test]
 fn ct_fields_fold_immediate_bounds_only() {
     // ratio le=100 -> max Some(100); trim abs -> both None; target register

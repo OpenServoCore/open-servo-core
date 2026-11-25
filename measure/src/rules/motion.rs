@@ -24,9 +24,14 @@ fn raw_max(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(stops(c)?.1)
 }
 
-/// A soft limit: the policy's share of the stops' span inside a stop.
+/// A soft limit: the policy's share of the stops' span inside a stop. A
+/// share of 0, or none, leaves both at 0, off: the servo then holds to
+/// its physical stops (protocol sec 5.8).
 fn soft(c: &mut Ctx, high: bool) -> Result<f64, Fail> {
-    let share = get!(c, policy, soft_margin_share)?;
+    let Some(share) = c.inputs.policy.soft_margin_share.filter(|&s| s != 0.0) else {
+        return Ok(0.0);
+    };
+    let share = c.fact("policy.soft_margin_share", share);
     let (lo, hi) = stops(c)?;
     Ok(if high {
         hi - share * (hi - lo)

@@ -186,15 +186,17 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             };
             // SAFETY: as above; `vbus_counts`, `pos` and `limit_flags` are
             // published by the kernel, which runs in this same context.
-            let (vbus, pos, lo, hi, limit_flags) = unsafe {
+            let (vbus, pos, soft, phys, limit_flags) = unsafe {
                 (
                     (&raw const (*p).telemetry.estimates.vbus_counts).read_volatile(),
                     (&raw const (*p).telemetry.tick.pos).read_volatile() as i32,
-                    (&raw const (*p).config.pos_soft.pos_min_soft_counts).read_volatile(),
-                    (&raw const (*p).config.pos_soft.pos_max_soft_counts).read_volatile(),
+                    (&raw const (*p).config.pos_soft).read_volatile(),
+                    (&raw const (*p).config.pos_phys).read_volatile(),
                     (&raw const (*p).telemetry.limits.limit_flags).read_volatile(),
                 )
             };
+            let travel = soft.or_stops(&phys);
+            let (lo, hi) = (travel.pos_min_soft_counts, travel.pos_max_soft_counts);
             // A burst runs past the current limit, the kernel limiter is not
             // ticking under it and a host can re-arm at will: the arm is what
             // bounds the rotor impulse (volts) and its rate (spacing), and a
@@ -611,6 +613,29 @@ mod tests {
             let r = rig();
             r.set(|t| t.telemetry.tick.pos = pos);
             assert_eq!(r.arm(EDGE_2S), state::ARMED, "pos {pos}");
+        }
+    }
+
+    /// Soft limits 0 / 0 are off: the physical stops bound the arm in their
+    /// place.
+    #[test]
+    fn burst_with_the_soft_limits_off_arms_inside_the_physical_stops() {
+        for (pos, want) in [
+            (SOFT_MIN as u16, state::REJECTED),
+            (SOFT_MIN as u16 + 1, state::ARMED),
+            (2048, state::ARMED),
+            (SOFT_MAX as u16 - 1, state::ARMED),
+            (SOFT_MAX as u16, state::REJECTED),
+        ] {
+            let r = rig();
+            r.set(|t| {
+                t.config.pos_phys.pos_min_phys_counts = SOFT_MIN;
+                t.config.pos_phys.pos_max_phys_counts = SOFT_MAX;
+                t.config.pos_soft.pos_min_soft_counts = 0;
+                t.config.pos_soft.pos_max_soft_counts = 0;
+                t.telemetry.tick.pos = pos;
+            });
+            assert_eq!(r.arm(EDGE_2S), want, "pos {pos}");
         }
     }
 

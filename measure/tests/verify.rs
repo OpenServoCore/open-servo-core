@@ -538,6 +538,34 @@ fn the_step_refuses_before_any_write() {
     refused(&mut c, &log, "3 Mbaud");
 }
 
+/// Soft limits 0 / 0, off: the step's travel is the physical stops, so
+/// its edge guard stands in from them, never from 0.
+#[test]
+fn with_the_soft_limits_off_the_travel_is_the_stops() {
+    let (mut c, log) = servo(BaudRate::B3000000, MID_POT, Box::new(|_, _| false));
+    let mut i = common::inputs();
+    i.policy.soft_margin_share = None;
+    let off = common::rules_set(&i, &table());
+    block_on(install::install(
+        &mut c,
+        ID,
+        &descriptor(),
+        &off,
+        Some(&table().points),
+        &[],
+        &mut Vec::new(),
+    ))
+    .expect("the soft limits go off");
+    c.pipe_mut().inner.set_track(0, resting(200));
+    estimate_at(&mut c, 200);
+    log.borrow_mut().clear();
+    let e = run(&mut c, &AtomicBool::new(false), &mut MemSink::default()).expect_err("refused");
+    assert!(
+        e.0.contains("of a soft limit (82..3792)") && e.0.contains("turn the horn"),
+        "{e}"
+    );
+}
+
 /// A fault latched under the first enable: refused, the loop not trusted,
 /// and torque off through the way out.
 #[test]

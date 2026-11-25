@@ -24,13 +24,17 @@ pub const OP_MAX_ONES: u8 = 7;
 /// `le` pair pays two. Bounds packed by [`within`].
 pub const OP_IN: u8 = 8;
 
-/// Field width in bytes, spec bits [3:0].
-pub const SPEC_WIDTH: u16 = 0xF;
+/// Field width in bytes, spec bits [2:0]: 1, 2 or 4.
+pub const SPEC_WIDTH: u16 = 0x7;
+/// Off-pair bit in a spec word: the rule also passes while the field and
+/// its partner, the other half of the `2 x width`-aligned pair
+/// (`addr ^ width`), both read 0, a pair whose all-zero value means off.
+pub const SPEC_OFF_PAIR: u16 = 1 << 3;
 const SPEC_SIGNED: u16 = 1 << 4;
 const SPEC_ABS: u16 = 1 << 5;
 
 /// Rhs flavor bit in a spec word: set = `val` names another register.
-pub const SPEC_RHS_REG: u16 = 1 << 6; // must not collide: width [3:0], signed 4, abs 5, op [15:8]
+pub const SPEC_RHS_REG: u16 = 1 << 6; // must not collide: width [2:0], off pair 3, signed 4, abs 5, op [15:8]
 /// As [`SPEC_RHS_REG`] for an [`OP_IN`] rule's `hi` bound (`lo` takes
 /// `SPEC_RHS_REG`).
 pub const SPEC_HI_REG: u16 = 1 << 7;
@@ -60,7 +64,7 @@ pub struct AllowedRule {
     pub allowed: &'static [u8],
 }
 
-/// Pack a compare rule's shape into one word: width in bits [3:0], signed at
+/// Pack a compare rule's shape into one word: width in bits [2:0], signed at
 /// bit 4, abs at bit 5, op in bits [15:8]. Const-folded at every call site.
 pub const fn spec(width: u8, signed: bool, abs: bool, op: u8) -> u16 {
     width as u16
@@ -159,7 +163,11 @@ pub fn check_cmp(view: &View, addr: u16, spec: u16, val: u32) -> Result<(), Erro
             _ => a != r,
         }
     };
-    if ok {
+    if ok
+        || spec & SPEC_OFF_PAIR != 0
+            && a == 0
+            && u32::from_le_bytes(view.read_fixed(addr ^ width as u16, width as usize)?) == 0
+    {
         Ok(())
     } else {
         Err(Error::ValidationError(ValidationKind::Compare))
@@ -306,6 +314,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An off-pair rule passes where its compare holds, and where it fails
+    /// only while the field and its partner both read 0.
+    #[test]
+    fn off_pair_passes_the_all_zero_pair_alone() {
+        let lt = spec(4, true, false, OP_LT) | SPEC_RHS_REG | SPEC_OFF_PAIR;
+        let gt = spec(4, true, false, OP_GT) | SPEC_RHS_REG | SPEC_OFF_PAIR;
+        let pair = |lo: i32, hi: i32| {
+            let mut s = [0u8; 8];
+            s[..4].copy_from_slice(&lo.to_le_bytes());
+            s[4..].copy_from_slice(&hi.to_le_bytes());
+            s
+        };
+        for (lo, hi, ok) in [
+            (0, 0, true),
+            (0, 500, true),
+            (-5, 0, true),
+            (0, -5, false),
+            (5, 5, false),
+            (500, 0, false),
+        ] {
+            let s = pair(lo, hi);
+            let v = view_over(&s);
+            assert_eq!(check_cmp(&v, 0, lt, 4).is_ok(), ok, "[{lo}, {hi}] lo");
+            assert_eq!(check_cmp(&v, 4, gt, 0).is_ok(), ok, "[{lo}, {hi}] hi");
+        }
+        // an immediate bound that excludes 0 still passes the all-zero pair
+        let s = pair(0, 0);
+        let v = view_over(&s);
+        let inside = spec(4, true, false, OP_IN) | SPEC_OFF_PAIR;
+        assert!(check_cmp(&v, 0, inside, within(100, 200)).is_ok());
+        assert!(check_cmp(&v, 0, inside & !SPEC_OFF_PAIR, within(100, 200)).is_err());
+        let s = pair(0, 7);
+        let v = view_over(&s);
+        assert!(check_cmp(&v, 0, inside, within(100, 200)).is_err());
     }
 
     #[test]

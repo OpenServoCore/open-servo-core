@@ -234,7 +234,8 @@ pub(crate) trait BurstIo {
 const EVERY_RULE: &str = "it arms only with torque on, in OpenLoop, with no fault latched, with \
                           no telemetry capture running, at most 3.2 V applied (duty times the \
                           rail), 100 ms or more after the burst before, and with the shaft \
-                          inside the soft limits unless the stall permit is held";
+                          inside the soft limits (the physical stops while those are off) \
+                          unless the stall permit is held";
 
 /// What the host reads once an arm is refused, to name the rule.
 #[derive(Copy, Clone, Debug, PartialEq)]

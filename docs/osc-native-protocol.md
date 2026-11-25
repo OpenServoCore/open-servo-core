@@ -1226,6 +1226,24 @@ the fault and setup lamp rules, after which the field reads 0 again. The
 host's own time of the write is the event a recording is lined up to; the
 lamp follows within one main-loop pass of the servo. Zero is a no-op.
 
+**Soft limits.** `pos_min_soft_counts` and `pos_max_soft_counts` (i32,
+RW, CONFIG, right behind `pos_min_phys_counts` / `pos_max_phys_counts`)
+are an application's travel: a servo built into a joint that moves less
+than the servo narrows its travel with them. Every reader of the travel
+holds to them: the goal clamp, the endstop wall, the Velocity wall ramp
+and the burst arm. By default they are off, and 0 / 0 means off: the
+physical stops `pos_min_phys_counts` / `pos_max_phys_counts` then stand
+in their place everywhere, the same wall at the hard stops, and the
+stall permit lifts it as it lifts a soft wall (unit
+`off_soft_limits_wall_at_the_physical_stops`,
+`off_soft_limits_clamp_goals_to_the_physical_stops`). Any other pair
+must lie inside the physical stops, min under max, within +/-8192;
+one side 0 with the other nonzero is such a pair, judged by those rules.
+Each side is judged against the other as stored, so a host writes both
+in one WRITE, which is the only way to reach 0 / 0 from limits that are
+on. A write to the physical stops reaches the kernel as a soft limit
+write does, so off limits follow the stops at once.
+
 **Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
 the motor stall on purpose, which calibration needs to seat a hard
 stop and identification's stop routes, when asked for, need to measure
@@ -1344,7 +1362,7 @@ every medium tick (2 kHz), torque on or off.
 | --- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0   | `CEILING` | the command sat at the current ceiling: in OpenLoop the duty ceiling held under the goal by the current, in the closed loops the current reference at `i_lim_counts` |
 | 1   | `YIELD`   | the press or collision verdict folded the limit to `i_cont_counts`                                                                                                   |
-| 2   | `ENDSTOP` | a soft limit closed a side of the band: at or past a wall, current toward it is forbidden                                                                            |
+| 2   | `ENDSTOP` | a soft limit, or a physical stop while they are off, closed a side of the band: at or past a wall, current toward it is forbidden                                    |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
 | 4   | `SPEED`   | Current mode only: the speed fold sits under the composed limit, so near `speed_ceiling_cps` the side of the band along the motion folds toward 0                    |
 | 5   | `UNSET`   | `current_limit_counts` or `speed_ceiling_cps` is 0: every closed mode is refused (sec 5.7, limits unset)                                                             |
@@ -1542,8 +1560,9 @@ unless all of these hold at the kernel tick that sees it:
   kernel ticks, and the kernel does not tick during a capture, so the
   gap in time is never shorter;
 - the raw `pos` lies strictly between `pos_min_soft_counts` and
-  `pos_max_soft_counts`, or the stall permit is granted (`limit_flags`
-  bit 3; the `stall_permit` request byte alone does not count).
+  `pos_max_soft_counts` (the physical stops while those are 0 / 0,
+  off), or the stall permit is granted (`limit_flags` bit 3; the
+  `stall_permit` request byte alone does not count).
 
 A refused arm drives nothing and publishes BURST `state` (`0x2C1`) 4,
 `REJECTED` (0 idle, 1 armed, 2 capturing, 3 done); it stays there until
@@ -1553,6 +1572,7 @@ millisecond every 100 ms inside the soft limits (control-theory "Open
 Loop Under the Same Band"; unit `burst_over_the_volts_cap_is_rejected`,
 `burst_inside_the_spacing_is_rejected`,
 `burst_outside_the_soft_limits_needs_the_permit`,
+`burst_with_the_soft_limits_off_arms_inside_the_physical_stops`,
 `burst_at_the_cap_still_arms`).
 
 The capture is 960 raw codes, one conversion every 1.083 us, frame

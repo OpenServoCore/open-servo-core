@@ -78,6 +78,48 @@ fn install_writes_only_what_differs() {
     assert!(checked.differences[0].starts_with("velocity_limit_cps: servo 3019, set 4025"));
 }
 
+/// Soft limits off (no margin share) install over limits that are on, and
+/// back: each way the pair is one write, since 0 / 0 is no side alone.
+#[test]
+fn the_soft_limits_go_off_and_on_in_one_write() {
+    let (mut c, log) = on_record();
+    let pair = (field_addr("pos_min_soft_counts").0, 8);
+    let mut i = inputs();
+    i.policy.soft_margin_share = None;
+    let off = rules_set(&i, &table());
+    assert_eq!(
+        off.value("pos_min_soft_counts").and_then(|v| v.as_i64()),
+        Some(0)
+    );
+    assert_eq!(
+        off.value("pos_max_soft_counts").and_then(|v| v.as_i64()),
+        Some(0)
+    );
+    let (r, steps) = install_set(&mut c, &off, &[]);
+    r.expect("the soft limits go off");
+    assert_eq!(
+        wrote(&steps),
+        ["pos_min_soft_counts", "pos_max_soft_counts"]
+    );
+    assert_eq!(writes_below(&log, CONTROL)[0], pair);
+    let soft = block_on(c.read(ID, pair.0, 8)).expect("read");
+    assert_eq!(soft, [0; 8]);
+    let checked = block_on(check(&mut c, ID, &descriptor(), &off)).expect("check");
+    assert!(checked.clean(), "{:?}", checked.differences);
+
+    log.borrow_mut().clear();
+    let (r, steps) = install_set(&mut c, &record(), &[]);
+    r.expect("the soft limits come back on");
+    assert_eq!(
+        wrote(&steps),
+        ["pos_min_soft_counts", "pos_max_soft_counts"]
+    );
+    assert_eq!(writes_below(&log, CONTROL)[0], pair);
+    let soft = block_on(c.read(ID, pair.0, 8)).expect("read");
+    assert_eq!(soft[..4], 314i32.to_le_bytes());
+    assert_eq!(soft[4..], 3560i32.to_le_bytes());
+}
+
 #[test]
 fn every_write_is_read_back() {
     let (mut c, log) = seeded();

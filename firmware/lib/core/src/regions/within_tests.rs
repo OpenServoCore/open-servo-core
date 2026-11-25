@@ -111,11 +111,26 @@ fn storage_for(cfg: &[i32; 4]) -> [u8; SIZE] {
     s
 }
 
+/// The old rules' verdict, but for the soft limits' off pair: a 0 against
+/// a stored 0 partner passes.
 fn assert_same(field: u16, old: &[CmpRule], storage: &[u8], v: i32) {
     let b = v.to_le_bytes();
+    let partner =
+        |a: u16| i32::from_le_bytes(storage[a as usize..a as usize + 4].try_into().unwrap());
+    let off = v == 0
+        && match field {
+            POS_MIN_SOFT_COUNTS => partner(POS_MAX_SOFT_COUNTS) == 0,
+            POS_MAX_SOFT_COUNTS => partner(POS_MIN_SOFT_COUNTS) == 0,
+            _ => false,
+        };
+    let want = if off {
+        Ok(())
+    } else {
+        verdict(old, storage, field, &b)
+    };
     assert_eq!(
         verdict(fused(field), storage, field, &b),
-        verdict(old, storage, field, &b),
+        want,
         "field {field:#x} value {v}"
     );
 }

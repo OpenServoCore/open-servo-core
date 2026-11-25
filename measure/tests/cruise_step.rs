@@ -607,8 +607,8 @@ fn a_shaft_at_rest_sets_every_leg_aside() {
 }
 
 /// Refused with nothing written: torque on, a fault, a stamp that is not
-/// the live set's, a data state that refuses the closed loops, soft limits
-/// not inside the stops, a shaft by a soft limit.
+/// the live set's, a data state that refuses the closed loops, a shaft by
+/// the step's bound.
 #[test]
 fn the_step_refuses_before_any_write() {
     let refused = |c: &mut Client<Bus>, log: &Log, word: &str| {
@@ -667,18 +667,41 @@ fn the_step_refuses_before_any_write() {
     block_on(c.write(ID, ke.addr, &ke_was)).expect("put back");
     restamp(&mut c);
 
-    // the low soft limit out to the stop: nothing bounds a leg in flight
-    let lo = d.field("pos_min_soft_counts").expect("soft");
-    let soft_was = block_on(c.read(ID, lo.addr, 2)).expect("read");
-    block_on(c.write(ID, lo.addr, &100u16.to_le_bytes())).expect("soft limit moved");
-    restamp(&mut c);
-    refused(&mut c, &log, "counts inside the stops");
-    block_on(c.write(ID, lo.addr, &soft_was)).expect("put back");
-    restamp(&mut c);
-
     let lin = c.pipe_mut().lin.clone().expect("lin");
     c.pipe_mut().move_to(lin.counts(330));
     refused(&mut c, &log, "turn the horn toward the middle");
+}
+
+/// Soft limits on the physical stops, and 0 / 0, off: a servo's normal
+/// state, so the step plans and runs on its own bound, 100 counts inside
+/// the stops, and is accepted.
+#[test]
+fn soft_limits_on_the_stops_or_off_cruise() {
+    let d = descriptor();
+    let lo = d.field("pos_min_soft_counts").expect("soft");
+    let phys = d.field("pos_min_phys_counts").expect("phys");
+    for on_stops in [true, false] {
+        let (mut c, log) = servo(MID_POT, Box::new(|_, _, _| {}));
+        let soft = if on_stops {
+            block_on(c.read(ID, phys.addr, 8)).expect("stops")
+        } else {
+            vec![0; 8]
+        };
+        block_on(c.write(ID, lo.addr, &soft)).expect("soft limits moved");
+        let s = block_on(state::read(&mut c, ID, &d)).expect("state");
+        let f = d.field("plant_stamp").expect("plant_stamp");
+        block_on(c.write(ID, f.addr, &s.stamp.computed.to_le_bytes())).expect("restamped");
+        log.borrow_mut().clear();
+        let mut sink = MemSink::default();
+        let v = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");
+        assert_eq!(
+            v.ended.way,
+            Way::Done,
+            "on the stops {on_stops}: {:?}",
+            v.ended.why
+        );
+        ended_torque_off(&mut c, &v, &log);
+    }
 }
 
 /// The travel from a run folder's stops result: an accepted one that
