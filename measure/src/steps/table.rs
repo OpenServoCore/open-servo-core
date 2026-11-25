@@ -90,9 +90,38 @@ const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 
 pub const RUNG_MIN_S: f64 = 0.15;
 /// The free rungs a slow pass chains before its stop rung, and the stop
-/// rungs it may take to reach the stop.
+/// rungs it may take to reach the stop; a rung read still short of it
+/// earns one more, so a pass takes at most `STOP_RUNGS_MAX + 1`.
 pub const FREE_RUNGS_MAX: usize = 4;
 pub const STOP_RUNGS_MAX: usize = 2;
+
+/// What follows a stop rung.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NextStop {
+    Done,
+    Another,
+    /// Still short of the stop twice.
+    Blocked,
+    /// Still past the stop's reading.
+    Moved,
+    /// Still moving at the end of the last stop rung.
+    Unreached,
+}
+
+/// What follows the `k`th stop rung of a pass (from 1) read `r`, `shorts`
+/// the stop rungs read still short of the stop before it: one read short
+/// takes one more at the same duty, whatever `k`; a second short is a
+/// blocked shaft.
+pub fn after_stop_rung(r: &Reach, k: usize, shorts: usize) -> NextStop {
+    match r {
+        Reach::Reached(_) => NextStop::Done,
+        Reach::Past(_) => NextStop::Moved,
+        Reach::Short(_) if shorts == 0 => NextStop::Another,
+        Reach::Short(_) => NextStop::Blocked,
+        Reach::Moving if k < STOP_RUNGS_MAX => NextStop::Another,
+        Reach::Moving => NextStop::Unreached,
+    }
+}
 /// The share of a rung's driven rows, from its end, its speed is read
 /// over: past the spin-up.
 pub const SPEED_TAIL_SHARE: f64 = 0.6;
@@ -119,9 +148,9 @@ pub const RESIDUAL_MAX_COUNTS: f64 = 4.0;
 pub const PASS_OUT_MAX_COUNTS: f64 = 4.0;
 /// Counts rms of the directions' difference over which it is a warning.
 pub const DIRECTION_WARN_COUNTS: f64 = 3.0;
-/// A rung's speed spread about its mean over its counted stretch at most
-/// this is steady (plan sec 2.4's speed-along-a-pass line): over it the
-/// speed line warns, and its cycle pairs are reported, never refused.
+/// A rung's speed spread about its mean over its counted stretch over
+/// which the speed line warns (plan sec 2.4's speed-along-a-pass line),
+/// never a refusal.
 pub const SPEED_SPREAD_WARN: f64 = 0.2;
 /// Counts a slow piece reaches into the span the fast passes cover, eight
 /// grid intervals: its offset rests on fast samples, not on the smoothing
@@ -1469,8 +1498,9 @@ async fn stop_rungs<P: Pipe>(
     let word = if at.dir > 0 { "high" } else { "low" };
     let mut start = start;
     let mut rungs = 0;
+    let mut shorts = 0;
     let mut attempt = 0;
-    while rungs < STOP_RUNGS_MAX {
+    loop {
         let slowest = seen.slowest(at.dir).map_or(seen.get(at.dir), |s| s.0);
         let p = plan_stop_rung(at.dir, start, stop, seen.get(at.dir), slowest, b.tick_hz);
         let n = found.next_n();
@@ -1532,8 +1562,8 @@ async fn stop_rungs<P: Pipe>(
             drive_k: s.drive_k,
             price: s.price,
         });
-        match r {
-            Reach::Reached(_) => {
+        match after_stop_rung(&r, rungs, shorts) {
+            NextStop::Done => {
                 if (s.end - stop).abs() > WALK_MAX_COUNTS {
                     return Err(Halt::Refused(format!(
                         "{what} read the {word} stop reached, then came to rest at {:.0}, {:.0} counts off its reading {stop:.0}, over {WALK_MAX_COUNTS}: the stopper gives or the shaft springs back. Nothing more drives",
@@ -1543,27 +1573,41 @@ async fn stop_rungs<P: Pipe>(
                 }
                 return Ok(s.end);
             }
-            Reach::Short(m) => {
+            NextStop::Another => {
+                if let Reach::Short(m) = r {
+                    shorts += 1;
+                    lines.push(format!(
+                        "{what}: still {:.0} counts short of the {word} stop's {stop:.0}: one more stop rung at the same duty",
+                        (m - stop).abs()
+                    ));
+                }
+                start = s.end;
+            }
+            NextStop::Blocked => {
+                let m = if let Reach::Short(m) = r { m } else { s.end };
                 return Err(Halt::Refused(format!(
-                    "{what} went still at {m:.0}, {:.0} counts short of the {word} stop's {stop:.0}: the shaft is blocked between the stops. Nothing more drives; {HANDS}, and check that nothing holds the horn",
+                    "{what} went still at {m:.0}, {:.0} counts short of the {word} stop's {stop:.0}, the second stop rung still short: the shaft is blocked between the stops. Nothing more drives; {HANDS}, and check that nothing holds the horn",
                     (m - stop).abs()
                 )));
             }
-            Reach::Past(m) => {
+            NextStop::Moved => {
+                let m = if let Reach::Past(m) = r { m } else { s.end };
                 return Err(Halt::Refused(format!(
                     "{what} went still at {m:.0}, {:.0} counts past the {word} stop's {stop:.0}, over {WALK_MAX_COUNTS}: the stop moved. Nothing more drives; run the stops step again",
                     (m - stop).abs()
                 )));
             }
-            Reach::Moving => start = s.end,
+            NextStop::Unreached => {
+                found.may_center = true;
+                return Err(Halt::Refused(format!(
+                    "pass {} {}: {rungs} stop rungs did not reach the {word} stop at {stop:.0}; the shaft rested at {:.0}",
+                    at.pass,
+                    way(at.dir),
+                    s.end
+                )));
+            }
         }
     }
-    found.may_center = true;
-    Err(Halt::Refused(format!(
-        "pass {} {}: {STOP_RUNGS_MAX} stop rungs did not reach the {word} stop at {stop:.0}; the shaft rested at {start:.0}",
-        at.pass,
-        way(at.dir)
-    )))
 }
 
 /// A slow pass from rest at `start` to the stop it drives toward.
@@ -1831,6 +1875,7 @@ fn check(name: &str, value: String, bound: String, verdict: Verdict) -> Check {
 
 /// The check names, for [`advice`].
 pub const WIDE_CODES: &str = "wide codes";
+pub const HALVES: &str = "wide-code halves";
 pub const ROWS: &str = "rows a code";
 pub const FIT: &str = "table fit";
 pub const RESIDUAL: &str = "table residual";
@@ -1889,6 +1934,8 @@ pub struct RungSegment {
     /// Its cycles over those the fast rungs' own table counts over the
     /// same counts.
     pub ratio: Option<f64>,
+    /// The pot's mean speed over its counted stretch, counts/s.
+    pub speed_cps: Option<f64>,
 }
 
 /// The table with one fast pass left out, against the full one.
@@ -2034,25 +2081,15 @@ fn directions(segs: &[Segment], table: &Table) -> Result<Term, TableError> {
     Ok(out)
 }
 
-/// A rung that ran steady over its counted stretch: a free or fast rung,
-/// neither leaving a stop nor pressing into one, its speed within
-/// [`SPEED_SPREAD_WARN`] of its mean.
-fn steady(r: &RungSegment) -> bool {
-    matches!(r.kind, RungKind::Free | RungKind::Fast)
-        && r.read
-            .as_ref()
-            .is_ok_and(|s| s.speed_spread <= SPEED_SPREAD_WARN)
-}
-
-/// Whether both rungs of a cycle pair ran steady; the pair's rungs'
-/// speed spreads.
-fn pair_steady(t: &TableRead, k: &Cycles) -> (bool, [Option<f64>; 2]) {
-    let get = |n: usize| t.rungs.iter().find(|r| r.n == n);
-    let spread = |n: usize| get(n).and_then(|r| r.read.as_ref().ok().map(|s| s.speed_spread));
-    (
-        get(k.a).is_some_and(steady) && get(k.b).is_some_and(steady),
-        [spread(k.a), spread(k.b)],
-    )
+/// Whether both rungs of a cycle pair are fast passes, the table's ruler.
+fn pair_fast(t: &TableRead, k: &Cycles) -> bool {
+    let fast = |n: usize| {
+        t.rungs
+            .iter()
+            .find(|r| r.n == n)
+            .is_some_and(|r| r.pass_kind == PassKind::Fast)
+    };
+    fast(k.a) && fast(k.b)
 }
 
 /// The stretches of the fit's span whose samples are one fast piece's
@@ -2319,6 +2356,7 @@ fn rung_segment(
                         "it starts within {NEAR_STOP_COUNTS} counts of the stop it drives toward"
                     )),
                     ratio: None,
+                    speed_cps: None,
                 };
             }
             Some(k) => &r.rows[..on + k],
@@ -2356,6 +2394,11 @@ fn rung_segment(
             ),
             _ => segment_said(&e),
         });
+    let speed_cps = read.as_ref().ok().and_then(|s| {
+        let (a, b) = (s.x.first()?, s.x.last()?);
+        let secs = (s.x.len() - 1) as f64 * postable::SAMPLE_ROWS as f64 / c.fs;
+        (secs > 0.0).then(|| (b - a).abs() / secs)
+    });
     RungSegment {
         n: r.n,
         pass: r.pass,
@@ -2364,6 +2407,7 @@ fn rung_segment(
         dir: r.dir,
         read,
         ratio: None,
+        speed_cps,
     }
 }
 
@@ -2649,18 +2693,33 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     )];
     let mut finding = None;
     let mut halves = None;
-    let wide = (|| {
-        let f = widecodes::find(&all, lo, hi).map_err(|e| e.said())?;
-        let half = |v: &[u16]| {
-            widecodes::find_in(&widecodes::histogram(v), lo, hi, HALF_THIN_ROWS)
-                .map_err(|e| e.said())
-        };
-        let (even, odd) = (half(&slow(Some(false)))?, half(&slow(Some(true)))?);
-        let ok = widecodes::check(&f, &even, &odd, c.raw_min, c.raw_max).map_err(|e| e.said());
-        finding = Some(f);
-        halves = Some((even, odd));
-        ok
-    })();
+    // the halves the pooled read is checked against are the pooled read
+    // itself: its own refusals (a stray run, too few carries reached)
+    // stand, the halves' disagreement is said below
+    let wide = widecodes::find(&all, lo, hi)
+        .map_err(|e| e.said())
+        .and_then(|f| {
+            let ok = widecodes::check(&f, &f, &f, c.raw_min, c.raw_max).map_err(|e| e.said());
+            finding = Some(f);
+            ok
+        });
+    let half = |v: &[u16]| {
+        widecodes::find_in(&widecodes::histogram(v), lo, hi, HALF_THIN_ROWS).map_err(|e| e.said())
+    };
+    let split = match (half(&slow(Some(false))), half(&slow(Some(true)))) {
+        (Ok(even), Ok(odd)) => {
+            let apart = finding.as_ref().and_then(|f| {
+                match widecodes::check(f, &even, &odd, c.raw_min, c.raw_max) {
+                    Err(e @ widecodes::Refusal::Halves { .. }) => Some(e.said()),
+                    _ => None,
+                }
+            });
+            let said = format!("even passes {:?}, odd passes {:?}", even.slots, odd.slots);
+            halves = Some((even, odd));
+            Ok((said, apart))
+        }
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    };
     let reached = finding.as_ref().map_or(0, |f: &Finding| {
         f.carries
             .iter()
@@ -2674,17 +2733,33 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
                 "slots {:?}, {reached} of 16 carries reached",
                 finding.as_ref().map(|f| f.slots).unwrap_or_default()
             ),
-            format!(
-                "no stray run, odd and even slow passes within {} Q4 at every carry both read, at least half the carries between the stops reached",
-                widecodes::Q4_PER_SKIPPED
-            ),
+            "no stray run, at least half the carries between the stops reached".into(),
             Verdict::Pass,
         ),
         Err(why) => check(
             WIDE_CODES,
             why.clone(),
-            "no stray run, the halves within one unit, half the carries reached".into(),
+            "no stray run, at least half the carries between the stops reached".into(),
             Verdict::Fail,
+        ),
+    });
+    let halves_bound = format!(
+        "said; a warning when the odd and the even slow passes read a carry over {} Q4 apart",
+        widecodes::Q4_PER_SKIPPED
+    );
+    checks.push(match split {
+        Ok((said, None)) => check(HALVES, said, halves_bound, Verdict::Pass),
+        Ok((said, Some(apart))) => check(
+            HALVES,
+            format!("{apart}: {said}"),
+            halves_bound,
+            Verdict::Warn,
+        ),
+        Err(why) => check(
+            HALVES,
+            format!("a half not read: {why}"),
+            halves_bound,
+            Verdict::Warn,
         ),
     });
     let slots = finding.as_ref().map_or([0; ADC_WIDE_SLOTS], |f| f.slots);
@@ -2789,8 +2864,8 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
             ),
         )
     });
-    let judged: Vec<&Cycles> = t.cycles.iter().filter(|k| pair_steady(t, k).0).collect();
-    let changing = t.cycles.len() - judged.len();
+    let judged: Vec<&Cycles> = t.cycles.iter().filter(|k| pair_fast(t, k)).collect();
+    let slow = t.cycles.len() - judged.len();
     let off: Vec<String> = judged
         .iter()
         .filter(|k| !k.agree.holds())
@@ -2802,17 +2877,17 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
         })
         .collect();
     let said = if judged.is_empty() {
-        "no two steady rungs one way share a grid interval".to_string()
+        "no two fast passes one way share a grid interval".to_string()
     } else if off.is_empty() {
-        format!("{} steady pairs agree", judged.len())
+        format!("{} fast pairs agree", judged.len())
     } else {
         off.join("; ")
     };
     out.push(check(
         CYCLES,
-        format!("{said}; {changing} pairs with a rung changing speed reported"),
+        format!("{said}; {slow} pairs with a slow rung reported"),
         format!(
-            "within {:.1} % or {} cycle over the counts each pair of steady rungs shares",
+            "within {:.1} % or {} cycle over the counts each pair of fast passes shares",
             100.0 * postable::AGREE_SHARE,
             postable::AGREE_MIN_CYCLES
         ),
@@ -3280,15 +3355,16 @@ fn report_json(t: &TableRead) -> Value {
         "gear_play": {"counts": null, "why": GEAR_PLAY_WORDS},
         "speed_spread": t.rungs.iter().filter_map(|r| r.read.as_ref().ok().map(|s| json!({"rung": r.n,
             "spread": s.speed_spread, "warning": s.speed_spread > SPEED_SPREAD_WARN}))).collect::<Vec<_>>(),
-        "cycles_while_speed_changes": t.cycles.iter().filter_map(|k| {
-            let (steady, spread) = pair_steady(t, k);
-            let kind = |n: usize| t.rungs.iter().find(|r| r.n == n).map(|r| r.kind.word());
-            (!steady).then(|| json!({"rungs": [k.a, k.b], "kinds": [kind(k.a), kind(k.b)],
+        "cycles_with_a_slow_rung": t.cycles.iter().filter(|k| !pair_fast(t, k)).map(|k| {
+            let rung = |n: usize| t.rungs.iter().find(|r| r.n == n);
+            let of = |n: usize| rung(n).map(|r| json!({"rung": n, "kind": r.kind.word(),
+                "speed_cps": r.speed_cps, "speed_spread": r.read.as_ref().ok().map(|s| s.speed_spread)}));
+            json!({"rungs": [of(k.a), of(k.b)],
                 "from_counts": k.agree.from, "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b],
                 "difference_pct": 100.0 * (k.agree.a - k.agree.b).abs() / k.agree.a.max(k.agree.b),
-                "limit_cycles": k.agree.limit(), "holds": k.agree.holds(),
-                "speed_spread": spread}))
+                "limit_cycles": k.agree.limit(), "holds": k.agree.holds()})
         }).collect::<Vec<_>>(),
+        "cycles_speed_words": "speed_cps the mean over each rung's whole counted stretch, speed_spread the (max - min) / mean of its ripple line over four quarters of that stretch; neither is over the counts the pair shares",
         "on_the_slow_passes": t.pieces.iter().filter(|p| p.slow_only).map(|p| {
             let (lo, hi) = p.segment.x.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
             json!({"rung": t.rungs[p.rung].n, "from_counts": lo, "to_counts": hi})
@@ -4064,11 +4140,11 @@ mod tests {
     }
 
     /// Two up fast rungs over the same counts, a down one beside: their
-    /// cycles made 2 % apart, a steady pair refuses; with one of them a
-    /// rung leaving a stop the pair is reported, beside each rung's speed
-    /// spread, and the line passes.
+    /// cycles made 2 % apart, the fast pair refuses; with one of them a
+    /// slow rung the pair is reported, beside each rung's speed and speed
+    /// spread, and nothing refuses.
     #[test]
-    fn a_cycle_pair_refuses_only_when_both_rungs_run_steady() {
+    fn a_cycle_pair_refuses_only_between_fast_passes() {
         let m = motor();
         let (up_a, up_b) = (fast_rows(&m, 1211.0, 1, 0.5), fast_rows(&m, 1211.0, 1, 0.5));
         let down = fast_rows(&m, 3119.0, -1, 0.7);
@@ -4097,18 +4173,17 @@ mod tests {
                 .find(|k| k.name == CYCLES)
                 .expect("cycles")
         };
-        let steady = line(&t);
-        assert_eq!(steady.verdict, Verdict::Fail, "{}", steady.said());
-        assert!(steady.value.contains("rungs 1 and 3"), "{}", steady.value);
-        t.rungs.iter_mut().find(|r| r.n == 1).expect("rung 1").kind = RungKind::Leave;
-        let changing = line(&t);
-        assert_ne!(changing.verdict, Verdict::Fail, "{}", changing.said());
+        let fast = line(&t);
+        assert_eq!(fast.verdict, Verdict::Fail, "{}", fast.said());
+        assert!(fast.value.contains("rungs 1 and 3"), "{}", fast.value);
+        let one = t.rungs.iter_mut().find(|r| r.n == 1).expect("rung 1");
+        (one.pass_kind, one.kind) = (PassKind::Slow, RungKind::Leave);
+        let slow = line(&t);
+        assert_ne!(slow.verdict, Verdict::Fail, "{}", slow.said());
         assert!(
-            changing
-                .value
-                .contains("1 pairs with a rung changing speed"),
+            slow.value.contains("1 pairs with a slow rung reported"),
             "{}",
-            changing.value
+            slow.value
         );
         assert!(
             table_checks(&t, &c)
@@ -4117,13 +4192,62 @@ mod tests {
             "accepted"
         );
         let rep = report_json(&t);
-        let said = rep["cycles_while_speed_changes"].as_array().expect("pairs");
+        let said = rep["cycles_with_a_slow_rung"].as_array().expect("pairs");
         assert_eq!(said.len(), 1, "{rep}");
-        assert_eq!(said[0]["rungs"], json!([1, 3]));
-        assert_eq!(said[0]["kinds"], json!(["leave", "fast"]));
+        let (a, b) = (&said[0]["rungs"][0], &said[0]["rungs"][1]);
+        assert_eq!((&a["rung"], &b["rung"]), (&json!(1), &json!(3)));
+        assert_eq!((&a["kind"], &b["kind"]), (&json!("leave"), &json!("fast")));
         assert_eq!(said[0]["holds"], false);
         assert!((n(&said[0]["difference_pct"]) - 100.0 * 0.02 / 1.02).abs() < 1e-9);
-        assert!(said[0]["speed_spread"][0].is_f64() && said[0]["speed_spread"][1].is_f64());
+        for r in [a, b] {
+            assert!(
+                n(&r["speed_cps"]) > 1000.0 && r["speed_spread"].is_f64(),
+                "{r}"
+            );
+        }
+    }
+
+    /// The odd slow passes on a converter skipping 11 codes over carry
+    /// 4, the even on one skipping 8: the pooled read still reads the
+    /// carry, and the halves' disagreement is a warning with both halves'
+    /// slots, never a refusal.
+    #[test]
+    fn wide_code_halves_that_disagree_warn_and_never_refuse() {
+        let m = motor();
+        let mut other = motor();
+        other.wide = vec![(1279, 8), (2559, 6)];
+        let (odd, even) = (slow_rows(&m, 1), slow_rows(&other, 1));
+        let mixed: Vec<&(usize, i8, Vec<TelFrame>)> = vec![&odd[0], &even[1], &odd[2]];
+        let rows: Vec<RungRows> = mixed
+            .iter()
+            .map(|(pass, dir, rows)| RungRows {
+                n: *pass,
+                pass: *pass,
+                pass_kind: if *pass == 1 {
+                    PassKind::Half
+                } else {
+                    PassKind::Slow
+                },
+                kind: RungKind::Free,
+                dir: *dir,
+                rows,
+            })
+            .collect();
+        let j = judge(&rows, &cfg(&m));
+        let get = |name: &str| j.checks.iter().find(|c| c.name == name).expect(name);
+        assert_eq!(
+            get(WIDE_CODES).verdict,
+            Verdict::Pass,
+            "{}",
+            get(WIDE_CODES).said()
+        );
+        let h = get(HALVES);
+        assert_eq!(h.verdict, Verdict::Warn, "{}", h.said());
+        assert!(
+            h.value.contains("even passes") && h.value.contains("odd passes"),
+            "{}",
+            h.value
+        );
     }
 
     /// One fast pass's rows on `m` from `x` for `secs`, no bus.
@@ -4316,9 +4440,27 @@ mod tests {
                 t.scale
             );
             println!("  one fast pass alone {:?}", t.single_fast);
+            let rep = report_json(t);
+            let slow = rep["cycles_with_a_slow_rung"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let over: Vec<String> = slow
+                .iter()
+                .filter(|k| k["holds"] == false)
+                .map(|k| {
+                    format!(
+                        "{}/{} {:.2} %",
+                        k["rungs"][0]["rung"],
+                        k["rungs"][1]["rung"],
+                        n(&k["difference_pct"])
+                    )
+                })
+                .collect();
             println!(
-                "  cycles while speed changes {}",
-                report_json(t)["cycles_while_speed_changes"]
+                "  pairs with a slow rung: {}, over the line: {}",
+                slow.len(),
+                over.join(", ")
             );
             for r in &t.rungs {
                 println!(
