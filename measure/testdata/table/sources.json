@@ -1,0 +1,45 @@
+{
+ "pass-1.sweep.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/ident-slice2/A/pass-1/sweep.csv",
+  "sha1": "8499c18ead0dd2be3fcf9ada35094301d5ca0510",
+  "rows": "segments 1 and 3, every row",
+  "columns": [
+   "seg",
+   "dir",
+   "tick",
+   "pos",
+   "duty_counts",
+   "current_raw"
+  ]
+ },
+ "pass-2.sweep.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/ident-slice2/A/pass-2/sweep.csv",
+  "sha1": "dc00b53b2fda0feb7786299885674f1c0a39e2a5",
+  "rows": "segments 1 and 3, every row",
+  "columns": [
+   "seg",
+   "dir",
+   "tick",
+   "pos",
+   "duty_counts",
+   "current_raw"
+  ]
+ },
+ "lookup-of-record.csv": {
+  "from": "notebooks stages/4-estimators/position/results/mg90-d__dev-v006-2A-D.lookup.csv",
+  "sha1": "fd812a50fba178b351cc5a895d9f0e0dc694584a",
+  "rows": "whole"
+ },
+ "widecodes.json.gz: crawl": {
+  "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/pot-table/crawl-9, chains.csv's 15 folders, the hold segments' raw pot codes",
+  "sha1": "704c571571a2658d33bad339c9bdaa2ce4cc3995",
+  "sweeps_sha1": "865a998eb0b6cd3aab5d1bf69106fdda02218cd4",
+  "rows": "histograms, even and odd folders by their index apart"
+ },
+ "widecodes.json.gz: ladder": {
+  "from": "notebooks telemetry/mg90-d__dev-v006-2A-D/ladder/low-1, cycles.csv's 51 folders, the hold segments' raw pot codes",
+  "sha1": "d477ea3255bdb3dc252da95e358b5e821b910756",
+  "sweeps_sha1": "378950db0f18ef753c50dffef13bc3e2fa747d5a",
+  "rows": "histograms, even and odd folders by their index apart"
+ }
+}
