@@ -1,0 +1,1735 @@
+{
+ "source": "kb/scratch/spins-ke-pool/variants.py, runs.csv variant C, the trend line's compare (line_*)",
+ "kept": "hunt-R",
+ "per_rev": 6,
+ "runs": [
+  {
+   "name": "spins-run1",
+   "from": "captures/ident-spins/run1/runs/00000000ffffffff76e5bc220ef6abcd/20261123T122128Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": 1.2995500000000675,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004116142660191728,
+    "r_ohm": 4.1460378328857885,
+    "l_h": 0.0008612687236854921,
+    "zero_i_counts": 1211.69315,
+    "zero_e_counts": 1.2995500000000675,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.348989196560943,
+    "top_pooled": true,
+    "top_vs_lower": null,
+    "trend": null,
+    "sd": 0.00263690511498254,
+    "ke_coasts": 4,
+    "gated": 4,
+    "plan": "FAIL count+trend"
+   }
+  },
+  {
+   "name": "spins-run2",
+   "from": "captures/ident-spins/run2/runs/00000000ffffffff76e5bc220ef6abcd/20261123T123333Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.3502999999999474,
+    "pwm_arr": 1200.0,
+    "window_s": 0.0041934962418212225,
+    "r_ohm": 4.147025069028383,
+    "l_h": 0.000861678243481629,
+    "zero_i_counts": 1211.90885,
+    "zero_e_counts": -1.3502999999999474,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.312524404615634,
+    "top_pooled": false,
+    "top_vs_lower": -0.026129135638028878,
+    "trend": 0.003100721126923096,
+    "sd": 0.002252339279432664,
+    "ke_coasts": 12,
+    "gated": 12,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "spins-run3",
+   "from": "captures/ident-spins/run3/runs/00000000ffffffff76e5bc220ef6abcd/20261123T124320Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.4021999999999935,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004111184937881293,
+    "r_ohm": 4.1949729365732775,
+    "l_h": 0.0008396392879391305,
+    "zero_i_counts": 1212.1709,
+    "zero_e_counts": -1.4021999999999935,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.2894300363584295,
+    "top_pooled": true,
+    "top_vs_lower": -0.01633940757443131,
+    "trend": 0.017289707610043212,
+    "sd": 0.00841627903831014,
+    "ke_coasts": 12,
+    "gated": 11,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "spins-run4",
+   "from": "captures/ident-spins/run4/runs/00000000ffffffff76e5bc220ef6abcd/20261123T124458Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": 1.1338499999999385,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004169268192000551,
+    "r_ohm": 4.23604899864835,
+    "l_h": 0.0008210945362095365,
+    "zero_i_counts": 1212.32645,
+    "zero_e_counts": 1.1338499999999385,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.299674441398897,
+    "top_pooled": true,
+    "top_vs_lower": -0.015342681464996843,
+    "trend": 0.017723499157959576,
+    "sd": 0.008196471887101372,
+    "ke_coasts": 12,
+    "gated": 12,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "tune-run3",
+   "from": "captures/ident-tune/run3/runs/00000000ffffffff76e5bc220ef6abcd/20261123T124912Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.268199999999979,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004226619202404893,
+    "r_ohm": 4.2715305373613734,
+    "l_h": 0.0008364862796772372,
+    "zero_i_counts": 1211.85155,
+    "zero_e_counts": -1.268199999999979,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.277234166135115,
+    "top_pooled": true,
+    "top_vs_lower": -0.018577691048830003,
+    "trend": 0.01789812996066101,
+    "sd": 0.010079096086890333,
+    "ke_coasts": 12,
+    "gated": 10,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "tune-run4",
+   "from": "captures/ident-tune/run4/runs/00000000ffffffff76e5bc220ef6abcd/20261123T125543Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.3711000000000695,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004242036023749322,
+    "r_ohm": 4.294624394541852,
+    "l_h": 0.0008247621722717099,
+    "zero_i_counts": 1211.8644,
+    "zero_e_counts": -1.3711000000000695,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.287041785370177,
+    "top_pooled": true,
+    "top_vs_lower": -0.016228368535309734,
+    "trend": 0.01709865692832558,
+    "sd": 0.008598196592057827,
+    "ke_coasts": 12,
+    "gated": 10,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "cruise-b",
+   "from": "captures/ident-cruise/b/00000000ffffffff76e5bc220ef6abcd/20261124T225943Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": 1.004099999999994,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004149391089472598,
+    "r_ohm": 4.265388178354341,
+    "l_h": 0.0008587854381735349,
+    "zero_i_counts": 1210.63865,
+    "zero_e_counts": 1.004099999999994,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.317017702000845,
+    "top_pooled": false,
+    "top_vs_lower": -0.019803964080158942,
+    "trend": 0.005728111219398011,
+    "sd": 0.003323395941514063,
+    "ke_coasts": 12,
+    "gated": 12,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "conform-a",
+   "from": "captures/ident-conform-gate/a/00000000ffffffff76e5bc220ef6abcd/20261125T060517Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.124249999999961,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004170886122695004,
+    "r_ohm": 4.277551547780787,
+    "l_h": 0.0008473123042066228,
+    "zero_i_counts": 1212.17735,
+    "zero_e_counts": -1.124249999999961,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    },
+    {
+     "n": 13,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      27,
+      28
+     ]
+    },
+    {
+     "n": 14,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      29,
+      30
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.297616979990371,
+    "top_pooled": false,
+    "top_vs_lower": -0.028209021737045314,
+    "trend": 0.00958927011011684,
+    "sd": 0.005349793098051172,
+    "ke_coasts": 12,
+    "gated": 11,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "conform-b",
+   "from": "captures/ident-conform-gate/b/00000000ffffffff76e5bc220ef6abcd/20261125T060839Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": 1.0115000000000691,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004185621754825688,
+    "r_ohm": 4.194935524088806,
+    "l_h": 0.0008723123825067616,
+    "zero_i_counts": 1211.7131,
+    "zero_e_counts": 1.0115000000000691,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    },
+    {
+     "n": 13,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      27,
+      28
+     ]
+    },
+    {
+     "n": 14,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      29,
+      30
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.295155081618156,
+    "top_pooled": false,
+    "top_vs_lower": -0.019398961626540756,
+    "trend": 0.002488512575655217,
+    "sd": 0.0027975023449710633,
+    "ke_coasts": 12,
+    "gated": 11,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "hunt-R",
+   "from": "captures/ident-hunt/R/00000000ffffffff76e5bc220ef6abcd/20261125T082846Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.2561500000000478,
+    "pwm_arr": 1200.0,
+    "window_s": 0.0040853499941918316,
+    "r_ohm": 4.265092130855182,
+    "l_h": 0.0008302040625944012,
+    "zero_i_counts": 1212.2048,
+    "zero_e_counts": -1.2561500000000478,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    },
+    {
+     "n": 13,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      27,
+      28
+     ]
+    },
+    {
+     "n": 14,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      29,
+      30
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.259573897522086,
+    "top_pooled": false,
+    "top_vs_lower": -0.040460950648174565,
+    "trend": 0.00842085102626291,
+    "sd": 0.00513993646488638,
+    "ke_coasts": 12,
+    "gated": 10,
+    "plan": "pass"
+   },
+   "files": {
+    "03-raw.csv.gz": "2ce6dd483b687004cf245d616145f1b68275626c",
+    "04-raw.csv.gz": "7be536626191701bc2e64a32ef7aea4db1144837",
+    "05-raw.csv.gz": "17fcd5b6663c51d1808de4e82915090699877f8d",
+    "06-raw.csv.gz": "c5b9c9066d5a0f6155812feb556b5c93a7e9bc10",
+    "07-raw.csv.gz": "65f5f2d37cc25e13e592da59907f928a4fd6cf9a",
+    "08-raw.csv.gz": "113ec403bb9ce361ce226db9ef1827b2e90edbfd",
+    "09-raw.csv.gz": "f2056cd703f6f0066152b132e320637ceb8a3872",
+    "10-raw.csv.gz": "d2407e52565c86a91a6d2a6b9c791a86c12ed342",
+    "11-raw.csv.gz": "b4292587b1892269ea7d85335baac2dabd412af2",
+    "12-raw.csv.gz": "144a9fa60f0cb011224f1f34e756463608e25f71",
+    "13-raw.csv.gz": "cddc4dddbf2f59a473a5796e64bfaa3a86a851c8",
+    "14-raw.csv.gz": "8356e9b6e4bcc552f2856e83a5404089fc784206",
+    "15-raw.csv.gz": "2926651842739a130500dc52be6b8f49883d0385",
+    "16-raw.csv.gz": "aade2799d4e28b35de28677143b2c67e10fbc5b4",
+    "17-raw.csv.gz": "fdec2b0e8b49d14c78833190eea7d9274260c896",
+    "18-raw.csv.gz": "88eaf3dc6ca275d40b2050a7b13376f34d616fbc",
+    "19-raw.csv.gz": "84ea2d2282354b22fb176ab393fb311889bf1921",
+    "20-raw.csv.gz": "49447abcd3c567c5fe45a7b3878ba3092f7f9a28",
+    "21-raw.csv.gz": "012e7a3c95a5bc4c67b456d9e2bee5a3b8ac4467",
+    "22-raw.csv.gz": "2164d6b1c5228b34c4d086f340672bbfff1b701c",
+    "23-raw.csv.gz": "f4d8fc889518b4ee0dfe606298932868b51069f5",
+    "24-raw.csv.gz": "071fa6376318ece1d2044a6433c530653657f517",
+    "25-raw.csv.gz": "34f52d6b0fb81ee58b247ae0e66aca7cf04d8021",
+    "26-raw.csv.gz": "32a680fe6068938031469afbb3b09a9d1a00608e",
+    "27-raw.csv.gz": "66e643e12c488d7104254a3c08bd33afbd884bdd",
+    "28-raw.csv.gz": "a1a206cd7f7297f5af4a83c801b4776460e9d34a",
+    "29-raw.csv.gz": "b651cdf7a818be69b7139977996d7d40f4dfa292",
+    "30-raw.csv.gz": "7ee1dd4295516d8f21542edd16c24e31d55826c6"
+   }
+  },
+  {
+   "name": "hunt-run3",
+   "from": "captures/ident-hunt/run3/R/00000000ffffffff76e5bc220ef6abcd/20261125T090531Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": 1.1549999999999727,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004023464924928277,
+    "r_ohm": 4.263955509217061,
+    "l_h": 0.0008287283645070454,
+    "zero_i_counts": 1212.32915,
+    "zero_e_counts": 1.1549999999999727,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    },
+    {
+     "n": 13,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      27,
+      28
+     ]
+    },
+    {
+     "n": 14,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      29,
+      30
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.262277778841068,
+    "top_pooled": false,
+    "top_vs_lower": -0.04191553165196671,
+    "trend": 0.009852318582480913,
+    "sd": 0.005203598110413281,
+    "ke_coasts": 12,
+    "gated": 10,
+    "plan": "pass"
+   }
+  },
+  {
+   "name": "hunt-run4",
+   "from": "captures/ident-hunt/run4/R/00000000ffffffff76e5bc220ef6abcd/20261125T194450Z",
+   "polarity": true,
+   "fs": 20000,
+   "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "drive_offset_counts": 0.0,
+    "counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": -1.2486999999999853,
+    "pwm_arr": 1200.0,
+    "window_s": 0.004181496599568569,
+    "r_ohm": 4.145359909591907,
+    "l_h": 0.0008189945914127594,
+    "zero_i_counts": 1211.73885,
+    "zero_e_counts": -1.2486999999999853,
+    "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+   },
+   "spins": [
+    {
+     "n": 1,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      3,
+      4
+     ]
+    },
+    {
+     "n": 2,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      5,
+      6
+     ]
+    },
+    {
+     "n": 3,
+     "level": 0.25,
+     "dir": 1,
+     "captures": [
+      7,
+      8
+     ]
+    },
+    {
+     "n": 4,
+     "level": 0.25,
+     "dir": -1,
+     "captures": [
+      9,
+      10
+     ]
+    },
+    {
+     "n": 5,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      11,
+      12
+     ]
+    },
+    {
+     "n": 6,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      13,
+      14
+     ]
+    },
+    {
+     "n": 7,
+     "level": 0.5,
+     "dir": 1,
+     "captures": [
+      15,
+      16
+     ]
+    },
+    {
+     "n": 8,
+     "level": 0.5,
+     "dir": -1,
+     "captures": [
+      17,
+      18
+     ]
+    },
+    {
+     "n": 9,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      19,
+      20
+     ]
+    },
+    {
+     "n": 10,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      21,
+      22
+     ]
+    },
+    {
+     "n": 11,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      23,
+      24
+     ]
+    },
+    {
+     "n": 12,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      25,
+      26
+     ]
+    },
+    {
+     "n": 13,
+     "level": 0.75,
+     "dir": 1,
+     "captures": [
+      27,
+      28
+     ]
+    },
+    {
+     "n": 14,
+     "level": 0.75,
+     "dir": -1,
+     "captures": [
+      29,
+      30
+     ]
+    }
+   ],
+   "c": {
+    "zero_counts": 0.0,
+    "ke_mv_per_rev_s": 7.2796526555913585,
+    "top_pooled": false,
+    "top_vs_lower": -0.02772433184074863,
+    "trend": 0.005930576626160077,
+    "sd": 0.003353790222954331,
+    "ke_coasts": 12,
+    "gated": 10,
+    "plan": "pass"
+   }
+  }
+ ]
+}
