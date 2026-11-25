@@ -8,10 +8,10 @@
 //! one-way pass ending at rest on its stop and the next starting there. A
 //! slow pass is chained bursts: free rungs as [`plan_rung`] sizes them,
 //! the first leaving the stop, then a stop rung under the stall permit
-//! ([`plan_stop_rung`]) that ends pressed on the far stop. When the slow
-//! passes give the wide-code finder under [`ROWS_A_CODE_MIN`] rows a code,
-//! another slow round trip is added, at most
-//! [`Schedule::extra_slow_max`], then the step refuses.
+//! ([`plan_stop_rung`]) that ends pressed on the far stop. While a carry
+//! inside the swept range reads thin to the wide-code finder, another slow
+//! round trip is added, at most [`Schedule::extra_slow_max`]; a carry thin
+//! after them stays 0 and is named.
 //!
 //! Fast passes at the volts that give one fifth of the rated speed by the
 //! nameplate's speed per volt: [`Schedule::fast_round_trips`] round trips,
@@ -33,6 +33,13 @@
 //! after a stop rung it rests on the stop. A burst that lost a row is
 //! taken again once, then the step ends. The way out leaves the shaft at
 //! the middle of the stops.
+//!
+//! The reading ([`judge`]): the wide-code slots from the slow passes'
+//! rows more than [`NEAR_STOP_COUNTS`] inside both stops, then one pooled
+//! fit `pos = T(phase) + c_rung` over the fast passes' constant-duty
+//! stretches and the slow passes' rungs, each its own segment with its own
+//! offset, cut where the pot comes within [`NEAR_STOP_COUNTS`] of a stop:
+//! the slow rungs fill the ends past the fast passes' brake points.
 
 use std::time::Duration;
 
@@ -59,14 +66,19 @@ use crate::envelope::{
 };
 use crate::fit::median;
 use crate::fit::polyfit;
-use crate::fit::postable::{PLAY_COUNTS, SPIN_UP_S};
-use crate::fit::widecodes::{self, Finding, HALF_THIN_ROWS, State, THIN_ROWS};
+use crate::fit::postable::{
+    self, Agreement, PLAY_COUNTS, PooledFit, SMOOTH_WEIGHT, SPIN_UP_S, Segment, SegmentError,
+    TableError, Term,
+};
+use crate::fit::widecodes::{self, EDGE_MARGIN_COUNTS, Finding, HALF_THIN_ROWS, State, THIN_ROWS};
 use crate::guard::{self, Ledger, Way};
 use crate::inputs::ThermalInputs;
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::ntc::{ADC_COUNTS, Parts};
 use crate::state::{self, State as ServoState, field};
+use osc_servo_core::adc::ADC_WIDE_SLOTS;
+use osc_servo_core::pos_lut::{self, INTERVALS, PAGE_POINTS, POINTS};
 
 pub const STEP: &str = "table";
 pub const RESULT: &str = "results/table.json";
@@ -97,15 +109,24 @@ pub const FIRST_FAST_SHARE: f64 = 0.5;
 /// histogram rows: the pot slows into a seat over up to 23 counts and
 /// reads within 5 of it pressed (the stops step's poll logs).
 pub const NEAR_STOP_COUNTS: f64 = 32.0;
-/// The wide-code finder's rows a code on average over the slow passes.
+/// The median rows a code the slow passes give the wide-code finder at
+/// least (stage 1 `widecodes.find`'s floor).
 pub const ROWS_A_CODE_MIN: f64 = 100.0;
+/// Counts rms the pooled fit's residual may reach.
+pub const RESIDUAL_MAX_COUNTS: f64 = 4.0;
+/// Counts rms the table may move, line out, with one fast pass left out.
+pub const PASS_OUT_MAX_COUNTS: f64 = 4.0;
+/// Counts rms of the directions' difference over which it is a warning.
+pub const DIRECTION_WARN_COUNTS: f64 = 3.0;
+/// A rung's speed spread over which it is a warning, never a refusal.
+pub const SPEED_SPREAD_WARN: f64 = 0.2;
 
 /// How many of each pass the step runs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Schedule {
     pub slow_round_trips: usize,
     pub fast_round_trips: usize,
-    /// Slow round trips added at most while the rows a code fall short.
+    /// Slow round trips added at most while a carry reads thin.
     pub extra_slow_max: usize,
 }
 
@@ -573,13 +594,42 @@ pub fn histogram_rows(codes: &[u16], raw_min: u16, raw_max: u16) -> (Vec<u16>, u
     (inside, lo, hi)
 }
 
-/// The rows a code on average over the histogram's range.
+/// The median rows a code over the histogram's range less
+/// [`EDGE_MARGIN_COUNTS`] at each end, as stage 1's finder reads its
+/// floor; 0 when no code is left.
 pub fn rows_a_code(codes: &[u16], raw_min: u16, raw_max: u16) -> f64 {
     let (inside, lo, hi) = histogram_rows(codes, raw_min, raw_max);
-    if hi <= lo {
+    let (a, b) = (
+        lo as usize + EDGE_MARGIN_COUNTS,
+        (hi as usize).saturating_sub(EDGE_MARGIN_COUNTS),
+    );
+    if b < a {
         return 0.0;
     }
-    inside.len() as f64 / (hi - lo + 1) as f64
+    let h = widecodes::histogram(&inside);
+    let rows: Vec<f64> = h[a..=b].iter().map(|&n| n as f64).collect();
+    median(&rows).unwrap_or(0.0)
+}
+
+/// Whether the slow passes take another round trip after `trips`: the
+/// plan's, then while a carry reads thin, at most
+/// [`Schedule::extra_slow_max`] more.
+pub fn another_trip(sched: &Schedule, trips: usize, thin: &[u16]) -> bool {
+    trips < sched.slow_round_trips
+        || (!thin.is_empty() && trips < sched.slow_round_trips + sched.extra_slow_max)
+}
+
+/// The carries the wide-code finder reads thin on `codes` over the
+/// histogram's range; none when it refuses.
+pub fn thin_carries(codes: &[u16], raw_min: u16, raw_max: u16) -> Vec<u16> {
+    let (inside, lo, hi) = histogram_rows(codes, raw_min, raw_max);
+    widecodes::find(&inside, lo, hi).map_or(Vec::new(), |f| {
+        f.carries
+            .iter()
+            .filter(|c| c.state == State::Thin)
+            .map(|c| c.code)
+            .collect()
+    })
 }
 
 /// The fast passes' duty, Q15, on `rail_v`: [`FAST_SHARE`] of the
@@ -657,6 +707,9 @@ struct Before {
     env: Envelope,
     stated_v: f64,
     rated_cps: f64,
+    ripple_per_rev: Option<u32>,
+    gear_ratio: Option<f64>,
+    travel_deg: f64,
     ntc: Parts,
     soft: [Vec<u8>; 2],
     soft_counts: (f64, f64),
@@ -864,6 +917,9 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result<Be
         env: Envelope::new(facts, heat),
         stated_v: speed.at_v,
         rated_cps: speed.per_deg / speed.seconds * ADC_COUNTS / np_travel,
+        ripple_per_rev,
+        gear_ratio: np.gear_ratio.filter(|g| g.is_finite() && *g > 0.0),
+        travel_deg: np_travel,
         ntc: sense.ntc,
         soft_counts: (word(&lo), word(&hi)),
         soft: [lo, hi],
@@ -1101,14 +1157,24 @@ struct PassRun {
     end: f64,
 }
 
+/// The slow rows after some slow round trips: the median rows a code and
+/// the carries thin.
+#[derive(Clone, Debug)]
+struct RowsRead {
+    trips: usize,
+    median: f64,
+    thin: Vec<u16>,
+}
+
 #[derive(Default)]
 struct Found {
     corrected: bool,
     rungs: Vec<Taken1>,
     unkept: Vec<Unkept>,
     passes: Vec<PassRun>,
-    /// The rows a code after each count of slow round trips.
-    rows_a_code: Vec<(usize, f64)>,
+    /// The rows read after each count of slow round trips from the
+    /// plan's on.
+    rows_a_code: Vec<RowsRead>,
     path: Vec<String>,
 }
 
@@ -1658,26 +1724,30 @@ async fn body<P: Pipe>(
     let (raw_min, raw_max) = b.raw;
     let mut trips = 0;
     loop {
-        let more = if trips < sched.slow_round_trips {
-            true
-        } else {
-            let r = rows_a_code(&slow_codes(found, taken), raw_min, raw_max);
-            found.rows_a_code.push((trips, r));
-            if r >= ROWS_A_CODE_MIN {
-                false
-            } else if trips < sched.slow_round_trips + sched.extra_slow_max {
-                lines.push(format!(
-                    "the slow passes give {r:.1} rows a code, under {ROWS_A_CODE_MIN}: one more slow round trip"
-                ));
-                true
-            } else {
-                return Err(Halt::Refused(format!(
-                    "{trips} slow round trips give the wide-code finder {r:.1} rows a code, under {ROWS_A_CODE_MIN}: the shaft runs too fast at the approach duty for the codes to be counted"
-                )));
+        if trips >= sched.slow_round_trips {
+            let codes = slow_codes(found, taken);
+            let thin = thin_carries(&codes, raw_min, raw_max);
+            let median = rows_a_code(&codes, raw_min, raw_max);
+            found.rows_a_code.push(RowsRead {
+                trips,
+                median,
+                thin: thin.clone(),
+            });
+            let more = another_trip(&sched, trips, &thin);
+            if !thin.is_empty() {
+                lines.push(if more {
+                    format!(
+                        "after {trips} slow round trips the carries {thin:?} read under {THIN_ROWS} reference rows a code (median {median:.0} a code): one more slow round trip"
+                    )
+                } else {
+                    format!(
+                        "after {trips} slow round trips the carries {thin:?} still read under {THIN_ROWS} reference rows a code: their slots stay 0"
+                    )
+                });
             }
-        };
-        if !more {
-            break;
+            if !more {
+                break;
+            }
         }
         trips += 1;
         for dir in [1i8, -1] {
@@ -1728,6 +1798,12 @@ fn check(name: &str, value: String, bound: String, verdict: Verdict) -> Check {
 pub const WIDE_CODES: &str = "wide codes";
 pub const ROWS: &str = "rows a code";
 pub const FIT: &str = "table fit";
+pub const RESIDUAL: &str = "table residual";
+pub const PASS_OUT: &str = "one fast pass out";
+pub const CYCLES: &str = "ripple cycles";
+pub const GAINS: &str = "table gains";
+pub const DIRECTIONS: &str = "directions";
+pub const SPEED: &str = "speed along a rung";
 
 /// What to do about a refused check.
 pub fn advice(name: &str) -> &'static str {
@@ -1735,19 +1811,12 @@ pub fn advice(name: &str) -> &'static str {
         WIDE_CODES => {
             "the pot's codes read a pattern the slot map cannot hold, or the sweep did not repeat; check the pot's wiring, then run the step again"
         }
-        FIT => "this build reads no table yet",
+        ROWS => "the shaft runs too fast at the approach duty for the codes to be counted",
+        FIT | RESIDUAL | PASS_OUT | CYCLES | GAINS => {
+            "the ripple does not count the pot's travel cleanly; check that nothing loads the horn and that the motor's current reads, then run the step again"
+        }
         _ => "check the servo, then run the step again",
     }
-}
-
-/// The capture's reading: the slots and every check.
-pub struct Judged {
-    pub finding: Option<Finding>,
-    pub halves: Option<(Finding, Finding)>,
-    /// The histogram's range, the stops less [`NEAR_STOP_COUNTS`].
-    pub swept: (u16, u16),
-    pub rows_a_code: f64,
-    pub checks: Vec<Check>,
 }
 
 /// One rung handed to the judge: its pass and its drive rows.
@@ -1766,12 +1835,306 @@ pub struct JudgeCfg {
     pub fs: f64,
     pub raw_min: u16,
     pub raw_max: u16,
+    pub ripple_per_rev: Option<u32>,
+    pub gear_ratio: Option<f64>,
+    pub travel_deg: f64,
 }
 
-/// The slow passes' driven rows to the wide-code slots: the finder on the
-/// rows more than [`NEAR_STOP_COUNTS`] inside both stops, its halves the
-/// odd and the even slow passes. The table's fit is not in this build, so
-/// its check refuses and nothing is written.
+/// One rung read against its ripple.
+#[derive(Clone, Debug)]
+pub struct RungSegment {
+    pub n: usize,
+    pub pass: usize,
+    pub pass_kind: PassKind,
+    pub dir: i8,
+    /// The segment, or why the rung is left out.
+    pub read: Result<Segment, String>,
+}
+
+/// The table with one fast pass left out, against the full one.
+#[derive(Clone, Debug)]
+pub struct PassOut {
+    pub n: usize,
+    pub pass: usize,
+    /// Counts rms, line out.
+    pub moved: Result<f64, TableError>,
+}
+
+/// Two same-direction rungs' ripple cycles over the counts they share.
+#[derive(Copy, Clone, Debug)]
+pub struct Cycles {
+    pub a: usize,
+    pub b: usize,
+    pub agree: Agreement,
+}
+
+/// A stretch of the table only one direction's samples reach, counts.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct OneWay {
+    pub from: f64,
+    pub to: f64,
+    pub dir: i8,
+}
+
+/// The table's reading.
+#[derive(Clone, Debug)]
+pub struct TableRead {
+    pub rungs: Vec<RungSegment>,
+    pub fit: Result<PooledFit, TableError>,
+    /// Counts rms at the table's mean slope.
+    pub residual_counts: Option<f64>,
+    pub points: Option<[i16; INTERVALS]>,
+    pub valid: Option<Result<(), pos_lut::Reject>>,
+    pub gains: Option<(i32, i32)>,
+    pub pass_out: Vec<PassOut>,
+    pub cycles: Vec<Cycles>,
+    /// Up less down on the common span, counts.
+    pub term: Result<Term, TableError>,
+    pub one_way: Vec<OneWay>,
+    /// Counts a degree and its source.
+    pub scale: Option<(f64, &'static str)>,
+}
+
+/// The capture's reading: the slots, the table and every check.
+pub struct Judged {
+    pub finding: Option<Finding>,
+    pub halves: Option<(Finding, Finding)>,
+    /// The histogram's range, the stops less [`NEAR_STOP_COUNTS`].
+    pub swept: (u16, u16),
+    pub rows_a_code: f64,
+    pub table: TableRead,
+    pub checks: Vec<Check>,
+}
+
+pub fn segment_said(e: &SegmentError) -> String {
+    match e {
+        SegmentError::NoDrive => "no driven row".into(),
+        SegmentError::Still => format!("the pot did not move {PLAY_COUNTS} counts from the edge"),
+        SegmentError::Short => "too few rows past the spin-up".into(),
+        SegmentError::NoLine => format!(
+            "no ripple line inside {:.0}..{:.0} Hz",
+            crate::ripple::BAND_HZ.0,
+            crate::ripple::BAND_HZ.1
+        ),
+        SegmentError::FewCrossings(n) => format!("{n} ripple crossings"),
+    }
+}
+
+pub fn table_said(e: &TableError) -> String {
+    let way = |d: i8| match d {
+        1 => "the up rungs'",
+        -1 => "the down rungs'",
+        _ => "the pooled",
+    };
+    match e {
+        TableError::OneWay => "no rung read in one of the directions".into(),
+        TableError::NoSpan => "the rungs share under three grid points".into(),
+        TableError::NoSamples(d) => format!("{} samples miss the span", way(*d)),
+        TableError::Singular => "the fit is singular".into(),
+        TableError::Hole {
+            dir,
+            from,
+            intervals,
+        } => format!(
+            "{} samples leave {intervals} grid intervals in a row empty from {from:.0} counts, over {}",
+            way(*dir),
+            postable::HOLE_MAX
+        ),
+        TableError::SpanMismatch => "the tables' spans differ".into(),
+    }
+}
+
+/// A rung's rows as the table reads them: a slow rung's cut where the pot
+/// first comes within [`NEAR_STOP_COUNTS`] of the stop it drives toward,
+/// and any rung's samples within that band of either stop dropped.
+fn rung_segment(r: &RungRows, slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> RungSegment {
+    let (lo, hi) = (
+        c.raw_min as f64 + NEAR_STOP_COUNTS,
+        c.raw_max as f64 - NEAR_STOP_COUNTS,
+    );
+    let entered = |f: &TelFrame| {
+        f.pos.is_some_and(|p| {
+            let p = p as f64;
+            if r.dir > 0 { p > hi } else { p < lo }
+        })
+    };
+    let on = r.rows.len() - driven(r.rows).len();
+    let rows = match r.pass_kind {
+        PassKind::Fast => r.rows,
+        _ => match r.rows[on..].iter().position(entered) {
+            Some(0) => {
+                return RungSegment {
+                    n: r.n,
+                    pass: r.pass,
+                    pass_kind: r.pass_kind,
+                    dir: r.dir,
+                    read: Err(format!(
+                        "it starts within {NEAR_STOP_COUNTS} counts of the stop it drives toward"
+                    )),
+                };
+            }
+            Some(k) => &r.rows[..on + k],
+            None => r.rows,
+        },
+    };
+    let (mut pos, mut cur, mut duty) = (Vec::new(), Vec::new(), Vec::new());
+    for f in rows {
+        if let (Some(p), Some(i), Some(d)) = (f.pos, f.current_raw, f.duty_counts) {
+            pos.push(p);
+            cur.push(i);
+            duty.push(d);
+        }
+    }
+    let read = postable::segment(&pos, &cur, &duty, slots, c.fs)
+        .and_then(|mut s| {
+            let keep: Vec<bool> = s.x.iter().map(|&x| (lo..=hi).contains(&x)).collect();
+            let pick = |v: &[f64]| -> Vec<f64> {
+                v.iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| **k)
+                    .map(|(v, _)| *v)
+                    .collect()
+            };
+            (s.x, s.y) = (pick(&s.x), pick(&s.y));
+            if s.x.len() < 2 {
+                return Err(SegmentError::Short);
+            }
+            Ok(s)
+        })
+        .map_err(|e| segment_said(&e));
+    RungSegment {
+        n: r.n,
+        pass: r.pass,
+        pass_kind: r.pass_kind,
+        dir: r.dir,
+        read,
+    }
+}
+
+/// Where only one direction's samples reach inside `fit`'s span.
+fn one_way(fit: &PooledFit) -> Vec<OneWay> {
+    let (Some(up), Some(down)) = (fit.up, fit.down) else {
+        return Vec::new();
+    };
+    let (lo, hi) = (fit.table.span.lo(), fit.table.span.hi());
+    let mut out = Vec::new();
+    let (first, dir) = if up.0 < down.0 {
+        (down.0, 1)
+    } else {
+        (up.0, -1)
+    };
+    if first > lo {
+        out.push(OneWay {
+            from: lo,
+            to: first.min(hi),
+            dir,
+        });
+    }
+    let (last, dir) = if up.1 > down.1 {
+        (down.1, 1)
+    } else {
+        (up.1, -1)
+    };
+    if last < hi {
+        out.push(OneWay {
+            from: last.max(lo),
+            to: hi,
+            dir,
+        });
+    }
+    out
+}
+
+/// The rungs to the table: each read against its ripple with `slots`,
+/// the pooled fit over every rung read, and what is judged on it.
+pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg) -> TableRead {
+    let read: Vec<RungSegment> = rungs.iter().map(|r| rung_segment(r, slots, c)).collect();
+    let used: Vec<(&RungSegment, &Segment)> = read
+        .iter()
+        .filter_map(|r| r.read.as_ref().ok().map(|s| (r, s)))
+        .collect();
+    let segs: Vec<Segment> = used.iter().map(|(_, s)| (*s).clone()).collect();
+    let span = postable::pooled_span(&segs);
+    let fit = span.and_then(|sp| postable::fit_pooled(&segs, &sp, SMOOTH_WEIGHT));
+    let mut t = TableRead {
+        rungs: Vec::new(),
+        fit: fit.clone(),
+        residual_counts: None,
+        points: None,
+        valid: None,
+        gains: None,
+        pass_out: Vec::new(),
+        cycles: Vec::new(),
+        term: Err(TableError::NoSpan),
+        one_way: Vec::new(),
+        scale: None,
+    };
+    for (i, (a, sa)) in used.iter().enumerate() {
+        for (b, sb) in &used[i + 1..] {
+            if a.pass != b.pass
+                && let Some(agree) = postable::agreement(sa, sb)
+            {
+                t.cycles.push(Cycles {
+                    a: a.n,
+                    b: b.n,
+                    agree,
+                });
+            }
+        }
+    }
+    if let Ok(f) = &fit {
+        let span = f.table.span;
+        t.residual_counts = Some(f.residual_rms * f.table.counts_per_cycle());
+        let points = f.table.points(c.raw_min, c.raw_max);
+        let mut full = [0i16; POINTS];
+        full[..INTERVALS].copy_from_slice(&points);
+        t.valid = Some(pos_lut::validate(&full, c.raw_min, c.raw_max));
+        t.gains = Some(postable::gains(&points));
+        t.points = Some(points);
+        for (k, (r, _)) in used.iter().enumerate() {
+            if r.pass_kind != PassKind::Fast {
+                continue;
+            }
+            let rest: Vec<Segment> = segs
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != k)
+                .map(|(_, s)| s.clone())
+                .collect();
+            let moved = postable::fit_pooled(&rest, &span, SMOOTH_WEIGHT)
+                .and_then(|o| postable::repeat(&o.table, &f.table))
+                .map(|r| r.line_out);
+            t.pass_out.push(PassOut {
+                n: r.n,
+                pass: r.pass,
+                moved,
+            });
+        }
+        t.term = postable::common_span(&segs).and_then(|common| {
+            let up = postable::fit_direction(&segs, 1, &common, SMOOTH_WEIGHT)?;
+            let down = postable::fit_direction(&segs, -1, &common, SMOOTH_WEIGHT)?;
+            Ok(postable::direction_term(&up, &down, &f.table))
+        });
+        t.one_way = one_way(f);
+        t.scale = match f.table.scale(c.ripple_per_rev, c.gear_ratio) {
+            Some(v) => Some((v, SCALE_RIPPLE)),
+            None => Some((
+                (c.raw_max as f64 - c.raw_min as f64) / c.travel_deg,
+                SCALE_TRAVEL,
+            )),
+        };
+    }
+    t.rungs = read;
+    t
+}
+
+pub const SCALE_RIPPLE: &str = "the ripple: the nameplate's ripple_per_rev x gear_ratio over the table's mean cycles a count, x 360";
+pub const SCALE_TRAVEL: &str = "the stops' span over the nameplate's travel_deg";
+
+/// The slow passes' driven rows to the wide-code slots, then the table on
+/// them: the finder on the rows more than [`NEAR_STOP_COUNTS`] inside both
+/// stops, its halves the odd and the even slow passes; the pooled fit on
+/// every rung given the slots found.
 pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
     let slow = |odd: Option<bool>| -> Vec<u16> {
         let codes: Vec<u16> = rungs
@@ -1784,26 +2147,23 @@ pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
     };
     let (_, lo, hi) = histogram_rows(&[], c.raw_min, c.raw_max);
     let all = slow(None);
-    let mut j = Judged {
-        finding: None,
-        halves: None,
-        swept: (lo, hi),
-        rows_a_code: rows_a_code(&all, c.raw_min, c.raw_max),
-        checks: Vec::new(),
-    };
-    j.checks.push(check(
+    let rows_a_code = rows_a_code(&all, c.raw_min, c.raw_max);
+    let mut checks = vec![check(
         ROWS,
         format!(
-            "{:.1} over codes {lo}..{hi} from the slow passes",
-            j.rows_a_code
+            "median {rows_a_code:.1} over codes {}..{} from the slow passes",
+            lo as usize + EDGE_MARGIN_COUNTS,
+            (hi as usize).saturating_sub(EDGE_MARGIN_COUNTS)
         ),
-        format!("at least {ROWS_A_CODE_MIN} on average"),
-        if j.rows_a_code >= ROWS_A_CODE_MIN {
+        format!("at least {ROWS_A_CODE_MIN}"),
+        if rows_a_code >= ROWS_A_CODE_MIN {
             Verdict::Pass
         } else {
             Verdict::Fail
         },
-    ));
+    )];
+    let mut finding = None;
+    let mut halves = None;
     let wide = (|| {
         let f = widecodes::find(&all, lo, hi).map_err(|e| e.said())?;
         let half = |v: &[u16]| {
@@ -1812,22 +2172,22 @@ pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
         };
         let (even, odd) = (half(&slow(Some(false)))?, half(&slow(Some(true)))?);
         let ok = widecodes::check(&f, &even, &odd, c.raw_min, c.raw_max).map_err(|e| e.said());
-        j.finding = Some(f);
-        j.halves = Some((even, odd));
+        finding = Some(f);
+        halves = Some((even, odd));
         ok
     })();
-    let reached = j.finding.as_ref().map_or(0, |f| {
+    let reached = finding.as_ref().map_or(0, |f: &Finding| {
         f.carries
             .iter()
             .filter(|k| k.state != State::Unreached)
             .count()
     });
-    j.checks.push(match &wide {
+    checks.push(match &wide {
         Ok(()) => check(
             WIDE_CODES,
             format!(
                 "slots {:?}, {reached} of 16 carries reached",
-                j.finding.as_ref().map(|f| f.slots).unwrap_or_default()
+                finding.as_ref().map(|f| f.slots).unwrap_or_default()
             ),
             format!(
                 "no stray run, odd and even slow passes within {} Q4 at every carry both read, at least half the carries between the stops reached",
@@ -1842,13 +2202,198 @@ pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
             Verdict::Fail,
         ),
     });
-    j.checks.push(check(
+    let slots = finding.as_ref().map_or([0; ADC_WIDE_SLOTS], |f| f.slots);
+    let table = read_table(rungs, &slots, c);
+    checks.extend(table_checks(&table, c));
+    Judged {
+        finding,
+        halves,
+        swept: (lo, hi),
+        rows_a_code,
+        table,
+        checks,
+    }
+}
+
+fn pass_fail(ok: bool) -> Verdict {
+    if ok { Verdict::Pass } else { Verdict::Fail }
+}
+
+/// The table's checks: the fit, its residual, one fast pass out, the
+/// ripple cycles and the gains refuse; the directions and the speed along
+/// a rung are said.
+fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
+    let unread: Vec<String> = t
+        .rungs
+        .iter()
+        .filter_map(|r| {
+            r.read
+                .as_ref()
+                .err()
+                .map(|e| format!("rung {} ({}): {e}", r.n, r.pass_kind.word()))
+        })
+        .collect();
+    let unread = if unread.is_empty() {
+        "none".to_string()
+    } else {
+        unread.join(", ")
+    };
+    let f = match &t.fit {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![check(
+                FIT,
+                format!("{}; rungs not read: {unread}", table_said(e)),
+                format!(
+                    "a rung read each way, no hole over {} grid intervals",
+                    postable::HOLE_MAX
+                ),
+                Verdict::Fail,
+            )];
+        }
+    };
+    let mut out = vec![check(
         FIT,
-        "not read: the pooled position fit is not in this build".into(),
-        "the table and the slots are written together".into(),
-        Verdict::Fail,
+        format!(
+            "{} rungs, {} samples over {:.0}..{:.0} counts ({:.0} % of the stops' span); not read: {}",
+            f.offsets.len(),
+            f.samples,
+            f.table.span.lo(),
+            f.table.span.hi(),
+            100.0 * f.table.span.coverage(c.raw_min, c.raw_max),
+            unread
+        ),
+        format!(
+            "a rung read each way, no hole over {} grid intervals",
+            postable::HOLE_MAX
+        ),
+        Verdict::Pass,
+    )];
+    let res = t.residual_counts.unwrap_or(f64::INFINITY);
+    out.push(check(
+        RESIDUAL,
+        format!("{res:.2} counts rms"),
+        format!("at most {RESIDUAL_MAX_COUNTS}"),
+        pass_fail(res <= RESIDUAL_MAX_COUNTS),
     ));
-    j
+    out.push(if t.pass_out.is_empty() {
+        check(
+            PASS_OUT,
+            "no fast pass read".into(),
+            format!("at most {PASS_OUT_MAX_COUNTS} counts rms, line out"),
+            Verdict::NotJudged,
+        )
+    } else {
+        let said: Vec<String> = t
+            .pass_out
+            .iter()
+            .map(|p| match &p.moved {
+                Ok(m) => format!("rung {} out {m:.2}", p.n),
+                Err(e) => format!("rung {} out: no table ({})", p.n, table_said(e)),
+            })
+            .collect();
+        check(
+            PASS_OUT,
+            format!("counts rms, line out: {}", said.join("; ")),
+            format!("at most {PASS_OUT_MAX_COUNTS} counts rms, line out, each"),
+            pass_fail(
+                t.pass_out
+                    .iter()
+                    .all(|p| p.moved.as_ref().is_ok_and(|m| *m <= PASS_OUT_MAX_COUNTS)),
+            ),
+        )
+    });
+    let off: Vec<String> = t
+        .cycles
+        .iter()
+        .filter(|k| !k.agree.holds())
+        .map(|k| {
+            format!(
+                "rungs {} and {}: {:.2} and {:.2} cycles over {:.0}..{:.0}",
+                k.a, k.b, k.agree.a, k.agree.b, k.agree.from, k.agree.to
+            )
+        })
+        .collect();
+    out.push(check(
+        CYCLES,
+        if t.cycles.is_empty() {
+            "no two rungs one way share a grid interval".into()
+        } else if off.is_empty() {
+            format!("{} pairs agree", t.cycles.len())
+        } else {
+            off.join("; ")
+        },
+        format!(
+            "within {:.1} % or {} cycle over the counts each pair shares",
+            100.0 * postable::AGREE_SHARE,
+            postable::AGREE_MIN_CYCLES
+        ),
+        if t.cycles.is_empty() {
+            Verdict::NotJudged
+        } else {
+            pass_fail(off.is_empty())
+        },
+    ));
+    let (glo, ghi) = t.gains.unwrap_or((0, 0));
+    out.push(check(
+        GAINS,
+        match t.valid {
+            Some(Ok(())) => format!("{glo}..{ghi} Q4"),
+            Some(Err(r)) => format!("{glo}..{ghi} Q4, refused as {r:?}"),
+            None => "not read".into(),
+        },
+        "the firmware's pos_lut::validate: zero at and past the stops, every gain in 1..256 Q4"
+            .into(),
+        pass_fail(matches!(t.valid, Some(Ok(())))),
+    ));
+    out.push(match &t.term {
+        Ok(term) => check(
+            DIRECTIONS,
+            format!(
+                "up less down {:.2} counts rms, {:.2} max, line out",
+                term.rms, term.max
+            ),
+            format!("said; a warning over {DIRECTION_WARN_COUNTS} counts rms"),
+            if term.rms > DIRECTION_WARN_COUNTS {
+                Verdict::Warn
+            } else {
+                Verdict::Pass
+            },
+        ),
+        Err(e) => check(
+            DIRECTIONS,
+            format!("not read: {}", table_said(e)),
+            format!("said; a warning over {DIRECTION_WARN_COUNTS} counts rms"),
+            Verdict::NotJudged,
+        ),
+    });
+    let spread: Vec<String> = t
+        .rungs
+        .iter()
+        .filter_map(|r| {
+            let s = r.read.as_ref().ok()?;
+            (s.speed_spread > SPEED_SPREAD_WARN)
+                .then(|| format!("rung {} {:.0} %", r.n, 100.0 * s.speed_spread))
+        })
+        .collect();
+    out.push(check(
+        SPEED,
+        if spread.is_empty() {
+            format!("every rung under {:.0} %", 100.0 * SPEED_SPREAD_WARN)
+        } else {
+            spread.join(", ")
+        },
+        format!(
+            "said; a warning over {:.0} % about the mean",
+            100.0 * SPEED_SPREAD_WARN
+        ),
+        if spread.is_empty() {
+            Verdict::Pass
+        } else {
+            Verdict::Warn
+        },
+    ));
+    out
 }
 
 /// The table step on the servo: the passes, then the way out, then the
@@ -1899,6 +2444,9 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
         fs: b.tick_hz,
         raw_min: b.raw.0,
         raw_max: b.raw.1,
+        ripple_per_rev: b.ripple_per_rev,
+        gear_ratio: b.gear_ratio,
+        travel_deg: b.travel_deg,
     };
     let finished = ran.is_ok();
     let rows: Vec<RungRows> = found
@@ -2112,7 +2660,8 @@ fn result_json(
                        "source": "the stops step's stops.low.median_counts up and stops.high.median_counts down: rounded inward, as the gather writes them"},
         "passes": found.passes.iter().map(|p| json!({"n": p.n, "kind": p.kind.word(), "dir": p.dir,
             "start_counts": p.start, "end_counts": p.end})).collect::<Vec<_>>(),
-        "rows_a_code_by_round_trips": found.rows_a_code.iter().map(|(t, r)| json!({"slow_round_trips": t, "rows_a_code": r})).collect::<Vec<_>>(),
+        "rows_by_round_trips": found.rows_a_code.iter().map(|r| json!({"slow_round_trips": r.trips,
+            "median_rows_a_code": r.median, "thin_carries": r.thin})).collect::<Vec<_>>(),
         "priced": {"rungs_s": priced_s, "blocked_s": blocked_s, "peak_rise_c": rise,
                    "words": "every rung priced blocked for its rows and dead-man; the stop rungs are the ones that end blocked"},
         "rungs": rungs,
@@ -2139,8 +2688,114 @@ fn result_json(
                 "thin_rows": THIN_ROWS, "half_thin_rows": HALF_THIN_ROWS,
             }),
         );
+        o.insert("table".into(), table_json(&j.table));
+        if way == Way::Done {
+            accepted(o, j);
+        }
     }
     out
+}
+
+fn segment_json(r: &RungSegment) -> Value {
+    let head = json!({"n": r.n, "pass": r.pass, "pass_kind": r.pass_kind.word(), "dir": r.dir});
+    let mut o = head.as_object().cloned().unwrap_or_default();
+    match &r.read {
+        Ok(s) => {
+            let (lo, hi) =
+                s.x.iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| {
+                        (l.min(v), h.max(v))
+                    });
+            o.extend(
+                json!({"read": true, "samples": s.x.len(), "reach_counts": [lo, hi],
+                       "cycles": s.y.last().map(|y| y.abs()), "line_hz": s.f_seed,
+                       "crossings": s.crossings, "odd_share": s.odd, "speed_spread": s.speed_spread})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            );
+        }
+        Err(e) => {
+            o.insert("read".into(), json!(false));
+            o.insert("why".into(), json!(e));
+        }
+    }
+    Value::Object(o)
+}
+
+fn table_json(t: &TableRead) -> Value {
+    let fit = match &t.fit {
+        Ok(f) => json!({
+            "span_counts": [f.table.span.lo(), f.table.span.hi()], "samples": f.samples,
+            "residual_cycles_rms": f.residual_rms, "residual_counts_rms": t.residual_counts,
+            "counts_per_cycle": f.table.counts_per_cycle(),
+            "up_reach_counts": f.up.map(|r| [r.0, r.1]), "down_reach_counts": f.down.map(|r| [r.0, r.1]),
+            "offsets_cycles": f.offsets.iter().map(|(k, c)| json!({"rung": t.rungs.iter().filter(|r| r.read.is_ok()).nth(*k).map(|r| r.n), "cycles": c})).collect::<Vec<_>>(),
+            "smooth_weight": SMOOTH_WEIGHT,
+        }),
+        Err(e) => json!({"refused": table_said(e)}),
+    };
+    json!({
+        "method": "one pooled fit, pos = T(phase) + one offset a rung (stage 4 position.fit_pwl form), the motor's ripple the ruler",
+        "near_stop_counts": NEAR_STOP_COUNTS,
+        "rungs": t.rungs.iter().map(segment_json).collect::<Vec<_>>(),
+        "fit": fit,
+        "gain_q4": t.gains.map(|g| [g.0, g.1]),
+        "validate": t.valid.map(|v| v.map_or_else(|r| format!("{r:?}"), |()| "ok".to_string())),
+        "one_fast_pass_out": t.pass_out.iter().map(|p| json!({"rung": p.n, "pass": p.pass,
+            "line_out_counts_rms": p.moved.as_ref().ok(), "why": p.moved.as_ref().err().map(table_said)})).collect::<Vec<_>>(),
+        "cycles": t.cycles.iter().map(|k| json!({"rungs": [k.a, k.b], "from_counts": k.agree.from,
+            "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b], "limit": k.agree.limit(),
+            "holds": k.agree.holds()})).collect::<Vec<_>>(),
+        "report": report_json(t),
+    })
+}
+
+/// What the table step says and never refuses on.
+fn report_json(t: &TableRead) -> Value {
+    json!({
+        "directions": match &t.term {
+            Ok(term) => json!({"up_less_down_counts_rms": term.rms, "max_counts": term.max,
+                "bands": term.bands.iter().map(|(b, r)| json!({"from_counts": b, "counts_rms": r})).collect::<Vec<_>>(),
+                "warn_over_counts_rms": DIRECTION_WARN_COUNTS, "warning": term.rms > DIRECTION_WARN_COUNTS}),
+            Err(e) => json!({"not_read": table_said(e)}),
+        },
+        "gear_play": {"counts": null, "why": GEAR_PLAY_WORDS},
+        "speed_spread": t.rungs.iter().filter_map(|r| r.read.as_ref().ok().map(|s| json!({"rung": r.n,
+            "spread": s.speed_spread, "warning": s.speed_spread > SPEED_SPREAD_WARN}))).collect::<Vec<_>>(),
+        "one_way": t.one_way.iter().map(|w| json!({"from_counts": w.from, "to_counts": w.to,
+            "only": way(w.dir)})).collect::<Vec<_>>(),
+    })
+}
+
+const GEAR_PLAY_WORDS: &str = "not read: each rung's cycle count starts at its own first crossing, so a rung's offset holds where it started, not the gear's play; the play needs one cycle count across the rungs";
+
+/// The accepted reading: the slots, the slots left 0 and why, the points
+/// by page and the scale; the report items stay under `table.report`.
+fn accepted(o: &mut Map<String, Value>, j: &Judged) {
+    if let Some(f) = &j.finding {
+        o.insert("slots".into(), json!(f.slots));
+        let zero: Vec<Value> = f
+            .carries
+            .iter()
+            .filter(|c| f.slots[c.slot] == 0)
+            .map(|c| {
+                json!({"slot": c.slot, "code": c.code, "state": state_word(c.state),
+                       "why": carry_reason(c.state).unwrap_or_else(|| "read, not wide: written 0".into())})
+            })
+            .collect();
+        o.insert("slots_zero".into(), json!(zero));
+    }
+    if let Some(p) = &j.table.points {
+        let pages: Vec<Vec<i16>> = p.chunks(PAGE_POINTS).map(<[i16]>::to_vec).collect();
+        o.insert("points_by_page".into(), json!(pages));
+    }
+    if let Some((v, source)) = j.table.scale {
+        o.insert(
+            "scale".into(),
+            json!({"counts_per_deg": v, "source": source}),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2169,20 +2824,21 @@ mod tests {
 
     /// A servo on 2300 counts of travel: 380 counts/s at the approach
     /// duty, 2200 at the fast passes' (the nameplate predicts 2667), the
-    /// shaft still under about 10.8 % duty, 3.3 counts a commutation
-    /// cycle, a pot reading 1.5x fast at 1900, wide codes at carries 4
-    /// and 9.
+    /// shaft still under about 10.8 % duty, 2 counts a commutation cycle
+    /// (the slow passes' line at 190 Hz, inside the ripple band), a pot
+    /// reading 1.5x fast at 1900, wide codes at carries 4 and 9.
     fn motor() -> Motor {
         let (slow, fast) = (APPROACH_Q15 as f64 / Q15, fast_q15(4.8, 5.0) as f64 / Q15);
         let k = (2200.0 - 380.0) / (fast - slow);
         Motor {
             cps_full: k,
             dead_duty: slow - 380.0 / k,
-            cycles_per_count: 0.3,
+            cycles_per_count: 0.5,
             rise_tau_s: 0.02,
             coast_tau_s: 0.03,
             stops: (900.0, 3200.0),
             bend: (1900.0, 30.0, 30.0),
+            up_wave: (0.0, 1150.0),
             wide: vec![(1279, 11), (2559, 6)],
             zero: 1206.0,
             level: 300.0,
@@ -2319,11 +2975,12 @@ mod tests {
     /// simulated motor: the half pass and each slow pass end at rest on
     /// their stop through a stop rung under the permit, each free and fast
     /// rung rests inside its guards under its bound, the first fast pass
-    /// runs at half length, the slow rows give the finder the converter's
-    /// carries, and the shaft ends at the middle with torque off. The table
-    /// is not read in this build, so nothing is written.
+    /// runs at half length, and the shaft ends at the middle with torque
+    /// off. The reading is accepted: the converter's slots, the points
+    /// that straighten the pot's bend, the scale from the stops over the
+    /// travel (the nameplate states no ripple_per_rev).
     #[test]
-    fn a_reduced_schedule_runs_every_pass_and_ends_at_the_middle() {
+    fn a_reduced_schedule_runs_every_pass_and_is_accepted() {
         let m = motor();
         let mut r = run(
             m.clone(),
@@ -2334,17 +2991,15 @@ mod tests {
         let t = r.out.expect("starts");
         let e = &t.ended;
         assert!(torque_off(&mut r.c) && e.exit.torque_off, "{}", e.exit);
-        let res = nothing_written(&mut r.sink);
-        let failed: Vec<&Check> = t
-            .checks
-            .iter()
-            .filter(|c| c.verdict == Verdict::Fail)
-            .collect();
+        assert_eq!(e.way, Way::Done, "{:?}\n{}", e.why, e.lines.join("\n"));
+        let res = result(&mut r.sink);
+        assert_eq!(res["verdict"], "accepted");
         assert!(
-            failed.len() == 1 && failed[0].name == FIT,
-            "{:?}\n{}",
-            e.why,
-            e.lines.join("\n")
+            t.checks
+                .iter()
+                .all(|c| matches!(c.verdict, Verdict::Pass | Verdict::NotJudged)),
+            "{:?}",
+            t.checks.iter().map(Check::said).collect::<Vec<_>>()
         );
         let passes = res["passes"].as_array().expect("passes");
         let kinds: Vec<(&str, i64)> = passes
@@ -2411,13 +3066,22 @@ mod tests {
         assert_eq!(fast[0]["duty_q15"], fast_q15(4.8, n(&res["rail_v"])));
         let mut want = [0u8; 16];
         (want[4], want[9]) = (88, 48);
-        assert_eq!(
-            res["wide_codes"]["all"]["slots"],
-            json!(want),
-            "{}",
-            res["wide_codes"]
-        );
+        assert_eq!(res["slots"], json!(want), "{}", res["wide_codes"]);
+        let zero = res["slots_zero"].as_array().expect("slots_zero");
+        assert_eq!(zero.len(), 14);
+        assert!(zero.iter().all(|z| z["why"].as_str().is_some()), "{zero:?}");
         assert!(n(&res["wide_codes"]["rows_a_code"]) >= ROWS_A_CODE_MIN);
+        straightens_the_bend(&m, &res);
+        let raw = &res["stops_used"];
+        assert_eq!(res["scale"]["source"], SCALE_TRAVEL);
+        assert_eq!(
+            n(&res["scale"]["counts_per_deg"]),
+            (n(&raw["raw_max"]) - n(&raw["raw_min"]))
+                / testkit::nameplate().travel_deg.expect("travel")
+        );
+        assert!(n(&res["table"]["fit"]["residual_counts_rms"]) <= RESIDUAL_MAX_COUNTS);
+        assert_eq!(res["table"]["report"]["directions"]["warning"], false);
+        assert!(res["table"]["report"]["gear_play"]["counts"].is_null());
         assert!(n(&res["priced"]["blocked_s"]) > 0.0 && n(&res["priced"]["peak_rise_c"]) > 0.0);
         let middle = (glo + ghi) / 2.0;
         let after = n(&res["position_after_counts"]);
@@ -2442,6 +3106,46 @@ mod tests {
             stops.len(),
             "the permit around each stop rung and no other"
         );
+    }
+
+    /// The accepted points against the motor's own bend: inside the
+    /// fitted span each point is the straight count the pot's reading
+    /// stands for, mapped so both stops map to themselves, within 3
+    /// counts.
+    fn straightens_the_bend(m: &Motor, res: &Value) {
+        let pages = res["points_by_page"].as_array().expect("points_by_page");
+        assert_eq!(pages.len(), INTERVALS / PAGE_POINTS);
+        let points: Vec<f64> = pages
+            .iter()
+            .flat_map(|p| p.as_array().expect("page").iter().map(n))
+            .collect();
+        assert_eq!(points.len(), INTERVALS);
+        let (raw_min, raw_max) = (
+            n(&res["stops_used"]["raw_min"]),
+            n(&res["stops_used"]["raw_max"]),
+        );
+        let straight = |pot: f64| {
+            let (mut lo, mut hi) = m.stops;
+            for _ in 0..60 {
+                let mid = (lo + hi) / 2.0;
+                if m.pot(mid) < pot { lo = mid } else { hi = mid }
+            }
+            (lo + hi) / 2.0
+        };
+        let (x0, x1) = (straight(raw_min), straight(raw_max));
+        let span = &res["table"]["fit"]["span_counts"];
+        let (lo, hi) = (n(&span[0]), n(&span[1]));
+        let mut worst = 0.0f64;
+        for (k, c) in points.iter().enumerate() {
+            let g = (k * 16) as f64;
+            if g < lo || g > hi {
+                continue;
+            }
+            let want = raw_min + (straight(g) - x0) * (raw_max - raw_min) / (x1 - x0) - g;
+            worst = worst.max((c - want).abs());
+        }
+        assert!(worst <= 3.0, "a point {worst:.1} counts off the bend");
+        assert!(points.iter().any(|c| c.abs() >= 10.0), "{points:?}");
     }
 
     /// An approach duty whose drive window is under the board's floor
@@ -2540,26 +3244,36 @@ mod tests {
         }
     }
 
-    /// A shaft so fast at the approach duty that one slow round trip
-    /// leaves the finder under 100 rows a code, with no extra trip
-    /// allowed: the step refuses and says the count.
+    /// The pot read 6 counts high in a wave on the up drives alone: the
+    /// directions differ by over 3 counts rms, which is said as a warning,
+    /// and the table is still accepted.
     #[test]
-    fn too_few_rows_a_code_refuses_with_the_count() {
+    fn a_direction_difference_over_three_counts_warns_and_still_accepts() {
         let mut m = motor();
-        m.cps_full *= 4.0;
+        m.up_wave = (6.0, 1150.0);
         let mut r = run(
             m.clone(),
             stops_json(&m, APPROACH_Q15, 0.95),
             REDUCED,
             testkit::quiet(),
         );
-        let e = r.out.expect("starts").ended;
-        assert_eq!(e.way, Way::Refused, "{:?}", e.why);
-        let why = e.why.as_deref().unwrap_or("");
-        assert!(why.contains("rows a code, under 100"), "{why}");
-        let res = nothing_written(&mut r.sink);
-        assert_eq!(res["rows_a_code_by_round_trips"][0]["slow_round_trips"], 1);
-        assert!(n(&res["rows_a_code_by_round_trips"][0]["rows_a_code"]) < ROWS_A_CODE_MIN);
+        let t = r.out.expect("starts");
+        let e = &t.ended;
+        assert_eq!(e.way, Way::Done, "{:?}\n{}", e.why, e.lines.join("\n"));
+        let dirs = t
+            .checks
+            .iter()
+            .find(|c| c.name == DIRECTIONS)
+            .expect("directions");
+        assert_eq!(dirs.verdict, Verdict::Warn, "{}", dirs.said());
+        let res = result(&mut r.sink);
+        let d = &res["table"]["report"]["directions"];
+        assert!(
+            n(&d["up_less_down_counts_rms"]) > DIRECTION_WARN_COUNTS,
+            "{d}"
+        );
+        assert_eq!(d["warning"], true);
+        assert!(res["points_by_page"].is_array() && res["slots"].is_array());
     }
 
     /// A drive's rows as the raw layout carries them.
@@ -2598,7 +3312,11 @@ mod tests {
     }
 
     fn judged(m: &Motor) -> Judged {
-        let ran = slow_rows(m, 2);
+        judged_after(m, 2)
+    }
+
+    fn judged_after(m: &Motor, trips: usize) -> Judged {
+        let ran = slow_rows(m, trips);
         let rows: Vec<RungRows> = ran
             .iter()
             .enumerate()
@@ -2614,19 +3332,24 @@ mod tests {
                 rows,
             })
             .collect();
-        judge(
-            &rows,
-            &JudgeCfg {
-                fs: 20_000.0,
-                raw_min: m.pot(m.stops.0).ceil() as u16,
-                raw_max: m.pot(m.stops.1).floor() as u16,
-            },
-        )
+        judge(&rows, &cfg(m))
+    }
+
+    fn cfg(m: &Motor) -> JudgeCfg {
+        JudgeCfg {
+            fs: 20_000.0,
+            raw_min: m.pot(m.stops.0).ceil() as u16,
+            raw_max: m.pot(m.stops.1).floor() as u16,
+            ripple_per_rev: None,
+            gear_ratio: None,
+            travel_deg: 184.3,
+        }
     }
 
     /// The plan's slow passes on the simulated motor: the finder reads the
     /// converter's carries from the rows inside the stops less 32 counts,
-    /// the unreached carries 0, and only the table's check refuses.
+    /// the unreached carries 0, and the table from the slow rungs alone
+    /// passes; with no fast pass the pass-out line is not judged.
     #[test]
     fn the_slow_passes_give_the_converters_slots() {
         let m = motor();
@@ -2645,8 +3368,79 @@ mod tests {
             )
         );
         for c in &j.checks {
-            assert_eq!(c.verdict == Verdict::Fail, c.name == FIT, "{}", c.said());
+            assert_ne!(c.verdict, Verdict::Fail, "{}", c.said());
         }
+        let out = j
+            .checks
+            .iter()
+            .find(|c| c.name == PASS_OUT)
+            .expect("pass out");
+        assert_eq!(out.verdict, Verdict::NotJudged);
+    }
+
+    /// The half pass alone gives the finder about 53 rows a code on the
+    /// codes it crosses: the median line refuses and says the count.
+    #[test]
+    fn too_few_rows_a_code_refuses_with_the_median() {
+        let j = judged_after(&motor(), 0);
+        let rows = j.checks.iter().find(|c| c.name == ROWS).expect("rows");
+        assert_eq!(rows.verdict, Verdict::Fail, "{}", rows.said());
+        assert!(rows.value.starts_with("median "), "{}", rows.value);
+        assert!(j.rows_a_code < ROWS_A_CODE_MIN, "{}", j.rows_a_code);
+    }
+
+    /// One fast pass's rows on `m` from `x` for `secs`, no bus.
+    fn fast_rows(m: &Motor, x: f64, dir: i8, secs: f64) -> Vec<TelFrame> {
+        let rows = (secs * 20_000.0) as usize;
+        let q = fast_q15(4.8, 5.0) * dir as i16;
+        let (track, _) = m.run(x, 0.0, 0, q, 0, Some(rows));
+        frames(&track[..rows])
+    }
+
+    /// Two up fast passes over the low half and one down pass over most
+    /// of the travel: past the up passes' reach the table rests on the
+    /// down pass alone, so with it left out there is no table there and
+    /// the pass-out line refuses; the fit, its residual, the cycles and
+    /// the gains pass.
+    #[test]
+    fn a_table_resting_on_one_fast_pass_refuses_with_it_left_out() {
+        let m = motor();
+        let (up_a, up_b) = (fast_rows(&m, 970.0, 1, 0.5), fast_rows(&m, 970.0, 1, 0.5));
+        let down = fast_rows(&m, 3130.0, -1, 0.8);
+        let rungs: Vec<RungRows> = [(1, 1, &up_a), (2, -1, &down), (3, 1, &up_b)]
+            .iter()
+            .map(|&(k, dir, rows)| RungRows {
+                n: k,
+                pass: k,
+                pass_kind: PassKind::Fast,
+                dir,
+                rows,
+            })
+            .collect();
+        let mut slots = [0u8; 16];
+        (slots[4], slots[9]) = (88, 48);
+        let c = cfg(&m);
+        let t = read_table(&rungs, &slots, &c);
+        let checks = table_checks(&t, &c);
+        let failed: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.verdict == Verdict::Fail)
+            .collect();
+        assert!(
+            failed.len() == 1 && failed[0].name == PASS_OUT,
+            "{:?}",
+            checks.iter().map(Check::said).collect::<Vec<_>>()
+        );
+        assert!(
+            failed[0].value.contains("rung 2 out"),
+            "{}",
+            failed[0].value
+        );
+        assert!(
+            t.pass_out.iter().filter(|p| p.moved.is_ok()).count() == 2,
+            "{:?}",
+            t.pass_out
+        );
     }
 
     /// A never-read run under a code that is no carry: the wide-code

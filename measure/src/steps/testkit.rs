@@ -197,6 +197,9 @@ pub struct Motor {
     pub stops: (f64, f64),
     /// The bend's middle and half width, and the counts it adds across it.
     pub bend: (f64, f64, f64),
+    /// A wave the pot reads only while driven up: its amplitude and its
+    /// period, counts, zero at the low stop.
+    pub up_wave: (f64, f64),
     /// Each carry the converter sticks at, and the codes over it it skips.
     pub wide: Vec<(u16, u16)>,
     /// The current's zero, its level at full duty and the ripple's
@@ -223,9 +226,9 @@ impl Motor {
         x + extra / 2.0 * (1.0 + ((x - mid) / w).tanh())
     }
 
-    /// The code the converter reads at `x`.
-    pub fn code(&self, x: f64) -> u16 {
-        let c = self.pot(x).floor().clamp(0.0, 4095.0) as u16;
+    /// The code the converter reads at pot reading `pot`.
+    fn code_of(&self, pot: f64) -> u16 {
+        let c = pot.floor().clamp(0.0, 4095.0) as u16;
         self.wide
             .iter()
             .find(|(k, s)| (*k..=k + s).contains(&c))
@@ -236,7 +239,13 @@ impl Motor {
         let d = q as f64 / 32768.0;
         let phase = 2.0 * std::f64::consts::PI * self.cycles_per_count * x;
         let i = (self.zero + self.level * d.abs() + self.ripple * phase.sin()).round() as u16;
-        let mut s = rest_row(self.code(x), k as u32);
+        let (a, period) = self.up_wave;
+        let wave = if q > 0 {
+            a * (2.0 * std::f64::consts::PI * (x - self.stops.0) / period).sin()
+        } else {
+            0.0
+        };
+        let mut s = rest_row(self.code_of(self.pot(x) + wave), k as u32);
         s.tick.current_raw = i;
         s.tick.current_trough = i;
         s.tick.duty_ticks = (d * self.pwm_arr).round() as i16;

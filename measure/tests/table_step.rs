@@ -10,8 +10,8 @@ use osc_measure::steps::runway::COAST_TAU_S;
 use osc_measure::steps::seek::WINDOW_S;
 use osc_measure::steps::table::{
     Band, FIRST_FAST_SHARE, FromStops, NEAR_STOP_COUNTS, RUNG_MIN_S, Reach, RungRead, Schedule,
-    Speeds, after, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows, plan_rung,
-    plan_stop_rung, reach, rows_a_code, stamp_ticks,
+    Speeds, after, another_trip, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows,
+    plan_rung, plan_stop_rung, reach, rows_a_code, stamp_ticks, thin_carries,
 };
 use serde_json::json;
 
@@ -269,7 +269,8 @@ fn a_stop_rung_reads_reached_short_past_or_moving() {
 }
 
 /// The histogram drops rows within 32 counts of a stop; the rows a code
-/// are the rest over the codes between.
+/// are the median of the rest over the codes between less stage 1's
+/// 15-count margins.
 #[test]
 fn the_rows_a_code_leave_out_the_counts_by_the_stops() {
     let codes: Vec<u16> = (110..=3729).flat_map(|c| [c, c]).collect();
@@ -284,6 +285,28 @@ fn the_rows_a_code_leave_out_the_counts_by_the_stops() {
     assert_eq!(inside.len(), 2 * (hi - lo + 1) as usize);
     assert_eq!(rows_a_code(&codes, 110, 3729), 2.0);
     assert_eq!(rows_a_code(&[], 110, 3729), 0.0);
+    // a median, not a mean: a third of the codes read 10x leave it at 2
+    let mut heavy = codes.clone();
+    heavy.extend((500..1700).flat_map(|c| [c; 18]));
+    assert_eq!(rows_a_code(&heavy, 110, 3729), 2.0);
+}
+
+/// The plan's slow round trips, then one more while a carry reads thin,
+/// at most the extra allowed.
+#[test]
+fn a_thin_carry_adds_a_slow_round_trip_up_to_the_extra() {
+    let s = Schedule::PLAN;
+    assert!(another_trip(&s, 0, &[]) && another_trip(&s, 1, &[]));
+    assert!(!another_trip(&s, 2, &[]));
+    assert!(another_trip(&s, 2, &[2303]) && another_trip(&s, 3, &[2303]));
+    assert!(!another_trip(&s, 4, &[2303]));
+    // 120 rows a code everywhere but 60 over the 64 codes under carry 9
+    let mut codes: Vec<u16> = (110..=3729).flat_map(|c| [c; 120]).collect();
+    codes.retain(|&c| !(2495..2559).contains(&c));
+    codes.extend((2495..2559).flat_map(|c| [c; 60]));
+    let thin = thin_carries(&codes, 110, 3729);
+    assert_eq!(thin, [2559]);
+    assert!(rows_a_code(&codes, 110, 3729) >= 100.0);
 }
 
 /// One fifth of the rated speed by the nameplate's speed per volt: one
