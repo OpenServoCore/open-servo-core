@@ -3744,14 +3744,17 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "shared:PJ54M33DE"
+		(symbol "Regulator_Linear:SPX3819M5-L-3-3"
+			(pin_names
+				(offset 0.254)
+			)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
 			(in_pos_files yes)
 			(duplicate_pin_numbers_are_jumpers no)
 			(property "Reference" "U"
-				(at 0 8.89 0)
+				(at -3.81 5.715 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
@@ -3760,29 +3763,19 @@
 					)
 				)
 			)
-			(property "Value" "PJ54M33DE"
-				(at 0 6.35 0)
+			(property "Value" "SPX3819M5-L-3-3"
+				(at 0 5.715 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
+					(justify left)
 				)
 			)
-			(property "Footprint" "shared:Texas_X2SON-4_1x1mm_P0.65mm_Tight"
-				(at 0 -10.16 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" "https://www.lcsc.com/product-detail/C22470321.html"
-				(at 0 -12.7 0)
+			(property "Footprint" "Package_TO_SOT_SMD:SOT-23-5"
+				(at 0 8.255 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(hide yes)
@@ -3792,7 +3785,7 @@
 					)
 				)
 			)
-			(property "Description" "3.3V 300mA LDO, 3-45V in (55V abs max), 2.1uA Iq, thermal shutdown, DFN1x1-4L; center pad is NC"
+			(property "Datasheet" "https://www.exar.com/content/document.ashx?id=22106&languageid=1033&type=Datasheet&partnumber=SPX3819&filename=SPX3819.pdf&part=SPX3819"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -3803,8 +3796,8 @@
 					)
 				)
 			)
-			(property "LCSC" "C22470321"
-				(at 0 -15.24 0)
+			(property "Description" "500mA Low drop-out regulator, Fixed Output 3.3V, SOT-23-5"
+				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(hide yes)
@@ -3814,8 +3807,8 @@
 					)
 				)
 			)
-			(property "MFPN" "PJ54M33DE"
-				(at 0 -17.78 0)
+			(property "ki_keywords" "REGULATOR LDO 3.3V"
+				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(hide yes)
@@ -3825,22 +3818,35 @@
 					)
 				)
 			)
-			(symbol "PJ54M33DE_0_1"
+			(property "ki_fp_filters" "SOT?23*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "SPX3819M5-L-3-3_0_1"
 				(rectangle
-					(start -7.62 5.08)
-					(end 7.62 -5.08)
+					(start -5.08 4.445)
+					(end 5.08 -5.08)
 					(stroke
-						(width 0)
+						(width 0.254)
 						(type default)
 					)
 					(fill
 						(type background)
 					)
 				)
-				(pin power_out line
-					(at 10.16 0 180)
+			)
+			(symbol "SPX3819M5-L-3-3_1_1"
+				(pin power_in line
+					(at -7.62 2.54 0)
 					(length 2.54)
-					(name "VOUT"
+					(name "IN"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -3874,7 +3880,7 @@
 					)
 				)
 				(pin input line
-					(at -10.16 -2.54 0)
+					(at -7.62 0 0)
 					(length 2.54)
 					(name "EN"
 						(effects
@@ -3891,10 +3897,10 @@
 						)
 					)
 				)
-				(pin power_in line
-					(at -10.16 0 0)
+				(pin input line
+					(at 7.62 0 180)
 					(length 2.54)
-					(name "VIN"
+					(name "BP"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -3909,10 +3915,10 @@
 						)
 					)
 				)
-				(pin no_connect line
-					(at 5.08 -7.62 90)
+				(pin power_out line
+					(at 7.62 2.54 180)
 					(length 2.54)
-					(name "NC"
+					(name "OUT"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -4263,7 +4269,7 @@
 		)
 		(uuid "06a74d4e-ff8f-42e4-a3f1-e05ddd9c8c5f")
 	)
-	(text_box "Rb1: thin film 0.1% 25ppm"
+	(text_box "Rb1, Rb2: 1% 100ppm"
 		(exclude_from_sim no)
 		(at 15.24 244.972 0)
 		(size 63.5 3.9483)
@@ -4303,10 +4309,10 @@
 		)
 		(uuid "27212e84-3803-465b-8dc7-4ba3a18aed37")
 	)
-	(text_box "Rs1 1% 100ppm: sole PGND-GND tie"
+	(text_box "Rs1: 1206 alloy 1% 50ppm 1 W,\nsole PGND-GND tie.\nBackup if 1206 does not fit:\n0805 Yageo PE0805FRF470R1L\n(C2935234) 1% 100ppm 0.5 W"
 		(exclude_from_sim no)
-		(at 208.28 92.5717 0)
-		(size 40.64 3.9483)
+		(at 208.28 84.12 0)
+		(size 40.64 12.4)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
 			(width 0)
@@ -4323,7 +4329,7 @@
 		)
 		(uuid "2a9a0fac-d935-4072-b689-92c961ca9aa2")
 	)
-	(text_box "Rg 0.1%, Rf and Ri 0.5%, all thin film 25ppm; Ri lifts the inputs to about 0.75 V common mode"
+	(text_box "Rg, Rf, Ri: 1% 100ppm thick film; Ri lifts the inputs to about 0.82 V common mode"
 		(exclude_from_sim no)
 		(at 254 92.5717 0)
 		(size 152.4 3.9483)
@@ -4343,7 +4349,7 @@
 		)
 		(uuid "4b45fe2c-fedb-4a2d-b3a6-1892e2b60d51")
 	)
-	(text_box "Rv: thin film 0.5% 25ppm, Cv: C0G"
+	(text_box "Rv: 1% 100ppm thick film, Cv: C0G"
 		(exclude_from_sim no)
 		(at 137.16 244.972 0)
 		(size 48.26 3.9483)
@@ -4423,7 +4429,7 @@
 		)
 		(uuid "c04fda49-761a-4fae-b65b-244a43d3b8bf")
 	)
-	(text_box "Rv: thin film 0.5% 25ppm, Cv: C0G"
+	(text_box "Rv: 1% 100ppm thick film, Cv: C0G"
 		(exclude_from_sim no)
 		(at 83.82 244.972 0)
 		(size 48.26 3.9483)
@@ -5703,16 +5709,6 @@
 	)
 	(wire
 		(pts
-			(xy 55.88 53.34) (xy 55.88 58.42)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "906234a6-d5a3-4a24-9731-a9ded7af887d")
-	)
-	(wire
-		(pts
 			(xy 304.8 49.53) (xy 309.88 49.53)
 		)
 		(stroke
@@ -5753,7 +5749,7 @@
 	)
 	(wire
 		(pts
-			(xy 66.04 45.72) (xy 73.66 45.72)
+			(xy 60.96 45.72) (xy 73.66 45.72)
 		)
 		(stroke
 			(width 0)
@@ -7041,7 +7037,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -7052,7 +7048,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C473048.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -7063,7 +7059,7 @@
 				)
 			)
 		)
-		(property "Description" "10K 1% 200ppm 0201 thick film"
+		(property "Description" "10K 1% 100ppm 0402 thick film"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -7074,7 +7070,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C473048"
+		(property "LCSC" "C25744"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -7096,7 +7092,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF1002TEE"
+		(property "MFPN" "0402WGF1002TCE"
 			(at 320.04 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -7155,7 +7151,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 182.88 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -7166,7 +7162,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C270364.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25741.html"
 			(at 182.88 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -7177,7 +7173,7 @@
 				)
 			)
 		)
-		(property "Description" "100K 1% 200ppm 0201 thick film"
+		(property "Description" "100K 1% 100ppm 0402 thick film"
 			(at 182.88 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -7188,7 +7184,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C270364"
+		(property "LCSC" "C25741"
 			(at 182.88 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -7199,7 +7195,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF1003TEE"
+		(property "MFPN" "0402WGF1003TCE"
 			(at 182.88 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -7567,7 +7563,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -7578,7 +7574,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C473048.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -7589,7 +7585,7 @@
 				)
 			)
 		)
-		(property "Description" "10K 1% 200ppm 0201 thick film"
+		(property "Description" "10K 1% 100ppm 0402 thick film"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -7600,7 +7596,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C473048"
+		(property "LCSC" "C25744"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -7622,7 +7618,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF1002TEE"
+		(property "MFPN" "0402WGF1002TCE"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -7981,7 +7977,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "10K"
 			(at 162.56 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7992,7 +7988,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -8003,7 +7999,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -8014,7 +8010,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "10K 1% 100ppm 0402 thick film"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -8025,7 +8021,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C25744"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -8036,7 +8032,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "0402WGF1002TCE"
 			(at 160.02 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -9219,7 +9215,7 @@
 				)
 			)
 		)
-		(property "Value" "680"
+		(property "Value" "1K5"
 			(at 339.09 52.07 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9229,7 +9225,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9240,7 +9236,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317914.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25867.html"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9251,7 +9247,7 @@
 				)
 			)
 		)
-		(property "Description" "680 0402 thin film 0.1% 25ppm"
+		(property "Description" "1K5 1% 100ppm 0402 thick film"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9262,7 +9258,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317914"
+		(property "LCSC" "C25867"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9273,7 +9269,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC6800"
+		(property "MFPN" "0402WGF1501TCE"
 			(at 339.09 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -9321,7 +9317,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "10K"
 			(at 109.22 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9332,7 +9328,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -9343,7 +9339,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -9354,7 +9350,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "10K 1% 100ppm 0402 thick film"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -9365,7 +9361,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C25744"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -9376,7 +9372,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "0402WGF1002TCE"
 			(at 106.68 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -9514,7 +9510,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -9525,7 +9521,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -9536,7 +9532,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -9547,7 +9543,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -9558,7 +9554,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 251.46 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -9848,7 +9844,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "6K2"
+		(property "Value" "12K"
 			(at 307.34 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9859,7 +9855,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9870,7 +9866,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C319496.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25752.html"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9881,7 +9877,7 @@
 				)
 			)
 		)
-		(property "Description" "6K2 0402 thin film 0.1% 25ppm"
+		(property "Description" "12K 1% 100ppm 0402 thick film"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9892,7 +9888,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C319496"
+		(property "LCSC" "C25752"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9903,7 +9899,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC6201"
+		(property "MFPN" "0402WGF1202TCE"
 			(at 304.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -9962,7 +9958,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0402_1005Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -9973,7 +9969,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C6119770.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C23733.html"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -9995,7 +9991,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C6119770"
+		(property "LCSC" "C23733"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -10006,7 +10002,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CGA0402X5R475M100GT"
+		(property "MFPN" "CL05A475MP5NRNC"
 			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -10153,7 +10149,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10164,7 +10160,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C62550.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C1546.html"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10175,7 +10171,7 @@
 				)
 			)
 		)
-		(property "Description" "100pF 50V C0G 5% 0201"
+		(property "Description" "100pF 50V C0G 5% 0402"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10186,7 +10182,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C62550"
+		(property "LCSC" "C1546"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10197,7 +10193,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201CG101J500NT"
+		(property "MFPN" "0402CG101J500NT"
 			(at 203.2 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10245,7 +10241,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "2K2"
 			(at 215.9 227.33 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10256,7 +10252,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10267,7 +10263,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25879.html"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10278,7 +10274,7 @@
 				)
 			)
 		)
-		(property "Description" "1K6 0402 thin film 0.5% 25ppm"
+		(property "Description" "2K2 1% 100ppm 0402 thick film"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10289,7 +10285,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2686471"
+		(property "LCSC" "C25879"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10300,7 +10296,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC1601"
+		(property "MFPN" "0402WGF2201TCE"
 			(at 213.36 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -10357,7 +10353,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -10368,7 +10364,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C270346.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25900.html"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -10379,7 +10375,7 @@
 				)
 			)
 		)
-		(property "Description" "4K7 1% 200ppm 0201 thick film"
+		(property "Description" "4K7 1% 100ppm 0402 thick film"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -10390,7 +10386,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C270346"
+		(property "LCSC" "C25900"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -10401,7 +10397,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF4701TEE"
+		(property "MFPN" "0402WGF4701TCE"
 			(at 241.3 154.94 0)
 			(hide yes)
 			(show_name no)
@@ -10428,8 +10424,8 @@
 		)
 	)
 	(symbol
-		(lib_id "shared:PJ54M33DE")
-		(at 55.88 45.72 0)
+		(lib_id "Regulator_Linear:SPX3819M5-L-3-3")
+		(at 53.34 48.26 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -10439,7 +10435,7 @@
 		(dnp no)
 		(uuid "77b6475a-ee9b-4140-b4bf-1306b687c8db")
 		(property "Reference" "U1"
-			(at 55.88 35.56 0)
+			(at 53.34 39.37 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -10448,8 +10444,8 @@
 				)
 			)
 		)
-		(property "Value" "PJ54M33DE"
-			(at 55.88 38.1 0)
+		(property "Value" "SPX3819M5-L-3-3"
+			(at 53.34 41.91 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -10458,8 +10454,8 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:Texas_X2SON-4_1x1mm_P0.65mm_Tight"
-			(at 55.88 45.72 0)
+		(property "Footprint" "Package_TO_SOT_SMD:SOT-23-5"
+			(at 53.34 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10469,8 +10465,8 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C22470321.html"
-			(at 55.88 45.72 0)
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C9055.html"
+			(at 53.34 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10480,8 +10476,8 @@
 				)
 			)
 		)
-		(property "Description" "3.3V 300mA LDO, 3-45V in (55V abs max), 2.1uA Iq, thermal shutdown, DFN1x1-4L; center pad is NC"
-			(at 55.88 45.72 0)
+		(property "Description" "3.3V 500mA LDO, 1%, 57ppm/C typ, 2.5-16V in (20V abs max), thermal shutdown, SOT-23-5; EN tied to VIN, 10nF on BYP (optional)"
+			(at 53.34 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10491,8 +10487,8 @@
 				)
 			)
 		)
-		(property "LCSC" "C22470321"
-			(at 55.88 45.72 0)
+		(property "LCSC" "C9055"
+			(at 53.34 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10502,8 +10498,8 @@
 				)
 			)
 		)
-		(property "MFPN" "PJ54M33DE"
-			(at 55.88 45.72 0)
+		(property "MFPN" "SPX3819M5-L-3-3/TR"
+			(at 53.34 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10570,7 +10566,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -10581,7 +10577,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -10592,7 +10588,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -10603,7 +10599,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -10614,7 +10610,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 251.46 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -10673,7 +10669,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0805_2012Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_1206_3216Metric"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -10684,7 +10680,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C186573.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C49164948.html"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -10695,7 +10691,7 @@
 				)
 			)
 		)
-		(property "Description" "100mOhm 1% 100ppm 330mW 0805 current sense resistor"
+		(property "Description" "100mOhm 1% 50ppm 1W 1206 metal alloy current sense resistor"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -10706,7 +10702,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C186573"
+		(property "LCSC" "C49164948"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -10717,7 +10713,7 @@
 				)
 			)
 		)
-		(property "MFPN" "SR732ATTDR100F"
+		(property "MFPN" "JER1206F1R100"
 			(at 220.98 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -10776,7 +10772,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0603_1608Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 193.04 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -10967,7 +10963,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -10978,7 +10974,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -10989,7 +10985,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -11000,7 +10996,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -11011,7 +11007,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 55.88 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -11528,7 +11524,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "1K"
 			(at 33.02 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11539,7 +11535,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -11550,7 +11546,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317913.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C11702.html"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -11561,7 +11557,7 @@
 				)
 			)
 		)
-		(property "Description" "430 0402 thin film 0.1% 25ppm"
+		(property "Description" "1K 1% 100ppm 0402 thick film"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -11572,7 +11568,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317913"
+		(property "LCSC" "C11702"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -11583,7 +11579,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC4300"
+		(property "MFPN" "0402WGF1001TCE"
 			(at 30.48 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -11642,7 +11638,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -11653,7 +11649,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C62550.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C1546.html"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -11664,7 +11660,7 @@
 				)
 			)
 		)
-		(property "Description" "100pF 50V C0G 5% 0201"
+		(property "Description" "100pF 50V C0G 5% 0402"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -11675,7 +11671,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C62550"
+		(property "LCSC" "C1546"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -11686,7 +11682,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201CG101J500NT"
+		(property "MFPN" "0402CG101J500NT"
 			(at 149.86 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -12036,7 +12032,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -12047,7 +12043,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307385.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C52923.html"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -12058,7 +12054,7 @@
 				)
 			)
 		)
-		(property "Description" "1uF 16V X5R 0201"
+		(property "Description" "1uF 25V X5R 0402"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -12069,7 +12065,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307385"
+		(property "LCSC" "C52923"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -12080,7 +12076,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A105MO3NRNH"
+		(property "MFPN" "CL05A105KA5NQNC"
 			(at 38.1 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -12119,7 +12115,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 55.88 58.42 0)
+		(at 53.34 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -12129,7 +12125,7 @@
 		(dnp no)
 		(uuid "9d017689-e34b-4e37-ab72-5d251498d19e")
 		(property "Reference" "#PWR0005"
-			(at 55.88 58.42 0)
+			(at 53.34 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12140,7 +12136,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 55.88 62.23 0)
+			(at 53.34 62.23 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -12150,7 +12146,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 55.88 58.42 0)
+			(at 53.34 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12161,7 +12157,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 55.88 58.42 0)
+			(at 53.34 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12172,7 +12168,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 55.88 58.42 0)
+			(at 53.34 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12379,7 +12375,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -12390,7 +12386,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C270346.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25900.html"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -12401,7 +12397,7 @@
 				)
 			)
 		)
-		(property "Description" "4K7 1% 200ppm 0201 thick film"
+		(property "Description" "4K7 1% 100ppm 0402 thick film"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -12412,7 +12408,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C270346"
+		(property "LCSC" "C25900"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -12434,7 +12430,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF4701TEE"
+		(property "MFPN" "0402WGF4701TCE"
 			(at 241.3 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -12493,7 +12489,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0402_1005Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 43.18 223.52 0)
 			(hide yes)
 			(show_name no)
@@ -12729,6 +12725,36 @@
 		)
 		(uuid "37e52e62-c414-4ad1-9769-c5bcbaf77ec0")
 	)
+	(wire
+		(pts
+			(xy 53.34 55.88) (xy 53.34 58.42)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6c347553-76cf-4446-992a-f87e7a28e611")
+	)
+	(wire
+		(pts
+			(xy 60.96 48.26) (xy 63.5 48.26)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3ca9154a-4d25-47e2-8115-6c884321b576")
+	)
+	(wire
+		(pts
+			(xy 63.5 55.88) (xy 63.5 58.42)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "af6b76df-cc8f-436e-bf1c-21c05e8ccd50")
+	)
 	(symbol
 		(lib_id "Device:R")
 		(at 175.26 119.38 90)
@@ -12760,7 +12786,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -12771,7 +12797,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C270355.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25092.html"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -12782,7 +12808,7 @@
 				)
 			)
 		)
-		(property "Description" "22 1% 200ppm 0201 thick film"
+		(property "Description" "22 1% 100ppm 0402 thick film"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -12793,7 +12819,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C270355"
+		(property "LCSC" "C25092"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -12804,7 +12830,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF220JTEE"
+		(property "MFPN" "0402WGF220JTCE"
 			(at 175.26 119.38 0)
 			(hide yes)
 			(show_name no)
@@ -13249,7 +13275,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "2K"
 			(at 274.32 39.37 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13260,7 +13286,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -13271,7 +13297,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C4109.html"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -13282,7 +13308,7 @@
 				)
 			)
 		)
-		(property "Description" "1K6 0402 thin film 0.5% 25ppm"
+		(property "Description" "2K 1% 100ppm 0402 thick film"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -13293,7 +13319,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2686471"
+		(property "LCSC" "C4109"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -13304,7 +13330,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC1601"
+		(property "MFPN" "0402WGF2001TCE"
 			(at 271.78 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -13583,7 +13609,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K8"
+		(property "Value" "10K"
 			(at 215.9 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13594,7 +13620,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13605,7 +13631,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689474.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25744.html"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13616,7 +13642,7 @@
 				)
 			)
 		)
-		(property "Description" "6K8 0402 thin film 0.5% 25ppm"
+		(property "Description" "10K 1% 100ppm 0402 thick film"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13627,7 +13653,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689474"
+		(property "LCSC" "C25744"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13638,7 +13664,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC6801"
+		(property "MFPN" "0402WGF1002TCE"
 			(at 213.36 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -13697,7 +13723,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -13708,7 +13734,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -13719,7 +13745,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -13730,7 +13756,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -13752,7 +13778,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 182.88 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -13811,7 +13837,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -13822,7 +13848,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -13833,7 +13859,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -13844,7 +13870,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -13855,7 +13881,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 121.92 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -13925,7 +13951,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -13936,7 +13962,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -13947,7 +13973,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -13958,7 +13984,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -13980,7 +14006,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 93.98 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -14208,7 +14234,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "820"
+		(property "Value" "1K"
 			(at 274.32 50.8 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14219,7 +14245,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -14230,7 +14256,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2689479.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C11702.html"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -14241,7 +14267,7 @@
 				)
 			)
 		)
-		(property "Description" "820 0402 thin film 0.5% 25ppm"
+		(property "Description" "1K 1% 100ppm 0402 thick film"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -14252,7 +14278,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2689479"
+		(property "LCSC" "C11702"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -14263,7 +14289,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC8200"
+		(property "MFPN" "0402WGF1001TCE"
 			(at 271.78 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -14311,7 +14337,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "2K2"
 			(at 109.22 227.33 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14322,7 +14348,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14333,7 +14359,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25879.html"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14344,7 +14370,7 @@
 				)
 			)
 		)
-		(property "Description" "1K6 0402 thin film 0.5% 25ppm"
+		(property "Description" "2K2 1% 100ppm 0402 thick film"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14355,7 +14381,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2686471"
+		(property "LCSC" "C25879"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14366,7 +14392,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC1601"
+		(property "MFPN" "0402WGF2201TCE"
 			(at 106.68 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14414,7 +14440,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "1K5"
+		(property "Value" "4K7"
 			(at 347.98 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14425,7 +14451,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14436,7 +14462,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686468.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25900.html"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14447,7 +14473,7 @@
 				)
 			)
 		)
-		(property "Description" "1K5 0402 thin film 0.5% 25ppm"
+		(property "Description" "4K7 1% 100ppm 0402 thick film"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14458,7 +14484,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2686468"
+		(property "LCSC" "C25900"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14469,7 +14495,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC1501"
+		(property "MFPN" "0402WGF4701TCE"
 			(at 345.44 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14836,7 +14862,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14847,7 +14873,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C62550.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C1546.html"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14858,7 +14884,7 @@
 				)
 			)
 		)
-		(property "Description" "100pF 50V C0G 5% 0201"
+		(property "Description" "100pF 50V C0G 5% 0402"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14869,7 +14895,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C62550"
+		(property "LCSC" "C1546"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14880,7 +14906,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201CG101J500NT"
+		(property "MFPN" "0402CG101J500NT"
 			(at 96.52 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14928,7 +14954,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "1K5"
+		(property "Value" "4K7"
 			(at 307.34 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14939,7 +14965,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14950,7 +14976,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686468.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25900.html"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14961,7 +14987,7 @@
 				)
 			)
 		)
-		(property "Description" "1K5 0402 thin film 0.5% 25ppm"
+		(property "Description" "4K7 1% 100ppm 0402 thick film"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14972,7 +14998,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2686468"
+		(property "LCSC" "C25900"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -14983,7 +15009,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC1501"
+		(property "MFPN" "0402WGF4701TCE"
 			(at 304.8 41.91 0)
 			(hide yes)
 			(show_name no)
@@ -15031,7 +15057,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "6K2"
+		(property "Value" "12K"
 			(at 347.98 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15042,7 +15068,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -15053,7 +15079,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C319496.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25752.html"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -15064,7 +15090,7 @@
 				)
 			)
 		)
-		(property "Description" "6K2 0402 thin film 0.1% 25ppm"
+		(property "Description" "12K 1% 100ppm 0402 thick film"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -15075,7 +15101,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C319496"
+		(property "LCSC" "C25752"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -15086,7 +15112,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC6201"
+		(property "MFPN" "0402WGF1202TCE"
 			(at 345.44 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -15145,7 +15171,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "shared:C_0201_0603Metric_Tight"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15156,7 +15182,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C307380.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C307331.html"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15167,7 +15193,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF 16V X5R 0201"
+		(property "Description" "100nF 50V X7R 0402"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15178,7 +15204,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C307380"
+		(property "LCSC" "C307331"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15189,7 +15215,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL03A104KO3NNNC"
+		(property "MFPN" "CL05B104KB54PNC"
 			(at 265.43 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15402,7 +15428,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 320.04 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -15413,7 +15439,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C525371.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C49247682.html"
 			(at 320.04 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -15424,7 +15450,7 @@
 				)
 			)
 		)
-		(property "Description" "10K 1% B3950 1% 0402 NTC thermistor"
+		(property "Description" "10K 1% B25/50 3950 1% 0402 NTC thermistor"
 			(at 320.04 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -15435,7 +15461,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C525371"
+		(property "LCSC" "C49247682"
 			(at 320.04 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -15457,7 +15483,7 @@
 				)
 			)
 		)
-		(property "MFPN" "TCTR0402F10K0F3950T"
+		(property "MFPN" "HNTC0402-103F3950FB"
 			(at 320.04 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -15504,7 +15530,7 @@
 				)
 			)
 		)
-		(property "Value" "680"
+		(property "Value" "1K5"
 			(at 298.45 52.07 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15514,7 +15540,7 @@
 				)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15525,7 +15551,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C317914.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25867.html"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15536,7 +15562,7 @@
 				)
 			)
 		)
-		(property "Description" "680 0402 thin film 0.1% 25ppm"
+		(property "Description" "1K5 1% 100ppm 0402 thick film"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15547,7 +15573,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C317914"
+		(property "LCSC" "C25867"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15558,7 +15584,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR02BTC6800"
+		(property "MFPN" "0402WGF1501TCE"
 			(at 298.45 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -15765,7 +15791,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "2K2"
 			(at 162.56 227.33 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15776,7 +15802,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0402_1005Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -15787,7 +15813,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C2686471.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25879.html"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -15798,7 +15824,7 @@
 				)
 			)
 		)
-		(property "Description" "1K6 0402 thin film 0.5% 25ppm"
+		(property "Description" "2K2 1% 100ppm 0402 thick film"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -15809,7 +15835,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C2686471"
+		(property "LCSC" "C25879"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -15820,7 +15846,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG02DTC1601"
+		(property "MFPN" "0402WGF2201TCE"
 			(at 160.02 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -16178,7 +16204,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100"
+		(property "Value" "220"
 			(at 33.02 227.33 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -16189,7 +16215,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "shared:R_0201_0603Metric_Tight"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -16200,7 +16226,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C270366.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C25091.html"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -16211,7 +16237,7 @@
 				)
 			)
 		)
-		(property "Description" "100 1% 200ppm 0201 thick film"
+		(property "Description" "220 1% 100ppm 0402 thick film"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -16222,7 +16248,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C270366"
+		(property "LCSC" "C25091"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -16233,7 +16259,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0201WMF1000TEE"
+		(property "MFPN" "0402WGF2200TCE"
 			(at 30.48 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -16254,6 +16280,197 @@
 			(project "osc-sg90-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "Rb2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 63.5 58.42 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "df4bc2bd-15ca-4af4-90e9-6e5f07ef0117")
+		(property "Reference" "#PWR0053"
+			(at 63.5 58.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 63.5 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 63.5 58.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 63.5 58.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 63.5 58.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "ee832886-e5ad-4ae9-b458-da263547ab01")
+		)
+		(instances
+			(project "osc-sg90-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
+					(reference "#PWR0053")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 63.5 52.07 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "25d4e1fc-c641-4915-be98-4bcc4615bfcd")
+		(property "Reference" "Cp3"
+			(at 66.04 50.8 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10nF"
+			(at 66.04 53.34 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+			(at 63.5 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C15195.html"
+			(at 63.5 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "10nF 50V X7R 0402"
+			(at 63.5 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C15195"
+			(at 63.5 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "CL05B103KB5NNNC"
+			(at 63.5 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "JLC Type" "Basic"
+			(at 63.5 52.07 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "7ab5c931-44f7-40cd-8c76-d3b9f5ca92b1")
+		)
+		(pin "2"
+			(uuid "b6df9f31-93d8-4a9f-b69f-6bc31a4f4318")
+		)
+		(instances
+			(project "osc-sg90-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
+					(reference "Cp3")
 					(unit 1)
 				)
 			)
