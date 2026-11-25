@@ -118,21 +118,21 @@ impl Reason {
                 "Saved settings unreadable; board defaults are running and torque is refused. Run osc recover."
             }
             Reason::CalibCorrupt => {
-                "Calibration unreadable. Open loop only; run osc cal, then osc ident."
+                "Calibration unreadable. Open loop only; run osc-ident run, then osc-ident save."
             }
             Reason::ConfigStale => {
-                "Saved settings are from another firmware; board defaults are running. Open loop only; run osc cal, then osc ident."
+                "Saved settings are from another firmware; board defaults are running. Open loop only; run osc-ident run, then osc-ident save."
             }
             Reason::CalibStale => {
-                "Calibration is from another firmware. Open loop only; run osc cal, then osc ident."
+                "Calibration is from another firmware. Open loop only; run osc-ident run, then osc-ident save."
             }
             Reason::ConfigVirgin | Reason::CalibVirgin => {
-                "Factory-fresh. Open loop only; run osc cal, then osc ident."
+                "Factory-fresh. Open loop only; run osc-ident run, then osc-ident save."
             }
             Reason::StampMismatch => {
-                "Position table and identified values are not one set (edited, rebuilt or partly written). Run osc ident, or re-run the interrupted tool."
+                "Position table and identified values are not one set (edited, rebuilt or partly written). Run osc-ident run, or re-run the interrupted tool."
             }
-            Reason::PlantUnset => "Motor not identified. Run osc ident.",
+            Reason::PlantUnset => "Motor not identified. Run osc-ident run.",
         }
     }
 }
@@ -265,7 +265,7 @@ mod tests {
         };
         assert_eq!(
             s.message().unwrap(),
-            "closed loop refused: Motor not identified. Run osc ident."
+            "closed loop refused: Motor not identified. Run osc-ident run."
         );
         assert_eq!(fault::name(fault::DATA), Some("data"));
         assert_eq!(fault::name(9), None);

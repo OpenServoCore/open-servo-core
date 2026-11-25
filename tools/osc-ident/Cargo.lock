@@ -740,6 +740,7 @@ dependencies = [
  "futures-lite",
  "osc-client",
  "osc-measure",
+ "osc-servo-core",
  "serde",
  "serde_json",
 ]

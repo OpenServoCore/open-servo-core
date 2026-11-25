@@ -7,9 +7,9 @@ use crate::descriptor::Descriptor;
 use crate::error::{Error, LinkError};
 use crate::pipe::Pipe;
 
-/// `gear_class`: the gear train's material, written by `osc cal`. A byte
-/// outside the known codes reads `Unknown`, as a never-calibrated servo's 0
-/// does.
+/// `gear_class`: the gear train's material, written by `osc-ident`'s rules
+/// from the nameplate. A byte outside the known codes reads `Unknown`, as a
+/// never-calibrated servo's 0 does.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GearClass {
     Unknown,

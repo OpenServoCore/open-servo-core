@@ -1,23 +1,19 @@
-//! `osc` -- the operator CLI for an osc-native bus, driven through the
-//! osc-adapter: discovery, rescue, id/baud management, calibration,
+//! `osc` -- the bus driver CLI for an osc-native bus, driven through the
+//! osc-adapter: discovery, rescue, id/baud management, firmware updates,
 //! persistence, profiles, one-shot reads/writes, typed get/set/dump, and the
 //! adapter's own management verbs (rails, bootloader). A thin surface over
-//! osc-client -- every choreography lives in the library. Wire measurement is
-//! the bench `tool-*` binaries' job, not this tool's.
+//! osc-client -- every choreography lives in the library. `osc-ident` is
+//! the identification, calibration and tuning tool; wire measurement is the
+//! bench `tool-*` binaries' job.
 
 // clap's derive parses every Cmd variant in one generated function, and an allow on the
 // enum does not reach it.
 #![allow(clippy::large_unopt_stack_frames)]
 
 mod boot;
-mod cal;
-mod capture;
+mod bus;
 mod descriptor;
-mod ident;
-mod lut;
-mod rig;
 mod state;
-mod sweep;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -37,11 +33,11 @@ use osc_protocol::wire::UID_LEN;
 #[derive(Parser, Debug)]
 #[command(
     name = "osc",
-    about = "Operate an osc-native servo bus through the osc-adapter."
+    about = "The bus driver CLI: drive an osc-native servo bus through the osc-adapter. osc-ident is the identification, calibration and tuning tool."
 )]
 struct Cli {
     #[command(flatten)]
-    bus: rig::Bus,
+    bus: bus::Bus,
     /// Servo id for the unicast verbs.
     #[arg(short, long, global = true, default_value_t = 1)]
     id: u8,
@@ -270,25 +266,6 @@ enum Cmd {
         #[arg(long, default_value_t = 2000)]
         ticks: u16,
     },
-    /// DEPRECATED, to be removed. Identify the motor and synthesize its
-    /// gains: experiments, fits, write-back.
-    Ident(ident::Args),
-    /// DEPRECATED, to be removed. Calibrate: find the end-stops, confirm the angle range, write limits +
-    /// polarity + angle endpoints, then SAVE.
-    Cal(cal::Args),
-    /// DEPRECATED, to be removed. Replay a saved cal sweep_tel.csv offline: classify capture corruption
-    /// and re-run the position-table / motor-rev pipeline without a servo.
-    CalReplay(cal::replay::Args),
-    /// DEPRECATED, to be removed. Plant-capture campaign on one servo and supply: `pilot` measures the
-    /// servo and writes the dataset's envelope.toml, `plan` shows the session
-    /// it sizes, `session` runs it, `check` re-reads a landed capture.
-    Capture(capture::Args),
-    /// DEPRECATED, to be removed. Position table: `build` stitches one from a capture dataset's settled
-    /// rungs and writes the image JSON, `grade` graphs it, `write` puts it on
-    /// the servo, `show` reads the servo's back, `clear` returns it to the
-    /// identity. A write never stamps: closed loop is refused until
-    /// `osc ident`.
-    Lut(lut::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -321,13 +298,6 @@ impl Cmd {
             _ => vec![Id::new(id)],
         }
     }
-}
-
-/// `osc` keeps the bus verbs. Identification and calibration move to their
-/// own tool, written from the characterization notebooks, and the notebooks
-/// capture with their own instrument, `osc-lab`.
-fn deprecated(verb: &str) {
-    eprintln!("warning: `osc {verb}` is deprecated and will be removed");
 }
 
 fn on_off(s: &str) -> Result<bool, String> {
@@ -515,7 +485,7 @@ fn connect() -> Result<Client<NusbPipe>> {
 }
 
 fn connect_bus(cli: &Cli) -> Result<Client<NusbPipe>> {
-    rig::connect(&cli.bus, &cli.cmd.targets(cli.id))
+    bus::connect(&cli.bus, &cli.cmd.targets(cli.id))
 }
 
 fn discover(cli: &Cli) -> Result<()> {
@@ -788,7 +758,7 @@ fn get(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor, name: &str)
 }
 
 /// A hand edit; a stamp-covered field leaves the set marked stale until
-/// `osc stamp` or an ident refit blesses it (`state::covered_note`).
+/// `osc stamp` or an osc-ident refit blesses it (`state::covered_note`).
 fn set(
     c: &mut Client<NusbPipe>,
     id: Id,
@@ -1123,31 +1093,15 @@ fn main() -> Result<()> {
             state::warn(&mut c, id, &d)?;
             clapper(&mut c, id, &d, *flashes, *ticks)
         }
-        Cmd::Ident(args) => {
-            deprecated("ident");
-            ident::run(args, cli.bus.clone(), cli.id)
-        }
-        Cmd::Cal(args) => {
-            deprecated("cal");
-            cal::run(args, cli.bus.clone(), cli.id)
-        }
-        Cmd::CalReplay(a) => {
-            deprecated("cal-replay");
-            cal::replay::run(a)
-        }
-        Cmd::Capture(args) => {
-            deprecated("capture");
-            capture::run(args, cli.bus.clone(), cli.id)
-        }
-        Cmd::Lut(args) => {
-            deprecated("lut");
-            lut::run(args, cli.bus.clone(), cli.id)
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use osc_client::blocking::Client;
+    use osc_client::fake::FakePipe;
+    use osc_client::{BaudRate, Id};
+
     use super::{fmt_uptime, health_line};
 
     #[test]
@@ -1161,7 +1115,9 @@ mod tests {
 
     #[test]
     fn status_prints_the_health_block() {
-        let (mut c, id) = crate::rig::servo::bench::table(1961);
+        let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        pipe.seed_calibrated(0);
+        let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
         let d = crate::state::descriptor(&mut c, id).unwrap();
         assert_eq!(
             health_line(&mut c, id, &d).unwrap(),

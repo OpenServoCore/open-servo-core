@@ -1,7 +1,7 @@
 //! Data state on every servo verb: the one-line warning a command prints
 //! when `data_flags` names a reason (the command still runs - OpenLoop,
-//! Current, cal and ident work on such a servo, the closed loops are what
-//! the servo refuses), the `osc status` report with the stamp verdict, the
+//! Current and osc-ident's steps work on such a servo, the closed loops are
+//! what the servo refuses), the `osc status` report with the stamp verdict, the
 //! torque-off restamp behind `osc set`, and `osc recover`: the only osc
 //! verb that SAVEs a CONFIG_CORRUPT servo.
 
@@ -20,8 +20,8 @@ use osc_client::{Error, Id, ResultCode};
 use osc_ident::regs::control;
 use osc_protocol::table::CONFIG_COMMON_END;
 
+use crate::bus::Bus;
 use crate::descriptor;
-use crate::rig::Bus;
 
 /// The servo's descriptor (built-ins plus the operator's overrides, picked
 /// by one identity read), owned so callers keep no registry around.
@@ -112,7 +112,7 @@ pub(crate) fn covered_note(d: &Descriptor, f: &Field) {
     };
     if covered {
         println!(
-            "note: {} is stamp-covered: the set is marked stale and closed loop is refused at the next enable; osc stamp [--save] blesses the tuned set, osc ident refits it",
+            "note: {} is stamp-covered: the set is marked stale and closed loop is refused at the next enable; osc stamp [--save] blesses the tuned set, osc-ident refits it",
             f.name
         );
     }
@@ -171,7 +171,7 @@ pub(crate) fn mgmt_save<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
 
 /// `osc stamp`: bless the set the servo holds now, after deliberate manual
 /// tuning (`osc set` of covered fields). The one explicit path besides the
-/// tools that write the set themselves (cal, ident, recover --from).
+/// tools that write the set themselves (osc-ident, recover --from).
 pub(crate) fn stamp(c: &mut Client<NusbPipe>, id: Id, save: bool) -> Result<()> {
     let d = descriptor(c, id)?;
     warn(c, id, &d)?;
@@ -185,10 +185,10 @@ pub(crate) fn stamp(c: &mut Client<NusbPipe>, id: Id, save: bool) -> Result<()> 
 /// A CONFIG_CORRUPT servo runs board defaults (limits, polarity) and
 /// refuses every mode; SAVE never blesses that, so FACTORY + reboot is the
 /// only exit, and the servo comes back factory-fresh on its board id and
-/// baud. From there either the normal fresh flow (`osc cal`, then `osc
-/// ident`) or `--from` restores a saved table, restamps and SAVEs. Every
-/// other reason (STALE, VIRGIN, CALIB_CORRUPT, STAMP_MISMATCH, PLANT_UNSET)
-/// needs no wipe: `--from` alone brings a saved table back.
+/// baud. From there either the normal fresh flow (`osc-ident run`, then
+/// `osc-ident save`) or `--from` restores a saved table, restamps and
+/// SAVEs. Every other reason (STALE, VIRGIN, CALIB_CORRUPT, STAMP_MISMATCH,
+/// PLANT_UNSET) needs no wipe: `--from` alone brings a saved table back.
 ///
 /// The bench MG90 after a CALIB layout change boots CALIB_STALE |
 /// STAMP_MISMATCH | PLANT_UNSET; with no motion at all:
@@ -198,7 +198,7 @@ pub(crate) fn stamp(c: &mut Client<NusbPipe>, id: Id, save: bool) -> Result<()> 
 #[derive(clap::Args, Debug)]
 pub(crate) struct RecoverArgs {
     /// Restore CONFIG + CALIB fields from a JSON table: `{"fields": {name:
-    /// value}}` (an exported profile) or `{name: value}` (an `ident write`
+    /// value}}` (an exported profile) or `{name: value}` (a flat
     /// snapshot). Identity/comms fields, read-only fields and the volatile
     /// blocks are skipped; then restamp + SAVE.
     #[arg(long)]
@@ -213,7 +213,7 @@ pub(crate) struct RecoverArgs {
 
 pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
     let mut id = Id::new(id);
-    let mut c = crate::rig::connect(&bus, &[id])?;
+    let mut c = crate::bus::connect(&bus, &[id])?;
     let d = descriptor(&mut c, id)?;
     let s = c.data_state(id, &d)?;
     println!("id {}:", id.as_byte());
@@ -251,7 +251,9 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
             commit(&mut c, id, &d, true)?;
         }
         None if corrupt || args.factory => {
-            println!("next: osc cal, then osc ident (or osc recover --from <table.json>)");
+            println!(
+                "next: osc-ident run, then osc-ident save (or osc recover --from <table.json>)"
+            );
         }
         None => match s.message() {
             None => println!("nothing to recover"),

@@ -184,7 +184,7 @@ pub fn seed(shared: &Shared) {
     shared.publish_data_state(ImageState::Loaded, ImageState::Loaded);
 }
 
-/// The host's stamp over the live set, as `osc ident` writes it last.
+/// The host's stamp over the live set, as `osc-ident` writes it last.
 pub fn stamp(shared: &Shared) {
     shared
         .table

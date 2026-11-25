@@ -1428,10 +1428,9 @@ fn table_bytes(t: &mut osc_servo_core::ControlTable) -> &mut [u8] {
     }
 }
 
-/// The commit sequence on a factory-fresh servo, as `osc cal` then
-/// `osc ident write` run it: the set, the stamp, SAVE, and only then a
-/// clean data state; a covered edit afterwards shuts closed loop until a
-/// restamp.
+/// The commit sequence on a factory-fresh servo, as `osc-ident save` runs
+/// it: the set, the stamp, SAVE, and only then a clean data state; a
+/// covered edit afterwards shuts closed loop until a restamp.
 #[test]
 fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     let d = descriptor();

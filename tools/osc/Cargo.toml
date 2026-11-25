@@ -5,29 +5,17 @@ resolver = "2"
 name        = "osc"
 version     = "0.1.0"
 edition     = "2024"
-description = "Operator CLI for an osc-native bus through the osc-adapter: discover, provision, calibrate, manage."
+description = "The bus driver CLI for an osc-native bus through the osc-adapter: discover, provision, update, manage. osc-ident is the identification, calibration and tuning tool."
 license     = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow       = "1"
 clap         = { version = "4", features = ["derive"] }
-ctrlc        = "3"
 dialoguer    = "0.11"
-flate2       = "1"
 osc-client   = { path = "../../client" }
 osc-ident    = { path = "../../ident" }
 osc-protocol = { path = "../../firmware/lib/osc-protocol" }
-serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
-toml         = "1"
 
-# cal's write phase runs against the in-process servo stack; the capture
-# front drives osc-ident's test servo.
 [dev-dependencies]
 osc-client = { path = "../../client", features = ["fake-adapter"] }
-osc-ident  = { path = "../../ident", features = ["testkit"] }
-
-# The mg90-a lut build tracks 100 rungs of 20 kHz current: minutes
-# unoptimized, seconds optimized. Overflow checks and debug assertions stay.
-[profile.test]
-opt-level = 2
