@@ -11,7 +11,10 @@ Writes, beside this file:
 - `lookup-of-record.csv`: the camera lookup of record (stage 4), copied;
 - `widecodes.json.gz`: the raw pot code histograms of the crawl and ladder
   hold rows (the stage 1 open-loop sets), even and odd chains apart;
-- `expected.json`: what the reference rules below give on those rows;
+- `expected.json`: what the reference rules below give on those rows, and
+  the pooled table: oscnb `position.fit_pwl` over all four passes, called
+  with no rest points and its ridge at the square root of the rules'
+  penalty, so it solves the same least squares as the rules' `fit`;
 - `sources.json`: where each came from, with sha1s.
 
 The rules are the design note's offline scripts' (bringup
@@ -28,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from oscnb import boards, postable, results, ripple, servos, motors, tel, widecodes
+from oscnb import boards, position, postable, results, ripple, servos, motors, tel, widecodes
 
 HERE = Path(__file__).resolve().parent
 BRINGUP = Path.home() / "projects/OpenServoCore/osc-dev-v006-bringup"
@@ -95,6 +98,30 @@ def fit(passes, knots, w=1.0):
         d[j, j:j + 3] = [1, -2, 1]
     sol = np.linalg.solve(a.T @ a + lam * d.T @ d, a.T @ y)
     return sol[:K], rms(y - a @ sol)
+
+
+def pooled(passes, knots, w=1.0):
+    """One table over every pass, each pass its own offset, the first's 0.
+
+    fit_pwl leaves the level free with no rest points and lstsq takes the
+    least-norm answer; the first pass's offset moved into the table gives
+    the rules' form. Checked against the rules' own solve.
+    """
+    xs, ys, sid = [], [], []
+    for p, (x, y) in enumerate(passes):
+        m = (x >= knots[0]) & (x <= knots[-1])
+        xs.append(x[m])
+        ys.append(y[m])
+        sid.append(np.full(m.sum(), p))
+    x, y, sid = np.concatenate(xs), np.concatenate(ys), np.concatenate(sid)
+    ridge = np.sqrt(w * len(x) / (len(knots) - 1))
+    v, off = position.fit_pwl(x, y, sid, np.zeros(0), np.zeros(0), knots, ridge)
+    o = np.array([off[p] for p in range(len(passes))])
+    v, o = v + o[0], o - o[0]
+    r = y - (np.interp(x, knots, v) + o[sid])
+    t, _ = fit(passes, knots, w)
+    assert np.abs(t - v).max() < 1e-9, np.abs(t - v).max()
+    return v, o, rms(r)
 
 
 def line_out(knots, a):
@@ -168,6 +195,17 @@ def table_part(record_slots):
             g = slopes(xg, knots, a)
             excess[zn][n] = float(np.mean((g.mean() / g - 1)[m]))
     s1, s2 = slopes(xg, knots, trips[0]), slopes(xg, knots, trips[1])
+    lo_p = min(per[k][0].min() for k in per)
+    hi_p = max(per[k][0].max() for k in per)
+    k0_p, k1_p = int(np.ceil(lo_p / GRID)) + 1, int(np.floor(hi_p / GRID)) - 1
+    knots_p = np.arange(k0_p, k1_p + 1) * GRID
+    P, off_p, r_p = pooled([per[k][:2] for k in per], knots_p)
+    Pc = P[np.isin(knots_p, knots)]
+    g_p, g_m = slopes(xg, knots, Pc), slopes(xg, knots, M)
+    e_p = (g_p / g_p.mean()) / (g_l / g_l.mean()) - 1
+    zone_p = {zn: float(np.mean(np.abs(e_p[(xg >= z[0]) & (xg <= z[1])]))) for zn, z in ZONES.items()}
+    pts_p = points(knots_p, P, *STOPS)
+    gain_p = 16 + np.diff(pts_p)
     pts = points(knots, M, *STOPS)
     gain = 16 + np.diff(pts)
     sl = (M[-1] - M[0]) / (knots[-1] - knots[0])
@@ -187,6 +225,17 @@ def table_part(record_slots):
         "points_max_abs": int(np.abs(pts).max()),
         "gain_q4": [int(gain.min()), int(gain.max())],
         "mean": [float(v) for v in M],
+        "pooled": {
+            "knots": [int(knots_p[0]), int(knots_p[-1])],
+            "angle": [float(v) for v in P],
+            "offsets": [float(v) for v in off_p],
+            "residual_deg": r_p * CYC_DEG,
+            "against_mean": {"line_out_counts": rms(line_out(knots, Pc - M)) * (knots[-1] - knots[0]) / (Pc[-1] - Pc[0]),
+                             "slope_rms": rms(g_p / g_m - 1)},
+            "zone_slope_error": zone_p,
+            "points_max_abs": int(np.abs(pts_p).max()),
+            "gain_q4": [int(gain_p.min()), int(gain_p.max())],
+        },
     }
     lpath = postable.lookup_of_record(PAIR)[1]
     (HERE / "lookup-of-record.csv").write_bytes(lpath.read_bytes())
