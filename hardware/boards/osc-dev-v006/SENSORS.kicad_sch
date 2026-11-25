@@ -2395,7 +2395,7 @@
 		)
 		(uuid "d680b987-f39b-46f9-8be7-40780045306c")
 	)
-	(text_box "Rg, Rf, Ri: thinfilm 0.5% 25ppm, C: C0G"
+	(text_box "Rg, Rf, Ri: 1% 100ppm thick film"
 		(exclude_from_sim no)
 		(at 83.185 82.4116 0)
 		(size 120.015 3.9483)
@@ -2457,7 +2457,7 @@
 		)
 		(uuid "b1380ba0-707f-45f7-80c7-03955301c4c3")
 	)
-	(text_box "R: thinfilm 0.5% 25ppm, C: C0G"
+	(text_box "R: 1% 100ppm thick film, C: C0G"
 		(exclude_from_sim no)
 		(at 15.24 138.2917 0)
 		(size 82.55 3.9483)
@@ -2477,7 +2477,7 @@
 		)
 		(uuid "be1ab2db-c5cb-420b-bd7f-124c3d2c4763")
 	)
-	(text_box "The whole sensing chain lives on this sheet: shunt -> OPA -> ADC, plus terminal sense, supply sense, two position channels and the NTC.\n\n- Rs1 is the ONLY tie between PGND and GND, so all motor return current has to cross it. Don't add another tie in layout. The full layout rules (PGND island, cap returns, Kelvin routing) live in the DRV sheet notes.\n- This is a swap-and-measure board: populated values are just the starting point.\n- Ri1/Ri2 lift the op-amp inputs to about 0.75V common mode, out of the offset ramp near GND. Keep them thinfilm and matched to Rg: each 1% of Ri2/Rg2 mismatch moves the current zero about 0.11V.\n- No compensation or input caps: the caps-out chain gave the lowest current floor, and 0-47pF across the inputs measured no different. If a layout ever rings, 22pF across Rf2 (and a matching one across Rf1) is the fix.\n- VREF sits at about 1.09V (Rd2 820), giving -1.2A to +2.2A of range; the positive side is kept for the overcurrent trip. Swap Rd2 to move it.\n- VSNA/VSNB divider bottoms return to VB, not GND, so both terminals stay readable while the bridge coasts and vA - vB is real back-EMF. Rail = 5 x tap - 4 x Vb (divider ratio 0.20); Vb is read at boot with the driver parked, both taps sitting at Vb.\n- POS2 shares its ADC pin with the NTC: JP2 jumped = NTC (internal Rn1/TH1 leg or external J7), JP2 open = second transducer channel. Ra2/Ca2 match Ra1/Ca1 so the pair stays phase-matched.\n- Precision money goes to the shunt + Rg/Rf quad only. Everything else is offset error and boot cal eats it."
+	(text_box "The whole sensing chain lives on this sheet: shunt -> OPA -> ADC, plus terminal sense, supply sense, two position channels and the NTC.\n\n- Rs1 is the ONLY tie between PGND and GND, so all motor return current has to cross it. Don't add another tie in layout. The full layout rules (PGND island, cap returns, Kelvin routing) live in the DRV sheet notes.\n- This is a swap-and-measure board: populated values are just the starting point.\n- Ri1/Ri2 lift the op-amp inputs to about 0.79V common mode, out of the offset ramp near GND. Each 1% of Ri2/Rg2 mismatch moves the current zero about 0.09V; the parts are 1%, so the zero spreads board to board and firmware measures it at boot.\n- No compensation or input caps: the caps-out chain gave the lowest current floor, and 0-47pF across the inputs measured no different. If a layout ever rings, 22pF across Rf2 (and a matching one across Rf1) is the fix.\n- VREF sits at about 1.08V (Rd1 2K / Rd2 1K), giving -1.5A to +2.9A of range at G = 12 (Rf 12K / Rg 1K); the positive side is kept for the overcurrent trip. Swap Rd2 to move it.\n- VSNA/VSNB divider bottoms return to VB, not GND, so both terminals stay readable while the bridge coasts and vA - vB is real back-EMF. Rail = 5.53 x tap - 4.53 x Vb (divider ratio 0.181, Rv 6K8 / 1K5); Vb is read at boot with the driver parked, both taps sitting at Vb.\n- POS2 shares its ADC pin with the NTC: JP2 jumped = NTC (internal Rn1/TH1 leg or external J7), JP2 open = second transducer channel. Ra2/Ca2 match Ra1/Ca1 so the pair stays phase-matched.\n- Precision money goes to the shunt only. The networks are 1% basic parts: the boot zero and identification absorb their spread."
 		(exclude_from_sim no)
 		(at 209.55 29.21 0)
 		(size 72.39 118.11)
@@ -4090,7 +4090,7 @@
 				)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "12K"
 			(at 181.61 60.96 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4111,7 +4111,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374580.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22790.html"
 			(at 179.07 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -4133,7 +4133,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374580"
+		(property "LCSC" "C22790"
 			(at 176.53 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -4144,7 +4144,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC6401N"
+		(property "MFPN" "0603WAF1202T5E"
 			(at 176.53 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -4268,7 +4268,7 @@
 				)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "2K"
 			(at 104.14 48.26 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4289,7 +4289,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374557.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22975.html"
 			(at 101.6 48.26 0)
 			(hide yes)
 			(show_name no)
@@ -4311,7 +4311,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374557"
+		(property "LCSC" "C22975"
 			(at 99.06 48.26 0)
 			(hide yes)
 			(show_name no)
@@ -4322,7 +4322,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC1601"
+		(property "MFPN" "0603WAF2001T5E"
 			(at 99.06 48.26 0)
 			(hide yes)
 			(show_name no)
@@ -4370,7 +4370,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "1K5"
 			(at 86.868 119.888 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4392,7 +4392,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374557.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22843.html"
 			(at 85.09 118.11 0)
 			(hide yes)
 			(show_name no)
@@ -4414,7 +4414,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374557"
+		(property "LCSC" "C22843"
 			(at 79.756 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -4425,7 +4425,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC1601"
+		(property "MFPN" "0603WAF1501T5E"
 			(at 79.756 116.84 0)
 			(hide yes)
 			(show_name no)
@@ -6598,7 +6598,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 65.024 104.648 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6620,7 +6620,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374580.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C23212.html"
 			(at 63.5 102.87 0)
 			(hide yes)
 			(show_name no)
@@ -6642,7 +6642,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374580"
+		(property "LCSC" "C23212"
 			(at 57.912 101.346 0)
 			(hide yes)
 			(show_name no)
@@ -6653,7 +6653,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC6401N"
+		(property "MFPN" "0603WAF6801T5E"
 			(at 57.912 101.346 0)
 			(hide yes)
 			(show_name no)
@@ -6701,7 +6701,7 @@
 				(justify bottom)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "470"
 			(at 29.21 135.636 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6722,7 +6722,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374586.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C23179.html"
 			(at 29.21 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -6744,7 +6744,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374586"
+		(property "LCSC" "C23179"
 			(at 27.178 137.922 0)
 			(hide yes)
 			(show_name no)
@@ -6755,7 +6755,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTCX4300"
+		(property "MFPN" "0603WAF4700T5E"
 			(at 27.178 137.922 0)
 			(hide yes)
 			(show_name no)
@@ -6882,7 +6882,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "1K5"
 			(at 35.814 114.808 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6904,7 +6904,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374557.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22843.html"
 			(at 34.29 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -6926,7 +6926,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374557"
+		(property "LCSC" "C22843"
 			(at 28.956 111.506 0)
 			(hide yes)
 			(show_name no)
@@ -6937,7 +6937,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC1601"
+		(property "MFPN" "0603WAF1501T5E"
 			(at 28.956 111.506 0)
 			(hide yes)
 			(show_name no)
@@ -6984,7 +6984,7 @@
 				)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "12K"
 			(at 142.24 60.96 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7005,7 +7005,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374580.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22790.html"
 			(at 139.7 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -7027,7 +7027,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374580"
+		(property "LCSC" "C22790"
 			(at 137.16 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -7038,7 +7038,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC6401N"
+		(property "MFPN" "0603WAF1202T5E"
 			(at 137.16 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -7189,7 +7189,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 86.614 109.728 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7211,7 +7211,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374580.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C23212.html"
 			(at 85.09 107.95 0)
 			(hide yes)
 			(show_name no)
@@ -7233,7 +7233,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374580"
+		(property "LCSC" "C23212"
 			(at 79.502 106.426 0)
 			(hide yes)
 			(show_name no)
@@ -7244,7 +7244,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC6401N"
+		(property "MFPN" "0603WAF6801T5E"
 			(at 79.502 106.426 0)
 			(hide yes)
 			(show_name no)
@@ -7396,7 +7396,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "6K4"
+		(property "Value" "6K8"
 			(at 35.814 104.394 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7418,7 +7418,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374580.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C23212.html"
 			(at 34.29 102.87 0)
 			(hide yes)
 			(show_name no)
@@ -7440,7 +7440,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374580"
+		(property "LCSC" "C23212"
 			(at 29.718 100.838 0)
 			(hide yes)
 			(show_name no)
@@ -7451,7 +7451,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC6401N"
+		(property "MFPN" "0603WAF6801T5E"
 			(at 29.718 100.838 0)
 			(hide yes)
 			(show_name no)
@@ -7680,7 +7680,7 @@
 				(justify bottom)
 			)
 		)
-		(property "Value" "1K5"
+		(property "Value" "3K3"
 			(at 181.356 46.99 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7701,7 +7701,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C4022618.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22978.html"
 			(at 179.07 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -7723,7 +7723,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C4022618"
+		(property "LCSC" "C22978"
 			(at 183.642 49.022 0)
 			(hide yes)
 			(show_name no)
@@ -7734,7 +7734,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC1501"
+		(property "MFPN" "0603WAF3301T5E"
 			(at 183.642 49.022 0)
 			(hide yes)
 			(show_name no)
@@ -8223,7 +8223,7 @@
 				)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "1K"
 			(at 171.45 55.626 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8244,7 +8244,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374586.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C21190.html"
 			(at 171.45 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -8266,7 +8266,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374586"
+		(property "LCSC" "C21190"
 			(at 171.45 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -8277,7 +8277,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTCX4300"
+		(property "MFPN" "0603WAF1001T5E"
 			(at 171.45 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -8897,7 +8897,7 @@
 				)
 			)
 		)
-		(property "Value" "430"
+		(property "Value" "1K"
 			(at 133.35 55.88 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8918,7 +8918,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374586.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C21190.html"
 			(at 133.35 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -8940,7 +8940,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374586"
+		(property "LCSC" "C21190"
 			(at 133.35 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -8951,7 +8951,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTCX4300"
+		(property "MFPN" "0603WAF1001T5E"
 			(at 133.35 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -9597,7 +9597,7 @@
 				)
 			)
 		)
-		(property "Value" "820"
+		(property "Value" "1K"
 			(at 104.14 58.42 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9618,7 +9618,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C218157.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C21190.html"
 			(at 101.6 58.42 0)
 			(hide yes)
 			(show_name no)
@@ -9640,7 +9640,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C218157"
+		(property "LCSC" "C21190"
 			(at 99.06 58.42 0)
 			(hide yes)
 			(show_name no)
@@ -9651,7 +9651,7 @@
 				)
 			)
 		)
-		(property "MFPN" "ARG03FTC8200"
+		(property "MFPN" "0603WAF1001T5E"
 			(at 99.06 58.42 0)
 			(hide yes)
 			(show_name no)
@@ -9699,7 +9699,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1K6"
+		(property "Value" "1K5"
 			(at 65.278 114.808 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9721,7 +9721,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C374557.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22843.html"
 			(at 63.5 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -9743,7 +9743,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C374557"
+		(property "LCSC" "C22843"
 			(at 58.166 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -9754,7 +9754,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC1601"
+		(property "MFPN" "0603WAF1501T5E"
 			(at 58.166 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -9905,7 +9905,7 @@
 				(justify bottom)
 			)
 		)
-		(property "Value" "1K5"
+		(property "Value" "3K3"
 			(at 141.986 46.99 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9926,7 +9926,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C4022618.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22978.html"
 			(at 139.7 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -9948,7 +9948,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C4022618"
+		(property "LCSC" "C22978"
 			(at 144.272 49.022 0)
 			(hide yes)
 			(show_name no)
@@ -9959,7 +9959,7 @@
 				)
 			)
 		)
-		(property "MFPN" "AR03DTC1501"
+		(property "MFPN" "0603WAF3301T5E"
 			(at 144.272 49.022 0)
 			(hide yes)
 			(show_name no)

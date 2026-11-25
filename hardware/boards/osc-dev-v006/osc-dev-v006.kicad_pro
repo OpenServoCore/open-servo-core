@@ -1018,8 +1018,8 @@
     "DRU": "osc-dev-v006.kicad_dru",
     "FAB": "JLCPCB",
     "PROJECT": "open-servo-core",
-    "REV": "Rev. 2B",
-    "STACKUP": "6L 1.6mm JLC06161H-3313"
+    "REV": "Rev. 2C",
+    "STACKUP": "4L 1.6mm JLC04161H-3313"
   },
   "tuning_profiles": {
     "meta": {
