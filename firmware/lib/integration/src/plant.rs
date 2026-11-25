@@ -256,7 +256,6 @@ impl Plant {
             vmotor_a_trough: va,
             vmotor_b: vb,
             vmotor_b_trough: vb,
-            vref_raw: 1489,
             vbus_raw: vbus_raw(VBUS),
             ntc_raw: 2048,
         }
@@ -405,7 +404,6 @@ impl RlPlant {
             vmotor_a_trough: va,
             vmotor_b: vb,
             vmotor_b_trough: vb,
-            vref_raw: 1489,
             vbus_raw: vbus_raw(RL_VBUS),
             ntc_raw: 2048,
         }

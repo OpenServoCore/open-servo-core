@@ -5,14 +5,18 @@ use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::config::addr::common::ID;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::telemetry::addr::refs::ENC_A;
-use osc_servo_core::regions::telemetry::addr::tick::{POS, VMOTOR_A};
+use osc_servo_core::regions::telemetry::addr::tick::{POS, VBUS_RAW, VMOTOR_A};
 use serial_test::serial;
 
 use crate::support::bench;
 
-/// The turnaround scatter: pos+vref_raw(4) + vmotor_a(2) + enc_a(2)
-/// from the raw telemetry block: the protocol sec 5.2 cyclic-telemetry shape.
-const SCATTER: [(u16, u8); 3] = [(POS, 4), (VMOTOR_A, 2), (ENC_A, 2)];
+/// The turnaround scatter from the raw telemetry block, the protocol sec 5.2
+/// cyclic-telemetry shape: pos+vbus_raw(4) at 2 mod 4, copied as two
+/// halfwords; vbus_raw+ntc_raw(4) word-aligned, copied as one word; then
+/// vmotor_a(2) and enc_a(2).
+const SCATTER: [(u16, u8); 4] = [(POS, 4), (VBUS_RAW, 4), (VMOTOR_A, 2), (ENC_A, 2)];
+
+const _: () = assert!(POS % 4 == 2 && VBUS_RAW % 4 == 0);
 
 /// A gathered reply is byte-identical to the concatenation of plain READs of
 /// the same spans (odd interior span included -- no parity constraint, protocol sec 5.2).
@@ -50,11 +54,12 @@ fn profile_read_bad_slot_rejects_range() {
     }
 }
 
-/// Per-baud ceiling for the mean profile-read turnaround (us), 3 spans / 8 B:
-/// the two extra snapshot arms and the span resolution add ~10-16 us over a
-/// contiguous READ of the same bytes. Measured means with the kernel above
-/// the bus: 72.4/87.4/89.0/93.1 ascending baud. Each ceiling sits ~8 us above
-/// (the turnaround-budget convention: layout swing plus kernel-phase spread).
+/// Per-baud ceiling for the mean profile-read turnaround (us). Set on a
+/// 3-span 8 B scatter, its 4 B span word-aligned: the two extra snapshot
+/// arms and the span resolution add ~10-16 us over a contiguous READ of the
+/// same bytes. Measured means with the kernel above the bus:
+/// 72.4/87.4/89.0/93.1 ascending baud. Each ceiling sits ~8 us above (the
+/// turnaround-budget convention: layout swing plus kernel-phase spread).
 fn profile_turnaround_budget_us(baud: u32) -> f64 {
     match baud {
         500_000 => 80.0,
@@ -85,7 +90,7 @@ fn profile_read_turnaround_within_budget() {
         );
 
         let s = Stats::from(&report.ok).expect("some turnaround samples");
-        println!("profile-read (3 spans, 8 B) turnaround @{baud}:");
+        println!("profile-read (4 spans, 12 B) turnaround @{baud}:");
         s.print();
         let budget = profile_turnaround_budget_us(baud);
         assert!(

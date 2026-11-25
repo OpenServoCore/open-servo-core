@@ -114,9 +114,8 @@ fn track(pot: Option<u16>, zero_w: i32) -> Vec<TelSample> {
             let at = |base: i32, k: u32| (base + n(k)) as u16;
             TelSample {
                 tick: TelemetryTick {
-                    _scan: [0; 10],
+                    _scan: [0; 9],
                     pos: pot.unwrap_or_else(|| at(2041, 1)),
-                    vref_raw: at(1490, 2),
                     vbus_raw: at(1241, 3),
                     ntc_raw: at(2010, 4),
                     current_raw: (1206 + noise(i, 5, zero_w)) as u16,
@@ -138,8 +137,18 @@ fn track(pot: Option<u16>, zero_w: i32) -> Vec<TelSample> {
 }
 
 /// The servo of record at `rate`: the set of record installed and saved,
-/// resting on `track`.
+/// resting on `track`, its boot reading of the reference 1490.
 fn servo(rate: BaudRate, track: Vec<TelSample>, hook: Hook) -> (Client<Bus>, Writes) {
+    servo_with_vref(rate, track, hook, 1490)
+}
+
+/// [`servo`] with the boot reading `vref_raw`; 0 is none.
+fn servo_with_vref(
+    rate: BaudRate,
+    track: Vec<TelSample>,
+    hook: Hook,
+    vref_raw: u16,
+) -> (Client<Bus>, Writes) {
     let mut inner = FakePipe::new(rate, &[1]);
     inner.seed_calibrated(0);
     let writes = Writes::default();
@@ -164,6 +173,10 @@ fn servo(rate: BaudRate, track: Vec<TelSample>, hook: Hook) -> (Client<Bus>, Wri
     .expect("the set of record installs");
     block_on(mgmt::save(&mut c, ID)).expect("save");
     c.pipe_mut().inner.set_track(0, track);
+    c.pipe_mut()
+        .inner
+        .sim_mut()
+        .servo_table_mut(0, |t| t.telemetry.refs.vref_raw = vref_raw);
     c.pipe_mut().hook = hook;
     writes.borrow_mut().clear();
     (c, writes)
@@ -265,6 +278,17 @@ fn rest_on_the_simulated_servo_accepts_and_moves_nothing() {
         .as_f64()
         .expect("rail");
     assert!((rail - 5.0).abs() < 0.02, "{rail}");
+    assert_eq!(
+        result["estimates"]["vdd_v"]["value"].as_f64(),
+        Some(1.2 * 4096.0 / 1490.0),
+        "the chip supply from the one READ of vref_raw"
+    );
+    let vdd = r
+        .checks
+        .iter()
+        .find(|c| c.name == "chip supply")
+        .expect("checked");
+    assert_eq!(vdd.verdict, Verdict::Pass, "{}", vdd.value);
 
     for name in ["captures/rest/01-rest", "captures/rest/02-raw"] {
         let csv = gunzip(&sink.files[&format!("{name}.csv.gz")]).expect("gzip");
@@ -281,6 +305,47 @@ fn rest_on_the_simulated_servo_accepts_and_moves_nothing() {
         );
         assert!(meta["sense"]["gain_milli"].is_u64());
     }
+}
+
+/// A servo whose `vref_raw` reads 0 took no boot reading: the step says
+/// so, reads the rail through the nominal supply, and still accepts.
+#[test]
+fn rest_without_a_boot_reading_uses_the_nominal_supply() {
+    let (mut c, _) = servo_with_vref(
+        BaudRate::B3000000,
+        track(None, 1),
+        Box::new(|_, _| false),
+        0,
+    );
+    let mut sink = MemSink::default();
+    let r = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");
+    assert_eq!(r.ended.way, Way::Done, "{:?} {:?}", r.ended.why, failed(&r));
+    let vdd = r
+        .checks
+        .iter()
+        .find(|c| c.name == "chip supply")
+        .expect("checked");
+    assert_eq!(vdd.verdict, Verdict::NotJudged, "{}", vdd.value);
+    assert!(
+        vdd.value.contains("vref_raw reads 0") && vdd.value.contains("nominal vdd_mv"),
+        "{}",
+        vdd.value
+    );
+    assert!(
+        r.ended
+            .lines
+            .iter()
+            .any(|l| l.contains("vref_raw reads 0") && l.contains("no chip supply figure")),
+        "{:?}",
+        r.ended.lines
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&sink.files[rest::RESULT]).expect("rest.json");
+    assert!(result["estimates"]["vdd_v"].is_null());
+    let rail = result["estimates"]["rail_v"]["value"]
+        .as_f64()
+        .expect("rail");
+    assert!((rail - 5.0).abs() < 0.02, "{rail}");
 }
 
 #[test]

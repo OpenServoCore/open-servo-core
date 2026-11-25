@@ -780,7 +780,7 @@ version = "0.0.0"
 
 [[package]]
 name = "osc-servo-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bbqueue",
  "bitflags",

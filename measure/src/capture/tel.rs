@@ -562,7 +562,10 @@ mod tests {
     }
 
     /// Trimmed from committed notebook captures (testdata/captures/sources.json):
-    /// the raw row of an open-loop ladder, and the rest row.
+    /// the raw row of an open-loop ladder, and the rest row. The rest row is
+    /// re-laid from a capture of the older row with `vref_raw`: that column
+    /// emptied, `vmotor_b` a copy of `vmotor_a`; a capture of the new row
+    /// replaces it at the bench gate.
     #[test]
     fn golden_rows_match_a_committed_capture() {
         round_trip("raw-row.sweep.csv", Layout::Raw, 64);
@@ -587,7 +590,7 @@ mod tests {
 
     #[test]
     fn a_missing_frame_leaves_a_seq_hole_and_a_tick_jump() {
-        let pos = Chunks::one(0x238, 2);
+        let pos = Chunks::one(0x236, 2);
         let mut a = StreamAssembler::new(pos, 0).expect("arms");
         let mut out = Vec::new();
         for seq in [0u8, 1, 3] {
@@ -606,7 +609,7 @@ mod tests {
     /// stamp tells.
     #[test]
     fn dropped_rows_jump_the_ticks_not_the_seq() {
-        let pos = Chunks::one(0x238, 2);
+        let pos = Chunks::one(0x236, 2);
         let mut a = StreamAssembler::new(pos, 0).expect("arms");
         let mut out = Vec::new();
         a.push(true, false, &payload(0, false, 7, 16), &mut out);
@@ -633,7 +636,7 @@ mod tests {
 
     #[test]
     fn the_stamps_unwrap_across_the_u16() {
-        let pos = Chunks::one(0x238, 2);
+        let pos = Chunks::one(0x236, 2);
         let mut a = StreamAssembler::new(pos, 0).expect("arms");
         let mut out = Vec::new();
         for k in 0..258u64 {
