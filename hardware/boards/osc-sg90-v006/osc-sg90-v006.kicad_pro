@@ -830,7 +830,7 @@
     "FAB": "JLCPCB",
     "PROJECT": "open-servo-core",
     "REV": "v0.0",
-    "STACKUP": "6L 1.6mm JLC06161H-3313"
+    "STACKUP": "4L 1.6mm JLC04161H-3313"
   },
   "tuning_profiles": {
     "meta": {
