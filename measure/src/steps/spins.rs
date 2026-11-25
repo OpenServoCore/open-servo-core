@@ -78,9 +78,6 @@ pub const KE_TREND_MAX: f64 = 0.02;
 pub const J_DIRS_MAX: f64 = 0.15;
 /// Over this many times its bound a check that warns refuses.
 pub const WARN_SPAN: f64 = 2.0;
-/// A derived count of ripple events a revolution within this share of
-/// the even integer it rounds to.
-pub const PER_REV_SHARE: f64 = 0.10;
 /// The steady stretch: the held duty's last 100 ms, half its rows at
 /// most, 20 ms at least (the ladder notebook's `spin_window`).
 pub const STEADY_S: f64 = 0.100;
@@ -202,9 +199,7 @@ struct Before {
     env: Envelope,
     stated_v: f64,
     rated_cps: f64,
-    travel_deg: f64,
-    gear_ratio: f64,
-    per_rev: Option<u32>,
+    per_rev: u32,
     window: Option<(f64, String)>,
     soft: [Vec<u8>; 2],
     soft_counts: (f64, f64),
@@ -319,15 +314,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
     let travel_deg = np
         .travel_deg
         .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
-    let gear_ratio = np
-        .gear_ratio
-        .ok_or_else(|| Refused("the nameplate has no usable gear_ratio".into()))?;
-    if np.ripple_per_rev.is_some_and(|n| n == 0) {
-        return Err(Refused(
-            "the nameplate's ripple_per_rev is 0: enter rotor slots times brushes, or leave it out"
-                .into(),
-        ));
-    }
+    let per_rev = np.events_per_rev().map_err(Refused)?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);
     let pos = rest::pos_now(rig.c, rig.id, rig.d).await?;
@@ -421,9 +408,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
         env: Envelope::new(facts, heat),
         stated_v,
         rated_cps: speed.per_deg / speed.seconds * ADC_COUNTS / travel_deg,
-        travel_deg,
-        gear_ratio,
-        per_rev: np.ripple_per_rev,
+        per_rev,
         window,
         soft_counts: (word(&lo), word(&hi)),
         soft: [lo, hi],
@@ -864,18 +849,6 @@ pub struct Spin<'a> {
     pub coast: &'a [TelFrame],
 }
 
-/// Where the ripple's events a revolution come from.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum PerRevFrom {
-    Stated(u32),
-    /// From the ripple and the pot: counts a degree over the stops, and
-    /// the gear ratio.
-    Derive {
-        counts_per_deg: f64,
-        gear_ratio: f64,
-    },
-}
-
 /// What the judge reads the spins through.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JudgeCfg {
@@ -889,7 +862,9 @@ pub struct JudgeCfg {
     pub window: Option<String>,
     pub r_ohm: f64,
     pub l_h: f64,
-    pub per_rev: PerRevFrom,
+    /// The ripple's events a motor revolution, the nameplate's brushes
+    /// times rotor segments.
+    pub per_rev: u32,
     /// The drag at rest the order count starts from, A; None: the
     /// open-loop line's intercept.
     pub i_drag0_a: Option<f64>,
@@ -922,9 +897,6 @@ pub struct Steady {
     /// window term taken off, mA.
     pub crest_ma: Option<f64>,
     pub i_ma: Option<f64>,
-    /// Ripple cycles a pot count, through the stops and the gear ratio to
-    /// events a motor revolution.
-    pub per_rev_raw: Option<f64>,
     /// Hz, where the line was looked for: the pot's speed over the lower
     /// levels' counts a ripple cycle; None for a free search.
     pub seed_hz: Option<f64>,
@@ -947,10 +919,7 @@ impl Steady {
 /// The ripple's events a revolution.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PerRev {
-    pub value: Option<usize>,
-    /// The median derived over the spins, before rounding.
-    pub raw: Option<f64>,
-    pub n: usize,
+    pub value: usize,
     pub source: String,
 }
 
@@ -1047,7 +1016,6 @@ fn steady(s: &Spin, c: &JudgeCfg, seed: Option<f64>) -> Steady {
         pot_cps: None,
         crest_ma: None,
         i_ma: None,
-        per_rev_raw: None,
         seed_hz: None,
     };
     let Some(rows) = steady_rows(s.drive, c.fs) else {
@@ -1088,18 +1056,6 @@ fn steady(s: &Spin, c: &JudgeCfg, seed: Option<f64>) -> Steady {
             .and_then(|f0| ripple::count_cycles(&x, f0, ripple::BAND_FRAC, c.fs))
             .map(|k| k.hz);
     }
-    if let (
-        PerRevFrom::Derive {
-            counts_per_deg,
-            gear_ratio,
-        },
-        Some(hz),
-        Some(cps),
-    ) = (c.per_rev, out.line_hz, out.pot_cps)
-        && cps > 0.0
-    {
-        out.per_rev_raw = Some(hz / cps * counts_per_deg * 360.0 / gear_ratio);
-    }
     out
 }
 
@@ -1135,79 +1091,14 @@ fn steadies(spins: &[Spin], c: &JudgeCfg) -> Vec<Steady> {
     done
 }
 
-/// The nearest even integer.
-pub fn nearest_even(x: f64) -> f64 {
-    2.0 * (x / 2.0).round()
-}
-
-/// The events a revolution: stated, or derived over the spins' steady
-/// stretches, refused when the median is more than [`PER_REV_SHARE`] from
-/// the even integer it rounds to.
-pub fn per_rev(c: &JudgeCfg, steady: &[Steady]) -> (PerRev, Check) {
-    let name = "events per revolution";
-    match c.per_rev {
-        PerRevFrom::Stated(n) => (
-            PerRev {
-                value: Some(n as usize),
-                raw: None,
-                n: 0,
-                source: format!("the nameplate's ripple_per_rev, {n}"),
-            },
-            check(
-                name,
-                format!("{n}, the nameplate's"),
-                "stated".into(),
-                Verdict::Pass,
-            ),
+/// The events a revolution the spins are read in: the nameplate's.
+pub fn per_rev(c: &JudgeCfg) -> PerRev {
+    PerRev {
+        value: c.per_rev as usize,
+        source: format!(
+            "the nameplate's brushes times rotor_segments, {}",
+            c.per_rev
         ),
-        PerRevFrom::Derive {
-            counts_per_deg,
-            gear_ratio,
-        } => {
-            let raws: Vec<f64> = steady.iter().filter_map(|s| s.per_rev_raw).collect();
-            let raw = median(&raws);
-            let even = raw.map(nearest_even).filter(|e| *e >= 2.0);
-            let ok = raw
-                .zip(even)
-                .is_some_and(|(r, e)| (r / e - 1.0).abs() <= PER_REV_SHARE);
-            let source = format!(
-                "derived: ripple cycles a pot count over each spin's steady stretch, times {counts_per_deg:.3} counts/deg (the stops over the nameplate's travel), times 360, over the gear ratio {gear_ratio}, the median over {} spins of both directions rounded to the nearest even integer; the pot's local slope varies by region, and the up spins read the low end of the travel, the down spins the high end",
-                raws.len()
-            );
-            (
-                PerRev {
-                    value: even.filter(|_| ok).map(|e| e as usize),
-                    raw,
-                    n: raws.len(),
-                    source,
-                },
-                check(
-                    name,
-                    match (raw, even) {
-                        (Some(r), Some(e)) => {
-                            let by = |d: i8| {
-                                let v: Vec<f64> = steady
-                                    .iter()
-                                    .filter(|s| s.dir == d)
-                                    .filter_map(|s| s.per_rev_raw)
-                                    .collect();
-                                median(&v).map_or("none".into(), |m| format!("{m:.2}"))
-                            };
-                            format!(
-                                "{r:.2}, the median over {} spins of both directions (up {}, down {}: the pot's local slope varies by region), nearest even {e:.0}: {:.1}% off",
-                                raws.len(),
-                                by(1),
-                                by(-1),
-                                100.0 * (r / e - 1.0).abs()
-                            )
-                        }
-                        _ => "no spin read both a ripple line and a pot slope".into(),
-                    },
-                    format!("within {:.0}% of an even integer", 100.0 * PER_REV_SHARE),
-                    pass(ok),
-                ),
-            )
-        }
     }
 }
 
@@ -1326,8 +1217,7 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
     let mut checks = Vec::new();
     let st = steadies(spins, c);
     let mut st = st;
-    let (pr, ck) = per_rev(c, &st);
-    checks.push(ck);
+    let pr = per_rev(c);
     checks.push(match &c.window {
         Some(w) => check(
             "the window term",
@@ -1342,20 +1232,7 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
             Verdict::Warn,
         ),
     });
-    let Some(per) = pr.value else {
-        return Judged {
-            per_rev: pr,
-            steady: st,
-            coasts: Vec::new(),
-            ke: None,
-            line: None,
-            i_drag0_a: None,
-            j_level: None,
-            runups: Vec::new(),
-            inertia: Err("no events a revolution".into()),
-            checks,
-        };
-    };
+    let per = pr.value;
     for s in st.iter_mut() {
         s.rev_s = s.line_hz.map(|h| h / per as f64);
     }
@@ -1635,9 +1512,6 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
 /// What to do when a check refuses the step.
 pub fn advice(name: &str) -> &'static str {
     match name {
-        "events per revolution" => {
-            "the ripple and the pot disagree on the motor's turns: enter ripple_per_rev in the nameplate (rotor slots times brushes), or check gear_ratio and travel_deg"
-        }
         "coasts pass the Ke gate" => {
             "too few coasts read a Ke: check the cable and its contacts and that the horn turns freely, then run the step again"
         }
@@ -1703,13 +1577,7 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
         window: b.window.as_ref().map(|w| w.1.clone()),
         r_ohm: b.stops.r_ohm,
         l_h: b.stops.l_h,
-        per_rev: match b.per_rev {
-            Some(n) => PerRevFrom::Stated(n),
-            None => PerRevFrom::Derive {
-                counts_per_deg: (b.stops.hi - b.stops.lo) / b.travel_deg,
-                gear_ratio: b.gear_ratio,
-            },
-        },
+        per_rev: b.per_rev,
         i_drag0_a: None,
     };
     let finished = ran.is_ok();
@@ -1872,12 +1740,10 @@ fn result_json(
             Some(w) => format!("the window term taken off by {w}"),
             None => "the window term NOT taken off (the window step not run; g taken 0)".into(),
         };
-        if let Some(n) = j.per_rev.value {
-            estimates.insert(
-                "events_per_rev".into(),
-                est(n as f64, "events/rev", &j.per_rev.source),
-            );
-        }
+        estimates.insert(
+            "events_per_rev".into(),
+            est(j.per_rev.value as f64, "events/rev", &j.per_rev.source),
+        );
         if let Some(p) = &j.ke {
             estimates.insert(
                 "ke_v_s_per_rad".into(),
@@ -1967,13 +1833,13 @@ fn result_json(
             Err(e) => json!({"error": e}),
         };
         fits = json!({
-            "events_per_rev": {"value": j.per_rev.value, "raw": j.per_rev.raw, "spins": j.per_rev.n, "source": j.per_rev.source},
+            "events_per_rev": {"value": j.per_rev.value, "source": j.per_rev.source},
             "ke": ke,
             "coasts": coasts,
             "steady": per_level,
             "steady_spins": j.steady.iter().map(|s| json!({"n": s.n, "level_share": s.level, "dir": s.dir, "rows": s.rows,
                 "line_hz": s.line_hz, "rev_s": s.rev_s, "pot_cps": s.pot_cps, "current_raw_ma": s.crest_ma,
-                "current_ma": s.i_ma, "per_rev_raw": s.per_rev_raw, "seed_hz": s.seed_hz})).collect::<Vec<_>>(),
+                "current_ma": s.i_ma, "seed_hz": s.seed_hz})).collect::<Vec<_>>(),
             "open_loop_line": j.line.as_ref().map(|l| json!({"coulomb_ma": l.coulomb_ma, "viscous_ma_s_per_rad": l.viscous_ma_s_per_rad,
                 "points": l.points.iter().map(|p| json!({"level_share": p.level, "dir": p.dir, "rad_s": p.rad_s, "current_ma": p.i_ma, "current_raw_ma": p.raw_ma, "spins": p.spins, "pot_counts_per_rev": p.counts_per_rev})).collect::<Vec<_>>()})),
             "i_drag0_a": j.i_drag0_a,
@@ -2201,6 +2067,17 @@ mod tests {
         thermal: bool,
         stop: &AtomicBool,
     ) -> Ran {
+        run_on(nameplate(), on_write, stops, window, thermal, stop)
+    }
+
+    fn run_on(
+        np: Nameplate,
+        on_write: impl Fn(&Descriptor) -> OnWrite,
+        stops: Value,
+        window: Option<Value>,
+        thermal: bool,
+        stop: &AtomicBool,
+    ) -> Ran {
         let d = descriptor();
         let mut inner = FakePipe::new(BaudRate::B3000000, &[1]);
         inner.seed_calibrated(0);
@@ -2214,7 +2091,6 @@ mod tests {
         .expect("connect");
         let stored = block_on(c.read(ID, addr(&d, "drive_polarity"), 1)).expect("read")[0] != 0;
         log.borrow_mut().clear();
-        let np = nameplate();
         let board: Board =
             serde_json::from_str(include_str!("../../boards/osc-dev-v006.json")).expect("board");
         let th: ThermalInputs =
@@ -2443,7 +2319,7 @@ mod tests {
         assert!(window_term(Some(&json!({"verdict": "accepted"}))).is_err());
     }
 
-    fn steady_of(raw: Option<f64>) -> Steady {
+    fn steady_of() -> Steady {
         Steady {
             n: 1,
             level: 0.5,
@@ -2454,16 +2330,16 @@ mod tests {
             pot_cps: Some(4700.0),
             crest_ma: Some(60.0),
             i_ma: Some(55.0),
-            per_rev_raw: raw,
             seed_hz: None,
         }
     }
 
-    /// Stated events a revolution are taken; derived ones are the median
-    /// rounded to the nearest even integer, refused more than 10 % off it.
+    /// The spins are read in the nameplate's events a revolution, its
+    /// brushes times rotor segments, and the report names them.
     #[test]
-    fn the_events_a_revolution_are_stated_or_derived_to_an_even_integer() {
-        let mut c = JudgeCfg {
+    fn the_events_a_revolution_are_the_nameplates() {
+        let np = nameplate();
+        let c = JudgeCfg {
             fs: 20_000.0,
             polarity: true,
             zero_i: 1206.0,
@@ -2479,49 +2355,34 @@ mod tests {
             window: None,
             r_ohm: 4.2,
             l_h: 0.82e-3,
-            per_rev: PerRevFrom::Stated(6),
+            per_rev: np.events_per_rev().expect("counts"),
             i_drag0_a: None,
         };
-        let (p, ck) = per_rev(&c, &[]);
-        assert_eq!((p.value, ck.verdict), (Some(6), Verdict::Pass));
-        c.per_rev = PerRevFrom::Derive {
-            counts_per_deg: 3710.0 / 184.33,
-            gear_ratio: 308.05,
-        };
-        // 1200 Hz over 4700 counts/s through 20.13 counts/deg and 308:1
-        let s = steady(
-            &Spin {
-                n: 1,
-                level: 0.5,
-                dir: 1,
-                drive: &[],
-                coast: &[],
-            },
-            &c,
-            None,
+        let p = per_rev(&c);
+        assert_eq!(p.value, 6);
+        assert!(
+            p.source.contains("brushes times rotor_segments"),
+            "{}",
+            p.source
         );
-        assert_eq!(s.per_rev_raw, None, "no rows, no stretch");
-        let want: f64 = 1200.0 / 4700.0 * (3710.0 / 184.33) * 360.0 / 308.05;
-        assert!((want - 6.0).abs() < 0.05, "{want}");
-        for (raws, value, verdict) in [
-            (vec![6.07, 5.9, 6.2], Some(6), Verdict::Pass),
-            (vec![6.5], Some(6), Verdict::Pass),
-            (vec![6.7], None, Verdict::Fail),
-            (vec![3.1, 3.0], Some(4), Verdict::Fail),
-            (vec![], None, Verdict::Fail),
-        ] {
-            let st: Vec<Steady> = raws.iter().map(|r| steady_of(Some(*r))).collect();
-            let (p, ck) = per_rev(&c, &st);
-            if verdict == Verdict::Pass {
-                assert_eq!(p.value, value, "{raws:?}");
-            } else {
-                assert_eq!(p.value, None, "{raws:?}");
-            }
-            assert_eq!(ck.verdict, verdict, "{raws:?}: {}", ck.said());
-        }
-        assert_eq!(
-            (nearest_even(6.9), nearest_even(5.1), nearest_even(7.0)),
-            (6.0, 6.0, 8.0)
+    }
+
+    /// A nameplate missing a commutator count is refused before any
+    /// write, naming both counts.
+    #[test]
+    fn a_nameplate_without_the_commutator_counts_is_refused() {
+        let none = |_: &Descriptor| -> OnWrite { Box::new(|_, _, _, _| {}) };
+        let mut np = nameplate();
+        np.rotor_segments = None;
+        let r = run_on(np, none, stops_json(), None, true, &AtomicBool::new(false));
+        let e = r.spun.expect_err("refused");
+        assert_eq!(e.0, crate::nameplate::COUNTS_MISSING);
+        assert!(
+            r.log
+                .iter()
+                .all(|w| !matches!(w, Ev::Write(..) | Ev::Commit)),
+            "{:?}",
+            r.log
         );
     }
 
@@ -2539,7 +2400,7 @@ mod tests {
             pot_cps: Some(cpr * w / (2.0 * core::f64::consts::PI)),
             i_ma: Some(i),
             crest_ma: Some(i + 3.0),
-            ..steady_of(None)
+            ..steady_of()
         };
         let one = [
             at(0.25, 1, 560.0, 45.0, 25.0),

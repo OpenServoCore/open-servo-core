@@ -2,6 +2,7 @@
 //! the few answers about this unit no measurement gives.
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Nameplate {
@@ -22,13 +23,15 @@ pub struct Nameplate {
     pub no_load: Vec<NoLoad>,
     #[serde(default)]
     pub stall: Vec<Stall>,
-    /// Commutation events a motor revolution, the ripple the speed is
-    /// counted in, where the sheet or a teardown gives it: rotor slots
-    /// times brushes (a three-slot, two-brush motor: 6). Optional: without
-    /// it the spin step derives it from the ripple, the pot and the gear
-    /// ratio.
-    #[serde(default)]
-    pub ripple_per_rev: Option<u32>,
+    /// The motor's brushes, counted on a teardown or stated by the maker.
+    pub brushes: Option<u32>,
+    /// The motor's commutator segments, the rotor's slots on these motors,
+    /// counted on a teardown or stated by the maker.
+    pub rotor_segments: Option<u32>,
+    /// A field this tool no longer reads: its presence is refused, naming
+    /// the two counts to enter instead.
+    #[serde(default, rename = "ripple_per_rev")]
+    retired_ripple_per_rev: Option<IgnoredAny>,
     /// The voltage the servo will run on: the stated row nearest it binds.
     pub run_v: Option<f64>,
     /// The share of the stated no-load speed the servo may ever turn at,
@@ -81,6 +84,19 @@ impl Nameplate {
         stated(self.operating_v?, self.run_v, &self.stall, |r| r.at_v)
     }
 
+    /// Ripple events a motor revolution, the ruler the speed and the table
+    /// are counted in: brushes times rotor segments (a two-brush,
+    /// three-segment motor: 6). Refused with the line to show the user
+    /// when either count is missing or 0.
+    pub fn events_per_rev(&self) -> Result<u32, String> {
+        match (self.brushes, self.rotor_segments) {
+            (Some(b), Some(s)) if b > 0 && s > 0 => b.checked_mul(s).ok_or_else(|| {
+                format!("the nameplate's brushes {b} times rotor_segments {s} is too large")
+            }),
+            _ => Err(COUNTS_MISSING.into()),
+        }
+    }
+
     /// A user's nameplate as the steps load it: every value they need is
     /// there, else refused naming the first missing one. A stated stall
     /// current is optional: the rules take stated V over the seated R.
@@ -90,6 +106,9 @@ impl Nameplate {
                 "the nameplate has no usable {field} ({what}): enter it from the maker's sheet or your own measurement"
             ))
         };
+        if self.retired_ripple_per_rev.is_some() {
+            return Err(RETIRED_RIPPLE_PER_REV.into());
+        }
         if self.gear_class.is_none() {
             return missing("gear_class", "plastic, metal or unknown");
         }
@@ -105,6 +124,7 @@ impl Nameplate {
                 "whether the count rises as the horn turns counterclockwise, facing it",
             );
         }
+        self.events_per_rev()?;
         let Some(op) = self.operating_v.filter(|o| o.min > 0.0 && o.min <= o.max) else {
             return missing("operating_v", "the operating voltage range, min and max");
         };
@@ -140,6 +160,9 @@ impl Nameplate {
         Ok(())
     }
 }
+
+pub const COUNTS_MISSING: &str = "the nameplate has no usable brushes and rotor_segments (the motor's brush count and its commutator segments, counted on a teardown or stated by the maker; their product is the ripple events a motor revolution): enter both";
+pub const RETIRED_RIPPLE_PER_REV: &str = "the nameplate states ripple_per_rev, which this tool no longer reads: take it out and enter brushes and rotor_segments, the motor's brush count and its commutator segments (a two-brush, three-segment motor: 2 and 3)";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -196,11 +219,14 @@ mod tests {
     fn a_nameplate_missing_a_required_field_is_refused_naming_it() {
         assert_eq!(bench().check_user(), Ok(()));
         type Take = fn(&mut Nameplate);
-        let cases: [(&str, Take); 9] = [
+        let cases: [(&str, Take); 12] = [
             ("gear_class", |n| n.gear_class = None),
             ("gear_ratio", |n| n.gear_ratio = None),
             ("travel_deg", |n| n.travel_deg = None),
             ("count_rises_ccw", |n| n.count_rises_ccw = None),
+            ("brushes and rotor_segments", |n| n.brushes = None),
+            ("brushes and rotor_segments", |n| n.rotor_segments = None),
+            ("brushes and rotor_segments", |n| n.brushes = Some(0)),
             ("operating_v", |n| n.operating_v = None),
             ("run_v", |n| n.run_v = None),
             ("no_load", |n| n.no_load.clear()),
@@ -226,5 +252,37 @@ mod tests {
             per_deg: 60.0,
         }];
         assert!(n.check_user().expect_err("outside").contains("no_load"));
+    }
+
+    /// The bench motor's two brushes and three segments: six events a
+    /// revolution, the notebooks' `Motor.ripple_per_rev` for the mg90-d.
+    #[test]
+    fn the_events_a_revolution_are_brushes_times_rotor_segments() {
+        let n = bench();
+        assert_eq!((n.brushes, n.rotor_segments), (Some(2), Some(3)));
+        assert_eq!(n.events_per_rev(), Ok(6));
+        let mut n = bench();
+        n.rotor_segments = Some(0);
+        assert_eq!(n.events_per_rev(), Err(COUNTS_MISSING.into()));
+    }
+
+    /// A nameplate from before the two counts, stating ripple_per_rev, is
+    /// refused saying what to enter instead, even with the counts beside it.
+    #[test]
+    fn a_nameplate_stating_ripple_per_rev_is_refused_naming_the_counts() {
+        let mut v: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/mg90-d/nameplate.json")).expect("json");
+        v["ripple_per_rev"] = 6.into();
+        let n: Nameplate = serde_json::from_value(v.clone()).expect("parses");
+        assert_eq!(n.check_user(), Err(RETIRED_RIPPLE_PER_REV.into()));
+        let o = v.as_object_mut().expect("object");
+        o.remove("brushes");
+        o.remove("rotor_segments");
+        let n: Nameplate = serde_json::from_value(v).expect("parses");
+        let why = n.check_user().expect_err("refused");
+        assert!(
+            why.contains("ripple_per_rev") && why.contains("brushes and rotor_segments"),
+            "{why}"
+        );
     }
 }

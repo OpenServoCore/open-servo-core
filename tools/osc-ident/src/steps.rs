@@ -82,11 +82,17 @@ fn nameplate_said(np: Option<&Nameplate>) -> String {
         }
     };
     format!(
-        "nameplate: {}, gear {}, ratio {}, operating {}, runs on {}, no-load {}, stall {}",
+        "nameplate: {}, gear {}, ratio {}, motor {}, operating {}, runs on {}, no-load {}, stall {}",
         np.name,
         np.gear_class
             .map_or("not given".into(), |g| format!("{g:?}").to_lowercase()),
         np.gear_ratio.map_or("not given".into(), |r| r.to_string()),
+        match (np.brushes, np.rotor_segments, np.events_per_rev()) {
+            (Some(b), Some(s), Ok(n)) => {
+                format!("{b} brushes x {s} rotor segments, {n} ripple events a revolution")
+            }
+            _ => "brushes and rotor_segments not given".into(),
+        },
         np.operating_v
             .map_or("not given".into(), |v| format!("{} to {} V", v.min, v.max)),
         np.run_v.map_or("not given".into(), |v| format!("{v} V")),

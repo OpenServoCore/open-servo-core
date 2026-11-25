@@ -302,6 +302,6 @@
   ],
   "scale": {
     "counts_per_deg": 19.435025359344024,
-    "source": "the ripple: the nameplate's ripple_per_rev x gear_ratio over the table's mean cycles a count, x 360"
+    "source": "the ripple: the stops' span over the output's degrees between them, the table's cycles from stop to stop x 360 over the nameplate's brushes x rotor_segments x gear_ratio"
   }
 }

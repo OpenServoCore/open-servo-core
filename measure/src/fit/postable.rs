@@ -596,11 +596,23 @@ impl Table {
         out
     }
 
-    /// Counts a degree of the output from the ripple, when the motor's
-    /// commutations a revolution and the gear ratio are both known.
-    pub fn scale(&self, ripple_per_rev: Option<u32>, gear_ratio: Option<f64>) -> Option<f64> {
-        let (n, g) = (ripple_per_rev? as f64, gear_ratio?);
-        let v = n * g / (360.0 * self.mean_slope());
+    /// Counts a degree of the output from the ripple, in the frame the
+    /// points write: the stops' span over the output's degrees between
+    /// them, the table's cycles from stop to stop ([`Table::angle_at`])
+    /// times 360 over the motor's events a revolution (the nameplate's
+    /// brushes times rotor segments) times the counted gear ratio (plan
+    /// sec 2.6).
+    pub fn scale(
+        &self,
+        events_per_rev: u32,
+        gear_ratio: f64,
+        raw_min: u16,
+        raw_max: u16,
+    ) -> Option<f64> {
+        let (n, g) = (events_per_rev as f64, gear_ratio);
+        let (lo, hi) = (raw_min as f64, raw_max as f64);
+        let deg = (self.angle_at(hi) - self.angle_at(lo)) * 360.0 / (n * g);
+        let v = (hi - lo) / deg;
         (n > 0.0 && g > 0.0 && v.is_finite() && v > 0.0).then_some(v)
     }
 
@@ -962,9 +974,40 @@ mod tests {
         assert_eq!(lut(hi), hi as f64);
         let (gmin, gmax) = gains(&p);
         assert!(gmin >= 8 && gmax <= 32, "{gmin} {gmax}");
-        let s = t.scale(Some(6), Some(300.0)).expect("scale");
+        // both stops past the span, where the table runs on its mean slope
+        let s = t.scale(6, 300.0, lo, hi).expect("scale");
         assert!((s - 6.0 * 300.0 / (360.0 * t.mean_slope())).abs() < 1e-9);
-        assert_eq!(t.scale(None, Some(300.0)), None);
+        assert_eq!(t.scale(0, 300.0, lo, hi), None);
         assert!((span.coverage(lo, hi) - 992.0 / 3620.0).abs() < 1e-12);
+    }
+
+    /// A table reading 0.2 cycles a count below 1500 and 0.3 above, on
+    /// 512..3072: its scale is the stops' span over the cycles between
+    /// them, not the middle's slope nor the span's mean; stops past the
+    /// span read the cycles on its mean slope.
+    #[test]
+    fn the_scale_is_the_stop_to_stop_frame() {
+        let span = Span { k0: 32, k1: 192 };
+        let a = |x: f64| 0.2 * x.min(1500.0) + 0.3 * (x - 1500.0).max(0.0);
+        let t = Table {
+            span,
+            angle: span.knots().iter().map(|&x| a(x)).collect(),
+        };
+        let (n, g) = (6, 300.0);
+        let (lo, hi) = (1000u16, 1900u16);
+        let s = t.scale(n, g, lo, hi).expect("scale");
+        let cycles = a(1900.0) - a(1000.0);
+        let want = 900.0 / (cycles * 360.0 / (6.0 * 300.0));
+        assert!((s - want).abs() < 1e-9, "{s} against {want}");
+        let middle = 6.0 * 300.0 / (360.0 * 0.2);
+        let mean = 6.0 * 300.0 / (360.0 * t.mean_slope());
+        assert!((s / middle - 1.0).abs() > 0.05 && (s / mean - 1.0).abs() > 0.05);
+        let (lo, hi) = (200u16, 1900u16);
+        let s = t.scale(n, g, lo, hi).expect("scale");
+        let cycles = a(1900.0) - (a(512.0) - 312.0 * t.mean_slope());
+        let want = 1700.0 / (cycles * 360.0 / (6.0 * 300.0));
+        assert!((s - want).abs() < 1e-9, "{s} against {want}");
+        let s = t.scale(n, g, 200, 3500).expect("scale");
+        assert!((s - mean).abs() < 1e-9, "{s} against {mean}");
     }
 }

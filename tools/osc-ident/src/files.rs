@@ -237,4 +237,28 @@ mod tests {
         assert_eq!(at(951_782_400), "20000229T000000Z");
         assert_eq!(at(1_700_000_000), "20231114T221320Z");
     }
+
+    /// The bench nameplate loads; one still stating ripple_per_rev is
+    /// refused naming the file and the two counts to enter instead.
+    #[test]
+    fn a_nameplate_stating_ripple_per_rev_is_refused() {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../measure/testdata/mg90-d/nameplate.json");
+        let np = nameplate(&p).expect("the bench nameplate loads");
+        assert_eq!(np.events_per_rev(), Ok(6));
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&read(&p).expect("read")).expect("json");
+        v["ripple_per_rev"] = 6.into();
+        let why = nameplate_of(&p, &serde_json::to_vec(&v).expect("bytes"))
+            .expect_err("refused")
+            .to_string();
+        assert_eq!(
+            why,
+            format!(
+                "{}: {}",
+                p.display(),
+                osc_measure::nameplate::RETIRED_RIPPLE_PER_REV
+            )
+        );
+    }
 }
