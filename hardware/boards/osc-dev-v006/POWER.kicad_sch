@@ -833,14 +833,27 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Regulator_Linear:HT75xx-1-SOT89"
+		(symbol "Regulator_Linear:SPX3819M5-L-3-3"
+			(pin_names
+				(offset 0.254)
+			)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
 			(in_pos_files yes)
 			(duplicate_pin_numbers_are_jumpers no)
 			(property "Reference" "U"
-				(at -5.08 -3.81 0)
+				(at -3.81 5.715 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "SPX3819M5-L-3-3"
+				(at 0 5.715 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
@@ -850,17 +863,7 @@
 					(justify left)
 				)
 			)
-			(property "Value" "HT75xx-1-SOT89"
-				(at 0 6.35 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" "Package_TO_SOT_SMD:SOT-89-3"
+			(property "Footprint" "Package_TO_SOT_SMD:SOT-23-5"
 				(at 0 8.255 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -868,22 +871,10 @@
 				(effects
 					(font
 						(size 1.27 1.27)
-						(italic yes)
 					)
 				)
 			)
-			(property "Datasheet" "https://www.holtek.com/documents/10179/116711/HT75xx-1v250.pdf"
-				(at 0 2.54 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "100mA Low Dropout Voltage Regulator, Fixed Output, SOT89"
+			(property "Datasheet" "https://www.exar.com/content/document.ashx?id=22106&languageid=1033&type=Datasheet&partnumber=SPX3819&filename=SPX3819.pdf&part=SPX3819"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -894,7 +885,7 @@
 					)
 				)
 			)
-			(property "ki_keywords" "100mA LDO Regulator Fixed Positive"
+			(property "Description" "500mA Low drop-out regulator, Fixed Output 3.3V, SOT-23-5"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -905,7 +896,7 @@
 					)
 				)
 			)
-			(property "ki_fp_filters" "SOT?89*"
+			(property "ki_keywords" "REGULATOR LDO 3.3V"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -916,10 +907,21 @@
 					)
 				)
 			)
-			(symbol "HT75xx-1-SOT89_0_1"
+			(property "ki_fp_filters" "SOT?23*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "SPX3819M5-L-3-3_0_1"
 				(rectangle
-					(start -5.08 5.08)
-					(end 5.08 -2.54)
+					(start -5.08 4.445)
+					(end 5.08 -5.08)
 					(stroke
 						(width 0.254)
 						(type default)
@@ -929,11 +931,11 @@
 					)
 				)
 			)
-			(symbol "HT75xx-1-SOT89_1_1"
+			(symbol "SPX3819M5-L-3-3_1_1"
 				(pin power_in line
-					(at 0 -5.08 90)
+					(at -7.62 2.54 0)
 					(length 2.54)
-					(name "GND"
+					(name "IN"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -949,9 +951,9 @@
 					)
 				)
 				(pin power_in line
-					(at -7.62 2.54 0)
+					(at 0 -7.62 90)
 					(length 2.54)
-					(name "VIN"
+					(name "GND"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -966,10 +968,10 @@
 						)
 					)
 				)
-				(pin power_out line
-					(at 7.62 2.54 180)
+				(pin input line
+					(at -7.62 0 0)
 					(length 2.54)
-					(name "VOUT"
+					(name "EN"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -977,6 +979,42 @@
 						)
 					)
 					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin input line
+					(at 7.62 0 180)
+					(length 2.54)
+					(name "BP"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_out line
+					(at 7.62 2.54 180)
+					(length 2.54)
+					(name "OUT"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "5"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1613,7 +1651,7 @@
 		)
 		(uuid "18550ddd-567f-469c-8d8e-20a5283cea12")
 	)
-	(text_box "Power comes in from the battery connector or the LinkE header, whichever is plugged. Both at once is fine, the SS54s OR them into VSYS and the loser just sits behind its diode.\n\nInputs:\n- VBAT - bench 5V up to 2S LiPo (DRV VM tops out at 11V, so no 3S)\n- VPROG - 5V from the WCH-LinkE\n\nRails:\n- VSYS - raw motor rail, also feeds the LDO\n- +3V3 - logic, and the DRV8212P VCC. One rail, no separate driver rail.\n\nLEDs are deliberately dim (0.1-0.3mA class). Yellow = VSYS, green = 3V3. STAT over on the MCU sheet is the only firmware-driven one."
+	(text_box "Power comes in from the battery connector or the LinkE header, whichever is plugged. Both at once is fine, the SS54s OR them into VSYS and the loser just sits behind its diode.\n\nInputs:\n- VBAT - bench 5V up to 2S LiPo (DRV VM tops out at 11V, so no 3S; the LDO takes 16V)\n- VPROG - 5V from the WCH-LinkE\n\nRails:\n- VSYS - raw motor rail, also feeds the LDO\n- +3V3 - logic, and the DRV8212P VCC. One rail, no separate driver rail.\n\nLEDs are deliberately dim (0.1-0.3mA class). Yellow = VSYS, green = 3V3. STAT over on the MCU sheet is the only firmware-driven one."
 		(exclude_from_sim no)
 		(at 180.34 27.94 0)
 		(size 101.6 135.255)
@@ -1703,6 +1741,24 @@
 		(color 0 0 0 0)
 		(uuid "c0cc83d7-3ef5-4ceb-a33e-e46fcf387810")
 	)
+	(junction
+		(at 45.72 50.8)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "9e5d16a3-0d3c-46a4-9f0c-faacd115dd16")
+	)
+	(junction
+		(at 53.34 60.96)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "8814eb5b-7972-4c70-854b-a6deab6675b4")
+	)
+	(junction
+		(at 66.04 60.96)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "f0cd65e1-c855-4198-83dd-96e200b10ab8")
+	)
 	(wire
 		(pts
 			(xy 92.71 97.79) (xy 92.71 96.52)
@@ -1775,7 +1831,7 @@
 	)
 	(wire
 		(pts
-			(xy 63.5 50.8) (xy 72.39 50.8)
+			(xy 60.96 50.8) (xy 72.39 50.8)
 		)
 		(stroke
 			(width 0)
@@ -1805,7 +1861,7 @@
 	)
 	(wire
 		(pts
-			(xy 55.88 60.96) (xy 72.39 60.96)
+			(xy 55.88 60.96) (xy 66.04 60.96)
 		)
 		(stroke
 			(width 0)
@@ -1915,7 +1971,7 @@
 	)
 	(wire
 		(pts
-			(xy 43.18 60.96) (xy 55.88 60.96)
+			(xy 43.18 60.96) (xy 53.34 60.96)
 		)
 		(stroke
 			(width 0)
@@ -2055,16 +2111,6 @@
 	)
 	(wire
 		(pts
-			(xy 55.88 58.42) (xy 55.88 60.96)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "f330095b-32a7-4c5c-b1ee-3f70500f6af6")
-	)
-	(wire
-		(pts
 			(xy 132.08 101.6) (xy 130.81 101.6)
 		)
 		(stroke
@@ -2085,13 +2131,53 @@
 	)
 	(wire
 		(pts
-			(xy 43.18 50.8) (xy 48.26 50.8)
+			(xy 43.18 50.8) (xy 45.72 50.8)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "fe945d52-1d42-420b-b641-306279ecbeed")
+	)
+	(wire
+		(pts
+			(xy 45.72 50.8) (xy 45.72 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f21240ff-fecb-485d-92f1-ded804f498b2")
+	)
+	(wire
+		(pts
+			(xy 53.34 60.96) (xy 55.88 60.96)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b32c7ac4-1de2-44e4-b0c4-606b426df0c1")
+	)
+	(wire
+		(pts
+			(xy 60.96 53.34) (xy 66.04 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f04040d6-1218-407d-b67e-08902eda2ce6")
+	)
+	(wire
+		(pts
+			(xy 66.04 60.96) (xy 72.39 60.96)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9693bb34-8ad2-437e-9176-816084fdec9e")
 	)
 	(label "LED_3V3"
 		(at 90.17 106.68 90)
@@ -3126,8 +3212,8 @@
 		)
 	)
 	(symbol
-		(lib_id "Regulator_Linear:HT75xx-1-SOT89")
-		(at 55.88 53.34 0)
+		(lib_id "Regulator_Linear:SPX3819M5-L-3-3")
+		(at 53.34 53.34 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3137,7 +3223,7 @@
 		(dnp no)
 		(uuid "8b595d06-a9b4-4f51-90ee-d2627cd7e6be")
 		(property "Reference" "U1"
-			(at 55.88 43.18 0)
+			(at 53.34 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3146,8 +3232,8 @@
 				)
 			)
 		)
-		(property "Value" "HT7533-1"
-			(at 55.88 45.72 0)
+		(property "Value" "SPX3819M5-L-3-3"
+			(at 53.34 45.72 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3156,8 +3242,8 @@
 				)
 			)
 		)
-		(property "Footprint" "Package_TO_SOT_SMD:SOT-89-3_Handsoldering"
-			(at 55.88 45.085 0)
+		(property "Footprint" "Package_TO_SOT_SMD:SOT-23-5_HandSoldering"
+			(at 53.34 45.085 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3168,8 +3254,8 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14289.html"
-			(at 55.88 50.8 0)
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C9055.html"
+			(at 53.34 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3179,8 +3265,8 @@
 				)
 			)
 		)
-		(property "Description" "100mA Low Dropout Voltage Regulator, Fixed Output, SOT89"
-			(at 55.88 53.34 0)
+		(property "Description" "3.3V 500mA LDO, 1%, 57ppm/C typ, 2.5-16V in (20V abs max), thermal shutdown, SOT-23-5; EN tied to VIN, 10nF on BYP"
+			(at 53.34 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3190,8 +3276,8 @@
 				)
 			)
 		)
-		(property "LCSC" "C14289"
-			(at 55.88 53.34 0)
+		(property "LCSC" "C9055"
+			(at 53.34 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3201,8 +3287,8 @@
 				)
 			)
 		)
-		(property "MFPN" "HT7533-1"
-			(at 55.88 53.34 0)
+		(property "MFPN" "SPX3819M5-L-3-3/TR"
+			(at 53.34 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3220,6 +3306,12 @@
 		)
 		(pin "1"
 			(uuid "0ff52359-3881-453a-be7a-d2b0d1400ae7")
+		)
+		(pin "4"
+			(uuid "c280f903-9f59-4f6a-a039-d42d83959b40")
+		)
+		(pin "5"
+			(uuid "e314c62c-101c-4c53-8749-b4efd43bc7c9")
 		)
 		(instances
 			(project "osc-dev-v006"
@@ -4805,6 +4897,109 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "Rl2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 66.04 57.15 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "6b444b77-a201-4738-bef2-69b611ffc5bf")
+		(property "Reference" "Cp4"
+			(at 63.5 55.88 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "10nF"
+			(at 63.5 58.42 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
+			(at 41.0652 26.84 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C57112.html"
+			(at 40.1 23.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "10nF +/-10% 50V X7R 0603"
+			(at 40.1 23.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C57112"
+			(at 63.5 54.61 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "0603B103K500NT"
+			(at 63.5 54.61 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "3a7386d1-34c3-4ba4-868d-b93b2dfe4fe9")
+		)
+		(pin "2"
+			(uuid "2990c36a-2e5b-4f40-9dc1-cee4ae89cbe6")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
+					(reference "Cp4")
 					(unit 1)
 				)
 			)

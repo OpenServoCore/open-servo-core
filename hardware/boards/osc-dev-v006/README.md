@@ -1,7 +1,7 @@
-# OSC Dev V006 - Rev. 2B
+# OSC Dev V006 - Rev. 2C
 
-> **Rev. 2B: schematic and layout done, not fabricated yet.**
-> Its sense chain is what the reworked Rev. 2A boards already run. Rev. 2A board #1 runs an MG90 on 2S. Position calibration, the position table, motor identification and closed-loop verify all pass on it, and the sense chain is graded in [Measured on board #1](#measured-on-board-1).
+> **Rev. 2C: schematic done, the PCB has not been updated to it yet.**
+> Rev. 2C keeps the Rev. 2B circuit and moves it to standard parts: a SOT-23-5 LDO and 1 % JLCPCB basic resistors with re-picked values. The layout file is on 4 layers with the new footprints in and is not rerouted yet. Rev. 2A board #1 runs an MG90 on 2S with the earlier values. Position calibration, the position table, motor identification and closed-loop verify all pass on it, and the sense chain is graded in [Measured on board #1](#measured-on-board-1).
 > Not exercised yet: the encoder inputs (J6 / J11), Qwiic, and the second position channel. See [Still open](#still-open).
 > **Fabricate this at your own risk!**
 
@@ -11,14 +11,14 @@ This is the OpenServoCore firmware development and validation board. It is built
 
 ![Front](docs/front.webp)
 
-KiCad render of Rev. 2A, not yet updated for Rev. 2B.
+KiCad render of Rev. 2A, not yet updated for Rev. 2C.
 
 ## Overview
 
 - **MCU** - CH32V006F8P6 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM, TSSOP20). Every pin is used, including the reset pin.
 - **Motor driver** - TI DRV8212PDSGR (U3). H-bridge with IN1/IN2 PWM. 4 A peak, VM 1.65-11 V. Continuous current is thermally limited on this layout to about 1.4 A at room temperature; the exposed pad sits on the top-only `PGND` island and dumps heat through the prepreg into the ground plane, not into a copper plane of its own.
-- **Current sense** - 60 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 14.88 against a 1.09 V bias, so both current directions are visible. Two pull-ups lift the op-amp inputs to about 0.75 V.
-- **LDO** - HT7533-1 (U1) for the 3.3 V logic rail. No thermal shutdown, and its 500 mW budget at 2S caps the `+3V3` load at about 55 mA, board included, so keep add-ons on the 3V3 pins light and mind probe slips on the 3V3 headers. The DRV8212P VCC sits on the same `+3V3` as the MCU.
+- **Current sense** - 60 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 12 against a 1.08 V bias, so both current directions are visible. Two pull-ups lift the op-amp inputs to about 0.79 V.
+- **LDO** - SPX3819M5-L-3-3 (U1, SOT-23-5) for the 3.3 V logic rail, which is also the ADC reference. +/-1 % output, 2.5-16 V input (20 V absolute max), current limit and thermal shutdown. EN is tied to `VSYS` and Cp4 (10 nF) sits on the BYP pin. At 191 C/W a 30 mA load at 8.4 V is about 155 mW and a 30 C rise, so keep add-ons on the 3V3 pins light and mind probe slips on the 3V3 headers. The DRV8212P VCC sits on the same `+3V3` as the MCU.
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 22 Ohm series resistor. No buffer, no TX_EN. Direction turnaround and RX timing are firmware's job.
 - **Telemetry** - no dedicated pin. Telemetry rides the `DATA` wire as bounded CRC'd bursts, so there is no second UART on the board.
 - **Qwiic** - SH 1.0 mm 4P I2C connector (J3) for an encoder module, either magnetic (I2C) or a quadrature encoder breakout.
@@ -27,7 +27,17 @@ KiCad render of Rev. 2A, not yet updated for Rev. 2B.
 - **Position feedback** - potentiometer or analog magnetic encoder on J5, I2C encoder on J3, or an ADC-sampled IR encoder on J6 (pins) or J11 (flex landing).
 - **Supply and terminal sense** - `VSYS` measured directly through its own divider, plus both motor terminals referenced to a common bias so back-EMF is readable while the bridge coasts.
 - **Temperature** - onboard NTC (TH1) or external NTC (J7), selected with JP2.
-- **Board** - 50 x 40 mm, 6-layer 1.6 mm (JLCPCB JLC06161H-3313 stackup), ENIG, via-in-pad.
+- **Board** - 50 x 40 mm, 4-layer 1.6 mm (JLCPCB JLC04161H-3313 stackup), ENIG, via-in-pad.
+
+### Changed from Rev. 2B
+
+Rev. 2C is a parts change, no new circuit. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+- LDO HT7533-1 (SOT-89) -> SPX3819M5-L-3-3 (SOT-23-5), 1 % with a stated drift.
+- Every thin-film resistor -> a 1 % JLCPCB basic 0603 part. The shunt stays.
+- Gain 14.88 -> 12, so the range grows to about -1.5 A to +2.9 A and the 2.2 A trip is reachable with 1 % parts.
+- Dividers 6K4 / 1K6 -> 6K8 / 1K5, `VB` bias 430 / 100 -> 470 / 100.
+- Firmware needs its own board constants for Rev. 2C. Boards built as Rev. 2A keep theirs.
 
 ### Changed from Rev. 2A
 
@@ -184,39 +194,39 @@ This jumper bridges the op-amp `+` input network (`OPA_P`) onto the shared `nRST
 
 Motor return current flows through Rs1 (60 mOhm, 1 %, 50 ppm, 1206) between `PGND` and `GND`. Rs1 is the only tie between the two grounds, so every amp of motor return has to cross it. Net-tie kelvin taps (NT1 on the `PGND` pad, NT2 on the `GND` pad) feed the MCU's on-chip op-amp, which runs in bare mode behind an external four-resistor difference network.
 
-- **Gain.** Rf 6K4 / Rg 430 gives G = 14.88. With the 60 mOhm shunt that is 893 mV/A at the ADC, about 0.9 mA per LSB.
-- **Input common mode.** Ri1 / Ri2 (1K5 thin film) pull `OPA_P` and `OPA_N` up from `+3V3` to about 0.75 V. Without them the inputs sit at about 0.06 V, and WCH AN24000 gives a flat offset only from 0.6 V to VDD - 0.6 V. Each 1 % of mismatch between a pull-up and its Rg moves the current zero about 0.11 V, so the pull-ups are 0.5 % 25 ppm, the same family as Rg.
-- **Bias.** The amplifier references `VREF` = 1.09 V (Rd1 1K6 from `+3V3` over Rd2 820, decoupled by Cd1), so negative current from regen or reversal is visible too. The usable range is roughly -1.2 A to +2.2 A at the measured scale, the top set by the amplifier's output ceiling near VDD - 0.16 V. On board #1 the rest output sits about 0.15 V under `VREF`, the op-amp's input offset times its noise gain and inside the part's spec, which moves the range to about -1.1 A to +2.4 A. The offset drifts with board temperature (see [Measured on board #1](#measured-on-board-1)), so firmware measures the rest at boot and keeps tracking it whenever the shunt carries no current: torque off, a brake or coast, and the brake half of a slow-decay drive. The Rev. 2A schematic had Rd2 300 for a 0.52 V `VREF`. Board #1 and the reworked bench boards run 1K6 in parallel with 1K6, 1.075 V on a meter.
-- **No compensation or input caps.** Board #1 measured its lowest current floor with the 22 pF comp caps out, and 0 - 47 pF across the inputs made no difference, so Rev. 2B has no footprints for them. If a layout ever rings, 22 pF across Rf2, with a matching one across Rf1, is the fix.
+- **Gain.** Rf 12K / Rg 1K gives G = 12. With the 60 mOhm shunt and the `VREF` divider's source resistance that is 722 mV/A at the ADC, about 1.1 mA per LSB.
+- **Input common mode.** Ri1 / Ri2 (3K3) pull `OPA_P` and `OPA_N` up from `+3V3` to about 0.79 V. Without them the inputs sit at about 0.06 V, and WCH AN24000 gives a flat offset only from 0.6 V to VDD - 0.6 V. Each 1 % of mismatch between a pull-up and its Rg moves the current zero about 0.09 V. The parts are 1 %, so the zero spreads about +/-0.3 V board to board, and firmware measures it at boot.
+- **Bias.** The amplifier references `VREF` = 1.08 V (Rd1 2K from `+3V3` over Rd2 1K, decoupled by Cd1), so negative current from regen or reversal is visible too. The usable range is roughly -1.5 A to +2.9 A nominal, the top set by the amplifier's output ceiling near VDD - 0.16 V. With every resistor at 1 %, 999 boards of 1000 still reach +2.4 A, above the 2.2 A firmware trip. On Rev. 2A board #1 the rest output sits about 0.15 V under `VREF`, the op-amp's input offset times its noise gain and inside the part's spec. The offset drifts with board temperature (see [Measured on board #1](#measured-on-board-1)), so firmware measures the rest at boot and keeps tracking it whenever the shunt carries no current: torque off, a brake or coast, and the brake half of a slow-decay drive. The Rev. 2A schematic had Rd2 300 for a 0.52 V `VREF`. Board #1 and the reworked bench boards run 1K6 in parallel with 1K6, 1.075 V on a meter.
+- **No compensation or input caps.** Board #1 measured its lowest current floor with the 22 pF comp caps out, and 0 - 47 pF across the inputs made no difference, so there are no footprints for them. If a layout ever rings, 22 pF across Rf2, with a matching one across Rf1, is the fix.
 
 The kelvin taps run straight from NT1 / NT2 into Rg1 / Rg2.
 
-Precision money goes to the shunt (1 %, 50 ppm), the Rf / Rg quad and the Ri pair (0.5 %, 25 ppm thin film). Matching and drift are what limit accuracy there and firmware cannot compensate for either. Everything downstream is offset error and boot calibration eats it. Rd2 is 1 % thin film (820 is not an E96 value), which moves `VREF` about 11 mV.
+Precision money goes to the shunt (1 %, 50 ppm) and the regulator (1 %, it is the ADC reference). The Rf / Rg quad, the Ri pair and the dividers are 1 % 100 ppm thick film from the JLCPCB basic library. Their mismatch is a fixed zero and a fixed gain error per board. Firmware measures the zero at boot and tracks it, and motor identification absorbs the gain. What is left is drift with temperature, and numbers typed in absolute amps or volts, which carry about 1.6 % from the network and the shunt.
 
-This is still a swap-and-measure board, so the populated values are a starting point. Rev. 2B ships with no DNP footprints though. Every experiment from Rev. 2A is settled, and other values swap onto the fitted pads.
+This is still a swap-and-measure board, so the populated values are a starting point. It ships with no DNP footprints though. Every experiment from Rev. 2A is settled, and other values swap onto the fitted pads.
 
 The shunt itself has no alternate footprint. Other values (22 to 150 mOhm, all 1206) swap onto Rs1's own pads, so the kelvin taps never move. A second shunt in parallel would split the current by pad and trace resistance and break the symmetric entry, so there is no pad for one.
 
-The DRV8212P's own OCP / TSD is the first protection layer. OCP trips at 4 A minimum, above the roughly 2.2 A where the sense chain saturates, and a hobby motor stalls below it, so a hard stall lands on TSD first and the driver hiccups at about 1 Hz until firmware drops `DRV_EN`. OCP only fires on a shorted lead pair, in 4 us pulses the ADC will not see. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
+The DRV8212P's own OCP / TSD is the first protection layer. OCP trips at 4 A minimum, above the roughly 2.9 A where the sense chain saturates, and a hobby motor stalls below it, so a hard stall lands on TSD first and the driver hiccups at about 1 Hz until firmware drops `DRV_EN`. OCP only fires on a shorted lead pair, in 4 us pulses the ADC will not see. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
 
 ## Other sensing
 
 ### Motor terminal voltage
 
-`MOT_A` / `MOT_B` go through Rv1 / Rv3 (6K4) into ADC `A5` / `A6`, with Rv2 / Rv4 (1K6) and Cv1 / Cv2 (100 pF) returning to `VB` instead of `GND`.
+`MOT_A` / `MOT_B` go through Rv1 / Rv3 (6K8) into ADC `A5` / `A6`, with Rv2 / Rv4 (1K5) and Cv1 / Cv2 (100 pF) returning to `VB` instead of `GND`.
 
-`VB` is a 0.623 V bias node (Rb1 430 / Rb2 100 from `+3V3`, bulk Cb1 10uF and Cb2 100nF). The divider ratio is 0.20, so a tap reads `0.2 x terminal + 0.8 x VB`:
+`VB` is a 0.579 V bias node (Rb1 470 / Rb2 100 from `+3V3`, bulk Cb1 10uF and Cb2 100nF). The divider ratio is 0.181, so a tap reads `0.181 x terminal + 0.819 x VB`:
 
-- A 2S rail at 8.4 V taps about 2.18 V, well inside the ADC range.
-- During coast, the free terminal sits a diode below `PGND` or a diode above `VSYS`. At -0.9 V the tap is still 0.32 V, and at 9.3 V it is 2.36 V, so neither phase clips.
+- A 2S rail at 8.4 V taps about 1.99 V, well inside the ADC range.
+- During coast, the free terminal sits a diode below `PGND` or a diode above `VSYS`. At -0.9 V the tap is still 0.31 V, and at 9.3 V it is 2.15 V, so neither phase clips.
 
-That is the point of the bias: both terminals stay readable while the bridge coasts, so `vA - vB` is real back-EMF rather than a rail-clamped stub. The rail comes back as `5 x tap - 4 x VB`.
+That is the point of the bias: both terminals stay readable while the bridge coasts, so `vA - vB` is real back-EMF rather than a rail-clamped stub. The rail comes back as `5.53 x tap - 4.53 x VB`.
 
-`VB` is read at boot with the driver parked. With the bridge Hi-Z no current flows in either leg, so both taps sit at `VB` itself and firmware recovers the bias with no extra pin. If the two taps disagree by more than 64 counts, the 773-count nominal stands in. The bias also shifts with drive current, since the divider bottoms inject into the `VB` node against its own 81 Ohm source impedance: about +80 mV at full duty on a 2S rail, which the 0.20 ratio turns into 0.3 V on a single-terminal reading. Firmware keeps the boot value and does not track that shift. The back-EMF path reads `vA - vB`, which is immune, and since both terminals are measured, a host that needs one terminal's absolute voltage under drive can correct `VB` from the two taps with one multiply-add.
+`VB` is read at boot with the driver parked. With the bridge Hi-Z no current flows in either leg, so both taps sit at `VB` itself and firmware recovers the bias with no extra pin. If the two taps disagree by more than 64 counts, the nominal stands in (719 counts with these values). The bias also shifts with drive current, since the divider bottoms inject into the `VB` node against its own 82 Ohm source impedance: about +70 mV at full duty on a 2S rail, which the 0.181 ratio turns into 0.3 V on a single-terminal reading. Firmware keeps the boot value and does not track that shift. The back-EMF path reads `vA - vB`, which is immune, and since both terminals are measured, a host that needs one terminal's absolute voltage under drive can correct `VB` from the two taps with one multiply-add.
 
 ### Supply voltage
 
-`VSYS` has its own divider straight to `GND`: Rv5 6K4 / Rv6 1K6 with Cv3 100 pF, into ADC `A2`. Divide by 5, so 8.4 V lands at 1.68 V. Same reels and the same phase as the terminal dividers, so the two chains track each other and rail minus terminal resolves the bridge drop instead of disappearing into a ratio disagreement.
+`VSYS` has its own divider straight to `GND`: Rv5 6K8 / Rv6 1K5 with Cv3 100 pF, into ADC `A2`. Divide by 5.53, so 8.4 V lands at 1.52 V. Same reels and the same phase as the terminal dividers, so the two chains track each other and rail minus terminal resolves the bridge drop instead of disappearing into a ratio disagreement.
 
 ### Position
 
@@ -228,7 +238,7 @@ Rn1 10K pulls up against the onboard 10K / 3950 TH1 on the internal leg of JP2. 
 
 ## Measured on board #1
 
-Everything here is from Rev. 2A board #1, reworked close to the Rev. 2B sense chain (1.5k input pull-ups, 1.10 V `VREF`, comp caps out, 47 pF left on Ci1). The copper around the amplifier differs, so Rev. 2B gets its own pass once built.
+Everything here is from Rev. 2A board #1, reworked close to the Rev. 2B sense chain (G = 14.88, 1.5k input pull-ups, 1.10 V `VREF`, 6K4 / 1K6 dividers, comp caps out, 47 pF left on Ci1) with the HT7533-1 regulator. Rev. 2C changes the gain, the dividers and the regulator, so every scale, floor and the settle gain below belongs to the earlier values, and Rev. 2C gets its own pass once built.
 
 Rev. 2A board #1 on a 2S LiPo, first against a 3.7 Ohm resistor grid (4.4 Ohm at J4 with its cable), then with an MG90 fitted. The grid figures come from [notebook 10](../../../notebooks/10-sense-chain-boards.ipynb), which grades the chain against board D (the bodged Rev. B rig), and the back-EMF figures from [notebook 11](../../../notebooks/11-back-emf-on-rev-2a.ipynb). The constants a capture is read with live in the `dev-v006-2A` entry of [`notebooks/oscnb/boards.py`](../../../notebooks/oscnb/boards.py), and the ones the servo runs with in the board's [`main.rs`](../../../firmware/boards/osc-dev-v006/app/src/main.rs). Those two are the authority; the tables below quote them. Source columns cite notebook sections as `nb10 sec 8`.
 
@@ -334,8 +344,9 @@ The pot is ratiometric on `VDD`, so reference drift cancels, and the 24 MHz ADC 
 - The MG90 terminal capacitance behind the edge spike is inferred from the current, not metered.
 - Every floor figure is on 2S; the LinkE 5 V supply is not characterised.
 - The encoder inputs (J6 / J11), Qwiic and `POS2`.
-- The firmware overcurrent trip (2.2 A) sits at the Rev. 2B chain's nominal ceiling. With the worst-case zero spread it wants to move under about 2.0 A.
-- Rev. 2B itself: not built, so none of the figures above are on its copper.
+- Rev. 2C itself: not built. None of the figures above are on its copper or its values, and firmware has no Rev. 2C board constants yet.
+- The settle gain table was measured at a noise gain of 20. Rev. 2C runs the amplifier at about 16.6, so the table has to be measured again.
+- The SPX3819 datasheet names electrolytic and tantalum output capacitors only. The board gives it ceramics, so check the `+3V3` rail for ringing on the first article.
 
 ## Reference designators
 
@@ -351,7 +362,7 @@ Passives are numbered by the net they serve, not by the sheet they are drawn on.
 |`v`|Terminal and supply dividers|Rv1 - Rv6, Cv1 - Cv3|
 |`b`|VB bias|Rb1, Rb2, Cb1, Cb2|
 |`n`|NTC|Rn1|
-|`p`|Power input and LDO|Cp1 - Cp3, Dp1, Dp2|
+|`p`|Power input and LDO|Cp1 - Cp4, Dp1, Dp2|
 |`l`|Lamps (LEDs and their resistors)|Dl1 - Dl4, Rl1 - Rl4|
 |`u`|MCU supply and debug|Cu1, Cu2, Ru1|
 |`q`|Qwiic I2C|Rq1 - Rq4|
@@ -402,7 +413,7 @@ Use a **WCH-LinkE** on J2. The link talks the CH32V006's 1-wire protocol on `SWD
 
 ### First boot
 
-The MCU's `nRST` and the op-amp `+` input share pin `PD7`. Fresh chips come out of the factory with `RST_MODE=10`, so the pin is reset, and the sense network holds it at about 0.75 V, low enough to keep the MCU in reset if it were connected. JP1 breaks the link until the option byte is flipped:
+The MCU's `nRST` and the op-amp `+` input share pin `PD7`. Fresh chips come out of the factory with `RST_MODE=10`, so the pin is reset, and the sense network holds it at about 0.8 V, low enough to keep the MCU in reset if it were connected. JP1 breaks the link until the option byte is flipped:
 
 1. Make sure JP1 is open (no solder bridging the pads).
 2. Flash the board, then program the USER option bytes over the WCH-LinkE to set `RST_MODE=11` so `PD7` becomes a GPIO.

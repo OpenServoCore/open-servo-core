@@ -6,6 +6,26 @@ To get files at a specific revision, check out the corresponding tag (e.g. `git 
 
 ---
 
+## Rev 2C - 2026-11-24
+
+**Status:** Schematic done. The layout file is on 4 layers (front, GND, VSYS plane, back; JLCPCB JLC04161H-3313) with the new footprints and nets in, but it is not rerouted yet: the new LDO and its bypass capacitor are unconnected and the tracks are the Rev. 2B ones. Same circuit as Rev. 2B on standard parts, so it can be assembled from the JLCPCB basic library plus a few extended lines. Firmware needs its own board constants for this revision, because boards built as Rev. 2A keep the old values.
+
+### Changed
+
+- **LDO** HT7533-1 (SOT-89, +/-3 %) -> SPX3819M5-L-3-3 (SOT-23-5, +/-1 %, 57 ppm/C typical, thermal shutdown). `+3V3` is the ADC reference, so every absolute volt and amp rides on this part. EN is tied to `VSYS`. Input range drops from 30 V to 16 V (20 V absolute max), still above the 11 V the DRV8212P allows on `VSYS`.
+- **Every thin-film resistor -> 1 % 100 ppm thick film** from the JLCPCB basic library, same 0603 hand-solder footprints. The shunt stays the 60 mOhm 1 % 50 ppm alloy part. Firmware measures the current zero and `VB` at boot, and identification absorbs the fixed gain error, so the money stays on the shunt and the regulator.
+- **Gain 14.88 -> 12.** Rf 6K4 -> 12K, Rg 430 -> 1K, Ri 1K5 -> 3K3. 722 mV/A, about 1.1 mA per LSB, range about -1.5 A to +2.9 A. With 1 % parts the zero spreads about +/-0.3 V board to board. At the old gain that left the 2.2 A firmware trip out of reach on about one board in four. At G = 12 999 boards of 1000 reach +2.4 A.
+- **VREF divider** Rd1 1K6 / Rd2 820 -> 2K / 1K. `VREF` stays at about 1.08 V.
+- **Dividers** 6K4 / 1K6 (ratio 0.20) -> 6K8 / 1K5 (ratio 0.181) on both terminals and `VSNS`. 8.4 V lands at 1.52 V and the rail comes back as `5.53 x tap - 4.53 x VB`. The source resistance and the 100 pF filter are within 5 % of before.
+- **`VB` bias** Rb1 430 -> 470, Rb2 stays 100. `VB` moves from 0.623 V to 0.579 V.
+- The op-amp input pull-ups, `VREF` divider and bias now draw about 8.4 mA from `+3V3`, down from about 11 mA.
+
+### Added
+
+- `Cp4`, 10 nF on the regulator's BYP pin for lower output noise.
+
+---
+
 ## Rev 2B - 2026-11-18
 
 **Status:** Schematic and layout done, not fabricated yet. The sense chain is what Rev. 2A board #1 and the reworked bench boards already run, now in copper. Board silk reads `Dev V006 Rev. 2B`.
