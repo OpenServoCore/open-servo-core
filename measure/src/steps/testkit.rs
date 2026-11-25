@@ -40,12 +40,6 @@ pub struct Spy {
     on_sent: OnSent,
 }
 
-impl Spy {
-    pub fn inner_mut(&mut self) -> &mut FakePipe {
-        &mut self.inner
-    }
-}
-
 impl Pipe for Spy {
     async fn send(&mut self, bytes: &[u8]) -> Result<(), PipeError> {
         if let [
@@ -183,8 +177,11 @@ pub fn thermal() -> ThermalInputs {
 /// it has no bend.
 #[derive(Clone, Debug)]
 pub struct Motor {
-    /// The free speed at full duty, counts/s.
+    /// The free speed a share of full duty over [`Motor::dead_duty`]
+    /// turns the shaft at, counts/s.
     pub cps_full: f64,
+    /// The duty the shaft's friction holds it still under.
+    pub dead_duty: f64,
     /// Commutation cycles a straight count: the ripple line is this times
     /// the speed.
     pub cycles_per_count: f64,
@@ -267,7 +264,8 @@ impl Motor {
             if zero_after.is_some_and(|n| rows.len() >= edge + n) {
                 q = 0;
             }
-            let target = q as f64 / 32768.0 * self.cps_full;
+            let d = q as f64 / 32768.0;
+            let target = d.signum() * self.cps_full * (d.abs() - self.dead_duty).max(0.0);
             let tau = if q != 0 {
                 self.rise_tau_s
             } else {

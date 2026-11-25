@@ -1,13 +1,17 @@
-//! The table step's planner, pure: a rung's length against its runway and
-//! the burst, the stagger, the short-rung cut, the stops step's result it
-//! reads and the checks after a rung. The step on the simulated servo is
-//! tested next to it (`steps::table`), on the crate's test kit.
+//! The table step's planner, pure: a free rung's length against its
+//! runway and the burst, a stop rung's against the permit, the short-rung
+//! cut, the fast passes' duty and bound, the rows a code, the stops step's
+//! result it reads and the checks after a rung. The step on the simulated
+//! servo is tested next to it (`steps::table`), on the crate's test kit.
 
-use osc_measure::envelope::{BURST_MAX_S, DRIVE_DEADMAN_S, FREE_MARGIN, GUARD_SHARE};
+use osc_measure::capture::rows::TelFrame;
+use osc_measure::envelope::{BURST_MAX_S, DRIVE_DEADMAN_S, FREE_MARGIN, GUARD_SHARE, PERMIT_MAX_S};
 use osc_measure::steps::runway::COAST_TAU_S;
+use osc_measure::steps::seek::WINDOW_S;
 use osc_measure::steps::table::{
-    self, Band, FromStops, RUNG_MIN_S, RungRead, STAGGER, START_INSIDE_COUNTS, after, plan_rung,
-    share, stamp_ticks,
+    Band, FIRST_FAST_SHARE, FromStops, NEAR_STOP_COUNTS, RUNG_MIN_S, Reach, RungRead, Schedule,
+    Speeds, after, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows, plan_rung,
+    plan_stop_rung, reach, rows_a_code, stamp_ticks,
 };
 use serde_json::json;
 
@@ -19,12 +23,11 @@ fn band() -> Band {
 }
 
 #[test]
-fn the_guards_are_the_envelopes_and_a_pass_starts_inside_its_near_one() {
+fn the_guards_are_the_envelopes_and_a_fast_pass_starts_at_its_near_one() {
     let b = band();
     let g = GUARD_SHARE * 3620.0;
     assert_eq!((b.lo, b.hi), (110.0 + g, 3730.0 - g));
-    assert_eq!(b.start(1), b.lo + START_INSIDE_COUNTS);
-    assert_eq!(b.start(-1), b.hi - START_INSIDE_COUNTS);
+    assert_eq!((b.near(1), b.near(-1)), (b.lo, b.hi));
     assert_eq!((b.far(1), b.far(-1)), (b.hi, b.lo));
     assert_eq!(b.runway(1, 500.0), b.hi - 500.0);
     assert_eq!(b.runway(-1, 3000.0), 3000.0 - b.lo);
@@ -67,9 +70,9 @@ fn a_rung_is_never_planned_past_the_far_guard_at_its_bound_speed() {
 #[test]
 fn the_rung_is_the_lesser_of_the_runway_and_the_burst() {
     let b = band();
-    let p = plan_rung(&b, 1, b.start(1), 730.0, 1.0, FS);
+    let p = plan_rung(&b, 1, b.near(1), 730.0, 1.0, FS);
     let bs = FREE_MARGIN * 730.0;
-    let runway = b.hi - b.start(1);
+    let runway = b.hi - b.near(1);
     assert!((p.t_runway_s - ((runway - bs * COAST_TAU_S) / bs - DRIVE_DEADMAN_S)).abs() < 1e-12);
     assert_eq!(p.t_burst_s, BURST_MAX_S - DRIVE_DEADMAN_S);
     assert!(p.t_runway_s > p.t_burst_s);
@@ -79,22 +82,15 @@ fn the_rung_is_the_lesser_of_the_runway_and_the_burst() {
     assert!((p.t_s - p.t_runway_s).abs() <= 1.0 / FS, "{}", p.said());
 }
 
+/// The first fast pass runs at half its window.
 #[test]
-fn the_first_rung_of_each_round_trip_is_staggered() {
-    assert_eq!(STAGGER, [1.0, 0.85, 0.7]);
-    for (trip, s) in STAGGER.iter().enumerate() {
-        assert_eq!(share(trip, 0), *s);
-        assert_eq!(share(trip, 1), 1.0);
-        assert_eq!(share(trip, 2), 1.0);
-    }
+fn a_share_cuts_the_window() {
     let b = band();
-    let full = plan_rung(&b, 1, b.start(1), 1400.0, 1.0, FS);
-    for s in STAGGER {
-        let p = plan_rung(&b, 1, b.start(1), 1400.0, s, FS);
-        let want = s * full.t_runway_s.min(full.t_burst_s);
-        assert!((p.t_s - want).abs() <= 1.0 / FS, "{s}: {}", p.said());
-        assert_eq!(p.share, s);
-    }
+    let full = plan_rung(&b, 1, b.near(1), 1400.0, 1.0, FS);
+    let p = plan_rung(&b, 1, b.near(1), 1400.0, FIRST_FAST_SHARE, FS);
+    let want = FIRST_FAST_SHARE * full.t_runway_s.min(full.t_burst_s);
+    assert!((p.t_s - want).abs() <= 1.0 / FS, "{}", p.said());
+    assert_eq!(p.share, FIRST_FAST_SHARE);
 }
 
 /// A rung under 150 ms is left out: at the start where T reaches 150 ms
@@ -111,7 +107,7 @@ fn a_rung_under_150_ms_is_left_out() {
     assert!(!p.fits() && p.t_s < RUNG_MIN_S, "{}", p.said());
     assert!(!plan_rung(&b, 1, start, 730.0, 0.85, FS).fits());
     assert!(!plan_rung(&b, 1, b.hi + 10.0, 730.0, 1.0, FS).fits());
-    assert!(!plan_rung(&b, 1, b.start(1), 0.0, 1.0, FS).fits());
+    assert!(!plan_rung(&b, 1, b.near(1), 0.0, 1.0, FS).fits());
 }
 
 fn stops(legs: serde_json::Value) -> serde_json::Value {
@@ -137,9 +133,13 @@ fn the_stops_result_gives_the_stops_the_duty_and_the_approach_speeds() {
     assert_eq!(s.legs.len(), 2);
     assert_eq!((s.legs[0].dir, s.legs[0].speed_cps()), (-1, 946.0));
     assert_eq!((s.legs[1].dir, s.legs[1].speed_cps()), (1, 694.0));
-    let f = table::Fastest::of_legs(&s.legs);
+    let mut f = Speeds::of_legs(&s.legs);
     assert_eq!((f.get(1), f.get(-1)), (694.0, 946.0));
     assert_eq!(f.from(1), "approach leg 3");
+    f.feed(1, 650.0, "rung 2".into());
+    f.feed(1, 720.0, "rung 3".into());
+    assert_eq!((f.get(1), f.from(1)), (720.0, "rung 3"));
+    assert_eq!(f.slowest(1), Some(&(650.0, "rung 2".to_string())));
 
     let one_way = json!([
         {"n": 1, "kind": "approach", "toward": "low", "from_counts": 2000.0, "to_counts": 108.0, "secs": 2.0},
@@ -157,7 +157,7 @@ fn the_stops_result_gives_the_stops_the_duty_and_the_approach_speeds() {
 #[test]
 fn the_checks_after_a_rung() {
     let b = band();
-    let p = plan_rung(&b, 1, b.start(1), 730.0, 1.0, FS);
+    let p = plan_rung(&b, 1, b.near(1), 730.0, 1.0, FS);
     let r = RungRead {
         start: p.start,
         end: 2500.0,
@@ -203,4 +203,114 @@ fn a_long_rungs_stamps_read_across_their_wrap() {
         500.0
     );
     assert_eq!(stamp_ticks(5, 5, 200.0), 0.0);
+}
+
+/// A stop rung covers the counts to the stop at the slowest speed seen
+/// over the free margin, spins up and reads a still window, inside the
+/// permit's time less the dead-man.
+#[test]
+fn a_stop_rung_reaches_the_stop_inside_the_permit() {
+    let p = plan_stop_rung(1, 3500.0, 3600.0, 900.0, 800.0, FS);
+    let want = 100.0 / (800.0 / FREE_MARGIN) + 0.1 + WINDOW_S;
+    assert!((p.t_s - want).abs() <= 1.0 / FS, "{}", p.said());
+    assert_eq!(
+        (p.runway, p.far_guard, p.bound_speed),
+        (100.0, 3600.0, FREE_MARGIN * 900.0)
+    );
+    let far = plan_stop_rung(-1, 2000.0, 100.0, 900.0, 800.0, FS);
+    assert!((far.t_s - (PERMIT_MAX_S - DRIVE_DEADMAN_S)).abs() <= 1.0 / FS);
+    assert!(far.t_s + DRIVE_DEADMAN_S <= PERMIT_MAX_S);
+    // already on the stop: the spin-up and the still window alone
+    let on = plan_stop_rung(-1, 100.0, 100.0, 900.0, 800.0, FS);
+    assert!((on.t_s - (0.1 + WINDOW_S)).abs() <= 1.0 / FS);
+}
+
+fn rows(pos: &[f64]) -> Vec<TelFrame> {
+    pos.iter()
+        .enumerate()
+        .map(|(k, p)| TelFrame {
+            tick: k as u64,
+            pos: Some(p.round() as u16),
+            duty_counts: Some(146),
+            ..TelFrame::default()
+        })
+        .collect()
+}
+
+/// The last still window against the stop: on it within 10 counts,
+/// short of it, past it, or still moving.
+#[test]
+fn a_stop_rung_reads_reached_short_past_or_moving() {
+    let n = (WINDOW_S * FS) as usize;
+    let still = |at: f64| rows(&vec![at; n + 100]);
+    assert_eq!(
+        reach(&still(3605.0), 1, 3600.0, 3.0, FS),
+        Reach::Reached(3605.0)
+    );
+    assert_eq!(
+        reach(&still(3580.0), 1, 3600.0, 3.0, FS),
+        Reach::Short(3580.0)
+    );
+    assert_eq!(
+        reach(&still(3620.0), 1, 3600.0, 3.0, FS),
+        Reach::Past(3620.0)
+    );
+    assert_eq!(
+        reach(&still(120.0), -1, 100.0, 3.0, FS),
+        Reach::Short(120.0)
+    );
+    assert_eq!(reach(&still(80.0), -1, 100.0, 3.0, FS), Reach::Past(80.0));
+    let moving: Vec<f64> = (0..n + 100).map(|k| 3400.0 + k as f64 * 0.05).collect();
+    assert_eq!(reach(&rows(&moving), 1, 3600.0, 3.0, FS), Reach::Moving);
+    assert_eq!(
+        reach(&still(3600.0)[..n - 1], 1, 3600.0, 3.0, FS),
+        Reach::Moving
+    );
+}
+
+/// The histogram drops rows within 32 counts of a stop; the rows a code
+/// are the rest over the codes between.
+#[test]
+fn the_rows_a_code_leave_out_the_counts_by_the_stops() {
+    let codes: Vec<u16> = (110..=3729).flat_map(|c| [c, c]).collect();
+    let (inside, lo, hi) = histogram_rows(&codes, 110, 3729);
+    assert_eq!(
+        (lo, hi),
+        (
+            110 + NEAR_STOP_COUNTS as u16,
+            3729 - NEAR_STOP_COUNTS as u16
+        )
+    );
+    assert_eq!(inside.len(), 2 * (hi - lo + 1) as usize);
+    assert_eq!(rows_a_code(&codes, 110, 3729), 2.0);
+    assert_eq!(rows_a_code(&[], 110, 3729), 0.0);
+}
+
+/// One fifth of the rated speed by the nameplate's speed per volt: one
+/// fifth of its stated voltage; the first fast pass is bounded by the
+/// prediction, later ones by what the fast passes ran.
+#[test]
+fn the_fast_passes_run_at_a_fifth_of_the_stated_volts() {
+    assert_eq!(fast_q15(4.8, 5.0), (0.96 / 5.0 * 32768.0f64).floor() as i16);
+    assert_eq!(fast_predicted_cps(13_333.0), 0.2 * 13_333.0);
+    assert_eq!(fast_bound_from([None, None], 1, 2667.0), 2667.0);
+    assert_eq!(fast_bound_from([Some(2100.0), None], 1, 2667.0), 2100.0);
+    assert_eq!(fast_bound_from([Some(2100.0), None], -1, 2667.0), 2667.0);
+    assert_eq!(fast_bound_from([Some(3000.0), None], -1, 2667.0), 3000.0);
+    assert_eq!(
+        fast_bound_from([Some(2100.0), Some(1900.0)], -1, 2667.0),
+        1900.0
+    );
+}
+
+#[test]
+fn the_plans_schedule() {
+    assert_eq!(
+        Schedule::PLAN,
+        Schedule {
+            slow_round_trips: 2,
+            fast_round_trips: 2,
+            extra_slow_max: 2
+        }
+    );
 }
