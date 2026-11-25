@@ -566,3 +566,208 @@ fn the_spin_steps_judge_reads_the_fixtures_ke() {
         p.all.n
     );
 }
+
+fn runs_json() -> Value {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/spins-run/expected.json");
+    serde_json::from_str(&std::fs::read_to_string(&p).expect("expected values")).expect("json")
+}
+
+/// A recorded spin: its number, level, direction, drive and coast rows.
+type SpinRows = (usize, f64, i8, Vec<TelFrame>, Vec<TelFrame>);
+
+/// One capture of a run, its single segment's rows.
+fn capture(dir: &Path, k: u64) -> Vec<TelFrame> {
+    sweep(&dir.join(format!("{k:02}-raw.csv.gz")))
+        .into_iter()
+        .flat_map(|s| s.rows)
+        .collect()
+}
+
+/// A recorded run's spins through the step's judge, its own scales and
+/// zeros from its `results/spins.json`, the nameplate's events a
+/// revolution.
+fn judge_run(run: &Value, per_rev: u32, dir: &Path) -> osc_measure::steps::spins::Judged {
+    use osc_measure::fit::runup::RowScales;
+    use osc_measure::steps::spins::{self, JudgeCfg, Spin};
+    let sc = &run["scales"];
+    let cfg = JudgeCfg {
+        fs: f(&run["fs"]),
+        polarity: run["polarity"].as_bool().expect("polarity"),
+        zero_i: f(&sc["zero_i_counts"]),
+        zero_e: f(&sc["zero_e_counts"]),
+        row: RowScales {
+            counts_per_a: f(&sc["counts_per_a"]),
+            drive_offset_counts: f(&sc["drive_offset_counts"]),
+            counts_per_v: f(&sc["counts_per_v"]),
+            terminal_offset_counts: f(&sc["terminal_offset_counts"]),
+            pwm_arr: f(&sc["pwm_arr"]),
+            window_s: f(&sc["window_s"]),
+        },
+        window: (f(&sc["window_s"]) > 0.0).then(|| "the run's window step".into()),
+        r_ohm: f(&sc["r_ohm"]),
+        l_h: f(&sc["l_h"]),
+        per_rev,
+        i_drag0_a: None,
+    };
+    let rows: Vec<SpinRows> = run["spins"]
+        .as_array()
+        .expect("spins")
+        .iter()
+        .map(|s| {
+            let k = s["captures"].as_array().expect("captures");
+            (
+                u(&s["n"]),
+                f(&s["level"]),
+                s["dir"].as_i64().expect("dir") as i8,
+                capture(dir, k[0].as_u64().expect("drive")),
+                capture(dir, k[1].as_u64().expect("coast")),
+            )
+        })
+        .collect();
+    let spins: Vec<Spin> = rows
+        .iter()
+        .map(|(n, level, d, drive, coast)| Spin {
+            n: *n,
+            level: *level,
+            dir: *d,
+            drive,
+            coast,
+        })
+        .collect();
+    spins::judge(&spins, &cfg)
+}
+
+/// The judge's Ke against the replay note's variant C on one run: the
+/// zero, the coasts pooled, the top's compare, the pooled Ke, its spread
+/// and trend within `rel`, and the plan's verdict.
+fn check_c(j: &osc_measure::steps::spins::Judged, run: &Value, rel: f64) {
+    use osc_measure::steps::Verdict;
+    let name = run["name"].as_str().expect("name");
+    let c = &run["c"];
+    let p = j.ke.as_ref().expect("a pooled Ke");
+    let ke = coast::mv_per_rev_s(p.all.mean);
+    let trend = j.trend;
+    let sd = p.all.sd.map(|s| s / p.all.mean);
+    let v = |n: &str| {
+        j.checks
+            .iter()
+            .find(|k| k.name == n)
+            .unwrap_or_else(|| panic!("{name}: no check {n}"))
+            .verdict
+    };
+    println!(
+        "{name}: zero {:+.2} ({:?} / {:?}), Ke {ke:.4} mV per rev/s over {} of {} ({:+.2}% from 7.283), top {}, sd {:.2}%, trend {}; checks: zero {:?}, gate {:?}, top {:?}, spread {:?}, dirs {:?}, trend {:?}",
+        j.zero.counts,
+        j.zero.up,
+        j.zero.down,
+        p.all.n,
+        j.ke_spins.len(),
+        100.0 * (ke / 7.283 - 1.0),
+        j.top.as_ref().map_or("not compared".into(), |t| format!(
+            "{:.0}% {} at {:+.2}% (line {:.2}%)",
+            100.0 * t.level,
+            if t.pooled { "pooled" } else { "left out" },
+            100.0 * t.vs_lower,
+            100.0 * t.trend
+        )),
+        100.0 * sd.unwrap_or(f64::NAN),
+        trend.map_or("-".into(), |t| format!("{:.2}%", 100.0 * t)),
+        v("the coasts' tap zero"),
+        v("coasts pass the Ke gate"),
+        v("the top level's Ke"),
+        v("Ke spread"),
+        v("Ke by direction"),
+        v("Ke trend with level"),
+    );
+    assert!(j.zero.from_tails, "{name}: {:?}", j.zero);
+    assert_eq!(j.zero.counts, f(&c["zero_counts"]), "{name}");
+    assert_eq!(j.ke_spins.len(), u(&c["ke_coasts"]), "{name}");
+    let gated = j
+        .coasts
+        .iter()
+        .filter(|(n, r)| j.ke_spins.contains(n) && r.as_ref().is_ok_and(|k| k.ke().is_some()))
+        .count();
+    assert_eq!(gated, u(&c["gated"]), "{name}");
+    close(ke, f(&c["ke_mv_per_rev_s"]), rel, &format!("{name} Ke"));
+    close(sd.expect("sd"), f(&c["sd"]), rel, &format!("{name} sd"));
+    match c["top_vs_lower"].as_f64() {
+        Some(want) => {
+            let t = j.top.as_ref().expect("compared");
+            close(t.vs_lower, want, rel, &format!("{name} top"));
+            assert_eq!(
+                t.pooled,
+                c["top_pooled"].as_bool().expect("pooled"),
+                "{name}"
+            );
+            assert_eq!(
+                v("the top level's Ke"),
+                if t.pooled {
+                    Verdict::Pass
+                } else {
+                    Verdict::Warn
+                },
+                "{name}"
+            );
+        }
+        None => assert!(j.top.is_none(), "{name}"),
+    }
+    match c["trend"].as_f64() {
+        Some(want) => close(trend.expect("a trend"), want, rel, &format!("{name} trend")),
+        None => assert_eq!(v("Ke trend with level"), Verdict::Fail, "{name}"),
+    }
+    let ke_checks = [
+        "coasts pass the Ke gate",
+        "Ke spread",
+        "Ke by direction",
+        "Ke trend with level",
+    ];
+    if c["plan"] == "pass" {
+        for n in ke_checks {
+            assert_eq!(v(n), Verdict::Pass, "{name}: {n}");
+        }
+    } else {
+        assert!(ke_checks.iter().any(|n| v(n) == Verdict::Fail), "{name}");
+    }
+}
+
+/// A recorded `osc-ident` run (hunt-R, `testdata/spins-run`) through the
+/// step's judge returns the replay note's variant C: one zero from both
+/// directions' coast tails, 2 spins each way a level, the 75 % level, 4 %
+/// low, left out with a warning and Ke pooled from the lower two.
+#[test]
+fn the_spin_steps_judge_pools_ke_as_the_replay_on_a_recorded_run() {
+    let e = runs_json();
+    let kept = e["kept"].as_str().expect("kept");
+    let run = e["runs"]
+        .as_array()
+        .expect("runs")
+        .iter()
+        .find(|r| r["name"] == kept)
+        .expect("the kept run");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata/spins-run")
+        .join(kept);
+    let j = judge_run(run, u(&e["per_rev"]) as u32, &dir);
+    check_c(&j, run, 1e-6);
+    let t = j.top.as_ref().expect("compared");
+    assert!(!t.pooled && t.level == 0.75);
+    assert_eq!(j.ke.as_ref().expect("pooled").by_level.len(), 2);
+}
+
+/// Opt-in: every run the replay note reads, from the bring-up checkout
+/// named by OSC_BRINGUP.
+#[test]
+fn the_spin_steps_judge_pools_ke_as_the_replay_on_every_recorded_run() {
+    let Some(root) = std::env::var_os("OSC_BRINGUP") else {
+        eprintln!("OSC_BRINGUP unset: the replay of every recorded run is skipped");
+        return;
+    };
+    let e = runs_json();
+    for run in e["runs"].as_array().expect("runs") {
+        let dir = PathBuf::from(&root)
+            .join(run["from"].as_str().expect("from"))
+            .join("captures/spins");
+        let j = judge_run(run, u(&e["per_rev"]) as u32, &dir);
+        check_c(&j, run, 1e-6);
+    }
+}

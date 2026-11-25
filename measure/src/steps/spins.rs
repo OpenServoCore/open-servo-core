@@ -25,6 +25,10 @@
 //! The fits read the raw row, the recorded ladder's: Ke per coast through
 //! [`coast::coast_ke`] and its gate, the speed from the ripple tach and
 //! never the pot, J through [`runup::read_run`] and [`runup::inertia`].
+//! Ke pools the first two spins each way a level over one tap zero, the
+//! mean of both directions' coast tails ([`tap_zero`]); the top level is
+//! pooled only when the line through every level's mean holds
+//! [`KE_TREND_MAX`] (plan sec 2.7's trap), else it is left out and said.
 //! The pot sizes the runway only. The way out leaves the shaft at the
 //! middle of the stops.
 
@@ -66,7 +70,7 @@ pub const RESULT: &str = "results/spins.json";
 /// The window step's result, read when the run holds one.
 pub const WINDOW_RESULT: &str = "results/window.json";
 const METHOD: &str = "free-spins-and-coasts";
-const REVISION: u32 = 2;
+const REVISION: u32 = 3;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 
@@ -84,6 +88,11 @@ pub const STEADY_S: f64 = 0.100;
 pub const STEADY_MIN_S: f64 = 0.020;
 /// The levels the open-loop friction line needs.
 pub const LINE_LEVELS: usize = 2;
+/// The levels Ke is pooled over at least.
+pub const KE_LEVELS: usize = 2;
+/// A coast's tail, its last stretch with the rotor stopped, where the
+/// coasts' tap zero is read.
+pub const TAIL_S: f64 = 0.100;
 /// A level and direction whose pot counts a ripple revolution lie further
 /// than this share from the run's median is left out of the line: its
 /// tach or its pot read another speed than the rest.
@@ -946,11 +955,82 @@ pub struct LinePoint {
     pub counts_per_rev: f64,
 }
 
+/// The tap zero the coasts' EMF is read over, counts of raw tap
+/// difference.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TapZero {
+    pub counts: f64,
+    /// The median of the up and of the down coasts' tails, and how many
+    /// coasts held a tail.
+    pub up: Option<(f64, usize)>,
+    pub down: Option<(f64, usize)>,
+    /// From both directions' tails; false: the rest step's zero.
+    pub from_tails: bool,
+}
+
+impl TapZero {
+    /// The zero [`coast::coast_ke`] takes, which it subtracts after signing
+    /// the tap difference by `bridge`. The tails' zero is a raw offset, the
+    /// same in both directions, so it is signed with the taps; the rest
+    /// step's keeps the record's rule, subtracted after the sign.
+    pub fn signed(&self, bridge: i8) -> f64 {
+        if self.from_tails {
+            f64::from(bridge) * self.counts
+        } else {
+            self.counts
+        }
+    }
+
+    pub fn said(&self) -> String {
+        let tail = |t: Option<(f64, usize)>| {
+            t.map_or("no tail".into(), |(m, n)| format!("{m:+.2} over {n}"))
+        };
+        if self.from_tails {
+            format!(
+                "{:+.2} counts, the mean of the up coasts' tail median ({}) and the down coasts' ({})",
+                self.counts,
+                tail(self.up),
+                tail(self.down)
+            )
+        } else {
+            format!(
+                "the rest step's {:+.2} counts: a direction has no coast at rest over its last {:.0} ms (up {}, down {})",
+                self.counts,
+                1e3 * TAIL_S,
+                tail(self.up),
+                tail(self.down)
+            )
+        }
+    }
+}
+
+/// The top level's Ke compared with the others before it is pooled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TopCompare {
+    pub level: f64,
+    /// Its mean over the mean of the lower levels' means, less 1.
+    pub vs_lower: f64,
+    /// The line through every level's mean over their span, a share of
+    /// the mean over every level.
+    pub trend: f64,
+    pub levels: usize,
+    pub pooled: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Judged {
     pub per_rev: PerRev,
     pub steady: Vec<Steady>,
+    /// Every spin's coast, Ke's or not.
     pub coasts: Vec<(usize, Result<CoastKe, String>)>,
+    pub zero: TapZero,
+    /// The spins whose coasts are Ke's.
+    pub ke_spins: Vec<usize>,
+    pub top: Option<TopCompare>,
+    /// The levels pooled, each with its mean Ke, and the line through
+    /// them over their span as a share of the pooled Ke.
+    pub ke_levels: Vec<(f64, f64)>,
+    pub trend: Option<f64>,
     pub ke: Option<KePooled>,
     pub line: Option<OpenLine>,
     pub i_drag0_a: Option<f64>,
@@ -1209,6 +1289,147 @@ pub fn j_level_check(level: Option<f64>) -> Check {
     }
 }
 
+/// A coast's raw tap difference at rest: the median of vA - vB over its
+/// last [`TAIL_S`]; None unless the rotor stopped before them.
+pub fn coast_tail(coast: &[TelFrame], bridge: i8, c: &JudgeCfg) -> Option<f64> {
+    let from = coast.len().checked_sub((TAIL_S * c.fs) as usize)?;
+    let cut = coast::cut_row(coast)?;
+    let emf = coast::emf_from_cut(coast, bridge, cut, 0.0, c.row.counts_per_v)?;
+    if cut + coast::stop_row(&emf)? > from {
+        return None;
+    }
+    let raw: Option<Vec<f64>> = coast[from..]
+        .iter()
+        .map(|f| Some(f64::from(f.vmotor_a?) - f64::from(f.vmotor_b?)))
+        .collect();
+    median(&raw?)
+}
+
+/// One tap zero for every coast of the run: the mean of the up coasts'
+/// and the down coasts' tail medians, else the rest step's.
+pub fn tap_zero(spins: &[Spin], c: &JudgeCfg) -> TapZero {
+    let way = |d: i8| {
+        let t: Vec<f64> = spins
+            .iter()
+            .filter(|s| s.dir == d)
+            .filter_map(|s| coast_tail(s.coast, c.bridge(s.dir), c))
+            .collect();
+        median(&t).map(|m| (m, t.len()))
+    };
+    let (up, down) = (way(1), way(-1));
+    match (up, down) {
+        (Some((u, _)), Some((d, _))) => TapZero {
+            counts: 0.5 * (u + d),
+            up,
+            down,
+            from_tails: true,
+        },
+        _ => TapZero {
+            counts: c.zero_e,
+            up,
+            down,
+            from_tails: false,
+        },
+    }
+}
+
+/// Whether each spin's coast is Ke's: the first [`runway::SPINS_EACH`] of
+/// its level and direction, plan sec 2.7's 2 cycles a level. The top
+/// level's third each way is J's run-up only.
+pub fn ke_spins(spins: &[Spin]) -> Vec<bool> {
+    spins
+        .iter()
+        .map(|s| {
+            spins
+                .iter()
+                .filter(|t| t.level == s.level && t.dir == s.dir && t.n < s.n)
+                .count()
+                < runway::SPINS_EACH
+        })
+        .collect()
+}
+
+/// Each level's mean Ke over its gated coasts, from (level, read), the
+/// lowest level first.
+fn level_means(coasts: &[(f64, CoastKe)]) -> Vec<(f64, f64)> {
+    let mut levels: Vec<f64> = coasts
+        .iter()
+        .filter(|(_, k)| k.ke().is_some())
+        .map(|(l, _)| *l)
+        .collect();
+    levels.sort_by(f64::total_cmp);
+    levels.dedup();
+    levels
+        .into_iter()
+        .filter_map(|l| {
+            let ke: Vec<f64> = coasts
+                .iter()
+                .filter(|(x, _)| *x == l)
+                .filter_map(|(_, k)| k.ke())
+                .collect();
+            Some((l, mean(&ke)?))
+        })
+        .collect()
+}
+
+/// The line through the level means over their span, a share of `mean`;
+/// None under [`KE_LEVELS`] levels.
+fn ke_trend(levels: &[(f64, f64)], mean: f64) -> Option<f64> {
+    let (x, y): (Vec<f64>, Vec<f64>) = levels.iter().copied().unzip();
+    let [_, slope] = polyfit::<2>(&x, &y).filter(|_| x.len() >= KE_LEVELS)?;
+    let span = x.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        - x.iter().copied().fold(f64::INFINITY, f64::min);
+    Some((slope * span).abs() / mean)
+}
+
+/// Ke as pooled: the coasts, the levels pooled with their means and the
+/// line through them, and the top level's compare.
+struct KePool {
+    ke: Option<KePooled>,
+    levels: Vec<(f64, f64)>,
+    trend: Option<f64>,
+    top: Option<TopCompare>,
+}
+
+/// Ke pooled over `coasts` as (level, read): the top level compared first
+/// and left out when the line through every level's mean is over
+/// [`KE_TREND_MAX`].
+fn pool_ke(coasts: &[(f64, CoastKe)]) -> KePool {
+    let all = coast::pooled(&coasts.iter().map(|(_, k)| k.clone()).collect::<Vec<_>>());
+    let levels = level_means(coasts);
+    let top = (|| {
+        let p = all.as_ref()?;
+        let (&(top, at), lower) = levels.split_last()?;
+        let trend = ke_trend(&levels, p.all.mean)?;
+        Some(TopCompare {
+            level: top,
+            vs_lower: at / mean(&lower.iter().map(|x| x.1).collect::<Vec<_>>())? - 1.0,
+            trend,
+            levels: levels.len(),
+            pooled: trend <= KE_TREND_MAX,
+        })
+    })();
+    let (ke, levels) = match &top {
+        Some(t) if !t.pooled => {
+            let kept: Vec<(f64, CoastKe)> = coasts
+                .iter()
+                .filter(|(l, _)| *l != t.level)
+                .cloned()
+                .collect();
+            let p = coast::pooled(&kept.iter().map(|(_, k)| k.clone()).collect::<Vec<_>>());
+            (p, level_means(&kept))
+        }
+        _ => (all, levels),
+    };
+    let trend = ke.as_ref().and_then(|p| ke_trend(&levels, p.all.mean));
+    KePool {
+        ke,
+        levels,
+        trend,
+        top,
+    }
+}
+
 /// The spins read: the events a revolution, each steady stretch and
 /// coast, Ke pooled, the open-loop line, J from the run-ups of the
 /// highest level that ran both ways ([`j_level`]),
@@ -1241,27 +1462,94 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
         per_rev: per,
         fs: c.fs,
     };
+    let zero = tap_zero(spins, c);
+    checks.push(check(
+        "the coasts' tap zero",
+        zero.said(),
+        format!(
+            "both directions' coasts at rest over their last {:.0} ms",
+            1e3 * TAIL_S
+        ),
+        if zero.from_tails {
+            Verdict::Pass
+        } else {
+            Verdict::Warn
+        },
+    ));
     let coasts: Vec<(usize, Result<CoastKe, String>)> = spins
         .iter()
         .map(|s| {
+            let b = c.bridge(s.dir);
             (
                 s.n,
-                coast::coast_ke(s.drive, s.coast, c.bridge(s.dir), c.zero_e, &cs),
+                coast::coast_ke(s.drive, s.coast, b, zero.signed(b), &cs),
             )
         })
         .collect();
-    let read: Vec<CoastKe> = coasts
+    let mine = ke_spins(spins);
+    let read: Vec<(f64, CoastKe)> = spins
         .iter()
-        .filter_map(|(_, r)| r.as_ref().ok().cloned())
+        .zip(&coasts)
+        .zip(&mine)
+        .filter(|(_, m)| **m)
+        .filter_map(|((s, (_, r)), _)| r.as_ref().ok().map(|k| (s.level, k.clone())))
         .collect();
-    let ke = coast::pooled(&read);
-    let gated = read.iter().filter(|k| k.ke().is_some()).count();
+    let ke_n: Vec<usize> = spins
+        .iter()
+        .zip(&mine)
+        .filter(|(_, m)| **m)
+        .map(|(s, _)| s.n)
+        .collect();
+    let KePool {
+        ke,
+        levels,
+        trend,
+        top,
+    } = pool_ke(&read);
+    let gated = read.iter().filter(|(_, k)| k.ke().is_some()).count();
     checks.push(check(
         "coasts pass the Ke gate",
-        format!("{gated} of {}", spins.len()),
+        format!(
+            "{gated} of {}, the first {} spins each way a level",
+            ke_n.len(),
+            runway::SPINS_EACH
+        ),
         format!("at least {GATED_MIN}"),
         pass(gated >= GATED_MIN),
     ));
+    checks.push(match &top {
+        Some(t) => {
+            let said = format!(
+                "{:+.2}% against the lower levels' mean; the line through all {} levels' means {:.2}%",
+                100.0 * t.vs_lower,
+                t.levels,
+                100.0 * t.trend
+            );
+            check(
+                "the top level's Ke",
+                if t.pooled {
+                    format!("the {:.0}% level pooled: {said}", 100.0 * t.level)
+                } else {
+                    format!("the {:.0}% level left out of Ke: {said}", 100.0 * t.level)
+                },
+                format!(
+                    "pooled when the line through every level's mean is within {:.0}%",
+                    100.0 * KE_TREND_MAX
+                ),
+                if t.pooled {
+                    Verdict::Pass
+                } else {
+                    Verdict::Warn
+                },
+            )
+        }
+        None => check(
+            "the top level's Ke",
+            "under two levels with a gated coast: nothing to compare".into(),
+            "two levels at least".into(),
+            Verdict::NotJudged,
+        ),
+    });
     match &ke {
         Some(p) => {
             let sd = p.all.sd.map(|s| s / p.all.mean);
@@ -1303,36 +1591,26 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
                     Verdict::Fail,
                 ),
             });
-            let (x, y): (Vec<f64>, Vec<f64>) = p
-                .by_level
-                .iter()
-                .map(|(l, q)| (f64::from(*l), q.mean))
-                .unzip();
-            checks.push(match polyfit::<2>(&x, &y).filter(|_| x.len() >= 2) {
-                Some([_, slope]) => {
-                    let span = x.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-                        - x.iter().copied().fold(f64::INFINITY, f64::min);
-                    let trend = (slope * span).abs() / p.all.mean;
-                    check(
-                        "Ke trend with level",
-                        format!(
-                            "{} levels: {:.2}% over the levels' span by the line through their means",
-                            x.len(),
-                            100.0 * trend
-                        ),
-                        format!(
-                            "within {:.0}%; a warning to {:.0}%",
-                            100.0 * KE_TREND_MAX,
-                            100.0 * WARN_SPAN * KE_TREND_MAX
-                        ),
-                        warn_within(trend, KE_TREND_MAX),
-                    )
-                }
+            let n = levels.len();
+            checks.push(match trend {
+                Some(trend) => check(
+                    "Ke trend with level",
+                    format!(
+                        "{n} levels pooled: {:.2}% over the levels' span by the line through their means",
+                        100.0 * trend
+                    ),
+                    format!(
+                        "within {:.0}%; a warning to {:.0}%",
+                        100.0 * KE_TREND_MAX,
+                        100.0 * WARN_SPAN * KE_TREND_MAX
+                    ),
+                    warn_within(trend, KE_TREND_MAX),
+                ),
                 None => check(
                     "Ke trend with level",
-                    format!("{} level with a gated coast", x.len()),
-                    "two levels at least".into(),
-                    Verdict::NotJudged,
+                    format!("{n} level pooled"),
+                    format!("Ke pooled over {KE_LEVELS} levels at least"),
+                    Verdict::Fail,
                 ),
             });
         }
@@ -1499,6 +1777,11 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
         per_rev: pr,
         steady: st,
         coasts,
+        zero,
+        ke_spins: ke_n,
+        top,
+        ke_levels: levels,
+        trend,
         ke,
         line,
         i_drag0_a,
@@ -1519,7 +1802,7 @@ pub fn advice(name: &str) -> &'static str {
             "the coasts scatter: let the motor cool and run the step again; if it is refused again, the brushes may want running in"
         }
         "Ke trend with level" => {
-            "Ke moves with the level: run the step again; if it is refused again, check the board's terminal taps"
+            "Ke moves with the level, or fewer than two levels were pooled: run the step again; if it is refused again, check the board's terminal taps, the stops and the nameplate's speed"
         }
         "J from the run-ups" => {
             "no run-up read a J: the runway may have left the levels out or their rows read too few crossings; check the stops and the nameplate's speed, then run the step again"
@@ -1594,6 +1877,9 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
         })
         .collect();
     let judged = finished.then(|| judge(&read, &cfg));
+    if let Some(j) = &judged {
+        lines.push(format!("Ke's tap zero: {}", j.zero.said()));
+    }
     let mut checks = judged.as_ref().map_or(Vec::new(), |j| j.checks.clone());
     if finished {
         checks.push(check(
@@ -1751,8 +2037,14 @@ fn result_json(
                     p.all.mean,
                     "V s/rad",
                     &format!(
-                        "the mean over {} coasts through the ladder notebook's gate: each coast's EMF over its ripple speed in its whole cycles nearest 10 ms",
-                        p.all.n
+                        "the mean over {} coasts, the first {} spins each way a level{}, through the ladder notebook's gate: each coast's EMF over its ripple speed in its whole cycles nearest 10 ms, the tap zero {}",
+                        p.all.n,
+                        runway::SPINS_EACH,
+                        j.top.as_ref().filter(|t| !t.pooled).map_or(String::new(), |t| format!(
+                            ", the {:.0}% level left out",
+                            100.0 * t.level
+                        )),
+                        j.zero.said()
                     ),
                 ),
             );
@@ -1806,7 +2098,7 @@ fn result_json(
             .coasts
             .iter()
             .map(|(n, r)| match r {
-                Ok(k) => json!({"n": n, "dir": wiring(k.dir), "held_ticks": k.level, "cut": k.cut, "e_first_v": k.e_first,
+                Ok(k) => json!({"n": n, "dir": wiring(k.dir), "in_ke": j.ke_spins.contains(n), "held_ticks": k.level, "cut": k.cut, "e_first_v": k.e_first,
                                 "turned": k.turned, "open_rows": k.open_rows, "f_seed_hz": k.f_seed,
                                 "ke_v_s_per_rad": k.window.map(|w| w.ke), "rev_s": k.window.map(|w| w.rev_s),
                                 "decel_frac": k.window.map(|w| w.decel_frac), "cycles": k.window.map(|w| w.cycles),
@@ -1821,8 +2113,21 @@ fn result_json(
                 "by_dir": p.by_dir.iter().map(|(d, x)| json!({"dir": wiring(*d), "v_s_per_rad": pooled_json(x, 1.0)})).collect::<Vec<_>>(),
                 "by_held_ticks": p.by_level.iter().map(|(l, x)| json!({"held_ticks": l, "v_s_per_rad": pooled_json(x, 1.0)})).collect::<Vec<_>>(),
                 "coasts": p.coasts,
+                "spins": j.ke_spins,
+                "levels_pooled": j.ke_levels.iter().map(|(l, m)| json!({"level_share": l, "v_s_per_rad": m})).collect::<Vec<_>>(),
+                "trend": opt(j.trend),
+                "top": j.top.as_ref().map(|t| json!({"level_share": t.level, "vs_lower": t.vs_lower, "trend_all_levels": t.trend,
+                                                     "levels": t.levels, "pooled": t.pooled})),
             })
         });
+        let tail = |t: Option<(f64, usize)>| {
+            t.map_or(
+                Value::Null,
+                |(m, n)| json!({"median_counts": m, "coasts": n}),
+            )
+        };
+        let ke_zero = json!({"counts": j.zero.counts, "from_tails": j.zero.from_tails, "tail_s": TAIL_S,
+                             "up_tail": tail(j.zero.up), "down_tail": tail(j.zero.down), "source": j.zero.said()});
         let inertia = match &j.inertia {
             Ok(i) => json!({
                 "j_kg_m2": pooled_json(&i.j, 1.0),
@@ -1835,6 +2140,7 @@ fn result_json(
         fits = json!({
             "events_per_rev": {"value": j.per_rev.value, "source": j.per_rev.source},
             "ke": ke,
+            "ke_zero": ke_zero,
             "coasts": coasts,
             "steady": per_level,
             "steady_spins": j.steady.iter().map(|s| json!({"n": s.n, "level_share": s.level, "dir": s.dir, "rows": s.rows,
@@ -2384,6 +2690,270 @@ mod tests {
             "{:?}",
             r.log
         );
+    }
+
+    const KE: f64 = 1.16e-3;
+    const CPV: f64 = 250.0;
+
+    fn ke_cfg() -> JudgeCfg {
+        JudgeCfg {
+            fs: 20_000.0,
+            polarity: true,
+            zero_i: 1210.0,
+            zero_e: 2.5,
+            row: RowScales {
+                counts_per_a: 1108.0,
+                drive_offset_counts: 0.0,
+                counts_per_v: CPV,
+                terminal_offset_counts: 0.0,
+                pwm_arr: 1200.0,
+                window_s: 0.0,
+            },
+            window: None,
+            r_ohm: 4.2,
+            l_h: 8e-4,
+            per_rev: 6,
+            i_drag0_a: Some(0.04),
+        }
+    }
+
+    /// A spin held at `ticks` and its coast of `rows` from 300 rev/s at
+    /// 1.5e4 rad/s^2, the same speeds at every level so the read's own
+    /// bias is common to all: the EMF `ke w` with a 5 % ripple six a turn
+    /// on the taps signed by `bridge`, `offset` counts on the raw tap
+    /// difference throughout, and once the rotor stops the signed tail
+    /// reads 1 count low, as the bench's tails do.
+    fn ke_spin(
+        ticks: i16,
+        bridge: i8,
+        ke: f64,
+        offset: i32,
+        rows: u64,
+    ) -> (Vec<TelFrame>, Vec<TelFrame>) {
+        let fs = 20_000.0;
+        let w0 = 2.0 * core::f64::consts::PI * 300.0;
+        let row = |tick: u64, duty: i16, diff: i32, raw: u16| TelFrame {
+            tick,
+            duty_counts: Some(duty),
+            pos: Some(2000),
+            vmotor_a: Some((1000 + diff) as u16),
+            vmotor_b: Some(1000),
+            current_raw: Some(raw),
+            ..TelFrame::default()
+        };
+        let drive = (0..1000u64)
+            .map(|k| {
+                let th = w0 * k as f64 / fs;
+                let raw = (1300.0 + 40.0 * (6.0 * th).cos()) as u16;
+                row(k, ticks * bridge as i16, 1000 * bridge as i32, raw)
+            })
+            .collect();
+        let (mut w, mut th) = (w0, 0.0f64);
+        let coast = (0..rows)
+            .map(|k| {
+                let emf = ke * w * (1.0 + 0.05 * (6.0 * th).cos());
+                let rest = if w == 0.0 { -1 } else { 0 };
+                let diff = bridge as i32 * ((emf * CPV).round() as i32 + rest) + offset;
+                th += w / fs;
+                w = (w - 1.5e4 / fs).max(0.0);
+                let duty = if k < 2 { ticks * bridge as i16 } else { 0 };
+                row(1000 + k, duty, diff, 1210)
+            })
+            .collect();
+        (drive, coast)
+    }
+
+    type Rows = Vec<(usize, f64, i8, Vec<TelFrame>, Vec<TelFrame>)>;
+
+    /// The step's order at `levels`, 2 spins each way a level and 3 at the
+    /// top, the top's Ke `top` times the others', its third spins each way
+    /// 10 % high.
+    fn ke_run(levels: &[f64], top: f64, offset: i32, rows: u64) -> Rows {
+        let mut out = Vec::new();
+        for (i, l) in levels.iter().enumerate() {
+            let last = i + 1 == levels.len() && levels.len() > 1;
+            let each = if last {
+                runway::TOP_SPINS_EACH
+            } else {
+                runway::SPINS_EACH
+            };
+            for k in 0..2 * each {
+                let dir = if k % 2 == 0 { 1 } else { -1 };
+                let ke = match (last, k / 2) {
+                    (true, 2) => 1.10 * KE,
+                    (true, _) => top * KE,
+                    _ => KE,
+                };
+                let ticks = (l * 1156.0) as i16;
+                let (d, c) = ke_spin(ticks, dir, ke, offset, rows);
+                out.push((out.len() + 1, *l, dir, d, c));
+            }
+        }
+        out
+    }
+
+    fn ke_judge(run: &Rows, c: &JudgeCfg) -> Judged {
+        let spins: Vec<Spin> = run
+            .iter()
+            .map(|(n, l, d, dr, co)| Spin {
+                n: *n,
+                level: *l,
+                dir: *d,
+                drive: dr,
+                coast: co,
+            })
+            .collect();
+        judge(&spins, c)
+    }
+
+    fn named(j: &Judged, name: &str) -> Check {
+        j.checks
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no check {name}"))
+    }
+
+    /// Ke's coasts' reads at `level`, by the judge's own per-coast read.
+    fn reads_at(j: &Judged, run: &Rows, keep: &dyn Fn(f64) -> bool) -> Vec<f64> {
+        j.coasts
+            .iter()
+            .zip(run)
+            .filter(|((n, _), (_, l, ..))| j.ke_spins.contains(n) && keep(*l))
+            .filter_map(|((_, r), _)| r.as_ref().ok().and_then(CoastKe::ke))
+            .collect()
+    }
+
+    /// Plan sec 2.7: Ke pools the first two spins each way a level, the
+    /// top level's third each way left to J. A top 2.4 % low puts the line
+    /// through the three level means over 2 %: it is left out with a
+    /// warning that gives its size, and Ke, its spread, direction split
+    /// and trend come from the lower two levels.
+    #[test]
+    fn a_top_level_off_the_line_is_left_out_of_ke_with_a_warning() {
+        let run = ke_run(&LEVELS, 0.976, 0, 8000);
+        let j = ke_judge(&run, &ke_cfg());
+        assert_eq!(j.ke_spins, (1..=12).collect::<Vec<_>>());
+        let t = j.top.clone().expect("compared");
+        assert!(!t.pooled && t.level == 0.75 && t.levels == 3, "{t:?}");
+        assert!((t.vs_lower + 0.024).abs() < 5e-4, "{t:?}");
+        assert!(t.trend > KE_TREND_MAX, "{t:?}");
+        let ck = named(&j, "the top level's Ke");
+        assert_eq!(ck.verdict, Verdict::Warn, "{}", ck.said());
+        assert!(
+            ck.value.contains("75% level left out")
+                && ck
+                    .value
+                    .contains(&format!("{:+.2}% against", 100.0 * t.vs_lower)),
+            "{}",
+            ck.said()
+        );
+        let p = j.ke.clone().expect("pooled");
+        let lower = reads_at(&j, &run, &|l| l < 0.75);
+        assert_eq!((p.all.n, p.by_level.len(), lower.len()), (8, 2, 8));
+        let m = lower.iter().sum::<f64>() / 8.0;
+        assert!((p.all.mean / m - 1.0).abs() < 1e-12);
+        assert!((p.all.mean / KE - 1.0).abs() < 0.005, "{}", p.all.mean);
+        assert_eq!(
+            named(&j, "coasts pass the Ke gate").value,
+            "12 of 12, the first 2 spins each way a level"
+        );
+        for name in ["Ke spread", "Ke by direction", "Ke trend with level"] {
+            let ck = named(&j, name);
+            assert_eq!(ck.verdict, Verdict::Pass, "{}", ck.said());
+        }
+        assert!(
+            named(&j, "Ke trend with level")
+                .value
+                .starts_with("2 levels pooled")
+        );
+    }
+
+    /// A top 1.5 % low keeps the line within 2 %: the top is pooled, its
+    /// two spins each way with the others', its third each way not.
+    #[test]
+    fn a_top_level_on_the_line_is_pooled() {
+        let run = ke_run(&LEVELS, 0.985, 0, 8000);
+        let j = ke_judge(&run, &ke_cfg());
+        let t = j.top.clone().expect("compared");
+        assert!(t.pooled && t.trend <= KE_TREND_MAX, "{t:?}");
+        assert_eq!(named(&j, "the top level's Ke").verdict, Verdict::Pass);
+        let p = j.ke.clone().expect("pooled");
+        let mine = reads_at(&j, &run, &|_| true);
+        assert_eq!((p.all.n, p.by_level.len(), mine.len()), (12, 3, 12));
+        let m = mine.iter().sum::<f64>() / 12.0;
+        assert!((p.all.mean / m - 1.0).abs() < 1e-12);
+        assert!(p.all.mean < KE, "the third spins at 1.10 are J's only");
+        let trend = named(&j, "Ke trend with level");
+        assert_eq!(trend.verdict, Verdict::Pass, "{}", trend.said());
+        assert!(trend.value.starts_with("3 levels pooled"));
+    }
+
+    /// The zero is the mean of the up and the down tails' medians, so the
+    /// signed 1 count low the tails read cancels, and an offset common to
+    /// both directions on the raw taps is taken off exactly: each coast
+    /// reads what it reads with no offset. The rest step's zero is not
+    /// used.
+    #[test]
+    fn the_tap_zero_is_the_two_directions_tail_mean() {
+        let c = ke_cfg();
+        let (clean, off) = (
+            ke_run(&LEVELS, 0.976, 0, 8000),
+            ke_run(&LEVELS, 0.976, 7, 8000),
+        );
+        let (a, b) = (ke_judge(&clean, &c), ke_judge(&off, &c));
+        assert_eq!(
+            a.zero,
+            TapZero {
+                counts: 0.0,
+                up: Some((-1.0, 7)),
+                down: Some((1.0, 7)),
+                from_tails: true
+            }
+        );
+        assert_eq!(
+            b.zero,
+            TapZero {
+                counts: 7.0,
+                up: Some((6.0, 7)),
+                down: Some((8.0, 7)),
+                from_tails: true
+            }
+        );
+        assert_eq!(a.coasts, b.coasts);
+        assert_eq!(a.ke, b.ke);
+        let ck = named(&b, "the coasts' tap zero");
+        assert_eq!(ck.verdict, Verdict::Pass, "{}", ck.said());
+        assert!(ck.value.starts_with("+7.00 counts"), "{}", ck.said());
+    }
+
+    /// Coasts too short to come to rest have no tail: the rest step's
+    /// zero is taken, as the record's rule takes it, and the check warns.
+    #[test]
+    fn without_a_tail_the_rest_zero_is_taken_and_said() {
+        let c = ke_cfg();
+        let j = ke_judge(&ke_run(&LEVELS, 0.976, 0, 2400), &c);
+        assert_eq!((j.zero.counts, j.zero.from_tails), (c.zero_e, false));
+        assert_eq!((j.zero.up, j.zero.down), (None, None));
+        let ck = named(&j, "the coasts' tap zero");
+        assert_eq!(ck.verdict, Verdict::Warn, "{}", ck.said());
+        assert!(
+            ck.value.contains("the rest step's +2.50 counts"),
+            "{}",
+            ck.said()
+        );
+    }
+
+    /// Ke is pooled over two levels at least: one level refuses on the
+    /// trend check, with nothing to compare.
+    #[test]
+    fn one_level_is_too_few_to_pool() {
+        let j = ke_judge(&ke_run(&[0.25], 1.0, 0, 8000), &ke_cfg());
+        assert_eq!(j.top, None);
+        assert_eq!(named(&j, "the top level's Ke").verdict, Verdict::NotJudged);
+        let ck = named(&j, "Ke trend with level");
+        assert_eq!(ck.verdict, Verdict::Fail, "{}", ck.said());
+        assert_eq!(ck.value, "1 level pooled");
     }
 
     /// The open-loop line needs two levels: one level's two directions
