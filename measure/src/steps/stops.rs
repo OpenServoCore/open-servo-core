@@ -1,7 +1,7 @@
 //! Step 3, the stops and the seated R and L, on the probe's result: its
 //! proven sign, its pricing R and its ceiling. Metal trains only, for now.
 //!
-//! The two stops are found by [`super::seek`]: two seats a stop, the low
+//! The two stops are found by [`super::seek`]: three seats a stop, the low
 //! stop and the high alternated, every drive open loop and host-polled
 //! every [`seek::POLL_S`] under a [`POLL_DEADMAN_S`] bus dead-man, at
 //! three duties from the probe: the approach (the level that proved the
@@ -38,7 +38,7 @@ use serde_json::{Map, Value, json};
 
 use super::polarity::{self, HANDS, STALLED, Stop};
 use super::probe::{self, FromRest, NOT_METAL};
-use super::seek::{self, Act, Seek, SeekCfg, WRONG_WAY_COUNTS, toward};
+use super::seek::{self, Act, SEATS_A_STOP, Seek, SeekCfg, WRONG_WAY_COUNTS, toward};
 use super::shunt::{self, AFTER_READS, Arm, Shunted};
 use super::{
     Check, Ended, Halt, Rig, Verdict, interrupted, mean_u16, mode_value, read_u8, read_u16, rest,
@@ -64,7 +64,7 @@ use crate::state::{self, State, field};
 pub const STEP: &str = "stops";
 pub const RESULT: &str = "results/stops.json";
 const METHOD: &str = "stops-and-seated-rl";
-const REVISION: u32 = 2;
+const REVISION: u32 = 3;
 /// Every poll of every leg, a row each.
 pub const POLLS: &str = "captures/stops/polls.csv";
 /// The bus dead-man a polled drive runs under, s: five poll periods, so a
@@ -79,7 +79,7 @@ pub const BURSTS_A_LEVEL: usize = 4;
 /// The longest the current may take back to the rest zero after a seat,
 /// s.
 pub const ZERO_WAIT_S: f64 = 1.0;
-/// A stop's two seats within this, counts.
+/// A stop's seats within this, counts.
 pub const SEATS_APART_MAX: f64 = seek::WALK_MAX_COUNTS;
 /// The stops at least a quarter of the converter's range apart.
 pub const SPAN_MIN_COUNTS: f64 = ADC_COUNTS / 4.0;
@@ -1196,7 +1196,7 @@ fn check(name: &str, value: String, bound: String, verdict: Verdict) -> Check {
 /// What to do when a check refuses the step.
 pub fn advice(name: &str) -> &'static str {
     match name {
-        "each stop's two seats agree" => {
+        "each stop's seats agree" => {
             "a stopper that yields or a stall that was no stop: check the horn and the stops, then run the step again"
         }
         "the stops are a travel apart" | "the span fits the nameplate's travel" => {
@@ -1226,7 +1226,7 @@ pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
         return vec![check(
             "both stops found",
             format!("{} seats read", seek.seats().len()),
-            "two seats at each stop".into(),
+            format!("{SEATS_A_STOP} seats at each stop"),
             Verdict::Fail,
         )];
     };
@@ -1244,12 +1244,12 @@ pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
         )
     };
     out.push(check(
-        "each stop's two seats agree",
+        "each stop's seats agree",
         format!("{}; {}", said(&lo), said(&hi)),
-        format!("two seats each, within {SEATS_APART_MAX} counts"),
+        format!("{SEATS_A_STOP} seats each, within {SEATS_APART_MAX} counts"),
         pass(
-            lo.seats.len() == 2
-                && hi.seats.len() == 2
+            lo.seats.len() == SEATS_A_STOP
+                && hi.seats.len() == SEATS_A_STOP
                 && lo.spread <= SEATS_APART_MAX
                 && hi.spread <= SEATS_APART_MAX,
         ),
@@ -1521,7 +1521,7 @@ fn keep_bursts(
     Ok(())
 }
 
-/// Step 3 on the servo: two seats a stop and their bursts, then the way
+/// Step 3 on the servo: three seats a stop and their bursts, then the way
 /// out. Refused with nothing written when it cannot start; once it has
 /// written, it ends through the guard whatever happens, and keeps its
 /// captures and result.
@@ -2361,13 +2361,14 @@ mod tests {
         let mut m = Seek::new(c.clone());
         let mut t = 0.0;
         let mut act = m.start(t, pos);
-        let mut rise = 0.0f64;
+        let (mut rise, mut priced) = (0.0f64, 0.0f64);
         for _ in 0..100_000 {
             match act {
                 Act::Drive { q15, permit, price } => {
                     if let Some(span) = price {
                         let r = window_rung("w", q15, span, permit, pos, &c, 4.8, rated);
                         rise = rise.max(env.admit(&r).expect("admitted").rise_c);
+                        priced += r.time_s + r.gap_s;
                     }
                     let v = c.volts(q15) - 0.4;
                     if v > 0.0 {
@@ -2385,10 +2386,9 @@ mod tests {
                         assert!(lowered.is_none(), "{lowered:?}");
                         for _ in 0..BURSTS_A_LEVEL {
                             let v = q as f64 / Q15 * 5.0;
-                            at_burst_r(&mut env, v, 2.2, None, |e| {
-                                e.admit(&burst_rung("b".into(), q * dir as i16, s.pos))
-                            })
-                            .expect("a burst");
+                            let b = burst_rung("b".into(), q * dir as i16, s.pos);
+                            at_burst_r(&mut env, v, 2.2, None, |e| e.admit(&b)).expect("a burst");
+                            priced += b.time_s + b.gap_s;
                         }
                     }
                     t += 1.5;
@@ -2399,7 +2399,11 @@ mod tests {
             }
         }
         assert!(m.finished(), "{:?}", m.path());
-        println!("whole run: peak priced rise {rise:.2} C");
+        assert_eq!(m.seats().len(), 2 * SEATS_A_STOP);
+        println!(
+            "whole run: {} seats, peak priced rise {rise:.2} C, {priced:.2} s priced, {t:.1} s on the clock",
+            m.seats().len()
+        );
         let mut worst = envelope(5.0);
         let n = (seek::LEG_MAX_S / seek::WINDOW_S).ceil() as usize;
         for _ in 0..n {
@@ -2463,8 +2467,8 @@ mod tests {
     }
 
     /// The stops of the bench servo pass; a jam short of the low stop that
-    /// seated twice is refused by the span against the nameplate's travel;
-    /// a stop by a converter rail is accepted and flagged.
+    /// seated three times is refused by the span against the nameplate's
+    /// travel; a stop by a converter rail is accepted and flagged.
     #[test]
     fn the_stops_are_judged_by_their_seats_span_and_start() {
         let travel = 184.33;
