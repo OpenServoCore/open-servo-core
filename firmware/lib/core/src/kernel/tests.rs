@@ -160,7 +160,6 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
         vmotor_a_trough: 3000,
         vmotor_b: 40,
         vmotor_b_trough: 40,
-        vref_raw: 1489,
         vbus_raw: vbus_raw(3000),
         ntc_raw: 2048,
     }
@@ -4349,7 +4348,6 @@ impl Plant {
             vmotor_a_trough: va,
             vmotor_b: vb,
             vmotor_b_trough: vb,
-            vref_raw: 1489,
             vbus_raw: vbus_raw(self.vbus),
             ntc_raw: 2048,
         }
@@ -5613,11 +5611,10 @@ fn the_zero_the_rail_and_the_ntc_read_every_wide_code_mid_band() {
     }
 }
 
-/// The ten raw fields of a tick block, as the frame carries them.
-fn raw_fields(t: &TelemetryTick) -> [u16; 10] {
+/// The nine raw fields of a tick block, as the frame carries them.
+fn raw_fields(t: &TelemetryTick) -> [u16; 9] {
     [
         t.pos,
-        t.vref_raw,
         t.vbus_raw,
         t.ntc_raw,
         t.current_raw,
@@ -5644,13 +5641,11 @@ fn a_written_map_leaves_every_raw_field_alone() {
         vmotor_b: 0x0ff,
         vbus_raw: 0xaff,
         ntc_raw: 0x7ff,
-        vref_raw: 0x5ff,
         vmotor_a_trough: 0xbff,
         vmotor_b_trough: 0x0ff,
     };
     let codes = [
         f.pos,
-        f.vref_raw,
         f.vbus_raw,
         f.ntc_raw,
         f.current,

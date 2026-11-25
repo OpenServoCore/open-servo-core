@@ -17,9 +17,10 @@ pub enum Channel {
     IN7 = 7,
     /// IN8 = VREFINT, the 1.2 V internal reference (RM sec 9.2.2). The ADC
     /// reference is VDD itself on this package, so this count is the one
-    /// reading of VDD: VDD = 1.2 V x 4096 / count. IN9 is the OPA's internal
-    /// output and IN10 ("VCAL" on the datasheet block diagram) is about
-    /// VDD/2, ratiometric, blind to a VDD change; neither is scanned.
+    /// reading of VDD: VDD = 1.2 V x 4096 / count, read once at boot, never
+    /// scanned. IN9 is the OPA's internal output and IN10 ("VCAL" on the
+    /// datasheet block diagram) is about VDD/2, ratiometric, blind to a VDD
+    /// change; neither is read.
     Vref = 8,
 }
 
@@ -227,7 +228,7 @@ pub fn disable() {
 }
 
 /// Polls for EOC this many times before giving up. A conversion is at most
-/// 54 ADCCLK cycles, so exceeding this means the converter is not running.
+/// 252 ADCCLK cycles, so exceeding this means the converter is not running.
 const EOC_POLL_LIMIT: u32 = 100_000;
 
 /// One software-triggered conversion of `channel`, polled. Overwrites the
