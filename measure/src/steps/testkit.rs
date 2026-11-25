@@ -210,6 +210,9 @@ pub struct Motor {
     pub zero: f64,
     pub level: f64,
     pub ripple: f64,
+    /// The line at twice the commutations' rate: its amplitude, counts,
+    /// under a duty share, none at or over it.
+    pub ripple2: (f64, f64),
     pub pwm_arr: f64,
 }
 
@@ -241,7 +244,15 @@ impl Motor {
     pub fn sample(&self, x: f64, q: i16, k: usize) -> TelSample {
         let d = q as f64 / 32768.0;
         let phase = 2.0 * std::f64::consts::PI * self.cycles_per_count * x;
-        let i = (self.zero + self.level * d.abs() + self.ripple * phase.sin()).round() as u16;
+        let i = (self.zero
+            + self.level * d.abs()
+            + self.ripple * phase.sin()
+            + if d.abs() < self.ripple2.1 {
+                self.ripple2.0 * (2.0 * phase).sin()
+            } else {
+                0.0
+            })
+        .round() as u16;
         let (a, period) = self.up_wave;
         let wave = if q > 0 {
             a * (2.0 * std::f64::consts::PI * (x - self.stops.0) / period).sin()

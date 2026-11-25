@@ -9,9 +9,10 @@ use osc_measure::envelope::{BURST_MAX_S, DRIVE_DEADMAN_S, FREE_MARGIN, GUARD_SHA
 use osc_measure::steps::runway::COAST_TAU_S;
 use osc_measure::steps::seek::WINDOW_S;
 use osc_measure::steps::table::{
-    Band, FIRST_FAST_SHARE, FromStops, NEAR_STOP_COUNTS, RUNG_MIN_S, Reach, RungRead, Schedule,
-    Speeds, after, another_trip, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows,
-    plan_rung, plan_stop_rung, reach, rows_a_code, stamp_ticks, still_window_s, thin_carries,
+    Band, FIRST_FAST_SHARE, FromStops, NEAR_STOP_COUNTS, NextStop, RUNG_MIN_S, Reach, RungRead,
+    STOP_RUNGS_MAX, Schedule, Speeds, after, after_stop_rung, another_trip, fast_bound_from,
+    fast_predicted_cps, fast_q15, histogram_rows, plan_rung, plan_stop_rung, reach, rows_a_code,
+    stamp_ticks, still_window_s, thin_carries,
 };
 use serde_json::json;
 
@@ -378,4 +379,30 @@ fn the_bench_stop_rungs_read_reached() {
         .position(|f| f.pos.is_some_and(|p| p >= 3700))
         .expect("reaches the top");
     assert_eq!(reach(&climb[..top], 1, 3726.0, 3.0, FS), Reach::Moving);
+}
+
+/// After a stop rung: on the stop, done; past it, the stop moved; still
+/// short, one more stop rung at the same duty even past the count, then
+/// blocked; still moving, another up to the count, then unreached.
+#[test]
+fn a_stop_rung_short_of_the_stop_takes_one_more() {
+    let (on, short, past) = (
+        Reach::Reached(100.0),
+        Reach::Short(119.0),
+        Reach::Past(80.0),
+    );
+    assert_eq!(after_stop_rung(&on, 1, 0), NextStop::Done);
+    assert_eq!(after_stop_rung(&past, 1, 0), NextStop::Moved);
+    assert_eq!(after_stop_rung(&short, 1, 0), NextStop::Another);
+    assert_eq!(
+        after_stop_rung(&short, STOP_RUNGS_MAX, 0),
+        NextStop::Another
+    );
+    assert_eq!(after_stop_rung(&short, 2, 1), NextStop::Blocked);
+    assert_eq!(after_stop_rung(&on, STOP_RUNGS_MAX + 1, 1), NextStop::Done);
+    assert_eq!(after_stop_rung(&Reach::Moving, 1, 0), NextStop::Another);
+    assert_eq!(
+        after_stop_rung(&Reach::Moving, STOP_RUNGS_MAX, 0),
+        NextStop::Unreached
+    );
 }

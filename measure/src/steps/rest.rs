@@ -22,11 +22,13 @@ use crate::capture::ripple::{self, Pattern};
 use crate::capture::rows::{Layout, TelFrame, telemetry::VREF_RAW};
 use crate::capture::tel::{self, Burst, Line, StreamCfg};
 use crate::envelope::{Envelope, Facts, Rung};
+use crate::fit::widecodes::compensated;
 use crate::guard::{self, Ledger, Way};
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::ntc::{self, Parts, Words};
 use crate::state::{self, State, field};
+use osc_servo_core::adc::ADC_WIDE_SLOTS;
 
 pub const STEP: &str = "rest";
 pub const RESULT: &str = "results/rest.json";
@@ -367,11 +369,17 @@ impl Channels {
     /// Every channel of both captures, each compensated by the rest
     /// capture's supply pattern: the raw row carries none of the sources,
     /// and both bursts start a frame at their first row, so the phase is
-    /// the same.
-    pub fn of(rest: &[TelFrame], raw: &[TelFrame]) -> Self {
+    /// the same. The pot's codes are read first as the firmware reads
+    /// them, a wide code as the middle of its band by `slots`.
+    pub fn of(rest: &[TelFrame], raw: &[TelFrame], slots: &[u8; ADC_WIDE_SLOTS]) -> Self {
         let (pattern, passed_over) = supply_pattern(rest);
         let one = |rows: &[TelFrame], name: &'static str| {
-            let s = ripple::series(rows, name);
+            let mut s = ripple::series(rows, name);
+            if name == "pos" {
+                for (_, v) in s.iter_mut() {
+                    *v = compensated(*v as u16, slots);
+                }
+            }
             let (gain, comp) = match &pattern {
                 Some(p) => ripple::fit(&s, &p.counts),
                 None => (0.0, s.clone()),
@@ -516,6 +524,8 @@ struct Before {
     deadman_ticks: u16,
     stream: StreamCfg,
     rungs: [Rung; 2],
+    /// The servo's stored wide-code slots, all 0 when it holds none.
+    slots: [u8; ADC_WIDE_SLOTS],
 }
 
 async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before, Refused> {
@@ -564,6 +574,10 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
         )));
     }
     let stream = StreamCfg::read(rig.c, rig.id, rig.d).await?;
+    let slots = state
+        .slots(rig.d)
+        .and_then(|v| <[u8; ADC_WIDE_SLOTS]>::try_from(v).ok())
+        .unwrap_or([0; ADC_WIDE_SLOTS]);
     Ok(Before {
         line,
         sense,
@@ -574,6 +588,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
         deadman_ticks: deadman as u16,
         stream,
         rungs,
+        slots,
     })
 }
 
@@ -759,7 +774,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         })
     };
     let pass = |ok: bool| if ok { Verdict::Pass } else { Verdict::Fail };
-    let ch = Channels::of(&rest.rows, &raw.rows);
+    let ch = Channels::of(&rest.rows, &raw.rows, &b.slots);
     let mut lines = vec![ch.said()];
     let (r_pos, r_vbus, r_ntc, r_zero, r_a) = (
         ch.rest("pos"),
@@ -1041,7 +1056,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             "current_zero_sd_counts": est(ch.rest("current_raw").comp.sd.max(ch.raw("current_raw").comp.sd), "counts", "the larger of the two rows, the VDD frame ripple out"),
             "tap_a_counts": est(w_a.mean, "counts", "raw row vmotor_a, torque on"),
             "tap_b_counts": est(w_b.mean, "counts", "raw row vmotor_b, torque on"),
-            "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, "counts", "rest row pos, torque off, the VDD frame ripple out"),
+            "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, "counts", "rest row pos, torque off, wide codes at their band's middle by the servo's stored slots, the VDD frame ripple out"),
             "vdd_frame_ripple_mv_pp": Value::Null,
             "vdd_v": match vref {
                 Some(_) => est(vdd, "V", "vref_raw, the 1.2 V reference read once at boot"),
@@ -1061,6 +1076,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         "ntc_parts": parts,
         "ntc_words": ntc_words,
         "channels": ch.json(),
+        "pos_wide_slots": {"slots": b.slots, "source": "the servo's stored adc_wide_mid_q4: the pot's codes read as the firmware reads them, a wide code at its band's middle"},
         "frame_ripple": {
             "pattern_source": ch.pattern.as_ref().map(|p| p.source),
             "pattern_counts": ch.pattern.as_ref().map(|p| p.counts.to_vec()),
@@ -1140,7 +1156,7 @@ mod tests {
     #[test]
     fn the_vdd_frame_ripple_is_taken_out_and_the_frame_passes() {
         let (rest, raw) = rows(|_| 0.0);
-        let ch = Channels::of(&rest, &raw);
+        let ch = Channels::of(&rest, &raw, &[0; ADC_WIDE_SLOTS]);
         let p = ch.pattern.as_ref().expect("a pattern");
         assert_eq!((p.source, ch.passed_over.len()), ("vbus_raw", 0));
         assert!((p.mean - 1241.0).abs() < 0.5, "{}", p.mean);
@@ -1170,7 +1186,7 @@ mod tests {
         for f in &mut rest {
             f.vbus_raw = Some(4090);
         }
-        let ch = Channels::of(&rest, &raw);
+        let ch = Channels::of(&rest, &raw, &[0; ADC_WIDE_SLOTS]);
         assert_eq!(ch.pattern.as_ref().map(|p| p.source), Some("ntc_raw"));
         assert!(
             ch.said()
@@ -1186,7 +1202,7 @@ mod tests {
         for f in &mut rest {
             f.vbus_raw = None;
         }
-        let ch = Channels::of(&rest, &raw);
+        let ch = Channels::of(&rest, &raw, &[0; ADC_WIDE_SLOTS]);
         assert_eq!(ch.pattern.as_ref().map(|p| p.source), Some("ntc_raw"));
         assert!(
             ch.said().starts_with("the rest row carries no vbus_raw"),
@@ -1197,7 +1213,7 @@ mod tests {
         for f in &mut rest {
             f.ntc_raw = Some(3);
         }
-        let ch = Channels::of(&rest, &raw);
+        let ch = Channels::of(&rest, &raw, &[0; ADC_WIDE_SLOTS]);
         assert!(ch.pattern.is_none());
         assert!(
             ch.rest.iter().chain(&ch.raw).all(|(_, c)| c.gain == 0.0),
@@ -1227,7 +1243,7 @@ mod tests {
     fn a_frame_pattern_unlike_vdds_is_warned() {
         let own = |i: u64| 2.0 * (2.0 * core::f64::consts::PI * 3.0 * (i % 16) as f64 / 16.0).sin();
         let (rest, raw) = rows(own);
-        let c = Channels::of(&rest, &raw).pattern_check();
+        let c = Channels::of(&rest, &raw, &[0; ADC_WIDE_SLOTS]).pattern_check();
         assert_eq!(c.verdict, Verdict::Warn, "{}", c.value);
         assert!(c.value.contains("(rest pos)"), "{}", c.value);
     }
@@ -1284,6 +1300,34 @@ mod tests {
         }
     }
 
+    /// The horn at rest on the top edge of carry 2047, which skips the 11
+    /// codes 2048..2058: half the rows read 2047, half 2059. Raw that is
+    /// a 12-count flip; read as the firmware reads it, 2047 is the band's
+    /// middle 2052.5, so the pot's rest sd is taken on a 6.5-count flip.
+    #[test]
+    fn the_pot_rest_sd_reads_a_wide_code_at_its_band_middle() {
+        let flip = |i: u64| (i.wrapping_mul(2_654_435_761) >> 7) % 2 == 0;
+        let (mut rest, raw) = rows_at(2047.0, |_| 0.0);
+        for f in &mut rest {
+            f.pos = Some(if flip(f.tick) { 2047 } else { 2059 });
+        }
+        let mut slots = [0u8; ADC_WIDE_SLOTS];
+        slots[7] = 88;
+        let sd = |j: &Judged| {
+            j.result["estimates"]["pot_rest_sd_counts"]["value"]
+                .as_f64()
+                .expect("sd")
+        };
+        let plain = judged_rows(2053.0, rest.clone(), raw.clone(), Ok(1490));
+        let read = judged_with(2053.0, rest, raw, Ok(1490), slots);
+        assert!((sd(&plain) - 6.0).abs() < 0.1, "{}", sd(&plain));
+        assert!((sd(&read) - 3.25).abs() < 0.1, "{}", sd(&read));
+        let mean = read.result["channels"]["rest"]["pos"]["mean"]
+            .as_f64()
+            .expect("mean");
+        assert!((mean - (2052.5 + 2059.0) / 2.0).abs() < 0.2, "{mean}");
+    }
+
     /// [`judge`] on the rows of [`rows_at`], the boot reading `vref`.
     fn judged(pos: f64, vref: Result<u16, String>) -> Judged {
         let (rest, raw) = rows_at(pos, |_| 0.0);
@@ -1297,6 +1341,17 @@ mod tests {
         rest: Vec<TelFrame>,
         raw: Vec<TelFrame>,
         vref: Result<u16, String>,
+    ) -> Judged {
+        judged_with(pos, rest, raw, vref, [0; ADC_WIDE_SLOTS])
+    }
+
+    /// [`judged_rows`] on a servo holding the wide-code `slots`.
+    fn judged_with(
+        pos: f64,
+        rest: Vec<TelFrame>,
+        raw: Vec<TelFrame>,
+        vref: Result<u16, String>,
+        slots: [u8; ADC_WIDE_SLOTS],
     ) -> Judged {
         let b = Before {
             line: Line {
@@ -1315,6 +1370,7 @@ mod tests {
                 tick_hz: 20_000,
             },
             rungs: [Rung::still("rest", 1.0, pos), Rung::still("raw", 1.0, pos)],
+            slots,
         };
         judge(
             &b,
@@ -1478,7 +1534,7 @@ mod tests {
     fn the_rails_pattern_takes_the_ripple_off_pos_anywhere_on_travel() {
         for (file, top) in [("rest-mid.csv.gz", false), ("rest-end.csv.gz", true)] {
             let rows = recorded(file);
-            let ch = Channels::of(&rows, &[]);
+            let ch = Channels::of(&rows, &[], &[0; ADC_WIDE_SLOTS]);
             assert_eq!(ch.pattern.as_ref().map(|p| p.source), Some("vbus_raw"));
             let pos = ch.rest("pos").raw.mean;
             assert_eq!(pos > 2750.0, top, "{file}: pos {pos}");
