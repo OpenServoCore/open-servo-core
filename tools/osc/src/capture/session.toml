@@ -33,7 +33,7 @@ baseline_ms = 1000
 # TEL row as table chunks, addr+len: the raw six (pos, then raw current,
 # vmotor_a, vmotor_b, applied duty, trough). Kernel conclusions stay out of raw
 # captures.
-tel_chunks = "0x238+2,0x240+10"
+tel_chunks = "0x236+2,0x23c+10"
 # Block order rotates by capture index, so warming within a session lands as a
 # testable trend against block position instead of hiding inside one block.
 rotate = true

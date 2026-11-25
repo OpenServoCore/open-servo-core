@@ -70,13 +70,9 @@ pub struct TelemetryMode {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Block)]
 pub struct TelemetryTick {
     #[ct_field(skip)]
-    pub _scan: [u16; 10],
+    pub _scan: [u16; 9],
     #[ct_field(access = ro)]
     pub pos: u16,
-    /// The chip's 1.2 V internal reference, counted against VDD, which is
-    /// the ADC reference: VDD = 1.2 V x 4096 / vref_raw.
-    #[ct_field(access = ro)]
-    pub vref_raw: u16,
     /// Direct supply divider tap (the rail `vbus_counts` derives from).
     #[ct_field(access = ro)]
     pub vbus_raw: u16,
@@ -189,6 +185,11 @@ pub struct TelemetryRefs {
     pub enc_a: u16,
     #[ct_field(access = ro)]
     pub enc_b: u16,
+    /// The chip's 1.2 V internal reference, counted against VDD, which is
+    /// the ADC reference: VDD = 1.2 V x 4096 / vref_raw. Read once at
+    /// boot, alone, the driver parked; 0 = no reading.
+    #[ct_field(access = ro)]
+    pub vref_raw: u16,
 }
 
 /// Which limit governs the command, published at the medium boundary: one
@@ -215,9 +216,11 @@ pub struct TelemetryRegs {
     pub common: TelemetryCommon,
     pub mode: TelemetryMode,
     pub tick: TelemetryTick,
+    #[ct_section(skip)]
+    pub _rsvd_tick: [u8; 4],
     pub estimates: TelemetryEstimates,
     pub refs: TelemetryRefs,
     #[ct_section(skip)]
-    pub _rsvd_ident: [u8; 8],
+    pub _rsvd_ident: [u8; 6],
     pub limits: TelemetryLimits,
 }

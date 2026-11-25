@@ -388,7 +388,7 @@ pub const ENTRY: u32 = 54;
 /// the tick waits for after its write; and the next trough and crest
 /// scans' first slot in the tick block.
 pub const WRITE_DEADLINE: u32 = 1144;
-pub const CREST_SCAN_DONE: u32 = 424;
+pub const CREST_SCAN_DONE: u32 = 316;
 pub const NEXT_TROUGH: u32 = 1200;
 pub const NEXT_CREST: u32 = 2456;
 
@@ -435,7 +435,7 @@ pub const STREAM_ENTRY: u32 = 46;
 /// path to the poll, priced as [`STREAM_ENTRY`] less 10%: a faulted Off
 /// tick's 257.5 HCLK, a Closed tick's endstop brake's 297.75; OpenLoop's
 /// shortest path passes the scan's end. Rounded up.
-pub const SCAN_WAIT: [u32; REGIMES] = [156, 120, 0];
+pub const SCAN_WAIT: [u32; REGIMES] = [48, 12, 0];
 
 /// A hold runs Closed this long after its goal moves, then parks. M: the
 /// longest Closed episode after a 600-count step, 2899 / 3396 ticks

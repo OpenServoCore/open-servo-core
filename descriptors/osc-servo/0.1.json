@@ -991,105 +991,98 @@
     },
     {
       "name": "pos",
-      "addr": 568,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "vref_raw",
-      "addr": 570,
+      "addr": 566,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vbus_raw",
-      "addr": 572,
+      "addr": 568,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "ntc_raw",
-      "addr": 574,
+      "addr": 570,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "current_raw",
-      "addr": 576,
+      "addr": 572,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_a",
-      "addr": 578,
+      "addr": 574,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_b",
-      "addr": 580,
+      "addr": 576,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "duty_ticks",
-      "addr": 582,
+      "addr": 578,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
       "name": "current_trough",
-      "addr": 584,
+      "addr": 580,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "i_tick_counts",
-      "addr": 586,
+      "addr": 582,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
       "name": "vdiff_counts",
-      "addr": 588,
+      "addr": 584,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
       "name": "vmotor_a_trough",
-      "addr": 590,
+      "addr": 586,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_b_trough",
-      "addr": 592,
+      "addr": 588,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "tick_flags",
-      "addr": 594,
+      "addr": 590,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "sample_tick",
-      "addr": 596,
+      "addr": 592,
       "width": 4,
       "access": "ro",
       "kind": "uint"
@@ -1174,6 +1167,13 @@
     {
       "name": "enc_b",
       "addr": 626,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vref_raw",
+      "addr": 628,
       "width": 2,
       "access": "ro",
       "kind": "uint"

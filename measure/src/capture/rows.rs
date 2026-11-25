@@ -24,20 +24,21 @@ const fn reg(name: &'static str, addr: u16, width: u8) -> Reg {
 pub mod telemetry {
     use super::{Reg, reg};
 
-    pub const POS: Reg = reg("pos", 0x238, 2);
-    /// The chip's 1.2 V reference against VDD.
-    pub const VREF_RAW: Reg = reg("vref_raw", 0x23a, 2);
-    pub const VBUS_RAW: Reg = reg("vbus_raw", 0x23c, 2);
-    pub const NTC_RAW: Reg = reg("ntc_raw", 0x23e, 2);
-    pub const CURRENT_RAW: Reg = reg("current_raw", 0x240, 2);
-    pub const VMOTOR_A: Reg = reg("vmotor_a", 0x242, 2);
-    pub const VMOTOR_B: Reg = reg("vmotor_b", 0x244, 2);
+    pub const POS: Reg = reg("pos", 0x236, 2);
+    /// The chip's 1.2 V reference against VDD, read once at boot into the
+    /// refs block: no tick row carries it. 0 = no reading.
+    pub const VREF_RAW: Reg = reg("vref_raw", 0x274, 2);
+    pub const VBUS_RAW: Reg = reg("vbus_raw", 0x238, 2);
+    pub const NTC_RAW: Reg = reg("ntc_raw", 0x23a, 2);
+    pub const CURRENT_RAW: Reg = reg("current_raw", 0x23c, 2);
+    pub const VMOTOR_A: Reg = reg("vmotor_a", 0x23e, 2);
+    pub const VMOTOR_B: Reg = reg("vmotor_b", 0x240, 2);
     /// Signed PWM compare counts; full scale is CALIB `pwm_period_ticks`.
-    pub const DUTY_TICKS: Reg = reg("duty_ticks", 0x246, 2);
-    pub const CURRENT_TROUGH: Reg = reg("current_trough", 0x248, 2);
-    pub const I_TICK_COUNTS: Reg = reg("i_tick_counts", 0x24a, 2);
-    pub const VDIFF_COUNTS: Reg = reg("vdiff_counts", 0x24c, 2);
-    pub const TICK_FLAGS: Reg = reg("tick_flags", 0x252, 2);
+    pub const DUTY_TICKS: Reg = reg("duty_ticks", 0x242, 2);
+    pub const CURRENT_TROUGH: Reg = reg("current_trough", 0x244, 2);
+    pub const I_TICK_COUNTS: Reg = reg("i_tick_counts", 0x246, 2);
+    pub const VDIFF_COUNTS: Reg = reg("vdiff_counts", 0x248, 2);
+    pub const TICK_FLAGS: Reg = reg("tick_flags", 0x24e, 2);
     pub const THETA_HAT_Q16: Reg = reg("theta_hat_q16", 0x258, 4);
     pub const OMEGA_HAT_CPS: Reg = reg("omega_hat_cps", 0x25c, 4);
     /// Published at the medium step: a row carries it up to a tick old.
@@ -75,7 +76,7 @@ pub enum Layout {
     /// pos, current_raw, vmotor_a, vmotor_b, duty_ticks, current_trough:
     /// the open-loop steps, the notebooks' row.
     Raw,
-    /// pos, vref_raw, vbus_raw, ntc_raw, current_raw, vmotor_a: the rest.
+    /// pos, vbus_raw, ntc_raw, current_raw, vmotor_a, vmotor_b: the rest.
     Rest,
     /// pos, duty_ticks, current_trough, i_tick_counts, vdiff_counts: the
     /// holds.
@@ -121,7 +122,7 @@ impl Layout {
     }
 }
 
-/// A row's chunks as `addr+len` joined by `,`: `0x238+2,0x246+8`.
+/// A row's chunks as `addr+len` joined by `,`: `0x236+2,0x242+8`.
 pub fn chunks_text(chunks: &Chunks) -> String {
     let parts: Vec<String> = chunks
         .0
@@ -391,10 +392,10 @@ mod tests {
         assert_eq!(
             text,
             [
-                "0x238+2,0x240+10",
-                "0x238+12",
-                "0x238+2,0x246+8",
-                "0x258+8,0x24a+4"
+                "0x236+2,0x23c+10",
+                "0x236+12",
+                "0x236+2,0x242+8",
+                "0x258+8,0x246+4"
             ]
         );
         let names = |l: Layout| {
@@ -407,12 +408,19 @@ mod tests {
             names(Layout::Rest),
             [
                 "pos",
-                "vref_raw",
                 "vbus_raw",
                 "ntc_raw",
                 "current_raw",
-                "vmotor_a"
+                "vmotor_a",
+                "vmotor_b"
             ]
+        );
+        let row: Vec<u8> = (1..=6u16).flat_map(|v| (100 * v).to_le_bytes()).collect();
+        let f = decode_row(&Layout::Rest.chunks(), 0, &row, 0);
+        assert_eq!(
+            csv(Layout::Rest, 0, 0, &[f]).lines().nth(1),
+            Some("0,0,0,0,0,100,,,,,,400,500,600,200,300,,"),
+            "a rest row fills vmotor_b and leaves vref_raw empty"
         );
         assert_eq!(
             names(Layout::Raw),
