@@ -53,7 +53,7 @@ pub mod seed {
         SENSE.vdd_mv,
     );
     pub const SPEED_CEILING_CPS: u16 = 1500;
-    // The identified motor (an `osc ident` fit on a 2S rail): nonzero Ke is
+    // The identified motor (an `osc-ident` fit on a 2S rail): nonzero Ke is
     // what lets the closed loops open once the set is stamped.
     pub const R_Q12: u16 = 7270;
     pub const RECIP_KE_Q: u16 = 6957;

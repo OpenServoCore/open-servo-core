@@ -229,11 +229,11 @@ A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 
 ## Identification and calibration pins
 
-How `osc ident` and `osc cal` plan their drives under the current limit
+How the `ident` crate plans its drives under the current limit
 (control-theory "Open Loop Under the Same Band" and "Calibration",
-protocol sec 5.8) is pinned in the host crates' own unit tests: `ident`
-and `tools/osc` at the repo root, each `cargo test` in its directory
-and in CI. The drives run against a fake servo that models the limiter,
+protocol sec 5.8) is pinned in its own unit tests, `cargo test` in
+`ident/` and in CI. `osc-ident`, the identification, calibration and
+tuning tool, has its own unit tests in `measure` and `tools/osc-ident`. The drives run against a fake servo that models the limiter,
 the stall timer and fold, the permit lease and the burst; the bench
 MG90 on it is a 4.9 ohm winding, a 280-count limit, the 13.3% window
 floor, stops at 209 and 3849 and soft limits at 432 and 3626, on a 2S
@@ -529,20 +529,10 @@ The stop routes asked for (`exp/resistance.rs`, `exp/held.rs`):
 - `escalation_only_leaves_a_stop` - the duty rises leaving a stop; a
   seek from mid travel stays at the hold duty and aborts.
 
-The burst handshake and the driver (`burst.rs`, `tools/osc/src/rig/pump.rs`):
+The burst handshake (`burst.rs`):
 
 - `a_rejected_arm_reports_and_releases` - a `REJECTED` arm is an error
   and the arm is released.
-- `a_held_permit_refuses_a_stream_it_would_lapse_inside` - 750 ms
-  passes, 751 does not, and torque off holds nothing.
-- `a_stream_carries_the_rows_the_servo_dropped_from_it`
-  (`rig/servo.rs`) - every stream reads `tel_drop_count` across itself,
-  through the wrap.
-- `limits_carry_both_window_floors` (`rig/limits.rs`) - a limits read
-  carries both published floors, 1734 and 4356; a servo that
-  publishes no terminal floor plans from the current floor.
-- `a_traverse_with_dropped_rows_is_refused` (`cal/mod.rs`) - cal's
-  traverse through the driver ends in capture's words, torque off.
 
 ## Gear 3 in detail
 
@@ -629,5 +619,6 @@ The `tool-*` binaries in `tools/bench/src/bin` are the forensic instruments
 behind these tests — `tool-burst` shares the exact cycle engine the hot-loop
 test asserts on; `tool-snoop` passively dumps the decoded edge capture when
 a wire artifact needs root-causing. Bus operation (discovery, provisioning,
-rescue, calibration) is the `osc` CLI's job (`tools/osc`, built on
-osc-client), not the bench's.
+rescue) is the job of the `osc` CLI, the bus driver (`tools/osc`, built on
+osc-client), and identification, calibration and tuning that of `osc-ident`
+(`tools/osc-ident`), not the bench's.

@@ -142,7 +142,7 @@ impl Servo {
         self.sh.data_state_after_commit(DRIVE_POLARITY, 1);
     }
 
-    /// The stamp over the set as it stands, as `osc cal` leaves a flip.
+    /// The stamp over the set as it stands, as `osc-ident` leaves a flip.
     fn stamp(&self) {
         lut_live(&self.sh, &support::mg90_a());
     }
@@ -454,7 +454,7 @@ fn a_locked_rotor_latches_stall_on_either_wiring() {
 
 /// A `drive_polarity` write is a covered write: it leaves the stamp stale,
 /// and the next enable of a closed loop is refused on the data state, the
-/// shaft where it was. With the stamp over the flip, as `osc cal` leaves
+/// shaft where it was. With the stamp over the flip, as `osc-ident` leaves
 /// one, the loop runs under the new polarity and a motor wired the other
 /// way round goes to its goal.
 #[test]

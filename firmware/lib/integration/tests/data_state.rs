@@ -640,7 +640,7 @@ fn factory_after_corrupt_config_boots_virgin(baud_idx: u8) {
 
 // The plant stamp over the wire
 
-/// The `osc ident` commit sequence: write the set, stamp it with torque
+/// The `osc-ident` commit sequence: write the set, stamp it with torque
 /// off, and the stamp write is the checkpoint that opens closed loop.
 #[apply(matrix)]
 fn stamp_write_verifies_and_opens_closed_loop(baud_idx: u8) {
