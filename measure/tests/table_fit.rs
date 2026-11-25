@@ -3,14 +3,17 @@
 //! with the reference rules' values by `testdata/table/gen.py`): the 20 %
 //! one-way passes of bringup capture A give the position table, the crawl
 //! and ladder hold rows the wide codes. Each number is held within 10 % of the offline check's and
-//! close to the reference rules' own on the same rows.
+//! close to the reference rules' own on the same rows. The pooled table's
+//! numbers are held within 10 % of the reference's, which is oscnb
+//! `position.fit_pwl` on the same samples.
 
 use std::path::PathBuf;
 
 use osc_measure::capture::meta::gunzip;
 use osc_measure::fit::postable::{
-    self, DirectionFit, SMOOTH_WEIGHT, Segment, Span, Table, agreement, common_span,
-    direction_term, fit_direction, gains, mean_table, repeat, residual_counts,
+    self, DirectionFit, PooledFit, SMOOTH_WEIGHT, Segment, Span, Table, agreement, common_span,
+    direction_term, fit_direction, fit_pooled, gains, mean_table, pooled_span, repeat,
+    residual_counts,
 };
 use osc_measure::fit::widecodes::{self, Finding, HALF_THIN_ROWS, State, THIN_ROWS, find_in};
 use osc_servo_core::pos_lut::{self, INTERVALS};
@@ -350,6 +353,117 @@ fn the_points_pass_the_firmwares_validate() {
     let max = p.iter().map(|c| c.unsigned_abs()).max().expect("points");
     assert_eq!(max as i64, exp["points_max_abs"].as_i64().expect("max"));
     assert!(t.span.coverage(STOPS.0, STOPS.1) > 0.45);
+}
+
+fn pooled(segs: &[Segment]) -> PooledFit {
+    let span = pooled_span(segs).expect("span");
+    fit_pooled(segs, &span, SMOOTH_WEIGHT).expect("pooled")
+}
+
+/// `t` read at `span`'s knots, which lie inside its own.
+fn on(t: &Table, span: Span) -> Table {
+    Table {
+        span,
+        angle: span.knots().iter().map(|&x| t.angle_at(x)).collect(),
+    }
+}
+
+#[test]
+fn the_pooled_table_matches_the_reference() {
+    let exp = &expected()["table"]["pooled"];
+    let (segs, t) = all();
+    let p = pooled(&segs);
+    let knots = p.table.span.knots();
+    assert_eq!(
+        (knots[0], knots[knots.len() - 1]),
+        (f(&exp["knots"][0]), f(&exp["knots"][1]))
+    );
+    let worst = |got: &mut dyn Iterator<Item = f64>, key: &str| {
+        let want = exp[key].as_array().expect(key);
+        let got: Vec<f64> = got.collect();
+        assert_eq!(got.len(), want.len(), "{key}");
+        got.iter()
+            .zip(want)
+            .fold(0.0f64, |m, (a, b)| m.max((a - f(b)).abs()))
+    };
+    let angle = worst(&mut p.table.angle.iter().copied(), "angle");
+    assert!(
+        angle < 1e-3,
+        "pooled angle off the reference by {angle} cycles"
+    );
+    assert_eq!(
+        p.offsets.iter().map(|o| o.0).collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    let off = worst(&mut p.offsets.iter().map(|o| o.1), "offsets");
+    assert!(
+        off < 1e-3,
+        "pooled offsets off the reference by {off} cycles"
+    );
+    near(
+        "pooled residual",
+        p.residual_rms * cyc_deg(),
+        f(&exp["residual_deg"]),
+        0.01,
+    );
+    let counts = p.residual_rms * p.table.counts_per_cycle();
+    assert!(counts <= 4.0, "pooled residual {counts:.2} counts");
+    // past the common span the table rests on one direction alone
+    let (up, down) = (p.up.expect("up"), p.down.expect("down"));
+    assert!(up.1 < p.table.span.hi() && down.0 > p.table.span.lo());
+    assert!(up.1 > t.span.hi() && down.0 < t.span.lo());
+}
+
+#[test]
+fn the_pooled_table_against_the_mean_table() {
+    let exp = &expected()["table"]["pooled"]["against_mean"];
+    let (segs, t) = all();
+    let p = on(&pooled(&segs).table, t.span);
+    let r = repeat(&p, &t.table).expect("same span");
+    near(
+        "pooled less mean line out, counts",
+        r.line_out,
+        f(&exp["line_out_counts"]),
+        0.10,
+    );
+    near(
+        "pooled over mean 48-count slope rms",
+        r.slope,
+        f(&exp["slope_rms"]),
+        0.10,
+    );
+}
+
+#[test]
+fn the_pooled_table_cures_the_fast_zones_against_the_camera_lookup() {
+    let exp = &expected()["table"]["pooled"]["zone_slope_error"];
+    let (segs, t) = all();
+    let p = on(&pooled(&segs).table, t.span);
+    let z = zone_errors(&t.span, &p.angle);
+    for ((table, straight), key) in z.iter().zip(["z1", "z2"]) {
+        near(key, *table, f(&exp[key]), 0.10);
+        assert!(
+            *table < 0.5 * straight,
+            "{key}: {table:.4} against {straight:.4}"
+        );
+    }
+}
+
+#[test]
+fn the_pooled_points_pass_the_firmwares_validate() {
+    let exp = &expected()["table"]["pooled"];
+    let (segs, _) = all();
+    let t = pooled(&segs).table;
+    let p = t.points(STOPS.0, STOPS.1);
+    let mut full = [0i16; INTERVALS + 1];
+    full[..INTERVALS].copy_from_slice(&p);
+    assert_eq!(pos_lut::validate(&full, STOPS.0, STOPS.1), Ok(()));
+    let (lo, hi) = gains(&p);
+    near("least gain", lo as f64, f(&exp["gain_q4"][0]), 0.10);
+    near("most gain", hi as f64, f(&exp["gain_q4"][1]), 0.10);
+    assert!(lo >= 8 && hi <= 32, "{lo}..{hi}");
+    let max = p.iter().map(|c| c.unsigned_abs()).max().expect("points");
+    near("most point", max as f64, f(&exp["points_max_abs"]), 0.10);
 }
 
 /// A set's two halves' histograms, and their sum, with each one's swept

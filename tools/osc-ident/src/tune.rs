@@ -547,9 +547,8 @@ mod tests {
         (0..4096u32)
             .map(|i| TelSample {
                 tick: TelemetryTick {
-                    _scan: [0; 10],
+                    _scan: [0; 9],
                     pos: pot,
-                    vref_raw: 1490,
                     vbus_raw: 1241,
                     ntc_raw: 2010,
                     current_raw: 1206,

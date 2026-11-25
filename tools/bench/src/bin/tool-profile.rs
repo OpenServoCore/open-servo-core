@@ -9,11 +9,12 @@ use bench::run::{Stats, measure};
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::telemetry::addr::refs::ENC_A;
-use osc_servo_core::regions::telemetry::addr::tick::{POS, VMOTOR_A};
+use osc_servo_core::regions::telemetry::addr::tick::{POS, VBUS_RAW, VMOTOR_A};
 
-/// pos+vref_raw(4) + vmotor_a(2) + enc_a(2): the scatter
-/// `tests/hardware/profile.rs` gates the turnaround on.
-const SCATTER: [(u16, u8); 3] = [(POS, 4), (VMOTOR_A, 2), (ENC_A, 2)];
+/// pos+vbus_raw(4) at 2 mod 4 + vbus_raw+ntc_raw(4) word-aligned +
+/// vmotor_a(2) + enc_a(2): the scatter `tests/hardware/profile.rs` gates the
+/// turnaround on.
+const SCATTER: [(u16, u8); 4] = [(POS, 4), (VBUS_RAW, 4), (VMOTOR_A, 2), (ENC_A, 2)];
 
 fn default_spans() -> Vec<String> {
     SCATTER
@@ -33,7 +34,7 @@ struct Args {
     #[arg(short, long, default_value_t = 0)]
     slot: u8,
     /// Spans as `addr:count` pairs. Default: the scattered telemetry the
-    /// hardware suite times, 4 B + 2 B + 2 B.
+    /// hardware suite times, 4 B + 4 B + 2 B + 2 B.
     #[arg(long, value_delimiter = ',', default_values_t = default_spans())]
     spans: Vec<String>,
     /// Number of profile reads.

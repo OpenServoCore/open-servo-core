@@ -118,9 +118,8 @@ struct Bus {
 fn sample(pot: u16, current_raw: u16, duty: i16, k: usize) -> TelSample {
     TelSample {
         tick: TelemetryTick {
-            _scan: [0; 10],
+            _scan: [0; 9],
             pos: pot,
-            vref_raw: 1490,
             vbus_raw: VBUS_RAW,
             ntc_raw: 2010,
             current_raw,

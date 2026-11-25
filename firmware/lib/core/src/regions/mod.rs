@@ -189,6 +189,15 @@ impl ControlTableCell {
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| t.telemetry.refs.vmotor_bias_counts = counts);
     }
+
+    /// Stamp the boot reading of the chip's 1.2 V reference, in raw ADC
+    /// counts; 0 = no reading.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_vref(&self, counts: u16) {
+        crate::log::debug!("seed vref: {} counts", counts);
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| t.telemetry.refs.vref_raw = counts);
+    }
 }
 
 #[cfg(test)]
@@ -577,12 +586,12 @@ mod tests {
         use super::telemetry::addr::{estimates, limits, refs, tick};
         use super::telemetry_ext::addr::{health, inject, limits_ext, therm};
         assert_eq!(
-            [tick::POS, tick::VREF_RAW, tick::VBUS_RAW, tick::NTC_RAW],
-            [0x224 + 20, 0x23A, 0x23C, 0x23E]
+            [tick::POS, tick::VBUS_RAW, tick::NTC_RAW],
+            [0x224 + 18, 0x238, 0x23A]
         );
         assert_eq!(
             [tick::CURRENT_RAW, tick::VMOTOR_A, tick::VMOTOR_B],
-            [0x240, 0x242, 0x244]
+            [0x23C, 0x23E, 0x240]
         );
         assert_eq!(
             [
@@ -591,7 +600,7 @@ mod tests {
                 tick::I_TICK_COUNTS,
                 tick::VDIFF_COUNTS
             ],
-            [0x246, 0x248, 0x24A, 0x24C]
+            [0x242, 0x244, 0x246, 0x248]
         );
         assert_eq!(
             [
@@ -599,13 +608,14 @@ mod tests {
                 tick::VMOTOR_B_TROUGH,
                 tick::TICK_FLAGS
             ],
-            [0x24E, 0x250, 0x252]
+            [0x24A, 0x24C, 0x24E]
         );
-        assert_eq!(tick::SAMPLE_TICK, 0x254);
+        assert_eq!(tick::SAMPLE_TICK, 0x250);
         assert_eq!(estimates::THETA_HAT_Q16, 0x258);
         assert_eq!(estimates::R_HAT_Q12, 0x26A);
         assert_eq!(refs::CURRENT_BIAS_COUNTS, 0x26C);
         assert_eq!(refs::ENC_B, 0x272);
+        assert_eq!(refs::VREF_RAW, 0x274);
         assert_eq!(limits::LIMIT_FLAGS, 0x27C);
         assert_eq!(limits::WINDOW_FLOOR_Q15, 0x27E);
         assert_eq!(super::TELEMETRY_EXT_BASE_ADDR, 0x3C0);

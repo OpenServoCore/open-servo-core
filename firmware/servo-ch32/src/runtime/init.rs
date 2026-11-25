@@ -31,12 +31,12 @@ const BIAS_SAMPLES: u32 = 1 << BIAS_SHIFT;
 /// stands in.
 const VMOTOR_BIAS_AGREE_COUNTS: u16 = 64;
 
-/// VB charges through Cb1 (0.82 ms) from a VDD that is still rising this
-/// soon after reset on a slow supply, so a pair is kept only once a re-read
-/// one step later agrees with it.
-const VMOTOR_BIAS_STEP_MS: u32 = 2;
-const VMOTOR_BIAS_STEPS: u32 = 32;
-const VMOTOR_BIAS_SETTLED_COUNTS: u16 = 1;
+/// VDD is still rising this soon after reset on a slow supply, and VB
+/// charges through Cb1 (0.82 ms) from it, so a boot reading is kept only
+/// once a re-read one step later agrees with it.
+const SETTLE_STEP_MS: u32 = 2;
+const SETTLE_STEPS: u32 = 32;
+const SETTLED_COUNTS: u16 = 1;
 
 pub fn bringup(
     wiring: &BoardWiring,
@@ -86,6 +86,7 @@ pub fn bringup(
         &wiring.sensors,
         pre.vmotor_bias_nom_counts,
     ));
+    SHARED.table.seed_vref(measure_vref());
 
     // SysTick drives both `Monotonic` (LED blinker) and the transport
     // deadline compare. Initialize *after* `bring_up_analog_chain` because
@@ -162,7 +163,7 @@ fn calib_sense_ext(cal: &Calibration, pre: &Precomputed) -> CalibSenseExt {
     }
 }
 
-// Order mirrors the scan in `configure_adc_dma_scan` (the shunt and Vref aside).
+// Order mirrors the scan in `configure_adc_dma_scan` (the shunt aside).
 fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
     [s.vmotor.0, s.vmotor.1, s.pos, s.vbus, s.ntc]
 }
@@ -226,11 +227,12 @@ fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
     delay_ms(OPA_SETTLE_MS);
 }
 
-/// `BIAS_SAMPLES` polled conversions of `ch`, averaged; `None` when EOC
-/// never arrives (a converter that never signals must not stall bringup).
-/// Leaves the ADC powered down so `configure_adc_dma_scan` still sees the
-/// off->on ADON transition it needs; every other register it touches is
-/// rewritten there.
+/// `BIAS_SAMPLES` polled conversions of `ch`, averaged, behind one
+/// discarded: the first follows another channel's conversion, or none.
+/// `None` when EOC never arrives (a converter that never signals must not
+/// stall bringup). Leaves the ADC powered down so `configure_adc_dma_scan`
+/// still sees the off->on ADON transition it needs; every other register it
+/// touches is rewritten there.
 fn measure_rest(ch: adc::Channel, t: adc::SampleTime) -> Option<u16> {
     adc::set_sample_time(ch, t);
     adc::set_low_power(true);
@@ -243,19 +245,21 @@ fn measure_rest(ch: adc::Channel, t: adc::SampleTime) -> Option<u16> {
 
     let mut sum: u32 = 0;
     let mut taken: u32 = 0;
-    while taken < BIAS_SAMPLES {
+    while taken <= BIAS_SAMPLES {
         let Some(counts) = adc::convert_once(ch) else {
             break;
         };
-        sum += counts as u32;
+        if taken > 0 {
+            sum += counts as u32;
+        }
         taken += 1;
     }
     adc::disable();
 
-    if taken == BIAS_SAMPLES {
+    if taken > BIAS_SAMPLES {
         Some((sum >> BIAS_SHIFT) as u16)
     } else {
-        crate::log::debug!("rest measure: adc timeout after {} samples", taken);
+        crate::log::debug!("rest measure: adc timeout after {} conversions", taken);
         None
     }
 }
@@ -271,36 +275,43 @@ fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
 /// `VMOTOR_BIAS_AGREE_COUNTS` and the pair must have settled, else the
 /// board nominal stands in.
 fn measure_vmotor_bias(s: &AdcPins, nominal: u16) -> u16 {
-    settled_bias(
+    settled(
         || {
             let a = measure_rest(s.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME)?;
             let b = measure_rest(s.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME)?;
             (a.abs_diff(b) <= VMOTOR_BIAS_AGREE_COUNTS).then(|| ((a as u32 + b as u32) >> 1) as u16)
         },
-        || delay_ms(VMOTOR_BIAS_STEP_MS),
+        || delay_ms(SETTLE_STEP_MS),
         nominal,
     )
 }
 
-/// The first `read` that agrees with the one a `wait` before it.
-fn settled_bias(
-    mut read: impl FnMut() -> Option<u16>,
-    mut wait: impl FnMut(),
-    nominal: u16,
-) -> u16 {
+/// The chip's 1.2 V reference, alone on the converter with the op-amp on
+/// and the driver parked; 0 = no reading, never a nominal.
+fn measure_vref() -> u16 {
+    settled(
+        || measure_rest(adc::Channel::Vref, chip::ADC_VREF_SAMPLE_TIME),
+        || delay_ms(SETTLE_STEP_MS),
+        0,
+    )
+}
+
+/// The first `read` that agrees with the one a `wait` before it, else
+/// `fallback`.
+fn settled(mut read: impl FnMut() -> Option<u16>, mut wait: impl FnMut(), fallback: u16) -> u16 {
     let mut last = read();
-    for _ in 0..VMOTOR_BIAS_STEPS {
+    for _ in 0..SETTLE_STEPS {
         wait();
         let next = read();
         if let (Some(p), Some(n)) = (last, next)
-            && p.abs_diff(n) <= VMOTOR_BIAS_SETTLED_COUNTS
+            && p.abs_diff(n) <= SETTLED_COUNTS
         {
             return n;
         }
         last = next;
     }
-    crate::log::debug!("vmotor bias: unsettled, nominal {}", nominal);
-    nominal
+    crate::log::debug!("rest reading: unsettled, {} stands in", fallback);
+    fallback
 }
 
 fn configure_adc_dma_scan(w: &BoardWiring) {
@@ -311,7 +322,6 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_sample_time(sensors.pos.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
-    adc::set_sample_time(adc::Channel::Vref, chip::ADC_VREF_SAMPLE_TIME);
     adc::set_sample_time(sensors.vbus.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_sample_time(sensors.ntc.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_low_power(true);
@@ -321,7 +331,6 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
         sensors.vmotor.1.channel(),
         current,
         sensors.pos.channel(),
-        adc::Channel::Vref,
         sensors.vbus.channel(),
         sensors.ntc.channel(),
     ]);
@@ -407,7 +416,7 @@ mod tests {
     fn a_charging_bias_is_read_once_it_settles() {
         let mut seq = [740u16, 763, 769, 771, 771].into_iter();
         let mut waits = 0;
-        let got = settled_bias(|| seq.next(), || waits += 1, 773);
+        let got = settled(|| seq.next(), || waits += 1, 773);
         assert_eq!(got, 771);
         assert_eq!(waits, 4);
     }
@@ -415,14 +424,14 @@ mod tests {
     #[test]
     fn a_settled_bias_costs_one_step() {
         let mut waits = 0;
-        assert_eq!(settled_bias(|| Some(770), || waits += 1, 773), 770);
+        assert_eq!(settled(|| Some(770), || waits += 1, 773), 770);
         assert_eq!(waits, 1);
     }
 
     #[test]
     fn a_bias_that_never_settles_or_never_reads_falls_back_to_nominal() {
         let mut v = 600u16;
-        let rising = settled_bias(
+        let rising = settled(
             || {
                 v += 2;
                 Some(v)
@@ -431,6 +440,6 @@ mod tests {
             773,
         );
         assert_eq!(rising, 773);
-        assert_eq!(settled_bias(|| None, || {}, 773), 773);
+        assert_eq!(settled(|| None, || {}, 773), 773);
     }
 }
