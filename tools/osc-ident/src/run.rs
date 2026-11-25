@@ -294,9 +294,8 @@ mod tests {
                 let at = |base: i32, k: u32| (base + noise(i, k)) as u16;
                 TelSample {
                     tick: TelemetryTick {
-                        _scan: [0; 10],
+                        _scan: [0; 9],
                         pos: at(2041, 1),
-                        vref_raw: at(1490, 2),
                         vbus_raw: at(1241, 3),
                         ntc_raw: at(2010, 4),
                         current_raw: at(1206, 5),

@@ -100,14 +100,16 @@ pub fn addr(d: &Descriptor, name: &str) -> u16 {
     field(d, name).expect(name).addr
 }
 
+/// The bench servo's boot reading of the chip's reference, counts.
+pub const BOOT_VREF: u16 = 1490;
+
 /// The shaft at rest at `pos`, the zero at 1206.
 pub fn still_at(pos: u16) -> Vec<TelSample> {
     (0..4096u32)
         .map(|i| TelSample {
             tick: TelemetryTick {
-                _scan: [0; 10],
+                _scan: [0; 9],
                 pos,
-                vref_raw: 1490,
                 vbus_raw: 1241,
                 ntc_raw: 2010,
                 current_raw: 1206,
@@ -127,11 +129,15 @@ pub fn still_at(pos: u16) -> Vec<TelSample> {
         .collect()
 }
 
-/// The calibrated simulated servo at rest at `pos` on a 3 Mbaud bus.
+/// The calibrated simulated servo at rest at `pos` on a 3 Mbaud bus, its
+/// boot reading of the reference [`BOOT_VREF`].
 pub fn servo(pos: u16, on_sent: OnSent) -> (Client<Spy>, Log) {
     let mut inner = FakePipe::new(BaudRate::B3000000, &[1]);
     inner.seed_calibrated(0);
     inner.set_track(0, still_at(pos));
+    inner
+        .sim_mut()
+        .servo_table_mut(0, |t| t.telemetry.refs.vref_raw = BOOT_VREF);
     let log = Log::default();
     let c = block_on(Client::connect(Spy {
         inner,

@@ -796,7 +796,6 @@ mod tests {
             vmotor_a_trough: 3000,
             vmotor_b: 40,
             vmotor_b_trough: 40,
-            vref_raw: 1489,
             vbus_raw: vbus_raw(3000),
             ntc_raw: 2048,
         }

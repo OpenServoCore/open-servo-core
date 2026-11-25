@@ -717,9 +717,9 @@ chunk's offset in the row plus its offset in the chunk
 encoding from the table.
 
 What a row means is when it was copied. osc-servo keeps a tick block
-in TELEMETRY (`0x224..0x258`). The ADC's DMA lands both scans of every
+in TELEMETRY (`0x224..0x254`). The ADC's DMA lands both scans of every
 PWM period at its front: the trough scan and the crest scan's taps and
-shunt in reserved bytes (`0x224..0x238`), the crest scan from `pos` to
+shunt in reserved bytes (`0x224..0x236`), the crest scan from `pos` to
 `ntc_raw` on its fields. The tick enters on the injected conversions
 that sample the drive's low-side tap and the shunt around the crest: it
 stamps `sample_tick`, copies that shunt to `current_raw` and the
@@ -739,26 +739,32 @@ side first, so no named field lies in its way.
 
 | addr  | name              | width | notes                                                       |
 | ----- | ----------------- | ----- | ----------------------------------------------------------- |
-| 0x238 | `pos`             | u16   | raw pot |
-| 0x23A | `vref_raw`        | u16   | the 1.2 V internal reference against VDD |
-| 0x23C | `vbus_raw`        | u16   | |
-| 0x23E | `ntc_raw`         | u16   | |
-| 0x240 | `current_raw`     | u16   | the shunt at the counter peak, 31 timer ticks past it; raw, the window term in it |
-| 0x242 | `vmotor_a`        | u16   | |
-| 0x244 | `vmotor_b`        | u16   | |
-| 0x246 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
-| 0x248 | `current_trough`  | u16   | the shunt in the trough, 135 timer ticks past it |
-| 0x24A | `i_tick_counts`   | i16   | the winding's current: bias-subtracted window current times the board's settle gain for the drive width, less the window term `g_window_q016` names (sec 5.8); through windows the shunt cannot read, held in OpenLoop and the current reference in the closed loops; 0 from the first tick nothing drives |
-| 0x24C | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
-| 0x24E | `vmotor_a_trough` | u16   | |
-| 0x250 | `vmotor_b_trough` | u16   | |
-| 0x252 | `tick_flags`      | u16   | bit 0 the shunt read the window, bit 1 a fault is latched, bit 2 the terminal taps read the window |
-| 0x254 | `sample_tick`     | u32   | the tick's count |
+| 0x236 | `pos`             | u16   | raw pot |
+| 0x238 | `vbus_raw`        | u16   | |
+| 0x23A | `ntc_raw`         | u16   | |
+| 0x23C | `current_raw`     | u16   | the shunt at the counter peak, 31 timer ticks past it; raw, the window term in it |
+| 0x23E | `vmotor_a`        | u16   | |
+| 0x240 | `vmotor_b`        | u16   | |
+| 0x242 | `duty_ticks`      | i16   | the PWM compare width the window measured was driven at, logical direction, negative in reverse; full scale is `pwm_period_ticks` (CALIB, RO) |
+| 0x244 | `current_trough`  | u16   | the shunt in the trough, 135 timer ticks past it |
+| 0x246 | `i_tick_counts`   | i16   | the winding's current: bias-subtracted window current times the board's settle gain for the drive width, less the window term `g_window_q016` names (sec 5.8); through windows the shunt cannot read, held in OpenLoop and the current reference in the closed loops; 0 from the first tick nothing drives |
+| 0x248 | `vdiff_counts`    | i16   | the window's `va - vb`, logical sign; held through windows the terminal taps cannot read |
+| 0x24A | `vmotor_a_trough` | u16   | |
+| 0x24C | `vmotor_b_trough` | u16   | |
+| 0x24E | `tick_flags`      | u16   | bit 0 the shunt read the window, bit 1 a fault is latched, bit 2 the terminal taps read the window |
+| 0x250 | `sample_tick`     | u32   | the tick's count |
 
-Common rows fit 12 B in at most two chunks: the six raw fields (`0x238`
-2 B, `pos`, and `0x240` 10 B, current to trough), identification's four
-(`0x238` 2 B, `pos`, and `0x246` 8 B, duty to differential with the
-trough riding along), the R/L set (`0x23C` 12 B, rail to duty with the
+The chip's 1.2 V internal reference is not in the scan: behind another
+channel its reading follows that channel's code. `vref_raw` (u16, RO,
+`0x274` in TELEMETRY, beside the boot references) is its one reading,
+taken at boot alone on the converter with the driver parked: VDD = 1.2 V
+x 4096 / `vref_raw`, 0 = no reading. No tick writes it, so a host reads
+it once.
+
+Common rows fit 12 B in at most two chunks: the six raw fields (`0x236`
+2 B, `pos`, and `0x23C` 10 B, current to trough), identification's four
+(`0x236` 2 B, `pos`, and `0x242` 8 B, duty to differential with the
+trough riding along), the R/L set (`0x238` 12 B, rail to duty with the
 NTC riding along). Whether a row's
 current is a fresh window is a pure function of its duty:
 `duty_ticks != 0` and `|duty_ticks| >= i_window_min_ticks` (CALIB), the
@@ -1173,13 +1179,13 @@ derived fields carry the step and the raw fields beside them do not:
 | `t_ntc_cc`, `t_winding_cc` | `ntc_raw` | whole counts, the slot rounded half up |
 | the estimates on the pot | `pos` | Q4, below |
 
-`pos`, `vref_raw`, `vbus_raw`, `ntc_raw`, `current_raw`, `vmotor_a`,
+`pos`, `vbus_raw`, `ntc_raw`, `current_raw`, `vmotor_a`,
 `vmotor_b`, `current_trough`, `vmotor_a_trough` and `vmotor_b_trough`
 stay the converter's codes in the table, in TEL rows and in the shunt
 burst. A host converting a streamed raw field adds the slot itself,
 `(code << 4) + wide_q4(code, map)` in Q4 counts
-(`osc-servo-core::adc::wide_q4`). `vref_raw` has no consumer in the
-kernel, so its step is the host's alone.
+(`osc-servo-core::adc::wide_q4`). `vref_raw`, a boot mean of 16 codes,
+has no consumer in the kernel, so its step is the host's alone.
 
 On the pot the wide-code step is taken in raw counts
 ahead of the table: a live table is read at the corrected raw count, in

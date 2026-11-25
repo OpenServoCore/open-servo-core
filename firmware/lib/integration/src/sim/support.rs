@@ -96,12 +96,11 @@ pub fn tel_sample(i: u32) -> TelSample {
             vmotor_b: raw(0x600),
             vbus_raw: raw(0xC00),
             ntc_raw: raw(0xD00),
-            vref_raw: raw(0x500),
             vmotor_a_trough: raw(0x700),
             vmotor_b_trough: raw(0x800),
             tick_flags: valid,
             sample_tick: i,
-            _scan: [raw(0x900); 10],
+            _scan: [raw(0x900); 9],
         },
         vbus_counts: 1800u16.wrapping_add(i as u16),
     }

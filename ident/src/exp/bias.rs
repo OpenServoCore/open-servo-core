@@ -397,7 +397,7 @@ mod tests {
         let local = (table.counts(2116) - table.counts(2084)) / 32.0;
         assert!(local < 0.85, "{local}");
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
-        assert_eq!(log.last().map(String::as_str), Some("stream 10000 0x238+2"));
+        assert_eq!(log.last().map(String::as_str), Some("stream 10000 0x236+2"));
         assert!(!servo.torque);
     }
 
