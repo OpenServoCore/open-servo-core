@@ -507,6 +507,13 @@ pub fn after(p: &RungPlan, r: &RungRead, band: &Band, what: &str) -> Result<(), 
     Ok(())
 }
 
+/// The time one still window of [`reach`] spans: [`WINDOW_S`] rounded up
+/// to whole polls, as the stops step's window closes on the first poll at
+/// or past it.
+pub fn still_window_s() -> f64 {
+    ((WINDOW_S - 1e-9) / POLL_S).ceil() * POLL_S
+}
+
 /// A stop rung of sign `dir` from rest at `start` toward the stop at
 /// `stop`, the slowest speed seen that way `slowest_cps`: long enough to
 /// cover the counts to the stop at that speed over the free margin, spin
@@ -522,7 +529,7 @@ pub fn plan_stop_rung(
 ) -> RungPlan {
     let d = (dir as f64 * (stop - start)).max(0.0);
     let bound_speed = FREE_MARGIN * fastest_cps;
-    let t_runway_s = d / (slowest_cps / FREE_MARGIN) + SPIN_UP_S + WINDOW_S;
+    let t_runway_s = d / (slowest_cps / FREE_MARGIN) + SPIN_UP_S + still_window_s();
     let t_burst_s = PERMIT_MAX_S - DRIVE_DEADMAN_S;
     let t = t_runway_s.min(t_burst_s);
     let rows = if t.is_finite() && t > 0.0 && slowest_cps > 0.0 {
@@ -559,23 +566,39 @@ pub enum Reach {
     Moving,
 }
 
-/// A stop rung's drive rows of sign `dir` against the stop at `stop`, a
-/// window still when every reading lies within `still_counts` of its
-/// median.
+/// A stop rung's drive rows of sign `dir` against the stop at `stop`, by
+/// the stops step's still rule ([`seek`]'s window): the rows read at the
+/// poll spacing [`POLL_S`], aligned to the rung's end, judged in
+/// consecutive windows of [`WINDOW_S`], a window not still replaced by the
+/// next. The latest still window's median against the stop; Moving when
+/// no window is still.
 pub fn reach(rows: &[TelFrame], dir: i8, stop: f64, still_counts: f64, fs: f64) -> Reach {
-    let n = (WINDOW_S * fs).round() as usize;
-    let pos: Vec<f64> = rows
+    let step = ((POLL_S * fs).round() as usize).max(1);
+    let mut polls: Vec<f64> = rows
         .iter()
         .rev()
-        .take(n)
+        .step_by(step)
         .filter_map(|f| f.pos.map(f64::from))
         .collect();
-    let Some(m) = median(&pos).filter(|_| pos.len() >= n) else {
+    polls.reverse();
+    let per = (still_window_s() / POLL_S).round() as usize;
+    let Some(first) = polls.len().checked_sub(1).map(|n| n % per) else {
         return Reach::Moving;
     };
-    if pos.iter().any(|p| (p - m).abs() > still_counts) {
-        return Reach::Moving;
+    let mut latest = None;
+    let mut w = seek::Window::new(0.0, polls[first]);
+    for (k, &p) in polls.iter().enumerate().skip(first + 1) {
+        let t = (k - first) as f64 * POLL_S;
+        if let Some(still) = w.judge(t, p, still_counts) {
+            if still {
+                latest = w.median();
+            }
+            w = seek::Window::new(t, p);
+        }
     }
+    let Some(m) = latest else {
+        return Reach::Moving;
+    };
     let along = dir as f64 * (m - stop);
     if along < -WALK_MAX_COUNTS {
         Reach::Short(m)
@@ -1181,6 +1204,9 @@ struct Found {
     /// plan's on.
     rows_a_code: Vec<RowsRead>,
     path: Vec<String>,
+    /// The refusal leaves the shaft at rest by a known stop or inside the
+    /// guards, and driving is safe: the way out goes to the middle first.
+    may_center: bool,
 }
 
 impl Found {
@@ -1530,8 +1556,9 @@ async fn stop_rungs<P: Pipe>(
             Reach::Moving => start = s.end,
         }
     }
+    found.may_center = true;
     Err(Halt::Refused(format!(
-        "pass {} {}: {STOP_RUNGS_MAX} stop rungs did not reach the {word} stop at {stop:.0}; the shaft rests at {start:.0}. Nothing more drives",
+        "pass {} {}: {STOP_RUNGS_MAX} stop rungs did not reach the {word} stop at {stop:.0}; the shaft rested at {start:.0}",
         at.pass,
         way(at.dir)
     )))
@@ -1595,6 +1622,7 @@ async fn fast_pass<P: Pipe>(
         let n = found.next_n();
         let what = format!("rung {n} (pass {} {}, fast)", at.pass, way(at.dir));
         if !p.fits() {
+            found.may_center = true;
             return Err(Halt::Refused(format!(
                 "{what} from {start:.0} gets {:.0} ms, under {:.0} ms ({}): the stops are too close for the fast passes' speed",
                 1e3 * p.t_s,
@@ -2750,6 +2778,15 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
         &mut lines,
     )
     .await;
+    let mut centered = None;
+    if ran.is_err() && found.may_center {
+        let middle = b.band.middle();
+        centered = Some(
+            go_to(rig, &mut b, middle, "the middle", &mut lines)
+                .await
+                .map_err(|h| h.why()),
+        );
+    }
     let exit = guard::exit(rig.c, rig.id, rig.d, &ledger).await;
     let after = rest::pos_now(rig.c, rig.id, rig.d).await.ok();
     let kept = keep_all(rig.sink, STEP, &taken, &mut lines).map_err(Halt::from);
@@ -2815,9 +2852,18 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
         _ => (Way::Done, None),
     };
     if let Some(w) = why.as_mut() {
+        if let Some(Err(e)) = &centered {
+            w.push_str(&format!("; the way to the middle stopped: {e}"));
+        }
         w.push_str(&format!(
-            "; the shaft ends at {} counts",
-            after.map_or("a position not read".into(), |p| format!("{p:.0}"))
+            "; the shaft ends at {} counts{}",
+            after.map_or("a position not read".into(), |p| format!("{p:.0}")),
+            match (&centered, exit.torque_off) {
+                (Some(Ok(_)), true) => ", taken to the middle, torque off",
+                (Some(Ok(_)), false) => ", taken to the middle",
+                (_, true) => ", torque off",
+                _ => "",
+            }
         ));
     }
     let result = result_json(
@@ -3169,6 +3215,7 @@ mod tests {
             stops: (1150.0, 3150.0),
             bend: (1900.0, 30.0, 30.0),
             up_wave: (0.0, 1000.0),
+            pressed_noise: 0.0,
             wide: vec![(1279, 11), (2559, 6)],
             zero: 1206.0,
             level: 300.0,
@@ -3588,6 +3635,40 @@ mod tests {
             assert!(torque_off(&mut r.c) && e.exit.torque_off, "{}", e.exit);
             nothing_written(&mut r.sink);
         }
+    }
+
+    /// The pot pressed on the high stop reads 8 counts of noise row to row,
+    /// over the still band at every poll: neither stop rung of the first
+    /// pass up reads the stop, the step refuses saying so, and as the shaft
+    /// rests on a known stop the way out takes it to the middle first.
+    #[test]
+    fn a_stop_rung_never_read_still_refuses_and_ends_at_the_middle() {
+        let mut m = motor();
+        m.pressed_noise = 8.0;
+        let mut r = run(
+            m.clone(),
+            stops_json(&m, APPROACH_Q15, 0.95),
+            REDUCED,
+            testkit::quiet(),
+        );
+        let e = r.out.expect("starts").ended;
+        assert_eq!(e.way, Way::Refused, "{:?}", e.why);
+        let why = e.why.as_deref().unwrap_or("");
+        assert!(
+            why.contains("did not reach the high stop") && why.contains("taken to the middle"),
+            "{why}"
+        );
+        assert!(torque_off(&mut r.c) && e.exit.torque_off, "{}", e.exit);
+        let res = nothing_written(&mut r.sink);
+        let (glo, ghi) = (
+            n(&res["drives"]["guards_counts"][0]),
+            n(&res["drives"]["guards_counts"][1]),
+        );
+        let after = n(&res["position_after_counts"]);
+        assert!(
+            (after - (glo + ghi) / 2.0).abs() <= 2.0 * ARRIVE_COUNTS,
+            "{after}"
+        );
     }
 
     /// The pot read 8 counts high in a wave on the up drives alone: the

@@ -11,7 +11,7 @@ use osc_measure::steps::seek::WINDOW_S;
 use osc_measure::steps::table::{
     Band, FIRST_FAST_SHARE, FromStops, NEAR_STOP_COUNTS, RUNG_MIN_S, Reach, RungRead, Schedule,
     Speeds, after, another_trip, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows,
-    plan_rung, plan_stop_rung, reach, rows_a_code, stamp_ticks, thin_carries,
+    plan_rung, plan_stop_rung, reach, rows_a_code, stamp_ticks, still_window_s, thin_carries,
 };
 use serde_json::json;
 
@@ -206,12 +206,13 @@ fn a_long_rungs_stamps_read_across_their_wrap() {
 }
 
 /// A stop rung covers the counts to the stop at the slowest speed seen
-/// over the free margin, spins up and reads a still window, inside the
-/// permit's time less the dead-man.
+/// over the free margin, spins up and reads a still window of whole polls,
+/// inside the permit's time less the dead-man.
 #[test]
 fn a_stop_rung_reaches_the_stop_inside_the_permit() {
     let p = plan_stop_rung(1, 3500.0, 3600.0, 900.0, 800.0, FS);
-    let want = 100.0 / (800.0 / FREE_MARGIN) + 0.1 + WINDOW_S;
+    assert!(still_window_s() >= WINDOW_S && still_window_s() < WINDOW_S + 0.02);
+    let want = 100.0 / (800.0 / FREE_MARGIN) + 0.1 + still_window_s();
     assert!((p.t_s - want).abs() <= 1.0 / FS, "{}", p.said());
     assert_eq!(
         (p.runway, p.far_guard, p.bound_speed),
@@ -222,7 +223,7 @@ fn a_stop_rung_reaches_the_stop_inside_the_permit() {
     assert!(far.t_s + DRIVE_DEADMAN_S <= PERMIT_MAX_S);
     // already on the stop: the spin-up and the still window alone
     let on = plan_stop_rung(-1, 100.0, 100.0, 900.0, 800.0, FS);
-    assert!((on.t_s - (0.1 + WINDOW_S)).abs() <= 1.0 / FS);
+    assert!((on.t_s - (0.1 + still_window_s())).abs() <= 1.0 / FS);
 }
 
 fn rows(pos: &[f64]) -> Vec<TelFrame> {
@@ -237,11 +238,11 @@ fn rows(pos: &[f64]) -> Vec<TelFrame> {
         .collect()
 }
 
-/// The last still window against the stop: on it within 10 counts,
+/// The latest still window against the stop: on it within 10 counts,
 /// short of it, past it, or still moving.
 #[test]
 fn a_stop_rung_reads_reached_short_past_or_moving() {
-    let n = (WINDOW_S * FS) as usize;
+    let n = (still_window_s() * FS) as usize;
     let still = |at: f64| rows(&vec![at; n + 100]);
     assert_eq!(
         reach(&still(3605.0), 1, 3600.0, 3.0, FS),
@@ -336,4 +337,45 @@ fn the_plans_schedule() {
             extra_slow_max: 2
         }
     );
+}
+
+/// The bench's stop rungs (`testdata/table/stop-rungs.csv.gz`): pressed
+/// on the low stop, and twice on the high stop where the pot reads about
+/// +/-6 counts row to row; read at the poll spacing as the stops step
+/// reads its seats, all three reach their stop. The same rows cut to the
+/// last 0.15 s before the high stop, still climbing, read Moving.
+#[test]
+fn the_bench_stop_rungs_read_reached() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/testdata/table/stop-rungs.csv.gz"
+    );
+    let gz = std::fs::read(path).expect("fixture");
+    let text =
+        String::from_utf8(osc_measure::capture::meta::gunzip(&gz).expect("gzip")).expect("utf8");
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("capture,tick,pos"));
+    let mut by: std::collections::BTreeMap<String, Vec<TelFrame>> = Default::default();
+    for l in lines {
+        let v: Vec<&str> = l.split(',').collect();
+        by.entry(v[0].into()).or_default().push(TelFrame {
+            tick: v[1].parse().expect("tick"),
+            pos: Some(v[2].parse().expect("pos")),
+            duty_counts: Some(152),
+            ..TelFrame::default()
+        });
+    }
+    for (k, dir, stop) in [("07", -1, 108.0), ("13", 1, 3726.0), ("15", 1, 3726.0)] {
+        let r = reach(&by[k], dir, stop, 3.0, FS);
+        assert!(
+            matches!(r, Reach::Reached(m) if (m - stop).abs() <= 10.0),
+            "{k}: {r:?}"
+        );
+    }
+    let climb = &by["13"];
+    let top = climb
+        .iter()
+        .position(|f| f.pos.is_some_and(|p| p >= 3700))
+        .expect("reaches the top");
+    assert_eq!(reach(&climb[..top], 1, 3726.0, 3.0, FS), Reach::Moving);
 }
