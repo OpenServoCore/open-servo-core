@@ -200,6 +200,9 @@ pub struct Motor {
     /// A wave the pot reads only while driven up: its amplitude and its
     /// period, counts, zero at the low stop.
     pub up_wave: (f64, f64),
+    /// The pot's row-to-row noise while driven up onto the high stop,
+    /// counts either way.
+    pub pressed_noise: f64,
     /// Each carry the converter sticks at, and the codes over it it skips.
     pub wide: Vec<(u16, u16)>,
     /// The current's zero, its level at full duty and the ripple's
@@ -245,7 +248,12 @@ impl Motor {
         } else {
             0.0
         };
-        let mut s = rest_row(self.code_of(self.pot(x) + wave), k as u32);
+        let noise = if q > 0 && x >= self.stops.1 {
+            self.pressed_noise * (1.7 * k as f64).sin()
+        } else {
+            0.0
+        };
+        let mut s = rest_row(self.code_of(self.pot(x) + wave + noise), k as u32);
         s.tick.current_raw = i;
         s.tick.current_trough = i;
         s.tick.duty_ticks = (d * self.pwm_arr).round() as i16;

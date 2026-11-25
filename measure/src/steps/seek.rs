@@ -221,13 +221,13 @@ pub enum Act {
     Stopped { kind: Refusal, why: String },
 }
 
-struct Window {
+pub(crate) struct Window {
     t0: f64,
     rows: Vec<f64>,
 }
 
 impl Window {
-    fn new(t0: f64, pos: f64) -> Self {
+    pub(crate) fn new(t0: f64, pos: f64) -> Self {
         Window {
             t0,
             rows: vec![pos],
@@ -235,13 +235,18 @@ impl Window {
     }
 
     /// Whether the window is complete at `t`, and if so still.
-    fn judge(&mut self, t: f64, pos: f64, band: f64) -> Option<bool> {
+    pub(crate) fn judge(&mut self, t: f64, pos: f64, band: f64) -> Option<bool> {
         self.rows.push(pos);
         if t - self.t0 < WINDOW_S - 1e-9 {
             return None;
         }
         let m = median(&self.rows)?;
         Some(self.rows.iter().all(|x| (x - m).abs() <= band))
+    }
+
+    /// The readings' median.
+    pub(crate) fn median(&self) -> Option<f64> {
+        median(&self.rows)
     }
 }
 
