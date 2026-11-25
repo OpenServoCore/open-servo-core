@@ -2,9 +2,11 @@
 
 pub mod coast;
 pub mod cruise;
+pub mod postable;
 pub mod rise;
 pub mod runup;
 pub mod seated;
+pub mod widecodes;
 pub mod window;
 
 /// The median; the mean of the middle two on an even count. None when
@@ -145,6 +147,38 @@ pub fn lstsq<const N: usize>(x: &[[f64; N]], y: &[f64]) -> Option<[f64; N]> {
     out.iter().all(|v| v.is_finite()).then_some(out)
 }
 
+/// `x` with `a x = b`, `a` dense, symmetric and positive definite, row
+/// major `n x n`, by Cholesky; only the lower triangle is read. None when
+/// `a` is not positive definite or the sizes disagree.
+pub fn solve_spd(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
+    let n = b.len();
+    if a.len() != n * n {
+        return None;
+    }
+    let mut l = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            let s = a[i * n + j] - (0..j).map(|k| l[i * n + k] * l[j * n + k]).sum::<f64>();
+            if i == j {
+                if !(s > 0.0 && s.is_finite()) {
+                    return None;
+                }
+                l[i * n + i] = s.sqrt();
+            } else {
+                l[i * n + j] = s / l[j * n + j];
+            }
+        }
+    }
+    let mut y = vec![0.0; n];
+    for i in 0..n {
+        y[i] = (b[i] - (0..i).map(|k| l[i * n + k] * y[k]).sum::<f64>()) / l[i * n + i];
+    }
+    for i in (0..n).rev() {
+        y[i] = (y[i] - (i + 1..n).map(|k| l[k * n + i] * y[k]).sum::<f64>()) / l[i * n + i];
+    }
+    y.iter().all(|v| v.is_finite()).then_some(y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +194,21 @@ mod tests {
         let [m, c] = lstsq(&x, &y).expect("solves");
         assert!((m - 3.0).abs() < 1e-12 && (c + 2.0).abs() < 1e-12);
         assert_eq!(lstsq(&[[1.0, 1.0], [2.0, 2.0]], &[1.0, 2.0]), None);
+    }
+
+    #[test]
+    fn a_positive_definite_system_solves_and_a_singular_one_does_not() {
+        let a = [4.0, 2.0, 0.6, 2.0, 5.0, 1.0, 0.6, 1.0, 3.0];
+        let x = [1.0, -2.0, 0.5];
+        let b: Vec<f64> = (0..3)
+            .map(|i| (0..3).map(|j| a[i * 3 + j] * x[j]).sum())
+            .collect();
+        let got = solve_spd(&a, &b).expect("solves");
+        for (g, w) in got.iter().zip(x) {
+            assert!((g - w).abs() < 1e-12, "{got:?}");
+        }
+        assert_eq!(solve_spd(&[1.0, 1.0, 1.0, 1.0], &[1.0, 1.0]), None);
+        assert_eq!(solve_spd(&[1.0, 0.0, 0.0, -1.0], &[1.0, 1.0]), None);
+        assert_eq!(solve_spd(&[1.0], &[1.0, 2.0]), None);
     }
 }
