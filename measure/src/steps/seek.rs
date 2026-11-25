@@ -1,8 +1,8 @@
 //! The stop finder's decisions, pure: fed the pot at each poll, it gives
 //! the duty for the next poll period, a seat to take the seated bursts
 //! at, or its end. Approaches alternate between the stops, the low one
-//! first, until each stop has two seats; then a drive to the middle of
-//! the two.
+//! first, until each stop has three seats (plan sec 2.3); then a drive to
+//! the middle of the two.
 //!
 //! An approach drives toward its stop at the approach duty with the stall
 //! permit held, and that duty is never raised: a soft stopper gives under
@@ -62,9 +62,9 @@ pub const WALK_MAX_COUNTS: f64 = 10.0;
 /// A leg whose shaft falls back this far from the farthest it got toward
 /// its end runs the wrong way.
 pub const WRONG_WAY_COUNTS: f64 = LEAVE_COUNTS;
-pub const SEATS_A_STOP: usize = 2;
+pub const SEATS_A_STOP: usize = 3;
 /// The most approaches a run makes: one that finds the start at a stop,
-/// then two seats a stop.
+/// then [`SEATS_A_STOP`] seats a stop.
 pub const APPROACHES_MAX: usize = 1 + 2 * SEATS_A_STOP;
 const Q15: f64 = 32768.0;
 
@@ -1065,14 +1065,15 @@ mod tests {
     }
 
     #[test]
-    fn four_seats_alternate_the_stops_and_end_at_the_middle() {
+    fn six_seats_alternate_the_stops_and_end_at_the_middle() {
         let mut s = Shaft::bench();
         let r = run(&mut s);
         let m = &r.m;
         assert!(m.finished(), "{:?}", m.path());
-        assert_eq!(m.approaches(), 4);
+        assert_eq!(m.approaches(), 6);
         let order: Vec<Stop> = m.seats().iter().map(|x| x.stop).collect();
-        assert_eq!(order, [Stop::Low, Stop::High, Stop::Low, Stop::High]);
+        use Stop::{High, Low};
+        assert_eq!(order, [Low, High, Low, High, Low, High]);
         for (stop, want) in [(Stop::Low, 432.0), (Stop::High, 3626.0)] {
             assert!(
                 seats(m, stop).iter().all(|p| (p - want).abs() <= 1.0),
@@ -1088,14 +1089,15 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                Approach, Leave, Approach, Leave, Approach, Leave, Approach, Center
+                Approach, Leave, Approach, Leave, Approach, Leave, Approach, Leave, Approach,
+                Leave, Approach, Center
             ]
         );
     }
 
     /// The bench servo's low stop: first contact at 108, and any press at
     /// the ceiling carries the shaft on to a blind 4. Never raised, the
-    /// approach seats at 108 both times.
+    /// approach seats at 108 every time.
     #[test]
     fn a_soft_stop_is_seated_at_its_contact() {
         let c = cfg();
@@ -1107,7 +1109,7 @@ mod tests {
         let r = run(&mut s);
         assert!(r.m.finished(), "{:?}", r.m.path());
         let low = seats(&r.m, Stop::Low);
-        assert_eq!(low.len(), 2);
+        assert_eq!(low.len(), SEATS_A_STOP);
         assert!(low.iter().all(|p| (p - 108.0).abs() <= 1.0), "{low:?}");
         presses_at_most_the_approach(&r);
         assert!(
@@ -1118,7 +1120,7 @@ mod tests {
     }
 
     /// A start resting at the low stop: the first approach goes still with
-    /// no travel, takes no seat, and leaves; two good seats a stop follow,
+    /// no travel, takes no seat, and leaves; three good seats a stop follow,
     /// the high stop first. A start 300 counts above the low stop travels
     /// enough and seats there first.
     #[test]
@@ -1132,7 +1134,8 @@ mod tests {
         assert!(m.finished(), "{:?}", m.path());
         assert_eq!(m.approaches(), APPROACHES_MAX);
         let order: Vec<Stop> = m.seats().iter().map(|x| x.stop).collect();
-        assert_eq!(order, [Stop::High, Stop::Low, Stop::High, Stop::Low]);
+        use Stop::{High, Low};
+        assert_eq!(order, [High, Low, High, Low, High, Low]);
         assert!(seats(m, Stop::Low).iter().all(|p| (p - 432.0).abs() <= 1.0));
         assert!(
             m.path().iter().any(|p| p.contains("no seat there")),
@@ -1149,7 +1152,7 @@ mod tests {
         };
         let r = run(&mut s);
         assert!(r.m.finished(), "{:?}", r.m.path());
-        assert_eq!(r.m.approaches(), 4);
+        assert_eq!(r.m.approaches(), 6);
         assert_eq!(r.m.seats()[0].stop, Stop::Low);
         assert!(
             seats(&r.m, Stop::Low)
@@ -1304,7 +1307,7 @@ mod tests {
         let m = &r.m;
         assert!(s.spiked);
         assert!(m.finished(), "{:?}", m.path());
-        assert_eq!(m.seats().len(), 4);
+        assert_eq!(m.seats().len(), 2 * SEATS_A_STOP);
         let odd = m.odd_reads();
         assert_eq!(odd.len(), 1, "{odd:?}");
         let o = &odd[0];

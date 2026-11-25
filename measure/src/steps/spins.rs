@@ -66,7 +66,7 @@ pub const RESULT: &str = "results/spins.json";
 /// The window step's result, read when the run holds one.
 pub const WINDOW_RESULT: &str = "results/window.json";
 const METHOD: &str = "free-spins-and-coasts";
-const REVISION: u32 = 1;
+const REVISION: u32 = 2;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 
@@ -853,7 +853,7 @@ async fn body<P: Pipe>(
     Ok(())
 }
 
-/// The spins the judge reads: the twelve, not the pilot.
+/// The spins the judge reads: those of [`runway::order`], not the pilot.
 #[derive(Copy, Clone, Debug)]
 pub struct Spin<'a> {
     pub n: usize,
@@ -1713,7 +1713,7 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
         i_drag0_a: None,
     };
     let finished = ran.is_ok();
-    let twelve: Vec<Spin> = found
+    let read: Vec<Spin> = found
         .spins
         .iter()
         .filter(|s| !s.pilot)
@@ -1725,7 +1725,7 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
             coast: &taken[s.coast_k].burst.rows,
         })
         .collect();
-    let judged = finished.then(|| judge(&twelve, &cfg));
+    let judged = finished.then(|| judge(&read, &cfg));
     let mut checks = judged.as_ref().map_or(Vec::new(), |j| j.checks.clone());
     if finished {
         checks.push(check(
@@ -2609,13 +2609,16 @@ mod tests {
     /// 3.7 to 7.4 V). Each spin is driven its T and its dead-man, a host
     /// that stalls after the drive's rows; the planner sees what the step
     /// would read; the go-to to each start runs at the approach duty, its
-    /// windows priced. The spins' ends and their margins to the far guard, the
-    /// twelve's that ran, those left out, and where it refused.
+    /// windows priced. The spins' ends and their margins to the far guard,
+    /// those of the order that ran, those left out, where it refused, and
+    /// the envelope's peak rise and priced seconds.
     struct Sim {
         ends: Vec<(String, f64)>,
         ran: Vec<(f64, i8)>,
         left_out: Vec<(f64, i8)>,
         refused: Option<String>,
+        rise_c: f64,
+        priced_s: f64,
     }
 
     fn simulate(k: f64, step: f64) -> Sim {
@@ -2632,6 +2635,15 @@ mod tests {
             ran: Vec::new(),
             left_out: Vec::new(),
             refused: None,
+            rise_c: 0.0,
+            priced_s: 0.0,
+        };
+        let (rise, priced) = (Cell::new(0.0f64), Cell::new(0.0f64));
+        let admit = |env: &mut Envelope, r: &Rung| -> Result<(), String> {
+            let p = env.admit(r).map_err(|e| e.0)?;
+            rise.set(rise.get().max(p.rise_c));
+            priced.set(priced.get() + r.time_s + r.gap_s);
+            Ok(())
         };
         let speed = |level: f64| {
             let i = LEVELS.iter().position(|l| *l == level).unwrap_or(0);
@@ -2658,12 +2670,12 @@ mod tests {
                     kind: Kind::Drive,
                 };
                 let stops = env.facts.stops.take();
-                let got = env.admit(&r);
+                let got = admit(env, &r);
                 env.facts.stops = stops;
-                got.map_err(|e| e.0)?;
+                got?;
             }
             let q = level_q15(w.level, 4.8, 5.0) * w.dir as i16;
-            env.admit(&spin_rung(name, q, w)).map_err(|e| e.0)?;
+            admit(env, &spin_rung(name, q, w))?;
             let v = speed(w.level);
             let t = w.t_s + DRIVE_DEADMAN_S;
             let x = v * (t - tau * (1.0 - (-t / tau).exp()));
@@ -2723,17 +2735,21 @@ mod tests {
             plan.feed(r.seen(s.level, s.dir));
             out.ran.push((s.level, s.dir));
         }
+        out.rise_c = rise.get();
+        out.priced_s = priced.get();
         out
     }
 
     fn said(k: f64, step: f64, s: &Sim) -> f64 {
         let worst = s.ends.iter().map(|(_, m)| *m).fold(f64::INFINITY, f64::min);
         println!(
-            "{k} x the nameplate, {step} x the volts' ratio a level: {} spins, the least margin to the far guard {worst:.0} counts, ran {:?}, left out {:?}, refused: {}",
+            "{k} x the nameplate, {step} x the volts' ratio a level: {} spins, the least margin to the far guard {worst:.0} counts, ran {:?}, left out {:?}, refused: {}; peak priced rise {:.2} C, {:.2} s priced",
             s.ends.len(),
             s.ran,
             s.left_out,
-            s.refused.as_deref().unwrap_or("no")
+            s.refused.as_deref().unwrap_or("no"),
+            s.rise_c,
+            s.priced_s
         );
         for (name, m) in &s.ends {
             println!("  {name}: {m:.0} counts short of the far guard");
@@ -2759,10 +2775,12 @@ mod tests {
                 0.6 => {
                     assert!(s.refused.is_none(), "{:?}", s.refused);
                     assert!(
-                        s.left_out.is_empty() && s.ran.len() == 12,
+                        s.left_out.is_empty() && s.ran.len() == 14,
                         "{:?}",
                         s.left_out
                     );
+                    let top = s.ran.iter().filter(|r| r.0 == 0.75);
+                    assert_eq!(top.count(), 2 * runway::TOP_SPINS_EACH);
                     assert_eq!(jl, Some(0.75));
                     assert!(worst >= SHORT_COUNTS, "{worst}");
                 }

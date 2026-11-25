@@ -78,6 +78,9 @@ pub const SHORT_COUNTS: f64 = 300.0;
 /// The levels, shares of the stated voltage: none above the last.
 pub const LEVELS: [f64; 3] = [0.25, 0.5, 0.75];
 pub const SPINS_EACH: usize = 2;
+/// The top level's spins each way: J is read from its run-ups, 3 each way
+/// (plan sec 2.9).
+pub const TOP_SPINS_EACH: usize = 3;
 pub const PILOT_LEVEL: f64 = 0.25;
 /// The pilot drives this share of the runway's T.
 pub const PILOT_SHARE: f64 = 0.5;
@@ -146,7 +149,7 @@ impl Travel {
     }
 }
 
-/// One spin of the twelve.
+/// One spin of [`order`].
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Slot {
     /// From 1.
@@ -157,11 +160,17 @@ pub struct Slot {
 }
 
 /// The spins in order: the lowest level first, [`SPINS_EACH`] each way a
-/// level, the direction alternating, up first.
+/// level and [`TOP_SPINS_EACH`] at the top, the direction alternating, up
+/// first.
 pub fn order() -> Vec<Slot> {
     let mut out = Vec::new();
-    for level in LEVELS {
-        for k in 0..2 * SPINS_EACH {
+    for (i, level) in LEVELS.into_iter().enumerate() {
+        let each = if i + 1 == LEVELS.len() {
+            TOP_SPINS_EACH
+        } else {
+            SPINS_EACH
+        };
+        for k in 0..2 * each {
             out.push(Slot {
                 n: out.len() + 1,
                 level,
@@ -823,22 +832,22 @@ mod tests {
     const RATED: f64 = 600.0 * 4096.0 / 184.33;
 
     #[test]
-    fn the_twelve_spins_go_lowest_level_first_alternating_up_first() {
+    fn the_fourteen_spins_go_lowest_level_first_alternating_up_first() {
         let o = order();
-        assert_eq!(o.len(), 12);
+        assert_eq!(o.len(), 14);
         let levels: Vec<f64> = o.iter().map(|s| s.level).collect();
         assert_eq!(
             levels,
             [
-                0.25, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 0.5, 0.75, 0.75, 0.75, 0.75
+                0.25, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 0.5, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75
             ]
         );
         assert!(o.iter().all(|s| s.level <= 0.75));
         let dirs: Vec<i8> = o.iter().map(|s| s.dir).collect();
-        assert_eq!(dirs, [1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1]);
+        assert_eq!(dirs, [1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1]);
         assert_eq!(
             o.iter().map(|s| s.n).collect::<Vec<_>>(),
-            (1..=12).collect::<Vec<_>>()
+            (1..=14).collect::<Vec<_>>()
         );
         let starts: Vec<f64> = o.iter().map(|s| TRAVEL.start(s.dir)).collect();
         assert_eq!(&starts[..2], &[332.0, 3542.0], "the guard it leaves");
