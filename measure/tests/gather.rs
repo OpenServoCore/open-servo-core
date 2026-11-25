@@ -42,6 +42,7 @@ fn run() -> RunResults {
         window: Some(result("window")),
         spins: Some(result("spins")),
         cruise: None,
+        table: None,
     }
 }
 
@@ -409,4 +410,116 @@ fn the_friction_line_is_the_cruise_steps_where_it_was_accepted() {
     r.cruise = Some(edited("cruise", |v| v["step"] = "spins".into()));
     let e = gather::gather(&r, &nameplate()).expect_err("refused");
     assert!(e.0.contains("not the cruise step's"), "{e}");
+}
+
+/// An accepted table step's slots, points and scale are the ones gathered,
+/// each naming `results/table.json`, its key and sha1; the rules on them
+/// give a set whose table is LIVE on those points and whose slots are the
+/// step's, written together. Without the step the straight table and the
+/// servo's slots stay, said in a line.
+#[test]
+fn gather_carries_the_table_steps_points_slots_and_scale() {
+    let tabled = result("table");
+    let mut r = run();
+    r.table = Some(tabled.clone());
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    let src = &g.measured["table"]["source"];
+    assert_eq!(src["file"], "results/table.json");
+    assert_eq!(src["sha1"], tabled.sha1.as_str());
+    assert!(
+        src["key"]
+            .as_str()
+            .is_some_and(|k| k.starts_with("scale.counts_per_deg (the ripple")),
+        "{src}"
+    );
+    let cpd = tabled.doc["scale"]["counts_per_deg"]
+        .as_f64()
+        .expect("scale");
+    assert_eq!(g.measured["table"]["counts_per_deg"].as_f64(), Some(cpd));
+    let table = TableFile::parse(&gather::render(&g.table)).expect("the table file parses");
+    let want: Vec<i64> = tabled.doc["points_by_page"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .flat_map(|p| {
+            p.as_array()
+                .expect("page")
+                .iter()
+                .map(|v| v.as_i64().expect("point"))
+        })
+        .collect();
+    assert_eq!(
+        table.points.iter().map(|&k| k as i64).collect::<Vec<_>>(),
+        want
+    );
+    assert!(table.points.iter().any(|&k| k != 0));
+    assert_eq!(table.stops, (107, 3729));
+    assert_eq!(table.counts_per_deg, Some(cpd));
+    assert_eq!(g.table["source"]["file"], "results/table.json");
+    let wide = g.wide_codes.as_ref().expect("the slots file");
+    let slots: Vec<u8> = wide["slots"]
+        .as_array()
+        .expect("slots")
+        .iter()
+        .map(|v| v.as_u64().expect("slot") as u8)
+        .collect();
+    assert_eq!(slots, [0, 48, 0, 80, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(wide["source"]["key"], "slots");
+    assert!(
+        g.lines
+            .iter()
+            .any(|l| l.starts_with("wide-code slots [0, 48")),
+        "{:?}",
+        g.lines
+    );
+
+    let measured: Measured =
+        serde_json::from_str(&gather::render(&g.measured)).expect("loads as Measured");
+    let mut inputs = inputs_of(measured);
+    inputs.measured.speed_kp_verified = Some(speed_loop::starting_gain(&inputs).expect("gain"));
+    let rules = build(&inputs);
+    let (file, _) = set::from_rules(
+        &rules,
+        &FromRules {
+            pair: "mg90-d__osc-dev-v006",
+            nameplate: &inputs.nameplate,
+            counts_per_deg: Some(cpd),
+            table: Some(&table),
+            slots: Some(&slots),
+            files: &[],
+        },
+        &descriptor(),
+    )
+    .expect("the rules give a set");
+    assert_eq!(file.table().0, "LIVE");
+    assert_eq!(file.table().1, set::points_sha1(&table.points));
+    assert_eq!(file.slots(), Ok(Some(slots)));
+
+    let g = gather::gather(&run(), &nameplate()).expect("gathers");
+    assert!(g.wide_codes.is_none());
+    assert!(
+        g.lines
+            .iter()
+            .any(|l| l.starts_with("wide-code slots: not gathered")
+                && l.contains("results/table.json")),
+        "{:?}",
+        g.lines
+    );
+}
+
+/// A table step built against other stops, or not accepted, refuses the
+/// gather naming the step.
+#[test]
+fn a_table_step_on_other_stops_or_refused_is_refused() {
+    let mut r = run();
+    r.table = Some(edited("table", |v| v["stops_used"]["raw_min"] = 110.into()));
+    let e = gather::gather(&r, &nameplate()).expect_err("other stops");
+    assert!(
+        e.0.contains("built against stops 110") && e.0.contains("table step"),
+        "{e}"
+    );
+    let mut r = run();
+    r.table = Some(edited("table", |v| v["verdict"] = "refused".into()));
+    let e = gather::gather(&r, &nameplate()).expect_err("refused");
+    assert!(e.0.contains("run the table step again"), "{e}");
 }

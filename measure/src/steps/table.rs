@@ -36,10 +36,11 @@
 //!
 //! The reading ([`judge`]): the wide-code slots from the slow passes'
 //! rows more than [`NEAR_STOP_COUNTS`] inside both stops, then one pooled
-//! fit `pos = T(phase) + c_rung` over the fast passes' constant-duty
-//! stretches and the slow passes' rungs, each its own segment with its own
-//! offset, cut where the pot comes within [`NEAR_STOP_COUNTS`] of a stop:
-//! the slow rungs fill the ends past the fast passes' brake points.
+//! fit `pos = T(phase) + c_piece` over the fast passes' constant-duty
+//! stretches, the slow passes filling the ends past the fast passes'
+//! brake points: of a slow rung only its samples past the fast rungs'
+//! reach plus [`SLOW_OVERLAP_COUNTS`] into it, each stretch its own piece
+//! with its own offset, nothing within [`NEAR_STOP_COUNTS`] of a stop.
 
 use std::time::Duration;
 
@@ -67,8 +68,8 @@ use crate::envelope::{
 use crate::fit::median;
 use crate::fit::polyfit;
 use crate::fit::postable::{
-    self, Agreement, PLAY_COUNTS, PooledFit, SMOOTH_WEIGHT, SPIN_UP_S, Segment, SegmentError,
-    TableError, Term,
+    self, Agreement, PLAY_COUNTS, PooledFit, SMOOTH_WEIGHT, SPIN_UP_S, Segment, SegmentError, Span,
+    Table, TableError, Term,
 };
 use crate::fit::widecodes::{self, EDGE_MARGIN_COUNTS, Finding, HALF_THIN_ROWS, State, THIN_ROWS};
 use crate::guard::{self, Ledger, Way};
@@ -78,7 +79,7 @@ use crate::nameplate::Nameplate;
 use crate::ntc::{ADC_COUNTS, Parts};
 use crate::state::{self, State as ServoState, field};
 use osc_servo_core::adc::ADC_WIDE_SLOTS;
-use osc_servo_core::pos_lut::{self, INTERVALS, PAGE_POINTS, POINTS};
+use osc_servo_core::pos_lut::{self, GRID, INTERVALS, PAGE_POINTS, POINTS};
 
 pub const STEP: &str = "table";
 pub const RESULT: &str = "results/table.json";
@@ -120,6 +121,10 @@ pub const PASS_OUT_MAX_COUNTS: f64 = 4.0;
 pub const DIRECTION_WARN_COUNTS: f64 = 3.0;
 /// A rung's speed spread over which it is a warning, never a refusal.
 pub const SPEED_SPREAD_WARN: f64 = 0.2;
+/// Counts a slow piece reaches into the span the fast passes cover, eight
+/// grid intervals: its offset rests on fast samples, not on the smoothing
+/// alone.
+pub const SLOW_OVERLAP_COUNTS: f64 = 128.0;
 
 /// How many of each pass the step runs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1856,8 +1861,178 @@ pub struct RungSegment {
 pub struct PassOut {
     pub n: usize,
     pub pass: usize,
-    /// Counts rms, line out.
+    /// Counts rms, line out, over the stretches judged.
     pub moved: Result<f64, TableError>,
+    /// The stretches the remaining pieces cover, counts: the refit is
+    /// judged on these alone.
+    pub on: Vec<(f64, f64)>,
+}
+
+/// The stretches of `span` the samples of `segs` cover, counts: runs of
+/// grid intervals with samples, split where more than
+/// [`postable::HOLE_MAX`] in a row hold none.
+fn covered(segs: &[Segment], span: &Span) -> Vec<(f64, f64)> {
+    let n = span.count() - 1;
+    let mut hit = vec![false; n];
+    for x in segs.iter().flat_map(|s| s.x.iter()) {
+        let i = ((x - span.lo()) / GRID as f64).floor();
+        if i >= 0.0 && (i as usize) < n {
+            hit[i as usize] = true;
+        }
+    }
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for (i, &h) in hit.iter().enumerate() {
+        if !h {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if i - last.1 <= postable::HOLE_MAX + 1 => last.1 = i,
+            _ => out.push((i, i)),
+        }
+    }
+    out.iter()
+        .map(|&(a, b)| {
+            (
+                span.lo() + (a * GRID) as f64,
+                span.lo() + ((b + 1) * GRID) as f64,
+            )
+        })
+        .collect()
+}
+
+/// The refit of `rest` against `full` on each stretch the rest covers:
+/// the stretch's own knots, the full table read at them, line out; the
+/// rms over the knots judged, and the stretches. No stretch of three grid
+/// points or more refuses as no span.
+fn pass_out(rest: &[Segment], full: &Table) -> (Result<f64, TableError>, Vec<(f64, f64)>) {
+    let mut ss = 0.0;
+    let mut knots = 0usize;
+    let mut on = Vec::new();
+    for (lo, hi) in covered(rest, &full.span) {
+        let Some(span) = stretch_span(lo, hi, &full.span) else {
+            continue;
+        };
+        let refit = match postable::fit_pooled(&inside(rest, &span), &span, SMOOTH_WEIGHT) {
+            Ok(r) => r,
+            Err(e) => return (Err(e), on),
+        };
+        let at = Table {
+            span,
+            angle: span.knots().iter().map(|&x| full.angle_at(x)).collect(),
+        };
+        match postable::repeat(&refit.table, &at) {
+            Ok(r) => {
+                ss += r.line_out * r.line_out * span.count() as f64;
+                knots += span.count();
+                on.push((span.lo(), span.hi()));
+            }
+            Err(e) => return (Err(e), on),
+        }
+    }
+    if knots == 0 {
+        return (Err(TableError::NoSpan), on);
+    }
+    (Ok((ss / knots as f64).sqrt()), on)
+}
+
+/// `segs` cut to the samples inside `span`, pieces with under two left
+/// out.
+fn inside(segs: &[Segment], span: &Span) -> Vec<Segment> {
+    segs.iter()
+        .filter_map(|s| {
+            let keep: Vec<usize> = (0..s.x.len())
+                .filter(|&j| s.x[j] >= span.lo() && s.x[j] <= span.hi())
+                .collect();
+            (keep.len() >= 2).then(|| Segment {
+                x: keep.iter().map(|&j| s.x[j]).collect(),
+                y: keep.iter().map(|&j| s.y[j]).collect(),
+                ..s.clone()
+            })
+        })
+        .collect()
+}
+
+/// A stretch of counts as the grid points inside it and `within`; None
+/// under three.
+fn stretch_span(lo: f64, hi: f64, within: &Span) -> Option<Span> {
+    let span = Span {
+        k0: (lo as usize).div_ceil(GRID).max(within.k0),
+        k1: (hi as usize / GRID).min(within.k1),
+    };
+    (span.k1 >= span.k0 + 2).then_some(span)
+}
+
+/// The direction term on each stretch both directions' samples cover,
+/// each direction fitted alone there, pooled over the stretches: rms
+/// weighted by knots, the largest max, every band. A direction's own hole
+/// is never bridged by the smoothing.
+fn directions(segs: &[Segment], table: &Table) -> Result<Term, TableError> {
+    let way = |d: i8| -> Vec<Segment> { segs.iter().filter(|s| s.dir == d).cloned().collect() };
+    let (up, down) = (way(1), way(-1));
+    let (cu, cd) = (covered(&up, &table.span), covered(&down, &table.span));
+    let mut ss = 0.0;
+    let mut knots = 0usize;
+    let mut out = Term {
+        rms: 0.0,
+        max: 0.0,
+        bands: Vec::new(),
+    };
+    for &(a0, a1) in &cu {
+        for &(b0, b1) in &cd {
+            let Some(span) = stretch_span(a0.max(b0), a1.min(b1), &table.span) else {
+                continue;
+            };
+            let both = inside(segs, &span);
+            let u = postable::fit_direction(&both, 1, &span, SMOOTH_WEIGHT)?;
+            let d = postable::fit_direction(&both, -1, &span, SMOOTH_WEIGHT)?;
+            let t = postable::direction_term(&u, &d, table);
+            ss += t.rms * t.rms * span.count() as f64;
+            knots += span.count();
+            out.max = out.max.max(t.max);
+            out.bands.extend(t.bands);
+        }
+    }
+    if knots == 0 {
+        return Err(TableError::NoSpan);
+    }
+    out.rms = (ss / knots as f64).sqrt();
+    Ok(out)
+}
+
+/// The stretches of the fit's span whose samples are one fast piece's
+/// alone, counts.
+fn single_fast(pieces: &[Piece], read: &[RungSegment], span: &Span) -> Vec<(f64, f64, usize)> {
+    let n = span.count() - 1;
+    let mut by: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (k, p) in pieces.iter().enumerate() {
+        for x in &p.segment.x {
+            let i = ((x - span.lo()) / GRID as f64).floor();
+            if i >= 0.0 && (i as usize) < n && !by[i as usize].contains(&k) {
+                by[i as usize].push(k);
+            }
+        }
+    }
+    let alone = |v: &Vec<usize>| {
+        (v.len() == 1 && read[pieces[v[0]].rung].pass_kind == PassKind::Fast)
+            .then(|| read[pieces[v[0]].rung].n)
+    };
+    let mut out: Vec<(usize, usize, usize)> = Vec::new();
+    for (i, v) in by.iter().enumerate() {
+        let Some(rung) = alone(v) else { continue };
+        match out.last_mut() {
+            Some(last) if last.1 + 1 == i && last.2 == rung => last.1 = i,
+            _ => out.push((i, i, rung)),
+        }
+    }
+    out.iter()
+        .map(|&(a, b, rung)| {
+            (
+                span.lo() + (a * GRID) as f64,
+                span.lo() + ((b + 1) * GRID) as f64,
+                rung,
+            )
+        })
+        .collect()
 }
 
 /// Two same-direction rungs' ripple cycles over the counts they share.
@@ -1866,6 +2041,93 @@ pub struct Cycles {
     pub a: usize,
     pub b: usize,
     pub agree: Agreement,
+}
+
+/// One segment of the fit: a fast rung, or a stretch of a slow one.
+#[derive(Clone, Debug)]
+pub struct Piece {
+    /// The rung's place in [`TableRead::rungs`].
+    pub rung: usize,
+    pub segment: Segment,
+    /// A slow piece with no fast sample over its counts: the table rests
+    /// on the slow passes there.
+    pub slow_only: bool,
+}
+
+/// The pieces the fit takes. With no fast rung read every rung is taken
+/// whole. Else each fast rung whole, and of a slow rung only the samples
+/// past the fast rungs' reach at either end plus [`SLOW_OVERLAP_COUNTS`]
+/// into it, each run of them its own piece with its own offset.
+fn pieces(read: &[RungSegment]) -> (Vec<Piece>, Option<(f64, f64)>) {
+    let ok = |want: Option<bool>| {
+        read.iter()
+            .enumerate()
+            .filter_map(|(k, r)| r.read.as_ref().ok().map(|s| (k, r, s)))
+            .filter(move |(_, r, _)| want.is_none_or(|f| (r.pass_kind == PassKind::Fast) == f))
+    };
+    let fast_reach = postable::reach(
+        &ok(Some(true))
+            .map(|(_, _, s)| s.clone())
+            .collect::<Vec<_>>(),
+        1,
+    )
+    .into_iter()
+    .chain(postable::reach(
+        &ok(Some(true))
+            .map(|(_, _, s)| s.clone())
+            .collect::<Vec<_>>(),
+        -1,
+    ))
+    .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+    let Some((flo, fhi)) = fast_reach else {
+        let all = ok(None)
+            .map(|(k, _, s)| Piece {
+                rung: k,
+                segment: s.clone(),
+                slow_only: true,
+            })
+            .collect();
+        return (all, None);
+    };
+    let fast_x: Vec<f64> = ok(Some(true))
+        .flat_map(|(_, _, s)| s.x.iter().copied())
+        .collect();
+    let mut out: Vec<Piece> = ok(Some(true))
+        .map(|(k, _, s)| Piece {
+            rung: k,
+            segment: s.clone(),
+            slow_only: false,
+        })
+        .collect();
+    let keep = |x: f64| x < flo + SLOW_OVERLAP_COUNTS || x > fhi - SLOW_OVERLAP_COUNTS;
+    for (k, _, s) in ok(Some(false)) {
+        let mut i = 0;
+        while i < s.x.len() {
+            if !keep(s.x[i]) {
+                i += 1;
+                continue;
+            }
+            let j = (i..s.x.len()).find(|&j| !keep(s.x[j])).unwrap_or(s.x.len());
+            if j - i >= 2 {
+                let (lo, hi) = s.x[i..j]
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| {
+                        (l.min(v), h.max(v))
+                    });
+                out.push(Piece {
+                    rung: k,
+                    segment: Segment {
+                        x: s.x[i..j].to_vec(),
+                        y: s.y[i..j].to_vec(),
+                        ..s.clone()
+                    },
+                    slow_only: !fast_x.iter().any(|&v| lo <= v && v <= hi),
+                });
+            }
+            i = j;
+        }
+    }
+    (out, Some((flo, fhi)))
 }
 
 /// A stretch of the table only one direction's samples reach, counts.
@@ -1880,6 +2142,13 @@ pub struct OneWay {
 #[derive(Clone, Debug)]
 pub struct TableRead {
     pub rungs: Vec<RungSegment>,
+    /// What the fit takes: each fast rung whole, each slow rung's pieces
+    /// past the fast passes' reach.
+    pub pieces: Vec<Piece>,
+    /// The least and the most counts the fast rungs' samples reach.
+    pub fast_reach: Option<(f64, f64)>,
+    /// The fast rungs' share of the fit's samples.
+    pub fast_share: Option<f64>,
     pub fit: Result<PooledFit, TableError>,
     /// Counts rms at the table's mean slope.
     pub residual_counts: Option<f64>,
@@ -1893,7 +2162,23 @@ pub struct TableRead {
     pub one_way: Vec<OneWay>,
     /// Counts a degree and its source.
     pub scale: Option<(f64, &'static str)>,
+    /// Both scales, reported: the ripple's at a stated or derived
+    /// ripple_per_rev, and the stops' span over the travel.
+    pub scales: Option<Scales>,
+    /// Stretches whose samples are one fast rung's alone: counts and the
+    /// rung.
+    pub single_fast: Vec<(f64, f64, usize)>,
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct Scales {
+    /// Counts a degree, the ripple_per_rev used and how it was had.
+    pub ripple: Option<(f64, u32, &'static str)>,
+    pub travel: f64,
+}
+
+pub const RIPPLE_STATED: &str = "the nameplate's ripple_per_rev";
+pub const RIPPLE_DERIVED: &str = "derived: the whole number of ripple cycles a motor revolution nearest the table's cycles over the stops' span, the nameplate's travel_deg and gear_ratio";
 
 /// The capture's reading: the slots, the table and every check.
 pub struct Judged {
@@ -2053,11 +2338,15 @@ pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg
         .iter()
         .filter_map(|r| r.read.as_ref().ok().map(|s| (r, s)))
         .collect();
-    let segs: Vec<Segment> = used.iter().map(|(_, s)| (*s).clone()).collect();
+    let (taken, fast_reach) = pieces(&read);
+    let segs: Vec<Segment> = taken.iter().map(|p| p.segment.clone()).collect();
     let span = postable::pooled_span(&segs);
     let fit = span.and_then(|sp| postable::fit_pooled(&segs, &sp, SMOOTH_WEIGHT));
     let mut t = TableRead {
         rungs: Vec::new(),
+        pieces: Vec::new(),
+        fast_reach,
+        fast_share: None,
         fit: fit.clone(),
         residual_counts: None,
         points: None,
@@ -2068,6 +2357,8 @@ pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg
         term: Err(TableError::NoSpan),
         one_way: Vec::new(),
         scale: None,
+        scales: None,
+        single_fast: Vec::new(),
     };
     for (i, (a, sa)) in used.iter().enumerate() {
         for (b, sb) in &used[i + 1..] {
@@ -2091,7 +2382,19 @@ pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg
         t.valid = Some(pos_lut::validate(&full, c.raw_min, c.raw_max));
         t.gains = Some(postable::gains(&points));
         t.points = Some(points);
-        for (k, (r, _)) in used.iter().enumerate() {
+        let on_span = |s: &Segment| {
+            s.x.iter()
+                .filter(|&&v| v >= span.lo() && v <= span.hi())
+                .count()
+        };
+        let fast: usize = taken
+            .iter()
+            .filter(|p| read[p.rung].pass_kind == PassKind::Fast)
+            .map(|p| on_span(&p.segment))
+            .sum();
+        t.fast_share = Some(fast as f64 / f.samples.max(1) as f64);
+        for (k, p) in taken.iter().enumerate() {
+            let r = &read[p.rung];
             if r.pass_kind != PassKind::Fast {
                 continue;
             }
@@ -2101,30 +2404,39 @@ pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg
                 .filter(|(j, _)| *j != k)
                 .map(|(_, s)| s.clone())
                 .collect();
-            let moved = postable::fit_pooled(&rest, &span, SMOOTH_WEIGHT)
-                .and_then(|o| postable::repeat(&o.table, &f.table))
-                .map(|r| r.line_out);
+            let (moved, on) = pass_out(&rest, &f.table);
             t.pass_out.push(PassOut {
                 n: r.n,
                 pass: r.pass,
                 moved,
+                on,
             });
         }
-        t.term = postable::common_span(&segs).and_then(|common| {
-            let up = postable::fit_direction(&segs, 1, &common, SMOOTH_WEIGHT)?;
-            let down = postable::fit_direction(&segs, -1, &common, SMOOTH_WEIGHT)?;
-            Ok(postable::direction_term(&up, &down, &f.table))
-        });
+        t.term = directions(&segs, &f.table);
         t.one_way = one_way(f);
+        t.single_fast = single_fast(&taken, &read, &span);
+        let travel = (c.raw_max as f64 - c.raw_min as f64) / c.travel_deg;
+        let ripple = c.gear_ratio.and_then(|g| {
+            let (n, how) = match c.ripple_per_rev {
+                Some(n) => (n, RIPPLE_STATED),
+                None => {
+                    let n = (f.table.mean_slope() * travel * 360.0 / g).round();
+                    if !(1.0..=u32::MAX as f64).contains(&n) {
+                        return None;
+                    }
+                    (n as u32, RIPPLE_DERIVED)
+                }
+            };
+            Some((f.table.scale(Some(n), Some(g))?, n, how))
+        });
+        t.scales = Some(Scales { ripple, travel });
         t.scale = match f.table.scale(c.ripple_per_rev, c.gear_ratio) {
             Some(v) => Some((v, SCALE_RIPPLE)),
-            None => Some((
-                (c.raw_max as f64 - c.raw_min as f64) / c.travel_deg,
-                SCALE_TRAVEL,
-            )),
+            None => Some((travel, SCALE_TRAVEL)),
         };
     }
     t.rungs = read;
+    t.pieces = taken;
     t
 }
 
@@ -2255,9 +2567,10 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
     let mut out = vec![check(
         FIT,
         format!(
-            "{} rungs, {} samples over {:.0}..{:.0} counts ({:.0} % of the stops' span); not read: {}",
+            "{} pieces, {} samples ({:.0} % fast) over {:.0}..{:.0} counts ({:.0} % of the stops' span); not read: {}",
             f.offsets.len(),
             f.samples,
+            100.0 * t.fast_share.unwrap_or(0.0),
             f.table.span.lo(),
             f.table.span.hi(),
             100.0 * f.table.span.coverage(c.raw_min, c.raw_max),
@@ -2730,7 +3043,13 @@ fn table_json(t: &TableRead) -> Value {
             "residual_cycles_rms": f.residual_rms, "residual_counts_rms": t.residual_counts,
             "counts_per_cycle": f.table.counts_per_cycle(),
             "up_reach_counts": f.up.map(|r| [r.0, r.1]), "down_reach_counts": f.down.map(|r| [r.0, r.1]),
-            "offsets_cycles": f.offsets.iter().map(|(k, c)| json!({"rung": t.rungs.iter().filter(|r| r.read.is_ok()).nth(*k).map(|r| r.n), "cycles": c})).collect::<Vec<_>>(),
+            "offsets_cycles": f.offsets.iter().map(|(k, c)| json!({"rung": t.pieces.get(*k).map(|p| t.rungs[p.rung].n), "cycles": c})).collect::<Vec<_>>(),
+            "fast_share": t.fast_share, "fast_reach_counts": t.fast_reach.map(|r| [r.0, r.1]),
+            "slow_overlap_counts": SLOW_OVERLAP_COUNTS,
+            "pieces": t.pieces.iter().map(|p| {
+                let (lo, hi) = p.segment.x.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
+                json!({"rung": t.rungs[p.rung].n, "from_counts": lo, "to_counts": hi, "samples": p.segment.x.len(), "slow_only": p.slow_only})
+            }).collect::<Vec<_>>(),
             "smooth_weight": SMOOTH_WEIGHT,
         }),
         Err(e) => json!({"refused": table_said(e)}),
@@ -2743,7 +3062,8 @@ fn table_json(t: &TableRead) -> Value {
         "gain_q4": t.gains.map(|g| [g.0, g.1]),
         "validate": t.valid.map(|v| v.map_or_else(|r| format!("{r:?}"), |()| "ok".to_string())),
         "one_fast_pass_out": t.pass_out.iter().map(|p| json!({"rung": p.n, "pass": p.pass,
-            "line_out_counts_rms": p.moved.as_ref().ok(), "why": p.moved.as_ref().err().map(table_said)})).collect::<Vec<_>>(),
+            "line_out_counts_rms": p.moved.as_ref().ok(), "why": p.moved.as_ref().err().map(table_said),
+            "judged_on_counts": p.on.iter().map(|o| [o.0, o.1]).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "cycles": t.cycles.iter().map(|k| json!({"rungs": [k.a, k.b], "from_counts": k.agree.from,
             "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b], "limit": k.agree.limit(),
             "holds": k.agree.holds()})).collect::<Vec<_>>(),
@@ -2763,12 +3083,20 @@ fn report_json(t: &TableRead) -> Value {
         "gear_play": {"counts": null, "why": GEAR_PLAY_WORDS},
         "speed_spread": t.rungs.iter().filter_map(|r| r.read.as_ref().ok().map(|s| json!({"rung": r.n,
             "spread": s.speed_spread, "warning": s.speed_spread > SPEED_SPREAD_WARN}))).collect::<Vec<_>>(),
+        "on_the_slow_passes": t.pieces.iter().filter(|p| p.slow_only).map(|p| {
+            let (lo, hi) = p.segment.x.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
+            json!({"rung": t.rungs[p.rung].n, "from_counts": lo, "to_counts": hi})
+        }).collect::<Vec<_>>(),
+        "one_fast_pass_alone": t.single_fast.iter().map(|&(lo, hi, rung)| json!({"from_counts": lo, "to_counts": hi,
+            "rung": rung, "share_of_span": t.fit.as_ref().ok().map(|f| (hi - lo) / (f.table.span.hi() - f.table.span.lo()))})).collect::<Vec<_>>(),
+        "scales": t.scales.map(|s| json!({"span_over_travel_counts_per_deg": s.travel,
+            "ripple": s.ripple.map(|(v, n, how)| json!({"counts_per_deg": v, "ripple_per_rev": n, "from": how}))})),
         "one_way": t.one_way.iter().map(|w| json!({"from_counts": w.from, "to_counts": w.to,
             "only": way(w.dir)})).collect::<Vec<_>>(),
     })
 }
 
-const GEAR_PLAY_WORDS: &str = "not read: each rung's cycle count starts at its own first crossing, so a rung's offset holds where it started, not the gear's play; the play needs one cycle count across the rungs";
+const GEAR_PLAY_WORDS: &str = "the plan takes the play from the mean difference of the pass offsets; these offsets hold each rung's own start of counting, so they cannot carry it";
 
 /// The accepted reading: the slots, the slots left 0 and why, the points
 /// by page and the scale; the report items stay under `table.report`.
@@ -2815,14 +3143,16 @@ mod tests {
     /// Where the shaft rests before the step, straight counts.
     const X_START: f64 = 2050.0;
     /// The reduced schedule the fake can run: its runaway guard stops a
-    /// sim at 10 M events, about a 400 k-row capture.
+    /// sim at 10 M events, about a 400 k-row capture. Two fast round
+    /// trips, as the plan, since the first fast pass runs at half length
+    /// and one trip leaves the middle to the slow passes.
     const REDUCED: Schedule = Schedule {
         slow_round_trips: 1,
-        fast_round_trips: 1,
+        fast_round_trips: 2,
         extra_slow_max: 0,
     };
 
-    /// A servo on 2300 counts of travel: 380 counts/s at the approach
+    /// A servo on 2000 counts of travel: 380 counts/s at the approach
     /// duty, 2200 at the fast passes' (the nameplate predicts 2667), the
     /// shaft still under about 10.8 % duty, 2 counts a commutation cycle
     /// (the slow passes' line at 190 Hz, inside the ripple band), a pot
@@ -2836,9 +3166,9 @@ mod tests {
             cycles_per_count: 0.5,
             rise_tau_s: 0.02,
             coast_tau_s: 0.03,
-            stops: (900.0, 3200.0),
+            stops: (1150.0, 3150.0),
             bend: (1900.0, 30.0, 30.0),
-            up_wave: (0.0, 1150.0),
+            up_wave: (0.0, 1000.0),
             wide: vec![(1279, 11), (2559, 6)],
             zero: 1206.0,
             level: 300.0,
@@ -3018,6 +3348,8 @@ mod tests {
                 ("slow", 1),
                 ("slow", -1),
                 ("fast", 1),
+                ("fast", -1),
+                ("fast", 1),
                 ("fast", -1)
             ]
         );
@@ -3060,7 +3392,7 @@ mod tests {
             );
         }
         let fast: Vec<&Value> = all.iter().filter(|x| x["kind"] == "fast").collect();
-        assert_eq!(fast.len(), 2);
+        assert_eq!(fast.len(), 4);
         assert_eq!(n(&fast[0]["planned"]["share"]), FIRST_FAST_SHARE);
         assert_eq!(n(&fast[1]["planned"]["share"]), 1.0);
         assert_eq!(fast[0]["duty_q15"], fast_q15(4.8, n(&res["rail_v"])));
@@ -3080,6 +3412,20 @@ mod tests {
                 / testkit::nameplate().travel_deg.expect("travel")
         );
         assert!(n(&res["table"]["fit"]["residual_counts_rms"]) <= RESIDUAL_MAX_COUNTS);
+        let rep = &res["table"]["report"];
+        let alone = rep["one_fast_pass_alone"].as_array().expect("stretches");
+        assert!(
+            !alone.is_empty() && alone.iter().all(|a| n(&a["share_of_span"]) > 0.0),
+            "{rep}"
+        );
+        for p in res["table"]["one_fast_pass_out"]
+            .as_array()
+            .expect("pass out")
+        {
+            assert!(n(&p["line_out_counts_rms"]) <= PASS_OUT_MAX_COUNTS, "{p}");
+        }
+        assert!(n(&rep["scales"]["span_over_travel_counts_per_deg"]) > 0.0);
+        assert_eq!(rep["scales"]["ripple"]["from"], RIPPLE_DERIVED);
         assert_eq!(res["table"]["report"]["directions"]["warning"], false);
         assert!(res["table"]["report"]["gear_play"]["counts"].is_null());
         assert!(n(&res["priced"]["blocked_s"]) > 0.0 && n(&res["priced"]["peak_rise_c"]) > 0.0);
@@ -3244,13 +3590,13 @@ mod tests {
         }
     }
 
-    /// The pot read 6 counts high in a wave on the up drives alone: the
+    /// The pot read 8 counts high in a wave on the up drives alone: the
     /// directions differ by over 3 counts rms, which is said as a warning,
     /// and the table is still accepted.
     #[test]
     fn a_direction_difference_over_three_counts_warns_and_still_accepts() {
         let mut m = motor();
-        m.up_wave = (6.0, 1150.0);
+        m.up_wave = (8.0, 500.0);
         let mut r = run(
             m.clone(),
             stops_json(&m, APPROACH_Q15, 0.95),
@@ -3399,14 +3745,15 @@ mod tests {
 
     /// Two up fast passes over the low half and one down pass over most
     /// of the travel: past the up passes' reach the table rests on the
-    /// down pass alone, so with it left out there is no table there and
-    /// the pass-out line refuses; the fit, its residual, the cycles and
-    /// the gains pass.
+    /// down pass alone. That stretch is named, never refused; with the
+    /// down pass left out the refit is judged on the counts the up passes
+    /// cover, and every line passes. A refit with nothing to judge on
+    /// refuses.
     #[test]
-    fn a_table_resting_on_one_fast_pass_refuses_with_it_left_out() {
+    fn a_stretch_resting_on_one_fast_pass_is_named_and_the_rest_judged() {
         let m = motor();
-        let (up_a, up_b) = (fast_rows(&m, 970.0, 1, 0.5), fast_rows(&m, 970.0, 1, 0.5));
-        let down = fast_rows(&m, 3130.0, -1, 0.8);
+        let (up_a, up_b) = (fast_rows(&m, 1211.0, 1, 0.4), fast_rows(&m, 1211.0, 1, 0.4));
+        let down = fast_rows(&m, 3119.0, -1, 0.7);
         let rungs: Vec<RungRows> = [(1, 1, &up_a), (2, -1, &down), (3, 1, &up_b)]
             .iter()
             .map(|&(k, dir, rows)| RungRows {
@@ -3422,24 +3769,33 @@ mod tests {
         let c = cfg(&m);
         let t = read_table(&rungs, &slots, &c);
         let checks = table_checks(&t, &c);
-        let failed: Vec<&Check> = checks
-            .iter()
-            .filter(|c| c.verdict == Verdict::Fail)
-            .collect();
         assert!(
-            failed.len() == 1 && failed[0].name == PASS_OUT,
+            checks.iter().all(|c| c.verdict != Verdict::Fail),
             "{:?}",
             checks.iter().map(Check::said).collect::<Vec<_>>()
         );
+        let up_hi = t.rungs[0]
+            .read
+            .as_ref()
+            .expect("read")
+            .x
+            .iter()
+            .fold(0.0f64, |m, &v| m.max(v));
+        let out = t.pass_out.iter().find(|p| p.n == 2).expect("rung 2 out");
         assert!(
-            failed[0].value.contains("rung 2 out"),
-            "{}",
-            failed[0].value
+            out.moved.is_ok() && out.on.iter().all(|o| o.1 <= up_hi + 16.0),
+            "{out:?}"
+        );
+        let alone: Vec<&(f64, f64, usize)> = t.single_fast.iter().filter(|s| s.2 == 2).collect();
+        assert_eq!(alone.len(), 1, "{:?}", t.single_fast);
+        assert!(
+            alone[0].0 <= up_hi + 16.0 && alone[0].1 >= 2800.0,
+            "{alone:?}"
         );
         assert!(
-            t.pass_out.iter().filter(|p| p.moved.is_ok()).count() == 2,
-            "{:?}",
-            t.pass_out
+            pass_out(&[], &t.fit.as_ref().expect("fit").table)
+                .0
+                .is_err()
         );
     }
 

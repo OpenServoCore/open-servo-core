@@ -1,5 +1,6 @@
 //! `run`: the whole identification in one command. The measurement chain
-//! through the spins (`step spins`'s own), then, every step accepted, the
+//! through the spins (`step spins`'s own: rest, probe, stops, table,
+//! window, spins), then, every step accepted, the
 //! gather into `<run folder>/inputs/` and the tune into
 //! `<run folder>/tune/`; on the set the tune accepts, the cruise step, the
 //! gather again and the final set's check into `<run folder>/final/`

@@ -560,7 +560,7 @@ impl Envelope {
             }
             (Some(s), Some(a)) => format!("{a:.3} A, the nameplate's {} V over R", s.at_v),
             (Some(s), None) => format!(
-                "the nameplate's {} V over R, once R is measured (step 4); until then no drive",
+                "the nameplate's {} V over R, once R is measured (the probe and the stops step); until then no drive",
                 s.at_v
             ),
             (None, _) => "the nameplate states no stall row: no drive".into(),

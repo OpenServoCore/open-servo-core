@@ -1,16 +1,20 @@
 //! The gather: the results of one run folder's steps to the rules' inputs,
-//! `measured.json` and a straight position table, each value naming the
-//! result file and key it came from with that file's sha1, and a line for
-//! each value and for each input the run does not give. Pure: the results
-//! come in as bytes, the files go out as JSON.
+//! `measured.json`, the position table and the wide-code slots, each value
+//! naming the result file and key it came from with that file's sha1, and
+//! a line for each value and for each input the run does not give. The
+//! table and the slots are the table step's when the run has it accepted,
+//! built and written together (ident plan sec 2.4); else a straight table
+//! and the slots the servo holds. Pure: the results come in as bytes, the
+//! files go out as JSON.
 
 use osc_client::pos_lut::{PAGE_POINTS, PAGES};
+use osc_servo_core::adc::ADC_WIDE_SLOTS;
 use serde_json::{Map, Value, json};
 
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::set::file_sha1;
-use crate::steps::{cruise, probe, rest, stops};
+use crate::steps::{cruise, probe, rest, stops, table};
 
 /// The later steps the gather reads where a run has them.
 pub const WINDOW_STEP: &str = "window";
@@ -20,6 +24,8 @@ pub const SPINS_RESULT: &str = "results/spins.json";
 /// The friction line's source where the run has it accepted, else the
 /// spins'.
 pub const CRUISE_RESULT: &str = cruise::RESULT;
+/// The table and the slots where the run has the step accepted.
+pub const TABLE_RESULT: &str = table::RESULT;
 /// Why the cruise line is the one the loop needs over the spins'.
 const SPIN_LINE_HIGH: &str = "the spin line reads high at low speed: its spins are short, still speeding up and at the low end of the travel, and its lowest point is a fast spin, so its offset is an extrapolation";
 
@@ -57,14 +63,17 @@ pub struct RunResults {
     pub window: Option<StepResult>,
     pub spins: Option<StepResult>,
     pub cruise: Option<StepResult>,
+    pub table: Option<StepResult>,
 }
 
 /// What the gather gives: the rules' `measured.json`, the table file
-/// (`pos_lut.json`), and its lines.
+/// (`pos_lut.json`), the slots file (`wide-codes.json`) where the table
+/// step gives one, and its lines.
 #[derive(Clone, Debug)]
 pub struct Gathered {
     pub measured: Value,
     pub table: Value,
+    pub wide_codes: Option<Value>,
     pub lines: Vec<String>,
 }
 
@@ -269,6 +278,12 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         SPINS_RESULT,
         "run the spins step again",
     )?;
+    let tabled = Taken::of(
+        run.table.as_ref(),
+        table::STEP,
+        TABLE_RESULT,
+        "run the table step again",
+    )?;
 
     let mut o = Out::default();
 
@@ -385,16 +400,37 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
                     .into(),
             )
         })?;
-    let cpd = (high - low) / travel;
-    o.m.insert(
-        "table".into(),
-        json!({"counts_per_deg": cpd, "source": stops.source(&format!(
-            "the stops' span, {lo_key} up to {hi_key} down, over the nameplate's travel_deg {travel}"))}),
-    );
-    o.lines.push(format!(
-        "table straight, {cpd:.4} counts/deg: the stops' {} count span over the nameplate's {travel} deg travel",
-        high - low
-    ));
+    let measured_table = match &tabled {
+        Some(t) => Some(MeasuredTable::of(t, low, high)?),
+        None => None,
+    };
+    let cpd = match &measured_table {
+        Some(m) => {
+            o.m.insert(
+                "table".into(),
+                json!({"counts_per_deg": m.cpd, "source": m.from.source(&format!(
+                    "scale.counts_per_deg ({})", m.scale_source))}),
+            );
+            o.lines.push(format!(
+                "table from the table step, {:.4} counts/deg ({}): {} points_by_page, built against stops {low} to {high}",
+                m.cpd, m.scale_source, m.from.r.file
+            ));
+            m.cpd
+        }
+        None => {
+            let cpd = (high - low) / travel;
+            o.m.insert(
+                "table".into(),
+                json!({"counts_per_deg": cpd, "source": stops.source(&format!(
+                    "the stops' span, {lo_key} up to {hi_key} down, over the nameplate's travel_deg {travel}"))}),
+            );
+            o.lines.push(format!(
+                "table straight, {cpd:.4} counts/deg: the stops' {} count span over the nameplate's {travel} deg travel; the run holds no {TABLE_RESULT}",
+                high - low
+            ));
+            cpd
+        }
+    };
 
     let r = stops.num("estimates.r_seated_ohm.value")?;
     let sd_key = "seated.r_sd_within_groups";
@@ -526,32 +562,126 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         "breakaway_ma: not gathered, no step measures it".to_string(),
         "shelf: none, a margin record is no step of a run".into(),
         "speed_kp_verified: not gathered, `osc-ident tune` settles it".into(),
-        "wide-code slots: not gathered, the servo keeps the slots it holds".into(),
     ]);
+    o.lines.push(match &measured_table {
+        Some(m) => format!(
+            "wide-code slots {:?}: from {} slots, written with its table",
+            m.slots, m.from.r.file
+        ),
+        None => format!(
+            "wide-code slots: not gathered, the servo keeps the slots it holds; the run holds no {TABLE_RESULT}"
+        ),
+    });
 
     let mut inputs = Map::new();
     inputs.insert(
         "stops".into(),
         json!({"raw_min": low as i64, "raw_max": high as i64, "from": stops.r.file, "sha1": stops.r.sha1}),
     );
-    inputs.insert(
-        "travel_deg".into(),
-        json!({"value": travel, "from": "the nameplate's travel_deg"}),
-    );
-    let table = json!({
-        "format": TABLE_FORMAT,
-        "inputs": inputs,
-        "target": {
-            "counts_per_deg": cpd,
-            "line": "straight between the stops: every correction point 0, the raw count is the table's count",
-        },
-        "points_by_page": vec![vec![0i16; PAGE_POINTS]; PAGES],
-    });
+    let (table, wide_codes) = match &measured_table {
+        Some(m) => {
+            inputs.insert(
+                "table".into(),
+                json!({"from": m.from.r.file, "sha1": m.from.r.sha1}),
+            );
+            (
+                json!({
+                    "format": TABLE_FORMAT,
+                    "inputs": inputs,
+                    "target": {
+                        "counts_per_deg": m.cpd,
+                        "source": m.from.source(&format!("scale.counts_per_deg ({})", m.scale_source)),
+                        "line": "the table step's ripple table, pinned so both stops map to themselves",
+                    },
+                    "points_by_page": m.pages,
+                    "source": m.from.source("points_by_page"),
+                }),
+                Some(json!({"slots": m.slots, "source": m.from.source("slots")})),
+            )
+        }
+        None => {
+            inputs.insert(
+                "travel_deg".into(),
+                json!({"value": travel, "from": "the nameplate's travel_deg"}),
+            );
+            (
+                json!({
+                    "format": TABLE_FORMAT,
+                    "inputs": inputs,
+                    "target": {
+                        "counts_per_deg": cpd,
+                        "line": "straight between the stops: every correction point 0, the raw count is the table's count",
+                    },
+                    "points_by_page": vec![vec![0i16; PAGE_POINTS]; PAGES],
+                }),
+                None,
+            )
+        }
+    };
     Ok(Gathered {
         measured: Value::Object(o.m),
         table,
+        wide_codes,
         lines: o.lines,
     })
+}
+
+/// What the gather takes from an accepted table step.
+struct MeasuredTable<'a> {
+    from: &'a Taken<'a>,
+    cpd: f64,
+    scale_source: String,
+    pages: Vec<Vec<i16>>,
+    slots: Vec<u8>,
+}
+
+impl<'a> MeasuredTable<'a> {
+    /// The table step's scale, points and slots, refused unless built
+    /// against the stops `low`..`high` the gather writes.
+    fn of(t: &'a Taken<'a>, low: f64, high: f64) -> Result<Self, Refused> {
+        let built = (t.num("stops_used.raw_min")?, t.num("stops_used.raw_max")?);
+        if built != (low, high) {
+            return Err(Refused(format!(
+                "{} was built against stops {} and {}, the stops step's are {low} and {high}: run the table step on this run's stops",
+                t.r.file, built.0, built.1
+            )));
+        }
+        let cpd = t.num("scale.counts_per_deg")?;
+        let scale_source = at(&t.r.doc, "scale.source")
+            .and_then(Value::as_str)
+            .ok_or_else(|| t.lacks("scale.source"))?
+            .to_string();
+        let pages: Vec<Vec<i16>> = at(&t.r.doc, "points_by_page")
+            .and_then(Value::as_array)
+            .filter(|p| p.len() == PAGES)
+            .and_then(|p| {
+                p.iter()
+                    .map(|page| {
+                        let page = page.as_array().filter(|v| v.len() == PAGE_POINTS)?;
+                        page.iter()
+                            .map(|v| v.as_i64().and_then(|v| i16::try_from(v).ok()))
+                            .collect::<Option<Vec<i16>>>()
+                    })
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| t.lacks("points_by_page"))?;
+        let slots: Vec<u8> = at(&t.r.doc, "slots")
+            .and_then(Value::as_array)
+            .filter(|v| v.len() == ADC_WIDE_SLOTS)
+            .and_then(|v| {
+                v.iter()
+                    .map(|s| s.as_u64().and_then(|s| u8::try_from(s).ok()))
+                    .collect::<Option<Vec<u8>>>()
+            })
+            .ok_or_else(|| t.lacks("slots"))?;
+        Ok(MeasuredTable {
+            from: t,
+            cpd,
+            scale_source,
+            pages,
+            slots,
+        })
+    }
 }
 
 /// A gathered file as the record's inputs folder writes one: a key a line.
