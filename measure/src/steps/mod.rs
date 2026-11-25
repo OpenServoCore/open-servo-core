@@ -13,6 +13,7 @@ pub mod seek;
 pub mod shunt;
 pub mod spins;
 pub mod stops;
+pub mod table;
 #[cfg(test)]
 pub(crate) mod testkit;
 pub mod verify;
