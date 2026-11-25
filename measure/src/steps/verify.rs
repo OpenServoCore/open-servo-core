@@ -17,7 +17,8 @@
 //! screen; no stall permit is written. Between bursts the host's
 //! watchdog reads the rows and a poll: a fault, the shaft outside the
 //! soft limits, the current over a quarter past the cap for
-//! [`CAP_S`]. "Travel" is the soft range. Every burst carries the raw
+//! [`CAP_S`]. "Travel" is the soft range, the physical stops while the
+//! soft limits are 0 / 0, off ([`travel`]). Every burst carries the raw
 //! row, the notebooks' row, so the scores are the scorecard's
 //! ([`crate::scorecard`]).
 
@@ -25,7 +26,7 @@ use std::ops::Range;
 
 use osc_client::data_state::fault;
 use osc_client::pipe::Pipe;
-use osc_servo_core::regions::config::{ConfigLoopPosition, ConfigPosSoft};
+use osc_servo_core::regions::config::{ConfigLoopPosition, ConfigPosPhys, ConfigPosSoft};
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -265,6 +266,23 @@ fn num(state: &State, d: &osc_client::descriptor::Descriptor, name: &str) -> Res
         .ok_or_else(|| Refused(format!("the state read holds no {name}")))
 }
 
+/// The travel the servo holds to, as its take resolves it: the soft
+/// limits, or the physical stops while those are 0 / 0, off.
+pub(crate) fn travel(
+    state: &State,
+    d: &osc_client::descriptor::Descriptor,
+) -> Result<ConfigPosSoft, Refused> {
+    let n = |name: &str| num(state, d, name).map(|v| v as i32);
+    let soft = ConfigPosSoft {
+        pos_min_soft_counts: n("pos_min_soft_counts")?,
+        pos_max_soft_counts: n("pos_max_soft_counts")?,
+    };
+    Ok(soft.or_stops(&ConfigPosPhys {
+        pos_min_phys_counts: n("pos_min_phys_counts")?,
+        pos_max_phys_counts: n("pos_max_phys_counts")?,
+    }))
+}
+
 /// The servo's own position estimate, rounded to the count: a `pos` read
 /// over the bus rings the pot channel a few counts off the rest.
 pub(crate) async fn theta_of<P: Pipe>(
@@ -342,7 +360,11 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
         )));
     }
     let n = |name: &str| num(&state, rig.d, name);
-    let soft = (n("pos_min_soft_counts")?, n("pos_max_soft_counts")?);
+    let held = travel(&state, rig.d)?;
+    let soft = (
+        held.pos_min_soft_counts as f64,
+        held.pos_max_soft_counts as f64,
+    );
     let travel = soft.1 - soft.0;
     if travel <= 0.0 || travel.is_nan() {
         return Err(Refused(format!(
@@ -397,10 +419,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
             accel_limit_q88: n("accel_limit_q88")? as u16,
             _rsvd_align: 0,
         },
-        soft: ConfigPosSoft {
-            pos_min_soft_counts: soft.0 as i32,
-            pos_max_soft_counts: soft.1 as i32,
-        },
+        soft: held,
         medium_hz: tick_hz / 10.0,
     };
     let mid = (soft.0 + (soft.1 - soft.0) / 2.0).floor();

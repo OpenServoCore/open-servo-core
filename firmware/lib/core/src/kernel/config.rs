@@ -12,13 +12,13 @@ use crate::estimator::{NtcCfg, ThermCfg, bemf, window};
 use crate::regions::calib::{CalibMotor, CalibThermal, addr as calib_addr};
 use crate::regions::config::{
     ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition,
-    ConfigLoopVelocity, ConfigPosSoft, ConfigThermal, addr as config_addr,
+    ConfigLoopVelocity, ConfigPosPhys, ConfigPosSoft, ConfigThermal, addr as config_addr,
 };
 use crate::{ControlTable, RegionStorageRaw, Shared};
 
-/// The kernel's inputs in the table: CONFIG from the soft limits on, CALIB
-/// up to its thermal block, one run across the region boundary.
-pub const SPAN_START: u16 = config_addr::pos_soft::POS_MIN_SOFT_COUNTS;
+/// The kernel's inputs in the table: CONFIG from the physical stops on,
+/// CALIB up to its thermal block, one run across the region boundary.
+pub const SPAN_START: u16 = config_addr::pos_phys::POS_MIN_PHYS_COUNTS;
 pub const SPAN_END: u16 = calib_addr::thermal::TH_RISE_Q016 + CalibThermal::CT_SIZE;
 const SPAN_WORDS: usize = (SPAN_END - SPAN_START) as usize / 4;
 
@@ -49,6 +49,9 @@ pub mod belt {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct KernelConfig {
+    pub pos_phys: ConfigPosPhys,
+    /// The travel the kernel holds to: the soft limits as stored, or the
+    /// physical stops while the pair is 0 / 0, off.
     pub pos_soft: ConfigPosSoft,
     pub loop_current: ConfigLoopCurrent,
     pub loop_velocity: ConfigLoopVelocity,
@@ -106,6 +109,7 @@ const _: () = {
     use core::mem::{offset_of, size_of};
     let s = SPAN_START as usize;
     assert!(s.is_multiple_of(4) && (SPAN_END as usize).is_multiple_of(4));
+    assert!(offset_of!(KernelConfig, pos_phys) + s == offset_of!(ControlTable, config.pos_phys));
     assert!(offset_of!(KernelConfig, pos_soft) + s == offset_of!(ControlTable, config.pos_soft));
     assert!(
         offset_of!(KernelConfig, loop_current) + s == offset_of!(ControlTable, config.loop_current)
@@ -130,6 +134,7 @@ const _: () = {
 impl KernelConfig {
     pub fn new() -> Self {
         Self {
+            pos_phys: ConfigPosPhys::new(),
             pos_soft: ConfigPosSoft::new(),
             loop_current: ConfigLoopCurrent::new(),
             loop_velocity: ConfigLoopVelocity::new(),
@@ -177,9 +182,10 @@ impl KernelConfig {
         self.v_floor_q15 = v;
     }
 
-    /// The span as the table holds it, then the belt, the two speeds, the
-    /// cap, the brush term, the window term's conductance, the position
-    /// reading's current terms' gains and the winding estimate's config. The caller takes it only between commits.
+    /// The span as the table holds it, then the travel, the belt, the two
+    /// speeds, the cap, the brush term, the window term's conductance, the
+    /// position reading's current terms' gains and the winding estimate's
+    /// config. The caller takes it only between commits.
     pub(super) fn take(&mut self, shared: &Shared, recip_arr_q24: u32, amps_q17: u32) {
         let src = shared
             .table
@@ -194,6 +200,7 @@ impl KernelConfig {
             // volatile, as every kernel read of a transport-owned region.
             unsafe { dst.add(i).write(src.add(i).read_volatile()) };
         }
+        self.pos_soft = self.pos_soft.or_stops(&self.pos_phys);
         let lp = &mut self.loop_position;
         let lim = &mut self.limits;
         let ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;

@@ -57,9 +57,9 @@ const ANGLE_MAX_CDEG: u16 = 170;
 const GEAR_RATIO_CENTI: u16 = 172;
 const SHUNT_R_MOHM: u16 = 176;
 const POS_MAX_SOFT_COUNTS: u16 = 44;
-/// The soft limit a wiped store boots: the board default travel, the pot's
-/// full 12-bit span.
-const DEFAULT_POS_MAX_SOFT_COUNTS: i32 = 4095;
+/// The soft limit a wiped store boots: 0, with the other at 0 off, so the
+/// physical stops are the travel.
+const DEFAULT_POS_MAX_SOFT_COUNTS: i32 = 0;
 
 /// Span word encoding, protocol sec 5.2: `[addr:10][count:6]`.
 const fn span_word(addr: u16, count: u16) -> u16 {
@@ -421,7 +421,7 @@ fn factory_wipes_the_seeded_calibration_like_hardware() {
     assert_eq!(
         read_i32(&mut c, id, POS_MAX_SOFT_COUNTS),
         DEFAULT_POS_MAX_SOFT_COUNTS,
-        "the travel limits fall back to board defaults"
+        "the soft limits fall back to off"
     );
     assert_eq!(
         read_u16(&mut c, id, SHUNT_R_MOHM),
@@ -1451,8 +1451,6 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     for (name, v) in [
         ("pos_min_phys_counts", Value::Int(5)),
         ("pos_max_phys_counts", Value::Int(4095)),
-        ("pos_min_soft_counts", Value::Int(228)),
-        ("pos_max_soft_counts", Value::Int(3872)),
         ("raw_min", Value::Uint(5)),
         ("raw_max", Value::Uint(4095)),
         ("drive_polarity", Value::Bool(true)),
@@ -1462,6 +1460,15 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     ] {
         write_field(&mut c, id, &d, name, v);
     }
+    // the soft limits in one write: the virgin servo's 0 / 0 (off) refuses
+    // either side alone
+    let soft = d.field("pos_min_soft_counts").expect("soft");
+    c.write(
+        id,
+        soft.addr,
+        &[228i32.to_le_bytes(), 3872i32.to_le_bytes()].concat(),
+    )
+    .expect("soft limits");
     // ident write: the identified set
     for (name, v) in [
         ("r_q12", seed::R_Q12),

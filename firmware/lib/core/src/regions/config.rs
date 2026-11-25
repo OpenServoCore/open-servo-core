@@ -64,8 +64,11 @@ pub struct ConfigPosPhys {
     pub pos_max_phys_counts: i32,
 }
 
-/// Inside the physical stops and the trajectory's goal range, so the kernel
-/// takes them as stored.
+/// An application's narrower travel, inside the physical stops and the
+/// trajectory's goal range, so the kernel takes them as stored; or 0 / 0,
+/// off: the kernel's take puts the physical stops in their place. Both
+/// sides go in one write, since each is checked against the other as
+/// stored.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigPosSoft {
@@ -73,15 +76,39 @@ pub struct ConfigPosSoft {
         within = (&addr::pos_phys::POS_MIN_PHYS_COUNTS, &addr::pos_phys::POS_MAX_PHYS_COUNTS),
         lt = &addr::pos_soft::POS_MAX_SOFT_COUNTS,
         within = (-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS),
+        off_pair,
     )]
     pub pos_min_soft_counts: i32,
     #[ct_field(
         within = (&addr::pos_phys::POS_MIN_PHYS_COUNTS, &addr::pos_phys::POS_MAX_PHYS_COUNTS),
         gt = &addr::pos_soft::POS_MIN_SOFT_COUNTS,
         within = (-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS),
+        off_pair,
     )]
     pub pos_max_soft_counts: i32,
 }
+
+impl ConfigPosSoft {
+    /// The travel these limits hold to: as stored, or `phys`, the physical
+    /// stops, while they are 0 / 0, off.
+    #[inline(always)]
+    pub fn or_stops(self, phys: &ConfigPosPhys) -> Self {
+        if self.pos_min_soft_counts | self.pos_max_soft_counts == 0 {
+            Self {
+                pos_min_soft_counts: phys.pos_min_phys_counts,
+                pos_max_soft_counts: phys.pos_max_phys_counts,
+            }
+        } else {
+            self
+        }
+    }
+}
+
+// `off_pair` finds each side's partner at `addr ^ 4`.
+const _: () = assert!(
+    addr::pos_soft::POS_MIN_SOFT_COUNTS.is_multiple_of(8)
+        && addr::pos_soft::POS_MAX_SOFT_COUNTS == addr::pos_soft::POS_MIN_SOFT_COUNTS + 4
+);
 
 /// Current PI gains, voltage-domain clamp + back-calc anti-windup.
 /// Gains carry i_/v_/p_ prefixes: descriptor field names are table-flat.
@@ -474,6 +501,43 @@ mod tests {
         assert_eq!(d.i_cont_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.oc_trip_counts, 1352);
+    }
+
+    /// The soft limits as one write over stops at 100..=3000: 0 / 0 is off
+    /// and taken; every other pair, one side 0 among them, as before.
+    #[test]
+    fn soft_limits_take_0_0_as_off_and_every_other_pair_by_the_rules() {
+        use control_table::{Error, RegionStorage, RegisterFile, ValidationKind};
+        let t = crate::ControlTableCell::new();
+        t.with_mut(|t| {
+            t.config.pos_phys.pos_min_phys_counts = 100;
+            t.config.pos_phys.pos_max_phys_counts = 3000;
+        });
+        let write = |lo: i32, hi: i32| {
+            let mut b = [0u8; 8];
+            b[..4].copy_from_slice(&lo.to_le_bytes());
+            b[4..].copy_from_slice(&hi.to_le_bytes());
+            t.write(addr::pos_soft::POS_MIN_SOFT_COUNTS, &b)
+        };
+        let refused = Err(Error::ValidationError(ValidationKind::Compare));
+        assert_eq!(write(0, 0), Ok(()), "off");
+        assert_eq!(write(0, 500), refused, "0 is under the low stop");
+        assert_eq!(write(500, 0), refused);
+        assert_eq!(write(200, 2800), Ok(()));
+        assert_eq!(write(2800, 200), refused);
+        assert_eq!(write(50, 2800), refused);
+        assert_eq!(write(200, 3100), refused);
+        // stops around 0: (0, 500) is a narrower travel and passes as before
+        t.with_mut(|t| t.config.pos_phys.pos_min_phys_counts = -100);
+        assert_eq!(write(0, 500), Ok(()));
+        assert_eq!(write(-50, 0), Ok(()));
+        assert_eq!(write(0, 0), Ok(()), "off");
+        // one side to 0 alone is checked against the stored other side
+        assert_eq!(write(200, 2800), Ok(()));
+        assert_eq!(
+            t.write(addr::pos_soft::POS_MAX_SOFT_COUNTS, &0i32.to_le_bytes()),
+            refused
+        );
     }
 
     #[test]

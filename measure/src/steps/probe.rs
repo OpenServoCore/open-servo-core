@@ -992,9 +992,7 @@ async fn body<P: Pipe>(
         ledger.keep(rig.c, rig.id, rig.d, name).await?;
     }
     write(rig, "current_limit_counts", &[0, 0]).await?;
-    let [lo, hi] = b.soft.clone();
-    write(rig, "pos_min_soft_counts", &lo).await?;
-    write(rig, "pos_max_soft_counts", &hi).await?;
+    write(rig, "pos_min_soft_counts", &b.soft.concat()).await?;
     write(rig, "mode", &[open_loop]).await?;
     write(rig, "goal_duty", &[0, 0]).await?;
     write(rig, "bus_deadman_ticks", &b.deadman_ticks.to_le_bytes()).await?;

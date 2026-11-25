@@ -205,6 +205,34 @@ fn a_missing_input_holds_the_field_and_names_it() {
     assert!(refused(&build(&i), "v_kp_q88").contains("only lowers it"));
 }
 
+/// The soft limits are an application's: a margin share of 0, or none,
+/// leaves both at 0, off, whatever the stops; a share over 0 sits them
+/// that share of the span inside each stop, as the set of record.
+#[test]
+fn no_soft_margin_leaves_the_soft_limits_off() {
+    for share in [None, Some(0.0)] {
+        let mut i = inputs();
+        i.policy.soft_margin_share = share;
+        let set = build(&i);
+        assert_eq!(bound(&set, "pos_min_soft_counts"), 0, "{share:?}");
+        assert_eq!(bound(&set, "pos_max_soft_counts"), 0, "{share:?}");
+        assert_eq!(bound(&set, "pos_min_phys_counts"), 82);
+        assert_eq!(bound(&set, "pos_max_phys_counts"), 3792);
+        i.measured.stops = None;
+        let set = build(&i);
+        assert_eq!(bound(&set, "pos_min_soft_counts"), 0, "no stops needed");
+        assert_eq!(bound(&set, "pos_max_soft_counts"), 0, "no stops needed");
+    }
+    let set = build(&inputs());
+    assert_eq!(bound(&set, "pos_min_soft_counts"), 314);
+    assert_eq!(bound(&set, "pos_max_soft_counts"), 3560);
+    let mut i = inputs();
+    i.policy.soft_margin_share = Some(0.125);
+    let set = build(&i);
+    assert_eq!(bound(&set, "pos_min_soft_counts"), 82 + 464);
+    assert_eq!(bound(&set, "pos_max_soft_counts"), 3792 - 464);
+}
+
 #[test]
 fn field_formats_match_the_descriptor() {
     #[derive(Deserialize)]

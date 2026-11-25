@@ -125,7 +125,8 @@ impl Winding {
         let mut limits = LimitState::new();
         let mut lim = lim;
         lim.i_cont_counts = i_cont_or_cap(&lim);
-        let fold = limits.fold(&FoldIn::default(), &lim, &t.config.pos_soft);
+        let travel = t.config.pos_soft.or_stops(&t.config.pos_phys);
+        let fold = limits.fold(&FoldIn::default(), &lim, &travel);
         t.telemetry.tick.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
         t.telemetry.estimates.i_lim_counts = fold.lim;

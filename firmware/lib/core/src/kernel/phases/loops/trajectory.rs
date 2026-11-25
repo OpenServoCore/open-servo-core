@@ -38,7 +38,8 @@ const WALL_RAMP_SHIFT: u32 = 4;
 /// The profile reads CONFIG `loop_position` and `pos_soft` as the take
 /// resolved them: the move speed at most the ceiling, the table rules
 /// holding the ceiling under [`VEL_CAP_CPS`] and the soft limits ordered
-/// inside [`GOAL_LIM_COUNTS`]. The cap and the goal bound apply again at
+/// inside [`GOAL_LIM_COUNTS`], or, while they are 0 / 0, off, the physical
+/// stops in their place. The cap and the goal bound apply again at
 /// the use, constant compares, so a corrupt table stays bounded and
 /// panic-free. This is the move speed, the Position profile's cruise.
 pub(in crate::kernel) fn vel_cap(lp: &ConfigLoopPosition) -> i32 {

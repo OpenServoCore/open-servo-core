@@ -47,6 +47,9 @@ struct FieldAttrs {
     access: AccessMode,
     compares: Vec<(CmpOp, Expr)>,
     abs: bool,
+    /// Every compare also passes while the field and its pair partner
+    /// (`rules::SPEC_OFF_PAIR`) both read 0.
+    off_pair: bool,
     hook: Option<Path>,
 }
 
@@ -57,6 +60,7 @@ impl Default for FieldAttrs {
             access: AccessMode::Rw,
             compares: Vec::new(),
             abs: false,
+            off_pair: false,
             hook: None,
         }
     }
@@ -138,6 +142,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             ));
         }
 
+        if attrs.off_pair && attrs.compares.is_empty() {
+            return Err(syn::Error::new(
+                name.span(),
+                "`off_pair` escapes the field's compares; it has none",
+            ));
+        }
+
         if attrs.skip {
             continue;
         }
@@ -158,6 +169,9 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     let op_const = op.const_tokens();
                     let mut spec =
                         quote!(::control_table::rules::spec(#width, #signed, #abs, #op_const));
+                    if attrs.off_pair {
+                        spec.extend(quote!(| ::control_table::rules::SPEC_OFF_PAIR));
+                    }
                     let val = if let CmpOp::Within = op {
                         let (lo, hi) = within_pair(expr)?;
                         let (lo_reg, lo) = build_rule_val(lo);
@@ -391,6 +405,9 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 Ok(())
             } else if m.path.is_ident("abs") {
                 out.abs = true;
+                Ok(())
+            } else if m.path.is_ident("off_pair") {
+                out.off_pair = true;
                 Ok(())
             } else if m.path.is_ident("access") {
                 let val = m.value()?;

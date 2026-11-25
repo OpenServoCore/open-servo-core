@@ -79,8 +79,8 @@ pub struct ControlTable {
 }
 
 impl ControlTableCell {
-    /// Soft limits init to physical limits per control-table doc.
-    /// Caller must be sole writer (install-time, pre-IRQ).
+    /// The soft limits stay 0 / 0, off. Caller must be sole writer
+    /// (install-time, pre-IRQ).
     /// `v_undervolt_counts` is `config::DEFAULT_V_UNDERVOLT_MV` through the
     /// board's terminal divider (`config::vmotor_counts`), `rail_fold_q8`
     /// `config::DEFAULT_RAIL_SOURCE_MOHM` through both chains
@@ -104,8 +104,6 @@ impl ControlTableCell {
             let cfg = &mut t.config;
             cfg.pos_phys.pos_min_phys_counts = defaults.pos_min_phys_counts;
             cfg.pos_phys.pos_max_phys_counts = defaults.pos_max_phys_counts;
-            cfg.pos_soft.pos_min_soft_counts = defaults.pos_min_phys_counts;
-            cfg.pos_soft.pos_max_soft_counts = defaults.pos_max_phys_counts;
             cfg.common.id = defaults.id;
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;

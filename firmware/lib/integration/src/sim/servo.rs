@@ -71,8 +71,8 @@ pub const DEV_V006_I_SETTLE_GAIN: SettleGain = SettleGain {
     ],
 };
 
-/// Board travel the config defaults seed (the v006 pot's 12-bit span): what
-/// the soft limits fall back to when a wiped store boots.
+/// Board travel the config defaults seed (the v006 pot's 12-bit span): the
+/// physical stops a wiped store boots, with the soft limits off.
 const PHYS_MAX_COUNTS: i32 = 4095;
 
 pub struct SimServo {

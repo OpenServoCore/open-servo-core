@@ -6316,6 +6316,133 @@ fn openloop_held_at_the_soft_wall_never_stalls() {
     assert_eq!(k.fast.duty_q15, 0);
 }
 
+/// The physical stops the off pins run against.
+const STOP_LO: i32 = 500;
+const STOP_HI: i32 = 3000;
+
+/// Soft limits 0 / 0, off, between the stops: the seed with the stops in
+/// place of the soft limits.
+fn seed_soft_off(sh: &Shared) {
+    seed(sh);
+    sh.table.with_mut(|t| {
+        t.config.pos_phys.pos_min_phys_counts = STOP_LO;
+        t.config.pos_phys.pos_max_phys_counts = STOP_HI;
+        t.config.pos_soft.pos_min_soft_counts = 0;
+        t.config.pos_soft.pos_max_soft_counts = 0;
+    });
+}
+
+/// Torque on in OpenLoop at rest at `pos`, stopped ahead of the CONTROL
+/// phase as `permit_rig`.
+fn soft_off_rest(sh: &Shared, pos: u16) -> Kernel<FakeIo> {
+    seed_soft_off(sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.torque_enable = true;
+    });
+    let mut k = kernel();
+    for _ in 0..400 {
+        k.on_scan(frame(pos, BIAS), sh);
+    }
+    run_to(&mut k, sh, frame(pos, BIAS), phase::CONTROL);
+    k
+}
+
+/// With the soft limits off the endstop wall is the same wall at the
+/// physical stops: at or past a stop the current toward it is 0, the
+/// stall permit lifts it, and inside the stops the band stays open.
+#[test]
+fn off_soft_limits_wall_at_the_physical_stops() {
+    let sh = Shared::new();
+    let k = soft_off_rest(&sh, 2000);
+    assert_eq!(
+        (
+            k.cfg.pos_soft.pos_min_soft_counts,
+            k.cfg.pos_soft.pos_max_soft_counts
+        ),
+        (STOP_LO, STOP_HI),
+        "the take puts the stops in place of the soft limits"
+    );
+    assert_eq!(
+        sh.table.with(|t| t.config.pos_soft.pos_min_soft_counts | t.config.pos_soft.pos_max_soft_counts),
+        0,
+        "the table keeps the host's 0 / 0"
+    );
+    assert!(k.medium.i_band.lo < 0 && k.medium.i_band.hi > 0);
+    assert_eq!(limit_flags(&sh), 0);
+
+    for (pos, top) in [
+        (STOP_HI as u16, true),
+        (PAST_WALL, true),
+        (STOP_LO as u16, false),
+        (STOP_LO as u16 - 100, false),
+    ] {
+        let sh = Shared::new();
+        let mut k = soft_off_rest(&sh, pos);
+        let b = k.medium.i_band;
+        let (toward, away) = if top { (b.hi, -b.lo) } else { (-b.lo, b.hi) };
+        assert_eq!(toward, 0, "at {pos}: current toward the stop");
+        assert!(away > 0, "at {pos}: the way back stays open");
+        assert_eq!(limit_flags(&sh), limits::flag::ENDSTOP, "at {pos}");
+        write_permit(&sh);
+        for _ in 0..DECIM_MED {
+            k.on_scan(frame(pos, BIAS), &sh);
+        }
+        let b = k.medium.i_band;
+        assert_eq!(
+            (b.lo, b.hi),
+            (-away, away),
+            "at {pos}: the permit lifts the wall"
+        );
+        assert_eq!(limit_flags(&sh), limits::flag::PERMIT, "at {pos}");
+    }
+}
+
+/// A stop's own commit moves the wall while the soft limits are off: the
+/// physical stops are kernel inputs.
+#[test]
+fn off_soft_limits_follow_a_stop_write() {
+    let sh = Shared::new();
+    let mut k = soft_off_rest(&sh, PAST_WALL);
+    assert_eq!(k.medium.i_band.hi, 0);
+    write_config(&sh, |t| t.config.pos_phys.pos_max_phys_counts = 3600);
+    for _ in 0..2 * DECIM_MED {
+        k.on_scan(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert_eq!(k.cfg.pos_soft.pos_max_soft_counts, 3600);
+    assert!(k.medium.i_band.hi > 0, "the wall moved out to the new stop");
+    assert_eq!(limit_flags(&sh), 0);
+}
+
+/// With the soft limits off a Position goal past a physical stop lands at
+/// the stop.
+#[test]
+fn off_soft_limits_clamp_goals_to_the_physical_stops() {
+    for (goal, stop) in [(3900, STOP_HI), (-100, STOP_LO)] {
+        let sh = Shared::new();
+        seed_soft_off(&sh);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.goal_position = goal;
+            t.config.fault_cfg.pos_error_counts = u16::MAX;
+            t.config.limits.stall_tau_trip_counts = u16::MAX;
+        });
+        let mut k = kernel();
+        let mut plant = Plant::new(2000);
+        run_plant(&mut k, &sh, &mut plant, 40_000);
+        assert_eq!(k.faults.mask(), 0, "goal {goal}");
+        assert_eq!(
+            k.medium.traj.theta_star_q16(),
+            stop << 16,
+            "goal {goal}: the profile lands at the stop"
+        );
+        assert_eq!(
+            loops::trajectory::TrajGen::goal_q16(goal, &k.cfg.pos_soft),
+            stop << 16
+        );
+    }
+}
+
 /// The same push pinned by the current limit mid travel is a stall.
 #[test]
 fn openloop_pinned_mid_travel_still_stalls() {

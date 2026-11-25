@@ -12,7 +12,7 @@
 //!    poll after it (the rail, the winding estimate and the current bias
 //!    the replay reads); then a zero goal with a burst of the stop, and
 //!    Position mode back at the estimate.
-//! 3. The goal back to the middle of the soft range, held until it
+//! 3. The goal back to the middle of the step's bound, held until it
 //!    arrives, then the way out.
 //!
 //! Every leg is sized and centered from the measured travel: the speed's
@@ -24,7 +24,9 @@
 //! first, the leg and its stop are predicted again from the last row of
 //! the leg before, and the host's time since it is read off its clock; a
 //! leg that would leave the span, or a gap over [`GAP_S`], ends the speed
-//! early. The soft limits must sit [`STOP_CLEAR_COUNTS`] inside the stops.
+//! early. The step's own bound is the soft range where an application
+//! narrowed the travel, else [`STOP_CLEAR_COUNTS`] inside the stops: soft
+//! limits on the stops, or 0 / 0, off, are a servo's normal state.
 //!
 //! The legs run under a [`VELOCITY_DEADMAN_S`] dead-man, the Position
 //! phases under the rest step's longer one. A host lost mid-leg leaves the
@@ -105,10 +107,10 @@ pub const WALL_CPS_PER_COUNT: f64 = 16.0;
 /// silent between legs, by a margin of the same size. The Position
 /// phases poll every [`POLL_S`] and run under the rest step's longer one.
 pub const VELOCITY_DEADMAN_S: f64 = DRIVE_DEADMAN_S;
-/// The soft limits lie at least this far inside the stops, and the worst
-/// case of a host lost after any leg ends at least this far inside them:
-/// the wall ramp stops the reference at a soft limit, and the shaft's
-/// following error and coast need room past it.
+/// The step's bound lies at least this far inside the stops, and the
+/// worst case of a host lost after any leg ends at least this far inside
+/// them: the wall ramp stops the reference at a soft limit only, so where
+/// the soft limits sit on the stops the plan alone keeps the room.
 pub const STOP_CLEAR_COUNTS: f64 = 100.0;
 /// A stops result for the travel agrees with the installed set's raw_min
 /// and raw_max to this share of the set's span, or it is another servo's
@@ -471,7 +473,7 @@ struct Before {
     enable_rows: u16,
     bursts: Vec<(u16, u16)>,
     bias: f64,
-    /// The soft range's middle, where the step ends.
+    /// The middle of the step's bound, where the step ends.
     mid: f64,
     /// The rows and polls stay inside the widest span a speed plans in.
     watch_span: (f64, f64),
@@ -570,7 +572,11 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
     let mode = |name: &str| mode_value(rig.d, name).map_err(|h| Refused(h.why()));
     let (position_mode, velocity_mode) = (mode("Position")?, mode("Velocity")?);
     let n = |name: &str| num(&state, rig.d, name);
-    let soft = (n("pos_min_soft_counts")?, n("pos_max_soft_counts")?);
+    let held = verify::travel(&state, rig.d)?;
+    let soft = (
+        held.pos_min_soft_counts as f64,
+        held.pos_max_soft_counts as f64,
+    );
     if soft.1 <= soft.0 {
         return Err(Refused(format!(
             "the soft range {}..{} is empty",
@@ -638,9 +644,13 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
             stops.0, stops.1
         )));
     }
-    if soft.0 < stops.0 + STOP_CLEAR_COUNTS || soft.1 > stops.1 - STOP_CLEAR_COUNTS {
+    let bound = (
+        soft.0.max(stops.0 + STOP_CLEAR_COUNTS),
+        soft.1.min(stops.1 - STOP_CLEAR_COUNTS),
+    );
+    if bound.1 <= bound.0 {
         return Err(Refused(format!(
-            "the soft limits {:.0}..{:.0} are not {STOP_CLEAR_COUNTS:.0} counts inside the stops {:.0}..{:.0} ({travel_from}): the wall ramp at a soft limit is the only bound on a leg in flight, so a cruise needs room between it and the stop; install a set whose soft limits sit inside the travel",
+            "the soft range {:.0}..{:.0} leaves nothing {STOP_CLEAR_COUNTS:.0} counts inside the stops {:.0}..{:.0} ({travel_from})",
             soft.0, soft.1, stops.0, stops.1
         )));
     }
@@ -704,13 +714,13 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
     let deadman_ticks = ticks_for(rest::DEADMAN_S, tick_hz)?;
     let velocity_deadman_ticks = ticks_for(VELOCITY_DEADMAN_S, tick_hz)?;
     let pos = verify::theta_of(rig.c, rig.id, rig.d).await? as f64;
-    let edge = EDGE_SHARE * (soft.1 - soft.0);
-    if pos < soft.0 + edge || pos > soft.1 - edge {
+    let edge = EDGE_SHARE * (bound.1 - bound.0);
+    if pos < bound.0 + edge || pos > bound.1 - edge {
         return Err(Refused(format!(
-            "the shaft reads {pos:.0} counts, within {:.0}% of the travel ({edge:.0} counts) of a soft limit ({:.0}..{:.0}): turn the horn toward the middle with torque off",
+            "the shaft reads {pos:.0} counts, within {:.0}% of the travel ({edge:.0} counts) of its bound ({:.0}..{:.0}): turn the horn toward the middle with torque off",
             100.0 * EDGE_SHARE,
-            soft.0,
-            soft.1
+            bound.0,
+            bound.1
         )));
     }
     let bias = read_word(rig, "current_bias_counts").await? as f64;
@@ -736,8 +746,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
             (a.min(p.span.0), b.max(p.span.1))
         });
     let watch_span = (
-        watch_span.0.min(soft.0 + edge),
-        watch_span.1.max(soft.1 - edge),
+        watch_span.0.min(bound.0 + edge),
+        watch_span.1.max(bound.1 - edge),
     );
     Ok(Before {
         servo: meta::servo(&state, rig.d, &line),
@@ -780,7 +790,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
         enable_rows,
         bursts,
         bias,
-        mid: (soft.0 + (soft.1 - soft.0) / 2.0).floor(),
+        mid: (bound.0 + (bound.1 - bound.0) / 2.0).floor(),
         watch_span,
     })
 }
@@ -1813,9 +1823,9 @@ mod tests {
         );
     }
 
-    /// Soft limits out past the stops, which the step refuses before any
-    /// write: the plan alone then still keeps a lost host's shaft clear of
-    /// the stops, the top speed shortened or left out for it.
+    /// Soft limits out past the stops (0 / 0, off, over stops measured
+    /// inside the physical ones): the plan alone keeps a lost host's shaft
+    /// clear of the stops, the top speed shortened or left out for it.
     #[test]
     fn soft_limits_outside_the_stops_leave_the_runaway_bound() {
         let g = Geometry {
@@ -1834,6 +1844,30 @@ mod tests {
         assert!(cut, "{p:?}");
         if let Some(l) = p.left_out.iter().find(|l| l.cps == 4025.0) {
             assert!(l.why.contains("host lost"), "{}", l.why);
+        }
+    }
+
+    /// Soft limits on the stops, as a share of 0 used to leave them, and
+    /// 0 / 0, off, over the set's own stops: the plan runs, every leg's
+    /// span [`GUARD_COUNTS`] and every lost host [`STOP_CLEAR_COUNTS`]
+    /// inside the stops.
+    #[test]
+    fn soft_limits_on_the_stops_keep_the_guard() {
+        for soft in [(110.0, 3730.0), (82.0, 3792.0)] {
+            let g = Geometry { soft, ..mg90d() };
+            let p = plan(&g);
+            assert!(!p.speeds.is_empty(), "{soft:?}: {p:?}");
+            for s in &p.speeds {
+                assert!(
+                    s.span.0 >= g.stops.0 + GUARD_COUNTS && s.span.1 <= g.stops.1 - GUARD_COUNTS,
+                    "{s:?}"
+                );
+                assert!(s.extent.0 >= s.span.0 && s.extent.1 <= s.span.1, "{s:?}");
+                assert!(
+                    s.runaway.0 >= g.clear().0 && s.runaway.1 <= g.clear().1,
+                    "{s:?}"
+                );
+            }
         }
     }
 

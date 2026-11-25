@@ -768,6 +768,40 @@ mod probe {
         ends(&mut c, &before, &p);
     }
 
+    /// Soft limits 0 / 0, off: the step widens them to the physical range
+    /// in one write and the way out puts 0 / 0 back in one write, neither
+    /// a side alone the servo would refuse.
+    #[test]
+    fn soft_limits_off_go_out_and_back_whole() {
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        block_on(c.write(ID, SOFT, &[0; 8])).expect("soft limits off");
+        let phys = block_on(c.read(ID, 0x020, 8)).expect("stops");
+        writes.borrow_mut().clear();
+        let before = table_bytes(&mut c);
+        assert_eq!(before[0], [0; 8]);
+        let p = probe_on(
+            &mut c,
+            &nameplate(),
+            Some(&thermal()),
+            &rest,
+            &AtomicBool::new(true),
+            &mut MemSink::default(),
+        )
+        .expect("starts");
+        assert_eq!(p.ended.way, Way::Interrupted, "{:?}", p.ended.why);
+        let soft: Vec<Vec<u8>> = writes
+            .borrow()
+            .iter()
+            .filter(|(a, _)| (SOFT..SOFT + 8).contains(a))
+            .map(|(a, b)| {
+                assert_eq!(*a, SOFT, "a soft limit written alone");
+                b.clone()
+            })
+            .collect();
+        assert_eq!(soft, [phys, vec![0; 8]]);
+        ends(&mut c, &before, &p);
+    }
+
     /// The flag set before the first burst: the step stops there, no burst
     /// armed, through the way out.
     #[test]

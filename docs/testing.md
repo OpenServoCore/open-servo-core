@@ -166,6 +166,18 @@ The lease and the flags (`core/src/kernel/tests.rs`,
   wall, permit with the endstop dropped, the goal capping a Velocity
   drive and not an OpenLoop one, a long hold over `i_cont` folding
   nothing, the rail fold binding on a sag into its band.
+- `off_soft_limits_wall_at_the_physical_stops` - soft limits 0 / 0 are
+  off: the take holds the physical stops in their place, at or past a
+  stop the current toward it is 0 and the endstop flag set, the permit
+  lifts it, and the table keeps 0 / 0.
+- `off_soft_limits_follow_a_stop_write` - a write to a physical stop
+  alone moves the wall while the soft limits are off.
+- `off_soft_limits_clamp_goals_to_the_physical_stops` - a Position goal
+  past either stop lands the profile at the stop.
+- `soft_limits_take_0_0_as_off_and_every_other_pair_by_the_rules`
+  (`core/src/regions/config.rs`) - 0 / 0 is accepted in one write; every
+  other pair, one side 0 among them, passes or fails the stops and order
+  rules as before.
 - `permit_write_bumps_the_generation_only_when_set` - only a committed
   true with torque on grants; a torque-off request, false, a span that
   misses the byte and a staged HOLD write do not, and one span over

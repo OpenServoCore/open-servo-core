@@ -394,7 +394,7 @@ async fn put<P: Pipe>(c: &mut Client<P>, id: Id, f: &Field, bytes: &[u8]) -> Res
         Err(Error::Servo(_)) => return Ok(false),
         Err(e) => return Err(e.into()),
     }
-    let back = c.read(id, f.addr, f.width).await?;
+    let back = c.read(id, f.addr, bytes.len() as u16).await?;
     if back != bytes {
         return Err(Refused(format!(
             "{}: wrote {}, read back {}",
@@ -404,6 +404,47 @@ async fn put<P: Pipe>(c: &mut Client<P>, id: Id, f: &Field, bytes: &[u8]) -> Res
         )));
     }
     Ok(true)
+}
+
+/// Fields the servo checks side against side as stored, so a change to
+/// both goes in one write: the soft limits, whose 0 / 0, off, no side
+/// reaches alone (protocol sec 5.8).
+const PAIRS: [[&str; 2]; 1] = [["pos_min_soft_counts", "pos_max_soft_counts"]];
+
+/// The plan's fields, in address order, as writes: both sides of a pair
+/// of [`PAIRS`] one write, every other field its own.
+fn writes(fields: Vec<(&Field, Vec<u8>)>) -> Vec<Vec<(&Field, Vec<u8>)>> {
+    let mut out: Vec<Vec<(&Field, Vec<u8>)>> = Vec::new();
+    for (f, b) in fields {
+        let joins = matches!(
+            out.last().map(Vec::as_slice),
+            Some([(g, _)]) if PAIRS.iter().any(|[lo, hi]| g.name == *lo && f.name == *hi)
+                && g.addr + g.width == f.addr
+        );
+        match out.last_mut() {
+            Some(w) if joins => w.push((f, b)),
+            _ => out.push(vec![(f, b)]),
+        }
+    }
+    out
+}
+
+/// A write of [`writes`], read back: [`put`] at its first field.
+async fn put_run<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    run: &[(&Field, Vec<u8>)],
+) -> Result<bool, Refused> {
+    let Some((f, _)) = run.first() else {
+        return Ok(true);
+    };
+    put(
+        c,
+        id,
+        f,
+        &run.iter().flat_map(|(_, b)| b.clone()).collect::<Vec<u8>>(),
+    )
+    .await
 }
 
 async fn apply<P: Pipe>(
@@ -454,21 +495,26 @@ async fn apply<P: Pipe>(
             to: set.table().0.into(),
         });
     }
-    let mut pending = p.fields;
+    let mut pending = writes(p.fields);
     for last in [false, true] {
         let mut again = Vec::new();
-        for (f, b) in pending {
+        for run in pending {
             *written = true;
-            if put(c, id, f, &b).await? {
-                steps.push(field_step(f, &b));
+            if put_run(c, id, &run).await? {
+                steps.extend(run.iter().map(|(f, b)| field_step(f, b)));
             } else if last {
+                let names: Vec<&str> = run.iter().map(|(f, _)| f.name.as_str()).collect();
+                let values: Vec<String> = run
+                    .iter()
+                    .map(|(f, b)| dumps(&set::text_of(f, b)))
+                    .collect();
                 return Err(Refused(format!(
                     "{}: the servo refused {}",
-                    f.name,
-                    dumps(&set::text_of(f, &b))
+                    names.join(" and "),
+                    values.join(" and ")
                 )));
             } else {
-                again.push((f, b));
+                again.push(run);
             }
         }
         pending = again;

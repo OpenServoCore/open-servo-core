@@ -1082,8 +1082,9 @@ pub(crate) async fn correct<P: Pipe>(
 /// The open-loop setup a drive step on the stops runs under: torque off,
 /// the fields it changes kept for the way out, the probe's sign volatile
 /// where it found the stored one wrong, the peak cap unset, the soft limits out
-/// to the physical range `soft`, OpenLoop, zero duty, the step's dead-man,
-/// then torque on. Whether the sign was corrected.
+/// to the physical range `soft` in one write (each side is checked against
+/// the other, and 0 / 0, off, is no side alone), OpenLoop, zero duty, the
+/// step's dead-man, then torque on. Whether the sign was corrected.
 pub(crate) async fn open_loop<P: Pipe>(
     rig: &mut Rig<'_, P>,
     ledger: &mut Ledger,
@@ -1108,8 +1109,7 @@ pub(crate) async fn open_loop<P: Pipe>(
         correct(rig, ledger, probe, lines).await?;
     }
     write(rig, "current_limit_counts", &[0, 0]).await?;
-    write(rig, "pos_min_soft_counts", &soft[0]).await?;
-    write(rig, "pos_max_soft_counts", &soft[1]).await?;
+    write(rig, "pos_min_soft_counts", &soft.concat()).await?;
     write(rig, "mode", &[open_loop]).await?;
     write(rig, "goal_duty", &[0, 0]).await?;
     write(rig, "bus_deadman_ticks", &deadman_ticks.to_le_bytes()).await?;

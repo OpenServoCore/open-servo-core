@@ -76,6 +76,26 @@ impl fmt::Display for Exit {
     }
 }
 
+/// The kept fields as the writes that put them back: each run of fields
+/// kept one after the other at adjacent addresses goes back in one write,
+/// so a pair the servo checks side against side, the soft limits, goes
+/// back whole (protocol sec 5.8: 0 / 0 is reached in one write only).
+fn runs(fields: &[(String, u16, Vec<u8>)]) -> Vec<&[(String, u16, Vec<u8>)]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 1..=fields.len() {
+        let joins = fields.get(i).is_some_and(|(_, addr, _)| {
+            let (_, a, w) = &fields[i - 1];
+            *a as usize + w.len() == *addr as usize
+        });
+        if !joins {
+            out.push(&fields[start..i]);
+            start = i;
+        }
+    }
+    out
+}
+
 async fn put<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -154,19 +174,23 @@ pub async fn exit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, ledger: &L
         put(c, id, d, "tel_count", &[0, 0]).await,
     );
     let mut back = true;
-    for (name, addr, was) in &ledger.fields {
-        let ok = match c.write(id, *addr, was).await {
+    for run in runs(&ledger.fields) {
+        let addr = run[0].1;
+        let was: Vec<u8> = run.iter().flat_map(|f| f.2.iter().copied()).collect();
+        let ok = match c.write(id, addr, &was).await {
             Ok(()) => c
-                .read(id, *addr, was.len() as u16)
+                .read(id, addr, was.len() as u16)
                 .await
-                .is_ok_and(|b| &b == was),
+                .is_ok_and(|b| b == was),
             Err(_) => false,
         };
-        lines.push(if ok {
-            format!("{name} put back, read back")
-        } else {
-            format!("{name} did not go back")
-        });
+        for (name, _, _) in run {
+            lines.push(if ok {
+                format!("{name} put back, read back")
+            } else {
+                format!("{name} did not go back")
+            });
+        }
         back &= ok;
     }
     let mut rebooted = false;
@@ -191,5 +215,36 @@ pub async fn exit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, ledger: &L
         lines,
         torque_off,
         rebooted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runs;
+
+    #[test]
+    fn adjacent_kept_fields_go_back_in_one_write() {
+        let f = |name: &str, addr: u16, width: usize| (name.to_string(), addr, vec![0; width]);
+        let kept = [
+            f("mode", 0x1a0, 1),
+            f("current_limit_counts", 0x064, 2),
+            f("pos_min_soft_counts", 0x028, 4),
+            f("pos_max_soft_counts", 0x02c, 4),
+            f("goal_duty", 0x186, 2),
+        ];
+        let names: Vec<Vec<&str>> = runs(&kept)
+            .iter()
+            .map(|r| r.iter().map(|(n, _, _)| n.as_str()).collect())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                vec!["mode"],
+                vec!["current_limit_counts"],
+                vec!["pos_min_soft_counts", "pos_max_soft_counts"],
+                vec!["goal_duty"],
+            ]
+        );
+        assert!(runs(&[]).is_empty());
     }
 }
