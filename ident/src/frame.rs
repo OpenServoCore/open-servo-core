@@ -170,7 +170,7 @@ pub const TEL_RL: Chunks = one(telemetry::VBUS_RAW, telemetry::DUTY_TICKS);
 /// The pot alone.
 pub const TEL_POS: Chunks = one(telemetry::POS, telemetry::POS);
 
-/// A row's chunks as `addr+len` joined by `,`: `0x238+2,0x246+8`.
+/// A row's chunks as `addr+len` joined by `,`: `0x236+2,0x242+8`.
 pub fn chunks_text(chunks: &Chunks) -> String {
     let parts: Vec<String> = chunks
         .0
@@ -391,7 +391,6 @@ mod tests {
             vmotor_b: 0x0B00 + i,
             vbus_raw: 0x0C00 + i,
             ntc_raw: 0x0D00 + i,
-            vref_raw: 0x0500 + i,
             vmotor_a_trough: 0x0700 + i,
             vmotor_b_trough: 0x0800 + i,
             tick_flags: if i.is_multiple_of(2) {
@@ -400,7 +399,7 @@ mod tests {
                 0
             },
             sample_tick: i as u32,
-            _scan: [0x0900 + i; 10],
+            _scan: [0x0900 + i; 9],
         };
         (tick, 1800 + i)
     }
@@ -461,7 +460,8 @@ mod tests {
             vmotor_b: sel(t::VMOTOR_B).then_some(s.vmotor_b),
             vbus_raw: sel(t::VBUS_RAW).then_some(s.vbus_raw),
             ntc_raw: sel(t::NTC_RAW).then_some(s.ntc_raw),
-            vref_raw: sel(t::VREF_RAW).then_some(s.vref_raw),
+            // in the refs block, past every chunk these tests stream
+            vref_raw: None,
         }
     }
 
@@ -492,7 +492,7 @@ mod tests {
         assert!(has(TEL_RAW, &raw));
         assert_eq!(
             (TEL_RAW, TEL_RAW.row_bytes()),
-            (Chunks::two(Chunk::new(0x238, 2), Chunk::new(0x240, 10)), 12)
+            (Chunks::two(Chunk::new(0x236, 2), Chunk::new(0x23C, 10)), 12)
         );
         assert!(has(
             TEL_LADDER,
@@ -500,20 +500,20 @@ mod tests {
         ));
         assert_eq!(
             TEL_LADDER,
-            Chunks::two(Chunk::new(0x238, 2), Chunk::new(0x246, 8))
+            Chunks::two(Chunk::new(0x236, 2), Chunk::new(0x242, 8))
         );
         let rl = [DUTY_TICKS, CURRENT_RAW, VMOTOR_A, VMOTOR_B, VBUS_RAW];
         assert!(has(TEL_RL, &rl));
-        assert_eq!((TEL_RL, TEL_RL.row_bytes()), (Chunks::one(0x23C, 12), 12));
-        assert_eq!(TEL_POS, Chunks::one(0x238, 2));
+        assert_eq!((TEL_RL, TEL_RL.row_bytes()), (Chunks::one(0x238, 12), 12));
+        assert_eq!(TEL_POS, Chunks::one(0x236, 2));
     }
 
     /// The presets and the rail estimate in a second chunk decode, field
     /// for field, the bytes core's table holds at the chunks' addresses.
     #[test]
     fn every_preset_round_trips_the_core_table() {
-        let with_vbus = Chunks::two(Chunk::new(0x246, 8), span(t::VBUS_COUNTS, t::VBUS_COUNTS));
-        let flags = Chunks::two(Chunk::new(0x238, 4), span(t::TICK_FLAGS, t::TICK_FLAGS));
+        let with_vbus = Chunks::two(Chunk::new(0x242, 8), span(t::VBUS_COUNTS, t::VBUS_COUNTS));
+        let flags = Chunks::two(Chunk::new(0x236, 4), span(t::TICK_FLAGS, t::TICK_FLAGS));
         for chunks in PRESETS.into_iter().chain([with_vbus, flags]) {
             for floor in [0, 300] {
                 let frames = decode(chunks, floor, &payload(chunks, 0, false, 48, 16));
@@ -541,7 +541,7 @@ mod tests {
         assert!(window_valid(1, 0));
         // row 0's 293 is over a 160 floor and its flags agree; with the
         // flags in the row, a 300 floor does not overrule them
-        let flags = Chunks::two(Chunk::new(0x246, 2), span(t::TICK_FLAGS, t::TICK_FLAGS));
+        let flags = Chunks::two(Chunk::new(0x242, 2), span(t::TICK_FLAGS, t::TICK_FLAGS));
         let p = payload(flags, 0, true, 0, 1);
         assert!(decode(flags, 300, &p)[0].window_valid);
         let p = payload(TEL_RAW, 0, true, 0, 1);

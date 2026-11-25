@@ -1,12 +1,12 @@
 //! The position table from the motor's commutation ripple: on open-loop
 //! one-way rungs the ripple counts the motor's turn, so the pot read
 //! against it gives the pot's shape with no other sensor. Each rung's
-//! crossings are the ruler; each direction is fitted alone on the
-//! firmware's 16-count grid (one offset a rung, a second-difference
-//! penalty); the table is the mean of the two shapes on the counts both
-//! directions cover, continued straight to the stops and pinned so both
-//! map to themselves. Angles are in commutation cycles, rising with the
-//! pot.
+//! crossings are the ruler. The table is one fit over every rung of both
+//! directions on the firmware's 16-count grid (one offset a rung, a
+//! second-difference penalty), continued straight to the stops and pinned
+//! so both map to themselves. Each direction fitted alone, and the mean of
+//! the two shapes, are the report's measure of how far the directions
+//! differ. Angles are in commutation cycles, rising with the pot.
 
 use osc_servo_core::adc::ADC_WIDE_SLOTS;
 use osc_servo_core::pos_lut::{GRID, INTERVALS};
@@ -241,10 +241,11 @@ pub enum TableError {
     OneWay,
     /// The directions share under three grid points.
     NoSpan,
+    /// No rung of direction `dir` (0 any direction) on the span.
     NoSamples(i8),
     Singular,
-    /// `intervals` in a row without samples in direction `dir` from
-    /// `from` counts.
+    /// `intervals` in a row without samples in direction `dir` (0 the
+    /// pooled samples) from `from` counts.
     Hole {
         dir: i8,
         from: f64,
@@ -253,22 +254,19 @@ pub enum TableError {
     SpanMismatch,
 }
 
-/// The grid points strictly inside the counts both directions cover, each
-/// direction's rungs pooled.
-pub fn common_span(segments: &[Segment]) -> Result<Span, TableError> {
-    let reach = |dir: i8| {
-        segments
-            .iter()
-            .filter(|s| s.dir == dir)
-            .flat_map(|s| s.x.iter().copied())
-            .fold(None, |acc: Option<(f64, f64)>, v| {
-                Some(acc.map_or((v, v), |(l, h)| (l.min(v), h.max(v))))
-            })
-    };
-    let (Some(up), Some(down)) = (reach(1), reach(-1)) else {
-        return Err(TableError::OneWay);
-    };
-    let (lo, hi) = (up.0.max(down.0), up.1.min(down.1));
+/// The least and the most counts the `dir` rungs' samples reach.
+pub fn reach(segments: &[Segment], dir: i8) -> Option<(f64, f64)> {
+    segments
+        .iter()
+        .filter(|s| s.dir == dir)
+        .flat_map(|s| s.x.iter().copied())
+        .fold(None, |acc: Option<(f64, f64)>, v| {
+            Some(acc.map_or((v, v), |(l, h)| (l.min(v), h.max(v))))
+        })
+}
+
+/// The grid points strictly inside `lo..hi` counts.
+fn inside_span(lo: f64, hi: f64) -> Result<Span, TableError> {
     let k0 = (lo / GRID_F).ceil() as i64 + 1;
     let k1 = (hi / GRID_F).floor() as i64 - 1;
     if k0 < 0 || k1 < k0 + 2 {
@@ -278,6 +276,24 @@ pub fn common_span(segments: &[Segment]) -> Result<Span, TableError> {
         k0: k0 as usize,
         k1: k1 as usize,
     })
+}
+
+/// The grid points strictly inside the counts both directions cover, each
+/// direction's rungs pooled.
+pub fn common_span(segments: &[Segment]) -> Result<Span, TableError> {
+    let (Some(up), Some(down)) = (reach(segments, 1), reach(segments, -1)) else {
+        return Err(TableError::OneWay);
+    };
+    inside_span(up.0.max(down.0), up.1.min(down.1))
+}
+
+/// The grid points strictly inside the counts any rung covers, a rung in
+/// each direction required.
+pub fn pooled_span(segments: &[Segment]) -> Result<Span, TableError> {
+    let (Some(up), Some(down)) = (reach(segments, 1), reach(segments, -1)) else {
+        return Err(TableError::OneWay);
+    };
+    inside_span(up.0.min(down.0), up.1.max(down.1))
 }
 
 /// One direction's shape on a span.
@@ -306,16 +322,43 @@ pub fn fit_direction(
     span: &Span,
     weight: f64,
 ) -> Result<DirectionFit, TableError> {
+    let s = solve(segments, Some(dir), span, weight)?;
+    Ok(DirectionFit {
+        dir,
+        span: *span,
+        angle: s.angle,
+        offsets: s.offsets,
+        residual_rms: s.residual_rms,
+        samples: s.samples,
+        per_interval: s.per_interval,
+    })
+}
+
+struct Solved {
+    angle: Vec<f64>,
+    offsets: Vec<(usize, f64)>,
+    residual_rms: f64,
+    samples: usize,
+    per_interval: Vec<usize>,
+}
+
+/// The `dir` rungs, or every rung, with a sample on the span fitted as one.
+fn solve(
+    segments: &[Segment],
+    dir: Option<i8>,
+    span: &Span,
+    weight: f64,
+) -> Result<Solved, TableError> {
     let k = span.count();
     let inside = |v: f64| v >= span.lo() && v <= span.hi();
     let used: Vec<usize> = segments
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.dir == dir && s.x.iter().any(|&v| inside(v)))
+        .filter(|(_, s)| dir.is_none_or(|d| s.dir == d) && s.x.iter().any(|&v| inside(v)))
         .map(|(j, _)| j)
         .collect();
     if used.is_empty() {
-        return Err(TableError::NoSamples(dir));
+        return Err(TableError::NoSamples(dir.unwrap_or(0)));
     }
     let m = k + used.len() - 1;
     let mut a = vec![0.0; m * m];
@@ -372,9 +415,7 @@ pub fn fit_direction(
             ss += r * r;
         }
     }
-    Ok(DirectionFit {
-        dir,
-        span: *span,
+    Ok(Solved {
         angle,
         offsets,
         residual_rms: (ss / samples as f64).sqrt(),
@@ -391,6 +432,59 @@ pub struct Table {
     pub angle: Vec<f64>,
 }
 
+/// The table of every rung, both directions, fitted as one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PooledFit {
+    /// The first rung's level.
+    pub table: Table,
+    /// As [`DirectionFit::offsets`], over both directions.
+    pub offsets: Vec<(usize, f64)>,
+    /// Cycles rms.
+    pub residual_rms: f64,
+    pub samples: usize,
+    /// Samples in each interval.
+    pub per_interval: Vec<usize>,
+    /// [`reach`] of each direction: past one's ends the table rests on the
+    /// other alone.
+    pub up: Option<(f64, f64)>,
+    pub down: Option<(f64, f64)>,
+}
+
+/// Every rung of `segments` fitted as [`fit_direction`] fits one
+/// direction's. Refused when the pooled samples leave a hole of more than
+/// [`HOLE_MAX`] intervals inside the span.
+pub fn fit_pooled(segments: &[Segment], span: &Span, weight: f64) -> Result<PooledFit, TableError> {
+    let s = solve(segments, None, span, weight)?;
+    no_hole(0, span, &s.per_interval)?;
+    Ok(PooledFit {
+        table: Table {
+            span: *span,
+            angle: s.angle,
+        },
+        offsets: s.offsets,
+        residual_rms: s.residual_rms,
+        samples: s.samples,
+        per_interval: s.per_interval,
+        up: reach(segments, 1),
+        down: reach(segments, -1),
+    })
+}
+
+fn no_hole(dir: i8, span: &Span, per_interval: &[usize]) -> Result<(), TableError> {
+    let mut run = 0;
+    for (i, &n) in per_interval.iter().enumerate() {
+        run = if n == 0 { run + 1 } else { 0 };
+        if run > HOLE_MAX {
+            return Err(TableError::Hole {
+                dir,
+                from: span.lo() + ((i + 1 - run) * GRID) as f64,
+                intervals: run,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The mean of the two directions' shapes. Refused when either leaves a
 /// hole of more than [`HOLE_MAX`] intervals inside the span.
 pub fn mean_table(up: &DirectionFit, down: &DirectionFit) -> Result<Table, TableError> {
@@ -398,17 +492,7 @@ pub fn mean_table(up: &DirectionFit, down: &DirectionFit) -> Result<Table, Table
         return Err(TableError::SpanMismatch);
     }
     for f in [up, down] {
-        let mut run = 0;
-        for (i, &n) in f.per_interval.iter().enumerate() {
-            run = if n == 0 { run + 1 } else { 0 };
-            if run > HOLE_MAX {
-                return Err(TableError::Hole {
-                    dir: f.dir,
-                    from: f.span.lo() + ((i + 1 - run) * GRID) as f64,
-                    intervals: run,
-                });
-            }
-        }
+        no_hole(f.dir, &f.span, &f.per_interval)?;
     }
     Ok(Table {
         span: up.span,
@@ -739,6 +823,46 @@ mod tests {
         assert!(term.rms < 0.5, "{term:?}");
         assert!(agreement(&segs[0], &segs[1]).expect("overlap").holds());
         assert!(agreement(&segs[0], &segs[2]).is_none());
+    }
+
+    #[test]
+    fn the_pooled_fit_recovers_the_bend_over_both_directions() {
+        let segs = segs();
+        let span = pooled_span(&segs).expect("span");
+        let common = common_span(&segs).expect("span");
+        assert!(span.k0 < common.k0 && span.k1 > common.k1);
+        let p = fit_pooled(&segs, &span, SMOOTH_WEIGHT).expect("pooled");
+        assert_eq!(p.offsets.len(), 4);
+        assert_eq!(p.offsets[0], (0, 0.0));
+        assert!(p.residual_rms < 0.05, "{}", p.residual_rms);
+        assert_eq!((p.up, p.down), (reach(&segs, 1), reach(&segs, -1)));
+        let up = fit_direction(&segs, 1, &common, SMOOTH_WEIGHT).expect("up");
+        let down = fit_direction(&segs, -1, &common, SMOOTH_WEIGHT).expect("down");
+        let mean = mean_table(&up, &down).expect("table");
+        let rel = |t: &Table, x: f64| t.angle_at(x) - t.angle_at(common.lo());
+        let worst = common.knots().iter().fold(0.0f64, |m, &x| {
+            m.max((rel(&p.table, x) - rel(&mean, x)).abs())
+        });
+        assert!(worst < 0.05, "{worst}");
+        let holed: Vec<Segment> = segs
+            .iter()
+            .map(|s| {
+                let (x, y) =
+                    s.x.iter()
+                        .zip(&s.y)
+                        .filter(|(v, _)| !(1300.0..1400.0).contains(*v))
+                        .unzip();
+                Segment { x, y, ..s.clone() }
+            })
+            .collect();
+        assert_eq!(
+            fit_pooled(&holed, &span, SMOOTH_WEIGHT).map(|_| ()),
+            Err(TableError::Hole {
+                dir: 0,
+                from: 1312.0,
+                intervals: 5
+            })
+        );
     }
 
     #[test]

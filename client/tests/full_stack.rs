@@ -2000,7 +2000,7 @@ mod wire {
 /// ahead of the count; the tick block's kernel fields.
 const CHUNK0_ADDR: u16 = 0x1E2;
 const TEL_COUNT: u16 = 0x1EA;
-const TICK: u16 = 0x246;
+const TICK: u16 = 0x242;
 /// Duty, trough, held current and differential.
 const IDENT: Chunks = Chunks::one(TICK, 8);
 const BURST_WINDOW: Duration = Duration::from_millis(50);

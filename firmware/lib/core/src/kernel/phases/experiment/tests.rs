@@ -122,7 +122,6 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
         vmotor_a_trough: 3000,
         vmotor_b: 40,
         vmotor_b_trough: 40,
-        vref_raw: 1489,
         vbus_raw: 1100,
         ntc_raw: 2048,
     }

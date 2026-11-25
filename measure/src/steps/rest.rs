@@ -4,10 +4,11 @@
 //! The estimators are medians and spreads, no fit: each channel's mean and
 //! standard deviation, the same folded by tick modulo 16 (the frame's own
 //! pattern, the supply's read off the rail tap), the asleep and awake
-//! current zeros, the rail from `vbus_raw` with the chip supply from
-//! `vref_raw` where it is read, the board temperature through the
-//! NTC's nominal beta, and the NTC curve's four words designed from the
-//! board's parts by the stage 1 rule ([`crate::ntc`]).
+//! current zeros, the rail from `vbus_raw` with the chip supply from the
+//! reference's one boot reading (`vref_raw`, a READ) where the servo holds
+//! one, the board temperature through the NTC's nominal beta, and the NTC
+//! curve's four words designed from the board's parts by the stage 1 rule
+//! ([`crate::ntc`]).
 
 use osc_client::descriptor::Descriptor;
 use osc_client::{Client, Error, Id, pipe::Pipe};
@@ -18,7 +19,7 @@ use super::{
 };
 use crate::capture::meta;
 use crate::capture::ripple::{self, Pattern};
-use crate::capture::rows::{Layout, TelFrame};
+use crate::capture::rows::{Layout, TelFrame, telemetry::VREF_RAW};
 use crate::capture::tel::{self, Burst, Line, StreamCfg};
 use crate::envelope::{Envelope, Facts, Rung};
 use crate::guard::{self, Ledger, Way};
@@ -45,7 +46,7 @@ const ADC_TOP: f64 = 4095.0;
 const RAIL_COUNTS: f64 = 8.0;
 /// The chip's internal reference, CH32V006 datasheet nominal.
 const VREF_V: f64 = 1.2;
-/// Reads a position before and after the step is the mean of.
+/// Reads a position, or the rail tap, is the mean of.
 const POS_READS: u32 = 8;
 
 const ZERO_SD_MAX: f64 = 2.0;
@@ -58,16 +59,6 @@ const NTC_C: (f64, f64) = (-10.0, 60.0);
 const FOLD_MAX: f64 = 1.0;
 /// The most the position may move between the two seconds, counts.
 const STILL_MAX: f64 = 5.0;
-/// The raw pos band `vref_raw` reads the supply in, to about 2.5 counts at
-/// its edges, on the dev board's CH32V006. The ADC converts the reference
-/// right after the pot, and outside the band the reference reading follows
-/// the pot's code: up to 175 counts high at 3440 to 3455 (1700 for the
-/// supply's 1493 with the horn at 3510), 10 low at 512 to 527 and 22 at
-/// 262, while the supply itself, the rail and the NTC readings stay put.
-/// It guards only the chip supply figure, its frame ripple in mV and the
-/// rail's measured scale: the frame pattern comes from [`PATTERN_SOURCES`]
-/// wherever the horn rests.
-pub const VREF_POS_BAND: (f64, f64) = (700.0, 2750.0);
 
 /// The rest-row channels the supply's frame pattern is read from, first
 /// usable first. The rail tap reads a share of VSYS against VDD, so it
@@ -75,11 +66,6 @@ pub const VREF_POS_BAND: (f64, f64) = (700.0, 2750.0);
 /// pot's twin RC filter, so over a frame its pin holds and it reads the
 /// ripple too.
 pub const PATTERN_SOURCES: [&str; 2] = ["vbus_raw", "ntc_raw"];
-
-/// `vref_raw` reads the supply with the pot at `pos`.
-pub fn vref_trusted(pos: f64) -> bool {
-    (VREF_POS_BAND.0..=VREF_POS_BAND.1).contains(&pos)
-}
 
 /// The board's sense chain as the servo's CALIB holds it.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -153,7 +139,7 @@ impl Sense {
     }
 
     /// The rail behind the board's input drop, V, the measured supply in
-    /// place of the nominal when `vref_raw` is given.
+    /// place of the nominal when a `vref_raw` reading is given.
     pub fn rail_v(&self, vbus_raw: f64, vref_raw: Option<f64>) -> f64 {
         let v = vbus_raw / self.rail_counts_per_v();
         vref_raw.map_or(v, |r| v * self.vdd_v(r) / (self.vdd_mv / 1000.0))
@@ -171,35 +157,40 @@ impl Sense {
     }
 }
 
-/// The rail now, V, from a few reads of the pot, the reference and the
-/// rail tap.
+/// One READ of `vref_raw`, the chip's reference as the servo read it once
+/// at boot: the count, or why there is none.
+pub async fn boot_vref<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<u16, String> {
+    match c.read(id, VREF_RAW.addr, VREF_RAW.width as u16).await {
+        Ok(b) => match b.get(..2) {
+            Some([0, 0]) => Err("vref_raw reads 0, the servo took no reading at boot".into()),
+            Some(&[lo, hi]) => Ok(u16::from_le_bytes([lo, hi])),
+            _ => Err(format!("vref_raw came back {} B", b.len())),
+        },
+        Err(e) => Err(format!("vref_raw was not read ({e})")),
+    }
+}
+
+/// The rail now, V, from a few reads of the rail tap and the boot reading
+/// of the reference, the nominal supply without one.
 pub async fn rail_now<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     s: &Sense,
 ) -> Result<f64, Error> {
-    let lo = field(d, "pos")?.addr;
-    let (mut pos, mut vbus, mut vref) = (0.0, 0.0, 0.0);
-    for _ in 0..POS_READS {
-        let b = c.read(id, lo, 6).await?;
-        let w = |k: usize| u16::from_le_bytes([b[k], b[k + 1]]) as f64;
-        pos += w(0);
-        vref += w(2);
-        vbus += w(4);
-    }
-    let n = POS_READS as f64;
-    Ok(rail_of(s, pos / n, vref / n, vbus / n))
+    let vref = boot_vref(c, id).await.ok();
+    rail_at(c, id, d, s, vref).await
 }
 
-/// The rail from the means of `pos`, `vref_raw` and `vbus_raw`: the
-/// measured supply when the reference is trusted at `pos`, else the
-/// nominal.
-pub fn rail_of(s: &Sense, pos: f64, vref_raw: f64, vbus_raw: f64) -> f64 {
-    s.rail_v(
-        vbus_raw,
-        (vref_raw > 0.0 && vref_trusted(pos)).then_some(vref_raw),
-    )
+async fn rail_at<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    s: &Sense,
+    vref: Option<u16>,
+) -> Result<f64, Error> {
+    let vbus = mean_of(c, id, d, "vbus_raw").await?;
+    Ok(s.rail_v(vbus, vref.map(f64::from)))
 }
 
 pub(crate) async fn pos_now<P: Pipe>(
@@ -207,7 +198,17 @@ pub(crate) async fn pos_now<P: Pipe>(
     id: Id,
     d: &Descriptor,
 ) -> Result<f64, Error> {
-    let f = field(d, "pos")?;
+    mean_of(c, id, d, "pos").await
+}
+
+/// The mean of [`POS_READS`] reads of the two-byte field `name`.
+async fn mean_of<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    name: &str,
+) -> Result<f64, Error> {
+    let f = field(d, name)?;
     let mut sum = 0.0;
     for _ in 0..POS_READS {
         let b = c.read(id, f.addr, 2).await?;
@@ -347,11 +348,11 @@ pub struct Channels {
 
 pub const REST_CHANNELS: [&str; 6] = [
     "pos",
-    "vref_raw",
     "vbus_raw",
     "ntc_raw",
     "current_raw",
     "vmotor_a",
+    "vmotor_b",
 ];
 pub const RAW_CHANNELS: [&str; 6] = [
     "pos",
@@ -422,17 +423,15 @@ impl Channels {
 
     /// The frame's own pattern a channel keeps once VDD's is out: flat
     /// within a count, every channel, else warned; not judged without a
-    /// supply pattern. `vref_raw` is left out where it follows the pot's
-    /// code ([`VREF_POS_BAND`]). Never a refusal: the supply's frame
+    /// supply pattern. Never a refusal: the supply's frame
     /// ripple does not keep one shape from capture to capture, so the
     /// torque-on second can keep over a count of it against the rest
     /// second's pattern on a healthy board. A channel no row carried (NaN)
     /// is no flatness.
-    pub fn pattern_check(&self, vref_trusted: bool) -> Check {
+    pub fn pattern_check(&self) -> Check {
         let (worst, fold) = self
             .rest
             .iter()
-            .filter(|(n, _)| vref_trusted || *n != "vref_raw")
             .map(|(n, c)| (format!("rest {n}"), c.comp.fold))
             .chain(
                 self.raw
@@ -454,15 +453,10 @@ impl Channels {
                 verdict: Verdict::NotJudged,
             };
         };
-        let left_out = if vref_trusted {
-            ""
-        } else {
-            ", vref_raw left out where it follows the pot's code"
-        };
         Check {
             name: "the frame's own pattern".into(),
             value: format!(
-                "tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}) once the VDD frame ripple from {} is out{left_out}",
+                "tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}) once the VDD frame ripple from {} is out",
                 p.source
             ),
             bound,
@@ -515,6 +509,8 @@ struct Before {
     line: Line,
     sense: Sense,
     servo: Map<String, Value>,
+    /// The boot reading of the reference, or why there is none.
+    vref: Result<u16, String>,
     pos: f64,
     rail_v: f64,
     deadman_ticks: u16,
@@ -546,10 +542,11 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
             "a fault is latched (fault_flags {faults:#04x}): every burst would carry it; `osc status` names it"
         )));
     }
+    let vref = boot_vref(rig.c, rig.id).await;
     let sense = Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);
     let pos = pos_now(rig.c, rig.id, rig.d).await?;
-    let rail_v = rail_now(rig.c, rig.id, rig.d, &sense).await?;
+    let rail_v = rail_at(rig.c, rig.id, rig.d, &sense, vref.as_ref().ok().copied()).await?;
     let span = ROWS as f64 / sense.tick_hz;
     let rungs = [
         Rung::still("rest, torque off", span, pos),
@@ -571,6 +568,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
         line,
         sense,
         servo,
+        vref,
         pos,
         rail_v,
         deadman_ticks: deadman as u16,
@@ -761,26 +759,21 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         })
     };
     let pass = |ok: bool| if ok { Verdict::Pass } else { Verdict::Fail };
-    let rest_pos = stats(&rest.rows, "pos").map_or(f64::NAN, |x| x.mean);
     let ch = Channels::of(&rest.rows, &raw.rows);
     let mut lines = vec![ch.said()];
-    let band = format!(
-        "the horn is at pos {rest_pos:.0}, outside {:.0} to {:.0}, where this chip's reference reading follows the position",
-        VREF_POS_BAND.0, VREF_POS_BAND.1
-    );
-    let (r_pos, r_vref, r_vbus, r_ntc, r_zero, r_a) = (
+    let (r_pos, r_vbus, r_ntc, r_zero, r_a) = (
         ch.rest("pos"),
-        ch.rest("vref_raw").raw,
         ch.rest("vbus_raw").raw,
         ch.rest("ntc_raw").raw,
         ch.rest("current_raw"),
         ch.rest("vmotor_a"),
     );
-    let has_vref = r_vref.n > 0;
-    if !has_vref {
-        lines.push("the rest row carries no vref_raw: no chip supply figure, the rail read through the nominal vdd_mv".into());
+    let vref = b.vref.as_ref().ok().map(|&v| f64::from(v));
+    if let Err(why) = &b.vref {
+        lines.push(format!(
+            "{why}: no chip supply figure, the rail read through the nominal vdd_mv"
+        ));
     }
-    let trusted = has_vref && vref_trusted(rest_pos);
     let (w_pos, w_zero, w_a, w_b) = (
         ch.raw("pos"),
         ch.raw("current_raw"),
@@ -870,42 +863,30 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         pass(worst_bias <= BIAS_SHARE),
     );
     let vdd_bound = format!("within {:.0}% of vdd_mv {}", 100.0 * VDD_SHARE, s.vdd_mv);
-    let vdd = if !has_vref {
-        check(
-            "chip supply",
-            format!(
-                "the rest row carries no vref_raw; the nominal vdd_mv {} is used",
-                s.vdd_mv
-            ),
-            vdd_bound,
-            Verdict::NotJudged,
-        );
-        s.vdd_mv / 1000.0
-    } else if trusted {
-        let vdd = s.vdd_v(r_vref.mean);
-        let vdd_off = (vdd * 1000.0 - s.vdd_mv).abs() / s.vdd_mv;
-        check(
-            "chip supply",
-            format!(
-                "{vdd:.3} V from vref_raw {:.1}, {:.2}% off",
-                r_vref.mean,
-                100.0 * vdd_off
-            ),
-            vdd_bound,
-            pass(vdd_off <= VDD_SHARE),
-        );
-        vdd
-    } else {
-        check(
-            "chip supply",
-            format!(
-                "{band}: vref_raw {:.1} is not read as the supply; the nominal vdd_mv {} is used",
-                r_vref.mean, s.vdd_mv
-            ),
-            vdd_bound,
-            Verdict::NotJudged,
-        );
-        s.vdd_mv / 1000.0
+    let vdd = match &b.vref {
+        Ok(v) => {
+            let vdd = s.vdd_v(f64::from(*v));
+            let vdd_off = (vdd * 1000.0 - s.vdd_mv).abs() / s.vdd_mv;
+            check(
+                "chip supply",
+                format!(
+                    "{vdd:.3} V from vref_raw {v}, the boot reading, {:.2}% off",
+                    100.0 * vdd_off
+                ),
+                vdd_bound,
+                pass(vdd_off <= VDD_SHARE),
+            );
+            vdd
+        }
+        Err(why) => {
+            check(
+                "chip supply",
+                format!("{why}; the nominal vdd_mv {} is used", s.vdd_mv),
+                vdd_bound,
+                Verdict::NotJudged,
+            );
+            s.vdd_mv / 1000.0
+        }
     };
     let ntc_c = s.ntc.c_of_raw(r_ntc.mean);
     let ntc_railed = r_ntc.min <= RAIL_COUNTS || r_ntc.max >= ADC_TOP - RAIL_COUNTS;
@@ -920,7 +901,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
     );
     let cpa = s.counts_per_a();
     let room_a = (ADC_TOP - w_zero.mean) / cpa;
-    let rail = s.rail_v(r_vbus.mean, trusted.then_some(r_vref.mean));
+    let rail = s.rail_v(r_vbus.mean, vref);
     let supply = s.supply_v(rail);
     let stall = np
         .map(|n| Facts::new(n, rail))
@@ -983,37 +964,13 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             Verdict::NotJudged,
         ),
     }
-    let vref_fold = if trusted {
-        ripple::fold(&ripple::series(&rest.rows, "vref_raw"))
-    } else {
-        None
-    };
-    let ripple_mv = vref_fold.map(|p| ripple::vdd_ripple_mv_pp(&p, r_vref.mean, vdd));
     check(
         "VDD frame ripple",
-        match ripple_mv {
-            Some(mv) => {
-                format!("{mv:.2} mV pp once a 16-row frame, from vref_raw folded by tick modulo 16")
-            }
-            None if !has_vref => "no vref_raw in the rest row".into(),
-            None if trusted => "no whole vref_raw pattern".into(),
-            None => format!("{band}: no mV figure"),
-        },
+        "no mV figure: vref_raw is one boot reading, no row carries it".into(),
         "reported; every channel's share of it is taken out".into(),
         Verdict::NotJudged,
     );
-    checks.push(ch.pattern_check(trusted));
-    if has_vref && !trusted {
-        checks.push(Check {
-            name: "the reference reading".into(),
-            value: format!("{band}: the chip supply was not judged"),
-            bound: format!(
-                "run the step again with the horn inside pos {:.0} to {:.0}",
-                VREF_POS_BAND.0, VREF_POS_BAND.1
-            ),
-            verdict: Verdict::Warn,
-        });
-    }
+    checks.push(ch.pattern_check());
     let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
         checks.push(Check {
             name: name.into(),
@@ -1085,15 +1042,12 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             "tap_a_counts": est(w_a.mean, "counts", "raw row vmotor_a, torque on"),
             "tap_b_counts": est(w_b.mean, "counts", "raw row vmotor_b, torque on"),
             "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, "counts", "rest row pos, torque off, the VDD frame ripple out"),
-            "vdd_frame_ripple_mv_pp": ripple_mv.map_or(Value::Null, |mv| est(mv, "mV", "rest row vref_raw folded by tick modulo 16, reported, not judged")),
-            "vdd_v": if !has_vref {
-                Value::Null
-            } else if trusted {
-                est(vdd, "V", "rest row vref_raw, the 1.2 V reference")
-            } else {
-                est(vdd, "V", "nominal vdd_mv: the reference is not trusted at the rest position")
+            "vdd_frame_ripple_mv_pp": Value::Null,
+            "vdd_v": match vref {
+                Some(_) => est(vdd, "V", "vref_raw, the 1.2 V reference read once at boot"),
+                None => Value::Null,
             },
-            "rail_v": est(rail, "V", if trusted {
+            "rail_v": est(rail, "V", if vref.is_some() {
                 "rest row vbus_raw through the rail divider, the measured supply"
             } else {
                 "rest row vbus_raw through the rail divider, the nominal supply"
@@ -1112,7 +1066,7 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             "pattern_counts": ch.pattern.as_ref().map(|p| p.counts.to_vec()),
             "pattern_mean_counts": ch.pattern.as_ref().map(|p| p.mean),
             "pattern_passed_over": ch.passed_over,
-            "vdd_ripple_mv_pp": ripple_mv,
+            "vdd_ripple_mv_pp": Value::Null,
             "fold": ripple::FOLD,
             "phase": "tick modulo 16 from a burst's first row",
             "compensation": "each channel less its pattern_gain x pattern_counts[tick % 16]",
@@ -1145,23 +1099,23 @@ mod tests {
     /// ripple at the bench's gains, and `extra` adds a frame pattern of
     /// its own to the rest row's pos.
     fn rows(extra: impl Fn(u64) -> f64) -> (Vec<TelFrame>, Vec<TelFrame>) {
-        rows_at(2041.0, 1490.0, extra)
+        rows_at(2041.0, extra)
     }
 
-    /// [`rows`] with the pot at `pos` and the reference reading `vref`.
-    fn rows_at(pos: f64, vref: f64, extra: impl Fn(u64) -> f64) -> (Vec<TelFrame>, Vec<TelFrame>) {
+    /// [`rows`] with the pot at `pos`.
+    fn rows_at(pos: f64, extra: impl Fn(u64) -> f64) -> (Vec<TelFrame>, Vec<TelFrame>) {
         let n = |i: u64, k: u64, base: f64, g: f64| {
             (base + g * vdd(i) + 0.4 * noise(i, k)).round() as u16
         };
         let rest = (0..20_000u64)
             .map(|i| TelFrame {
                 tick: i,
-                vref_raw: Some(n(i, 1, vref, 1.0)),
                 pos: Some((pos + 1.15 * vdd(i) + extra(i) + 0.4 * noise(i, 2)).round() as u16),
                 vbus_raw: Some(n(i, 3, 1241.0, 0.73)),
                 ntc_raw: Some(n(i, 4, 2010.0, 1.59)),
                 current_raw: Some(n(i, 5, 1206.0, 0.16)),
                 vmotor_a: Some(n(i, 6, 773.0, 0.5)),
+                vmotor_b: Some(n(i, 12, 772.0, 0.5)),
                 ..TelFrame::default()
             })
             .collect();
@@ -1201,7 +1155,7 @@ mod tests {
             "the raw row by the rest's pattern: {raw_pos}"
         );
         assert_eq!(ch.rest("vbus_raw").gain, 1.0);
-        let c = ch.pattern_check(true);
+        let c = ch.pattern_check();
         assert_eq!(c.verdict, Verdict::Pass, "{}", c.value);
         assert!(c.value.contains("from vbus_raw"), "{}", c.value);
         assert_eq!(ch.said(), "the supply's frame pattern from vbus_raw");
@@ -1254,9 +1208,9 @@ mod tests {
             ch.said(),
             "no supply frame pattern (the rest row carries no vbus_raw; ntc_raw reads 3.0, within 8 counts of a converter limit): nothing taken out, every channel's gain 0"
         );
-        let c = ch.pattern_check(true);
+        let c = ch.pattern_check();
         assert_eq!(c.verdict, Verdict::NotJudged, "{}", c.value);
-        let j = judged_rows(2041.0, rest, raw);
+        let j = judged_rows(2041.0, rest, raw, Ok(1490));
         assert!(
             j.lines
                 .iter()
@@ -1273,7 +1227,7 @@ mod tests {
     fn a_frame_pattern_unlike_vdds_is_warned() {
         let own = |i: u64| 2.0 * (2.0 * core::f64::consts::PI * 3.0 * (i % 16) as f64 / 16.0).sin();
         let (rest, raw) = rows(own);
-        let c = Channels::of(&rest, &raw).pattern_check(true);
+        let c = Channels::of(&rest, &raw).pattern_check();
         assert_eq!(c.verdict, Verdict::Warn, "{}", c.value);
         assert!(c.value.contains("(rest pos)"), "{}", c.value);
     }
@@ -1330,14 +1284,20 @@ mod tests {
         }
     }
 
-    /// [`judge`] on the rows of [`rows_at`].
-    fn judged(pos: f64, vref: f64) -> Judged {
-        let (rest, raw) = rows_at(pos, vref, |_| 0.0);
-        judged_rows(pos, rest, raw)
+    /// [`judge`] on the rows of [`rows_at`], the boot reading `vref`.
+    fn judged(pos: f64, vref: Result<u16, String>) -> Judged {
+        let (rest, raw) = rows_at(pos, |_| 0.0);
+        judged_rows(pos, rest, raw, vref)
     }
 
-    /// [`judge`] on `rest` and `raw`, the horn at `pos` before the step.
-    fn judged_rows(pos: f64, rest: Vec<TelFrame>, raw: Vec<TelFrame>) -> Judged {
+    /// [`judge`] on `rest` and `raw`, the horn at `pos` before the step,
+    /// the boot reading `vref`.
+    fn judged_rows(
+        pos: f64,
+        rest: Vec<TelFrame>,
+        raw: Vec<TelFrame>,
+        vref: Result<u16, String>,
+    ) -> Judged {
         let b = Before {
             line: Line {
                 caps: 0,
@@ -1346,6 +1306,7 @@ mod tests {
             },
             sense: sense(),
             servo: Map::new(),
+            vref,
             pos,
             rail_v: 5.0,
             deadman_ticks: 10_000,
@@ -1378,126 +1339,100 @@ mod tests {
             .collect()
     }
 
+    /// The supply is the boot reading of the reference wherever the horn
+    /// rests, the top of travel included, and the rail is read through it.
     #[test]
-    fn the_reference_is_trusted_inside_its_pos_band() {
-        assert!(vref_trusted(700.0) && vref_trusted(2750.0) && vref_trusted(2041.0));
-        assert!(!vref_trusted(699.9) && !vref_trusted(2750.1));
-        assert!(!vref_trusted(f64::NAN));
-    }
-
-    /// Near the top of the pot's range the reference reads 13 % high: the
-    /// rail is the nominal supply's, not the reference's.
-    #[test]
-    fn the_rail_is_read_through_the_reference_only_inside_the_band() {
-        let s = sense();
-        assert_eq!(rail_of(&s, 3517.0, 1700.0, 1241.0), s.rail_v(1241.0, None));
-        assert_eq!(
-            rail_of(&s, 2041.0, 1495.0, 1241.0),
-            s.rail_v(1241.0, Some(1495.0))
-        );
-        assert_ne!(rail_of(&s, 2041.0, 1495.0, 1241.0), s.rail_v(1241.0, None));
-        assert_eq!(rail_of(&s, 2041.0, 0.0, 1241.0), s.rail_v(1241.0, None));
-    }
-
-    /// The horn at pos 3517, the reference reading 1700 for the supply's
-    /// 1495: the supply is not judged and the nominal one is used, the
-    /// step is not refused for it, and the frame ripple still comes out
-    /// by the rail's pattern.
-    #[test]
-    fn a_rest_outside_the_reference_band_uses_the_nominal_supply_and_still_corrects() {
-        let j = judged(3517.0, 1700.0);
-        assert!(failed(&j).is_empty(), "{:?}", failed(&j));
-        let vdd = named(&j, "chip supply");
-        assert_eq!(vdd.verdict, Verdict::NotJudged, "{}", vdd.value);
-        assert!(
-            vdd.value.contains("pos 3517") && vdd.value.contains("700 to 2750"),
-            "{}",
-            vdd.value
-        );
-        let frame = named(&j, "the frame's own pattern");
-        assert_eq!(frame.verdict, Verdict::Pass, "{}", frame.value);
-        assert!(
-            frame.value.contains("from vbus_raw") && frame.value.contains("vref_raw left out"),
-            "{}",
-            frame.value
-        );
-        let warn = named(&j, "the reference reading");
-        assert_eq!(warn.verdict, Verdict::Warn, "{}", warn.value);
-        assert!(warn.bound.contains("run the step again"), "{}", warn.bound);
-        let est = &j.result["estimates"];
-        assert_eq!(est["vdd_v"]["value"], 3.3);
-        assert!(
-            est["vdd_v"]["source"]
-                .as_str()
-                .is_some_and(|s| s.contains("nominal")),
-            "{}",
-            est["vdd_v"]
-        );
-        let s = sense();
-        let rail = est["rail_v"]["value"].as_f64().expect("rail");
-        let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]
-            .as_f64()
-            .expect("vbus");
-        assert_eq!(rail, s.rail_v(vbus, None));
-        let fr = &j.result["frame_ripple"];
-        assert_eq!(fr["pattern_source"], "vbus_raw");
-        assert_eq!(fr["pattern_counts"].as_array().map(Vec::len), Some(16));
-        assert!(fr["pattern_mean_counts"].is_f64());
-        assert!(fr["vdd_ripple_mv_pp"].is_null() && est["vdd_frame_ripple_mv_pp"].is_null());
-        let g = j.result["channels"]["raw"]["pos"]["pattern_gain"]
-            .as_f64()
-            .expect("gain");
-        assert!((g - 1.15 / 0.73).abs() < 0.05 * 1.15 / 0.73, "{g}");
-    }
-
-    /// A rest row without `vref_raw`, as a firmware that reads the
-    /// reference once at boot streams it: no supply figure, the rail
-    /// through the nominal supply, the pattern and its gains as ever.
-    #[test]
-    fn a_rest_row_without_vref_raw_reports_no_supply_and_still_corrects() {
-        let (mut rest, raw) = rows_at(2041.0, 1490.0, |_| 0.0);
-        for f in &mut rest {
-            f.vref_raw = None;
+    fn the_chip_supply_is_the_boot_reading_wherever_the_horn_rests() {
+        for pos in [2041.0, 3517.0] {
+            let j = judged(pos, Ok(1490));
+            assert!(failed(&j).is_empty(), "{pos}: {:?}", failed(&j));
+            let vdd = named(&j, "chip supply");
+            assert_eq!(vdd.verdict, Verdict::Pass, "{pos}: {}", vdd.value);
+            assert!(
+                vdd.value
+                    .contains("3.299 V from vref_raw 1490, the boot reading"),
+                "{}",
+                vdd.value
+            );
+            assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
+            let est = &j.result["estimates"];
+            assert_eq!(est["vdd_v"]["value"].as_f64(), Some(1.2 * 4096.0 / 1490.0));
+            let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]
+                .as_f64()
+                .expect("vbus");
+            assert_eq!(
+                est["rail_v"]["value"].as_f64(),
+                Some(sense().rail_v(vbus, Some(1490.0)))
+            );
+            assert_ne!(
+                sense().rail_v(vbus, Some(1490.0)),
+                sense().rail_v(vbus, None)
+            );
+            let fr = &j.result["frame_ripple"];
+            assert_eq!(fr["pattern_source"], "vbus_raw");
+            assert_eq!(fr["pattern_counts"].as_array().map(Vec::len), Some(16));
+            assert!(fr["vdd_ripple_mv_pp"].is_null() && est["vdd_frame_ripple_mv_pp"].is_null());
+            assert_eq!(named(&j, "VDD frame ripple").verdict, Verdict::NotJudged);
+            assert_eq!(j.result["channels"]["rest"]["vmotor_b"]["n"], 20_000);
+            assert!(j.result["channels"]["rest"].get("vref_raw").is_none());
+            assert_eq!(j.result["revision"], REVISION);
         }
-        let j = judged_rows(2041.0, rest, raw);
-        assert!(failed(&j).is_empty(), "{:?}", failed(&j));
-        let vdd = named(&j, "chip supply");
-        assert_eq!(vdd.verdict, Verdict::NotJudged, "{}", vdd.value);
-        assert!(vdd.value.contains("carries no vref_raw"), "{}", vdd.value);
-        assert!(
-            j.lines.iter().any(|l| l.contains("carries no vref_raw")),
-            "{:?}",
-            j.lines
-        );
-        assert!(!j.checks.iter().any(|c| c.name == "the reference reading"));
-        assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
-        let est = &j.result["estimates"];
-        assert!(est["vdd_v"].is_null() && est["vdd_frame_ripple_mv_pp"].is_null());
-        let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]
-            .as_f64()
-            .expect("vbus");
-        assert_eq!(
-            est["rail_v"]["value"].as_f64(),
-            Some(sense().rail_v(vbus, None))
-        );
-        assert_eq!(j.result["frame_ripple"]["pattern_source"], "vbus_raw");
-        assert_eq!(j.result["channels"]["rest"]["vref_raw"]["n"], 0);
     }
 
+    /// A servo that holds no boot reading (`vref_raw` 0), or a READ that
+    /// fails: no supply figure, said, the rail through the nominal supply,
+    /// the pattern and its gains as ever, and the step not refused for it.
     #[test]
-    fn a_rest_inside_the_band_judges_the_supply_from_the_reference() {
-        let j = judged(2041.0, 1490.0);
-        assert!(failed(&j).is_empty(), "{:?}", failed(&j));
-        assert_eq!(named(&j, "chip supply").verdict, Verdict::Pass);
-        assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
-        assert!(!j.checks.iter().any(|c| c.name == "the reference reading"));
-        let est = &j.result["estimates"];
-        assert!(est["vdd_v"]["value"].as_f64().is_some_and(|v| v != 3.3));
-        let fr = &j.result["frame_ripple"];
-        assert_eq!(fr["pattern_source"], "vbus_raw");
-        assert!(fr["pattern_counts"].is_array());
-        assert!(fr["vdd_ripple_mv_pp"].as_f64().is_some_and(|mv| mv > 0.0));
-        assert_eq!(j.result["revision"], REVISION);
+    fn a_zero_boot_reading_reports_no_supply_and_still_corrects() {
+        for (vref, why) in [
+            (
+                Err("vref_raw reads 0, the servo took no reading at boot".to_string()),
+                "vref_raw reads 0",
+            ),
+            (
+                Err("vref_raw was not read (timeout)".to_string()),
+                "not read",
+            ),
+        ] {
+            let j = judged(2041.0, vref);
+            assert!(failed(&j).is_empty(), "{:?}", failed(&j));
+            let vdd = named(&j, "chip supply");
+            assert_eq!(vdd.verdict, Verdict::NotJudged, "{}", vdd.value);
+            assert!(
+                vdd.value.contains(why) && vdd.value.contains("the nominal vdd_mv 3300 is used"),
+                "{}",
+                vdd.value
+            );
+            assert!(
+                j.lines
+                    .iter()
+                    .any(|l| l.contains(why) && l.contains("no chip supply figure")),
+                "{:?}",
+                j.lines
+            );
+            assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
+            let est = &j.result["estimates"];
+            assert!(est["vdd_v"].is_null() && est["vdd_frame_ripple_mv_pp"].is_null());
+            let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]
+                .as_f64()
+                .expect("vbus");
+            assert_eq!(
+                est["rail_v"]["value"].as_f64(),
+                Some(sense().rail_v(vbus, None))
+            );
+            assert!(
+                est["rail_v"]["source"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("nominal")),
+                "{}",
+                est["rail_v"]
+            );
+            assert_eq!(j.result["frame_ripple"]["pattern_source"], "vbus_raw");
+            let g = j.result["channels"]["raw"]["pos"]["pattern_gain"]
+                .as_f64()
+                .expect("gain");
+            assert!((g - 1.15 / 0.73).abs() < 0.05 * 1.15 / 0.73, "{g}");
+        }
     }
 
     /// A committed rest capture's first 4096 rows
@@ -1520,7 +1455,6 @@ mod tests {
                     vmotor_a: col(&c, "vmotor_a"),
                     vbus_raw: col(&c, "vbus_raw"),
                     ntc_raw: col(&c, "ntc_raw"),
-                    vref_raw: col(&c, "vref_raw"),
                     ..TelFrame::default()
                 }
             })
@@ -1539,29 +1473,18 @@ mod tests {
 
     /// On the bench's own rows, the horn mid travel and at the top of
     /// travel: the rail's pattern leaves under half a count of the frame's
-    /// ripple on pos in both. At the top the old position gate took
-    /// nothing out (6 counts left), and the reference's own pattern would
-    /// leave over 4: its reading follows the pot's code there.
+    /// ripple on pos in both.
     #[test]
     fn the_rails_pattern_takes_the_ripple_off_pos_anywhere_on_travel() {
-        for (file, inside) in [("rest-mid.csv.gz", true), ("rest-end.csv.gz", false)] {
+        for (file, top) in [("rest-mid.csv.gz", false), ("rest-end.csv.gz", true)] {
             let rows = recorded(file);
             let ch = Channels::of(&rows, &[]);
             assert_eq!(ch.pattern.as_ref().map(|p| p.source), Some("vbus_raw"));
             let pos = ch.rest("pos").raw.mean;
-            assert_eq!(vref_trusted(pos), inside, "{file}: pos {pos}");
+            assert_eq!(pos > 2750.0, top, "{file}: pos {pos}");
             let (before, after) = pos_ripple(&rows, &ch);
             assert!(before > 2.0, "{file}: the ripple shows, {before:.2}");
             assert!(after < 0.5, "{file}: {before:.2} -> {after:.2} counts pp");
-            let s = ripple::series(&rows, "pos");
-            let vref = ripple::fold(&ripple::series(&rows, "vref_raw")).expect("phases");
-            let by_vref = ripple::fit(&s, &vref).1;
-            let left = ripple::pp(&ripple::fold(&by_vref).expect("phases"));
-            if inside {
-                assert!(left < 1.0, "{file}: {left:.2}");
-            } else {
-                assert!(before > 5.0 && left > 4.0, "{file}: {before:.2} {left:.2}");
-            }
         }
     }
 }

@@ -53,7 +53,8 @@ const BURST_SPACING_TICKS: u16 = (chip::MOTOR_PWM_FREQ_HZ / 10) as u16;
 const ARMED_AT_BOOT: u32 = 0u32.wrapping_sub(BURST_SPACING_TICKS as u32);
 
 const CYCLES_PER_US: u32 = HCLK_HZ / 1_000_000;
-/// One 7-slot scan retires: 210 ADCCLK at 24 MHz = 8.75 us.
+/// A scan in flight retires within this: 6 slots, 156 ADCCLK at 24 MHz =
+/// 6.5 us.
 const ADC_SCAN_DRAIN: u32 = 9 * CYCLES_PER_US;
 /// Per frame slot, two conversions retire: clearing CONT lets the frame in
 /// flight finish, and that CTLR2 write can start one more frame of its own

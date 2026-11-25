@@ -52,7 +52,7 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 // === ADC ===
 
 // Apertures at ADCCLK 24 MHz. TCONV = aperture + 12.5, so 13.5 cycles puts
-// every channel but Vref at 1.083 us, fS 0.92 MHz. That is the binding
+// every scanned channel at 1.083 us, fS 0.92 MHz. That is the binding
 // constraint: V006 datasheet Table 3-23 allows VDD down to 2.4 V only while
 // fS stays at or under 1 MHz, and this board's MCU rail is 3.3 V. Above the
 // line the part wants 4.5 V. 13.5 cycles also clears every source impedance
@@ -71,10 +71,10 @@ pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 pub const ADC_TERMINAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 /// Cap-backed board taps (pot, rail, NTC).
 pub const ADC_RESERVOIR_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
-/// The 1.2 V reference, scanned right behind the pot: at the reservoir
-/// aperture it reads about +62 counts (+4 %) high, at 28.5 cycles +3.6, at
-/// 41.5 within a count of its settled value (measured).
-pub const ADC_VREF_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES43;
+/// The 1.2 V reference, read alone at boot and never scanned: behind another
+/// channel its reading follows that channel's code. 239.5 cycles, the
+/// longest aperture (RM sec 9.3.4), one conversion 252 ADCCLK = 10.5 us.
+pub const ADC_VREF_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES241;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
 /// A0 (PA2) doubles as an OPA positive-input route (PSEL=00), so a board

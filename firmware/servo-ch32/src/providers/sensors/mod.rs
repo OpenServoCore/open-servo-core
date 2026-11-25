@@ -20,7 +20,7 @@ use scan::{
 };
 
 /// The longest wait for the crest scan after the motor write, HCLK past the
-/// first look. The scan lands about 480 ticks past the crest and the tick
+/// first look. The scan lands about 372 ticks past the crest and the tick
 /// enters at about +100, so a live converter keeps every wait under about
 /// 400 even from a write at entry.
 const SCAN_WAIT_CAP: u32 = 800;
