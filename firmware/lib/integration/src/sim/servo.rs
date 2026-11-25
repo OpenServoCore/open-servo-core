@@ -59,7 +59,7 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
 
 /// The same `Calibration`'s `bemf_window_min_ticks`, the floor the board
 /// hands the kernel through `KernelTiming` and not through CALIB.
-pub const DEV_V006_BEMF_MIN_TICKS: u16 = 160;
+pub const DEV_V006_BEMF_MIN_TICKS: u16 = 93;
 
 /// The same `Calibration`'s `i_settle_gain`, the shunt amplifier's settle
 /// bands the board hands the kernel through `KernelTiming`.

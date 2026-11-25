@@ -14,7 +14,7 @@
 //! | run on | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output: 0; limiter at the floor; observer at the sample, or at rest on an in-band goal; profile at rest at the goal or the estimate; Run |
 //! | run off | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output: 0; limiter at the floor; Off |
 //! | mode change under run | CONTROL | limiter at the floor; Run. Between Velocity and Position: profile at the estimate, its speed kept. Otherwise: profile at rest at the estimate, velocity integral 0. From OpenLoop: current integral at the applied volts, reference at the held current inside the band, the dropped-pulse gate on OpenLoop's last width |
-//! | park in | TRAJECTORY | Parked; every parked period at VELOCITY: reference, velocity integral, blend 0 |
+//! | park in | TRAJECTORY | Parked; every parked period at VELOCITY: reference, velocity integral, the blend's lead 0; its standing part kept, the boxcar's level over the observer that a push carries to the next |
 //! | park out | TRAJECTORY | Run, or Held under a load |
 //! | held in | TRAJECTORY | Held (loaded, where a free shaft parks); every held period at VELOCITY: the velocity loop steps with its integral frozen |
 //! | held out | TRAJECTORY | Run, or Parked once the load is gone |
@@ -135,15 +135,19 @@ impl Medium {
 
     /// Every parked period at VELOCITY: nothing drives, so the velocity
     /// loop stops too. omega_hat is the blend, and with no window its lead
-    /// runs out (the reset here empties it), so at rest it reads the pot
+    /// runs out (`rest` here empties it), so at rest it reads the pot
     /// observer (+-hundreds c/s of noise); left running, the PI integrates
     /// that phantom error until i_ref pins at the current limit, and
     /// pinned + slow false-trips the stall detector (bench: CODE_STALL a
-    /// few seconds into a clean hold).
+    /// few seconds into a clean hold). The standing part stays: it is the
+    /// boxcar's level over the observer, which the motor carries from one
+    /// push to the next, and cleared at every park it never forms in slow
+    /// following. It reaches the loop only through a boxcar, and a parked
+    /// motor has none.
     #[inline(always)]
     pub(super) fn parked(&mut self) {
         self.i_ref_cc = 0;
         self.vel.reset();
-        self.omega_blend.reset();
+        self.omega_blend.rest();
     }
 }
