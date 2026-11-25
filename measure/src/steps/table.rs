@@ -119,7 +119,9 @@ pub const RESIDUAL_MAX_COUNTS: f64 = 4.0;
 pub const PASS_OUT_MAX_COUNTS: f64 = 4.0;
 /// Counts rms of the directions' difference over which it is a warning.
 pub const DIRECTION_WARN_COUNTS: f64 = 3.0;
-/// A rung's speed spread over which it is a warning, never a refusal.
+/// A rung's speed spread about its mean over its counted stretch at most
+/// this is steady (plan sec 2.4's speed-along-a-pass line): over it the
+/// speed line warns, and its cycle pairs are reported, never refused.
 pub const SPEED_SPREAD_WARN: f64 = 0.2;
 /// Counts a slow piece reaches into the span the fast passes cover, eight
 /// grid intervals: its offset rests on fast samples, not on the smoothing
@@ -1858,6 +1860,7 @@ pub struct RungRows<'a> {
     pub n: usize,
     pub pass: usize,
     pub pass_kind: PassKind,
+    pub kind: RungKind,
     pub dir: i8,
     pub rows: &'a [TelFrame],
 }
@@ -1879,6 +1882,7 @@ pub struct RungSegment {
     pub n: usize,
     pub pass: usize,
     pub pass_kind: PassKind,
+    pub kind: RungKind,
     pub dir: i8,
     /// The segment, or why the rung is left out.
     pub read: Result<Segment, String>,
@@ -2028,6 +2032,27 @@ fn directions(segs: &[Segment], table: &Table) -> Result<Term, TableError> {
     }
     out.rms = (ss / knots as f64).sqrt();
     Ok(out)
+}
+
+/// A rung that ran steady over its counted stretch: a free or fast rung,
+/// neither leaving a stop nor pressing into one, its speed within
+/// [`SPEED_SPREAD_WARN`] of its mean.
+fn steady(r: &RungSegment) -> bool {
+    matches!(r.kind, RungKind::Free | RungKind::Fast)
+        && r.read
+            .as_ref()
+            .is_ok_and(|s| s.speed_spread <= SPEED_SPREAD_WARN)
+}
+
+/// Whether both rungs of a cycle pair ran steady; the pair's rungs'
+/// speed spreads.
+fn pair_steady(t: &TableRead, k: &Cycles) -> (bool, [Option<f64>; 2]) {
+    let get = |n: usize| t.rungs.iter().find(|r| r.n == n);
+    let spread = |n: usize| get(n).and_then(|r| r.read.as_ref().ok().map(|s| s.speed_spread));
+    (
+        get(k.a).is_some_and(steady) && get(k.b).is_some_and(steady),
+        [spread(k.a), spread(k.b)],
+    )
 }
 
 /// The stretches of the fit's span whose samples are one fast piece's
@@ -2288,6 +2313,7 @@ fn rung_segment(
                     n: r.n,
                     pass: r.pass,
                     pass_kind: r.pass_kind,
+                    kind: r.kind,
                     dir: r.dir,
                     read: Err(format!(
                         "it starts within {NEAR_STOP_COUNTS} counts of the stop it drives toward"
@@ -2334,6 +2360,7 @@ fn rung_segment(
         n: r.n,
         pass: r.pass,
         pass_kind: r.pass_kind,
+        kind: r.kind,
         dir: r.dir,
         read,
         ratio: None,
@@ -2762,8 +2789,9 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
             ),
         )
     });
-    let off: Vec<String> = t
-        .cycles
+    let judged: Vec<&Cycles> = t.cycles.iter().filter(|k| pair_steady(t, k).0).collect();
+    let changing = t.cycles.len() - judged.len();
+    let off: Vec<String> = judged
         .iter()
         .filter(|k| !k.agree.holds())
         .map(|k| {
@@ -2773,21 +2801,22 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
             )
         })
         .collect();
+    let said = if judged.is_empty() {
+        "no two steady rungs one way share a grid interval".to_string()
+    } else if off.is_empty() {
+        format!("{} steady pairs agree", judged.len())
+    } else {
+        off.join("; ")
+    };
     out.push(check(
         CYCLES,
-        if t.cycles.is_empty() {
-            "no two rungs one way share a grid interval".into()
-        } else if off.is_empty() {
-            format!("{} pairs agree", t.cycles.len())
-        } else {
-            off.join("; ")
-        },
+        format!("{said}; {changing} pairs with a rung changing speed reported"),
         format!(
-            "within {:.1} % or {} cycle over the counts each pair shares",
+            "within {:.1} % or {} cycle over the counts each pair of steady rungs shares",
             100.0 * postable::AGREE_SHARE,
             postable::AGREE_MIN_CYCLES
         ),
-        if t.cycles.is_empty() {
+        if judged.is_empty() {
             Verdict::NotJudged
         } else {
             pass_fail(off.is_empty())
@@ -2924,6 +2953,7 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
             n: r.n,
             pass: r.pass,
             pass_kind: r.pass_kind,
+            kind: r.kind,
             dir: r.plan.dir,
             rows: &taken[r.drive_k].burst.rows,
         })
@@ -3250,6 +3280,15 @@ fn report_json(t: &TableRead) -> Value {
         "gear_play": {"counts": null, "why": GEAR_PLAY_WORDS},
         "speed_spread": t.rungs.iter().filter_map(|r| r.read.as_ref().ok().map(|s| json!({"rung": r.n,
             "spread": s.speed_spread, "warning": s.speed_spread > SPEED_SPREAD_WARN}))).collect::<Vec<_>>(),
+        "cycles_while_speed_changes": t.cycles.iter().filter_map(|k| {
+            let (steady, spread) = pair_steady(t, k);
+            let kind = |n: usize| t.rungs.iter().find(|r| r.n == n).map(|r| r.kind.word());
+            (!steady).then(|| json!({"rungs": [k.a, k.b], "kinds": [kind(k.a), kind(k.b)],
+                "from_counts": k.agree.from, "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b],
+                "difference_pct": 100.0 * (k.agree.a - k.agree.b).abs() / k.agree.a.max(k.agree.b),
+                "limit_cycles": k.agree.limit(), "holds": k.agree.holds(),
+                "speed_spread": spread}))
+        }).collect::<Vec<_>>(),
         "on_the_slow_passes": t.pieces.iter().filter(|p| p.slow_only).map(|p| {
             let (lo, hi) = p.segment.x.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
             json!({"rung": t.rungs[p.rung].n, "from_counts": lo, "to_counts": hi})
@@ -3877,6 +3916,11 @@ mod tests {
                 } else {
                     PassKind::Slow
                 },
+                kind: if *pass == 1 {
+                    RungKind::Free
+                } else {
+                    RungKind::Leave
+                },
                 dir: *dir,
                 rows,
             })
@@ -3961,6 +4005,11 @@ mod tests {
                 } else {
                     PassKind::Slow
                 },
+                kind: if *pass == 1 {
+                    RungKind::Free
+                } else {
+                    RungKind::Leave
+                },
                 dir: *dir,
                 rows,
             })
@@ -3970,6 +4019,7 @@ mod tests {
                 n: k,
                 pass: k,
                 pass_kind: PassKind::Fast,
+                kind: RungKind::Fast,
                 dir,
                 rows,
             });
@@ -4013,6 +4063,69 @@ mod tests {
         );
     }
 
+    /// Two up fast rungs over the same counts, a down one beside: their
+    /// cycles made 2 % apart, a steady pair refuses; with one of them a
+    /// rung leaving a stop the pair is reported, beside each rung's speed
+    /// spread, and the line passes.
+    #[test]
+    fn a_cycle_pair_refuses_only_when_both_rungs_run_steady() {
+        let m = motor();
+        let (up_a, up_b) = (fast_rows(&m, 1211.0, 1, 0.5), fast_rows(&m, 1211.0, 1, 0.5));
+        let down = fast_rows(&m, 3119.0, -1, 0.7);
+        let rungs: Vec<RungRows> = [(1, 1, &up_a), (2, -1, &down), (3, 1, &up_b)]
+            .iter()
+            .map(|&(k, dir, rows)| RungRows {
+                n: k,
+                pass: k,
+                pass_kind: PassKind::Fast,
+                kind: RungKind::Fast,
+                dir,
+                rows,
+            })
+            .collect();
+        let c = cfg(&m);
+        let mut t = read_table(&rungs, &[0; 16], &c);
+        let pair = t
+            .cycles
+            .iter_mut()
+            .find(|k| (k.a, k.b) == (1, 3))
+            .expect("the up pair");
+        pair.agree.b = 1.02 * pair.agree.a;
+        let line = |t: &TableRead| {
+            table_checks(t, &c)
+                .into_iter()
+                .find(|k| k.name == CYCLES)
+                .expect("cycles")
+        };
+        let steady = line(&t);
+        assert_eq!(steady.verdict, Verdict::Fail, "{}", steady.said());
+        assert!(steady.value.contains("rungs 1 and 3"), "{}", steady.value);
+        t.rungs.iter_mut().find(|r| r.n == 1).expect("rung 1").kind = RungKind::Leave;
+        let changing = line(&t);
+        assert_ne!(changing.verdict, Verdict::Fail, "{}", changing.said());
+        assert!(
+            changing
+                .value
+                .contains("1 pairs with a rung changing speed"),
+            "{}",
+            changing.value
+        );
+        assert!(
+            table_checks(&t, &c)
+                .iter()
+                .all(|k| k.verdict != Verdict::Fail),
+            "accepted"
+        );
+        let rep = report_json(&t);
+        let said = rep["cycles_while_speed_changes"].as_array().expect("pairs");
+        assert_eq!(said.len(), 1, "{rep}");
+        assert_eq!(said[0]["rungs"], json!([1, 3]));
+        assert_eq!(said[0]["kinds"], json!(["leave", "fast"]));
+        assert_eq!(said[0]["holds"], false);
+        assert!((n(&said[0]["difference_pct"]) - 100.0 * 0.02 / 1.02).abs() < 1e-9);
+        assert!(said[0]["speed_spread"][0].is_f64() && said[0]["speed_spread"][1].is_f64());
+    }
+
     /// One fast pass's rows on `m` from `x` for `secs`, no bus.
     fn fast_rows(m: &Motor, x: f64, dir: i8, secs: f64) -> Vec<TelFrame> {
         let rows = (secs * 20_000.0) as usize;
@@ -4038,6 +4151,7 @@ mod tests {
                 n: k,
                 pass: k,
                 pass_kind: PassKind::Fast,
+                kind: RungKind::Fast,
                 dir,
                 rows,
             })
@@ -4114,7 +4228,7 @@ mod tests {
         let res: Value =
             serde_json::from_slice(&std::fs::read(root.join(RESULT)).expect("table.json"))
                 .expect("json");
-        let mut kept: Vec<(usize, usize, PassKind, i8, Vec<TelFrame>)> = Vec::new();
+        let mut kept: Vec<(usize, usize, PassKind, RungKind, i8, Vec<TelFrame>)> = Vec::new();
         for r in res["rungs"].as_array().expect("rungs") {
             let k = r["captures"][0].as_u64().expect("capture");
             let p = root.join(format!("captures/table/{k:02}-raw.csv.gz"));
@@ -4147,20 +4261,28 @@ mod tests {
                 Some("half") => PassKind::Half,
                 _ => PassKind::Slow,
             };
+            let rung = match r["kind"].as_str() {
+                Some("leave") => RungKind::Leave,
+                Some("stop") => RungKind::Stop,
+                Some("fast") => RungKind::Fast,
+                _ => RungKind::Free,
+            };
             kept.push((
                 r["n"].as_u64().expect("n") as usize,
                 r["pass"].as_u64().expect("pass") as usize,
                 kind,
+                rung,
                 r["dir"].as_i64().expect("dir") as i8,
                 rows,
             ));
         }
         let rungs: Vec<RungRows> = kept
             .iter()
-            .map(|(n, pass, kind, dir, rows)| RungRows {
+            .map(|(n, pass, kind, rung, dir, rows)| RungRows {
                 n: *n,
                 pass: *pass,
                 pass_kind: *kind,
+                kind: *rung,
                 dir: *dir,
                 rows,
             })
@@ -4194,6 +4316,10 @@ mod tests {
                 t.scale
             );
             println!("  one fast pass alone {:?}", t.single_fast);
+            println!(
+                "  cycles while speed changes {}",
+                report_json(t)["cycles_while_speed_changes"]
+            );
             for r in &t.rungs {
                 println!(
                     "  rung {} {} {:+}: {}, counted/expected {}",
