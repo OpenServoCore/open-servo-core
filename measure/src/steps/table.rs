@@ -2247,6 +2247,8 @@ pub struct TableRead {
     pub gains: Option<(i32, i32)>,
     pub pass_out: Vec<PassOut>,
     pub cycles: Vec<Cycles>,
+    /// The table's cycles from stop to stop, the pairs' limit read from.
+    pub travel_cycles: Option<f64>,
     /// Up less down on the common span, counts.
     pub term: Result<Term, TableError>,
     pub one_way: Vec<OneWay>,
@@ -2561,6 +2563,7 @@ fn read_table_with(
         gains: None,
         pass_out: Vec::new(),
         cycles: Vec::new(),
+        travel_cycles: None,
         term: Err(TableError::NoSpan),
         one_way: Vec::new(),
         scale: None,
@@ -2619,6 +2622,7 @@ fn read_table_with(
                 on,
             });
         }
+        t.travel_cycles = Some(f.table.travel_cycles(c.raw_min, c.raw_max));
         t.term = directions(&segs, &f.table);
         t.one_way = one_way(f);
         t.single_fast = single_fast(&taken, &read, &span);
@@ -2849,11 +2853,13 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
             ),
         )
     });
+    let travel = t.travel_cycles.unwrap_or(f64::NAN);
+    let limit = postable::agree_limit(travel);
     let judged: Vec<&Cycles> = t.cycles.iter().filter(|k| pair_fast(t, k)).collect();
     let slow = t.cycles.len() - judged.len();
     let off: Vec<String> = judged
         .iter()
-        .filter(|k| !k.agree.holds())
+        .filter(|k| !k.agree.holds(limit))
         .map(|k| {
             format!(
                 "rungs {} and {}: {:.2} and {:.2} cycles over {:.0}..{:.0}",
@@ -2872,9 +2878,8 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
         CYCLES,
         format!("{said}; {slow} pairs with a slow rung reported"),
         format!(
-            "within {:.1} % or {} cycle over the counts each pair of fast passes shares",
+            "within {:.1} % of the travel's {travel:.0} cycles ({limit:.1} cycles) over the counts each pair of fast passes shares",
             100.0 * postable::AGREE_SHARE,
-            postable::AGREE_MIN_CYCLES
         ),
         if judged.is_empty() {
             Verdict::NotJudged
@@ -3292,6 +3297,7 @@ fn segment_json(r: &RungSegment) -> Value {
 }
 
 fn table_json(t: &TableRead) -> Value {
+    let limit = t.travel_cycles.map(postable::agree_limit);
     let fit = match &t.fit {
         Ok(f) => json!({
             "span_counts": [f.table.span.lo(), f.table.span.hi()], "samples": f.samples,
@@ -3321,15 +3327,17 @@ fn table_json(t: &TableRead) -> Value {
         "one_fast_pass_out": t.pass_out.iter().map(|p| json!({"rung": p.n, "pass": p.pass,
             "line_out_counts_rms": p.moved.as_ref().ok(), "why": p.moved.as_ref().err().map(table_said),
             "judged_on_counts": p.on.iter().map(|o| [o.0, o.1]).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "travel_cycles": t.travel_cycles,
         "cycles": t.cycles.iter().map(|k| json!({"rungs": [k.a, k.b], "from_counts": k.agree.from,
-            "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b], "limit": k.agree.limit(),
-            "holds": k.agree.holds()})).collect::<Vec<_>>(),
+            "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b], "limit": limit,
+            "holds": limit.map(|l| k.agree.holds(l))})).collect::<Vec<_>>(),
         "report": report_json(t),
     })
 }
 
 /// What the table step says and never refuses on.
 fn report_json(t: &TableRead) -> Value {
+    let limit = t.travel_cycles.map(postable::agree_limit);
     json!({
         "directions": match &t.term {
             Ok(term) => json!({"up_less_down_counts_rms": term.rms, "max_counts": term.max,
@@ -3347,7 +3355,7 @@ fn report_json(t: &TableRead) -> Value {
             json!({"rungs": [of(k.a), of(k.b)],
                 "from_counts": k.agree.from, "to_counts": k.agree.to, "cycles": [k.agree.a, k.agree.b],
                 "difference_pct": 100.0 * (k.agree.a - k.agree.b).abs() / k.agree.a.max(k.agree.b),
-                "limit_cycles": k.agree.limit(), "holds": k.agree.holds()})
+                "limit_cycles": limit, "holds": limit.map(|l| k.agree.holds(l))})
         }).collect::<Vec<_>>(),
         "cycles_speed_words": "speed_cps the mean over each rung's whole counted stretch, speed_spread the (max - min) / mean of its ripple line over four quarters of that stretch; neither is over the counts the pair shares",
         "on_the_slow_passes": t.pieces.iter().filter(|p| p.slow_only).map(|p| {
@@ -4228,6 +4236,56 @@ mod tests {
                 "{r}"
             );
         }
+    }
+
+    /// Two up fast rungs on a 940-cycle travel: 1.10 cycles apart over
+    /// the counts they share holds, 3.0 apart refuses, and the bound
+    /// names the travel's cycles and the limit in cycles.
+    #[test]
+    fn a_fast_pair_is_held_to_a_share_of_the_travel() {
+        let m = motor();
+        let (up_a, up_b) = (fast_rows(&m, 1211.0, 1, 0.5), fast_rows(&m, 1211.0, 1, 0.5));
+        let down = fast_rows(&m, 3119.0, -1, 0.7);
+        let rungs: Vec<RungRows> = [(1, 1, &up_a), (2, -1, &down), (3, 1, &up_b)]
+            .iter()
+            .map(|&(k, dir, rows)| RungRows {
+                n: k,
+                pass: k,
+                pass_kind: PassKind::Fast,
+                kind: RungKind::Fast,
+                dir,
+                rows,
+            })
+            .collect();
+        let c = cfg(&m);
+        let mut t = read_table(&rungs, &[0; 16], &c);
+        t.travel_cycles = Some(940.0);
+        let line = |t: &TableRead| {
+            table_checks(t, &c)
+                .into_iter()
+                .find(|k| k.name == CYCLES)
+                .expect("cycles")
+        };
+        let apart = |t: &mut TableRead, d: f64| {
+            let pair = t
+                .cycles
+                .iter_mut()
+                .find(|k| (k.a, k.b) == (1, 3))
+                .expect("pair");
+            pair.agree.b = pair.agree.a - d;
+        };
+        apart(&mut t, 1.10);
+        let held = line(&t);
+        assert_eq!(held.verdict, Verdict::Pass, "{}", held.said());
+        assert!(
+            held.bound.contains("travel's 940 cycles (2.8 cycles)"),
+            "{}",
+            held.bound
+        );
+        apart(&mut t, 3.0);
+        let off = line(&t);
+        assert_eq!(off.verdict, Verdict::Fail, "{}", off.said());
+        assert!(off.value.contains("rungs 1 and 3"), "{}", off.value);
     }
 
     /// The odd slow passes on a converter skipping 11 codes over carry

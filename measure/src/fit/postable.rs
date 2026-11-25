@@ -43,10 +43,10 @@ pub const SLOPE_HALF: f64 = 24.0;
 pub const SLOPE_STEP: f64 = 4.0;
 /// Counts a band of the direction term covers.
 pub const BAND_COUNTS: f64 = 256.0;
-/// Two same-direction rungs agree within this share of their cycles over
-/// the counts they share, or [`AGREE_MIN_CYCLES`].
+/// Two same-direction rungs' cycles over the counts they share agree
+/// within this share of the travel's cycles, the table's from stop to
+/// stop (plan sec 2.4).
 pub const AGREE_SHARE: f64 = 0.003;
-pub const AGREE_MIN_CYCLES: f64 = 1.0;
 
 const GRID_F: f64 = GRID as f64;
 
@@ -610,10 +610,14 @@ impl Table {
         raw_max: u16,
     ) -> Option<f64> {
         let (n, g) = (events_per_rev as f64, gear_ratio);
-        let (lo, hi) = (raw_min as f64, raw_max as f64);
-        let deg = (self.angle_at(hi) - self.angle_at(lo)) * 360.0 / (n * g);
-        let v = (hi - lo) / deg;
+        let deg = self.travel_cycles(raw_min, raw_max) * 360.0 / (n * g);
+        let v = (raw_max as f64 - raw_min as f64) / deg;
         (n > 0.0 && g > 0.0 && v.is_finite() && v > 0.0).then_some(v)
+    }
+
+    /// The cycles from stop to stop ([`Table::angle_at`]).
+    pub fn travel_cycles(&self, raw_min: u16, raw_max: u16) -> f64 {
+        self.angle_at(raw_max as f64) - self.angle_at(raw_min as f64)
     }
 
     /// Counts a cycle, end to end over the span.
@@ -723,13 +727,14 @@ pub struct Agreement {
     pub b: f64,
 }
 
-impl Agreement {
-    pub fn limit(&self) -> f64 {
-        AGREE_MIN_CYCLES.max(AGREE_SHARE * self.a.max(self.b))
-    }
+/// Cycles two rungs may differ by on a travel of `travel_cycles`.
+pub fn agree_limit(travel_cycles: f64) -> f64 {
+    AGREE_SHARE * travel_cycles
+}
 
-    pub fn holds(&self) -> bool {
-        (self.a - self.b).abs() <= self.limit()
+impl Agreement {
+    pub fn holds(&self, limit: f64) -> bool {
+        (self.a - self.b).abs() <= limit
     }
 }
 
@@ -882,7 +887,8 @@ mod tests {
         assert!(worst < 0.035, "{worst}");
         let term = direction_term(&up, &down, &t);
         assert!(term.rms < 0.5, "{term:?}");
-        assert!(agreement(&segs[0], &segs[1]).expect("overlap").holds());
+        let limit = agree_limit(t.angle_at(span.hi()) - t.angle_at(span.lo()));
+        assert!(agreement(&segs[0], &segs[1]).expect("overlap").holds(limit));
         assert!(agreement(&segs[0], &segs[2]).is_none());
     }
 
@@ -1009,5 +1015,22 @@ mod tests {
         assert!((s - want).abs() < 1e-9, "{s} against {want}");
         let s = t.scale(n, g, 200, 3500).expect("scale");
         assert!((s - mean).abs() < 1e-9, "{s} against {mean}");
+    }
+
+    /// Two fast rungs over a third of a 940-cycle travel: 1.10 cycles
+    /// apart holds, as the travel's share allows 2.82; 3.0 apart refuses.
+    #[test]
+    fn a_pair_agrees_within_a_share_of_the_travel() {
+        let limit = agree_limit(940.0);
+        assert!((limit - 2.82).abs() < 1e-9, "{limit}");
+        let mut k = Agreement {
+            from: 2263.0,
+            to: 3476.0,
+            a: 316.45,
+            b: 315.35,
+        };
+        assert!(k.holds(limit));
+        k.b = k.a - 3.0;
+        assert!(!k.holds(limit));
     }
 }

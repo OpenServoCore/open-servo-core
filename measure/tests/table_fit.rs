@@ -165,9 +165,10 @@ fn each_pass_is_read_as_the_reference_reads_it() {
         assert!(s.odd <= postable::ODD_MAX && s.speed_spread < 0.2, "{name}");
     }
     let p = passes();
+    let limit = postable::agree_limit(all().1.table.travel_cycles(STOPS.0, STOPS.1));
     for (a, b) in [(0, 2), (1, 3)] {
         let g = agreement(&p[a].1, &p[b].1).expect("they overlap");
-        assert!(g.holds(), "{} against {}: {g:?}", p[a].0, p[b].0);
+        assert!(g.holds(limit), "{} against {}: {g:?}", p[a].0, p[b].0);
     }
 }
 
