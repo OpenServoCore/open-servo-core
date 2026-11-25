@@ -712,7 +712,7 @@ struct Before {
     env: Envelope,
     stated_v: f64,
     rated_cps: f64,
-    ripple_per_rev: Option<u32>,
+    events_per_rev: u32,
     gear_ratio: Option<f64>,
     travel_deg: f64,
     ntc: Parts,
@@ -785,13 +785,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result<Be
     let rest = FromRest::of(i.rest)?;
     let probe = FromProbe::of(i.probe)?;
     let stops = FromStops::of(i.stops)?;
-    let ripple_per_rev = np.ripple_per_rev;
-    if ripple_per_rev == Some(0) {
-        return Err(Refused(
-            "the nameplate's ripple_per_rev is 0: enter rotor slots times brushes, or leave it out"
-                .into(),
-        ));
-    }
+    let events_per_rev = np.events_per_rev().map_err(Refused)?;
     let travel_deg = np.travel_deg.filter(|t| t.is_finite() && *t > 0.0);
     let state = state::read(rig.c, rig.id, rig.d).await?;
     if state.torque {
@@ -922,7 +916,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result<Be
         env: Envelope::new(facts, heat),
         stated_v: speed.at_v,
         rated_cps: speed.per_deg / speed.seconds * ADC_COUNTS / np_travel,
-        ripple_per_rev,
+        events_per_rev,
         gear_ratio: np.gear_ratio.filter(|g| g.is_finite() && *g > 0.0),
         travel_deg: np_travel,
         ntc: sense.ntc,
@@ -1840,7 +1834,10 @@ pub struct JudgeCfg {
     pub fs: f64,
     pub raw_min: u16,
     pub raw_max: u16,
-    pub ripple_per_rev: Option<u32>,
+    /// The nameplate's brushes times rotor segments.
+    pub events_per_rev: u32,
+    /// The counted gear ratio; None reads the scale from the stops' span
+    /// over the travel.
     pub gear_ratio: Option<f64>,
     pub travel_deg: f64,
 }
@@ -2162,8 +2159,8 @@ pub struct TableRead {
     pub one_way: Vec<OneWay>,
     /// Counts a degree and its source.
     pub scale: Option<(f64, &'static str)>,
-    /// Both scales, reported: the ripple's at a stated or derived
-    /// ripple_per_rev, and the stops' span over the travel.
+    /// Both scales, reported: the ripple's where the gear ratio is
+    /// stated, and the stops' span over the travel.
     pub scales: Option<Scales>,
     /// Stretches whose samples are one fast rung's alone: counts and the
     /// rung.
@@ -2172,13 +2169,10 @@ pub struct TableRead {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Scales {
-    /// Counts a degree, the ripple_per_rev used and how it was had.
-    pub ripple: Option<(f64, u32, &'static str)>,
+    /// Counts a degree and the events a revolution it was read at.
+    pub ripple: Option<(f64, u32)>,
     pub travel: f64,
 }
-
-pub const RIPPLE_STATED: &str = "the nameplate's ripple_per_rev";
-pub const RIPPLE_DERIVED: &str = "derived: the whole number of ripple cycles a motor revolution nearest the table's cycles over the stops' span, the nameplate's travel_deg and gear_ratio";
 
 /// The capture's reading: the slots, the table and every check.
 pub struct Judged {
@@ -2416,22 +2410,13 @@ pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg
         t.one_way = one_way(f);
         t.single_fast = single_fast(&taken, &read, &span);
         let travel = (c.raw_max as f64 - c.raw_min as f64) / c.travel_deg;
-        let ripple = c.gear_ratio.and_then(|g| {
-            let (n, how) = match c.ripple_per_rev {
-                Some(n) => (n, RIPPLE_STATED),
-                None => {
-                    let n = (f.table.mean_slope() * travel * 360.0 / g).round();
-                    if !(1.0..=u32::MAX as f64).contains(&n) {
-                        return None;
-                    }
-                    (n as u32, RIPPLE_DERIVED)
-                }
-            };
-            Some((f.table.scale(Some(n), Some(g))?, n, how))
-        });
+        let ripple = c
+            .gear_ratio
+            .and_then(|g| f.table.scale(c.events_per_rev, g, c.raw_min, c.raw_max))
+            .map(|v| (v, c.events_per_rev));
         t.scales = Some(Scales { ripple, travel });
-        t.scale = match f.table.scale(c.ripple_per_rev, c.gear_ratio) {
-            Some(v) => Some((v, SCALE_RIPPLE)),
+        t.scale = match ripple {
+            Some((v, _)) => Some((v, SCALE_RIPPLE)),
             None => Some((travel, SCALE_TRAVEL)),
         };
     }
@@ -2440,7 +2425,7 @@ pub fn read_table(rungs: &[RungRows], slots: &[u8; ADC_WIDE_SLOTS], c: &JudgeCfg
     t
 }
 
-pub const SCALE_RIPPLE: &str = "the ripple: the nameplate's ripple_per_rev x gear_ratio over the table's mean cycles a count, x 360";
+pub const SCALE_RIPPLE: &str = "the ripple: the stops' span over the output's degrees between them, the table's cycles from stop to stop x 360 over the nameplate's brushes x rotor_segments x gear_ratio";
 pub const SCALE_TRAVEL: &str = "the stops' span over the nameplate's travel_deg";
 
 /// The slow passes' driven rows to the wide-code slots, then the table on
@@ -2757,7 +2742,7 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
         fs: b.tick_hz,
         raw_min: b.raw.0,
         raw_max: b.raw.1,
-        ripple_per_rev: b.ripple_per_rev,
+        events_per_rev: b.events_per_rev,
         gear_ratio: b.gear_ratio,
         travel_deg: b.travel_deg,
     };
@@ -3090,7 +3075,8 @@ fn report_json(t: &TableRead) -> Value {
         "one_fast_pass_alone": t.single_fast.iter().map(|&(lo, hi, rung)| json!({"from_counts": lo, "to_counts": hi,
             "rung": rung, "share_of_span": t.fit.as_ref().ok().map(|f| (hi - lo) / (f.table.span.hi() - f.table.span.lo()))})).collect::<Vec<_>>(),
         "scales": t.scales.map(|s| json!({"span_over_travel_counts_per_deg": s.travel,
-            "ripple": s.ripple.map(|(v, n, how)| json!({"counts_per_deg": v, "ripple_per_rev": n, "from": how}))})),
+            "ripple": s.ripple.map(|(v, n)| json!({"counts_per_deg": v, "events_per_rev": n,
+                "from": "the nameplate's brushes x rotor_segments"}))})),
         "one_way": t.one_way.iter().map(|w| json!({"from_counts": w.from, "to_counts": w.to,
             "only": way(w.dir)})).collect::<Vec<_>>(),
     })
@@ -3238,11 +3224,15 @@ mod tests {
     }
 
     fn run(m: Motor, stops: Value, schedule: Schedule, also: OnSent) -> Ran {
+        run_on(testkit::nameplate(), m, stops, schedule, also)
+    }
+
+    fn run_on(np: Nameplate, m: Motor, stops: Value, schedule: Schedule, also: OnSent) -> Ran {
         let d = descriptor();
         let (mut c, log, _) = testkit::motor_servo(m, X_START, also);
         let stored = block_on(c.read(ID, addr(&d, "drive_polarity"), 1)).expect("read")[0] != 0;
         log.borrow_mut().clear();
-        let (np, board, thermal) = (testkit::nameplate(), testkit::board(), testkit::thermal());
+        let (board, thermal) = (testkit::board(), testkit::thermal());
         let (rest, probe) = (rest_json(), probe_json(stored));
         let clock = testkit::clock();
         let stop = AtomicBool::new(false);
@@ -3307,8 +3297,9 @@ mod tests {
     /// rung rests inside its guards under its bound, the first fast pass
     /// runs at half length, and the shaft ends at the middle with torque
     /// off. The reading is accepted: the converter's slots, the points
-    /// that straighten the pot's bend, the scale from the stops over the
-    /// travel (the nameplate states no ripple_per_rev).
+    /// that straighten the pot's bend, the scale from the ripple (the
+    /// nameplate states its brushes, rotor segments and gear ratio), the
+    /// stops' span over the travel reported beside it.
     #[test]
     fn a_reduced_schedule_runs_every_pass_and_is_accepted() {
         let m = motor();
@@ -3405,14 +3396,23 @@ mod tests {
         assert!(n(&res["wide_codes"]["rows_a_code"]) >= ROWS_A_CODE_MIN);
         straightens_the_bend(&m, &res);
         let raw = &res["stops_used"];
-        assert_eq!(res["scale"]["source"], SCALE_TRAVEL);
+        let np = testkit::nameplate();
+        assert_eq!(res["scale"]["source"], SCALE_RIPPLE);
+        let rep = &res["table"]["report"];
+        let cpd = n(&res["scale"]["counts_per_deg"]);
+        assert_eq!(cpd, n(&rep["scales"]["ripple"]["counts_per_deg"]));
+        assert_eq!(rep["scales"]["ripple"]["events_per_rev"], 6);
+        // stop to stop: the pot's span over the motor's degrees between
+        // the stops, 0.5 cycles a straight count at 6 events and 308:1
+        let (s0, s1) = m.stops;
+        let deg = (s1 - s0) * m.cycles_per_count * 360.0 / (6.0 * np.gear_ratio.expect("gear"));
+        let truth = (m.pot(s1) - m.pot(s0)) / deg;
+        assert!((cpd / truth - 1.0).abs() < 0.003, "{cpd} against {truth}");
         assert_eq!(
-            n(&res["scale"]["counts_per_deg"]),
-            (n(&raw["raw_max"]) - n(&raw["raw_min"]))
-                / testkit::nameplate().travel_deg.expect("travel")
+            n(&rep["scales"]["span_over_travel_counts_per_deg"]),
+            (n(&raw["raw_max"]) - n(&raw["raw_min"])) / np.travel_deg.expect("travel")
         );
         assert!(n(&res["table"]["fit"]["residual_counts_rms"]) <= RESIDUAL_MAX_COUNTS);
-        let rep = &res["table"]["report"];
         let alone = rep["one_fast_pass_alone"].as_array().expect("stretches");
         assert!(
             !alone.is_empty() && alone.iter().all(|a| n(&a["share_of_span"]) > 0.0),
@@ -3424,8 +3424,6 @@ mod tests {
         {
             assert!(n(&p["line_out_counts_rms"]) <= PASS_OUT_MAX_COUNTS, "{p}");
         }
-        assert!(n(&rep["scales"]["span_over_travel_counts_per_deg"]) > 0.0);
-        assert_eq!(rep["scales"]["ripple"]["from"], RIPPLE_DERIVED);
         assert_eq!(res["table"]["report"]["directions"]["warning"], false);
         assert!(res["table"]["report"]["gear_play"]["counts"].is_null());
         assert!(n(&res["priced"]["blocked_s"]) > 0.0 && n(&res["priced"]["peak_rise_c"]) > 0.0);
@@ -3518,6 +3516,31 @@ mod tests {
         );
         let res = nothing_written(&mut r.sink);
         assert_eq!(res["before_any_write"], true);
+    }
+
+    /// A nameplate missing a commutator count is refused before any
+    /// write, naming both counts: the table's scale is read in them.
+    #[test]
+    fn a_nameplate_without_the_commutator_counts_is_refused() {
+        let m = motor();
+        let mut np = testkit::nameplate();
+        np.brushes = None;
+        let r = run_on(
+            np,
+            m.clone(),
+            stops_json(&m, APPROACH_Q15, 0.95),
+            REDUCED,
+            testkit::quiet(),
+        );
+        let why = r.out.expect_err("refused").0;
+        assert_eq!(why, crate::nameplate::COUNTS_MISSING);
+        assert!(
+            !r.log
+                .iter()
+                .any(|w| matches!(w, Sent::Write { .. }) || *w == Sent::Commit),
+            "{:?}",
+            r.log
+        );
     }
 
     /// A shaft faster than the approach legs allow runs the half pass's
@@ -3686,7 +3709,7 @@ mod tests {
             fs: 20_000.0,
             raw_min: m.pot(m.stops.0).ceil() as u16,
             raw_max: m.pot(m.stops.1).floor() as u16,
-            ripple_per_rev: None,
+            events_per_rev: 6,
             gear_ratio: None,
             travel_deg: 184.3,
         }
@@ -3748,7 +3771,8 @@ mod tests {
     /// down pass alone. That stretch is named, never refused; with the
     /// down pass left out the refit is judged on the counts the up passes
     /// cover, and every line passes. A refit with nothing to judge on
-    /// refuses.
+    /// refuses. The scale is the stops' span over the travel with no gear
+    /// ratio stated, the ripple's with one.
     #[test]
     fn a_stretch_resting_on_one_fast_pass_is_named_and_the_rest_judged() {
         let m = motor();
@@ -3796,6 +3820,33 @@ mod tests {
             pass_out(&[], &t.fit.as_ref().expect("fit").table)
                 .0
                 .is_err()
+        );
+        let travel = (c.raw_max as f64 - c.raw_min as f64) / c.travel_deg;
+        assert_eq!(
+            t.scale,
+            Some((travel, SCALE_TRAVEL)),
+            "no gear ratio stated"
+        );
+        let g = 308.0533;
+        let t = read_table(
+            &rungs,
+            &slots,
+            &JudgeCfg {
+                gear_ratio: Some(g),
+                ..c.clone()
+            },
+        );
+        let want = t
+            .fit
+            .as_ref()
+            .expect("fit")
+            .table
+            .scale(6, g, c.raw_min, c.raw_max)
+            .expect("scale");
+        assert_eq!(t.scale, Some((want, SCALE_RIPPLE)));
+        assert_eq!(
+            t.scales.map(|s| (s.ripple, s.travel)),
+            Some((Some((want, 6)), travel))
         );
     }
 

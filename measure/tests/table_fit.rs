@@ -24,8 +24,6 @@ const FS: f64 = 20_000.0;
 const STOPS: (u16, u16) = (110, 3730);
 /// The stops of the table of record (`testdata/mg90-d/pos_lut.json`).
 const RECORD_STOPS: (u16, u16) = (82, 3792);
-/// The mg90-d motor's commutations a revolution (oscnb `motors`).
-const RIPPLE_PER_REV: u32 = 6;
 
 fn path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
@@ -60,12 +58,22 @@ fn record_slots() -> [u8; 16] {
     s.try_into().expect("16 slots")
 }
 
+fn nameplate() -> osc_measure::Nameplate {
+    serde_json::from_value(json("testdata/mg90-d/nameplate.json")).expect("nameplate")
+}
+
 fn gear_ratio() -> f64 {
-    f(&json("testdata/mg90-d/nameplate.json")["gear_ratio"])
+    nameplate().gear_ratio.expect("gear_ratio")
+}
+
+/// The mg90-d motor's events a revolution: the nameplate's brushes times
+/// rotor segments (oscnb `motors`).
+fn events_per_rev() -> u32 {
+    nameplate().events_per_rev().expect("counts")
 }
 
 fn cyc_deg() -> f64 {
-    360.0 / (RIPPLE_PER_REV as f64 * gear_ratio())
+    360.0 / (events_per_rev() as f64 * gear_ratio())
 }
 
 /// `got` within `share` of `want`.
@@ -217,7 +225,7 @@ fn the_mean_table_matches_the_offline_check() {
 
     let scale = t
         .table
-        .scale(Some(RIPPLE_PER_REV), Some(gear_ratio()))
+        .scale(events_per_rev(), gear_ratio(), STOPS.0, STOPS.1)
         .expect("scale");
     near("counts a degree", scale, 19.01, 0.10);
     near("counts a degree", scale, f(&exp["counts_per_deg"]), 1e-3);
@@ -408,6 +416,29 @@ fn the_pooled_table_matches_the_reference() {
     );
     let counts = p.residual_rms * p.table.counts_per_cycle();
     assert!(counts <= 4.0, "pooled residual {counts:.2} counts");
+    // the ripple scale at the nameplate's two brushes, three segments and
+    // counted gear ratio, stop to stop on the end lines: the reference's
+    // at the stops, and the gather fixture's, made from this fit pinned
+    // to its stops 107 and 3729
+    assert_eq!(events_per_rev(), 6);
+    let scale = |lo, hi| {
+        p.table
+            .scale(events_per_rev(), gear_ratio(), lo, hi)
+            .expect("scale")
+    };
+    near(
+        "pooled counts a degree",
+        scale(STOPS.0, STOPS.1),
+        f(&exp["counts_per_deg"]),
+        1e-3,
+    );
+    let gathered = f(&json("testdata/gather/table.json")["scale"]["counts_per_deg"]);
+    near("pooled counts a degree", scale(107, 3729), gathered, 1e-6);
+    println!(
+        "pooled counts a degree {:.4} at the stops {STOPS:?}, {:.4} at 107..3729",
+        scale(STOPS.0, STOPS.1),
+        scale(107, 3729)
+    );
     // past the common span the table rests on one direction alone
     let (up, down) = (p.up.expect("up"), p.down.expect("down"));
     assert!(up.1 < p.table.span.hi() && down.0 > p.table.span.lo());

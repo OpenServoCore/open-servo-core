@@ -262,7 +262,11 @@ enum StepName {
 
 #[derive(clap::Args, Debug)]
 struct StepArgs {
-    /// The servo's nameplate file (JSON, the rules' nameplate.json).
+    /// The servo's nameplate file (JSON, the rules' nameplate.json): the
+    /// maker's sheet (gear class, operating and run voltage, no-load and
+    /// stall rows, derates), the counted gear ratio, the travel, the count's
+    /// sense, and the motor's brushes and rotor_segments (commutator
+    /// segments), counted on a teardown or stated by the maker.
     #[arg(long)]
     nameplate: Option<PathBuf>,
     /// The user's thermal values (JSON, the rules' thermal.json).

@@ -511,15 +511,23 @@ impl Table {
         (self.angle[self.angle.len() - 1] - self.angle[0]) / (self.span.hi() - self.span.lo())
     }
 
-    /// The angle at `x` counts, continued at [`Table::mean_slope`] past
-    /// the span.
+    /// The cycles a count of the span's first and last interval: the end
+    /// lines the table runs on past it (oscnb `position.Lookup`, the last
+    /// cell's own slope).
+    pub fn end_slopes(&self) -> (f64, f64) {
+        let (a, m) = (&self.angle, self.angle.len() - 1);
+        ((a[1] - a[0]) / GRID_F, (a[m] - a[m - 1]) / GRID_F)
+    }
+
+    /// The angle at `x` counts, continued past the span on its end lines
+    /// ([`Table::end_slopes`]).
     pub fn angle_at(&self, x: f64) -> f64 {
         let (a0, a1) = (self.angle[0], self.angle[self.angle.len() - 1]);
-        let sl = self.mean_slope();
+        let (s0, s1) = self.end_slopes();
         if x < self.span.lo() {
-            a0 + (x - self.span.lo()) * sl
+            a0 + (x - self.span.lo()) * s0
         } else if x > self.span.hi() {
-            a1 + (x - self.span.hi()) * sl
+            a1 + (x - self.span.hi()) * s1
         } else {
             interp(x, &self.span.knots(), &self.angle, a0, a1)
         }
@@ -547,11 +555,23 @@ impl Table {
         out
     }
 
-    /// Counts a degree of the output from the ripple, when the motor's
-    /// commutations a revolution and the gear ratio are both known.
-    pub fn scale(&self, ripple_per_rev: Option<u32>, gear_ratio: Option<f64>) -> Option<f64> {
-        let (n, g) = (ripple_per_rev? as f64, gear_ratio?);
-        let v = n * g / (360.0 * self.mean_slope());
+    /// Counts a degree of the output from the ripple, in the frame the
+    /// points write: the stops' span over the output's degrees between
+    /// them, the table's cycles from stop to stop ([`Table::angle_at`])
+    /// times 360 over the motor's events a revolution (the nameplate's
+    /// brushes times rotor segments) times the counted gear ratio (plan
+    /// sec 2.6).
+    pub fn scale(
+        &self,
+        events_per_rev: u32,
+        gear_ratio: f64,
+        raw_min: u16,
+        raw_max: u16,
+    ) -> Option<f64> {
+        let (n, g) = (events_per_rev as f64, gear_ratio);
+        let (lo, hi) = (raw_min as f64, raw_max as f64);
+        let deg = (self.angle_at(hi) - self.angle_at(lo)) * 360.0 / (n * g);
+        let v = (hi - lo) / deg;
         (n > 0.0 && g > 0.0 && v.is_finite() && v > 0.0).then_some(v)
     }
 
@@ -913,9 +933,43 @@ mod tests {
         assert_eq!(lut(hi), hi as f64);
         let (gmin, gmax) = gains(&p);
         assert!(gmin >= 8 && gmax <= 32, "{gmin} {gmax}");
-        let s = t.scale(Some(6), Some(300.0)).expect("scale");
-        assert!((s - 6.0 * 300.0 / (360.0 * t.mean_slope())).abs() < 1e-9);
-        assert_eq!(t.scale(None, Some(300.0)), None);
+        // stops past the span: the ends run on the end intervals' slopes
+        let (s0, s1) = t.end_slopes();
+        let cycles = t.angle[t.angle.len() - 1] - t.angle[0]
+            + (span.lo() - lo as f64) * s0
+            + (hi as f64 - span.hi()) * s1;
+        let s = t.scale(6, 300.0, lo, hi).expect("scale");
+        assert!((s - (hi - lo) as f64 * 6.0 * 300.0 / (360.0 * cycles)).abs() < 1e-9);
+        assert_eq!(t.scale(0, 300.0, lo, hi), None);
         assert!((span.coverage(lo, hi) - 992.0 / 3620.0).abs() < 1e-12);
+    }
+
+    /// A table reading 0.2 cycles a count below 1500 and 0.3 above, on
+    /// 512..3072: its scale is the stops' span over the cycles between
+    /// them, not the middle's slope nor the span's mean; stops past the
+    /// span read the cycles on its end lines, its end intervals' slopes.
+    #[test]
+    fn the_scale_is_the_stop_to_stop_frame() {
+        let span = Span { k0: 32, k1: 192 };
+        let a = |x: f64| 0.2 * x.min(1500.0) + 0.3 * (x - 1500.0).max(0.0);
+        let t = Table {
+            span,
+            angle: span.knots().iter().map(|&x| a(x)).collect(),
+        };
+        let (n, g) = (6, 300.0);
+        let (lo, hi) = (1000u16, 1900u16);
+        let s = t.scale(n, g, lo, hi).expect("scale");
+        let cycles = a(1900.0) - a(1000.0);
+        let want = 900.0 / (cycles * 360.0 / (6.0 * 300.0));
+        assert!((s - want).abs() < 1e-9, "{s} against {want}");
+        let middle = 6.0 * 300.0 / (360.0 * 0.2);
+        let mean = 6.0 * 300.0 / (360.0 * t.mean_slope());
+        assert!((s / middle - 1.0).abs() > 0.05 && (s / mean - 1.0).abs() > 0.05);
+        let (s0, s1) = t.end_slopes();
+        assert!((s0 - 0.2).abs() < 1e-12 && (s1 - 0.3).abs() < 1e-12);
+        let (lo, hi) = (200u16, 3500u16);
+        let s = t.scale(n, g, lo, hi).expect("scale");
+        let want = 3300.0 / ((a(3500.0) - a(200.0)) * 360.0 / (6.0 * 300.0));
+        assert!((s - want).abs() < 1e-9, "{s} against {want}");
     }
 }
