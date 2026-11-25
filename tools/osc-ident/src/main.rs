@@ -209,7 +209,7 @@ enum StepName {
         out: PathBuf,
     },
     /// Step 5, free spins and their coasts: rest, the probe, the stops
-    /// and the window term first, then a pilot spin and twelve spins
+    /// and the window term first, then a pilot spin and fourteen spins
     /// between the stops at 25, 50 and 75 % of the stated voltage, each
     /// from rest at a guard and cut short of the far one, for Ke, J and the
     /// open-loop friction line; the shaft left at mid travel. Drives the motor fast between
