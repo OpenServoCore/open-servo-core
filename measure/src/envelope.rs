@@ -13,7 +13,8 @@
 //! free drive: the nameplate's stall current), duty (no drive above the
 //! voltage the nameplate states its speed at), time (the burst counter,
 //! and less while the permit is held), travel (inside a guard in from each
-//! stop) and temperature (the board NTC, and the winding's rise as the
+//! stop, but a light press with the permit held may end on the stop it
+//! drives toward) and temperature (the board NTC, and the winding's rise as the
 //! kernel's own estimator predicts it from the user's thermal values, fed
 //! every rung's blocked-case heat and the gaps between rungs).
 
@@ -444,7 +445,21 @@ impl Envelope {
             match f.band() {
                 Some((lo, hi)) => {
                     let out = |end: f64| end < lo || end > hi;
-                    if out(free_end) {
+                    let onto_stop = r.permit
+                        && f.polarity_proven
+                        && r.kind == Kind::Drive
+                        && if dir > 0.0 {
+                            free_end > hi
+                        } else {
+                            free_end < lo
+                        };
+                    let light = hold_a(f.gear) / 2.0;
+                    if onto_stop && current_a > light {
+                        no.push(format!(
+                            "free shaft: from {:.0} the worst case runs {travel:.0} counts to {free_end:.0}, past the guard {lo:.0}..{hi:.0} onto the stop, with {current_a:.3} A blocked, over the {light} A (half the stop-hold ceiling) a rung may arrive at a stop with",
+                            r.start
+                        ));
+                    } else if !onto_stop && out(free_end) {
                         no.push(format!(
                             "free shaft: from {:.0} the worst case runs {travel:.0} counts to {free_end:.0}, past the guard {lo:.0}..{hi:.0}",
                             r.start
@@ -545,7 +560,7 @@ impl Envelope {
             }
             (Some(s), Some(a)) => format!("{a:.3} A, the nameplate's {} V over R", s.at_v),
             (Some(s), None) => format!(
-                "the nameplate's {} V over R, once R is measured (step 4); until then no drive",
+                "the nameplate's {} V over R, once R is measured (the probe and the stops step); until then no drive",
                 s.at_v
             ),
             (None, _) => "the nameplate states no stall row: no drive".into(),
@@ -560,8 +575,9 @@ impl Envelope {
         };
         let travel = match (f.stops, f.band()) {
             (Some((lo, hi)), Some((glo, ghi))) => format!(
-                "start, worst case and stop inside {glo:.0}..{ghi:.0}, {:.0}% of the stops {lo:.0}..{hi:.0} in from each",
-                100.0 * GUARD_SHARE
+                "start, worst case and stop inside {glo:.0}..{ghi:.0}, {:.0}% of the stops {lo:.0}..{hi:.0} in from each; with the stall permit held and the sign proven, a rung at most {} A blocked (half the stop-hold ceiling) may end on the stop it drives toward",
+                100.0 * GUARD_SHARE,
+                hold_a(f.gear) / 2.0
             ),
             _ => format!(
                 "the stops are not found yet: only a rung that moves nothing, or one stall-safe by its duty alone (at most {} A blocked, half the stop-hold ceiling)",
@@ -754,6 +770,64 @@ mod tests {
         assert_eq!(why.matches("; ").count(), 0, "the travel alone: {why}");
         e.facts.gear = Some(GearClass::Plastic);
         assert!(refused(&e, &at(light * 0.999)).contains("0.15 A"));
+    }
+
+    /// Once the stops are known, a rung with the permit held and the sign
+    /// proven may end on the stop it drives toward at a light press; the
+    /// same rung without the permit, or with the sign unproven, may not.
+    #[test]
+    fn a_permit_rung_may_end_on_a_stop_at_a_light_press() {
+        let e = envelope(true);
+        // 300 counts inside the high stop, driven up for the permit's whole time
+        let r = rung(0.04, PERMIT_MAX_S, 3600.0, true, 900.0);
+        assert!(e.price(&r).is_ok(), "{}", refused(&e, &r));
+        let down = rung(-0.04, PERMIT_MAX_S, 500.0, true, 900.0);
+        let p = e.price(&down).expect("onto the low stop");
+        assert!(p.free_end < 200.0, "{p:?}");
+        let no = refused(&e, &rung(0.04, PERMIT_MAX_S, 3600.0, false, 900.0));
+        assert!(no.contains("past the guard"), "{no}");
+        let no = refused(&envelope(false), &r);
+        assert!(
+            no.contains("free shaft: ") && no.contains("past the guard"),
+            "{no}"
+        );
+    }
+
+    #[test]
+    fn a_permit_rung_over_half_the_hold_ceiling_may_not_end_on_a_stop() {
+        let e = envelope(true);
+        // the duty whose blocked current is the whole stop-hold ceiling
+        let r_ohm = e.facts.r.as_ref().map(|r| r.ohm).unwrap_or(1.0);
+        let duty = hold_a(e.facts.gear) * r_ohm / e.facts.rail_v;
+        let no = refused(&e, &rung(duty, PERMIT_MAX_S, 3600.0, true, 900.0));
+        assert!(no.contains("half the stop-hold ceiling"), "{no}");
+    }
+
+    #[test]
+    fn a_rung_without_the_permit_may_not_end_past_a_guard() {
+        let e = envelope(true);
+        for (duty, start) in [(0.04, 3600.0), (-0.04, 500.0)] {
+            let no = refused(&e, &rung(duty, PERMIT_MAX_S, start, false, 900.0));
+            assert!(no.contains("past the guard"), "{no}");
+            assert_eq!(no.matches("; ").count(), 0, "the travel alone: {no}");
+        }
+    }
+
+    /// From under the low guard a short rung up ends still under it: the
+    /// permit lets a rung onto the stop it drives toward, not the one
+    /// behind it.
+    #[test]
+    fn a_permit_rung_may_not_end_past_the_guard_it_drives_away_from() {
+        let e = envelope(true);
+        let (lo, hi) = e.facts.band().expect("stops");
+        for (duty, start) in [(0.04, lo - 60.0), (-0.04, hi + 60.0)] {
+            let r = rung(duty, 0.05, start, true, 100.0);
+            let no = refused(&e, &r);
+            assert!(
+                no.contains("past the guard") && !no.contains("onto the stop"),
+                "{no}"
+            );
+        }
     }
 
     fn unwedge(duty: f64, time_s: f64) -> Rung {

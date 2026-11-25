@@ -41,5 +41,19 @@
   "sha1": "d477ea3255bdb3dc252da95e358b5e821b910756",
   "sweeps_sha1": "378950db0f18ef753c50dffef13bc3e2fa747d5a",
   "rows": "histograms, even and odd folders by their index apart"
+ },
+ "stop-rungs.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/ident-table-gate/t1/00000000ffffffff76e5bc220ef6abcd/20261125T063717Z/captures/table/{07,13,15}-raw.csv.gz",
+  "sha1": {
+   "07": "dac1d514963481b78eae85449e12dc0aded76144",
+   "13": "72f5bd947ad926105ef5bf372085473982871e40",
+   "15": "44d56c371166ad23fd4acef1a3b3979ce71ba6b9"
+  },
+  "rows": "the last 6000 rows (0.3 s) of each drive capture: 07 the stop rung onto the low stop (108), 13 and 15 the two stop rungs onto the high stop (3726)",
+  "columns": [
+   "capture",
+   "tick",
+   "pos"
+  ]
  }
 }

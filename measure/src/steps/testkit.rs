@@ -105,28 +105,30 @@ pub const BOOT_VREF: u16 = 1490;
 
 /// The shaft at rest at `pos`, the zero at 1206.
 pub fn still_at(pos: u16) -> Vec<TelSample> {
-    (0..4096u32)
-        .map(|i| TelSample {
-            tick: TelemetryTick {
-                _scan: [0; 9],
-                pos,
-                vbus_raw: 1241,
-                ntc_raw: 2010,
-                current_raw: 1206,
-                vmotor_a: 773,
-                vmotor_b: 772,
-                duty_ticks: 0,
-                current_trough: 1206,
-                i_tick_counts: 0,
-                vdiff_counts: 0,
-                vmotor_a_trough: 773,
-                vmotor_b_trough: 772,
-                tick_flags: 0,
-                sample_tick: i,
-            },
-            vbus_counts: 2000,
-        })
-        .collect()
+    (0..4096u32).map(|i| rest_row(pos, i)).collect()
+}
+
+fn rest_row(pos: u16, i: u32) -> TelSample {
+    TelSample {
+        tick: TelemetryTick {
+            _scan: [0; 9],
+            pos,
+            vbus_raw: 1241,
+            ntc_raw: 2010,
+            current_raw: 1206,
+            vmotor_a: 773,
+            vmotor_b: 772,
+            duty_ticks: 0,
+            current_trough: 1206,
+            i_tick_counts: 0,
+            vdiff_counts: 0,
+            vmotor_a_trough: 773,
+            vmotor_b_trough: 772,
+            tick_flags: 0,
+            sample_tick: i,
+        },
+        vbus_counts: 2000,
+    }
 }
 
 /// The calibrated simulated servo at rest at `pos` on a 3 Mbaud bus, its
@@ -171,4 +173,257 @@ pub fn board() -> Board {
 
 pub fn thermal() -> ThermalInputs {
     serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json")).expect("thermal")
+}
+
+/// A brushed motor behind the simulated servo's pot, the least the table
+/// step reads: the shaft's turn, a first-order spin-up and coast, a pot
+/// that reads fast over one bend, a converter that sticks at chosen
+/// carries, and a winding current that rides a ripple line at the
+/// commutations' rate. Positions are straight counts, the pot's own where
+/// it has no bend.
+#[derive(Clone, Debug)]
+pub struct Motor {
+    /// The free speed a share of full duty over [`Motor::dead_duty`]
+    /// turns the shaft at, counts/s.
+    pub cps_full: f64,
+    /// The duty the shaft's friction holds it still under.
+    pub dead_duty: f64,
+    /// Commutation cycles a straight count: the ripple line is this times
+    /// the speed.
+    pub cycles_per_count: f64,
+    pub rise_tau_s: f64,
+    pub coast_tau_s: f64,
+    /// Where the train stops.
+    pub stops: (f64, f64),
+    /// The bend's middle and half width, and the counts it adds across it.
+    pub bend: (f64, f64, f64),
+    /// A wave the pot reads only while driven up: its amplitude and its
+    /// period, counts, zero at the low stop.
+    pub up_wave: (f64, f64),
+    /// The pot's row-to-row noise while driven up onto the high stop,
+    /// counts either way.
+    pub pressed_noise: f64,
+    /// Each carry the converter sticks at, and the codes over it it skips.
+    pub wide: Vec<(u16, u16)>,
+    /// The current's zero, its level at full duty and the ripple's
+    /// amplitude, counts.
+    pub zero: f64,
+    pub level: f64,
+    pub ripple: f64,
+    /// The line at twice the commutations' rate: its amplitude, counts,
+    /// under a duty share, none at or over it.
+    pub ripple2: (f64, f64),
+    pub pwm_arr: f64,
+}
+
+/// Rows of the shaft's old state ahead of a committed duty: the burst
+/// opens on the commit's tick, the duty lands a medium tick later.
+pub const EDGE_ROWS: usize = 10;
+/// Rows a track holds the shaft still after it settles: longer than any
+/// wait between two writes, since a track loops.
+const HOLD_ROWS: usize = 200_000;
+const TRACK_MAX_ROWS: usize = 1_200_000;
+const TICK_HZ: f64 = 20_000.0;
+
+impl Motor {
+    /// The pot's reading at straight count `x`, before the converter.
+    pub fn pot(&self, x: f64) -> f64 {
+        let (mid, w, extra) = self.bend;
+        x + extra / 2.0 * (1.0 + ((x - mid) / w).tanh())
+    }
+
+    /// The code the converter reads at pot reading `pot`.
+    fn code_of(&self, pot: f64) -> u16 {
+        let c = pot.floor().clamp(0.0, 4095.0) as u16;
+        self.wide
+            .iter()
+            .find(|(k, s)| (*k..=k + s).contains(&c))
+            .map_or(c, |(k, _)| *k)
+    }
+
+    pub fn sample(&self, x: f64, q: i16, k: usize) -> TelSample {
+        let d = q as f64 / 32768.0;
+        let phase = 2.0 * std::f64::consts::PI * self.cycles_per_count * x;
+        let i = (self.zero
+            + self.level * d.abs()
+            + self.ripple * phase.sin()
+            + if d.abs() < self.ripple2.1 {
+                self.ripple2.0 * (2.0 * phase).sin()
+            } else {
+                0.0
+            })
+        .round() as u16;
+        let (a, period) = self.up_wave;
+        let wave = if q > 0 {
+            a * (2.0 * std::f64::consts::PI * (x - self.stops.0) / period).sin()
+        } else {
+            0.0
+        };
+        let noise = if q > 0 && x >= self.stops.1 {
+            self.pressed_noise * (1.7 * k as f64).sin()
+        } else {
+            0.0
+        };
+        let mut s = rest_row(self.code_of(self.pot(x) + wave + noise), k as u32);
+        s.tick.current_raw = i;
+        s.tick.current_trough = i;
+        s.tick.duty_ticks = (d * self.pwm_arr).round() as i16;
+        s.tick.sample_tick = k as u32;
+        s
+    }
+
+    /// The shaft from `x` at `v` counts/s under duty `q` until it settles
+    /// or presses a stop, then held there; `edge` rows of duty `was`
+    /// ahead. With `zero_after`, the duty goes to zero that many rows in
+    /// and the shaft coasts.
+    pub fn run(
+        &self,
+        x: f64,
+        v: f64,
+        was: i16,
+        q: i16,
+        edge: usize,
+        zero_after: Option<usize>,
+    ) -> (Vec<TelSample>, Vec<(f64, f64)>) {
+        let (mut x, mut v) = (x, v);
+        let mut rows = Vec::new();
+        let mut states = Vec::new();
+        for k in 0..edge {
+            rows.push(self.sample(x, was, k));
+            states.push((x, v));
+        }
+        let dt = 1.0 / TICK_HZ;
+        let mut q = q;
+        while rows.len() < TRACK_MAX_ROWS {
+            if zero_after.is_some_and(|n| rows.len() >= edge + n) {
+                q = 0;
+            }
+            let d = q as f64 / 32768.0;
+            let target = d.signum() * self.cps_full * (d.abs() - self.dead_duty).max(0.0);
+            let tau = if q != 0 {
+                self.rise_tau_s
+            } else {
+                self.coast_tau_s
+            };
+            v += (target - v) * dt / tau;
+            x += v * dt;
+            let (lo, hi) = self.stops;
+            let pressed = (x <= lo && target <= 0.0) || (x >= hi && target >= 0.0);
+            if x <= lo || x >= hi {
+                x = x.clamp(lo, hi);
+                v = 0.0;
+            }
+            rows.push(self.sample(x, q, rows.len()));
+            states.push((x, v));
+            if (q == 0 && v.abs() < 0.05) || (q != 0 && pressed && zero_after.is_none()) {
+                break;
+            }
+        }
+        for _ in 0..HOLD_ROWS {
+            rows.push(self.sample(x, q, rows.len()));
+            states.push((x, 0.0));
+        }
+        (rows, states)
+    }
+}
+
+/// The motor's state on the simulated servo: where the shaft is along the
+/// track it plays, and a duty and a burst's rows held for their COMMIT.
+pub struct Plant {
+    pub motor: Motor,
+    states: Vec<(f64, f64)>,
+    staged: Option<i16>,
+    armed: Option<u16>,
+    duty: i16,
+}
+
+impl Plant {
+    /// Where the shaft is now, straight counts, and its speed.
+    pub fn now(&self, pipe: &mut FakePipe) -> (f64, f64) {
+        let row = pipe.sim_mut().track_row(0).unwrap_or(0);
+        self.states
+            .get(row % self.states.len().max(1))
+            .copied()
+            .unwrap_or((self.motor.stops.0, 0.0))
+    }
+
+    fn apply(&mut self, pipe: &mut FakePipe, q: i16, edge: usize, armed: Option<u16>) {
+        let (x, v) = self.now(pipe);
+        let zero_after = armed.filter(|_| q != 0).map(usize::from);
+        let (rows, states) = self.motor.run(x, v, self.duty, q, edge, zero_after);
+        self.states = states;
+        self.duty = if zero_after.is_some() { 0 } else { q };
+        pipe.set_track(0, rows);
+    }
+}
+
+/// The calibrated simulated servo with `motor` behind its pot, the shaft
+/// at rest at straight count `x`: a duty written plain applies at once, a
+/// held one at its COMMIT, torque off coasts. A committed drive armed with
+/// a burst ends with the burst's rows, as on silicon the host's zero
+/// follows the burst's LAST frame: the fake adapter plays each stream's
+/// whole window out before the host's next command. `also` sees every write and COMMIT
+/// first.
+pub fn motor_servo(
+    motor: Motor,
+    x: f64,
+    mut also: OnSent,
+) -> (Client<Spy>, Log, Rc<RefCell<Plant>>) {
+    let d = descriptor();
+    let (goal, torque, chunk0) = (
+        addr(&d, "goal_duty"),
+        addr(&d, "torque_enable"),
+        addr(&d, "chunk0_addr"),
+    );
+    let (rows, states) = motor.run(x, 0.0, 0, 0, 0, None);
+    let plant = Rc::new(RefCell::new(Plant {
+        motor,
+        states,
+        staged: None,
+        armed: None,
+        duty: 0,
+    }));
+    let p = plant.clone();
+    let on_sent: OnSent = Box::new(move |s, pipe| {
+        also(s, pipe);
+        let mut p = p.borrow_mut();
+        match s {
+            Sent::Write { addr, data, hold } if *addr == goal && data.len() == 2 => {
+                let q = i16::from_le_bytes([data[0], data[1]]);
+                if *hold {
+                    p.staged = Some(q);
+                } else {
+                    p.apply(pipe, q, 0, None);
+                }
+            }
+            Sent::Write {
+                addr,
+                data,
+                hold: true,
+            } if *addr == chunk0 && data.len() >= 10 => {
+                p.armed = Some(u16::from_le_bytes([data[8], data[9]]));
+            }
+            Sent::Write { addr, data, .. } if *addr == torque && data[..] == [0] => {
+                p.apply(pipe, 0, 0, None)
+            }
+            Sent::Commit => {
+                let armed = p.armed.take();
+                if let Some(q) = p.staged.take() {
+                    p.apply(pipe, q, EDGE_ROWS, armed);
+                }
+            }
+            _ => {}
+        }
+    });
+    let mut inner = FakePipe::new(BaudRate::B3000000, &[1]);
+    inner.seed_calibrated(0);
+    inner.set_track(0, rows);
+    let log = Log::default();
+    let c = block_on(Client::connect(Spy {
+        inner,
+        log: log.clone(),
+        on_sent,
+    }))
+    .expect("connect");
+    (c, log, plant)
 }

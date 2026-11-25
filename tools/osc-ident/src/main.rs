@@ -198,18 +198,31 @@ enum StepName {
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
     },
-    /// Step 4, the window term: rest, the probe and the stops first, then
-    /// 24 open-loop onsets from rest near mid travel (48 when the two
-    /// directions differ), fitted after the way out. Drives the motor;
-    /// metal gears only, for now.
+    /// Step 4, the ADC's wide codes and the position table: rest, the
+    /// probe and the stops first, then open-loop slow passes at the
+    /// approach duty stop to stop, each ending pressed on its stop under
+    /// the stall permit, and fast passes at one fifth of the rated speed
+    /// guard to guard; the motor's ripple read as the ruler after the way
+    /// out, the shaft left at mid travel. Presses the end stops; metal
+    /// gears only, for now.
+    Table {
+        #[command(flatten)]
+        i: StepArgs,
+        #[arg(long, default_value = "osc-ident-runs")]
+        out: PathBuf,
+    },
+    /// Step 5, the window term: rest, the probe, the stops and the table
+    /// first, then 24 open-loop onsets from rest near mid travel (48 when
+    /// the two directions differ), fitted after the way out. Drives the
+    /// motor; metal gears only, for now.
     Window {
         #[command(flatten)]
         i: StepArgs,
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
     },
-    /// Step 5, free spins and their coasts: rest, the probe, the stops
-    /// and the window term first, then a pilot spin and fourteen spins
+    /// Step 6, free spins and their coasts: rest, the probe, the stops,
+    /// the table and the window term first, then a pilot spin and fourteen spins
     /// between the stops at 25, 50 and 75 % of the stated voltage, each
     /// from rest at a guard and cut short of the far one, for Ke, J and the
     /// open-loop friction line; the shaft left at mid travel. Drives the motor fast between
@@ -519,6 +532,7 @@ fn run(cli: &Cli) -> Result<bool> {
             let (StepName::Rest { i, out }
             | StepName::Probe { i, out }
             | StepName::Stops { i, out }
+            | StepName::Table { i, out }
             | StepName::Window { i, out }
             | StepName::Spins { i, out }
             | StepName::Verify { i, out }
@@ -538,6 +552,9 @@ fn run(cli: &Cli) -> Result<bool> {
                     }
                     StepName::Stops { .. } => {
                         steps::step_stops(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                    }
+                    StepName::Table { .. } => {
+                        steps::step_table(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
                     }
                     StepName::Window { .. } => {
                         steps::step_window(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
@@ -669,6 +686,14 @@ mod tests {
     #[test]
     fn the_arguments_parse() {
         Cli::command().debug_assert();
+        let cli = Cli::try_parse_from(["osc-ident", "step", "table", "--nameplate", "np.json"])
+            .expect("step table parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Step {
+                step: StepName::Table { .. }
+            }
+        ));
     }
 
     /// `rules` on the mg90-d inputs writes a set that `check` reads as the

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use osc_measure::gather::{
-    self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, WINDOW_RESULT,
+    self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, TABLE_RESULT, WINDOW_RESULT,
 };
 use osc_measure::inputs::ThermalInputs;
 use osc_measure::steps::{probe, rest, stops};
@@ -30,8 +30,9 @@ fn parsed<T: DeserializeOwned>(p: &Path, bytes: &[u8]) -> Result<T> {
 }
 
 /// The inputs folder `out` from the run folder `run`: `measured.json`, the
-/// straight table `pos_lut.json`, and the nameplate, the policy and the
-/// thermal values as given. The lines it prints.
+/// table `pos_lut.json` (the table step's, else straight), the table
+/// step's slots `wide-codes.json` where it ran, and the nameplate, the
+/// policy and the thermal values as given. The lines it prints.
 pub fn gather(
     run: &Path,
     nameplate: &Path,
@@ -58,6 +59,7 @@ pub fn gather(
         window: result(run, WINDOW_RESULT)?,
         spins: result(run, SPINS_RESULT)?,
         cruise: result(run, CRUISE_RESULT)?,
+        table: result(run, TABLE_RESULT)?,
     };
     let g = gather::gather(&results, &np).map_err(|e| anyhow::anyhow!("{e}"))?;
     if out.exists() {
@@ -79,6 +81,10 @@ pub fn gather(
         "nameplate.json",
         "policy.json",
     ];
+    if let Some(w) = &g.wide_codes {
+        sink.write("wide-codes.json", gather::render(w).as_bytes())?;
+        wrote.push("wide-codes.json");
+    }
     if let Some(b) = &thermal_bytes {
         sink.write("thermal.json", b)?;
         wrote.push("thermal.json");
@@ -173,6 +179,49 @@ mod tests {
         .expect_err("refused");
         assert!(format!("{e:#}").contains("osc-ident step stops"), "{e:#}");
         assert!(!dir.join("other").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// With the table step's result in the run, the inputs folder holds
+    /// its points and its slots, and `rules` writes a set whose table is
+    /// LIVE and whose slots are the step's.
+    #[test]
+    fn gather_writes_the_table_steps_table_and_slots() {
+        let dir = scratch("gather-table");
+        let run = dir.join("run");
+        std::fs::create_dir_all(run.join("results")).expect("mkdir");
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
+            std::fs::copy(
+                testdata(&format!("gather/{f}.json")),
+                run.join(format!("results/{f}.json")),
+            )
+            .expect("copy");
+        }
+        let out = dir.join("inputs");
+        let lines = gather(
+            &run,
+            &testdata("mg90-d/nameplate.json"),
+            Some(&testdata("mg90-d/thermal.json")),
+            &testdata("mg90-d/policy.json"),
+            &out,
+        )
+        .expect("gathers");
+        assert!(
+            lines.iter().any(|l| l.contains("wide-codes.json")),
+            "{lines:?}"
+        );
+        let r = files::rules_inputs(&out, None, None).expect("the rules read it");
+        let t = r.table.as_ref().expect("the table");
+        assert!(t.points.iter().any(|&k| k != 0));
+        assert_eq!(
+            r.slots.as_deref(),
+            Some(&[0, 48, 0, 80, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0][..])
+        );
+        let set_out = dir.join("set.json");
+        crate::rules(&out, None, None, None, &set_out).expect("rules");
+        let set = files::set(&set_out).expect("set");
+        assert_eq!(set.table().0, "LIVE");
+        assert_eq!(set.slots().expect("slots").as_deref(), r.slots.as_deref());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
