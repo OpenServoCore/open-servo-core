@@ -132,21 +132,24 @@ def slopes(xg, knots, a):
     return (np.interp(xg + 24, knots, a) - np.interp(xg - 24, knots, a)) / 48
 
 
-def end_lines(knots, m):
-    """The table's angle at counts, past its knots on its end lines: the
-    first and last cell's own slope, as `position.Lookup` runs."""
-    return position.Lookup("counts", knots, m).angle
+def angle_at(knots, m):
+    """The table's angle at counts, past its knots at its mean slope."""
+    sl = (m[-1] - m[0]) / (knots[-1] - knots[0])
+    def ang(x):
+        return np.where(x < knots[0], m[0] + (x - knots[0]) * sl,
+                        np.where(x > knots[-1], m[-1] + (x - knots[-1]) * sl, np.interp(x, knots, m)))
+    return ang
 
 
 def scale(knots, m, lo_s, hi_s):
     """Counts a degree stop to stop: the stops' span over the output's
-    degrees between them on the table's end lines."""
-    ang = end_lines(knots, m)
+    degrees between them."""
+    ang = angle_at(knots, m)
     return (hi_s - lo_s) / ((ang(hi_s) - ang(lo_s)) * CYC_DEG)
 
 
 def points(knots, m, lo_s, hi_s):
-    ang = end_lines(knots, m)
+    ang = angle_at(knots, m)
     g = np.arange(257) * 16.0
     t = lo_s + (ang(g) - ang(lo_s)) * (hi_s - lo_s) / (ang(hi_s) - ang(lo_s))
     c = np.round(t - g)

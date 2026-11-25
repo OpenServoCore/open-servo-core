@@ -560,23 +560,15 @@ impl Table {
         (self.angle[self.angle.len() - 1] - self.angle[0]) / (self.span.hi() - self.span.lo())
     }
 
-    /// The cycles a count of the span's first and last interval: the end
-    /// lines the table runs on past it (oscnb `position.Lookup`, the last
-    /// cell's own slope).
-    pub fn end_slopes(&self) -> (f64, f64) {
-        let (a, m) = (&self.angle, self.angle.len() - 1);
-        ((a[1] - a[0]) / GRID_F, (a[m] - a[m - 1]) / GRID_F)
-    }
-
-    /// The angle at `x` counts, continued past the span on its end lines
-    /// ([`Table::end_slopes`]).
+    /// The angle at `x` counts, continued at [`Table::mean_slope`] past
+    /// the span.
     pub fn angle_at(&self, x: f64) -> f64 {
         let (a0, a1) = (self.angle[0], self.angle[self.angle.len() - 1]);
-        let (s0, s1) = self.end_slopes();
+        let sl = self.mean_slope();
         if x < self.span.lo() {
-            a0 + (x - self.span.lo()) * s0
+            a0 + (x - self.span.lo()) * sl
         } else if x > self.span.hi() {
-            a1 + (x - self.span.hi()) * s1
+            a1 + (x - self.span.hi()) * sl
         } else {
             interp(x, &self.span.knots(), &self.angle, a0, a1)
         }
@@ -982,13 +974,9 @@ mod tests {
         assert_eq!(lut(hi), hi as f64);
         let (gmin, gmax) = gains(&p);
         assert!(gmin >= 8 && gmax <= 32, "{gmin} {gmax}");
-        // stops past the span: the ends run on the end intervals' slopes
-        let (s0, s1) = t.end_slopes();
-        let cycles = t.angle[t.angle.len() - 1] - t.angle[0]
-            + (span.lo() - lo as f64) * s0
-            + (hi as f64 - span.hi()) * s1;
+        // both stops past the span, where the table runs on its mean slope
         let s = t.scale(6, 300.0, lo, hi).expect("scale");
-        assert!((s - (hi - lo) as f64 * 6.0 * 300.0 / (360.0 * cycles)).abs() < 1e-9);
+        assert!((s - 6.0 * 300.0 / (360.0 * t.mean_slope())).abs() < 1e-9);
         assert_eq!(t.scale(0, 300.0, lo, hi), None);
         assert!((span.coverage(lo, hi) - 992.0 / 3620.0).abs() < 1e-12);
     }
@@ -996,7 +984,7 @@ mod tests {
     /// A table reading 0.2 cycles a count below 1500 and 0.3 above, on
     /// 512..3072: its scale is the stops' span over the cycles between
     /// them, not the middle's slope nor the span's mean; stops past the
-    /// span read the cycles on its end lines, its end intervals' slopes.
+    /// span read the cycles on its mean slope.
     #[test]
     fn the_scale_is_the_stop_to_stop_frame() {
         let span = Span { k0: 32, k1: 192 };
@@ -1014,11 +1002,12 @@ mod tests {
         let middle = 6.0 * 300.0 / (360.0 * 0.2);
         let mean = 6.0 * 300.0 / (360.0 * t.mean_slope());
         assert!((s / middle - 1.0).abs() > 0.05 && (s / mean - 1.0).abs() > 0.05);
-        let (s0, s1) = t.end_slopes();
-        assert!((s0 - 0.2).abs() < 1e-12 && (s1 - 0.3).abs() < 1e-12);
-        let (lo, hi) = (200u16, 3500u16);
+        let (lo, hi) = (200u16, 1900u16);
         let s = t.scale(n, g, lo, hi).expect("scale");
-        let want = 3300.0 / ((a(3500.0) - a(200.0)) * 360.0 / (6.0 * 300.0));
+        let cycles = a(1900.0) - (a(512.0) - 312.0 * t.mean_slope());
+        let want = 1700.0 / (cycles * 360.0 / (6.0 * 300.0));
         assert!((s - want).abs() < 1e-9, "{s} against {want}");
+        let s = t.scale(n, g, 200, 3500).expect("scale");
+        assert!((s - mean).abs() < 1e-9, "{s} against {mean}");
     }
 }

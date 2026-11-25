@@ -24,8 +24,8 @@
    "sha1": "039309c0cb5612fd61de9442e71f4ab5551bb371"
   },
   "table.json": {
-   "from": "synthetic, the table step's result shape: points_by_page the pooled fit (postable::fit_pooled, SMOOTH_WEIGHT) of testdata/table pass-1 and pass-2 (bringup capture A's 20 % passes) compensated with the slots of record, pinned to the stops 107 and 3729 of stops.json rounded inward, past the fit's knots on its end lines; slots of record (testdata/mg90-d/wide-codes.json); scale from the ripple, the nameplate's brushes 2 x rotor_segments 3 and its gear_ratio",
-   "sha1": "0aa1356f4cee8ad083ead5e77ff21f5c7a0d7cdb"
+   "from": "synthetic, the table step's result shape: points_by_page the pooled fit (postable::fit_pooled, SMOOTH_WEIGHT) of testdata/table pass-1 and pass-2 (bringup capture A's 20 % passes) compensated with the slots of record, pinned to the stops 107 and 3729 of stops.json rounded inward; slots of record (testdata/mg90-d/wide-codes.json); scale from the ripple, the nameplate's brushes 2 x rotor_segments 3 and its gear_ratio",
+   "sha1": "a890534f21c51d5bd5091fa509301e1b82bcac74"
   }
  }
 }

@@ -417,7 +417,7 @@ fn the_pooled_table_matches_the_reference() {
     let counts = p.residual_rms * p.table.counts_per_cycle();
     assert!(counts <= 4.0, "pooled residual {counts:.2} counts");
     // the ripple scale at the nameplate's two brushes, three segments and
-    // counted gear ratio, stop to stop on the end lines: the reference's
+    // counted gear ratio, stop to stop: the reference's
     // at the stops, and the gather fixture's, made from this fit pinned
     // to its stops 107 and 3729
     assert_eq!(events_per_rev(), 6);
