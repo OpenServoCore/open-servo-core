@@ -1,29 +1,21 @@
-//! The cruise fit on recorded rows: closed-loop Velocity cruises of the
-//! mg90-d, trimmed to the rows the fit reads (`testdata/mg90-d/cruise`,
-//! written with their expected values by its `gen.py`, a Python reference
-//! of the method). Each leg's numbers against the reference, then the
-//! line against the reference and against the analyst's lines of the
-//! same captures.
+//! The cruise fit on the record's own cruises: stage 5 cruise-friction's
+//! two sittings on mg90-d (`testdata/cruise`, written with their expected
+//! values by its `gen.py`, which runs the notebook's own cells). Each leg's
+//! replay and held mean against the notebook's, then the step's line on
+//! the first sitting against the line of record, and the joint line.
 
 use std::collections::BTreeMap;
 
-use osc_measure::Board;
 use osc_measure::capture::meta::gunzip;
 use osc_measure::capture::rows::TelFrame;
-use osc_measure::fit::cruise::{
-    self, INERTIA_MAX_MA, Leg, LegRead, Line, Point, Reading, band, settled_span,
-};
+use osc_measure::fit::cruise::{self, Leg, LegRead, Point, Poll, Reading};
 use osc_measure::fit::window::Settle;
 use osc_measure::scorecard::Lin;
 use osc_measure::steps::Verdict;
 use serde_json::Value;
 
-/// The comparison line without the slowest speed takes the legs from this
-/// share of the ceiling up, as the analyst's line over 1500 to 4025 c/s.
-const LOW_SHARE: f64 = 0.2;
-
 fn dir() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/mg90-d/cruise")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/cruise")
 }
 
 fn expected() -> Value {
@@ -31,14 +23,15 @@ fn expected() -> Value {
         .expect("json")
 }
 
-/// A stored leg: its numbers and its rows, each row's tick its place in
-/// the leg.
+/// A stored leg: where it is from, its polls and its rows.
 struct Stored {
     run: String,
+    capture: String,
     seg: i64,
     goal: f64,
-    rows: usize,
-    bias: f64,
+    before: Poll,
+    after: Poll,
+    t_read_cc: f64,
     frames: Vec<TelFrame>,
 }
 
@@ -52,6 +45,15 @@ fn sums(v: &Value) -> Vec<i64> {
             acc
         })
         .collect()
+}
+
+fn poll(v: &Value) -> Poll {
+    let n = |k: &str| v[k].as_f64().unwrap_or_else(|| panic!("{k}"));
+    Poll {
+        vbus_raw: n("vbus_raw"),
+        t_winding_cc: n("t_winding_cc"),
+        bias_counts: n("current_bias_counts"),
+    }
 }
 
 fn legs() -> Vec<Stored> {
@@ -70,40 +72,31 @@ fn legs() -> Vec<Stored> {
             let pos = sums(&l["pos"]);
             let duty = sums(&l["duty_counts"]);
             let mut raw = sums(&l["current_raw"]).into_iter();
-            let every = l["vdiff_every"].as_u64().expect("every") as usize;
-            let vdiff: Vec<i64> = l["vdiff"]
-                .as_array()
-                .expect("vdiff")
-                .iter()
-                .map(|v| v.as_i64().expect("int"))
-                .collect();
-            let first = l["first"].as_u64().expect("first");
+            let first = l["first_tick"].as_u64().expect("first");
+            assert_eq!(valid.len() as u64, l["n"].as_u64().expect("n"));
             let frames = (0..valid.len())
-                .map(|k| {
-                    let tap = (k % every == 0).then(|| vdiff[k / every]);
-                    TelFrame {
-                        tick: first + k as u64,
-                        window_valid: valid[k],
-                        pos: Some(pos[k] as u16),
-                        duty_counts: Some(duty[k] as i16),
-                        current_raw: if valid[k] {
-                            Some(raw.next().expect("a read row's current") as u16)
-                        } else {
-                            None
-                        },
-                        vmotor_a: tap.map(|v| (2048 + v) as u16),
-                        vmotor_b: tap.map(|_| 2048),
-                        ..TelFrame::default()
-                    }
+                .map(|k| TelFrame {
+                    tick: first + k as u64,
+                    window_valid: valid[k],
+                    pos: Some(pos[k] as u16),
+                    duty_counts: Some(duty[k] as i16),
+                    current_raw: if valid[k] {
+                        Some(raw.next().expect("a read row's current") as u16)
+                    } else {
+                        None
+                    },
+                    ..TelFrame::default()
                 })
                 .collect();
             assert!(raw.next().is_none(), "every stored current is a read row's");
             Stored {
                 run: l["run"].as_str().expect("run").into(),
+                capture: l["capture"].as_str().expect("capture").into(),
                 seg: l["seg"].as_i64().expect("seg"),
                 goal: l["goal"].as_f64().expect("goal"),
-                rows: l["rows"].as_u64().expect("rows") as usize,
-                bias: l["bias_counts"].as_f64().expect("bias"),
+                before: poll(&l["before"]),
+                after: poll(&l["after"]),
+                t_read_cc: l["t_read_cc"].as_f64().expect("t_read"),
                 frames,
             }
         })
@@ -111,49 +104,50 @@ fn legs() -> Vec<Stored> {
 }
 
 fn lin(e: &Value) -> Lin {
-    let points: Vec<i16> = e["points"]
-        .as_array()
-        .expect("points")
-        .iter()
-        .map(|v| v.as_i64().expect("point") as i16)
-        .collect();
+    let ints = |k: &str| -> Vec<i64> {
+        e[k].as_array()
+            .expect(k)
+            .iter()
+            .map(|v| v.as_i64().expect(k))
+            .collect()
+    };
+    let points: Vec<i16> = ints("points").into_iter().map(|p| p as i16).collect();
     let points: [i16; 256] = points.try_into().expect("256 points");
-    let slots: Vec<u8> = e["slots"]
-        .as_array()
-        .expect("slots")
-        .iter()
-        .map(|v| v.as_u64().expect("slot") as u8)
-        .collect();
+    let slots: Vec<u8> = ints("slots").into_iter().map(|s| s as u8).collect();
     Lin::new(Some(&points), Some(&slots))
 }
 
-fn reading(e: &Value) -> Reading {
+/// The reading a sitting's legs replay through: the set's words and the
+/// sitting's own.
+fn reading(e: &Value, run: &str) -> Reading {
     let c = &e["constants"];
-    let n = |k: &str| c[k].as_f64().unwrap_or_else(|| panic!("{k}"));
-    let board: Board = serde_json::from_str(
-        &std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("boards/osc-dev-v006.json"),
-        )
-        .expect("board"),
-    )
-    .expect("board json");
-    let w = board.window_read.expect("the board's crest read");
-    assert_eq!(board.bridge_min_ticks, Some(n("bridge_min_ticks")));
+    let s = &e["sittings"][run];
+    let n = |v: &Value, k: &str| v[k].as_f64().unwrap_or_else(|| panic!("{k}"));
+    let w = |v: &Value, k: &str| n(v, k) as u16;
     Reading {
-        counts_per_a: n("counts_per_a"),
-        g_window_q016: n("g_window_q016"),
-        j_ff_q88: n("j_ff_q88"),
-        pwm_arr: n("pwm_arr"),
-        tick_hz: n("tick_hz"),
-        medium_hz: n("tick_hz") / 10.0,
-        v_window_min_ticks: n("v_window_min_ticks") as u16,
-        bridge_min_ticks: n("bridge_min_ticks"),
+        counts_per_a: n(c, "counts_per_a"),
+        g_window_q016: w(s, "g_window_q016"),
+        i_kp_q88: w(c, "i_kp_q88"),
+        i_ki_q412: w(c, "i_ki_q412"),
+        ke_vpc_q: w(c, "ke_vpc_q"),
+        r_hat_q12: w(s, "r_hat_q12"),
+        j_ff_q88: n(c, "j_ff_q88"),
+        fric_fc_counts: n(s, "fric_fc_counts"),
+        fric_fv_q016: n(s, "fric_fv_q016"),
+        pwm_arr: w(c, "pwm_arr"),
+        tick_hz: n(c, "tick_hz"),
+        bridge_min_ticks: n(c, "bridge_min_ticks"),
         settle: Settle {
-            start_ticks: w.settle_start_ticks,
-            q15: w.settle_q15,
+            start_ticks: w(c, "settle_start_ticks"),
+            q15: c["settle_q15"]
+                .as_array()
+                .expect("settle")
+                .iter()
+                .map(|v| v.as_u64().expect("q15") as u16)
+                .collect(),
         },
-        counts_per_motor_rad: n("counts_per_deg") * 180.0 / core::f64::consts::PI / n("gear_ratio"),
-        ceiling_cps: n("ceiling_cps"),
+        counts_per_motor_rad: n(c, "counts_per_motor_rad"),
+        ceiling_cps: n(s, "velocity_limit_cps"),
     }
 }
 
@@ -164,309 +158,174 @@ fn close(what: &str, got: f64, want: f64, tol: f64) {
     );
 }
 
-fn leg(s: &Stored) -> Leg<'_> {
-    Leg {
-        goal_cps: s.goal,
-        rows: &s.frames,
-        planned_rows: s.rows,
-        bias_counts: s.bias,
-    }
-}
-
-/// A leg's reference values by name, and the leg as read.
-type Read = (BTreeMap<&'static str, f64>, Result<LegRead, String>);
-
-/// Every leg read as the step reads it: the windows by speed, then each
-/// leg over its speed's window.
-fn read_all(stored: &[Stored], lin: &Lin, r: &Reading, travel: (f64, f64)) -> Vec<Read> {
-    let b = band(travel);
-    let mut windows = BTreeMap::new();
-    for g in [300.0, 2150.0, 4025.0] {
-        let spans: Vec<(i8, (f64, f64))> = stored
-            .iter()
-            .filter(|s| s.goal.abs() == g)
-            .filter_map(|s| Some((leg(s).dir(), settled_span(&leg(s), lin, b)?)))
-            .collect();
-        windows.insert(g as i64, cruise::window(&spans).expect("a window"));
-    }
-    stored
-        .iter()
-        .map(|s| {
-            let w = windows[&(s.goal.abs() as i64)];
-            let mut m = BTreeMap::new();
-            m.insert("window_lo", w.0);
-            m.insert("window_hi", w.1);
-            (m, cruise::read(&leg(s), lin, w, r))
-        })
-        .collect()
-}
-
-fn line_of(
-    stored: &[Stored],
-    reads: &[Result<LegRead, String>],
-    r: &Reading,
-    low: bool,
-) -> Option<Line> {
-    let points: Vec<Point> = stored
-        .iter()
-        .zip(reads)
-        .filter_map(|(s, l)| l.as_ref().ok().map(|l| (s, l)))
-        .filter(|(_, l)| l.fails().is_empty())
-        .filter(|(s, _)| low || s.goal.abs() >= LOW_SHARE * r.ceiling_cps)
-        .map(|(s, l)| Point {
-            goal_cps: s.goal.abs(),
-            dir: l.dir,
-            rad_s: l.rad_s,
-            i_ma: l.i_ma,
-        })
-        .collect();
-    cruise::line(&points)
-}
-
-fn said(l: &Line) -> String {
-    format!(
-        "{:.2} +/- {:.2} mA + {:.5} +/- {:.5} mA per rad/s over {:.0} to {:.0} rad/s, {} legs, residuals {}",
-        l.coulomb_ma,
-        l.coulomb_se_ma,
-        l.viscous_ma_s_per_rad,
-        l.viscous_se,
-        l.rad_s.0,
-        l.rad_s.1,
-        l.legs,
-        l.speeds
-            .iter()
-            .map(|s| format!("{:+.2} at {:.0}", s.residual_ma, s.goal_cps))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-}
-
-/// The table and slots read a raw pot as the notebooks' do.
-#[test]
-fn the_fixture_reads_the_pot_as_the_notebooks() {
+/// Every stored leg read, beside the notebook's numbers for it.
+fn read_all() -> (Value, Vec<(Value, LegRead)>) {
     let e = expected();
     let lin = lin(&e);
-    for s in e["lin_samples"].as_array().expect("samples") {
-        let raw = s[0].as_u64().expect("raw") as u16;
-        close(
-            &format!("lin({raw})"),
-            lin.counts(raw),
-            s[1].as_f64().expect("lin"),
-            1e-9,
-        );
-    }
-}
-
-/// Each leg's cut, reading, all-tick estimate, speed, inertia and
-/// verdict equal the reference's on the same rows.
-#[test]
-fn each_leg_reads_as_the_reference() {
-    let e = expected();
-    let (lin, r) = (lin(&e), reading(&e));
-    let travel = (
-        e["constants"]["travel_counts"][0].as_f64().expect("lo"),
-        e["constants"]["travel_counts"][1].as_f64().expect("hi"),
-    );
-    let stored = legs();
-    let reads = read_all(&stored, &lin, &r, travel);
-    let want = e["legs"].as_array().expect("legs");
-    assert_eq!(want.len(), stored.len());
-    for ((s, (w, got)), x) in stored.iter().zip(&reads).zip(want) {
-        let at = format!("{} seg {}", s.run, s.seg);
-        assert_eq!(x["run"], s.run.as_str(), "{at}");
-        assert_eq!(x["seg"], s.seg, "{at}");
-        let ew = &e["windows"][format!("{}", s.goal.abs())];
-        close(
-            &format!("{at} window lo"),
-            w["window_lo"],
-            ew[0].as_f64().expect("lo"),
-            1e-9,
-        );
-        close(
-            &format!("{at} window hi"),
-            w["window_hi"],
-            ew[1].as_f64().expect("hi"),
-            1e-9,
-        );
-        match (got, x.get("kept_rows")) {
-            (Err(why), None) => {
-                println!("{at}: not read, {why} (reference: {})", x["fail"]);
-                continue;
-            }
-            (Ok(_), None) => panic!("{at}: read, the reference did not ({})", x["fail"]),
-            (Err(why), Some(_)) => panic!("{at}: not read ({why}), the reference read it"),
-            (Ok(l), Some(_)) => {
-                let n = |k: &str| x[k].as_f64().unwrap_or_else(|| panic!("{at} {k}"));
-                assert_eq!(l.rows as f64, n("kept_rows"), "{at}");
-                assert_eq!(l.first_tick as f64, n("first_kept"), "{at}");
-                close(&format!("{at} v_on"), l.v_on_counts, n("v_on_counts"), 1e-9);
-                close(
-                    &format!("{at} read share"),
-                    l.read_share,
-                    n("read_share"),
-                    1e-12,
-                );
-                close(
-                    &format!("{at} read mean"),
-                    l.i_read_ma,
-                    n("i_read_ma"),
-                    1e-6,
-                );
-                let all = l.all_ticks.expect("an all-tick fit");
-                assert_eq!(
-                    (all.lag as f64, all.tau_us),
-                    (n("lag"), n("tau_us")),
-                    "{at}"
-                );
-                close(&format!("{at} all-tick"), all.counts, n("i_all_ma"), 1e-6);
-                close(&format!("{at} used"), l.i_used_ma, n("i_used_ma"), 1e-6);
-                close(&format!("{at} speed"), l.speed_cps, n("cps"), 1e-6);
-                close(&format!("{at} halves"), l.halves, n("halves"), 1e-9);
-                close(
-                    &format!("{at} inertia"),
-                    l.i_inertia_ma,
-                    n("i_inertia_ma"),
-                    1e-6,
-                );
-                close(&format!("{at} current"), l.i_ma, n("i_ma"), 1e-6);
-                let fails = l.fails();
-                assert_eq!(fails.is_empty(), x["valid"] == true, "{at}: {fails:?}");
-                println!(
-                    "{at}: {:.0} rows, {:.1} rad/s, read {:.2}{}, {:.2} mA, inertia {:+.2}, halves {:+.2}%: {}",
-                    l.rows,
-                    l.rad_s,
-                    l.read_share,
-                    if l.all_ticks_used { " (all-tick)" } else { "" },
-                    l.i_ma,
-                    l.i_inertia_ma,
-                    100.0 * l.halves,
-                    if fails.is_empty() {
-                        "valid".into()
-                    } else {
-                        fails.join("; ")
-                    }
-                );
-            }
-        }
-    }
-}
-
-/// The line the step ships, every valid leg's, the 300 c/s legs
-/// anchoring the offset, reproduces the reference and the analyst's line
-/// with the 300 c/s legs within its error bars, and its checks pass. The
-/// line without them is held to the analyst's line without them, the one
-/// over 1500 to 4025 c/s.
-#[test]
-fn the_line_reproduces_the_analysts_within_its_error_bars() {
-    let e = expected();
-    let (lin, r) = (lin(&e), reading(&e));
-    let travel = (110.0, 3730.0);
-    let stored = legs();
-    let reads: Vec<Result<LegRead, String>> = read_all(&stored, &lin, &r, travel)
-        .into_iter()
-        .map(|(_, l)| l)
-        .collect();
-    let points: Vec<Point> = stored
+    let by: BTreeMap<(String, String, i64), Value> = e["legs"]
+        .as_array()
+        .expect("legs")
         .iter()
-        .zip(&reads)
-        .filter_map(|(s, l)| {
-            l.as_ref()
-                .ok()
-                .filter(|l| l.fails().is_empty())
-                .map(|l| (s, l))
-        })
-        .map(|(s, l)| Point {
-            goal_cps: s.goal.abs(),
-            dir: l.dir,
-            rad_s: l.rad_s,
-            i_ma: l.i_ma,
+        .map(|l| {
+            let k = (
+                l["run"].as_str().expect("run").to_string(),
+                l["capture"].as_str().expect("capture").to_string(),
+                l["seg"].as_i64().expect("seg"),
+            );
+            (k, l.clone())
         })
         .collect();
-    let shipped = cruise::line(&points).expect("the step's line");
-    assert_eq!(
-        Some(&shipped),
-        line_of(&stored, &reads, &r, true).as_ref(),
-        "the line over every valid leg is the one with the 300 c/s legs"
-    );
-    let without = line_of(&stored, &reads, &r, false).expect("a line without 300");
-    println!("the step's line: {}", said(&shipped));
-    println!(
-        "  errors: coulomb {:.2} mA from {}, legs {:.2}, speeds {:?}; viscous {:.5} from {}",
-        shipped.coulomb_se_ma,
-        shipped.coulomb_se_from,
-        shipped.coulomb_se_legs_ma,
-        shipped.coulomb_se_speeds_ma,
-        shipped.viscous_se,
-        shipped.viscous_se_from
-    );
-    println!("without the 300 c/s legs: {}", said(&without));
-    for (got, key) in [(&shipped, "line_with_low"), (&without, "line")] {
-        let x = &e[key];
+    let stored = legs();
+    assert_eq!(stored.len(), by.len());
+    let reads = stored
+        .iter()
+        .map(|s| {
+            let r = reading(&e, &s.run);
+            let leg = Leg {
+                goal_cps: s.goal,
+                rows: &s.frames,
+                before: s.before,
+                after: s.after,
+                t_read_cc: s.t_read_cc,
+            };
+            let got = cruise::read(&leg, &lin, &r).expect("read");
+            (by[&(s.run.clone(), s.capture.clone(), s.seg)].clone(), got)
+        })
+        .collect();
+    (e, reads)
+}
+
+/// Each leg against the notebook's `leg_numbers` and `inertia_ma`: the
+/// phase found exactly, the replay's spreads, the held mean, the read
+/// rows' mean, the integrator's share, the speed and its halves, the
+/// inertia current and the steady mean, to rounding.
+#[test]
+fn every_leg_reads_as_the_notebook() {
+    let (_, reads) = read_all();
+    let mut worst: BTreeMap<&str, f64> = BTreeMap::new();
+    for (want, got) in &reads {
+        let n = |k: &str| want[k].as_f64().unwrap_or(f64::NAN);
+        let at = format!(
+            "{} {} seg {}",
+            want["run"].as_str().unwrap_or(""),
+            want["capture"].as_str().unwrap_or(""),
+            want["seg"]
+        );
+        assert_eq!(got.phase, want["phase"].as_i64().expect("phase"), "{at}");
+        assert_eq!(got.dir as i64, want["dir"].as_i64().expect("dir"), "{at}");
+        assert_eq!(
+            got.rows as i64,
+            want["rows"].as_i64().expect("rows"),
+            "{at}"
+        );
+        let held_in = got.held_in_ms.unwrap_or(f64::NAN);
         for (name, v, k, tol) in [
-            ("coulomb", got.coulomb_ma, "coulomb_ma", 1e-6),
-            ("coulomb se", got.coulomb_se_ma, "coulomb_se_ma", 1e-6),
-            (
-                "coulomb se legs",
-                got.coulomb_se_legs_ma,
-                "coulomb_se_legs_ma",
-                1e-6,
-            ),
-            (
-                "viscous",
-                got.viscous_ma_s_per_rad,
-                "viscous_ma_s_per_rad",
-                1e-9,
-            ),
-            ("viscous se", got.viscous_se, "viscous_se", 1e-9),
-            (
-                "viscous se legs",
-                got.viscous_se_legs,
-                "viscous_se_legs",
-                1e-9,
-            ),
+            ("held", got.held_ma, "held_ma", 1e-9),
+            ("read", got.read_ma, "read_ma", 1e-9),
+            ("read share", got.read_share, "read_share", 1e-12),
+            ("line", got.line_ma, "line_ma", 1e-9),
+            ("integrator", got.integ_ma, "integ_ma", 1e-9),
+            ("sd in", got.sd_in_ma, "sd_in_ma", 1e-9),
+            ("sd worst", got.sd_worst_ma, "sd_worst_ma", 1e-9),
+            ("cps", got.speed_cps, "cps", 1e-6),
+            ("halves", 100.0 * got.halves, "v2_v1_pct", 1e-6),
+            ("held in", held_in, "held_in_ms", 1e-9),
+            ("inertia", got.inertia_ma, "inertia_ma", 1e-9),
+            ("steady", got.held_ma - got.inertia_ma, "steady_ma", 1e-9),
         ] {
-            close(&format!("{key} {name}"), v, x[k].as_f64().expect(k), tol);
+            close(&format!("{at} {name}"), v, n(k), tol);
+            let d = worst.entry(name).or_insert(0.0);
+            *d = d.max((v - n(k)).abs());
         }
-        let from = |k: &str| x[k].as_str().expect(k).to_string();
-        let ours = |f: &str| {
-            if f == cruise::SE_SPEEDS {
-                "speeds"
-            } else {
-                "legs"
-            }
-        };
-        assert_eq!(ours(got.coulomb_se_from), from("coulomb_se_from"), "{key}");
-        assert_eq!(ours(got.viscous_se_from), from("viscous_se_from"), "{key}");
-        assert_eq!(got.legs as u64, x["legs"].as_u64().expect("legs"), "{key}");
     }
-    assert_eq!(shipped.coulomb_se_from, cruise::SE_SPEEDS);
-    for (got, key, span) in [
-        (&shipped, "line_with_low", "with the 300 c/s legs"),
-        (&without, "line", "over 400 to 1076 rad/s"),
-    ] {
-        let a = &e["analyst"][key];
-        let n = |k: &str| a[k].as_f64().expect(k);
-        println!(
-            "the analyst's {key}: {:.2} +/- {:.2} mA + {:.5} +/- {:.5} mA per rad/s, {span}",
-            n("coulomb_ma"),
-            n("coulomb_se_ma"),
-            n("viscous_ma_s_per_rad"),
-            n("viscous_se")
-        );
-        close(
-            &format!("{key}: the offset against the analyst's"),
-            got.coulomb_ma,
-            n("coulomb_ma"),
-            n("coulomb_se_ma"),
-        );
-        close(
-            &format!("{key}: the slope against the analyst's"),
+    println!("{} legs, worst differences: {worst:?}", reads.len());
+}
+
+fn word(x: f64) -> i64 {
+    (x.abs() + 0.5).floor().copysign(x) as i64
+}
+
+/// The step's line on the first sitting's whole legs is the line of
+/// record, the notebook's `LINE`: the top speed's up leg still gaining
+/// 5.55% across its steady rows is left out, named; the other 19, held
+/// means against the goal, give 37.64 mA + 12.73 per 1000 c/s, the words
+/// 43 / 947; the line's checks pass.
+#[test]
+fn the_steps_line_is_the_line_of_record() {
+    let (e, reads) = read_all();
+    let g3: Vec<&(Value, LegRead)> = reads.iter().filter(|(w, _)| w["run"] == "g3").collect();
+    let fails = |l: &LegRead| l.fails(l.goal_cps.abs() == 4025.0);
+    let aside: Vec<String> = g3
+        .iter()
+        .filter(|(_, l)| !fails(l).is_empty())
+        .map(|(w, l)| format!("{} seg {}: {:?}", w["capture"], w["seg"], fails(l)))
+        .collect();
+    println!("set aside: {aside:?}");
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert!(
+        aside[0].contains("c4025") && aside[0].contains("+5.55% across its steady rows"),
+        "{aside:?}"
+    );
+    let kept: Vec<&&(Value, LegRead)> = g3.iter().filter(|(_, l)| fails(l).is_empty()).collect();
+    assert!(kept.iter().all(|(w, _)| w["in_line"] == true));
+    let points: Vec<Point> = kept
+        .iter()
+        .map(|(_, l)| Point {
+            goal_cps: l.goal_cps.abs(),
+            dir: l.dir,
+            i_ma: l.held_ma,
+        })
+        .collect();
+    let c = &e["constants"];
+    let cpmr = c["counts_per_motor_rad"].as_f64().expect("cpmr");
+    let cpa = c["counts_per_a"].as_f64().expect("cpa");
+    let got = cruise::line(&points, cpmr).expect("line");
+    let x = &e["line"];
+    let n = |k: &str| x[k].as_f64().unwrap_or_else(|| panic!("{k}"));
+    println!(
+        "the line: {} legs, {:.4} +/- {:.4} mA + {:.4} +/- {:.4} per 1000 c/s ({:.5} per rad/s), rms {:.3}; the notebook's {:.4} + {:.4}",
+        got.legs,
+        got.coulomb_ma,
+        got.coulomb_se_ma,
+        got.viscous_ma_per_kcps,
+        got.viscous_se_ma_per_kcps,
+        got.viscous_ma_s_per_rad,
+        got.rms_ma,
+        n("intercept_ma"),
+        n("slope_ma_per_kcps")
+    );
+    assert_eq!(got.legs as u64, x["legs"].as_u64().expect("legs"));
+    for (name, v, k, tol) in [
+        ("coulomb", got.coulomb_ma, "intercept_ma", 1e-9),
+        ("coulomb se", got.coulomb_se_ma, "intercept_se_ma", 1e-9),
+        (
+            "viscous",
+            got.viscous_ma_per_kcps,
+            "slope_ma_per_kcps",
+            1e-9,
+        ),
+        (
+            "viscous se",
+            got.viscous_se_ma_per_kcps,
+            "slope_se_ma_per_kcps",
+            1e-9,
+        ),
+        (
+            "viscous per rad/s",
             got.viscous_ma_s_per_rad,
-            n("viscous_ma_s_per_rad"),
-            n("viscous_se"),
-        );
+            "viscous_ma_s_per_rad",
+            1e-12,
+        ),
+        ("rms", got.rms_ma, "rms_ma", 1e-9),
+    ] {
+        close(&format!("line {name}"), v, n(k), tol);
     }
-    let checks = cruise::checks(&points, Some(&shipped), r.ceiling_cps);
+    let words = [
+        word(got.coulomb_ma * cpa / 1e3),
+        word(got.viscous_ma_per_kcps / 1e3 * cpa / 1e3 * 65536.0),
+    ];
+    assert_eq!(words, [43, 947]);
+    let checks = cruise::checks(&points, Some(&got), 4025.0);
     for c in &checks {
         println!("  {}", c.said());
     }
@@ -476,47 +335,33 @@ fn the_line_reproduces_the_analysts_within_its_error_bars() {
     );
 }
 
-/// The steadiness rule on recorded legs: a 2150 c/s leg still easing
-/// toward its speed, its halves 3% apart, past the 1.5% a halves rule
-/// would allow, and its inertia correction inside the bound, counts; a
-/// leg whose correction passes the bound is set aside, the halves never
-/// the reason.
+/// The joint line, reported by the notebook and not the step's: both
+/// sittings, the first's 4025 legs out, each leg's reported inertia
+/// current off its held mean, against the notebook's `J`.
 #[test]
-fn a_leg_easing_toward_its_speed_counts_inside_the_inertia_bound() {
-    let e = expected();
-    let (lin, r) = (lin(&e), reading(&e));
-    let stored = legs();
-    let reads = read_all(&stored, &lin, &r, (110.0, 3730.0));
-    let at = |run: &str, seg: i64| {
-        let k = stored
-            .iter()
-            .position(|s| s.run == run && s.seg == seg)
-            .unwrap_or_else(|| panic!("{run} seg {seg}"));
-        reads[k].1.as_ref().expect("read").clone()
-    };
-    let easing = at("K2-cl-b", 4);
-    assert!(easing.halves.abs() > 0.015, "{easing:?}");
-    assert!(easing.i_inertia_ma.abs() <= INERTIA_MAX_MA, "{easing:?}");
-    assert!(easing.fails().is_empty(), "{:?}", easing.fails());
-    for (run, seg) in [("K1-cl", 0), ("H-cl", 0)] {
-        let l = at(run, seg);
-        assert!(l.i_inertia_ma.abs() > INERTIA_MAX_MA, "{run} {seg}: {l:?}");
-        let f = l.fails();
-        assert!(
-            f.iter().any(|m| m.contains("inertia current")),
-            "{run} {seg}: {f:?}"
-        );
-        assert!(f.iter().all(|m| !m.contains("halves")), "{f:?}");
-    }
-    let kept: Vec<f64> = stored
+fn the_joint_line_is_the_notebooks() {
+    let (e, reads) = read_all();
+    let cpmr = e["constants"]["counts_per_motor_rad"]
+        .as_f64()
+        .expect("cpmr");
+    let points: Vec<Point> = reads
         .iter()
-        .zip(&reads)
-        .filter_map(|(s, (_, l))| {
-            let l = l.as_ref().ok()?;
-            (l.fails().is_empty() && l.halves.abs() > 0.015 && s.goal.abs() > 1000.0)
-                .then_some(l.i_ma)
+        .filter(|(w, _)| w["in_joint"] == true)
+        .map(|(_, l)| Point {
+            goal_cps: l.goal_cps.abs(),
+            dir: l.dir,
+            i_ma: l.held_ma - l.inertia_ma,
         })
         .collect();
-    println!("legs kept with halves past 1.5%: {kept:?}");
-    assert_eq!(kept.len(), 5, "{kept:?}");
+    let got = cruise::line(&points, cpmr).expect("line");
+    let x = &e["joint"];
+    let n = |k: &str| x[k].as_f64().unwrap_or_else(|| panic!("{k}"));
+    assert_eq!(got.legs as u64, x["legs"].as_u64().expect("legs"));
+    close("joint coulomb", got.coulomb_ma, n("intercept_ma"), 1e-9);
+    close(
+        "joint viscous",
+        got.viscous_ma_per_kcps,
+        n("slope_ma_per_kcps"),
+        1e-9,
+    );
 }

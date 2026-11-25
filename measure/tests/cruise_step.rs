@@ -21,6 +21,7 @@ use futures_lite::future::block_on;
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick};
 use osc_client::pipe::{Pipe, PipeError};
 use osc_client::{BaudRate, Client, Inst, Opcode, mgmt};
+use osc_measure::fit::cruise as cruise_fit;
 use osc_measure::guard::Way;
 use osc_measure::install;
 use osc_measure::nameplate::Nameplate;
@@ -41,6 +42,8 @@ const FC_MA: f64 = 40.0;
 const FV_MA_PER_CPS: f64 = 0.011;
 /// The duty the plant's legs run at: wide, past the settle table.
 const DUTY: i16 = 600;
+/// The rail every row and poll reads, tap counts.
+const VBUS_RAW: u16 = 1241;
 /// Rows a leg's motion runs past its burst, then the shaft holds.
 const SLACK: usize = 200;
 const HOLD: usize = 20000;
@@ -105,6 +108,8 @@ struct Bus {
     inverse: Vec<(f64, u16)>,
     bias: f64,
     counts_per_a: f64,
+    /// The window term the crest sample carries at [`DUTY`], counts.
+    term: u16,
     at: f64,
     speed: f64,
     goal_speed: Option<f64>,
@@ -115,7 +120,7 @@ fn sample(pot: u16, current_raw: u16, duty: i16, k: usize) -> TelSample {
         tick: TelemetryTick {
             _scan: [0; 9],
             pos: pot,
-            vbus_raw: 1241,
+            vbus_raw: VBUS_RAW,
             ntc_raw: 2010,
             current_raw,
             vmotor_a: 773,
@@ -179,7 +184,7 @@ impl Bus {
             } else {
                 let ma = FC_MA + FV_MA_PER_CPS * self.speed.abs();
                 let counts = (self.counts_per_a * ma / 1e3).round() as u16;
-                (bias + counts, DUTY * goal.signum() as i16)
+                (bias + counts + self.term, DUTY * goal.signum() as i16)
             };
             track.push(sample(self.pot(self.at), raw, duty, k));
         }
@@ -293,6 +298,7 @@ fn servo(pot: u16, hook: Hook) -> (Client<Bus>, Log) {
         inverse: Vec::new(),
         bias: 0.0,
         counts_per_a: 0.0,
+        term: 0,
         at: 0.0,
         speed: 0.0,
         goal_speed: None,
@@ -315,9 +321,22 @@ fn servo(pot: u16, hook: Hook) -> (Client<Bus>, Log) {
     let lin = Lin::new(s.lut.effective(), s.slots(&d).as_deref());
     let mut inverse: Vec<(f64, u16)> = (0..4096u16).map(|r| (lin.counts(r), r)).collect();
     inverse.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let bias = block_on(c.read(ID, addr("current_bias_counts"), 2)).expect("bias");
+    let word = |c: &mut Client<Bus>, name: &str| {
+        let b = block_on(c.read(ID, addr(name), 2)).expect(name);
+        u16::from_le_bytes([b[0], b[1]])
+    };
+    let bias = word(&mut c, "current_bias_counts");
+    let g = word(&mut c, "g_window_q016");
+    let arr = word(&mut c, "pwm_period_ticks");
     let p = c.pipe_mut();
-    p.bias = u16::from_le_bytes([bias[0], bias[1]]) as f64;
+    // the resistance a kernel would publish, the record's, and the rail
+    // the samples carry
+    p.inner.sim_mut().servo_table_mut(0, |t| {
+        t.telemetry.estimates.r_hat_q12 = 3676;
+        t.telemetry.tick.vbus_raw = VBUS_RAW;
+    });
+    p.term = cruise_fit::term_counts(g, DUTY as i64, VBUS_RAW as i64, arr as i64) as u16;
+    p.bias = bias as f64;
     p.counts_per_a = rest::Sense::of(&s, &d).expect("sense").counts_per_a();
     p.inverse = inverse;
     p.lin = Some(lin.clone());
@@ -480,7 +499,19 @@ fn every_speed_cruises_and_the_step_is_accepted() {
                 .is_some_and(|s| s.contains("standard error"))
         );
     }
-    assert!(r["line"]["coulomb_se_from"].is_string(), "{}", r["line"]);
+    assert!(r["line"]["coulomb_se_ma"].is_number(), "{}", r["line"]);
+    let legs = r["legs"].as_array().expect("legs");
+    assert!(
+        legs.iter().all(
+            |l| l["before"]["vbus_raw"].as_f64() == Some(VBUS_RAW as f64)
+                && l["after"]["t_winding_cc"].is_number()
+                && l["read_share"] == 1.0
+        ),
+        "{}",
+        r["legs"]
+    );
+    assert_eq!(r["t_read_cc"], legs[0]["before"]["t_winding_cc"]);
+    assert_eq!(r["scales"]["r_hat_q12"], 3676);
     let mid = r["travel"]["middle_counts"].as_f64().expect("middle");
     let centered = r["position_centered_counts"].as_f64().expect("centered");
     assert!((centered - mid).abs() <= 24.0, "{centered} {mid}");
@@ -510,7 +541,7 @@ fn every_speed_cruises_and_the_step_is_accepted() {
             Ev::Commit => unreachable!(),
         })
         .collect();
-    assert_eq!(&goals[..5], &[302, -302, 302, -302, 0], "{goals:?}");
+    assert_eq!(&goals[..5], &[322, -322, 322, -322, 0], "{goals:?}");
     assert_eq!(&goals[15..], &[4025, -4025, 4025, -4025, 0], "{goals:?}");
     drop(l);
 
@@ -702,7 +733,7 @@ fn a_fault_in_a_leg_ends_torque_off_where_it_is() {
     assert_eq!(v.ended.way, Way::Error, "{:?}", v.ended.why);
     let why = v.ended.why.clone().unwrap_or_default();
     assert!(
-        why.contains("a fault latched on the 302 counts/s leg 1 up"),
+        why.contains("a fault latched on the 322 counts/s leg 1 up"),
         "{why}"
     );
     let text = said(&v);
@@ -822,13 +853,13 @@ fn a_gap_over_the_plan_ends_the_speed() {
     let v = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");
     let text = said(&v);
     assert!(
-        text.contains("the 302 counts/s speed ends after 1 legs: the host took"),
+        text.contains("the 322 counts/s speed ends after 1 legs: the host took"),
         "{text}"
     );
     let r = result(&sink);
     let cut = &r["plan"]["cut_short"];
     assert_eq!(cut.as_array().map(Vec::len), Some(1), "{cut}");
-    assert_eq!(cut[0]["speed_cps"], 302.0);
+    assert_eq!(cut[0]["speed_cps"], 322.0);
     let legs = r["legs"].as_array().expect("legs");
     assert_eq!(legs.len(), 1 + 3 * 2 * LEGS_EACH);
     ended_torque_off(&mut c, &v, &log);

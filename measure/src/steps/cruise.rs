@@ -7,9 +7,11 @@
 //!    servo's own estimate, the dead-man before torque on; [`ENABLE_S`]
 //!    captured and judged.
 //! 2. Each speed of [`SPEEDS`], the lowest first: a Position move to the
-//!    speed's start, then Velocity mode and [`LEGS_EACH`] legs each way,
-//!    up first, each goal committed with its leg's burst; then a zero goal
-//!    with a burst of the stop, and Position mode back at the estimate.
+//!    speed's start, then Velocity mode, a poll, and [`LEGS_EACH`] legs
+//!    each way, up first, each goal committed with its leg's burst and a
+//!    poll after it (the rail, the winding estimate and the current bias
+//!    the replay reads); then a zero goal with a burst of the stop, and
+//!    Position mode back at the estimate.
 //! 3. The goal back to the middle of the soft range, held until it
 //!    arrives, then the way out.
 //!
@@ -74,13 +76,14 @@ use crate::state::{State, field};
 pub const STEP: &str = "cruise";
 pub const RESULT: &str = "results/cruise.json";
 const METHOD: &str = "closed-loop-velocity-cruises";
-const REVISION: u32 = 1;
+const REVISION: u32 = 2;
 
-/// The cruise speeds, shares of the ceiling, and each one's leg, s: 300,
-/// 1500, 2150 and 4025 counts/s on the mg90-d, the slowest low enough to
-/// read the offset rather than extrapolate it, each leg long enough to
-/// settle at its speed and leave a tenth of a second read.
-pub const SPEEDS: [(f64, f64); 4] = [(0.075, 1.2), (0.37, 0.9), (0.53, 0.65), (1.0, 0.6)];
+/// The cruise speeds, shares of the speed ceiling (`speed_ceiling_cps`),
+/// each capped at the move speed the set allows, and each one's leg, s:
+/// 322, 805, 1530 and 4025 counts/s on the mg90-d's ceiling of 8050 (the
+/// record's 300, 800, 1500 and 4025 to two figures), its legs the
+/// record's.
+pub const SPEEDS: [(f64, f64); 4] = [(0.04, 1.2), (0.1, 1.2), (0.19, 0.9), (0.5, 0.6)];
 pub const LEGS_EACH: usize = 2;
 /// The host's longest time between one leg's burst and the next goal's
 /// commit, s: recorded cruises started each leg 7 to 20 ms past the leg
@@ -140,8 +143,10 @@ pub struct Geometry {
     /// The measured stops.
     pub stops: (f64, f64),
     pub soft: (f64, f64),
-    /// The speed the shares are of: the move speed the set allows.
+    /// The speed the shares are of, the set's speed ceiling, and the move
+    /// speed the set allows, the most a cruise asks.
     pub ceiling_cps: f64,
+    pub move_cps: f64,
     /// The profile's acceleration, counts/s a MEDIUM tick, at the MEDIUM
     /// rate.
     pub accel_per_tick: f64,
@@ -209,13 +214,12 @@ impl Geometry {
 
 /// The reference's path through `legs` (goal counts/s, s), slewed at the
 /// profile's acceleration each MEDIUM tick, from `from` at `v0`: its
-/// lowest and highest position, each leg's positions from its settle on,
-/// and where each leg ends and the reference's speed there.
+/// lowest and highest position, and where each leg ends and the
+/// reference's speed there.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
     pub lo: f64,
     pub hi: f64,
-    pub settled: Vec<(f64, f64)>,
     pub ends: Vec<(f64, f64)>,
 }
 
@@ -223,30 +227,18 @@ pub fn path(g: &Geometry, from: f64, v0: f64, legs: &[(f64, f64)]) -> Path {
     let dt = 1.0 / g.medium_hz;
     let (mut p, mut v) = (from, v0);
     let (mut lo, mut hi) = (p, p);
-    let mut settled = Vec::new();
     let mut ends = Vec::new();
     for &(goal, s) in legs {
         let n = (s * g.medium_hz).round() as usize;
-        let at = (fit::SETTLE_SHARE * n as f64) as usize;
-        let mut span = (f64::INFINITY, f64::NEG_INFINITY);
-        for k in 0..n {
+        for _ in 0..n {
             v += (goal - v).clamp(-g.accel_per_tick, g.accel_per_tick);
             p += v * dt;
             lo = lo.min(p);
             hi = hi.max(p);
-            if k >= at {
-                span = (span.0.min(p), span.1.max(p));
-            }
         }
-        settled.push(span);
         ends.push((p, v));
     }
-    Path {
-        lo,
-        hi,
-        settled,
-        ends,
-    }
+    Path { lo, hi, ends }
 }
 
 /// A speed's legs, up first, the up ones `t_up` and the down ones
@@ -282,9 +274,6 @@ pub struct Planned {
     /// The furthest a host lost after one of its legs leaves the shaft,
     /// each way, inside [`Geometry::clear`].
     pub runaway: (f64, f64),
-    /// The positions both directions cross settled inside the middle of
-    /// the travel: the rows the fit will keep.
-    pub window: (f64, f64),
 }
 
 impl Planned {
@@ -321,16 +310,14 @@ fn runaways(g: &Geometry, at: &Path) -> (f64, f64) {
 /// The speed at `cps` with legs of `t`, placed: its extent at the host's
 /// worst gaps, every up leg long or every down leg, centered on the span
 /// the speed may use, else on the travel's middle; the first center whose
-/// extent stays inside the span, whose lost-host runaways stay clear of
-/// the stops, and whose legs cross a window inside the middle third.
-/// Why not, the span-centered try's reason.
+/// extent stays inside the span and whose lost-host runaways stay clear of
+/// the stops. Why not, the span-centered try's reason.
 fn place(g: &Geometry, cps: f64, t: f64) -> Result<Planned, String> {
     let high = path(g, 0.0, 0.0, &legs_of(g, cps, t + GAP_S, t));
     let low = path(g, 0.0, 0.0, &legs_of(g, cps, t, t + GAP_S));
     let (lo, hi) = (low.lo.min(high.lo), high.hi.max(low.hi));
     let span = g.span(cps);
     let clear = g.clear();
-    let band = fit::band(g.stops);
     let mut first: Option<String> = None;
     for centre in [(span.0 + span.1) / 2.0, g.middle()] {
         let start = centre - (lo + hi) / 2.0;
@@ -356,39 +343,16 @@ fn place(g: &Geometry, cps: f64, t: f64) -> Result<Planned, String> {
                     worst.0, worst.1, clear.0, clear.1
                 ))
             } else {
-                let mean = path(
-                    g,
+                Ok(Planned {
+                    share: cps / g.ceiling_cps,
+                    cps,
+                    t_s: t,
+                    t_full_s: t,
                     start,
-                    0.0,
-                    &legs_of(g, cps, t + GAP_S / 2.0, t + GAP_S / 2.0),
-                );
-                let spans: Vec<(i8, (f64, f64))> = mean.settled[..2 * LEGS_EACH]
-                    .iter()
-                    .enumerate()
-                    .map(|(k, s)| (if k % 2 == 0 { 1 } else { -1 }, *s))
-                    .collect();
-                match fit::window(&spans)
-                    .map(|w| (w.0.max(band.0), w.1.min(band.1)))
-                    .filter(|w| (w.1 - w.0) / cps >= fit::KEPT_MIN_S)
-                {
-                    Some(window) => Ok(Planned {
-                        share: cps / g.ceiling_cps,
-                        cps,
-                        t_s: t,
-                        t_full_s: t,
-                        start,
-                        extent,
-                        span,
-                        runaway: worst,
-                        window,
-                    }),
-                    None => Err(format!(
-                        "its legs cross under {:.0} ms of the middle of the travel ({:.0}..{:.0}) settled both ways",
-                        1e3 * fit::KEPT_MIN_S,
-                        band.0,
-                        band.1
-                    )),
-                }
+                    extent,
+                    span,
+                    runaway: worst,
+                })
             }
         };
         match why {
@@ -409,7 +373,7 @@ pub fn plan(g: &Geometry) -> Plan {
         left_out: Vec::new(),
     };
     for (share, t_full) in SPEEDS {
-        let cps = (share * g.ceiling_cps).round().max(1.0);
+        let cps = (share * g.ceiling_cps).round().min(g.move_cps).max(1.0);
         let placed = match place(g, cps, t_full) {
             Ok(p) => Ok(p),
             Err(_) => match place(g, cps, LEG_MIN_SHARE * t_full) {
@@ -581,6 +545,14 @@ fn travel_raw(i: &CruiseInputs, set: (f64, f64)) -> Result<((f64, f64), String),
     Ok((stops, "the stops step's stops".into()))
 }
 
+async fn read_word<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u16, Refused> {
+    let f = field(rig.d, name)?;
+    match rig.c.read(rig.id, f.addr, 2).await?[..] {
+        [lo, hi, ..] => Ok(u16::from_le_bytes([lo, hi])),
+        _ => Err(Refused(format!("the read of {name} came back short"))),
+    }
+}
+
 async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<Before, Refused> {
     let (line, state) = verify::admit(rig.c, rig.id, rig.d).await?;
     if state.stamp.stored == osc_client::stamp::UNSTAMPED || !state.stamp.matches() {
@@ -624,7 +596,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
     let j_ff = n("j_ff_q88")?;
     if j_ff <= 0.0 {
         return Err(Refused(
-            "the set holds no inertia word (j_ff_q88 0): the cruises' inertia current cannot be taken off; run the spin step and gather".into(),
+            "the set holds no inertia word (j_ff_q88 0): the coast after a lapsed dead-man cannot be bounded, so no leg can be sized; run the spin step and gather".into(),
         ));
     }
     let fc = n("fric_fc_counts")?;
@@ -651,7 +623,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
     })?;
     let bridge_min = i.board.bridge_min_ticks.ok_or_else(|| {
         Refused(format!(
-            "the board's description ({}) holds no bridge_min_ticks: the all-tick estimate needs the bridge's shortest pulse",
+            "the board's description ({}) holds no bridge_min_ticks: the replay needs the bridge's shortest pulse",
             i.board.name
         ))
     })?;
@@ -698,7 +670,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
     let geometry = Geometry {
         stops,
         soft,
-        ceiling_cps: move_cps,
+        ceiling_cps: ceiling,
+        move_cps,
         accel_per_tick: accel,
         medium_hz,
         coast_cps2: fc / (j_ff / 256.0) * medium_hz,
@@ -740,15 +713,19 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
             soft.1
         )));
     }
-    let bias = {
-        let f = field(rig.d, "current_bias_counts")?;
-        match rig.c.read(rig.id, f.addr, 2).await?[..] {
-            [lo, hi, ..] => u16::from_le_bytes([lo, hi]) as f64,
-            _ => {
-                return Err(Refused(
-                    "the read of current_bias_counts came back short".into(),
-                ));
-            }
+    let bias = read_word(rig, "current_bias_counts").await? as f64;
+    let r_hat = read_word(rig, "r_hat_q12").await?;
+    if r_hat == 0 {
+        return Err(Refused(
+            "the servo reads no winding resistance (r_hat_q12 0): the cruises' current reference cannot be replayed".into(),
+        ));
+    }
+    let word_of = |name: &str| -> Result<u16, Refused> {
+        let x = n(name)?;
+        if (0.0..=u16::MAX as f64).contains(&x) {
+            Ok(x as u16)
+        } else {
+            Err(Refused(format!("the set's {name} {x} is no u16")))
         }
     };
     let stream = StreamCfg::read(rig.c, rig.id, rig.d).await?;
@@ -768,12 +745,16 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
         stream,
         reading: Reading {
             counts_per_a: sense.counts_per_a(),
-            g_window_q016: n("g_window_q016")?,
+            g_window_q016: word_of("g_window_q016")?,
+            i_kp_q88: word_of("i_kp_q88")?,
+            i_ki_q412: word_of("i_ki_q412")?,
+            ke_vpc_q: word_of("ke_vpc_q")?,
+            r_hat_q12: r_hat,
             j_ff_q88: j_ff,
-            pwm_arr: n("pwm_period_ticks")?,
+            fric_fc_counts: fc,
+            fric_fv_q016: n("fric_fv_q016")?,
+            pwm_arr: word_of("pwm_period_ticks")?,
             tick_hz,
-            medium_hz,
-            v_window_min_ticks: n("v_window_min_ticks")? as u16,
             bridge_min_ticks: bridge_min,
             settle: Settle {
                 start_ticks: w.settle_start_ticks,
@@ -805,14 +786,15 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
 }
 
 /// A leg as taken: its speed in the plan, goal, the capture it is, its
-/// planned rows and the bias polled after it.
+/// planned rows and the polls before and after it.
 #[derive(Clone, Debug)]
 struct TakenLeg {
     speed: usize,
     goal: f64,
     k: usize,
     planned_rows: usize,
-    bias: f64,
+    before: fit::Poll,
+    after: fit::Poll,
 }
 
 /// What the body found, as far as it got.
@@ -821,6 +803,9 @@ struct Found {
     goal0: Option<f64>,
     enable: Option<Check>,
     legs: Vec<TakenLeg>,
+    /// The winding estimate of the first poll beside a leg, centi-C: the
+    /// temperature the start's resistance is followed from.
+    t_read_cc: Option<f64>,
     /// A speed ended early: its cps, the leg, why.
     cut_short: Vec<(f64, usize, String)>,
     torque_on: bool,
@@ -916,8 +901,14 @@ async fn poll<P: Pipe>(rig: &mut Rig<'_, P>, b: &Before, w: &mut Watch) -> Resul
     Ok(Polled::Ok(pos))
 }
 
-async fn bias_now<P: Pipe>(rig: &mut Rig<'_, P>) -> Result<f64, Halt> {
-    Ok(super::read_u16(rig, "current_bias_counts").await? as f64)
+/// What the replay reads beside a leg: the rail, the winding estimate and
+/// the current bias.
+async fn leg_poll<P: Pipe>(rig: &mut Rig<'_, P>) -> Result<fit::Poll, Halt> {
+    Ok(fit::Poll {
+        vbus_raw: super::read_u16(rig, "vbus_raw").await? as f64,
+        t_winding_cc: super::read_u16(rig, "t_winding_cc").await? as i16 as f64,
+        bias_counts: super::read_u16(rig, "current_bias_counts").await? as f64,
+    })
 }
 
 /// A fault: the loop is not trusted to bring the shaft back.
@@ -1091,6 +1082,8 @@ async fn body<P: Pipe>(
         )
         .await?;
         write(rig, "mode", &[b.velocity_mode]).await?;
+        let mut polled = leg_poll(rig).await?;
+        found.t_read_cc.get_or_insert(polled.t_winding_cc);
         let (mut from, mut v_prev, mut ended) = (at, 0.0, None::<f64>);
         for leg in 0..2 * LEGS_EACH {
             interrupted(rig.stop)?;
@@ -1129,21 +1122,23 @@ async fn body<P: Pipe>(
                 return Err(faulted(found, on, f));
             }
             watch_rows(&w, b, &taken[bu], found)?;
-            let polled = poll_on(rig, b, &mut w, found, &on).await?;
-            let bias = bias_now(rig).await?;
+            let at = poll_on(rig, b, &mut w, found, &on).await?;
+            let after = leg_poll(rig).await?;
             from = taken[bu]
                 .burst
                 .rows
                 .last()
                 .and_then(|f| f.pos)
-                .map_or(polled, |p| b.lin.counts(p));
+                .map_or(at, |p| b.lin.counts(p));
             found.legs.push(TakenLeg {
                 speed: k,
                 goal,
                 k: bu,
                 planned_rows: leg_rows as usize,
-                bias,
+                before: polled,
+                after,
             });
+            polled = after;
             (v_prev, ended) = (goal, Some(t1));
         }
         let on = format!("the {:.0} counts/s stop", p.cps);
@@ -1198,76 +1193,58 @@ async fn recover<P: Pipe>(rig: &mut Rig<'_, P>, b: &Before, found: &mut Found) -
     }
 }
 
-/// A leg as read: the window of its speed, its read or why not, and
-/// what sets it aside.
-type ReadLeg = (
-    TakenLeg,
-    Option<(f64, f64)>,
-    Result<LegRead, String>,
-    Vec<String>,
-);
+/// A leg as read: its read or why not, and what sets it aside.
+type ReadLeg = (TakenLeg, Result<LegRead, String>, Vec<String>);
 
 /// The legs read and the line.
 struct Judged {
     reads: Vec<ReadLeg>,
-    windows: Vec<(f64, Option<(f64, f64)>)>,
     points: Vec<Point>,
     line: Option<fit::Line>,
 }
 
 fn judge(b: &Before, found: &Found, taken: &[Taken]) -> Judged {
-    let band = fit::band(b.geometry.stops);
-    let leg_of = |l: &TakenLeg| Leg {
-        goal_cps: l.goal,
-        rows: &taken[l.k].burst.rows,
-        planned_rows: l.planned_rows,
-        bias_counts: l.bias,
-    };
-    let mut windows = Vec::new();
-    let mut reads = Vec::new();
-    for (k, p) in b.plan.speeds.iter().enumerate() {
-        let legs: Vec<&TakenLeg> = found.legs.iter().filter(|l| l.speed == k).collect();
-        if legs.is_empty() {
-            continue;
-        }
-        let spans: Vec<(i8, (f64, f64))> = legs
-            .iter()
-            .filter_map(|l| {
-                let leg = leg_of(l);
-                Some((leg.dir(), fit::settled_span(&leg, &b.lin, band)?))
-            })
-            .collect();
-        let w = fit::window(&spans);
-        windows.push((p.cps, w));
-        for l in legs {
-            let got = match w {
-                Some(w) => fit::read(&leg_of(l), &b.lin, w, &b.reading),
-                None => Err("its speed has no window both directions crossed".into()),
+    let reads: Vec<ReadLeg> = found
+        .legs
+        .iter()
+        .map(|l| {
+            let got = match found.t_read_cc {
+                Some(t_read_cc) => fit::read(
+                    &Leg {
+                        goal_cps: l.goal,
+                        rows: &taken[l.k].burst.rows,
+                        before: l.before,
+                        after: l.after,
+                        t_read_cc,
+                    },
+                    &b.lin,
+                    &b.reading,
+                ),
+                None => Err("no poll before the first leg".into()),
             };
+            let top = b.plan.speeds[l.speed].share == SPEEDS[SPEEDS.len() - 1].0;
             let fails = match &got {
-                Ok(r) => r.fails(),
+                Ok(r) => r.fails(top),
                 Err(e) => vec![e.clone()],
             };
-            reads.push(((*l).clone(), w, got, fails));
-        }
-    }
+            (l.clone(), got, fails)
+        })
+        .collect();
     let points: Vec<Point> = reads
         .iter()
-        .filter(|(_, _, _, f)| f.is_empty())
-        .filter_map(|(l, _, r, _)| {
+        .filter(|(_, _, f)| f.is_empty())
+        .filter_map(|(l, r, _)| {
             let r = r.as_ref().ok()?;
             Some(Point {
                 goal_cps: l.goal.abs(),
                 dir: r.dir,
-                rad_s: r.rad_s,
-                i_ma: r.i_ma,
+                i_ma: r.held_ma,
             })
         })
         .collect();
-    let line = fit::line(&points);
+    let line = fit::line(&points, b.reading.counts_per_motor_rad);
     Judged {
         reads,
-        windows,
         points,
         line,
     }
@@ -1302,16 +1279,15 @@ pub async fn cruise<P: Pipe>(
     let mut lines = vec![
         format!("{}; bus at {} baud", b.line.said(), b.line.baud.as_hz()),
         format!(
-            "position {:.0} counts; travel {:.0}..{:.0} from {}; soft range {:.0}..{:.0}; the middle third {:.0}..{:.0}; ceiling {:.0} counts/s, acceleration {:.0} counts/s^2; {:.3} counts/deg, {}",
+            "position {:.0} counts; travel {:.0}..{:.0} from {}; soft range {:.0}..{:.0}; speed ceiling {:.0} counts/s, move speed {:.0} counts/s, acceleration {:.0} counts/s^2; {:.3} counts/deg, {}",
             b.pos,
             g.stops.0,
             g.stops.1,
             b.travel_from,
             g.soft.0,
             g.soft.1,
-            fit::band(g.stops).0,
-            fit::band(g.stops).1,
             g.ceiling_cps,
+            g.move_cps,
             g.accel_per_tick * g.medium_hz,
             b.scale.counts_per_deg,
             b.scale.source
@@ -1319,7 +1295,7 @@ pub async fn cruise<P: Pipe>(
     ];
     for p in &b.plan.speeds {
         lines.push(format!(
-            "plan: {:.0} counts/s from {:.0}, legs of {:.0} ms{}, reaching {:.0}..{:.0} inside {:.0}..{:.0}, a host lost as a leg ends leaving it in {:.0}..{:.0}; read over {:.0}..{:.0}",
+            "plan: {:.0} counts/s from {:.0}, legs of {:.0} ms{}, reaching {:.0}..{:.0} inside {:.0}..{:.0}, a host lost as a leg ends leaving it in {:.0}..{:.0}",
             p.cps,
             p.start,
             1e3 * p.t_s,
@@ -1333,9 +1309,7 @@ pub async fn cruise<P: Pipe>(
             p.span.0,
             p.span.1,
             p.runaway.0,
-            p.runaway.1,
-            p.window.0,
-            p.window.1
+            p.runaway.1
         ));
     }
     for l in &b.plan.left_out {
@@ -1362,17 +1336,21 @@ pub async fn cruise<P: Pipe>(
     let after = verify::theta_of(rig.c, rig.id, rig.d).await.ok();
     let kept = keep_all(rig.sink, STEP, &taken, &mut lines).map_err(Halt::from);
     let j = judge(&b, &found, &taken);
-    for (l, _, r, fails) in &j.reads {
+    for (l, r, fails) in &j.reads {
         lines.push(format!("  {}", leg_said(l, r, fails, b.tick_hz)));
     }
     let mut checks: Vec<Check> = found.enable.iter().cloned().collect();
     if ran.is_ok() {
-        checks.extend(fit::checks(&j.points, j.line.as_ref(), g.ceiling_cps));
+        checks.extend(fit::checks(
+            &j.points,
+            j.line.as_ref(),
+            b.reading.ceiling_cps,
+        ));
         let aside: Vec<String> = j
             .reads
             .iter()
-            .filter(|(_, _, _, f)| !f.is_empty())
-            .map(|(l, _, _, f)| {
+            .filter(|(_, _, f)| !f.is_empty())
+            .map(|(l, _, f)| {
                 format!(
                     "{:.0} {} (capture {:02}): {}",
                     l.goal.abs(),
@@ -1509,21 +1487,18 @@ fn leg_said(l: &TakenLeg, r: &Result<LegRead, String>, fails: &[String], tick_hz
     match r {
         Err(e) => format!("{head}: not read, {e}"),
         Ok(r) => format!(
-            "{head}: {:.0} ms over {:.0}..{:.0}, {:.0} counts/s ({:.1} rad/s), read {:.0}%{}, {:.2} mA, inertia {:+.2} mA, halves {:+.2}%: {}",
+            "{head}: {:.0} ms steady, {:.0} counts/s, halves {:+.2}%, phase {} (sd {:.2} mA, worst {:.2}), read {:.0}%, held {:.2} mA (read rows {:.2}), integrator {:+.2} mA, inertia {:+.2} mA (reported): {}",
             1e3 * r.rows as f64 / tick_hz,
-            r.pos.0,
-            r.pos.1,
             r.speed_cps,
-            r.rad_s,
-            100.0 * r.read_share,
-            if r.all_ticks_used {
-                " (all-tick estimate)"
-            } else {
-                ""
-            },
-            r.i_ma,
-            r.i_inertia_ma,
             100.0 * r.halves,
+            r.phase,
+            r.sd_in_ma,
+            r.sd_worst_ma,
+            100.0 * r.read_share,
+            r.held_ma,
+            r.read_ma,
+            r.integ_ma,
+            r.inertia_ma,
             if fails.is_empty() {
                 "valid".into()
             } else {
@@ -1553,15 +1528,14 @@ fn result_json(
     let mut estimates = Map::new();
     let source = |l: &fit::Line| {
         format!(
-            "the line of each closed-loop cruise leg's mean current on its table speed over {} valid legs at {} speeds, {:.0} to {:.0} rad/s, both directions pooled and each speed weighted once; the rows from a quarter into each leg inside the middle third of the travel and the window both directions crossed; the firmware's reading (the polled bias, the board's settle gain, the installed window term on the taps), the all-tick estimate under {:.0}% of rows read, inertia off through the installed j_ff; on the nominal sense block's {:.3} counts/A; the band is the standard error, the coulomb's from {}, the viscous term's from {}",
+            "the least-squares line of each closed-loop cruise leg's held current on its goal speed over {} valid legs at {} speeds, {:.0} to {:.0} counts/s, both directions pooled: the stage 5 cruise-friction method, each leg's current-loop reference replayed from its rows (the board's integer reading over the polled bias, the installed gains, Ke, window term and resistance), averaged over its MEDIUM period at the phase found, the reading on read rows and that mean on the rest, over the leg's middle half; every leg below the top speed and the top speed's legs whose speed held across their steady rows within {}%; per motor rad/s at {:.4} counts a motor radian; on the nominal sense block's {:.3} counts/A; the band is the standard error from the legs' residuals",
             l.legs,
             l.speeds.len(),
-            l.rad_s.0,
-            l.rad_s.1,
-            100.0 * fit::READ_SHARE_MIN,
+            l.goal_cps.0,
+            l.goal_cps.1,
+            fit::STEADY_TOP_PCT,
+            r.counts_per_motor_rad,
             r.counts_per_a,
-            l.coulomb_se_from,
-            l.viscous_se_from
         )
     };
     if let Some(l) = &j.line {
@@ -1577,40 +1551,40 @@ fn result_json(
     }
     let line = j.line.as_ref().map_or(Value::Null, |l| {
         json!({
-            "coulomb_ma": l.coulomb_ma, "coulomb_se_ma": l.coulomb_se_ma, "coulomb_se_from": l.coulomb_se_from,
-            "viscous_ma_s_per_rad": l.viscous_ma_s_per_rad, "viscous_se": l.viscous_se, "viscous_se_from": l.viscous_se_from,
-            "coulomb_se_legs_ma": l.coulomb_se_legs_ma, "viscous_se_legs": l.viscous_se_legs,
-            "coulomb_se_speeds_ma": l.coulomb_se_speeds_ma, "viscous_se_speeds": l.viscous_se_speeds,
-            "legs": l.legs, "rad_s": [l.rad_s.0, l.rad_s.1], "rms_ma": l.rms_ma,
+            "coulomb_ma": l.coulomb_ma, "coulomb_se_ma": l.coulomb_se_ma,
+            "viscous_ma_per_kcps": l.viscous_ma_per_kcps, "viscous_se_ma_per_kcps": l.viscous_se_ma_per_kcps,
+            "viscous_ma_s_per_rad": l.viscous_ma_s_per_rad, "viscous_se": l.viscous_se,
+            "legs": l.legs, "goal_cps": [l.goal_cps.0, l.goal_cps.1], "rms_ma": l.rms_ma,
             "speeds": l.speeds.iter().map(|s| json!({
-                "goal_cps": s.goal_cps, "legs": s.legs, "rad_s": s.rad_s, "current_ma": s.i_ma,
+                "goal_cps": s.goal_cps, "legs": s.legs, "current_ma": s.i_ma,
                 "residual_ma": s.residual_ma, "up_ma": s.up_ma, "down_ma": s.down_ma,
             })).collect::<Vec<_>>(),
         })
     });
+    let poll = |p: &fit::Poll| json!({"vbus_raw": p.vbus_raw, "t_winding_cc": p.t_winding_cc, "current_bias_counts": p.bias_counts});
     let legs: Vec<Value> = j
         .reads
         .iter()
-        .map(|(l, w, r, fails)| {
+        .map(|(l, r, fails)| {
             let mut v = json!({"goal_cps": l.goal, "capture": l.k + 1, "planned_rows": l.planned_rows,
-                               "bias_counts": l.bias, "window_counts": w.map(|w| [w.0, w.1]),
+                               "before": poll(&l.before), "after": poll(&l.after),
                                "valid": fails.is_empty(), "set_aside": fails});
             if let (Ok(r), Some(m)) = (r, v.as_object_mut()) {
                 m.extend([
+                    ("leg_rows".into(), r.leg_rows.into()),
                     ("rows".into(), r.rows.into()),
-                    ("first_tick".into(), r.first_tick.into()),
-                    ("pos_counts".into(), json!([r.pos.0, r.pos.1])),
-                    ("v_on_counts".into(), r.v_on_counts.into()),
+                    ("phase".into(), r.phase.into()),
+                    ("sd_in_ma".into(), finite(r.sd_in_ma)),
+                    ("sd_worst_ma".into(), finite(r.sd_worst_ma)),
+                    ("held_in_ms".into(), r.held_in_ms.map_or(Value::Null, finite)),
                     ("read_share".into(), r.read_share.into()),
-                    ("current_read_ma".into(), finite(r.i_read_ma)),
-                    ("all_ticks".into(), r.all_ticks.map_or(Value::Null, |a| json!({"current_ma": a.counts, "lag_rows": a.lag, "tau_us": a.tau_us}))),
-                    ("all_ticks_used".into(), r.all_ticks_used.into()),
+                    ("current_read_ma".into(), finite(r.read_ma)),
+                    ("current_held_ma".into(), finite(r.held_ma)),
+                    ("line_installed_ma".into(), finite(r.line_ma)),
+                    ("integrator_ma".into(), finite(r.integ_ma)),
                     ("speed_cps".into(), finite(r.speed_cps)),
-                    ("rad_s".into(), finite(r.rad_s)),
                     ("halves".into(), finite(r.halves)),
-                    ("accel_cps2".into(), finite(r.accel_cps2)),
-                    ("current_inertia_ma".into(), finite(r.i_inertia_ma)),
-                    ("current_ma".into(), finite(r.i_ma)),
+                    ("current_inertia_ma".into(), finite(r.inertia_ma)),
                 ]);
             }
             v
@@ -1635,12 +1609,12 @@ fn result_json(
         "estimates": estimates,
         "line": line,
         "legs": legs,
-        "windows": j.windows.iter().map(|(c, w)| json!({"speed_cps": c, "window_counts": w.map(|w| [w.0, w.1])})).collect::<Vec<_>>(),
+        "t_read_cc": found.t_read_cc,
         "plan": {
             "speeds": b.plan.speeds.iter().map(|p| json!({
                 "share": p.share, "speed_cps": p.cps, "t_s": p.t_s, "t_full_s": p.t_full_s, "shortened": p.shortened(),
                 "start_counts": p.start, "extent_counts": [p.extent.0, p.extent.1], "span_counts": [p.span.0, p.span.1],
-                "window_counts": [p.window.0, p.window.1], "runaway_counts": [p.runaway.0, p.runaway.1],
+                "runaway_counts": [p.runaway.0, p.runaway.1],
             })).collect::<Vec<_>>(),
             "left_out": b.plan.left_out.iter().map(|l| json!({"share": l.share, "speed_cps": l.cps, "why": l.why})).collect::<Vec<_>>(),
             "cut_short": found.cut_short.iter().map(|(c, k, w)| json!({"speed_cps": c, "legs_run": k, "why": w})).collect::<Vec<_>>(),
@@ -1652,20 +1626,23 @@ fn result_json(
         },
         "travel": {
             "stops_counts": [g.stops.0, g.stops.1], "from": b.travel_from, "soft_counts": [g.soft.0, g.soft.1],
-            "band_counts": [fit::band(g.stops).0, fit::band(g.stops).1], "middle_counts": b.mid,
-            "ceiling_cps": g.ceiling_cps, "accel_cps2": g.accel_per_tick * g.medium_hz,
+            "middle_counts": b.mid, "speed_ceiling_cps": g.ceiling_cps, "move_cps": g.move_cps,
+            "accel_cps2": g.accel_per_tick * g.medium_hz,
         },
         "scales": {
             "counts_per_a": r.counts_per_a, "counts_per_a_source": "the servo's nominal sense block, the gather's",
-            "g_window_q016": r.g_window_q016, "j_ff_q88": r.j_ff_q88, "pwm_arr": r.pwm_arr, "tick_hz": r.tick_hz,
-            "v_window_min_ticks": r.v_window_min_ticks, "bridge_min_ticks": r.bridge_min_ticks,
+            "g_window_q016": r.g_window_q016, "i_kp_q88": r.i_kp_q88, "i_ki_q412": r.i_ki_q412,
+            "ke_vpc_q": r.ke_vpc_q, "r_hat_q12": r.r_hat_q12, "j_ff_q88": r.j_ff_q88,
+            "fric_fc_counts": r.fric_fc_counts, "fric_fv_q016": r.fric_fv_q016,
+            "pwm_arr": r.pwm_arr, "tick_hz": r.tick_hz, "bridge_min_ticks": r.bridge_min_ticks,
             "settle_start_ticks": r.settle.start_ticks, "settle_q15": r.settle.q15,
             "counts_per_deg": b.scale.counts_per_deg, "gear_ratio": b.gear_ratio,
             "counts_per_motor_rad": r.counts_per_motor_rad,
         },
         "bounds": {
-            "band_share": fit::BAND_SHARE, "settle_share": fit::SETTLE_SHARE, "kept_min_s": fit::KEPT_MIN_S,
-            "read_share_min": fit::READ_SHARE_MIN, "held_share": fit::HELD_SHARE, "inertia_max_ma": fit::INERTIA_MAX_MA,
+            "steady_cut": fit::STEADY_CUT, "travel_counts": fit::TRAVEL_COUNTS,
+            "speed_window_min_s": fit::SPEED_WINDOW_MIN_S, "speed_tol": fit::SPEED_TOL,
+            "copper_per_c": fit::COPPER_PER_C, "kept_min_s": fit::KEPT_MIN_S, "steady_top_pct": fit::STEADY_TOP_PCT,
             "speeds_min": fit::SPEEDS_MIN,
             "low_share_max": fit::LOW_SHARE_MAX, "residual_max_ma": fit::RESIDUAL_MAX_MA, "dirs_max_ma": fit::DIRS_MAX_MA, "dirs_speeds_min": fit::DIRS_SPEEDS_MIN,
         },
@@ -1685,13 +1662,14 @@ fn result_json(
 mod tests {
     use super::*;
 
-    /// The mg90-d's travel, soft range, move speed, acceleration and the
-    /// record's coast (fric_fc 43 over j_ff 862).
+    /// The mg90-d's travel, soft range, speed ceiling, move speed,
+    /// acceleration and the record's coast (fric_fc 43 over j_ff 862).
     pub(crate) fn mg90d() -> Geometry {
         Geometry {
             stops: (110.0, 3730.0),
             soft: (314.0, 3560.0),
-            ceiling_cps: 4025.0,
+            ceiling_cps: 8050.0,
+            move_cps: 4025.0,
             accel_per_tick: 10305.0 / 256.0,
             medium_hz: 2000.0,
             coast_cps2: 43.0 / (862.0 / 256.0) * 2000.0,
@@ -1709,8 +1687,6 @@ mod tests {
         let want = 4025.0 * 0.6 - 4025.0 * 4025.0 / (2.0 * a);
         assert!((p.hi - want).abs() < 5.0, "{} {want}", p.hi);
         assert_eq!(p.lo, 0.0);
-        let (lo, hi) = p.settled[0];
-        assert!(lo > 0.0 && hi == p.hi);
         assert_eq!(p.ends, [(p.hi, 4025.0)]);
     }
 
@@ -1734,17 +1710,16 @@ mod tests {
         assert!(down > g.clear().0 && down < 620.0, "{down}");
     }
 
-    /// On the mg90-d every speed runs at its full leg, centered on its
-    /// span, inside it at the worst gaps, a lost host clear of the stops,
-    /// read over a window inside the middle third.
+    /// On the mg90-d every speed runs at its full leg, the plan's shares of
+    /// the ceiling, centered on its span, inside it at the worst gaps, a
+    /// lost host clear of the stops.
     #[test]
     fn the_mg90d_runs_every_speed_at_full_length() {
         let g = mg90d();
         let p = plan(&g);
         assert!(p.left_out.is_empty(), "{:?}", p.left_out);
         let cps: Vec<f64> = p.speeds.iter().map(|s| s.cps).collect();
-        assert_eq!(cps, [302.0, 1489.0, 2133.0, 4025.0]);
-        let band = fit::band(g.stops);
+        assert_eq!(cps, [322.0, 805.0, 1530.0, 4025.0]);
         for s in &p.speeds {
             assert!(!s.shortened(), "{s:?}");
             assert!(s.extent.0 >= s.span.0 && s.extent.1 <= s.span.1, "{s:?}");
@@ -1756,16 +1731,15 @@ mod tests {
             );
             let centre = (s.extent.0 + s.extent.1) / 2.0;
             assert!((centre - (s.span.0 + s.span.1) / 2.0).abs() < 1e-6, "{s:?}");
-            assert!(s.window.0 >= band.0 && s.window.1 <= band.1, "{s:?}");
-            assert!(
-                (s.window.1 - s.window.0) / s.cps >= fit::KEPT_MIN_S,
-                "{s:?}"
-            );
         }
         let top = &p.speeds[3];
         assert!(top.extent.1 - top.extent.0 > 2400.0, "{top:?}");
-        let low = &p.speeds[0];
-        assert!(low.extent.0 > band.0 && low.extent.1 < band.1, "{low:?}");
+        // a ceiling over twice the move speed: the top cruise is capped at it
+        let fast = plan(&Geometry {
+            ceiling_cps: 9000.0,
+            ..g
+        });
+        assert_eq!(fast.speeds.last().map(|s| s.cps), Some(4025.0));
     }
 
     /// A servo with a third of the mg90-d's travel: the top speed's legs
@@ -1790,7 +1764,7 @@ mod tests {
             assert!(place(&g, s.cps, s.t_s + 0.002).is_err(), "{s:?}");
         }
         let slow = p.speeds.first().expect("the slowest speed planned");
-        assert!(slow.cps == 302.0 && !slow.shortened(), "{slow:?}");
+        assert!(slow.cps == 322.0 && !slow.shortened(), "{slow:?}");
         let g = Geometry {
             stops: (1800.0, 2200.0),
             soft: (1900.0, 2100.0),
@@ -1803,7 +1777,7 @@ mod tests {
 
     /// Soft limits set well in from one stop: the legs center on the span
     /// they may use, not the travel's middle, and so run longer than
-    /// centered on the middle; the rows read stay in the middle third.
+    /// centered on the middle.
     #[test]
     fn asymmetric_soft_limits_center_the_legs_on_the_span() {
         let g = Geometry {
@@ -1811,7 +1785,6 @@ mod tests {
             ..mg90d()
         };
         let p = plan(&g);
-        let band = fit::band(g.stops);
         for s in &p.speeds {
             let centre = (s.extent.0 + s.extent.1) / 2.0;
             let mid = (s.span.0 + s.span.1) / 2.0;
@@ -1819,7 +1792,6 @@ mod tests {
                 (centre - mid).abs() < 1e-6 || (centre - g.middle()).abs() < 1e-6,
                 "{s:?}"
             );
-            assert!(s.window.0 >= band.0 && s.window.1 <= band.1, "{s:?}");
         }
         let top = p.speeds.iter().find(|s| s.cps == 4025.0);
         let centred_on_middle = {
