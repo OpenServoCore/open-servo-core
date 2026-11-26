@@ -42,8 +42,24 @@
 //! at the band's edge never wakes the integral; a held shaft whose load
 //! goes away parks where it is.
 //!
+//! A shaft the play throws out of the band or the zone at every push is
+//! caught and lost without end: the push the loop keeps up on it is what
+//! throws it. A hold lost [`HOLD_THROWN`] times running is thrown ([`Thrown`]):
+//! once the raw pot sample is at rest inside its reach it parks there, if
+//! the load estimate is within the friction level, the plain park's own
+//! test: a thrown shaft the estimate calls loaded is the plain hold, so its
+//! current, and the stall and position error timers on it, are as without
+//! the rule. The reach starts at the zone and grows a band for every second
+//! further loss, to [`HOLD_REACH_BANDS`], so a hold with a resting place
+//! inside the zone ends there and only the wide throws are taken farther
+//! out. That park is kept to a band past its reach and while the estimate
+//! stays within twice the friction level; lost, the count clears, as it
+//! does on a loss after the dwell, a moving profile, the run edge and a
+//! mode change. Under the count every output is the plain hold's.
+//!
 //! Hold gates on POSITION rest (profile stopped, error inside the
-//! deadband) and the load estimate - never on omega_hat. The fused omega is
+//! deadband, or the thrown hold's rest on the raw sample) and the load
+//! estimate - never on omega_hat. The fused omega is
 //! pot-noise driven at rest and the velocity loop amplifies it (bench +
 //! integer-sim: a ~3x blow-up when driving), so an omega gate that clears
 //! the parked noise floor sits below the driving floor: hold latches from
@@ -73,13 +89,16 @@ pub const HOLD_SETTLE_TICKS: u8 = 128;
 /// toward `HOLD_SETTLE_TICKS`). Inside the band of a stopped goal, or once
 /// settled the zone: `park` for an unloaded shaft (the kernel maps it to
 /// Brake), `hold` for a loaded one (it keeps its current, its velocity
-/// integral frozen). At most one of the two is set.
+/// integral frozen). At most one of the two is set. On a stopped goal the
+/// band and the raw error's magnitude it was judged on, else 0.
 #[derive(Copy, Clone)]
 pub struct PosOut {
     pub omega_ref_q16: i32,
     pub hold: bool,
     pub park: bool,
     pub near: bool,
+    pub band: u32,
+    pub e_abs: u32,
 }
 
 /// The hold band, cQ16: the deadband's raw counts times the local gain
@@ -133,6 +152,8 @@ pub fn step(
             hold: false,
             park: false,
             near: false,
+            band: 0,
+            e_abs: 0,
         };
     }
     let band = band_q16(cfg.pos_deadband_counts, band_gain_q4);
@@ -146,6 +167,150 @@ pub fn step(
         hold: hit && !unloaded,
         park: hit && unloaded,
         near,
+        band,
+        e_abs,
+    }
+}
+
+/// Catches lost running from which a hold is thrown. The landing itself
+/// loses up to two.
+pub const HOLD_THROWN: u8 = 3;
+
+/// Medium periods the raw pot sample stays within [`HOLD_STILL_COUNTS`]
+/// for the shaft to be at rest (6 ms at 2 kHz).
+pub const HOLD_REST_TICKS: u8 = 12;
+
+/// Raw counts the sample may move and still be at rest: a throw moves 2 to
+/// 5 a period.
+pub const HOLD_STILL_COUNTS: u16 = 2;
+
+/// The thrown hold's widest reach, bands.
+pub const HOLD_REACH_BANDS: u8 = 5;
+
+/// The thrown hold: the catches the loop lost running, the rest on the raw
+/// sample, and whether the hold parked on them.
+pub struct Thrown {
+    lost: u8,
+    still: u8,
+    anchor: u16,
+    at_rest: bool,
+}
+
+impl Thrown {
+    pub const fn new() -> Self {
+        Self {
+            lost: 0,
+            still: 0,
+            anchor: 0,
+            at_rest: false,
+        }
+    }
+
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.lost = 0;
+        self.still = 0;
+        self.at_rest = false;
+    }
+
+    #[cfg(test)]
+    pub fn lost(&self) -> u8 {
+        self.lost
+    }
+
+    #[cfg(test)]
+    pub fn at_rest(&self) -> bool {
+        self.at_rest
+    }
+
+    /// Lost `lost` times running, not at rest yet.
+    #[cfg(test)]
+    pub fn lost_times(lost: u8) -> Self {
+        Self {
+            lost,
+            ..Self::new()
+        }
+    }
+
+    /// Parked at rest on `raw` by the rule on a count of `lost`.
+    #[cfg(test)]
+    pub fn parked_at(raw: u16, lost: u8) -> Self {
+        Self {
+            lost,
+            still: HOLD_REST_TICKS,
+            anchor: raw,
+            at_rest: true,
+        }
+    }
+
+    /// One period of a profile resting on its goal, after [`step`]:
+    /// whether the hold parks where `step` did not. `raw` is the tick's
+    /// pot sample, `e_abs` and `band` `step`'s. `lost`: a catch ended, the
+    /// last period parked or held and this one's `step` does neither;
+    /// `settled`: the dwell `step` ran on was over. `tau_abs` is the load
+    /// estimate's magnitude and `fric` the friction level, both ccQ16: the
+    /// park is taken only on a shaft [`unloaded`] calls free, and kept
+    /// only while the estimate stays inside twice that level.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn parks(
+        &mut self,
+        raw: u16,
+        e_abs: u32,
+        band: u32,
+        lost: bool,
+        settled: bool,
+        tau_abs: u32,
+        fric: u32,
+    ) -> bool {
+        if raw.abs_diff(self.anchor) > HOLD_STILL_COUNTS {
+            self.anchor = raw;
+            self.still = 0;
+        } else {
+            self.still += (self.still < HOLD_REST_TICKS) as u8;
+        }
+        if self.at_rest {
+            // an undriven shaft at rest that leaves, or one the estimate
+            // shows a load on, is the plain hold's again. Twice the level
+            // the park was taken under: the estimate's noise on a free
+            // shaft never ends it, a load does before it moves the shaft
+            if e_abs <= self.reach(band).saturating_add(band) && tau_abs >> 1 <= fric {
+                return true;
+            }
+            self.clear();
+            return false;
+        }
+        if lost {
+            // a shaft that had come to rest was moved by something else
+            self.lost = if settled {
+                0
+            } else {
+                self.lost.saturating_add(1)
+            };
+        }
+        if self.lost < HOLD_THROWN || self.still < HOLD_REST_TICKS {
+            return false;
+        }
+        // the plain hold's load test: the rule widens where a free shaft
+        // parks, never which shaft is free
+        if tau_abs > fric {
+            return false;
+        }
+        self.at_rest = e_abs <= self.reach(band);
+        self.at_rest
+    }
+
+    /// The zone, a band more for every second loss past the throw.
+    #[inline(always)]
+    fn reach(&self, band: u32) -> u32 {
+        let bands = (2 + (self.lost.saturating_sub(HOLD_THROWN) >> 1)).min(HOLD_REACH_BANDS);
+        band.saturating_mul(bands as u32)
+    }
+}
+
+impl Default for Thrown {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -429,5 +594,181 @@ mod tests {
             )
             .park
         );
+    }
+
+    /// The identity's band at the deadband of 4.
+    const B: u32 = 4 << 16;
+
+    /// A friction level of 43 counts, ccQ16.
+    const FRIC: u32 = 43 << 16;
+
+    /// The periods of a rest: the anchor's and [`HOLD_REST_TICKS`] on it.
+    const REST: u32 = HOLD_REST_TICKS as u32 + 1;
+
+    /// `n` uncaught periods at rest on `raw`, `e_abs` off the goal: whether
+    /// the last one parks.
+    fn rest(t: &mut Thrown, raw: u16, e_abs: u32, n: u32) -> bool {
+        let mut parks = false;
+        for _ in 0..n {
+            parks = t.parks(raw, e_abs, B, false, false, 0, FRIC);
+        }
+        parks
+    }
+
+    /// `n` catches lost before the dwell by a shaft in flight past `raw`,
+    /// each a caught period and the next.
+    fn lose(t: &mut Thrown, raw: u16, n: u8) {
+        for _ in 0..n {
+            assert!(!t.parks(raw + 10, 0, B, false, false, 0, FRIC));
+            assert!(!t.parks(raw + 20, 3 * B, B, true, false, 0, FRIC));
+        }
+    }
+
+    #[test]
+    fn a_hold_lost_twice_is_the_plain_hold() {
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, 2);
+        assert_eq!(t.lost(), 2);
+        // at rest in the zone, past the band: the plain hold drives
+        assert!(!rest(&mut t, 2000, 2 * B, 100));
+        lose(&mut t, 2000, 1);
+        assert_eq!(t.lost(), 3);
+        assert!(!rest(&mut t, 2000, 2 * B, REST - 1));
+        assert!(rest(&mut t, 2000, 2 * B, 1));
+        assert!(t.at_rest());
+    }
+
+    #[test]
+    fn a_thrown_hold_parks_after_the_rest_and_inside_the_zone_only() {
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, HOLD_THROWN);
+        assert!(!rest(&mut t, 2000, 2 * B, REST - 1));
+        assert!(rest(&mut t, 2000, 2 * B, 1));
+        // a sample past the still counts restarts the rest
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, HOLD_THROWN);
+        assert!(!rest(&mut t, 2000, 2 * B, REST - 1));
+        assert!(!rest(&mut t, 2003, 2 * B, REST - 1));
+        assert!(rest(&mut t, 2003, 2 * B, 1));
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, HOLD_THROWN);
+        assert!(!rest(&mut t, 2100, 2 * B + 1, 100));
+        assert_eq!(t.lost(), HOLD_THROWN);
+    }
+
+    #[test]
+    fn the_reach_grows_a_band_every_second_loss_to_five() {
+        for lost in HOLD_THROWN..=40 {
+            let bands = (2 + (lost - HOLD_THROWN) as u32 / 2).min(5);
+            let mut t = Thrown::new();
+            lose(&mut t, 2000, lost);
+            assert!(!rest(&mut t, 2000, bands * B + 1, 50), "lost {lost}");
+            assert_eq!(t.lost(), lost);
+            assert!(rest(&mut t, 2000, bands * B, 1), "lost {lost}");
+        }
+        // the count saturates and the reach stays at the cap
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, 255);
+        lose(&mut t, 2000, 3);
+        assert_eq!(t.lost(), 255);
+        assert!(!rest(&mut t, 2000, 5 * B + 1, 50));
+        assert!(rest(&mut t, 2000, 5 * B, 1));
+    }
+
+    #[test]
+    fn the_park_is_kept_a_band_past_its_reach_and_once_lost_clears() {
+        for (lost, reach) in [(3, 2), (5, 3), (9, 5)] {
+            let mut t = Thrown::new();
+            lose(&mut t, 2000, lost);
+            assert!(rest(&mut t, 2000, reach * B, REST));
+            // moving or not, the park holds to the kept band, lost or not
+            for (raw, lost) in [(2010, true), (1990, false)] {
+                assert!(t.parks(raw, (reach + 1) * B, B, lost, false, 0, FRIC));
+            }
+            assert!(!t.parks(2000, (reach + 1) * B + 1, B, true, false, 0, FRIC));
+            assert_eq!((t.lost(), t.at_rest()), (0, false), "lost {lost}");
+            // the hold is the plain one again: never parked twice
+            assert!(!rest(&mut t, 2000, B + 1, 100));
+            lose(&mut t, 2000, 2);
+            assert!(!rest(&mut t, 2000, B + 1, 100));
+        }
+    }
+
+    #[test]
+    fn a_thrown_hold_parks_only_inside_the_friction_level() {
+        // thrown, at rest in the zone, a count over the level: the plain
+        // hold's loaded shaft, never parked, and the count stands
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, HOLD_THROWN);
+        for n in 0..1000 {
+            assert!(
+                !t.parks(2000, 2 * B, B, false, false, FRIC + 1, FRIC),
+                "period {n}"
+            );
+        }
+        assert_eq!((t.lost(), t.at_rest()), (HOLD_THROWN, false));
+        // the estimate back inside the level: the rest already stands
+        assert!(t.parks(2000, 2 * B, B, false, false, FRIC, FRIC));
+        // no friction level set: only a zero estimate is a free shaft
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, HOLD_THROWN);
+        for _ in 0..REST {
+            assert!(!t.parks(2000, B, B, false, false, 1, 0));
+        }
+        assert!(t.parks(2000, B, B, false, false, 0, 0));
+    }
+
+    #[test]
+    fn the_park_is_kept_inside_twice_the_friction_level_and_a_load_ends_it() {
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, HOLD_THROWN);
+        assert!(rest(&mut t, 2000, 2 * B, REST));
+        // the estimate's noise past the level it was taken under
+        for tau in [FRIC + 1, 2 * FRIC, 2 * FRIC + 1] {
+            assert!(t.parks(2000, 2 * B, B, false, false, tau, FRIC), "{tau}");
+        }
+        assert!(!t.parks(2000, 2 * B, B, false, false, 2 * FRIC + 2, FRIC));
+        assert_eq!((t.lost(), t.at_rest()), (0, false));
+        // the largest estimate and the largest level wrap nothing
+        let mut t = Thrown::parked_at(2000, HOLD_THROWN);
+        assert!(!t.parks(2000, 0, B, false, false, u32::MAX, 43 << 16));
+        let mut t = Thrown::parked_at(2000, HOLD_THROWN);
+        assert!(t.parks(2000, 0, B, false, false, u32::MAX, u32::MAX >> 1));
+    }
+
+    #[test]
+    fn a_loss_after_the_dwell_restarts_the_count() {
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, 2);
+        assert!(!t.parks(2000, 2 * B, B, false, true, 0, FRIC));
+        assert!(!t.parks(2000, 3 * B, B, true, true, 0, FRIC));
+        assert_eq!(t.lost(), 0);
+        lose(&mut t, 2000, 2);
+        assert!(!rest(&mut t, 2000, B + 1, 100));
+    }
+
+    #[test]
+    fn a_creeping_shaft_with_pot_noise_is_never_at_rest() {
+        let mut t = Thrown::new();
+        lose(&mut t, 2000, 20);
+        // a count every second period under 2 counts of noise
+        for n in 0..2_000u16 {
+            let raw = 1000 + n / 2 + 2 * (n & 1);
+            assert!(!t.parks(raw, B, B, false, false, 0, FRIC), "period {n}");
+        }
+        // the same noise on a still shaft is a rest
+        let mut parks = false;
+        for n in 0..REST as u16 {
+            parks = t.parks(3000 + 2 * (n & 1), B, B, false, false, 0, FRIC);
+        }
+        assert!(parks);
+    }
+
+    #[test]
+    fn clear_drops_the_count_the_rest_and_the_park() {
+        let mut t = Thrown::parked_at(2000, 9);
+        t.clear();
+        assert_eq!((t.lost(), t.at_rest()), (0, false));
+        assert!(!rest(&mut t, 2000, B, 100));
     }
 }

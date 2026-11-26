@@ -270,7 +270,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         #[cfg(not(feature = "experiment"))]
         let staged = if phase == phase::TRAJECTORY {
             self.medium
-                .trajectory(&self.cfg, &self.faults, &mut self.cmd)
+                .trajectory(&self.cfg, &self.faults, &mut self.cmd, shared.frame().pos())
         } else {
             self.medium.step(
                 phase,

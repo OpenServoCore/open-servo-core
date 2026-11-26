@@ -52,7 +52,7 @@ Medium phases, in data-flow order (`phase` in `kernel/scheduler/table.rs`):
 | --- | --- | --- |
 | 0 | CONTROL | CONTROL read, enable and mode edges, the data-state check and the belt, drive kind; the configuration on the first tick |
 | 1 | OBSERVER | the reading with its stored current term, observer step, speed blend on the boxcar SPEED closed |
-| 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind |
+| 2 | TRAJECTORY | trajectory and position loop; the hold updates the drive kind; on a profile resting on its goal the thrown hold's count of lost catches and its rest on the tick's raw pot sample, which `on_tick` passes in, its park only on a shaft the load test calls free (`a_hold_the_play_throws_wider_than_the_zone_comes_to_rest`, `a_thrown_hold_rests_on_the_end_inside_the_zone`, `a_thrown_hold_never_parks_a_loaded_shaft`) |
 | 3 | LIMITS | limits fold, Current mode's speed fold, OpenLoop base duty, stall fault, the held current's square into the heats' sum |
 | 4 | VELOCITY | velocity loop or current clamp; current reference and band land; the reading's current terms on the reference |
 | 5 | RAIL | rail estimate and its fold, sensor screen, position error timer, at zero while the press fold is latched under Yield, as this period's LIMITS left it (`a_wall_held_under_yield_never_latches_position_error`, `a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back`), the window term on the rail |

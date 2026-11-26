@@ -49,6 +49,8 @@ use self::loops::faults::{Detectors, FaultLatch};
 #[cfg(not(feature = "experiment"))]
 use self::loops::limits::{IBand, LimitState};
 #[cfg(not(feature = "experiment"))]
+use self::loops::position::Thrown;
+#[cfg(not(feature = "experiment"))]
 use self::loops::trajectory::TrajGen;
 #[cfg(not(feature = "experiment"))]
 use self::loops::velocity::VelocityLoop;
@@ -165,6 +167,8 @@ pub(in crate::kernel) struct Medium {
     /// Consecutive medium ticks the position loop has reported `near`, up
     /// to `position::HOLD_SETTLE_TICKS`, where the hold is settled.
     pub(in crate::kernel) near_ticks: u8,
+    /// The hold's lost catches and the rest on the raw sample.
+    pub(in crate::kernel) thrown: Thrown,
 }
 
 #[cfg(not(feature = "experiment"))]
@@ -207,6 +211,7 @@ impl Medium {
             i_ref_cc: 0,
             omega_ref_q16: 0,
             near_ticks: 0,
+            thrown: Thrown::new(),
         }
     }
 

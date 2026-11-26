@@ -239,6 +239,55 @@ A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
   the 554-count class limit: peak within 1.1x, mean 0.85x to 1.0x, no
   fault inside the stall time.
 
+## Thrown hold pins
+
+The thrown hold (control-theory "The Position Loop", `position::Thrown`) is
+pinned in gear 1. The two DES pins in `core/src/kernel/tests.rs` run the
+kernel against `ThrownShaft`, a kinematic plant in the shape of the free
+horn's rows after a long move: the pot rests at one of two places either
+side of the goal, a drive kept up for 15 ms throws it to the other in 3 or
+4 ms and it stops dead there, and undriven it stays. The loops and the
+observer are the development servo's stored set, the band 4 counts, the
+motor model unset so no load estimate forms. A hold hunts when the motor
+is driven on more than 2% of the ticks of its last 500 ms. Paths below are
+under `firmware/lib`.
+
+- `a_hold_the_play_throws_wider_than_the_zone_comes_to_rest` - ends 18
+  below and 19 above the goal: the hold parks at -18 after its ninth loss,
+  208.6 ms in and 10 throws, still and undriven to the end, inside five
+  bands, the last drive within 0.5 s.
+- `a_thrown_hold_rests_on_the_end_inside_the_zone` - ends 22 below and 5
+  above: the hold parks at +5, its first rest inside the zone once thrown,
+  102.6 ms in and 5 throws.
+- `a_goal_a_mode_change_and_the_run_edge_clear_a_thrown_hold` - the wide
+  plant thrown, then a new goal, a mode change or torque off: the count
+  reads 0.
+- `a_thrown_hold_never_parks_a_loaded_shaft` - the loaded rig held in the
+  band with a count of nine, the widest reach's: held and driven on every
+  tick of 3 s, the held current's sign kept, the count still nine.
+- `a_load_ends_the_thrown_holds_park_at_once` - the same rig with the rule's
+  park set on it: never braked, held on every tick, the count 0.
+
+The loaded and yielded holds of `integration/tests/loaded_hold.rs` and
+`yield_hold.rs` run unchanged with the rule in: a loaded hold rests in the
+zone with the drive on, the stall latch and the yield fold come as without
+it.
+
+The rule's state (`core/src/kernel/phases/loops/position.rs`):
+`a_hold_lost_twice_is_the_plain_hold`,
+`a_thrown_hold_parks_after_the_rest_and_inside_the_zone_only`,
+`the_reach_grows_a_band_every_second_loss_to_five`,
+`the_park_is_kept_a_band_past_its_reach_and_once_lost_clears`,
+`a_loss_after_the_dwell_restarts_the_count`,
+`a_creeping_shaft_with_pot_noise_is_never_at_rest`,
+`clear_drops_the_count_the_rest_and_the_park`, and the load test:
+`a_thrown_hold_parks_only_inside_the_friction_level` (an estimate a count
+over the level never parks and the count stands; no level set, only a zero
+estimate is free) and
+`the_park_is_kept_inside_twice_the_friction_level_and_a_load_ends_it`.
+Under three losses every output is the plain hold's: the `kernel_trace`
+golden does not move.
+
 ## Identification and calibration pins
 
 How the `ident` crate plans its drives under the current limit

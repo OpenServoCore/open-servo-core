@@ -11,11 +11,12 @@
 //! | --- | --- | --- |
 //! | boot | first tick | all at rest; the shunt zero at the install's rest reading, the observer at the first sample |
 //! | enable edge (`torque_enable` 0 -> 1) | CONTROL (`admit`) | latch, OC count, detectors, the limits' stall, yield and pending: acknowledged |
-//! | run on | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output: 0; limiter at the floor; observer at the sample, or at rest on an in-band goal; profile at rest at the goal or the estimate; Run |
-//! | run off | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output: 0; limiter at the floor; Off |
-//! | mode change under run | CONTROL | limiter at the floor; Run. Between Velocity and Position: profile at the estimate, its speed kept. Otherwise: profile at rest at the estimate, velocity integral 0. From OpenLoop: current integral at the applied volts, reference at the held current inside the band, the dropped-pulse gate on OpenLoop's last width |
+//! | run on | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output, the thrown hold's count: 0; limiter at the floor; observer at the sample, or at rest on an in-band goal; profile at rest at the goal or the estimate; Run |
+//! | run off | CONTROL | current integral, reference, its averages in the reading, velocity integral, blend, position loop output, the thrown hold's count: 0; limiter at the floor; Off |
+//! | mode change under run | CONTROL | limiter at the floor; the thrown hold's count 0; Run. Between Velocity and Position: profile at the estimate, its speed kept. Otherwise: profile at rest at the estimate, velocity integral 0. From OpenLoop: current integral at the applied volts, reference at the held current inside the band, the dropped-pulse gate on OpenLoop's last width |
 //! | park in | TRAJECTORY | Parked; every parked period at VELOCITY: reference, velocity integral, the blend's lead 0; its standing part kept, the boxcar's level over the observer that a push carries to the next |
 //! | park out | TRAJECTORY | Run, or Held under a load |
+//! | thrown hold park | TRAJECTORY | a park on a free shaft, kept a band past its reach and within twice the friction level; lost, the count 0 |
 //! | held in | TRAJECTORY | Held (loaded, where a free shaft parks); every held period at VELOCITY: the velocity loop steps with its integral frozen |
 //! | held out | TRAJECTORY | Run, or Parked once the load is gone |
 //! | fault | any tick | the latch; FAST drives Off that tick, run off follows at CONTROL |
@@ -106,6 +107,7 @@ impl Medium {
         self.i_ref_cc = 0;
         self.omega_ref_q16 = 0;
         self.near_ticks = 0;
+        self.thrown.clear();
         self.life = if run { Life::Run } else { Life::Off };
     }
 
@@ -131,6 +133,7 @@ impl Medium {
         fast.reset_limiter(cfg.ol_floor_q15);
         self.life = Life::Run;
         self.near_ticks = 0;
+        self.thrown.clear();
     }
 
     /// Every parked period at VELOCITY: nothing drives, so the velocity
