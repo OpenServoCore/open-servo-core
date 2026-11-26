@@ -11,11 +11,14 @@
 //! omega_hat = observer + c
 //! ```
 //!
-//! The standing part holds across the gaps between boxcars: under a
-//! closed loop a run of boxcars lasts a few periods, and a part cleared at
-//! every gap never forms. The lead keeps a boxcar that comes or goes from
-//! stepping the loop's speed by the whole fast part at once. With no
-//! boxcar the lead runs out and the loop reads the observer alone.
+//! The standing part holds across the gaps between boxcars and across a
+//! park: under a closed loop a run of boxcars lasts a few periods, and in
+//! slow following a push lasts a few runs, so a part cleared at every gap
+//! or every park never forms. Only the run edges clear it (`reset`); a
+//! park empties the lead alone (`rest`). The lead keeps a boxcar that
+//! comes or goes from stepping the loop's speed by the whole fast part at
+//! once. With no boxcar the lead runs out and the loop reads the observer
+//! alone.
 
 use crate::math::{sat_add, sat_clamp, sat_sub};
 
@@ -41,11 +44,16 @@ impl OmegaBlend {
         Self { d_q16: 0, c_q16: 0 }
     }
 
-    /// Zero state; the kernel calls it where the velocity loop's
-    /// integrator clears.
+    /// Zero state, at the run edges.
     #[inline(always)]
     pub fn reset(&mut self) {
         self.d_q16 = 0;
+        self.c_q16 = 0;
+    }
+
+    /// The lead at 0, the standing part kept: the park's clear.
+    #[inline(always)]
+    pub fn rest(&mut self) {
         self.c_q16 = 0;
     }
 
@@ -293,6 +301,42 @@ mod tests {
                 assert_eq!(blend.step(None, false, obs), obs, "{over} over, {obs}");
             }
             assert_eq!(blend.standing_q16(), standing, "{over} over");
+        }
+    }
+
+    /// A park empties the lead and keeps the standing part. Behind boxcars
+    /// that read 500 c/s over the observer, the last of them 300 c/s more,
+    /// `rest` leaves the lead at 0 and the standing part bit for bit, so
+    /// the next period without a boxcar reads the observer exactly. A
+    /// push that reads the same 500 over then hands the loop under 4 c/s
+    /// of it, where a blend `reset` at the park hands it more than half.
+    #[test]
+    fn a_rest_empties_the_lead_and_keeps_the_standing_part() {
+        for dir in [1, -1] {
+            let mut blend = OmegaBlend::new();
+            for _ in 0..FORM {
+                blend.step(Some(dir * 2000), false, q16(dir * 1500));
+            }
+            blend.step(Some(dir * 2300), false, q16(dir * 1500));
+            let (formed, lead) = (blend.standing_q16(), blend.lead_q16());
+            assert!((formed - q16(dir * 500)).abs() < q16(4), "formed {formed}");
+            assert!(lead * dir > q16(50), "drive {dir}: a lead of {lead}");
+
+            let mut cleared = OmegaBlend::new();
+            blend.rest();
+            cleared.reset();
+            assert_eq!((blend.standing_q16(), blend.lead_q16()), (formed, 0));
+            assert_eq!(blend.step(None, false, q16(dir * 7)), q16(dir * 7));
+            assert_eq!(blend.standing_q16(), formed);
+
+            let (mut kept, mut lost) = (0, 0);
+            for _ in 0..4 {
+                let obs = q16(dir * 300);
+                kept = kept.max((blend.step(Some(dir * 800), false, obs) - obs).abs());
+                lost = lost.max((cleared.step(Some(dir * 800), false, obs) - obs).abs());
+            }
+            assert!(kept < q16(4), "drive {dir}: {} c/s off", kept >> 16);
+            assert!(lost > q16(250), "drive {dir}: {} c/s", lost >> 16);
         }
     }
 

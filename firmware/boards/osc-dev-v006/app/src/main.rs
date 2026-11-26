@@ -86,9 +86,9 @@ fn main() -> ! {
             // 0.9% from 96 in both directions.
             i_window_min_ticks: 64,
             v_window_min_ticks: 93,
-            // The drive pulse comes out ~27 ticks short of the commanded
-            // width and the observer scales by the commanded one.
-            bemf_window_min_ticks: 160,
+            // The back-EMF observer reads wherever both terminal taps read:
+            // the taps' own floor.
+            bemf_window_min_ticks: 93,
             // A narrower command loses its whole pulse, and the first shunt
             // window read after one reads far over the winding current.
             bridge_min_ticks: 27,

@@ -16,7 +16,10 @@
 //! the rotor above the speed where the shunt's window opens through every
 //! burst, so the current loop reads every window, friction holds one side
 //! and the lash stays closed. The truth is the linear model of the plant
-//! and the kernel's loops at their ticks ([`model`]).
+//! and the kernel's loops at their ticks ([`model`]), whose speed loop reads
+//! the observer alone. Where a back-EMF boxcar reads, the loop's speed
+//! carries the boxcar's fast part too, and the speed loop is held to the
+//! bench's reading of it instead.
 
 use std::f64::consts::{PI, TAU};
 
@@ -24,7 +27,7 @@ use osc_integration::mg90::{self, Motor, TAU_E};
 use osc_integration::mg90_d;
 use osc_integration::plant::{FakeIo, FakeMotor, FakeSensors};
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::{ControlTable, Kernel, Mode, RegionStorage, TelStream};
+use osc_servo_core::{ControlTable, Kernel, KernelTiming, Mode, RegionStorage, TelStream};
 
 /// A burst streams for the whole run.
 struct Burst;
@@ -65,8 +68,8 @@ struct Rows {
 
 #[derive(Copy, Clone)]
 struct Plant {
-    /// No pot noise, no table residual and the stored winding: the plant
-    /// [`model`] describes.
+    /// No pot noise, no table residual, the stored winding and no back-EMF
+    /// boxcar: the plant and the loop [`model`] describes.
     quiet: bool,
     seed: u64,
     /// The cruise's sign.
@@ -104,13 +107,21 @@ fn burst(plant: Plant, n: u16, periods: usize, cfg: impl FnOnce(&mut ControlTabl
         t.control.inject.inject_half_periods = n;
         cfg(t);
     });
+    let timing = if plant.quiet {
+        KernelTiming {
+            bemf_min_ticks: u16::MAX,
+            ..mg90::TIMING
+        }
+    } else {
+        mg90::TIMING
+    };
     let mut k = Kernel::with_tel(
         FakeIo {
             sensors: FakeSensors,
             motor: FakeMotor { last: None },
         },
         Burst,
-        mg90::TIMING,
+        timing,
     );
     let mut p = mg90_d::plant(if plant.up { UP } else { DOWN }, plant.seed);
     if plant.quiet {
@@ -204,13 +215,19 @@ fn fundamentals(r: &Rows, cycles: usize) -> (C, C, C) {
     (dft(&r.u, k), dft(&r.omega, k), th)
 }
 
-/// The speed and position loop gains at half-period `n`, the bursts' cross
-/// spectra summed: each burst a record of `periods`, one up and one down.
-fn gains(plants: &[Plant], n: u16, periods: usize, kp: f64) -> (C, C) {
-    gains_with(plants, n, periods, kp, |_| {})
+/// The speed gains the bench servo stores, set stamp 0xd1c4: every margin
+/// sweep with the back-EMF floor at 93 ran on them (bringup
+/// captures/blend-margin).
+fn stored_speed_gains(t: &mut ControlTable) {
+    let v = &mut t.config.loop_velocity;
+    v.v_kp_q88 = 57;
+    v.v_ki_q412 = 21;
+    v.v_kaw_q412 = 96;
 }
 
-/// [`gains`] with `cfg` over every burst's rig.
+/// The speed and position loop gains at half-period `n`, the bursts' cross
+/// spectra summed: each burst a record of `periods`, one up and one down,
+/// with `cfg` over every burst's rig.
 fn gains_with(
     plants: &[Plant],
     n: u16,
@@ -334,6 +351,13 @@ fn crossover(pts: &[(f64, C)]) -> (f64, f64) {
     panic!("no crossover in the band");
 }
 
+/// The least phase margin the band leaves wherever |L| crosses 1 inside
+/// it, degrees: 180 + its lowest phase. A speed loop that sits near 0 dB
+/// across the band has no one crossover; this is its margin.
+fn phase_floor(pts: &[(f64, C)]) -> f64 {
+    180.0 + pts.iter().map(|p| p.1.deg()).fold(f64::MAX, f64::min)
+}
+
 /// Half-periods the speed loop's band reads, ascending frequency: 25 Hz to
 /// 125 Hz around its crossover; the Nyquist point is its gain margin.
 const SPEED: [u16; 8] = [40, 30, 25, 20, 15, 12, 10, 8];
@@ -349,7 +373,18 @@ struct Sweep {
 }
 
 fn sweep(plants: &[Plant], speed_periods: usize, position_periods: usize, kp: f64) -> Sweep {
-    let at = |n: u16, periods| (1000.0 / n as f64, gains(plants, n, periods, kp));
+    sweep_with(plants, speed_periods, position_periods, kp, &|_| {})
+}
+
+/// [`sweep`] with `cfg` over every burst's rig.
+fn sweep_with(
+    plants: &[Plant],
+    speed_periods: usize,
+    position_periods: usize,
+    kp: f64,
+    cfg: &dyn Fn(&mut ControlTable),
+) -> Sweep {
+    let at = |n: u16, periods| (1000.0 / n as f64, gains_with(plants, n, periods, kp, cfg));
     Sweep {
         speed: SPEED
             .iter()
@@ -365,7 +400,7 @@ fn sweep(plants: &[Plant], speed_periods: usize, position_periods: usize, kp: f6
                 (f, lp)
             })
             .collect(),
-        gm_db: -gains(plants, 1, speed_periods, kp).0.db(),
+        gm_db: -gains_with(plants, 1, speed_periods, kp, cfg).0.db(),
     }
 }
 
@@ -401,8 +436,8 @@ fn rig_gains() -> Gains {
     })
 }
 
-/// On a quiet plant (no pot noise, no table residual, the stored winding)
-/// the loop is the linear one, so the reading is the model's: every point
+/// On a quiet plant (no pot noise, no table residual, the stored winding,
+/// no boxcar) the loop is the linear one, so the reading is the model's: every point
 /// of both bands within 1 dB and 10 degrees, the margins within 5 degrees
 /// and 1 dB, the crossovers within 10 %. On the rig's gains the model's
 /// speed loop crosses near 57 Hz with about 43 degrees and 23 dB, its
@@ -457,20 +492,23 @@ fn the_margins_read_on_a_quiet_mg90_are_the_loop_models() {
     );
 }
 
-/// Under the bench's pot noise and table residual two sweeps, each a burst
-/// up and a burst down per point, repeat within 1 dB and 10 degrees at every
-/// point of both bands and their phase margins within 5 degrees: the bench
-/// gate's repeatability, on the plant the sim knows. The gain margin decides
-/// a 6 dB acceptance floor, so the two agree within 1 dB or both read at
-/// least 12 dB, twice the floor, where their scatter cannot change the
-/// verdict.
+/// Under the bench's pot noise and table residual two sweeps on the stored
+/// speed gains, each a burst up and a burst down per point, repeat within 1
+/// dB and 10 degrees at every point of both bands, and their phase margins
+/// within 5 degrees: the bench gate's repeatability, on the plant the sim
+/// knows. The speed loop's margin is its band's [`phase_floor`]: with a
+/// boxcar on every period it sits near 0 dB across the band, where a
+/// crossover reads in one sweep and not the next (bringup
+/// captures/blend-margin, b1 and b2 at 742 c/s). The gain margin decides a 6
+/// dB acceptance floor, so the two agree within 1 dB or both read at least
+/// 12 dB, twice the floor, where their scatter cannot change the verdict.
 #[test]
 fn two_sweeps_on_the_bench_mg90_repeat_within_the_bounds() {
     let kp = rig_gains().kp;
     let pair = |a: u64| bench_pair(a, CRUISE);
     let (one, two) = (
-        sweep(&pair(1), 2000, 6000, kp),
-        sweep(&pair(3), 2000, 6000, kp),
+        sweep_with(&pair(1), 2000, 6000, kp, &stored_speed_gains),
+        sweep_with(&pair(3), 2000, 6000, kp, &stored_speed_gains),
     );
     for (a, b) in [(&one.speed, &two.speed), (&one.position, &two.position)] {
         for (&(f, x), &(_, y)) in a.iter().zip(b.iter()) {
@@ -485,12 +523,12 @@ fn two_sweeps_on_the_bench_mg90_repeat_within_the_bounds() {
         }
     }
     for (x, y) in [
-        (crossover(&one.speed), crossover(&two.speed)),
-        (crossover(&one.position), crossover(&two.position)),
+        (phase_floor(&one.speed), phase_floor(&two.speed)),
+        (crossover(&one.position).1, crossover(&two.position).1),
     ] {
         assert!(
-            (x.1 - y.1).abs() <= 5.0,
-            "phase margins {x:?} against {y:?}"
+            (x - y).abs() <= 5.0,
+            "phase margins {x:.1} deg against {y:.1} deg"
         );
     }
     assert!(
@@ -541,9 +579,13 @@ fn the_triangle_rides_the_velocity_reference_under_the_deadman() {
     assert!(capped.u.iter().all(|&u| u <= CRUISE as f64 + 50.0));
 }
 
-/// The slow cruise's floor, degrees: the rig's stock loop reads 61 there,
-/// where the contact term carries no weight.
-const SLOW_FLOOR_DEG: f64 = 58.0;
+/// The slow cruise's speed band on the stored speed gains, with a boxcar
+/// on every period: within this of 0 dB at every point, and this
+/// [`phase_floor`], degrees. The bench reads -3.5 to +4.9 dB over both
+/// sweeps at 742 and 1453 c/s, and a floor of 88 at 742 (bringup
+/// captures/blend-margin, b1 and b2).
+const SLOW_LEVEL_DB: f64 = 5.0;
+const SLOW_FLOOR_DEG: f64 = 85.0;
 /// The share of the current limit a large move's braking stays under. The
 /// rig's stock moves peak at 0.54 to 0.72 of it; the bench broke into a
 /// swing at the limit where a raised resistance braked into it.
@@ -597,18 +639,29 @@ fn move_peaks(seed: u64) -> Vec<f64> {
     peaks
 }
 
-/// On the set of record the speed loop at the slow cruise keeps
-/// [`SLOW_FLOOR_DEG`] of phase margin, and no large move's braking takes
-/// the winding past [`BRAKE_SHARE`] of the current limit. A resistance
-/// raised by the identified contact slope takes the braking to the limit
-/// (the bench swung there on every move into 3124).
+/// On the stored speed gains the speed loop at the slow cruise sits on a
+/// flat stretch near 0 dB, as the bench reads it: every point of its band
+/// within [`SLOW_LEVEL_DB`] of 0 dB, and its [`phase_floor`] at
+/// [`SLOW_FLOOR_DEG`] or more. On the set of record no large move's
+/// braking takes the winding past [`BRAKE_SHARE`] of the current limit. A
+/// resistance raised by the identified contact slope takes the braking to
+/// the limit (the bench swung there on every move into 3124).
 #[test]
 fn the_record_rig_keeps_its_slow_cruise_margin_and_its_moves_off_the_limit() {
     let kp = rig_gains().kp;
-    let (f, pm) = crossover(&sweep(&bench_pair(1, CRUISE), 2000, 2000, kp).speed);
+    let band = sweep_with(&bench_pair(1, CRUISE), 2000, 2000, kp, &stored_speed_gains).speed;
+    for &(f, l) in &band {
+        assert!(
+            l.db().abs() <= SLOW_LEVEL_DB,
+            "slow cruise: {f:.1} Hz reads {:.2} dB {:.1} deg",
+            l.db(),
+            l.deg()
+        );
+    }
+    let pm = phase_floor(&band);
     assert!(
         pm >= SLOW_FLOOR_DEG,
-        "slow cruise: {f:.1} Hz {pm:.1} deg, under {SLOW_FLOOR_DEG}"
+        "slow cruise: a phase floor of {pm:.1} deg, under {SLOW_FLOOR_DEG}"
     );
     for seed in [1, 2] {
         for (m, peak) in move_peaks(seed).into_iter().enumerate() {

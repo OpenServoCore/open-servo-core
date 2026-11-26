@@ -4098,12 +4098,17 @@ fn the_loops_speed_is_the_observers_plus_the_boxcars_fast_part() {
     assert_eq!(cleared(&k), (0, 0), "the enable edge");
 }
 
-/// The park clears the blend with the velocity loop's integrator. A
-/// position step on the plant forms a standing part on the way; from the
-/// first parked VELOCITY on, every parked period leaves it and the lead at
-/// zero, so the loop that leaves the park starts on the observer alone.
+/// A park keeps the standing part and empties the lead. The standing part
+/// is the boxcar's level over the observer, which the motor carries from
+/// one push to the next; cleared at every park it never forms in slow
+/// following, and each push hands the loop the boxcar's whole level as
+/// speed. A position step on the plant forms a standing part on the way.
+/// From the first parked VELOCITY on it stays what it was there, bit for
+/// bit, and what the park is for holds as before: the lead, the current
+/// reference and the velocity integral are zero every parked period, so
+/// the parked loop reads the observer alone and integrates nothing.
 #[test]
-fn the_park_clears_the_blend() {
+fn a_park_keeps_the_standing_part_and_empties_the_lead() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
@@ -4115,24 +4120,25 @@ fn the_park_clears_the_blend() {
     });
     let mut k = kernel();
     let mut plant = Plant::new(1000);
-    let (mut formed, mut fed, mut parked) = (0i32, 0u32, 0u32);
+    let (mut kept, mut parked) = (None, 0u32);
     for tick in 0..40_000u32 {
         let ran = plant_tick(&mut k, &sh, &mut plant);
-        let (standing, c) = (
-            k.medium.omega_blend.standing_q16(),
-            k.medium.omega_blend.lead_q16(),
-        );
-        if k.medium.life != phases::Life::Parked {
-            formed = formed.max(standing.abs());
-            fed += (ran == phase::OBSERVER && k.medium.omega_bemf.is_some()) as u32;
-        } else if ran == phase::VELOCITY {
-            assert_eq!((standing, c), (0, 0), "tick {tick}");
-            parked += 1;
+        if k.medium.life != phases::Life::Parked || ran != phase::VELOCITY {
+            continue;
         }
+        let standing = k.medium.omega_blend.standing_q16();
+        let kept = *kept.get_or_insert(standing);
+        assert!(
+            kept.abs() > 16 << 16,
+            "tick {tick}: the park left a standing part of {kept}"
+        );
+        assert_eq!(standing, kept, "tick {tick}");
+        assert_eq!(k.medium.omega_blend.lead_q16(), 0, "tick {tick}");
+        assert_eq!(k.medium.i_ref_cc, 0, "tick {tick}");
+        assert_eq!(k.medium.vel.integ_ccq16(), 0, "tick {tick}");
+        parked += 1;
     }
     assert_eq!(k.faults.mask(), 0);
-    assert!(fed > 100, "{fed} boxcars fed the move");
-    assert!(formed > 16 << 16, "a standing part of {formed} on the way");
     assert!(parked > 1000, "{parked} parked periods");
 }
 

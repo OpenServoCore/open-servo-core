@@ -13,6 +13,13 @@ use osc_servo_core::{Mode, RegionStorage};
 
 /// The plant's own resistance as the rig stores it.
 const R_Q12: u16 = 7270;
+/// 11/16 of it: the boxcar reads 1.46 to 1.48 x the rotor at the cruise,
+/// inside the bench's 1.38 to 1.48 at 1453 c/s (bringup
+/// kb/scratch/reversals-2/report-bemf-width.md).
+const R_OVER_Q12: u16 = (R_Q12 as u32 * 11 / 16) as u16;
+/// The least the boxcar reads over the rotor on [`R_OVER_Q12`], as a
+/// ratio: the bench's low end.
+const OVER_RATIO: f64 = 1.38;
 const MID: f64 = 2050.0;
 /// The rig's velocity limit.
 const ASKED: i32 = 1500;
@@ -87,26 +94,27 @@ fn cruise(asked: i32, r_q12: u16, seed: u64) -> Cruise {
 }
 
 /// A cruise holds the asked speed with a back-EMF that reads over. With
-/// half the plant's resistance stored the boxcar reads more than 1000 c/s
-/// over the rotor on the periods that have one, either way round, and the
-/// rotor still cruises within 2 % of the asked speed, as it does with the
-/// plant's own resistance stored. A loop fed the boxcar's level on those
-/// periods cruises a sixth under.
+/// [`R_OVER_Q12`] stored the boxcar reads [`OVER_RATIO`] x the rotor or
+/// more on the periods that have one, either way round, and the rotor
+/// still cruises within 2 % of the asked speed, as it does with the
+/// plant's own resistance stored. The bench holds its 1530 c/s cruise
+/// legs within 1.5 % on the floor of 93 (bringup
+/// captures/floor-blend-gate, V2 and V5, 24 legs).
 #[test]
 fn a_cruise_holds_the_asked_speed_with_a_back_emf_that_reads_over() {
     for seed in 1..=4u64 {
         for asked in [ASKED, -ASKED] {
             let dir = asked.signum() as f64;
             let own = cruise(asked, R_Q12, seed);
-            let low = cruise(asked, R_Q12 / 2, seed);
+            let low = cruise(asked, R_OVER_Q12, seed);
             for c in [&own, &low] {
                 assert_eq!(c.faults, 0, "seed {seed} asked {asked}: {c:?}");
                 assert!(c.fed > 0.1, "seed {seed} asked {asked}: {c:?}");
             }
-            let over = (low.boxcar - low.rotor) * dir;
+            let over = low.boxcar / low.rotor;
             assert!(
-                over > 1000.0,
-                "seed {seed} asked {asked}: the boxcar reads {over:.0} c/s over: {low:?}"
+                over >= OVER_RATIO,
+                "seed {seed} asked {asked}: the boxcar reads {over:.2} x the rotor: {low:?}"
             );
             for c in [&own, &low] {
                 let off = (c.rotor - asked as f64) * dir;
