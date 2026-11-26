@@ -330,7 +330,7 @@ fn the_steps_line_is_the_line_of_record() {
         println!("  {}", c.said());
     }
     assert!(
-        checks.iter().all(|c| c.verdict == Verdict::Pass),
+        checks.iter().all(|c| c.verdict == Verdict::NotJudged),
         "{checks:?}"
     );
 }

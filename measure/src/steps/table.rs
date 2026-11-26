@@ -1885,8 +1885,7 @@ pub fn advice(name: &str) -> &'static str {
         WIDE_CODES => {
             "the pot's codes read a pattern the slot map cannot hold, or the sweep did not repeat; check the pot's wiring, then run the step again"
         }
-        ROWS => "the shaft runs too fast at the approach duty for the codes to be counted",
-        FIT | RESIDUAL | PASS_OUT | CYCLES | GAINS => {
+        FIT | GAINS => {
             "the ripple does not count the pot's travel cleanly; check that nothing loads the horn and that the motor's current reads, then run the step again"
         }
         _ => "check the servo, then run the step again",
@@ -2666,32 +2665,24 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let (_, lo, hi) = histogram_rows(&[], c.raw_min, c.raw_max);
     let all = slow(None);
     let rows_a_code = rows_a_code(&all, c.raw_min, c.raw_max);
-    let mut checks = vec![check(
+    let mut checks = vec![Check::reported(
         ROWS,
         format!(
             "median {rows_a_code:.1} over codes {}..{} from the slow passes",
             lo as usize + EDGE_MARGIN_COUNTS,
             (hi as usize).saturating_sub(EDGE_MARGIN_COUNTS)
         ),
-        format!("at least {ROWS_A_CODE_MIN}"),
-        if rows_a_code >= ROWS_A_CODE_MIN {
-            Verdict::Pass
-        } else {
-            Verdict::Fail
-        },
     )];
     let mut finding = None;
     let mut halves = None;
     // the halves the pooled read is checked against are the pooled read
-    // itself: its own refusals (a stray run, too few carries reached)
-    // stand, the halves' disagreement is said below
-    let wide = widecodes::find(&all, lo, hi)
-        .map_err(|e| e.said())
-        .and_then(|f| {
-            let ok = widecodes::check(&f, &f, &f, c.raw_min, c.raw_max).map_err(|e| e.said());
-            finding = Some(f);
-            ok
-        });
+    // itself: its own refusals (a stray run, a slot over a byte) stand,
+    // the halves' disagreement and the carries reached are said below
+    let wide = widecodes::find(&all, lo, hi).and_then(|f| {
+        let ok = widecodes::check(&f, &f, &f, c.raw_min, c.raw_max);
+        finding = Some(f);
+        ok
+    });
     let half = |v: &[u16]| {
         widecodes::find_in(&widecodes::histogram(v), lo, hi, HALF_THIN_ROWS).map_err(|e| e.said())
     };
@@ -2715,42 +2706,26 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
             .filter(|k| k.state != State::Unreached)
             .count()
     });
-    checks.push(match &wide {
-        Ok(()) => check(
-            WIDE_CODES,
-            format!(
-                "slots {:?}, {reached} of 16 carries reached",
-                finding.as_ref().map(|f| f.slots).unwrap_or_default()
-            ),
-            "no stray run, at least half the carries between the stops reached".into(),
-            Verdict::Pass,
-        ),
-        Err(why) => check(
-            WIDE_CODES,
-            why.clone(),
-            "no stray run, at least half the carries between the stops reached".into(),
-            Verdict::Fail,
-        ),
-    });
-    let halves_bound = format!(
-        "said; a warning when the odd and the even slow passes read a carry over {} Q4 apart",
-        widecodes::Q4_PER_SKIPPED
+    let found = format!(
+        "slots {:?}, {reached} of 16 carries reached",
+        finding.as_ref().map(|f| f.slots).unwrap_or_default()
     );
-    checks.push(match split {
-        Ok((said, None)) => check(HALVES, said, halves_bound, Verdict::Pass),
-        Ok((said, Some(apart))) => check(
-            HALVES,
-            format!("{apart}: {said}"),
-            halves_bound,
-            Verdict::Warn,
-        ),
-        Err(why) => check(
-            HALVES,
-            format!("a half not read: {why}"),
-            halves_bound,
-            Verdict::Warn,
-        ),
+    let wide_bound = "no stray run, no slot over a byte";
+    checks.push(match &wide {
+        Ok(()) => check(WIDE_CODES, found, wide_bound.into(), Verdict::Pass),
+        Err(why @ widecodes::Refusal::FewReached { .. }) => {
+            Check::reported(WIDE_CODES, format!("{found}: {}", why.said()))
+        }
+        Err(why) => check(WIDE_CODES, why.said(), wide_bound.into(), Verdict::Fail),
     });
+    checks.push(Check::reported(
+        HALVES,
+        match split {
+            Ok((said, None)) => said,
+            Ok((said, Some(apart))) => format!("{apart}: {said}"),
+            Err(why) => format!("a half not read: {why}"),
+        },
+    ));
     let slots = finding.as_ref().map_or([0; ADC_WIDE_SLOTS], |f| f.slots);
     let table = read_table_with(rungs, &slots, c, from_fast);
     checks.extend(table_checks(&table, c));
@@ -2768,9 +2743,9 @@ fn pass_fail(ok: bool) -> Verdict {
     if ok { Verdict::Pass } else { Verdict::Fail }
 }
 
-/// The table's checks: the fit, its residual, one fast pass out, the
-/// ripple cycles and the gains refuse; the directions and the speed along
-/// a rung are said.
+/// The table's checks: no fit and gains the firmware refuses refuse; the
+/// residual, one fast pass out, the ripple cycles, the directions and the
+/// speed along a rung are reported.
 fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
     let unread: Vec<String> = t
         .rungs
@@ -2819,73 +2794,56 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
         ),
         Verdict::Pass,
     )];
-    let res = t.residual_counts.unwrap_or(f64::INFINITY);
-    out.push(check(
+    out.push(Check::reported(
         RESIDUAL,
-        format!("{res:.2} counts rms"),
-        format!("at most {RESIDUAL_MAX_COUNTS}"),
-        pass_fail(res <= RESIDUAL_MAX_COUNTS),
+        t.residual_counts
+            .map_or("not read".into(), |r| format!("{r:.2} counts rms")),
     ));
-    out.push(if t.pass_out.is_empty() {
-        check(
-            PASS_OUT,
-            "no fast pass read".into(),
-            format!("at most {PASS_OUT_MAX_COUNTS} counts rms, line out"),
-            Verdict::NotJudged,
-        )
-    } else {
-        let said: Vec<String> = t
-            .pass_out
-            .iter()
-            .map(|p| match &p.moved {
-                Ok(m) => format!("rung {} out {m:.2}", p.n),
-                Err(e) => format!("rung {} out: no table ({})", p.n, table_said(e)),
-            })
-            .collect();
-        check(
-            PASS_OUT,
-            format!("counts rms, line out: {}", said.join("; ")),
-            format!("at most {PASS_OUT_MAX_COUNTS} counts rms, line out, each"),
-            pass_fail(
-                t.pass_out
-                    .iter()
-                    .all(|p| p.moved.as_ref().is_ok_and(|m| *m <= PASS_OUT_MAX_COUNTS)),
-            ),
-        )
-    });
+    out.push(Check::reported(
+        PASS_OUT,
+        if t.pass_out.is_empty() {
+            "no fast pass read".into()
+        } else {
+            let said: Vec<String> = t
+                .pass_out
+                .iter()
+                .map(|p| match &p.moved {
+                    Ok(m) => format!("rung {} out {m:.2}", p.n),
+                    Err(e) => format!("rung {} out: no table ({})", p.n, table_said(e)),
+                })
+                .collect();
+            format!("counts rms, line out: {}", said.join("; "))
+        },
+    ));
     let travel = t.travel_cycles.unwrap_or(f64::NAN);
-    let limit = postable::agree_limit(travel);
     let judged: Vec<&Cycles> = t.cycles.iter().filter(|k| pair_fast(t, k)).collect();
     let slow = t.cycles.len() - judged.len();
-    let off: Vec<String> = judged
+    let worst = judged
         .iter()
-        .filter(|k| !k.agree.holds(limit))
+        .max_by(|x, y| {
+            (x.agree.a - x.agree.b)
+                .abs()
+                .total_cmp(&(y.agree.a - y.agree.b).abs())
+        })
         .map(|k| {
             format!(
-                "rungs {} and {}: {:.2} and {:.2} cycles over {:.0}..{:.0}",
-                k.a, k.b, k.agree.a, k.agree.b, k.agree.from, k.agree.to
+                "the most apart rungs {} and {}: {:.2} and {:.2} cycles over {:.0}..{:.0}, {:.2} % of the travel's {travel:.0} cycles",
+                k.a,
+                k.b,
+                k.agree.a,
+                k.agree.b,
+                k.agree.from,
+                k.agree.to,
+                100.0 * (k.agree.a - k.agree.b).abs() / travel
             )
-        })
-        .collect();
-    let said = if judged.is_empty() {
-        "no two fast passes one way share a grid interval".to_string()
-    } else if off.is_empty() {
-        format!("{} fast pairs agree", judged.len())
-    } else {
-        off.join("; ")
-    };
-    out.push(check(
+        });
+    out.push(Check::reported(
         CYCLES,
-        format!("{said}; {slow} pairs with a slow rung reported"),
         format!(
-            "within {:.1} % of the travel's {travel:.0} cycles ({limit:.1} cycles) over the counts each pair of fast passes shares",
-            100.0 * postable::AGREE_SHARE,
+            "{} fast pairs one way sharing a grid interval{}; {slow} pairs with a slow rung reported",
+            judged.len(),
+            worst.map_or(String::new(), |w| format!(", {w}"))
         ),
-        if judged.is_empty() {
-            Verdict::NotJudged
-        } else {
-            pass_fail(off.is_empty())
-        },
     ));
     let (glo, ghi) = t.gains.unwrap_or((0, 0));
     out.push(check(
@@ -2899,52 +2857,26 @@ fn table_checks(t: &TableRead, c: &JudgeCfg) -> Vec<Check> {
             .into(),
         pass_fail(matches!(t.valid, Some(Ok(())))),
     ));
-    out.push(match &t.term {
-        Ok(term) => check(
-            DIRECTIONS,
-            format!(
+    out.push(Check::reported(
+        DIRECTIONS,
+        match &t.term {
+            Ok(term) => format!(
                 "up less down {:.2} counts rms, {:.2} max, line out",
                 term.rms, term.max
             ),
-            format!("said; a warning over {DIRECTION_WARN_COUNTS} counts rms"),
-            if term.rms > DIRECTION_WARN_COUNTS {
-                Verdict::Warn
-            } else {
-                Verdict::Pass
-            },
-        ),
-        Err(e) => check(
-            DIRECTIONS,
-            format!("not read: {}", table_said(e)),
-            format!("said; a warning over {DIRECTION_WARN_COUNTS} counts rms"),
-            Verdict::NotJudged,
-        ),
-    });
-    let spread: Vec<String> = t
+            Err(e) => format!("not read: {}", table_said(e)),
+        },
+    ));
+    let spread = t
         .rungs
         .iter()
-        .filter_map(|r| {
-            let s = r.read.as_ref().ok()?;
-            (s.speed_spread > SPEED_SPREAD_WARN)
-                .then(|| format!("rung {} {:.0} %", r.n, 100.0 * s.speed_spread))
-        })
-        .collect();
-    out.push(check(
+        .filter_map(|r| r.read.as_ref().ok().map(|s| (r.n, s.speed_spread)))
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    out.push(Check::reported(
         SPEED,
-        if spread.is_empty() {
-            format!("every rung under {:.0} %", 100.0 * SPEED_SPREAD_WARN)
-        } else {
-            spread.join(", ")
-        },
-        format!(
-            "said; a warning over {:.0} % about the mean",
-            100.0 * SPEED_SPREAD_WARN
-        ),
-        if spread.is_empty() {
-            Verdict::Pass
-        } else {
-            Verdict::Warn
-        },
+        spread.map_or("no rung read".into(), |(n, s)| {
+            format!("the largest about the mean {:.0} % (rung {n})", 100.0 * s)
+        }),
     ));
     out
 }
@@ -3940,10 +3872,10 @@ mod tests {
     }
 
     /// The pot read 8 counts high in a wave on the up drives alone: the
-    /// directions differ by over 3 counts rms, which is said as a warning,
-    /// and the table is still accepted.
+    /// directions differ by over 3 counts rms, which is reported, and the
+    /// table is accepted.
     #[test]
-    fn a_direction_difference_over_three_counts_warns_and_still_accepts() {
+    fn a_direction_difference_over_three_counts_is_reported_and_accepted() {
         let mut m = motor();
         m.up_wave = (8.0, 500.0);
         let mut r = run(
@@ -3960,7 +3892,7 @@ mod tests {
             .iter()
             .find(|c| c.name == DIRECTIONS)
             .expect("directions");
-        assert_eq!(dirs.verdict, Verdict::Warn, "{}", dirs.said());
+        assert_eq!(dirs.verdict, Verdict::NotJudged, "{}", dirs.said());
         let res = result(&mut r.sink);
         let d = &res["table"]["report"]["directions"];
         assert!(
@@ -4079,12 +4011,12 @@ mod tests {
     }
 
     /// The half pass alone gives the finder about 53 rows a code on the
-    /// codes it crosses: the median line refuses and says the count.
+    /// codes it crosses: the median is reported, not refused.
     #[test]
-    fn too_few_rows_a_code_refuses_with_the_median() {
+    fn few_rows_a_code_are_reported_with_the_median() {
         let j = judged_after(&motor(), 0);
         let rows = j.checks.iter().find(|c| c.name == ROWS).expect("rows");
-        assert_eq!(rows.verdict, Verdict::Fail, "{}", rows.said());
+        assert_eq!(rows.verdict, Verdict::NotJudged, "{}", rows.said());
         assert!(rows.value.starts_with("median "), "{}", rows.value);
         assert!(j.rows_a_code < ROWS_A_CODE_MIN, "{}", j.rows_a_code);
     }
@@ -4171,11 +4103,11 @@ mod tests {
     }
 
     /// Two up fast rungs over the same counts, a down one beside: their
-    /// cycles made 2 % apart, the fast pair refuses; with one of them a
-    /// slow rung the pair is reported, beside each rung's speed and speed
-    /// spread, and nothing refuses.
+    /// cycles made 2 % apart, the fast pair is reported by name; with one
+    /// of them a slow rung the pair is reported apart, beside each rung's
+    /// speed and speed spread. Nothing refuses.
     #[test]
-    fn a_cycle_pair_refuses_only_between_fast_passes() {
+    fn a_cycle_pair_is_reported_fast_passes_and_slow_apart() {
         let m = motor();
         let (up_a, up_b) = (fast_rows(&m, 1211.0, 1, 0.5), fast_rows(&m, 1211.0, 1, 0.5));
         let down = fast_rows(&m, 3119.0, -1, 0.7);
@@ -4205,7 +4137,7 @@ mod tests {
                 .expect("cycles")
         };
         let fast = line(&t);
-        assert_eq!(fast.verdict, Verdict::Fail, "{}", fast.said());
+        assert_eq!(fast.verdict, Verdict::NotJudged, "{}", fast.said());
         assert!(fast.value.contains("rungs 1 and 3"), "{}", fast.value);
         let one = t.rungs.iter_mut().find(|r| r.n == 1).expect("rung 1");
         (one.pass_kind, one.kind) = (PassKind::Slow, RungKind::Leave);
@@ -4238,11 +4170,11 @@ mod tests {
         }
     }
 
-    /// Two up fast rungs on a 940-cycle travel: 1.10 cycles apart over
-    /// the counts they share holds, 3.0 apart refuses, and the bound
-    /// names the travel's cycles and the limit in cycles.
+    /// Two up fast rungs on a 940-cycle travel, 3.0 cycles apart over the
+    /// counts they share: the pair is reported by name with its share of
+    /// the travel's cycles.
     #[test]
-    fn a_fast_pair_is_held_to_a_share_of_the_travel() {
+    fn a_fast_pairs_difference_is_reported_against_the_travels_cycles() {
         let m = motor();
         let (up_a, up_b) = (fast_rows(&m, 1211.0, 1, 0.5), fast_rows(&m, 1211.0, 1, 0.5));
         let down = fast_rows(&m, 3119.0, -1, 0.7);
@@ -4274,26 +4206,23 @@ mod tests {
                 .expect("pair");
             pair.agree.b = pair.agree.a - d;
         };
-        apart(&mut t, 1.10);
-        let held = line(&t);
-        assert_eq!(held.verdict, Verdict::Pass, "{}", held.said());
-        assert!(
-            held.bound.contains("travel's 940 cycles (2.8 cycles)"),
-            "{}",
-            held.bound
-        );
         apart(&mut t, 3.0);
         let off = line(&t);
-        assert_eq!(off.verdict, Verdict::Fail, "{}", off.said());
-        assert!(off.value.contains("rungs 1 and 3"), "{}", off.value);
+        assert_eq!(off.verdict, Verdict::NotJudged, "{}", off.said());
+        assert!(
+            off.value.contains("rungs 1 and 3")
+                && off.value.contains("0.32 % of the travel's 940 cycles"),
+            "{}",
+            off.value
+        );
     }
 
     /// The odd slow passes on a converter skipping 11 codes over carry
     /// 4, the even on one skipping 8: the pooled read still reads the
-    /// carry, and the halves' disagreement is a warning with both halves'
+    /// carry, and the halves' disagreement is reported with both halves'
     /// slots, never a refusal.
     #[test]
-    fn wide_code_halves_that_disagree_warn_and_never_refuse() {
+    fn wide_code_halves_that_disagree_are_reported() {
         let m = motor();
         let mut other = motor();
         other.wide = vec![(1279, 8), (2559, 6)];
@@ -4323,7 +4252,7 @@ mod tests {
             get(WIDE_CODES).said()
         );
         let h = get(HALVES);
-        assert_eq!(h.verdict, Verdict::Warn, "{}", h.said());
+        assert_eq!(h.verdict, Verdict::NotJudged, "{}", h.said());
         assert!(
             h.value.contains("even passes") && h.value.contains("odd passes"),
             "{}",

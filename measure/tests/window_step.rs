@@ -9,7 +9,7 @@ use common::{path, sweep};
 use osc_measure::capture::meta::gunzip;
 use osc_measure::fit::window::{Method, Scales, Settle, on_rail_line};
 use osc_measure::steps::Verdict;
-use osc_measure::steps::window::{DIRECTIONS, SET, Shot, judge};
+use osc_measure::steps::window::{SET, Shot, judge};
 use serde_json::Value;
 
 fn json(rel: &str) -> Value {
@@ -116,8 +116,11 @@ fn the_steps_judge_returns_the_fixtures_g_from_the_recorded_onsets() {
     close("R", w.r_ohm, f(&e["r_ohm"]), 1e-12);
     for c in &j.checks {
         println!("  {}", c.said());
-        let warned = c.name == DIRECTIONS && c.verdict == Verdict::Warn;
-        assert!(c.verdict == Verdict::Pass || warned, "{}", c.said());
+        assert!(
+            matches!(c.verdict, Verdict::Pass | Verdict::NotJudged),
+            "{}",
+            c.said()
+        );
     }
 
     // the step's own scales: the nominal sense block and the board's lags

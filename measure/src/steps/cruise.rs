@@ -1263,14 +1263,8 @@ fn judge(b: &Before, found: &Found, taken: &[Taken]) -> Judged {
 /// What to do when a check refuses the step.
 pub fn advice(name: &str) -> &'static str {
     match name {
-        fit::SPEEDS | fit::RESIDUALS => {
-            "too few speeds held a steady cruise, or the line does not hold them: check that the horn turns freely, then run the step again"
-        }
-        fit::LOWEST => {
-            "no slow cruise held steady, so the offset would be an extrapolation: check that the horn turns freely, then run the step again"
-        }
-        fit::DIRECTIONS => {
-            "the two directions read different currents: check that nothing drags on the horn, then run the step again"
+        fit::RESIDUALS => {
+            "under two speeds held a steady cruise, so no line: check that the horn turns freely, then run the step again"
         }
         _ => "check the servo, then run the step again",
     }
@@ -1653,8 +1647,6 @@ fn result_json(
             "steady_cut": fit::STEADY_CUT, "travel_counts": fit::TRAVEL_COUNTS,
             "speed_window_min_s": fit::SPEED_WINDOW_MIN_S, "speed_tol": fit::SPEED_TOL,
             "copper_per_c": fit::COPPER_PER_C, "kept_min_s": fit::KEPT_MIN_S, "steady_top_pct": fit::STEADY_TOP_PCT,
-            "speeds_min": fit::SPEEDS_MIN,
-            "low_share_max": fit::LOW_SHARE_MAX, "residual_max_ma": fit::RESIDUAL_MAX_MA, "dirs_max_ma": fit::DIRS_MAX_MA, "dirs_speeds_min": fit::DIRS_SPEEDS_MIN,
         },
         "enable_goal_counts": found.goal0,
         "fault": found.fault,

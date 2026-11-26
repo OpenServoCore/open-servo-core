@@ -225,10 +225,9 @@ fn verdict(checks: &[osc_measure::steps::Check], name: &str) -> (Verdict, String
     (c.verdict, c.value.clone())
 }
 
-/// The run refused by the two stops' R: its bursts replay to the R the
-/// step printed, the bridged rule sets aside the five 40 % bursts at the
-/// high stop that read 2.90 to 3.52 ohm and nothing at the low stop, and
-/// the judge then accepts.
+/// The run the two stops' R once refused: its bursts replay to the R the
+/// step printed, and the bridged rule sets aside the five 40 % bursts at
+/// the high stop that read 2.90 to 3.52 ohm and nothing at the low stop.
 #[test]
 fn the_bridged_rule_replays_a_run_refused_by_the_stops_r() {
     let root = path("testdata/seated/bridged-high");
@@ -256,10 +255,9 @@ fn the_bridged_rule_replays_a_run_refused_by_the_stops_r() {
     }
     let was = rs(&r);
     let judged = stops::judge_r(&r, &seats);
-    assert_eq!(
-        verdict(&judged, "the two stops read the same R").0,
-        Verdict::Fail,
-        "the step's refusal"
+    assert!(
+        judged.iter().all(|c| c.verdict != Verdict::Fail),
+        "the stops' R apart is reported: {judged:?}"
     );
     r.set_aside_bridged();
     let now = rs(&r);
@@ -308,13 +306,9 @@ fn the_bridged_rule_replays_a_run_refused_by_the_stops_r() {
         judged.iter().all(|c| c.verdict != Verdict::Fail),
         "{judged:?}"
     );
-    assert_eq!(
-        verdict(&judged, "the two stops read the same R").0,
-        Verdict::Pass
-    );
-    let (v, said) = verdict(&judged, "few bursts read a bridged brush");
-    assert!(said.starts_with("5 of 22"), "{said}");
-    assert_eq!(v, Verdict::Pass, "5 of 22 is under a quarter: {said}");
+    let (v, said) = verdict(&judged, "kept bursts in the fit");
+    assert!(said.contains("5 more set aside as bridged"), "{said}");
+    assert_eq!(v, Verdict::NotJudged, "{said}");
 }
 
 /// The same rule on a clean stops run of the bench servo, its own

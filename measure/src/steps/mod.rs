@@ -130,7 +130,20 @@ impl Verdict {
     }
 }
 
+/// The bound of a reading the tool reports and the user judges.
+pub const REPORTED: &str = "reported";
+
 impl Check {
+    /// A reading said with its numbers and no range.
+    pub fn reported(name: &str, value: String) -> Self {
+        Check {
+            name: name.into(),
+            value,
+            bound: REPORTED.into(),
+            verdict: Verdict::NotJudged,
+        }
+    }
+
     pub fn said(&self) -> String {
         format!(
             "{}: {} ({}): {}",

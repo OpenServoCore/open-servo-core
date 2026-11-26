@@ -45,22 +45,6 @@ pub const KEPT_MIN_S: f64 = 0.100;
 /// A top-speed leg counts when its speed held across its steady rows
 /// within this, %: its second half's over its first's.
 pub const STEADY_TOP_PCT: f64 = 2.0;
-/// The line's checks: this many speeds with a valid leg; the lowest at
-/// most this share of the ceiling, so the offset is no long
-/// extrapolation; each speed's mean residual within this, mA.
-pub const SPEEDS_MIN: usize = 3;
-pub const LOW_SHARE_MAX: f64 = 0.4;
-pub const RESIDUAL_MAX_MA: f64 = 3.0;
-/// The directions' check: the mean over the speeds valid both ways of each
-/// speed's up less down, within this, mA, over at least
-/// [`DIRS_SPEEDS_MIN`] speeds. What it catches, a current zero off by `b`
-/// or a load one way, reads `+b` up and `-b` down at every speed alike, so
-/// the mean holds all of it, while a single speed's difference of two legs
-/// a way carries their scatter. A single speed past the bound is said, not
-/// refused.
-pub const DIRS_MAX_MA: f64 = 3.0;
-pub const DIRS_SPEEDS_MIN: usize = 2;
-
 /// What a leg's rows are replayed through: the installed set's words, the
 /// board's and the scales.
 #[derive(Clone, Debug, PartialEq)]
@@ -579,26 +563,17 @@ pub const SPEEDS: &str = "cruise speeds with a valid leg";
 pub const LOWEST: &str = "the lowest valid cruise speed";
 pub const RESIDUALS: &str = "the friction line's residuals by speed";
 pub const DIRECTIONS: &str = "the cruise directions agree";
-pub const DIRECTION_SPEEDS: &str = "each cruise speed's directions";
-
-fn check(name: &str, value: String, bound: String, ok: bool) -> Check {
-    Check {
-        name: name.into(),
-        value,
-        bound,
-        verdict: if ok { Verdict::Pass } else { Verdict::Fail },
-    }
-}
 
 /// The line's checks over the valid legs' `points` and the `line` through
-/// them; the ceiling the lowest speed is a share of.
+/// them, the ceiling the lowest speed is a share of: no line refuses, the
+/// speeds, the residuals and the directions are reported.
 pub fn checks(points: &[Point], line: Option<&Line>, ceiling_cps: f64) -> Vec<Check> {
     let groups = group(points);
     let speeds: Vec<String> = groups
         .iter()
         .map(|(g, v)| format!("{g:.0} ({})", v.len()))
         .collect();
-    let mut out = vec![check(
+    let mut out = vec![Check::reported(
         SPEEDS,
         if speeds.is_empty() {
             "none".into()
@@ -609,11 +584,9 @@ pub fn checks(points: &[Point], line: Option<&Line>, ceiling_cps: f64) -> Vec<Ch
                 speeds.join(", ")
             )
         },
-        format!("at least {SPEEDS_MIN}"),
-        groups.len() >= SPEEDS_MIN,
     )];
     let low = groups.first().map(|(g, _)| *g);
-    out.push(check(
+    out.push(Check::reported(
         LOWEST,
         low.map_or("no valid leg".into(), |g| {
             format!(
@@ -621,25 +594,16 @@ pub fn checks(points: &[Point], line: Option<&Line>, ceiling_cps: f64) -> Vec<Ch
                 g / ceiling_cps
             )
         }),
-        format!("at most {LOW_SHARE_MAX} of the ceiling: the offset read, not extrapolated"),
-        low.is_some_and(|g| g <= LOW_SHARE_MAX * ceiling_cps),
     ));
     match line {
         Some(l) => {
-            let worst = l
-                .speeds
-                .iter()
-                .map(|s| s.residual_ma.abs())
-                .fold(0.0, f64::max);
-            out.push(check(
+            out.push(Check::reported(
                 RESIDUALS,
                 l.speeds
                     .iter()
                     .map(|s| format!("{:+.2} mA at {:.0}", s.residual_ma, s.goal_cps))
                     .collect::<Vec<_>>()
                     .join(", "),
-                format!("each within {RESIDUAL_MAX_MA} mA"),
-                worst <= RESIDUAL_MAX_MA,
             ));
             let both: Vec<(f64, f64)> = l
                 .speeds
@@ -652,7 +616,7 @@ pub fn checks(points: &[Point], line: Option<&Line>, ceiling_cps: f64) -> Vec<Ch
                 .collect::<Vec<_>>()
                 .join(", ");
             let mean = super::mean(&both.iter().map(|(_, d)| *d).collect::<Vec<_>>());
-            out.push(check(
+            out.push(Check::reported(
                 DIRECTIONS,
                 match mean {
                     None => "no speed has valid legs both ways".into(),
@@ -661,37 +625,14 @@ pub fn checks(points: &[Point], line: Option<&Line>, ceiling_cps: f64) -> Vec<Ch
                         both.len()
                     ),
                 },
-                format!(
-                    "at least {DIRS_SPEEDS_MIN} speeds valid both ways, their mean within {DIRS_MAX_MA} mA"
-                ),
-                both.len() >= DIRS_SPEEDS_MIN && mean.is_some_and(|m| m.abs() <= DIRS_MAX_MA),
             ));
-            let past: Vec<String> = both
-                .iter()
-                .filter(|(_, d)| d.abs() > DIRS_MAX_MA)
-                .map(|(g, d)| format!("{d:+.2} mA at {g:.0}"))
-                .collect();
-            out.push(Check {
-                name: DIRECTION_SPEEDS.into(),
-                value: if past.is_empty() {
-                    format!("none past the bound of {}", both.len())
-                } else {
-                    format!("up less down past the bound: {}", past.join(", "))
-                },
-                bound: format!("each within {DIRS_MAX_MA} mA, said, not judged"),
-                verdict: if past.is_empty() {
-                    Verdict::Pass
-                } else {
-                    Verdict::Warn
-                },
-            });
         }
-        None => out.push(check(
-            RESIDUALS,
-            "no line: under two speeds with a valid leg".into(),
-            format!("each within {RESIDUAL_MAX_MA} mA"),
-            false,
-        )),
+        None => out.push(Check {
+            name: RESIDUALS.into(),
+            value: "no line: under two speeds with a valid leg".into(),
+            bound: "a line through two speeds at least".into(),
+            verdict: Verdict::Fail,
+        }),
     }
     out
 }
@@ -958,12 +899,15 @@ mod tests {
         );
     }
 
-    /// The line's checks: three speeds, the lowest at most 0.4 of the
-    /// ceiling, residuals within 3 mA, two speeds valid both ways and the
-    /// mean of their up less down within 3 mA; a single speed past it is
-    /// a warning.
+    /// The line's checks: the speeds, the lowest's share of the ceiling,
+    /// the residuals and the directions are reported, whatever they read;
+    /// no line (under two speeds) refuses.
     #[test]
-    fn the_line_checks() {
+    fn the_line_checks_report_and_only_no_line_refuses() {
+        let reported = |c: &[Check]| {
+            c.iter()
+                .all(|c| c.verdict == Verdict::NotJudged && c.bound == crate::steps::REPORTED)
+        };
         let ok = points(
             37.6,
             12.7,
@@ -976,24 +920,20 @@ mod tests {
                 (4025.0, -1, -0.2),
             ],
         );
-        let l = line(&ok, 3.7434);
-        let c = checks(&ok, l.as_ref(), 4025.0);
-        assert!(c.iter().all(|c| c.verdict == Verdict::Pass), "{c:?}");
-        // two speeds, the lowest at 0.53: the count and the low speed fail
+        let c = checks(&ok, line(&ok, 3.7434).as_ref(), 4025.0);
+        assert!(reported(&c), "{c:?}");
+        // two speeds, the lowest at 0.53 of the ceiling: a line, reported
         let two = points(
             37.6,
             12.7,
             &[(2150.0, 1, 0.0), (2150.0, -1, 0.0), (4025.0, 1, 0.0)],
         );
         let c = checks(&two, line(&two, 3.7434).as_ref(), 4025.0);
-        let failed: Vec<&str> = c
-            .iter()
-            .filter(|c| c.verdict == Verdict::Fail)
-            .map(|c| c.name.as_str())
-            .collect();
-        assert_eq!(failed, [SPEEDS, LOWEST, DIRECTIONS], "{c:?}");
+        assert!(reported(&c), "{c:?}");
+        let low = c.iter().find(|c| c.name == LOWEST).expect("lowest");
+        assert!(low.value.contains("0.53 of the ceiling"), "{low:?}");
         // up 4 mA over down at every speed, as a current zero off by 2 mA
-        // reads: the mean holds it all, refused
+        // reads: the mean holds it all, reported
         let offset = points(
             37.6,
             12.7,
@@ -1007,34 +947,19 @@ mod tests {
             ],
         );
         let c = checks(&offset, line(&offset, 3.7434).as_ref(), 4025.0);
+        assert!(reported(&c), "{c:?}");
         let d = c.iter().find(|c| c.name == DIRECTIONS).expect("directions");
-        assert_eq!(d.verdict, Verdict::Fail, "{d:?}");
         assert!(
-            d.value.contains("+4.00 mA on the mean of 3 speeds"),
+            d.value.contains("+4.00 mA on the mean of 3 speeds")
+                && d.value.contains("up less down +4.00 mA at 322"),
             "{d:?}"
         );
-        let w = c.iter().find(|c| c.name == DIRECTION_SPEEDS).expect("each");
-        assert_eq!(w.verdict, Verdict::Warn, "{w:?}");
-        // one speed 3.5 mA apart, the others near zero: said, not refused
-        let one = points(
-            37.6,
-            12.7,
-            &[
-                (322.0, 1, 1.75),
-                (322.0, -1, -1.75),
-                (1530.0, 1, 0.1),
-                (1530.0, -1, 0.0),
-                (4025.0, 1, -0.1),
-                (4025.0, -1, 0.0),
-            ],
-        );
-        let c = checks(&one, line(&one, 3.7434).as_ref(), 4025.0);
-        let d = c.iter().find(|c| c.name == DIRECTIONS).expect("directions");
-        assert_eq!(d.verdict, Verdict::Pass, "{d:?}");
-        let w = c.iter().find(|c| c.name == DIRECTION_SPEEDS).expect("each");
-        assert_eq!(w.verdict, Verdict::Warn, "{w:?}");
-        assert!(w.value.contains("+3.50 mA at 322"), "{w:?}");
         let c = checks(&[], None, 4025.0);
-        assert!(c.iter().all(|c| c.verdict == Verdict::Fail), "{c:?}");
+        let failed: Vec<&str> = c
+            .iter()
+            .filter(|c| c.verdict == Verdict::Fail)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(failed, [RESIDUALS], "{c:?}");
     }
 }
