@@ -590,8 +590,8 @@ dependencies = [
  "clap",
  "dialoguer",
  "osc-client",
- "osc-ident",
  "osc-protocol",
+ "osc-servo-core",
  "serde_json",
 ]
 
@@ -616,15 +616,6 @@ name = "osc-host"
 version = "0.0.0"
 dependencies = [
  "osc-protocol",
-]
-
-[[package]]
-name = "osc-ident"
-version = "0.1.0"
-dependencies = [
- "osc-protocol",
- "osc-servo-core",
- "serde",
 ]
 
 [[package]]
