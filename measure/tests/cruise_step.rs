@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use common::{ID, descriptor, every_protection, record, table};
+use common::{ID, descriptor, record, table};
 use futures_lite::future::block_on;
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick};
 use osc_client::pipe::{Pipe, PipeError};
@@ -312,7 +312,6 @@ fn servo(pot: u16, hook: Hook) -> (Client<Bus>, Log) {
         &d,
         &rec,
         Some(&table().points),
-        &every_protection(&rec),
         &mut Vec::new(),
     ))
     .expect("the set of record installs");

@@ -76,22 +76,6 @@ pub(crate) fn set_at(
     Ok((file, bytes))
 }
 
-/// The protection fields an install refusal names to loosen, each once.
-pub fn to_loosen(why: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for f in why
-        .split("--loosen ")
-        .skip(1)
-        .filter_map(|s| s.split_whitespace().next())
-        .map(|s| s.trim_matches('`').to_string())
-    {
-        if !out.contains(&f) {
-            out.push(f);
-        }
-    }
-    out
-}
-
 /// One try as tune.json keeps it.
 fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value {
     let mut t = json!({
@@ -112,7 +96,6 @@ fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value {
 /// set was accepted. Refused with nothing written, and no folder, unless
 /// the servo is at rest with torque off, no fault, and settings this tool
 /// may write.
-#[allow(clippy::too_many_arguments)]
 pub async fn tune<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -120,13 +103,12 @@ pub async fn tune<P: Pipe>(
     inputs: &Path,
     out: &Path,
     tries: u32,
-    loosen: &[String],
     stop: &AtomicBool,
 ) -> Result<(Vec<String>, bool)> {
     let check = async |rig: &mut Rig<'_, P>, np: &Nameplate| {
         verify::verify(rig, &VerifyInputs { nameplate: np }).await
     };
-    tune_with(c, id, d, inputs, out, tries, loosen, stop, check).await
+    tune_with(c, id, d, inputs, out, tries, stop, check).await
 }
 
 /// [`tune`] with the closed-loop check `check`: the simulated servo runs
@@ -139,7 +121,6 @@ async fn tune_with<P: Pipe, F>(
     inputs: &Path,
     out: &Path,
     tries: u32,
-    loosen: &[String],
     stop: &AtomicBool,
     mut check: F,
 ) -> Result<(Vec<String>, bool)>
@@ -175,17 +156,7 @@ where
         .map_err(|e| anyhow::anyhow!("refused before any write: {e}"))?;
     install::writable_now(&state).map_err(|e| anyhow::anyhow!("refused before any write: {e}"))?;
     let points = r.table.as_ref().map(|t| &t.points);
-    if let Err(e) = install::gate(&first, &state, d, points, loosen) {
-        let fields = to_loosen(&e.0);
-        if fields.is_empty() {
-            bail!("{e}");
-        }
-        bail!(
-            "{e}\nthe tune's sets protect less than the servo on {}: add `--loosen {}` to the tune to take that",
-            fields.join(", "),
-            fields.join(" ")
-        );
-    }
+    install::gate(&first, &state, d, points).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let root = out.to_path_buf();
     let mut sink = DirSink { root: root.clone() };
@@ -234,24 +205,15 @@ where
             &file.hash()[..12]
         );
         let mut isteps = Vec::new();
-        if let Err(e) = install::install(c, id, d, &file, points, loosen, &mut isteps).await {
-            let fields = to_loosen(&e.0);
-            ended = if fields.is_empty() {
-                format!("the install refused: {e}")
-            } else {
-                format!(
-                    "the set would protect less than the servo on {}: add `--loosen {}` to the tune to take that",
-                    fields.join(", "),
-                    fields.join(" ")
-                )
-            };
+        if let Err(e) = install::install(c, id, d, &file, points, &mut isteps).await {
+            ended = format!("the install refused: {e}");
             lines.push(format!("{head}: the install refused; {ended}"));
             kept.push(try_json(
                 n,
                 kp,
                 k0,
                 &file,
-                json!({"install": format!("refused: {e}"), "loosen": fields, "next": "stop"}),
+                json!({"install": format!("refused: {e}"), "next": "stop"}),
             ));
             if !isteps.is_empty() {
                 last = Some((n, file.hash().to_string()));
@@ -305,6 +267,7 @@ where
                 tune::worst_said(&worst)
             }
         ));
+        lines.extend(isteps.iter().map(|s| format!("  {s}")));
         kept.push(try_json(
             n,
             kp,
@@ -348,13 +311,8 @@ where
                 ("LIVE", Some(_)) => format!(" --table {}", inputs.join("pos_lut.json").display()),
                 _ => String::new(),
             };
-            let loosened = if loosen.is_empty() {
-                String::new()
-            } else {
-                format!(" --loosen {}", loosen.join(" "))
-            };
             lines.push(format!(
-                "to store it: osc-ident --id {} save --set {}{table}{loosened}",
+                "to store it: osc-ident --id {} save --set {}{table}",
                 id.as_byte(),
                 shown("set.json")
             ));
@@ -410,7 +368,6 @@ where
         "ended_at": unix_s(),
         "starting_gain": k0,
         "starting_gain_nominal": nominal,
-        "loosen": loosen,
         "share": tune::SHARE,
         "tries_allowed": tries,
         "backup": STORED,
@@ -443,7 +400,6 @@ mod tests {
     use osc_client::{BaudRate, Inst, MgmtOp, Opcode, mgmt};
     use osc_measure::guard::{Exit, Way};
     use osc_measure::scorecard::{self as sc, Lin};
-    use osc_measure::set::looser;
     use osc_measure::state;
     use osc_measure::steps::{Check, Ended, Verdict};
 
@@ -585,19 +541,12 @@ mod tests {
         let d = descriptor();
         let rec = record();
         let table = files::table(&testdata("mg90-d/pos_lut.json")).expect("table");
-        let loosen: Vec<String> = rec
-            .values()
-            .iter()
-            .filter(|(n, _)| looser(n).is_some())
-            .map(|(n, _)| n.to_string())
-            .collect();
         block_on(install::install(
             &mut c,
             ID,
             &d,
             &rec,
             Some(&table.points),
-            &loosen,
             &mut Vec::new(),
         ))
         .expect("the set of record installs");
@@ -625,7 +574,6 @@ mod tests {
             inputs,
             out,
             tries,
-            &[],
             &AtomicBool::new(false),
         ))
     }
@@ -696,13 +644,12 @@ mod tests {
         tries: u32,
         script: Vec<(Way, Vec<&'static str>)>,
     ) -> Result<(Vec<String>, bool)> {
-        run_scripted_on(c, &testdata("mg90-d"), &[], out, tries, script)
+        run_scripted_on(c, &testdata("mg90-d"), out, tries, script)
     }
 
     fn run_scripted_on(
         c: &mut Client<Spy>,
         inputs: &Path,
-        loosen: &[String],
         out: &Path,
         tries: u32,
         script: Vec<(Way, Vec<&'static str>)>,
@@ -720,7 +667,6 @@ mod tests {
             inputs,
             out,
             tries,
-            loosen,
             &AtomicBool::new(false),
             check,
         ))
@@ -934,8 +880,8 @@ mod tests {
     }
 
     /// Refused with nothing written and no run folder: torque on, a latched
-    /// fault, a set that would protect less than the servo holds without
-    /// `--loosen` naming those fields; named, every install takes them.
+    /// fault. A set that moves protections from the servo's is no refusal:
+    /// every install takes it.
     #[test]
     fn the_tune_refuses_before_any_write() {
         let dir = scratch("tune-refused");
@@ -994,47 +940,30 @@ mod tests {
         )
         .expect("gathers");
         log.borrow_mut().clear();
-        let out = dir.join("loosen");
-        let e = run(&mut c, &inputs, &out, 4).expect_err("refused");
-        let e = format!("{e:#}");
-        println!("{e}");
-        let flag = "add `--loosen stall_omega_max_cps i_cont_counts v_undervolt_counts rail_fold_q8` to the tune";
-        assert!(e.contains(flag), "{e}");
-        for f in [
-            "stall_omega_max_cps",
-            "i_cont_counts",
-            "v_undervolt_counts",
-            "rail_fold_q8",
-        ] {
-            assert!(
-                e.contains(&format!("name it with --loosen {f}")),
-                "the install's own lines: {e}"
-            );
-        }
-        assert!(nothing_written(&log), "{:?}", log.borrow());
-        assert!(!out.exists());
-
-        // named, every install of the tune takes them
-        let loosen: Vec<String> = [
+        let out = dir.join("moved");
+        let script = vec![(Way::Done, vec![])];
+        let (lines, accepted) = run_scripted_on(&mut c, &inputs, &out, 6, script).expect("runs");
+        let text = lines.join("\n");
+        assert!(accepted, "{text}");
+        let installed: Vec<&str> = [
             "stall_omega_max_cps",
             "i_cont_counts",
             "v_undervolt_counts",
             "rail_fold_q8",
         ]
-        .map(String::from)
-        .to_vec();
-        let out = dir.join("loosened");
-        let script = vec![(Way::Done, vec![])];
-        let (lines, accepted) =
-            run_scripted_on(&mut c, &inputs, &loosen, &out, 6, script).expect("runs");
-        let text = lines.join("\n");
-        assert!(accepted, "{text}");
-        assert!(
-            text.contains(
-                "--loosen stall_omega_max_cps i_cont_counts v_undervolt_counts rail_fold_q8"
-            ),
-            "{text}"
+        .into_iter()
+        .filter(|f| text.contains(&format!("{f}: ")))
+        .collect();
+        assert_eq!(
+            installed.len(),
+            4,
+            "the install's lines name each move: {text}"
         );
+        let save = format!(
+            "to store it: osc-ident --id 1 save --set {}",
+            out.join("set.json").display()
+        );
+        assert!(text.contains(&save), "{text}");
         let set = files::set(&out.join("set.json")).expect("set");
         let checked = block_on(install::check(&mut c, ID, &d, &set)).expect("check");
         assert!(checked.clean(), "{:?}", checked.differences);

@@ -45,19 +45,17 @@ fn json_at(p: &Path) -> Result<Value> {
 
 /// `set` live on the servo, volatile, installed again where the way out
 /// of a step rebooted it away; the lines say what holds.
-#[allow(clippy::too_many_arguments)]
 async fn keep_live<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     set: &SetFile,
     points: Option<&[i16; INTERVALS]>,
-    loosen: &[String],
     what: &str,
     lines: &mut Vec<String>,
 ) -> bool {
     let mut steps = Vec::new();
-    match install::install(c, id, d, set, points, loosen, &mut steps).await {
+    match install::install(c, id, d, set, points, &mut steps).await {
         Ok(()) => {
             lines.push(format!(
                 "live on the servo, volatile: {what} {}{}",
@@ -104,24 +102,14 @@ async fn short_of_final<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
-    keep: (&SetFile, Option<&[i16; INTERVALS]>, &[String]),
+    keep: (&SetFile, Option<&[i16; INTERVALS]>),
     mut lines: Vec<String>,
     cruise: Value,
     state: &str,
     why: String,
 ) -> Finished {
     lines.push(format!("no final set: {why}"));
-    keep_live(
-        c,
-        id,
-        d,
-        keep.0,
-        keep.1,
-        keep.2,
-        "the tune's set",
-        &mut lines,
-    )
-    .await;
+    keep_live(c, id, d, keep.0, keep.1, "the tune's set", &mut lines).await;
     Finished {
         lines,
         cruise,
@@ -174,7 +162,7 @@ where
     let np = files::nameplate(a.nameplate)?;
     let board = files::board(None)?;
     let stops_result = json_at(&root.join(stops::RESULT))?;
-    let keep = (&tune_set, tune_points.as_ref(), a.loosen);
+    let keep = (&tune_set, tune_points.as_ref());
     let clock = unix_s;
 
     // the tune's check may have ended through a way out that rebooted onto
@@ -186,7 +174,6 @@ where
         d,
         &tune_set,
         tune_points.as_ref(),
-        a.loosen,
         "the tune's set",
         &mut lines,
     )
@@ -287,7 +274,7 @@ where
         word(&tune_set, "fric_fv_q016")
     ));
     let mut steps = Vec::new();
-    if let Err(e) = install::install(c, id, d, &file, points.as_ref(), a.loosen, &mut steps).await {
+    if let Err(e) = install::install(c, id, d, &file, points.as_ref(), &mut steps).await {
         let why = format!("the final set's install was refused: {e}");
         return Ok(short_of_final(c, id, d, keep, lines, cruise_entry, "refused", why).await);
     }
@@ -334,7 +321,6 @@ where
             d,
             &file,
             points.as_ref(),
-            a.loosen,
             "the final set",
             &mut lines,
         )
@@ -344,13 +330,8 @@ where
             ("LIVE", Some(_)) => format!(" --table {}", inputs_dir.join("pos_lut.json").display()),
             _ => String::new(),
         };
-        let loosened = if a.loosen.is_empty() {
-            String::new()
-        } else {
-            format!(" --loosen {}", a.loosen.join(" "))
-        };
         lines.push(format!(
-            "to store it: osc-ident --id {} save --set {}{table}{loosened}",
+            "to store it: osc-ident --id {} save --set {}{table}",
             id.as_byte(),
             final_dir.join("set.json").display()
         ));
@@ -388,20 +369,12 @@ mod tests {
     use osc_client::pipe::PipeError;
     use osc_client::{BaudRate, Inst, MgmtOp, Opcode, mgmt};
     use osc_measure::guard::{Exit, Way};
-    use osc_measure::set::looser;
     use osc_measure::steps::{Check, Ended, Verdict};
 
     use super::*;
 
     const ID: Id = Id::new(1);
     const OSC_EXCHANGE: u8 = 0x20;
-    /// The four protections the bench servo's gathered set loosens.
-    const LOOSEN: [&str; 4] = [
-        "stall_omega_max_cps",
-        "i_cont_counts",
-        "v_undervolt_counts",
-        "rail_fold_q8",
-    ];
 
     /// The fake adapter, every MGMT op logged.
     struct Spy {
@@ -445,7 +418,6 @@ mod tests {
         nameplate: PathBuf,
         thermal: PathBuf,
         policy: PathBuf,
-        loosen: Vec<String>,
     }
 
     fn given() -> Given {
@@ -453,7 +425,6 @@ mod tests {
             nameplate: testdata("mg90-d/nameplate.json"),
             thermal: testdata("mg90-d/thermal.json"),
             policy: testdata("mg90-d/policy.json"),
-            loosen: LOOSEN.map(String::from).to_vec(),
         }
     }
 
@@ -463,7 +434,6 @@ mod tests {
             thermal: &g.thermal,
             policy: &g.policy,
             out,
-            loosen: &g.loosen,
             tries: 6,
         }
     }
@@ -508,19 +478,12 @@ mod tests {
         .expect("connect");
         let rec = files::set(&testdata("mg90-d/constants.json")).expect("record");
         let table = files::table(&testdata("mg90-d/pos_lut.json")).expect("table");
-        let all: Vec<String> = rec
-            .values()
-            .iter()
-            .filter(|(n, _)| looser(n).is_some())
-            .map(|(n, _)| n.to_string())
-            .collect();
         block_on(install::install(
             &mut c,
             ID,
             &d,
             &rec,
             Some(&table.points),
-            &all,
             &mut Vec::new(),
         ))
         .expect("the record installs");
@@ -531,7 +494,6 @@ mod tests {
             &d,
             &set,
             r.table.as_ref().map(|t| &t.points),
-            &g.loosen,
             &mut Vec::new(),
         ))
         .expect("the tune's set installs");
@@ -670,9 +632,8 @@ mod tests {
             "{text}"
         );
         let save = format!(
-            "to store it: osc-ident --id 1 save --set {} --loosen {}",
-            root.join("final/set.json").display(),
-            LOOSEN.join(" ")
+            "to store it: osc-ident --id 1 save --set {}",
+            root.join("final/set.json").display()
         );
         assert!(f.lines.contains(&save), "{text}");
         let live = format!(
@@ -800,12 +761,6 @@ mod tests {
         let (root, tune_set, mut c, _) = tuned(&dir, &g);
         let rec = files::set(&testdata("mg90-d/constants.json")).expect("record");
         let d = crate::descriptor_builtin().expect("descriptor");
-        let all: Vec<String> = rec
-            .values()
-            .iter()
-            .filter(|(n, _)| looser(n).is_some())
-            .map(|(n, _)| n.to_string())
-            .collect();
         let table = files::table(&testdata("mg90-d/pos_lut.json")).expect("table");
         block_on(install::install(
             &mut c,
@@ -813,7 +768,6 @@ mod tests {
             &d,
             &rec,
             Some(&table.points),
-            &all,
             &mut Vec::new(),
         ))
         .expect("the stored set back, as a reboot leaves it");

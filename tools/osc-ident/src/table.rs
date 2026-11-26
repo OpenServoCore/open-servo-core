@@ -460,19 +460,12 @@ mod tests {
 
         let record = SetFile::parse(&testdata("constants.json")).expect("the set of record");
         let table = TableFile::parse(&testdata("pos_lut.json")).expect("table");
-        let loosen: Vec<String> = record
-            .values()
-            .iter()
-            .filter(|(n, _)| osc_measure::set::looser(n).is_some())
-            .map(|(n, _)| n.to_string())
-            .collect();
         block_on(install::install(
             &mut c,
             id,
             &d,
             &record,
             Some(&table.points),
-            &loosen,
             &mut Vec::new(),
         ))
         .expect("the servo takes the set of record");

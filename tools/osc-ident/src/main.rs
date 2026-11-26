@@ -6,7 +6,9 @@
 //! turns a run folder into inputs; `tune` settles the speed gain on the
 //! servo with the closed-loop check; `run` does the steps, the gather and
 //! the tune in one, then the cruises for the friction line and the final
-//! set's check.
+//! set's check. The tool reports measurements, calculations and their
+//! spread; judging them is the user's, so a set installs whatever it
+//! moves, each change printed.
 
 mod files;
 mod finish;
@@ -41,7 +43,8 @@ const DESCRIPTORS: &[&str] = &[include_str!("../../../descriptors/osc-servo/0.1.
 #[command(
     name = "osc-ident",
     version,
-    about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo"
+    about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo",
+    long_about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo. It reports measurements, calculations and their spread; judging them is the user's, so a set installs whatever it moves, each change printed."
 )]
 struct Cli {
     /// The servo's bus id.
@@ -106,9 +109,6 @@ enum Cmd {
     Restore {
         #[arg(long = "from")]
         from: PathBuf,
-        /// The protection fields the restore may set to protect less.
-        #[arg(long, num_args = 1..)]
-        loosen: Vec<String>,
     },
     /// The run this tool would do on the servo, with its numbers and the five budgets. Reads only.
     Plan {
@@ -149,9 +149,6 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, default_value_t = osc_measure::tune::TRIES)]
         tries: u32,
-        /// The protection fields the tune's sets may move to protect less than the servo holds.
-        #[arg(long, num_args = 1..)]
-        loosen: Vec<String>,
     },
     /// The whole identification: the steps through the spins into a run folder, then, every step
     /// accepted, the gather into its `inputs/` and the tune into its `tune/`; on the set the tune
@@ -170,9 +167,6 @@ enum Cmd {
         /// Where the run folder `<servo uid>/<UTC time>/` goes.
         #[arg(long)]
         out: PathBuf,
-        /// The protection fields the tune's sets may move to protect less than the servo holds.
-        #[arg(long, num_args = 1..)]
-        loosen: Vec<String>,
         #[arg(long, default_value_t = osc_measure::tune::TRIES)]
         tries: u32,
     },
@@ -304,9 +298,6 @@ struct WriteArgs {
     /// The table file of a LIVE set's points; `<pair>.pos_lut.json` beside the set if omitted.
     #[arg(long)]
     table: Option<PathBuf>,
-    /// The protection fields the set may move to protect less than the servo holds.
-    #[arg(long, num_args = 1..)]
-    loosen: Vec<String>,
 }
 
 fn rules(
@@ -450,7 +441,6 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
                 d,
                 &file,
                 table.as_ref().map(|t| &t.points),
-                &w.loosen,
                 &mut steps,
             )
             .await
@@ -466,17 +456,16 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
                 d,
                 &file,
                 table.as_ref().map(|t| &t.points),
-                &w.loosen,
                 &mut sink,
                 &mut steps,
             )
             .await
         }
-        Cmd::Restore { from, loosen } => {
+        Cmd::Restore { from } => {
             let bytes = files::read(from)?;
             let text = String::from_utf8(bytes.clone()).context("a record is UTF-8")?;
             let origin = json!({"from": "a record restored", "file": from.display().to_string(), "sha1": set::file_sha1(&bytes)});
-            install::restore(c, id, d, &text, origin, loosen, &mut steps).await
+            install::restore(c, id, d, &text, origin, &mut steps).await
         }
         Cmd::Rules { .. }
         | Cmd::Check { .. }
@@ -623,18 +612,13 @@ fn run(cli: &Cli) -> Result<bool> {
             }
             Ok(true)
         }
-        Cmd::Tune {
-            inputs,
-            out,
-            tries,
-            loosen,
-        } => {
+        Cmd::Tune { inputs, out, tries } => {
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
                 .context("installing the Ctrl-C handler")?;
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
                 let (lines, accepted) =
-                    tune::tune(&mut c, id, &d, inputs, out, *tries, loosen, &STOP).await?;
+                    tune::tune(&mut c, id, &d, inputs, out, *tries, &STOP).await?;
                 for l in &lines {
                     println!("{l}");
                 }
@@ -646,7 +630,6 @@ fn run(cli: &Cli) -> Result<bool> {
             thermal,
             policy,
             out,
-            loosen,
             tries,
         } => {
             let a = run::RunArgs {
@@ -654,7 +637,6 @@ fn run(cli: &Cli) -> Result<bool> {
                 thermal,
                 policy,
                 out,
-                loosen,
                 tries: *tries,
             };
             run::admit(&a)?;
@@ -746,19 +728,12 @@ mod tests {
         let table =
             TableFile::parse(&std::fs::read_to_string(testdata("pos_lut.json")).expect("read"))
                 .expect("table");
-        let loosen: Vec<String> = record
-            .values()
-            .iter()
-            .filter(|(n, _)| set::looser(n).is_some())
-            .map(|(n, _)| n.to_string())
-            .collect();
         block_on(install::install(
             &mut c,
             id,
             &d,
             &record,
             Some(&table.points),
-            &loosen,
             &mut Vec::new(),
         ))
         .expect("the servo takes the set of record");
@@ -783,7 +758,6 @@ mod tests {
             &d,
             &ours,
             named.as_ref().map(|t| &t.points),
-            &[],
             &mut steps,
         ))
         .expect("installs");

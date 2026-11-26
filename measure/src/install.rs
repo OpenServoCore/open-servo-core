@@ -10,13 +10,13 @@ use std::fmt;
 use std::time::Duration;
 
 use osc_client::data_state::{CONFIG_CORRUPT, PLANT_UNSET, STAMP_MISMATCH};
-use osc_client::descriptor::{Descriptor, Field, Kind};
+use osc_client::descriptor::{Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS};
 use osc_client::{Client, Error, Id, mgmt, pipe::Pipe, stamp};
 use serde_json::Value;
 
 use crate::pyjson::dumps;
-use crate::set::{self, Looser, NEVER, SetError, SetFile, WIDE, bytes_of, points_sha1};
+use crate::set::{self, NEVER, SetError, SetFile, WIDE, bytes_of, points_sha1};
 use crate::sink::{Sink, SinkError};
 use crate::state::{self, Record, State, state_hash};
 
@@ -129,18 +129,6 @@ impl Checked {
     }
 }
 
-fn int_of(f: &Field, b: &[u8]) -> i64 {
-    let raw = b
-        .iter()
-        .enumerate()
-        .fold(0u64, |v, (i, &x)| v | (x as u64) << (8 * i));
-    let shift = 64 - 8 * (b.len().clamp(1, 8) as u32);
-    match f.kind {
-        Kind::Int => ((raw << shift) as i64) >> shift,
-        _ => raw as i64,
-    }
-}
-
 /// Where `state` is not the set, a line each.
 pub fn differences(set: &SetFile, state: &State, d: &Descriptor) -> Vec<String> {
     let mut out = Vec::new();
@@ -242,14 +230,11 @@ struct Plan<'d> {
     fields: Vec<(&'d Field, Vec<u8>)>,
 }
 
-/// The protection gate is in here: a protection field the set would move
-/// to protect less is written only when `loosen` names it.
 fn plan<'d>(
     set: &SetFile,
     state: &'d State,
     d: &'d Descriptor,
     points: Option<&[i16; INTERVALS]>,
-    loosen: &[String],
 ) -> Result<Plan<'d>, Refused> {
     writable_now(state)?;
     let mut no = Vec::new();
@@ -296,31 +281,10 @@ fn plan<'d>(
             no.push(format!("{said}: this tool never writes it"));
             continue;
         }
-        if let Some(way) = set::looser(&f.name) {
-            let (from, to) = (int_of(f, have), int_of(f, &b));
-            let less = match way {
-                Looser::Judged => true,
-                Looser::Up => to > from,
-                Looser::Down => to < from,
-            };
-            if less && !loosen.contains(&f.name) {
-                let how = match way {
-                    Looser::Judged => "judged, taken as protecting less".to_string(),
-                    w => format!("protects less (less is {})", w.word()),
-                };
-                no.push(format!("{said}, {how}: name it with --loosen {}", f.name));
-                continue;
-            }
-        }
         if STOPS.contains(&f.name.as_str()) {
             p.stops.push((f, b));
         } else {
             p.fields.push((f, b));
-        }
-    }
-    for n in loosen {
-        if set::looser(n).is_none() || set.value(n).is_none() {
-            no.push(format!("{n} is not a protection field of the set"));
         }
     }
     match set.slots() {
@@ -375,15 +339,14 @@ fn plan<'d>(
 }
 
 /// The refusals an install of `set` over `state` makes before its first
-/// write, the protection gate among them, without writing.
+/// write, without writing.
 pub fn gate(
     set: &SetFile,
     state: &State,
     d: &Descriptor,
     points: Option<&[i16; INTERVALS]>,
-    loosen: &[String],
 ) -> Result<(), Refused> {
-    plan(set, state, d, points, loosen).map(|_| ())
+    plan(set, state, d, points).map(|_| ())
 }
 
 /// One field written and read back. `Ok(false)`: the servo refused the
@@ -595,24 +558,23 @@ async fn rebooted<P: Pipe>(
 
 /// Make the servo equal the set, volatile, then stamp it. Refused with
 /// nothing written unless torque is off, every field of the set is one
-/// the servo lets a host write and this tool writes, the table can be
-/// written, and the protection gate passes. Then the slots, the stops, the
-/// table, the other fields that differ in table order, each read back, a
-/// field the servo refuses tried once more after the rest; the whole state
-/// read back must be the set before it is stamped. A refusal after the
-/// first write reboots the servo onto its saved state. `points` are the
-/// table's when the set's is LIVE.
+/// the servo lets a host write and this tool writes, and the table can be
+/// written. Then the slots, the stops, the table, the other fields that
+/// differ in table order, each read back, a field the servo refuses tried
+/// once more after the rest; the whole state read back must be the set
+/// before it is stamped. A refusal after the first write reboots the
+/// servo onto its saved state. `points` are the table's when the set's
+/// is LIVE.
 pub async fn install<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     set: &SetFile,
     points: Option<&[i16; INTERVALS]>,
-    loosen: &[String],
     steps: &mut Vec<Step>,
 ) -> Result<(), Refused> {
     let state = state::read(c, id, d).await?;
-    let p = plan(set, &state, d, points, loosen)?;
+    let p = plan(set, &state, d, points)?;
     let mut written = false;
     match apply(c, id, d, set, p, steps, &mut written).await {
         Ok(()) => Ok(()),
@@ -653,9 +615,8 @@ pub async fn backup<P: Pipe>(
 }
 
 /// Put the servo back on its stored state by a reboot, which writes no
-/// field and so needs no protection gate, then read it against
-/// `stored`, the state [`backup`] kept: a line a difference, none when it
-/// is that state.
+/// field, then read it against `stored`, the state [`backup`] kept: a
+/// line a difference, none when it is that state.
 pub async fn put_back<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -710,17 +671,15 @@ pub async fn put_back<P: Pipe>(
 /// Persist the set. Refused with the bus untouched for a derived set,
 /// then unless torque is off. The servo is rebooted onto its stored state,
 /// which is written to [`STORED`] and must read back the same before
-/// anything else is written; then the install, its gate as for any, the
+/// anything else is written; then the install, refused as any, the
 /// check, MGMT SAVE (protocol sec 9.4), a reboot, and the state it boots
 /// with to [`AFTER`], which must be the set.
-#[allow(clippy::too_many_arguments)]
 pub async fn save<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     set: &SetFile,
     points: Option<&[i16; INTERVALS]>,
-    loosen: &[String],
     sink: &mut dyn Sink,
     steps: &mut Vec<Step>,
 ) -> Result<(), Refused> {
@@ -735,7 +694,7 @@ pub async fn save<P: Pipe>(
         "`osc-ident restore --from {}` installs it again, volatile",
         sink.shown(STORED)
     );
-    if let Err(e) = install(c, id, d, set, points, loosen, steps).await {
+    if let Err(e) = install(c, id, d, set, points, steps).await {
         return Err(Refused(format!(
             "{e}\nnothing was saved: {} holds the state the servo has stored; {put_back}",
             sink.shown(STORED)
@@ -778,17 +737,16 @@ pub async fn save<P: Pipe>(
 
 /// Put back, volatile, the state a record holds (a save's [`STORED`], or
 /// the notebooks' `servo.json`): the install of the set adopted from it,
-/// the table from its own points, behind the same gate.
+/// the table from its own points, refused as any install.
 pub async fn restore<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     record: &str,
     origin: Value,
-    loosen: &[String],
     steps: &mut Vec<Step>,
 ) -> Result<(), Refused> {
     let r = Record::parse(record)?;
     let set = r.adopted(origin)?;
-    install(c, id, d, &set, Some(&r.points), loosen, steps).await
+    install(c, id, d, &set, Some(&r.points), steps).await
 }
