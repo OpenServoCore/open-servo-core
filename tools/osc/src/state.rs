@@ -17,8 +17,8 @@ use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_client::stamp::UNSTAMPED;
 use osc_client::{Error, Id, ResultCode};
-use osc_ident::regs::control;
 use osc_protocol::table::CONFIG_COMMON_END;
+use osc_servo_core::regions::CONTROL_BASE_ADDR;
 
 use crate::bus::Bus;
 use crate::descriptor;
@@ -363,7 +363,7 @@ fn restore(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor, path: &Path) -> Res
 /// before the first volatile block. The identity front would move the
 /// servo mid-restore; CONTROL and the blocks after it are not table state.
 fn persisted(f: &Field) -> bool {
-    f.addr >= CONFIG_COMMON_END && f.addr < control::TORQUE_ENABLE.addr
+    f.addr >= CONFIG_COMMON_END && f.addr < CONTROL_BASE_ADDR
 }
 
 #[cfg(test)]

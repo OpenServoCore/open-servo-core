@@ -839,8 +839,8 @@ drive mode, OpenLoop included, sec 5.8), soft-position clamps, the
 stall timer and fault latches run in firmware regardless of the bus -
 and the host's supervisory reads resume between bursts. The one thing a
 silent host cannot do is renew a stall permit: a burst that needs one
-has to end inside the lease (sec 5.8), and the `ident` crate refuses a
-burst longer than 750 ms while it holds a permit.
+has to end inside the lease (sec 5.8), and `osc-ident` refuses a rung
+longer than 0.7 s while it holds a permit.
 
 ### 5.7 Data state, plant stamp and position table (osc-servo)
 
@@ -1261,7 +1261,7 @@ host's *request*; the *grant* is a lease the servo keeps:
   grants at its COMMIT.
 - Each rewrite of true under torque restarts the lease from the
   rewrite. A host holding the permit rewrites it well inside the second
-  (the `ident` crate's drives do it every 250 ms).
+  (`osc-ident`'s stop finder does it every 250 ms).
 - A write of false revokes within one medium tick (0.5 ms). Torque off
   revokes, and turning torque back on does not revive the lease: only a
   fresh write does.
@@ -1293,10 +1293,10 @@ fresh enable starts it from the field. It counts once a medium period
 sooner than the field rounded up to a whole period after the last
 instruction, and at most one period later (osc-servo-kernel sec 2.7).
 0 is off and the boot value:
-CONTROL is RAM, so a reboot clears it. The `ident` crate's drives write
-20000 after every torque enable on the experiment image and rewrite it every
-250 ms while torque is on, so a host that dies mid-drive leaves a servo
-that coasts within a second on either image.
+CONTROL is RAM, so a reboot clears it. `osc-ident`'s drives run under
+50 ms when the host times the drive and 100 ms, five poll periods, when
+the host polls it, so a host that dies mid-drive leaves a servo that
+coasts within a tenth of a second.
 
 **The experiment image.** `capability_flags` bit 1 (sec 5.4) names a
 servo built with the `experiment` feature (osc-servo-kernel sec 2.7):
@@ -1401,8 +1401,7 @@ changes after boot (unit `floor_inputs_are_read_only`).
 0 means the servo publishes no floor: the kernel has not ticked yet, or
 the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a
-board constant, and the `ident` crate refuses a servo that reports 0 (DES
-`window_floor_is_published_as_the_limiter_uses_it`).
+board constant (DES `window_floor_is_published_as_the_limiter_uses_it`).
 
 The terminal taps have a floor of their own: `window_v_floor_q15` (u16,
 RO, `0x3CC` in TELEMETRY-EXT, Q15) is CALIB `v_window_min_ticks` turned into
@@ -1417,7 +1416,7 @@ differential read there. Which
 floor a host plans against follows what its fit reads: a drive judged
 on current alone (the limiter's slew, an overcurrent abort, a current
 step) takes `window_floor_q15`; a drive whose fit takes the differential
-(the `ident` crate's resistance stop ladder) takes the higher of the two. Firmware
+takes the higher of the two. Firmware
 that predates the register reads 0 there, and a host then takes
 `window_floor_q15` for both (DES
 `window_v_floor_is_published_beside_the_current_floor`).
@@ -1586,50 +1585,36 @@ each tap every 4.33 us. The BURST header echoes `chans_echo` and
 `step_index` counts raw codes, not frames (unit
 `burst_frame_follows_the_mask`).
 
-**Around a drive.** What the `ident` crate's drives do with these
-registers, the reference for any host that drives OpenLoop
+**Around a drive.** What `osc-ident`'s drives (the `measure` crate) do
+with these registers, the reference for any host that drives OpenLoop
 (control-theory "Open Loop Under the Same Band" has the planning behind
 it):
 
-- Before any drive it reads what it plans against:
-  `current_limit_counts`, `i_cont_counts`,
-  `stall_tau_trip_counts`, the soft and physical position limits,
-  `raw_min` and `raw_max`, `r_q12`, the shunt and amplifier constants
-  that turn counts into amps, one telemetry read for `vbus_counts`
-  and `window_floor_q15`, and `window_v_floor_q15`. A current floor of
-  0 refuses every drive; a continuous current not under the limit, or
-  a collision trip over twice it (the boot value, off, excepted), is
-  warned about. Identification also refuses soft limits that span the
-  whole pot (a servo never calibrated) and an abort threshold
-  more than a quarter over the limit.
-- A `current_limit_counts` of 0 is unset (sec 5.7): the servo's
-  OpenLoop band is then the overcurrent trip, not a limit fit for the
-  motor, so a host that drives a servo in that state plans against a
-  cap of its own, and writes the cap before it enables a closed mode.
-- Each drive watches while it waits: every pause is a TEL burst of
-  `pos`, then `duty_ticks` to `vdiff_counts` (sec 5.6), of whole 16-tick
-  windows, at most 250 ms long. The host folds each window into floor
-  means and the current's extremes, judges every row and window as the
-  burst lands, and reads TELEMETRY between bursts for what the stream
-  does not carry (`limit_flags`, the fault code, the estimates). The
-  host refuses a line under 3 M, which streams no TEL, before it drives.
-- Each drive writes its `mode`, then `torque_enable` 1, then, only
-  for a drive that stalls on purpose (the stop approach, the
-  resistance stop ladder, the held burst route, the current verify's
-  stop stalls), `stall_permit` 1. A held permit is rewritten every
-  250 ms, between commands and between watch bursts.
-- Every exit of a drive - done, aborted, interrupted or failed on the
-  wire - writes `goal_duty` 0, `torque_enable` 0 and, when it held one,
-  `stall_permit` 0, in that order, and a guard
-  around the drive writes them again with the other goals and
-  `tel_count` zeroed. A killed host skips that; the lease then runs out inside the
-  second and the servo's own protections carry the rest.
-- A shunt burst stages `duty_q15`, `chans` and `arm` 1 under HOLD and
-  fires one COMMIT, then polls BURST `state`: 3 `DONE` walks the
+- Every rung is priced before anything of it is written, for a free
+  shaft, a blocked one and, until the sign is proven, the wrong sign,
+  against the current (a press: the gear class's stop-hold ceiling, 300
+  mA plastic or unknown, 500 mA metal; a free drive: the nameplate's
+  stall current), the duty, the time (the burst counter, and at most
+  0.7 s while the permit is held), the travel and the temperature. A
+  rung that does not fit is refused in plain words.
+- Each drive runs under the bus dead-man: 50 ms for a drive the host
+  times, 100 ms for one it polls every 20 ms.
+- Only a drive that presses on purpose holds `stall_permit` 1: the
+  polarity step's unwedge press, the stop approach, a seated burst at or
+  past a soft limit (where the firmware arms a burst only under a
+  granted permit) and the table's stop rung. The stop finder, the one
+  drive that holds it past the lease, rewrites it every 250 ms.
+- Every exit of a step - done, refused, a bus error or the interrupt -
+  writes zero duty, `torque_enable` 0 and reads it back, `stall_permit`
+  0, `bus_deadman_ticks` 0 and `tel_count` 0, then puts back the
+  volatile fields the run changed, or reboots the servo onto its saved
+  state where one does not go back. With the bus gone the dead-man has
+  already dropped torque, so it is left armed until torque reads off.
+- A shunt burst arms, then polls BURST `state`: 3 `DONE` walks the eight
   pages, 4 `REJECTED` is a refused arm. `REJECTED` does not say which
-  rule refused it. The host plans every arm inside the rules above, so it
-  treats a rejection as a failure: it writes `arm` 0 to release the
-  section, and the run ends (unit `a_rejected_arm_reports_and_releases`).
+  rule refused it, so the host treats it as a failure, and a rejected or
+  wedged arm is released before the error goes up, so it never holds
+  the burst machine.
 
 ### 5.9 Health (osc-servo)
 

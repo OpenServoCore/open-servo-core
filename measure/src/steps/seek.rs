@@ -48,10 +48,10 @@ pub const READ_S: f64 = 0.100;
 /// [`STILL_MIN_COUNTS`].
 pub const STILL_SD: f64 = 3.0;
 pub const STILL_MIN_COUNTS: f64 = 3.0;
-/// Travel an approach must make before a still shaft is a seat, counts:
-/// the deprecated `ident` finder's `SEEK_TRAVEL_MIN`. A few counts of
-/// elastic wind-up at a stop pass any stillness test, and a finder that
-/// takes them for travel seats against the stop it started on.
+/// Travel an approach must make before a still shaft is a seat, counts.
+/// A few counts of elastic wind-up at a stop pass any stillness test, and
+/// a finder that takes them for travel seats against the stop it started
+/// on.
 pub const TRAVEL_MIN_COUNTS: f64 = 100.0;
 pub const LEAVE_COUNTS: f64 = 150.0;
 /// How far a refusal's leave drives off a stop when the other is not
