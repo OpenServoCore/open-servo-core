@@ -1546,7 +1546,7 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
 // --- position table ---
 
 /// The mg90-a table on the 2S session, built against stops 209/3849.
-const MG90_A_IMAGE: &str = include_str!("../../ident/testdata/lut/pos-lut-mg90-a-grid.json");
+const MG90_A_IMAGE: &str = include_str!("../testdata/lut/pos-lut-mg90-a-grid.json");
 
 fn mg90_a() -> [i16; INTERVALS] {
     let img: serde_json::Value = serde_json::from_str(MG90_A_IMAGE).expect("image parses");

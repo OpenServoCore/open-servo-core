@@ -340,7 +340,7 @@ mod tests {
     fn mg90_a() -> ([i16; POINTS], (u16, u16)) {
         let img: serde_json::Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../ident/testdata/lut/pos-lut-mg90-a-grid.json"
+            "/../../client/testdata/lut/pos-lut-mg90-a-grid.json"
         )))
         .unwrap();
         let mut k = [0i16; POINTS];
