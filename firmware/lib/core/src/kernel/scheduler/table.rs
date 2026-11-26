@@ -106,7 +106,9 @@ impl Medium {
             phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
             // `Kernel::on_tick` takes this phase straight, not through here
             #[cfg(not(feature = "experiment"))]
-            phase::TRAJECTORY => return self.trajectory(cfg, faults, cmd),
+            phase::TRAJECTORY => {
+                return self.trajectory(cfg, faults, cmd, shared.frame().pos());
+            }
             #[cfg(not(feature = "experiment"))]
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             #[cfg(not(feature = "experiment"))]

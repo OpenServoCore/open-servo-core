@@ -102,8 +102,9 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// wait for the crest scan and every phase's stages, RAIL's window term on
 /// the rail among them. The Closed and OpenLoop rows carry
 /// [`WINDOW_CARRY`] on top, every row [`DEADMAN`], phase TRAJECTORY
-/// [`PARK_GATE`], phases TRAJECTORY and VELOCITY [`HELD`] and phase
-/// OBSERVER and VELOCITY [`POT_CURRENT`], which the measurement predates.
+/// [`PARK_GATE`] and [`THROWN_HOLD`], phases TRAJECTORY and VELOCITY
+/// [`HELD`] and phase OBSERVER and VELOCITY [`POT_CURRENT`], which the
+/// measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -118,7 +119,7 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
 /// barely vary); with [`WINDOW_CARRY`], [`DEADMAN`], [`PARK_GATE`],
-/// [`HELD`] and [`POT_CURRENT`], as the maximum's.
+/// [`THROWN_HOLD`], [`HELD`] and [`POT_CURRENT`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
     [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
@@ -174,6 +175,23 @@ pub const PARK_GATE: u32 = 25;
 /// rounded up. The bench must refill the rows.
 pub const HELD: [u32; PHASES] = held_cells();
 
+/// E, on phase TRAJECTORY of every regime, maximum and mean: the thrown
+/// hold (`position::Thrown`), against the image without it. Priced on the
+/// executed path of the release image with the fetch model ([`REFRESH`]),
+/// from the phase's entry to its return. On a profile resting on its goal
+/// the rest on the raw sample, the loss test, the load test and the
+/// count's gate run every period, the estimate and the friction level
+/// spilled across the hold's own gate: parked 507 HCLK against 364.75,
+/// held 537.5 against 403.25, driven in the zone 553.5 against 403.25, a
+/// loaded hold past three losses as held. The period the rule parks
+/// 564.25, its park kept 545 and lost 586, each against the driven 403.25.
+/// The landing period takes the spills and the clear, not the rule, 722.5
+/// against 650.25 driven, 684 against 613.75 parked: still the dearest
+/// path, by 72.25. Every regime, as [`PARK_GATE`]. The driven rest's
+/// 150.25 plus 10%, rounded up; it bounds the maximum's 72.25 too. The
+/// bench must refill the rows.
+pub const THROWN_HOLD: u32 = 166;
+
 /// E, on phases OBSERVER and VELOCITY of every regime, maximum and mean:
 /// the position reading's current terms (`estimator::pot_current`),
 /// against the image without them. Priced on the executed path of the
@@ -223,7 +241,7 @@ const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REG
     }
     let mut r = 0;
     while r < REGIMES {
-        rows[r][phase::TRAJECTORY as usize] += PARK_GATE;
+        rows[r][phase::TRAJECTORY as usize] += PARK_GATE + THROWN_HOLD;
         let mut p = 0;
         while p < PHASES {
             rows[r][p] += HELD[p] + POT_CURRENT[p];

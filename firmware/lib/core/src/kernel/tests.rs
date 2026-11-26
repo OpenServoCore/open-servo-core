@@ -7830,3 +7830,311 @@ mod streaming {
         stays_off(&mut k, &sh);
     }
 }
+
+// --- A free output the play throws from side to side ------------------------
+
+/// A free output inside the train's play, in the shape the free horn shows
+/// after a long move: the pot rests at one of two places either side of the
+/// goal, a drive kept up for `stuck` ticks throws it to the other in
+/// `flight` ticks, whatever the drive does meanwhile, and it stops dead
+/// there. Undriven it stays where it is: in the rows every rest the loop
+/// drove through ended in a throw, and no parked one did. The motor's side
+/// is a held rotor on `Plant`'s winding.
+struct ThrownShaft {
+    goal: i32,
+    /// The two resting places, counts from the goal: below, above.
+    ends: [i32; 2],
+    stuck: u32,
+    flight: u32,
+    /// The end the pot rests at or flies to: 0 below, 1 above.
+    at: usize,
+    pushed: u32,
+    /// Ticks left of a throw toward `at`.
+    left: u32,
+    throws: u32,
+}
+
+impl ThrownShaft {
+    fn below(goal: i32, ends: [i32; 2], stuck: u32, flight: u32) -> Self {
+        Self {
+            goal,
+            ends,
+            stuck,
+            flight,
+            at: 0,
+            pushed: 0,
+            left: 0,
+            throws: 0,
+        }
+    }
+
+    fn pos(&self) -> i32 {
+        let (to, from) = (self.ends[self.at], self.ends[1 - self.at]);
+        // a throw runs from the other end at a steady speed
+        self.goal + to + (from - to) * self.left as i32 / self.flight as i32
+    }
+
+    /// One FAST tick on the duty the kernel last wrote.
+    fn step(&mut self, duty: i16) -> SensorFrame {
+        if self.left > 0 {
+            self.left -= 1;
+        } else {
+            self.pushed = if duty != 0 { self.pushed + 1 } else { 0 };
+            if self.pushed >= self.stuck {
+                self.pushed = 0;
+                self.at = 1 - self.at;
+                self.left = self.flight;
+                self.throws += 1;
+            }
+        }
+        let v = (duty as i32 * PLANT_VBUS as i32) >> 15;
+        let mag = (v >> PLANT_R_SHIFT).abs();
+        let (va, vb) = if duty >= 0 {
+            (PLANT_VBUS, 40)
+        } else {
+            (40, PLANT_VBUS)
+        };
+        SensorFrame {
+            current: (BIAS as i32 + mag).clamp(0, 4095) as u16,
+            vmotor_a: va,
+            vmotor_a_trough: va,
+            vmotor_b: vb,
+            vmotor_b_trough: vb,
+            ..frame(self.pos() as u16, BIAS)
+        }
+    }
+}
+
+/// What a 2 s hold on a thrown shaft came to.
+struct ThrownHold {
+    /// Ticks driven in the hold's last 500 ms.
+    tail_driven: u32,
+    /// The pot's lowest and highest place in that tail, counts from the goal.
+    tail: (i32, i32),
+    /// The last tick the motor was driven on.
+    last_driven: u32,
+    throws: u32,
+}
+
+/// The kernel of a hold on a [`ThrownShaft`] under a 4-count band and the
+/// stored set's loops, torque on with `goal` set.
+fn thrown_kernel(sh: &Shared, goal: i32) -> Kernel<FakeIo> {
+    seed(sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = goal;
+        // the loops and the observer of the development servo's stored set
+        let c = &mut t.config;
+        c.loop_position.pos_deadband_counts = 4;
+        c.loop_position.p_kp_q88 = 5026;
+        c.loop_position.speed_ceiling_cps = 8050;
+        c.loop_position.velocity_limit_cps = 4025;
+        c.loop_position.accel_limit_q88 = 10305;
+        c.loop_velocity.v_kp_q88 = 57;
+        c.loop_velocity.v_ki_q412 = 21;
+        c.loop_velocity.v_kaw_q412 = 96;
+        c.fusion.l1_q016 = 8640;
+        c.fusion.l2_q88 = 3180;
+        c.fault_cfg.pos_error_counts = u16::MAX;
+        // the pot alone places the observer and no load estimate forms: the
+        // plant is a position sequence, not a motor the model could explain
+        t.calib.motor.b_i_q313 = 0;
+    });
+    kernel()
+}
+
+/// A 2 s hold on `plant` ([`thrown_kernel`]), the pot resting at the
+/// plant's low end.
+fn thrown_hold(mut plant: ThrownShaft) -> ThrownHold {
+    let sh = Shared::new();
+    let mut k = thrown_kernel(&sh, plant.goal);
+    let mut out = ThrownHold {
+        tail_driven: 0,
+        tail: (i32::MAX, i32::MIN),
+        last_driven: 0,
+        throws: 0,
+    };
+    for n in 0..2 * SEC {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        let driven = !matches!(last_cmd(&k), MotorCmd::Brake);
+        if driven {
+            out.last_driven = n;
+        }
+        if n >= 2 * SEC - SEC / 2 {
+            out.tail_driven += driven as u32;
+            let at = plant.pos() - plant.goal;
+            out.tail = (out.tail.0.min(at), out.tail.1.max(at));
+        }
+    }
+    assert_eq!(k.faults.mask(), 0);
+    out.throws = plant.throws;
+    out
+}
+
+/// The hunting rule: a hold hunts when the motor is driven on more than 2 %
+/// of the ticks of its last 500 ms.
+const HUNT_TICKS: u32 = SEC / 2 / 50;
+
+/// Where the play throws a free output wider than twice the band, both
+/// resting places lie outside the zone, the dwell never runs and every push
+/// throws the shaft to the other one: the hold drives without end. The rows
+/// of the free horn show it 18 and 19 counts either side of the goal, 15 ms
+/// under a push and 4 ms in flight. A hold the loop has caught and lost
+/// three times running is thrown: at rest inside its reach it parks, and
+/// the reach grows a band for every second loss past the third, to five
+/// bands at most. The shaft rests where a throw left it, inside five
+/// bands, within half a second, and the loop redrove it at least three
+/// times before it gave any accuracy up.
+#[test]
+fn a_hold_the_play_throws_wider_than_the_zone_comes_to_rest() {
+    let h = thrown_hold(ThrownShaft::below(2000, [-18, 19], 300, 80));
+    assert!(
+        h.tail_driven <= HUNT_TICKS && h.tail.0 == h.tail.1,
+        "the hold hunts: {} throws in 2 s, {} of {} ticks driven and the pot from {} to {} in the \
+         last 500 ms",
+        h.throws,
+        h.tail_driven,
+        SEC / 2,
+        h.tail.0,
+        h.tail.1
+    );
+    assert!(h.tail.0.abs() <= 20, "rest {} counts off", h.tail.0);
+    assert!(h.last_driven < SEC / 2, "driven to tick {}", h.last_driven);
+    assert!(
+        (3..=14).contains(&h.throws),
+        "{} throws before the rest",
+        h.throws
+    );
+}
+
+/// The same shaft with one resting place inside the zone, 5 counts above
+/// the goal, and the other 22 below: the shape of most hunting holds in the
+/// rows. The push the loop keeps up through the dwell throws it out of the
+/// zone before the dwell's 64 ms are over. A thrown hold takes the first
+/// rest inside its reach, and the reach starts at the zone, so this hold
+/// ends on the near place: nothing is accepted that today's settled hold
+/// would not accept.
+#[test]
+fn a_thrown_hold_rests_on_the_end_inside_the_zone() {
+    let h = thrown_hold(ThrownShaft::below(2000, [-22, 5], 300, 60));
+    assert!(
+        h.tail_driven <= HUNT_TICKS && h.tail.0 == h.tail.1,
+        "the hold hunts: {} throws in 2 s, {} of {} ticks driven and the pot from {} to {} in the \
+         last 500 ms",
+        h.throws,
+        h.tail_driven,
+        SEC / 2,
+        h.tail.0,
+        h.tail.1
+    );
+    assert_eq!(h.tail.0, 5, "rest");
+    assert!(h.last_driven < SEC / 2, "driven to tick {}", h.last_driven);
+}
+
+/// The wide plant's hold once the loop has lost it three times, before it
+/// came to rest anywhere.
+fn thrown_wide(sh: &Shared) -> (Kernel<FakeIo>, ThrownShaft) {
+    let mut plant = ThrownShaft::below(2000, [-18, 19], 300, 80);
+    let mut k = thrown_kernel(sh, plant.goal);
+    for _ in 0..SEC / 5 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, sh);
+        if k.medium.thrown.lost() >= phases::loops::position::HOLD_THROWN {
+            break;
+        }
+    }
+    assert!(
+        k.medium.thrown.lost() >= phases::loops::position::HOLD_THROWN,
+        "precondition: thrown"
+    );
+    assert!(!k.medium.thrown.at_rest(), "precondition: not at rest");
+    (k, plant)
+}
+
+/// A thrown hold is the plain one again after a new goal, a mode change
+/// and torque off: each starts from a count of 0.
+#[test]
+fn a_goal_a_mode_change_and_the_run_edge_clear_a_thrown_hold() {
+    let sh = Shared::new();
+    let (mut k, mut plant) = thrown_wide(&sh);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = plant.goal + 100);
+    for _ in 0..4 * DECIM_MED {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+    }
+    assert_ne!(k.medium.traj.omega_star_q16(), 0, "precondition: moving");
+    assert_eq!(k.medium.thrown.lost(), 0, "goal");
+
+    for mode_change in [true, false] {
+        let sh = Shared::new();
+        let (mut k, mut plant) = thrown_wide(&sh);
+        sh.table.with_mut(|t| {
+            if mode_change {
+                t.control.lifecycle.mode = Mode::Velocity;
+            } else {
+                t.control.lifecycle.torque_enable = false;
+            }
+        });
+        for _ in 0..2 * DECIM_MED {
+            let f = plant.step(k.fast.duty_q15);
+            k.on_scan(f, &sh);
+        }
+        assert_eq!(k.medium.thrown.lost(), 0, "mode change {mode_change}");
+    }
+}
+
+/// The loaded rig held in the band, the park never taken and the drive on
+/// to the end of 3 s on a hold in the thrown state `thrown`: what the
+/// state came to.
+fn loaded_thrown_hold(thrown: phases::loops::position::Thrown) -> phases::loops::position::Thrown {
+    let sh = Shared::new();
+    seed(&sh);
+    let (mut k, mut plant) = loaded_hold(&sh, PLANT_LOAD_CPS);
+    assert!(k.medium.life == phases::Life::Held, "precondition: held");
+    let held = k.medium.i_ref_cc;
+    k.medium.thrown = thrown;
+    for n in 0..3 * SEC {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        assert!(k.medium.life == phases::Life::Held, "not held at tick {n}");
+        assert!(
+            !matches!(last_cmd(&k), MotorCmd::Brake),
+            "braked at tick {n}"
+        );
+    }
+    assert_eq!(
+        k.medium.i_ref_cc.signum(),
+        held.signum(),
+        "the held current"
+    );
+    assert_eq!(k.faults.mask(), 0);
+    k.medium.thrown
+}
+
+/// A thrown hold parks only a shaft the plain hold calls free. A loaded
+/// shaft at rest in the band whose catch was lost nine times, the count
+/// the widest reach takes, is held on its current as before: a park would
+/// drop the current that holds it, and with it the press the stall timer
+/// counts. On the gravity arm's rows the first landing under a load loses
+/// the catch three to six times, and a park taken there dropped the arm.
+#[test]
+fn a_thrown_hold_never_parks_a_loaded_shaft() {
+    let thrown = loaded_thrown_hold(phases::loops::position::Thrown::lost_times(9));
+    assert!(!thrown.at_rest());
+    assert_eq!(thrown.lost(), 9, "nothing was lost in a still, held hold");
+}
+
+/// A load that comes onto a shaft the thrown hold has parked ends the
+/// park on the first period, before the shaft moves and before VELOCITY
+/// empties the integral: the count clears and the plain hold keeps the
+/// current.
+#[test]
+fn a_load_ends_the_thrown_holds_park_at_once() {
+    let thrown = loaded_thrown_hold(phases::loops::position::Thrown::parked_at(
+        2000,
+        phases::loops::position::HOLD_THROWN,
+    ));
+    assert_eq!((thrown.lost(), thrown.at_rest()), (0, false));
+}
