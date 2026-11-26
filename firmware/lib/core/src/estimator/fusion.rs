@@ -4,8 +4,10 @@
 //! ccount (rig-measured B runs ~3.4, so Q3.13 holds it with headroom
 //! where Q0.16 saturated), and the shift-0 product << 3 couples current
 //! counts into csQ16 - and correct nudges all three states against the
-//! measured pot position. The third state is the
-//! disturbance torque the model cannot explain, in current counts; it feeds
+//! measured pot position. The model's drag is the whole friction line on
+//! the observer's own speed (Coulomb plus viscous), so the third state is
+//! the disturbance torque the model cannot explain, in current counts, and
+//! a free shaft reads none in motion; it feeds
 //! stall/collision detection and telemetry. Gains are host-synthesized
 //! constants (no runtime matrix math on this chip). The measurement is the
 //! linearized pot in Q4 (`pos_lut` module), so theta is in linearized
@@ -98,8 +100,8 @@ impl FusionObs {
     /// `i_counts` is the caller's held current: the last window-valid
     /// measurement, 0 once nothing drives - the observer never sees the
     /// validity flag.
-    /// The model is CALIB `motor`'s (b_i, fric_fc), the corrections CONFIG
-    /// `fusion`'s.
+    /// The model is CALIB `motor`'s (b_i and the friction line fric_fc,
+    /// fric_fv on omega), the corrections CONFIG `fusion`'s.
     pub fn step(
         &mut self,
         i_counts: i32,
@@ -114,8 +116,13 @@ impl FusionObs {
         // product itself i32-exact). Saturating subs guard a hostile
         // i_counts, everything downstream is clamp-bounded.
         let fric = fric_c(self.omega_q16, motor.fric_fc_counts);
+        // The friction line's viscous part on whole c/s, in 32 bits: the
+        // omega clamp and a u16 fv keep the product under 2^31 and its sum
+        // with tau_d (<= 4095) under 2^16, so the plain ops are exact. The
+        // 64-bit q_mul form costs twice the cycles.
+        let visc = (motor.fric_fv_q016 as i32 * (self.omega_q16 >> 16)) >> 16;
         let accel = sat_sym(
-            sat_sub(sat_sub(i_counts, fric), self.tau_d_q16 >> 16),
+            sat_sub(sat_sub(i_counts, fric), (self.tau_d_q16 >> 16) + visc),
             ACCEL_LIM_CC,
         );
         let d_omega = q_mul(motor.b_i_q313 as i32, accel, 0);
@@ -341,6 +348,164 @@ mod tests {
         assert!(f.omega_q16().abs() < 1 << 16, "omega={}", f.omega_q16());
     }
 
+    /// The servo of record's observer and friction line: corrections 8640
+    /// / 3180 / 84, 0.297 c/s per period per ccount, 43 ccounts and 947
+    /// Q0.16 ccounts per c/s.
+    const RECORD: Gains = Gains {
+        l: ConfigFusion {
+            l1_q016: 8640,
+            l2_q88: 3180,
+            l3_q88: 84,
+            ..ConfigFusion::new()
+        },
+        motor: CalibMotor {
+            b_i_q313: 2434,
+            fric_fc_counts: 43,
+            fric_fv_q016: 947,
+            ..CalibMotor::new()
+        },
+    };
+    const RECORD_FC: f64 = 43.0;
+    const RECORD_FV: f64 = 947.0 / 65536.0;
+    const RECORD_B: f64 = 2434.0 / 8192.0;
+    /// 2 counts a period.
+    const CRUISE_CPS: f64 = 4000.0;
+    /// The friction line's viscous part at that speed, ccounts.
+    const CRUISE_VISCOUS: i32 = 58;
+
+    /// The Q4 word of a position in counts.
+    fn q4f(x: f64) -> u16 {
+        (x * (1 << GRID_SHIFT) as f64).round() as u16
+    }
+
+    /// The record's observer on a shaft that cruises 400 ms at
+    /// `CRUISE_CPS` on the model's own friction line with `load` ccounts
+    /// on it (positive against the travel): the current is the line's at
+    /// that speed plus the load, so nothing accelerates. The observer and
+    /// the position it ends at.
+    fn cruise(load: f64) -> (FusionObs, f64) {
+        let mut f = FusionObs::new();
+        let mut x = 1000.0;
+        f.seed(q4f(x));
+        let i = (RECORD_FC + RECORD_FV * CRUISE_CPS + load).round() as i32;
+        for _ in 0..800 {
+            x += CRUISE_CPS / 2000.0;
+            step(&mut f, i, q4f(x), &RECORD);
+        }
+        (f, x)
+    }
+
+    /// A free shaft carries no load while it moves. Cruising on the
+    /// model's friction line the estimate reads none; with the Coulomb
+    /// term alone in the predict the line's viscous part reads as a load
+    /// of its own size, 58 ccounts at 4000 c/s against a friction level
+    /// of 43.
+    #[test]
+    fn a_free_cruise_on_the_friction_line_reads_no_load() {
+        let (f, _) = cruise(0.0);
+        assert!(
+            f.tau_d_counts().abs() <= 2,
+            "a free cruise reads a load of {} ccounts",
+            f.tau_d_counts()
+        );
+    }
+
+    /// And none when it stops. Brought to rest along the set's ramp
+    /// (10305 Q8.8 c/s a period) on the model's own current, the estimate
+    /// is well inside the friction level the moment the shaft stops and
+    /// stays there: the hold's park test (`position::unloaded`) reads a
+    /// free shaft as free at its arrival. Left in the estimate, the
+    /// cruise's viscous friction comes down the ramp only to about the
+    /// friction level, and the predict's zero band lets a level inside it
+    /// stand on a still shaft: the arrival sits on the edge of the test.
+    #[test]
+    fn a_free_shaft_reads_no_load_at_the_stop_after_a_cruise() {
+        const RAMP: f64 = 10305.0 / 256.0;
+        let (mut f, mut x) = cruise(0.0);
+        let mut v = CRUISE_CPS;
+        while v > 0.0 {
+            let next = (v - RAMP).max(0.0);
+            x += next / 2000.0;
+            // the model's current for this period's speed and its change;
+            // nothing drives a stopped shaft
+            let i = if next > 0.0 {
+                RECORD_FC + RECORD_FV * next + (next - v) / RECORD_B
+            } else {
+                0.0
+            };
+            step(&mut f, i.round() as i32, q4f(x), &RECORD);
+            v = next;
+        }
+        let half = RECORD_FC as i16 / 2;
+        assert!(
+            f.tau_d_counts().abs() <= half,
+            "at the stop a free shaft reads a load of {} ccounts",
+            f.tau_d_counts()
+        );
+        for period in 0..120 {
+            step(&mut f, 0, q4f(x), &RECORD);
+            assert!(
+                f.tau_d_counts().abs() <= half,
+                "{period} periods at rest a free shaft reads a load of {} ccounts",
+                f.tau_d_counts()
+            );
+        }
+    }
+
+    /// A load reads its own size at any speed. One of the viscous part's
+    /// size that helps the motion cancels it in an estimate that carries
+    /// both, and the loaded shaft reads free while it moves; one against
+    /// the motion reads twice its size.
+    #[test]
+    fn a_load_on_a_cruising_shaft_reads_its_own_size() {
+        for load in [-CRUISE_VISCOUS, CRUISE_VISCOUS, 120] {
+            let (f, _) = cruise(load as f64);
+            assert!(
+                (f.tau_d_counts() as i32 - load).abs() <= 2,
+                "a load of {load} ccounts on a cruising shaft reads {}",
+                f.tau_d_counts()
+            );
+        }
+    }
+
+    /// With the viscous word 0 the predict is the Coulomb model alone, and
+    /// the same cruise reads the line's viscous part as a load.
+    #[test]
+    fn a_zero_viscous_word_reads_the_viscous_part_as_a_load() {
+        let g = Gains {
+            motor: CalibMotor {
+                fric_fv_q016: 0,
+                ..RECORD.motor
+            },
+            ..RECORD
+        };
+        let mut f = FusionObs::new();
+        let mut x = 1000.0;
+        f.seed(q4f(x));
+        let i = (RECORD_FC + RECORD_FV * CRUISE_CPS).round() as i32;
+        for _ in 0..800 {
+            x += CRUISE_CPS / 2000.0;
+            step(&mut f, i, q4f(x), &g);
+        }
+        assert_eq!(f.tau_d_counts() as i32, CRUISE_VISCOUS, "pin");
+    }
+
+    /// A load on a still shaft reads its size with the viscous word set:
+    /// at rest the term is nothing.
+    #[test]
+    fn a_load_on_a_still_shaft_reads_its_own_size() {
+        let mut f = FusionObs::new();
+        f.seed(q4(2000));
+        for _ in 0..20000 {
+            step(&mut f, 200, q4(2000), &RECORD);
+        }
+        assert!(
+            (f.tau_d_counts() - 200).abs() <= 1,
+            "a load of 200 ccounts on a still shaft reads {}",
+            f.tau_d_counts()
+        );
+    }
+
     #[test]
     fn unset_model_holds_tau_d_at_zero() {
         // b_i unset, shaft ramping under drive: the innovation still
@@ -385,6 +550,7 @@ mod tests {
             motor: CalibMotor {
                 b_i_q313: u16::MAX,
                 fric_fc_counts: u16::MAX,
+                fric_fv_q016: u16::MAX,
                 ..CalibMotor::new()
             },
         };

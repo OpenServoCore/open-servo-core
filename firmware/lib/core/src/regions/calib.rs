@@ -41,9 +41,10 @@ pub struct CalibSense {
 /// `estimator::thermal::ALPHA_Q26`; 0 = never measured),
 /// reciprocal Ke (c/s per vcount Q6.10, estimator::bemf convention), fusion
 /// current gain (bakes Ts/J, Q3.13: rig B runs ~3.4 so Q0.16 saturated), the
-/// friction model (Coulomb ccounts, viscous Q0.16; the Coulomb level is
-/// also the load past which the position hold keeps the current instead
-/// of parking), and forward Ke
+/// friction model (Coulomb ccounts, viscous Q0.16; the whole line is the
+/// observer's drag on its own speed and the velocity loop's feed-forward
+/// on the profile's; the Coulomb level is also the load past which the
+/// position hold keeps the current instead of parking), and forward Ke
 /// (vcounts per c/s Q4.12, the current loop's bemf decoupling feedforward).
 /// Forward and reciprocal Ke are both host-written: the chip has no divide
 /// to derive one from the other. SG90 scale ~0.28 vcounts per c/s (~1150

@@ -4252,7 +4252,9 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
         t.control.lifecycle.mode = Mode::Current;
         t.control.lifecycle.goal_current = 0;
     });
-    for n in 0..2000u16 {
+    // 300 ms: the seed's viscous word is the observer's slowest pole, so
+    // after the 1000-count step its speed reads under 1000 c/s until 175 ms
+    for n in 0..6000u16 {
         k.on_scan(frame(1000 + n / 10, BIAS), &sh);
     }
     assert!(
