@@ -34,18 +34,28 @@ impl Medium {
         let theta_hat = self.fusion.theta_q16();
         match life.mode {
             Mode::Position => {
-                self.traj
+                let rested = self
+                    .traj
                     .step_position(life.goal_position, self.dt_med_q32, lp, soft);
-                let out = position::step(
-                    self.traj.theta_star_q16(),
-                    self.traj.omega_star_q16(),
-                    theta_hat,
-                    self.band_gain_q4,
-                    self.near_ticks == HOLD_SETTLE_TICKS,
-                    position::unloaded(self.fusion.tau_d_q16(), cfg.motor.fric_fc_counts),
-                    lp,
-                );
+                let (theta_star, omega_star) =
+                    (self.traj.theta_star_q16(), self.traj.omega_star_q16());
+                let settled = self.near_ticks == HOLD_SETTLE_TICKS;
+                let unloaded =
+                    position::unloaded(self.fusion.tau_d_q16(), cfg.motor.fric_fc_counts);
+                let (parked, gain, play) =
+                    (self.life == Life::Parked, self.band_gain_q4, self.play);
+                let step = |rested| {
+                    position::step(
+                        rested, theta_star, omega_star, theta_hat, gain, settled, unloaded, parked,
+                        play, lp,
+                    )
+                };
+                // a constant per arm: each inlines on its own, so a moving
+                // period runs the loop alone and no flag of the profile's
+                // lives across the loop's math
+                let out = if rested { step(true) } else { step(false) };
                 self.omega_ref_q16 = out.omega_ref_q16;
+                self.play = out.play;
                 self.life = Life::of_hold(out.park, out.hold);
                 self.near_ticks = if out.near {
                     self.near_ticks + (self.near_ticks < HOLD_SETTLE_TICKS) as u8

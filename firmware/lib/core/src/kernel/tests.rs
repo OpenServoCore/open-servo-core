@@ -5879,12 +5879,74 @@ fn a_hold_on_the_band_edge_settles_through_its_wakes() {
     assert_eq!(k.faults.mask(), 0);
 }
 
+/// A settled free park is kept to three bands either side of the goal. A
+/// still shaft moved inside them stays an ordinary settled park: a throw is
+/// a park left, so none is counted while it holds.
 #[test]
-fn a_settled_hold_wakes_past_two_bands() {
+fn a_settled_hold_wakes_past_three_bands() {
     let sh = Shared::new();
     seed(&sh);
-    let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
-    assert!(wakes(&mut k, &sh, 1954), "parked at 2.5x the band");
+    // parked at zero error, last driven from below the goal: 2.5 bands and
+    // 3.5 bands either side
+    for (raw, woke) in [(1894, false), (1882, true), (1954, false), (1966, true)] {
+        let mut k = parked_for(&sh, 2 * SETTLE_SCANS);
+        assert_eq!(wakes(&mut k, &sh, raw), woke, "pot {raw}");
+        if !woke {
+            assert_eq!(k.medium.play.throws, 0, "pot {raw}");
+        }
+        assert_eq!(k.faults.mask(), 0);
+    }
+}
+
+/// The record of the play belongs to one hold: a new goal, the torque edge
+/// either way and a mode change each start the next one clear.
+#[test]
+fn a_new_goal_a_torque_edge_and_a_mode_change_clear_the_play() {
+    use phases::loops::position::{HOLD_THROWS, Play};
+    let thrown = Play {
+        above: true,
+        throws: HOLD_THROWS,
+    };
+    let sh = Shared::new();
+    seed(&sh);
+    let scan = |k: &mut Kernel<FakeIo>, n: u32| {
+        for _ in 0..n {
+            k.on_scan(frame(1924, BIAS), &sh);
+        }
+    };
+    // a new goal: the profile's first moving period
+    let mut k = parked_for(&sh, 0);
+    k.medium.play = thrown;
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = 1930);
+    let mut n = 0;
+    while k.medium.traj.omega_star_q16() == 0 {
+        k.on_scan(frame(1924, BIAS), &sh);
+        n += 1;
+        assert!(n < 1_000, "the profile never moved");
+    }
+    assert_eq!(k.medium.play, Play::default(), "new goal");
+    // torque off, then on
+    let mut k = parked_for(&sh, 0);
+    k.medium.play = thrown;
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    scan(&mut k, 4 * DECIM_MED as u32);
+    assert!(k.medium.life == phases::Life::Off);
+    assert_eq!(k.medium.play, Play::default(), "torque off");
+    k.medium.play = thrown;
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    scan(&mut k, 4 * DECIM_MED as u32);
+    assert!(k.medium.life != phases::Life::Off);
+    assert_eq!(k.medium.play, Play::default(), "torque on");
+    // a mode change under torque
+    let mut k = parked_for(&sh, 0);
+    k.medium.play = thrown;
+    sh.table
+        .with_mut(|t| t.control.lifecycle.mode = Mode::Velocity);
+    scan(&mut k, 4 * DECIM_MED as u32);
+    assert_eq!(k.medium.play, Play::default(), "mode change");
     assert_eq!(k.faults.mask(), 0);
 }
 
@@ -7823,4 +7885,160 @@ mod streaming {
         k.io.sensors.lost = false;
         stays_off(&mut k, &sh);
     }
+}
+
+// --- A free output thrown across the train's play ---------------------------
+
+/// Counts the play spans: the pot rests `PLAY / 2` either side of the goal.
+const PLAY: i32 = 18;
+/// Ticks of push toward the goal that throw the resting pot (20 ms).
+const PLAY_STUCK: u32 = 400;
+/// Ticks a throw takes (5 ms).
+const PLAY_FLIGHT: u32 = 100;
+
+/// A free output inside the train's play, in the shape the free horn shows
+/// where the play is wider than twice the band: the pot rests at one end of
+/// the play under a push toward the goal for `PLAY_STUCK` ticks, then
+/// crosses to the other end in `PLAY_FLIGHT` ticks, whatever the drive does
+/// meanwhile, and stops dead there. Without a push it stays where it is.
+struct PlayPlant {
+    goal: i32,
+    /// The end the pot rests at, or left last: -1 below the goal, +1 above.
+    end: i32,
+    pushed: u32,
+    /// Ticks left of a throw toward `end`.
+    flight: u32,
+    throws: u32,
+}
+
+impl PlayPlant {
+    fn below(goal: i32) -> Self {
+        Self {
+            goal,
+            end: -1,
+            pushed: 0,
+            flight: 0,
+            throws: 0,
+        }
+    }
+
+    fn pos(&self) -> i32 {
+        let rest = self.goal + self.end * PLAY / 2;
+        // a throw runs from the other end at a steady speed
+        rest - self.end * (PLAY * self.flight as i32) / PLAY_FLIGHT as i32
+    }
+
+    /// One FAST tick on the duty the kernel last wrote.
+    fn step(&mut self, duty: i16) -> SensorFrame {
+        if self.flight > 0 {
+            self.flight -= 1;
+        } else {
+            // toward the goal is up from the low end, down from the high one
+            let toward = duty as i32 * -self.end > 0;
+            self.pushed = if toward { self.pushed + 1 } else { 0 };
+            if self.pushed >= PLAY_STUCK {
+                self.pushed = 0;
+                self.end = -self.end;
+                self.flight = PLAY_FLIGHT;
+                self.throws += 1;
+            }
+        }
+        // the motor's side is a held rotor on `Plant`'s winding: the current
+        // the duty drives through R, no back-EMF, the taps on the driven leg
+        let v = (duty as i32 * PLANT_VBUS as i32) >> 15;
+        let mag = (v >> PLANT_R_SHIFT).abs();
+        let (va, vb) = if duty >= 0 {
+            (PLANT_VBUS, 40)
+        } else {
+            (40, PLANT_VBUS)
+        };
+        SensorFrame {
+            current: (BIAS as i32 + mag).clamp(0, 4095) as u16,
+            vmotor_a: va,
+            vmotor_a_trough: va,
+            vmotor_b: vb,
+            vmotor_b_trough: vb,
+            ..frame(self.pos() as u16, BIAS)
+        }
+    }
+}
+
+/// Where the play between the motor and the position sensor is wider than
+/// twice the band, a free output rests outside the zone at either end of the
+/// play, and every push throws it to the other end: the dwell never runs,
+/// and without more the hold drives 80 % of the time for as long as it
+/// lasts. Two parks left on the far side running are that cycle: the hold
+/// then rests where the throw landed, parked, inside four bands.
+#[test]
+fn a_free_shaft_thrown_across_the_play_comes_to_rest() {
+    const GOAL: i32 = 2000;
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = GOAL;
+        t.config.loop_position.pos_deadband_counts = 4;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        // the pot alone places the observer and no load estimate forms: the
+        // plant is a position sequence, not a motor the model could explain
+        t.calib.motor.b_i_q313 = 0;
+    });
+    let mut k = kernel();
+    let mut plant = PlayPlant::below(GOAL);
+    // 2 s: on a 45 ms cycle that is over 80 throws
+    for _ in 0..40_000 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+    }
+    assert_eq!(k.faults.mask(), 0);
+    let thrown = plant.throws;
+    let (mut driven, mut lo, mut hi) = (0u32, i32::MAX, i32::MIN);
+    for _ in 0..10_000 {
+        let f = plant.step(k.fast.duty_q15);
+        k.on_scan(f, &sh);
+        driven += !matches!(last_cmd(&k), MotorCmd::Brake) as u32;
+        lo = lo.min(plant.pos());
+        hi = hi.max(plant.pos());
+    }
+    assert!(
+        driven == 0 && hi == lo,
+        "the hold hunts: {thrown} throws in 2 s, then {driven} of 10000 ticks driven and the pot \
+         from {lo} to {hi} in the last 500 ms"
+    );
+    // one coast through and the way back, no more
+    assert_eq!(thrown, 2, "throws before the hold came to rest");
+    assert!(k.medium.life == phases::Life::Parked);
+    assert!((lo - GOAL).abs() <= 16, "rest {lo}");
+}
+
+/// A park the dwell settled can sit on the zone's edge, where the pot's
+/// noise carries the estimate across it: released there, the loop pushes a
+/// still shaft until it breaks loose. A settled park of an unloaded shaft
+/// is kept to three bands.
+#[test]
+fn a_settled_park_on_the_zones_edge_stays_parked_under_noise() {
+    let sh = Shared::new();
+    seed(&sh);
+    // two bands off the goal less a count, +-1 count of noise: inside the
+    // zone on every sample, so the dwell runs
+    let mut rng: u32 = 0xdead_beef;
+    let mut noise = move || {
+        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        ((rng >> 24) as i32 % 3) - 1
+    };
+    let mut k = landed(&sh, &mut || (1947 + noise()) as u16);
+    for _ in 0..SETTLE_SCANS + SETTLE_SLACK {
+        k.on_scan(frame((1947 + noise()) as u16, BIAS), &sh);
+    }
+    assert!(k.medium.life == phases::Life::Parked, "never settled");
+    // then on the zone's edge itself, the same noise
+    for n in 0..20_000 {
+        let raw = (1948 + noise()) as u16;
+        k.on_scan(frame(raw, BIAS), &sh);
+        assert!(
+            k.medium.life == phases::Life::Parked,
+            "woke at tick {n}, pot {raw}"
+        );
+    }
+    assert_eq!(k.faults.mask(), 0);
 }

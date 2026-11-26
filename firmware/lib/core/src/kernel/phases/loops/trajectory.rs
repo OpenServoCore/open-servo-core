@@ -100,7 +100,8 @@ impl TrajGen {
     }
 
     /// One MEDIUM step over `dt_q32` toward `goal_counts` clamped to the soft
-    /// limits.
+    /// limits. Returns whether the profile was already at rest on the goal
+    /// when the step began: the period it lands returns false.
     ///
     /// Decel decision: a decel chain shedding a per tick from v travels
     /// dt*sum(v - k*a) = (v^2 - a*v)*dt/(2a) - exact when a divides v, else
@@ -122,7 +123,7 @@ impl TrajGen {
         dt_q32: u32,
         lp: &ConfigLoopPosition,
         soft: &ConfigPosSoft,
-    ) {
+    ) -> bool {
         let a = (lp.accel_limit_q88 as i32) << 8;
         let v_lim = vel_cap(lp) << 16;
         let goal = Self::goal_q16(goal_counts, soft);
@@ -132,7 +133,7 @@ impl TrajGen {
         // landed and at rest: the full step lands again with alpha 0
         if d == 0 && prev == 0 {
             self.alpha_last_q16 = 0;
-            return;
+            return true;
         }
         let d_abs = d.unsigned_abs();
         let dir_pos = d >= 0;
@@ -173,6 +174,7 @@ impl TrajGen {
             self.omega_ref_q16 = omega;
             self.alpha_last_q16 = omega.saturating_sub(prev);
         }
+        false
     }
 
     /// Velocity-mode entry: slew omega_ref toward the goal, clamped at the

@@ -352,9 +352,12 @@ fn a_reversed_motor_under_yield_holds_its_stop_once_folded() {
 /// Gravity on a held shaft at 80% of the current limit, let go at the
 /// enable and again after the hold has parked, at the bench inertia and
 /// twice it, 16 seeds each: the shaft drops against the drive until the
-/// loop stops it and pulls it back. The fall ends inside the hold's zone
-/// of 30 counts plus the load's work over it, shed by the limit's margin
-/// over the load and friction: 30 + 30 x 224 / (280 - 224 + 53), 92 counts.
+/// loop stops it and pulls it back. A settled park lets go at the hold's
+/// zone of 30 counts once the load estimate has passed friction, and at
+/// its keep of 45 counts where it has not; the fall then runs on by the
+/// load's work, shed by the limit's margin over the load and friction.
+/// The bound is the zone's, 30 + 30 x 224 / (280 - 224 + 53), 92 counts:
+/// the falls from the keep end at 75.
 /// Half a second on it is back inside 3 deg, and nothing latches.
 #[test]
 fn a_load_under_the_limit_sags_and_is_pulled_back() {

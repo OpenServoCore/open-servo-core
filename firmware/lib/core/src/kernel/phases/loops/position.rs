@@ -13,16 +13,25 @@
 //! A shaft resting on the band's edge is released by every dip of sensor
 //! noise, each wake too short to move it, so "parked for the dwell" may
 //! never come true. The dwell (`HOLD_SETTLE_TICKS`) therefore runs while the
-//! error stays within twice the band of a stopped goal: a shaft that has not
-//! left that zone for the dwell is at rest there, and from then on the zone
-//! is the band. Before the dwell the band is the gate both ways, so a moving
-//! shaft is caught and a coast through is redriven as before.
+//! error stays within twice the band of a resting goal: a shaft that has
+//! not left that zone for the dwell is at rest there and parks there. A free
+//! one is then kept to three bands (keep): the dwell can settle a park on
+//! the zone's edge, where the estimate's noise would release it into a push
+//! on a still shaft. Before the dwell the band is the gate both ways, so a
+//! moving shaft is caught and a coast through is redriven as before. The
+//! hold is judged from the period after the profile lands.
 //!
 //! Where the play between the motor and the position sensor is wider than
-//! the band, a free output can rest outside the band with the motor at the
-//! goal, and the loop then throws it from side to side without end. A shaft
-//! that has stayed inside the zone for the dwell is parked where it is, so
-//! that oscillation ends with the dwell.
+//! the zone, a free output rests at either end of it, outside the zone, and
+//! every push throws it to the other end: the dwell never runs. A throw is a
+//! park left on the far side of the goal from the side the loop last drove
+//! from, counted once, in the period the park is left; the first is a coast
+//! through, the second (`HOLD_THROWS`) settles the hold where it is, kept to
+//! five bands (loose). A near-side exit and a swing past loose clear the
+//! count. Both reaches hold an unloaded shaft only, and cost accuracy: a hold
+//! the throws settle rests up to five bands off the goal. With no velocity
+//! integral the loop cannot throw the shaft, and a hold resting outside the
+//! zone does not park.
 //!
 //! Only a shaft that holds no load parks. The park drops the current and
 //! the velocity integral, so a shaft that needed that current to stay put
@@ -42,8 +51,8 @@
 //! at the band's edge never wakes the integral; a held shaft whose load
 //! goes away parks where it is.
 //!
-//! Hold gates on POSITION rest (profile stopped, error inside the
-//! deadband) and the load estimate - never on omega_hat. The fused omega is
+//! Hold gates on POSITION rest (profile at rest on the goal, error inside
+//! the reach) and the load estimate - never on omega_hat. The fused omega is
 //! pot-noise driven at rest and the velocity loop amplifies it (bench +
 //! integer-sim: a ~3x blow-up when driving), so an omega gate that clears
 //! the parked noise floor sits below the driving floor: hold latches from
@@ -68,18 +77,36 @@ const E_LIM_CQ16: i32 = 1 << 23;
 /// stopped, not coasting through.
 pub const HOLD_SETTLE_TICKS: u8 = 128;
 
-/// omega_ref for the velocity loop, the anti-hunt flags and whether the
-/// error is within twice the band of a stopped goal (the kernel counts it
-/// toward `HOLD_SETTLE_TICKS`). Inside the band of a stopped goal, or once
-/// settled the zone: `park` for an unloaded shaft (the kernel maps it to
-/// Brake), `hold` for a loaded one (it keeps its current, its velocity
-/// integral frozen). At most one of the two is set.
+/// Parks left on the far side of the goal, running, that settle a hold
+/// where it is. The first is a coast through the band, which the loop
+/// redrives; the second is the way back, a shaft thrown from one end of
+/// the play to the other.
+pub const HOLD_THROWS: u8 = 2;
+
+/// omega_ref for the velocity loop, the anti-hunt flags, whether the error
+/// is within the hold's reach of a goal the profile rests on (the kernel
+/// counts it toward `HOLD_SETTLE_TICKS`) and the hold's record of the play.
+/// Inside the band, or once settled or thrown the reach: `park` for an
+/// unloaded shaft (the kernel maps it to Brake), `hold` for a loaded one (it
+/// keeps its current, its velocity integral frozen). At most one of the two
+/// is set.
 #[derive(Copy, Clone)]
 pub struct PosOut {
     pub omega_ref_q16: i32,
     pub hold: bool,
     pub park: bool,
     pub near: bool,
+    pub play: Play,
+}
+
+/// The hold's record of the play: the side of the goal the estimate was on
+/// in the last period the loop did not start parked (`above`: past the
+/// goal upward), and the parks left on the far side of it since, up to
+/// `HOLD_THROWS`.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
+pub struct Play {
+    pub above: bool,
+    pub throws: u8,
 }
 
 /// The hold band, cQ16: the deadband's raw counts times the local gain
@@ -100,19 +127,25 @@ pub fn unloaded(tau_d_q16: i32, fric_fc_counts: u16) -> bool {
     tau_d_q16.unsigned_abs() <= (fric_fc_counts as u32) << 16
 }
 
-/// One MEDIUM-tick update; stateless. theta*/omega* come from the
-/// trajectory generator, theta_hat/omega_hat from fusion. `band_gain_q4` is
-/// linearized counts per raw count at the present position, Q4 (16 at the
-/// identity), clamped (`pos_lut::band_gain_q4`). `settled`: `near` has held
-/// for `HOLD_SETTLE_TICKS`, so the gate is twice the band. `unloaded`:
-/// [`unloaded`] on this period's estimate.
+/// One MEDIUM-tick update. theta*/omega* come from the trajectory
+/// generator, theta_hat from fusion. `rested`: the profile was at rest on
+/// the goal when the period began (`TrajGen::step_position`); the period it
+/// lands is judged as moving. `band_gain_q4` is linearized counts per raw
+/// count at the present position, Q4 (16 at the identity), clamped
+/// (`pos_lut::band_gain_q4`). `settled`: `near` has held for
+/// `HOLD_SETTLE_TICKS`. `unloaded`: [`unloaded`] on this period's estimate.
+/// `parked`: the last period parked. `play`: the last period's record.
+#[allow(clippy::too_many_arguments)]
 pub fn step(
+    rested: bool,
     theta_star_q16: i32,
     omega_star_q16: i32,
     theta_hat_q16: i32,
     band_gain_q4: u16,
     settled: bool,
     unloaded: bool,
+    parked: bool,
+    play: Play,
     cfg: &ConfigLoopPosition,
 ) -> PosOut {
     let e_raw = sat_sub(theta_star_q16, theta_hat_q16);
@@ -121,32 +154,107 @@ pub fn step(
     // asked for more, up to the ceiling. The table rule bounds it; the min
     // keeps the shift below from turning v_lim negative on a corrupt one
     let v_lim = (cfg.speed_ceiling_cps.min(VEL_CAP_CPS) as i32) << 16;
-    // Q8.8 * cQ16 >> 8 -> csQ16, i32-exact per E_LIM
-    let omega_ref = sat_sym(
-        sat_add(q_mul(cfg.p_kp_q88 as i32, e, 8), omega_star_q16),
-        v_lim,
+    let mut play = play;
+    let v = judge_hold(
+        rested && cfg.pos_deadband_counts != 0,
+        e_raw,
+        band_gain_q4,
+        settled,
+        unloaded,
+        parked,
+        &mut play,
+        cfg,
     );
-    // a moving profile skips the band's multiply
-    if cfg.pos_deadband_counts == 0 || omega_star_q16 != 0 {
-        return PosOut {
-            omega_ref_q16: omega_ref,
-            hold: false,
-            park: false,
-            near: false,
-        };
-    }
-    let band = band_q16(cfg.pos_deadband_counts, band_gain_q4);
-    let zone = band.saturating_add(band);
-    let e_abs = e_raw.unsigned_abs();
-    let near = e_abs <= zone;
-    // the band sits inside the zone
-    let hit = near && (e_abs <= band || settled);
+    let hit = v & HIT != 0;
     PosOut {
-        omega_ref_q16: omega_ref,
+        // Q8.8 * cQ16 >> 8 -> csQ16, i32-exact per E_LIM
+        omega_ref_q16: sat_sym(
+            sat_add(q_mul(cfg.p_kp_q88 as i32, e, 8), omega_star_q16),
+            v_lim,
+        ),
         hold: hit && !unloaded,
         park: hit && unloaded,
-        near,
+        near: v & NEAR != 0,
+        play,
     }
+}
+
+/// `judge_hold`'s verdict bits: within the reach (`PosOut::near`), and
+/// inside the hold, a park or a hold by its load. A hit is near.
+const NEAR: u8 = 1;
+const HIT: u8 = 2;
+
+/// `step`'s hold on `e_raw`, `play` updated. One byte out: a struct of
+/// flags is carried through the early returns as a packed word, shifted
+/// apart again at the merge. `judged`: the profile rests on the goal and
+/// the deadband is not 0.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn judge_hold(
+    judged: bool,
+    e_raw: i32,
+    band_gain_q4: u16,
+    settled: bool,
+    unloaded: bool,
+    parked: bool,
+    play: &mut Play,
+    cfg: &ConfigLoopPosition,
+) -> u8 {
+    // a moving profile skips the band's multiply
+    if !judged {
+        *play = Play::default();
+        return 0;
+    }
+    let band = band_q16(cfg.pos_deadband_counts, band_gain_q4);
+    let e_abs = e_raw.unsigned_abs();
+    let above = e_raw < 0;
+    if !parked {
+        play.above = above;
+    }
+    // the band sits inside every reach
+    if e_abs <= band {
+        return NEAR | HIT;
+    }
+    // past the band, which is then under 2^31: each reach compares as the
+    // excess over the band against a multiple of it, exact with no
+    // saturation
+    let over = e_abs - band;
+    // past loose, 5 bands: a swing that wide is not a throw across the play
+    if (over + 3) >> 2 > band {
+        play.throws = 0;
+        return 0;
+    }
+    // thrown: kept to loose, inside it here
+    if unloaded && play.throws >= HOLD_THROWS {
+        return NEAR | HIT;
+    }
+    // settled: kept to keep, 3 bands, or under a load the zone, 2. Before
+    // the dwell the zone only counts it
+    let near = if settled {
+        if over <= band << unloaded as u32 {
+            return NEAR | HIT;
+        }
+        false
+    } else {
+        over <= band
+    };
+    // a throw counts once, in the period the park is left: counted on
+    // every parked period past the band, a load pushing a settled park out
+    // of it reads as thrown and sags to loose
+    // (`a_load_under_the_limit_sags_and_is_pulled_back`). At HOLD_THROWS
+    // the count stays
+    if parked && play.throws < HOLD_THROWS {
+        if above == play.above {
+            play.throws = 0;
+        } else {
+            play.throws += 1;
+            // the second throw settles the hold on the spot
+            if unloaded && play.throws >= HOLD_THROWS {
+                return NEAR | HIT;
+            }
+        }
+    }
+    near as u8
 }
 
 #[cfg(test)]
@@ -166,15 +274,36 @@ mod tests {
         cfg: &ConfigLoopPosition,
     ) -> PosOut {
         super::step(
+            omega_star_q16 == 0,
             theta_star_q16,
             omega_star_q16,
             theta_hat_q16,
             band_gain_q4,
             settled,
             true,
+            false,
+            Play::default(),
             cfg,
         )
     }
+
+    /// The step on a resting profile at the goal 0, the estimate at `-e`.
+    fn judged(
+        e: i32,
+        settled: bool,
+        unloaded: bool,
+        parked: bool,
+        play: Play,
+        cfg: &ConfigLoopPosition,
+    ) -> PosOut {
+        super::step(true, e, 0, 0, ID, settled, unloaded, parked, play, cfg)
+    }
+
+    /// A record the play has thrown: the last drive from below the goal.
+    const THROWN: Play = Play {
+        above: false,
+        throws: HOLD_THROWS,
+    };
 
     /// The block as the take leaves it: the move speed at the ceiling.
     fn c(kp: u16, db: u16, ceiling: u16) -> ConfigLoopPosition {
@@ -203,9 +332,10 @@ mod tests {
 
     #[test]
     fn hold_band_scales_by_the_local_gain() {
-        // gain 26/16: 12 raw counts span 19.5 linearized, twice is 39
+        // gain 26/16: 12 raw counts span 19.5 linearized; a settled free
+        // shaft is kept to three bands, 58.5
         let cfg = c(1 << 8, 12, 32767);
-        for (settled, gate) in [(false, 39 << 15), (true, 39 << 16)] {
+        for (settled, gate) in [(false, 39 << 15), (true, 117 << 15)] {
             assert!(step(gate, 0, 0, 26, settled, &cfg).park);
             assert!(step(0, 0, gate, 26, settled, &cfg).park);
             assert!(!step(gate + 1, 0, 0, 26, settled, &cfg).park);
@@ -221,16 +351,27 @@ mod tests {
     }
 
     #[test]
-    fn near_is_two_bands_of_a_stopped_goal() {
+    fn near_is_two_bands_of_a_resting_goal_and_three_once_a_free_hold_settles() {
         let cfg = c(1 << 8, 12, 32767);
+        for (settled, unloaded, reach) in [
+            (false, true, 24),
+            (false, false, 24),
+            (true, false, 24),
+            (true, true, 36),
+        ] {
+            let near = |e: i32| judged(e, settled, unloaded, false, Play::default(), &cfg).near;
+            assert!(near(reach << 16), "settled {settled}, unloaded {unloaded}");
+            assert!(near(-(reach << 16)));
+            assert!(!near((reach << 16) + 1));
+            assert!(!near(-(reach << 16) - 1));
+        }
         for settled in [false, true] {
-            assert!(step(24 << 16, 0, 0, ID, settled, &cfg).near);
-            assert!(step(0, 0, 24 << 16, ID, settled, &cfg).near);
-            assert!(!step((24 << 16) + 1, 0, 0, ID, settled, &cfg).near);
-            assert!(!step(0, 0, (24 << 16) + 1, ID, settled, &cfg).near);
             // a moving profile is never near, even at zero error
             assert!(!step(0, 1, 0, ID, settled, &cfg).near);
             assert!(!step(0, -1, 0, ID, settled, &cfg).near);
+            // nor is the period it lands, at rest on the goal
+            let out = super::step(false, 0, 0, 0, ID, settled, true, false, THROWN, &cfg);
+            assert!(!out.near && !out.park && !out.hold);
             // deadband 0 never counts
             assert!(!step(0, 0, 0, ID, settled, &c(1 << 8, 0, 32767)).near);
         }
@@ -241,18 +382,18 @@ mod tests {
     }
 
     #[test]
-    fn a_settled_park_releases_past_two_bands() {
+    fn a_settled_park_releases_past_three_bands() {
         let cfg = c(1 << 8, 12, 32767);
         // entry and an un-settled park: the band, not past it
         assert!(step(12 << 16, 0, 0, ID, false, &cfg).park);
         assert!(step(0, 0, 12 << 16, ID, false, &cfg).park);
         assert!(!step((12 << 16) + 1, 0, 0, ID, false, &cfg).park);
         assert!(!step(18 << 16, 0, 0, ID, false, &cfg).park);
-        // settled: twice the band, not past it
-        assert!(step(18 << 16, 0, 0, ID, true, &cfg).park);
-        assert!(step(0, 0, 24 << 16, ID, true, &cfg).park);
-        assert!(!step((24 << 16) + 1, 0, 0, ID, true, &cfg).park);
-        assert!(!step(0, 0, (24 << 16) + 1, ID, true, &cfg).park);
+        // settled: three bands, not past them
+        assert!(step(30 << 16, 0, 0, ID, true, &cfg).park);
+        assert!(step(0, 0, 36 << 16, ID, true, &cfg).park);
+        assert!(!step((36 << 16) + 1, 0, 0, ID, true, &cfg).park);
+        assert!(!step(0, 0, (36 << 16) + 1, ID, true, &cfg).park);
         // a moving profile drops either, even at zero error
         for settled in [false, true] {
             assert!(!step(0, 1, 0, ID, settled, &cfg).park);
@@ -285,7 +426,7 @@ mod tests {
     fn a_loaded_shaft_is_held_but_never_parks() {
         let cfg = c(1 << 8, 12, 32767);
         let step = |e: i32, settled: bool, unloaded: bool| {
-            super::step(e, 0, 0, ID, settled, unloaded, &cfg)
+            judged(e, settled, unloaded, false, Play::default(), &cfg)
         };
         // the free shaft's park region holds a loaded one: the band, and
         // once settled the zone
@@ -308,16 +449,189 @@ mod tests {
             assert_eq!(loaded.omega_ref_q16, free.omega_ref_q16);
         }
         // past the band before the dwell, past the zone, and on a moving
-        // profile, neither
+        // profile, neither: a settled free shaft is kept to three bands, a
+        // loaded one still released past two
+        for (e, settled) in [
+            ((12 << 16) + 1, false),
+            (25 << 16, true),
+            (-(36 << 16), true),
+        ] {
+            let out = step(e, settled, false);
+            assert!(!out.hold && !out.park, "e {e}");
+        }
+        assert!(step(25 << 16, true, true).park);
+        assert!(!step((36 << 16) + 1, true, true).park);
         for unloaded in [false, true] {
-            for (e, omega_star, settled) in [
-                ((12 << 16) + 1, 0, false),
-                (25 << 16, 0, true),
-                (0, 1, true),
-            ] {
-                let out = super::step(e, omega_star, 0, ID, settled, unloaded, &cfg);
-                assert!(!out.hold && !out.park, "e {e}, unloaded {unloaded}");
+            let out = super::step(
+                false,
+                0,
+                1,
+                0,
+                ID,
+                true,
+                unloaded,
+                false,
+                Play::default(),
+                &cfg,
+            );
+            assert!(!out.hold && !out.park, "unloaded {unloaded}");
+        }
+    }
+
+    #[test]
+    fn a_throw_is_a_park_left_on_the_far_side() {
+        let cfg = c(1 << 8, 12, 32767);
+        let from_below = |throws| Play {
+            above: false,
+            throws,
+        };
+        // driven last from below: a park left above the goal counts in the
+        // period it is left, up to HOLD_THROWS, and the second settles the
+        // hold where it is
+        let first = judged(-(13 << 16), false, true, true, from_below(0), &cfg);
+        assert_eq!(first.play, from_below(1));
+        assert!(!first.park);
+        let second = judged(-(13 << 16), false, true, true, from_below(1), &cfg);
+        assert_eq!(second.play, from_below(HOLD_THROWS));
+        assert!(second.park);
+        let more = judged(-(60 << 16), false, true, true, THROWN, &cfg);
+        assert_eq!(more.play, THROWN);
+        // inside the band, or driving, nothing counts; a drive moves the
+        // side to where the estimate is
+        for (e, parked, play) in [
+            (-(12 << 16), true, from_below(1)),
+            (-(13 << 16), false, from_below(1)),
+        ] {
+            let out = judged(e, false, true, parked, play, &cfg);
+            let side = if parked { play.above } else { true };
+            assert_eq!(
+                out.play,
+                Play {
+                    above: side,
+                    throws: 1
+                },
+                "e {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_settled_park_held_past_the_band_counts_no_throw_until_it_is_left() {
+        // settled and parked two bands above the goal, on the far side of
+        // the last drive: kept, period after period, with nothing counted
+        let cfg = c(1 << 8, 12, 32767);
+        let mut play = Play::default();
+        for _ in 0..1000 {
+            let out = judged(-(24 << 16), true, true, true, play, &cfg);
+            assert!(out.park && out.near);
+            play = out.play;
+        }
+        assert_eq!(play, Play::default());
+        // a load there is held, and the park that ends counts nothing
+        let out = judged(-(24 << 16), true, false, true, play, &cfg);
+        assert!(out.hold && !out.park);
+        // left past the keep: one throw, in that period
+        let out = judged(-(37 << 16), true, true, true, play, &cfg);
+        assert!(!out.park && !out.near);
+        assert_eq!(out.play.throws, 1);
+    }
+
+    #[test]
+    fn a_near_side_exit_clears_the_throws() {
+        let cfg = c(1 << 8, 12, 32767);
+        // driven last from below, the park left below the goal again
+        for e in [13 << 16, 60 << 16] {
+            let out = judged(
+                e,
+                false,
+                true,
+                true,
+                Play {
+                    above: false,
+                    throws: 1,
+                },
+                &cfg,
+            );
+            assert_eq!(out.play, Play::default(), "e {e}");
+            assert!(!out.park);
+        }
+        // a settled hold stays settled on the spot
+        assert_eq!(
+            judged(13 << 16, false, true, true, THROWN, &cfg).play,
+            THROWN
+        );
+        assert!(judged(60 << 16, false, true, true, THROWN, &cfg).park);
+    }
+
+    #[test]
+    fn a_swing_past_loose_clears_the_throws() {
+        let cfg = c(1 << 8, 12, 32767);
+        // loose is five bands, 60: past it, parked or driving, either side
+        for e in [(60 << 16) + 1, -(60 << 16) - 1, 200 << 16, i32::MIN + 1] {
+            for parked in [false, true] {
+                let out = judged(e, true, true, parked, THROWN, &cfg);
+                assert_eq!(out.play.throws, 0, "e {e}, parked {parked}");
+                assert!(!out.park && !out.hold && !out.near);
             }
+        }
+        // a rattle that swings past loose between two far-side exits is
+        // not a throw across the play: the second exit counts one, again
+        let play = judged(-(20 << 16), false, true, true, Play::default(), &cfg).play;
+        assert_eq!(play.throws, 1);
+        let play = judged(-(80 << 16), false, true, false, play, &cfg).play;
+        let play = judged(40 << 16, false, true, false, play, &cfg).play;
+        assert_eq!(play, Play::default());
+        let play = judged(5 << 16, false, true, false, play, &cfg).play;
+        let out = judged(-(20 << 16), false, true, true, play, &cfg);
+        assert_eq!(out.play.throws, 1);
+        assert!(!out.park);
+    }
+
+    #[test]
+    fn a_thrown_park_is_kept_to_five_bands_of_the_local_gain() {
+        // loose is five bands, settled or not: 60 at the identity, 97.5 at
+        // gain 26/16
+        let cfg = c(1 << 8, 12, 32767);
+        for (gain, gate) in [(ID, 60 << 16), (26, 195 << 15)] {
+            for settled in [false, true] {
+                let thrown =
+                    |e: i32| super::step(true, e, 0, 0, gain, settled, true, true, THROWN, &cfg);
+                assert!(thrown(gate).park && thrown(gate).near, "gain {gain}");
+                assert!(thrown(-gate).park);
+                assert!(!thrown(gate + 1).park && !thrown(gate + 1).near);
+                assert!(!thrown(-gate - 1).park);
+            }
+        }
+        // the keep scales with the gain as the band does: 58.5 at 26/16
+        let keep = |e: i32| super::step(true, e, 0, 0, 26, true, true, true, Play::default(), &cfg);
+        assert!(keep(117 << 15).park && !keep((117 << 15) + 1).park);
+    }
+
+    #[test]
+    fn a_load_on_a_thrown_park_drives_or_holds() {
+        // a load, the record thrown: never parked, held only where a loaded
+        // shaft is, the band and once settled the zone
+        let cfg = c(1 << 8, 12, 32767);
+        for settled in [false, true] {
+            for raw in -60..=60 {
+                let e = raw << 16;
+                let out = judged(e, settled, false, true, THROWN, &cfg);
+                let held = raw.abs() <= 12 || (settled && raw.abs() <= 24);
+                assert!(!out.park, "e {raw}, settled {settled}");
+                assert_eq!(out.hold, held, "e {raw}, settled {settled}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_moving_profile_and_deadband_0_clear_the_record() {
+        let cfg = c(1 << 8, 12, 32767);
+        for parked in [false, true] {
+            let moving = super::step(false, 30 << 16, 0, 0, ID, true, true, parked, THROWN, &cfg);
+            assert_eq!(moving.play, Play::default());
+            let off = judged(30 << 16, true, true, parked, THROWN, &c(1 << 8, 0, 32767));
+            assert_eq!(off.play, Play::default());
+            assert!(!off.park && !off.near);
         }
     }
 
