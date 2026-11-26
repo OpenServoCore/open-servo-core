@@ -23,9 +23,7 @@ fn field_addr(name: &str) -> (u16, u16) {
 fn install_set(
     c: &mut osc_client::Client<Spy>,
     set: &SetFile,
-    loosen: &[&str],
 ) -> (Result<(), install::Refused>, Vec<Step>) {
-    let loosen: Vec<String> = loosen.iter().map(|s| s.to_string()).collect();
     let mut steps = Vec::new();
     let r = block_on(install::install(
         c,
@@ -33,7 +31,6 @@ fn install_set(
         &descriptor(),
         set,
         Some(&table().points),
-        &loosen,
         &mut steps,
     ));
     (r, steps)
@@ -48,7 +45,7 @@ fn read_u16(c: &mut osc_client::Client<Spy>, name: &str) -> u16 {
 #[test]
 fn install_writes_only_what_differs() {
     let (mut c, log) = on_record();
-    let (r, steps) = install_set(&mut c, &record(), &[]);
+    let (r, steps) = install_set(&mut c, &record());
     r.expect("the set it holds installs");
     assert_eq!(steps, []);
     assert_eq!(writes_below(&log, CONTROL), [], "nothing written");
@@ -57,7 +54,7 @@ fn install_writes_only_what_differs() {
     i.policy.velocity_limit_deg_s = Some(150.0);
     let set = rules_set(&i, &table());
     log.borrow_mut().clear();
-    let (r, steps) = install_set(&mut c, &set, &[]);
+    let (r, steps) = install_set(&mut c, &set);
     r.expect("one plant field installs");
     assert_eq!(wrote(&steps), ["velocity_limit_cps"]);
     assert!(matches!(steps.last(), Some(Step::Stamped(_))));
@@ -95,7 +92,7 @@ fn the_soft_limits_go_off_and_on_in_one_write() {
         off.value("pos_max_soft_counts").and_then(|v| v.as_i64()),
         Some(0)
     );
-    let (r, steps) = install_set(&mut c, &off, &[]);
+    let (r, steps) = install_set(&mut c, &off);
     r.expect("the soft limits go off");
     assert_eq!(
         wrote(&steps),
@@ -108,7 +105,7 @@ fn the_soft_limits_go_off_and_on_in_one_write() {
     assert!(checked.clean(), "{:?}", checked.differences);
 
     log.borrow_mut().clear();
-    let (r, steps) = install_set(&mut c, &record(), &[]);
+    let (r, steps) = install_set(&mut c, &record());
     r.expect("the soft limits come back on");
     assert_eq!(
         wrote(&steps),
@@ -124,14 +121,7 @@ fn the_soft_limits_go_off_and_on_in_one_write() {
 fn every_write_is_read_back() {
     let (mut c, log) = seeded();
     let rec = record();
-    let (r, steps) = install_set(
-        &mut c,
-        &rec,
-        &every_protection(&rec)
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-    );
+    let (r, steps) = install_set(&mut c, &rec);
     r.expect("the set of record installs on the seeded servo");
     let log = log.borrow();
     let mut checked = 0;
@@ -165,12 +155,7 @@ fn every_write_is_read_back() {
 fn the_table_lands_live_and_the_stamp_matches() {
     let (mut c, _) = seeded();
     let rec = record();
-    let names = every_protection(&rec);
-    let (r, steps) = install_set(
-        &mut c,
-        &rec,
-        &names.iter().map(String::as_str).collect::<Vec<_>>(),
-    );
+    let (r, steps) = install_set(&mut c, &rec);
     r.expect("installs");
     let d = descriptor();
     let lut = block_on(pos_lut::read(&mut c, ID, &d)).expect("lut");
@@ -196,7 +181,6 @@ fn save_writes_the_backup_before_anything_else() {
     let (mut c, log) = seeded();
     let d = descriptor();
     let rec = record();
-    let names = every_protection(&rec);
     let before = block_on(state::read(&mut c, ID, &d)).expect("state");
     log.borrow_mut().clear();
 
@@ -212,7 +196,6 @@ fn save_writes_the_backup_before_anything_else() {
         &d,
         &rec,
         Some(&table().points),
-        &names,
         &mut sink,
         &mut steps,
     ))
@@ -237,7 +220,6 @@ fn save_writes_the_backup_before_anything_else() {
         &d,
         &rec,
         Some(&table().points),
-        &names,
         &mut sink,
         &mut steps,
     ))
@@ -286,7 +268,6 @@ fn save_writes_the_backup_before_anything_else() {
         &d,
         std::str::from_utf8(&sink.files[STORED]).expect("utf8"),
         json!({"from": "test"}),
-        &names,
         &mut steps,
     ))
     .expect("restore");
@@ -318,7 +299,6 @@ fn a_refusal_after_the_first_write_reboots_to_the_saved_state() {
         &d,
         &set,
         Some(&t.points),
-        &[],
         &mut steps,
     ))
     .expect_err("the table is refused");
@@ -339,47 +319,49 @@ fn a_refusal_after_the_first_write_reboots_to_the_saved_state() {
     );
 }
 
+/// The tool makes no judgment of a set: one that moves a protection
+/// field, either way, installs as any other, and its steps say each move.
 #[test]
-fn a_field_that_protects_less_needs_its_name() {
-    let (mut c, log) = on_record();
-    let looser = |f: &dyn Fn(&mut osc_measure::Inputs)| {
+fn a_set_that_moves_a_protection_installs_and_says_the_move() {
+    let (mut c, _) = on_record();
+    let with = |f: &dyn Fn(&mut osc_measure::Inputs)| {
         let mut i = inputs();
         f(&mut i);
         rules_set(&i, &table())
     };
+    let moved = |steps: &[Step], name: &str| {
+        steps.iter().find_map(|s| match s {
+            Step::Field { name: n, from, to } if n == name => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+    };
 
-    let higher_cap = looser(&|i| i.nameplate.derate_other = Some(0.9));
-    let (r, steps) = install_set(&mut c, &higher_cap, &[]);
-    let e = r.expect_err("a higher cap needs its name");
-    assert!(e.0.contains("current_limit_counts: servo 1043, set"), "{e}");
-    assert!(e.0.contains("--loosen current_limit_counts"), "{e}");
-    assert_eq!(steps, []);
-    assert_eq!(writes_below(&log, CONTROL), []);
-    let (r, steps) = install_set(&mut c, &higher_cap, &["current_limit_counts"]);
-    r.expect("named, it installs");
+    let higher_cap = with(&|i| i.nameplate.derate_other = Some(0.9));
+    let cap = higher_cap.value("current_limit_counts").cloned();
+    let (r, steps) = install_set(&mut c, &higher_cap);
+    r.expect("a higher cap installs");
     assert_eq!(wrote(&steps), ["current_limit_counts"]);
-
-    // Back down is tighter: no name needed.
-    let (r, _) = install_set(&mut c, &record(), &[]);
-    r.expect("a lower cap installs unnamed");
-    assert_eq!(read_u16(&mut c, "current_limit_counts"), 1043);
-
-    // A judged field: any change is taken as protecting less.
-    let fault =
-        looser(&|i| i.policy.stall_response = Some(osc_measure::policy::StallResponse::Fault));
-    let (r, _) = install_set(&mut c, &fault, &[]);
-    let e = r.expect_err("a judged field needs its name");
-    assert!(
-        e.0.contains("stall_response: servo \"Yield (1)\", set \"Fault (0)\", judged"),
-        "{e}"
+    assert_eq!(
+        moved(&steps, "current_limit_counts"),
+        Some((json!(1043), cap.expect("a cap")))
     );
+    let said = steps[0].to_string();
+    assert!(said.starts_with("current_limit_counts: 1043 -> "), "{said}");
 
-    // A name that is no protection field of the set is refused, not ignored.
-    let (r, _) = install_set(&mut c, &record(), &["r_q12"]);
-    assert!(
-        r.expect_err("not a protection field")
-            .0
-            .contains("r_q12 is not a protection field")
+    let slower = with(&|i| i.policy.stall_omega_max_deg_s = Some(10.0));
+    let (r, steps) = install_set(&mut c, &slower);
+    r.expect("a lower stall speed installs");
+    let (from, to) = moved(&steps, "stall_omega_max_cps").expect("the move is a step");
+    assert_eq!(from, json!(500));
+    assert!(to.as_i64().expect("an int") < 500, "{to}");
+
+    let fault =
+        with(&|i| i.policy.stall_response = Some(osc_measure::policy::StallResponse::Fault));
+    let (r, steps) = install_set(&mut c, &fault);
+    r.expect("another stall response installs");
+    assert_eq!(
+        moved(&steps, "stall_response"),
+        Some((json!("Yield (1)"), json!("Fault (0)")))
     );
 }
 
@@ -400,7 +382,7 @@ fn torque_on_refuses_every_write_verb() {
 
     let mut i = inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
-    let (r, _) = install_set(&mut c, &rules_set(&i, &table()), &[]);
+    let (r, _) = install_set(&mut c, &rules_set(&i, &table()));
     let refusals = [
         r.expect_err("install"),
         block_on(save(
@@ -409,21 +391,12 @@ fn torque_on_refuses_every_write_verb() {
             &d,
             &record(),
             Some(&table().points),
-            &[],
             &mut osc_measure::sink::MemSink::default(),
             &mut Vec::new(),
         ))
         .expect_err("save"),
-        block_on(restore(
-            &mut c,
-            ID,
-            &d,
-            &backup,
-            json!({}),
-            &[],
-            &mut Vec::new(),
-        ))
-        .expect_err("restore"),
+        block_on(restore(&mut c, ID, &d, &backup, json!({}), &mut Vec::new()))
+            .expect_err("restore"),
     ];
     for e in refusals {
         assert!(e.0.contains("torque_enable is on"), "{e}");
@@ -479,7 +452,7 @@ fn the_tool_has_no_factory_path() {
     log.borrow_mut().clear();
     let mut i = inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
-    let (r, _) = install_set(&mut c, &rules_set(&i, &table()), &[]);
+    let (r, _) = install_set(&mut c, &rules_set(&i, &table()));
     let refusals = [
         r.expect_err("install"),
         block_on(save(
@@ -488,21 +461,12 @@ fn the_tool_has_no_factory_path() {
             &d,
             &record(),
             Some(&table().points),
-            &[],
             &mut osc_measure::sink::MemSink::default(),
             &mut Vec::new(),
         ))
         .expect_err("save"),
-        block_on(restore(
-            &mut c,
-            ID,
-            &d,
-            &backup,
-            json!({}),
-            &[],
-            &mut Vec::new(),
-        ))
-        .expect_err("restore"),
+        block_on(restore(&mut c, ID, &d, &backup, json!({}), &mut Vec::new()))
+            .expect_err("restore"),
     ];
     for e in refusals {
         assert!(e.0.contains("`osc recover`"), "{e}");

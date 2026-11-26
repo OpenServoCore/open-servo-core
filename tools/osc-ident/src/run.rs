@@ -16,8 +16,6 @@ use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
 use osc_measure::Policy;
-use osc_measure::rules::rules;
-use osc_measure::set::looser;
 use serde_json::{Value, json};
 
 use crate::files;
@@ -29,7 +27,6 @@ pub struct RunArgs<'a> {
     pub thermal: &'a Path,
     pub policy: &'a Path,
     pub out: &'a Path,
-    pub loosen: &'a [String],
     pub tries: u32,
 }
 
@@ -39,10 +36,8 @@ fn unix_s() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// The refusals that need no servo: the three files parse, `--tries` is
-/// at least 1, and every `--loosen` name is a protection field a rule
-/// binds. Whether the gathered set holds the field is the install's to
-/// say, in the tune: no set exists before the run.
+/// The refusals that need no servo: the three files parse and `--tries`
+/// is at least 1.
 pub fn admit(a: &RunArgs) -> Result<StepInputs> {
     if a.tries == 0 {
         bail!("--tries is at least 1");
@@ -50,36 +45,20 @@ pub fn admit(a: &RunArgs) -> Result<StepInputs> {
     let policy = files::read(a.policy)?;
     serde_json::from_slice::<Policy>(&policy)
         .with_context(|| format!("parsing {}", a.policy.display()))?;
-    let bad: Vec<&str> = a
-        .loosen
-        .iter()
-        .map(String::as_str)
-        .filter(|n| looser(n).is_none() || !rules().any(|r| r.field == *n))
-        .collect();
-    if !bad.is_empty() {
-        bail!(
-            "--loosen {}: no protection field of a set by that name",
-            bad.join(" ")
-        );
-    }
     StepInputs::load(Some(a.nameplate), Some(a.thermal), None)
 }
 
 /// The command line that runs `run` again as given.
 fn again(id: Id, a: &RunArgs) -> String {
-    let mut s = format!(
-        "osc-ident --id {} run --nameplate {} --thermal {} --policy {} --out {}",
+    format!(
+        "osc-ident --id {} run --nameplate {} --thermal {} --policy {} --out {} --tries {}",
         id.as_byte(),
         a.nameplate.display(),
         a.thermal.display(),
         a.policy.display(),
-        a.out.display()
-    );
-    if !a.loosen.is_empty() {
-        s.push_str(&format!(" --loosen {}", a.loosen.join(" ")));
-    }
-    s.push_str(&format!(" --tries {}", a.tries));
-    s
+        a.out.display(),
+        a.tries
+    )
 }
 
 /// The run folder's manifest with the gather and the tune beside its
@@ -201,7 +180,7 @@ async fn gather_and_tune<P: Pipe>(
     let gather = json!({"state": "accepted", "why": null, "started": t0, "ended": t1, "files": gather_files});
 
     let tune_dir = root.join("tune");
-    let tuned = crate::tune::tune(c, id, d, &inputs_dir, &tune_dir, a.tries, a.loosen, stop).await;
+    let tuned = crate::tune::tune(c, id, d, &inputs_dir, &tune_dir, a.tries, stop).await;
     let t2 = unix_s();
     match tuned {
         Err(e) => {
@@ -212,30 +191,13 @@ async fn gather_and_tune<P: Pipe>(
                 json!({"state": "refused", "why": why, "started": t1, "ended": t2}),
             )?;
             lines.push(format!("tune refused: {why}"));
-            let fields = crate::tune::to_loosen(&why);
-            if fields.is_empty() {
-                lines.push(format!(
-                    "nothing was written; the measured inputs are kept: osc-ident --id {} tune --inputs {} --out {} continues from them",
-                    id.as_byte(),
-                    inputs_dir.display(),
-                    tune_dir.display()
-                ));
-            } else {
-                let mut all: Vec<String> = a.loosen.to_vec();
-                all.extend(fields.iter().filter(|f| !a.loosen.contains(f)).cloned());
-                lines.push(format!(
-                    "the gathered set protects less than the servo on {}; nothing was written",
-                    fields.join(", ")
-                ));
-                lines.push(format!(
-                    "to continue without measuring again: osc-ident --id {} tune --inputs {} --out {} --loosen {} --tries {}",
-                    id.as_byte(),
-                    inputs_dir.display(),
-                    tune_dir.display(),
-                    all.join(" "),
-                    a.tries
-                ));
-            }
+            lines.push(format!(
+                "nothing was written; the measured inputs are kept: osc-ident --id {} tune --inputs {} --out {} --tries {} continues from them",
+                id.as_byte(),
+                inputs_dir.display(),
+                tune_dir.display(),
+                a.tries
+            ));
             Ok((lines, false))
         }
         Ok((tune_lines, accepted)) => {
@@ -337,18 +299,12 @@ mod tests {
         }
     }
 
-    fn args<'a>(
-        g: &'a Given,
-        out: &'a Path,
-        policy: &'a Path,
-        loosen: &'a [String],
-    ) -> RunArgs<'a> {
+    fn args<'a>(g: &'a Given, out: &'a Path, policy: &'a Path) -> RunArgs<'a> {
         RunArgs {
             nameplate: &g.nameplate,
             thermal: &g.thermal,
             policy,
             out,
-            loosen,
             tries: 6,
         }
     }
@@ -362,7 +318,7 @@ mod tests {
         let dir = scratch("run-stops");
         let policy = testdata("mg90-d/policy.json");
         let g = given();
-        let a = args(&g, &dir, &policy, &[]);
+        let a = args(&g, &dir, &policy);
         let (lines, accepted) =
             block_on(run(&mut c, ID, &d, &a, "uid", &AtomicBool::new(false))).expect("runs");
         let text = lines.join("\n");
@@ -402,7 +358,7 @@ mod tests {
         let (mut c, d) = fake();
         let g = given();
         let out = dir.join("run");
-        let a = args(&g, &out, &policy, &[]);
+        let a = args(&g, &out, &policy);
         let (ran, _) =
             block_on(run(&mut c, ID, &d, &a, "uid", &AtomicBool::new(false))).expect("runs");
         let (mut c, d) = fake();
@@ -440,11 +396,11 @@ mod tests {
     }
 
     /// A run whose steps were all accepted gathers into `inputs/` and
-    /// tunes into `tune/`; a tune refused before any write because the set
-    /// protects less than the servo ends with the fields and the command
-    /// that continues without measuring again, and `run.json` records both.
+    /// tunes into `tune/`; a tune refused before any write (torque on)
+    /// ends with the command that continues without measuring again, and
+    /// `run.json` records both.
     #[test]
-    fn a_tune_refused_on_protections_names_the_command_that_continues() {
+    fn a_tune_refused_before_any_write_names_the_command_that_continues() {
         let dir = scratch("run-continue");
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
@@ -463,7 +419,9 @@ mod tests {
         let g = given();
         let policy = testdata("mg90-d/policy.json");
         let (mut c, d) = fake();
-        let a = args(&g, &dir, &policy, &[]);
+        let torque = d.field("torque_enable").expect("torque").addr;
+        block_on(c.write(ID, torque, &[1])).expect("torque on");
+        let a = args(&g, &dir, &policy);
         let (lines, accepted) = block_on(gather_and_tune(
             &mut c,
             ID,
@@ -480,14 +438,12 @@ mod tests {
         assert!(!root.join("tune").exists(), "nothing tuned");
         let last = lines.last().expect("a line");
         let want = format!(
-            "to continue without measuring again: osc-ident --id 1 tune --inputs {} --out {} --loosen ",
+            "nothing was written; the measured inputs are kept: osc-ident --id 1 tune --inputs {} --out {} --tries 6 continues from them",
             root.join("inputs").display(),
             root.join("tune").display()
         );
-        assert!(
-            last.starts_with(&want) && last.ends_with("--tries 6"),
-            "{last}"
-        );
+        assert_eq!(last, &want);
+        assert!(text.contains("torque_enable is on"), "{text}");
         let m: Value = serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read"))
             .expect("json");
         assert_eq!(m["gather"]["state"], "accepted", "{m}");
@@ -496,8 +452,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A `--loosen` name no set can hold, or a policy that is not there:
-    /// refused before anything goes on the bus, and no run folder.
+    /// A policy that is not there, or no tries: refused before anything
+    /// goes on the bus, and no run folder.
     #[test]
     fn the_arguments_are_refused_before_any_bus_traffic() {
         let dir = scratch("run-args");
@@ -511,21 +467,12 @@ mod tests {
             assert!(format!("{e:#}").contains(word), "{e:#}");
             assert!(c.pipe_mut().take_frames().is_empty(), "the bus was used");
         };
-        for bad in ["v_kp_q88", "no_such_field", "derate_start_cc"] {
-            let loosen = vec!["current_limit_counts".to_string(), bad.to_string()];
-            refused(
-                &mut c,
-                &args(&g, &dir, &policy, &loosen),
-                &format!("--loosen {bad}:"),
-            );
-        }
         let missing = dir.join("none.json");
-        refused(&mut c, &args(&g, &dir, &missing, &[]), "none.json");
-        let mut a = args(&g, &dir, &policy, &[]);
+        refused(&mut c, &args(&g, &dir, &missing), "none.json");
+        let mut a = args(&g, &dir, &policy);
         a.tries = 0;
         refused(&mut c, &a, "--tries");
-        let loosen: Vec<String> = ["rail_fold_q8", "i_cont_counts"].map(String::from).to_vec();
-        admit(&args(&g, &dir, &policy, &loosen)).expect("protection fields the rules bind");
+        admit(&args(&g, &dir, &policy)).expect("admitted");
         assert!(!dir.join("uid").exists(), "no run folder");
         let _ = std::fs::remove_dir_all(dir);
     }

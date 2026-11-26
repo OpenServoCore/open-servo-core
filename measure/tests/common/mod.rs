@@ -183,16 +183,6 @@ pub fn seeded() -> (Client<Spy>, Log) {
     (c, log)
 }
 
-/// Every protection field of `set`: what a test names to take a seeded
-/// servo onto the set of record.
-pub fn every_protection(set: &SetFile) -> Vec<String> {
-    set.values()
-        .iter()
-        .filter(|(n, _)| set::looser(n).is_some())
-        .map(|(n, _)| n.to_string())
-        .collect()
-}
-
 /// A servo that holds the set of record, saved.
 pub fn on_record() -> (Client<Spy>, Log) {
     let (mut c, log) = seeded();
@@ -205,7 +195,6 @@ pub fn on_record() -> (Client<Spy>, Log) {
         &d,
         &rec,
         Some(&table().points),
-        &every_protection(&rec),
         &mut steps,
     ))
     .expect("the set of record installs");
