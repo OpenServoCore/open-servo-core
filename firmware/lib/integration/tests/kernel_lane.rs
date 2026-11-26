@@ -162,7 +162,7 @@ fn slow_stages_fit_at_budget_while_streaming() {
 /// TEL row and a bank or the TX lane's dearest step, with the health close
 /// where it can land and interrupt entry and exit.
 #[test]
-#[ignore = "OBSERVER is over at budget by budget::POT_TERM"]
+#[ignore = "OBSERVER is over at budget by budget::POT_TERM and budget::VISCOUS_PREDICT"]
 fn plain_phases_fit_at_budget_while_streaming() {
     let carried = Events {
         tel: true,
@@ -522,7 +522,7 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
 /// at budget at 3M: every frame good, no row dropped, no body over the
 /// period.
 #[test]
-#[ignore = "OBSERVER is over at budget by budget::POT_TERM"]
+#[ignore = "OBSERVER is over at budget by budget::POT_TERM and budget::VISCOUS_PREDICT"]
 fn tel_twelve_byte_rows_fit_at_budget_while_stepping() {
     assert_eq!(SIX.row_bytes(), osc_servo_core::tel::ROW_BYTES_MAX);
     for k in 0..STARTS {
@@ -772,7 +772,7 @@ fn config_apply_lands_within_its_bound_at_budget() {
 /// row charged where the feed copied one. Some offsets must hold, or the
 /// pin tests nothing.
 #[test]
-#[ignore = "OBSERVER is over at budget by budget::POT_TERM"]
+#[ignore = "OBSERVER is over at budget by budget::POT_TERM and budget::VISCOUS_PREDICT"]
 fn a_burst_never_streams_through_a_config_take() {
     let mut held = 0;
     for (how, k) in [ConfigArm::Acked, ConfigArm::Silent]

@@ -103,8 +103,8 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// the rail among them. The Closed and OpenLoop rows carry
 /// [`WINDOW_CARRY`] on top, every row [`DEADMAN`], phase TRAJECTORY
 /// [`PARK_GATE`] and [`THROWN_HOLD`], phases TRAJECTORY and VELOCITY
-/// [`HELD`] and phase OBSERVER and VELOCITY [`POT_CURRENT`], which the
-/// measurement predates.
+/// [`HELD`], phases OBSERVER and VELOCITY [`POT_CURRENT`] and phase
+/// OBSERVER [`VISCOUS_PREDICT`], which the measurement predates.
 /// Phase SLOW off its due period is a plain tick; the due body is
 /// [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
@@ -119,7 +119,8 @@ pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
 /// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
 /// barely vary); with [`WINDOW_CARRY`], [`DEADMAN`], [`PARK_GATE`],
-/// [`THROWN_HOLD`], [`HELD`] and [`POT_CURRENT`], as the maximum's.
+/// [`THROWN_HOLD`], [`HELD`], [`POT_CURRENT`] and [`VISCOUS_PREDICT`], as
+/// the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
     [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
     [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
@@ -192,6 +193,16 @@ pub const HELD: [u32; PHASES] = held_cells();
 /// bench must refill the rows.
 pub const THROWN_HOLD: u32 = 166;
 
+/// E, on phase OBSERVER of every regime, maximum and mean: the friction
+/// line's viscous part in the observer's predict (`FusionObs::step`),
+/// against the image without it. Priced on the executed path of the
+/// release image with the fetch model ([`REFRESH`]): the word loaded, one
+/// load; its multiply on the speed's whole c/s; the two shifts and the add
+/// to the disturbance, three ALU; 19.25 HCLK, straight line, on every path
+/// through the predict. Every regime: the observer runs with torque off.
+/// Plus 10%, rounded up. The bench must refill the rows.
+pub const VISCOUS_PREDICT: u32 = 22;
+
 /// E, on phases OBSERVER and VELOCITY of every regime, maximum and mean:
 /// the position reading's current terms (`estimator::pot_current`),
 /// against the image without them. Priced on the executed path of the
@@ -242,6 +253,7 @@ const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REG
     let mut r = 0;
     while r < REGIMES {
         rows[r][phase::TRAJECTORY as usize] += PARK_GATE + THROWN_HOLD;
+        rows[r][phase::OBSERVER as usize] += VISCOUS_PREDICT;
         let mut p = 0;
         while p < PHASES {
             rows[r][p] += HELD[p] + POT_CURRENT[p];
