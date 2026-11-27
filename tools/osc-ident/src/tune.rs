@@ -31,15 +31,16 @@ fn unix_s() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// The set the rules give at the speed gain `kp`, and the measured file it
-/// was given with: the inputs' own, `speed_kp_verified` set to `kp`.
+/// The set the rules give at the speed gain `kp`, the measured file it was
+/// given with (the inputs' own, `speed_kp_verified` set to `kp`), and a
+/// line for each field the rules stored at a bound.
 pub(crate) fn set_at(
     r: &RulesInputs,
     measured: &Value,
     kp: f64,
     pair: &str,
     d: &Descriptor,
-) -> Result<(SetFile, Vec<u8>)> {
+) -> Result<(SetFile, Vec<u8>, Vec<String>)> {
     let mut inputs = r.inputs.clone();
     inputs.measured.speed_kp_verified = Some(kp);
     let mut doc = measured.clone();
@@ -61,8 +62,9 @@ pub(crate) fn set_at(
             }
         })
         .collect();
+    let built = build(&inputs);
     let (file, _) = set::from_rules(
-        &build(&inputs),
+        &built,
         &FromRules {
             pair,
             nameplate: &inputs.nameplate,
@@ -73,7 +75,7 @@ pub(crate) fn set_at(
         },
         d,
     )?;
-    Ok((file, bytes))
+    Ok((file, bytes, built.clamps()))
 }
 
 /// One try as tune.json keeps it.
@@ -146,7 +148,7 @@ where
     };
     let k0 = speed_loop::starting_gain(&r.inputs).map_err(no_gain)?;
     let nominal = speed_loop::nominal_starting_gain(&r.inputs).map_err(no_gain)?;
-    let (first, _) = set_at(&r, &measured, k0, &pair, d)
+    let (first, _, clamps) = set_at(&r, &measured, k0, &pair, d)
         .with_context(|| format!("the rules on {} at the starting gain", inputs.display()))?;
     if out.exists() {
         bail!("{} exists: a tune runs into a new folder", out.display());
@@ -166,6 +168,7 @@ where
         q88(k0),
         q88(nominal)
     )];
+    lines.extend(clamps);
     let mut steps = Vec::new();
     let stored = install::backup(c, id, d, &mut sink, &mut steps)
         .await
@@ -184,7 +187,7 @@ where
         }
         let kp = tune::gain(k0, n);
         let dir = format!("tries/{:02}", n + 1);
-        let prepared = set_at(&r, &measured, kp, &pair, d).and_then(|(file, bytes)| {
+        let prepared = set_at(&r, &measured, kp, &pair, d).and_then(|(file, bytes, _)| {
             sink.write(&format!("{dir}/measured.json"), &bytes)?;
             sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
             Ok(file)
@@ -886,6 +889,42 @@ mod tests {
         let doc = json_at(&out.join("tune.json"));
         assert_eq!(doc["tries"].as_array().map(Vec::len), Some(1), "{doc}");
         assert!(lines.iter().any(|l| l.contains("put back: rebooted")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A field the rules store at a bound is said in the tune's lines,
+    /// under the starting gain: a move speed at the ceiling in deg/s lands
+    /// a count over the ceiling, which rounds down.
+    #[test]
+    fn a_field_stored_at_a_bound_is_said_in_the_tunes_lines() {
+        let dir = scratch("tune-clamp");
+        let inputs = dir.join("inputs");
+        std::fs::create_dir_all(&inputs).expect("mkdir");
+        for f in [
+            "measured.json",
+            "shelf.json",
+            "nameplate.json",
+            "thermal.json",
+            "pos_lut.json",
+            "wide-codes.json",
+        ] {
+            std::fs::copy(testdata(&format!("mg90-d/{f}")), inputs.join(f)).expect("copy");
+        }
+        let mut policy = json_at(&testdata("mg90-d/policy.json"));
+        policy["velocity_limit_deg_s"] = 400.0.into();
+        std::fs::write(inputs.join("policy.json"), policy.to_string()).expect("policy");
+        let (mut c, _) = servo(Box::new(|_, _| {}));
+        let out = dir.join("run");
+        let (lines, accepted) =
+            run_scripted_on(&mut c, &inputs, &out, 1, vec![(Way::Done, vec![])]).expect("runs");
+        assert!(accepted, "{lines:?}");
+        assert!(lines[0].starts_with("starting gain: "), "{lines:?}");
+        assert_eq!(
+            lines[1],
+            "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050"
+        );
+        let set = files::set(&out.join("set.json")).expect("set");
+        assert_eq!(set.value("velocity_limit_cps"), Some(&8050.into()));
         let _ = std::fs::remove_dir_all(dir);
     }
 

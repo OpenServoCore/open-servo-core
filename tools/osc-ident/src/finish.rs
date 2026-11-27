@@ -127,7 +127,7 @@ fn final_set(
     let r = files::rules_inputs(inputs_dir, None, None)?;
     let measured = json_at(&inputs_dir.join("measured.json"))?;
     let pair = format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name);
-    let (file, bytes) = crate::tune::set_at(&r, &measured, kp, &pair, d)
+    let (file, bytes, _) = crate::tune::set_at(&r, &measured, kp, &pair, d)
         .with_context(|| format!("the rules on {} at kp {kp}", inputs_dir.display()))?;
     Ok((file, bytes, r.table.as_ref().map(|t| t.points)))
 }
@@ -458,7 +458,8 @@ mod tests {
         let r = files::rules_inputs(&inputs, None, None).expect("inputs");
         let measured = json_at(&inputs.join("measured.json")).expect("measured");
         let pair = format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name);
-        let (set, _) = crate::tune::set_at(&r, &measured, KP, &pair, &d).expect("the tune's set");
+        let (set, _, _) =
+            crate::tune::set_at(&r, &measured, KP, &pair, &d).expect("the tune's set");
         std::fs::create_dir_all(root.join("tune")).expect("mkdir");
         std::fs::write(root.join("tune/set.json"), set.render()).expect("set");
         std::fs::write(

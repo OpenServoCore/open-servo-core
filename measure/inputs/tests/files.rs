@@ -184,6 +184,60 @@ fn the_shares_resolve_to_the_records_values() {
     assert!(e.contains("motion.move_speed"), "{e}");
 }
 
+/// A move speed over the speed ceiling cannot act: it resolves to the
+/// ceiling, the speed-up time reaches that, and the report's line says
+/// what was stated and what is stored.
+#[test]
+fn a_move_speed_over_the_ceiling_resolves_to_the_ceiling_and_says_so() {
+    let (p, mut q) = v1();
+    let line = |r: &osc_ident_inputs::Resolved| {
+        r.report
+            .fields
+            .iter()
+            .find(|l| l.field == "motion.move_speed")
+            .cloned()
+            .unwrap()
+    };
+    q.motion.move_speed = Some(MoveSpeed::ShareOfCeiling(1.5));
+    q.motion.speed_up = Some(SpeedUp::S(0.05));
+    let r = resolve(&p, &q, Some(&BOARD)).expect("resolves");
+    assert_eq!(r.policy.velocity_limit_deg_s, Some(400.0));
+    assert_eq!(r.policy.accel_limit_deg_s2, Some(8000.0));
+    let l = line(&r);
+    assert_eq!(l.note.as_deref(), Some("600 deg/s"));
+    assert_eq!(
+        l.clamp.as_deref(),
+        Some(
+            "600 deg/s is over the 400 deg/s speed ceiling, where it cannot act: stored as 400 deg/s"
+        )
+    );
+    assert_eq!(
+        r.report.clamps(),
+        [
+            "motion.move_speed: 600 deg/s is over the 400 deg/s speed ceiling, where it cannot act: stored as 400 deg/s"
+        ]
+    );
+
+    q.motion.move_speed = Some(MoveSpeed::DegS(500.0));
+    let r = resolve(&p, &q, Some(&BOARD)).expect("resolves");
+    assert_eq!(r.policy.velocity_limit_deg_s, Some(400.0));
+    assert!(line(&r).clamp.is_some());
+
+    for under in [MoveSpeed::DegS(400.0), MoveSpeed::ShareOfCeiling(0.75)] {
+        q.motion.move_speed = Some(under);
+        let r = resolve(&p, &q, Some(&BOARD)).expect("resolves");
+        assert!(r.report.clamps().is_empty(), "{under:?}");
+        let json = serde_json::to_value(&r.report).expect("json");
+        assert!(
+            json["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l.get("clamp").is_none())
+        );
+    }
+}
+
 /// A form whose rule this tool does not have yet is refused naming the
 /// fixed form, so no field is left out unannounced.
 #[test]

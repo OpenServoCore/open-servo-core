@@ -137,30 +137,114 @@ fn bands_reproduce() {
     assert_eq!(same, 24);
 }
 
+fn clamp(set: &osc_measure::Set, field: &str) -> String {
+    match set.get(field) {
+        Some(Outcome::Bound(e)) => e
+            .clamp
+            .clone()
+            .unwrap_or_else(|| panic!("{field}: no clamp")),
+        other => panic!("{field}: {other:?}"),
+    }
+}
+
+/// A value its storage cannot hold is refused, never stored at the end of
+/// the width: a gain past it would be another loop.
 #[test]
-fn a_value_that_does_not_fit_is_refused_never_clamped() {
+fn a_value_its_storage_cannot_hold_is_refused() {
     let mut i = inputs();
     i.policy.current_loop_hz = Some(1e6);
     let set = build(&i);
     assert!(refused(&set, "i_kp_q88").contains("does not fit its 0..65535"));
-
-    // Fits its u16 storage, over the firmware's own speed cap.
-    let mut i = inputs();
-    for row in &mut i.nameplate.no_load {
-        row.seconds /= 5.0;
-    }
-    let set = build(&i);
-    assert!(refused(&set, "speed_ceiling_cps").contains("does not fit its 0..32767"));
-
-    let mut i = inputs();
-    i.policy.velocity_limit_deg_s = Some(500.0);
-    assert!(refused(&build(&i), "velocity_limit_cps").contains("over speed_ceiling_cps 8050"));
 
     let mut i = inputs();
     if let Some(q) = i.measured.r_board_c.as_mut() {
         q.value = f64::NAN;
     }
     assert!(refused(&build(&i), "r_q12").contains("which no field holds"));
+}
+
+/// A value past the firmware's own bound on the field (`Format::within`)
+/// is stored at that bound, and the set says what the rule gave: a speed
+/// ceiling over the trajectory's speed cap.
+#[test]
+fn a_value_past_the_firmwares_bound_is_stored_at_it_and_said() {
+    let mut i = inputs();
+    for row in &mut i.nameplate.no_load {
+        row.seconds /= 5.0;
+    }
+    let set = build(&i);
+    assert_eq!(bound(&set, "speed_ceiling_cps"), 32767);
+    let c = clamp(&set, "speed_ceiling_cps");
+    assert!(
+        c.starts_with("speed_ceiling.nameplate gives 40253.")
+            && c.ends_with("past the firmware's 0..32767: stored as 32767"),
+        "{c}"
+    );
+    assert!(set.clamps()[0].starts_with("speed_ceiling_cps: speed_ceiling.nameplate gives"));
+    // the move speed is under the stored ceiling: nothing else moves
+    assert_eq!(set.clamps().len(), 1, "{:?}", set.clamps());
+    assert!(build(&inputs()).clamps().is_empty());
+}
+
+/// A move speed over the speed ceiling cannot act: it is stored at the
+/// ceiling, and said.
+#[test]
+fn a_move_speed_over_the_ceiling_is_stored_at_the_ceiling() {
+    let mut i = inputs();
+    i.policy.velocity_limit_deg_s = Some(500.0);
+    let set = build(&i);
+    assert_eq!(bound(&set, "speed_ceiling_cps"), 8050);
+    assert_eq!(bound(&set, "velocity_limit_cps"), 8050);
+    assert_eq!(
+        clamp(&set, "velocity_limit_cps"),
+        "the move speed gives 10063 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050"
+    );
+    // At the ceiling in deg/s it lands one count over: the ceiling, a
+    // derated cap, rounds down, the move speed to the nearest.
+    let mut i = inputs();
+    i.policy.velocity_limit_deg_s = Some(400.0);
+    let set = build(&i);
+    assert_eq!(bound(&set, "velocity_limit_cps"), 8050);
+    assert_eq!(
+        set.clamps(),
+        [
+            "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050"
+        ]
+    );
+    i.policy.velocity_limit_deg_s = Some(399.9);
+    assert!(build(&i).clamps().is_empty());
+}
+
+/// A current limit over the board's overcurrent trip cannot act, since the
+/// trip fires first: it is stored at the trip, its band too, and the press
+/// fold's release is then judged against the limit as stored.
+#[test]
+fn a_current_limit_over_the_board_trip_is_stored_at_the_trip() {
+    let set = build(&inputs());
+    assert_eq!(bound(&set, "current_limit_counts"), 1043);
+    let mut i = inputs();
+    i.board.oc_trip_ma = 800.0;
+    let set = build(&i);
+    let trip = bound(&set, "oc_trip_counts");
+    assert_eq!(trip, 908);
+    assert_eq!(bound(&set, "current_limit_counts"), trip);
+    let Some(Outcome::Bound(e)) = set.get("current_limit_counts") else {
+        panic!("bound")
+    };
+    assert!(
+        e.band.is_some_and(|(lo, hi)| lo <= hi && hi <= trip),
+        "{:?}",
+        e.band
+    );
+    assert_eq!(
+        clamp(&set, "current_limit_counts"),
+        "the derate gives 1043 ccounts, over the board's overcurrent trip oc_trip_counts 908, which fires before the limit folds: stored as 908"
+    );
+    // the yield current 0 reads as the cap: the cap the servo holds
+    i.policy.yield_current_ma = Some(0.0);
+    i.policy.stall_release_ma = Some(850.0);
+    let why = refused(&build(&i), "stall_release_counts");
+    assert!(why.contains("not under the yield current 908"), "{why}");
 }
 
 #[test]

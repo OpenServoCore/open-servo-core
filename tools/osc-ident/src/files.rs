@@ -29,7 +29,8 @@ pub fn board(path: Option<&Path>) -> Result<Board> {
 }
 
 /// A profile (or a version 0 nameplate) and the policy beside it as the
-/// rules read them, with a line for each file read at an older version.
+/// rules read them, with a line for each file read at an older version and
+/// for each value stored at a bound it is over.
 pub struct Loaded {
     pub resolved: Resolved,
     pub notes: Vec<String>,
@@ -81,7 +82,13 @@ fn inputs_of(
     let u = upgrade(p, q).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
     let resolved = resolve(&u.profile, &u.policy, Some(&board.facts()))
         .map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
-    let notes = u.notes.iter().map(|n| format!("{named}: {n}")).collect();
+    let notes = u
+        .notes
+        .iter()
+        .cloned()
+        .chain(resolved.report.clamps())
+        .map(|n| format!("{named}: {n}"))
+        .collect();
     Ok(Loaded { resolved, notes })
 }
 
@@ -323,6 +330,35 @@ mod tests {
         assert_eq!(at(0), "19700101T000000Z");
         assert_eq!(at(951_782_400), "20000229T000000Z");
         assert_eq!(at(1_700_000_000), "20231114T221320Z");
+    }
+
+    /// A value the policy states over its bound is said among the loaded
+    /// inputs' lines, which the steps and the gather print, naming the files.
+    #[test]
+    fn a_value_stored_at_a_bound_is_said_with_the_inputs() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../measure/testdata/mg90-d");
+        let profile = dir.join("profile.json");
+        let policy = dir.join("policy-of-record.json");
+        let mut q: serde_json::Value =
+            serde_json::from_slice(&read(&policy).expect("read")).expect("json");
+        q["motion"]["move_speed"] = serde_json::json!({"deg_s": 500.0});
+        let board = board(None).expect("board");
+        let l = inputs_of(
+            &profile,
+            &read(&profile).expect("read"),
+            Some((&policy, serde_json::to_vec(&q).expect("bytes"))),
+            &board,
+        )
+        .expect("loads");
+        assert_eq!(l.resolved.policy.velocity_limit_deg_s, Some(400.0));
+        assert_eq!(
+            l.notes,
+            [format!(
+                "{} with {}: motion.move_speed: 500 deg/s is over the 400 deg/s speed ceiling, where it cannot act: stored as 400 deg/s",
+                profile.display(),
+                policy.display()
+            )]
+        );
     }
 
     /// The bench nameplate loads; one still stating ripple_per_rev is

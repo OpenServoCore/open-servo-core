@@ -5,9 +5,10 @@
 
 mod common;
 
-use common::{inputs, record, rules_set, table, text};
+use common::{descriptor, inputs, record, rules_set, table, text};
 use osc_ident_inputs::{read, resolve, upgrade};
-use osc_measure::set::{SetFile, file_sha1, points_sha1};
+use osc_measure::build;
+use osc_measure::set::{self, FromRules, SetFile, file_sha1, points_sha1};
 
 #[test]
 fn a_notebook_set_file_loads_and_round_trips() {
@@ -103,4 +104,35 @@ fn the_record_inputs_as_profile_and_policy_bind_the_record_set() {
             "{profile} with {policy}"
         );
     }
+}
+
+/// A field the rules stored at a bound goes into the set at that bound,
+/// and the set's notes say what the rule gave.
+#[test]
+fn a_field_stored_at_a_bound_is_said_in_the_sets_notes() {
+    let mut i = inputs();
+    i.board.oc_trip_ma = 800.0;
+    let t = table();
+    let (file, notes) = set::from_rules(
+        &build(&i),
+        &FromRules {
+            pair: "mg90-d__dev-v006",
+            nameplate: &i.nameplate,
+            counts_per_deg: i.measured.table.as_ref().map(|t| t.counts_per_deg),
+            table: Some(&t),
+            slots: None,
+            files: &[],
+        },
+        &descriptor(),
+    )
+    .expect("a set");
+    assert_eq!(file.value("current_limit_counts"), Some(&908.into()));
+    assert_eq!(file.value("oc_trip_counts"), Some(&908.into()));
+    let said: Vec<&String> = notes
+        .iter()
+        .filter(|n| n.starts_with("current_limit_counts: "))
+        .collect();
+    assert_eq!(said.len(), 1, "{notes:?}");
+    assert!(said[0].ends_with("which fires before the limit folds: stored as 908"));
+    SetFile::parse(&file.render()).expect("it loads");
 }
