@@ -235,6 +235,8 @@ fn rest_on_the_simulated_servo_accepts_and_moves_nothing() {
     assert!(r.ended.exit.torque_off && !r.ended.exit.rebooted);
     assert_eq!(torque(&mut c), 0);
     assert!(torque_went_on(&writes), "the second second runs torque on");
+    let s = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
+    assert!(!s.unsaved, "CONTROL writes leave the saved servo saved");
 
     // nothing a set holds was written: only CONTROL, and the mode put back
     let w = writes.borrow();
@@ -669,6 +671,10 @@ mod probe {
         assert_eq!(block_on(c.read(ID, 0x192, 2)).expect("dead-man"), [0, 0]);
         assert_eq!(block_on(c.read(ID, 0x1ea, 2)).expect("tel_count"), [0, 0]);
         assert_eq!(table_bytes(c), before, "{}", p.ended.exit);
+        // each field went back, but a write to a stored field set the
+        // unsaved bit, which only a SAVE or a reboot clears
+        let s = block_on(osc_measure::state::read(c, ID, &descriptor())).expect("state");
+        assert!(s.unsaved, "{}", p.ended.exit);
         for name in [
             "current_limit_counts",
             "pos_min_soft_counts",

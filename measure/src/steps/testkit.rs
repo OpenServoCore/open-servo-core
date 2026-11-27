@@ -15,7 +15,7 @@ use osc_client::{BaudRate, Client, Id, Inst, Opcode};
 use crate::Board;
 use crate::inputs::ThermalInputs;
 use crate::nameplate::Nameplate;
-use crate::state::field;
+use crate::state::{State, field};
 
 const OSC_EXCHANGE: u8 = 0x20;
 pub const ID: Id = Id::new(1);
@@ -152,6 +152,31 @@ pub fn servo(pos: u16, on_sent: OnSent) -> (Client<Spy>, Log) {
 
 pub fn quiet() -> OnSent {
     Box::new(|_, _| {})
+}
+
+/// After a step's way out the servo holds every field of the saved state
+/// [`servo`] seeds: its fingerprint, 0 differences. A step that wrote a
+/// stored field leaves the unsaved bit set though each went back, since only
+/// a SAVE or a reboot clears it (protocol sec 9.4); `unsaved` says which.
+pub fn fields_back<P: Pipe>(c: &mut Client<P>, d: &Descriptor, unsaved: bool, exit: &str) {
+    let (mut fresh, _) = servo(0, quiet());
+    let seeded = block_on(crate::state::read(&mut fresh, ID, d)).expect("state");
+    assert!(!seeded.unsaved, "the seed is saved");
+    as_it_was(c, d, &seeded, unsaved, exit);
+}
+
+/// After a step's way out the servo holds every field of `before`, and
+/// reads `unsaved` as said.
+pub fn as_it_was<P: Pipe>(
+    c: &mut Client<P>,
+    d: &Descriptor,
+    before: &State,
+    unsaved: bool,
+    exit: &str,
+) {
+    let now = block_on(crate::state::read(c, ID, d)).expect("state");
+    assert_eq!(now.hash(d), before.hash(d), "a field not back:\n{exit}");
+    assert_eq!(now.unsaved, unsaved, "unsaved:\n{exit}");
 }
 
 /// A host clock that moves 11 ms a look.

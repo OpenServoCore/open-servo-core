@@ -1485,6 +1485,8 @@ mod tests {
         let id = Id::new(1);
         let addr = field(&d, "drive_polarity").expect("field").addr;
         let stored = block_on(c.read(id, addr, 1)).expect("read")[0] != 0;
+        let before = block_on(crate::state::read(&mut c, id, &d)).expect("state");
+        assert!(!before.unsaved, "the seed is saved");
         let (stop, clock) = (AtomicBool::new(false), || 0.0);
         let mut sink = MemSink::default();
         let mut ledger = Ledger {
@@ -1522,6 +1524,10 @@ mod tests {
         );
         assert_eq!(block_on(c.read(id, addr, 1)).expect("read"), [stored as u8]);
         assert!(exit.torque_off && !exit.rebooted);
+        // every field back, 0 differences; the write left the unsaved bit
+        let after = block_on(crate::state::read(&mut c, id, &d)).expect("state");
+        assert_eq!(after.hash(&d), before.hash(&d), "{exit}");
+        assert!(after.unsaved, "{exit}");
     }
 
     /// Before any R a burst is priced at the most current the board's trip,
