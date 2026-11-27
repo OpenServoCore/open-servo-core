@@ -649,7 +649,7 @@ where
 
     let final_dir = root.join("final");
     let inputs_dir = final_dir.join("inputs");
-    match crate::gather::gather(root, a.nameplate, Some(a.thermal), a.policy, &inputs_dir) {
+    match crate::gather::gather(root, a.nameplate, a.policy, &inputs_dir) {
         Ok(g) => {
             lines.push(format!("gather into {}:", inputs_dir.display()));
             lines.extend(g.into_iter().map(|l| format!("  {l}")));
@@ -810,14 +810,12 @@ mod tests {
 
     struct Given {
         nameplate: PathBuf,
-        thermal: PathBuf,
         policy: PathBuf,
     }
 
     fn given() -> Given {
         Given {
             nameplate: testdata("mg90-d/nameplate.json"),
-            thermal: testdata("mg90-d/thermal.json"),
             policy: testdata("mg90-d/policy.json"),
         }
     }
@@ -825,7 +823,6 @@ mod tests {
     fn args<'a>(g: &'a Given, out: &'a Path) -> RunArgs<'a> {
         RunArgs {
             nameplate: &g.nameplate,
-            thermal: &g.thermal,
             policy: &g.policy,
             out,
             tries: 6,
@@ -857,8 +854,7 @@ mod tests {
             .expect("copy");
         }
         let inputs = root.join("inputs");
-        crate::gather::gather(&root, &g.nameplate, Some(&g.thermal), &g.policy, &inputs)
-            .expect("gathers");
+        crate::gather::gather(&root, &g.nameplate, &g.policy, &inputs).expect("gathers");
         let d = crate::descriptor_builtin().expect("descriptor");
         let r = files::rules_inputs(&inputs, None).expect("inputs");
         let measured = json_at(&inputs.join("measured.json")).expect("measured");
