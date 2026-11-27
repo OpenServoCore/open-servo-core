@@ -3,8 +3,9 @@
 //! with no hardware; time is sim time, so every engine window resolves
 //! instantly and deterministically.
 
+use osc_host::link::record::OSC_EXCHANGE;
 use osc_integration::sim::{RamStore, Sim, WireFrame};
-use osc_protocol::wire::BaudRate;
+use osc_protocol::wire::{BaudRate, Id};
 use osc_servo_core::ControlTable;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
 use osc_servo_core::kernel::belt;
@@ -154,6 +155,8 @@ pub struct FakePipe {
     sim: Sim,
     frames: Vec<WireFrame>,
     windings: Vec<Winding>,
+    lose: u32,
+    deaf: u8,
 }
 
 impl FakePipe {
@@ -176,7 +179,17 @@ impl FakePipe {
             sim,
             frames: Vec::new(),
             windings: servo_ids.iter().map(|_| Winding::default()).collect(),
+            lose: 0,
+            deaf: (1..=0xF9).find(|i| !servo_ids.contains(i)).unwrap_or(0xF9),
         }
+    }
+
+    /// The next `n` unicast exchanges, this send's first, are lost on the
+    /// wire: each goes out addressed to an id the roster this pipe was made
+    /// with does not hold, so no servo acts on it and the engine times out,
+    /// as it does on a frame a servo dropped (protocol sec 5.3).
+    pub fn lose_next(&mut self, n: u32) {
+        self.lose = n;
     }
 
     /// Reach into the rig (seed UIDs, peek tables, read diag counters).
@@ -276,6 +289,16 @@ impl FakePipe {
 
 impl Pipe for FakePipe {
     async fn send(&mut self, bytes: &[u8]) -> Result<(), PipeError> {
+        let mut lost;
+        let bytes = match bytes {
+            [_, _, OSC_EXCHANGE, _, _, _, id, ..] if self.lose > 0 && Id::new(*id).is_unicast() => {
+                self.lose -= 1;
+                lost = bytes.to_vec();
+                lost[6] = self.deaf;
+                &lost[..]
+            }
+            _ => bytes,
+        };
         self.sim.link_send(bytes);
         // Play the whole exchange out; records accumulate for recv.
         self.frames.extend(self.sim.run());

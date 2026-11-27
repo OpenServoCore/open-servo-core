@@ -9,6 +9,7 @@ use futures_lite::future;
 use osc_host::engine::{Command, Outcome, TbExpect};
 use osc_host::link::record::{self as rec, ExchangeResult};
 use osc_protocol::build;
+use osc_protocol::table;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode};
 
 use crate::error::{Error, LinkError, RejectReason};
@@ -136,6 +137,8 @@ pub struct Client<P: Pipe> {
     pub(crate) anchor: crate::wire::EdgeAnchor,
     info: LinkInfo,
     guard: Duration,
+    resend: bool,
+    resent: u32,
 }
 
 impl<P: Pipe> Client<P> {
@@ -152,6 +155,8 @@ impl<P: Pipe> Client<P> {
                 ..Default::default()
             },
             guard: DEFAULT_GUARD,
+            resend: false,
+            resent: 0,
         };
         let mut out = Vec::new();
         let tag = c.session.encode_get_info(&mut out);
@@ -175,6 +180,22 @@ impl<P: Pipe> Client<P> {
 
     pub fn guard(&self) -> Duration {
         self.guard
+    }
+
+    /// Send a unicast READ or WRITE once more when it draws no reply: a
+    /// frame the servo dropped draws none, and the host's timeout and retry
+    /// close the loop (protocol sec 5.3). Off until a caller turns it on.
+    /// Only those two instructions go again: each leaves the table as one
+    /// receipt does. MGMT, PING, the TEL carrier, group and broadcast
+    /// instructions never do, nor a write over `id` or `baud_rate_idx`
+    /// (protocol sec 8).
+    pub fn set_resend(&mut self, on: bool) {
+        self.resend = on;
+    }
+
+    /// The instructions sent once more since the last take.
+    pub fn take_resent(&mut self) -> u32 {
+        std::mem::take(&mut self.resent)
     }
 
     /// Give the transport back (to close a pipe that closes by value).
@@ -366,8 +387,18 @@ impl<P: Pipe> Client<P> {
         let mut p = [0u8; 8];
         let n = build::read(&mut p, addr, count).ok_or(Error::Servo(ResultCode::Range))?;
         let inst = Inst::instruction(Opcode::Read, 0);
-        let status = Self::sole_ok(self.exchange(id, inst, &p[..n]).await?)?;
+        let status = Self::sole_ok(self.exchange_again(id, inst, &p[..n]).await?)?;
         Ok(status.payload)
+    }
+
+    /// [`Self::exchange`], sent once more on a timeout while resend is on.
+    async fn exchange_again(&mut self, id: Id, inst: Inst, payload: &[u8]) -> Result<Reply, Error> {
+        let reply = self.exchange(id, inst, payload).await?;
+        if !self.resend || !matches!(reply.outcome, Outcome::Timeout { .. }) {
+            return Ok(reply);
+        }
+        self.resent += 1;
+        self.exchange(id, inst, payload).await
     }
 
     /// Read `[lo, hi)` in as many status-frame-sized READs as it takes.
@@ -393,7 +424,7 @@ impl<P: Pipe> Client<P> {
         let mut p = [0u8; 1];
         let n = build::read_profile(&mut p, slot).ok_or(Error::Servo(ResultCode::Range))?;
         let inst = Inst::instruction(Opcode::Read, Inst::FLAG_PROFILE);
-        let status = Self::sole_ok(self.exchange(id, inst, &p[..n]).await?)?;
+        let status = Self::sole_ok(self.exchange_again(id, inst, &p[..n]).await?)?;
         Ok(status.payload)
     }
 
@@ -416,7 +447,15 @@ impl<P: Pipe> Client<P> {
         let mut p = vec![0u8; data.len() + 4];
         let n = build::write(&mut p, addr, data).ok_or(Error::Servo(ResultCode::Limit))?;
         let inst = Inst::instruction(Opcode::Write, flags);
-        Self::sole_ok(self.exchange(id, inst, &p[..n]).await?)?;
+        // The servo moves its address or rate after the reply: a lost reply
+        // may hide a move it made, and a resend can only garble it.
+        let moves = addr <= table::BAUD_RATE_IDX && addr as usize + data.len() > table::ID as usize;
+        let reply = if moves {
+            self.exchange(id, inst, &p[..n]).await?
+        } else {
+            self.exchange_again(id, inst, &p[..n]).await?
+        };
+        Self::sole_ok(reply)?;
         Ok(())
     }
 
