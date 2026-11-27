@@ -23,6 +23,7 @@ const IN_CAP: u32 = 4096;
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_name = USBDevice, typescript_type = "USBDevice")]
+    #[derive(Clone)]
     pub type UsbDevice;
     #[wasm_bindgen(js_namespace = ["navigator", "usb"], js_name = requestDevice, catch)]
     fn request_device_js(opts: &JsValue) -> Result<Promise, JsValue>;
@@ -40,6 +41,10 @@ extern "C" {
     fn transfer_out(this: &UsbDevice, ep: u8, data: &[u8]) -> Promise;
     #[wasm_bindgen(method)]
     fn close(this: &UsbDevice) -> Promise;
+    /// Whether a page holds the device open: an owner that finds it so
+    /// would share the bus with whoever holds it.
+    #[wasm_bindgen(method, getter)]
+    pub fn opened(this: &UsbDevice) -> bool;
 
     type UsbInTransferResult;
     #[wasm_bindgen(method, getter)]
@@ -136,9 +141,21 @@ impl WebUsbPipe {
         self.transfers_in
     }
 
-    pub async fn close(self) -> Result<(), PipeError> {
-        settle(self.device.close()).await.map(drop)
+    /// The device this pipe holds, for the owner the bus goes to next.
+    pub fn device(&self) -> &UsbDevice {
+        &self.device
     }
+
+    pub async fn close(self) -> Result<(), PipeError> {
+        close_device(&self.device).await
+    }
+}
+
+/// Close `device` with no pipe over it: a client whose GET_INFO failed
+/// dropped its pipe, and the device must still be closed before another
+/// owner opens it.
+pub async fn close_device(device: &UsbDevice) -> Result<(), PipeError> {
+    settle(device.close()).await.map(drop)
 }
 
 impl Pipe for WebUsbPipe {

@@ -2,8 +2,7 @@
 //! [`FakePipe`], target-independent so native tests run it.
 
 use osc_client::boot::{Cmd, Status};
-use osc_client::fake::{FakePipe, TelSample, TelemetryTick, duty_counts, tick_flag};
-use osc_protocol::wire::UID_LEN;
+use osc_client::fake::{FakePipe, TelSample, TelemetryTick, duty_counts, tick_flag, uid_of};
 
 use crate::types::{FakeFail, FakeServo, Track};
 
@@ -22,7 +21,7 @@ pub fn pipe(fleet: Vec<FakeServo>) -> Result<FakePipe, String> {
     // before any migration.
     let mut pipe = FakePipe::new(osc_client::BaudRate::B1000000, &ids);
     for (i, s) in fleet.into_iter().enumerate() {
-        pipe.sim_mut().seed_servo_uid(i, uid(s.id));
+        pipe.sim_mut().seed_servo_uid(i, uid_of(s.id));
         if s.virgin {
             pipe.seed_board(i);
         } else {
@@ -95,19 +94,4 @@ fn track_rows(t: Track) -> Result<Vec<TelSample>, String> {
             vbus_counts: t.vbus[i],
         })
         .collect())
-}
-
-/// splitmix64 over the id: the same roster always discovers the same UIDs,
-/// and they carry a real part's entropy rather than a run of zeros.
-fn uid(id: u8) -> [u8; UID_LEN] {
-    let mut s = 0x05C0_DE00_0000_0000 | id as u64;
-    let mut out = [0u8; UID_LEN];
-    for w in out.chunks_mut(8) {
-        s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = s;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        w.copy_from_slice(&(z ^ (z >> 31)).to_le_bytes());
-    }
-    out
 }

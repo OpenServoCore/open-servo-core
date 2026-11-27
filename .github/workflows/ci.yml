@@ -299,6 +299,12 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown -p osc-client-web -- -D warnings
       - name: cargo test (osc-client-web helpers, native)
         run: cargo test -p osc-client-web
+      - name: cargo clippy (osc-client-web-ident, wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown -p osc-client-web-ident --tests -- -D warnings
+      - name: cargo clippy (osc-client-web-ident, native)
+        run: cargo clippy -p osc-client-web-ident --tests -- -D warnings
+      - name: cargo test (osc-client-web-ident over the simulated servo, native)
+        run: cargo test -p osc-client-web-ident
       # A pinned release tarball: the wasm-pack action's "latest" is an
       # unauthenticated API lookup that falls back to v0.9.1 (binaryen
       # version_78, MVP-only wasm-opt) when rate-limited, and its install
@@ -311,6 +317,12 @@ jobs:
       - name: wasm-pack build (osc-client-web, generated .d.ts must build)
         working-directory: client/web
         run: wasm-pack build --target web --out-dir pkg
+      - name: wasm-pack build (osc-client-web-ident, generated .d.ts must build)
+        working-directory: client/web-ident
+        run: wasm-pack build --target web --out-dir pkg
+      - name: wasm-pack test (osc-client-web-ident in node)
+        working-directory: client/web-ident
+        run: wasm-pack test --node
 
   osc-bus-cli:
     name: build (tools/osc-bus)

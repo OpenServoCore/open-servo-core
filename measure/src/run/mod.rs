@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result, bail};
 use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
-use osc_client::{Client, Id};
+use osc_client::{Client, Id, mgmt};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -94,6 +94,31 @@ fn tell_end(feed: &dyn Fn(&Progress), step: &'static str, entry: &Value) {
         state: entry["state"].as_str().unwrap_or_default().into(),
         why: entry["why"].as_str().map(Into::into),
     });
+}
+
+/// The servo's name in a run folder: its chip id as the bus says it.
+/// Refused when the discovery fails or names no servo of `id`: the servo
+/// answered its id a moment ago, so something is already wrong.
+pub async fn servo_name<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<String> {
+    let found = mgmt::discover(c)
+        .await
+        .with_context(|| format!("the discovery of servo {} failed", id.as_byte()))?;
+    match found.iter().find(|f| f.id == id) {
+        Some(f) => Ok(format!("{:?}", f.uid)),
+        None => bail!(
+            "the discovery found no servo of id {} (ids: {}), though it answers a ping: no run folder without its chip id",
+            id.as_byte(),
+            if found.is_empty() {
+                "none".into()
+            } else {
+                found
+                    .iter()
+                    .map(|f| f.id.as_byte().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ),
+    }
 }
 
 /// What `run` was given.

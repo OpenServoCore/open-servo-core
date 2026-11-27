@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["web"]
+members  = ["web", "web-ident"]
 
 [package]
 name    = "osc-client"
