@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::set::file_sha1;
+use crate::steps::polarity::PROVING_PAIRS;
 use crate::steps::{cruise, probe, rest, stops, table};
 
 /// The later steps the gather reads where a run has them.
@@ -213,6 +214,12 @@ struct Spread {
 }
 
 const NOMINAL: Spread = Spread { sd: None, n: None };
+/// The table step's scale and the travel through it: one pooled fit's
+/// cycles from stop to stop.
+const ONE_FIT: Spread = Spread {
+    sd: None,
+    n: Some(1),
+};
 
 fn quantity(
     value: f64,
@@ -410,10 +417,11 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
     }
     o.m.insert(
         "drive_polarity".into(),
-        json!({"value": found, "source": probe.source("drive_polarity.found")}),
+        json!({"value": found, "sd": null, "n": PROVING_PAIRS,
+               "source": probe.source("drive_polarity.found")}),
     );
     o.lines.push(format!(
-        "drive_polarity {}: {} drive_polarity.found, {}",
+        "drive_polarity {} n {PROVING_PAIRS}: {} drive_polarity.found, {}",
         if found { "on" } else { "off" },
         probe.r.file,
         if found == stored {
@@ -473,11 +481,11 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         Some(m) => {
             o.m.insert(
                 "table".into(),
-                json!({"counts_per_deg": m.cpd, "source": m.from.source(&format!(
-                    "scale.counts_per_deg ({})", m.scale_source))}),
+                json!({"counts_per_deg": m.cpd, "sd": ONE_FIT.sd, "n": ONE_FIT.n,
+                       "source": m.from.source(&format!("scale.counts_per_deg ({})", m.scale_source))}),
             );
             o.lines.push(format!(
-                "table from the table step, {:.4} counts/deg ({}): {} points_by_page, built against stops {low} to {high}",
+                "table from the table step, {:.4} counts/deg n 1 ({}): {} points_by_page, built against stops {low} to {high}",
                 m.cpd, m.scale_source, m.from.r.file
             ));
             m.cpd
@@ -486,11 +494,12 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             let cpd = (high - low) / travel;
             o.m.insert(
                 "table".into(),
-                json!({"counts_per_deg": cpd, "source": stops.source(&format!(
-                    "the stops' span, {lo_key} up to {hi_key} down, over the nameplate's travel_deg {travel}"))}),
+                json!({"counts_per_deg": cpd, "sd": NOMINAL.sd, "n": NOMINAL.n,
+                       "source": stops.source(&format!(
+                    "the stops' span, {lo_key} up to {hi_key} down, over the nameplate's travel_deg {travel}: nominal, as the stated travel"))}),
             );
             o.lines.push(format!(
-                "table straight, {cpd:.4} counts/deg: the stops' {} count span over the nameplate's {travel} deg travel; the run holds no {TABLE_RESULT}",
+                "table straight, {cpd:.4} counts/deg nominal: the stops' {} count span over the nameplate's {travel} deg travel; the run holds no {TABLE_RESULT}",
                 high - low
             ));
             cpd
@@ -646,10 +655,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         Some(m) if m.scale_source == table::SCALE_RIPPLE => Ok(quantity(
             (high - low) / m.cpd,
             None,
-            Spread {
-                sd: None,
-                n: Some(1),
-            },
+            ONE_FIT,
             "deg",
             m.from.source(&format!(
                 "the stops' span {low} to {high} counts over scale.counts_per_deg ({})",
