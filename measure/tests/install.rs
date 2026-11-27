@@ -47,9 +47,24 @@ fn install_writes_only_what_differs() {
     let (mut c, log) = on_record();
     let (r, steps) = install_set(&mut c, &record());
     r.expect("the set it holds installs");
-    // the record's undervolt floor has no field on this firmware
+    assert_eq!(steps, []);
+    assert_eq!(writes_below(&log, CONTROL), [], "nothing written");
+
+    // A set written while the undervolt floor stood names it: the firmware
+    // has no such field, and the install says so and writes nothing.
+    let mut doc: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&text("testdata/mg90-d/constants.json")).expect("json");
+    doc["fields"].as_object_mut().expect("fields").insert(
+        "v_undervolt_counts".into(),
+        json!({"value": 922, "class": "policy", "protection": {"looser": "down"}}),
+    );
+    let old = SetFile::sealed(doc).expect("seals");
+    let (r, steps) = install_set(&mut c, &old);
+    r.expect("a set naming a retired field installs");
     assert_eq!(steps, [Step::Retired("v_undervolt_counts".to_owned())]);
     assert_eq!(writes_below(&log, CONTROL), [], "nothing written");
+    let checked = block_on(check(&mut c, ID, &descriptor(), &old)).expect("check");
+    assert!(checked.clean(), "{:?}", checked.differences);
 
     let mut i = inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);

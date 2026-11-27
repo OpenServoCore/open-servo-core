@@ -764,8 +764,7 @@ mod tests {
         assert!(block_on(check(&mut c, id, &d, &testdata("constants.json"))).expect("check"));
         let ours = files::set(&out).expect("our set");
         assert_eq!(ours.table(), record.table());
-        // the record's held breakaway and its retired undervolt floor
-        assert_eq!(ours.values().len() + 2, record.values().len());
+        assert_eq!(ours.values().len() + 1, record.values().len());
 
         // The table goes with the set: our rules' output names its points.
         let mut steps = Vec::new();
