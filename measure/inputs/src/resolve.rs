@@ -2,7 +2,9 @@
 //! steps read, with a line for each value saying what it was stated as and
 //! what it binds. The forms that need nothing measured resolve here; a
 //! form whose rule this tool does not have yet is refused, naming the fixed
-//! form to state instead, so a run never leaves a field out unannounced.
+//! form to state instead, so a run never leaves a field out unannounced. A
+//! value that cannot act is stored at the bound it is over, and its line
+//! says so.
 
 use serde::Serialize;
 
@@ -37,6 +39,17 @@ pub struct Report {
     pub profile: Named,
     pub policy: Named,
     pub fields: Vec<Line>,
+}
+
+impl Report {
+    /// A line for each value stored at a bound: `field: what it gave and
+    /// where it is stored`.
+    pub fn clamps(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .filter_map(|l| Some(format!("{}: {}", l.field, l.clamp.as_ref()?)))
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -79,6 +92,10 @@ pub struct Line {
     pub binds: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Where the value cannot act: what it gave, the bound it is over, and
+    /// the value stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clamp: Option<String>,
 }
 
 fn not_yet(field: &str, rule: &str, fixed: &str) -> String {
@@ -105,6 +122,7 @@ impl Lines {
             unit,
             binds,
             note: None,
+            clamp: None,
         });
     }
 
@@ -132,6 +150,24 @@ impl Lines {
             l.note = Some(note);
         }
     }
+
+    fn clamp(&mut self, clamp: String) {
+        if let Some(l) = self.0.last_mut() {
+            l.clamp = Some(clamp);
+        }
+    }
+}
+
+/// The move speed `v`, deg/s, at most the speed ceiling: over it the
+/// ceiling stops the move first.
+fn under_ceiling(l: &mut Lines, v: f64, ceiling: f64) -> f64 {
+    if v > ceiling {
+        l.clamp(format!(
+            "{v} deg/s is over the {ceiling} deg/s speed ceiling, where it cannot act: stored as {ceiling} deg/s"
+        ));
+        return ceiling;
+    }
+    v
 }
 
 /// The absolute inputs from `profile` and `policy`, each refused the
@@ -332,7 +368,6 @@ pub fn resolve(
     match m.move_speed {
         Some(MoveSpeed::ShareOfCeiling(s)) => {
             let v = s * ceiling;
-            out.velocity_limit_deg_s = Some(v);
             l.number(
                 "motion.move_speed",
                 Form::Share,
@@ -341,9 +376,9 @@ pub fn resolve(
                 "policy.velocity_limit_deg_s",
             );
             l.note(format!("{v} deg/s"));
+            out.velocity_limit_deg_s = Some(under_ceiling(&mut l, v, ceiling));
         }
         Some(MoveSpeed::DegS(v)) => {
-            out.velocity_limit_deg_s = Some(v);
             l.number(
                 "motion.move_speed",
                 Form::Fixed,
@@ -351,6 +386,7 @@ pub fn resolve(
                 "deg/s",
                 "policy.velocity_limit_deg_s",
             );
+            out.velocity_limit_deg_s = Some(under_ceiling(&mut l, v, ceiling));
         }
         None => {}
     }

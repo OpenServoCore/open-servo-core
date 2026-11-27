@@ -676,7 +676,8 @@ pub struct FromRules<'a> {
 }
 
 /// A set file from what the rules gave: a refused field refuses the set;
-/// a held field and a tuning field are left out, each said in a note.
+/// a held field and a tuning field are left out, and a field stored at a
+/// bound is kept there, each said in a note.
 pub fn from_rules(
     set: &rules::Set,
     r: &FromRules,
@@ -707,7 +708,12 @@ pub fn from_rules(
                 ));
                 continue;
             }
-            Outcome::Bound(e) => e,
+            Outcome::Bound(e) => {
+                if let Some(c) = &e.clamp {
+                    notes.push(format!("{}: {c}", f.name));
+                }
+                e
+            }
             Outcome::Held(m) => {
                 notes.push(format!(
                     "{}: left out, its rule reads {}, which is not there",

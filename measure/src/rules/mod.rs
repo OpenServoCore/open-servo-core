@@ -1,8 +1,9 @@
 //! The rules: one per field a host writes past the bus front, each a
 //! function that reads only through a [`Ctx`], so a field names every
 //! input it read, and a missing input holds the field and names it. One
-//! encoder rounds a rule's value into the field's format and refuses a
-//! value that does not fit; it never clamps.
+//! encoder rounds a rule's value into the field's format: a value past the
+//! firmware's own bound is stored at it and said, a value its storage
+//! cannot hold is refused.
 
 use crate::inputs::{Inputs, Quantity};
 
@@ -231,6 +232,9 @@ pub struct Entry {
     /// The rule again at each end of every banded input; none with no
     /// banded input.
     pub band: Option<(i64, i64)>,
+    /// Where the rule's value cannot be stored or cannot act: what it gave
+    /// and the bound it is stored at.
+    pub clamp: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -267,6 +271,33 @@ impl Set {
         if let Some((_, outcome)) = self.fields.iter_mut().find(|(name, _)| *name == field) {
             *outcome = Outcome::Refused(Refusal { why });
         }
+    }
+
+    /// A bound `field` over `to` stored at `to`, band and all, and said.
+    fn clamp_down(&mut self, field: &str, to: i64, why: String) {
+        if let Some((_, Outcome::Bound(e))) =
+            self.fields.iter_mut().find(|(name, _)| *name == field)
+            && e.value > to
+        {
+            e.value = to;
+            e.band = e.band.map(|(lo, hi)| (lo.min(to), hi.min(to)));
+            e.clamp = Some(match e.clamp.take() {
+                Some(was) => format!("{was}; {why}"),
+                None => why,
+            });
+        }
+    }
+
+    /// A line for each field stored at a bound: `field: what it gave and
+    /// where it is stored`.
+    pub fn clamps(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .filter_map(|(name, o)| match o {
+                Outcome::Bound(Entry { clamp: Some(c), .. }) => Some(format!("{name}: {c}")),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -408,7 +439,7 @@ pub fn rules() -> impl Iterator<Item = &'static Rule> {
 
 fn evaluate(rule: &Rule, inputs: &Inputs) -> Outcome {
     let mut c = Ctx::new(inputs);
-    let value = match (rule.value)(&mut c).and_then(|x| encode::encode(rule, x)) {
+    let (value, clamp) = match (rule.value)(&mut c).and_then(|x| encode::encode(rule, x)) {
         Ok(v) => v,
         Err(Fail::Missing(m)) => return Outcome::Held(m),
         Err(Fail::Refused(r)) => return Outcome::Refused(r),
@@ -429,7 +460,7 @@ fn evaluate(rule: &Rule, inputs: &Inputs) -> Outcome {
         for end in [End::Lo, End::Hi] {
             c.side = Some((name, end));
             let at = match (rule.value)(&mut c) {
-                Ok(x) => encode::rounded(rule, x),
+                Ok(x) => encode::held(rule, encode::rounded(rule, x)),
                 Err(Fail::Missing(m)) => return Outcome::Held(m),
                 Err(Fail::Refused(r)) => return Outcome::Refused(r),
             };
@@ -444,15 +475,17 @@ fn evaluate(rule: &Rule, inputs: &Inputs) -> Outcome {
         unit: rule.unit,
         inputs: names,
         band,
+        clamp,
     })
 }
 
 /// The set the rules give from `inputs`: every field, bound, held or
-/// refused. A field over the field that bounds it is refused.
+/// refused. A field over the field that bounds it, where it cannot act, is
+/// stored at that bound and said ([`limits::bound_over_bounds`]).
 pub fn build(inputs: &Inputs) -> Set {
     let mut set = Set {
         fields: rules().map(|r| (r.field, evaluate(r, inputs))).collect(),
     };
-    limits::refuse_over_bounds(&mut set);
+    limits::bound_over_bounds(&mut set);
     set
 }

@@ -1,7 +1,8 @@
 //! The protections: the two caps read off the nameplate, the press
 //! detector's currents and times, the board's overcurrent trip, the
 //! thermal cutoff, the screens, the supply terms; and the board's supply
-//! word. A field over the field that bounds it is refused here.
+//! word. A field over the field that bounds it is stored at that bound
+//! here, or refused where no bound has a source.
 
 use osc_servo_core::kernel::phases::loops::trajectory::VEL_CAP_CPS;
 use osc_servo_core::regions::config::{STALL_TAU_TRIP_OFF, StallResponse as Response};
@@ -192,19 +193,38 @@ pub const RULES: &[Rule] = table![
     vdd_mv: "vdd.board", Format::of(U16), "mV", Board, vdd;
 ];
 
-/// Refuse a field over the one that bounds it: the move speed over the
-/// speed ceiling, and the press fold's release at or over the yield
-/// current (which a held press would never let go of, and under which the
-/// Yield response never folds). The yield current 0 reads as the cap.
-pub(super) fn refuse_over_bounds(set: &mut Set) {
+/// A field over the one that bounds it, where it cannot act, stored at
+/// that bound and said: the move speed over the speed ceiling, and the
+/// current limit over the board's overcurrent trip, which fires before the
+/// limit folds. The press fold's release at or over the yield current is
+/// refused, since no value under it has a source: a held press would never
+/// let go, and under it the Yield response never folds. The yield current
+/// 0 reads as the cap, the current limit as stored.
+pub(super) fn bound_over_bounds(set: &mut Set) {
     if let (Some(v), Some(ceiling)) = (
         set.value("velocity_limit_cps"),
         set.value("speed_ceiling_cps"),
     ) && v > ceiling
     {
-        set.refuse(
+        set.clamp_down(
             "velocity_limit_cps",
-            format!("velocity_limit_cps {v} is over speed_ceiling_cps {ceiling}"),
+            ceiling,
+            format!(
+                "the move speed gives {v} count/s, over speed_ceiling_cps {ceiling}, where it cannot act: stored as {ceiling}"
+            ),
+        );
+    }
+    if let (Some(limit), Some(trip)) = (
+        set.value("current_limit_counts"),
+        set.value("oc_trip_counts"),
+    ) && limit > trip
+    {
+        set.clamp_down(
+            "current_limit_counts",
+            trip,
+            format!(
+                "the derate gives {limit} ccounts, over the board's overcurrent trip oc_trip_counts {trip}, which fires before the limit folds: stored as {trip}"
+            ),
         );
     }
     if let Some(release) = set.value("stall_release_counts") {
@@ -220,7 +240,7 @@ pub(super) fn refuse_over_bounds(set: &mut Set) {
             ),
             None => set.refuse(
                 "stall_release_counts",
-                "stall_release_counts: the continuous current it sits under is not bound".into(),
+                "stall_release_counts: the yield current it sits under is not bound".into(),
             ),
         }
     }
