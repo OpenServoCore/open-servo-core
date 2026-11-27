@@ -4,7 +4,7 @@
 use panic_halt as _;
 use tinyboot_ch32_rt as _;
 
-tinyboot_ch32::boot::boot_version!(compat = "osc-dev-v006");
+tinyboot_ch32::boot::boot_version!(compat = include!(concat!(env!("OUT_DIR"), "/board_compat.rs")));
 
 use tinyboot_ch32::boot::prelude::*;
 use tinyboot_ch32::pac::{

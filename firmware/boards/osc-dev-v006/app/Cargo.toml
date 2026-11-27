@@ -32,3 +32,6 @@ experiment = ["osc-servo-ch32/experiment"]
 # The bench image with the loop-margin stimulus, for `osc-lab margin`
 # (scripts/build-image.sh --margin).
 margin = ["bench", "osc-servo-ch32/loop-margin"]
+
+[build-dependencies]
+osc-board-file = { path = "../../../lib/board-file" }

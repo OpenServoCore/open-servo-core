@@ -29,7 +29,7 @@ from pathlib import Path
 
 import gzip
 import json
-import re
+import tomllib
 
 import numpy as np
 import pandas as pd
@@ -48,7 +48,7 @@ CLOSE = {"shunt": ow.sample_close_ticks(0), "tap A": ow.sample_close_ticks(1),
 APERTURE_TICKS = ow.APERTURE_CLK * ow.TICKS_PER_ADC_CLK
 REF_DUTIES = (30, 40)
 
-BOARD_SRC = Path(__file__).resolve().parents[2] / "firmware" / "boards" / "osc-dev-v006" / "app" / "src" / "main.rs"
+BOARD_SRC = Path(__file__).resolve().parents[2] / "firmware" / "boards" / "osc-dev-v006" / "board.toml"
 
 
 def drive_ticks(q15, arr=ARR):
@@ -66,10 +66,8 @@ def floor_q15(ticks, arr=ARR):
 def settle_gain(path=BOARD_SRC):
     """(start_ticks, [q15 per 8-tick band]) of `i_settle_gain` as the board
     file ships it. A window past the last band reads at unity."""
-    src = Path(path).read_text()
-    m = re.search(r"i_settle_gain:\s*SettleGain\s*\{\s*start_ticks:\s*(\d+),\s*q15:\s*&\[([^\]]*)\]", src)
-    q = [int(v) for v in m.group(2).replace("\n", " ").split(",") if v.strip()]
-    return int(m.group(1)), q
+    gain = tomllib.loads(Path(path).read_text())["calibration"]["i_settle_gain"]
+    return gain["start_ticks"], list(gain["q15"])
 
 
 def settle_gain_at(h, table):
