@@ -215,6 +215,7 @@ where
                 &file,
                 json!({"install": format!("refused: {e}"), "next": "stop"}),
             ));
+            lines.extend(install::moves(&isteps));
             if !isteps.is_empty() {
                 last = Some((n, file.hash().to_string()));
             }
@@ -325,6 +326,7 @@ where
             lines.push(format!("the tune is refused: {ended}"));
             let mut bsteps = Vec::new();
             let back = install::put_back(c, id, d, &stored, &mut bsteps).await;
+            lines.extend(install::moves(&bsteps));
             let live = match &back {
                 Ok(left) if left.is_empty() => {
                     lines.push(format!(
@@ -425,6 +427,8 @@ mod tests {
         arms: usize,
         hook: Hook,
         theta_q16: Option<i32>,
+        /// Run on the servo as each REBOOT is acked.
+        rebooted: Box<dyn FnMut(&mut FakePipe)>,
     }
 
     impl Pipe for Spy {
@@ -460,7 +464,12 @@ mod tests {
                     _ => {}
                 }
             }
+            let reboot = matches!(bytes, [_, _, OSC_EXCHANGE, _, _, _, _, inst, _, _, _, _, op, ..]
+                if Inst(*inst).opcode() == Some(Opcode::Mgmt) && *op == MgmtOp::Reboot as u8);
             let sent = self.inner.send(bytes).await;
+            if reboot {
+                (self.rebooted)(&mut self.inner);
+            }
             if let Some(q) = self.theta_q16 {
                 self.inner
                     .sim_mut()
@@ -527,7 +536,13 @@ mod tests {
     /// The servo of record at 3 Mbps, the set of record installed and
     /// saved, at rest near the middle, its estimate its own reading.
     fn servo(hook: Hook) -> (Client<Spy>, Log) {
-        let mut inner = FakePipe::new(BaudRate::B3000000, &[1]);
+        servo_at(BaudRate::B3000000, hook)
+    }
+
+    /// [`servo`] with its saved baud `saved`, the bus then moved to 3M
+    /// volatile, as `osc baud 3000000` does after a FACTORY.
+    fn servo_at(saved: BaudRate, hook: Hook) -> (Client<Spy>, Log) {
+        let mut inner = FakePipe::new(saved, &[1]);
         inner.seed_calibrated(0);
         let log = Log::default();
         let mut c = block_on(Client::connect(Spy {
@@ -536,6 +551,7 @@ mod tests {
             arms: 0,
             hook: Box::new(|_, _| {}),
             theta_q16: None,
+            rebooted: Box::new(|_| {}),
         }))
         .expect("connect");
         let d = descriptor();
@@ -551,6 +567,10 @@ mod tests {
         ))
         .expect("the set of record installs");
         block_on(mgmt::save(&mut c, ID)).expect("save");
+        if saved != BaudRate::B3000000 {
+            let roster = block_on(mgmt::set_baud(&mut c, &[ID], BaudRate::B3000000));
+            assert_eq!(roster.expect("baud"), [(ID, true)]);
+        }
         c.pipe_mut().inner.set_track(0, resting(MID_POT));
         let s = block_on(state::read(&mut c, ID, &d)).expect("state");
         let lin = Lin::new(s.lut.effective(), s.slots(&d).as_deref());
@@ -972,6 +992,79 @@ mod tests {
             [MgmtOp::Reboot as u8],
             "the backup's reboot alone"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const MOVED: &str =
+        "after the reboot the servo answers at 1M, its saved baud; moved it to 3M, volatile";
+
+    /// A servo whose saved baud is 1M on a bus moved to 3M volatile comes
+    /// back from each of the tool's reboots at 1M: it is found there, its
+    /// stored state read there, and moved back to 3M, a line each reboot.
+    #[test]
+    fn a_reboot_onto_a_saved_baud_off_the_run_rate_is_found_and_moved_back() {
+        let dir = scratch("tune-baud");
+        let three = BaudRate::B3000000.as_hz();
+
+        let (mut c, log) = servo_at(BaudRate::B1000000, Box::new(|_, _| {}));
+        let out = dir.join("accept");
+        let script = vec![(Way::Refused, vec![sc::REST]), (Way::Done, vec![])];
+        let (lines, accepted) = run_scripted(&mut c, &out, 2, script).expect("runs");
+        let text = lines.join("\n");
+        println!("{text}");
+        assert!(accepted, "{text}");
+        let reboot = MgmtOp::Reboot as u8;
+        let reboots = |log: &Log| mgmt_ops(log).iter().filter(|o| **o == reboot).count();
+        assert_eq!(lines.iter().filter(|l| *l == MOVED).count(), 1, "{text}");
+        assert_eq!(reboots(&log), 1);
+        let stored = json_at(&out.join("backup/stored.json"));
+        assert_eq!(stored["fields"]["baud_rate_idx"], 1, "the saved baud");
+        assert_eq!(c.info().bps, three);
+        block_on(c.ping(ID)).expect("the servo answers at 3M");
+        let set = files::set(&out.join("set.json")).expect("set");
+        let checked = block_on(install::check(&mut c, ID, &descriptor(), &set)).expect("check");
+        assert!(checked.clean(), "{:?}", checked.differences);
+
+        let (mut c, log) = servo_at(BaudRate::B1000000, Box::new(|_, _| {}));
+        let out = dir.join("refused");
+        let script = vec![(Way::Refused, vec![sc::REST])];
+        let (lines, accepted) = run_scripted(&mut c, &out, 1, script).expect("runs");
+        let text = lines.join("\n");
+        println!("{text}");
+        assert!(!accepted, "{text}");
+        assert_eq!(reboots(&log), 2);
+        assert_eq!(lines.iter().filter(|l| *l == MOVED).count(), 2, "{text}");
+        let doc = json_at(&out.join("tune.json"));
+        assert_eq!(doc["put_back"]["differences"], json!([]), "{doc}");
+        assert!(
+            text.contains("put back: rebooted onto the stored configuration"),
+            "{text}"
+        );
+        assert_eq!(c.info().bps, three);
+        block_on(c.ping(ID)).expect("the servo answers at 3M");
+        let checked =
+            block_on(install::check(&mut c, ID, &descriptor(), &record())).expect("check");
+        assert!(checked.clean(), "{:?}", checked.differences);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A servo that answers at no rate after the backup's reboot: the tune
+    /// says so, the rates it was looked for at named, and the host is left
+    /// at the run's rate.
+    #[test]
+    fn a_servo_silent_at_every_rate_after_the_reboot_is_refused_plainly() {
+        let (mut c, _) = servo(Box::new(|_, _| {}));
+        c.pipe_mut().rebooted = Box::new(|p| p.sim_mut().start_in_bootloader(0));
+        let dir = scratch("tune-silent");
+        let out = dir.join("run");
+        let e = run_scripted(&mut c, &out, 1, vec![(Way::Done, vec![])]).expect_err("refused");
+        let e = format!("{e:#}");
+        assert_eq!(
+            e,
+            "no answer at 3M after the REBOOT it acked (10 pings over 5 s), and no ENUM answer at 1M, 0.5M, 2M or 3M either: the servo answers at no rate on this bus"
+        );
+        assert_eq!(c.info().bps, BaudRate::B3000000.as_hz());
+        assert!(!out.join("backup/stored.json").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

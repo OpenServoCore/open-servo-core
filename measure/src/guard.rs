@@ -199,7 +199,7 @@ pub async fn exit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, ledger: &L
         match install::reboot(c, id, &mut steps).await {
             Ok(()) => {
                 rebooted = true;
-                lines.push("rebooted: the servo runs its saved state".into());
+                lines.extend(steps.iter().map(ToString::to_string));
                 if let Ok(f) = field(d, "torque_enable")
                     && let Ok(b) = c.read(id, f.addr, 1).await
                 {

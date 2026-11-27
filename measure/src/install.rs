@@ -12,7 +12,7 @@ use std::time::Duration;
 use osc_client::data_state::{CONFIG_CORRUPT, PLANT_UNSET, STAMP_MISMATCH};
 use osc_client::descriptor::{Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS};
-use osc_client::{Client, Error, Id, mgmt, pipe::Pipe, stamp};
+use osc_client::{BaudRate, Client, Error, Id, mgmt, pipe::Pipe, stamp};
 use serde_json::Value;
 
 use crate::pyjson::dumps;
@@ -28,6 +28,7 @@ pub const AFTER: &str = "backup/after.json";
 const STOPS: [&str; 2] = ["raw_min", "raw_max"];
 const BOOT_WAIT: Duration = Duration::from_millis(500);
 const BOOT_TRIES: u32 = 10;
+const SWEEP_QUIET: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused(pub String);
@@ -79,6 +80,12 @@ pub enum Step {
     Saved,
     After(String),
     Rebooted,
+    /// After a reboot the servo answered at `at`, its saved baud, and was
+    /// moved back to the run's rate `run`, volatile.
+    Moved {
+        at: BaudRate,
+        run: BaudRate,
+    },
 }
 
 impl fmt::Display for Step {
@@ -100,8 +107,22 @@ impl fmt::Display for Step {
             Step::Saved => write!(f, "SAVE: CONFIG and CALIB are in flash"),
             Step::After(p) => write!(f, "the state after the SAVE is in {p}"),
             Step::Rebooted => write!(f, "rebooted: the servo runs its saved state"),
+            Step::Moved { at, run } => write!(
+                f,
+                "after the reboot the servo answers at {}, its saved baud; moved it to {}, volatile",
+                mbaud(*at),
+                mbaud(*run)
+            ),
         }
     }
+}
+
+/// The lines of the moves back to the run's rate among `steps`.
+pub fn moves(steps: &[Step]) -> impl Iterator<Item = String> + '_ {
+    steps
+        .iter()
+        .filter(|s| matches!(s, Step::Moved { .. }))
+        .map(ToString::to_string)
 }
 
 fn spaced(b: &[u8]) -> String {
@@ -527,15 +548,92 @@ async fn await_boot<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(), Error> {
     Err(last)
 }
 
+fn mbaud(r: BaudRate) -> String {
+    format!("{}M", r.as_hz() as f64 / 1e6)
+}
+
+/// MGMT REBOOT, and the servo found after it. A servo boots on its saved
+/// baud, which a volatile move of the bus does not change: silent at the
+/// run's rate, it is looked for at the others by ENUM and must be on the
+/// roster there by its id. `Some` is the rate it answers at, the host left
+/// there for the caller's reads ahead of [`home`].
+async fn boot<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Option<BaudRate>, Refused> {
+    mgmt::reboot(c, id).await?;
+    let run = c.info().bps;
+    let silent = match await_boot(c, id).await {
+        Ok(()) => return Ok(None),
+        Err(e @ Error::Timeout { .. }) => e,
+        Err(e) => return Err(e.into()),
+    };
+    let Some(run) = BaudRate::from_hz(run) else {
+        return Err(silent.into());
+    };
+    let pinged = format!(
+        "no answer at {} after the REBOOT it acked ({BOOT_TRIES} pings over {:.0} s)",
+        mbaud(run),
+        (BOOT_WAIT * BOOT_TRIES).as_secs_f64()
+    );
+    let Some(at) = mgmt::find_bus_baud(c).await? else {
+        c.host_baud(run).await?;
+        return Err(Refused(format!(
+            "{pinged}, and no ENUM answer at 1M, 0.5M, 2M or 3M either: the servo answers at no rate on this bus"
+        )));
+    };
+    let roster = mgmt::discover(c).await?;
+    // The first unicast right behind a discover sweep is lost about one
+    // run in twenty; one sent 5 s after it was observed clean.
+    c.pause(SWEEP_QUIET).await;
+    if !roster.iter().any(|f| f.id == id) {
+        let ids: Vec<String> = roster.iter().map(|f| f.id.as_byte().to_string()).collect();
+        c.host_baud(run).await?;
+        return Err(Refused(format!(
+            "{pinged}; at {} the bus answers ENUM, and its roster (ids: {}) holds no servo of id {}",
+            mbaud(at),
+            if ids.is_empty() {
+                "none".into()
+            } else {
+                ids.join(", ")
+            },
+            id.as_byte()
+        )));
+    }
+    Ok((at != run).then_some(at))
+}
+
+/// The servo [`boot`] found at `at` moved back to the run's rate, volatile:
+/// one write at `at`, never retried, and the reunion ping at the run's rate
+/// is the verdict (protocol sec 8).
+async fn home<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    at: Option<BaudRate>,
+    run: u32,
+    steps: &mut Vec<Step>,
+) -> Result<(), Refused> {
+    let (Some(at), Some(run)) = (at, BaudRate::from_hz(run)) else {
+        return Ok(());
+    };
+    let roster = mgmt::set_baud(c, &[id], run).await?;
+    if roster.iter().all(|(_, alive)| *alive) {
+        steps.push(Step::Moved { at, run });
+        return Ok(());
+    }
+    Err(Refused(format!(
+        "after the reboot the servo answers at {}, its saved baud; moved to {}, volatile, it does not answer there: `osc discover` finds the rate it answers at",
+        mbaud(at),
+        mbaud(run)
+    )))
+}
+
 pub(crate) async fn reboot<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     steps: &mut Vec<Step>,
-) -> Result<(), Error> {
-    mgmt::reboot(c, id).await?;
-    await_boot(c, id).await?;
+) -> Result<(), Refused> {
+    let run = c.info().bps;
+    let at = boot(c, id).await?;
     steps.push(Step::Rebooted);
-    Ok(())
+    home(c, id, at, run, steps).await
 }
 
 /// The refusal of a verb that had written: the servo is rebooted onto its
@@ -586,7 +684,8 @@ pub async fn install<P: Pipe>(
 /// Reboot the servo onto its stored state and keep the record of it in
 /// [`STORED`], which must read back the same before anything else is
 /// written: the state a save, and a tune that ends without a set, go back
-/// to. The stored state as read.
+/// to. The stored state as read at the baud it boots on, before any move
+/// back to the run's rate.
 pub async fn backup<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -594,8 +693,12 @@ pub async fn backup<P: Pipe>(
     sink: &mut dyn Sink,
     steps: &mut Vec<Step>,
 ) -> Result<State, Refused> {
-    reboot(c, id, steps).await?;
-    let stored = state::read(c, id, d).await?;
+    let run = c.info().bps;
+    let at = boot(c, id).await?;
+    steps.push(Step::Rebooted);
+    let stored = state::read(c, id, d).await;
+    home(c, id, at, run, steps).await?;
+    let stored = stored?;
     let mut bytes =
         serde_json::to_vec_pretty(&stored.record(d)).map_err(|e| Refused(e.to_string()))?;
     bytes.push(b'\n');
@@ -616,7 +719,8 @@ pub async fn backup<P: Pipe>(
 
 /// Put the servo back on its stored state by a reboot, which writes no
 /// field, then read it against `stored`, the state [`backup`] kept: a
-/// line a difference, none when it is that state.
+/// line a difference, none when it is that state. The read comes before
+/// any move back to the run's rate, so the volatile baud is no difference.
 pub async fn put_back<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -624,8 +728,12 @@ pub async fn put_back<P: Pipe>(
     stored: &State,
     steps: &mut Vec<Step>,
 ) -> Result<Vec<String>, Refused> {
-    reboot(c, id, steps).await?;
-    let now = state::read(c, id, d).await?;
+    let run = c.info().bps;
+    let at = boot(c, id).await?;
+    steps.push(Step::Rebooted);
+    let now = state::read(c, id, d).await;
+    home(c, id, at, run, steps).await?;
+    let now = now?;
     if now.record(d)["hash"] == stored.record(d)["hash"] {
         return Ok(Vec::new());
     }
