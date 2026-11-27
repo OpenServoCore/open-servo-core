@@ -1,4 +1,4 @@
-//! The closed-loop check of an installed, stamped set: the position loop
+//! The closed-loop check of an installed set: the position loop
 //! turned on safely, then a few moves scored, so a bad set is caught
 //! before it is saved. It changes no constant; it reads, moves and scores.
 //!
@@ -345,20 +345,36 @@ pub async fn admit<P: Pipe>(
     Ok((line, state))
 }
 
+/// The constants whose 0 the kernel's belt refuses the closed loops on
+/// (protocol sec 5.7): a zero Ke, an unset current cap or speed ceiling.
+const BELT: [&str; 4] = [
+    "recip_ke_q",
+    "ke_vpc_q",
+    "current_limit_counts",
+    "speed_ceiling_cps",
+];
+
+/// Refused when the servo would refuse the closed loops: one of [`BELT`]
+/// reads 0. The data state is no refusal; it is information.
+pub(crate) fn belt(state: &State, d: &osc_client::descriptor::Descriptor) -> Result<(), Refused> {
+    let mut unset = Vec::new();
+    for name in BELT {
+        if num(state, d, name)? == 0.0 {
+            unset.push(name);
+        }
+    }
+    if unset.is_empty() {
+        return Ok(());
+    }
+    Err(Refused(format!(
+        "{} 0, unset: the servo refuses the closed loops on it (protocol sec 5.7), so nothing moves; an identification sets them (`osc-ident run`)",
+        unset.join(", ")
+    )))
+}
+
 async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<Before, Refused> {
     let (line, state) = admit(rig.c, rig.id, rig.d).await?;
-    if state.stamp.stored == osc_client::stamp::UNSTAMPED || !state.stamp.matches() {
-        return Err(Refused(format!(
-            "the stamp says {}: the live set is not the one installed and stamped, and a closed loop would run on constants that do not belong together; install the set (`osc-ident install`) first",
-            state.stamp_said()
-        )));
-    }
-    if state.data.flags != 0 {
-        return Err(Refused(format!(
-            "the servo's data state is {}, not clean: the closed loops would run on a set it does not vouch for",
-            state.data_said()
-        )));
-    }
+    belt(&state, rig.d)?;
     let n = |name: &str| num(&state, rig.d, name);
     let held = travel(&state, rig.d)?;
     let soft = (

@@ -1,5 +1,5 @@
 //! The cruise step: the running friction line from closed-loop Velocity
-//! cruises at mid travel, on the installed, stamped set, the line the
+//! cruises at mid travel, on the installed set, the line the
 //! velocity loop's friction feed-forward has to match ([`crate::fit::cruise`]).
 //! It changes no constant; it reads, cruises and fits.
 //!
@@ -49,7 +49,7 @@
 
 use std::time::Duration;
 
-use osc_client::data_state::{self, fault};
+use osc_client::data_state::fault;
 use osc_client::pipe::Pipe;
 use serde_json::{Map, Value, json};
 
@@ -557,18 +557,7 @@ async fn read_word<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u16, Ref
 
 async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<Before, Refused> {
     let (line, state) = verify::admit(rig.c, rig.id, rig.d).await?;
-    if state.stamp.stored == osc_client::stamp::UNSTAMPED || !state.stamp.matches() {
-        return Err(Refused(format!(
-            "the stamp says {}: the live set is not the one installed and stamped, and the closed loop would run on constants that do not belong together; install the set (`osc-ident install`) first",
-            state.stamp_said()
-        )));
-    }
-    if !data_state::allows(state.data.flags, true) {
-        return Err(Refused(format!(
-            "the servo's data state is {}: it refuses the closed loops, so no cruise runs",
-            state.data_said()
-        )));
-    }
+    verify::belt(&state, rig.d)?;
     let mode = |name: &str| mode_value(rig.d, name).map_err(|h| Refused(h.why()));
     let (position_mode, velocity_mode) = (mode("Position")?, mode("Velocity")?);
     let n = |name: &str| num(&state, rig.d, name);

@@ -605,9 +605,8 @@ fn a_shaft_at_rest_sets_every_leg_aside() {
     assert!(r["position_centered_counts"].is_number());
 }
 
-/// Refused with nothing written: torque on, a fault, a stamp that is not
-/// the live set's, a data state that refuses the closed loops, a shaft by
-/// the step's bound.
+/// Refused with nothing written: torque on, a fault, a Ke the servo's belt
+/// refuses the closed loops on, a shaft by the step's bound.
 #[test]
 fn the_step_refuses_before_any_write() {
     let refused = |c: &mut Client<Bus>, log: &Log, word: &str| {
@@ -622,12 +621,6 @@ fn the_step_refuses_before_any_write() {
             "nothing written: {e}: {w:?}"
         );
         assert!(sink.files.is_empty());
-    };
-    let restamp = |c: &mut Client<Bus>| {
-        let d = descriptor();
-        let s = block_on(state::read(c, ID, &d)).expect("state");
-        let f = d.field("plant_stamp").expect("plant_stamp");
-        block_on(c.write(ID, f.addr, &s.stamp.computed.to_le_bytes())).expect("restamped");
     };
     let (mut c, log) = servo(MID_POT, Box::new(|_, _, _| {}));
     let t = addr("torque_enable");
@@ -645,26 +638,13 @@ fn the_step_refuses_before_any_write() {
         .sim_mut()
         .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
 
+    // the plant unset: the belt refuses
     let d = descriptor();
-    let kp = d.field("p_kp_q88").expect("p_kp_q88");
-    let was = block_on(c.read(ID, kp.addr, 2)).expect("read");
-    let other = (u16::from_le_bytes([was[0], was[1]]) ^ 1).to_le_bytes();
-    block_on(c.write(ID, kp.addr, &other)).expect("a covered field moved");
-    refused(
-        &mut c,
-        &log,
-        "the live set is not the one installed and stamped",
-    );
-    block_on(c.write(ID, kp.addr, &was)).expect("put back");
-
-    // the plant unset: the stamp still matches, the data state refuses
     let ke = d.field("recip_ke_q").expect("recip_ke_q");
     let ke_was = block_on(c.read(ID, ke.addr, 2)).expect("read");
     block_on(c.write(ID, ke.addr, &[0, 0])).expect("Ke unset");
-    restamp(&mut c);
-    refused(&mut c, &log, "refuses the closed loops");
+    refused(&mut c, &log, "recip_ke_q 0, unset");
     block_on(c.write(ID, ke.addr, &ke_was)).expect("put back");
-    restamp(&mut c);
 
     let lin = c.pipe_mut().lin.clone().expect("lin");
     c.pipe_mut().move_to(lin.counts(330));

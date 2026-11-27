@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn data_state_mirrors_name_text_and_verdicts() {
+    fn data_state_mirrors_name_text_and_the_refusal() {
         use osc_client::data_state::{self, CALIB_STALE, PLANT_UNSET, STAMP_MISMATCH, fault};
         let s = DataState::from(data_state::DataState {
             flags: CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET,
@@ -257,16 +257,13 @@ mod tests {
         let names: Vec<&str> = s.reasons.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["CALIB_STALE", "STAMP_MISMATCH", "PLANT_UNSET"]);
         assert_eq!(s.fault.as_deref(), Some("data"));
-        assert!(s.message.unwrap().starts_with("closed loop refused: "));
-        assert!(s.open_loop);
-        assert!(!s.closed_loop);
+        assert_eq!(s.message.as_deref(), Some(data_state::REFUSED));
         let clean = DataState::from(data_state::DataState {
             flags: 0,
             fault_code: fault::NONE,
         });
         assert!(clean.reasons.is_empty());
         assert_eq!(clean.message, None);
-        assert!(clean.closed_loop);
         assert_eq!(fault_name(fault::STALL).as_deref(), Some("stall"));
         assert_eq!(fault_name(200), None);
     }

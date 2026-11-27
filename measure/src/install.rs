@@ -3,15 +3,13 @@
 //! stamps it, `save` keeps a backup of the stored state and then makes the
 //! set permanent, `restore` puts a recorded state back. Nothing drives the
 //! motor, every write is refused under torque, and there is no path that
-//! wipes the stored data: a servo whose saved settings are corrupt is
-//! refused.
+//! wipes the stored data. The data state is information: no verb refuses
+//! on it, and a servo that boots on defaults is written like any.
 
 use std::fmt;
 use std::time::Duration;
 
-use osc_client::data_state::{
-    self as data_state, CONFIG_CORRUPT, PLANT_UNSET, SAVE_CLEARS, STAMP_MISMATCH,
-};
+use osc_client::data_state::{PLANT_UNSET, STAMP_MISMATCH};
 use osc_client::descriptor::{Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS};
 use osc_client::{BaudRate, Client, Error, Id, mgmt, pipe::Pipe, stamp};
@@ -31,6 +29,9 @@ const STOPS: [&str; 2] = ["raw_min", "raw_max"];
 const BOOT_WAIT: Duration = Duration::from_millis(500);
 const BOOT_TRIES: u32 = 10;
 const SWEEP_QUIET: Duration = Duration::from_secs(5);
+/// The data-state reasons of an image that did not load: a SAVE that
+/// landed leaves none after its reboot.
+const IMAGE: u8 = !(STAMP_MISMATCH | PLANT_UNSET);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused(pub String);
@@ -119,15 +120,6 @@ impl fmt::Display for Step {
     }
 }
 
-/// The reason names set in `flags`, joined.
-fn names(flags: u8) -> String {
-    data_state::DataState {
-        flags,
-        fault_code: data_state::fault::NONE,
-    }
-    .names()
-}
-
 /// The lines of the moves back to the run's rate among `steps`.
 pub fn moves(steps: &[Step]) -> impl Iterator<Item = String> + '_ {
     steps
@@ -157,29 +149,21 @@ pub struct Checked {
 }
 
 impl Checked {
+    /// The servo holds the set. The data state is no part of it.
     pub fn clean(&self) -> bool {
-        self.differences.is_empty() && self.flags == 0
+        self.differences.is_empty()
     }
 
     /// Why a SAVE of the servo as checked is refused: the set has not
-    /// landed, or its data state holds a reason the SAVE does not retire.
-    /// The reasons it retires are no refusal: on a servo never saved they
-    /// stand until that SAVE.
+    /// landed.
     pub fn unsaveable(&self) -> Option<String> {
-        let left = self.flags & !SAVE_CLEARS;
-        match (self.differences.is_empty(), left) {
-            (true, 0) => None,
-            (true, _) => Some(format!(
-                "after the install the servo holds the set, but its data state reads {} ({} of it a SAVE does not clear)",
-                self.data,
-                names(left)
-            )),
-            (false, _) => Some(format!(
+        (!self.clean()).then(|| {
+            format!(
                 "after the install the servo is not the set (data state {}): {}",
                 self.data,
                 self.differences.join("; ")
-            )),
-        }
+            )
+        })
     }
 }
 
@@ -259,17 +243,11 @@ pub async fn check<P: Pipe>(
     })
 }
 
-/// Refused with nothing written: torque on, or saved settings no write
-/// verb may touch.
+/// Refused with nothing written: torque on.
 pub fn writable_now(state: &State) -> Result<(), Refused> {
     if state.torque {
         return Err(Refused(
             "torque_enable is on: this tool writes a servo only with torque off".into(),
-        ));
-    }
-    if state.data.flags & CONFIG_CORRUPT != 0 {
-        return Err(Refused(
-            "the servo's saved settings are unreadable (CONFIG_CORRUPT): `osc recover` is the way back, this tool refuses such a servo".into(),
         ));
     }
     Ok(())
@@ -555,7 +533,7 @@ async fn apply<P: Pipe>(
         let s = stamp::restamp(c, id, d).await?;
         let v = stamp::verdict(c, id, d).await?;
         let data = osc_client::data_state::read(c, id, d).await?;
-        if v.stored != s || !v.matches() || data.flags & (STAMP_MISMATCH | PLANT_UNSET) != 0 {
+        if v.stored != s || !v.matches() || data.flags & STAMP_MISMATCH != 0 {
             return Err(Refused(format!(
                 "the stamp {s:#06x} did not bless the set: stamp reads {:#06x} over a live set of {:#06x}, data state {}",
                 v.stored,
@@ -865,7 +843,7 @@ pub async fn save<P: Pipe>(
     sink.write(AFTER, &bytes)?;
     steps.push(Step::After(sink.shown(AFTER)));
     let left = differences(set, &after, d);
-    if !left.is_empty() || after.data.flags != 0 {
+    if !left.is_empty() || after.data.flags & IMAGE != 0 {
         return Err(Refused(format!(
             "after the SAVE and a reboot the servo is not the set (data state {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc save` then makes it permanent",
             after.data_said(),

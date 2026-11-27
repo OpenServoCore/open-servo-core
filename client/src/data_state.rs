@@ -43,7 +43,8 @@ pub mod fault {
     pub const POSITION_ERROR: u8 = 4;
     pub const SENSOR: u8 = 5;
     pub const UNDER_VOLT: u8 = 6;
-    /// An enable refused by the data state.
+    /// An enable refused by the kernel's belt: Ke, the current cap or the
+    /// speed ceiling unset.
     pub const DATA: u8 = 7;
 
     pub fn name(code: u8) -> Option<&'static str> {
@@ -112,28 +113,24 @@ impl Reason {
         }
     }
 
-    /// What it means and what to do about it.
+    /// What it means and what to do about it. Information: no reason
+    /// refuses a mode.
     pub const fn text(self) -> &'static str {
         match self {
-            Reason::ConfigCorrupt => {
-                "Saved settings unreadable; board defaults are running and torque is refused. Run osc recover."
-            }
-            Reason::CalibCorrupt => {
-                "Calibration unreadable. Open loop only; run osc-ident run, then osc-ident save."
-            }
-            Reason::ConfigStale => {
-                "Saved settings are from another firmware; board defaults are running. Open loop only; run osc-ident run, then osc-ident save."
-            }
-            Reason::CalibStale => {
-                "Calibration is from another firmware. Open loop only; run osc-ident run, then osc-ident save."
-            }
-            Reason::ConfigVirgin | Reason::CalibVirgin => {
-                "Factory-fresh. Open loop only; run osc-ident run, then osc-ident save."
+            Reason::ConfigCorrupt
+            | Reason::CalibCorrupt
+            | Reason::ConfigStale
+            | Reason::CalibStale
+            | Reason::ConfigVirgin
+            | Reason::CalibVirgin => {
+                "Settings not identified (defaults); run an identification: osc-ident run, then osc-ident save."
             }
             Reason::StampMismatch => {
-                "Position table and identified values are not one set (edited, rebuilt or partly written). Run osc-ident run, or re-run the interrupted tool."
+                "Changed since a tool stamped the set (edited, rebuilt or partly written); it runs as written. osc-ident check compares it with a set."
             }
-            Reason::PlantUnset => "Motor not identified. Run osc-ident run.",
+            Reason::PlantUnset => {
+                "Motor not identified (Ke 0): closed loop refused. Run an identification: osc-ident run."
+            }
         }
     }
 }
@@ -146,12 +143,9 @@ pub fn reasons(flags: u8) -> Vec<Reason> {
         .collect()
 }
 
-/// The kernel's entry verdict: CONFIG_CORRUPT refuses every mode, any
-/// other reason refuses the closed loops (Velocity, Position) and leaves
-/// OpenLoop and Current open.
-pub fn allows(flags: u8, closed_loop: bool) -> bool {
-    flags & CONFIG_CORRUPT == 0 && (flags == 0 || !closed_loop)
-}
+/// The operator line for the `data` fault: the kernel's belt refused the
+/// mode on a constant it cannot run on.
+pub const REFUSED: &str = "closed mode refused: Ke, the current cap or the speed ceiling is 0, unset; run an identification: osc-ident run";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DataState {
@@ -173,15 +167,13 @@ impl DataState {
             .join(" | ")
     }
 
-    /// The operator line: the most urgent reason's text, prefixed when the
-    /// kernel refused an enable over it. `None` when nothing is wrong.
+    /// The operator line: the refusal when the kernel's belt latched one,
+    /// else the most urgent reason's text. `None` when nothing is wrong.
     pub fn message(&self) -> Option<String> {
-        let first = self.reasons().into_iter().next()?;
-        Some(if self.fault_code == fault::DATA {
-            format!("closed loop refused: {}", first.text())
-        } else {
-            first.text().to_string()
-        })
+        if self.fault_code == fault::DATA {
+            return Some(REFUSED.into());
+        }
+        Some(self.reasons().into_iter().next()?.text().to_string())
     }
 }
 
@@ -232,21 +224,6 @@ mod tests {
     }
 
     #[test]
-    fn allows_mirrors_the_kernel_entry_check() {
-        assert!(allows(0, true));
-        assert!(allows(0, false));
-        for r in Reason::ALL {
-            assert!(!allows(r.bit(), true), "{}", r.name());
-            assert_eq!(
-                allows(r.bit(), false),
-                r != Reason::ConfigCorrupt,
-                "{}",
-                r.name()
-            );
-        }
-    }
-
-    #[test]
     fn message_leads_with_the_urgent_reason_and_marks_a_refusal() {
         let s = DataState {
             flags: 0,
@@ -260,14 +237,13 @@ mod tests {
         };
         assert_eq!(s.names(), "CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET");
         assert_eq!(s.message().unwrap(), Reason::CalibStale.text());
-        let s = DataState {
-            flags: PLANT_UNSET,
-            fault_code: fault::DATA,
-        };
-        assert_eq!(
-            s.message().unwrap(),
-            "closed loop refused: Motor not identified. Run osc-ident run."
-        );
+        for flags in [0, PLANT_UNSET] {
+            let s = DataState {
+                flags,
+                fault_code: fault::DATA,
+            };
+            assert_eq!(s.message().unwrap(), REFUSED, "{flags:#04x}");
+        }
         assert_eq!(fault::name(fault::DATA), Some("data"));
         assert_eq!(fault::name(9), None);
     }
