@@ -1,5 +1,5 @@
 {
- "source": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.constants.json", "sha1": "c30f686432c191421fbe6c93eaa5e9f8eed74a03", "text_values": "written as the field holds them: Yield (1) -> 1, on -> 1, off -> 0, 2 (metal) -> 2"},
+ "source": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.constants.json", "sha1": "c94abef7c670b1a3c3d5732374e72d478953c931", "text_values": "written as the field holds them: Yield (1) -> 1, on -> 1, off -> 0, 2 (metal) -> 2"},
  "fields": {
    "pos_min_phys_counts": {"value": 82, "class": "bench"},
    "pos_max_phys_counts": {"value": 3792, "class": "bench"},
@@ -30,7 +30,6 @@
    "openloop_zero_brake": {"value": 0, "class": "policy"},
    "thermal_tau_s": {"value": 2, "band": [1, 3], "class": "measured"},
    "cutoff_cc": {"value": 9000, "class": "policy"},
-   "v_undervolt_counts": {"value": 922, "band": [922, 922], "class": "policy"},
    "thermal_tau2_s": {"value": 129, "band": [121, 135], "class": "policy"},
    "pos_error_time_ticks": {"value": 2000, "class": "policy"},
    "pos_error_counts": {"value": 199, "class": "policy"},

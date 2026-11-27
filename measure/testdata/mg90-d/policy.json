@@ -14,8 +14,6 @@
   "stall_time_ms": 500.0,
   "cutoff_c": 90.0,
   "duty_max_share": 1.0,
-  "v_undervolt_v": 3.7,
-  "rail_source_ohm": 0.8,
   "openloop_zero_brake": "off",
   "brush_term": "off",
   "velocity_limit_deg_s": 200.0,
@@ -28,5 +26,5 @@
   "hold_band_floor_counts": 4,
   "sensor_delta_max_counts": 64,
   "sensor_bad_samples": 4,
-  "source": {"file": "notebooks/stages/5-closed-loop/calibration/policy.json", "sha1": "c6a292c59dd228b0f03cac972e6978213aa6f117"}
+  "source": {"file": "notebooks/stages/5-closed-loop/calibration/policy.json", "sha1": "b12f35ed8cb4b322d6c57b8678065cf674464283"}
 }

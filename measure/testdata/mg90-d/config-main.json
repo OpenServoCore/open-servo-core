@@ -30,7 +30,6 @@
   "openloop_zero_brake": 0,
   "thermal_tau_s": 2,
   "cutoff_cc": 9000,
-  "v_undervolt_counts": 922,
   "thermal_tau2_s": 129,
   "l1_q016": 8640,
   "l2_q88": 3180,

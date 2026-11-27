@@ -75,9 +75,6 @@ fn refused(set: &osc_measure::Set, field: &str) -> String {
 /// breakaway: the set of record holds its 0 with no source, and the rule
 /// holds it the same way.
 const HELD_OF_RECORD: &str = "fric_breakaway_counts";
-/// The undervolt floor of record, 3.7 V: the firmware took the fault and
-/// its field out, and the fold's floor is the board's, so no rule makes it.
-const RETIRED_OF_RECORD: &str = "v_undervolt_counts";
 /// Tuning parameters newer than the set of record: off unless the user
 /// sets them.
 const TUNING: [&str; 2] = ["pot_steady_counts_per_a", "pot_fast_counts_per_a"];
@@ -86,18 +83,13 @@ const TUNING: [&str; 2] = ["pot_steady_counts_per_a", "pot_fast_counts_per_a"];
 fn rules_reproduce_the_set_of_record() {
     let set = build(&inputs());
     let record = record();
-    assert_eq!(record.fields.len(), 64);
+    assert_eq!(record.fields.len(), 63);
     let mut equal = 0;
     let mut wrong = Vec::new();
     for (name, want) in &record.fields {
         if name == HELD_OF_RECORD {
             assert_eq!(want.class, "none");
             assert_eq!(held(&set, name), "measured.breakaway_ma");
-            continue;
-        }
-        if name == RETIRED_OF_RECORD {
-            assert_eq!((want.value, want.class.as_str()), (922, "policy"));
-            assert!(set.get(name).is_none());
             continue;
         }
         match set.get(name) {
@@ -110,15 +102,12 @@ fn rules_reproduce_the_set_of_record() {
     for name in TUNING {
         assert_eq!(bound(&set, name), 0);
     }
-    assert_eq!(set.fields.len(), record.fields.len() - 1 + TUNING.len());
+    assert_eq!(set.fields.len(), record.fields.len() + TUNING.len());
 
     // The CONFIG the bench ran is the set's.
     let gate: BTreeMap<String, serde_json::Value> = load("testdata/mg90-d/config-main.json");
     let mut config = 0;
-    for (name, v) in gate
-        .iter()
-        .filter(|(n, _)| !["source", RETIRED_OF_RECORD].contains(&n.as_str()))
-    {
+    for (name, v) in gate.iter().filter(|(n, _)| *n != "source") {
         assert_eq!(Some(bound(&set, name)), v.as_i64(), "{name}");
         config += 1;
     }
@@ -140,9 +129,6 @@ fn bands_reproduce() {
         };
         if THERMAL_BANDED.contains(&name.as_str()) {
             assert!(want.band.is_some() && got != want.band, "{name}: {got:?}");
-            continue;
-        }
-        if name == RETIRED_OF_RECORD {
             continue;
         }
         assert_eq!(got, want.band, "{name}");

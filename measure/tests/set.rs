@@ -1,6 +1,6 @@
 //! The set file against the notebooks' own: the set of record of mg90-d
 //! (`testdata/mg90-d/constants.json`, a byte copy of the notebooks'
-//! `mg90-d__dev-v006-2A-D.constants.json` at sha1 c30f6864) loads, hashes
+//! `mg90-d__dev-v006-2A-D.constants.json` at sha1 c94abef7) loads, hashes
 //! and renders back byte for byte.
 
 mod common;
@@ -13,15 +13,15 @@ fn a_notebook_set_file_loads_and_round_trips() {
     let file = text("testdata/mg90-d/constants.json");
     assert_eq!(
         file_sha1(file.as_bytes()),
-        "c30f686432c191421fbe6c93eaa5e9f8eed74a03"
+        "c94abef7c670b1a3c3d5732374e72d478953c931"
     );
     let set = record();
     assert_eq!(set.render(), file, "rendered back byte for byte");
     assert_eq!(
         set.hash(),
-        "362e018756172017f612be404de097dd772706b54d109445344b1e5324a82242"
+        "e8520bef6124c6631ba5386c6387f88edcffe5132ca4277bd058b14b28ac61e9"
     );
-    assert_eq!(set.values().len(), 64);
+    assert_eq!(set.values().len(), 63);
     assert_eq!(set.table(), ("LIVE", points_sha1(&table().points).as_str()));
 
     // A value edited by hand, a plant and a protection field.
@@ -54,13 +54,13 @@ fn a_notebook_set_file_loads_and_round_trips() {
 }
 
 #[test]
-fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_and_retired_fields() {
+fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
     let ours = rules_set(&inputs(), &table());
     let rec = record();
     assert_eq!(ours.values().len(), 62);
     for (name, v) in rec.values() {
         match name {
-            "fric_breakaway_counts" | "v_undervolt_counts" => assert_eq!(ours.value(name), None),
+            "fric_breakaway_counts" => assert_eq!(ours.value(name), None),
             _ => assert_eq!(ours.value(name), Some(v), "{name}"),
         }
     }
