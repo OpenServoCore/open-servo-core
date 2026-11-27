@@ -75,9 +75,16 @@ pub struct Policy {
     pub velocity_shelf_margin_db: Option<f64>,
     /// The speed loop's crossover over the position gain.
     pub position_split: Option<f64>,
-    /// The press trigger and Yield fold level.
+    /// The press trigger and Yield fold level: a current, or a max yield
+    /// torque (none: the cap on metal, the plastic torque limit on any
+    /// other train).
     #[serde(rename = "yield", deserialize_with = "form")]
     pub yield_: Option<Yield>,
+    /// The yield torque a plastic train takes with none stated, kg cm; none
+    /// while it is not known.
+    pub plastic_torque_limit_kg_cm: Option<f64>,
+    /// A yield torque over the plastic torque limit is taken only with this.
+    pub above_plastic_limit: bool,
     #[serde(deserialize_with = "form")]
     pub stall_release: Option<StallRelease>,
     /// The overcurrent detector's window, samples: in a version 0 file
@@ -278,5 +285,55 @@ impl PolicyFile {
             "sensor_delta_max_counts",
         )?;
         Ok(p)
+    }
+}
+
+/// Why a train's yield torque cannot be taken.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum YieldRefusal {
+    /// A plastic train with no yield torque stated and no plastic torque
+    /// limit.
+    NotKnown,
+    Over {
+        torque: f64,
+        limit: f64,
+    },
+}
+
+impl YieldRefusal {
+    pub fn said(self) -> String {
+        match self {
+            YieldRefusal::NotKnown => {
+                "the plastic torque limit, the yield torque of a plastic train, is not known yet"
+                    .into()
+            }
+            YieldRefusal::Over { torque, limit } => format!(
+                "a yield torque of {torque} kg cm is over the plastic torque limit, {limit} kg cm, and above_plastic_limit is not true: plastic teeth strip there when the horn is blocked"
+            ),
+        }
+    }
+}
+
+/// The max yield torque that binds, kg cm, none for the cap: the one
+/// stated; with none, the cap on a metal train and the plastic torque limit
+/// on any other (plastic, or of unknown class). A torque over the plastic
+/// limit on a train that is not metal needs `above`.
+pub fn yield_torque(
+    metal: bool,
+    torque: Option<f64>,
+    limit: Option<f64>,
+    above: bool,
+) -> Result<Option<f64>, YieldRefusal> {
+    if metal {
+        return Ok(torque);
+    }
+    match (torque, limit) {
+        (None, None) => Err(YieldRefusal::NotKnown),
+        (None, Some(l)) => Ok(Some(l)),
+        (Some(t), Some(l)) if t > l && !above => Err(YieldRefusal::Over {
+            torque: t,
+            limit: l,
+        }),
+        (Some(t), _) => Ok(Some(t)),
     }
 }

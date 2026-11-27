@@ -10,7 +10,19 @@
 //!    loop shows inside one burst.
 //! 3. The self-test: moves of [`SIZES`] of the travel each way from the
 //!    middle of the soft range, each held [`HOLD_S`], captured whole.
-//! 4. The goal back to the middle, held until it arrives, then the way out.
+//!    Each move is followed by a still hold at its goal, [`STILL_S`] on
+//!    the loop row, whose observer speed the stall speed's rule reads
+//!    ([`crate::screens::still_speed_cps`]).
+//! 4. The wide-code holds, as the scorecard's `wide` capture holds them
+//!    (notebooks `stages/5-closed-loop/scorecard/testset.py`): for each
+//!    ADC wide code that takes a slot, lowest first, two holds of
+//!    [`WIDE_HOLD_MS`] at the middle of the codes it skips, the first after
+//!    a goal [`WIDE_APPROACH_COUNTS`] above the span the code stands for,
+//!    the second after one as far below it ([`wide`]). The pot flips
+//!    across the skipped span there, so these rows hold the worst pot steps
+//!    a healthy pot reads, which the pot jump's rule reads with the run's
+//!    driven rows ([`crate::screens::step_run`]).
+//! 5. The goal back to the middle, held until it arrives, then the way out.
 //!
 //! The firmware's protections stay in force: the current cap, the speed
 //! ceiling, the soft limits, the press detector, the position-error
@@ -18,9 +30,9 @@
 //! watchdog reads the rows and a poll: a fault, the shaft outside the
 //! soft limits, the current over a quarter past the cap for
 //! [`CAP_S`]. "Travel" is the soft range, the physical stops while the
-//! soft limits are 0 / 0, off ([`travel`]). Every burst carries the raw
-//! row, the notebooks' row, so the scores are the scorecard's
-//! ([`crate::scorecard`]).
+//! soft limits are 0 / 0, off ([`travel`]). Every burst but the still
+//! holds carries the raw row, the notebooks' row, so the scores are the
+//! scorecard's ([`crate::scorecard`]) and the pot steps read the raw pot.
 
 use std::ops::Range;
 
@@ -42,10 +54,13 @@ use crate::nameplate::Nameplate;
 use crate::scorecard::{
     self as sc, Lin, Move, Profile, Row, Scores, Small, Units, enable_check, small_check,
 };
+use crate::screens::Holes;
 use crate::state::{self, State, field};
 
 pub const STEP: &str = "verify";
 pub const RESULT: &str = "results/verify.json";
+/// The check's estimate the stall speed's rule reads.
+pub const STILL_SPEED: &str = "still_speed_cps";
 const METHOD: &str = "closed-loop-self-test";
 const REVISION: u32 = 1;
 /// The first enable's capture, s.
@@ -58,6 +73,8 @@ pub const SMALL_S: f64 = 0.1;
 pub const SIZES: [f64; 3] = [0.01, 0.10, 0.33];
 /// The hold after each move's profile lands, s.
 pub const HOLD_S: f64 = 1.5;
+/// The still hold after each move's hold, on the loop row, s.
+pub const STILL_S: f64 = 1.0;
 /// The shaft starts at least this share of the travel inside each soft
 /// limit.
 pub const EDGE_SHARE: f64 = 0.05;
@@ -76,10 +93,171 @@ pub(crate) const CENTER_POLLS: u32 = 200;
 const PROFILE_MAX_S: f64 = 10.0;
 /// The most rows one burst carries: `tel_count` is a u16.
 const BURST_ROWS: usize = u16::MAX as usize;
+/// The wide-code holds: each held this long, ms, after an approach goal
+/// this many counts past the span the code stands for.
+pub const WIDE_HOLD_MS: u32 = 2000;
+pub const WIDE_APPROACH_COUNTS: i32 = 30;
+/// An approach goal is held as long as a step of its travel from the goal
+/// before it: the hold of the smallest step size at or above the travel,
+/// deg, the largest size's beyond it.
+pub const STEP_SIZES_DEG: [f64; 3] = [2.0, 20.0, 60.0];
+pub const STEP_HOLD_MS: [u32; 3] = [1200, 1500, 2000];
+/// A wide code is held when both approach goals lie this far clear of the
+/// soft range, deg.
+pub const FIT_MARGIN_DEG: f64 = 5.0;
+/// A slot holds half the codes skipped, Q4: 8 x the codes skipped.
+const Q4_PER_SKIPPED: u16 = 8;
 
 /// What the step reads besides the servo.
 pub struct VerifyInputs<'a> {
     pub nameplate: &'a Nameplate,
+    /// The run's pot holes, which the check's pot steps leave out.
+    pub holes: &'a Holes,
+}
+
+/// An ADC wide code with a slot: its stuck code and the codes it skips.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct WideCode {
+    pub stuck: u16,
+    pub skipped: u16,
+}
+
+/// The wide codes the servo's slots `slots` give, lowest first: slot `k`
+/// belongs to the stuck code `(k << 8) | 0xFF` and holds 8 x the codes it
+/// skips.
+pub fn wide_codes(slots: &[u8]) -> Vec<WideCode> {
+    slots
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| **v != 0)
+        .map(|(k, v)| WideCode {
+            stuck: ((k as u16) << osc_servo_core::adc::ADC_WIDE_SHIFT)
+                | osc_servo_core::adc::ADC_WIDE_MASK,
+            skipped: *v as u16 / Q4_PER_SKIPPED,
+        })
+        .collect()
+}
+
+/// Where a wide-code segment's goal lies against the span.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Side {
+    Above,
+    Below,
+}
+
+impl Side {
+    pub fn name(self) -> &'static str {
+        match self {
+            Side::Above => "above",
+            Side::Below => "below",
+        }
+    }
+}
+
+/// One segment of the wide-code holds: an approach or a hold at a code's
+/// middle, its raw goal, its goal in the counts the servo runs in, and how
+/// long it is held.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WideSeg {
+    pub code: WideCode,
+    pub side: Side,
+    pub hold: bool,
+    pub raw: i32,
+    pub goal: i32,
+    pub ms: u32,
+}
+
+impl WideSeg {
+    pub fn test(&self) -> &'static str {
+        if self.hold {
+            "wide-hold"
+        } else {
+            "wide-approach"
+        }
+    }
+}
+
+/// A wide code's raw goals: the approach above the span it stands for,
+/// the middle of the codes it skips, the approach below the span.
+pub fn wide_goals(c: WideCode) -> (i32, i32, i32) {
+    let (stuck, skipped) = (c.stuck as i32, c.skipped as i32);
+    (
+        stuck + skipped + WIDE_APPROACH_COUNTS,
+        stuck + 1 + skipped / 2,
+        stuck - WIDE_APPROACH_COUNTS,
+    )
+}
+
+/// How long a goal `travel_deg` from the one before it is held, ms.
+pub fn approach_ms(travel_deg: f64) -> u32 {
+    STEP_SIZES_DEG
+        .iter()
+        .zip(STEP_HOLD_MS)
+        .find(|(size, _)| travel_deg <= **size)
+        .map_or(STEP_HOLD_MS[STEP_HOLD_MS.len() - 1], |(_, ms)| ms)
+}
+
+/// Whether goals `lo` and `hi` both lie [`FIT_MARGIN_DEG`] clear of the
+/// soft range `soft`.
+fn fits(lo: i32, hi: i32, soft: (f64, f64), cpd: f64) -> bool {
+    let margin = FIT_MARGIN_DEG * cpd;
+    lo as f64 - margin >= soft.0 && hi as f64 + margin <= soft.1
+}
+
+/// The wide-code holds in order: per code of `codes` whose approach goals
+/// fit the soft range `soft`, lowest first, its middle held after the
+/// approach from above, then after the one from below, each approach held
+/// for its travel from the goal before it, the first from `center`. With a
+/// live table `table` the goals are its reading of the raw goals, to the
+/// count; with none, the raw goals. A code whose raw goals leave the
+/// converter's codes is not held.
+pub fn wide(
+    center: f64,
+    cpd: f64,
+    soft: (f64, f64),
+    codes: &[WideCode],
+    table: Option<&Lin>,
+) -> Vec<WideSeg> {
+    let through = |raw: i32| match table {
+        None => raw,
+        Some(lin) => lin.counts(raw as u16).round_ties_even() as i32,
+    };
+    let mut codes = codes.to_vec();
+    codes.sort_by_key(|c| c.stuck);
+    let mut segs = Vec::new();
+    let mut at = center;
+    for c in codes {
+        let (above, middle, below) = wide_goals(c);
+        let adc = 0..=osc_servo_core::adc::ADC_MASK as i32;
+        if !adc.contains(&above) || !adc.contains(&below) {
+            continue;
+        }
+        let goal = |raw: i32| (raw, through(raw));
+        let (above, middle, below) = (goal(above), goal(middle), goal(below));
+        if !fits(below.1, above.1, soft, cpd) {
+            continue;
+        }
+        for (side, approach) in [(Side::Above, above), (Side::Below, below)] {
+            segs.push(WideSeg {
+                code: c,
+                side,
+                hold: false,
+                raw: approach.0,
+                goal: approach.1,
+                ms: approach_ms((approach.1 as f64 - at).abs() / cpd),
+            });
+            segs.push(WideSeg {
+                code: c,
+                side,
+                hold: true,
+                raw: middle.0,
+                goal: middle.1,
+                ms: WIDE_HOLD_MS,
+            });
+            at = middle.1 as f64;
+        }
+    }
+    segs
 }
 
 #[derive(Clone, Debug)]
@@ -256,6 +434,8 @@ struct Before {
     small: f64,
     lead_rows: usize,
     moves: Vec<Planned>,
+    codes: Vec<WideCode>,
+    wide: Vec<WideSeg>,
 }
 
 fn num(state: &State, d: &osc_client::descriptor::Descriptor, name: &str) -> Result<f64, Refused> {
@@ -321,6 +501,7 @@ pub async fn admit<P: Pipe>(
 ) -> Result<(Line, State), Refused> {
     let line = tel::line(c, id).await?;
     line.admit(Layout::Raw)?;
+    line.admit(Layout::Loop)?;
     if line.image() != Image::Production {
         return Err(Refused(format!(
             "the servo runs the {}, which has no closed loops: flash a production image",
@@ -427,6 +608,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
     let sense = rest::Sense::of(&state, rig.d)?;
     let tick_hz = sense.tick_hz;
     let lin = Lin::new(state.lut.effective(), state.slots(rig.d).as_deref());
+    let live = state.lut.effective().is_some();
     let pos = theta_of(rig.c, rig.id, rig.d).await? as f64;
     let edge = EDGE_SHARE * travel;
     if pos < soft.0 + edge || pos > soft.1 - edge {
@@ -483,6 +665,14 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
         u16::from_le_bytes([b[0], b[1]]) as f64
     };
     let stream = StreamCfg::read(rig.c, rig.id, rig.d).await?;
+    let codes = wide_codes(&lin.slots);
+    let wide = wide(
+        mid,
+        scale.counts_per_deg,
+        soft,
+        &codes,
+        live.then_some(&lin),
+    );
     Ok(Before {
         servo: meta::servo(&state, rig.d, &line),
         line,
@@ -504,6 +694,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
         small: (SMALL_SHARE * travel).round().max(1.0),
         lead_rows,
         moves,
+        codes,
+        wide,
     })
 }
 
@@ -553,6 +745,12 @@ struct Found {
     /// Each self-test move scored, its bursts' places in the step's
     /// captures.
     moves: Vec<(Planned, Range<usize>)>,
+    /// Each still hold: its move's name and its place in the step's
+    /// captures.
+    still: Vec<(String, usize)>,
+    /// Each wide-code segment held, its bursts' places in the step's
+    /// captures.
+    wide: Vec<(WideSeg, Range<usize>)>,
     fault: Option<String>,
     fault_on: Option<String>,
     centered: Option<f64>,
@@ -565,7 +763,7 @@ fn fault_said(flags: u8, code: u8) -> String {
     )
 }
 
-/// One burst of `rows`, its goal committed with it when `goal` is Some,
+/// One burst of `rows` on `layout`, its goal committed with it when `goal` is Some,
 /// kept in `taken`: its place there, and a fault it latched, said. A
 /// burst that lost a row is no evidence, and a goal's burst cannot be
 /// taken again: the step aborts.
@@ -574,6 +772,7 @@ async fn shot<P: Pipe>(
     b: &Before,
     taken: &mut Vec<Taken>,
     rows: u16,
+    layout: Layout,
     goal: Option<i32>,
     plan: Value,
 ) -> Result<(usize, Option<String>), Halt> {
@@ -585,7 +784,7 @@ async fn shot<P: Pipe>(
         rig.id,
         rig.d,
         &b.stream,
-        Layout::Raw,
+        layout,
         rows,
         bytes.as_ref().map(|g| (gp, &g[..])),
     )
@@ -674,7 +873,16 @@ async fn capture<P: Pipe>(
         if let Some(m) = p.as_object_mut() {
             m.insert("burst".into(), k.into());
         }
-        let (_, fault) = shot(rig, b, taken, n as u16, (k == 0).then_some(goal), p).await?;
+        let (_, fault) = shot(
+            rig,
+            b,
+            taken,
+            n as u16,
+            Layout::Raw,
+            (k == 0).then_some(goal),
+            p,
+        )
+        .await?;
         if fault.is_some() {
             return Ok((first..taken.len(), fault));
         }
@@ -716,6 +924,7 @@ async fn body<P: Pipe>(
         b,
         taken,
         rows_for(ENABLE_S, b.tick_hz) as u16,
+        Layout::Raw,
         None,
         json!({"phase": "enable", "goal_counts": goal0}),
     )
@@ -755,6 +964,7 @@ async fn body<P: Pipe>(
             b,
             taken,
             rows_for(SMALL_S, b.tick_hz) as u16,
+            Layout::Raw,
             Some(goal as i32),
             json!({"phase": "small", "move": name, "goal_counts": goal}),
         )
@@ -785,7 +995,7 @@ async fn body<P: Pipe>(
     }
 
     lines.push(format!(
-        "self-test: to the middle ({:.0} counts), then {} moves of {} of the travel each way, each held {HOLD_S} s past its profile",
+        "self-test: to the middle ({:.0} counts), then {} moves of {} of the travel each way, each held {HOLD_S} s past its profile, then {STILL_S} s still on the loop row",
         b.mid,
         b.moves.len(),
         SIZES
@@ -829,6 +1039,46 @@ async fn body<P: Pipe>(
                 m.name
             )));
         }
+        let plan = json!({"phase": "still", "move": m.name, "goal_counts": m.goal});
+        let rows = rows_for(STILL_S, b.tick_hz) as u16;
+        let (k, mut fault) = shot(rig, b, taken, rows, Layout::Loop, None, plan).await?;
+        if fault.is_none()
+            && let Polled::Fault(f) = poll(rig, b, &mut w).await?
+        {
+            fault = Some(f);
+        }
+        if let Some(f) = fault {
+            let on = format!("the still hold after the {} move", m.name);
+            found.fault_on = Some(on.clone());
+            found.fault = Some(f.clone());
+            return Err(Halt::Refused(format!(
+                "the set is not accepted: a fault latched on {on}: {f}"
+            )));
+        }
+        found.still.push((m.name.clone(), k));
+    }
+
+    lines.push(wide_said(b));
+    for s in &b.wide {
+        interrupted(rig.stop)?;
+        let plan = json!({"phase": s.test(), "stuck_code": s.code.stuck, "skipped": s.code.skipped,
+                          "side": s.side.name(), "raw_counts": s.raw, "goal_counts": s.goal, "ms": s.ms});
+        let rows = rows_for(s.ms as f64 / 1e3, b.tick_hz);
+        let (bursts, fault) = capture(rig, b, &mut w, taken, rows, s.goal, &plan).await?;
+        if let Some(f) = fault {
+            let on = format!(
+                "the {} at wide code {} from {}",
+                s.test(),
+                s.code.stuck,
+                s.side.name()
+            );
+            found.fault_on = Some(on.clone());
+            found.fault = Some(f.clone());
+            return Err(Halt::Refused(format!(
+                "the set is not accepted: a fault latched on {on}: {f}"
+            )));
+        }
+        found.wide.push((s.clone(), bursts));
     }
 
     write(rig, "goal_position", &(b.mid as i32).to_le_bytes()).await?;
@@ -896,7 +1146,15 @@ pub async fn verify<P: Pipe>(
         counts_per_a: b.counts_per_a,
         tick_hz: b.tick_hz,
         zero_counts: sc::current_zero(
-            chain(taken.iter().map(|t| &t.burst), &b.lin, b.tick_hz).iter(),
+            chain(
+                taken
+                    .iter()
+                    .map(|t| &t.burst)
+                    .filter(|b| b.layout == Layout::Raw),
+                &b.lin,
+                b.tick_hz,
+            )
+            .iter(),
         ),
     };
     let scored: Vec<(Planned, Scores)> = found
@@ -973,9 +1231,22 @@ pub async fn verify<P: Pipe>(
             "NOT read back off"
         }
     ));
-    let result = result_json(
-        &b, &found, &scored, &units, &checks, &failed, way, &why, &exit, after,
+    let mut result = result_json(
+        &b, &found, &taken, &scored, &units, &checks, &failed, way, &why, &exit, after,
     );
+    if ran.is_ok() {
+        let driven: Vec<&[TelFrame]> = taken
+            .iter()
+            .filter(|t| t.burst.layout == Layout::Raw)
+            .map(|t| t.burst.rows.as_slice())
+            .collect();
+        super::with_pot_step4(
+            &mut result,
+            &driven,
+            i.holes,
+            "the check, its wide-code holds too",
+        );
+    }
     let mut text = serde_json::to_vec_pretty(&result).unwrap_or_default();
     text.push(b'\n');
     match rig.sink.write(RESULT, &text) {
@@ -1014,6 +1285,79 @@ fn said(p: &Planned, s: &Scores, u: &Units, cap_counts: f64) -> String {
     )
 }
 
+/// The wide-code holds' line: the codes held, the ones not, and the time.
+fn wide_said(b: &Before) -> String {
+    if b.codes.is_empty() {
+        return "wide-code holds: none, the servo's wide-code map holds no slot".into();
+    }
+    if b.wide.is_empty() {
+        return format!(
+            "wide-code holds: none, every code with a slot ({}) has an approach goal within {FIT_MARGIN_DEG} deg of the soft range",
+            b.codes
+                .iter()
+                .map(|c| c.stuck.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let mut held_codes: Vec<u16> = b.wide.iter().map(|s| s.code.stuck).collect();
+    held_codes.dedup();
+    let not: Vec<String> = b
+        .codes
+        .iter()
+        .filter(|c| !held_codes.contains(&c.stuck))
+        .map(|c| c.stuck.to_string())
+        .collect();
+    format!(
+        "wide-code holds: codes {} (of {} with a slot), each held {WIDE_HOLD_MS} ms twice at the middle of the codes it skips, after a goal {WIDE_APPROACH_COUNTS} counts above its span and one as far below; {:.1} s{}",
+        held_codes
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        b.codes.len(),
+        wide_s(&b.wide),
+        if not.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; not held, an approach goal within {FIT_MARGIN_DEG} deg of the soft range: {}",
+                not.join(", ")
+            )
+        }
+    )
+}
+
+/// The wide-code holds' planned time, s.
+pub fn wide_s(segs: &[WideSeg]) -> f64 {
+    segs.iter().map(|s| s.ms as f64).sum::<f64>() / 1e3
+}
+
+/// The largest observer speed over the still holds, once every planned
+/// move held still: `{"still_speed_cps": ...}`, else empty.
+fn still_estimate(found: &Found, b: &Before, taken: &[Taken]) -> Value {
+    let holds: Vec<&[TelFrame]> = found
+        .still
+        .iter()
+        .map(|(_, k)| taken[*k].burst.rows.as_slice())
+        .collect();
+    let mut m = Map::new();
+    if holds.len() == b.moves.len()
+        && let Some(v) = crate::screens::still_speed_cps(&holds)
+    {
+        let src = format!(
+            "the largest |omega_hat| over the {} still holds, {STILL_S} s each on the loop row at each self-test move's goal after its {HOLD_S} s hold, each read from {} ms in",
+            holds.len(),
+            crate::screens::STILL_SKIP_MS
+        );
+        m.insert(
+            STILL_SPEED.into(),
+            super::estimate(v, super::Scatter::Once(holds.len()), "count/s", &src),
+        );
+    }
+    Value::Object(m)
+}
+
 fn finite(v: f64) -> Value {
     if v.is_finite() { v.into() } else { Value::Null }
 }
@@ -1022,6 +1366,7 @@ fn finite(v: f64) -> Value {
 fn result_json(
     b: &Before,
     found: &Found,
+    taken: &[Taken],
     scored: &[(Planned, Scores)],
     u: &Units,
     checks: &[Check],
@@ -1079,6 +1424,22 @@ fn result_json(
             "overshoot_deg": sc::OVERSHOOT_DEG, "overshoot_share": sc::OVERSHOOT_SHARE,
             "tail_driven_share": sc::TAIL_DRIVEN_SHARE, "follow_share_of_screen": sc::FOLLOW_SHARE,
             "rest_deg": sc::REST_DEG, "screen_counts": b.screen_counts, "watchdog_cap_counts": CAP_GAIN * b.cap_counts,
+        },
+        "estimates": still_estimate(found, b, taken),
+        "still_holds": found.still.iter().map(|(name, k)| {
+            let rows = taken[*k].burst.rows.as_slice();
+            json!({"move": name, "capture": taken[*k].nn, "rows": rows.len(),
+                   "still_speed_cps": crate::screens::still_speed_cps(&[rows])})
+        }).collect::<Vec<_>>(),
+        "wide_codes": {
+            "codes": b.codes.iter().map(|c| json!({"stuck_code": c.stuck, "skipped": c.skipped,
+                "held": b.wide.iter().any(|s| s.code == *c)})).collect::<Vec<_>>(),
+            "hold_ms": WIDE_HOLD_MS, "approach_counts": WIDE_APPROACH_COUNTS, "fit_margin_deg": FIT_MARGIN_DEG,
+            "planned_s": wide_s(&b.wide),
+            "segments": b.wide.iter().enumerate().map(|(k, s)| json!({"test": s.test(), "stuck_code": s.code.stuck,
+                "side": s.side.name(), "raw_counts": s.raw, "goal_counts": s.goal,
+                "goal_deg": (s.goal as f64 - b.mid) / u.counts_per_deg, "ms": s.ms,
+                "captures": found.wide.get(k).map_or(Vec::new(), |(_, at)| taken[at.clone()].iter().map(|t| t.nn).collect())})).collect::<Vec<_>>(),
         },
         "enable_goal_counts": found.goal0,
         "small_steps": small,

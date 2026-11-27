@@ -795,10 +795,13 @@ mod tests {
             (a.run_v, a.derate_speed, a.derate_other, a.travel_deg),
             (b.run_v, b.derate_speed, b.derate_other, b.travel_deg)
         );
+        let volts = |s: Option<osc_measure::nameplate::Stall>| s.map(|s| (s.at_v, s.current_a));
         assert_eq!(
-            (a.speed_row(), a.stall_row()),
-            (b.speed_row(), b.stall_row())
+            (a.speed_row(), volts(a.stall_row())),
+            (b.speed_row(), volts(b.stall_row()))
         );
+        // the profile states the stall torque a yield torque is taken over
+        assert_eq!(a.stall_row().and_then(|s| s.torque_kg_cm), Some(1.8));
         assert!(v1.thermal.is_none(), "the profile states no heat model");
     }
 

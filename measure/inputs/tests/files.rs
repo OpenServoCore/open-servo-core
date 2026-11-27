@@ -2,6 +2,7 @@
 //! migration of version 0, the refusals, and what `resolve` gives.
 
 use osc_ident_inputs::migrate::{PolicyIn, ProfileIn, slug};
+use osc_ident_inputs::nameplate::GearClass;
 use osc_ident_inputs::policy::{StallResponse, Switch};
 use osc_ident_inputs::resolve::{Form, Value};
 use osc_ident_inputs::tuning::{
@@ -14,6 +15,7 @@ const NAMEPLATE: &str = include_str!("../../testdata/mg90-d/nameplate.json");
 const POLICY: &str = include_str!("../../testdata/mg90-d/policy.json");
 const PROFILE: &str = include_str!("../../testdata/mg90-d/profile.json");
 const RECORD_POLICY: &str = include_str!("../../testdata/mg90-d/policy-of-record.json");
+const DEFAULT_POLICY: &str = include_str!("../../testdata/mg90-d/default-policy.json");
 const BOARD: BoardFacts = BoardFacts {
     tick_hz: 20_000.0,
     oc_trip_us: Some(400.0),
@@ -140,10 +142,22 @@ fn both_versions_of_the_record_resolve_to_the_version_0_values() {
         assert_eq!(n.derate_speed, nameplate.derate_speed);
         assert_eq!(n.derate_other, nameplate.derate_other);
         assert_eq!(n.no_load, nameplate.no_load);
-        assert_eq!(n.stall, nameplate.stall);
+        let volts = |s: &[osc_ident_inputs::nameplate::Stall]| -> Vec<(f64, Option<f64>)> {
+            s.iter().map(|r| (r.at_v, r.current_a)).collect()
+        };
+        assert_eq!(volts(&n.stall), volts(&nameplate.stall));
         assert_eq!(n.document, nameplate.document);
         assert_eq!(n.travel_deg, nameplate.travel_deg);
     }
+    assert_eq!(from_v0.nameplate.stall, nameplate.stall);
+    // the profile states the stall torque the yield torque is taken over
+    let torques: Vec<Option<f64>> = from_v1
+        .nameplate
+        .stall
+        .iter()
+        .map(|s| s.torque_kg_cm)
+        .collect();
+    assert_eq!(torques, [Some(1.8), Some(2.2)]);
     assert_eq!(from_v1.nameplate.name, "vorpal-mg90");
     let oc = from_v1
         .report
@@ -265,40 +279,144 @@ fn the_current_limit_is_the_stated_volts_over_r_a_stated_current_beside_it() {
     );
 }
 
-/// A form whose rule this tool does not have yet is refused naming the
-/// fixed form, so no field is left out unannounced.
+/// The Default policy's rule forms resolve as they are stated, each line
+/// saying what the run sets it from; on metal no yield torque is the cap.
 #[test]
-fn a_rule_form_this_tool_cannot_resolve_is_refused_naming_the_fixed_form() {
-    let (p, q) = v1();
+fn the_default_policys_rule_forms_resolve_to_what_the_run_sets() {
+    let (p, _) = v1();
+    let PolicyIn::V1(q) = read::policy(DEFAULT_POLICY, "unused").expect("policy") else {
+        panic!("version 1")
+    };
+    let r = resolve(&p, &q, Some(&BOARD)).expect("resolves");
+    let o = &r.policy;
+    assert_eq!(o.yield_, Some(Yield::TorqueKgCm(None)));
+    assert_eq!(o.stall_release, Some(StallRelease::ShareOfYield(0.36)));
+    assert_eq!(o.stall_speed, Some(StallSpeed::MultipleOfStillSpeed(4.0)));
+    assert_eq!(
+        o.current_loop,
+        Some(CurrentLoop::MultipleOfElectricalCorner(1.25))
+    );
+    assert_eq!(o.observer, Some(Observer::MultipleOfMechanicalCorner(1.9)));
+    assert_eq!(o.pot_jump, Some(PotJump::MultipleOfStep4(4.0)));
+    let line = |f: &str| r.report.fields.iter().find(|l| l.field == f).unwrap();
+    let y = line("protection.yield");
+    assert_eq!(
+        (&y.form, &y.value, y.note.as_deref()),
+        (
+            &Form::Share,
+            &Value::Text("the cap".into()),
+            Some("no yield torque on a metal train: the cap, no fold")
+        )
+    );
+    for f in [
+        "protection.stall_release",
+        "protection.stall_speed",
+        "loops.current_loop",
+        "loops.observer",
+        "sensor.pot_jump",
+    ] {
+        let l = line(f);
+        assert_eq!(l.form, Form::Share, "{f}");
+        assert!(
+            l.note.as_deref().unwrap().ends_with("set by the run"),
+            "{f}"
+        );
+    }
+
+    // a yield torque is the torque ratio, and at or over the current
+    // limit's share of the stall torque the press never trips
+    let mut t = (*q).clone();
+    t.protection.yield_ = Some(Yield::TorqueKgCm(Some(0.9)));
+    let r = resolve(&p, &t, Some(&BOARD)).expect("resolves");
+    let l = r
+        .report
+        .fields
+        .iter()
+        .find(|l| l.field == "protection.yield")
+        .unwrap();
+    assert_eq!(
+        l.note.as_deref(),
+        Some(
+            "over the 1.8 kg cm stall torque at 4.8 V, times 4.8 V over the identified R, set by the run"
+        )
+    );
+    t.protection.yield_ = Some(Yield::TorqueKgCm(Some(1.5)));
+    let r = resolve(&p, &t, Some(&BOARD)).expect("resolves");
+    let l = r
+        .report
+        .fields
+        .iter()
+        .find(|l| l.field == "protection.yield")
+        .unwrap();
+    assert!(
+        l.note
+            .as_deref()
+            .unwrap()
+            .ends_with("the press never trips"),
+        "{l:?}"
+    );
+
+    // a plastic train takes the plastic torque limit, not known yet, and a
+    // torque over it only with the checkbox
+    let mut soft = p.clone();
+    soft.gear_class = Some(GearClass::Plastic);
+    let e = resolve(&soft, &q, Some(&BOARD)).expect_err("not known");
+    assert_eq!(
+        e,
+        "The yield current a stalled horn folds to cannot be set: the plastic torque limit, the yield torque of a plastic train, is not known yet"
+    );
+    let mut t = (*q).clone();
+    t.protection.plastic_torque_limit_kg_cm = Some(0.6);
+    let r = resolve(&soft, &t, Some(&BOARD)).expect("the limit");
+    let l = r
+        .report
+        .fields
+        .iter()
+        .find(|l| l.field == "protection.yield")
+        .unwrap();
+    assert_eq!(l.value, Value::Number(0.6));
+    assert!(
+        l.note
+            .as_deref()
+            .unwrap()
+            .starts_with("the plastic torque limit, over the 1.8 kg cm")
+    );
+    t.protection.yield_ = Some(Yield::TorqueKgCm(Some(0.9)));
+    let e = resolve(&soft, &t, Some(&BOARD)).expect_err("over the limit");
+    assert!(
+        e.ends_with("plastic teeth strip there when the horn is blocked"),
+        "{e}"
+    );
+    t.protection.above_plastic_limit = true;
+    resolve(&soft, &t, Some(&BOARD)).expect("with the checkbox");
+
+    // a torque, a share or a multiple of 0 or under is refused
     type Set = fn(&mut TuningPolicy);
-    let cases: [(&str, &str, Set); 6] = [
-        ("protection.yield", "ma", |q| {
-            q.protection.yield_ = Some(Yield::TorqueKgCm(None))
+    let cases: [(&str, Set); 6] = [
+        ("protection.yield", |q| {
+            q.protection.yield_ = Some(Yield::TorqueKgCm(Some(0.0)))
         }),
-        ("protection.stall_release", "ma", |q| {
-            q.protection.stall_release = Some(StallRelease::ShareOfYield(0.36))
+        ("protection.stall_release", |q| {
+            q.protection.stall_release = Some(StallRelease::ShareOfYield(-0.1))
         }),
-        ("protection.stall_speed", "deg_s", |q| {
-            q.protection.stall_speed = Some(StallSpeed::MultipleOfStillSpeed(4.0))
+        ("protection.stall_speed", |q| {
+            q.protection.stall_speed = Some(StallSpeed::MultipleOfStillSpeed(0.0))
         }),
-        ("loops.current_loop", "hz", |q| {
-            q.loops.current_loop = Some(CurrentLoop::MultipleOfElectricalCorner(1.25))
+        ("loops.current_loop", |q| {
+            q.loops.current_loop = Some(CurrentLoop::MultipleOfElectricalCorner(f64::NAN))
         }),
-        ("loops.observer", "hz", |q| {
-            q.loops.observer = Some(Observer::MultipleOfMechanicalCorner(1.9))
+        ("loops.observer", |q| {
+            q.loops.observer = Some(Observer::MultipleOfMechanicalCorner(0.0))
         }),
-        ("sensor.pot_jump", "counts", |q| {
-            q.sensor.pot_jump = Some(PotJump::MultipleOfStep4(4.0))
+        ("sensor.pot_jump", |q| {
+            q.sensor.pot_jump = Some(PotJump::MultipleOfStep4(0.0))
         }),
     ];
-    for (field, fixed, set) in cases {
-        let mut q = q.clone();
-        set(&mut q);
-        let e = resolve(&p, &q, Some(&BOARD)).expect_err(field);
-        assert!(
-            e.contains(field) && e.contains(&format!("{{\"{fixed}\": ...}}")),
-            "{e}"
-        );
+    for (field, set) in cases {
+        let mut t = (*q).clone();
+        set(&mut t);
+        let e = resolve(&p, &t, Some(&BOARD)).expect_err(field);
+        assert!(e.contains(&format!("the policy's {field} is")), "{e}");
     }
 }
 

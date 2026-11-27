@@ -2837,6 +2837,19 @@ impl PotHole {
     }
 }
 
+/// The pot holes `h` as the pot steps' statistic leaves them out.
+fn pot_holes_of(h: &PotHoles) -> crate::screens::Holes {
+    let ranges: Vec<(f64, f64)> = h.holes.iter().map(|h| (h.from, h.to)).collect();
+    let n = ranges.len();
+    crate::screens::Holes {
+        ranges,
+        source: format!(
+            "the {n} pot hole{} this step found ({RESULT} holes.pot)",
+            if n == 1 { "" } else { "s" }
+        ),
+    }
+}
+
 /// The pot's holes over the slow rungs: pot counts a ripple cycle far over
 /// the pass's typical.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -3460,7 +3473,7 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
             }
         ));
     }
-    let result = result_json(
+    let mut result = result_json(
         &b,
         &found,
         judged.as_ref(),
@@ -3471,6 +3484,15 @@ pub async fn table<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result
         &exit,
         after,
     );
+    if let Some(j) = &judged {
+        let driven: Vec<&[TelFrame]> = found
+            .rungs
+            .iter()
+            .map(|r| taken[r.drive_k].burst.rows.as_slice())
+            .collect();
+        let holes = pot_holes_of(&j.pot_holes);
+        super::with_pot_step4(&mut result, &driven, &holes, "the table's rungs");
+    }
     let mut text = serde_json::to_vec_pretty(&result).unwrap_or_default();
     text.push(b'\n');
     match rig.sink.write(RESULT, &text) {

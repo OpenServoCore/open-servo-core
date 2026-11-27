@@ -28,8 +28,8 @@ pub struct Migrated {
 
 /// A policy resolved with a profile before any run. The values a run binds
 /// from what it measures are not here: the current limit is shown at a
-/// preview resistance, and a form whose rule needs the run is refused as
-/// the CLI refuses it.
+/// preview resistance, and a rule form over what the run measures stays
+/// in its form, its report line saying what the run sets it from.
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[tsify(missing_as_null, hashmap_as_object)]
 #[serde(rename_all = "camelCase")]
@@ -191,6 +191,7 @@ mod tests {
     const POLICY: &str = include_str!("../../../measure/testdata/mg90-d/policy-of-record.json");
     const NAMEPLATE: &str = include_str!("../../../measure/testdata/mg90-d/nameplate.json");
     const POLICY_V0: &str = include_str!("../../../measure/testdata/mg90-d/policy.json");
+    const DEFAULT: &str = include_str!("../../../measure/testdata/mg90-d/default-policy.json");
     /// The board facts the bench servo publishes, as step 0 keeps them.
     const BOARD: &str = include_str!("../../../measure/testdata/mg90-d/board.json");
     /// The preview resistance the policy page shows: the record's 4.1767 ohm.
@@ -411,6 +412,47 @@ mod tests {
                 "{e}"
             );
         }
+    }
+
+    /// The Default policy previews: its rule forms stay in their forms for
+    /// the run, each line saying what the run sets it from, and on metal no
+    /// yield torque is the cap.
+    #[test]
+    fn the_default_policy_previews_its_rule_forms() {
+        let (profile, _, board) = record();
+        let policy: TuningPolicy = json(DEFAULT).parse().expect("policy");
+        assert_eq!(check(&json(DEFAULT), TuningPolicy::check), None);
+        let p = preview(&profile, &policy, R_OHM, Some(&board)).expect("resolves");
+        let y = line(&p, "protection.yield");
+        assert_eq!(
+            (&y.form, &y.value),
+            (&Form::Share, &Value::Text("the cap".into()))
+        );
+        for f in [
+            "protection.stall_release",
+            "protection.stall_speed",
+            "loops.current_loop",
+            "loops.observer",
+            "sensor.pot_jump",
+        ] {
+            let l = line(&p, f);
+            assert_eq!(l.form, Form::Share, "{f}");
+            assert!(
+                l.note
+                    .as_deref()
+                    .is_some_and(|n| n.ends_with("set by the run")),
+                "{f}"
+            );
+        }
+        let v = serde_json::to_value(&p).expect("serializes");
+        assert_eq!(
+            v["values"]["yield"],
+            serde_json::json!({"torque_kg_cm": null})
+        );
+        assert_eq!(
+            v["values"]["current_loop"],
+            serde_json::json!({"multiple_of_electrical_corner": 1.25})
+        );
     }
 
     /// The wrapper keys are camelCase, the file types keep their file keys.

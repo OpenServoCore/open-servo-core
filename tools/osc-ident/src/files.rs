@@ -10,10 +10,42 @@ use osc_ident_inputs::profile::HeatModel;
 use osc_ident_inputs::{BoardFacts, Resolved, read as file_of, resolve, upgrade};
 use osc_measure::board::{self, Record};
 use osc_measure::inputs::{Measured, ShelfRecord, ThermalInputs, Tuning};
+use osc_measure::screens::Holes;
 use osc_measure::set::{SetFile, TableFile, file_sha1};
 use osc_measure::sink::{Sink, SinkError};
+use osc_measure::steps::table as table_step;
 use osc_measure::{Board, Inputs, Nameplate, Quantity, Source};
 use serde::de::DeserializeOwned;
+
+/// The run's pot holes the closed-loop check's pot steps leave out: those
+/// of the table step's result the gathered inputs `measured` (a
+/// `measured.json`) name as their table's source, read again and checked
+/// against its sha1. None, said, where the inputs hold no table or name no
+/// table step's result. Refused where that result is gone or changed.
+pub fn run_holes(measured: &serde_json::Value) -> Result<Holes> {
+    let src = &measured["table"]["source"];
+    let Some(file) = src["file"].as_str() else {
+        return Ok(Holes::none(
+            "the inputs hold no table: no pot hole left out",
+        ));
+    };
+    if !file.ends_with(table_step::RESULT) {
+        return Ok(Holes::none(format!(
+            "the inputs' table is {file}, no table step's result: no pot hole left out"
+        )));
+    }
+    let p = Path::new(file);
+    let bytes = read(p).context(
+        "the table result the inputs' table names, whose pot holes the check's pot steps leave out",
+    )?;
+    if let Some(want) = src["sha1"].as_str()
+        && file_sha1(&bytes) != want
+    {
+        bail!("{file} changed since the inputs were gathered (sha1 {want}): gather again");
+    }
+    let doc: serde_json::Value = json(p, &bytes)?;
+    Holes::of_table(&doc, file).map_err(|e| anyhow::anyhow!(e))
+}
 
 /// A run's board file, `inputs/board.json`: what step 0 read off the servo.
 pub const BOARD: &str = "inputs/board.json";
@@ -385,6 +417,49 @@ mod tests {
                 policy.display()
             )]
         );
+    }
+
+    /// The check's pot holes are those of the table step's result the
+    /// inputs name as their table's source, read again: none, said, where
+    /// the inputs' table is no table step's result; refused where that
+    /// result is gone or changed since the gather.
+    #[test]
+    fn the_run_holes_are_the_table_results_the_inputs_name() {
+        let dir = std::env::temp_dir().join(format!("osc-ident-holes-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("results")).expect("mkdir");
+        let file = dir.join(table_step::RESULT);
+        let doc = serde_json::json!({"step": "table", "holes": {"pot": {"holes": [
+            {"from_counts": 6.75, "to_counts": 118.8}]}}});
+        let bytes = serde_json::to_vec(&doc).expect("bytes");
+        std::fs::write(&file, &bytes).expect("write");
+        let measured = |sha1: &str| {
+            serde_json::json!({"table": {"counts_per_deg": 20.0, "source": {
+                "file": file.display().to_string(), "key": "scale.counts_per_deg", "sha1": sha1}}})
+        };
+        let h = run_holes(&measured(&file_sha1(&bytes))).expect("holes");
+        assert_eq!(h.ranges, vec![(6.75, 118.8)]);
+        assert_eq!(h.source, format!("the 1 pot hole of {}", file.display()));
+        let changed = run_holes(&measured("0000")).expect_err("changed");
+        assert!(
+            changed
+                .to_string()
+                .contains("changed since the inputs were gathered"),
+            "{changed}"
+        );
+        let none = run_holes(&serde_json::json!({"r_ohm": {}})).expect("none");
+        assert!(
+            none.ranges.is_empty() && none.source.contains("no table"),
+            "{none:?}"
+        );
+        let record = serde_json::json!({"table": {"source": {"file": "notebooks/x.pos_lut.json", "sha1": "1"}}});
+        let h = run_holes(&record).expect("none");
+        assert!(
+            h.ranges.is_empty() && h.source.contains("no table step's result"),
+            "{h:?}"
+        );
+        std::fs::remove_file(&file).expect("rm");
+        assert!(run_holes(&measured(&file_sha1(&bytes))).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The bench nameplate loads; one still stating ripple_per_rev is

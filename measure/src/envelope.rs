@@ -911,6 +911,7 @@ mod tests {
 
         np.stall = vec![crate::nameplate::Stall {
             at_v: 4.8,
+            torque_kg_cm: None,
             current_a: Some(1.2),
         }];
         np.operating_v = Some(VoltRange { min: 4.8, max: 6.6 });

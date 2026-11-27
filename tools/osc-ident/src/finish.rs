@@ -18,6 +18,7 @@ use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::pos_lut::INTERVALS;
 use osc_client::{Client, Id};
+use osc_measure::gather::{self, POT_STEP4, StepResult};
 use osc_measure::install::{self, Refused};
 use osc_measure::nameplate::Nameplate;
 use osc_measure::set::SetFile;
@@ -30,7 +31,7 @@ use serde_json::{Value, json};
 
 use crate::files::{self, DirSink};
 use crate::run::RunArgs;
-use crate::tune::{Scored, try_head, try_json};
+use crate::tune::{Checked, Scored, try_head, try_json};
 
 fn unix_s() -> f64 {
     SystemTime::now()
@@ -95,9 +96,7 @@ pub async fn finish<P: Pipe>(
 ) -> Result<Finished> {
     let run_cruise =
         async |rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>| cruise::cruise(rig, i).await;
-    let check = async |rig: &mut Rig<'_, P>, np: &Nameplate| {
-        verify::verify(rig, &VerifyInputs { nameplate: np }).await
-    };
+    let check = async |rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>| verify::verify(rig, i).await;
     finish_with(c, id, d, a, root, stop, run_cruise, check).await
 }
 
@@ -123,17 +122,91 @@ async fn short_of_final<P: Pipe>(
     }
 }
 
-/// The final set from the gather with the cruise line, at the tune's gain:
-/// the set, the measured file it was given with, and its table.
+/// The terms of the tune's accepted check, try `from`, the final set takes:
+/// its still speed, and the pot statistic, the worst of the gather's
+/// `gathered` and the check's; each said, the check's none where its
+/// result holds none or cannot be read.
+fn tune_checked(
+    tune_dir: &Path,
+    from: u32,
+    gathered: Option<&Value>,
+    lines: &mut Vec<String>,
+) -> Checked {
+    let p = tune_dir.join(format!("tries/{from:02}/{}", verify::RESULT));
+    let r = files::read(&p)
+        .map_err(|e| format!("{e:#}"))
+        .and_then(|bytes| StepResult::parse(&p.display().to_string(), &bytes).map_err(|e| e.0));
+    let still = tune_still(r.as_ref(), from, lines);
+    let check = match r
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|r| gather::check_pot_step4(r).map_err(|e| e.0))
+    {
+        Ok(q) => q,
+        Err(e) => {
+            lines.push(format!("{POT_STEP4} of the tune's check: not read, {e}"));
+            None
+        }
+    };
+    let value = |q: Option<&Value>| {
+        q.and_then(|q| q["value"].as_f64())
+            .map_or("none".to_string(), |v| format!("{v:.0}"))
+    };
+    let step4 = gather::worst_pot_step4(gathered, check.as_ref());
+    lines.push(format!(
+        "{POT_STEP4} {} raw counts: the worst of the spins' and the table's, {}, and the tune's check's, try {from}, its wide-code holds too, {}",
+        value(step4.as_ref()),
+        value(gathered),
+        value(check.as_ref())
+    ));
+    Checked { still, step4 }
+}
+
+/// The still speed of the tune's accepted check `r`, try `from`, as a
+/// measured term; none, said, where its result holds none or cannot be
+/// read.
+fn tune_still(
+    r: Result<&StepResult, &String>,
+    from: u32,
+    lines: &mut Vec<String>,
+) -> Option<Value> {
+    let read = r
+        .map_err(Clone::clone)
+        .and_then(|r| gather::still_speed(r).map_err(|e| e.0));
+    match read {
+        Ok(Some(q)) => {
+            lines.push(format!(
+                "still_speed_cps {:.1} count/s: the largest observer speed over the still holds of the tune's check, try {from}",
+                q["value"].as_f64().unwrap_or(f64::NAN)
+            ));
+            Some(q)
+        }
+        Ok(None) => {
+            lines.push(format!(
+                "still_speed_cps: the tune's check, try {from}, holds no still holds"
+            ));
+            None
+        }
+        Err(e) => {
+            lines.push(format!("still_speed_cps: not read, {e}"));
+            None
+        }
+    }
+}
+
+/// The final set from the gather with the cruise line, at the tune's gain
+/// and with the terms of the tune's accepted check: the set, the measured
+/// file it was given with, and its table.
 fn final_set(
     inputs_dir: &Path,
     kp: f64,
+    checked: &Checked,
     d: &Descriptor,
 ) -> Result<(SetFile, Vec<u8>, Option<[i16; INTERVALS]>)> {
     let r = files::rules_inputs(inputs_dir, None)?;
     let measured = json_at(&inputs_dir.join("measured.json"))?;
     let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
-    let (file, bytes, _) = crate::tune::set_at(&r, &measured, kp, &pair, d)
+    let (file, bytes, _) = crate::tune::set_at(&r, &measured, kp, checked, &pair, d)
         .with_context(|| format!("the rules on {} at kp {kp}", inputs_dir.display()))?;
     Ok((file, bytes, r.table.as_ref().map(|t| t.points)))
 }
@@ -234,7 +307,7 @@ async fn final_checks<P: Pipe, V>(
     lines: &mut Vec<String>,
 ) -> Checks
 where
-    V: AsyncFnMut(&mut Rig<'_, P>, &Nameplate) -> Result<Verified, Refused>,
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
 {
     let mut out = Checks {
         tries: vec![],
@@ -243,6 +316,20 @@ where
         why: String::new(),
     };
     let tune_dir = root.join("tune");
+    let gathered = json_at(&inputs_dir.join("measured.json"));
+    let checked = tune_checked(
+        &tune_dir,
+        from,
+        gathered.as_ref().ok().and_then(|m| m.get(POT_STEP4)),
+        lines,
+    );
+    let holes = match gathered.and_then(|m| files::run_holes(&m)) {
+        Ok(h) => h,
+        Err(e) => {
+            out.why = format!("the final check's pot holes were not read: {e:#}");
+            return out;
+        }
+    };
     let mut sink = DirSink {
         root: tune_dir.clone(),
     };
@@ -257,11 +344,12 @@ where
             break "interrupted between tries".into();
         }
         let dir = format!("tries/{t:02}");
-        let prepared = final_set(inputs_dir, kp_now, d).and_then(|(file, bytes, points)| {
-            sink.write(&format!("{dir}/measured.json"), &bytes)?;
-            sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
-            Ok((file, points))
-        });
+        let prepared =
+            final_set(inputs_dir, kp_now, &checked, d).and_then(|(file, bytes, points)| {
+                sink.write(&format!("{dir}/measured.json"), &bytes)?;
+                sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
+                Ok((file, points))
+            });
         let (file, points) = match prepared {
             Ok(p) => p,
             Err(e) if first => break format!("the final set was not built: {e:#}"),
@@ -324,7 +412,14 @@ where
                 stop,
                 clock: &clock,
             };
-            check(&mut rig, np).await
+            check(
+                &mut rig,
+                &VerifyInputs {
+                    nameplate: np,
+                    holes: &holes,
+                },
+            )
+            .await
         };
         let t3 = unix_s();
         let s = Scored::of(&ran);
@@ -458,7 +553,7 @@ pub(crate) async fn finish_with<P: Pipe, C, V>(
 ) -> Result<Finished>
 where
     C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
-    V: AsyncFnMut(&mut Rig<'_, P>, &Nameplate) -> Result<Verified, Refused>,
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
 {
     let tune_dir = root.join("tune");
     let tuned = json_at(&tune_dir.join("tune.json"))?;
@@ -770,8 +865,8 @@ mod tests {
         let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
         let k0 = osc_measure::rules::speed_loop::starting_gain(&r.inputs).expect("k0");
         let kp = tune::gain(k0, accepted - 1);
-        let (set, _, _) =
-            crate::tune::set_at(&r, &measured, kp, &pair, &d).expect("the tune's set");
+        let (set, _, _) = crate::tune::set_at(&r, &measured, kp, &Checked::default(), &pair, &d)
+            .expect("the tune's set");
         std::fs::create_dir_all(root.join("tune")).expect("mkdir");
         std::fs::write(root.join("tune/set.json"), set.render()).expect("set");
         let tries: Vec<Value> = (1..=accepted)
@@ -921,7 +1016,7 @@ mod tests {
             root,
             &AtomicBool::new(false),
             async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| cruised(rig, Way::Done, &doc),
-            async |rig: &mut Rig<'_, Spy>, _: &Nameplate| {
+            async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
                 let (way, failed) = script[at.min(script.len() - 1)];
                 at += 1;
                 checked_on(rig, way, failed)
@@ -949,7 +1044,7 @@ mod tests {
             root,
             &AtomicBool::new(false),
             async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| cruised(rig, cruise_way, &doc),
-            async |rig: &mut Rig<'_, Spy>, _: &Nameplate| {
+            async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
                 checks += 1;
                 checked(rig, check_way)
             },
@@ -970,6 +1065,118 @@ mod tests {
     /// installed volatile and checked; accepted, it stays on the servo,
     /// the command that stores it printed, nothing saved. Accepted the
     /// first time, nothing is backed off: no try is added to the tune's.
+    /// The final set takes the still speed of the tune's accepted check as
+    /// a measured term naming its result; a tune whose check holds none
+    /// leaves it out and says so.
+    #[test]
+    fn the_final_set_takes_the_still_speed_of_the_tunes_check() {
+        let dir = scratch("finish-still");
+        let g = given();
+        let (root, _, mut c, _) = tuned(&dir, &g);
+        let at = root.join(format!("tune/tries/01/{}", verify::RESULT));
+        std::fs::create_dir_all(at.parent().expect("parent")).expect("mkdir");
+        let check = json!({"step": "verify", "verdict": "accepted", "estimates": {"still_speed_cps":
+            {"value": 115.0, "sd": null, "n": 6, "unit": "count/s", "source": "the still holds"}}});
+        std::fs::write(&at, check.to_string()).expect("verify.json");
+        let (f, _) = finish_scripted(&mut c, &args(&g, &dir), &root, Way::Done, Way::Done);
+        let text = f.lines.join("\n");
+        assert!(
+            text.contains("still_speed_cps 115.0 count/s: the largest observer speed over the still holds of the tune's check, try 1"),
+            "{text}"
+        );
+        let m = json_at(&root.join("final/measured.json")).expect("m");
+        let q = &m["still_speed_cps"];
+        assert_eq!(
+            (q["value"].as_f64(), q["n"].as_u64()),
+            (Some(115.0), Some(6))
+        );
+        assert!(
+            q["source"]["file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with("tune/tries/01/results/verify.json")),
+            "{q}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        let dir = scratch("finish-no-still");
+        let (root, _, mut c, _) = tuned(&dir, &g);
+        let at = root.join(format!("tune/tries/01/{}", verify::RESULT));
+        std::fs::create_dir_all(at.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &at,
+            json!({"step": "verify", "verdict": "accepted"}).to_string(),
+        )
+        .expect("verify.json");
+        let (f, _) = finish_scripted(&mut c, &args(&g, &dir), &root, Way::Done, Way::Done);
+        assert!(
+            f.lines
+                .iter()
+                .any(|l| l == "still_speed_cps: the tune's check, try 1, holds no still holds"),
+            "{:?}",
+            f.lines
+        );
+        let m = json_at(&root.join("final/measured.json")).expect("m");
+        assert!(m.get("still_speed_cps").is_none(), "{m}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The final set's pot statistic is the worst over the whole
+    /// population: the spins' and the table's as gathered, and the tune's
+    /// accepted check's, its wide-code holds too; the larger term, named by
+    /// its result.
+    #[test]
+    fn the_final_pot_steps_are_the_worst_of_the_gather_and_the_tunes_check() {
+        let g = given();
+        let check = |v: f64| {
+            json!({"step": "verify", "verdict": "accepted", "estimates": {"pot_step4_counts":
+                {"value": v, "sd": null, "n": 34, "unit": "raw counts", "source": "the check"}}})
+        };
+        let finished = |name: &str, spins: Option<f64>, checked: f64| {
+            let dir = scratch(name);
+            let (root, _, mut c, _) = tuned(&dir, &g);
+            if let Some(v) = spins {
+                let p = root.join("results/spins.json");
+                let mut doc = json_at(&p).expect("spins.json");
+                doc["estimates"]["pot_step4_counts"] =
+                    json!({"value": v, "sd": null, "n": 12, "unit": "raw counts"});
+                std::fs::write(&p, doc.to_string()).expect("spins.json");
+            }
+            let at = root.join(format!("tune/tries/01/{}", verify::RESULT));
+            std::fs::create_dir_all(at.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&at, check(checked).to_string()).expect("verify.json");
+            let (f, _) = finish_scripted(&mut c, &args(&g, &dir), &root, Way::Done, Way::Done);
+            let m = json_at(&root.join("final/measured.json")).expect("m");
+            let _ = std::fs::remove_dir_all(dir);
+            (f.lines.join("\n"), m[POT_STEP4].clone())
+        };
+        let (text, q) = finished("finish-step4-check", Some(15.0), 52.0);
+        assert_eq!(
+            (q["value"].as_f64(), q["n"].as_u64()),
+            (Some(52.0), Some(34)),
+            "{q}"
+        );
+        assert!(
+            q["source"]["file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with("tune/tries/01/results/verify.json")),
+            "{q}"
+        );
+        assert!(
+            text.contains("pot_step4_counts 52 raw counts: the worst of the spins' and the table's, 15, and the tune's check's, try 1, its wide-code holds too, 52"),
+            "{text}"
+        );
+        let (_, q) = finished("finish-step4-spins", Some(60.0), 52.0);
+        assert_eq!(q["value"].as_f64(), Some(60.0), "{q}");
+        assert!(
+            q["source"]["file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with("results/spins.json")),
+            "{q}"
+        );
+        let (_, q) = finished("finish-step4-alone", None, 52.0);
+        assert_eq!(q["value"].as_f64(), Some(52.0), "{q}");
+    }
+
     #[test]
     fn an_accepted_cruise_installs_and_checks_the_final_set() {
         let dir = scratch("finish-accepted");
@@ -1002,7 +1209,8 @@ mod tests {
             .as_f64()
             .expect("kp");
         let d = crate::descriptor_builtin().expect("descriptor");
-        let (set, measured, _) = final_set(&root.join("final/inputs"), kp, &d).expect("set");
+        let (set, measured, _) =
+            final_set(&root.join("final/inputs"), kp, &Checked::default(), &d).expect("set");
         let mut today: Vec<(String, Vec<u8>)> = tree_of(&root.join("final/inputs"))
             .into_iter()
             .map(|(n, b)| (format!("inputs/{n}"), b))
@@ -1168,7 +1376,7 @@ mod tests {
                 after(rig.c);
                 r
             },
-            async |rig: &mut Rig<'_, Spy>, _: &Nameplate| {
+            async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
                 checks += 1;
                 let r = checked(rig, check_way);
                 after_check(rig.c);

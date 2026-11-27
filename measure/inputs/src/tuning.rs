@@ -311,6 +311,58 @@ impl TuningPolicy {
         {
             return Err("A plastic torque limit of 0 or under would never let a plastic horn push: the policy's protection.plastic_torque_limit_kg_cm is not over 0; leave it out for none".into());
         }
+        if let Some(Yield::TorqueKgCm(Some(t))) = p.yield_
+            && !(t.is_finite() && t > 0.0)
+        {
+            return Err(format!(
+                "A yield torque of 0 or under would read as the cap, no fold: the policy's protection.yield is {{\"torque_kg_cm\": {t}}}; state null for the default"
+            ));
+        }
+        let rules = [
+            (
+                "protection.stall_release",
+                match p.stall_release {
+                    Some(StallRelease::ShareOfYield(s)) => Some(s),
+                    _ => None,
+                },
+            ),
+            (
+                "protection.stall_speed",
+                match p.stall_speed {
+                    Some(StallSpeed::MultipleOfStillSpeed(m)) => Some(m),
+                    _ => None,
+                },
+            ),
+            (
+                "loops.current_loop",
+                match self.loops.current_loop {
+                    Some(CurrentLoop::MultipleOfElectricalCorner(m)) => Some(m),
+                    _ => None,
+                },
+            ),
+            (
+                "loops.observer",
+                match self.loops.observer {
+                    Some(Observer::MultipleOfMechanicalCorner(m)) => Some(m),
+                    _ => None,
+                },
+            ),
+            (
+                "sensor.pot_jump",
+                match self.sensor.pot_jump {
+                    Some(PotJump::MultipleOfStep4(m)) => Some(m),
+                    _ => None,
+                },
+            ),
+        ];
+        for (field, x) in rules {
+            if x.is_some_and(|x| !(x.is_finite() && x > 0.0)) {
+                return Err(format!(
+                    "A share or a multiple of 0 or under sets nothing the servo can run on: the policy's {field} is {}; state one over 0",
+                    x.unwrap_or_default()
+                ));
+            }
+        }
         Ok(())
     }
 }

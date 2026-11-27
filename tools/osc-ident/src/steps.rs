@@ -15,6 +15,7 @@ use osc_measure::capture::tel;
 use osc_measure::envelope::{Envelope, Facts, HeatModel, Rung};
 use osc_measure::inputs::ThermalInputs;
 use osc_measure::nameplate::Nameplate;
+use osc_measure::screens::Holes;
 use osc_measure::state;
 use osc_measure::steps::cruise::{self, CruiseInputs};
 use osc_measure::steps::probe::{self, ProbeInputs};
@@ -538,7 +539,15 @@ pub async fn step_verify<P: Pipe>(
             stop,
             clock: &clock,
         };
-        verify::verify(&mut rig, &VerifyInputs { nameplate: np }).await
+        let holes = Holes::none("a step on its own reads no run's table");
+        verify::verify(
+            &mut rig,
+            &VerifyInputs {
+                nameplate: np,
+                holes: &holes,
+            },
+        )
+        .await
     };
     let entry = Ran {
         step: verify::STEP,
@@ -962,6 +971,7 @@ async fn chain<P: Pipe>(
             let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
             let window_result = result_of(&mut sink, window::RESULT, "window")?;
+            let table_result = result_of(&mut sink, table::RESULT, "table")?;
             let spun = {
                 let mut rig = Rig {
                     c: &mut *c,
@@ -981,6 +991,7 @@ async fn chain<P: Pipe>(
                         probe: &probe_result,
                         stops: &stops_result,
                         window: Some(&window_result),
+                        table: Some(&table_result),
                     },
                 )
                 .await

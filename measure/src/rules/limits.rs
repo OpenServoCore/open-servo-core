@@ -11,7 +11,10 @@ use super::units::{
     counts_per_deg, deg_to_counts, ma_to_counts, ms_to_ticks, share, shunt_counts_per_a,
 };
 use super::{Ctx, Fail, Format, Kind, Rule, Set, board, get, q, table};
-use crate::policy::{PotJump, StallRelease, StallResponse, StallSpeed, Switch, Yield};
+use crate::nameplate::GearClass;
+use crate::policy::{
+    PotJump, StallRelease, StallResponse, StallSpeed, Switch, Yield, YieldRefusal, yield_torque,
+};
 
 /// The row the maker states at the stated voltage nearest the one the
 /// servo runs on, the lower of two as near, of the rows inside the
@@ -68,22 +71,57 @@ fn current_limit(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(current_limit_a(c)? * shunt_counts_per_a(c)?)
 }
 
-fn yield_current(c: &mut Ctx) -> Result<f64, Fail> {
+/// The yield current, A, 0 for the cap: the policy's, or a max yield
+/// torque taken to current by the torque ratio, the torque over the stall
+/// torque the maker states times the voltage the stall is stated at over
+/// the seated winding. Two torques at one voltage cancel Kt, the gear
+/// ratio and the train's efficiency, which no step measures at the horn.
+fn yield_current_a(c: &mut Ctx) -> Result<f64, Fail> {
     let v = c.inputs.policy.yield_;
-    match c.get("policy.yield", v)? {
-        Yield::Ma(ma) => ma_to_counts(c, ma),
-        Yield::TorqueKgCm(_) => Err(Fail::refused(
-            "policy.yield is a max yield torque, which this tool does not bind yet",
-        )),
+    let asked = match c.get("policy.yield", v)? {
+        Yield::Ma(ma) => return Ok(ma / 1000.0),
+        Yield::TorqueKgCm(t) => t,
+    };
+    let metal = get!(c, nameplate, gear_class)? == GearClass::Metal;
+    let p = &c.inputs.policy;
+    let (limit, above) = (p.plastic_torque_limit_kg_cm, p.above_plastic_limit);
+    if !metal {
+        c.fact("policy.plastic_torque_limit_kg_cm", ());
     }
+    let torque = match yield_torque(metal, asked, limit, above) {
+        Ok(None) => return Ok(0.0),
+        Ok(Some(t)) => t,
+        Err(YieldRefusal::NotKnown) => {
+            return Err(Fail::missing("policy.plastic_torque_limit_kg_cm"));
+        }
+        Err(e) => return Err(Fail::refused(format!("policy.yield: {}", e.said()))),
+    };
+    let rows = c.inputs.nameplate.stall.clone();
+    let row = stated(c, "nameplate.stall", &rows, |r| r.at_v)?;
+    let Some(stall) = row.torque_kg_cm else {
+        return Err(Fail::missing("nameplate.stall torque_kg_cm"));
+    };
+    Ok(torque / stall * row.at_v / q!(c, measured, r_ohm)?)
 }
 
+fn yield_current(c: &mut Ctx) -> Result<f64, Fail> {
+    Ok(yield_current_a(c)? * shunt_counts_per_a(c)?)
+}
+
+/// The stall release: the policy's, or its share of the yield current as
+/// the kernel runs it, the current limit where the yield current is 0.
 fn stall_release(c: &mut Ctx) -> Result<f64, Fail> {
     match get!(c, policy, stall_release)? {
         StallRelease::Ma(ma) => ma_to_counts(c, ma),
-        StallRelease::ShareOfYield(_) => Err(Fail::refused(
-            "policy.stall_release is a share of the yield current, which this tool does not bind yet",
-        )),
+        StallRelease::ShareOfYield(s) => {
+            let folds_to = yield_current_a(c)?;
+            let held = if folds_to > 0.0 {
+                folds_to
+            } else {
+                current_limit_a(c)?
+            };
+            Ok(s * held * shunt_counts_per_a(c)?)
+        }
     }
 }
 
@@ -108,12 +146,13 @@ fn stall_time(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(ms_to_ticks(c, ms))
 }
 
+/// The stall speed: the policy's, or its multiple of the largest speed
+/// the observer reads over the still holds of a closed-loop check, what the
+/// detector must clear on every MEDIUM period of a press.
 fn stall_omega_max(c: &mut Ctx) -> Result<f64, Fail> {
     match get!(c, policy, stall_speed)? {
         StallSpeed::DegS(deg) => deg_to_counts(c, deg),
-        StallSpeed::MultipleOfStillSpeed(_) => Err(Fail::refused(
-            "policy.stall_speed is a multiple of the still-shaft speed, which this tool does not bind yet",
-        )),
+        StallSpeed::MultipleOfStillSpeed(m) => Ok(m * q!(c, measured, still_speed_cps)?),
     }
 }
 
@@ -157,12 +196,13 @@ fn pos_error_time(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(ms_to_ticks(c, ms))
 }
 
+/// The pot jump: the policy's, or its multiple of the worst run of 4
+/// successive RAIL-period pot steps over the run's driven rows, the
+/// statistic the sensor screen tests.
 fn sensor_delta(c: &mut Ctx) -> Result<f64, Fail> {
     match get!(c, policy, pot_jump)? {
         PotJump::Counts(n) => Ok(n),
-        PotJump::MultipleOfStep4(_) => Err(Fail::refused(
-            "policy.pot_jump is a multiple of the pot's 4-step run, which this tool does not bind yet",
-        )),
+        PotJump::MultipleOfStep4(m) => Ok(m * q!(c, measured, pot_step4_counts)?),
     }
 }
 

@@ -24,10 +24,11 @@ use osc_measure::guard::Way;
 use osc_measure::install;
 use osc_measure::nameplate::Nameplate;
 use osc_measure::scorecard::{self as sc, Lin, Move, Row, Units};
+use osc_measure::screens::Holes;
 use osc_measure::sink::MemSink;
 use osc_measure::state;
 use osc_measure::steps::Rig;
-use osc_measure::steps::verify::{self, Verified, VerifyInputs};
+use osc_measure::steps::verify::{self, Side, Verified, VerifyInputs, WideCode, WideSeg};
 use serde_json::Value;
 
 fn json(rel: &str) -> Value {
@@ -371,6 +372,15 @@ fn run(
     stop: &AtomicBool,
     sink: &mut MemSink,
 ) -> Result<Verified, install::Refused> {
+    run_with(c, stop, sink, &Holes::none("no run's table"))
+}
+
+fn run_with(
+    c: &mut Client<Bus>,
+    stop: &AtomicBool,
+    sink: &mut MemSink,
+    holes: &Holes,
+) -> Result<Verified, install::Refused> {
     let d = descriptor();
     let clock = || 1.7e9;
     let np = nameplate();
@@ -382,7 +392,13 @@ fn run(
         stop,
         clock: &clock,
     };
-    block_on(verify::verify(&mut rig, &VerifyInputs { nameplate: &np }))
+    block_on(verify::verify(
+        &mut rig,
+        &VerifyInputs {
+            nameplate: &np,
+            holes,
+        },
+    ))
 }
 
 fn torque(c: &mut Client<Bus>) -> u8 {
@@ -668,4 +684,275 @@ fn a_fault_in_the_self_test_fails_no_fault_and_ends_torque_off() {
         .sim_mut()
         .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
     assert_eq!(torque(&mut c), 0);
+}
+
+/// Each self-test move is followed by a still hold on the loop row, and
+/// its still speed is the largest |omega_hat| over that hold's rows alone:
+/// the simulated servo runs no loop, so each burst reads the observer
+/// speed set at its arm. Arms: the enable, four small steps, the move to
+/// the middle, the first move (500 count/s, which no hold reads), its
+/// still hold (-80); a fault on the second move ends the step, and with
+/// a move short of its still hold the check gives no still speed.
+#[test]
+fn a_checks_still_holds_give_the_still_speed() {
+    let (mut c, _) = servo(
+        BaudRate::B3000000,
+        MID_POT,
+        Box::new(|n, p| {
+            let cps: i32 = match n {
+                7 => 500,
+                8 => -80,
+                _ => 0,
+            };
+            p.sim_mut().servo_table_mut(0, |t| {
+                t.telemetry.estimates.omega_hat_cps = cps << 16;
+                if n == 9 {
+                    t.telemetry.common.fault_flags = 0x10;
+                }
+            });
+            false
+        }),
+    );
+    let mut sink = MemSink::default();
+    let v = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");
+    let result: Value = serde_json::from_slice(&sink.files[verify::RESULT]).expect("verify.json");
+    let holds = result["still_holds"].as_array().expect("still holds");
+    assert_eq!(holds.len(), 1, "{result}");
+    let h = &holds[0];
+    assert_eq!(
+        (
+            h["move"].as_str(),
+            h["capture"].as_u64(),
+            h["still_speed_cps"].as_f64()
+        ),
+        (Some("1% + out"), Some(8), Some(80.0)),
+        "{result}"
+    );
+    let rows = (verify::STILL_S * 20_000.0).ceil() as u64;
+    assert_eq!(h["rows"].as_u64(), Some(rows));
+    assert!(
+        sink.files
+            .keys()
+            .any(|k| k.starts_with("captures/verify/08-loop")),
+        "{:?}",
+        sink.files.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(result["estimates"], serde_json::json!({}), "{result}");
+    assert_eq!(result["fault_on"], "1% + back", "{result}");
+    assert!(v.ended.exit.torque_off);
+    c.pipe_mut()
+        .inner
+        .sim_mut()
+        .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
+}
+
+// --- the wide-code holds ---
+
+/// The board of record's wide-code slots (`testdata/mg90-d/wide-codes.json`).
+const SLOTS: [u8; 16] = [0, 48, 0, 80, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0];
+
+fn code(stuck: u16, skipped: u16) -> WideCode {
+    WideCode { stuck, skipped }
+}
+
+/// A plan's segments as (stuck code, side, hold, raw, goal, ms).
+fn plan_of(segs: &[WideSeg]) -> Vec<(u16, Side, bool, i32, i32, u32)> {
+    segs.iter()
+        .map(|s| (s.code.stuck, s.side, s.hold, s.raw, s.goal, s.ms))
+        .collect()
+}
+
+/// Every slot that holds a value is a wide code, lowest first: slot k the
+/// stuck code (k << 8) | 0xFF, its value 8 x the codes it skips. The goals
+/// are testset.py's: 30 counts above the span, the middle of the skipped
+/// codes, 30 counts below the stuck code.
+#[test]
+fn the_wide_codes_are_the_slotted_ones_and_their_goals_the_scorecards() {
+    assert_eq!(
+        verify::wide_codes(&SLOTS),
+        vec![code(511, 6), code(1023, 10), code(2047, 11), code(2559, 6)]
+    );
+    assert_eq!(verify::wide_goals(code(2047, 11)), (2088, 2053, 2017));
+    assert_eq!(verify::wide_goals(code(1023, 10)), (1063, 1029, 993));
+    // an approach is held for its travel as a step of that size: up to 2,
+    // 20 and 60 deg, and the largest size's hold beyond
+    let ms: Vec<u32> = [0.0, 2.0, 2.01, 20.0, 20.5, 60.0, 61.0, 180.0]
+        .into_iter()
+        .map(verify::approach_ms)
+        .collect();
+    assert_eq!(ms, vec![1200, 1200, 1500, 1500, 2000, 2000, 2000, 2000]);
+}
+
+/// On the raw pot (no live table), from the center 2048 at 20 counts/deg:
+/// each code above, its middle, below, its middle; the first approach timed
+/// from the center, each later one from the middle held before it. Code 511
+/// is not held in a soft range from 400: its goal below, 481, lies under
+/// 400 + 5 deg.
+#[test]
+fn the_wide_holds_plan_follows_the_scorecards_wide_capture() {
+    let codes = verify::wide_codes(&SLOTS);
+    let segs = verify::wide(2048.0, 20.0, (400.0, 3700.0), &codes, None);
+    use Side::{Above, Below};
+    assert_eq!(
+        plan_of(&segs),
+        vec![
+            (1023, Above, false, 1063, 1063, 2000),
+            (1023, Above, true, 1029, 1029, 2000),
+            (1023, Below, false, 993, 993, 1200),
+            (1023, Below, true, 1029, 1029, 2000),
+            (2047, Above, false, 2088, 2088, 2000),
+            (2047, Above, true, 2053, 2053, 2000),
+            (2047, Below, false, 2017, 2017, 1200),
+            (2047, Below, true, 2053, 2053, 2000),
+            (2559, Above, false, 2595, 2595, 2000),
+            (2559, Above, true, 2563, 2563, 2000),
+            (2559, Below, false, 2529, 2529, 1200),
+            (2559, Below, true, 2563, 2563, 2000),
+        ]
+    );
+    assert_eq!(verify::wide_s(&segs), 21.6);
+    assert!(
+        segs.iter()
+            .all(|s| s.test() == if s.hold { "wide-hold" } else { "wide-approach" })
+    );
+    // both goals must lie 5 deg (100 counts) clear: a soft range from 381
+    // holds 511, from 382 it does not; at the top, 2595 + 100 is the edge
+    let held = |soft: (f64, f64)| {
+        let mut c: Vec<u16> = verify::wide(2048.0, 20.0, soft, &codes, None)
+            .iter()
+            .map(|s| s.code.stuck)
+            .collect();
+        c.dedup();
+        c
+    };
+    assert_eq!(held((381.0, 3700.0)), vec![511, 1023, 2047, 2559]);
+    assert_eq!(held((382.0, 3700.0)), vec![1023, 2047, 2559]);
+    assert_eq!(held((382.0, 2695.0)), vec![1023, 2047, 2559]);
+    assert_eq!(held((382.0, 2694.0)), vec![1023, 2047]);
+    assert!(verify::wide(2048.0, 20.0, (1100.0, 2000.0), &codes, None).is_empty());
+    // the codes come lowest first whatever their order
+    let mut rev = codes.clone();
+    rev.reverse();
+    assert_eq!(
+        verify::wide(2048.0, 20.0, (400.0, 3700.0), &rev, None),
+        segs
+    );
+}
+
+/// A travel of exactly 2 deg is held as a 2 deg step, a hair over it as a
+/// 20 deg one: 36 counts at 18 counts/deg, then at 17.9.
+#[test]
+fn an_approach_of_2_deg_is_held_as_the_2_deg_step() {
+    let codes = [code(1023, 10)];
+    let ms = |cpd: f64| verify::wide(1937.0, cpd, (0.0, 4095.0), &codes, None)[2].ms;
+    assert_eq!((ms(18.0), ms(17.9)), (1200, 1500));
+}
+
+/// Under a live table the goals are the table's reading of the raw goals,
+/// to the count, halves to even as Python's round; the raw goal is kept.
+/// A table 10 counts up around 2048 that climbs to 11 over 2048..2064 reads
+/// the middle 2056 as 2066.5, so 2066.
+#[test]
+fn under_a_live_table_the_goals_are_the_tables_reading_of_the_raw_goals() {
+    let mut points = [0i16; 256];
+    for p in &mut points[126..=131] {
+        *p = 10;
+    }
+    points[129] = 11;
+    let lin = Lin::new(Some(&points), Some(&SLOTS));
+    assert_eq!(lin.counts(2056), 2066.5);
+    let segs = verify::wide(2048.0, 20.0, (400.0, 3700.0), &[code(2047, 16)], Some(&lin));
+    use Side::{Above, Below};
+    assert_eq!(
+        plan_of(&segs),
+        vec![
+            (2047, Above, false, 2093, 2103, 1500),
+            (2047, Above, true, 2056, 2066, 2000),
+            (2047, Below, false, 2017, 2027, 1200),
+            (2047, Below, true, 2056, 2066, 2000),
+        ]
+    );
+}
+
+/// The check on the simulated servo with the board of record's slots and
+/// the set of record, its live table and soft range 314..3560, plans the
+/// wide holds before it moves: every slotted code fits, each goal the
+/// table's reading of its raw goal, and verify.json says the plan. The
+/// simulated servo cannot run a whole check (its event budget ends near
+/// the self-test's middle), so this check ends on a fault at its first
+/// small step, and one that does not finish writes no pot steps.
+#[test]
+fn the_check_plans_the_wide_holds_of_the_servos_slots() {
+    let (mut c, _) = servo(
+        BaudRate::B3000000,
+        MID_POT,
+        Box::new(|n, p| {
+            if n == 2 {
+                p.sim_mut()
+                    .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0x10);
+            }
+            false
+        }),
+    );
+    c.pipe_mut()
+        .inner
+        .sim_mut()
+        .servo_table_mut(0, |t| t.calib.adc.adc_wide_mid_q4 = SLOTS);
+    estimate_at(&mut c, MID_POT);
+    let mut sink = MemSink::default();
+    let v = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");
+    assert_ne!(v.ended.way, Way::Done);
+    let result: Value = serde_json::from_slice(&sink.files[verify::RESULT]).expect("verify.json");
+    let w = &result["wide_codes"];
+    let codes: Vec<(u64, u64, bool)> = w["codes"]
+        .as_array()
+        .expect("codes")
+        .iter()
+        .map(|c| {
+            (
+                c["stuck_code"].as_u64().unwrap(),
+                c["skipped"].as_u64().unwrap(),
+                c["held"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            (511, 6, true),
+            (1023, 10, true),
+            (2047, 11, true),
+            (2559, 6, true)
+        ],
+        "{w}"
+    );
+    let d = descriptor();
+    let s = block_on(state::read(&mut c, ID, &d)).expect("state");
+    let lin = Lin::new(s.lut.effective(), s.slots(&d).as_deref());
+    assert!(
+        s.lut.effective().is_some(),
+        "the set of record's table is live"
+    );
+    let segs = w["segments"].as_array().expect("segments");
+    assert_eq!(segs.len(), 16, "{w}");
+    for g in segs {
+        let raw = g["raw_counts"].as_u64().expect("raw") as u16;
+        assert_eq!(
+            g["goal_counts"].as_f64(),
+            Some(lin.counts(raw).round_ties_even()),
+            "{g}"
+        );
+        assert_eq!(g["captures"], serde_json::json!([]), "{g}");
+    }
+    let planned: f64 = segs.iter().map(|s| s["ms"].as_f64().unwrap()).sum::<f64>() / 1e3;
+    assert_eq!(w["planned_s"].as_f64(), Some(planned));
+    println!("the record's wide-code holds: {planned} s; {w}");
+    assert!(
+        result["estimates"].get("pot_step4_counts").is_none(),
+        "{result}"
+    );
+    c.pipe_mut()
+        .inner
+        .sim_mut()
+        .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
 }
