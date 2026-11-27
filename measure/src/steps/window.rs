@@ -63,7 +63,7 @@ use crate::state::{self, State, field};
 pub const STEP: &str = "window";
 pub const RESULT: &str = "results/window.json";
 const METHOD: &str = "window-term-onsets";
-const REVISION: u32 = 1;
+const REVISION: u32 = 2;
 /// The notebook's duties, its onsets' 25, 27 and 29 % as osc-lab wrote
 /// them (`pct_q15`).
 pub const NOTEBOOK_Q15: [i16; 3] = [8191, 8847, 9502];
@@ -390,7 +390,8 @@ pub fn judge(shots: &[Shot], s: &Scales, m: &Method, r_q12: u16) -> Judged {
 }
 
 /// The fit's scales, nominal: the sense block read off the servo, the
-/// terminal offset 0, the board's edge lags and its crest read.
+/// board's terminal offset (V_on is read over it, as the window-term
+/// notebook reads it), its edge lags and its crest read.
 pub fn scales(
     sense: &rest::Sense,
     board: &Board,
@@ -409,10 +410,16 @@ pub fn scales(
             board.name
         ))
     })?;
+    let terminal_offset_counts = board.terminal_offset_counts.ok_or_else(|| {
+        Refused(format!(
+            "the board's description ({}) holds no terminal offset (terminal_offset_counts): the onsets cannot be read",
+            board.name
+        ))
+    })?;
     Ok(Scales {
         counts_per_a: sense.counts_per_a(),
         terminal_counts_per_v: sense.terminal_counts_per_v(),
-        terminal_offset_counts: 0.0,
+        terminal_offset_counts,
         tick_hz: sense.tick_hz,
         pwm_arr,
         sample_ticks: w.sample_ticks,
@@ -1115,7 +1122,7 @@ fn result_json(
         estimates.insert(
             "g_window_ms".into(),
             json!({"value": w.g_over_mean_s * 1e3, "lo": null, "hi": null, "unit": "mS",
-                   "source": "open-loop onsets from rest, the window-term notebook's fit on the nominal scales and the board's edge lags: g plus the crest sample's lateness past the window's middle, the term over the period's mean"}),
+                   "source": "open-loop onsets from rest, the window-term notebook's fit on the nominal scales, the board's terminal offset and its edge lags: g plus the crest sample's lateness past the window's middle, the term over the period's mean"}),
         );
     }
     let fit = w.map_or(Value::Null, |w| {
@@ -1172,7 +1179,7 @@ fn result_json(
                    "sample_ticks": s.sample_ticks, "lag_on_ticks": s.lag_on_ticks, "lag_off_ticks": s.lag_off_ticks,
                    "r_brake_ohm": s.r_brake_ohm, "v_window_min_ticks": s.v_window_min_ticks,
                    "settle_start_ticks": s.settle.start_ticks, "settle_q15": s.settle.q15,
-                   "source": "the nominal sense block read off the servo, the board's burst_edges tap-on and off lags and its window_read; no terminal offset"},
+                   "source": "the nominal sense block read off the servo, the board's burst_edges tap-on and off lags and its window_read, V_on over the board's terminal_offset_counts (notebooks stage 1 terminal-chain)"},
         "fence": {"r_q12": b.r_q12, "r_25c_ohm": b.stops.r_25c_ohm,
                   "source": "this run's seated R at 25 C (results/stops.json) through the rules' r_q12 on the nominal scales"},
         "drives": {"duties_q15": b.duties, "duties_v": b.duties.map(|q| q as f64 / Q15 * b.rail_v),

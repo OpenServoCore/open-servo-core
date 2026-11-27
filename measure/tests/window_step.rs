@@ -8,8 +8,10 @@ mod common;
 use common::{path, sweep};
 use osc_measure::capture::meta::gunzip;
 use osc_measure::fit::window::{Method, Scales, Settle, on_rail_line};
+use osc_measure::ntc::{self, Parts};
 use osc_measure::steps::Verdict;
-use osc_measure::steps::window::{SET, Shot, judge};
+use osc_measure::steps::rest::Sense;
+use osc_measure::steps::window::{self, SET, Shot, judge};
 use serde_json::Value;
 
 fn json(rel: &str) -> Value {
@@ -76,6 +78,29 @@ fn stage1(src: &Value, exp: &Value) -> Scales {
     }
 }
 
+/// The dev board's sense chain as its CALIB holds it.
+fn sense() -> Sense {
+    let ntc = Parts {
+        pullup_ohm: 10_000.0,
+        r25_ohm: 10_000.0,
+        beta: 3950.0,
+    };
+    Sense {
+        shunt_r_mohm: 60.0,
+        gain_milli: 14_884.0,
+        vdd_mv: 3300.0,
+        vmotor_div_top: 6400.0,
+        vmotor_div_bot: 1600.0,
+        vbus_div_top: 6400.0,
+        vbus_div_bot: 1600.0,
+        rail_drop_mv: 250.0,
+        bias_nom: 773.0,
+        tick_hz: 20_000.0,
+        words: ntc::design(&ntc, &ntc::STAGE_1).expect("designs"),
+        ntc,
+    }
+}
+
 fn close(what: &str, got: f64, want: f64, rel: f64) {
     assert!(
         (got - want).abs() <= rel * want.abs(),
@@ -123,30 +148,30 @@ fn the_steps_judge_returns_the_fixtures_g_from_the_recorded_onsets() {
         );
     }
 
-    // the step's own scales: the nominal sense block and the board's lags
+    // the step's own scales: the nominal sense block, the board's terminal
+    // offset, lags and crest read; the fixture's differ only in the sense
+    // scales and the lags on the captures' rail, which stage 1 measured
     let board: osc_measure::Board = common::load("boards/osc-dev-v006.json");
-    let (edges, read) = (
-        board.burst_edges.expect("edges"),
-        board.window_read.expect("window_read"),
-    );
-    let nominal = Scales {
-        counts_per_a: 14.884 * 0.060 / (3.3 / 4096.0),
-        terminal_counts_per_v: 4096.0 / 3.3 * 1600.0 / 8000.0,
-        terminal_offset_counts: 0.0,
-        lag_on_ticks: edges.tap_on_ticks,
-        lag_off_ticks: edges.off_ticks,
-        sample_ticks: read.sample_ticks,
-        r_brake_ohm: read.r_brake_ohm,
-        settle: Settle {
-            start_ticks: read.settle_start_ticks,
-            q15: read.settle_q15.clone(),
-        },
-        ..s.clone()
-    };
+    let nominal = window::scales(&sense(), &board, s.pwm_arr, s.v_window_min_ticks)
+        .expect("the board reads onsets");
     assert_eq!(
-        nominal.settle, s.settle,
-        "the board's settle gain is the fixture's"
+        Scales {
+            counts_per_a: s.counts_per_a,
+            terminal_counts_per_v: s.terminal_counts_per_v,
+            lag_on_ticks: s.lag_on_ticks,
+            lag_off_ticks: s.lag_off_ticks,
+            ..nominal.clone()
+        },
+        s,
+        "the step's other terms are the fixture's"
     );
+    let mut v: Value = common::load("boards/osc-dev-v006.json");
+    v.as_object_mut()
+        .expect("board")
+        .remove("terminal_offset_counts");
+    let bare: osc_measure::Board = serde_json::from_value(v).expect("board");
+    let e = window::scales(&sense(), &bare, s.pwm_arr, s.v_window_min_ticks).expect_err("refused");
+    assert!(e.0.contains("terminal_offset_counts"), "{}", e.0);
     let n = judge(&shots, &nominal, &Method::NOTEBOOK, 3725);
     let wn = n.window.as_ref().expect("fits");
     println!(
