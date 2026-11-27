@@ -59,13 +59,16 @@ pub fn bringup(
     SHARED.table.seed_identity(model, hw_rev);
     config_store::ConfigStore::boot_load();
     // After boot_load: the calib overlay copies the whole region, so the RO
-    // board facts (tick_hz, window floors) must land last to win over a
-    // stale saved image.
+    // board facts (tick_hz, window floors, the board block) must land last
+    // to win over a stale saved image.
     SHARED.table.seed_calib_sense(
         &calib_sense(wiring, calibration),
         &calib_sense_ext(calibration, pre),
         pre.pwm_arr,
     );
+    SHARED
+        .table
+        .seed_calib_board(&pre.calib_board, calibration.ntc.site);
     SHARED.seed_uid(esig::uid());
 
     bring_up_analog_chain(&wiring.current_sense);

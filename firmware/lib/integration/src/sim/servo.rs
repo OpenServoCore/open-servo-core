@@ -29,8 +29,9 @@ use crate::plant::TIMING;
 // Every board file's values, written by build.rs from the files the board
 // images are built from and held to the image's value rules: osc-dev-v006's
 // `DEV_V006_SENSE`, `_SENSE_EXT`, `_PROTECTION`, `_BEMF_MIN_TICKS`,
-// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN` and `_DEFAULTS` (the one host mirror,
-// which the fake adapter and the class-default tests read from here), and
+// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN`, `_NTC_SITE`, `_CHARACTERIZATION`,
+// `_BOARD` and `_DEFAULTS` (the one host mirror, which the fake adapter
+// and the class-default tests read from here), and
 // `BOARD_FILES`. Per-servo board facts override the sense chain through
 // [`SimServo::set_sense`].
 include!(concat!(env!("OUT_DIR"), "/board_files.rs"));
@@ -187,6 +188,9 @@ impl SimServo {
         shared
             .table
             .seed_calib_sense(&seed.sense, &seed.sense_ext, TIMING.pwm_arr);
+        shared
+            .table
+            .seed_calib_board(&DEV_V006_BOARD, DEV_V006_NTC_SITE);
         // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         // A reboot passes the live one back in: the UID is silicon (ESIG on

@@ -30,8 +30,8 @@ pub mod telemetry_ext;
 
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
-    CalibGear, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense,
-    CalibSenseExt, CalibThermal,
+    CalibBoard, CalibGear, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs,
+    CalibSense, CalibSenseExt, CalibThermal, Characterization, NtcSite,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
@@ -158,6 +158,27 @@ impl ControlTableCell {
             t.calib.sense = *sense;
             t.calib.sense_ext = *ext;
             t.calib.pwm.pwm_period_ticks = pwm_period_ticks;
+        });
+    }
+
+    /// Stamp the RO board facts block (protocol sec 5.5). Caller must be
+    /// sole writer (install-time, pre-IRQ), after the calib overlay.
+    #[inline(never)]
+    pub fn seed_calib_board(&self, board: &CalibBoard, ntc_site: NtcSite) {
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| {
+            t.calib.ntc_site.ntc_site = ntc_site as u8;
+            let dst = core::ptr::from_mut(&mut t.calib.board).cast::<u16>();
+            let src = core::ptr::from_ref(board).cast::<u16>();
+            // The opaque count keeps the copy a loop (unrolled, it is a
+            // load and a store per word); the volatile store keeps it from
+            // becoming the memcpy a struct assignment lowers to, which the
+            // no-mem gate refuses outside bringup.
+            let words = core::hint::black_box(core::mem::size_of::<CalibBoard>() / 2);
+            for i in 0..words {
+                // SAFETY: CalibBoard is repr(C) halfwords; `i` is inside both.
+                unsafe { dst.add(i).write_volatile(src.add(i).read()) };
+            }
         });
     }
 
@@ -417,11 +438,13 @@ mod tests {
     }
 
     /// The ADC wide-code map takes the reserved bytes right behind the gear
-    /// class, one byte per slot, host-written; the rest of the tail stays
-    /// reserved, so the region keeps its size.
+    /// class, one byte per slot, host-written; the board facts follow it,
+    /// read-only, and the rest of the tail from 0x12E stays reserved, so the
+    /// region keeps its size.
     #[test]
     fn calib_adc_appends_after_gear() {
-        use super::calib::addr::{adc, gear};
+        use super::calib::addr::{adc, board, gear, ntc_site};
+        use super::calib::{CalibBoard, SETTLE_WORDS};
         use crate::adc::ADC_WIDE_SLOTS;
         assert_eq!(gear::GEAR_CLASS, 0x0D2);
         assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D3);
@@ -431,11 +454,47 @@ mod tests {
         assert_eq!(w.width, ADC_WIDE_SLOTS as u16);
         assert_eq!(w.kind, FieldKind::Bytes);
         assert!(w.writable);
+        assert_eq!(ntc_site::NTC_SITE, 0x0E3);
+        assert_eq!(
+            [
+                board::BRIDGE_MIN_TICKS,
+                board::I_SETTLE_START_TICKS,
+                board::I_SETTLE_Q15,
+                board::OC_TRIP_MA,
+                board::OC_TRIP_US,
+                board::RAIL_SOURCE_MOHM,
+                board::WINDOW_SCALE_Q15,
+                board::TERMINAL_OFFSET_Q4,
+                board::BRAKE_LOOP_MOHM,
+                board::CREST_SAMPLE_TICKS,
+                board::SHUNT_ON_LAG_Q4,
+                board::TAP_ON_LAG_Q4,
+                board::OFF_LAG_Q4,
+                board::SHUNT_SETTLE_Q4,
+            ],
+            [
+                0x0E4, 0x0E6, 0x0E8, 0x118, 0x11A, 0x11C, 0x11E, 0x120, 0x122, 0x124, 0x126, 0x128,
+                0x12A, 0x12C,
+            ]
+        );
+        let s = f.iter().find(|d| d.name == "i_settle_q15").unwrap();
+        assert_eq!(s.width, 2 * SETTLE_WORDS as u16);
+        assert_eq!(s.kind, FieldKind::Bytes);
+        let tail = 0x12E;
+        assert_eq!(
+            board::BRIDGE_MIN_TICKS + core::mem::size_of::<CalibBoard>() as u16,
+            tail
+        );
+        assert!(
+            f.iter()
+                .filter(|d| (ntc_site::NTC_SITE..tail).contains(&d.addr))
+                .all(|d| !d.writable),
+            "every board fact is read-only"
+        );
         let calib_end = super::CALIB_BASE_ADDR + super::CALIB_REGION_SIZE;
         assert!(
             f.iter()
-                .filter(|d| d.name != w.name)
-                .all(|d| d.addr + d.width <= w.addr || d.addr >= calib_end),
+                .all(|d| d.addr + d.width <= tail || d.addr >= calib_end),
             "the rest of the tail stays reserved"
         );
     }

@@ -43,32 +43,43 @@
             top_ohm: 430, // board.toml:76 calibration.vmotor_bias.top_ohm
             bot_ohm: 100, // board.toml:76 calibration.vmotor_bias.bot_ohm
         },
-        ntc: ::osc_servo_ch32::prelude::Ntc { // board.toml:77 calibration.ntc
-            pullup_ohm: 10000, // board.toml:77 calibration.ntc.pullup_ohm
-            r25_ohm: 10000, // board.toml:77 calibration.ntc.r25_ohm
-            beta: 3950, // board.toml:77 calibration.ntc.beta
+        ntc: ::osc_servo_ch32::prelude::Ntc { // board.toml:78 calibration.ntc
+            pullup_ohm: 10000, // board.toml:78 calibration.ntc.pullup_ohm
+            r25_ohm: 10000, // board.toml:78 calibration.ntc.r25_ohm
+            beta: 3950, // board.toml:78 calibration.ntc.beta
+            site: ::osc_servo_ch32::prelude::NtcSite::Air, // board.toml:78 calibration.ntc.site
         },
-        i_settle_gain: ::osc_servo_ch32::prelude::SettleGain { // board.toml:87 calibration.i_settle_gain
-            start_ticks: 40, // board.toml:88 calibration.i_settle_gain.start_ticks
-            q15: &[37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785], // board.toml:89 calibration.i_settle_gain.q15
+        i_settle_gain: ::osc_servo_ch32::prelude::SettleGain { // board.toml:88 calibration.i_settle_gain
+            start_ticks: 40, // board.toml:89 calibration.i_settle_gain.start_ticks
+            q15: &[37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785], // board.toml:90 calibration.i_settle_gain.q15
         },
     },
-    defaults: ::osc_servo_ch32::prelude::ConfigDefaults { // board.toml:94 defaults
-        pos_min_phys_counts: 0, // board.toml:95 defaults.pos_min_phys_counts
-        pos_max_phys_counts: 4095, // board.toml:96 defaults.pos_max_phys_counts
-        id: 1, // board.toml:97 defaults.id
-        baud: ::osc_servo_ch32::prelude::BaudRate::B1000000, // board.toml:98 defaults.baud
+    characterization: ::osc_servo_ch32::prelude::Characterization { // board.toml:98 characterization
+        window_scale_q15: 32975, // board.toml:101 characterization.window_scale_q15
+        terminal_offset_q4: 38, // board.toml:104 characterization.terminal_offset_q4
+        brake_loop_mohm: 301, // board.toml:106 characterization.brake_loop_mohm
+        crest_sample_ticks: 31, // board.toml:108 characterization.crest_sample_ticks
+        shunt_on_lag_q4: 704, // board.toml:113 characterization.shunt_on_lag_q4
+        tap_on_lag_q4: 632, // board.toml:114 characterization.tap_on_lag_q4
+        off_lag_q4: 224, // board.toml:115 characterization.off_lag_q4
+        shunt_settle_q4: 1152, // board.toml:116 characterization.shunt_settle_q4
+    },
+    defaults: ::osc_servo_ch32::prelude::ConfigDefaults { // board.toml:118 defaults
+        pos_min_phys_counts: 0, // board.toml:119 defaults.pos_min_phys_counts
+        pos_max_phys_counts: 4095, // board.toml:120 defaults.pos_max_phys_counts
+        id: 1, // board.toml:121 defaults.id
+        baud: ::osc_servo_ch32::prelude::BaudRate::B1000000, // board.toml:122 defaults.baud
         response_deadline_us: ::osc_servo_ch32::prelude::DEFAULT_RESPONSE_DEADLINE_US,
     },
-    protection: ::osc_servo_ch32::prelude::ProtectionDefaults { // board.toml:101 protection
-        yield_current_ma: 250, // board.toml:107 protection.yield_current_ma
-        stall_release_ma: 90, // board.toml:109 protection.stall_release_ma
-        oc_trip_ma: 2200, // board.toml:114 protection.oc_trip_ma
-        oc_trip_us: 400, // board.toml:115 protection.oc_trip_us
-        thermal_tau_s: 4, // board.toml:118 protection.thermal_tau_s
-        cutoff_cc: 9000, // board.toml:120 protection.cutoff_cc
-        rail_source_mohm: 800, // board.toml:124 protection.rail_source_mohm
-        drive_polarity: true, // board.toml:125 protection.drive_polarity
+    protection: ::osc_servo_ch32::prelude::ProtectionDefaults { // board.toml:125 protection
+        yield_current_ma: 250, // board.toml:131 protection.yield_current_ma
+        stall_release_ma: 90, // board.toml:133 protection.stall_release_ma
+        oc_trip_ma: 2200, // board.toml:138 protection.oc_trip_ma
+        oc_trip_us: 400, // board.toml:140 protection.oc_trip_us
+        thermal_tau_s: 4, // board.toml:143 protection.thermal_tau_s
+        cutoff_cc: 9000, // board.toml:145 protection.cutoff_cc
+        rail_source_mohm: 800, // board.toml:149 protection.rail_source_mohm
+        drive_polarity: true, // board.toml:150 protection.drive_polarity
     },
     model: ::osc_servo_ch32::prelude::MODEL_OSC_SERVO,
 }

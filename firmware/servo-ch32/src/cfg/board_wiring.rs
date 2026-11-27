@@ -3,6 +3,7 @@
 //! tunable per board (within the analog/digital pin buckets the chip + this
 //! board's free-pin set allow) lives here.
 
+use osc_servo_core::NtcSite;
 use osc_servo_core::estimator::window::SettleGain;
 use osc_servo_drivers::Level;
 
@@ -74,6 +75,7 @@ pub struct Ntc {
     pub pullup_ohm: u32,
     pub r25_ohm: u32,
     pub beta: u16,
+    pub site: NtcSite,
 }
 
 /// Schematic-derived constants identical across every unit of a PCB design.

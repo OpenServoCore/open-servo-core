@@ -57,12 +57,12 @@ pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults, ProtectionDefaults, ProtectionSeed};
 pub use regions::{
-    CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
-    CalibThermal, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
-    ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys, ConfigPosSoft, ConfigRegs,
-    ConfigThermal, ControlLifecycle, ControlRegs, ControlTable, ControlTableCell, Mode,
-    StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryMode, TelemetryRefs,
-    TelemetryRegs, TelemetryTick,
+    CalibBoard, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense,
+    CalibSenseExt, CalibThermal, Characterization, ConfigCommon, ConfigFaultCfg, ConfigFusion,
+    ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosPhys,
+    ConfigPosSoft, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlTable,
+    ControlTableCell, Mode, NtcSite, StallResponse, TelemetryCommon, TelemetryEstimates,
+    TelemetryMode, TelemetryRefs, TelemetryRegs, TelemetryTick,
 };
 pub use sensor_frame::{Frame, SensorFrame};
 pub use services::bus::{Dispatcher, Session};

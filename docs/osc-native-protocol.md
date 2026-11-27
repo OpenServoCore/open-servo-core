@@ -646,6 +646,49 @@ terminal taps, Q0.16, so a host converts it with both chains' primitives,
 `g [S] = g_window_q016 / 65536 x (current counts per A)^-1 x (terminal
 counts per V)`. On the osc-dev-v006 1 mS is about 300.
 
+**Board facts.** CALIB also publishes, read-only, every board fact a host
+identification reads that no other register holds, so the host takes the
+board off the servo it measures and never from a file. Install stamps the
+block from the image's own board file after the calibration overlay, as
+it stamps the sense primitives, so a saved image never supplies a word,
+and the firmware reads none of them. The words are the board file's
+integers: the settle table is followed by zeros, and the NTC site is a
+code.
+
+| addr  | name                   | type      | unit                      | board.toml key                           |
+| ----- | ---------------------- | --------- | ------------------------- | ---------------------------------------- |
+| 0x0E3 | `ntc_site`             | u8        | 1 air, 2 motor can        | `calibration.ntc.site`                   |
+| 0x0E4 | `bridge_min_ticks`     | u16       | TIM1 ticks                | `calibration.bridge_min_ticks`           |
+| 0x0E6 | `i_settle_start_ticks` | u16       | TIM1 ticks                | `calibration.i_settle_gain.start_ticks`  |
+| 0x0E8 | `i_settle_q15`         | [u16; 24] | Q15 gain per 8-tick band  | `calibration.i_settle_gain.q15`, then 0s |
+| 0x118 | `oc_trip_ma`           | u16       | mA                        | `protection.oc_trip_ma`                  |
+| 0x11A | `oc_trip_us`           | u16       | us                        | `protection.oc_trip_us`                  |
+| 0x11C | `rail_source_mohm`     | u16       | mΩ                        | `protection.rail_source_mohm`            |
+| 0x11E | `window_scale_q15`     | u16       | Q15 ratio                 | `characterization.window_scale_q15`      |
+| 0x120 | `terminal_offset_q4`   | i16       | ADC counts, Q4            | `characterization.terminal_offset_q4`    |
+| 0x122 | `brake_loop_mohm`      | u16       | mΩ                        | `characterization.brake_loop_mohm`       |
+| 0x124 | `crest_sample_ticks`   | u16       | TIM1 ticks                | `characterization.crest_sample_ticks`    |
+| 0x126 | `shunt_on_lag_q4`      | u16       | TIM1 ticks, Q4            | `characterization.shunt_on_lag_q4`       |
+| 0x128 | `tap_on_lag_q4`        | u16       | TIM1 ticks, Q4            | `characterization.tap_on_lag_q4`         |
+| 0x12A | `off_lag_q4`           | u16       | TIM1 ticks, Q4            | `characterization.off_lag_q4`            |
+| 0x12C | `shunt_settle_q4`      | u16       | TIM1 ticks, Q4            | `characterization.shunt_settle_q4`       |
+
+CALIB's reserved tail runs from 0x12E. TIM1 ticks are the PWM counter's,
+`pwm_period_ticks` to a period. `ntc_site` is never 0 on an image that
+carries the block, so a 0 there names an image older than it.
+`bridge_min_ticks` 0 means the bridge's shortest pulse was not measured.
+The settle table ends at its first 0 word; past it the gain is unity. The
+protection words are the defaults the board seeds CONFIG from, before any
+host write. The characterization words are the board design's stage 1
+results (the drive window's scale, the terminal taps' offset, the
+low-side brake loop, the shunt's crest sample and the slow-decay edge
+lags); `window_scale_q15` 0 means the board has none, and then every
+characterization word is 0. The block sits in what was the reserved tail
+and no writable field moved, so a CALIB image saved before it still loads
+(DES `a_calib_image_saved_before_the_board_facts_block_loads_with_them`),
+and `the_servo_publishes_every_board_fact_ident_reads` holds the words to
+the board file.
+
 ### 5.6 Telemetry stream (TEL bursts)
 
 High-rate telemetry rides the bus as a bounded burst of status frames
