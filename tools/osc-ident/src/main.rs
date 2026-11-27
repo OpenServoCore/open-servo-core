@@ -288,6 +288,32 @@ impl StepArgs {
     }
 }
 
+/// A step command's or a run's outcome with the lines of the reboot that
+/// clears the unsaved bit after it ([`steps::clear_unsaved`]): appended to
+/// its lines, or printed ahead of its refusal.
+fn ended<T>(
+    ran: Result<(Vec<String>, bool, T)>,
+    cleared: Result<Vec<String>>,
+) -> Result<(Vec<String>, bool, T)> {
+    match (ran, cleared) {
+        (Ok((mut lines, accepted, t)), Ok(more)) => {
+            lines.extend(more);
+            Ok((lines, accepted, t))
+        }
+        (Ok(_), Err(e)) => Err(e.context("the command ended, but the reboot to clear unsaved")),
+        (Err(e), Ok(more)) => {
+            for l in more {
+                println!("{l}");
+            }
+            Err(e)
+        }
+        (Err(e), Err(r)) => {
+            eprintln!("the reboot to clear unsaved: {r:#}");
+            Err(e)
+        }
+    }
+}
+
 /// Set by Ctrl-C: a step reads it between rungs, so a running burst is
 /// never cut short.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -577,42 +603,48 @@ fn run(cli: &Cli) -> Result<bool> {
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
                 let servo = servo_name(&mut c, id).await?;
-                let (lines, accepted, _) = match step {
-                    StepName::Rest { .. } => {
-                        steps::step_rest(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Probe { .. } => {
-                        steps::step_probe(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Stops { .. } => {
-                        steps::step_stops(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Table { .. } => {
-                        steps::step_table(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Window { .. } => {
-                        steps::step_window(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Spins { .. } => {
-                        steps::step_spins(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Verify { .. } => {
-                        steps::step_verify(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
-                    }
-                    StepName::Cruise { run, .. } => {
-                        steps::step_cruise(
-                            &mut c,
-                            id,
-                            &d,
-                            &inputs,
-                            out,
-                            &servo,
-                            &STOP,
-                            run.as_deref(),
-                        )
-                        .await?
-                    }
-                };
+                let before = osc_measure::state::read(&mut c, id, &d).await?;
+                let ran = async {
+                    Ok::<_, anyhow::Error>(match step {
+                        StepName::Rest { .. } => {
+                            steps::step_rest(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Probe { .. } => {
+                            steps::step_probe(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Stops { .. } => {
+                            steps::step_stops(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Table { .. } => {
+                            steps::step_table(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Window { .. } => {
+                            steps::step_window(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Spins { .. } => {
+                            steps::step_spins(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Verify { .. } => {
+                            steps::step_verify(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
+                        }
+                        StepName::Cruise { run, .. } => {
+                            steps::step_cruise(
+                                &mut c,
+                                id,
+                                &d,
+                                &inputs,
+                                out,
+                                &servo,
+                                &STOP,
+                                run.as_deref(),
+                            )
+                            .await?
+                        }
+                    })
+                }
+                .await;
+                let (lines, accepted, _) =
+                    ended(ran, steps::clear_unsaved(&mut c, id, &d, &before).await)?;
                 for l in &lines {
                     println!("{l}");
                 }
@@ -661,7 +693,12 @@ fn run(cli: &Cli) -> Result<bool> {
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
                 let servo = servo_name(&mut c, id).await?;
-                let (lines, accepted) = run::run(&mut c, id, &d, &a, &servo, &STOP).await?;
+                let before = osc_measure::state::read(&mut c, id, &d).await?;
+                let ran = run::run(&mut c, id, &d, &a, &servo, &STOP)
+                    .await
+                    .map(|(lines, accepted)| (lines, accepted, ()));
+                let (lines, accepted, ()) =
+                    ended(ran, steps::clear_unsaved(&mut c, id, &d, &before).await)?;
                 for l in &lines {
                     println!("{l}");
                 }
@@ -1080,6 +1117,8 @@ mod tests {
         c.pipe_mut().set_track(0, resting());
         let out = scratch("step-probe");
         let stop = AtomicBool::new(false);
+        let before = block_on(osc_measure::state::read(&mut c, Id::new(1), &d)).expect("state");
+        assert!(!before.unsaved, "the seed is saved");
         let (lines, accepted, root) = block_on(steps::step_probe(
             &mut c,
             Id::new(1),
@@ -1104,7 +1143,51 @@ mod tests {
         assert!(text.contains("torque_enable 0, read back 0"), "{text}");
         assert!(text.contains("end position"), "{text}");
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
+        // the probe's stored writes went back, 0 differences, but set the
+        // unsaved bit: the command's end reboots to clear it
+        let now = block_on(osc_measure::state::read(&mut c, Id::new(1), &d)).expect("state");
+        assert!(now.unsaved && now.hash(&d) == before.hash(&d), "{text}");
+        let more = block_on(steps::clear_unsaved(&mut c, Id::new(1), &d, &before)).expect("clears");
+        assert!(
+            more[0].starts_with("rebooted to clear unsaved: ")
+                && more[0].ends_with("now unsaved no, 0 differences"),
+            "{more:?}"
+        );
+        let now = block_on(osc_measure::state::read(&mut c, Id::new(1), &d)).expect("state");
+        assert!(!now.unsaved && now.hash(&d) == before.hash(&d));
+        assert_eq!(
+            block_on(steps::clear_unsaved(&mut c, Id::new(1), &d, &before)).expect("reads"),
+            Vec::<String>::new(),
+            "a saved servo is not rebooted"
+        );
         let _ = std::fs::remove_dir_all(out);
+    }
+
+    /// A command that leaves a stored field other than it found it, a set
+    /// installed volatile, is never rebooted, and neither is one that began
+    /// on a servo already unsaved: either holds a value its flash does not.
+    #[test]
+    fn a_volatile_value_is_never_rebooted_away() {
+        let (mut c, d) = fake(BaudRate::B3000000);
+        let id = Id::new(1);
+        let f = d.field("current_limit_counts").expect("field").addr;
+        let read = |c: &mut Client<FakePipe>| {
+            block_on(osc_measure::state::read(c, id, &d)).expect("state")
+        };
+        let before = read(&mut c);
+        let was = block_on(c.read(id, f, 2)).expect("read");
+        let other = (u16::from_le_bytes([was[0], was[1]]) - 1).to_le_bytes();
+        block_on(c.write(id, f, &other)).expect("write");
+        let lines = block_on(steps::clear_unsaved(&mut c, id, &d, &before)).expect("reads");
+        assert!(lines.is_empty(), "{lines:?}");
+        let installed = read(&mut c);
+        assert!(installed.unsaved);
+        assert_eq!(block_on(c.read(id, f, 2)).expect("read"), other);
+        // began unsaved, ends back on the flash's value: still left
+        block_on(c.write(id, f, &was)).expect("write");
+        let lines = block_on(steps::clear_unsaved(&mut c, id, &d, &installed)).expect("reads");
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!(read(&mut c).unsaved);
     }
 
     /// `step stops` runs rest and the probe first into the same folder;

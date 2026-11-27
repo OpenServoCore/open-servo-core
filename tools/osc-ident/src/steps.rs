@@ -14,9 +14,10 @@ use osc_measure::capture::rows::Layout;
 use osc_measure::capture::tel;
 use osc_measure::envelope::{Envelope, Facts, HeatModel, Rung};
 use osc_measure::inputs::ThermalInputs;
+use osc_measure::install;
 use osc_measure::nameplate::Nameplate;
 use osc_measure::screens::Holes;
-use osc_measure::state;
+use osc_measure::state::{self, State};
 use osc_measure::steps::cruise::{self, CruiseInputs};
 use osc_measure::steps::probe::{self, ProbeInputs};
 use osc_measure::steps::rest::{self, DEADMAN_S, ROWS, Sense};
@@ -59,6 +60,35 @@ impl StepInputs {
             nameplate: Some(l.resolved.nameplate),
         })
     }
+}
+
+/// The end of a step command or a run: a servo that began on its stored
+/// state, `before`, and holds it again but for the unsaved bit a write to
+/// a stored field set is rebooted onto it ([`install::clear_unsaved`]), the
+/// run's rate restored; a line says why and what it reads after. None
+/// where it holds anything else, a value the user installed among them.
+pub async fn clear_unsaved<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    before: &State,
+) -> Result<Vec<String>> {
+    let mut steps = Vec::new();
+    let Some(after) = install::clear_unsaved(c, id, d, before, &mut steps).await? else {
+        return Ok(Vec::new());
+    };
+    let (was, is) = (before.hash(d), after.hash(d));
+    let now = if is == was {
+        "0 differences".to_string()
+    } else {
+        format!("not the state the command began on (state {is}, began {was})")
+    };
+    let mut lines = vec![format!(
+        "rebooted to clear unsaved: every stored field is back as the command found it, but a write to one set the unsaved bit, which only a SAVE or a reboot clears; the reboot restarts the winding estimate from the board NTC; now unsaved {}, {now}",
+        after.unsaved_said()
+    )];
+    lines.extend(install::moves(&steps));
+    Ok(lines)
 }
 
 fn unix_s() -> f64 {

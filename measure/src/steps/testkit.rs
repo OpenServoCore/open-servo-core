@@ -157,12 +157,29 @@ pub fn quiet() -> OnSent {
 /// After a step's way out the servo holds every field of the saved state
 /// [`servo`] seeds: its fingerprint, 0 differences. A step that wrote a
 /// stored field leaves the unsaved bit set though each went back, since only
-/// a SAVE or a reboot clears it (protocol sec 9.4); `unsaved` says which.
+/// a SAVE or a reboot clears it (protocol sec 9.4); `unsaved` says which,
+/// and then the command's end reboots it to clear the bit ([`cleared`]).
 pub fn fields_back<P: Pipe>(c: &mut Client<P>, d: &Descriptor, unsaved: bool, exit: &str) {
     let (mut fresh, _) = servo(0, quiet());
     let seeded = block_on(crate::state::read(&mut fresh, ID, d)).expect("state");
     assert!(!seeded.unsaved, "the seed is saved");
     as_it_was(c, d, &seeded, unsaved, exit);
+    if unsaved {
+        cleared(c, d, &seeded, exit);
+    }
+}
+
+/// The command's end on a servo that began saved as `before` and holds it
+/// again but for the unsaved bit: rebooted onto it
+/// ([`crate::install::clear_unsaved`]), every field still back, unsaved no.
+pub fn cleared<P: Pipe>(c: &mut Client<P>, d: &Descriptor, before: &State, exit: &str) {
+    let mut steps = Vec::new();
+    let after = block_on(crate::install::clear_unsaved(c, ID, d, before, &mut steps))
+        .expect("the reboot")
+        .expect("rebooted to clear unsaved");
+    assert!(steps.contains(&crate::install::Step::Rebooted), "{steps:?}");
+    assert_eq!(after.hash(d), before.hash(d), "a field not back:\n{exit}");
+    assert!(!after.unsaved, "unsaved after the reboot:\n{exit}");
 }
 
 /// After a step's way out the servo holds every field of `before`, and

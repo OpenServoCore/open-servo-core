@@ -730,6 +730,35 @@ pub async fn backup<P: Pipe>(
     Ok(stored)
 }
 
+/// The end of a command that began on the servo's stored state, `before`
+/// (unsaved no), and left every field as it read, torque off, but for the
+/// unsaved bit its writes to stored fields set, which only a SAVE or a
+/// reboot clears (protocol sec 9.4): the servo rebooted onto that same
+/// state, the run's rate restored, and read again. None, nothing done,
+/// where it is not so: a field that differs is one a command installed,
+/// and a servo that began unsaved held values its flash does not.
+pub async fn clear_unsaved<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    before: &State,
+    steps: &mut Vec<Step>,
+) -> Result<Option<State>, Refused> {
+    if before.unsaved {
+        return Ok(None);
+    }
+    let now = state::read(c, id, d).await?;
+    if !now.unsaved
+        || now.torque
+        || now.hash(d) != before.hash(d)
+        || now.settings_said() != before.settings_said()
+    {
+        return Ok(None);
+    }
+    reboot(c, id, steps).await?;
+    Ok(Some(state::read(c, id, d).await?))
+}
+
 /// Put the servo back on its stored state by a reboot, which writes no
 /// field, then read it against `stored`, the state [`backup`] kept: a
 /// line a difference, none when it is that state. The read comes before
