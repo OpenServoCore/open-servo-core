@@ -91,6 +91,9 @@ pub enum Seed<'a> {
     /// gives at the pot there: a slow rung's, its counts a cycle from
     /// rungs already counted.
     Near(&'a dyn Fn(f64) -> f64),
+    /// This line, Hz: a rung read again on the line an earlier read of it
+    /// was seeded on.
+    Line(f64),
 }
 
 /// The share either side of the line the pot's speed implies a seed is
@@ -154,6 +157,7 @@ pub fn segment_seeded(
                 })
                 .flatten()
         }
+        Seed::Line(f) => Some(f),
     }
     .ok_or(SegmentError::NoLine)?;
     let tc = tracked_crossings(&x, start, stop as f64, f_seed, TRACK_CYCLES, fs);
@@ -189,6 +193,53 @@ pub fn segment_seeded(
         odd: odd_share(&tc),
         speed_spread: speed_spread(&tc),
     })
+}
+
+/// One whole ripple cycle of a segment: the pot at cycles `k` and `k + 1`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Cycle {
+    pub k: usize,
+    pub from: f64,
+    pub to: f64,
+}
+
+impl Cycle {
+    /// Pot counts over the cycle.
+    pub fn counts(&self) -> f64 {
+        (self.to - self.from).abs()
+    }
+
+    pub fn lo(&self) -> f64 {
+        self.from.min(self.to)
+    }
+
+    pub fn hi(&self) -> f64 {
+        self.from.max(self.to)
+    }
+}
+
+/// Each whole cycle the segment spans, the pot read at whole cycle
+/// indices on its samples.
+pub fn cycles(s: &Segment) -> Vec<Cycle> {
+    let y: Vec<f64> = s.y.iter().map(|v| v.abs()).collect();
+    let (Some(&first), Some(&last)) = (y.first(), y.last()) else {
+        return Vec::new();
+    };
+    let (k0, k1) = (first.ceil() as usize, last.floor() as usize);
+    if k1 < k0 + 1 {
+        return Vec::new();
+    }
+    let x: Vec<f64> = (k0..=k1)
+        .map(|k| interp(k as f64, &y, &s.x, s.x[0], s.x[s.x.len() - 1]))
+        .collect();
+    x.windows(2)
+        .enumerate()
+        .map(|(j, w)| Cycle {
+            k: k0 + j,
+            from: w[0],
+            to: w[1],
+        })
+        .collect()
 }
 
 /// The mean of `w` rows centered on each, `w / 2` before and `w / 2 - 1`

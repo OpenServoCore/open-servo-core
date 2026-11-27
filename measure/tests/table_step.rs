@@ -6,13 +6,15 @@
 
 use osc_measure::capture::rows::TelFrame;
 use osc_measure::envelope::{BURST_MAX_S, DRIVE_DEADMAN_S, FREE_MARGIN, GUARD_SHARE, PERMIT_MAX_S};
+use osc_measure::fit::postable::{self, Seed};
 use osc_measure::steps::runway::COAST_TAU_S;
 use osc_measure::steps::seek::WINDOW_S;
 use osc_measure::steps::table::{
-    Band, FIRST_FAST_SHARE, FromStops, NEAR_STOP_COUNTS, NextStop, RUNG_MIN_S, Reach, RungRead,
-    STOP_RUNGS_MAX, Schedule, Speeds, after, after_stop_rung, another_trip, fast_bound_from,
-    fast_predicted_cps, fast_q15, histogram_rows, plan_rung, plan_stop_rung, reach, rows_a_code,
-    stamp_ticks, still_window_s, thin_carries,
+    Band, FIRST_FAST_SHARE, FromStops, HoleRead, NEAR_STOP_COUNTS, NextStop, PassKind, RUNG_MIN_S,
+    Reach, RungKind, RungRead, RungRows, RungSegment, STOP_RUNGS_MAX, Schedule, Speeds, after,
+    after_stop_rung, another_trip, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows,
+    hole_reads, plan_rung, plan_stop_rung, reach, rows_a_code, rung_holes, stamp_ticks,
+    still_window_s, thin_carries,
 };
 use serde_json::json;
 
@@ -445,4 +447,157 @@ fn a_stop_rung_short_of_the_stop_takes_one_more() {
         after_stop_rung(&Reach::Moving, STOP_RUNGS_MAX, 0),
         NextStop::Unreached
     );
+}
+
+/// A low-stop fixture's rows (`testdata/table/*-low-stop.csv.gz`) and its
+/// reference reading (`low-stop.expected.json`).
+fn low_stop(name: &str) -> (Vec<TelFrame>, serde_json::Value) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/table/");
+    let gz = std::fs::read(format!("{dir}{name}.csv.gz")).expect("fixture");
+    let text =
+        String::from_utf8(osc_measure::capture::meta::gunzip(&gz).expect("gzip")).expect("utf8");
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("tick,pos,duty_counts,current_raw"));
+    let rows = lines
+        .map(|l| {
+            let v: Vec<&str> = l.split(',').collect();
+            TelFrame {
+                tick: v[0].parse().expect("tick"),
+                pos: Some(v[1].parse().expect("pos")),
+                duty_counts: Some(v[2].parse().expect("duty")),
+                current_raw: Some(v[3].parse().expect("current")),
+                ..TelFrame::default()
+            }
+        })
+        .collect();
+    let exp: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(format!("{dir}low-stop.expected.json")).expect("json"),
+    )
+    .expect("expected");
+    (rows, exp[name].clone())
+}
+
+fn num(v: &serde_json::Value) -> f64 {
+    v.as_f64().expect("number")
+}
+
+/// A low-stop rung read for pot holes as the table step reads it: the
+/// whole drive, no near-stop cut, on the line the table read was seeded on
+/// (here the one the tool recorded; a constant 3.65 counts a cycle, the
+/// fast rungs' about, seeds the same line). Every cycle is the reference's
+/// (bringup `kb/scratch/pot-holes` `potholes.py`), and against the run's
+/// typical and line the dead low end flags cycles 50 and 51, one hole.
+#[test]
+fn the_dead_low_end_flags_the_cycles_into_the_stop() {
+    let (rows, e) = low_stop("dead-low-stop");
+    let read = hole_read(&rows, &e);
+    let want = e["cycles"].as_array().expect("cycles");
+    assert_eq!(read.cycles.len(), want.len());
+    for (c, w) in read.cycles.iter().zip(want) {
+        assert_eq!(c.k as u64, w[0].as_u64().expect("k"));
+        for (got, w) in [c.from, c.to, c.counts()]
+            .into_iter()
+            .zip(&w.as_array().expect("cycle")[1..])
+        {
+            assert!(
+                (got - num(w)).abs() <= 6e-4,
+                "cycle {}: {got} against {w}",
+                c.k
+            );
+        }
+    }
+    let (m, line) = (num(&e["run_typical_this_pass"]), num(&e["run_line"]));
+    assert!((m - 3.8557).abs() < 1e-4 && (line - 7.7261).abs() < 1e-4);
+    let flagged: Vec<(usize, f64)> = read
+        .cycles
+        .iter()
+        .filter(|c| c.counts() / m > line)
+        .map(|c| (c.k, c.counts() / m))
+        .collect();
+    assert_eq!(flagged.len(), 2, "{flagged:?}");
+    assert_eq!(flagged[0].0, 50);
+    assert!((flagged[0].1 - 20.39).abs() < 0.005, "{flagged:?}");
+    assert_eq!(flagged[1].0, 51);
+    assert!((flagged[1].1 - 9.42).abs() < 0.005, "{flagged:?}");
+    let holes = rung_holes(&read, m, line);
+    assert_eq!(holes.len(), 1, "{holes:?}");
+    let h = &holes[0];
+    assert!(
+        (h.from - 5.529).abs() < 1e-3 && (h.to - 120.473).abs() < 1e-3,
+        "{h:?}"
+    );
+    assert_eq!(
+        (h.cycles, &h.rungs[..], &h.dirs[..]),
+        (2, &[3][..], &[-1][..])
+    );
+    assert!((h.r_max - 20.39).abs() < 0.005, "{h:?}");
+}
+
+/// The same rung on a clean pot, against its run's typical and line: no
+/// cycle flags; the cycles pressed on the stop read under typical.
+#[test]
+fn a_clean_low_end_flags_nothing() {
+    let (rows, e) = low_stop("clean-low-stop");
+    let read = hole_read(&rows, &e);
+    assert_eq!(
+        read.cycles.len(),
+        e["cycles"].as_array().expect("cycles").len()
+    );
+    let (m, line) = (num(&e["run_typical_this_pass"]), num(&e["run_line"]));
+    assert!((m - 3.6434).abs() < 1e-4 && (line - 8.3988).abs() < 1e-4);
+    assert_eq!(rung_holes(&read, m, line), []);
+    assert!(
+        read.cycles
+            .iter()
+            .filter(|c| c.lo() < 101.0)
+            .all(|c| c.counts() < m)
+    );
+}
+
+/// [`hole_reads`] over one rung the table read, with its line.
+fn hole_read(rows: &[TelFrame], e: &serde_json::Value) -> HoleRead {
+    let slots: [u8; 16] = e["slots"]
+        .as_array()
+        .expect("slots")
+        .iter()
+        .map(|v| v.as_u64().expect("slot") as u8)
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("16 slots");
+    let line = num(&e["tool_line_hz"]);
+    let (pos, cur, duty): (Vec<u16>, Vec<u16>, Vec<i16>) = (
+        rows.iter().map(|f| f.pos.expect("pos")).collect(),
+        rows.iter()
+            .map(|f| f.current_raw.expect("current"))
+            .collect(),
+        rows.iter().map(|f| f.duty_counts.expect("duty")).collect(),
+    );
+    let near = |_: f64| num(&e["const_seed_counts_a_cycle"]);
+    let seeded = postable::segment_seeded(&pos, &cur, &duty, &slots, FS, Seed::Near(&near))
+        .expect("segment");
+    assert_eq!(seeded.f_seed, line);
+    assert_eq!(seeded.f_seed, num(&e["const_seed_line_hz"]));
+    let table = RungSegment {
+        n: 3,
+        pass: 1,
+        pass_kind: PassKind::Slow,
+        kind: RungKind::Stop,
+        dir: -1,
+        read: Ok(seeded),
+        ratio: None,
+        speed_cps: None,
+    };
+    let rung = RungRows {
+        n: 3,
+        pass: 1,
+        pass_kind: PassKind::Slow,
+        kind: RungKind::Stop,
+        dir: -1,
+        rows,
+    };
+    let (mut reads, not_read) = hole_reads(&[rung], &[table], &slots, FS);
+    assert_eq!((reads.len(), not_read), (1, vec![]));
+    let read = reads.remove(0);
+    assert!(read.cycles.len() >= 3);
+    read
 }
