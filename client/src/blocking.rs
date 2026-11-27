@@ -15,13 +15,13 @@ use crate::calib::{self, GearClass};
 use crate::client::{Chain, Ping, Reply, StreamReply, TbReply};
 use crate::common::{self, Health, Identity};
 use crate::cyclic::Cycle;
-use crate::data_state::{self, DataState};
 use crate::descriptor::Descriptor;
 use crate::error::Error;
 use crate::mgmt::{self, CalTrace, Found, Uid};
 use crate::pipe::Pipe;
 use crate::pos_lut::{self, PosLut};
 use crate::session::{BusMode, LinkInfo};
+use crate::store_state::{self, StoreState};
 #[cfg(feature = "bench")]
 use crate::wire::EdgeDrain;
 
@@ -312,8 +312,8 @@ impl<P: Pipe> Client<P> {
         block_on(self.0.read_span(id, lo, hi))
     }
 
-    pub fn data_state(&mut self, id: Id, d: &Descriptor) -> Result<DataState, Error> {
-        block_on(data_state::read(&mut self.0, id, d))
+    pub fn store_state(&mut self, id: Id, d: &Descriptor) -> Result<StoreState, Error> {
+        block_on(store_state::read(&mut self.0, id, d))
     }
 
     pub fn gear_class(&mut self, id: Id, d: &Descriptor) -> Result<GearClass, Error> {

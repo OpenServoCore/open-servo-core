@@ -300,27 +300,34 @@ fn field_formats_match_the_descriptor() {
 }
 
 #[test]
-fn release_sits_under_the_continuous_current() {
+fn release_sits_under_the_yield_current() {
     let set = build(&inputs());
-    assert!(bound(&set, "stall_release_counts") < bound(&set, "i_cont_counts"));
+    assert!(bound(&set, "stall_release_counts") < bound(&set, "yield_current_counts"));
 
     for release in [350.0, 400.0] {
         let mut i = inputs();
         i.policy.stall_release_ma = Some(release);
         assert!(
-            refused(&build(&i), "stall_release_counts")
-                .contains("not under the continuous current")
+            refused(&build(&i), "stall_release_counts").contains("not under the yield current")
         );
     }
     // 0 reads as the cap.
     let mut i = inputs();
-    i.policy.i_cont_ma = Some(0.0);
+    i.policy.yield_current_ma = Some(0.0);
     i.policy.stall_release_ma = Some(400.0);
     assert_eq!(bound(&build(&i), "stall_release_counts"), 454);
 
     let mut i = inputs();
-    i.policy.i_cont_ma = None;
+    i.policy.yield_current_ma = None;
     assert!(refused(&build(&i), "stall_release_counts").contains("not bound"));
+}
+
+/// A policy file written before the rename names the yield current
+/// `i_cont_ma`; it still reads.
+#[test]
+fn a_policy_naming_the_old_key_still_reads() {
+    let p: Policy = serde_json::from_str(r#"{"i_cont_ma": 350.0}"#).expect("parses");
+    assert_eq!(p.yield_current_ma, Some(350.0));
 }
 
 #[test]

@@ -1,5 +1,5 @@
 {
- "source": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.constants.json", "sha1": "39f19217a854c0d4cdb9850254ff929e7596911c", "text_values": "written as the field holds them: Yield (1) -> 1, on -> 1, off -> 0, 2 (metal) -> 2"},
+ "source": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.constants.json", "sha1": "c30f686432c191421fbe6c93eaa5e9f8eed74a03", "text_values": "written as the field holds them: Yield (1) -> 1, on -> 1, off -> 0, 2 (metal) -> 2"},
  "fields": {
    "pos_min_phys_counts": {"value": 82, "class": "bench"},
    "pos_max_phys_counts": {"value": 3792, "class": "bench"},
@@ -22,7 +22,7 @@
    "drive_polarity": {"value": 1, "class": "bench"},
    "stall_time_ticks": {"value": 10000, "class": "policy"},
    "stall_omega_max_cps": {"value": 500, "class": "policy"},
-   "i_cont_counts": {"value": 397, "band": [397, 398], "class": "policy"},
+   "yield_current_counts": {"value": 397, "band": [397, 398], "class": "policy"},
    "stall_release_counts": {"value": 143, "band": [143, 143], "class": "policy"},
    "stall_tau_trip_counts": {"value": 65535, "class": "policy"},
    "oc_trip_counts": {"value": 2497, "band": [2494, 2500], "class": "policy"},

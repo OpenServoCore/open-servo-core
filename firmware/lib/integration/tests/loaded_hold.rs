@@ -10,7 +10,7 @@ use osc_integration::mg90_d::{self, COUNTS_PER_DEG, CURRENT_COUNTS_PER_A};
 use osc_servo_core::{MotorCmd, RegionStorage};
 
 /// The load as a winding current, counts: 200 mA, under the set's
-/// continuous rating, so the press verdict never folds the hold.
+/// yield current, so the press verdict never folds the hold.
 const LOAD: f64 = 0.2 * CURRENT_COUNTS_PER_A;
 const TICKS_PER_MS: u32 = 20;
 /// Per goal, as the bench's load captures hold each: 1.5 s, the last 1.0

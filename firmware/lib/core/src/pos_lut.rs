@@ -722,7 +722,7 @@ mod tests {
         let booted = crate::persist::rebooted(&sh);
         assert_eq!(pos_lut_state(&booted), state::IDENTITY);
         sh.with_pos_lut(|k| booted.with_pos_lut(|b| assert_eq!(k, b)));
-        assert_eq!(booted.table.with(|t| t.telemetry.mode.data_flags), 0);
+        assert_eq!(booted.table.with(|t| t.telemetry.common.status_flags), 0);
     }
 
     #[test]

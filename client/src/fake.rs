@@ -7,8 +7,9 @@ use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
 use osc_servo_core::ControlTable;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
+use osc_servo_core::kernel::belt;
 use osc_servo_core::kernel::phases::loops::limits::{
-    FoldIn, LimitState, SLOW_PERIOD_MS, i_cont_or_cap, tau_shift,
+    FoldIn, LimitState, SLOW_PERIOD_MS, tau_shift, yield_current_or_cap,
 };
 
 use crate::pipe::{Pipe, PipeError};
@@ -96,7 +97,8 @@ struct Winding {
 impl Winding {
     /// Advance to `now_us` and publish what the kernel would: UNSET under
     /// the firmware's own predicate, else NTC plus the excess; `i_lim` the
-    /// limit fold's electrical ceiling.
+    /// limit fold's electrical ceiling; the modes the belt refuses on the
+    /// table's constants.
     fn publish(&mut self, t: &mut ControlTable, now_us: u64) {
         let th = t.calib.thermal;
         let raw = match t.telemetry.tick.ntc_raw {
@@ -124,7 +126,7 @@ impl Winding {
         };
         let mut limits = LimitState::new();
         let mut lim = lim;
-        lim.i_cont_counts = i_cont_or_cap(&lim);
+        lim.yield_current_counts = yield_current_or_cap(&lim);
         let travel = t.config.pos_soft.or_stops(&t.config.pos_phys);
         let fold = limits.fold(&FoldIn::default(), &lim, &travel);
         t.telemetry.tick.ntc_raw = raw;
@@ -132,6 +134,13 @@ impl Winding {
         t.telemetry.estimates.i_lim_counts = fold.lim;
         t.telemetry_ext.therm.t_ntc_cc = t_ntc.unwrap_or(0);
         t.telemetry_ext.therm.therm_flags = flags;
+        let m = t.calib.motor;
+        t.telemetry.mode.refused_modes = belt::of(
+            m.recip_ke_q,
+            m.ke_vpc_q,
+            t.config.limits.current_limit_counts,
+            t.config.loop_position.speed_ceiling_cps,
+        );
     }
 }
 
@@ -177,8 +186,8 @@ impl FakePipe {
 
     /// Servo `i` carries the dev board's sense chain as board data
     /// ([`seed`]): install re-stamps it at every bringup, so FACTORY leaves
-    /// it standing. Alone, the servo is factory-fresh (every `data_flags`
-    /// reason of a never-saved, never-identified servo).
+    /// it standing. Alone, the servo is factory-fresh (both images on their
+    /// defaults, never saved, never identified).
     pub fn seed_board(&mut self, i: usize) {
         self.sim.set_servo_sense(i, seed::SENSE, seed::SENSE_EXT);
         self.publish_therm();
@@ -187,7 +196,7 @@ impl FakePipe {
     /// Servo `i` comes up like one off the calibration bench ([`seed`]): the
     /// dumped CALIB, the travel limits and the identified motor are
     /// written and SAVEd, then the board data goes in. So the app
-    /// reads real units from the first scan with `data_flags` clear, a
+    /// reads real units from the first scan with both images loaded, a
     /// reboot keeps them, and FACTORY wipes them back to board defaults -
     /// exactly what the hardware does (protocol sec 9.4/9.5).
     pub fn seed_calibrated(&mut self, i: usize) {

@@ -63,8 +63,8 @@ impl Looser {
 const LOOSER: [(&str, Looser); 26] = [
     ("current_limit_counts", Looser::Up),
     ("stall_tau_trip_counts", Looser::Up),
-    // the press arms over the continuous current and folds to it; 0 reads as the cap
-    ("i_cont_counts", Looser::Judged),
+    // the press arms over the yield current and folds to it; 0 reads as the cap
+    ("yield_current_counts", Looser::Judged),
     ("stall_release_counts", Looser::Up),
     ("stall_response", Looser::Judged),
     ("stall_time_ticks", Looser::Up),

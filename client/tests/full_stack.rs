@@ -14,13 +14,13 @@ use osc_client::boot::{
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
-use osc_client::data_state::{self, CALIB_VIRGIN, CONFIG_VIRGIN, Reason, fault};
 use osc_client::descriptor::{Descriptor, Value, encode};
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, heat_tau_s, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::pipe::{Pipe, PipeError};
 use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
 use osc_client::session::{EngineCommand, LinkInfo, Record, Session};
+use osc_client::store_state::{self, CALIB_DEFAULTS, CONFIG_DEFAULTS, UNSAVED, fault};
 use osc_client::{
     BaudRate, BusMode, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode,
     StreamReply, TbExpect,
@@ -1276,15 +1276,18 @@ fn deadline_sync_sets_the_engine_mirror_with_no_servo_listed() {
     assert!(timeout_us(&mut c) >= STRETCHED_US as u64);
 }
 
-// --- data state and the unsaved bit ---
+// --- stored state, refused modes and the unsaved bit ---
 
-/// The checked-in descriptor: the register names the data-state helpers
+/// The checked-in descriptor: the register names the stored-state helpers
 /// resolve.
 const DESCRIPTOR: &str = include_str!("../../descriptors/osc-servo/0.1.json");
-/// The kernel's latched data fault (`kernel/phases/loops/faults.rs` BIT_DATA).
-const BIT_DATA: u8 = 1 << 6;
-/// A never-saved servo.
-const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN;
+/// The kernel's latched config fault (`kernel/phases/loops/faults.rs` BIT_CONFIG).
+const BIT_CONFIG: u8 = 1 << 6;
+/// A never-saved servo: both images on their defaults.
+const FRESH: u8 = CONFIG_DEFAULTS | CALIB_DEFAULTS;
+/// Current, Velocity and Position: what a servo with Ke, the cap and the
+/// ceiling unset refuses.
+const CLOSED: u8 = 0b1110;
 
 fn descriptor() -> Descriptor {
     Descriptor::parse(DESCRIPTOR).expect("descriptor parses")
@@ -1320,18 +1323,24 @@ fn seeded_servo_boots_identified_and_saved() {
     let mut c = Client::connect(pipe).expect("connect");
     let id = Id::new(1);
 
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!((s.flags, s.fault_code), (0, fault::NONE));
-    assert_eq!(s.message(), None);
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!((s.status, s.refused, s.fault_code), (0, 0, fault::NONE));
+    assert!(s.messages().is_empty());
+    assert_eq!(
+        (s.settings(), s.refused_said()),
+        ("loaded".into(), "none".into())
+    );
     assert!(!unsaved(&mut c, id));
 
     c.reboot(id).expect("reboot");
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    assert_eq!(c.store_state(id, &d).expect("store state").status, 0);
 
     c.factory(id).expect("factory");
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, FRESH, "a wiped store boots factory-fresh");
-    assert_eq!(s.reasons()[0], Reason::ConfigVirgin);
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!(s.status, FRESH, "a wiped store boots factory-fresh");
+    assert_eq!(s.settings(), "defaults: CONFIG, CALIB");
+    assert_eq!(s.refused, CLOSED);
+    assert_eq!(s.refused_modes, ["Current", "Velocity", "Position"]);
 }
 
 /// Board data alone leaves the servo factory-fresh: the GUI's virgin
@@ -1342,8 +1351,9 @@ fn board_seed_alone_is_factory_fresh() {
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
     pipe.seed_board(0);
     let mut c = Client::connect(pipe).expect("connect");
-    let s = c.data_state(Id::new(1), &d).expect("data state");
-    assert_eq!(s.flags, FRESH);
+    let s = c.store_state(Id::new(1), &d).expect("store state");
+    assert_eq!((s.status, s.refused), (FRESH, CLOSED));
+    assert_eq!(s.messages(), [store_state::REFUSED, store_state::DEFAULTS]);
     assert_eq!(
         read_u16(&mut c, Id::new(1), SHUNT_R_MOHM),
         seed::SENSE.shunt_r_mohm
@@ -1351,9 +1361,9 @@ fn board_seed_alone_is_factory_fresh() {
 }
 
 /// The commit sequence on a factory-fresh servo, as `osc-ident save` runs
-/// it: the set reads unsaved and the image reasons stand until SAVE, which
-/// clears both; an edit afterwards reads unsaved again, and names no
-/// reason.
+/// it: the refused modes clear as the set lands, volatile; the set reads
+/// unsaved and the store bits stand until SAVE, which clears all three; an
+/// edit afterwards reads unsaved again and sets no store bit.
 #[test]
 fn virgin_servo_commit_sequence_reads_unsaved_until_save() {
     let d = descriptor();
@@ -1362,8 +1372,8 @@ fn virgin_servo_commit_sequence_reads_unsaved_until_save() {
     let mut c = Client::connect(pipe).expect("connect");
     let id = Id::new(1);
 
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, FRESH);
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!((s.status, s.refused), (FRESH, CLOSED));
     assert!(!unsaved(&mut c, id), "a boot reads saved");
 
     // cal: stops, travel, polarity, angles, gear
@@ -1401,34 +1411,44 @@ fn virgin_servo_commit_sequence_reads_unsaved_until_save() {
     ] {
         write_field(&mut c, id, &d, name, Value::Uint(v as u64));
     }
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, FRESH, "writes name no reason");
-    assert_eq!(s.reasons(), [Reason::ConfigVirgin, Reason::CalibVirgin]);
-    assert!(unsaved(&mut c, id), "the set is not saved yet");
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!(s.status, UNSAVED | FRESH, "writes set no store bit");
+    assert_eq!(
+        s.refused_modes,
+        ["Current", "Velocity", "Position"],
+        "no limits yet"
+    );
+    for (name, v) in [("current_limit_counts", 568), ("speed_ceiling_cps", 4000)] {
+        write_field(&mut c, id, &d, name, Value::Uint(v));
+    }
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!(s.refused, 0, "a usable set, volatile and unsaved");
+    assert_eq!(
+        s.messages(),
+        [store_state::DEFAULTS, store_state::NOT_SAVED]
+    );
 
     c.save(id).expect("save");
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, 0, "VIRGIN clears on SAVE");
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!(s.status, 0, "SAVE clears the store bits and unsaved");
     assert!(!unsaved(&mut c, id));
     c.reboot(id).expect("reboot");
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
-    assert!(!unsaved(&mut c, id));
+    assert_eq!(c.store_state(id, &d).expect("store state").status, 0);
 
-    // a gain edit: unsaved, no reason
+    // a gain edit: unsaved, no store bit
     write_field(&mut c, id, &d, "v_kp_q88", Value::Uint(600));
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
-    assert!(unsaved(&mut c, id));
+    assert_eq!(c.store_state(id, &d).expect("store state").status, UNSAVED);
 
     // the belt's refusal of an enable, as the fault ISR publishes it (the
     // fake adapter runs no kernel): the operator line is the refusal's
     c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
-        t.telemetry.common.fault_flags = BIT_DATA;
-        t.telemetry.mode.fault_code = fault::DATA;
+        t.telemetry.common.fault_flags = BIT_CONFIG;
+        t.telemetry.mode.fault_code = fault::CONFIG;
     });
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(fault::name(s.fault_code), Some("data"));
-    assert_eq!(s.message().as_deref(), Some(data_state::REFUSED));
-    assert_eq!(c.health(id).expect("health").fault_flags, BIT_DATA);
+    let s = c.store_state(id, &d).expect("store state");
+    assert_eq!(fault::name(s.fault_code), Some("config"));
+    assert_eq!(s.messages()[0], store_state::REFUSED);
+    assert_eq!(c.health(id).expect("health").fault_flags, BIT_CONFIG);
 }
 
 // --- position table ---
@@ -1457,8 +1477,7 @@ fn mg90_servo() -> (Descriptor, Client<FakePipe>, Id) {
     write_field(&mut c, id, &d, "raw_min", Value::Uint(209));
     write_field(&mut c, id, &d, "raw_max", Value::Uint(3849));
     c.save(id).expect("save");
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
-    assert!(!unsaved(&mut c, id));
+    assert_eq!(c.store_state(id, &d).expect("store state").status, 0);
     (d, c, id)
 }
 
@@ -1499,7 +1518,7 @@ fn lut_write_goes_live_and_reads_unsaved() {
         pos_lut::state::LIVE
     );
     assert!(unsaved(&mut c, id), "the table is not saved yet");
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    assert_eq!(c.store_state(id, &d).expect("store state").status, UNSAVED);
     c.save(id).expect("save");
     assert!(!unsaved(&mut c, id));
 

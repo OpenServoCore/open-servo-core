@@ -3,8 +3,8 @@
 //! every other scalar as number.
 
 use osc_client::BaudRate as WireBaud;
-use osc_client::data_state;
 use osc_client::descriptor as desc;
+use osc_client::store_state;
 use serde::{Deserialize, Serialize};
 use tsify::Tsify;
 
@@ -357,51 +357,46 @@ impl From<osc_client::common::Health> for Health {
     }
 }
 
-/// One `data_flags` reason: its firmware name and what to do about it.
+/// The stored state and the refused modes (protocol sec 5.7): which
+/// images boot did not load, whether anything changed since SAVE (both
+/// information), and the modes the belt refuses now, with the kernel's
+/// latched fault beside them.
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-pub struct DataReason {
-    pub name: String,
-    pub text: String,
-}
-
-impl From<data_state::Reason> for DataReason {
-    fn from(r: data_state::Reason) -> Self {
-        DataReason {
-            name: r.name().into(),
-            text: r.text().into(),
-        }
-    }
-}
-
-/// Whether the persisted images and the identified set are the servo's
-/// own (`data_flags`, information: no reason refuses a mode), with the
-/// kernel's latched fault beside it.
-#[derive(Debug, Clone, Serialize, Tsify)]
-#[serde(rename_all = "camelCase")]
-pub struct DataState {
-    pub flags: u8,
+pub struct StoreState {
+    /// `status_flags`, whole.
+    pub status: u8,
+    pub unsaved: bool,
+    /// The images on their defaults: `CONFIG`, `CALIB`.
+    pub defaults: Vec<String>,
+    /// `loaded`, or `defaults: CONFIG, CALIB`.
+    pub settings: String,
+    /// `refused_modes`, whole.
+    pub refused: u8,
+    /// The refused modes by name, lowest first.
+    pub refused_modes: Vec<String>,
     pub fault_code: u8,
     /// `faultCode` by name; absent for a code this build does not know.
     #[tsify(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<String>,
-    /// Most urgent first.
-    pub reasons: Vec<DataReason>,
-    /// The operator line; absent when nothing is wrong.
-    #[tsify(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    /// The operator lines, most urgent first; empty when nothing needs
+    /// doing.
+    pub messages: Vec<String>,
 }
 
-impl From<data_state::DataState> for DataState {
-    fn from(s: data_state::DataState) -> Self {
-        DataState {
-            flags: s.flags,
+impl From<store_state::StoreState> for StoreState {
+    fn from(s: store_state::StoreState) -> Self {
+        StoreState {
+            status: s.status,
+            unsaved: s.unsaved(),
+            defaults: s.defaults().into_iter().map(String::from).collect(),
+            settings: s.settings(),
+            refused: s.refused,
             fault_code: s.fault_code,
-            fault: data_state::fault::name(s.fault_code).map(String::from),
-            reasons: s.reasons().into_iter().map(DataReason::from).collect(),
-            message: s.message(),
+            fault: store_state::fault::name(s.fault_code).map(String::from),
+            messages: s.messages().into_iter().map(String::from).collect(),
+            refused_modes: s.refused_modes,
         }
     }
 }
@@ -545,7 +540,7 @@ pub struct Track {
 
 /// One `fakeWithTracks` roster entry: a servo id, optionally playing a
 /// track back, optionally factory-fresh (never calibrated, identified or
-/// saved: every `data_flags` reason set) instead of seeded, optionally
+/// saved: both images on their defaults) instead of seeded, optionally
 /// with its winding estimate off or holding another response deadline,
 /// optionally a board that carries only its bootloader or one whose next
 /// erase or write fails.

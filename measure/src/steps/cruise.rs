@@ -49,8 +49,8 @@
 
 use std::time::Duration;
 
-use osc_client::data_state::fault;
 use osc_client::pipe::Pipe;
+use osc_client::store_state::fault;
 use serde_json::{Map, Value, json};
 
 use super::runway::GUARD_COUNTS;
@@ -557,7 +557,7 @@ async fn read_word<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u16, Ref
 
 async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<Before, Refused> {
     let (line, state) = verify::admit(rig.c, rig.id, rig.d).await?;
-    verify::belt(&state, rig.d)?;
+    verify::belt(&state, rig.d, &["Position", "Velocity"])?;
     let mode = |name: &str| mode_value(rig.d, name).map_err(|h| Refused(h.why()));
     let (position_mode, velocity_mode) = (mode("Position")?, mode("Velocity")?);
     let n = |name: &str| num(&state, rig.d, name);

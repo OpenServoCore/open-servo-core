@@ -12,7 +12,7 @@ mod support;
 use osc_integration::mg90::{self, Mg90};
 use osc_integration::plant::FakeIo;
 use osc_servo_core::kernel::phases::loops::faults::{
-    BIT_OVER_CURRENT, CODE_DATA, CODE_NONE, CODE_POSITION_ERROR, CODE_STALL,
+    BIT_OVER_CURRENT, CODE_CONFIG, CODE_NONE, CODE_POSITION_ERROR, CODE_STALL,
 };
 use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::kernel::{DECIM_MED, TICK_HZ as KERNEL_HZ};
@@ -302,7 +302,7 @@ fn a_reversed_motor_runs_to_its_stop_and_a_timer_latches() {
 /// stop: at the rig's equal 500 ms, `position_error` latches with no fold,
 /// as under Fault. With the timer at 2 s the fold comes first, and the
 /// timer does not run while it is latched: the servo holds the stop at
-/// `i_cont_counts`, YIELD set, drive on and no fault, to 3 s.
+/// `yield_current_counts`, YIELD set, drive on and no fault, to 3 s.
 #[test]
 fn a_reversed_motor_under_yield_holds_its_stop_once_folded() {
     for (error_ms, code) in [(500, CODE_POSITION_ERROR), (2000, CODE_NONE)] {
@@ -315,7 +315,7 @@ fn a_reversed_motor_under_yield_holds_its_stop_once_folded() {
                     t.config.fault_cfg.pos_error_time_ticks = error_ms * MS;
                     t.control.lifecycle.goal_position = MID as i32 + 200 * dir;
                 });
-                let i_cont = s.sh.table.with(|t| t.config.limits.i_cont_counts);
+                let yield_current = s.sh.table.with(|t| t.config.limits.yield_current_counts);
                 s.p.swapped = true;
                 s.stops = true;
                 s.control(|c| c.torque_enable = true);
@@ -329,7 +329,7 @@ fn a_reversed_motor_under_yield_holds_its_stop_once_folded() {
                 if code == CODE_NONE {
                     assert!(s.limit_flags() & flag::YIELD != 0, "{case}: no fold");
                     let i_lim = s.sh.table.with(|t| t.telemetry.estimates.i_lim_counts);
-                    assert_eq!(i_lim, i_cont, "{case}");
+                    assert_eq!(i_lim, yield_current, "{case}");
                     assert!(
                         matches!(s.k.io.motor.last, Some(MotorCmd::Drive { .. })),
                         "{case}: {:?}",
@@ -512,7 +512,7 @@ fn a_hand_tuned_nonzero_set_runs_as_written() {
         drove |= matches!(s.k.io.motor.last, Some(MotorCmd::Drive { .. }));
     }
     assert!(drove, "observer gain 0: enabled");
-    assert_ne!(s.code(), CODE_DATA, "observer gain 0");
+    assert_ne!(s.code(), CODE_CONFIG, "observer gain 0");
 }
 
 /// An OpenLoop drive overpowered by a push mid travel from the enable: the

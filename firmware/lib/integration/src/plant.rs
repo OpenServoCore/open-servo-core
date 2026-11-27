@@ -147,7 +147,7 @@ pub fn seed(shared: &Shared) {
         c.limits.drive_polarity = true;
         c.limits.stall_omega_max_cps = 500;
         c.limits.stall_time_ticks = ms_ticks(50);
-        c.limits.i_cont_counts = 300;
+        c.limits.yield_current_counts = 300;
         c.limits.stall_release_counts = 150;
         c.limits.stall_tau_trip_counts = 1200;
         // inside the 12-bit span above BIAS: the plant's samples clamp at 4095

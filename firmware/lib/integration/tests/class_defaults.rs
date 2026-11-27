@@ -7,7 +7,7 @@ use osc_integration::sim::{
     DEV_V006_DEFAULTS as DEFAULTS, DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE,
     DEV_V006_SENSE_EXT as SENSE_EXT,
 };
-use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_NONE};
+use osc_servo_core::kernel::phases::loops::faults::{CODE_CONFIG, CODE_NONE};
 use osc_servo_core::regions::config::{STALL_TAU_TRIP_OFF, current_counts};
 use osc_servo_core::{BaudRate, ImageState, Kernel, Mode, ProtectionSeed, RegionStorage, Shared};
 
@@ -17,7 +17,7 @@ const GOAL_64: i16 = 20971;
 const MID: u16 = 2050;
 
 /// Boot as the chip does with both images erased: defaults, board data,
-/// the measured shunt bias, the virgin data state.
+/// the measured shunt bias, both images on their defaults.
 fn virgin() -> Shared {
     let sh = Shared::new();
     sh.table
@@ -25,7 +25,7 @@ fn virgin() -> Shared {
     sh.table
         .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);
     sh.table.seed_current_bias(BIAS);
-    sh.publish_data_state(ImageState::Virgin, ImageState::Virgin);
+    sh.publish_data_state(ImageState::Defaults, ImageState::Defaults);
     sh.table
         .with_mut(|t| t.control.lifecycle.mode = Mode::OpenLoop);
     sh
@@ -110,7 +110,7 @@ fn the_dev_v006_boot_seed_is_pinned() {
         assert_eq!(l.current_limit_counts, 0);
         assert!(l.drive_polarity);
         assert_eq!((l.stall_omega_max_cps, l.stall_time_ticks), (500, 10_000));
-        assert_eq!((l.i_cont_counts, l.stall_release_counts), (277, 100));
+        assert_eq!((l.yield_current_counts, l.stall_release_counts), (277, 100));
         assert_eq!(l.stall_tau_trip_counts, u16::MAX);
         assert_eq!((l.oc_trip_counts, l.oc_trip_ticks), (2439, 8));
         assert_eq!(l.thermal_tau_s, 4);
@@ -197,7 +197,7 @@ fn virgin_servo_admits_current_mode_once_both_limits_are_written() {
         code
     };
     for mode in [Mode::Current, Mode::Velocity, Mode::Position] {
-        assert_eq!(enable(&mut k, &mut p, mode), CODE_DATA, "{mode:?}");
+        assert_eq!(enable(&mut k, &mut p, mode), CODE_CONFIG, "{mode:?}");
     }
     let commit = |f: &dyn Fn(&mut osc_servo_core::ControlTable)| {
         sh.config_commit_begin();
@@ -210,7 +210,7 @@ fn virgin_servo_admits_current_mode_once_both_limits_are_written() {
     assert_ne!(limit_flags(&sh) & FLAG_UNSET, 0, "the cap alone");
     assert_eq!(
         enable(&mut k, &mut p, Mode::Current),
-        CODE_DATA,
+        CODE_CONFIG,
         "the cap alone"
     );
     commit(&|t| t.config.loop_position.speed_ceiling_cps = 1500);
@@ -219,7 +219,7 @@ fn virgin_servo_admits_current_mode_once_both_limits_are_written() {
     assert_eq!(enable(&mut k, &mut p, Mode::Current), CODE_NONE, "Current");
     assert_eq!(
         enable(&mut k, &mut p, Mode::Velocity),
-        CODE_DATA,
+        CODE_CONFIG,
         "Velocity"
     );
 }

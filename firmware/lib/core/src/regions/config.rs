@@ -191,10 +191,12 @@ pub struct ConfigLimits {
     /// Kernel ticks (`CalibSense.tick_hz`).
     pub stall_time_ticks: u32,
     pub stall_omega_max_cps: u16,
-    /// The continuous current: what the winding holds at its maximum
-    /// temperature. The press detector triggers over it and folds to it. 0
-    /// reads as the cap: the press at the cap.
-    pub i_cont_counts: u16,
+    /// The yield current: the press detector's trigger (a held current
+    /// over it with the shaft still for `stall_time_ticks`) and the level
+    /// the limit folds to under Yield. Not a thermal rating: the winding
+    /// estimate's cutoff is the one thermal limit. 0 reads as the cap: the
+    /// press at the cap.
+    pub yield_current_counts: u16,
     /// The press fold lets go once the held current reads under this.
     pub stall_release_counts: u16,
     /// Collision trip: |tau_d| above this is model-unexplained torque;
@@ -341,9 +343,9 @@ pub struct ConfigDefaults {
 /// states each field; `ProtectionSeed` converts them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ProtectionDefaults {
-    /// The continuous current, `i_cont_counts`.
-    pub i_cont_ma: u16,
-    /// `stall_release_counts`, under `i_cont_ma` so a held press stays
+    /// The press trigger and Yield fold level, `yield_current_counts`.
+    pub yield_current_ma: u16,
+    /// `stall_release_counts`, under `yield_current_ma` so a held press stays
     /// folded.
     pub stall_release_ma: u16,
     pub oc_trip_ma: u16,
@@ -364,7 +366,7 @@ pub struct ProtectionDefaults {
 /// divide.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ProtectionSeed {
-    pub i_cont_counts: u16,
+    pub yield_current_counts: u16,
     pub stall_release_counts: u16,
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
@@ -385,7 +387,12 @@ impl ProtectionSeed {
         div_bot_ohm: u32,
     ) -> Self {
         Self {
-            i_cont_counts: current_counts(p.i_cont_ma, shunt_r_mohm, gain_milli, vdd_mv),
+            yield_current_counts: current_counts(
+                p.yield_current_ma,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+            ),
             stall_release_counts: current_counts(
                 p.stall_release_ma,
                 shunt_r_mohm,
@@ -425,7 +432,7 @@ impl ProtectionSeed {
 /// The osc-dev-v006 board's values, for the core's own tests.
 #[cfg(test)]
 pub(crate) const TEST_PROTECTION: ProtectionDefaults = ProtectionDefaults {
-    i_cont_ma: 250,
+    yield_current_ma: 250,
     stall_release_ma: 90,
     oc_trip_ma: 2200,
     oc_trip_us: 400,
@@ -546,7 +553,7 @@ mod tests {
     #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {
         let d = ProtectionSeed::from_chain(&TEST_PROTECTION, 33, 15_000, 3300, 20_000, 10_000);
-        assert_eq!(d.i_cont_counts, 154);
+        assert_eq!(d.yield_current_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.oc_trip_counts, 1352);
         assert_eq!(d.v_undervolt_counts, 1200);

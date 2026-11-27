@@ -13,7 +13,7 @@ use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
 use osc_client::{
-    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, data_state, mgmt, pos_lut,
+    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, mgmt, pos_lut, store_state,
 };
 use osc_protocol::build;
 use tsify::{Ts, Tsify};
@@ -26,8 +26,8 @@ use crate::descriptor::Descriptor;
 #[cfg(feature = "fake")]
 use crate::types::FakeServo;
 use crate::types::{
-    Alive, BaudRate, BootRow, DataState, DeadlineRewrite, Found, Health, Identity, InstallVerdict,
-    LinkInfo, Ping, PosLut, Rails, TelBurst, TelChunk, tel_chunks,
+    Alive, BaudRate, BootRow, DeadlineRewrite, Found, Health, Identity, InstallVerdict, LinkInfo,
+    Ping, PosLut, Rails, StoreState, TelBurst, TelChunk, tel_chunks,
 };
 
 /// Floor under `setGuard`: below this the watchdog would fire inside a
@@ -185,13 +185,14 @@ impl OscClient {
         Ok(())
     }
 
-    /// `data_flags` and `fault_code` decoded: the reasons closed loop is
-    /// refused, most urgent first, with the operator line.
-    #[wasm_bindgen(js_name = dataState)]
-    pub async fn data_state(&self, id: u8, d: &Descriptor) -> Result<Ts<DataState>, JsError> {
-        let s = cmd!(self, |c| data_state::read(c, Id::new(id), d.inner())
+    /// `status_flags`, `refused_modes` and `fault_code` decoded: the
+    /// images on their defaults, unsaved changes and the modes the belt
+    /// refuses, with the operator lines.
+    #[wasm_bindgen(js_name = storeState)]
+    pub async fn store_state(&self, id: u8, d: &Descriptor) -> Result<Ts<StoreState>, JsError> {
+        let s = cmd!(self, |c| store_state::read(c, Id::new(id), d.inner())
             .await?);
-        Ok(DataState::from(s).into_ts()?)
+        Ok(StoreState::from(s).into_ts()?)
     }
 
     /// The position table as the servo holds it: every page FETCHed, with
@@ -420,7 +421,7 @@ impl OscClient {
 impl OscClient {
     /// A fleet of `ids` on a simulated bus, already past GET_INFO. No hardware,
     /// no user gesture; each servo's UID is derived from its id, and every
-    /// servo boots calibrated, identified and saved (`dataState` clean).
+    /// servo boots calibrated, identified and saved (`storeState` loaded).
     pub async fn fake(
         #[wasm_bindgen(unchecked_param_type = "number[]")] ids: Vec<u8>,
     ) -> Result<OscClient, JsError> {

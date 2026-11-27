@@ -11,16 +11,17 @@ pub const BIT_STALL: u8 = 1 << 2;
 pub const BIT_POSITION_ERROR: u8 = 1 << 3;
 pub const BIT_SENSOR: u8 = 1 << 4;
 pub const BIT_UNDER_VOLT: u8 = 1 << 5;
-/// The configuration leaves the mode unusable. `CODE_DATA`: raised by the
-/// belt (`kernel::config::belt`) on every tick a mode runs on the
+/// The configuration leaves the mode unusable (`config`, code 7): raised
+/// by the belt (`kernel::config::belt`) on every tick a mode runs on the
 /// constants it refuses (a zero Ke under Velocity or Position, an unset
 /// limit under any closed mode); raised on use, never on state alone.
-pub const BIT_DATA: u8 = 1 << 6;
+/// `refused_modes` shows the refusal before any enable.
+pub const BIT_CONFIG: u8 = 1 << 6;
 /// The bus fell silent under torque for `bus_deadman_ticks`: the host-loss
 /// guard (kernel sec 2.7).
 pub const BIT_DEADMAN: u8 = 1 << 7;
 
-/// `fault_code` values: bit index + 1 through `CODE_DATA`; 0 = no fault
+/// `fault_code` values: bit index + 1 through `CODE_CONFIG`; 0 = no fault
 /// since the last ack. 8 stays unassigned: captures of record hold the
 /// dead-man as 9.
 pub const CODE_NONE: u8 = 0;
@@ -30,7 +31,7 @@ pub const CODE_STALL: u8 = 3;
 pub const CODE_POSITION_ERROR: u8 = 4;
 pub const CODE_SENSOR: u8 = 5;
 pub const CODE_UNDER_VOLT: u8 = 6;
-pub const CODE_DATA: u8 = 7;
+pub const CODE_CONFIG: u8 = 7;
 pub const CODE_DEADMAN: u8 = 9;
 
 /// Latched mask + the LATEST newly-latched kind (`fault_code`). Re-raising

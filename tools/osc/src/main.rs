@@ -141,7 +141,7 @@ enum Cmd {
         #[arg(long, value_name = "BAUD")]
         bootloader: Option<String>,
     },
-    /// Report a servo's data state and, with --from, restore a saved
+    /// Report a servo's stored state and, with --from, restore a saved
     /// table and SAVE; --factory wipes the saved images first.
     Recover(state::RecoverArgs),
     /// Read or configure a protocol sec 5.2 profile slot.
@@ -168,8 +168,8 @@ enum Cmd {
     /// One ping: model, firmware, the ALERT bit.
     Ping,
     /// Identity + health from the common register block (protocol sec 5.4),
-    /// then the data state, the latched fault and the servo's own health
-    /// (protocol sec 5.9).
+    /// then the stored state, the refused modes, the latched fault and the
+    /// servo's own health (protocol sec 5.9).
     Status,
     /// Zero the telemetry transport counters (rw-clear).
     Clear {
@@ -557,7 +557,7 @@ fn migrate(c: &mut Client<NusbPipe>, ids: &[Id], rate: BaudRate) -> Result<()> {
     Ok(())
 }
 
-/// SAVE, never refused on the data state: what the servo holds becomes
+/// SAVE, never refused on the stored state: what the servo holds becomes
 /// what it boots.
 fn save(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     state::check(c, id)?;

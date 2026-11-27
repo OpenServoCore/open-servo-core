@@ -60,7 +60,7 @@
         response_deadline_us: ::osc_servo_ch32::prelude::DEFAULT_RESPONSE_DEADLINE_US,
     },
     protection: ::osc_servo_ch32::prelude::ProtectionDefaults { // board.toml:92 protection
-        i_cont_ma: 250, // board.toml:98 protection.i_cont_ma
+        yield_current_ma: 250, // board.toml:98 protection.yield_current_ma
         stall_release_ma: 90, // board.toml:100 protection.stall_release_ma
         oc_trip_ma: 2200, // board.toml:105 protection.oc_trip_ma
         oc_trip_us: 400, // board.toml:106 protection.oc_trip_us

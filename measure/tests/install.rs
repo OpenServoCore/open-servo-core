@@ -6,8 +6,8 @@ mod common;
 
 use common::*;
 use futures_lite::future::block_on;
-use osc_client::data_state::{CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN};
 use osc_client::pos_lut;
+use osc_client::store_state::{CALIB_DEFAULTS, CONFIG_DEFAULTS, UNSAVED};
 use osc_measure::install::{self, AFTER, STORED, Step, check, restore, save};
 use osc_measure::pyjson;
 use osc_measure::set::SetFile;
@@ -172,7 +172,7 @@ fn the_table_lands_live_and_the_install_reads_unsaved() {
         checked.clean(),
         "{:?} {}",
         checked.differences,
-        checked.data
+        checked.settings
     );
     assert!(checked.unsaved, "installed, not saved");
     let state = block_on(state::read(&mut c, ID, &d)).expect("state");
@@ -265,7 +265,7 @@ fn save_writes_the_backup_before_anything_else() {
         checked.clean(),
         "the set boots: {:?} {}",
         checked.differences,
-        checked.data
+        checked.settings
     );
 
     // And the backup puts the old state back.
@@ -286,9 +286,9 @@ fn save_writes_the_backup_before_anything_else() {
     );
 }
 
-/// A servo never saved boots `CONFIG_VIRGIN | CALIB_VIRGIN`, which only
-/// the SAVE retires: the check before it is the set landed, and after it
-/// the servo boots the set, data state clean, nothing unsaved.
+/// A servo never saved boots both images on their defaults, which only the
+/// SAVE clears: the check before it is the set landed, and after it the
+/// servo boots the set, both images loaded, nothing unsaved.
 #[test]
 fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
     let (mut c, log) = factory();
@@ -296,10 +296,10 @@ fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
     let rec = record();
     let fresh = block_on(state::read(&mut c, ID, &d)).expect("state");
     assert_eq!(
-        fresh.data.flags & (CONFIG_VIRGIN | CALIB_VIRGIN),
-        CONFIG_VIRGIN | CALIB_VIRGIN,
+        fresh.store.status & (CONFIG_DEFAULTS | CALIB_DEFAULTS),
+        CONFIG_DEFAULTS | CALIB_DEFAULTS,
         "{}",
-        fresh.data_said()
+        fresh.settings_said()
     );
     let mut sink = LogSink {
         files: Default::default(),
@@ -325,11 +325,7 @@ fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
     assert_eq!(saves, 1);
     assert!(steps.contains(&Step::Saved), "{steps:?}");
     let stored: serde_json::Value = serde_json::from_slice(&sink.files[STORED]).expect("json");
-    let fresh_said = stored["data_state"].as_str().unwrap_or_default();
-    assert!(
-        fresh_said.contains("CONFIG_VIRGIN | CALIB_VIRGIN"),
-        "{fresh_said}"
-    );
+    assert_eq!(stored["settings"], "defaults: CONFIG, CALIB");
 
     block_on(osc_client::mgmt::reboot(&mut c, ID)).expect("reboot");
     let checked = block_on(check(&mut c, ID, &d, &rec)).expect("check");
@@ -337,35 +333,36 @@ fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
         checked.clean(),
         "the set boots: {:?} {}",
         checked.differences,
-        checked.data
+        checked.settings
     );
+    assert_eq!(checked.settings, "loaded");
     assert!(!checked.unsaved);
     let after: serde_json::Value = serde_json::from_slice(&sink.files[AFTER]).expect("json");
     assert_eq!(checked.servo, after["hash"], "the state the SAVE left");
 }
 
 /// The check before the SAVE refuses a set that did not land, never a
-/// data state: every reason is information.
+/// stored state or a refused mode: both are information.
 #[test]
 fn the_check_before_a_save_refuses_only_a_set_that_did_not_land() {
-    let checked = |differences: Vec<String>, flags: u8| install::Checked {
+    let checked = |differences: Vec<String>, settings: &str, refused: &str| install::Checked {
         differences,
         unowned: vec![],
-        data: "said".into(),
-        flags,
+        settings: settings.into(),
+        refused: refused.into(),
         unsaved: true,
         servo: "0".repeat(64),
     };
-    for flags in [
-        0,
-        CONFIG_VIRGIN | CALIB_VIRGIN | CONFIG_STALE,
-        CONFIG_CORRUPT,
+    for (settings, refused) in [
+        ("loaded", "none"),
+        ("defaults: CONFIG, CALIB", "Current, Velocity, Position"),
+        ("defaults: CONFIG", "none"),
     ] {
-        let c = checked(vec![], flags);
-        assert!(c.clean(), "{flags:#04x}");
-        assert_eq!(c.unsaveable(), None, "{flags:#04x}");
+        let c = checked(vec![], settings, refused);
+        assert!(c.clean(), "{settings}");
+        assert_eq!(c.unsaveable(), None, "{settings}");
     }
-    let c = checked(vec!["v_kp_q88: servo 70, set 97".into()], 0);
+    let c = checked(vec!["v_kp_q88: servo 70, set 97".into()], "loaded", "none");
     assert!(!c.clean());
     let why = c.unsaveable().expect("refused");
     assert!(why.ends_with(": v_kp_q88: servo 70, set 97"), "{why}");
@@ -411,7 +408,7 @@ fn a_refusal_after_the_first_write_reboots_to_the_saved_state() {
         checked.clean(),
         "{:?} {}",
         checked.differences,
-        checked.data
+        checked.settings
     );
 }
 
@@ -530,7 +527,7 @@ fn the_tool_has_no_factory_path() {
     }
 
     // A servo whose saved settings are unreadable runs on its defaults and
-    // is written like any: no verb refuses on the data state, none wipes.
+    // is written like any: no verb refuses on the stored state, none wipes.
     let (mut c, log) = on_record();
     let d = descriptor();
     let backup = serde_json::to_string(
@@ -542,9 +539,9 @@ fn the_tool_has_no_factory_path() {
     c.pipe_mut()
         .inner
         .sim_mut()
-        .servo_table_mut(0, |t| t.telemetry.mode.data_flags |= CONFIG_CORRUPT);
+        .servo_table_mut(0, |t| t.telemetry.common.status_flags |= CONFIG_DEFAULTS);
     let s = block_on(state::read(&mut c, ID, &d)).expect("state");
-    assert_eq!(s.data.flags & CONFIG_CORRUPT, CONFIG_CORRUPT);
+    assert_eq!(s.store.status & CONFIG_DEFAULTS, CONFIG_DEFAULTS);
     log.borrow_mut().clear();
     let mut i = inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
@@ -553,13 +550,23 @@ fn the_tool_has_no_factory_path() {
     block_on(restore(&mut c, ID, &d, &backup, json!({}), &mut Vec::new())).expect("restore");
     assert!(log.borrow().iter().all(|e| !matches!(e, Ev::Mgmt(_))));
     let s = block_on(state::read(&mut c, ID, &d)).expect("state");
-    assert_eq!(s.data.flags & CONFIG_CORRUPT, CONFIG_CORRUPT, "information");
+    assert_eq!(
+        s.store.status & CONFIG_DEFAULTS,
+        CONFIG_DEFAULTS,
+        "information"
+    );
+    assert_eq!(
+        s.store.status & UNSAVED,
+        UNSAVED,
+        "the restore wrote, unsaved"
+    );
 }
 
 /// A record kept while servos carried a plant stamp (CALIB layout 7: a
 /// `stamp` line and `plant_stamp` among its fields, both under its hash)
-/// still restores: it reads under the hash it was written with, and the
-/// register no servo has any more is never written.
+/// still restores: it reads under the hash it was written with, the
+/// register no servo has any more is never written, and a register read
+/// under its old name lands under today's.
 #[test]
 fn a_record_from_a_stamped_servo_still_restores() {
     let (mut c, log) = on_record();
@@ -569,8 +576,11 @@ fn a_record_from_a_stamped_servo_still_restores() {
         .record(&d);
     let m = doc.as_object_mut().expect("object");
     m.remove("unsaved");
+    m.remove("settings");
+    m.remove("refused_modes");
     m.remove("hash");
     m.insert("stamp".into(), json!("0xd1c4 = live set"));
+    m.insert("data_state".into(), json!("clean"));
     m["fields"]
         .as_object_mut()
         .expect("fields")
@@ -579,6 +589,14 @@ fn a_record_from_a_stamped_servo_still_restores() {
         .as_array_mut()
         .expect("writable")
         .push(json!("plant_stamp"));
+    let fields = m["fields"].as_object_mut().expect("fields");
+    let held = fields.remove("yield_current_counts").expect("held");
+    fields.insert("i_cont_counts".into(), held.clone());
+    for name in m["writable"].as_array_mut().expect("writable") {
+        if name == "yield_current_counts" {
+            *name = json!("i_cont_counts");
+        }
+    }
     let old_hash = pyjson::hash(&json!({
         "addr": doc["addr"],
         "raw": doc["raw"],
@@ -592,12 +610,13 @@ fn a_record_from_a_stamped_servo_still_restores() {
     assert!(Record::parse(&bad.to_string()).is_err(), "not its hash");
     doc["hash"] = json!(old_hash);
     let r = Record::parse(&doc.to_string()).expect("the old record reads");
-    assert!(
-        r.adopted(json!({}))
-            .expect("adopted")
-            .value("plant_stamp")
-            .is_none(),
-        "never written"
+    let adopted = r.adopted(json!({})).expect("adopted");
+    assert!(adopted.value("plant_stamp").is_none(), "never written");
+    assert!(adopted.value("i_cont_counts").is_none());
+    assert_eq!(
+        adopted.value("yield_current_counts"),
+        Some(&held),
+        "today's name"
     );
     log.borrow_mut().clear();
     block_on(restore(

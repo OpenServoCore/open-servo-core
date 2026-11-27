@@ -60,13 +60,13 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // cadence: the 20 kHz kernel tick at the slowest.
         // SAFETY: table storage is 'static; single-byte volatile loads, and
         // a write landing from an ISR mid-pair costs one stale pass.
-        let (fault_code, data_flags) = unsafe {
+        let (fault_code, refused_modes) = unsafe {
             let mode = &raw const (*crate::runtime::statics::SHARED.table.region_ptr())
                 .telemetry
                 .mode;
             (
                 (&raw const (*mode).fault_code).read_volatile(),
-                (&raw const (*mode).data_flags).read_volatile(),
+                (&raw const (*mode).refused_modes).read_volatile(),
             )
         };
         // A host flash request (`stat_flash_ticks`) is taken and zeroed
@@ -94,7 +94,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             flash.running(now),
             lamp_test.running(now),
             fault_code,
-            data_flags,
+            refused_modes,
         ));
         led.poll();
 

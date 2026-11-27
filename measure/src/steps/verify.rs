@@ -24,8 +24,8 @@
 
 use std::ops::Range;
 
-use osc_client::data_state::fault;
 use osc_client::pipe::Pipe;
+use osc_client::store_state::fault;
 use osc_servo_core::regions::config::{ConfigLoopPosition, ConfigPosPhys, ConfigPosSoft};
 use serde_json::{Map, Value, json};
 
@@ -347,6 +347,7 @@ pub async fn admit<P: Pipe>(
 
 /// The constants whose 0 the kernel's belt refuses the closed loops on
 /// (protocol sec 5.7): a zero Ke, an unset current cap or speed ceiling.
+/// They name the reason; `refused_modes` is the verdict.
 const BELT: [&str; 4] = [
     "recip_ke_q",
     "ke_vpc_q",
@@ -354,27 +355,39 @@ const BELT: [&str; 4] = [
     "speed_ceiling_cps",
 ];
 
-/// Refused when the servo would refuse the closed loops: one of [`BELT`]
-/// reads 0. The data state is no refusal; it is information.
-pub(crate) fn belt(state: &State, d: &osc_client::descriptor::Descriptor) -> Result<(), Refused> {
+/// Refused when the servo refuses one of `modes` now (`refused_modes`),
+/// with the belt's reason: the [`BELT`] constants that read 0. The stored
+/// state is no refusal; it is information.
+pub(crate) fn belt(
+    state: &State,
+    d: &osc_client::descriptor::Descriptor,
+    modes: &[&str],
+) -> Result<(), Refused> {
+    let refused: Vec<&str> = modes
+        .iter()
+        .copied()
+        .filter(|m| state.store.refused_modes.iter().any(|r| r == m))
+        .collect();
+    if refused.is_empty() {
+        return Ok(());
+    }
     let mut unset = Vec::new();
     for name in BELT {
         if num(state, d, name)? == 0.0 {
             unset.push(name);
         }
     }
-    if unset.is_empty() {
-        return Ok(());
-    }
     Err(Refused(format!(
-        "{} 0, unset: the servo refuses the closed loops on it (protocol sec 5.7), so nothing moves; an identification sets them (`osc-ident run`)",
+        "the servo refuses {} (refused_modes {}): {} 0, unset (protocol sec 5.7), so nothing moves; an identification sets them (`osc-ident run`)",
+        refused.join(" and "),
+        state.refused_said(),
         unset.join(", ")
     )))
 }
 
 async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<Before, Refused> {
     let (line, state) = admit(rig.c, rig.id, rig.d).await?;
-    belt(&state, rig.d)?;
+    belt(&state, rig.d, &["Position"])?;
     let n = |name: &str| num(&state, rig.d, name);
     let held = travel(&state, rig.d)?;
     let soft = (

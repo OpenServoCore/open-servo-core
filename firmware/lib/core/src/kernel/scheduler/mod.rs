@@ -75,8 +75,7 @@ pub struct KernelTiming {
 /// is read once per period; CONFIG and CALIB only into `cfg`, between
 /// commits (`Shared::config_seq`). The kernel is the sole writer of TELEMETRY
 /// tick (its frame and `sample_tick` excepted: the ADC DMA and the tick ISR
-/// land them ahead of the kernel), estimates, refs, mode and limits (`data_flags`
-/// excepted: boot and dispatch write it) and the
+/// land them ahead of the kernel), estimates, refs, mode and limits, and the
 /// `fault_flags` byte; TELEMETRY-EXT `health` belongs to the chip side.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,
@@ -144,10 +143,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         #[cfg(not(feature = "experiment"))]
         self.medium.r_hat(&self.cfg, shared, &mut self.cmd);
         let p = shared.table.region_ptr();
-        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile stores.
         unsafe {
             (&raw mut (*p).telemetry_ext.limits_ext.window_v_floor_q15)
                 .write_volatile(self.cfg.v_floor_q15);
+            #[cfg(not(feature = "experiment"))]
+            (&raw mut (*p).telemetry.mode.refused_modes).write_volatile(self.cfg.belt);
         }
     }
 

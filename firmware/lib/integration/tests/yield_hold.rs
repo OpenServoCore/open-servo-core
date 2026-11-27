@@ -1,9 +1,9 @@
-//! A Position hold under a load over the continuous rating on the servo of
+//! A Position hold under a load over the yield current on the servo of
 //! record's rig (`mg90_d`): a spring on the output whose pull at the goal
-//! sits between `i_cont_counts` and the current cap, and falls as the
+//! sits between `yield_current_counts` and the current cap, and falls as the
 //! shaft gives way toward its rest point, as a gravity arm's pull falls as
 //! it swings toward hanging. The cap holds the goal until the press verdict
-//! folds the limit to `i_cont_counts`, `stall_time_ticks` on. Under Yield the
+//! folds the limit to `yield_current_counts`, `stall_time_ticks` on. Under Yield the
 //! shaft then gives way to where the spring meets the fold, past
 //! `pos_error_counts`, and the position error timer does not run while the
 //! fold is latched (protocol sec 5.7, sec 5.8).
@@ -20,9 +20,9 @@ const MS: u32 = 20;
 /// The spring's rate, winding current counts per count of travel.
 const RATE: f64 = 0.5;
 /// Its pull at the goal, counts of winding current: about 0.40 A, between
-/// the set's 284-count continuous rating and its 568-count cap.
+/// the set's 284-count yield current and its 568-count cap.
 const PULL: f64 = 450.0;
-/// The pull at the goal once the load lightens: under the rating less
+/// The pull at the goal once the load lightens: under the yield current less
 /// the drag, so the fold holds the goal.
 const LIGHT: f64 = 200.0;
 const SEEDS: u64 = 3;
@@ -122,8 +122,8 @@ fn cfg<T>(sh: &Shared, f: impl FnOnce(&ControlTable) -> T) -> T {
 /// Under Yield, each way and over three pot-noise seeds: the cap holds the
 /// goal until the fold, which lands with no fault. On the fold the shaft
 /// gives way past `pos_error_counts` and rests there, torque on at
-/// `i_cont_counts`, YIELD set and no fault for at least ten
-/// `pos_error_time_ticks`. Once the load lightens under the rating the
+/// `yield_current_counts`, YIELD set and no fault for at least ten
+/// `pos_error_time_ticks`. Once the load lightens under the yield current the
 /// shaft climbs back and rests within the zone of its goal, twice the
 /// deadband, with no fault.
 #[test]
@@ -132,15 +132,16 @@ fn a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back() {
         for dir in [1.0, -1.0] {
             let case = format!("seed {seed} dir {dir}");
             let mut h = Hold::new(seed, dir, |_| {});
-            let (stall_ticks, i_cont, error_counts, error_ticks, deadband) = cfg(&h.sh, |t| {
-                (
-                    t.config.limits.stall_time_ticks,
-                    t.config.limits.i_cont_counts,
-                    t.config.fault_cfg.pos_error_counts as f64,
-                    t.config.fault_cfg.pos_error_time_ticks,
-                    t.config.loop_position.pos_deadband_counts as f64,
-                )
-            });
+            let (stall_ticks, yield_current, error_counts, error_ticks, deadband) =
+                cfg(&h.sh, |t| {
+                    (
+                        t.config.limits.stall_time_ticks,
+                        t.config.limits.yield_current_counts,
+                        t.config.fault_cfg.pos_error_counts as f64,
+                        t.config.fault_cfg.pos_error_time_ticks,
+                        t.config.loop_position.pos_deadband_counts as f64,
+                    )
+                });
             let fold = h
                 .until(stall_ticks + 500 * MS, |h| {
                     h.yielded() || h.code() != CODE_NONE
@@ -154,7 +155,7 @@ fn a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back() {
                 let at = format!("{case}: err {:.0}", h.err());
                 assert_eq!(h.code(), CODE_NONE, "{at}");
                 assert!(h.yielded(), "{at}: the fold released");
-                assert_eq!(h.i_lim(), i_cont, "{at}");
+                assert_eq!(h.i_lim(), yield_current, "{at}");
                 assert!(h.driving(), "{at}: {:?}", h.k.io.motor.last);
                 over += (h.err().abs() > error_counts) as u32;
                 sag = sag.max(dir * h.err());
@@ -185,7 +186,7 @@ fn a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back() {
 /// `stall_time_ticks` after the enable, the limit never folds, and the
 /// drive goes off.
 #[test]
-fn a_hold_over_the_rating_latches_stall_under_fault() {
+fn a_hold_over_the_yield_current_latches_stall_under_fault() {
     for seed in 1..=SEEDS {
         for dir in [1.0, -1.0] {
             let case = format!("seed {seed} dir {dir}");
@@ -207,14 +208,14 @@ fn a_hold_over_the_rating_latches_stall_under_fault() {
     }
 }
 
-/// The same load with `goal_current` under `i_cont_counts`: the hold gives
-/// way as under a fold, but the press never sees a current over the rating,
+/// The same load with `goal_current` under `yield_current_counts`: the hold gives
+/// way as under a fold, but the press never sees a current over the yield current,
 /// so nothing yields, and `position_error` latches `pos_error_time_ticks`
 /// after the observer's lag first passed `pos_error_counts`, to two medium
 /// periods (the timer counts its first sample as a whole period, and the
 /// lag is read as published, once a period). The drive goes off.
 #[test]
-fn a_hold_capped_under_the_rating_latches_position_error() {
+fn a_hold_capped_under_the_yield_current_latches_position_error() {
     for seed in 1..=SEEDS {
         for dir in [1.0, -1.0] {
             let case = format!("seed {seed} dir {dir}");
@@ -229,7 +230,7 @@ fn a_hold_capped_under_the_rating_latches_position_error() {
             let latch = (0..3000 * MS)
                 .find(|&n| {
                     h.tick();
-                    assert!(!h.yielded(), "{case}: folded under the rating");
+                    assert!(!h.yielded(), "{case}: folded under the yield current");
                     if h.lag() > error_counts {
                         over.get_or_insert(n);
                     }

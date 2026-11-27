@@ -923,8 +923,8 @@ mod tests {
 
     /// A factory-fresh servo, never saved, tunes as decided: each try's set
     /// installed volatile and the check run on it, with no SAVE before it
-    /// and none after. The data state its images left is information: the
-    /// check's first enable is reached (its first burst armed). A `data`
+    /// and none after. The stored state its images left is information: the
+    /// check's first enable is reached (its first burst armed). A `config`
     /// fault latched there, as a firmware that refuses the mode latches
     /// it, ends the tune as any fault does, named, and the servo is put
     /// back.
@@ -934,10 +934,10 @@ mod tests {
         let d = descriptor();
         let fresh = block_on(state::read(&mut c, ID, &d)).expect("state");
         assert_ne!(
-            fresh.data.flags & osc_client::data_state::CONFIG_VIRGIN,
+            fresh.store.status & osc_client::store_state::CONFIG_DEFAULTS,
             0,
             "{}",
-            fresh.data_said()
+            fresh.settings_said()
         );
         let armed = Rc::new(RefCell::new(0));
         let seen = armed.clone();
@@ -946,7 +946,7 @@ mod tests {
             if n == 1 {
                 p.sim_mut().servo_table_mut(0, |t| {
                     t.telemetry.common.fault_flags = 0x40;
-                    t.telemetry.mode.fault_code = osc_client::data_state::fault::DATA;
+                    t.telemetry.mode.fault_code = osc_client::store_state::fault::CONFIG;
                 });
             }
         });
@@ -972,18 +972,12 @@ mod tests {
         assert!(
             tries[0]["why"]
                 .as_str()
-                .is_some_and(|w| w.contains("fault_code 7 (data)")),
+                .is_some_and(|w| w.contains("fault_code 7 (config)")),
             "{doc}"
         );
         assert!(text.contains("put back: rebooted"), "{text}");
-        assert!(!text.contains("servo's data state is"), "{text}");
         let stored = json_at(&out.join("backup/stored.json"));
-        assert!(
-            stored["data_state"]
-                .as_str()
-                .is_some_and(|s| s.contains("CONFIG_VIRGIN | CALIB_VIRGIN")),
-            "{stored}"
-        );
+        assert_eq!(stored["settings"], "defaults: CONFIG, CALIB", "{stored}");
         assert!(
             !mgmt_ops(&log).contains(&(MgmtOp::Save as u8)),
             "{:?}",
@@ -1060,7 +1054,7 @@ mod tests {
         assert!(accepted, "{text}");
         let installed: Vec<&str> = [
             "stall_omega_max_cps",
-            "i_cont_counts",
+            "yield_current_counts",
             "v_undervolt_counts",
             "rail_fold_q8",
         ]

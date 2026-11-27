@@ -534,7 +534,7 @@ comms RW:
 | addr  | name                 | width | access | notes                                       |
 | ----- | -------------------- | ----- | ------ | ------------------------------------------- |
 | 0x200 | `fault_flags`        | u8    | RO     | the §5.3 alarm register — ALERT's read target |
-| 0x201 | `status_flags`       | u8    | RO     | bit 0 = `UNSAVED` (sec 5.7, sec 9.4); bits 1-7 reserved |
+| 0x201 | `status_flags`       | u8    | RO     | bit 0 `UNSAVED`, bit 1 `CONFIG_DEFAULTS`, bit 2 `CALIB_DEFAULTS` (sec 5.7, sec 9.4); bits 3-7 reserved |
 | 0x202 | `trim_steps`         | i8    | RO     | applied clock-trim total (§9.3)             |
 | 0x203 | —                    | 1 B   | rsvd   |                                             |
 | 0x204 | `crc_fail_count`     | u32   | RW     | §5.3 frame-level counters; hosts write 0 to clear |
@@ -849,51 +849,63 @@ silent host cannot do is renew a stall permit: a burst that needs one
 has to end inside the lease (sec 5.8), and `osc-ident` refuses a rung
 longer than 0.7 s while it holds a permit.
 
-### 5.7 Data state and position table (osc-servo)
+### 5.7 Stored state, refused modes and position table (osc-servo)
 
-Two osc-servo conventions that ride the same registers: a data state
-that says whether the persisted images this servo booted on are its own,
-and the position table. They are model facts, not protocol, and live in
-model-specific space; the descriptor (sec 5.4) carries the field
-addresses, so a host needs no second copy of any of it.
+Three osc-servo conventions that ride the same registers: the stored
+state, which says whether the persisted images this servo booted on
+loaded and whether the table in RAM has changed since; the modes the
+servo refuses on the constants it holds; and the position table. They
+are model facts, not protocol; the store bits sit in the common
+`status_flags` byte (sec 5.4), the rest in model-specific space, and the
+descriptor (sec 5.4) carries the field addresses, so a host needs no
+second copy of any of it.
 
-**Data state.** `data_flags` (u8, RO, `0x223` in TELEMETRY-MODE) names
-every persisted image boot did not load, one bit per reason; 0 means the
-saved images loaded. It is information for the host: no reason refuses
-a mode (below). Bits 4 and 5 are reserved.
+**Stored state.** `status_flags` (u8, RO, `0x201`, sec 5.4) carries one
+bit per persisted image beside the unsaved bit. Each is information for
+the host: no bit refuses a mode (below).
 
-| bit | reason           | set                                                                                   | cleared                          |
-| --- | ---------------- | ------------------------------------------------------------------------------------- | -------------------------------- |
-| 0   | `CONFIG_VIRGIN`  | boot: both CONFIG slots erased                                                        | a successful SAVE                |
-| 1   | `CONFIG_CORRUPT` | boot: CONFIG bytes present that parse under no version                                | a successful SAVE                |
-| 2   | `CALIB_VIRGIN`   | boot: both CALIB slots erased                                                         | a successful SAVE                |
-| 3   | `CALIB_CORRUPT`  | boot: CALIB bytes present that parse under no version                                 | a successful SAVE                |
-| 6   | `CONFIG_STALE`   | boot: a CRC-valid CONFIG image of another layout version                              | a successful SAVE                |
-| 7   | `CALIB_STALE`    | boot: a CRC-valid CALIB image of another layout version                               | a successful SAVE                |
+| bit | name              | set                                                                                          | cleared           |
+| --- | ----------------- | -------------------------------------------------------------------------------------------- | ----------------- |
+| 0   | `UNSAVED`         | a committed write to CONFIG, PROFILE or CALIB, or a position table STORE or COMMIT that ran   | a successful SAVE |
+| 1   | `CONFIG_DEFAULTS` | boot: the CONFIG image did not load, and the board's defaults run                             | a successful SAVE |
+| 2   | `CALIB_DEFAULTS`  | boot: the CALIB image did not load, and the class defaults and the identity position table run | a successful SAVE |
 
-Boot classifies each image from its two slots: *loaded* when one parses,
-*virgin* when every byte of both is erased, *stale* when a slot holds a
-CRC-valid image of another layout version (a real save this firmware
-cannot read: board defaults stand, nothing migrates), *corrupt*
-otherwise. Stale beats corrupt when one slot is stale and the other is
-rotten. An image that did not load, blank, corrupt or stale, leaves the
-board defaults running, and a successful SAVE retires every image reason:
-the persisted images are then the table in RAM.
+Boot judges each image from its two slots: *loaded* when one parses,
+*defaults* otherwise. Blank, unreadable and another layout's images are
+one case (a CRC-valid image of another layout version is a real save
+this firmware cannot read: nothing migrates). The defaults already
+seeded stand, and the user's action is the same: run an identification,
+then save. A successful SAVE clears all three bits: the persisted
+images are then the table in RAM, and a reboot boots them loaded (DES
+`save_clears_unsaved_and_both_store_bits`,
+`an_older_layout_image_boots_on_defaults_like_a_blank_one`).
 
-**Unsaved.** `status_flags` bit 0 `UNSAVED` (sec 5.4) says the table in
-RAM differs from what a reboot would load: a committed write to CONFIG,
-CALIB or PROFILE, or a position table STORE or COMMIT that ran, since
-boot or the last successful SAVE. It is set whatever the value written,
-so a value written back reads unsaved too; only a successful SAVE
-clears it, and a boot reads saved. An identification written and never
-saved therefore reads unsaved, and a reboot loses it (DES
+**Unsaved.** `UNSAVED` says the table in RAM differs from what a reboot
+would load: a committed write to CONFIG, CALIB or PROFILE, or a position
+table STORE or COMMIT that ran, since boot or the last successful SAVE.
+It is set whatever the value written, so a value written back reads
+unsaved too; only a successful SAVE clears it, and a boot reads saved.
+An identification written and never saved therefore reads unsaved, and
+a reboot loses it (DES
 `an_install_leaves_the_servo_unsaved_until_save`,
 `a_calib_write_or_a_table_commit_marks_unsaved`). It refuses nothing:
 SAVE is the user's choice. Which values differ from a set is the host's
 check against that set, field by field.
 
+**Refused modes.** `refused_modes` (u8, RO, `0x223` in TELEMETRY-MODE)
+holds the modes the physics belt (below) refuses now: bit `mode` set
+(OpenLoop 0, Current 1, Velocity 2, Position 3) refuses that mode. The
+kernel publishes it at every configuration take, so it reads within a
+medium period (0.5 ms) of the write that moved it, torque on or off,
+and a host sees a refusal before any enable (DES
+`the_refused_modes_read_before_any_enable`). A zero Ke sets bits 2 and
+3, an unset limit bits 1 to 3; bit 0 is never set. The experiment image
+(kernel sec 2.7) refuses nothing and reads 0. The board's STA lamp
+blinks at 1 Hz while Position is refused: the servo needs an
+identification.
+
 Only the physics belt refuses a mode, on the constants a loop would run
-on; the kernel never reads `data_flags`. A zero Ke (`recip_ke_q == 0` or
+on; the kernel never reads the store bits. A zero Ke (`recip_ke_q == 0` or
 `ke_vpc_q == 0`) refuses Velocity and Position: the back-EMF boxcar
 yields nothing on it and the current loop decouples nothing. A limit
 unset (below) refuses Current, Velocity and Position, which have nothing
@@ -903,8 +915,8 @@ as written, and the protections that act on measurements (the current
 limit, the overcurrent trip, the stall and position error timers, the
 thermal cutoff, the rail fold, the soft limits) bound what follows. At
 the `torque_enable` 0 to 1 edge, at a mode change while torque is on,
-and at every medium tick a loop runs, a refused mode latches the `data`
-fault (below) and the drive stays off for that run. On a factory-fresh
+and at every medium tick a loop runs, a refused mode latches the
+`config` fault (below) and the drive stays off for that run. On a factory-fresh
 servo, and behind any image that did not load, the board defaults' zeros
 (Ke, the cap, the ceiling) are what the belt refuses, so OpenLoop runs
 and the closed modes wait for an identification; once a usable set is
@@ -931,8 +943,8 @@ captures stay clean (DES `virgin_servo_drives_openloop_and_current_without_alert
 and the factory block holds 0 in both: no compiled value is right for a
 motor the board has never met. Neither has a meaningful 0 in a closed
 loop, so 0 fails safe. While either is 0 the physics belt refuses
-Current, Velocity and Position, whatever `data_flags` says: an enable
-or a mode change into one latches the `data` fault (code 7) and the
+Current, Velocity and Position, whatever the store bits say: an enable
+or a mode change into one latches the `config` fault (code 7) and the
 servo stays disabled, and a live write of 0 stops a running loop as a
 zero Ke does (above). `limit_flags` bit 5 `UNSET` (sec 5.8) names the
 state every medium tick, torque on or off, so a host sees it before any
@@ -959,7 +971,7 @@ newly-latched kind (`fault_code`, `0x221`):
 | 3   | 4    | `position_error` |
 | 4   | 5    | `sensor`         |
 | 5   | 6    | `under_volt`     |
-| 6   | 7    | `data`           |
+| 6   | 7    | `config`         |
 | 7   | 9    | `deadman`        |
 
 Code 8 is unassigned. Any set bit forces the drive off; the
@@ -969,11 +981,11 @@ Position when the profile's lead over the observer stays past
 `pos_error_counts` for `pos_error_time_ticks`. The timer does not count
 while the press fold is latched under `stall_response` Yield (`YIELD`,
 sec 5.8): the fold sags the shaft on purpose, so the servo holds at
-`i_cont_counts` instead of turning the drive off, and the timer starts
+`yield_current_counts` instead of turning the drive off, and the timer starts
 over, so once the fold releases the error gets the whole time at full
 torque (DES
 `a_yielded_hold_sags_past_the_error_with_torque_on_and_climbs_back`,
-`a_hold_capped_under_the_rating_latches_position_error`). Besides the raw pot screen,
+`a_hold_capped_under_the_yield_current_latches_position_error`). Besides the raw pot screen,
 `sensor` latches when the crest scan a tick waits for never lands, and
 the tick writes the drive off (osc-servo-kernel sec 2.3).
 The kernel reads `torque_enable`, `mode` and the goals once per medium
@@ -1005,14 +1017,14 @@ its goal and through the soft limit toward the hard stop, at the current
 limit, until a timer acts. In Velocity it is the press's verdict on
 the stop, `stall_time_ticks` after the observer reads the shaft still
 (sec 5.8): `stall` under `stall_response` Fault, and the drive goes off;
-under Yield the fold to `i_cont_counts`, which the servo then holds
+under Yield the fold to `yield_current_counts`, which the servo then holds
 against the stop. In Position the position error timer runs too, from
 the error passing `pos_error_counts`, early in the run. When it ends
 before the press's verdict, as it does whenever `pos_error_time_ticks`
 is under the run plus `stall_time_ticks` on the stop, `position_error`
 latches on the stop or short of it and the drive goes off, under either
 response. Under Yield a fold that comes first stops the timer, and the
-servo holds against the stop at `i_cont_counts`, as in Velocity. DES
+servo holds against the stop at `yield_current_counts`, as in Velocity. DES
 `a_reversed_motor_runs_to_its_stop_and_a_timer_latches` has the travel,
 the times and the currents on the bench MG90's plant, `stall_response`
 Fault; `a_reversed_motor_under_yield_holds_its_stop_once_folded` has
@@ -1034,7 +1046,7 @@ hash), never by a register.
 
 Known limitation: no boot verdict says a SAVE tore. A power cut between
 the CONFIG and CALIB images of one SAVE (sec 9.4) boots the new CONFIG
-beside the old CALIB with no reason named, and nothing refuses the mix.
+beside the old CALIB with no store bit set, and nothing refuses the mix.
 The host is the check: the SAVE never acked (ack == durable), so the
 host that sent it knows it did not finish, and its check against its
 set names the mixed fields (DES
@@ -1113,7 +1125,7 @@ with them and goes LIVE only when they validate and correct something,
 the rule a COMMIT lands by; otherwise the
 identity runs, and the host's check against its set names the loss (DES
 `lut_survives_save_and_reboot_until_factory`,
-`corrupt_or_stale_calib_image_boots_identity_under_its_reason`).
+`an_unreadable_or_other_layout_calib_image_boots_identity_on_defaults`).
 
 **ADC wide codes.** The converter can stick at a code just under a
 multiple of 256 while its input rises through the codes it then skips,
@@ -1327,7 +1339,7 @@ every medium tick (2 kHz), torque on or off.
 | bit | name      | set while                                                                                                                                                            |
 | --- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0   | `CEILING` | the command sat at the current ceiling: in OpenLoop the duty ceiling held under the goal by the current, in the closed loops the current reference at `i_lim_counts` |
-| 1   | `YIELD`   | the press or collision verdict folded the limit to `i_cont_counts`                                                                                                   |
+| 1   | `YIELD`   | the press or collision verdict folded the limit to `yield_current_counts`                                                                                               |
 | 2   | `ENDSTOP` | a soft limit, or a physical stop while they are off, closed a side of the band: at or past a wall, current toward it is forbidden                                    |
 | 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
 | 4   | `SPEED`   | Current mode only: the speed fold sits under the composed limit, so near `speed_ceiling_cps` the side of the band along the motion folds toward 0                    |
@@ -1336,15 +1348,15 @@ every medium tick (2 kHz), torque on or off.
 | 7   | `GOAL`    | `goal_current` binds before the press fold, under the cap                                                                                                                      |
 
 Bits 6 and 7 name the ceiling that binds before the press fold: neither
-set means the peak cap does, and a tie sets both. The press trigger is the held current over `i_cont_counts` on
+set means the peak cap does, and a tie sets both. The press trigger is the held current over `yield_current_counts` on
 a still shaft, not bit 0, so bit 0 alone on a still shaft under
-`i_cont_counts` is a hold the loop is content with. While bit 1 is
+`yield_current_counts` is a hold the loop is content with. While bit 1 is
 set in Position the position error timer does not count (sec 5.7): a
-load over `i_cont_counts` sags the shaft to where the fold meets it,
+load over `yield_current_counts` sags the shaft to where the fold meets it,
 past `pos_error_counts` if need be, with the drive on and the bit set,
 and the shaft climbs back when the load lightens. Under Fault the
 verdict latches `stall` instead (DES
-`a_hold_over_the_rating_latches_stall_under_fault`). The permit drops
+`a_hold_over_the_yield_current_latches_stall_under_fault`). The permit drops
 the fold and the endstop, so bit 3 never appears with bits 1 or 2, and
 it drops no ceiling, so it does appear with bits 6 and 7 (unit
 `limit_flags_name_the_governor`). Bit 4 is never set in Position,
@@ -1901,7 +1913,8 @@ so that is what gets gated:
   mid-motion is the control kernel's job to sequence, not the table's to
   forbid.
 - The `UNSAVED` bit in telemetry reports a persisted byte changed since
-  boot or the last SAVE (`status_flags` bit 0, sec 5.4, sec 5.7).
+  boot or the last SAVE (`status_flags` bit 0, sec 5.4, sec 5.7), and
+  bits 1 and 2 an image boot did not load.
 
 Two images, each with its own A/B slot pair and sequence number, one
 8-byte header each: magic, layout version, seq u16, body length u16,
@@ -1913,11 +1926,11 @@ points i16 LE (the fixed last one is not stored): 776 B, four pages per slot, on
 calibration and the table it validates save and load as one unit and a
 save cannot tear between them; tables to come join this image (a layout
 change bumps its version). A CRC-valid image of another version boots
-*stale*, never migrated (sec 5.7): a CALIB 5 image, whose blocks behind
-the motor block sit 4 B earlier, boots stale and the seeds stand (unit
-`calib_images_before_the_brush_term_are_stale`), as does a CALIB 7 image,
-whose gear class and ADC map sit 2 B later (unit
-`calib_images_of_the_stamp_layout_are_stale`). On the osc-servo the two CALIB slots
+on defaults, never migrated (sec 5.7): a CALIB 5 image, whose blocks
+behind the motor block sit 4 B earlier, boots on defaults and the seeds
+stand (unit `calib_images_before_the_brush_term_boot_on_defaults`), as
+does a CALIB 7 image, whose gear class and ADC map sit 2 B later (unit
+`calib_images_of_the_stamp_layout_boot_on_defaults`). On the osc-servo the two CALIB slots
 sit at the front of the 4 KB CALIB flash region, 1 KB apart, with 2 KB
 spare behind them.
 
@@ -1927,9 +1940,8 @@ so a reboot never applies a table the kernel did not); program the
 CONFIG image, then the CALIB image, each readback-verified, an image
 advancing its A/B state only on its own verify so a later failure
 leaves the earlier one durable and the `hardware` nack honest; on
-success clear `UNSAVED` and retire every image reason (sec 5.7). A
-power cut between the two images boots a new/old mix with no reason
-named (sec 5.7, the torn-save limitation; DES
+success clear `UNSAVED` and both store bits (sec 5.7). A power cut
+between the two images boots a new/old mix with no store bit set (sec 5.7, the torn-save limitation; DES
 `torn_save_boots_the_new_config_beside_the_old_calib_unflagged`,
 `torn_calib_save_boots_the_previous_calibration_with_its_tables`).
 
@@ -1959,8 +1971,8 @@ REBOOT names where the servo goes, with no default:
 reset. FACTORY takes no args and always comes back as the app. FACTORY erases every slot
 of both saved images (config and calib with its tables, sec 9.4), not
 just the live table, then stages the reboot: the erased store is the
-factory state, and the servo comes back *virgin* (sec 5.7) on board
-defaults, the position table at the identity. It shares SAVE's torque
+factory state, and the servo comes back on its defaults, both store
+bits set (sec 5.7), the position table at the identity. It shares SAVE's torque
 gate, and a failed wipe nacks `hardware` without rebooting.
 
 ### 9.6 Firmware update

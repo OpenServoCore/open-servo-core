@@ -195,7 +195,7 @@ impl ConfigStore {
             }
         };
         SHARED.seed_store(&CONFIG_STORE);
-        // image state: 0 loaded, 1 virgin, 2 corrupt, 3 stale (data_state)
+        // image state: 0 loaded, 1 defaults (data_state)
         crate::log::debug!(
             "config store: state={} next_seq={} calib state={} next_seq={} pos_lut_state={}",
             pick.state as u8,

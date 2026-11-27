@@ -6,7 +6,7 @@
   "velocity_zero_ratio": 3.0,
   "velocity_shelf_margin_db": 1.0,
   "position_split": 7.104,
-  "i_cont_ma": 350.0,
+  "yield_current_ma": 350.0,
   "stall_release_ma": 126.0,
   "oc_trip_samples": 8,
   "collision_trip": "off",

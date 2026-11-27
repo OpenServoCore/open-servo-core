@@ -309,8 +309,13 @@ it, and a gain tuned by hand refused closed loop until a tool stamped the
 set again. The refusals that protect a motor are the ones on a constant the
 loop's math cannot run on, a zero Ke or an unset cap or ceiling, and the
 kernel's belt already made them. So the gate went and the belt is the one
-check that refuses a mode. The byte stays as information for the host, and
-a hand-tuned set runs as written, bounded by the protections that act on
+check that refuses a mode. What stayed is information: one bit per image
+in the status byte says boot did not load it and its defaults run (blank,
+unreadable and another layout's, once three reasons, are one case, since
+the user does the same for each: identify, then save), and the byte that
+held the reasons now carries the modes the belt refuses, so a host sees a
+refusal before any enable and the board lamp blinks for a servo that needs
+an identification. A hand-tuned set runs as written, bounded by the protections that act on
 measurements: the current limit, the overcurrent trip, the stall and
 position error timers, the thermal cutoff, the rail fold and the soft
 limits. Lesson: refuse what the math cannot run on, not what the firmware

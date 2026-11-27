@@ -69,8 +69,8 @@ fn current_limit(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(current_limit_a(c)? * shunt_counts_per_a(c)?)
 }
 
-fn i_cont(c: &mut Ctx) -> Result<f64, Fail> {
-    let ma = get!(c, policy, i_cont_ma)?;
+fn yield_current(c: &mut Ctx) -> Result<f64, Fail> {
+    let ma = get!(c, policy, yield_current_ma)?;
     ma_to_counts(c, ma)
 }
 
@@ -180,7 +180,8 @@ pub const RULES: &[Rule] = table![
     stall_time_ticks: "stall_time.policy", Format::of(Kind::U32), "ticks", Policy, stall_time;
     stall_omega_max_cps: "stall_omega_max.policy", Format::of(U16), "count/s", Policy,
         stall_omega_max;
-    i_cont_counts: "i_cont.policy", Format::of(U16), "ccounts", Policy, i_cont;
+    yield_current_counts: "yield_current.policy", Format::of(U16), "ccounts", Policy,
+        yield_current;
     stall_release_counts: "stall_release.policy", Format::of(U16), "ccounts", Policy, stall_release;
     stall_tau_trip_counts: "stall_tau_trip.policy", Format::of(U16), "ccounts", Policy,
         stall_tau_trip;
@@ -201,9 +202,9 @@ pub const RULES: &[Rule] = table![
 ];
 
 /// Refuse a field over the one that bounds it: the move speed over the
-/// speed ceiling, and the press fold's release at or over the continuous
+/// speed ceiling, and the press fold's release at or over the yield
 /// current (which a held press would never let go of, and under which the
-/// Yield response never folds). The continuous current 0 reads as the cap.
+/// Yield response never folds). The yield current 0 reads as the cap.
 pub(super) fn refuse_over_bounds(set: &mut Set) {
     if let (Some(v), Some(ceiling)) = (
         set.value("velocity_limit_cps"),
@@ -216,17 +217,15 @@ pub(super) fn refuse_over_bounds(set: &mut Set) {
         );
     }
     if let Some(release) = set.value("stall_release_counts") {
-        let held = match set.value("i_cont_counts") {
+        let held = match set.value("yield_current_counts") {
             Some(0) => set.value("current_limit_counts"),
             other => other,
         };
         match held {
-            Some(i_cont) if release < i_cont => {}
-            Some(i_cont) => set.refuse(
+            Some(held) if release < held => {}
+            Some(held) => set.refuse(
                 "stall_release_counts",
-                format!(
-                    "stall_release_counts {release} is not under the continuous current {i_cont}"
-                ),
+                format!("stall_release_counts {release} is not under the yield current {held}"),
             ),
             None => set.refuse(
                 "stall_release_counts",

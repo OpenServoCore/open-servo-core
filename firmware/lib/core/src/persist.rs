@@ -29,8 +29,8 @@
 //! otherwise. Boot loads the points beside the calibration and validates
 //! them against the stops it just overlaid: a table that fails, or is all
 //! zero, is the identity. An image that does not load leaves the identity
-//! too, under the CALIB_* reason; a table lost that way is the host's
-//! check against its set to name.
+//! too, under `CALIB_DEFAULTS`; a table lost that way is the host's check
+//! against its set to name.
 
 use control_table::{RegisterFile, RegisterMap};
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
@@ -53,7 +53,7 @@ pub const CALIB_IMAGE_LEN: usize = HEADER_LEN + CALIB_LEN + LUT_LEN;
 
 pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout or unit change; a mismatched image boots
-/// `ImageState::Stale` (board defaults stand) rather than migrating.
+/// `ImageState::Defaults` (board defaults stand) rather than migrating.
 pub const IMAGE_VERSION: u8 = 12;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
@@ -105,58 +105,17 @@ impl Slot {
 pub struct BootPick {
     pub next_slot: Slot,
     pub next_seq: u16,
-    /// `Loaded` = a valid image was overlaid; anything else leaves board
-    /// defaults standing and says why (`data_state`).
+    /// `Loaded` = a valid image was overlaid; `Defaults` leaves the board
+    /// defaults standing (`data_state`).
     pub state: ImageState,
 }
 
 impl BootPick {
-    const fn unloaded(state: ImageState) -> Self {
-        Self {
-            next_slot: Slot::A,
-            next_seq: 1,
-            state,
-        }
-    }
-}
-
-/// Every byte over the image length erased.
-fn erased(slot: &[u8], len: usize) -> bool {
-    slot.get(..len)
-        .is_some_and(|s| s.iter().all(|&b| b == 0xFF))
-}
-
-/// A CRC-valid image of another layout version: sound bytes this firmware
-/// cannot read. The version byte is under the CRC, so this is a whole-image
-/// verdict, not a header guess; the body length is the header's own, since
-/// another layout need not share this one's.
-fn stale(slot: &[u8], magic: u8, version: u8) -> bool {
-    let Some(h) = slot.get(..HEADER_LEN) else {
-        return false;
+    const DEFAULTS: Self = Self {
+        next_slot: Slot::A,
+        next_seq: 1,
+        state: ImageState::Defaults,
     };
-    let body_len = u16::from_le_bytes([h[4], h[5]]) as usize;
-    let Some(bytes) = slot.get(..HEADER_LEN + body_len) else {
-        return false;
-    };
-    bytes[0] == magic
-        && bytes[1] != version
-        && osc_crc_continue(osc_crc(&bytes[..6]), &bytes[HEADER_LEN..])
-            == u16::from_le_bytes([bytes[6], bytes[7]])
-}
-
-/// Why neither slot parsed. A stale image beside a rotten one still says
-/// the store held a real save once, so stale wins over corrupt. Cold boot
-/// path shared by both images: one copy, not one per call site.
-#[inline(never)]
-fn unloaded_state(a: &[u8], b: &[u8], magic: u8, version: u8, body_len: usize) -> ImageState {
-    let len = HEADER_LEN + body_len;
-    if erased(a, len) && erased(b, len) {
-        ImageState::Virgin
-    } else if stale(a, magic, version) || stale(b, magic, version) {
-        ImageState::Stale
-    } else {
-        ImageState::Corrupt
-    }
 }
 
 /// Wrapping-newest of two validated slot images: the winner overlays, the
@@ -429,13 +388,7 @@ pub fn boot_overlay(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> B
                 state: ImageState::Loaded,
             }
         }
-        None => BootPick::unloaded(unloaded_state(
-            slot_a,
-            slot_b,
-            IMAGE_MAGIC,
-            IMAGE_VERSION,
-            CONFIG_LEN + PROFILE_LEN,
-        )),
+        None => BootPick::DEFAULTS,
     }
 }
 
@@ -474,13 +427,7 @@ pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> Boot
                 state: ImageState::Loaded,
             }
         }
-        None => BootPick::unloaded(unloaded_state(
-            slot_a,
-            slot_b,
-            CALIB_IMAGE_MAGIC,
-            CALIB_IMAGE_VERSION,
-            CALIB_LEN + LUT_LEN,
-        )),
+        None => BootPick::DEFAULTS,
     }
 }
 
@@ -646,7 +593,7 @@ mod tests {
             BootPick {
                 next_slot: Slot::A,
                 next_seq: 1,
-                state: ImageState::Corrupt
+                state: ImageState::Defaults
             }
         );
         assert_eq!(table.with(|t| t.config.common.id), 1);
@@ -873,7 +820,7 @@ mod tests {
             BootPick {
                 next_slot: Slot::A,
                 next_seq: 1,
-                state: ImageState::Corrupt
+                state: ImageState::Defaults
             }
         );
         assert_eq!(table.with(|t| t.calib.sense.tick_hz), 20000);
@@ -906,20 +853,20 @@ mod tests {
     }
 
     #[test]
-    fn boot_classifies_erased_as_virgin_and_garbage_as_corrupt() {
+    fn boot_runs_on_defaults_for_erased_and_garbage_alike() {
         let erased = [0xFF; IMAGE_LEN];
         let zeros = [0u8; IMAGE_LEN];
         let mut torn = image_of(1);
         torn[HEADER_LEN + 3] ^= 0x80;
-        for (a, b, want) in [
-            (&erased[..], &erased[..], ImageState::Virgin),
-            (&erased[..], &zeros[..], ImageState::Corrupt),
-            (&torn[..], &erased[..], ImageState::Corrupt),
-            (&torn[..], &zeros[..], ImageState::Corrupt),
+        for (a, b) in [
+            (&erased[..], &erased[..]),
+            (&erased[..], &zeros[..]),
+            (&torn[..], &erased[..]),
+            (&torn[..], &zeros[..]),
         ] {
             let table = seeded_table();
             let pick = boot_overlay(&table, a, b);
-            assert_eq!(pick, BootPick::unloaded(want));
+            assert_eq!(pick, BootPick::DEFAULTS);
             assert_eq!(table.with(|t| t.config.common.id), 1, "defaults stand");
         }
         // One valid slot loads whatever sits beside it.
@@ -928,20 +875,20 @@ mod tests {
             boot_overlay(&table, &torn, &image_of(2)).state,
             ImageState::Loaded
         );
-        // The same verdicts for the calib image, a tear in the points
+        // The same verdict for the calib image, a tear in the points
         // included; the identity stands under each.
         let calib_erased = [0xFF; CALIB_IMAGE_LEN];
         let mut calib_torn = calib_image_of(1);
         calib_torn[HEADER_LEN] ^= 0x01;
         let mut lut_torn = calib_image_of(1);
         lut_torn[HEADER_LEN + CALIB_LEN + 40] ^= 0x01;
-        for (a, b, want) in [
-            (&calib_erased[..], &calib_erased[..], ImageState::Virgin),
-            (&calib_torn[..], &calib_erased[..], ImageState::Corrupt),
-            (&lut_torn[..], &calib_erased[..], ImageState::Corrupt),
+        for (a, b) in [
+            (&calib_erased[..], &calib_erased[..]),
+            (&calib_torn[..], &calib_erased[..]),
+            (&lut_torn[..], &calib_erased[..]),
         ] {
             let sh = seeded_servo();
-            assert_eq!(boot_overlay_calib(&sh, a, b), BootPick::unloaded(want));
+            assert_eq!(boot_overlay_calib(&sh, a, b), BootPick::DEFAULTS);
             assert_eq!(pos_lut_state(&sh), state::IDENTITY);
             assert_eq!(array(&sh), [0; POINTS]);
         }
@@ -955,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn version_bump_is_stale() {
+    fn another_layout_boots_on_defaults() {
         let mut old = image_of(4);
         reseal_version(&mut old, IMAGE_VERSION.wrapping_add(1));
         assert!(
@@ -972,10 +919,10 @@ mod tests {
         ] {
             let table = seeded_table();
             let pick = boot_overlay(&table, a, b);
-            assert_eq!(pick, BootPick::unloaded(ImageState::Stale));
+            assert_eq!(pick, BootPick::DEFAULTS);
             assert_eq!(table.with(|t| t.config.common.id), 1, "defaults stand");
         }
-        // A newer valid image beside a stale one loads as usual.
+        // A newer valid image beside another layout's loads as usual.
         let table = seeded_table();
         assert_eq!(
             boot_overlay(&table, &old, &image_of(1)),
@@ -985,13 +932,12 @@ mod tests {
                 state: ImageState::Loaded
             }
         );
-        // A re-sealed CRC is what makes it stale: the same bytes with the
-        // old CRC are corrupt.
+        // The same bytes with the old CRC: unreadable, the same verdict.
         let mut unsealed = image_of(4);
         unsealed[1] = IMAGE_VERSION.wrapping_add(1);
         assert_eq!(
             boot_overlay(&seeded_table(), &unsealed, &erased).state,
-            ImageState::Corrupt
+            ImageState::Defaults
         );
         // Calib: same rule.
         let mut old_calib = calib_image_of(2);
@@ -999,52 +945,52 @@ mod tests {
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old_calib, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
     /// Images SAVEd before the kernel's inputs became one span (CONFIG 5,
-    /// CALIB 3) boot stale: the seeds stand until the host recovers the
-    /// set by field name.
+    /// CALIB 3) boot on defaults: the seeds stand until the host recovers
+    /// the set by field name.
     #[test]
-    fn images_before_the_kernel_span_are_stale() {
+    fn images_before_the_kernel_span_boot_on_defaults() {
         let mut old = image_of(7);
         reseal_version(&mut old, 5);
         assert_eq!(
             boot_overlay(&seeded_table(), &old, &[0xFF; IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         let mut old = calib_image_of(7);
         reseal_version(&mut old, 3);
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
     }
 
     /// CALIB images SAVEd while `r_q12` was the resistance as measured
-    /// (CALIB 4, `r0_q12` beside it) boot stale: their `r_q12` is at
+    /// (CALIB 4, `r0_q12` beside it) boot on defaults: their `r_q12` is at
     /// another temperature and the blocks behind it sit at other addresses.
     #[test]
-    fn calib_images_of_the_as_measured_resistance_are_stale() {
+    fn calib_images_of_the_as_measured_resistance_boot_on_defaults() {
         let mut old = calib_image_of(7);
         reseal_version(&mut old, 4);
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
-    /// CALIB images SAVEd before the brush term (CALIB 5) boot stale: the
-    /// blocks behind the motor block sit 4 B earlier there.
+    /// CALIB images SAVEd before the brush term (CALIB 5) boot on defaults:
+    /// the blocks behind the motor block sit 4 B earlier there.
     #[test]
-    fn calib_images_before_the_brush_term_are_stale() {
+    fn calib_images_before_the_brush_term_boot_on_defaults() {
         use crate::regions::calib::addr::motor::{BRUSH_CPS, R_BRUSH_Q12};
         let mut old = calib_image_of(7);
         for (at, v) in [(R_BRUSH_Q12, 1093u16), (BRUSH_CPS, 2540)] {
@@ -1055,7 +1001,7 @@ mod tests {
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         let m = sh.table.with(|t| t.calib.motor);
         assert_eq!(
@@ -1066,10 +1012,10 @@ mod tests {
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
-    /// CALIB images SAVEd before the window term (CALIB 6) boot stale: the
-    /// blocks behind the motor block sit 4 B earlier there.
+    /// CALIB images SAVEd before the window term (CALIB 6) boot on
+    /// defaults: the blocks behind the motor block sit 4 B earlier there.
     #[test]
-    fn calib_images_before_the_window_term_are_stale() {
+    fn calib_images_before_the_window_term_boot_on_defaults() {
         use crate::regions::calib::addr::motor::G_WINDOW_Q016;
         let mut old = calib_image_of(7);
         old[HEADER_LEN + (G_WINDOW_Q016 - CALIB_BASE_ADDR) as usize..][..2]
@@ -1078,7 +1024,7 @@ mod tests {
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         let m = sh.table.with(|t| t.calib.motor);
         assert_eq!((m.r_q12, m.g_window_q016), (0, 0), "seeds stand");
@@ -1086,10 +1032,10 @@ mod tests {
     }
 
     /// CALIB images SAVEd with the plant stamp (CALIB 7, `plant_stamp` at
-    /// 0x0AE) boot stale: the gear class and the ADC wide-code map sit 2 B
+    /// 0x0AE) boot on defaults: the gear class and the ADC wide-code map sit 2 B
     /// later there.
     #[test]
-    fn calib_images_of_the_stamp_layout_are_stale() {
+    fn calib_images_of_the_stamp_layout_boot_on_defaults() {
         use crate::regions::calib::addr::gear::GEAR_CLASS;
         let mut old = calib_image_of(7);
         old[HEADER_LEN + (GEAR_CLASS + 2 - CALIB_BASE_ADDR) as usize] = 2;
@@ -1097,7 +1043,7 @@ mod tests {
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         let seeded = seeded_servo().table.with(|t| t.calib.gear.gear_class);
         assert_ne!(seeded, 2);
@@ -1111,10 +1057,10 @@ mod tests {
 
     /// CONFIG images SAVEd with one speed (CONFIG 10: `velocity_limit_cps`
     /// at 0x044, both the cruise and the position loop's clamp, no ceiling)
-    /// boot stale: their speed would load as the ceiling and every block
+    /// boot on defaults: their speed would load as the ceiling and every block
     /// behind it sits 4 B off.
     #[test]
-    fn config_images_of_the_single_speed_are_stale() {
+    fn config_images_of_the_single_speed_boot_on_defaults() {
         let (mut config, profile) = body();
         let at = addr::loop_position::SPEED_CEILING_CPS as usize;
         config[at..at + 2].copy_from_slice(&4000u16.to_le_bytes());
@@ -1124,7 +1070,7 @@ mod tests {
         let table = seeded_table();
         assert_eq!(
             boot_overlay(&table, &old, &[0xFF; IMAGE_LEN]).state,
-            ImageState::Stale
+            ImageState::Defaults
         );
         let lp = table.with(|t| t.config.loop_position);
         assert_eq!(
@@ -1136,10 +1082,10 @@ mod tests {
     }
 
     /// The layout before the tables joined the image: the region alone as
-    /// the body, in a slot that then held two pages. Sound bytes of another
-    /// length are stale, not corrupt.
+    /// the body, in a slot that then held two pages: defaults, like any
+    /// image that does not parse.
     #[test]
-    fn previous_calib_layout_is_stale() {
+    fn previous_calib_layout_boots_on_defaults() {
         let mut old = [0xFF; CALIB_IMAGE_LEN];
         old[0] = CALIB_IMAGE_MAGIC;
         old[1] = 2;
@@ -1151,15 +1097,15 @@ mod tests {
         let sh = seeded_servo();
         assert_eq!(
             boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]),
-            BootPick::unloaded(ImageState::Stale)
+            BootPick::DEFAULTS
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
-        // the body length is under the crc: a length claim alone is corrupt
+        // a length claim alone: the same verdict
         old[4] ^= 0x01;
         assert_eq!(
             boot_overlay_calib(&seeded_servo(), &old, &[0xFF; CALIB_IMAGE_LEN]).state,
-            ImageState::Corrupt
+            ImageState::Defaults
         );
     }
 }

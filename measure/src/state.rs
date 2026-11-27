@@ -2,10 +2,10 @@
 //! save keeps before anything is written: the notebooks' state record
 //! (`scorecard.servo_state`), so `oscnb.constants restore` reads it too.
 
-use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::{Access, Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS, PosLut};
-use osc_client::{Client, Error, Id, common, pipe::Pipe};
+use osc_client::store_state::{self, StoreState};
+use osc_client::{Client, Error, Id, pipe::Pipe};
 use serde_json::{Map, Value, json};
 
 use crate::pyjson::{self, hex};
@@ -18,6 +18,9 @@ const ORIGIN: &str = "servo-state";
 /// The register a record read on CALIB layout 7 holds and no servo has
 /// since: a restore never writes it.
 const OLD_STAMP: &str = "plant_stamp";
+/// Registers a record names as the servo it was read on did, by today's
+/// names: the bytes are the same.
+const RENAMED: [(&str, &str); 1] = [("i_cont_counts", "yield_current_counts")];
 
 pub(crate) fn field<'a>(d: &'a Descriptor, name: &str) -> Result<&'a Field, Error> {
     d.field(name)
@@ -30,7 +33,8 @@ pub struct State {
     pub base: u16,
     pub raw: Vec<u8>,
     pub lut: PosLut,
-    pub data: DataState,
+    /// The store bits, the unsaved bit and the refused modes.
+    pub store: StoreState,
     /// `status_flags` UNSAVED: what the servo runs differs from what a
     /// reboot loads.
     pub unsaved: bool,
@@ -48,8 +52,8 @@ pub async fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<
         .unwrap_or(end);
     let raw = c.read_span(id, base, end).await?;
     let lut = pos_lut::read(c, id, d).await?;
-    let data = data_state::read(c, id, d).await?;
-    let unsaved = common::health(c, id).await?.unsaved;
+    let store = store_state::read(c, id, d).await?;
+    let unsaved = store.unsaved();
     let torque = field(d, CONTROL_FIRST)?;
     let torque = c
         .read(id, torque.addr, 1)
@@ -60,7 +64,7 @@ pub async fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<
         base,
         raw,
         lut,
-        data,
+        store,
         unsaved,
         torque,
     })
@@ -90,13 +94,15 @@ impl State {
         points_sha1(&self.lut.points)
     }
 
-    /// The data state as `osc status` says it.
-    pub fn data_said(&self) -> String {
-        if self.data.flags == 0 {
-            "clean".into()
-        } else {
-            self.data.names()
-        }
+    /// The settings word as `osc status` says it: `loaded`, or
+    /// `defaults: CONFIG, CALIB`.
+    pub fn settings_said(&self) -> String {
+        self.store.settings()
+    }
+
+    /// The modes the servo refuses now, as `osc status` says them.
+    pub fn refused_said(&self) -> String {
+        self.store.refused_said()
     }
 
     pub fn unsaved_said(&self) -> &'static str {
@@ -138,7 +144,8 @@ impl State {
             "writable": writable,
             "pos_table": {"state": self.table_state(), "points_sha1": self.points_sha1(), "points": hex(&points)},
             "wide_codes": self.slots(d).map(|s| hex(&s)),
-            "data_state": self.data_said(),
+            "settings": self.settings_said(),
+            "refused_modes": self.refused_said(),
             "unsaved": self.unsaved,
         });
         let hash = state_hash(&doc);
@@ -152,7 +159,7 @@ impl State {
 /// What a state record's hash covers: the table bytes and the position
 /// table. Not the decoded fields, which `raw` holds, the descriptor's
 /// writable list, the points, which their sha1 stands for, or what the
-/// servo says of its state (`data_state`, `unsaved`).
+/// servo says of its state (`settings`, `refused_modes`, `unsaved`).
 pub fn state_hash(doc: &Value) -> String {
     pyjson::hash(&hashed(doc))
 }
@@ -200,7 +207,7 @@ pub struct Record {
 
 impl Record {
     /// Refused when its hash is not its content's or when its points are
-    /// not the ones its sha1 names. The data state it was read in is no
+    /// not the ones its sha1 names. The stored state it was read in is no
     /// refusal: a record of a servo on its defaults restores like any. A
     /// record from a servo with a plant stamp reads under the hash it was
     /// written with.
@@ -261,11 +268,13 @@ impl Record {
             if COMMS.contains(&name) || NEVER.contains(&name) || name == WIDE || name == OLD_STAMP {
                 continue;
             }
+            let value = fields.get(name).cloned().unwrap_or(Value::Null);
+            let name = RENAMED
+                .iter()
+                .find(|(old, _)| *old == name)
+                .map_or(name, |(_, new)| new);
             let mut e = Map::new();
-            e.insert(
-                "value".into(),
-                fields.get(name).cloned().unwrap_or(Value::Null),
-            );
+            e.insert("value".into(), value);
             own(&mut e);
             e.insert(
                 "protection".into(),

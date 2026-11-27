@@ -368,7 +368,7 @@ All four are deliberately dim. The resistors are picked so the lamps look about 
 |`VSYS`|Dl1|yellow|System rail present. Rl1 68K: about 80 uA at 7.4 V, still visible on LinkE 5 V at about 40 uA.|
 |`3V3`|Dl2|green|Logic rail up. Rl2 20K, about 40 uA.|
 |`DAT`|Dl3|blue|Servo bus activity (active low). Passive lamp on the `DATA` line, no firmware involved. Rl3 1K, about 0.7 mA while the bus is low. That current flows into whichever node pulls the bus low.|
-|`STA`|Dl4|red|Servo health (`PC7`, active low), never traffic. In precedence order: lit for a 150 ms lamp test at boot, solid while a fault is latched (until the torque ack clears it), a 1 Hz blink while `data_flags` names a reason (an image that did not load: never saved, unreadable or of another layout), dark when healthy. Rl4 10K, about 0.15 mA.|
+|`STA`|Dl4|red|Servo health (`PC7`, active low), never traffic. In precedence order: lit for a 150 ms lamp test at boot, solid while a fault is latched (until the torque ack clears it), a 1 Hz blink while the belt refuses Position (`refused_modes`: the servo needs an identification, whether its images did not load or a loaded set holds a zero Ke, cap or ceiling), dark when healthy. Rl4 10K, about 0.15 mA.|
 
 ## Test points & probing
 

@@ -68,7 +68,7 @@ fn stall_rig(response: StallResponse) -> Shared {
         let l = &mut t.config.limits;
         l.stall_response = response;
         l.stall_time_ticks = ms_ticks(STALL_MS);
-        l.i_cont_counts = YIELD;
+        l.yield_current_counts = YIELD;
         l.stall_release_counts = RELEASE;
     });
     sh

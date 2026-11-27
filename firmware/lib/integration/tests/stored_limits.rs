@@ -16,7 +16,7 @@ use osc_integration::sim::{
 };
 use osc_servo_core::estimator::thermal::{NtcCfg, ThermCfg, WindingTherm, ntc_cc};
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::kernel::phases::loops::faults::{BIT_DATA, CODE_DATA};
+use osc_servo_core::kernel::phases::loops::faults::{BIT_CONFIG, CODE_CONFIG};
 use osc_servo_core::{ImageState, Kernel, Mode, MotorCmd, ProtectionSeed, RegionStorage, Shared};
 
 /// The set of record's speed ceiling, c/s: the maker's 600 deg/s at
@@ -209,7 +209,7 @@ fn drives(cmds: &[(f64, MotorCmd)]) -> bool {
 }
 
 /// The record's set with the current cap at 0, its unset value: every
-/// closed mode is refused at the enable with the data fault, nothing
+/// closed mode is refused at the enable with the config fault, nothing
 /// drives, and `limit_flags` says a limit is unset with torque off and on.
 /// OpenLoop still runs, under the board's own trip. On main the closed
 /// modes run on a zero band without a fault, and OpenLoop's band is shut.
@@ -227,7 +227,7 @@ fn a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop() {
             l.goal_position = 1900;
         });
         let cmds = run(&mut k, &sh, &mut p, 2 * DECIM_MED as u32);
-        assert_eq!(faults(&sh), (BIT_DATA, CODE_DATA), "{mode:?}");
+        assert_eq!(faults(&sh), (BIT_CONFIG, CODE_CONFIG), "{mode:?}");
         assert!(
             cmds[DECIM_MED as usize..]
                 .iter()
@@ -250,7 +250,7 @@ fn a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop() {
 }
 
 /// A live write of a zero cap under a running loop stops it: the take
-/// carries the unset limit and the next CONTROL latches the data fault,
+/// carries the unset limit and the next CONTROL latches the config fault,
 /// so within two medium periods of the commit nothing drives. On main the
 /// loop runs on a zero band, braking, with no fault.
 #[test]
@@ -271,7 +271,7 @@ fn a_live_zero_cap_write_stops_a_running_closed_loop() {
             .with_mut(|t| t.config.limits.current_limit_counts = 0);
         sh.config_commit_end();
         let cmds = run(&mut k, &sh, &mut p, 3 * DECIM_MED as u32);
-        assert_eq!(faults(&sh), (BIT_DATA, CODE_DATA), "{mode:?}");
+        assert_eq!(faults(&sh), (BIT_CONFIG, CODE_CONFIG), "{mode:?}");
         assert!(
             cmds[2 * DECIM_MED as usize..]
                 .iter()
@@ -294,7 +294,7 @@ fn the_factory_block_refuses_current_mode_and_runs_openloop() {
     sh.table
         .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);
     sh.table.seed_current_bias(BIAS);
-    sh.publish_data_state(ImageState::Virgin, ImageState::Virgin);
+    sh.publish_data_state(ImageState::Defaults, ImageState::Defaults);
     let mut k = kernel();
     let mut p = RlPlant::new(1500);
     let mut run = |sh: &Shared, ticks: u32| -> Vec<MotorCmd> {
@@ -330,7 +330,7 @@ fn the_factory_block_refuses_current_mode_and_runs_openloop() {
         t.control.lifecycle.torque_enable = true;
     });
     let cmds = run(&sh, 1_000);
-    assert_eq!(faults(&sh), (BIT_DATA, CODE_DATA), "Current mode");
+    assert_eq!(faults(&sh), (BIT_CONFIG, CODE_CONFIG), "Current mode");
     assert!(
         cmds[DECIM_MED as usize..]
             .iter()

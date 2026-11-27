@@ -1,7 +1,8 @@
-//! Data state on every servo verb: the one-line warning a command prints
-//! when `data_flags` names a reason (information: the command still runs,
-//! and the servo refuses a mode only on a constant it cannot run on), the
-//! `osc status` report, and `osc recover`.
+//! Stored state on every servo verb: the one-line warning a command prints
+//! when an image is on its defaults or the belt refuses a mode
+//! (information: the command still runs, and the servo refuses a mode only
+//! on a constant it cannot run on), the `osc status` report, and
+//! `osc recover`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -9,10 +10,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use osc_client::blocking::Client;
-use osc_client::data_state::{DataState, fault};
 use osc_client::descriptor::{Access, Descriptor, Field};
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
+use osc_client::store_state::{self, StoreState, fault};
 use osc_client::{Error, Id, ResultCode};
 use osc_protocol::table::CONFIG_COMMON_END;
 use osc_servo_core::regions::CONTROL_BASE_ADDR;
@@ -27,17 +28,21 @@ pub(crate) fn descriptor<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Descripto
     Ok(crate::select_descriptor(c, id, &reg)?.clone())
 }
 
-/// Read the data state; a set reason prints the one-line warning.
-pub(crate) fn warn<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<DataState> {
-    let s = c.data_state(id, d)?;
-    if let Some(msg) = s.message() {
-        eprintln!("warning: id {}: {} - {msg}", id.as_byte(), s.names());
+/// Read the stored state; an image on its defaults or a refused mode
+/// prints its one-line warning. Unsaved changes print none: `osc status`
+/// says them.
+pub(crate) fn warn<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<StoreState> {
+    let s = c.store_state(id, d)?;
+    for msg in s.messages() {
+        if msg != store_state::NOT_SAVED {
+            eprintln!("warning: id {}: {msg}", id.as_byte());
+        }
     }
     Ok(s)
 }
 
 /// [`warn`] for the verbs that resolve no descriptor of their own.
-pub(crate) fn check<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<DataState> {
+pub(crate) fn check<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<StoreState> {
     let d = descriptor(c, id)?;
     warn(c, id, &d)
 }
@@ -49,10 +54,11 @@ pub(crate) fn check_each(c: &mut Client<NusbPipe>, ids: &[Id]) -> Result<()> {
     Ok(())
 }
 
-/// What an ALERT means: the latched fault by name, then the data warning.
+/// What an ALERT means: the latched fault by name, then the stored-state
+/// warning.
 pub(crate) fn alert(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let d = descriptor(c, id)?;
-    let s = c.data_state(id, &d)?;
+    let s = c.store_state(id, &d)?;
     if s.fault_code != fault::NONE {
         eprintln!("id {}: fault {}", id.as_byte(), fault_name(s.fault_code));
     }
@@ -67,17 +73,14 @@ fn fault_name(code: u8) -> String {
     }
 }
 
-/// The `osc status` tail: reasons, the operator line and the latched
-/// fault.
+/// The `osc status` tail: the settings word, the refused modes, the
+/// operator lines and the latched fault.
 pub(crate) fn report(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<()> {
-    let s = c.data_state(id, d)?;
-    if s.flags == 0 {
-        println!("      data  clean");
-    } else {
-        println!("      data  {}", s.names());
-        if let Some(msg) = s.message() {
-            println!("            {msg}");
-        }
+    let s = c.store_state(id, d)?;
+    println!("      settings {}", s.settings());
+    println!("      refused  {}", s.refused_said());
+    for msg in s.messages() {
+        println!("               {msg}");
     }
     if s.fault_code != fault::NONE {
         println!("      fault {}", fault_name(s.fault_code));
@@ -86,17 +89,14 @@ pub(crate) fn report(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result
 }
 
 /// The SAVE that closes a write of a set: torque off (every write before
-/// it was read-back verified), then SAVE. The data state after is printed
-/// and returned.
-pub(crate) fn save_set<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<DataState> {
+/// it was read-back verified), then SAVE. The stored state after is
+/// printed and returned.
+pub(crate) fn save_set<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<StoreState> {
     let f = descriptor::field(d, "torque_enable")?;
     c.write(id, f.addr, &[0])?;
     mgmt_save(c, id)?;
-    let s = c.data_state(id, d)?;
-    match s.message() {
-        None => println!("data state clean"),
-        Some(msg) => println!("data state {}: {msg}", s.names()),
-    }
+    let s = c.store_state(id, d)?;
+    println!("settings {}; refused {}", s.settings(), s.refused_said());
     Ok(s)
 }
 
@@ -112,18 +112,17 @@ pub(crate) fn mgmt_save<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
     Ok(())
 }
 
-/// `osc recover`: a saved table back onto a servo whose data state names a
-/// reason.
+/// `osc recover`: a saved table back onto a servo on its defaults.
 ///
-/// No reason needs a wipe: a servo whose images did not load (VIRGIN,
-/// CORRUPT, STALE) runs board defaults, and `--from` restores a saved
-/// table and SAVEs over them; the normal fresh flow is
+/// Nothing needs a wipe: a servo whose images did not load (blank,
+/// unreadable or of another layout) runs board defaults, and `--from`
+/// restores a saved table and SAVEs over them; the normal fresh flow is
 /// `osc-ident run`, then `osc-ident save`. `--factory` wipes every saved
 /// image first, and the servo comes back factory-fresh on its board id and
 /// baud.
 ///
-/// The bench MG90 after a CALIB layout change boots CALIB_STALE; with no
-/// motion at all:
+/// The bench MG90 after a CALIB layout change boots `defaults: CALIB`;
+/// with no motion at all:
 ///   osc status
 ///   osc recover --from profiles/mg90-a.json
 ///   osc status
@@ -147,7 +146,7 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
     let mut id = Id::new(id);
     let mut c = crate::bus::connect(&bus, &[id])?;
     let d = descriptor(&mut c, id)?;
-    let s = c.data_state(id, &d)?;
+    let s = c.store_state(id, &d)?;
     println!("id {}:", id.as_byte());
     report(&mut c, id, &d)?;
 
@@ -172,8 +171,8 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
         // rather than assume either.
         c.pause(Duration::from_millis(200));
         id = refind(&mut c, id)?;
-        let s = c.data_state(id, &d)?;
-        println!("id {}: {}", id.as_byte(), s.names());
+        let s = c.store_state(id, &d)?;
+        println!("id {}: settings {}", id.as_byte(), s.settings());
     }
 
     match &args.from {
@@ -186,10 +185,8 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
                 "next: osc-ident run, then osc-ident save (or osc recover --from <table.json>)"
             );
         }
-        None => match s.message() {
-            None => println!("nothing to recover"),
-            Some(msg) => println!("next: {msg}"),
-        },
+        None if s.loaded() => println!("nothing to recover"),
+        None => println!("next: {}", store_state::DEFAULTS),
     }
     Ok(())
 }
@@ -326,7 +323,7 @@ mod tests {
         ] {
             assert!(persisted(d.field(name).unwrap()), "{name}");
         }
-        for name in ["torque_enable", "goal_position", "data_flags", "words"] {
+        for name in ["torque_enable", "goal_position", "refused_modes", "words"] {
             assert!(!persisted(d.field(name).unwrap()), "{name}");
         }
     }
