@@ -8,6 +8,19 @@ fn main() {
     )
     .expect("copy memory.x");
 
+    // The board's facts (driver-pattern sec 2.6): `run!` takes the literal,
+    // `app_version!` the compatibility key.
+    let board = std::path::Path::new(&manifest_dir).join("../board.toml");
+    println!("cargo:rerun-if-changed=../board.toml");
+    let generated = osc_board_file::emit_board_config(&board).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1)
+    });
+    std::fs::write(format!("{out_dir}/board_config.rs"), generated.config)
+        .expect("write board_config.rs");
+    std::fs::write(format!("{out_dir}/board_compat.rs"), generated.compat)
+        .expect("write board_compat.rs");
+
     println!("cargo:rustc-link-search={out_dir}");
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rustc-link-arg=-Ttb-app.x");

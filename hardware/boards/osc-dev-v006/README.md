@@ -230,7 +230,7 @@ Rn1 10K pulls up against the onboard 10K / 3950 TH1 on the internal leg of JP2. 
 
 Everything here is from Rev. 2A board #1, reworked close to the Rev. 2B sense chain (1.5k input pull-ups, 1.10 V `VREF`, comp caps out, 47 pF left on Ci1). The copper around the amplifier differs, so Rev. 2B gets its own pass once built.
 
-Rev. 2A board #1 on a 2S LiPo, first against a 3.7 Ohm resistor grid (4.4 Ohm at J4 with its cable), then with an MG90 fitted. The grid figures come from [notebook 10](../../../notebooks/10-sense-chain-boards.ipynb), which grades the chain against board D (the bodged Rev. B rig), and the back-EMF figures from [notebook 11](../../../notebooks/11-back-emf-on-rev-2a.ipynb). The constants a capture is read with live in the `dev-v006-2A` entry of [`notebooks/oscnb/boards.py`](../../../notebooks/oscnb/boards.py), and the ones the servo runs with in the board's [`main.rs`](../../../firmware/boards/osc-dev-v006/app/src/main.rs). Those two are the authority; the tables below quote them. Source columns cite notebook sections as `nb10 sec 8`.
+Rev. 2A board #1 on a 2S LiPo, first against a 3.7 Ohm resistor grid (4.4 Ohm at J4 with its cable), then with an MG90 fitted. The grid figures come from [notebook 10](../../../notebooks/10-sense-chain-boards.ipynb), which grades the chain against board D (the bodged Rev. B rig), and the back-EMF figures from [notebook 11](../../../notebooks/11-back-emf-on-rev-2a.ipynb). The constants a capture is read with live in the `dev-v006-2A` entry of [`notebooks/oscnb/boards.py`](../../../notebooks/oscnb/boards.py), and the ones the servo runs with in the board's [`board.toml`](../../../firmware/boards/osc-dev-v006/board.toml). Those two are the authority; the tables below quote them. Source columns cite notebook sections as `nb10 sec 8`.
 
 Ticks are 48 MHz TIM1 ticks (20.8 ns). The PWM half-period is 1200 ticks, so a drive window of `h` ticks is `h / 1200` duty.
 
@@ -242,7 +242,7 @@ Ticks are 48 MHz TIM1 ticks (20.8 ns). The PWM half-period is 1200 ticks, so a d
 |ADC clock|24 MHz (HCLK / 2).|`servo-ch32/src/hal/clocks.rs`|
 |Aperture|13.5 ADC clocks on every channel. A conversion is 26 clocks: 1.083 us, 52 ticks, 0.92 Msps.|`cfg/chip.rs`, nb10 sec 8|
 |Trigger|TIM1 CH4 (CCR4 = ARR - 52) starts a two-conversion injected group before the crest, the low-side tap (tap B forward, tap A reverse), then the shunt; its end, 56 ticks past the crest, is the kernel tick. TIM1 update (TRGO) at the counter crest and at the trough starts the two regular scans a period; the crest's lands during the injected group and runs right behind it.|`providers/sensors/scan.rs`|
-|Scan order|high tap, low tap, shunt, pos, vbus, ntc: vmA before vmB forward, vmB before vmA reverse. The order follows a direction flip from the trough scan after the tick that writes it, or a period later when that tick reaches the swap outside the idle gap. The chip's 1.2 V reference is not scanned: boot reads it once, alone, at 239.5 cycles.|`main.rs`, `providers/sensors/scan.rs`, `runtime/init.rs`|
+|Scan order|high tap, low tap, shunt, pos, vbus, ntc: vmA before vmB forward, vmB before vmA reverse. The order follows a direction flip from the trough scan after the tick that writes it, or a period later when that tick reaches the swap outside the idle gap. The chip's 1.2 V reference is not scanned: boot reads it once, alone, at 239.5 cycles.|`board.toml`, `providers/sensors/scan.rs`, `runtime/init.rs`|
 |Sample closes from the crest|Injected: low-side tap -21, shunt +31. Crest scan: high-side tap +87, its own low-side tap +139 and shunt +191, neither read, pos +243, vbus +295, ntc +347. Trough scan, from the trough: high-side tap +31, low-side tap +83, shunt +135 (the zero tracker's sample). The same in both directions. The ADC's 2-clock trigger delay included; the crest scan's instants assume its start 4 ticks behind the injected group's end, which the reference manual states only as a postponement.|`providers/sensors/scan.rs`|
 
 The bridge runs slow decay, so the drive window is centered on the crest and the crest's samples read the driven half.
@@ -308,8 +308,8 @@ Two things the gain cannot remove:
 
 |Quantity|Board #1|Source|
 |---|---|---|
-|`VSNS` scale|Ratio 5 (Rv5 6K4 / Rv6 1K6 to `GND`): 4.028 mV at `VSYS` per count.|`main.rs`, `boards.py`|
-|Pack voltage|`VSYS` + 0.25 V at rest, the firmware's `rail_drop_mv` for the SS54.|`main.rs`|
+|`VSNS` scale|Ratio 5 (Rv5 6K4 / Rv6 1K6 to `GND`): 4.028 mV at `VSYS` per count.|`board.toml`, `boards.py`|
+|Pack voltage|`VSYS` + 0.25 V at rest, the firmware's `rail_drop_mv` for the SS54.|`board.toml`|
 |2S under load|7.73 V at rest, 7.40 V at the grid's 100% rung: 0.21 Ohm of pack, diode and wiring.|nb10 sec 7|
 |Rest noise|3.8 mV.|nb10 sec 3|
 

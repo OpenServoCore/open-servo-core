@@ -1,0 +1,74 @@
+::osc_servo_ch32::prelude::BoardConfig {
+    hw_rev: 2, // board.toml:4 board.hw_rev
+    wiring: ::osc_servo_ch32::prelude::BoardWiring { // board.toml:6 wiring
+        stat_led_active: ::osc_servo_ch32::prelude::Level::Low, // board.toml:7 wiring.stat_led_active
+        drv_en: ::osc_servo_ch32::prelude::DrvEn { // board.toml:10 wiring.drv_en
+            pin: ::osc_servo_ch32::prelude::DigitalPin::PC3, // board.toml:11 wiring.drv_en.pin
+            active: ::osc_servo_ch32::prelude::Level::High, // board.toml:12 wiring.drv_en.active
+        },
+        current_sense: ::osc_servo_ch32::prelude::CurrentSenseConfig { // board.toml:16 wiring.current_sense
+            gain_milli: 14884, // board.toml:17 wiring.current_sense.gain_milli
+            opa: ::osc_servo_ch32::prelude::opa::Config { // board.toml:19 wiring.current_sense.opa
+                pos: ::osc_servo_ch32::prelude::opa::PositiveInput::PD7, // board.toml:20 wiring.current_sense.opa.pos
+                neg: ::osc_servo_ch32::prelude::opa::NegativeInput::PD0, // board.toml:21 wiring.current_sense.opa.neg
+                out: ::osc_servo_ch32::prelude::opa::Output::PD4, // board.toml:22 wiring.current_sense.opa.out
+            },
+        },
+        sensors: ::osc_servo_ch32::prelude::AdcPins { // board.toml:25 wiring.sensors
+            pos: ::osc_servo_ch32::prelude::AnalogChannel::A1, // board.toml:26 wiring.sensors.pos
+            vmotor: (::osc_servo_ch32::prelude::AnalogChannel::A5, ::osc_servo_ch32::prelude::AnalogChannel::A6), // board.toml:27 wiring.sensors.vmotor
+            vbus: ::osc_servo_ch32::prelude::AnalogChannel::A2, // board.toml:28 wiring.sensors.vbus
+            ntc: ::osc_servo_ch32::prelude::AnalogChannel::A0, // board.toml:29 wiring.sensors.ntc
+        },
+    },
+    calibration: ::osc_servo_ch32::prelude::Calibration { // board.toml:31 calibration
+        shunt_r_mohm: 60, // board.toml:32 calibration.shunt_r_mohm
+        rail_drop_mv: 250, // board.toml:34 calibration.rail_drop_mv
+        vdd_mv: 3300, // board.toml:35 calibration.vdd_mv
+        i_window_min_ticks: 64, // board.toml:49 calibration.i_window_min_ticks
+        v_window_min_ticks: 93, // board.toml:50 calibration.v_window_min_ticks
+        bemf_window_min_ticks: 93, // board.toml:53 calibration.bemf_window_min_ticks
+        bridge_min_ticks: 27, // board.toml:56 calibration.bridge_min_ticks
+        bias_brake_min_ticks: 960, // board.toml:61 calibration.bias_brake_min_ticks
+        vmotor_divider: ::osc_servo_ch32::prelude::Divider { // board.toml:63 calibration.vmotor_divider
+            top_ohm: 6400, // board.toml:63 calibration.vmotor_divider.top_ohm
+            bot_ohm: 1600, // board.toml:63 calibration.vmotor_divider.bot_ohm
+        },
+        vbus_divider: ::osc_servo_ch32::prelude::Divider { // board.toml:65 calibration.vbus_divider
+            top_ohm: 6400, // board.toml:65 calibration.vbus_divider.top_ohm
+            bot_ohm: 1600, // board.toml:65 calibration.vbus_divider.bot_ohm
+        },
+        vmotor_bias: ::osc_servo_ch32::prelude::Divider { // board.toml:67 calibration.vmotor_bias
+            top_ohm: 430, // board.toml:67 calibration.vmotor_bias.top_ohm
+            bot_ohm: 100, // board.toml:67 calibration.vmotor_bias.bot_ohm
+        },
+        ntc: ::osc_servo_ch32::prelude::Ntc { // board.toml:68 calibration.ntc
+            pullup_ohm: 10000, // board.toml:68 calibration.ntc.pullup_ohm
+            r25_ohm: 10000, // board.toml:68 calibration.ntc.r25_ohm
+            beta: 3950, // board.toml:68 calibration.ntc.beta
+        },
+        i_settle_gain: ::osc_servo_ch32::prelude::SettleGain { // board.toml:78 calibration.i_settle_gain
+            start_ticks: 40, // board.toml:79 calibration.i_settle_gain.start_ticks
+            q15: &[37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785], // board.toml:80 calibration.i_settle_gain.q15
+        },
+    },
+    defaults: ::osc_servo_ch32::prelude::ConfigDefaults { // board.toml:85 defaults
+        pos_min_phys_counts: 0, // board.toml:86 defaults.pos_min_phys_counts
+        pos_max_phys_counts: 4095, // board.toml:87 defaults.pos_max_phys_counts
+        id: 1, // board.toml:88 defaults.id
+        baud: ::osc_servo_ch32::prelude::BaudRate::B1000000, // board.toml:89 defaults.baud
+        response_deadline_us: ::osc_servo_ch32::prelude::DEFAULT_RESPONSE_DEADLINE_US,
+    },
+    protection: ::osc_servo_ch32::prelude::ProtectionDefaults { // board.toml:92 protection
+        i_cont_ma: 250, // board.toml:98 protection.i_cont_ma
+        stall_release_ma: 90, // board.toml:100 protection.stall_release_ma
+        oc_trip_ma: 2200, // board.toml:105 protection.oc_trip_ma
+        oc_trip_us: 400, // board.toml:106 protection.oc_trip_us
+        thermal_tau_s: 4, // board.toml:109 protection.thermal_tau_s
+        cutoff_cc: 9000, // board.toml:111 protection.cutoff_cc
+        v_undervolt_mv: 2900, // board.toml:115 protection.v_undervolt_mv
+        rail_source_mohm: 800, // board.toml:119 protection.rail_source_mohm
+        drive_polarity: true, // board.toml:120 protection.drive_polarity
+    },
+    model: ::osc_servo_ch32::prelude::MODEL_OSC_SERVO,
+}
