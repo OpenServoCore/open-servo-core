@@ -1321,7 +1321,6 @@ fn seeded_servo_boots_identified_and_stamped() {
     let v = c.stamp_verdict(id, &d).expect("verdict");
     assert!(v.matches(), "{v:?}");
     assert_eq!(v.stored, firmware_stamp(&mut c));
-    assert!(data_state::allows(s.flags, true));
 
     c.reboot(id).expect("reboot");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
@@ -1430,9 +1429,9 @@ fn table_bytes(t: &mut osc_servo_core::ControlTable) -> &mut [u8] {
 
 /// The commit sequence on a factory-fresh servo, as `osc-ident save` runs
 /// it: the set, the stamp, SAVE, and only then a clean data state; a
-/// covered edit afterwards shuts closed loop until a restamp.
+/// covered edit afterwards reads as a mismatch until a restamp.
 #[test]
-fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
+fn virgin_servo_commit_sequence_then_a_covered_edit_marks_the_mismatch() {
     let d = descriptor();
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
     pipe.seed_board(0);
@@ -1441,11 +1440,6 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
 
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, FRESH);
-    assert!(
-        data_state::allows(s.flags, false),
-        "OpenLoop and Current run"
-    );
-    assert!(!data_state::allows(s.flags, true));
 
     // cal: stops, travel, polarity, angles, gear
     for (name, v) in [
@@ -1494,15 +1488,10 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, CONFIG_VIRGIN | CALIB_VIRGIN);
     assert_eq!(s.reasons(), [Reason::ConfigVirgin, Reason::CalibVirgin]);
-    assert!(
-        !data_state::allows(s.flags, true),
-        "VIRGIN clears only on SAVE"
-    );
 
     c.save(id).expect("save");
     let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, 0);
-    assert!(data_state::allows(s.flags, true));
+    assert_eq!(s.flags, 0, "VIRGIN clears on SAVE");
     c.reboot(id).expect("reboot");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
     assert!(c.stamp_verdict(id, &d).expect("verdict").matches());
@@ -1511,24 +1500,19 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     write_field(&mut c, id, &d, "v_kp_q88", Value::Uint(600));
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, STAMP_MISMATCH);
-    assert!(!data_state::allows(s.flags, true));
-    assert!(data_state::allows(s.flags, false));
     let v = c.stamp_verdict(id, &d).expect("verdict");
     assert!(!v.matches());
     assert_eq!(v.stored, stamp);
 
-    // the kernel's refusal of the next closed-loop enable, as the fault
-    // ISR publishes it (the fake adapter runs no kernel)
+    // the belt's refusal of an enable, as the fault ISR publishes it (the
+    // fake adapter runs no kernel): the operator line is the refusal's
     c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
         t.telemetry.common.fault_flags = BIT_DATA;
         t.telemetry.mode.fault_code = fault::DATA;
     });
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(fault::name(s.fault_code), Some("data"));
-    assert_eq!(
-        s.message().unwrap(),
-        format!("closed loop refused: {}", Reason::StampMismatch.text())
-    );
+    assert_eq!(s.message().as_deref(), Some(data_state::REFUSED));
     assert_eq!(c.health(id).expect("health").fault_flags, BIT_DATA);
 
     // torque on: the restamp lands unverified until torque drops
@@ -1613,7 +1597,6 @@ fn lut_write_goes_live_and_the_stamp_hashes_the_live_points() {
 
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, STAMP_MISMATCH, "the hashed points changed");
-    assert!(!data_state::allows(s.flags, true));
     let v = c.stamp_verdict(id, &d).expect("verdict");
     assert!(!v.matches());
     let firmware = c

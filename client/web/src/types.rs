@@ -375,7 +375,8 @@ impl From<data_state::Reason> for DataReason {
 }
 
 /// Whether the persisted images and the identified set are the servo's
-/// own (`data_flags`), with the kernel's latched fault beside it.
+/// own (`data_flags`, information: no reason refuses a mode), with the
+/// kernel's latched fault beside it.
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct DataState {
@@ -391,10 +392,6 @@ pub struct DataState {
     #[tsify(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// OpenLoop and Current may be enabled.
-    pub open_loop: bool,
-    /// Velocity and Position may be enabled.
-    pub closed_loop: bool,
 }
 
 impl From<data_state::DataState> for DataState {
@@ -405,8 +402,6 @@ impl From<data_state::DataState> for DataState {
             fault: data_state::fault::name(s.fault_code).map(String::from),
             reasons: s.reasons().into_iter().map(DataReason::from).collect(),
             message: s.message(),
-            open_loop: data_state::allows(s.flags, false),
-            closed_loop: data_state::allows(s.flags, true),
         }
     }
 }

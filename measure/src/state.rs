@@ -197,18 +197,14 @@ pub struct Record {
 }
 
 impl Record {
-    /// Refused when its hash is not its content's, when its points are not
-    /// the ones its sha1 names, or when it was no clean state.
+    /// Refused when its hash is not its content's or when its points are
+    /// not the ones its sha1 names. The data state it was read in is no
+    /// refusal: a record of a servo on its defaults restores like any.
     pub fn parse(text: &str) -> Result<Self, SetError> {
         let bad = |why: &str| SetError(format!("the record {why}"));
         let doc: Value = serde_json::from_str(text).map_err(|e| SetError(e.to_string()))?;
         if doc.get("hash").and_then(Value::as_str) != Some(state_hash(&doc).as_str()) {
             return Err(bad("is not what its hash says"));
-        }
-        if doc.get("data_state").and_then(Value::as_str) != Some("clean") {
-            return Err(bad(
-                "is of a state that is not clean: a reboot puts a stored state back",
-            ));
         }
         let table = doc.get("pos_table");
         let bytes = table

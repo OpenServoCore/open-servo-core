@@ -7,7 +7,7 @@ mod common;
 use common::*;
 use futures_lite::future::block_on;
 use osc_client::data_state::{
-    CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN, STAMP_MISMATCH,
+    CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN, PLANT_UNSET, STAMP_MISMATCH,
 };
 use osc_client::pos_lut;
 use osc_client::stamp;
@@ -336,10 +336,10 @@ fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
     assert_eq!(checked.stamp, "0xd1c4 = live set");
 }
 
-/// The check before the SAVE refuses on what the SAVE cannot clear, and
-/// says it when the set itself landed.
+/// The check before the SAVE refuses a set that did not land, never a
+/// data state: every reason is information.
 #[test]
-fn the_check_before_a_save_refuses_only_what_the_save_cannot_clear() {
+fn the_check_before_a_save_refuses_only_a_set_that_did_not_land() {
     let checked = |differences: Vec<String>, flags: u8| install::Checked {
         differences,
         unowned: vec![],
@@ -347,21 +347,18 @@ fn the_check_before_a_save_refuses_only_what_the_save_cannot_clear() {
         flags,
         stamp: "0xd1c4 = live set".into(),
     };
-    assert_eq!(checked(vec![], 0).unsaveable(), None);
-    assert_eq!(
-        checked(vec![], CONFIG_VIRGIN | CALIB_VIRGIN | CONFIG_STALE).unsaveable(),
-        None
-    );
-    let why = checked(vec![], CONFIG_VIRGIN | STAMP_MISMATCH)
-        .unsaveable()
-        .expect("refused");
-    assert!(
-        why.ends_with("(STAMP_MISMATCH of it a SAVE does not clear)"),
-        "{why}"
-    );
-    let why = checked(vec!["v_kp_q88: servo 70, set 97".into()], 0)
-        .unsaveable()
-        .expect("refused");
+    for flags in [
+        0,
+        CONFIG_VIRGIN | CALIB_VIRGIN | CONFIG_STALE,
+        CONFIG_CORRUPT | STAMP_MISMATCH | PLANT_UNSET,
+    ] {
+        let c = checked(vec![], flags);
+        assert!(c.clean(), "{flags:#04x}");
+        assert_eq!(c.unsaveable(), None, "{flags:#04x}");
+    }
+    let c = checked(vec!["v_kp_q88: servo 70, set 97".into()], 0);
+    assert!(!c.clean());
+    let why = c.unsaveable().expect("refused");
     assert!(why.ends_with(": v_kp_q88: servo 70, set 97"), "{why}");
 }
 
@@ -523,8 +520,8 @@ fn the_tool_has_no_factory_path() {
         }
     }
 
-    // A servo whose saved settings are corrupt, the one state only that
-    // wipe clears, is refused by every write verb, nothing written.
+    // A servo whose saved settings are unreadable runs on its defaults and
+    // is written like any: no verb refuses on the data state, none wipes.
     let (mut c, log) = on_record();
     let d = descriptor();
     let backup = serde_json::to_string(
@@ -543,25 +540,10 @@ fn the_tool_has_no_factory_path() {
     let mut i = inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
     let (r, _) = install_set(&mut c, &rules_set(&i, &table()));
-    let refusals = [
-        r.expect_err("install"),
-        block_on(save(
-            &mut c,
-            ID,
-            &d,
-            &record(),
-            Some(&table().points),
-            &mut osc_measure::sink::MemSink::default(),
-            &mut Vec::new(),
-        ))
-        .expect_err("save"),
-        block_on(restore(&mut c, ID, &d, &backup, json!({}), &mut Vec::new()))
-            .expect_err("restore"),
-    ];
-    for e in refusals {
-        assert!(e.0.contains("`osc recover`"), "{e}");
-    }
-    assert_eq!(writes_below(&log, CONTROL), []);
+    r.expect("install");
+    block_on(restore(&mut c, ID, &d, &backup, json!({}), &mut Vec::new())).expect("restore");
     assert!(log.borrow().iter().all(|e| !matches!(e, Ev::Mgmt(_))));
+    let s = block_on(state::read(&mut c, ID, &d)).expect("state");
+    assert_eq!(s.data.flags & CONFIG_CORRUPT, CONFIG_CORRUPT, "information");
     assert_eq!(s.data.flags & STAMP_MISMATCH, 0);
 }

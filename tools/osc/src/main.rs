@@ -149,9 +149,8 @@ enum Cmd {
         #[arg(long, value_name = "BAUD")]
         bootloader: Option<String>,
     },
-    /// Recover a servo whose data state refuses closed loop: report it,
-    /// FACTORY-reset a CONFIG_CORRUPT one (the only exit from that state)
-    /// and, with --from, restore a saved table, restamp and SAVE.
+    /// Report a servo's data state and, with --from, restore a saved
+    /// table, restamp and SAVE; --factory wipes the saved images first.
     Recover(state::RecoverArgs),
     /// Read or configure a protocol sec 5.2 profile slot.
     Profile {
@@ -566,16 +565,10 @@ fn migrate(c: &mut Client<NusbPipe>, ids: &[Id], rate: BaudRate) -> Result<()> {
     Ok(())
 }
 
-/// SAVE, refused on a CONFIG_CORRUPT servo: it would bless board defaults
-/// as this servo's config, which only `osc recover` may decide.
+/// SAVE, never refused on the data state: what the servo holds becomes
+/// what it boots.
 fn save(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    let s = state::check(c, id)?;
-    if s.flags & osc_client::data_state::CONFIG_CORRUPT != 0 {
-        bail!(
-            "id {}: saved settings are unreadable and board defaults are running; run osc recover",
-            id.as_byte()
-        );
-    }
+    state::check(c, id)?;
     match c.save(id) {
         Ok(()) => {
             println!("id {}: saved", id.as_byte());

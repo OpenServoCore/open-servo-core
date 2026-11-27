@@ -581,6 +581,34 @@ mod tests {
         (c, log)
     }
 
+    /// A servo off the line, never saved: board data only, every image
+    /// reason of a factory-fresh servo, saved at 1M and the bus moved to
+    /// 3M volatile, at rest near the middle, its estimate the reading the
+    /// set of record's table gives.
+    fn fresh_servo() -> (Client<Spy>, Log) {
+        let mut inner = FakePipe::new(BaudRate::B1000000, &[1]);
+        inner.seed_board(0);
+        let log = Log::default();
+        let mut c = block_on(Client::connect(Spy {
+            inner,
+            log: log.clone(),
+            arms: 0,
+            hook: Box::new(|_, _| {}),
+            theta_q16: None,
+            rebooted: Box::new(|_| {}),
+        }))
+        .expect("connect");
+        let roster = block_on(mgmt::set_baud(&mut c, &[ID], BaudRate::B3000000));
+        assert_eq!(roster.expect("baud"), [(ID, true)]);
+        c.pipe_mut().inner.set_track(0, resting(MID_POT));
+        let table = files::table(&testdata("mg90-d/pos_lut.json")).expect("table");
+        let slots = record().slots().expect("slots");
+        let lin = Lin::new(Some(&table.points), slots.as_deref());
+        c.pipe_mut().theta_q16 = Some((lin.counts(MID_POT) * 65536.0).round() as i32);
+        log.borrow_mut().clear();
+        (c, log)
+    }
+
     fn run(
         c: &mut Client<Spy>,
         inputs: &Path,
@@ -896,6 +924,77 @@ mod tests {
         assert!(text.contains("put back: rebooted"), "{text}");
         let reboot = MgmtOp::Reboot as u8;
         assert_eq!(mgmt_ops(&log), [reboot, reboot]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A factory-fresh servo, never saved, tunes as decided: each try's set
+    /// installed volatile and the check run on it, with no SAVE before it
+    /// and none after. The data state its images left is information: the
+    /// check's first enable is reached (its first burst armed). A `data`
+    /// fault latched there, as a firmware that refuses the mode latches
+    /// it, ends the tune as any fault does, named, and the servo is put
+    /// back.
+    #[test]
+    fn a_tune_on_a_factory_fresh_servo_reaches_the_check_unsaved() {
+        let (mut c, log) = fresh_servo();
+        let d = descriptor();
+        let fresh = block_on(state::read(&mut c, ID, &d)).expect("state");
+        assert_ne!(
+            fresh.data.flags & osc_client::data_state::CONFIG_VIRGIN,
+            0,
+            "{}",
+            fresh.data_said()
+        );
+        let armed = Rc::new(RefCell::new(0));
+        let seen = armed.clone();
+        c.pipe_mut().hook = Box::new(move |n, p| {
+            *seen.borrow_mut() = n;
+            if n == 1 {
+                p.sim_mut().servo_table_mut(0, |t| {
+                    t.telemetry.common.fault_flags = 0x40;
+                    t.telemetry.mode.fault_code = osc_client::data_state::fault::DATA;
+                });
+            }
+        });
+        let dir = scratch("tune-factory");
+        let out = dir.join("run");
+        let (lines, accepted) = run(&mut c, &testdata("mg90-d"), &out, 4).expect("runs");
+        let text = lines.join("\n");
+        println!("{text}");
+        assert!(!accepted, "{text}");
+        assert!(
+            *armed.borrow() >= 1,
+            "the check reached its first enable: {text}"
+        );
+        let doc = json_at(&out.join("tune.json"));
+        let tries = doc["tries"].as_array().expect("tries");
+        assert_eq!(tries.len(), 1, "{doc}");
+        assert_eq!(tries[0]["install"], "installed and stamped", "{doc}");
+        assert_eq!(
+            tries[0]["failed_on"],
+            json!(["the first enable holds still"]),
+            "{doc}"
+        );
+        assert!(
+            tries[0]["why"]
+                .as_str()
+                .is_some_and(|w| w.contains("fault_code 7 (data)")),
+            "{doc}"
+        );
+        assert!(text.contains("put back: rebooted"), "{text}");
+        assert!(!text.contains("servo's data state is"), "{text}");
+        let stored = json_at(&out.join("backup/stored.json"));
+        assert!(
+            stored["data_state"]
+                .as_str()
+                .is_some_and(|s| s.contains("CONFIG_VIRGIN | CALIB_VIRGIN")),
+            "{stored}"
+        );
+        assert!(
+            !mgmt_ops(&log).contains(&(MgmtOp::Save as u8)),
+            "{:?}",
+            mgmt_ops(&log)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

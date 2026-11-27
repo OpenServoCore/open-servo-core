@@ -1,9 +1,8 @@
 //! Data state on every servo verb: the one-line warning a command prints
-//! when `data_flags` names a reason (the command still runs - OpenLoop,
-//! Current and osc-ident's steps work on such a servo, the closed loops are
-//! what the servo refuses), the `osc status` report with the stamp verdict, the
-//! torque-off restamp behind `osc set`, and `osc recover`: the only osc
-//! verb that SAVEs a CONFIG_CORRUPT servo.
+//! when `data_flags` names a reason (information: the command still runs,
+//! and the servo refuses a mode only on a constant it cannot run on), the
+//! `osc status` report with the stamp verdict, the torque-off restamp
+//! behind `osc set`, and `osc recover`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use osc_client::blocking::Client;
-use osc_client::data_state::{CONFIG_CORRUPT, DataState, SAVE_CLEARS, STAMP_MISMATCH, fault};
+use osc_client::data_state::{DataState, SAVE_CLEARS, STAMP_MISMATCH, fault};
 use osc_client::descriptor::{Access, Descriptor, Field};
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
@@ -101,10 +100,10 @@ pub(crate) fn report(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result
 }
 
 /// After a hand edit of `f`: a covered write leaves STAMP_MISMATCH standing
-/// (the servo marks it; the next closed-loop enable is refused, a running
-/// loop is never stopped) and the note names the deliberate ways out. No
-/// tool restamps as a side effect of a write: an auto-restamp would bless
-/// any edit, plant constants included, as the identified set.
+/// (the servo marks it, as information: the edit runs as written) and the
+/// note names the deliberate ways out. No tool restamps as a side effect of
+/// a write: an auto-restamp would bless any edit, plant constants included,
+/// as the identified set.
 pub(crate) fn covered_note(d: &Descriptor, f: &Field) {
     let covered = match d.stamp() {
         Ok(s) => s.covers(f.addr, f.width),
@@ -112,7 +111,7 @@ pub(crate) fn covered_note(d: &Descriptor, f: &Field) {
     };
     if covered {
         println!(
-            "note: {} is stamp-covered: the set is marked stale and closed loop is refused at the next enable; osc stamp [--save] blesses the tuned set, osc-ident refits it",
+            "note: {} is stamp-covered: the set is marked changed and runs as written; osc stamp [--save] blesses the tuned set, osc-ident refits it",
             f.name
         );
     }
@@ -121,9 +120,9 @@ pub(crate) fn covered_note(d: &Descriptor, f: &Field) {
 /// The commit that closes a write of the identified or calibrated set:
 /// torque off, the stamp over the set as the servo holds it (every write
 /// before it was read-back verified, so this is the intended set), the
-/// firmware's checkpoint as the witness, then SAVE when asked. VIRGIN and
-/// STALE clear only on SAVE, so a fresh servo opens closed loop after the
-/// save, never before. The state after is printed and returned.
+/// firmware's checkpoint as the witness, then SAVE when asked. The image
+/// reasons clear only on SAVE; they are information and refuse nothing.
+/// The state after is printed and returned.
 pub(crate) fn commit<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -151,7 +150,7 @@ pub(crate) fn commit<P: Pipe>(
     }
     let s = c.data_state(id, d)?;
     match s.message() {
-        None => println!("data state clean: closed loop allowed"),
+        None => println!("data state clean"),
         Some(msg) => println!("data state {}: {msg}", s.names()),
     }
     Ok(s)
@@ -179,16 +178,15 @@ pub(crate) fn stamp(c: &mut Client<NusbPipe>, id: Id, save: bool) -> Result<()> 
     Ok(())
 }
 
-/// `osc recover`: the way back from a data state that refuses closed
-/// loop.
+/// `osc recover`: a saved table back onto a servo whose data state names a
+/// reason.
 ///
-/// A CONFIG_CORRUPT servo runs board defaults (limits, polarity) and
-/// refuses every mode; SAVE never blesses that, so FACTORY + reboot is the
-/// only exit, and the servo comes back factory-fresh on its board id and
-/// baud. From there either the normal fresh flow (`osc-ident run`, then
-/// `osc-ident save`) or `--from` restores a saved table, restamps and
-/// SAVEs. Every other reason (STALE, VIRGIN, CALIB_CORRUPT, STAMP_MISMATCH,
-/// PLANT_UNSET) needs no wipe: `--from` alone brings a saved table back.
+/// No reason needs a wipe: a servo whose images did not load (VIRGIN,
+/// CORRUPT, STALE) runs board defaults, and `--from` restores a saved
+/// table, restamps and SAVEs over them; the normal fresh flow is
+/// `osc-ident run`, then `osc-ident save`. `--factory` wipes every saved
+/// image first, and the servo comes back factory-fresh on its board id and
+/// baud.
 ///
 /// The bench MG90 after a CALIB layout change boots CALIB_STALE |
 /// STAMP_MISMATCH | PLANT_UNSET; with no motion at all:
@@ -203,7 +201,7 @@ pub(crate) struct RecoverArgs {
     /// blocks are skipped; then restamp + SAVE.
     #[arg(long)]
     from: Option<PathBuf>,
-    /// FACTORY-reset even when the config is not corrupt.
+    /// FACTORY-reset first: wipe every saved image.
     #[arg(long)]
     factory: bool,
     /// Assume yes: never prompt.
@@ -219,8 +217,7 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
     println!("id {}:", id.as_byte());
     report(&mut c, id, &d)?;
 
-    let corrupt = s.flags & CONFIG_CORRUPT != 0;
-    if corrupt || args.factory {
+    if args.factory {
         if !args.yes
             && !Confirm::new()
                 .with_prompt(
@@ -250,7 +247,7 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
             restore(&mut c, id, &d, path)?;
             commit(&mut c, id, &d, true)?;
         }
-        None if corrupt || args.factory => {
+        None if args.factory => {
             println!(
                 "next: osc-ident run, then osc-ident save (or osc recover --from <table.json>)"
             );

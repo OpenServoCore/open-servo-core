@@ -483,8 +483,8 @@ fn the_first_enable_writes_the_goal_and_the_dead_man_before_torque_on() {
 }
 
 /// Refused with nothing written, and nothing kept: torque on, a latched
-/// fault, a stamp that is not the live set's, a bus under 3 Mbps, a shaft
-/// too near a soft limit.
+/// fault, a constant the servo's belt refuses the closed loops on, a bus
+/// under 3 Mbps, a shaft too near a soft limit.
 #[test]
 fn the_step_refuses_before_any_write() {
     let refused = |c: &mut Client<Bus>, log: &Log, word: &str| {
@@ -518,16 +518,13 @@ fn the_step_refuses_before_any_write() {
         .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
 
     let d = descriptor();
-    let kp = d.field("p_kp_q88").expect("p_kp_q88");
-    let was = block_on(c.read(ID, kp.addr, 2)).expect("read");
-    let other = (u16::from_le_bytes([was[0], was[1]]) ^ 1).to_le_bytes();
-    block_on(c.write(ID, kp.addr, &other)).expect("a covered field moved");
-    refused(
-        &mut c,
-        &log,
-        "the live set is not the one installed and stamped",
-    );
-    block_on(c.write(ID, kp.addr, &was)).expect("put back");
+    for name in ["recip_ke_q", "speed_ceiling_cps"] {
+        let f = d.field(name).expect(name);
+        let was = block_on(c.read(ID, f.addr, 2)).expect("read");
+        block_on(c.write(ID, f.addr, &[0, 0])).expect("unset");
+        refused(&mut c, &log, &format!("{name} 0, unset"));
+        block_on(c.write(ID, f.addr, &was)).expect("put back");
+    }
 
     c.pipe_mut().inner.set_track(0, resting(330));
     estimate_at(&mut c, 330);

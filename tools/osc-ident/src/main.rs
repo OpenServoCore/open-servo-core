@@ -492,7 +492,13 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
     });
     match cmd {
         Cmd::Save { .. } => {
-            println!("saved: after a reboot the servo reads as the set, data state clean")
+            let s = osc_client::data_state::read(c, id, d).await?;
+            let said = if s.flags == 0 {
+                "clean".into()
+            } else {
+                s.names()
+            };
+            println!("saved: after a reboot the servo reads as the set, data state {said}")
         }
         _ if wrote => println!("volatile, not saved: a reboot returns the saved state"),
         _ => println!("the servo holds the set: nothing written"),
