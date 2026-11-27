@@ -7,6 +7,8 @@
   "ntc_curve": {"raw_ref": 2048, "t_ref_cc": 2430, "k1_q88": 474, "k2_q24": 19934},
   "bridge_min_ticks": 27,
   "burst_edges": {"on_ticks": 44.0, "tap_on_ticks": 39.5, "off_ticks": 14.0, "settle_ticks": 72.0},
+  "window_scale": 1.006331915441961,
+  "terminal_offset_counts": 2.3816859542540265,
   "window_read": {
     "sample_ticks": 31.0,
     "r_brake_ohm": 0.30083616429222926,
@@ -25,6 +27,8 @@
       "off_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) off_edge_lag_7v4 (15) and off_edge_lag_3v7 (13), their mean",
       "settle_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) shunt_settle_7v4 (75) and shunt_settle_3v7 (69), their mean"
     },
+    "window_scale": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) window_scale, the k the identification notebook's seated burst fit divides R and L by (stages/3-servo/identification cells 40 and 41)",
+    "terminal_offset_counts": "notebooks stages/1-board/terminal-chain/results/dev-v006-2A-D.json (sha1 e1249f71a80bcad5c4c1d64301560f66c0bd8582) terminal_offset_counts, the offset oscnb bursts.period_table takes off the driven tap difference",
     "window_read": {
       "sample_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) crest_sample_ticks shunt",
       "r_brake_ohm": "notebooks stages/1-board/bridge-states/results/dev-v006-2A-D.json (sha1 d5e050edaf991630ba778cb78f44f3073b8f40cb) low_side_loop_ohm",

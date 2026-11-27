@@ -22,6 +22,14 @@ pub struct Board {
     /// The bridge's slow-decay edges a shunt burst is read by.
     #[serde(default)]
     pub burst_edges: Option<BurstEdges>,
+    /// The window's own `V_on / i` over the 100 % one, which a seated
+    /// burst's R and L are divided by.
+    #[serde(default)]
+    pub window_scale: Option<f64>,
+    /// The tap difference at zero volts in the driven frame, counts: a
+    /// seated burst's volts are read over it.
+    #[serde(default)]
+    pub terminal_offset_counts: Option<f64>,
     /// What the window-term fit reads a crest shunt sample by.
     #[serde(default)]
     pub window_read: Option<WindowRead>,

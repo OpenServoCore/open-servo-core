@@ -1,7 +1,8 @@
 //! The winding's R and L read seated: shunt bursts from rest with the
 //! rotor against a stop, each read whole by the period-pair fit with no
 //! intercept, `V_n = R i_n + L di_n / T` ([`super::rise::fit`]), as the
-//! stage 3 identification notebook reads its bursts at a held seat. The
+//! stage 3 identification notebook reads its bursts at a held seat: the
+//! volts over stage 1's terminal offset, R and L over its window scale. The
 //! first burst of each group is set aside, and so is a burst whose first
 //! window current is more than [`SET_ASIDE_SHARE`] off the median of its
 //! group's others (the inductance notebook's rule). After it,
