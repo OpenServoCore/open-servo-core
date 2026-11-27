@@ -28,7 +28,7 @@
       "settle_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) shunt_settle_7v4 (75) and shunt_settle_3v7 (69), their mean"
     },
     "window_scale": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) window_scale, the k the identification notebook's seated burst fit divides R and L by (stages/3-servo/identification cells 40 and 41)",
-    "terminal_offset_counts": "notebooks stages/1-board/terminal-chain/results/dev-v006-2A-D.json (sha1 e1249f71a80bcad5c4c1d64301560f66c0bd8582) terminal_offset_counts, the offset oscnb bursts.period_table takes off the driven tap difference",
+    "terminal_offset_counts": "notebooks stages/1-board/terminal-chain/results/dev-v006-2A-D.json (sha1 e1249f71a80bcad5c4c1d64301560f66c0bd8582) terminal_offset_counts, the offset oscnb bursts.period_table takes off the driven tap difference and the window-term notebook off V_on (stages/3-servo/window-term cell 23)",
     "window_read": {
       "sample_ticks": "notebooks stages/1-board/sample-timing/results/dev-v006-2A-D.json (sha1 6de39d5aa7818cba119048a5ef59028760a03420) crest_sample_ticks shunt",
       "r_brake_ohm": "notebooks stages/1-board/bridge-states/results/dev-v006-2A-D.json (sha1 d5e050edaf991630ba778cb78f44f3073b8f40cb) low_side_loop_ohm",
