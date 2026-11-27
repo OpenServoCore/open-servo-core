@@ -39,38 +39,24 @@ pub struct StepInputs {
 
 impl StepInputs {
     /// The profile resolved with the policy where one is named (a version
-    /// 0 nameplate carries the choices the steps read); the thermal values
-    /// from their file, else the profile's heat model. Each line said about
-    /// a file read at an older version goes to stderr.
-    pub fn load(
-        nameplate: Option<&Path>,
-        policy: Option<&Path>,
-        thermal: Option<&Path>,
-    ) -> Result<Self> {
-        let json = |p: &Path| -> Result<Value> {
-            serde_json::from_slice(&files::read(p)?)
-                .with_context(|| format!("parsing {}", p.display()))
+    /// 0 nameplate carries the choices the steps read), and its heat model.
+    /// Each line said about a file read at an older version, and where the
+    /// heat model came from, goes to stderr.
+    pub fn load(nameplate: Option<&Path>, policy: Option<&Path>) -> Result<Self> {
+        let Some(p) = nameplate else {
+            return Ok(StepInputs {
+                nameplate: None,
+                thermal: None,
+            });
         };
-        let loaded = nameplate
-            .map(|p| files::inputs(p, policy, None).map(|l| (p, l)))
-            .transpose()?;
-        let mut heat = None;
-        if let Some((p, l)) = &loaded {
-            for n in &l.notes {
-                eprintln!("{n}");
-            }
-            if let Some(h) = &l.resolved.thermal {
-                let sha = osc_measure::set::file_sha1(&files::read(p)?);
-                heat = Some(files::thermal_of(h, p, &sha));
-            }
+        let l = files::inputs(p, policy, None)?;
+        for n in &l.notes {
+            eprintln!("{n}");
         }
-        let thermal = match thermal {
-            Some(p) => Some(serde_json::from_value(json(p)?)?),
-            None => heat,
-        };
+        eprintln!("{}", l.heat_said());
         Ok(StepInputs {
-            nameplate: loaded.map(|(_, l)| l.resolved.nameplate),
-            thermal,
+            thermal: l.thermal(),
+            nameplate: Some(l.resolved.nameplate),
         })
     }
 }
@@ -219,7 +205,7 @@ pub async fn plan<P: Pipe>(
     facts.ntc_c = Some(ntc_c);
     let board = Board::of(&state, d);
     let heat = match (&facts.r, &i.thermal, &board) {
-        (_, None, _) => Err("no thermal values entered (--thermal)".to_string()),
+        (_, None, _) => Err("no heat model (the profile's thermal)".to_string()),
         (None, _, _) => Err(
             "R is not known: the nameplate states no stall current, the probe and the stops step measure it".to_string(),
         ),

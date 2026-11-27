@@ -24,7 +24,6 @@ use crate::steps::{self, StepInputs};
 /// What `run` was given.
 pub struct RunArgs<'a> {
     pub nameplate: &'a Path,
-    pub thermal: &'a Path,
     pub policy: &'a Path,
     pub out: &'a Path,
     pub tries: u32,
@@ -36,22 +35,30 @@ fn unix_s() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// The refusals that need no servo: the three files parse, the profile and
-/// the policy resolve, and `--tries` is at least 1.
+/// The refusals that need no servo: the files parse, the profile and the
+/// policy resolve, the profile states its heat model, and `--tries` is at
+/// least 1.
 pub fn admit(a: &RunArgs) -> Result<StepInputs> {
     if a.tries == 0 {
         bail!("--tries is at least 1");
     }
-    StepInputs::load(Some(a.nameplate), Some(a.policy), Some(a.thermal))
+    let i = StepInputs::load(Some(a.nameplate), Some(a.policy))?;
+    if i.thermal.is_none() {
+        bail!(
+            "{}: {}",
+            a.nameplate.display(),
+            osc_ident_inputs::no_heat_model()
+        );
+    }
+    Ok(i)
 }
 
 /// The command line that runs `run` again as given.
 fn again(id: Id, a: &RunArgs) -> String {
     format!(
-        "osc-ident --id {} run --nameplate {} --thermal {} --policy {} --out {} --tries {}",
+        "osc-ident --id {} run --nameplate {} --policy {} --out {} --tries {}",
         id.as_byte(),
         a.nameplate.display(),
-        a.thermal.display(),
         a.policy.display(),
         a.out.display(),
         a.tries
@@ -147,9 +154,9 @@ async fn gather_and_tune<P: Pipe>(
     let mut lines = Vec::new();
     let inputs_dir = root.join("inputs");
     let t0 = unix_s();
-    let gathered = crate::gather::gather(root, a.nameplate, Some(a.thermal), a.policy, &inputs_dir);
+    let gathered = crate::gather::gather(root, a.nameplate, a.policy, &inputs_dir);
     let t1 = unix_s();
-    let gather_files = [
+    let gather_files: Vec<String> = [
         "measured.json",
         "pos_lut.json",
         "cross-checks.json",
@@ -158,7 +165,10 @@ async fn gather_and_tune<P: Pipe>(
         "resolved.json",
         "thermal.json",
     ]
-    .map(|f| format!("inputs/{f}"));
+    .iter()
+    .filter(|f| **f != "thermal.json" || inputs_dir.join(f).exists())
+    .map(|f| format!("inputs/{f}"))
+    .collect();
     match gathered {
         Err(e) => {
             let why = format!("{e:#}");
@@ -288,20 +298,17 @@ mod tests {
 
     struct Given {
         nameplate: PathBuf,
-        thermal: PathBuf,
     }
 
     fn given() -> Given {
         Given {
             nameplate: testdata("mg90-d/nameplate.json"),
-            thermal: testdata("mg90-d/thermal.json"),
         }
     }
 
     fn args<'a>(g: &'a Given, out: &'a Path, policy: &'a Path) -> RunArgs<'a> {
         RunArgs {
             nameplate: &g.nameplate,
-            thermal: &g.thermal,
             policy,
             out,
             tries: 6,
@@ -362,12 +369,8 @@ mod tests {
         let (ran, _) =
             block_on(run(&mut c, ID, &d, &a, "uid", &AtomicBool::new(false))).expect("runs");
         let (mut c, d) = fake();
-        let inputs = StepInputs::load(
-            Some(&testdata("mg90-d/nameplate.json")),
-            None,
-            Some(&testdata("mg90-d/thermal.json")),
-        )
-        .expect("inputs");
+        let inputs =
+            StepInputs::load(Some(&testdata("mg90-d/nameplate.json")), None).expect("inputs");
         let (stepped, _, root) = block_on(steps::step_spins(
             &mut c,
             ID,
@@ -475,6 +478,56 @@ mod tests {
         refused(&mut c, &a, "--tries");
         admit(&args(&g, &dir, &policy)).expect("admitted");
         assert!(!dir.join("uid").exists(), "no run folder");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A profile with no heat model is refused before the bus, naming its
+    /// four values; the record profile, which states one, is admitted, and
+    /// so is the version 0 nameplate with the thermal.json beside it.
+    #[test]
+    fn a_profile_with_no_heat_model_is_refused_before_any_bus_traffic() {
+        let dir = scratch("run-no-heat");
+        let policy = testdata("mg90-d/policy-of-record.json");
+        let mut v: Value =
+            serde_json::from_slice(&files::read(&testdata("mg90-d/profile.json")).expect("read"))
+                .expect("json");
+        v["thermal"] = Value::Null;
+        let blank = Given {
+            nameplate: dir.join("profile.json"),
+        };
+        std::fs::write(&blank.nameplate, serde_json::to_vec(&v).expect("bytes")).expect("write");
+        let (mut c, d) = fake();
+        c.pipe_mut().take_frames();
+        let e = block_on(run(
+            &mut c,
+            ID,
+            &d,
+            &args(&blank, &dir, &policy),
+            "uid",
+            &AtomicBool::new(false),
+        ))
+        .expect_err("refused");
+        assert_eq!(
+            format!("{e:#}"),
+            format!(
+                "{}: {}",
+                blank.nameplate.display(),
+                osc_ident_inputs::no_heat_model()
+            )
+        );
+        assert!(c.pipe_mut().take_frames().is_empty(), "the bus was used");
+        assert!(!dir.join("uid").exists(), "no run folder");
+        let record = Given {
+            nameplate: testdata("mg90-d/profile.json"),
+        };
+        let i = admit(&args(&record, &dir, &policy)).expect("admitted");
+        let heat = i.thermal.expect("the profile's heat model");
+        assert_eq!(heat.slow_tau_s.map(|q| q.value), Some(128.92));
+        let i = admit(&args(&given(), &dir, &testdata("mg90-d/policy.json"))).expect("v0");
+        assert_eq!(
+            i.thermal.and_then(|t| t.fast_tau_s).map(|q| q.source.file),
+            Some(testdata("mg90-d/thermal.json").display().to_string())
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

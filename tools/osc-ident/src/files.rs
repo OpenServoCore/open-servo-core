@@ -6,15 +6,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use osc_ident_inputs::migrate::{ProfileIn, slug};
-use osc_ident_inputs::profile::HeatModel;
-use osc_ident_inputs::{BoardFacts, Resolved, read as file_of, resolve, upgrade};
+use osc_ident_inputs::profile::{FieldSource, HeatModel};
+use osc_ident_inputs::{BoardFacts, Resolved, read as file_of, resolve, upgrade_with};
 use osc_measure::board::{self, Record};
 use osc_measure::inputs::{Measured, ShelfRecord, ThermalInputs, Tuning};
 use osc_measure::screens::Holes;
 use osc_measure::set::{SetFile, TableFile, file_sha1};
 use osc_measure::sink::{Sink, SinkError};
 use osc_measure::steps::table as table_step;
-use osc_measure::{Board, Inputs, Nameplate, Quantity, Source};
+use osc_measure::{Board, Inputs, Nameplate};
 use serde::de::DeserializeOwned;
 
 /// The run's pot holes the closed-loop check's pot steps leave out: those
@@ -74,12 +74,54 @@ pub fn board_in(dir: &Path) -> Result<(Record, Board, Vec<u8>)> {
 pub struct Loaded {
     pub resolved: Resolved,
     pub notes: Vec<String>,
+    /// The file the heat model was read from and its sha1: the profile, or
+    /// the thermal.json beside a version 0 nameplate.
+    pub heat_from: (PathBuf, String),
+    /// That thermal.json's bytes, where a version 0 nameplate took one.
+    pub thermal_json: Option<Vec<u8>>,
+}
+
+impl Loaded {
+    /// The profile's heat model as the rules and the steps read it.
+    pub fn thermal(&self) -> Option<ThermalInputs> {
+        let (file, sha1) = &self.heat_from;
+        self.resolved
+            .thermal
+            .map(|h| ThermalInputs::of_profile(&h, &file.display().to_string(), sha1))
+    }
+
+    /// Where the heat model came from, and its four values.
+    pub fn heat_said(&self) -> String {
+        let named = &self.resolved.report.profile;
+        let Some(h) = self.resolved.thermal else {
+            return format!(
+                "heat model: none, the profile {} states no thermal: no step that drives runs",
+                named.key
+            );
+        };
+        let from = match &self.thermal_json {
+            Some(_) => format!(
+                "{} beside the version 0 nameplate",
+                self.heat_from.0.display()
+            ),
+            None => format!(
+                "the profile {} rev {}",
+                named.key,
+                named.revision.unwrap_or(0)
+            ),
+        };
+        format!(
+            "heat model: from {from}, not identified: fast {:.2} s {:.1} C/W, slow {:.1} s {:.1} C/W",
+            h.fast_tau_s, h.fast_gain_c_per_w, h.slow_tau_s, h.slow_gain_c_per_w
+        )
+    }
 }
 
 /// The profile file and the policy file, either at version 0 or 1, resolved
 /// over the board's facts where they are read; refused naming the files and
 /// the first value the run cannot use. With no policy, a version 0 nameplate
-/// carries the three choices the steps read.
+/// carries the three choices the steps read. A version 0 nameplate takes
+/// its heat model from the `thermal.json` beside it, where there is one.
 pub fn inputs(profile: &Path, policy: Option<&Path>, board: Option<&BoardFacts>) -> Result<Loaded> {
     let policy = match policy {
         Some(p) => Some((p, read(p)?)),
@@ -90,6 +132,27 @@ pub fn inputs(profile: &Path, policy: Option<&Path>, board: Option<&BoardFacts>)
 
 fn utf8<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a str> {
     std::str::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
+}
+
+/// The `thermal.json` beside a version 0 nameplate: its path, bytes and
+/// heat model.
+struct Beside {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    heat: HeatModel,
+}
+
+/// The `thermal.json` beside the version 0 nameplate `profile`, where
+/// there is one.
+fn beside_v0(profile: &Path) -> Result<Option<Beside>> {
+    let path = profile.with_file_name("thermal.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = read(&path)?;
+    let heat = file_of::thermal(utf8(&path, &bytes)?)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    Ok(Some(Beside { path, bytes, heat }))
 }
 
 fn inputs_of(
@@ -119,7 +182,25 @@ fn inputs_of(
         ),
         None => None,
     };
-    let u = upgrade(p, q).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
+    let beside = match p {
+        ProfileIn::V0 { .. } => beside_v0(profile)?,
+        ProfileIn::V1(_) => None,
+    };
+    let mut heat_from = (profile.to_path_buf(), file_sha1(bytes));
+    let mut thermal_json = None;
+    let heat = beside.map(|b| {
+        let sha1 = file_sha1(&b.bytes);
+        let from = FieldSource {
+            how: Some("file".into()),
+            file: Some(b.path.display().to_string()),
+            sha1: Some(sha1.clone()),
+            ..FieldSource::default()
+        };
+        heat_from = (b.path, sha1);
+        thermal_json = Some(b.bytes);
+        (b.heat, from)
+    });
+    let u = upgrade_with(p, q, heat).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
     let resolved =
         resolve(&u.profile, &u.policy, board).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
     let notes = u
@@ -129,39 +210,18 @@ fn inputs_of(
         .chain(resolved.report.clamps())
         .map(|n| format!("{named}: {n}"))
         .collect();
-    Ok(Loaded { resolved, notes })
+    Ok(Loaded {
+        resolved,
+        notes,
+        heat_from,
+        thermal_json,
+    })
 }
 
 /// The steps' nameplate: the profile resolved with the policy, where one is
 /// named.
 pub fn nameplate(path: &Path, policy: Option<&Path>) -> Result<Nameplate> {
     Ok(inputs(path, policy, None)?.resolved.nameplate)
-}
-
-/// The profile's heat model as the rules read thermal values, each named
-/// by its key in the profile file.
-pub fn thermal_of(h: &HeatModel, profile: &Path, sha1: &str) -> ThermalInputs {
-    let q = |value: f64, unit: &str, key: &str| {
-        Some(Quantity {
-            value,
-            lo: None,
-            hi: None,
-            sd: None,
-            n: None,
-            unit: unit.into(),
-            source: Source {
-                file: profile.display().to_string(),
-                key: key.into(),
-                sha1: Some(sha1.into()),
-            },
-        })
-    };
-    ThermalInputs {
-        fast_tau_s: q(h.fast_tau_s, "s", "thermal.fast_tau_s"),
-        fast_gain_c_per_w: q(h.fast_gain_c_per_w, "C/W", "thermal.fast_gain_c_per_w"),
-        slow_tau_s: q(h.slow_tau_s, "s", "thermal.slow_tau_s"),
-        slow_gain_c_per_w: q(h.slow_gain_c_per_w, "C/W", "thermal.slow_gain_c_per_w"),
-    }
 }
 
 pub fn read(path: &Path) -> Result<Vec<u8>> {
@@ -223,9 +283,9 @@ pub struct RulesInputs {
 
 /// `dir` holds `measured.json`, `nameplate.json` (the servo profile, either
 /// version), `policy.json` and `board.json` (step 0's), and where they exist
-/// `thermal.json` (else the profile's heat model), `shelf.json`,
-/// `pos_lut.json` (the table, a notebooks table file) and `wide-codes.json`
-/// (the slots).
+/// `thermal.json` (beside a version 0 nameplate only: a version 1 profile
+/// states its heat model), `shelf.json`, `pos_lut.json` (the table, a
+/// notebooks table file) and `wide-codes.json` (the slots).
 pub fn rules_inputs(dir: &Path, policy: Option<&Path>) -> Result<RulesInputs> {
     let (record, board, board_bytes) = board_in(dir)?;
     let mut files = vec![(
@@ -259,22 +319,29 @@ pub fn rules_inputs(dir: &Path, policy: Option<&Path>) -> Result<RulesInputs> {
     let np_bytes = need("nameplate", take("nameplate", np_path.clone())?, &np_path)?;
     let q = policy.map_or_else(|| dir.join("policy.json"), Path::to_path_buf);
     let q_bytes = need("policy", take("policy", q.clone())?, &q)?;
-    let p = dir.join("thermal.json");
-    let thermal_bytes = take("thermal", p.clone())?;
-    let Loaded {
-        resolved: loaded,
-        notes,
-    } = inputs_of(
+    let l = inputs_of(
         &np_path,
         &np_bytes,
         Some((&q, q_bytes)),
         Some(&board.facts()),
     )?;
-    let thermal: ThermalInputs = match (thermal_bytes, &loaded.thermal) {
-        (Some(b), _) => json(&p, &b)?,
-        (None, Some(h)) => thermal_of(h, &np_path, &file_sha1(&np_bytes)),
-        (None, None) => ThermalInputs::default(),
-    };
+    let p = dir.join("thermal.json");
+    match &l.thermal_json {
+        Some(_) => {
+            take("thermal", p)?;
+        }
+        None if p.exists() => bail!(
+            "{}: the profile is the heat model's one source, and a version 1 profile states its own thermal: enter the values in the profile and take the file out",
+            p.display()
+        ),
+        None => {}
+    }
+    let thermal = l.thermal().unwrap_or_default();
+    let Loaded {
+        resolved: loaded,
+        notes,
+        ..
+    } = l;
     let p = dir.join("pos_lut.json");
     let table = match take("pos_table", p.clone())? {
         Some(b) => Some(
@@ -459,6 +526,123 @@ mod tests {
         );
         std::fs::remove_file(&file).expect("rm");
         assert!(run_holes(&measured(&file_sha1(&bytes))).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn testdata(rel: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../measure/testdata")
+            .join(rel)
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("osc-ident-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("scratch");
+        p
+    }
+
+    /// The set the rules write from the inputs folder `dir`.
+    fn set_of(dir: &Path) -> SetFile {
+        let r = rules_inputs(dir, None).expect("inputs");
+        let (file, _) = osc_measure::set::from_rules(
+            &osc_measure::build(&r.inputs),
+            &osc_measure::set::FromRules {
+                pair: "pair",
+                nameplate: &r.inputs.nameplate,
+                counts_per_deg: r.inputs.measured.table.as_ref().map(|t| t.counts_per_deg),
+                table: r.table.as_ref(),
+                slots: r.slots.as_deref(),
+                files: &r.files,
+            },
+            &crate::descriptor_builtin().expect("descriptor"),
+        )
+        .expect("a set");
+        file
+    }
+
+    const HEAT_WORDS: [&str; 4] = [
+        "thermal_tau_s",
+        "thermal_tau2_s",
+        "th_rise_q016",
+        "th_rise2_q016",
+    ];
+
+    /// The record's inputs with the record's profile and its policy, no
+    /// thermal.json: the profile's heat model binds the set of record's four
+    /// thermal words.
+    #[test]
+    fn the_profiles_heat_model_binds_the_records_thermal_words() {
+        let src = testdata("mg90-d");
+        let dir = scratch("heat-record");
+        for f in [
+            "measured.json",
+            "shelf.json",
+            "board.json",
+            "pos_lut.json",
+            "wide-codes.json",
+        ] {
+            std::fs::copy(src.join(f), dir.join(f)).expect(f);
+        }
+        std::fs::copy(src.join("profile.json"), dir.join("nameplate.json")).expect("profile");
+        std::fs::copy(src.join("policy-of-record.json"), dir.join("policy.json")).expect("policy");
+        let r = rules_inputs(&dir, None).expect("inputs");
+        assert!(
+            !r.files.iter().any(|(n, _, _)| n == "thermal"),
+            "no thermal.json read"
+        );
+        let set = osc_measure::build(&r.inputs);
+        let word = |f: &str| match set.get(f) {
+            Some(osc_measure::Outcome::Bound(e)) => e.value,
+            o => panic!("{f}: {o:?}"),
+        };
+        // set-of-record.json: 2, 129, 434, 1631
+        assert_eq!(HEAT_WORDS.map(word), [2, 129, 434, 1631]);
+
+        // a thermal.json beside a version 1 profile is refused, not read
+        std::fs::copy(src.join("thermal.json"), dir.join("thermal.json")).expect("thermal");
+        let e = rules_inputs(&dir, None).err().expect("refused");
+        assert!(format!("{e:#}").contains("one source"), "{e:#}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The recorded bench run's final inputs bind its final set: as the run
+    /// gathered them (the version 0 nameplate with the thermal.json beside
+    /// it, folded into its heat model), the whole set; with the record's
+    /// profile and policy in their place and no thermal.json, the four
+    /// thermal words and the protection hash.
+    #[test]
+    fn the_recorded_runs_final_inputs_bind_its_final_sets_thermal_words() {
+        let run = testdata("run/00000000ffffffff76e5bc220ef6abcd/20261127T130203Z");
+        let recorded = set(&run.join("final/set.json")).expect("the final set");
+        let words = |s: &SetFile| HEAT_WORDS.map(|f| s.value(f).and_then(|v| v.as_i64()));
+        assert_eq!(
+            words(&recorded),
+            [Some(2), Some(129), Some(447), Some(1678)]
+        );
+        let protection = |s: &SetFile| s.hashes().expect("hashes")["protection"].clone();
+        let dir = scratch("heat-run");
+        for f in std::fs::read_dir(run.join("final/inputs")).expect("inputs") {
+            let f = f.expect("entry").path();
+            std::fs::copy(&f, dir.join(f.file_name().expect("name"))).expect("copy");
+        }
+        std::fs::copy(run.join("final/measured.json"), dir.join("measured.json"))
+            .expect("measured");
+        let as_run = set_of(&dir);
+        assert_eq!(words(&as_run), words(&recorded));
+        assert_eq!(as_run.hashes().expect("hashes")["set"], recorded.hash());
+
+        std::fs::remove_file(dir.join("thermal.json")).expect("rm");
+        std::fs::copy(testdata("mg90-d/profile.json"), dir.join("nameplate.json"))
+            .expect("profile");
+        std::fs::copy(
+            testdata("mg90-d/policy-of-record.json"),
+            dir.join("policy.json"),
+        )
+        .expect("policy");
+        let profiled = set_of(&dir);
+        assert_eq!(words(&profiled), words(&recorded));
+        assert_eq!(protection(&profiled), protection(&recorded));
         let _ = std::fs::remove_dir_all(dir);
     }
 

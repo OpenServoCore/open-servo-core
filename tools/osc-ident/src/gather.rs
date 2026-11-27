@@ -8,10 +8,8 @@ use osc_measure::board;
 use osc_measure::gather::{
     self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, TABLE_RESULT, WINDOW_RESULT,
 };
-use osc_measure::inputs::ThermalInputs;
 use osc_measure::sink::Sink;
 use osc_measure::steps::{probe, rest, stops};
-use serde::de::DeserializeOwned;
 
 use crate::files::{self, DirSink};
 
@@ -26,25 +24,15 @@ fn result(run: &Path, rel: &str) -> Result<Option<StepResult>> {
     ))
 }
 
-fn parsed<T: DeserializeOwned>(p: &Path, bytes: &[u8]) -> Result<T> {
-    serde_json::from_slice(bytes).with_context(|| format!("parsing {}", p.display()))
-}
-
 /// The inputs folder `out` from the run folder `run`: `measured.json`, the
 /// table `pos_lut.json` (the table step's, else straight), the table
 /// step's slots `wide-codes.json` where it ran, the profile's
-/// cross-checks `cross-checks.json`, the profile (as `nameplate.json`),
-/// the policy and the thermal values as given,
+/// cross-checks `cross-checks.json`, the profile (as `nameplate.json`,
+/// with the `thermal.json` a version 0 nameplate took), the policy,
 /// `resolved.json`, the policy's values as this run resolved them, and
 /// step 0's `board.json`, which is there already when `out` is the run's
 /// own `inputs/`. The lines it prints.
-pub fn gather(
-    run: &Path,
-    nameplate: &Path,
-    thermal: Option<&Path>,
-    policy: &Path,
-    out: &Path,
-) -> Result<Vec<String>> {
+pub fn gather(run: &Path, nameplate: &Path, policy: &Path, out: &Path) -> Result<Vec<String>> {
     let own = run.join("inputs");
     let (_, board, board_bytes) = files::board_in(&own)?;
     let loaded = files::inputs(nameplate, Some(policy), Some(&board.facts()))?;
@@ -55,14 +43,6 @@ pub fn gather(
     resolved["notes"] = loaded.notes.clone().into();
     let mut resolved = serde_json::to_vec_pretty(&resolved)?;
     resolved.push(b'\n');
-    let thermal_bytes = match thermal {
-        Some(p) => {
-            let b = files::read(p)?;
-            parsed::<ThermalInputs>(p, &b)?;
-            Some(b)
-        }
-        None => None,
-    };
     let results = RunResults {
         rest: result(run, rest::RESULT)?,
         probe: result(run, probe::RESULT)?,
@@ -110,7 +90,7 @@ pub fn gather(
         sink.write("wide-codes.json", gather::render(w).as_bytes())?;
         wrote.push("wide-codes.json");
     }
-    if let Some(b) = &thermal_bytes {
+    if let Some(b) = &loaded.thermal_json {
         sink.write("thermal.json", b)?;
         wrote.push("thermal.json");
     }
@@ -175,7 +155,6 @@ mod tests {
         let lines = gather(
             &run,
             &testdata("mg90-d/nameplate.json"),
-            Some(&testdata("mg90-d/thermal.json")),
             &testdata("mg90-d/policy.json"),
             &out,
         )
@@ -221,7 +200,6 @@ mod tests {
             gather(
                 &run,
                 &testdata("mg90-d/nameplate.json"),
-                None,
                 &testdata("mg90-d/policy.json"),
                 &out,
             )
@@ -241,7 +219,6 @@ mod tests {
         let e = gather(
             &run,
             &testdata("mg90-d/nameplate.json"),
-            None,
             &testdata("mg90-d/policy.json"),
             &dir.join("other"),
         )
@@ -262,7 +239,6 @@ mod tests {
         let e = gather(
             &run,
             &testdata("mg90-d/nameplate.json"),
-            None,
             &testdata("mg90-d/policy.json"),
             &out,
         )
@@ -302,14 +278,7 @@ mod tests {
             ("mg90-d/profile.json", "mg90-d/policy-of-record.json", "v1"),
         ] {
             let out = dir.join(name);
-            gather(
-                &run,
-                &testdata(profile),
-                Some(&testdata("mg90-d/thermal.json")),
-                &testdata(policy),
-                &out,
-            )
-            .expect("gathers");
+            gather(&run, &testdata(profile), &testdata(policy), &out).expect("gathers");
             let set_out = dir.join(format!("{name}.json"));
             crate::rules(&out, None, Some("pair"), &set_out).expect("rules");
             let text = files::set(&set_out).expect("set").render();
@@ -340,7 +309,6 @@ mod tests {
         let lines = gather(
             &run,
             &testdata("mg90-d/nameplate.json"),
-            Some(&testdata("mg90-d/thermal.json")),
             &testdata("mg90-d/policy.json"),
             &out,
         )

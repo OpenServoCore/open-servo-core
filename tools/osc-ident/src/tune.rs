@@ -1152,7 +1152,6 @@ mod tests {
         crate::gather::gather(
             &run_dir,
             &testdata("mg90-d/nameplate.json"),
-            Some(&testdata("mg90-d/thermal.json")),
             &testdata("mg90-d/policy.json"),
             &inputs,
         )
