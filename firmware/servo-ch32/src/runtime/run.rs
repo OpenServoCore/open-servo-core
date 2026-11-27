@@ -10,15 +10,16 @@ use crate::hal::{gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
 use crate::runtime::control_io::Ch32ControlIo;
 
-/// Const-asserts pin-uniqueness on the `BoardConfig` literal and the bounds
-/// on its derived constants, then runs.
+/// Const-asserts the value rules on the `BoardConfig` literal
+/// (`BoardConfig::assert_valid`) and the bounds on its derived constants,
+/// then runs.
 #[macro_export]
 macro_rules! run {
     ($cfg:expr) => {{
         const __OSC_CH32_CFG: $crate::cfg::BoardConfig = $cfg;
         const __OSC_CH32_PRE: $crate::cfg::Precomputed =
             $crate::cfg::Precomputed::compute(&__OSC_CH32_CFG);
-        const _: () = __OSC_CH32_CFG.wiring.assert_valid();
+        const _: () = __OSC_CH32_CFG.assert_valid();
         const _: () = __OSC_CH32_PRE.assert_valid();
         // qingke-rt sets WFITOWFE=1; undo it so `wfi` wakes on pending IRQs.
         // INTSYSCR stays at qingke-rt's 0x3 (HPE + nesting): the "HPE

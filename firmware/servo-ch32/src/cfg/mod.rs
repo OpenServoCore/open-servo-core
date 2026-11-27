@@ -10,7 +10,7 @@ use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
 use osc_servo_core::estimator::pot_current;
 use osc_servo_core::estimator::window::WINDOW_ARR_MIN;
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::regions::config::{BURST_MAX_MV, vmotor_counts};
+use osc_servo_core::regions::config::{BURST_MAX_MV, assert_rail_floor, vmotor_counts};
 use osc_servo_core::{ConfigDefaults, KernelTiming, ProtectionDefaults, ProtectionSeed};
 
 use crate::providers::{break_wake, usart_baud};
@@ -25,6 +25,29 @@ pub struct BoardConfig {
     /// firmware version comes from `osc_servo_core::FIRMWARE_VERSION`, not here.
     pub model: u16,
     pub hw_rev: u8,
+}
+
+impl BoardConfig {
+    /// The value rules on the literal: the wiring's, the protection
+    /// defaults' through the sense chain, and the rail floor's through the
+    /// rail divider. Compile-time call site: `run!`.
+    pub const fn assert_valid(&self) {
+        self.wiring.assert_valid();
+        let cal = &self.calibration;
+        self.protection.assert_valid(
+            cal.shunt_r_mohm,
+            self.wiring.current_sense.gain_milli,
+            cal.vdd_mv,
+            cal.vmotor_divider.top_ohm,
+            cal.vmotor_divider.bot_ohm,
+        );
+        assert_rail_floor(
+            cal.rail_floor_mv,
+            cal.vbus_divider.top_ohm,
+            cal.vbus_divider.bot_ohm,
+            cal.vdd_mv,
+        );
+    }
 }
 
 /// Boot-time-derived values that the `run!` macro folds at compile time so the

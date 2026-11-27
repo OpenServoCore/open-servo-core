@@ -121,7 +121,8 @@ pub fn generate(text: &str, file: &str) -> Result<Generated, Error> {
 /// Reads `path` and writes the sim's mirror of the board: items named
 /// `<prefix>_SENSE`, `_SENSE_EXT`, `_PROTECTION`, `_BEMF_MIN_TICKS`,
 /// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN` and `_DEFAULTS` over the core's host
-/// types.
+/// types, and the image's value rules on them as const asserts, so the sim
+/// never seeds a board the image refuses.
 pub fn emit_sim_mirror(path: &Path, prefix: &str) -> Result<String, Error> {
     let (file, text) = read(path)?;
     sim_mirror(&text, &file, prefix)
@@ -262,6 +263,24 @@ pub fn sim_mirror(text: &str, file: &str, prefix: &str) -> Result<String, Error>
         &format!("{CORE}::ConfigDefaults"),
         "defaults",
     )?;
+
+    let _ = writeln!(
+        out,
+        "// The image's value rules on the same board (`BoardConfig::assert_valid`).\n\
+         const _: () = {prefix}_PROTECTION.assert_valid(\n    \
+         {prefix}_SENSE.shunt_r_mohm,\n    \
+         {prefix}_SENSE.gain_milli,\n    \
+         {prefix}_SENSE.vdd_mv,\n    \
+         {prefix}_SENSE.vmotor_div_top as u32,\n    \
+         {prefix}_SENSE.vmotor_div_bot as u32,\n\
+         );\n\
+         const _: () = {CORE_CONFIG}::assert_rail_floor(\n    \
+         {prefix}_RAIL_FLOOR_MV,\n    \
+         {prefix}_SENSE_EXT.vbus_div_top_ohm as u32,\n    \
+         {prefix}_SENSE_EXT.vbus_div_bot_ohm as u32,\n    \
+         {prefix}_SENSE.vdd_mv,\n\
+         );"
+    );
     Ok(out)
 }
 

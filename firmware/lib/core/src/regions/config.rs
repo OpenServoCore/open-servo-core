@@ -428,6 +428,137 @@ impl ProtectionSeed {
     }
 }
 
+/// The highest code of the 12-bit ADC.
+const ADC_TOP_CODE: u16 = 4095;
+
+impl ProtectionDefaults {
+    /// The rule these defaults break through the board's shunt chain and
+    /// motor-terminal divider (`ProtectionSeed::from_chain`'s arguments), or
+    /// None. The fold and the trip compare counts, so the order rules read
+    /// the seed. Const-eval only.
+    pub const fn violation(
+        &self,
+        shunt_r_mohm: u16,
+        gain_milli: u16,
+        vdd_mv: u16,
+        div_top_ohm: u32,
+        div_bot_ohm: u32,
+    ) -> Option<&'static str> {
+        // Ahead of the seed: a zero vdd divides by zero in `current_counts`.
+        if shunt_r_mohm == 0 {
+            return Some("ProtectionDefaults: calibration.shunt_r_mohm must be nonzero");
+        }
+        if gain_milli == 0 {
+            return Some("ProtectionDefaults: wiring.current_sense.gain_milli must be nonzero");
+        }
+        if vdd_mv == 0 {
+            return Some("ProtectionDefaults: calibration.vdd_mv must be nonzero");
+        }
+        if div_bot_ohm == 0 {
+            return Some("ProtectionDefaults: calibration.vmotor_divider.bot_ohm must be nonzero");
+        }
+        let s = ProtectionSeed::from_chain(
+            self,
+            shunt_r_mohm,
+            gain_milli,
+            vdd_mv,
+            div_top_ohm,
+            div_bot_ohm,
+        );
+        // 0 reads as the cap, and the boot cap is unset, so OpenLoop's
+        // limit is the trip (`yield_current_or_cap`).
+        if s.yield_current_counts == 0 {
+            if s.stall_release_counts >= s.oc_trip_counts {
+                return Some(
+                    "ProtectionDefaults: stall_release_ma must read under oc_trip_ma \
+                     while yield_current_ma is 0, or a held press unfolds",
+                );
+            }
+        } else {
+            if s.stall_release_counts >= s.yield_current_counts {
+                return Some(
+                    "ProtectionDefaults: stall_release_ma must read under yield_current_ma, \
+                     or a held press unfolds",
+                );
+            }
+            if s.yield_current_counts >= s.oc_trip_counts {
+                return Some(
+                    "ProtectionDefaults: yield_current_ma must read under oc_trip_ma, \
+                     or the trip latches before the press",
+                );
+            }
+        }
+        // Necessary only: the amplifier's zero and its saturation take more
+        // of the range, and the board file holds neither.
+        if s.oc_trip_counts > ADC_TOP_CODE {
+            return Some(
+                "ProtectionDefaults: oc_trip_ma must read under the ADC's full scale \
+                 through the sense chain, or the trip never fires",
+            );
+        }
+        if us_ticks(self.oc_trip_us) > u8::MAX as u64 {
+            return Some("ProtectionDefaults: oc_trip_us must round to at most 255 kernel ticks");
+        }
+        None
+    }
+
+    /// Compile-time call site: the board's `run!` and the sim's mirror.
+    pub const fn assert_valid(
+        &self,
+        shunt_r_mohm: u16,
+        gain_milli: u16,
+        vdd_mv: u16,
+        div_top_ohm: u32,
+        div_bot_ohm: u32,
+    ) {
+        if let Some(rule) =
+            self.violation(shunt_r_mohm, gain_milli, vdd_mv, div_top_ohm, div_bot_ohm)
+        {
+            panic!("{}", rule);
+        }
+    }
+}
+
+/// The rule a board's rail floor breaks through its rail divider, or None.
+/// The floor is the rail fold's zero and the floor of the supply
+/// reciprocal (`VbusEst`): at 0 neither guards the chip's own supply, and
+/// at or over the rail tap's top code no rail reads over it, so the fold
+/// holds the drive at 0. Const-eval only.
+pub const fn rail_floor_violation(
+    rail_floor_mv: u16,
+    div_top_ohm: u32,
+    div_bot_ohm: u32,
+    vdd_mv: u16,
+) -> Option<&'static str> {
+    if div_bot_ohm == 0 {
+        return Some("Calibration: calibration.vbus_divider.bot_ohm must be nonzero");
+    }
+    if vdd_mv == 0 {
+        return Some("Calibration: calibration.vdd_mv must be nonzero");
+    }
+    if rail_floor_mv == 0 {
+        return Some("Calibration: calibration.rail_floor_mv must be nonzero");
+    }
+    if vmotor_counts(rail_floor_mv, div_top_ohm, div_bot_ohm, vdd_mv) >= ADC_TOP_CODE {
+        return Some(
+            "Calibration: calibration.rail_floor_mv must read under the rail tap's full scale",
+        );
+    }
+    None
+}
+
+/// Compile-time call site: the board's `run!` and the sim's mirror.
+pub const fn assert_rail_floor(
+    rail_floor_mv: u16,
+    div_top_ohm: u32,
+    div_bot_ohm: u32,
+    vdd_mv: u16,
+) {
+    if let Some(rule) = rail_floor_violation(rail_floor_mv, div_top_ohm, div_bot_ohm, vdd_mv) {
+        panic!("{}", rule);
+    }
+}
+
 /// The osc-dev-v006 board's values, for the core's own tests.
 #[cfg(test)]
 pub(crate) const TEST_PROTECTION: ProtectionDefaults = ProtectionDefaults {
@@ -450,9 +581,13 @@ pub const fn ms_ticks(ms: u32) -> u32 {
 
 const _: () = assert!(crate::kernel::TICK_HZ.is_multiple_of(1000));
 
+const fn us_ticks(us: u16) -> u64 {
+    (us as u64 * crate::kernel::TICK_HZ as u64 + 500_000) / 1_000_000
+}
+
 /// Kernel ticks in `us`, rounded, saturating at the u8 field.
 pub const fn us_ticks_u8(us: u16) -> u8 {
-    let ticks = (us as u64 * crate::kernel::TICK_HZ as u64 + 500_000) / 1_000_000;
+    let ticks = us_ticks(us);
     if ticks > u8::MAX as u64 {
         u8::MAX
     } else {
@@ -606,5 +741,142 @@ mod tests {
         assert_eq!(current_counts(500, 60, 14_884, 3300), 554);
         assert_eq!(current_counts(0, 60, 14_884, 3300), 0);
         assert_eq!(current_counts(u16::MAX, u16::MAX, u16::MAX, 1), u16::MAX);
+    }
+
+    /// The osc-dev-v006 chain: 60 mOhm, G 14.884, 3300 mV, 6K4 / 1K6 taps.
+    fn dev(p: ProtectionDefaults) -> Option<&'static str> {
+        p.violation(60, 14_884, 3300, 6_400, 1_600)
+    }
+
+    fn with(f: fn(&mut ProtectionDefaults)) -> ProtectionDefaults {
+        let mut p = TEST_PROTECTION;
+        f(&mut p);
+        p
+    }
+
+    #[test]
+    fn the_dev_protection_defaults_pass_every_rule() {
+        assert_eq!(dev(TEST_PROTECTION), None);
+        TEST_PROTECTION.assert_valid(60, 14_884, 3300, 6_400, 1_600);
+    }
+
+    const UNFOLDS: Option<&str> = Some(
+        "ProtectionDefaults: stall_release_ma must read under yield_current_ma, \
+         or a held press unfolds",
+    );
+
+    #[test]
+    fn a_release_at_or_over_the_yield_current_is_refused() {
+        assert_eq!(dev(with(|p| p.stall_release_ma = 250)), UNFOLDS);
+        assert_eq!(dev(with(|p| p.stall_release_ma = 400)), UNFOLDS);
+        assert_eq!(dev(with(|p| p.stall_release_ma = 249)), None);
+        // Under in mA, equal in counts on the arm-B chain (61 and 61).
+        let p = ProtectionDefaults {
+            yield_current_ma: 100,
+            stall_release_ma: 99,
+            ..TEST_PROTECTION
+        };
+        assert_eq!(p.violation(33, 15_000, 3300, 20_000, 10_000), UNFOLDS);
+    }
+
+    #[test]
+    fn a_release_at_or_over_the_trip_is_refused_while_the_yield_current_is_the_cap() {
+        let refused = Some(
+            "ProtectionDefaults: stall_release_ma must read under oc_trip_ma \
+             while yield_current_ma is 0, or a held press unfolds",
+        );
+        let at_cap = |release| ProtectionDefaults {
+            yield_current_ma: 0,
+            stall_release_ma: release,
+            ..TEST_PROTECTION
+        };
+        assert_eq!(dev(at_cap(2200)), refused);
+        assert_eq!(dev(at_cap(2199)), None);
+        assert_eq!(dev(at_cap(90)), None);
+    }
+
+    #[test]
+    fn a_yield_current_at_or_over_the_trip_is_refused() {
+        let refused = Some(
+            "ProtectionDefaults: yield_current_ma must read under oc_trip_ma, \
+             or the trip latches before the press",
+        );
+        assert_eq!(dev(with(|p| p.yield_current_ma = 2200)), refused);
+        assert_eq!(dev(with(|p| p.yield_current_ma = 3000)), refused);
+        assert_eq!(dev(with(|p| p.yield_current_ma = 2199)), None);
+    }
+
+    #[test]
+    fn a_trip_over_the_adc_full_scale_is_refused() {
+        let refused = Some(
+            "ProtectionDefaults: oc_trip_ma must read under the ADC's full scale \
+             through the sense chain, or the trip never fires",
+        );
+        // 3694 mA is 4095 counts on the dev chain, 3695 is 4096.
+        assert_eq!(dev(with(|p| p.oc_trip_ma = 3694)), None);
+        assert_eq!(dev(with(|p| p.oc_trip_ma = 3695)), refused);
+        assert_eq!(dev(with(|p| p.oc_trip_ma = u16::MAX)), refused);
+    }
+
+    #[test]
+    fn a_trip_window_past_the_tick_field_is_refused() {
+        let refused = Some("ProtectionDefaults: oc_trip_us must round to at most 255 kernel ticks");
+        // 12774 us rounds to 255 ticks at 20 kHz, 12775 to 256.
+        assert_eq!(dev(with(|p| p.oc_trip_us = 12_774)), None);
+        assert_eq!(dev(with(|p| p.oc_trip_us = 12_775)), refused);
+        assert_eq!(dev(with(|p| p.oc_trip_us = u16::MAX)), refused);
+    }
+
+    #[test]
+    fn a_zero_in_the_sense_chain_is_refused() {
+        let p = TEST_PROTECTION;
+        assert_eq!(
+            p.violation(0, 14_884, 3300, 6_400, 1_600),
+            Some("ProtectionDefaults: calibration.shunt_r_mohm must be nonzero")
+        );
+        assert_eq!(
+            p.violation(60, 0, 3300, 6_400, 1_600),
+            Some("ProtectionDefaults: wiring.current_sense.gain_milli must be nonzero")
+        );
+        assert_eq!(
+            p.violation(60, 14_884, 0, 6_400, 1_600),
+            Some("ProtectionDefaults: calibration.vdd_mv must be nonzero")
+        );
+        assert_eq!(
+            p.violation(60, 14_884, 3300, 6_400, 0),
+            Some("ProtectionDefaults: calibration.vmotor_divider.bot_ohm must be nonzero")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ProtectionDefaults: yield_current_ma must read under oc_trip_ma")]
+    fn assert_valid_panics_with_the_rule() {
+        with(|p| p.yield_current_ma = 2200).assert_valid(60, 14_884, 3300, 6_400, 1_600);
+    }
+
+    #[test]
+    fn a_rail_floor_the_rail_tap_cannot_read_over_is_refused() {
+        let dev = |mv| rail_floor_violation(mv, 6_400, 1_600, 3300);
+        assert_eq!(dev(3500), None);
+        // 16493 mV is 4094 counts at the rail tap, 16494 is the top code.
+        assert_eq!(dev(16_493), None);
+        let top = Some(
+            "Calibration: calibration.rail_floor_mv must read under the rail tap's full scale",
+        );
+        assert_eq!(dev(16_494), top);
+        assert_eq!(dev(u16::MAX), top);
+        assert_eq!(
+            dev(0),
+            Some("Calibration: calibration.rail_floor_mv must be nonzero")
+        );
+        assert_eq!(
+            rail_floor_violation(3500, 6_400, 0, 3300),
+            Some("Calibration: calibration.vbus_divider.bot_ohm must be nonzero")
+        );
+        assert_eq!(
+            rail_floor_violation(3500, 6_400, 1_600, 0),
+            Some("Calibration: calibration.vdd_mv must be nonzero")
+        );
+        assert_rail_floor(3500, 6_400, 1_600, 3300);
     }
 }
