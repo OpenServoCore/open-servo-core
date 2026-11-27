@@ -20,7 +20,8 @@
 //! the drive's rows holds the duty [`DRIVE_DEADMAN_S`] at most, and every
 //! spin is priced through the envelope at its time plus that. A pilot at
 //! the lowest level sizes the rest; after every spin the shaft must rest
-//! inside both guards, no faster than its bound, or nothing more drives.
+//! inside both guards, no further than its priced travel, or nothing more
+//! drives.
 //!
 //! The fits read the raw row, the recorded ladder's: Ke per coast through
 //! [`coast::coast_ke`] and its gate, the speed from the ripple tach and
@@ -2998,9 +2999,17 @@ mod tests {
         refused: Option<String>,
         rise_c: f64,
         priced_s: f64,
+        /// The spins whose pot speed read over their bound speed.
+        fast: Vec<String>,
     }
 
     fn simulate(k: f64, step: f64) -> Sim {
+        simulate_on(k, step, |_, _| 1.0)
+    }
+
+    /// [`simulate`] behind a pot that reads `pot(level, dir)` times the
+    /// shaft's counts over the stretch a spin crosses.
+    fn simulate_on(k: f64, step: f64, pot: fn(f64, i8) -> f64) -> Sim {
         let travel = Travel {
             lo: 82.0,
             hi: 3792.0,
@@ -3016,6 +3025,7 @@ mod tests {
             refused: None,
             rise_c: 0.0,
             priced_s: 0.0,
+            fast: Vec::new(),
         };
         let (rise, priced) = (Cell::new(0.0f64), Cell::new(0.0f64));
         let admit = |env: &mut Envelope, r: &Rung| -> Result<(), String> {
@@ -3057,20 +3067,24 @@ mod tests {
             admit(env, &spin_rung(name, q, w))?;
             let v = speed(w.level);
             let t = w.t_s + DRIVE_DEADMAN_S;
-            let x = v * (t - tau * (1.0 - (-t / tau).exp()));
+            let g = pot(w.level, w.dir);
+            let x = g * v * (t - tau * (1.0 - (-t / tau).exp()));
             let v_cut = v * (1.0 - (-t / tau).exp());
-            let coast = coast_k * v_cut * v_cut;
+            let coast = g * coast_k * v_cut * v_cut;
             let end = w.start + w.dir as f64 * (x + coast);
             pos = end;
             let (glo, ghi) = travel.guards();
             let margin = if w.dir > 0 { ghi - end } else { end - glo };
             out.ends.push((name.into(), margin));
+            if g * v_cut > w.bound_speed {
+                out.fast.push(name.into());
+            }
             Ok(SpinRead {
                 start: w.start,
                 end,
                 drive_travel: x,
                 travel: x + coast,
-                speed_cps: v_cut,
+                speed_cps: g * v_cut,
                 t90_s: Some(tau * 10f64.ln()),
                 cut_pos: end - w.dir as f64 * coast,
                 coast_counts: coast,
@@ -3139,8 +3153,8 @@ mod tests {
     /// At 0.6 times the nameplate's speed, the bench servo's case, every
     /// level runs both ways and J is read at the top; at 1.0 times the top
     /// level's coast bound leaves it no runway, J comes from the 50 %
-    /// level with a warning; at 1.5 times the pilot runs over its bound
-    /// and the step refuses before any other spin. No spin's travel, at
+    /// level with a warning; at 1.5 times the pilot runs past its priced
+    /// travel and the step refuses before any other spin. No spin's travel, at
     /// its T and its dead-man, passes the far guard; every one that ran
     /// ends its SHORT_COUNTS short or more.
     #[test]
@@ -3179,7 +3193,10 @@ mod tests {
                 }
                 _ => {
                     let why = s.refused.expect("refused");
-                    assert!(why.contains("the pilot ran faster than its bound"), "{why}");
+                    assert!(
+                        why.contains("the pilot ran past its priced travel"),
+                        "{why}"
+                    );
                     assert_eq!(s.ends.len(), 1, "after the pilot");
                 }
             }
@@ -3187,16 +3204,40 @@ mod tests {
     }
 
     /// A servo whose speed rises 60 % faster than the volts' ratio from a
-    /// level to the next outruns the 1.5 margin the level below sets: the
-    /// check after its first spin over the bound ends the step there, that
-    /// spin's travel still short of the far guard.
+    /// level to the next runs its 50 % spins over the speed the 25 % level
+    /// predicts at the 1.5 margin, but inside the travel they were priced
+    /// at: they are accepted, the 75 % level is bounded by the line
+    /// through the speeds the run read, and no spin comes within
+    /// SHORT_COUNTS of the far guard.
     #[test]
-    fn a_servo_faster_than_the_volts_ratio_is_stopped_after_its_first_spin() {
+    fn a_servo_faster_than_the_volts_ratio_inside_its_price_runs_on() {
         let s = simulate(0.6, 1.6);
         let worst = said(0.6, 1.6, &s);
+        assert!(s.refused.is_none(), "{:?}", s.refused);
+        assert!(
+            s.fast.iter().any(|f| f.starts_with("spin 5")),
+            "{:?}",
+            s.fast
+        );
+        assert!(
+            s.ran.contains(&(0.5, 1)) && s.ran.contains(&(0.5, -1)),
+            "{:?}",
+            s.ran
+        );
+        assert!(worst >= SHORT_COUNTS, "{worst}");
+    }
+
+    /// A servo whose speed rises 2.2 times the volts' ratio from a level to
+    /// the next runs its first 50 % spin past the travel the 25 % level's
+    /// spins priced: the check after it ends the step there, that spin's
+    /// travel still short of the far guard.
+    #[test]
+    fn a_servo_far_faster_than_the_volts_ratio_is_stopped_after_its_first_spin() {
+        let s = simulate(0.6, 2.2);
+        let worst = said(0.6, 2.2, &s);
         let why = s.refused.as_deref().expect("refused");
         assert!(
-            why.contains("spin 5 (50% up) ran faster than its bound"),
+            why.contains("spin 5 (50% up) ran past its priced travel"),
             "{why}"
         );
         assert!(
@@ -3207,5 +3248,30 @@ mod tests {
         let (last, m) = s.ends.last().expect("a spin");
         assert!(last.starts_with("spin 5") && *m > 0.0, "{last}: {m}");
         assert!(worst > 0.0);
+    }
+
+    /// The pot reads 1.3x steep over the stretch the 75 % spins down cross
+    /// (the bench servo's reads 1.24x over its upper stretch), the shaft's
+    /// speed in proportion to the volts: their pot speed reads over the
+    /// 1.25 margin on the line through the 25 % and 50 % levels, their
+    /// travel inside its price. Every level runs both ways, none within
+    /// SHORT_COUNTS of the far guard.
+    #[test]
+    fn a_spin_read_fast_by_a_steep_pot_stretch_inside_its_price_runs_on() {
+        let pot = |level: f64, dir: i8| if level == 0.75 && dir < 0 { 1.3 } else { 1.0 };
+        let s = simulate_on(0.6, 1.0, pot);
+        let worst = said(0.6, 1.0, &s);
+        assert!(s.refused.is_none(), "{:?}", s.refused);
+        assert!(
+            s.fast.iter().any(|f| f.contains("75% down")),
+            "{:?}",
+            s.fast
+        );
+        assert!(
+            s.left_out.is_empty() && s.ran.len() == 14,
+            "{:?}",
+            s.left_out
+        );
+        assert!(worst >= SHORT_COUNTS, "{worst}");
     }
 }

@@ -56,7 +56,8 @@
 //! speed through 25 and 50 %, inside [`SPEED_GAIN`]. A coast
 //! under a constant or rising drag grows no faster than the square of its
 //! speed. A servo faster than that is caught by the checks after its first
-//! spin over the bound.
+//! spin past its priced travel; a spin over its bound speed but inside its
+//! price runs on, and the next level is bounded by what it read.
 //!
 //! A spin's drive lasts the lesser of that T and [`RISE_TIMES`] of the
 //! pilot's 90 % rise time plus [`RISE_PAD_S`]; a level whose T comes out
@@ -64,8 +65,8 @@
 //! measured: its coast is bounded by the notebooks' spin-down rule, its
 //! bound speed for [`COAST_TAU_S`] (oscnb `sitting.COAST_TAU_S`), and it
 //! drives half the runway's T. Nothing stops a spin mid-drive but the
-//! servo's dead-man, so a spin that ran past its bound or faster than it
-//! ends the step.
+//! servo's dead-man, so a spin that ran past its priced travel or ended
+//! outside the guards ends the step.
 
 use super::polarity::{HANDS, MOVE_MIN_COUNTS};
 use super::seek::{LEG_MAX_S, WINDOW_S, WRONG_WAY_COUNTS};
@@ -556,7 +557,10 @@ pub fn read_spin(
 }
 
 /// The checks after a spin, at rest: it turned, it stayed inside both
-/// guards, and it ran no faster than its bound. A failure ends the step.
+/// guards, and it ran no further than the travel it was priced at. A
+/// failure ends the step. Its pot speed is reported, never judged: the
+/// pot's slope differs along the travel, so a window's slope against
+/// another level's, read over other counts, misreads the shaft's speed.
 pub fn after(w: &Window, r: &SpinRead, travel: &Travel, what: &str) -> Result<(), String> {
     if r.drive_travel < MOVE_MIN_COUNTS {
         return Err(format!(
@@ -569,7 +573,7 @@ pub fn after(w: &Window, r: &SpinRead, travel: &Travel, what: &str) -> Result<()
             "The nameplate's speed is too low for this servo; nothing more drives: enter the servo's own no-load speed and start again".to_string()
         }
         _ => format!(
-            "Its speed rose with the volts faster than {} predict, past the {} margin; nothing more drives: check that nothing changed on the horn, then start again",
+            "It ran further than {} predict, past the {} margin; nothing more drives: check that nothing changed on the horn, then start again",
             w.from.said(),
             match w.from {
                 BoundFrom::Spins { .. } => SPEED_GAIN_ONE,
@@ -577,26 +581,27 @@ pub fn after(w: &Window, r: &SpinRead, travel: &Travel, what: &str) -> Result<()
             }
         ),
     };
-    let too_fast = |why: String| {
+    let too_far = |why: String| {
         format!(
-            "{what} {why}: it ran {:.0} counts from {:.0} to {:.0} against a bound of {:.0}, at {:.0} counts/s against a bound of {:.0}. {what_now}",
+            "{what} {why}: it ran {:.0} counts from {:.0} to {:.0} against the {:.0} it was priced at, {:.0} counts/s and a coast of {:.0}, its pot reading {:.0} counts/s. {what_now}",
             r.travel,
             r.start,
             r.end,
             w.travel_bound(),
-            r.speed_cps,
-            w.bound_speed
+            w.bound_speed,
+            w.bound_coast,
+            r.speed_cps
         )
     };
     if !travel.inside_guards(r.end) {
         let (lo, hi) = travel.guards();
-        return Err(too_fast(format!(
+        return Err(too_far(format!(
             "ended at {:.0}, outside the guards {lo:.0}..{hi:.0}",
             r.end
         )));
     }
-    if r.speed_cps > w.bound_speed {
-        return Err(too_fast("ran faster than its bound".into()));
+    if r.travel > w.travel_bound() {
+        return Err(too_far("ran past its priced travel".into()));
     }
     Ok(())
 }
@@ -1052,7 +1057,8 @@ mod tests {
     }
 
     /// After a spin: a shaft that did not turn, one past a guard, and one
-    /// faster than its bound each end the step; one inside both passes.
+    /// past its priced travel inside the guards each end the step; one
+    /// inside both passes, its pot speed not judged.
     #[test]
     fn the_checks_after_a_spin() {
         let p = Planner::new(TRAVEL, RATED);
@@ -1085,12 +1091,20 @@ mod tests {
             "{why}"
         );
         let fast = SpinRead {
-            speed_cps: 1.01 * w.bound_speed,
+            speed_cps: 1.3 * w.bound_speed,
             ..r
         };
-        let why = after(&w, &fast, &TRAVEL, "spin 3").expect_err("fast");
+        assert_eq!(after(&w, &fast, &TRAVEL, "the pilot"), Ok(()));
+        let over = 1.01 * w.travel_bound();
+        let far = SpinRead {
+            end: r.start + over,
+            travel: over,
+            ..r
+        };
+        assert!(TRAVEL.inside_guards(far.end), "{}", far.end);
+        let why = after(&w, &far, &TRAVEL, "the pilot").expect_err("far");
         assert!(
-            why.contains("faster than its bound") && why.contains("against a bound of"),
+            why.contains("past its priced travel") && why.contains("it was priced at"),
             "{why}"
         );
     }

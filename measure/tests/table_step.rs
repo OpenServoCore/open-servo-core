@@ -153,8 +153,9 @@ fn the_stops_result_gives_the_stops_the_duty_and_the_approach_speeds() {
     assert!(why.contains("accepted stops step"), "{why}");
 }
 
-/// After a rung: one that did not turn, one past a guard and one faster
-/// than its bound each end the step; one inside passes.
+/// After a rung: one that did not turn, one past a guard and one past
+/// its priced travel inside the guards each end the step; one inside
+/// passes, its pot speed not judged.
 #[test]
 fn the_checks_after_a_rung() {
     let b = band();
@@ -183,11 +184,50 @@ fn the_checks_after_a_rung() {
     let why = after(&p, &past, &b, "rung 1").expect_err("past");
     assert!(why.contains("outside the guards"), "{why}");
     let fast = RungRead {
-        speed_cps: 1.01 * p.bound_speed,
+        speed_cps: 1.3 * p.bound_speed,
         ..r
     };
-    let why = after(&p, &fast, &b, "rung 1").expect_err("fast");
-    assert!(why.contains("faster than its bound"), "{why}");
+    assert_eq!(after(&p, &fast, &b, "rung 1"), Ok(()));
+    let over = 1.01 * p.travel_bound();
+    let far = RungRead {
+        end: p.start + over,
+        travel: over,
+        ..r
+    };
+    assert!(b.holds(far.end), "{}", far.end);
+    let why = after(&p, &far, &b, "rung 1").expect_err("far");
+    assert!(why.contains("past its priced travel"), "{why}");
+}
+
+/// The bench servo's first free rung up after leaving a low stop read at
+/// 4, stops 4 and 3730: the leave rung's pot slope 1084 counts/s, then
+/// this rung from 2907 for 7493 rows read 1370 counts/s, 1.26x, its tail
+/// over 3058..3369 where the pot reads 1.24x the counts a commutation
+/// cycle of the middle, the rotor at 0.98x the leave rung's speed. It ran
+/// 493 counts of the 711 it was priced at and rested at 3400, 218 inside
+/// the far guard: accepted. Ended past that guard, it is refused.
+#[test]
+fn a_rung_read_fast_by_a_steep_pot_stretch_inside_its_price_passes() {
+    let b = Band::of_stops(4.0, 3730.0);
+    let p = plan_rung(&b, 1, 2907.0, 1084.38, 1.0, FS);
+    assert!(p.rows.abs_diff(7493) <= 1, "{}", p.rows);
+    assert!((p.travel_bound() - 711.0).abs() < 1.0, "{}", p.said());
+    let r = RungRead {
+        start: 2907.0,
+        end: 3400.0,
+        drive_travel: 462.0,
+        travel: 493.0,
+        speed_cps: 1369.58,
+    };
+    assert!(r.speed_cps > p.bound_speed, "{}", p.said());
+    assert_eq!(after(&p, &r, &b, "rung 5"), Ok(()));
+    let past = RungRead {
+        end: b.hi + 1.0,
+        travel: b.hi + 1.0 - 2907.0,
+        ..r
+    };
+    let why = after(&p, &past, &b, "rung 5").expect_err("past");
+    assert!(why.contains("outside the guards"), "{why}");
 }
 
 /// A rung's time on by the servo's stamps across their wrap, the host's
