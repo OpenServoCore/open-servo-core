@@ -1402,6 +1402,7 @@ mod tests {
         log: Log,
         c: Client<Spy>,
         sink: MemSink,
+        before: crate::state::State,
     }
 
     /// The step on the simulated servo resting at `pos`, which runs no
@@ -1411,6 +1412,7 @@ mod tests {
         let d = descriptor();
         let (mut c, log) = testkit::servo(pos, on_sent);
         block_on(c.write(ID, addr(&d, "g_window_q016"), &1178u16.to_le_bytes())).expect("g");
+        let before = block_on(crate::state::read(&mut c, ID, &d)).expect("state");
         log.borrow_mut().clear();
         let stored = block_on(c.read(ID, addr(&d, "drive_polarity"), 1)).expect("read")[0] != 0;
         let (np, board, thermal) = (testkit::nameplate(), testkit::board(), testkit::thermal());
@@ -1442,7 +1444,13 @@ mod tests {
                 },
             ))
         };
-        Ran { out, log, c, sink }
+        Ran {
+            out,
+            log,
+            c,
+            sink,
+            before,
+        }
     }
 
     fn plain(d: &Descriptor, name: &str, data: &[u8]) -> Sent {
@@ -1536,6 +1544,7 @@ mod tests {
             1178u16.to_le_bytes()
         );
         assert!(e.exit.torque_off && torque_off(&mut r.c), "{}", e.exit);
+        testkit::as_it_was(&mut r.c, &d, &r.before, true, &e.exit.to_string());
         assert!(r.sink.read(RESULT).is_ok(), "the result is kept");
         let res = w.result.as_ref().expect("result");
         assert_eq!(res["g_window_q016"]["stored"], 1178);

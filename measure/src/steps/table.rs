@@ -78,7 +78,7 @@ use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::ntc::{ADC_COUNTS, Parts};
 use crate::state::{self, State as ServoState, field};
-use osc_servo_core::adc::ADC_WIDE_SLOTS;
+use osc_servo_core::adc::{ADC_WIDE_MASK, ADC_WIDE_SLOTS};
 use osc_servo_core::pos_lut::{self, GRID, INTERVALS, PAGE_POINTS, POINTS};
 
 pub const STEP: &str = "table";
@@ -1881,6 +1881,7 @@ pub const CYCLES: &str = "ripple cycles";
 pub const GAINS: &str = "table gains";
 pub const DIRECTIONS: &str = "directions";
 pub const SPEED: &str = "speed along a rung";
+pub const HOLES: &str = "position holes";
 
 /// What to do about a refused check.
 pub fn advice(name: &str) -> &'static str {
@@ -2278,6 +2279,7 @@ pub struct Judged {
     /// The histogram's range, the stops less [`NEAR_STOP_COUNTS`].
     pub swept: (u16, u16),
     pub rows_a_code: f64,
+    pub holes: Holes,
     pub table: TableRead,
     pub checks: Vec<Check>,
 }
@@ -2655,6 +2657,127 @@ pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
     judge_with(rungs, c, true)
 }
 
+/// A run of codes never read, `from..=to` raw counts.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Hole {
+    pub from: u16,
+    pub to: u16,
+}
+
+impl Hole {
+    pub fn codes(&self) -> usize {
+        (self.to - self.from) as usize + 1
+    }
+}
+
+/// The codes the slow passes never read that the shaft crossed, as stage
+/// 1's finder (oscnb `widecodes.find`) counts a run: wholly inside the
+/// codes a sweep crossed less [`EDGE_MARGIN_COUNTS`] at each turn, since a
+/// code next to a turnaround is crossed slowly or not at all.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Holes {
+    /// Ties go to the lowest.
+    pub longest: Option<Hole>,
+    pub runs: usize,
+    /// Codes in all the runs.
+    pub codes: usize,
+    /// Codes the shaft crossed, and the least and most of them.
+    pub crossed: usize,
+    pub span: Option<(u16, u16)>,
+}
+
+/// [`Holes`] of the slow rungs: each rung's driven codes inside the
+/// histogram's range cross every code from their least to their most, less
+/// the margin at each end.
+pub fn holes(rungs: &[RungRows], c: &JudgeCfg) -> Holes {
+    let (_, lo, hi) = histogram_rows(&[], c.raw_min, c.raw_max);
+    let mut read = vec![false; widecodes::CODES];
+    let mut crossed = vec![false; widecodes::CODES];
+    for r in rungs.iter().filter(|r| r.pass_kind != PassKind::Fast) {
+        let (codes, _, _) = histogram_rows(
+            &driven_codes(r.rows).collect::<Vec<_>>(),
+            c.raw_min,
+            c.raw_max,
+        );
+        let (Some(&least), Some(&most)) = (codes.iter().min(), codes.iter().max()) else {
+            continue;
+        };
+        for &k in &codes {
+            read[k as usize] = true;
+        }
+        let (a, b) = (
+            least.max(lo) as usize + EDGE_MARGIN_COUNTS,
+            (most.min(hi) as usize).saturating_sub(EDGE_MARGIN_COUNTS),
+        );
+        if a <= b {
+            crossed[a..=b.min(widecodes::CODES - 1)].fill(true);
+        }
+    }
+    let mut h = Holes::default();
+    let mut run: Option<u16> = None;
+    for k in 0..widecodes::CODES {
+        if crossed[k] {
+            h.crossed += 1;
+            h.span = Some(h.span.map_or((k as u16, k as u16), |(a, _)| (a, k as u16)));
+        }
+        if !crossed[k] {
+            run = None;
+        } else if !read[k] {
+            run = run.or(Some(k as u16));
+        } else if let Some(from) = run.take() {
+            // a run opened right past an uncrossed code is not wholly inside
+            let below = (from as usize).checked_sub(1);
+            if below.is_some_and(|j| crossed[j] && read[j]) {
+                let hole = Hole {
+                    from,
+                    to: k as u16 - 1,
+                };
+                h.runs += 1;
+                h.codes += hole.codes();
+                if h.longest.is_none_or(|l| hole.codes() > l.codes()) {
+                    h.longest = Some(hole);
+                }
+            }
+        }
+    }
+    h
+}
+
+/// The holes' line: the longest run in counts and degrees, where it sits
+/// and over what the shaft crossed.
+fn holes_said(h: &Holes, counts_per_deg: Option<f64>) -> String {
+    let deg = |n: usize| {
+        counts_per_deg.map_or(String::new(), |cpd| format!(" ({:.2} deg)", n as f64 / cpd))
+    };
+    let Some((a, b)) = h.span else {
+        return "no slow rung crossed a code".into();
+    };
+    let over = format!(
+        "over the {} codes{} the slow passes crossed, raw {a}..{b}, {EDGE_MARGIN_COUNTS} counts off each turn",
+        h.crossed,
+        deg(h.crossed)
+    );
+    match h.longest {
+        None => format!("no code the shaft crossed went unread, {over}"),
+        Some(l) => {
+            let carry = l
+                .from
+                .checked_sub(1)
+                .filter(|&c| c & ADC_WIDE_MASK == ADC_WIDE_MASK);
+            format!(
+                "the longest run of codes never read {} counts{} at raw {}..{}{}; {} runs, {} codes in all, {over}",
+                l.codes(),
+                deg(l.codes()),
+                l.from,
+                l.to,
+                carry.map_or(String::new(), |c| format!(", just above carry {c}")),
+                h.runs,
+                h.codes
+            )
+        }
+    }
+}
+
 fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let slow = |odd: Option<bool>| -> Vec<u16> {
         let codes: Vec<u16> = rungs
@@ -2732,11 +2855,17 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let slots = finding.as_ref().map_or([0; ADC_WIDE_SLOTS], |f| f.slots);
     let table = read_table_with(rungs, &slots, c, from_fast);
     checks.extend(table_checks(&table, c));
+    let holes = holes(rungs, c);
+    checks.push(Check::reported(
+        HOLES,
+        holes_said(&holes, table.scale.map(|s| s.0)),
+    ));
     Judged {
         finding,
         halves,
         swept: (lo, hi),
         rows_a_code,
+        holes,
         table,
         checks,
     }
@@ -3196,6 +3325,20 @@ fn result_json(
             }),
         );
         o.insert("table".into(), table_json(&j.table));
+        let cpd = j.table.scale.map(|s| s.0);
+        let deg = |n: usize| cpd.map(|cpd| n as f64 / cpd);
+        o.insert(
+            "holes".into(),
+            json!({
+                "longest": j.holes.longest.map(|l| json!({"from_counts": l.from, "to_counts": l.to,
+                    "counts": l.codes(), "deg": deg(l.codes())})),
+                "runs": j.holes.runs, "codes": j.holes.codes,
+                "crossed": {"counts": j.holes.crossed, "deg": deg(j.holes.crossed),
+                    "from_counts": j.holes.span.map(|s| s.0), "to_counts": j.holes.span.map(|s| s.1)},
+                "edge_margin_counts": EDGE_MARGIN_COUNTS,
+                "source": "runs of codes the slow passes' driven rows never read, each wholly inside the codes a slow rung crossed less the edge margin at each turn (oscnb widecodes.find's rule); degrees over the table's counts_per_deg",
+            }),
+        );
         if way == Way::Done {
             accepted(o, j);
         }
@@ -3540,6 +3683,7 @@ mod tests {
         let e = &t.ended;
         assert!(torque_off(&mut r.c) && e.exit.torque_off, "{}", e.exit);
         assert_eq!(e.way, Way::Done, "{:?}\n{}", e.why, e.lines.join("\n"));
+        testkit::fields_back(&mut r.c, &descriptor(), true, &e.exit.to_string());
         let res = result(&mut r.sink);
         assert_eq!(res["verdict"], "accepted");
         assert!(
@@ -3960,6 +4104,75 @@ mod tests {
         );
         assert_eq!(d["warning"], true);
         assert!(res["points_by_page"].is_array() && res["slots"].is_array());
+    }
+
+    /// A hole counts only where the shaft crossed it: wholly inside a slow
+    /// rung's codes less the edge margin at each turn. Codes between two
+    /// rungs' reach, next to a turn or read only by a fast pass are no
+    /// hole of the slow passes'.
+    #[test]
+    fn a_hole_is_a_run_never_read_inside_the_codes_crossed() {
+        let drive = |codes: Vec<u16>| -> Vec<TelFrame> {
+            codes
+                .into_iter()
+                .enumerate()
+                .map(|(k, c)| TelFrame {
+                    tick: k as u64,
+                    pos: Some(c),
+                    duty_counts: Some(100),
+                    ..TelFrame::default()
+                })
+                .collect()
+        };
+        let a = drive(
+            (100..=600)
+                .filter(|c| !(300..=304).contains(c) && !(590..=595).contains(c))
+                .collect(),
+        );
+        let b = drive((700..=800).filter(|c| !(750..=751).contains(c)).collect());
+        let fast = drive((300..=304).collect());
+        let rung = |n, pass_kind, rows| RungRows {
+            n,
+            pass: n,
+            pass_kind,
+            kind: RungKind::Free,
+            dir: 1,
+            rows,
+        };
+        let rungs = [
+            rung(1, PassKind::Slow, &a),
+            rung(2, PassKind::Slow, &b),
+            rung(3, PassKind::Fast, &fast),
+        ];
+        let c = JudgeCfg {
+            fs: 20_000.0,
+            raw_min: 0,
+            raw_max: 1000,
+            events_per_rev: 6,
+            gear_ratio: None,
+            travel_deg: 180.0,
+        };
+        let h = holes(&rungs, &c);
+        assert_eq!(h.longest, Some(Hole { from: 300, to: 304 }));
+        assert_eq!((h.runs, h.codes), (2, 7));
+        assert_eq!(h.crossed, (585 - 115 + 1) + (785 - 715 + 1));
+        assert_eq!(h.span, Some((115, 785)));
+        assert_eq!(
+            holes_said(&h, Some(20.0)),
+            "the longest run of codes never read 5 counts (0.25 deg) at raw 300..304; 2 runs, 7 codes in all, over the 542 codes (27.10 deg) the slow passes crossed, raw 115..785, 15 counts off each turn"
+        );
+        let carry = drive((200..=300).filter(|c| !(256..=258).contains(c)).collect());
+        let h = holes(&[rung(1, PassKind::Slow, &carry)], &c);
+        assert!(holes_said(&h, None).contains("at raw 256..258, just above carry 255;"));
+        let whole = drive((700..=800).collect());
+        assert_eq!(
+            holes_said(&holes(&[rung(1, PassKind::Slow, &whole)], &c), None),
+            "no code the shaft crossed went unread, over the 71 codes the slow passes crossed, raw 715..785, 15 counts off each turn"
+        );
+        assert_eq!(
+            holes_said(&holes(&[rung(1, PassKind::Slow, &whole[..10])], &c), None),
+            "no slow rung crossed a code"
+        );
     }
 
     /// A drive's rows as the raw layout carries them.

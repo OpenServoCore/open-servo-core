@@ -2482,6 +2482,7 @@ mod tests {
             block_on(c.read(ID, addr(&d, "torque_enable"), 1)).expect("read"),
             [0]
         );
+        crate::steps::testkit::fields_back(&mut c, &d, true, &e.exit.to_string());
         let lines = e.lines.join("\n");
         assert!(lines.contains("to the low guard 682"), "{lines}");
         assert!(lines.contains("kept "), "the captures are kept: {lines}");
