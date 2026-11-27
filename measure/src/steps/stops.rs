@@ -44,8 +44,8 @@ use super::probe::{self, FromRest, NOT_METAL};
 use super::seek::{self, Act, SEATS_A_STOP, Seek, SeekCfg, WRONG_WAY_COUNTS, toward};
 use super::shunt::{self, AFTER_READS, Arm, Shunted};
 use super::{
-    Check, Ended, Halt, Rig, Verdict, interrupted, mean_u16, mode_value, read_u8, read_u16, rest,
-    write,
+    Check, Ended, Halt, Rig, Scatter, Verdict, estimate, interrupted, mean_u16, mode_value,
+    read_u8, read_u16, rest, write,
 };
 use crate::Board;
 use crate::capture::burst::{self, CHANS_DIFF};
@@ -1428,8 +1428,14 @@ fn spread_json(s: Option<Spread>, scale: f64) -> Value {
     })
 }
 
-fn est(value: f64, unit: &str, source: &str) -> Value {
-    json!({"value": value, "lo": null, "hi": null, "unit": unit, "source": source})
+/// A pooled median as an estimate: the bursts' sd and count.
+fn est(s: &Spread, unit: &str, source: &str) -> Value {
+    estimate(
+        s.median,
+        Scatter::of(s.sd_share * s.median, s.n),
+        unit,
+        source,
+    )
 }
 
 /// Keep every poll in [`POLLS`].
@@ -1628,19 +1634,19 @@ fn result_json(
     let src = "seated bursts from rest at both stops, 25 % and 40 % of the rail into the stop, the period-pair fit with no intercept per burst on the nominal scales and the board's edge lags, volts over the board's terminal offset and R and L over its window scale (notebooks stage 1 terminal-chain and sample-timing), the first of each group and any whose first window current is over 12 % off its group's others set aside, then any whose own R reads over 8 % under the median R of the run's kept bursts at its level, both stops together (two passes, the median taken again), the median over the kept";
     let mut estimates = Map::new();
     if let Some(r) = read.r(all) {
-        estimates.insert("r_seated_ohm".into(), est(r.median, "ohm", src));
+        estimates.insert("r_seated_ohm".into(), est(&r, "ohm", src));
     }
     if let Some(r) = read.r25(all) {
         estimates.insert(
             "r_seated_25c_ohm".into(),
-            est(r.median, "ohm", "the seated R per burst through copper's slope (the kernel's ALPHA_Q26) from the board NTC read before its seat's bursts, the median"),
+            est(&r, "ohm", "the seated R per burst through copper's slope (the kernel's ALPHA_Q26) from the board NTC read before its seat's bursts, the median"),
         );
     }
     if let Some(l) = read.l(all) {
-        estimates.insert("l_seated_h".into(), est(l.median, "H", src));
+        estimates.insert("l_seated_h".into(), est(&l, "H", src));
     }
     if let Some(t) = read.tau(all) {
-        estimates.insert("tau_seated_s".into(), est(t.median, "s", src));
+        estimates.insert("tau_seated_s".into(), est(&t, "s", src));
     }
     let c = &b.cfg;
     json!({

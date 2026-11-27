@@ -470,6 +470,36 @@ impl SetFile {
         self.doc.get("fields")?.get(name)?.get("value")
     }
 
+    /// A line a field: its value, unit and spread, `+/- p %` of its band
+    /// or `nominal` with none.
+    pub fn terms(&self) -> Vec<String> {
+        let Some(fields) = self.doc.get("fields").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+        fields
+            .iter()
+            .map(|(name, e)| {
+                let band = e
+                    .get("band")
+                    .and_then(Value::as_array)
+                    .and_then(|b| Some((b.first()?.as_i64()?, b.get(1)?.as_i64()?)));
+                let value = e.get("value").and_then(Value::as_i64);
+                let spread = match (value, band) {
+                    (Some(v), Some(b)) => match spread_pct(v, b) {
+                        Some(p) => format!("+/- {p:.2} %"),
+                        None => format!("band {} to {}", b.0, b.1),
+                    },
+                    _ => "nominal".into(),
+                };
+                format!(
+                    "{name} {} {} {spread}",
+                    e.get("value").map_or(String::new(), dumps),
+                    e.get("unit").and_then(Value::as_str).unwrap_or("")
+                )
+            })
+            .collect()
+    }
+
     /// The slots, none when the set holds none.
     pub fn slots(&self) -> Result<Option<Vec<u8>>, SetError> {
         match self.doc.get("wide_codes") {
@@ -675,6 +705,13 @@ pub struct FromRules<'a> {
     pub files: &'a [(String, String, String)],
 }
 
+/// A derived field's spread: half its band (the rule again at each end of
+/// every banded input, a measured one's band one sd either side) over its
+/// value, percent to 0.01.
+pub fn spread_pct(value: i64, band: (i64, i64)) -> Option<f64> {
+    (value != 0).then(|| (5000.0 * (band.1 - band.0) as f64 / (value as f64).abs()).round() / 100.0)
+}
+
 /// A set file from what the rules gave: a refused field refuses the set;
 /// a held field and a tuning field are left out, and a field stored at a
 /// bound is kept there, each said in a note.
@@ -736,6 +773,9 @@ pub fn from_rules(
         entry.insert("class".into(), class.into());
         if let Some((lo, hi)) = e.band {
             entry.insert("band".into(), json!([lo, hi]));
+            if let Some(p) = spread_pct(e.value, (lo, hi)) {
+                entry.insert("spread_pct".into(), p.into());
+            }
         }
         if class == "datasheet" {
             entry.insert("document".into(), r.nameplate.document.clone().into());

@@ -15,7 +15,8 @@ use osc_client::{Client, Error, Id, pipe::Pipe};
 use serde_json::{Map, Value, json};
 
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mode_value, take, write,
+    Check, Ended, Halt, Rig, Scatter, Taken, Verdict, estimate, interrupted, keep_all, mode_value,
+    take, write,
 };
 use crate::capture::meta;
 use crate::capture::ripple::{self, Pattern};
@@ -733,8 +734,14 @@ struct Judged {
     lines: Vec<String>,
 }
 
-fn est(value: f64, unit: &str, source: &str) -> Value {
-    json!({"value": value, "lo": null, "hi": null, "unit": unit, "source": source})
+/// A row mean as an estimate: the rows' sd and count.
+fn mean_est(x: &Stats, unit: &str, source: &str) -> Value {
+    estimate(x.mean, Scatter::of(x.sd, x.n), unit, source)
+}
+
+/// A value read once from `n` rows.
+fn est(value: f64, n: usize, unit: &str, source: &str) -> Value {
+    estimate(value, Scatter::Once(n), unit, source)
 }
 
 /// The estimators and every acceptance check of the rest step, pure.
@@ -999,25 +1006,25 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
         "image": b.line.image().name(),
         "capability_flags": b.line.caps,
         "estimates": {
-            "current_zero_asleep_counts": est(r_zero.mean, "counts", "rest row current_raw, torque off"),
-            "current_zero_awake_counts": est(w_zero.mean, "counts", "raw row current_raw, torque on at zero duty"),
-            "current_zero_sd_counts": est(ch.rest("current_raw").comp.sd.max(ch.raw("current_raw").comp.sd), "counts", "the larger of the two rows, the VDD frame ripple out"),
-            "tap_a_counts": est(w_a.mean, "counts", "raw row vmotor_a, torque on"),
-            "tap_b_counts": est(w_b.mean, "counts", "raw row vmotor_b, torque on"),
-            "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, "counts", "rest row pos, torque off, wide codes at their band's middle by the servo's stored slots, the VDD frame ripple out"),
+            "current_zero_asleep_counts": mean_est(&r_zero, "counts", "rest row current_raw, torque off"),
+            "current_zero_awake_counts": mean_est(&w_zero, "counts", "raw row current_raw, torque on at zero duty"),
+            "current_zero_sd_counts": est(ch.rest("current_raw").comp.sd.max(ch.raw("current_raw").comp.sd), r_zero.n.min(w_zero.n), "counts", "the larger of the two rows, the VDD frame ripple out"),
+            "tap_a_counts": mean_est(&w_a, "counts", "raw row vmotor_a, torque on"),
+            "tap_b_counts": mean_est(&w_b, "counts", "raw row vmotor_b, torque on"),
+            "pot_rest_sd_counts": est(ch.rest("pos").comp.sd, r_pos.n, "counts", "rest row pos, torque off, wide codes at their band's middle by the servo's stored slots, the VDD frame ripple out"),
             "vdd_frame_ripple_mv_pp": Value::Null,
             "vdd_v": match vref {
-                Some(_) => est(vdd, "V", "vref_raw, the 1.2 V reference read once at boot"),
+                Some(_) => est(vdd, 1, "V", "vref_raw, the 1.2 V reference read once at boot"),
                 None => Value::Null,
             },
-            "rail_v": est(rail, "V", if vref.is_some() {
+            "rail_v": est(rail, r_vbus.n, "V", if vref.is_some() {
                 "rest row vbus_raw through the rail divider, the measured supply"
             } else {
                 "rest row vbus_raw through the rail divider, the nominal supply"
             }),
-            "supply_v": est(supply, "V", "the rail and the board's input drop"),
-            "board_ntc_c": est(ntc_c, "C", "rest row ntc_raw through the part's nominal beta"),
-            "stall_room_a": est(room_a, "A", "the awake zero to the converter's top, nominal counts per A"),
+            "supply_v": est(supply, r_vbus.n, "V", "the rail and the board's input drop"),
+            "board_ntc_c": est(ntc_c, r_ntc.n, "C", "rest row ntc_raw through the part's nominal beta"),
+            "stall_room_a": est(room_a, w_zero.n, "A", "the awake zero to the converter's top, nominal counts per A"),
         },
         "counts_per_a_nominal": cpa,
         "rail_counts_per_v_nominal": s.rail_counts_per_v(),

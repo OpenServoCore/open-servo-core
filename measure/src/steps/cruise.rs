@@ -59,8 +59,8 @@ use super::verify::{
     Watch,
 };
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_alive, keep_all, mode_value,
-    read_u8, rest, write,
+    Check, Ended, Halt, Rig, Scatter, Taken, Verdict, estimate, interrupted, keep_alive, keep_all,
+    mode_value, read_u8, rest, write,
 };
 use crate::Board;
 use crate::capture::meta;
@@ -1521,7 +1521,7 @@ fn result_json(
     let mut estimates = Map::new();
     let source = |l: &fit::Line| {
         format!(
-            "the least-squares line of each closed-loop cruise leg's held current on its goal speed over {} valid legs at {} speeds, {:.0} to {:.0} counts/s, both directions pooled: the stage 5 cruise-friction method, each leg's current-loop reference replayed from its rows (the board's integer reading over the polled bias, the installed gains, Ke, window term and resistance), averaged over its MEDIUM period at the phase found, the reading on read rows and that mean on the rest, over the leg's middle half; every leg below the top speed and the top speed's legs whose speed held across their steady rows within {}%; per motor rad/s at {:.4} counts a motor radian; on the nominal sense block's {:.3} counts/A; the band is the standard error from the legs' residuals",
+            "the least-squares line of each closed-loop cruise leg's held current on its goal speed over {} valid legs at {} speeds, {:.0} to {:.0} counts/s, both directions pooled: the stage 5 cruise-friction method, each leg's current-loop reference replayed from its rows (the board's integer reading over the polled bias, the installed gains, Ke, window term and resistance), averaged over its MEDIUM period at the phase found, the reading on read rows and that mean on the rest, over the leg's middle half; every leg below the top speed and the top speed's legs whose speed held across their steady rows within {}%; per motor rad/s at {:.4} counts a motor radian; on the nominal sense block's {:.3} counts/A; its sd and band the standard error from the legs' residuals",
             l.legs,
             l.speeds.len(),
             l.goal_cps.0,
@@ -1535,11 +1535,16 @@ fn result_json(
         let s = source(l);
         estimates.insert(
             "friction_coulomb_ma".into(),
-            json!({"value": l.coulomb_ma, "lo": l.coulomb_ma - l.coulomb_se_ma, "hi": l.coulomb_ma + l.coulomb_se_ma, "unit": "mA", "source": s}),
+            estimate(l.coulomb_ma, Scatter::of(l.coulomb_se_ma, l.legs), "mA", &s),
         );
         estimates.insert(
             "friction_viscous_ma_s_per_rad".into(),
-            json!({"value": l.viscous_ma_s_per_rad, "lo": l.viscous_ma_s_per_rad - l.viscous_se, "hi": l.viscous_ma_s_per_rad + l.viscous_se, "unit": "mA per motor rad/s", "source": s}),
+            estimate(
+                l.viscous_ma_s_per_rad,
+                Scatter::of(l.viscous_se, l.legs),
+                "mA per motor rad/s",
+                &s,
+            ),
         );
     }
     let line = j.line.as_ref().map_or(Value::Null, |l| {

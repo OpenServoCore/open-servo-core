@@ -6,6 +6,8 @@
    "value": 0.0011590992521478365,
    "lo": 0.0011518368085073664,
    "hi": 0.0011663616957883066,
+   "sd": 7.2624436404701304e-06,
+   "n": 12,
    "unit": "V s/rad",
    "source": "synthetic: measure/testdata/mg90-d/measured.json ke_v_s_per_rad (notebooks/stages/3-servo/ladder/results/mg90-d__dev-v006-2A-D.json ke_v_s_per_rad)"
   },
@@ -13,6 +15,8 @@
    "value": 6.433118992563836e-09,
    "lo": 5.860118662057509e-09,
    "hi": 7.0746079785920765e-09,
+   "sd": 6.072446582672838e-10,
+   "n": 6,
    "unit": "kg m^2",
    "source": "synthetic: measure/testdata/mg90-d/measured.json j_kg_m2 (notebooks/stages/3-servo/run-up/results/mg90-d__dev-v006-2A-D.json j_kg_m2)"
   },
@@ -20,6 +24,8 @@
    "value": 37.641718709849386,
    "lo": 37.239809698353085,
    "hi": 38.043627721345686,
+   "sd": null,
+   "n": 6,
    "unit": "mA",
    "source": "synthetic: measure/testdata/mg90-d/measured.json cruise_coulomb_ma (notebooks/stages/5-closed-loop/cruise-friction/results/mg90-d__dev-v006-2A-D.json coulomb_ma)"
   },
@@ -27,6 +33,8 @@
    "value": 0.04764539919426953,
    "lo": 0.046522040023833616,
    "hi": 0.04876875836470544,
+   "sd": null,
+   "n": 6,
    "unit": "mA per motor rad/s",
    "source": "synthetic: measure/testdata/mg90-d/measured.json cruise_viscous_ma_s_per_rad (notebooks/stages/5-closed-loop/cruise-friction/results/mg90-d__dev-v006-2A-D.json viscous_ma_s_per_rad)"
   }

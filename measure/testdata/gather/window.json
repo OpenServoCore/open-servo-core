@@ -6,6 +6,8 @@
    "value": 3.932556090386423,
    "lo": 3.8907643008204267,
    "hi": 3.9743478799524197,
+   "sd": 0.041791789565996496,
+   "n": 105,
    "unit": "mS",
    "source": "synthetic: measure/testdata/mg90-d/measured.json g_window_ms (notebooks/stages/3-servo/window-term/results/mg90-d__dev-v006-2A-D.json g_over_mean_ms)"
   }

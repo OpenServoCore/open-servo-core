@@ -48,7 +48,8 @@ use super::runway::{
 use super::seek::{self, POLL_S, WINDOW_S};
 use super::stops::{self, FromProbe, POLL_DEADMAN_S};
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, read_u16, rest, write,
+    Check, Ended, Halt, Rig, Scatter, Taken, Verdict, estimate, interrupted, keep_all, read_u16,
+    rest, write,
 };
 use crate::Board;
 use crate::capture::meta;
@@ -1765,8 +1766,13 @@ pub fn advice(name: &str) -> &'static str {
     }
 }
 
-fn est(value: f64, unit: &str, source: &str) -> Value {
-    json!({"value": value, "lo": null, "hi": null, "unit": unit, "source": source})
+fn pooled(p: &coast::Pooled, unit: &str, source: &str) -> Value {
+    estimate(
+        p.mean,
+        p.sd.map_or(Scatter::Once(p.n), |sd| Scatter::of(sd, p.n)),
+        unit,
+        source,
+    )
 }
 
 /// Step 5 on the servo: the pilot and the spins, then the way out.
@@ -1973,13 +1979,18 @@ fn result_json(
         };
         estimates.insert(
             "events_per_rev".into(),
-            est(j.per_rev.value as f64, "events/rev", &j.per_rev.source),
+            estimate(
+                j.per_rev.value as f64,
+                Scatter::Nominal,
+                "events/rev",
+                &j.per_rev.source,
+            ),
         );
         if let Some(p) = &j.ke {
             estimates.insert(
                 "ke_v_s_per_rad".into(),
-                est(
-                    p.all.mean,
+                pooled(
+                    &p.all,
                     "V s/rad",
                     &format!(
                         "the mean over {} coasts, the first {} spins each way a level{}, through the ladder notebook's gate: each coast's EMF over its ripple speed in its whole cycles nearest 10 ms, the tap zero {}",
@@ -1997,8 +2008,8 @@ fn result_json(
         if let Ok(i) = &j.inertia {
             estimates.insert(
                 "j_kg_m2".into(),
-                est(
-                    i.j.mean,
+                pooled(
+                    &i.j,
                     "kg m^2",
                     &format!(
                         "the mean over {} run-ups from rest at {:.0}% of the stated voltage, each against its own coast, through the order count, {g_words}",
@@ -2013,10 +2024,14 @@ fn result_json(
                 "the line of the steady winding current on the steady ripple speed over {} level and direction means, both directions pooled, {g_words}; no in-drive current offset taken off",
                 l.points.len()
             );
-            estimates.insert("friction_coulomb_ma".into(), est(l.coulomb_ma, "mA", &src));
+            let n = Scatter::Once(l.points.len());
+            estimates.insert(
+                "friction_coulomb_ma".into(),
+                estimate(l.coulomb_ma, n, "mA", &src),
+            );
             estimates.insert(
                 "friction_viscous_ma_s_per_rad".into(),
-                est(l.viscous_ma_s_per_rad, "mA per motor rad/s", &src),
+                estimate(l.viscous_ma_s_per_rad, n, "mA per motor rad/s", &src),
             );
         }
         let wiring = |bridge: i8| cfg.logical(bridge);

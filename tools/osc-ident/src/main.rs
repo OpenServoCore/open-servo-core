@@ -87,7 +87,7 @@ enum Cmd {
         #[arg(long)]
         set: PathBuf,
     },
-    /// The servo's position table: state, stops, nonzero calibration points, grade. Writes nothing.
+    /// The servo's position table: state, stops, nonzero calibration points, local gains. Writes nothing.
     Table {
         /// The table and its report as JSON.
         #[arg(long)]
@@ -343,6 +343,9 @@ fn rules(
         bail!("{} exists: a set is written to a new file", out.display());
     }
     std::fs::write(out, file.render()).with_context(|| format!("writing {}", out.display()))?;
+    for t in file.terms() {
+        println!("{t}");
+    }
     for n in &notes {
         println!("{n}");
     }
@@ -442,14 +445,28 @@ async fn check<P: Pipe>(
     Ok(checked.clean())
 }
 
-/// The servo's name in a run folder: its UID where the bus says it.
-async fn servo_name<P: Pipe>(c: &mut Client<P>, id: Id) -> String {
-    match mgmt::discover(c).await {
-        Ok(found) => match found.iter().find(|f| f.id == id) {
-            Some(f) => format!("{:?}", f.uid),
-            None => format!("id{}", id.as_byte()),
-        },
-        Err(_) => format!("id{}", id.as_byte()),
+/// The servo's name in a run folder: its chip id as the bus says it.
+/// Refused when the discovery fails or names no servo of `id`: the servo
+/// answered its id a moment ago, so something is already wrong.
+async fn servo_name<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<String> {
+    let found = mgmt::discover(c)
+        .await
+        .with_context(|| format!("the discovery of servo {} failed", id.as_byte()))?;
+    match found.iter().find(|f| f.id == id) {
+        Some(f) => Ok(format!("{:?}", f.uid)),
+        None => bail!(
+            "the discovery found no servo of id {} (ids: {}), though it answers a ping: no run folder without its chip id",
+            id.as_byte(),
+            if found.is_empty() {
+                "none".into()
+            } else {
+                found
+                    .iter()
+                    .map(|f| f.id.as_byte().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ),
     }
 }
 
@@ -472,7 +489,7 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
         Cmd::Save { set, w, out } => {
             let file = files::set(set)?;
             let table = files::table_for(set, &file, w.table.as_deref())?;
-            let root = files::run_folder(out, &servo_name(c, id).await)?;
+            let root = files::run_folder(out, &servo_name(c, id).await?)?;
             let mut sink = DirSink { root };
             install::save(
                 c,
@@ -585,7 +602,7 @@ fn run(cli: &Cli) -> Result<bool> {
                 .context("installing the Ctrl-C handler")?;
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
-                let servo = servo_name(&mut c, id).await;
+                let servo = servo_name(&mut c, id).await?;
                 let (lines, accepted, _) = match step {
                     StepName::Rest { .. } => {
                         steps::step_rest(&mut c, id, &d, &inputs, out, &servo, &STOP).await?
@@ -672,7 +689,7 @@ fn run(cli: &Cli) -> Result<bool> {
                 .context("installing the Ctrl-C handler")?;
             block_on(async {
                 let (mut c, d) = connect(&cli.baud, id).await?;
-                let servo = servo_name(&mut c, id).await;
+                let servo = servo_name(&mut c, id).await?;
                 let (lines, accepted) = run::run(&mut c, id, &d, &a, &servo, &STOP).await?;
                 for l in &lines {
                     println!("{l}");
@@ -866,6 +883,22 @@ mod tests {
         pipe.seed_calibrated(0);
         let c = block_on(Client::connect(pipe)).expect("connect");
         (c, descriptor_builtin().expect("descriptor"))
+    }
+
+    /// A run folder is named by the chip id the discovery reads; with no
+    /// servo of the id in its roster, no folder is named at all.
+    #[test]
+    fn a_run_folder_takes_the_chip_id_or_is_refused() {
+        let (mut c, _) = fake(BaudRate::B1000000);
+        let name = block_on(servo_name(&mut c, Id::new(1))).expect("the chip id");
+        assert_eq!(name.len(), 32, "{name}");
+        assert!(name.chars().all(|ch| ch.is_ascii_hexdigit()), "{name}");
+        let e = block_on(servo_name(&mut c, Id::new(2))).expect_err("no servo 2");
+        assert!(
+            e.to_string()
+                .starts_with("the discovery found no servo of id 2 (ids: 1)"),
+            "{e}"
+        );
     }
 
     fn inputs() -> steps::StepInputs {
