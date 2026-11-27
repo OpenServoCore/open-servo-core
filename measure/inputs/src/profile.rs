@@ -12,6 +12,11 @@ use crate::why;
 pub const SCHEMA: &str = "osc.servo-profile/1";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct ServoProfile {
     pub schema: String,
@@ -21,18 +26,25 @@ pub struct ServoProfile {
     pub revision: u32,
     #[serde(default)]
     pub model: Model,
+    #[serde(default)]
     pub gear_class: Option<GearClass>,
     /// Motor revolutions per output revolution, counted teeth.
+    #[serde(default)]
     pub gear_ratio: Option<f64>,
     /// The count behind `gear_ratio`, `[pinion, wheel]` a stage: documentation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gear_stages: Vec<[u32; 2]>,
+    #[serde(default)]
     pub brushes: Option<u32>,
+    #[serde(default)]
     pub rotor_segments: Option<u32>,
     /// The output's travel from stop to stop, deg.
+    #[serde(default)]
     pub travel_deg: Option<f64>,
     /// Whether the count rises as the horn turns counterclockwise, facing it.
+    #[serde(default)]
     pub count_rises_ccw: Option<bool>,
+    #[serde(default)]
     pub operating_v: Option<VoltRange>,
     #[serde(default)]
     pub no_load: Vec<NoLoad>,
@@ -49,6 +61,11 @@ pub struct ServoProfile {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
     #[serde(default)]
@@ -62,6 +79,11 @@ pub struct Model {
 /// The maker's stall rating at a stated voltage: the torque converts a
 /// policy's yield torque into current; the current is optional.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct StallRow {
     pub at_v: f64,
@@ -72,6 +94,11 @@ pub struct StallRow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Stopper {
     Plastic,
@@ -82,6 +109,11 @@ pub enum Stopper {
 /// Each node's time constant and its gain over the board NTC per watt of
 /// copper loss.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct HeatModel {
     pub fast_tau_s: f64,
@@ -91,6 +123,11 @@ pub struct HeatModel {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct Provenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,6 +140,11 @@ pub struct Provenance {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct AtlasRef {
     pub id: String,
@@ -114,6 +156,11 @@ pub struct AtlasRef {
 /// `ident run <esig>/<UTC>`, `atlas <id>@<revision>`, `user`, or `file`
 /// for a file reference a version 0 `source` block carried.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct FieldSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]

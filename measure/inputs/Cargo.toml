@@ -9,10 +9,16 @@ license     = "MIT OR Apache-2.0"
 # Reading a file's text: the version probe and parse. The web parses JSON in
 # JS and passes values in, so the wasm build leaves this off.
 json = ["dep:serde_json"]
+# The TypeScript declarations of the file types, for client/web's exports.
+# An Option key a file may leave out carries serde(default), which no reader
+# needs but which marks the key optional in the declarations.
+tsify = ["dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
-serde      = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"], optional = true }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = { version = "1", features = ["float_roundtrip", "preserve_order"], optional = true }
+tsify        = { version = "0.5", default-features = false, features = ["js"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }

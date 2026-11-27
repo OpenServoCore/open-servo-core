@@ -14,11 +14,18 @@ use crate::why;
 pub const SCHEMA: &str = "osc.tuning-policy/1";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct TuningPolicy {
     pub schema: String,
     /// Keyed by application (`default`, `arm-joints`), not by servo.
     pub key: String,
+    #[serde(default)]
+    pub revision: u32,
     #[serde(default)]
     pub label: String,
     #[serde(default)]
@@ -39,7 +46,12 @@ pub struct TuningPolicy {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[serde(default, deny_unknown_fields)]
 pub struct Protection {
     /// The voltage the servo runs on: it picks which of the maker's
     /// ratings applies.
@@ -62,7 +74,12 @@ pub struct Protection {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[serde(default, deny_unknown_fields)]
 pub struct Motion {
     pub move_speed: Option<MoveSpeed>,
     pub speed_up: Option<SpeedUp>,
@@ -73,7 +90,12 @@ pub struct Motion {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[serde(default, deny_unknown_fields)]
 pub struct Loops {
     pub current_loop: Option<CurrentLoop>,
     pub observer: Option<Observer>,
@@ -86,28 +108,50 @@ pub struct Loops {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[serde(default, deny_unknown_fields)]
 pub struct Sensor {
     pub pot_jump: Option<PotJump>,
     pub bad_samples: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[serde(default, deny_unknown_fields)]
 pub struct Behavior {
     pub openloop_zero_brake: Option<Switch>,
     pub brush_term: Option<Switch>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(deny_unknown_fields)]
 pub struct PositionError {
+    #[serde(default)]
     pub deg: Option<f64>,
+    #[serde(default)]
     pub time_ms: Option<f64>,
 }
 
 /// The share of the stated no-load speed the servo may ever turn at.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeedCeiling {
     ShareOfNoLoad([u32; 2]),
@@ -115,6 +159,11 @@ pub enum SpeedCeiling {
 
 /// The share of the stall current, the stated volts over R.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CurrentLimit {
     ShareOfStall(f64),
@@ -123,6 +172,11 @@ pub enum CurrentLimit {
 /// How hard a stalled horn keeps pushing: a max yield torque (none: the
 /// cap on metal, the plastic torque limit on plastic), or a fixed current.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Yield {
     TorqueKgCm(Option<f64>),
@@ -130,6 +184,11 @@ pub enum Yield {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StallRelease {
     ShareOfYield(f64),
@@ -137,6 +196,11 @@ pub enum StallRelease {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StallSpeed {
     MultipleOfStillSpeed(f64),
@@ -144,6 +208,11 @@ pub enum StallSpeed {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MoveSpeed {
     ShareOfCeiling(f64),
@@ -152,6 +221,11 @@ pub enum MoveSpeed {
 
 /// The time to reach the move speed, or a fixed acceleration.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeedUp {
     S(f64),
@@ -159,6 +233,11 @@ pub enum SpeedUp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CurrentLoop {
     MultipleOfElectricalCorner(f64),
@@ -166,6 +245,11 @@ pub enum CurrentLoop {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Observer {
     MultipleOfMechanicalCorner(f64),
@@ -174,6 +258,11 @@ pub enum Observer {
 
 /// The sensor screen's bound on one RAIL period's pot step.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PotJump {
     MultipleOfStep4(f64),
@@ -186,6 +275,7 @@ impl TuningPolicy {
         TuningPolicy {
             schema: SCHEMA.into(),
             key: key.into(),
+            revision: 0,
             label: String::new(),
             protection: Protection::default(),
             motion: Motion::default(),

@@ -89,6 +89,15 @@ impl Nameplate {
         stated(self.operating_v?, self.run_v, &self.stall, |r| r.at_v)
     }
 
+    /// The speed ceiling, deg/s: the derate of the bound no-load row, in
+    /// the order of the rules' `limits::speed_ceiling_deg_s`, so a share of
+    /// it resolves to the ceiling's own value.
+    pub fn speed_ceiling_deg_s(&self) -> Option<f64> {
+        let row = self.speed_row()?;
+        let [num, den] = self.derate_speed?;
+        Some(row.per_deg / row.seconds * num as f64 / den as f64)
+    }
+
     /// Ripple events a motor revolution, the ruler the speed and the table
     /// are counted in: brushes times rotor segments (a two-brush,
     /// three-segment motor: 6). Refused with the line to show the user
@@ -158,6 +167,11 @@ impl Nameplate {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "lowercase")]
 pub enum GearClass {
     Unknown,
@@ -177,6 +191,11 @@ impl GearClass {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 pub struct VoltRange {
     pub min: f64,
     pub max: f64,
@@ -184,6 +203,11 @@ pub struct VoltRange {
 
 /// The sheet's no-load speed as makers state it: `seconds` per `per_deg`.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 pub struct NoLoad {
     pub at_v: f64,
     pub seconds: f64,

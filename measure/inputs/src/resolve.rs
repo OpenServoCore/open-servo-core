@@ -6,7 +6,7 @@
 //! value that cannot act is stored at the bound it is over, and its line
 //! says so.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::nameplate::{Nameplate, Stall};
 use crate::policy::Policy;
@@ -16,11 +16,18 @@ use crate::tuning::{
     StallSpeed, TuningPolicy, Yield,
 };
 
-/// The board's facts a policy value resolves from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The board's facts a policy value resolves from, as the board file
+/// names them.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 pub struct BoardFacts {
     pub tick_hz: f64,
     /// The overcurrent detector's window, us.
+    #[serde(default)]
     pub oc_trip_us: Option<f64>,
 }
 
@@ -35,6 +42,11 @@ pub struct Resolved {
 
 /// What `inputs/resolved.json` holds.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 pub struct Report {
     pub profile: Named,
     pub policy: Named,
@@ -53,6 +65,11 @@ impl Report {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 pub struct Named {
     pub key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +77,11 @@ pub struct Named {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Form {
     /// A share or a time over another value the run knows.
@@ -73,6 +95,11 @@ pub enum Form {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object, rename = "ResolvedValue")
+)]
 #[serde(untagged)]
 pub enum Value {
     Number(f64),
@@ -82,10 +109,16 @@ pub enum Value {
 
 /// One policy value as resolved.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 pub struct Line {
     /// The policy's key.
     pub field: &'static str,
     pub form: Form,
+    #[cfg_attr(feature = "tsify", tsify(type = "ResolvedValue"))]
     pub value: Value,
     pub unit: &'static str,
     /// What the rules read it as.
@@ -211,12 +244,13 @@ pub fn resolve(
         derate_other: Some(other),
     };
     nameplate.check_user()?;
-    let (Some(speed), Some(stall)) = (nameplate.speed_row(), nameplate.stall_row()) else {
-        unreachable!("Nameplate::check_user holds both rows")
+    let (Some(speed), Some(stall), Some(ceiling)) = (
+        nameplate.speed_row(),
+        nameplate.stall_row(),
+        nameplate.speed_ceiling_deg_s(),
+    ) else {
+        unreachable!("Nameplate::check_user holds both rows and the derate")
     };
-    // the order of rules::limits::speed_ceiling_deg_s, so a share resolves
-    // to the ceiling's own value
-    let ceiling = speed.per_deg / speed.seconds * num as f64 / den as f64;
 
     let mut out = Policy::default();
     let mut l = Lines(Vec::new());
@@ -595,7 +629,7 @@ pub fn resolve(
             },
             policy: Named {
                 key: policy.key.clone(),
-                revision: None,
+                revision: Some(policy.revision),
             },
             fields: l.0,
         },
