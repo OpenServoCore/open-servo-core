@@ -6,7 +6,9 @@ mod common;
 
 use common::*;
 use futures_lite::future::block_on;
-use osc_client::data_state::{CONFIG_CORRUPT, STAMP_MISMATCH};
+use osc_client::data_state::{
+    CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN, STAMP_MISMATCH,
+};
 use osc_client::pos_lut;
 use osc_client::stamp;
 use osc_measure::install::{self, AFTER, STORED, Step, check, restore, save};
@@ -278,6 +280,91 @@ fn save_writes_the_backup_before_anything_else() {
     );
 }
 
+/// A servo never saved boots `CONFIG_VIRGIN | CALIB_VIRGIN`, which only
+/// the SAVE retires: the check before it is the set landed and stamped,
+/// and after it the servo boots the set, data state clean.
+#[test]
+fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
+    let (mut c, log) = factory();
+    let d = descriptor();
+    let rec = record();
+    let fresh = block_on(state::read(&mut c, ID, &d)).expect("state");
+    assert_eq!(
+        fresh.data.flags & (CONFIG_VIRGIN | CALIB_VIRGIN),
+        CONFIG_VIRGIN | CALIB_VIRGIN,
+        "{}",
+        fresh.data_said()
+    );
+    let mut sink = LogSink {
+        files: Default::default(),
+        log: log.clone(),
+        fail: false,
+    };
+    let mut steps = Vec::new();
+    block_on(save(
+        &mut c,
+        ID,
+        &d,
+        &rec,
+        Some(&table().points),
+        &mut sink,
+        &mut steps,
+    ))
+    .unwrap_or_else(|e| panic!("the save lands: {e}"));
+    let saves = log
+        .borrow()
+        .iter()
+        .filter(|e| **e == Ev::Mgmt(osc_client::MgmtOp::Save as u8))
+        .count();
+    assert_eq!(saves, 1);
+    assert!(steps.contains(&Step::Saved), "{steps:?}");
+    let stored: serde_json::Value = serde_json::from_slice(&sink.files[STORED]).expect("json");
+    let fresh_said = stored["data_state"].as_str().unwrap_or_default();
+    assert!(
+        fresh_said.contains("CONFIG_VIRGIN | CALIB_VIRGIN"),
+        "{fresh_said}"
+    );
+
+    block_on(osc_client::mgmt::reboot(&mut c, ID)).expect("reboot");
+    let checked = block_on(check(&mut c, ID, &d, &rec)).expect("check");
+    assert!(
+        checked.clean(),
+        "the set boots: {:?} {}",
+        checked.differences,
+        checked.data
+    );
+    assert_eq!(checked.stamp, "0xd1c4 = live set");
+}
+
+/// The check before the SAVE refuses on what the SAVE cannot clear, and
+/// says it when the set itself landed.
+#[test]
+fn the_check_before_a_save_refuses_only_what_the_save_cannot_clear() {
+    let checked = |differences: Vec<String>, flags: u8| install::Checked {
+        differences,
+        unowned: vec![],
+        data: "said".into(),
+        flags,
+        stamp: "0xd1c4 = live set".into(),
+    };
+    assert_eq!(checked(vec![], 0).unsaveable(), None);
+    assert_eq!(
+        checked(vec![], CONFIG_VIRGIN | CALIB_VIRGIN | CONFIG_STALE).unsaveable(),
+        None
+    );
+    let why = checked(vec![], CONFIG_VIRGIN | STAMP_MISMATCH)
+        .unsaveable()
+        .expect("refused");
+    assert!(
+        why.ends_with("(STAMP_MISMATCH of it a SAVE does not clear)"),
+        "{why}"
+    );
+    let why = checked(vec!["v_kp_q88: servo 70, set 97".into()], 0)
+        .unsaveable()
+        .expect("refused");
+    assert!(why.ends_with(": v_kp_q88: servo 70, set 97"), "{why}");
+}
+
 #[test]
 fn a_refusal_after_the_first_write_reboots_to_the_saved_state() {
     let (mut c, _) = on_record();
@@ -308,7 +395,10 @@ fn a_refusal_after_the_first_write_reboots_to_the_saved_state() {
         "{e}"
     );
     assert_eq!(wrote(&steps).first().map(String::as_str), Some("raw_min"));
-    assert_eq!(steps.last(), Some(&Step::Rebooted));
+    assert!(
+        !steps.contains(&Step::Rebooted),
+        "the refusal says the reboot, once: {steps:?}"
+    );
     assert_eq!(read_u16(&mut c, "raw_min"), 82);
     let checked = block_on(check(&mut c, ID, &d, &record())).expect("check");
     assert!(
