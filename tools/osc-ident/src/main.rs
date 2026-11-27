@@ -25,6 +25,7 @@ mod tune;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -35,10 +36,12 @@ use osc_client::pipe::Pipe;
 use osc_client::{BaudRate, Client, Error, Id, mgmt};
 use osc_measure::build;
 use osc_measure::install::{self, Step};
+use osc_measure::run::{At, Host, Store};
 use osc_measure::set::{self, FromRules};
 use serde_json::json;
 
-use crate::files::DirSink;
+use crate::files::Fs;
+use crate::steps::Load;
 
 /// The table layouts this tool knows, compiled from the checked-in export.
 const DESCRIPTORS: &[&str] = &[include_str!("../../../descriptors/osc-servo/0.1.json")];
@@ -318,6 +321,25 @@ fn ended<T>(
 /// never cut short.
 static STOP: AtomicBool = AtomicBool::new(false);
 
+/// The name a run's records carry.
+const TOOL: &str = concat!("osc-ident ", env!("CARGO_PKG_VERSION"));
+
+fn unix_s() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// The run's host: the file system, the system clock, `stop`.
+fn host<'a>(files: &'a mut dyn Store, stop: &'a AtomicBool) -> Host<'a> {
+    Host {
+        files,
+        clock: &unix_s,
+        stop,
+        tool: TOOL,
+    }
+}
+
 #[derive(clap::Args, Debug)]
 struct WriteArgs {
     /// The table file of a LIVE set's points; `<pair>.pos_lut.json` beside the set if omitted.
@@ -497,7 +519,10 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
             let file = files::set(set)?;
             let table = files::table_for(set, &file, w.table.as_deref())?;
             let root = files::run_folder(out, &servo_name(c, id).await?)?;
-            let mut sink = DirSink { root };
+            let mut sink = At {
+                files: &mut Fs,
+                root,
+            };
             install::save(
                 c,
                 id,

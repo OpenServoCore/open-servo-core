@@ -1,103 +1,38 @@
-//! `run`: the whole identification in one command. The measurement chain
-//! through the spins (`step spins`'s own: rest, probe, stops, table,
-//! window, spins), then, every step accepted, the
-//! gather into `<run folder>/inputs/` and the tune into
-//! `<run folder>/tune/`; on the set the tune accepts, the cruise step, the
-//! gather again and the final set's check into `<run folder>/final/`,
-//! backed off down the tune's tries on a refusal on rest error alone
-//! ([`crate::finish`]). Every argument is checked before the bus is
-//! touched.
+//! `run` on the file system: [`osc_measure::run`], the run folder under
+//! `--out`.
 
-use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
-use serde_json::{Value, json};
+use osc_measure::run as of;
 
-use crate::files;
-use crate::steps::{self, StepInputs};
+pub use osc_measure::run::RunArgs;
 
-/// What `run` was given.
-pub struct RunArgs<'a> {
-    pub nameplate: &'a Path,
-    pub policy: &'a Path,
-    pub out: &'a Path,
-    pub tries: u32,
-}
+use crate::files::Fs;
+use crate::steps::StepInputs;
+#[cfg(test)]
+use {
+    crate::files,
+    crate::steps::{self, Load},
+    serde_json::Value,
+    std::path::Path,
+};
 
-fn unix_s() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64())
-}
-
-/// The refusals that need no servo: the files parse, the profile and the
-/// policy resolve, the profile states its heat model, and `--tries` is at
-/// least 1.
+/// The refusals that need no servo ([`of::admit`]), each line said about
+/// the files read printed to stderr.
 pub fn admit(a: &RunArgs) -> Result<StepInputs> {
-    if a.tries == 0 {
-        bail!("--tries is at least 1");
+    let mut said = Vec::new();
+    let admitted = of::admit(&mut Fs, a, &mut said);
+    for n in &said {
+        eprintln!("{n}");
     }
-    let i = StepInputs::load(Some(a.nameplate), Some(a.policy))?;
-    if i.thermal.is_none() {
-        bail!(
-            "{}: {}",
-            a.nameplate.display(),
-            osc_ident_inputs::no_heat_model()
-        );
-    }
-    Ok(i)
+    admitted
 }
 
-/// The command line that runs `run` again as given.
-fn again(id: Id, a: &RunArgs) -> String {
-    format!(
-        "osc-ident --id {} run --nameplate {} --policy {} --out {} --tries {}",
-        id.as_byte(),
-        a.nameplate.display(),
-        a.policy.display(),
-        a.out.display(),
-        a.tries
-    )
-}
-
-/// The run folder's manifest with the gather and the tune beside its
-/// steps.
-fn record(root: &Path, gather: Value, tune: Value) -> Result<()> {
-    let p = root.join("run.json");
-    let mut doc: Value = serde_json::from_slice(&files::read(&p)?)
-        .with_context(|| format!("parsing {}", p.display()))?;
-    doc["gather"] = gather;
-    doc["tune"] = tune;
-    let mut text = serde_json::to_vec_pretty(&doc)?;
-    text.push(b'\n');
-    std::fs::write(&p, text).with_context(|| format!("writing {}", p.display()))
-}
-
-/// The cruise step and the final check beside the tune in `run.json`.
-fn record_finish(root: &Path, cruise: Value, last: Value) -> Result<()> {
-    let p = root.join("run.json");
-    let mut doc: Value = serde_json::from_slice(&files::read(&p)?)
-        .with_context(|| format!("parsing {}", p.display()))?;
-    doc["cruise"] = cruise;
-    doc["final"] = last;
-    let mut text = serde_json::to_vec_pretty(&doc)?;
-    text.push(b'\n');
-    std::fs::write(&p, text).with_context(|| format!("writing {}", p.display()))
-}
-
-fn not_run(why: &str) -> Value {
-    json!({"state": "not run", "why": why})
-}
-
-/// `run` on the servo: the lines it prints, and whether the tune accepted
-/// a set; the final set's verdict is in the lines and in `run.json`. The
-/// arguments are [`admit`]ted before anything goes on the bus.
-#[allow(clippy::too_many_arguments)]
+/// `run` on the servo ([`of::run`]), the arguments [`admit`]ted first.
 pub async fn run<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -107,42 +42,10 @@ pub async fn run<P: Pipe>(
     stop: &AtomicBool,
 ) -> Result<(Vec<String>, bool)> {
     let inputs = admit(a)?;
-    let (mut lines, measured, root) =
-        steps::step_spins(c, id, d, &inputs, a.out, servo, stop).await?;
-    if !measured {
-        let why = "not every step was accepted";
-        record(&root, not_run(why), not_run(why))?;
-        record_finish(&root, not_run(why), not_run(why))?;
-        lines.push(format!(
-            "the run stops: {why}, so nothing is gathered or tuned; to run it again: {}",
-            again(id, a)
-        ));
-        return Ok((lines, false));
-    }
-    let (more, accepted) = gather_and_tune(c, id, d, a, &root, stop).await?;
-    lines.extend(more);
-    if !accepted {
-        let why = "the tune accepted no set";
-        record_finish(&root, not_run(why), not_run(why))?;
-        return Ok((lines, false));
-    }
-    match crate::finish::finish(c, id, d, a, &root, stop).await {
-        Ok(f) => {
-            record_finish(&root, f.cruise, f.last)?;
-            lines.extend(f.lines);
-        }
-        Err(e) => {
-            let why = format!("the run folder could not be read for the cruise: {e:#}");
-            record_finish(&root, not_run(&why), not_run(&why))?;
-            lines.push(format!("{why}; nothing was written, the tune's set stays"));
-        }
-    }
-    Ok((lines, accepted))
+    of::run(c, id, d, &mut crate::host(&mut Fs, stop), a, &inputs, servo).await
 }
 
-/// The gather of the run folder `root`, its steps all accepted, into
-/// `inputs/`, then the tune from it into `tune/`, both recorded in its
-/// `run.json`.
+#[cfg(test)]
 async fn gather_and_tune<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -151,80 +54,7 @@ async fn gather_and_tune<P: Pipe>(
     root: &Path,
     stop: &AtomicBool,
 ) -> Result<(Vec<String>, bool)> {
-    let mut lines = Vec::new();
-    let inputs_dir = root.join("inputs");
-    let t0 = unix_s();
-    let gathered = crate::gather::gather(root, a.nameplate, a.policy, &inputs_dir);
-    let t1 = unix_s();
-    let gather_files: Vec<String> = [
-        "measured.json",
-        "pos_lut.json",
-        "cross-checks.json",
-        "nameplate.json",
-        "policy.json",
-        "resolved.json",
-        "thermal.json",
-    ]
-    .iter()
-    .filter(|f| **f != "thermal.json" || inputs_dir.join(f).exists())
-    .map(|f| format!("inputs/{f}"))
-    .collect();
-    match gathered {
-        Err(e) => {
-            let why = format!("{e:#}");
-            record(
-                root,
-                json!({"state": "refused", "why": why, "started": t0, "ended": t1}),
-                not_run("the gather was refused"),
-            )?;
-            lines.push(format!("gather refused: {why}"));
-            lines.push("the run stops: nothing is tuned".into());
-            return Ok((lines, false));
-        }
-        Ok(g) => {
-            lines.push(format!("gather into {}:", inputs_dir.display()));
-            lines.extend(g.into_iter().map(|l| format!("  {l}")));
-        }
-    }
-    let gather = json!({"state": "accepted", "why": null, "started": t0, "ended": t1, "files": gather_files});
-
-    let tune_dir = root.join("tune");
-    let tuned = crate::tune::tune(c, id, d, &inputs_dir, &tune_dir, a.tries, stop).await;
-    let t2 = unix_s();
-    match tuned {
-        Err(e) => {
-            let why = format!("{e:#}");
-            record(
-                root,
-                gather,
-                json!({"state": "refused", "why": why, "started": t1, "ended": t2}),
-            )?;
-            lines.push(format!("tune refused: {why}"));
-            lines.push(format!(
-                "nothing was written; the measured inputs are kept: osc-ident --id {} tune --inputs {} --out {} --tries {} continues from them",
-                id.as_byte(),
-                inputs_dir.display(),
-                tune_dir.display(),
-                a.tries
-            ));
-            Ok((lines, false))
-        }
-        Ok((tune_lines, accepted)) => {
-            let mut files = vec!["tune/tune.json".to_string()];
-            if accepted {
-                files.push("tune/set.json".into());
-            }
-            record(
-                root,
-                gather,
-                json!({"state": if accepted { "accepted" } else { "refused" }, "why": null,
-                       "started": t1, "ended": t2, "files": files}),
-            )?;
-            lines.push(format!("tune into {}:", tune_dir.display()));
-            lines.extend(tune_lines);
-            Ok((lines, accepted))
-        }
-    }
+    of::gather_and_tune(c, id, d, &mut crate::host(&mut Fs, stop), a, root).await
 }
 
 #[cfg(test)]
@@ -536,6 +366,384 @@ mod tests {
             i.thermal.and_then(|t| t.fast_tau_s).map(|q| q.source.file),
             Some(testdata("mg90-d/thermal.json").display().to_string())
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// The run into memory, as the browser keeps it, against the same run on
+/// disk, as the CLI keeps it.
+#[cfg(test)]
+mod parity {
+    use std::cell::Cell;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
+
+    use futures_lite::future::block_on;
+    use osc_client::BaudRate;
+    use osc_client::descriptor::Descriptor;
+    use osc_client::fake::{FakePipe, TelSample, TelemetryTick};
+    use osc_client::{Client, Id, mgmt};
+    use osc_measure::guard::{Exit, Way};
+    use osc_measure::install::{self, Refused};
+    use osc_measure::run::{self as of, Host, RunArgs, Store};
+    use osc_measure::scorecard::REST;
+    use osc_measure::sink::MemSink;
+    use osc_measure::steps::cruise::{self, CruiseInputs, Cruised};
+    use osc_measure::steps::verify::{self, Verified, VerifyInputs};
+    use osc_measure::steps::{Check, Ended, Rig, Verdict};
+    use serde_json::{Value, json};
+
+    use crate::files::{self, Fs};
+
+    const ID: Id = Id::new(1);
+    const TOOL: &str = "osc-ident parity";
+
+    fn testdata(rel: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../measure/testdata")
+            .join(rel)
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("osc-ident-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("scratch");
+        p
+    }
+
+    /// A clock that reads a quarter second later each time, from the same
+    /// instant on every run.
+    fn clock() -> impl Fn() -> f64 {
+        let t = Cell::new(1_764_000_000.0);
+        move || {
+            let now = t.get();
+            t.set(now + 0.25);
+            now
+        }
+    }
+
+    /// A servo at rest, a count or so of noise on each channel.
+    fn resting() -> Vec<TelSample> {
+        let noise = |i: u32, k: u32| {
+            let mut h = i.wrapping_mul(0x9E37_79B9) ^ k.wrapping_mul(0x85EB_CA6B);
+            h ^= h >> 15;
+            h = h.wrapping_mul(0x2C1B_3C6D);
+            h ^= h >> 12;
+            (h % 3) as i32 - 1
+        };
+        (0..4096u32)
+            .map(|i| {
+                let at = |base: i32, k: u32| (base + noise(i, k)) as u16;
+                TelSample {
+                    tick: TelemetryTick {
+                        _scan: [0; 9],
+                        pos: at(2041, 1),
+                        vbus_raw: at(1241, 3),
+                        ntc_raw: at(2010, 4),
+                        current_raw: at(1206, 5),
+                        vmotor_a: at(773, 6),
+                        vmotor_b: at(772, 7),
+                        duty_ticks: 0,
+                        current_trough: at(1206, 8),
+                        i_tick_counts: 0,
+                        vdiff_counts: 0,
+                        vmotor_a_trough: at(773, 9),
+                        vmotor_b_trough: at(772, 10),
+                        tick_flags: 0,
+                        sample_tick: i,
+                    },
+                    vbus_counts: 2000,
+                }
+            })
+            .collect()
+    }
+
+    fn fake() -> (Client<FakePipe>, Descriptor) {
+        let mut pipe = FakePipe::new(BaudRate::B3000000, &[1]);
+        pipe.seed_calibrated(0);
+        let mut c = block_on(Client::connect(pipe)).expect("connect");
+        c.pipe_mut().set_track(0, resting());
+        (c, crate::descriptor_builtin().expect("descriptor"))
+    }
+
+    /// Every file under `dir` on disk, by its full path, with its bytes.
+    fn on_disk(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut names = Vec::new();
+        of::finish::tree(&Fs, dir, "", &mut names).expect("tree");
+        names
+            .into_iter()
+            .map(|n| {
+                let p = dir.join(&n);
+                (p.display().to_string(), std::fs::read(&p).expect("read"))
+            })
+            .collect()
+    }
+
+    /// Every file of `m` under `dir`, as [`on_disk`] lists them.
+    fn in_memory(m: &MemSink, dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let prefix = format!("{}/", dir.display());
+        m.files
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// A memory store holding the given files from disk at their paths.
+    fn holding(paths: &[PathBuf]) -> MemSink {
+        let mut m = MemSink::default();
+        for p in paths {
+            m.write_file(p, &std::fs::read(p).expect("read"))
+                .expect("write");
+        }
+        m
+    }
+
+    fn given() -> [PathBuf; 3] {
+        [
+            testdata("mg90-d/nameplate.json"),
+            testdata("mg90-d/policy.json"),
+            testdata("mg90-d/thermal.json"),
+        ]
+    }
+
+    /// `run` on the simulated servo, which runs no shunt burst, so the run
+    /// stops at the probe: into memory it says the same lines and writes
+    /// the same files, path for path and byte for byte, as on disk.
+    #[test]
+    fn a_run_into_a_mem_sink_writes_what_the_cli_writes() {
+        let dir = scratch("parity-run");
+        let out = dir.join("out");
+        let [nameplate, policy, _] = given();
+        let a = RunArgs {
+            nameplate: &nameplate,
+            policy: &policy,
+            out: &out,
+            tries: 6,
+        };
+        let run = |files: &mut dyn Store| {
+            let (mut c, d) = fake();
+            let mut said = Vec::new();
+            let inputs = of::admit(files, &a, &mut said).expect("admitted");
+            let stop = AtomicBool::new(false);
+            let clock = clock();
+            let mut host = Host {
+                files,
+                clock: &clock,
+                stop: &stop,
+                tool: TOOL,
+            };
+            let ran = block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid"));
+            (said, ran.expect("runs"))
+        };
+        let disk = run(&mut Fs);
+        let mut m = holding(&given());
+        let mem = run(&mut m);
+        assert!(disk.0.len() >= 2, "{:?}", disk.0);
+        assert!(!disk.1.1, "the simulated servo's run stops at the probe");
+        assert_eq!(mem, disk, "the same lines");
+        let files = on_disk(&out);
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        for f in ["run.json", "inputs/board.json", "results/probe.json"] {
+            assert!(names.iter().any(|n| n.ends_with(f)), "{f}: {names:?}");
+        }
+        assert!(names.iter().any(|n| n.contains("/captures/rest/")));
+        assert_eq!(in_memory(&m, &out), files, "the same files");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn ended(way: Way) -> Ended {
+        Ended {
+            way,
+            why: (way != Way::Done).then(|| "scripted".into()),
+            exit: Exit {
+                lines: vec![],
+                torque_off: true,
+                rebooted: false,
+            },
+            lines: vec![],
+        }
+    }
+
+    /// The servo of record holding the tune's set `set`, volatile.
+    fn tuned_servo(
+        set: &osc_measure::set::SetFile,
+        points: Option<&[i16; osc_client::pos_lut::INTERVALS]>,
+    ) -> Client<FakePipe> {
+        let mut inner = FakePipe::new(BaudRate::B3000000, &[1]);
+        inner.seed_calibrated(0);
+        let mut c = block_on(Client::connect(inner)).expect("connect");
+        let d = crate::descriptor_builtin().expect("descriptor");
+        let rec = files::set(&testdata("mg90-d/constants.json")).expect("record");
+        let table = files::table(&testdata("mg90-d/pos_lut.json")).expect("table");
+        block_on(install::install(
+            &mut c,
+            ID,
+            &d,
+            &rec,
+            Some(&table.points),
+            &mut Vec::new(),
+        ))
+        .expect("the record installs");
+        block_on(mgmt::save(&mut c, ID)).expect("save");
+        block_on(install::install(
+            &mut c,
+            ID,
+            &d,
+            set,
+            points,
+            &mut Vec::new(),
+        ))
+        .expect("the tune's set installs");
+        c
+    }
+
+    /// The finish on a run folder as the tune leaves it, its cruise and
+    /// checks scripted (refused on rest error, then accepted, so it backs
+    /// off once): into memory it says the same lines and writes the same
+    /// `final/` and `tune/` files as on disk.
+    #[test]
+    fn a_finish_into_a_mem_sink_writes_what_the_cli_writes() {
+        let dir = scratch("parity-finish");
+        let root = dir.join("uid/run");
+        std::fs::create_dir_all(root.join("results")).expect("mkdir");
+        files::step_0(&root);
+        for f in ["rest", "probe", "stops", "window", "spins"] {
+            std::fs::copy(
+                testdata(&format!("gather/{f}.json")),
+                root.join(format!("results/{f}.json")),
+            )
+            .expect("copy");
+        }
+        let [nameplate, policy, _] = given();
+        let inputs = root.join("inputs");
+        crate::gather::gather(&root, &nameplate, &policy, &inputs).expect("gathers");
+        let d = crate::descriptor_builtin().expect("descriptor");
+        let r = files::rules_inputs(&inputs, None).expect("inputs");
+        let measured: Value =
+            serde_json::from_slice(&std::fs::read(inputs.join("measured.json")).expect("read"))
+                .expect("json");
+        let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
+        let k0 = osc_measure::rules::speed_loop::starting_gain(&r.inputs).expect("k0");
+        let (set, _, _) = crate::tune::set_at(
+            &r,
+            &measured,
+            k0,
+            &crate::tune::Checked::default(),
+            &pair,
+            &d,
+        )
+        .expect("the tune's set");
+        std::fs::create_dir_all(root.join("tune")).expect("mkdir");
+        std::fs::write(root.join("tune/set.json"), set.render()).expect("set");
+        std::fs::write(
+            root.join("tune/tune.json"),
+            json!({"starting_gain": k0, "tries": [{"try": 1, "kp": k0, "next": "accept"}],
+                   "accepted": {"try": 1, "kp": k0, "speed_kp_verified": k0, "set": set.hash()}})
+            .to_string(),
+        )
+        .expect("tune.json");
+        // the tune's accepted check, as the tune keeps it; a file not there
+        // is said in the host's own words, which differ between the stores
+        let check = root.join(format!("tune/tries/01/{}", verify::RESULT));
+        std::fs::create_dir_all(check.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &check,
+            json!({"step": "verify", "verdict": "accepted"}).to_string(),
+        )
+        .expect("verify.json");
+        let mut before: Vec<PathBuf> = on_disk(&dir).into_iter().map(|(n, _)| n.into()).collect();
+        before.extend(given());
+        let mut m = holding(&before);
+
+        let points = r.table.as_ref().map(|t| t.points);
+        let cruise_doc: Value =
+            serde_json::from_slice(&std::fs::read(testdata("gather/cruise.json")).expect("read"))
+                .expect("json");
+        let a = RunArgs {
+            nameplate: &nameplate,
+            policy: &policy,
+            out: &dir,
+            tries: 6,
+        };
+        let finish = |files: &mut dyn Store| {
+            let mut c = tuned_servo(&set, points.as_ref());
+            let stop = AtomicBool::new(false);
+            let clock = clock();
+            let mut host = Host {
+                files,
+                clock: &clock,
+                stop: &stop,
+                tool: TOOL,
+            };
+            let mut checks = 0;
+            let f = block_on(of::finish::finish_with(
+                &mut c,
+                ID,
+                &d,
+                &mut host,
+                &a,
+                &root,
+                async |rig: &mut Rig<'_, FakePipe>, _: &CruiseInputs<'_>| {
+                    rig.sink
+                        .write(cruise::RESULT, cruise_doc.to_string().as_bytes())
+                        .map_err(|e| Refused(e.0))?;
+                    Ok::<_, Refused>(Cruised {
+                        ended: ended(Way::Done),
+                        checks: vec![],
+                        result: Some(cruise_doc.clone()),
+                    })
+                },
+                async |rig: &mut Rig<'_, FakePipe>, _: &VerifyInputs<'_>| {
+                    checks += 1;
+                    let (way, failed): (Way, &[&str]) = if checks == 1 {
+                        (Way::Refused, &[REST])
+                    } else {
+                        (Way::Done, &[])
+                    };
+                    rig.sink
+                        .write(
+                            verify::RESULT,
+                            json!({"verdict": way.name(), "failed_on": failed})
+                                .to_string()
+                                .as_bytes(),
+                        )
+                        .map_err(|e| Refused(e.0))?;
+                    let verdict = if way == Way::Done {
+                        Verdict::Pass
+                    } else {
+                        Verdict::Fail
+                    };
+                    let name = failed.first().copied().unwrap_or("scripted");
+                    Ok::<_, Refused>(Verified {
+                        ended: ended(way),
+                        checks: vec![Check {
+                            name: name.into(),
+                            value: "scripted".into(),
+                            bound: "scripted".into(),
+                            verdict,
+                        }],
+                        result: None,
+                    })
+                },
+            ))
+            .expect("finishes");
+            (f.lines, f.cruise, f.last)
+        };
+        let disk = finish(&mut Fs);
+        let mem = finish(&mut m);
+        assert_eq!(disk.2["state"], "accepted", "{}", disk.2);
+        assert_eq!(disk.2["checks"], json!([2, 3]), "{}", disk.2);
+        assert_eq!(mem, disk, "the same lines and records");
+        let files = on_disk(&dir);
+        for f in [
+            "final/set.json",
+            "final/inputs/measured.json",
+            "tune/back-off.json",
+        ] {
+            assert!(files.iter().any(|(n, _)| n.ends_with(f)), "{f}");
+        }
+        assert_eq!(in_memory(&m, &dir), files, "the same files");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
