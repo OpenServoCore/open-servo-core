@@ -36,7 +36,7 @@ use osc_client::pipe::Pipe;
 use osc_client::{BaudRate, Client, Error, Id, mgmt};
 use osc_measure::build;
 use osc_measure::install::{self, Step};
-use osc_measure::run::{At, Host, Store, quiet};
+use osc_measure::run::{At, Host, Store, quiet, servo_name};
 use osc_measure::set::{self, FromRules};
 use serde_json::json;
 
@@ -474,31 +474,6 @@ async fn check<P: Pipe>(
         );
     }
     Ok(checked.clean())
-}
-
-/// The servo's name in a run folder: its chip id as the bus says it.
-/// Refused when the discovery fails or names no servo of `id`: the servo
-/// answered its id a moment ago, so something is already wrong.
-async fn servo_name<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<String> {
-    let found = mgmt::discover(c)
-        .await
-        .with_context(|| format!("the discovery of servo {} failed", id.as_byte()))?;
-    match found.iter().find(|f| f.id == id) {
-        Some(f) => Ok(format!("{:?}", f.uid)),
-        None => bail!(
-            "the discovery found no servo of id {} (ids: {}), though it answers a ping: no run folder without its chip id",
-            id.as_byte(),
-            if found.is_empty() {
-                "none".into()
-            } else {
-                found
-                    .iter()
-                    .map(|f| f.id.as_byte().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        ),
-    }
 }
 
 async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cmd) -> Result<()> {

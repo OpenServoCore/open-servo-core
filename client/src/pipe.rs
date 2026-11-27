@@ -10,7 +10,7 @@ pub const VID: u16 = 0x1209;
 pub const PID: u16 = 0x0001;
 
 /// A stalled OPEN_SESSION request: the adapter firmware predates it.
-#[cfg(any(feature = "nusb", feature = "webusb"))]
+#[cfg(any(feature = "nusb", all(feature = "webusb", target_arch = "wasm32")))]
 pub(crate) const OLD_ADAPTER: &str =
     "the adapter refused OPEN_SESSION: its firmware is too old, reflash it";
 

@@ -5,7 +5,7 @@
 
 use osc_host::link::record::OSC_EXCHANGE;
 use osc_integration::sim::{RamStore, Sim, WireFrame};
-use osc_protocol::wire::{BaudRate, Id};
+use osc_protocol::wire::{BaudRate, Id, UID_LEN};
 use osc_servo_core::ControlTable;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
 use osc_servo_core::kernel::belt;
@@ -149,6 +149,22 @@ impl Winding {
 /// periods.
 pub fn heat_tau_s(thermal_tau_s: u16) -> f64 {
     (1u32 << tau_shift(thermal_tau_s)) as f64 * SLOW_PERIOD_MS as f64 / 1000.0
+}
+
+/// A simulated servo's UID from its id, splitmix64 over it: the same roster
+/// always discovers the same UIDs, and they carry a real part's entropy
+/// rather than a run of zeros.
+pub fn uid_of(id: u8) -> [u8; UID_LEN] {
+    let mut s = 0x05C0_DE00_0000_0000 | id as u64;
+    let mut out = [0u8; UID_LEN];
+    for w in out.chunks_mut(8) {
+        s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = s;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        w.copy_from_slice(&(z ^ (z >> 31)).to_le_bytes());
+    }
+    out
 }
 
 pub struct FakePipe {

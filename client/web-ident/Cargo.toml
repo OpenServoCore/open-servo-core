@@ -1,0 +1,36 @@
+[package]
+name        = "osc-client-web-ident"
+version     = "0.1.0"
+edition     = "2024"
+description = "The identification run in the browser: osc-measure's run over the osc-adapter by WebUSB, the run folder handed back as files. A package of its own, loaded only on the run screen."
+license     = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["fake"]
+# One simulated servo at rest, no hardware: the run screen and its browser
+# tests run offline, as osc-client-web's own fake does.
+fake = ["osc-client/fake-adapter"]
+
+[dependencies]
+anyhow             = "1"
+osc-client         = { path = "..", default-features = false, features = ["webusb"] }
+osc-measure        = { path = "../../measure" }
+serde              = { version = "1", features = ["derive"] }
+serde_bytes        = "0.11"
+serde-wasm-bindgen = "0.6"
+tsify              = { version = "0.5", default-features = false, features = ["js"] }
+wasm-bindgen       = "0.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys               = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+futures-lite = "2"
+serde_json   = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

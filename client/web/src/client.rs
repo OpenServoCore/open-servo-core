@@ -1,17 +1,22 @@
 //! The adapter client as a JS class. One command in flight is the adapter
 //! contract, so the wrapped client sits in a RefCell and an overlapping
 //! call fails with "busy" rather than queueing.
+//!
+//! `release` and `reclaim` hand the device to another wasm module and take
+//! it back (the identification run's): the modules hold separate memories,
+//! so they cannot share a client, and one owner of the bus at a time means
+//! this client is closed while the other holds the device.
 
 // The RefMut is held across the await on purpose: it IS the busy gate.
 #![allow(clippy::await_holding_refcell_ref)]
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{Cell, RefCell, RefMut};
 use std::time::Duration;
 
 use osc_client::boot::Image;
 use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
-use osc_client::webusb::{UsbDevice, WebUsbPipe};
+use osc_client::webusb::{UsbDevice, WebUsbPipe, close_device};
 use osc_client::{
     Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, mgmt, pos_lut, store_state,
 };
@@ -50,6 +55,26 @@ enum Backend {
     Fake(Box<Client<FakePipe>>),
 }
 
+/// Where the client stands: open on a backend, its device lent to another
+/// module, or closed for good.
+enum State {
+    Open(Backend),
+    Lent(Lent),
+    Closed,
+}
+
+/// What `release` keeps for `reclaim`.
+enum Lent {
+    Usb {
+        device: UsbDevice,
+        guard: Duration,
+    },
+    // The simulated fleet lives in this module, so nothing else can open
+    // it; it is set aside so the client still answers "released".
+    #[cfg(feature = "fake")]
+    Fake(Box<Client<FakePipe>>),
+}
+
 /// Run one command body against whichever backend is open, so each command
 /// stays a single line and the two transports never drift apart.
 macro_rules! cmd {
@@ -68,8 +93,8 @@ macro_rules! cmd {
 
 #[wasm_bindgen]
 pub struct OscClient {
-    inner: RefCell<Option<Backend>>,
-    info: osc_client::session::LinkInfo,
+    inner: RefCell<State>,
+    info: Cell<osc_client::session::LinkInfo>,
 }
 
 #[wasm_bindgen]
@@ -79,28 +104,103 @@ impl OscClient {
         let pipe = WebUsbPipe::open(device).await?;
         let c = Client::connect(pipe).await?;
         Ok(OscClient {
-            info: c.info(),
-            inner: RefCell::new(Some(Backend::Usb(c))),
+            info: Cell::new(c.info()),
+            inner: RefCell::new(State::Open(Backend::Usb(c))),
         })
     }
 
     pub async fn close(&self) -> Result<(), JsError> {
-        let b = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .take()
-            .ok_or_else(closed)?;
-        match b {
-            Backend::Usb(c) => Ok(c.into_pipe().close().await?),
+        let mut g = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        match std::mem::replace(&mut *g, State::Closed) {
+            State::Open(Backend::Usb(c)) => Ok(c.into_pipe().close().await?),
             #[cfg(feature = "fake")]
-            Backend::Fake(_) => Ok(()),
+            State::Open(Backend::Fake(_)) => Ok(()),
+            // The device is the other module's until reclaim.
+            State::Lent(_) => Ok(()),
+            State::Closed => Err(closed()),
+        }
+    }
+
+    /// Close the device for another module to open, keeping this client:
+    /// every command answers "released" until `reclaim`. Resolves to the
+    /// device, or undefined for the simulated adapter, which no other
+    /// module can open.
+    #[wasm_bindgen(unchecked_return_type = "USBDevice | undefined")]
+    pub async fn release(&self) -> Result<JsValue, JsError> {
+        let mut g = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        match std::mem::replace(&mut *g, State::Closed) {
+            State::Open(Backend::Usb(c)) => {
+                let guard = c.guard();
+                let pipe = c.into_pipe();
+                let device = pipe.device().clone();
+                *g = State::Lent(Lent::Usb {
+                    device: device.clone(),
+                    guard,
+                });
+                pipe.close().await?;
+                Ok(device.into())
+            }
+            #[cfg(feature = "fake")]
+            State::Open(Backend::Fake(c)) => {
+                *g = State::Lent(Lent::Fake(c));
+                Ok(JsValue::UNDEFINED)
+            }
+            s @ State::Lent(_) => {
+                *g = s;
+                Err(released())
+            }
+            State::Closed => Err(closed()),
+        }
+    }
+
+    /// Open the device `release` lent again: a new session (GET_INFO), the
+    /// guard as it was, then the bus rate found. Resolves to that rate,
+    /// undefined when no servo answers at any rate; the client is open
+    /// either way.
+    pub async fn reclaim(&self) -> Result<Option<Ts<BaudRate>>, JsError> {
+        let mut g = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let lent = match std::mem::replace(&mut *g, State::Closed) {
+            State::Lent(l) => l,
+            s @ State::Open(_) => {
+                *g = s;
+                return Err(JsError::new("reclaim: the client holds the bus"));
+            }
+            State::Closed => return Err(closed()),
+        };
+        match lent {
+            Lent::Usb { device, guard } => {
+                let pipe = match WebUsbPipe::open(device.clone()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        *g = State::Lent(Lent::Usb { device, guard });
+                        return Err(e.into());
+                    }
+                };
+                let mut c = match Client::connect(pipe).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = close_device(&device).await;
+                        *g = State::Lent(Lent::Usb { device, guard });
+                        return Err(e.into());
+                    }
+                };
+                c.set_guard(guard);
+                self.info.set(c.info());
+                *g = State::Open(Backend::Usb(c));
+            }
+            #[cfg(feature = "fake")]
+            Lent::Fake(c) => *g = State::Open(Backend::Fake(c)),
+        }
+        drop(g);
+        match cmd!(self, |c| mgmt::find_bus_baud(c).await?) {
+            Some(r) => Ok(Some(BaudRate::from(r).into_ts()?)),
+            None => Ok(None),
         }
     }
 
     #[wasm_bindgen(js_name = linkInfo)]
     pub fn link_info(&self) -> Result<Ts<LinkInfo>, JsError> {
-        Ok(LinkInfo::from(self.info).into_ts()?)
+        Ok(LinkInfo::from(self.info.get()).into_ts()?)
     }
 
     /// Client-side watchdog on pipe delivery, for every later command.
@@ -457,8 +557,8 @@ impl OscClient {
         let pipe = crate::fake::pipe(fleet).map_err(|e| JsError::new(&e))?;
         let c = Client::connect(pipe).await?;
         Ok(OscClient {
-            info: c.info(),
-            inner: RefCell::new(Some(Backend::Fake(Box::new(c)))),
+            info: Cell::new(c.info()),
+            inner: RefCell::new(State::Open(Backend::Fake(Box::new(c)))),
         })
     }
 }
@@ -505,12 +605,21 @@ async fn burst<P: Pipe>(
 impl OscClient {
     fn backend(&self) -> Result<RefMut<'_, Backend>, JsError> {
         let g = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        RefMut::filter_map(g, Option::as_mut).map_err(|_| closed())
+        let lent = matches!(*g, State::Lent(_));
+        RefMut::filter_map(g, |s| match s {
+            State::Open(b) => Some(b),
+            _ => None,
+        })
+        .map_err(|_| if lent { released() } else { closed() })
     }
 }
 
 fn busy() -> JsError {
     JsError::new("busy: a command is in flight")
+}
+
+fn released() -> JsError {
+    JsError::new("released: another module holds the bus until reclaim")
 }
 
 fn closed() -> JsError {
