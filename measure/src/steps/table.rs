@@ -29,10 +29,10 @@
 //! ```
 //!
 //! Every rung is priced through the envelope before it is sent. After a
-//! free rung the shaft rests inside both guards, no faster than its bound;
-//! after a stop rung it rests on the stop. A burst that lost a row is
-//! taken again once, then the step ends. The way out leaves the shaft at
-//! the middle of the stops.
+//! free rung the shaft rests inside both guards, no further than its
+//! priced travel; after a stop rung it rests on the stop. A burst that
+//! lost a row is taken again once, then the step ends. The way out leaves
+//! the shaft at the middle of the stops.
 //!
 //! The reading ([`judge`]): the wide-code slots from the slow passes'
 //! rows more than [`NEAR_STOP_COUNTS`] inside both stops, then one pooled
@@ -506,7 +506,11 @@ pub fn read_rung(dir: i8, start: f64, drive: &[TelFrame], end: f64, fs: f64) -> 
 }
 
 /// The checks after a rung, at rest: it turned, it stayed inside both
-/// guards, and it ran no faster than its bound.
+/// guards, and it ran no further than the travel it was priced at. Its
+/// pot speed is reported, never judged: the pot's slope differs along
+/// the travel (the bench servo's reads 1.24x steep over its upper
+/// stretch), so a tail's slope against another stretch's misreads the
+/// shaft's speed by the whole free margin.
 pub fn after(p: &RungPlan, r: &RungRead, band: &Band, what: &str) -> Result<(), String> {
     if r.drive_travel < MOVE_MIN_COUNTS {
         return Err(format!(
@@ -514,26 +518,25 @@ pub fn after(p: &RungPlan, r: &RungRead, band: &Band, what: &str) -> Result<(), 
             r.drive_travel
         ));
     }
-    let too_fast = |why: String| {
+    let too_far = |why: String| {
         format!(
-            "{what} {why}: it ran {:.0} counts from {:.0} to {:.0} against a bound of {:.0}, at {:.0} counts/s against a bound of {:.0} from {:.0} seen. It ran faster than any speed the run had seen that way allows; nothing more drives: check that nothing changed on the horn, then start again",
+            "{what} {why}: it ran {:.0} counts from {:.0} to {:.0} against the {:.0} it was priced at, {FREE_MARGIN} x the {:.0} counts/s seen that way, its pot reading {:.0} counts/s. It ran further than any speed the run had seen that way allows; nothing more drives: check that nothing changed on the horn, then start again",
             r.travel,
             r.start,
             r.end,
             p.travel_bound(),
-            r.speed_cps,
-            p.bound_speed,
-            p.fastest_cps
+            p.fastest_cps,
+            r.speed_cps
         )
     };
     if !band.holds(r.end) {
-        return Err(too_fast(format!(
+        return Err(too_far(format!(
             "ended at {:.0}, outside the guards {:.0}..{:.0}",
             r.end, band.lo, band.hi
         )));
     }
-    if r.speed_cps > p.bound_speed {
-        return Err(too_fast("ran faster than its bound".into()));
+    if r.travel > p.travel_bound() {
+        return Err(too_far("ran past its priced travel".into()));
     }
     Ok(())
 }
@@ -3518,9 +3521,9 @@ mod tests {
     /// The plan's schedule cut to one slow and one fast round trip on the
     /// simulated motor: the half pass and each slow pass end at rest on
     /// their stop through a stop rung under the permit, each free and fast
-    /// rung rests inside its guards under its bound, the first fast pass
-    /// runs at half length, and the shaft ends at the middle with torque
-    /// off. The reading is accepted: the converter's slots, the points
+    /// rung rests inside its guards and its priced travel, the first fast
+    /// pass runs at half length, and the shaft ends at the middle with
+    /// torque off. The reading is accepted: the converter's slots, the points
     /// that straighten the pot's bend, the scale from the ripple (the
     /// nameplate states its brushes, rotor segments and gear ratio), the
     /// stops' span over the travel reported beside it.
@@ -3599,10 +3602,6 @@ mod tests {
             assert!(glo <= end && end <= ghi, "{x}");
             assert!(
                 n(&x["travel_counts"]) <= n(&x["planned"]["travel_bound_counts"]),
-                "{x}"
-            );
-            assert!(
-                n(&x["pot_speed_cps"]) <= n(&x["planned"]["bound_speed_cps"]),
                 "{x}"
             );
         }
@@ -3785,6 +3784,66 @@ mod tests {
         let why = e.why.as_deref().unwrap_or("");
         assert!(
             why.contains("rung 1") && why.contains("outside the guards"),
+            "{why}"
+        );
+        assert!(torque_off(&mut r.c) && e.exit.torque_off, "{}", e.exit);
+        nothing_written(&mut r.sink);
+    }
+
+    /// The pot reads up to 1.33x steep over its upper stretch, as the bench
+    /// servo's reads about 1.24x there: the first free rung up after the
+    /// leave rung turns the shaft at the leave rung's speed, its tail lies
+    /// in the steep stretch and its pot slope reads over 1.25x the leave
+    /// rung's, its travel inside its price. It is accepted and the step
+    /// runs to the end.
+    #[test]
+    fn a_rung_read_fast_by_a_steep_pot_stretch_inside_its_price_is_accepted() {
+        let mut m = motor();
+        m.bend = (2900.0, 300.0, 200.0);
+        let mut r = run(
+            m.clone(),
+            stops_json(&m, APPROACH_Q15, 0.95),
+            REDUCED,
+            testkit::quiet(),
+        );
+        let e = r.out.expect("starts").ended;
+        assert_eq!(e.way, Way::Done, "{:?}\n{}", e.why, e.lines.join("\n"));
+        let res = result(&mut r.sink);
+        assert_eq!(res["verdict"], "accepted");
+        let all = rungs(&res);
+        let steep: Vec<&Value> = all
+            .iter()
+            .filter(|x| x["kind"] == "free" && x["dir"] == 1)
+            .filter(|x| n(&x["pot_speed_cps"]) > n(&x["planned"]["bound_speed_cps"]))
+            .collect();
+        assert!(!steep.is_empty(), "{}", e.lines.join("\n"));
+        for x in steep {
+            assert!(
+                n(&x["travel_counts"]) <= n(&x["planned"]["travel_bound_counts"]),
+                "{x}"
+            );
+        }
+    }
+
+    /// The up legs read at 0.7 of the shaft's speed: the leave rung up,
+    /// cut by the burst well short of the far guard, runs past the travel
+    /// it was priced at and rests inside the guards. The step ends there,
+    /// torque off, nothing written.
+    #[test]
+    fn a_free_rung_past_its_priced_travel_ends_the_step() {
+        let m = motor();
+        let mut stops = stops_json(&m, APPROACH_Q15, 0.95);
+        for l in stops["stops"]["legs"].as_array_mut().expect("legs") {
+            if l["toward"] == "high" {
+                l["secs"] = json!(n(&l["secs"]) * 0.95 / 0.7);
+            }
+        }
+        let mut r = run(m.clone(), stops, REDUCED, testkit::quiet());
+        let e = r.out.expect("starts").ended;
+        assert_eq!(e.way, Way::Refused, "{:?}", e.why);
+        let why = e.why.as_deref().unwrap_or("");
+        assert!(
+            why.contains("pass 2 up, leave") && why.contains("past its priced travel"),
             "{why}"
         );
         assert!(torque_off(&mut r.c) && e.exit.torque_off, "{}", e.exit);
