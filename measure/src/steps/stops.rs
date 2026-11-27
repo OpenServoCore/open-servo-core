@@ -20,7 +20,10 @@
 //! there only under a granted permit (protocol sec 5.8). They are read by
 //! [`crate::fit::seated`]: the first of each group out, the period-pair
 //! fit with no intercept per burst, medians over both stops and both
-//! levels.
+//! levels. The volts are read over the board's terminal offset (stage 1
+//! terminal-chain) and R and L over its window scale (stage 1
+//! sample-timing), the identification notebook's two board terms
+//! ([`seated_scales`]).
 //!
 //! Every window of a drive is priced before it starts, at its duty for
 //! its time and the dead-man: the envelope prices a rung up to a burst's
@@ -64,7 +67,7 @@ use crate::state::{self, State, field};
 pub const STEP: &str = "stops";
 pub const RESULT: &str = "results/stops.json";
 const METHOD: &str = "stops-and-seated-rl";
-const REVISION: u32 = 3;
+const REVISION: u32 = 4;
 /// Every poll of every leg, a row each.
 pub const POLLS: &str = "captures/stops/polls.csv";
 /// The bus dead-man a polled drive runs under, s: five poll periods, so a
@@ -235,6 +238,41 @@ fn num(state: &State, d: &osc_client::descriptor::Descriptor, name: &str) -> Res
         .ok_or_else(|| Refused(format!("the state read holds no {name}")))
 }
 
+/// What a seated burst is read through: the servo's sense scales, and the
+/// board's edge lags, window scale and terminal offset, as the stage 3
+/// identification notebook reads its bursts at a held seat.
+pub fn seated_scales(
+    b: &Board,
+    counts_per_a: f64,
+    terminal_counts_per_v: f64,
+) -> Result<Scales, Refused> {
+    let missing = |what: &str| {
+        Refused(format!(
+            "the board's description ({}) holds no {what}: a seated burst cannot be read",
+            b.name
+        ))
+    };
+    let edges = b
+        .burst_edges
+        .ok_or_else(|| missing("bridge edge lags (burst_edges)"))?;
+    Ok(Scales {
+        counts_per_a,
+        terminal_counts_per_v,
+        terminal_offset_counts: b
+            .terminal_offset_counts
+            .ok_or_else(|| missing("terminal offset (terminal_offset_counts)"))?,
+        window_scale: b
+            .window_scale
+            .ok_or_else(|| missing("window scale (window_scale)"))?,
+        lags: Lags {
+            on: edges.on_ticks,
+            tap_on: edges.tap_on_ticks,
+            off: edges.off_ticks,
+            settle: edges.settle_ticks,
+        },
+    })
+}
+
 /// A seated burst's rung, priced as part A prices one: blocked at the
 /// most current the board's trip, the 0.5 ohm floor and a stated stall
 /// allow.
@@ -364,12 +402,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
             b.name
         )));
     }
-    let edges = b.burst_edges.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no bridge edge lags (burst_edges): a burst cannot be read",
-            b.name
-        ))
-    })?;
+    let sense = rest::Sense::of(&state, rig.d)?;
+    let scales = seated_scales(b, sense.counts_per_a(), sense.terminal_counts_per_v())?;
     let bridge_min_ticks = b.bridge_min_ticks.ok_or_else(|| {
         Refused(format!(
             "the board's description ({}) states no bridge_min_ticks: the seat duty cannot be checked against the bridge's shortest pulse",
@@ -382,7 +416,6 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
     let travel_deg = np
         .travel_deg
         .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
-    let sense = rest::Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);
     let pos_read = read_pos(rig.c, rig.id, rig.d).await?;
     let pos = pos_read.pos;
@@ -401,18 +434,6 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
             cfg.volts(cfg.approach_q15)
         )));
     }
-    let scales = Scales {
-        counts_per_a: sense.counts_per_a(),
-        terminal_counts_per_v: sense.terminal_counts_per_v(),
-        terminal_offset_counts: 0.0,
-        window_scale: 1.0,
-        lags: Lags {
-            on: edges.on_ticks,
-            tap_on: edges.tap_on_ticks,
-            off: edges.off_ticks,
-            settle: edges.settle_ticks,
-        },
-    };
     let trip_a = b.oc_trip_ma / 1000.0;
     let stall = np
         .stall_row()
@@ -1604,7 +1625,7 @@ fn result_json(
         t.dedup();
         t.into_iter().map(|(_, c)| c).collect()
     };
-    let src = "seated bursts from rest at both stops, 25 % and 40 % of the rail into the stop, the period-pair fit with no intercept per burst on the nominal scales and the board's edge lags, the first of each group and any whose first window current is over 12 % off its group's others set aside, then any whose own R reads over 8 % under the median R of the run's kept bursts at its level, both stops together (two passes, the median taken again), the median over the kept";
+    let src = "seated bursts from rest at both stops, 25 % and 40 % of the rail into the stop, the period-pair fit with no intercept per burst on the nominal scales and the board's edge lags, volts over the board's terminal offset and R and L over its window scale (notebooks stage 1 terminal-chain and sample-timing), the first of each group and any whose first window current is over 12 % off its group's others set aside, then any whose own R reads over 8 % under the median R of the run's kept bursts at its level, both stops together (two passes, the median taken again), the median over the kept";
     let mut estimates = Map::new();
     if let Some(r) = read.r(all) {
         estimates.insert("r_seated_ohm".into(), est(r.median, "ohm", src));
@@ -1652,7 +1673,7 @@ fn result_json(
             "scales": {"counts_per_a": b.scales.counts_per_a, "terminal_counts_per_v": b.scales.terminal_counts_per_v,
                        "terminal_offset_counts": b.scales.terminal_offset_counts, "window_scale": b.scales.window_scale,
                        "lags_ticks": {"on": b.scales.lags.on, "tap_on": b.scales.lags.tap_on, "off": b.scales.lags.off, "settle": b.scales.lags.settle},
-                       "source": "the nominal sense block read off the servo and the board's burst_edges; no edge term, no window scale"},
+                       "source": "the nominal sense block read off the servo; the board's burst_edges, terminal_offset_counts (notebooks stage 1 terminal-chain) and window_scale (stage 1 sample-timing); no edge term"},
         },
         "drives": {
             "approach_q15": c.approach_q15, "approach_v": c.volts(c.approach_q15),

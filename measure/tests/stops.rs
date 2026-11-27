@@ -1,16 +1,19 @@
 //! The stops step's seated read on recorded bursts: the record's seated
 //! set, the reverse groups at the low stop of bench capture B, through the
-//! period-pair fit on stage 1's scales and the board's edge lags; and a
-//! stops step's own bursts whose high stop read bridged, replayed through
-//! the bridged rule and the step's judge.
+//! period-pair fit on stage 1's sense scales and the board's edge lags,
+//! window scale and terminal offset; a stage 3 stop burst as the
+//! identification notebook reads it; and a stops step's own bursts whose
+//! high stop read bridged, replayed through the bridged rule and the
+//! step's judge.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
 use common::path;
+use osc_measure::Board;
 use osc_measure::capture::burst;
-use osc_measure::fit::rise::{Lags, Scales};
+use osc_measure::fit::rise::{self, Lags, Scales};
 use osc_measure::fit::seated::{self, SeatedRead, Shot};
 use osc_measure::steps::Verdict;
 use osc_measure::steps::polarity::Stop;
@@ -24,23 +27,149 @@ const SEATS: [&str; 3] = ["seat-1", "seat-2", "seat-3"];
 const GROUPS: [(&str, usize); 3] = [("g3-rev-40", 1), ("g4-rev-25", 0), ("g5-rev-25-rested", 0)];
 const R_RECORD_OHM: f64 = 4.2174;
 
+/// The stage 3 identification notebook's stop seat, burst 1 of its 40 %
+/// forward group, as its pass reads it (stages/3-servo/identification
+/// cell 43, printed to the milliohm).
+const STOP_40_R_OHM: f64 = 4.341;
+
+fn board() -> Board {
+    common::load("boards/osc-dev-v006.json")
+}
+
+fn sources() -> Value {
+    serde_json::from_str(&common::text("testdata/bursts/sources.json")).expect("sources")
+}
+
+/// The scales the step reads its bursts through, on stage 1's measured
+/// sense scales in place of the nominal ones the servo reports.
 fn stage1() -> Scales {
-    let s: Value =
-        serde_json::from_str(&common::text("testdata/bursts/sources.json")).expect("sources");
+    let s = sources();
+    let v = |k: &str| s["scales"][k]["value"].as_f64().expect(k);
+    stops::seated_scales(&board(), v("counts_per_a"), v("terminal_counts_per_v"))
+        .expect("the board reads a seated burst")
+}
+
+/// R of one burst through `s`, the edge term left out as the seated read
+/// leaves it.
+fn r_of(cap: &burst::Capture, s: &Scales) -> f64 {
+    let t = rise::periods(cap, seated::wiring_sign(cap), s, 0.0).expect("periods");
+    rise::fit(&t, rise::pwm_period_s(cap.meta.pwm_arr), s.window_scale)
+        .expect("fits")
+        .r_ohm
+}
+
+/// The same scales without the two board terms.
+fn bare(s: &Scales) -> Scales {
+    Scales {
+        terminal_offset_counts: 0.0,
+        window_scale: 1.0,
+        ..*s
+    }
+}
+
+#[test]
+fn the_board_carries_stage_1s_burst_terms() {
+    let s = sources();
     let v = |k: &str| s["scales"][k]["value"].as_f64().expect(k);
     let lag = |k: &str| s["scales"]["lags"][k]["value"].as_f64().expect(k);
-    Scales {
-        counts_per_a: v("counts_per_a"),
-        terminal_counts_per_v: v("terminal_counts_per_v"),
-        terminal_offset_counts: v("terminal_offset_counts"),
-        window_scale: v("window_scale"),
-        lags: Lags {
+    let b = board();
+    assert_eq!(b.window_scale, Some(v("window_scale")));
+    assert_eq!(b.terminal_offset_counts, Some(v("terminal_offset_counts")));
+    let sc = stage1();
+    assert_eq!(sc.window_scale, v("window_scale"));
+    assert_eq!(sc.terminal_offset_counts, v("terminal_offset_counts"));
+    assert_eq!(
+        sc.lags,
+        Lags {
             on: lag("on"),
             tap_on: lag("tap_on"),
             off: lag("off"),
             settle: lag("settle"),
-        },
+        }
+    );
+    for key in ["window_scale", "terminal_offset_counts"] {
+        let mut v: Value = common::load("boards/osc-dev-v006.json");
+        v.as_object_mut().expect("board").remove(key);
+        let b: Board = serde_json::from_value(v).expect("board");
+        let e = stops::seated_scales(&b, 1135.0, 248.0).expect_err(key);
+        assert!(e.0.contains(key), "{key}: {}", e.0);
     }
+}
+
+#[test]
+fn a_stage_3_stop_burst_reads_the_identification_notebooks_r() {
+    let name = "stop-g2-fwd-40-burst-1.csv";
+    let cap = burst::from_csv(&common::text(&format!("testdata/bursts/{name}"))).expect(name);
+    let s = stage1();
+    let (r, was) = (r_of(&cap, &s), r_of(&cap, &bare(&s)));
+    println!(
+        "{name}: R {r:.5} ohm (notebook {STOP_40_R_OHM}), {was:.5} without the board terms ({:+.2}%)",
+        100.0 * (r / was - 1.0)
+    );
+    assert!((r - STOP_40_R_OHM).abs() < 5e-4, "R {r:.5}");
+}
+
+/// Opt-in, OSC_NOTEBOOKS names a notebooks checkout: the identification
+/// notebook's seated pass, its stop seat's groups and bursts as its result
+/// names them, reads its burst R through the step's scales.
+#[test]
+fn the_identification_pass_reads_the_notebooks_burst_r() {
+    let Some(nb) = std::env::var_os("OSC_NOTEBOOKS") else {
+        println!("OSC_NOTEBOOKS unset: skipped");
+        return;
+    };
+    let nb = PathBuf::from(nb);
+    let res: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            nb.join("stages/3-servo/identification/results/mg90-d__dev-v006-2A-D.json"),
+        )
+        .expect("the identification result"),
+    )
+    .expect("json");
+    let want = res["r_burst_ohm"]["value"].as_f64().expect("r_burst_ohm");
+    let pass = &res["pass_bursts"];
+    let ks: Vec<usize> = pass["bursts"]
+        .as_array()
+        .expect("bursts")
+        .iter()
+        .map(|k| k.as_u64().expect("k") as usize)
+        .collect();
+    let dir = nb.join("telemetry/mg90-d__dev-v006-2A-D/inductance/stop-6");
+    let groups = pass["groups"].as_array().expect("groups");
+    let mut shots = Vec::new();
+    for (g, name) in groups.iter().enumerate() {
+        let name = name.as_str().expect("group");
+        for k in 0..=*ks.iter().max().expect("a burst") {
+            let p = dir.join(name).join(format!("burst-{k}.csv"));
+            let text =
+                std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            shots.push(Shot {
+                group: g,
+                stop: 0,
+                level: name.ends_with("-40") as usize,
+                ntc_c: 25.0,
+                cap: burst::from_csv(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display())),
+            });
+        }
+    }
+    let s = stage1();
+    let mean = |s: &Scales| {
+        let r = seated::read(&shots, s);
+        let x: Vec<f64> = r
+            .bursts
+            .iter()
+            .filter(|b| ks.contains(&b.k))
+            .map(|b| b.fit.as_ref().expect("a fit").r_ohm)
+            .collect();
+        assert_eq!(x.len(), groups.len() * ks.len());
+        x.iter().sum::<f64>() / x.len() as f64
+    };
+    let (r, was) = (mean(&s), mean(&bare(&s)));
+    println!(
+        "the pass: R {r:.4} ohm (notebook {want:.4}), {was:.4} without the board terms ({:+.2}%)",
+        100.0 * (r / was - 1.0)
+    );
+    assert!((r - want).abs() < 5e-5, "R {r:.6} against {want:.6}");
 }
 
 /// Every burst of the seated set under `root`, a group a folder.
