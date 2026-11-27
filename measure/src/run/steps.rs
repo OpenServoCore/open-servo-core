@@ -9,9 +9,9 @@ use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
 use serde_json::{Value, json};
 
-use super::Host;
 use super::files;
 use super::store::{At, Store};
+use super::{Host, Progress, tell_end, tell_lines};
 use crate::board::{self, Record};
 use crate::capture::rows::Layout;
 use crate::capture::tel;
@@ -313,23 +313,21 @@ struct Ran<'a> {
     times: (f64, f64),
 }
 
+/// A step's entry in the manifest.
+fn entry(r: &Ran) -> Value {
+    json!({
+        "state": r.ended.map_or("refused", |e| e.way.name()),
+        "why": r.ended.and_then(|e| e.why.clone()).or(r.refused.clone()),
+        "started": r.times.0,
+        "ended": r.times.1,
+    })
+}
+
 /// The run folder's minimal manifest: every step it ran, in order.
 fn manifest(tool: &str, uid: &str, ran: &[Ran]) -> Value {
     let result = ran.iter().find_map(|r| r.result);
-    let steps: serde_json::Map<String, Value> = ran
-        .iter()
-        .map(|r| {
-            (
-                r.step.to_string(),
-                json!({
-                    "state": r.ended.map_or("refused", |e| e.way.name()),
-                    "why": r.ended.and_then(|e| e.why.clone()).or(r.refused.clone()),
-                    "started": r.times.0,
-                    "ended": r.times.1,
-                }),
-            )
-        })
-        .collect();
+    let steps: serde_json::Map<String, Value> =
+        ran.iter().map(|r| (r.step.to_string(), entry(r))).collect();
     json!({
         "tool": tool,
         "servo_uid": uid,
@@ -527,6 +525,25 @@ type Kept = (
     Option<String>,
     (f64, f64),
 );
+
+fn ran_of(k: &Kept) -> Ran<'_> {
+    let (step, e, refused, times) = k;
+    Ran {
+        step,
+        ended: e.as_ref().map(|(e, _)| e),
+        result: e.as_ref().and_then(|(_, r)| r.as_ref()),
+        refused: refused.clone(),
+        times: *times,
+    }
+}
+
+/// The step the chain just kept: its lines and its end, told.
+fn tell_kept(feed: &dyn Fn(&Progress), lines: &[String], told: &mut usize, ran: &[Kept]) {
+    tell_lines(feed, lines, told);
+    if let Some(k) = ran.last() {
+        tell_end(feed, k.0, &entry(&ran_of(k)));
+    }
+}
 
 fn result_of(sink: &mut At, rel: &str, what: &str) -> Result<Value> {
     serde_json::from_slice(&sink.read(rel)?).with_context(|| format!("the {what} result"))
@@ -757,9 +774,10 @@ async fn chain<P: Pipe>(
     })?;
     let (record, board) = board_of(c, id, d, servo).await?;
     let (root, mut sink) = folder_with(&mut *host.files, (host.clock)(), out, servo, &record)?;
-    let (stop, clock) = (host.stop, host.clock);
-    let mut lines = Vec::new();
+    let (stop, clock, feed) = (host.stop, host.clock, host.feed);
+    let (mut lines, mut told) = (Vec::new(), 0);
     let mut ran: Vec<Kept> = Vec::new();
+    feed(&Progress::Started { step: rest::STEP });
     let t0 = clock();
     let rested = {
         let mut rig = Rig {
@@ -792,10 +810,12 @@ async fn chain<P: Pipe>(
         rested.as_ref().err().map(|e| e.0.clone()),
         (t0, t1),
     ));
+    tell_kept(feed, &lines, &mut told, &ran);
     let mut probe_ok = false;
     let mut t2 = t1;
     if rest_ok {
         let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
+        feed(&Progress::Started { step: probe::STEP });
         let probed = {
             let mut rig = Rig {
                 c: &mut *c,
@@ -833,6 +853,7 @@ async fn chain<P: Pipe>(
             probed.as_ref().err().map(|e| e.0.clone()),
             (t1, t2),
         ));
+        tell_kept(feed, &lines, &mut told, &ran);
     } else {
         lines.push("step probe not run: it needs an accepted rest step".into());
     }
@@ -841,6 +862,7 @@ async fn chain<P: Pipe>(
     if probe_ok {
         let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
         let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
+        feed(&Progress::Started { step: stops::STEP });
         let found = {
             let mut rig = Rig {
                 c: &mut *c,
@@ -879,6 +901,7 @@ async fn chain<P: Pipe>(
             found.as_ref().err().map(|e| e.0.clone()),
             (t2, t3),
         ));
+        tell_kept(feed, &lines, &mut told, &ran);
     } else if rest_ok {
         lines.push("step stops not run: it needs an accepted probe".into());
     }
@@ -890,6 +913,7 @@ async fn chain<P: Pipe>(
             let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
             let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
+            feed(&Progress::Started { step: table::STEP });
             let tabled = {
                 let mut rig = Rig {
                     c: &mut *c,
@@ -930,6 +954,7 @@ async fn chain<P: Pipe>(
                 tabled.as_ref().err().map(|e| e.0.clone()),
                 (t3, t4),
             ));
+            tell_kept(feed, &lines, &mut told, &ran);
         } else if probe_ok {
             lines.push("step table not run: it needs an accepted stops step".into());
         }
@@ -942,6 +967,7 @@ async fn chain<P: Pipe>(
             let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
             let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
+            feed(&Progress::Started { step: window::STEP });
             let windowed = {
                 let mut rig = Rig {
                     c: &mut *c,
@@ -981,6 +1007,7 @@ async fn chain<P: Pipe>(
                 windowed.as_ref().err().map(|e| e.0.clone()),
                 (t4, t5),
             ));
+            tell_kept(feed, &lines, &mut told, &ran);
         } else if stops_ok {
             lines.push("step window not run: it needs an accepted table step".into());
         }
@@ -994,6 +1021,7 @@ async fn chain<P: Pipe>(
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
             let window_result = result_of(&mut sink, window::RESULT, "window")?;
             let table_result = result_of(&mut sink, table::RESULT, "table")?;
+            feed(&Progress::Started { step: spin::STEP });
             let spun = {
                 let mut rig = Rig {
                     c: &mut *c,
@@ -1034,23 +1062,16 @@ async fn chain<P: Pipe>(
                 spun.as_ref().err().map(|e| e.0.clone()),
                 (t5, t6),
             ));
+            tell_kept(feed, &lines, &mut told, &ran);
         } else if table_ok {
             lines.push("step spins not run: it needs an accepted window step".into());
         }
     }
-    let entries: Vec<Ran> = ran
-        .iter()
-        .map(|(step, e, refused, times)| Ran {
-            step,
-            ended: e.as_ref().map(|(e, _)| e),
-            result: e.as_ref().and_then(|(_, r)| r.as_ref()),
-            refused: refused.clone(),
-            times: *times,
-        })
-        .collect();
+    let entries: Vec<Ran> = ran.iter().map(ran_of).collect();
     let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &entries))?;
     text.push(b'\n');
     sink.write("run.json", &text)?;
     lines.push(format!("run folder: {}", root.display()));
+    tell_lines(feed, &lines, &mut told);
     Ok((lines, accepted, root))
 }

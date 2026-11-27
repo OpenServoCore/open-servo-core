@@ -22,21 +22,78 @@ use anyhow::{Context, Result, bail};
 use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use self::steps::StepInputs;
 pub use self::store::{At, Store};
+use crate::steps::cruise;
+
+/// The steps past the measurement chain, by their keys in `run.json`.
+pub const GATHER: &str = "gather";
+pub const TUNE: &str = "tune";
+pub const FINAL: &str = "final";
 
 /// What a run takes from the host it runs on: its files, its clock, the
-/// stop flag a step reads between rungs, and the tool's name the run's
-/// records carry.
+/// stop flag a step reads between rungs, the feed its progress goes to,
+/// and the tool's name the run's records carry.
 pub struct Host<'a> {
     pub files: &'a mut dyn Store,
     /// Unix seconds: the CLI's system clock, the browser's `Date.now()`.
     pub clock: &'a dyn Fn() -> f64,
     pub stop: &'a AtomicBool,
+    /// The browser's progress block; [`quiet`] for the CLI, which prints
+    /// the lines the run returns.
+    pub feed: &'a dyn Fn(&Progress),
     /// `osc-ident 0.1.0`.
     pub tool: &'a str,
+}
+
+/// What a run tells its host's feed as it goes, each step by its key in
+/// `run.json`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Progress {
+    /// The step begins; a step not run never does.
+    Started { step: &'static str },
+    /// Try `at` of at most `of` begins: the tune's, and the final check's
+    /// down the back-off.
+    Try {
+        step: &'static str,
+        at: u32,
+        of: u32,
+    },
+    /// Lines as the CLI prints them, once said: a run's, in order, are
+    /// the lines it returns.
+    Lines { lines: Vec<String> },
+    /// The step ends, in the state and why `run.json` records for it.
+    Ended {
+        step: &'static str,
+        state: String,
+        why: Option<String>,
+    },
+}
+
+/// The feed of a host that prints the lines at the end.
+pub fn quiet(_: &Progress) {}
+
+/// The lines said past `told`, told.
+fn tell_lines(feed: &dyn Fn(&Progress), lines: &[String], told: &mut usize) {
+    if lines.len() > *told {
+        feed(&Progress::Lines {
+            lines: lines[*told..].to_vec(),
+        });
+        *told = lines.len();
+    }
+}
+
+/// The end of `step` as its `run.json` entry `entry` records it.
+fn tell_end(feed: &dyn Fn(&Progress), step: &'static str, entry: &Value) {
+    feed(&Progress::Ended {
+        step,
+        state: entry["state"].as_str().unwrap_or_default().into(),
+        why: entry["why"].as_str().map(Into::into),
+    });
 }
 
 /// What `run` was given.
@@ -85,8 +142,8 @@ fn record(fs: &mut dyn Store, root: &Path, gather: Value, tune: Value) -> Result
     let p = root.join("run.json");
     let mut doc: Value = serde_json::from_slice(&files::read(fs, &p)?)
         .with_context(|| format!("parsing {}", p.display()))?;
-    doc["gather"] = gather;
-    doc["tune"] = tune;
+    doc[GATHER] = gather;
+    doc[TUNE] = tune;
     rewrite(fs, &p, &doc)
 }
 
@@ -104,8 +161,8 @@ fn record_finish(fs: &mut dyn Store, root: &Path, cruise: Value, last: Value) ->
     let p = root.join("run.json");
     let mut doc: Value = serde_json::from_slice(&files::read(fs, &p)?)
         .with_context(|| format!("parsing {}", p.display()))?;
-    doc["cruise"] = cruise;
-    doc["final"] = last;
+    doc[cruise::STEP] = cruise;
+    doc[FINAL] = last;
     rewrite(fs, &p, &doc)
 }
 
@@ -126,34 +183,47 @@ pub async fn run<P: Pipe>(
     inputs: &StepInputs,
     servo: &str,
 ) -> Result<(Vec<String>, bool)> {
+    let feed = host.feed;
     let (mut lines, measured, root) =
         steps::step_spins(c, id, d, host, inputs, a.out, servo).await?;
+    let mut told = lines.len();
     if !measured {
         let why = "not every step was accepted";
         record(host.files, &root, not_run(why), not_run(why))?;
         record_finish(host.files, &root, not_run(why), not_run(why))?;
+        for step in [GATHER, TUNE, cruise::STEP, FINAL] {
+            tell_end(feed, step, &not_run(why));
+        }
         lines.push(format!(
             "the run stops: {why}, so nothing is gathered or tuned; to run it again: {}",
             again(id, a)
         ));
+        tell_lines(feed, &lines, &mut told);
         return Ok((lines, false));
     }
     let (more, accepted) = gather_and_tune(c, id, d, host, a, &root).await?;
     lines.extend(more);
+    told = lines.len();
     if !accepted {
         let why = "the tune accepted no set";
         record_finish(host.files, &root, not_run(why), not_run(why))?;
+        tell_end(feed, cruise::STEP, &not_run(why));
+        tell_end(feed, FINAL, &not_run(why));
         return Ok((lines, false));
     }
     match finish::finish(c, id, d, host, a, &root).await {
         Ok(f) => {
-            record_finish(host.files, &root, f.cruise, f.last)?;
+            record_finish(host.files, &root, f.cruise, f.last.clone())?;
+            tell_end(feed, FINAL, &f.last);
             lines.extend(f.lines);
         }
         Err(e) => {
             let why = format!("the run folder could not be read for the cruise: {e:#}");
             record_finish(host.files, &root, not_run(&why), not_run(&why))?;
+            tell_end(feed, cruise::STEP, &not_run(&why));
+            tell_end(feed, FINAL, &not_run(&why));
             lines.push(format!("{why}; nothing was written, the tune's set stays"));
+            tell_lines(feed, &lines, &mut told);
         }
     }
     Ok((lines, accepted))
@@ -170,8 +240,10 @@ pub async fn gather_and_tune<P: Pipe>(
     a: &RunArgs<'_>,
     root: &Path,
 ) -> Result<(Vec<String>, bool)> {
-    let mut lines = Vec::new();
+    let feed = host.feed;
+    let (mut lines, mut told) = (Vec::new(), 0);
     let inputs_dir = root.join("inputs");
+    feed(&Progress::Started { step: GATHER });
     let t0 = (host.clock)();
     let gathered = gather::gather(host.files, root, a.nameplate, a.policy, &inputs_dir);
     let t1 = (host.clock)();
@@ -191,14 +263,14 @@ pub async fn gather_and_tune<P: Pipe>(
     match gathered {
         Err(e) => {
             let why = format!("{e:#}");
-            record(
-                host.files,
-                root,
-                json!({"state": "refused", "why": why, "started": t0, "ended": t1}),
-                not_run("the gather was refused"),
-            )?;
+            let gather = json!({"state": "refused", "why": why, "started": t0, "ended": t1});
+            let tune = not_run("the gather was refused");
+            record(host.files, root, gather.clone(), tune.clone())?;
             lines.push(format!("gather refused: {why}"));
             lines.push("the run stops: nothing is tuned".into());
+            tell_lines(feed, &lines, &mut told);
+            tell_end(feed, GATHER, &gather);
+            tell_end(feed, TUNE, &tune);
             return Ok((lines, false));
         }
         Ok(g) => {
@@ -207,19 +279,18 @@ pub async fn gather_and_tune<P: Pipe>(
         }
     }
     let gather = json!({"state": "accepted", "why": null, "started": t0, "ended": t1, "files": gather_files});
+    tell_lines(feed, &lines, &mut told);
+    tell_end(feed, GATHER, &gather);
 
     let tune_dir = root.join("tune");
+    feed(&Progress::Started { step: TUNE });
     let tuned = tune::tune(c, id, d, host, &inputs_dir, &tune_dir, a.tries).await;
     let t2 = (host.clock)();
     match tuned {
         Err(e) => {
             let why = format!("{e:#}");
-            record(
-                host.files,
-                root,
-                gather,
-                json!({"state": "refused", "why": why, "started": t1, "ended": t2}),
-            )?;
+            let tune = json!({"state": "refused", "why": why, "started": t1, "ended": t2});
+            record(host.files, root, gather, tune.clone())?;
             lines.push(format!("tune refused: {why}"));
             lines.push(format!(
                 "nothing was written; the measured inputs are kept: osc-ident --id {} tune --inputs {} --out {} --tries {} continues from them",
@@ -228,6 +299,8 @@ pub async fn gather_and_tune<P: Pipe>(
                 tune_dir.display(),
                 a.tries
             ));
+            tell_lines(feed, &lines, &mut told);
+            tell_end(feed, TUNE, &tune);
             Ok((lines, false))
         }
         Ok((tune_lines, accepted)) => {
@@ -235,15 +308,13 @@ pub async fn gather_and_tune<P: Pipe>(
             if accepted {
                 files.push("tune/set.json".into());
             }
-            record(
-                host.files,
-                root,
-                gather,
-                json!({"state": if accepted { "accepted" } else { "refused" }, "why": null,
-                       "started": t1, "ended": t2, "files": files}),
-            )?;
+            let tune = json!({"state": if accepted { "accepted" } else { "refused" }, "why": null,
+                              "started": t1, "ended": t2, "files": files});
+            record(host.files, root, gather, tune.clone())?;
             lines.push(format!("tune into {}:", tune_dir.display()));
             lines.extend(tune_lines);
+            tell_lines(feed, &lines, &mut told);
+            tell_end(feed, TUNE, &tune);
             Ok((lines, accepted))
         }
     }

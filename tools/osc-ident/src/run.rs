@@ -59,7 +59,9 @@ async fn gather_and_tune<P: Pipe>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
 
     use futures_lite::future::block_on;
     use osc_client::BaudRate;
@@ -368,6 +370,207 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// A run on the simulated servo as a page runs it.
+    struct Fed {
+        dir: PathBuf,
+        root: PathBuf,
+        lines: Vec<String>,
+        told: Vec<of::Progress>,
+        c: Client<FakePipe>,
+        d: Descriptor,
+    }
+
+    /// The run with a feed that keeps what it is told, and raises the stop
+    /// flag as the step `stop_at` starts where one is given.
+    fn fed(name: &str, stop_at: Option<&str>) -> Fed {
+        let (mut c, d) = fake();
+        let dir = scratch(name);
+        let policy = testdata("mg90-d/policy.json");
+        let g = given();
+        let a = args(&g, &dir, &policy);
+        let inputs = admit(&a).expect("admitted");
+        let stop = AtomicBool::new(false);
+        let told = RefCell::new(Vec::new());
+        let feed = |p: &of::Progress| {
+            if matches!(p, of::Progress::Started { step } if Some(*step) == stop_at) {
+                stop.store(true, Ordering::SeqCst);
+            }
+            told.borrow_mut().push(p.clone());
+        };
+        let (lines, _) = {
+            let mut fs = Fs;
+            let mut host = crate::host(&mut fs, &stop);
+            host.feed = &feed;
+            block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs")
+        };
+        let root = std::fs::read_dir(dir.join("uid"))
+            .expect("the run folder")
+            .next()
+            .expect("one")
+            .expect("entry")
+            .path();
+        Fed {
+            dir,
+            root,
+            lines,
+            told: told.into_inner(),
+            c,
+            d,
+        }
+    }
+
+    fn manifest(root: &Path) -> Value {
+        serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read")).expect("json")
+    }
+
+    /// Each step's end as the feed was told it, in order.
+    fn ends(told: &[of::Progress]) -> Vec<(String, String, Option<String>)> {
+        told.iter()
+            .filter_map(|p| match p {
+                of::Progress::Ended { step, state, why } => {
+                    Some((step.to_string(), state.clone(), why.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn at(told: &[of::Progress], p: &of::Progress) -> usize {
+        told.iter().position(|t| t == p).expect("told")
+    }
+
+    /// The simulated servo's run stops at the probe: the feed is told each
+    /// step's start and its end in the state and why `run.json` records,
+    /// in its order, every step after the probe not run and never begun;
+    /// each step's lines as it ends, all of them, in order, the lines the
+    /// run returns.
+    #[test]
+    fn the_feed_tells_each_step_as_run_json_records_it() {
+        let f = fed("feed-steps", None);
+        let m = manifest(&f.root);
+        let entry = |k: &str, v: &Value| {
+            (
+                k.to_string(),
+                v["state"].as_str().expect("state").to_string(),
+                v["why"].as_str().map(str::to_string),
+            )
+        };
+        let mut want: Vec<_> = m["steps"]
+            .as_object()
+            .expect("steps")
+            .iter()
+            .map(|(k, v)| entry(k, v))
+            .collect();
+        for k in ["gather", "tune", "cruise", "final"] {
+            want.push(entry(k, &m[k]));
+        }
+        let ended = ends(&f.told);
+        assert_eq!(ended, want, "{m}");
+        let states: Vec<(&str, &str)> = ended
+            .iter()
+            .map(|(s, w, _)| (s.as_str(), w.as_str()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("rest", "accepted"),
+                ("probe", "aborted"),
+                ("gather", "not run"),
+                ("tune", "not run"),
+                ("cruise", "not run"),
+                ("final", "not run")
+            ]
+        );
+        let begun: Vec<&str> = f
+            .told
+            .iter()
+            .filter_map(|p| match p {
+                of::Progress::Started { step } => Some(*step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(begun, ["rest", "probe"]);
+        let end_of = |step: &'static str| {
+            f.told
+                .iter()
+                .position(|p| matches!(p, of::Progress::Ended { step: s, .. } if *s == step))
+                .expect("ended")
+        };
+        let rest = at(&f.told, &of::Progress::Started { step: "rest" });
+        let probe = at(&f.told, &of::Progress::Started { step: "probe" });
+        assert!(rest < end_of("rest") && end_of("rest") < probe && probe < end_of("probe"));
+        let said_before = |i: usize| -> Vec<String> {
+            f.told[..i]
+                .iter()
+                .filter_map(|p| match p {
+                    of::Progress::Lines { lines } => Some(lines.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        };
+        assert!(
+            said_before(probe).iter().any(|l| l == "step rest accepted"),
+            "the rest step's lines are told before the probe starts"
+        );
+        assert_eq!(
+            said_before(f.told.len()),
+            f.lines,
+            "the lines the run returns"
+        );
+        assert_eq!(
+            serde_json::to_value(&f.told[0]).expect("json"),
+            serde_json::json!({"event": "started", "step": "rest"})
+        );
+        let _ = std::fs::remove_dir_all(f.dir);
+    }
+
+    /// The stop flag raised as the probe starts, as Ctrl-C raises the
+    /// CLI's: the probe stops before its first burst and ends through its
+    /// way out, torque off and read back; `run.json` and the feed record
+    /// it interrupted, and the run stops there.
+    #[test]
+    fn a_stop_raised_mid_run_ends_the_step_through_its_way_out() {
+        let mut f = fed("feed-stop", Some("probe"));
+        let m = manifest(&f.root);
+        let why = "interrupted: the step stopped between rungs";
+        assert_eq!(m["steps"]["rest"]["state"], "accepted", "{m}");
+        assert_eq!(m["steps"]["probe"]["state"], "interrupted", "{m}");
+        assert_eq!(m["steps"]["probe"]["why"], why, "{m}");
+        assert_eq!(m["gather"]["state"], "not run", "{m}");
+        assert_eq!(
+            ends(&f.told)[1],
+            ("probe".into(), "interrupted".into(), Some(why.into()))
+        );
+        let out = f
+            .lines
+            .iter()
+            .rposition(|l| l == "the way out:")
+            .expect("the probe's way out");
+        let end = f
+            .lines
+            .iter()
+            .position(|l| *l == format!("step probe interrupted: {why}"))
+            .expect("the probe's verdict");
+        assert!(
+            f.lines[out..end]
+                .iter()
+                .any(|l| l == "  torque_enable 0, read back 0"),
+            "{:?}",
+            &f.lines[out..end]
+        );
+        let torque = f.d.field("torque_enable").expect("torque").addr;
+        assert_eq!(block_on(f.c.read(ID, torque, 1)).expect("read"), [0]);
+        assert!(
+            f.lines
+                .last()
+                .is_some_and(|l| l.starts_with("the run stops: not every step was accepted")),
+            "{:?}",
+            f.lines.last()
+        );
+        let _ = std::fs::remove_dir_all(f.dir);
+    }
 }
 
 /// The run into memory, as the browser keeps it, against the same run on
@@ -531,6 +734,7 @@ mod parity {
                 files,
                 clock: &clock,
                 stop: &stop,
+                feed: &of::quiet,
                 tool: TOOL,
             };
             let ran = block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid"));
@@ -674,6 +878,7 @@ mod parity {
                 files,
                 clock: &clock,
                 stop: &stop,
+                feed: &of::quiet,
                 tool: TOOL,
             };
             let mut checks = 0;

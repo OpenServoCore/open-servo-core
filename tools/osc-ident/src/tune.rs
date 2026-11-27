@@ -405,6 +405,44 @@ mod tests {
         ))
     }
 
+    /// The feed is told each try as it begins, of the tries allowed.
+    #[test]
+    fn the_feed_is_told_each_try_as_it_begins() {
+        use osc_measure::run::Progress;
+        let (mut c, _) = servo(Box::new(|_, _| {}));
+        let dir = scratch("tune-feed");
+        let told = RefCell::new(Vec::new());
+        let feed = |p: &Progress| told.borrow_mut().push(p.clone());
+        let stop = AtomicBool::new(false);
+        let mut fs = Fs;
+        let mut host = crate::host(&mut fs, &stop);
+        host.feed = &feed;
+        let check = async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
+            verified(rig, Way::Refused, &[sc::QUIET])
+        };
+        let (_, accepted) = block_on(of::tune_with(
+            &mut c,
+            ID,
+            &descriptor(),
+            &mut host,
+            &testdata("mg90-d"),
+            &dir.join("run"),
+            3,
+            check,
+        ))
+        .expect("runs");
+        assert!(!accepted);
+        let tries: Vec<Progress> = (1..=3)
+            .map(|at| Progress::Try {
+                step: "tune",
+                at,
+                of: 3,
+            })
+            .collect();
+        assert_eq!(told.take(), tries);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Each try's set from the rules, then its install, then the check, in
     /// that order; refused on its scores, each try four fifths of the gain
     /// before. After the last try the servo is rebooted onto its stored

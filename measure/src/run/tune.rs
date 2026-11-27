@@ -13,9 +13,9 @@ use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
 use serde_json::{Value, json};
 
-use super::Host;
 use super::files::{self, RulesInputs};
 use super::store::At;
+use super::{Host, Progress, TUNE};
 use crate::build;
 use crate::gather::POT_STEP4;
 use crate::install::{self, Refused, STORED};
@@ -246,7 +246,7 @@ where
     install::gate(&first, &state, d, points).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let root = out.to_path_buf();
-    let (stop, clock, tool) = (host.stop, host.clock, host.tool);
+    let (stop, clock, tool, feed) = (host.stop, host.clock, host.tool, host.feed);
     let mut sink = At {
         files: &mut *host.files,
         root: root.clone(),
@@ -278,6 +278,11 @@ where
             ended = "interrupted between tries".into();
             break;
         }
+        feed(&Progress::Try {
+            step: TUNE,
+            at: n + 1,
+            of: tries,
+        });
         let kp = tune::gain(k0, n);
         let dir = format!("tries/{:02}", n + 1);
         let prepared = set_at(&r, &measured, kp, &Checked::default(), &pair, d).and_then(

@@ -924,6 +924,78 @@ mod tests {
             .collect()
     }
 
+    /// The feed is told the cruise as it starts and ends, then the final
+    /// check's start and each of its tries down the back-off, of the
+    /// tries the tune leaves; the lines told, in order, are the finish's.
+    #[test]
+    fn the_feed_is_told_the_cruise_and_each_final_check() {
+        use osc_measure::run::Progress;
+        let dir = scratch("finish-feed");
+        let g = given();
+        let (root, _, mut c, _) = tuned(&dir, &g);
+        let d = crate::descriptor_builtin().expect("descriptor");
+        let doc = cruise_doc();
+        let script = [ON_REST, ON_REST, ACCEPTED];
+        let mut at = 0;
+        let told = RefCell::new(Vec::new());
+        let feed = |p: &Progress| told.borrow_mut().push(p.clone());
+        let stop = AtomicBool::new(false);
+        let mut fs = Fs;
+        let mut host = crate::host(&mut fs, &stop);
+        host.feed = &feed;
+        let f = block_on(osc_measure::run::finish::finish_with(
+            &mut c,
+            ID,
+            &d,
+            &mut host,
+            &args(&g, &dir),
+            &root,
+            async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| cruised(rig, Way::Done, &doc),
+            async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
+                let (way, failed) = script[at];
+                at += 1;
+                checked_on(rig, way, failed)
+            },
+        ))
+        .expect("finishes");
+        assert_eq!(f.last["state"], "accepted", "{}", f.last);
+        let told = told.take();
+        let events: Vec<&Progress> = told
+            .iter()
+            .filter(|p| !matches!(p, Progress::Lines { .. }))
+            .collect();
+        let tried = |at| Progress::Try {
+            step: "final",
+            at,
+            of: 6,
+        };
+        assert_eq!(
+            events,
+            [
+                &Progress::Started { step: "cruise" },
+                &Progress::Ended {
+                    step: "cruise",
+                    state: "accepted".into(),
+                    why: None
+                },
+                &Progress::Started { step: "final" },
+                &tried(1),
+                &tried(2),
+                &tried(3),
+            ]
+        );
+        let said: Vec<String> = told
+            .iter()
+            .filter_map(|p| match p {
+                Progress::Lines { lines } => Some(lines.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(said, f.lines);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Each final check is a try after the tune's, kept in `tune/tries/NN`
     /// and listed in `tune/back-off.json`; one refused on rest error alone
     /// goes on to the tune's next gain on the cruise's friction line, each

@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use super::files;
 use super::store::{At, Store};
 use super::tune::{Checked, Scored, try_head, try_json};
-use super::{Host, RunArgs};
+use super::{FINAL, Host, Progress, RunArgs, tell_end, tell_lines};
 use crate::gather::{self, POT_STEP4, StepResult};
 use crate::install::{self, Refused};
 use crate::nameplate::Nameplate;
@@ -328,7 +328,7 @@ where
             return out;
         }
     };
-    let (stop, clock, tool) = (host.stop, host.clock, host.tool);
+    let (stop, clock, tool, feed) = (host.stop, host.clock, host.tool, host.feed);
     let mut sink = At {
         files: &mut *host.files,
         root: tune_dir.clone(),
@@ -342,6 +342,11 @@ where
         if !first && stop.load(Ordering::SeqCst) {
             break "interrupted between tries".into();
         }
+        feed(&Progress::Try {
+            step: FINAL,
+            at: out.tries.len() as u32 + 1,
+            of: allowed.saturating_sub(from.saturating_sub(1)),
+        });
         let dir = format!("tries/{t:02}");
         let prepared = final_set(&mut *sink.files, inputs_dir, kp_now, &checked, d).and_then(
             |(file, bytes, points)| {
@@ -549,8 +554,32 @@ pub async fn finish_with<P: Pipe, C, V>(
     host: &mut Host<'_>,
     a: &RunArgs<'_>,
     root: &Path,
+    run_cruise: C,
+    check: V,
+) -> Result<Finished>
+where
+    C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
+{
+    let (feed, mut told) = (host.feed, 0);
+    let f = finish_told(c, id, d, host, a, root, run_cruise, check, &mut told).await?;
+    tell_lines(feed, &f.lines, &mut told);
+    Ok(f)
+}
+
+/// [`finish_with`], the lines through the cruise's end told and counted
+/// in `told`.
+#[allow(clippy::too_many_arguments)]
+async fn finish_told<P: Pipe, C, V>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
     mut run_cruise: C,
     mut check: V,
+    told: &mut usize,
 ) -> Result<Finished>
 where
     C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
@@ -574,7 +603,7 @@ where
     let board = first.inputs.board.clone();
     let stops_result = json_at(host.files, &root.join(stops::RESULT))?;
     let keep = (&tune_set, tune_points.as_ref());
-    let (stop, clock) = (host.stop, host.clock);
+    let (stop, clock, feed) = (host.stop, host.clock, host.feed);
 
     // the tune's check may have ended through a way out that rebooted onto
     // the stored set: the cruise runs on the tune's set or not at all
@@ -592,12 +621,16 @@ where
     {
         lines.push("the cruise is not run: the servo does not hold the tune's set".into());
         let why = "the tune's set could not be made live for the cruise";
+        let cruise = json!({"state": "not run", "why": why});
+        tell_lines(feed, &lines, told);
+        tell_end(feed, cruise::STEP, &cruise);
         return Ok(Finished {
             lines,
-            cruise: json!({"state": "not run", "why": why}),
+            cruise,
             last: json!({"state": "not run", "why": why}),
         });
     }
+    feed(&Progress::Started { step: cruise::STEP });
     lines.push(format!(
         "cruise on the tune's set {}, at kp {kp:.4}:",
         &tune_set.hash()[..12]
@@ -641,6 +674,8 @@ where
     }
     let cruise_entry = json!({"state": state, "why": why, "started": t0, "ended": t1,
                               "files": [cruise::RESULT]});
+    tell_lines(feed, &lines, told);
+    tell_end(feed, cruise::STEP, &cruise_entry);
     if !matches!(&ran, Ok(r) if r.accepted()) {
         lines.push(format!(
             "the cruise step was {state}: the friction line stays the spin step's"
@@ -649,6 +684,7 @@ where
         return Ok(short_of_final(c, id, d, keep, lines, cruise_entry, "not run", why).await);
     }
 
+    feed(&Progress::Started { step: FINAL });
     let final_dir = root.join("final");
     let inputs_dir = final_dir.join("inputs");
     match super::gather::gather(host.files, root, a.nameplate, a.policy, &inputs_dir) {
