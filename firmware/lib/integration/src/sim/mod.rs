@@ -1193,6 +1193,10 @@ impl Sim {
         let t = &mut self.tels[j];
         if copied {
             t.encoded += 1;
+            if t.encoded == 1 {
+                self.cpus[j].kernel_burst_start();
+                cost += c.pickup;
+            }
             let at = t.encoded % STREAM_SAMPLES_MAX as u32;
             if at == 1 {
                 cost += c.head;

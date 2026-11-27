@@ -6553,9 +6553,10 @@ impl TelStream for HoldTel {
 }
 
 /// The kernel holds the TX lane on every tick that runs a SLOW stage (due
-/// or finish) and on no other: never a configuration take's tick, never a
-/// plain one. The stages are the budget probe's (`Events::between` on the
-/// tags).
+/// or finish) and on no other but OBSERVER and TRAJECTORY
+/// (`observer_and_trajectory_ticks_hold_the_tel_lane`): never a
+/// configuration take's tick, never another plain one. The stages are the
+/// budget probe's (`Events::between` on the tags).
 #[test]
 fn slow_stage_ticks_hold_the_tel_lane() {
     let sh = Shared::new();
@@ -6577,6 +6578,7 @@ fn slow_stage_ticks_hold_the_tel_lane() {
         if t == BASE_FAST_TICKS / 2 {
             write_config(&sh, |_| {});
         }
+        let p = k.phase;
         let before = k.probe_tags();
         k.tel.held = false;
         k.on_scan(hot, &sh);
@@ -6585,10 +6587,84 @@ fn slow_stage_ticks_hold_the_tel_lane() {
         for (n, &hit) in seen.iter_mut().zip(&kind) {
             *n += hit as u32;
         }
-        let want = kind[..2].iter().any(|&h| h);
+        let want = kind[..2].iter().any(|&h| h) || lane_held(p);
         assert_eq!(k.tel.held, want, "tick {t}: {kind:?}");
     }
     assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+}
+
+/// What the kernel told the TEL stream on the last tick: the lane held,
+/// and the start rule's answer.
+#[derive(Default)]
+struct GateTel {
+    held: bool,
+    start_held: bool,
+}
+impl TelStream for GateTel {
+    fn on_publish(&mut self, hold_start: impl FnOnce() -> bool) {
+        self.start_held = hold_start();
+    }
+    fn hold(&mut self) {
+        self.held = true;
+    }
+}
+
+/// A kernel on [`GateTel`], settled on a hot frame, and the frame.
+fn gate_kernel(sh: &Shared) -> (Kernel<FakeIo, GateTel>, SensorFrame) {
+    seed(sh);
+    seed_estimate(sh);
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        GateTel::default(),
+        TIMING,
+    );
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, sh, hot);
+    (k, hot)
+}
+
+/// The phases the kernel holds the TX lane on: the two heaviest plain ticks.
+fn lane_held(p: u8) -> bool {
+    p == phase::OBSERVER || p == phase::TRAJECTORY
+}
+
+/// The kernel holds the TX lane on every OBSERVER and TRAJECTORY tick, as
+/// on a SLOW stage's, and on no other.
+#[test]
+fn observer_and_trajectory_ticks_hold_the_tel_lane() {
+    let sh = Shared::new();
+    let (mut k, hot) = gate_kernel(&sh);
+    let mut seen = [0u32; DECIM_MED as usize];
+    for t in 0..BASE_FAST_TICKS {
+        let p = k.phase;
+        let before = k.probe_tags();
+        k.tel.held = false;
+        k.on_scan(hot, &sh);
+        let ev = Events::between(before, k.probe_tags());
+        let want = ev.slow || ev.finish || lane_held(p);
+        assert_eq!(k.tel.held, want, "tick {t} phase {p}");
+        seen[p as usize] += k.tel.held as u32;
+    }
+    assert!(seen[phase::OBSERVER as usize] > 0 && seen[phase::TRAJECTORY as usize] > 0);
+}
+
+/// A burst starts on CONTROL or SPEED alone, and never while a take is
+/// pending: the start rule the kernel hands the stream holds on every
+/// other phase.
+#[test]
+fn a_burst_starts_only_on_control_or_speed() {
+    let sh = Shared::new();
+    let (mut k, hot) = gate_kernel(&sh);
+    for t in 0..BASE_FAST_TICKS {
+        let p = k.phase;
+        let pending = sh.config_seq() != k.config_seq;
+        k.on_scan(hot, &sh);
+        let want = pending || !(p == phase::CONTROL || p == phase::SPEED);
+        assert_eq!(k.tel.start_held, want, "tick {t} phase {p}");
+    }
 }
 
 /// The bench probe books each tick from the tags it carried from the tick
@@ -7149,9 +7225,9 @@ impl TelStream for StartTel {
 }
 
 /// From a commit to the SPARE_A take that ends it, every tick holds
-/// a burst's start, the take's own included, and after it only the take's
-/// phase does; an odd count holds too, and its take waits for the next
-/// period's SPARE_A.
+/// a burst's start, the take's own included, and after it every phase but
+/// CONTROL and SPEED does; an odd count holds too, and its take waits for
+/// the next period's SPARE_A.
 #[test]
 fn a_pending_take_holds_a_burst_start_through_its_tick() {
     let f = frame(2000, BIAS);
@@ -7188,10 +7264,12 @@ fn a_pending_take_holds_a_burst_start_through_its_tick() {
         let want = if odd_at_install { 15 } else { 5 };
         assert_eq!(take_at, want, "odd at install: {odd_at_install}");
         // tick i runs phase LIMITS + i
-        let install =
-            |i: usize| (phase::LIMITS as usize + i) % DECIM_MED as usize == phase::SPARE_A as usize;
+        let starts = |i: usize| {
+            let p = ((phase::LIMITS as usize + i) % DECIM_MED as usize) as u8;
+            p == phase::CONTROL || p == phase::SPEED
+        };
         let want: heapless::Vec<bool, 64> = (0..k.tel.held.len())
-            .map(|i| i <= take_at || install(i))
+            .map(|i| i <= take_at || !starts(i))
             .collect();
         assert_eq!(k.tel.held, want);
     }

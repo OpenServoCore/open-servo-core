@@ -44,6 +44,29 @@ pub mod phase {
     pub const SPEED: u8 = 9;
 }
 
+/// The phases the kernel holds the TX lane on while a burst streams,
+/// beside a SLOW stage's tick: the two heaviest plain ticks carry their row
+/// and a head or a bank, never a lane step. `Medium::step` returns the
+/// hold; the budget and the DES read this set.
+pub const LANE_HELD: u32 = 1 << phase::OBSERVER | 1 << phase::TRAJECTORY;
+
+/// Whether the kernel holds the TX lane on `phase` ([`LANE_HELD`]), a
+/// phase under [`DECIM_MED`].
+pub const fn lane_holds(phase: usize) -> bool {
+    LANE_HELD >> phase & 1 != 0
+}
+
+/// The phases a burst may start on: the two plain ticks with the room for
+/// the arm's pickup beside a lane step. Never the take's phase.
+pub const BURST_START: u32 = 1 << phase::CONTROL | 1 << phase::SPEED;
+const _: () = assert!(BURST_START & (LANE_HELD | 1 << phase::SPARE_A | 1 << phase::SLOW) == 0);
+
+/// Whether a burst may start on `phase` ([`BURST_START`]), a phase under
+/// [`DECIM_MED`]: one shift, no divide, on the tick a start is asked.
+pub const fn burst_starts(phase: usize) -> bool {
+    BURST_START >> phase & 1 != 0
+}
+
 /// Ticks between two tick-load closes.
 pub const HEALTH_CLOSE_TICKS: u32 = 2 * DECIM_MED as u32;
 
@@ -72,7 +95,8 @@ pub const fn health_close_lands(phase: usize) -> bool {
 
 impl Medium {
     /// Phase `k` of the medium chain (`phase`), on this tick's sample;
-    /// whether a SLOW stage ran. Out of line: inlined, the phases sit
+    /// whether the TX lane holds: a SLOW stage ran, or `k` is in
+    /// [`LANE_HELD`]. Out of line: inlined, the phases sit
     /// between the fast half and its cold arms and carry every one of
     /// those branches out of reach (v006-performance sec 3). `streaming`: a
     /// TEL burst streams this tick, which holds the dead-man at CONTROL.
@@ -103,7 +127,10 @@ impl Medium {
             #[cfg(feature = "experiment")]
             phase::CONTROL => self.control(cfg, shared, faults, fast, cmd),
             #[cfg(not(feature = "experiment"))]
-            phase::OBSERVER => self.observe(shared.frame().pos(), cfg, shared, fast),
+            phase::OBSERVER => {
+                self.observe(shared.frame().pos(), cfg, shared, fast);
+                return true;
+            }
             // `Kernel::on_tick` takes this phase straight, not through here
             #[cfg(not(feature = "experiment"))]
             phase::TRAJECTORY => {
@@ -121,6 +148,8 @@ impl Medium {
             }
             #[cfg(feature = "experiment")]
             phase::SLOW => self.slow(fast),
+            #[cfg(feature = "experiment")]
+            phase::OBSERVER | phase::TRAJECTORY => return true,
             phase::PUBLISH => {
                 fast.track_bias(shared);
                 self.publish(shared, faults, fast)

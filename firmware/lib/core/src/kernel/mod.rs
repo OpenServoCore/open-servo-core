@@ -34,8 +34,8 @@ pub use phases::loops::trajectory::TrajGen;
 #[cfg(not(feature = "experiment"))]
 pub use phases::loops::velocity::VelocityLoop;
 pub use scheduler::table::{
-    DECIM_MED, DECIM_SLOW, HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, HEALTH_LOST_MAX, TICK_HZ,
-    health_close_at, health_close_lands, phase,
+    BURST_START, DECIM_MED, DECIM_SLOW, HEALTH_CLOSE_PHASE, HEALTH_CLOSE_TICKS, HEALTH_LOST_MAX,
+    LANE_HELD, TICK_HZ, burst_starts, health_close_at, health_close_lands, lane_holds, phase,
 };
 pub use scheduler::{Kernel, KernelTiming, ProbeTags};
 

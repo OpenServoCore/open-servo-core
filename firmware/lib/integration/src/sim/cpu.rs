@@ -163,13 +163,14 @@ pub struct KernelLane {
 }
 
 /// The TEL burst a kernel lane paces, HCLK ticks, on top of the body: a
-/// row, a row 0's head and a bank, and the TX lane the kernel owns while
-/// the burst streams - its poll on every tick, each CRC feed, DMA arm and
-/// patch where it runs.
+/// row, a row 0's head, the burst's first row 0's pickup and a bank, and
+/// the TX lane the kernel owns while the burst streams - its poll on every
+/// tick, each CRC feed, DMA arm and patch where it runs.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct TelCosts {
     pub row: u64,
     pub head: u64,
+    pub pickup: u64,
     pub bank: u64,
     pub poll: u64,
     pub feed: u64,
@@ -180,7 +181,8 @@ pub struct TelCosts {
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
 /// block's due stage on phase SLOW every DECIM_SLOW periods (by event row) and
 /// its finish on the next period's, each holding the TX lane as the kernel
-/// does, and the tick-load close where the chip's count lands it
+/// does (as on [`kernel::LANE_HELD`]), and the tick-load close where the
+/// chip's count lands it
 /// ([`kernel::health_close_at`], the lane's first tick the boot tick), with
 /// the catch-up when a tick was lost since the last one. A configuration
 /// take runs on phase SPARE_A when the servo's count is even and new; it
@@ -206,6 +208,7 @@ impl KernelLane {
             tel: TelCosts {
                 row: budget::TEL_ROW as u64,
                 head: budget::TEL_HEAD as u64,
+                pickup: budget::TEL_PICKUP as u64,
                 bank: budget::TEL_BANK as u64,
                 poll: budget::TEL_POLL as u64,
                 feed: budget::TEL_FEED as u64,
@@ -294,6 +297,11 @@ pub struct KernelStats {
     /// ones the TX lane took a step on.
     pub stage_tel: u64,
     pub stage_steps: u64,
+    /// By the phase the body ran: TEL ticks, the ones the TX lane took a
+    /// step on, and bursts whose first row landed there.
+    pub tel_ticks: [u64; PHASES],
+    pub lane_steps: [u64; PHASES],
+    pub starts: [u64; PHASES],
     /// Tick-load closes by phase.
     pub closes: [u64; PHASES],
     /// Configuration takes, and the most ticks from a committed set to the
@@ -323,13 +331,15 @@ struct Kernel {
     regime: Regime,
     /// The running body runs a SLOW stage.
     stage: bool,
+    /// The running body's phase.
+    ran: usize,
     /// The servo's configuration count as the next tick reads it, the one
     /// the last take saw, and the tick a set not yet taken was committed at.
     config_seq: u8,
     config_taken: u8,
     config_new_at: Option<u64>,
-    /// The running body holds a burst's start (its phase is the take's, or
-    /// a take is pending), and ran the take.
+    /// The running body holds a burst's start (its phase is not one of
+    /// [`kernel::BURST_START`], or a take is pending), and ran the take.
     hold_start: bool,
     took: bool,
     /// The running body, extensions included.
@@ -524,6 +534,7 @@ impl Cpu {
             lost_at_close: 0,
             regime: Regime::Open,
             stage: false,
+            ran: 0,
             config_seq: 0,
             config_taken: 0,
             config_new_at: None,
@@ -625,7 +636,7 @@ impl Cpu {
             }
         }
         // the kernel's start rule, asked after the take
-        k.hold_start = spare_a || k.config_seq != k.config_taken;
+        k.hold_start = !kernel::burst_starts(k.phase) || k.config_seq != k.config_taken;
         if kernel::health_close_at(tick) {
             k.stats.closes[k.phase] += 1;
             cost += ev.health_close;
@@ -634,6 +645,7 @@ impl Cpu {
             }
             k.lost_at_close = k.stats.lost;
         }
+        k.ran = k.phase;
         k.phase += 1;
         if k.phase == k.lane.phases[r].len() {
             k.phase = 0;
@@ -658,13 +670,16 @@ impl Cpu {
         self.kernel.as_ref().map(|k| k.lane.tel).unwrap_or_default()
     }
 
-    /// The running kernel body runs a SLOW stage: the TX lane holds.
+    /// The running kernel body runs a SLOW stage or a held phase
+    /// ([`kernel::LANE_HELD`]): the TX lane holds.
     pub fn kernel_holds(&self) -> bool {
-        self.kernel.as_ref().is_some_and(|k| k.stage)
+        self.kernel
+            .as_ref()
+            .is_some_and(|k| k.stage || kernel::lane_holds(k.ran))
     }
 
-    /// The running body holds a burst not yet started: its phase is the
-    /// take's, or a configuration take is pending.
+    /// The running body holds a burst not yet started: its phase is not a
+    /// start phase, or a configuration take is pending.
     pub fn kernel_hold_start(&self) -> bool {
         self.kernel.as_ref().is_some_and(|k| k.hold_start)
     }
@@ -681,11 +696,20 @@ impl Cpu {
 
     /// The running body's TEL tick: whether its TX lane took a step.
     pub fn kernel_lane_step(&mut self, stepped: bool) {
-        if let Some(k) = self.kernel.as_mut()
-            && k.stage
-        {
-            k.stats.stage_tel += 1;
-            k.stats.stage_steps += stepped as u64;
+        if let Some(k) = self.kernel.as_mut() {
+            k.stats.tel_ticks[k.ran] += 1;
+            k.stats.lane_steps[k.ran] += stepped as u64;
+            if k.stage {
+                k.stats.stage_tel += 1;
+                k.stats.stage_steps += stepped as u64;
+            }
+        }
+    }
+
+    /// The running body's TEL tick landed a burst's first row.
+    pub fn kernel_burst_start(&mut self) {
+        if let Some(k) = self.kernel.as_mut() {
+            k.stats.starts[k.ran] += 1;
         }
     }
 

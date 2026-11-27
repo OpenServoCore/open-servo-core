@@ -162,7 +162,7 @@ fn slow_stages_fit_at_budget_while_streaming() {
 /// TEL row and a bank or the TX lane's dearest step, with the health close
 /// where it can land and interrupt entry and exit.
 #[test]
-#[ignore = "OBSERVER is over at budget by budget::POT_TERM and budget::VISCOUS_PREDICT"]
+#[ignore = "TRAJECTORY is over at budget on estimated rows (budget::THROWN_HOLD) until the silicon refill"]
 fn plain_phases_fit_at_budget_while_streaming() {
     let carried = Events {
         tel: true,
@@ -522,7 +522,7 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
 /// at budget at 3M: every frame good, no row dropped, no body over the
 /// period.
 #[test]
-#[ignore = "OBSERVER is over at budget by budget::POT_TERM and budget::VISCOUS_PREDICT"]
+#[ignore = "TRAJECTORY is over at budget on estimated rows (budget::THROWN_HOLD) until the silicon refill"]
 fn tel_twelve_byte_rows_fit_at_budget_while_stepping() {
     assert_eq!(SIX.row_bytes(), osc_servo_core::tel::ROW_BYTES_MAX);
     for k in 0..STARTS {
@@ -572,7 +572,9 @@ fn tel_rows_hold_one_ticks_values() {
             frames.len()
         );
         // Each synthesized tick's row is unique: a row matches at most one.
-        let ticks: Vec<Vec<u8>> = (0..rows as u32 + 8)
+        // The ticks a burst reaches: its rows, the lost ones, and a start
+        // held up to a period.
+        let ticks: Vec<Vec<u8>> = (0..rows as u32 + 4 + PHASES as u32)
             .map(|n| tel_row(IDENT_RAIL, &tel_sample(n), n))
             .collect();
         for f in &frames {
@@ -645,6 +647,48 @@ fn tel_lane_never_steps_on_a_stage_tick() {
             assert!(st.stage_tel > 0, "start {k}: no stage tick streamed");
             assert_eq!(st.stage_steps, 0, "start {k}: {st:?}");
         }
+    }
+}
+
+/// The phases the kernel holds the TX lane on while a burst streams, beside
+/// the SLOW stages' ticks: the two heaviest plain ticks.
+const LANE_HELD: [u8; 2] = [phase::OBSERVER, phase::TRAJECTORY];
+
+/// The kernel holds the TX lane on OBSERVER and TRAJECTORY: at every start
+/// offset, stepping at budget, those ticks carry their rows and never a
+/// lane step, and the lane still takes its steps on the other phases.
+#[test]
+fn tel_lane_never_steps_on_observer_or_trajectory() {
+    for c in [SIX, IDENT_RAIL, POS] {
+        for k in 0..STARTS {
+            let (_, _, st) = tel_burst_at(BaudRate::B3000000, c, Motion::Moving, k);
+            for p in LANE_HELD.map(usize::from) {
+                assert!(st.tel_ticks[p] > 0, "start {k}: no row on phase {p}");
+                assert_eq!(st.lane_steps[p], 0, "start {k} phase {p}: {st:?}");
+            }
+            assert!(st.lane_steps.iter().sum::<u64>() > 0, "start {k}: {st:?}");
+        }
+    }
+}
+
+/// A burst starts on CONTROL or SPEED alone, the two plain ticks with the
+/// room for the arm's pickup: over every start offset each burst's first
+/// row lands on one of them, both are reached, and no start is held
+/// longer than a period and a tick.
+#[test]
+fn a_burst_starts_only_on_control_or_speed() {
+    let mut starts = [0u64; PHASES];
+    for k in 0..STARTS {
+        let (_, _, st) = tel_burst_at(BaudRate::B3000000, SIX, Motion::Moving, k);
+        assert_eq!(st.starts.iter().sum::<u64>(), 1, "start {k}: {st:?}");
+        assert!(st.held_starts <= PHASES as u64 + 1, "start {k}: {st:?}");
+        for (n, s) in starts.iter_mut().zip(st.starts) {
+            *n += s;
+        }
+    }
+    let on = [phase::CONTROL, phase::SPEED].map(usize::from);
+    for (p, &n) in starts.iter().enumerate() {
+        assert_eq!(n > 0, on.contains(&p), "phase {p}: {starts:?}");
     }
 }
 
@@ -772,7 +816,7 @@ fn config_apply_lands_within_its_bound_at_budget() {
 /// row charged where the feed copied one. Some offsets must hold, or the
 /// pin tests nothing.
 #[test]
-#[ignore = "OBSERVER is over at budget by budget::POT_TERM and budget::VISCOUS_PREDICT"]
+#[ignore = "TRAJECTORY is over at budget on estimated rows (budget::THROWN_HOLD) until the silicon refill"]
 fn a_burst_never_streams_through_a_config_take() {
     let mut held = 0;
     for (how, k) in [ConfigArm::Acked, ConfigArm::Silent]

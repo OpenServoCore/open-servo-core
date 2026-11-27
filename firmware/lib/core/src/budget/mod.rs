@@ -30,7 +30,7 @@ mod tests;
 
 use osc_protocol::wire::LAW_BREAK_BIT_TIMES;
 
-use crate::kernel::{DECIM_MED, TICK_HZ, phase};
+use crate::kernel::{DECIM_MED, TICK_HZ, burst_starts, lane_holds, phase};
 
 /// The clock every budget counts: the chip's HCLK (the chip asserts it).
 pub const CLOCK_HZ: u32 = 48_000_000;
@@ -275,8 +275,8 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// its leak, the winding
 /// resistance on the new `r_q12`
 /// (`Medium::r_hat`) and the terminal floor's store. It carries no TEL
-/// row: a burst starts neither on SPARE_A nor while a take is pending, and
-/// the host is silent through one. E, an upper bound: the take's longest
+/// row: a burst starts only on CONTROL or SPEED and never while a take is
+/// pending, and the host is silent through one. E, an upper bound: the take's longest
 /// path on matched release disassembly is under 781 HCLK, including the
 /// rating, its two log calls, the resistance's 115.25, the speeds' 34 (22
 /// more instructions, two halfword stores where the span copy stored their
@@ -339,10 +339,13 @@ pub const TEL_BANK: u32 = 43;
 /// with the LAST frame's resume cursor (270); TEL_PATCH, the CRC read, its
 /// odd fold and the 2 B store (240). TEL_HEAD: row 0 over a plain row, the
 /// out-of-line head: the frame header, the stamp and fault read from the
-/// tick block, the head and the start rule (133); a burst's first row 0
-/// also takes the arm from the mailbox (250).
+/// tick block, the head and the start rule (133). TEL_PICKUP: a burst's
+/// first row 0 over TEL_HEAD, the arm taken from the mailbox (250 priced
+/// for the whole row 0, 275 with 10%), only on the phases a burst starts
+/// on (`kernel::BURST_START`).
 pub const TEL_POLL: u32 = 99;
-pub const TEL_HEAD: u32 = 275;
+pub const TEL_HEAD: u32 = 147;
+pub const TEL_PICKUP: u32 = 128;
 pub const TEL_FEED: u32 = 255;
 pub const TEL_ARM: u32 = 198;
 pub const TEL_PATCH: u32 = 165;
@@ -353,14 +356,20 @@ const fn max(a: u32, b: u32) -> u32 {
 
 /// The most a TEL tick that banks nothing carries beyond its row: the poll
 /// and one lane step, or row 0's head on a tick the lane leaves be; a
-/// `held` tick (a SLOW stage) takes no step.
-pub const fn tel_lane(held: bool) -> u32 {
+/// `held` tick (a SLOW stage, `kernel::LANE_HELD`) takes no step, and only
+/// a tick a burst `starts` on carries the pickup.
+pub const fn tel_lane(held: bool, starts: bool) -> u32 {
     let step = if held {
         0
     } else {
         max(max(TEL_FEED, TEL_ARM), TEL_PATCH)
     };
-    TEL_POLL + max(TEL_HEAD, step)
+    let head = if starts {
+        TEL_HEAD + TEL_PICKUP
+    } else {
+        TEL_HEAD
+    };
+    TEL_POLL + max(head, step)
 }
 
 /// The lane's share of a TEL tick over a window, for the mean budgets: a
@@ -647,12 +656,13 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     }
     if ev.tel {
         // The lane leaves a banking tick be (its gate is under the poll),
-        // and a stage tick, so the dearest TEL tick is the bank's or a lane
-        // step's, a stage tick's the bank's or a head's. A one-row batch's
+        // and a held tick, so the dearest TEL tick is the bank's or a lane
+        // step's, a held tick's the bank's or a head's. A one-row batch's
         // head and bank land on one tick: under a step's.
-        let held = ev.slow || ev.finish;
+        let p = phase % PHASES;
+        let held = ev.slow || ev.finish || lane_holds(p);
         let bank = if ev.bank { TEL_BANK + TEL_POLL } else { 0 };
-        t += TEL_ROW + max(tel_lane(held), bank);
+        t += TEL_ROW + max(tel_lane(held, burst_starts(p)), bank);
     }
     if ev.health {
         t += HEALTH_CLOSE;

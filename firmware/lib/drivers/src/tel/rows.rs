@@ -13,7 +13,7 @@ use crate::traits::bus::{CrcEngine, Providers};
 /// CRC. The lane skips the bank's tick and the next frame's head tick,
 /// feeds on the one after and patches on the next: three ticks of slack
 /// remain, and the last row's read has at least as many. Late or lost
-/// ticks, or stage ticks the lane holds on, inside them still ship a whole
+/// ticks, or ticks the lane holds on, inside them still ship a whole
 /// frame (DES `tel_kernel_lane_never_underruns_at_budget`); more fail its
 /// CRC (DES `tel_lost_ticks_mid_frame_fail_the_crc_and_leave_a_seq_hole`).
 const LEAD_MARGIN_TICKS: u32 = 5;
