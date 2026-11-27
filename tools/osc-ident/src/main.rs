@@ -157,7 +157,9 @@ enum Cmd {
     /// The whole identification: the steps through the spins into a run folder, then, every step
     /// accepted, the gather into its `inputs/` and the tune into its `tune/`; on the set the tune
     /// accepts, the cruise step for the friction line, the gather again into `final/inputs/` and
-    /// the final set installed volatile and checked in `final/`. Never saves.
+    /// the final set installed volatile and checked in `final/`; a final check refused on rest
+    /// error alone goes on down the tune's tries on that friction line, into `tune/tries/`.
+    /// Never saves.
     Run {
         /// The servo profile, or a version 0 nameplate.json.
         #[arg(long, visible_alias = "profile")]
