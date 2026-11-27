@@ -1,0 +1,45 @@
+{
+  "tool": "osc-ident 0.1.0",
+  "inputs": "/bench/run/final/inputs",
+  "started": 1795784844.81565,
+  "ended_at": 1795784867.879445,
+  "starting_gain": 0.5992119527107691,
+  "share": 0.8,
+  "tries_allowed": 6,
+  "after": {
+    "tune": "tune.json",
+    "accepted_try": 6
+  },
+  "tries": [
+    {
+      "try": 7,
+      "kp": 0.19634977266426493,
+      "share_of_start": 0.3276800000000002,
+      "v_kp_q88": 50,
+      "set": "00690f71c10b54aef094904b67159fe7a8fc9b6ee5142bcc4e86b0d24c4ac605",
+      "set_file": "tries/07/set.json",
+      "after": "the tune's check accepted its try 6",
+      "install": "installed",
+      "verdict": "accepted",
+      "failed_on": [],
+      "why": null,
+      "worst": {
+        "overshoot_share_of_bound": 0.8501624883936861,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 0.35622387406126305,
+        "follow_peak_counts": 26.8525390625,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/07/results/verify.json",
+      "next": "accept"
+    }
+  ],
+  "accepted": {
+    "try": 7,
+    "kp": 0.19634977266426493,
+    "speed_kp_verified": 0.19634977266426493,
+    "set": "00690f71c10b54aef094904b67159fe7a8fc9b6ee5142bcc4e86b0d24c4ac605"
+  },
+  "ended": null
+}

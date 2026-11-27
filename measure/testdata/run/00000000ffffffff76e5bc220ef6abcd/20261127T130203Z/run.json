@@ -1,0 +1,97 @@
+{
+  "tool": "osc-ident 0.1.0",
+  "servo_uid": "00000000ffffffff76e5bc220ef6abcd",
+  "image": "production",
+  "capability_flags": 1,
+  "steps": {
+    "rest": {
+      "state": "accepted",
+      "why": null,
+      "started": 1795784523.190082,
+      "ended": 1795784525.286537
+    },
+    "probe": {
+      "state": "accepted",
+      "why": null,
+      "started": 1795784525.286537,
+      "ended": 1795784530.296405
+    },
+    "stops": {
+      "state": "accepted",
+      "why": null,
+      "started": 1795784530.296405,
+      "ended": 1795784562.232554
+    },
+    "table": {
+      "state": "accepted",
+      "why": null,
+      "started": 1795784562.232554,
+      "ended": 1795784609.050838
+    },
+    "window": {
+      "state": "accepted",
+      "why": null,
+      "started": 1795784609.050838,
+      "ended": 1795784627.569134
+    },
+    "spins": {
+      "state": "accepted",
+      "why": null,
+      "started": 1795784627.569134,
+      "ended": 1795784677.343498
+    }
+  },
+  "gather": {
+    "state": "accepted",
+    "why": null,
+    "started": 1795784677.343972,
+    "ended": 1795784677.347646,
+    "files": [
+      "inputs/measured.json",
+      "inputs/pos_lut.json",
+      "inputs/cross-checks.json",
+      "inputs/nameplate.json",
+      "inputs/policy.json",
+      "inputs/resolved.json",
+      "inputs/thermal.json"
+    ]
+  },
+  "tune": {
+    "state": "accepted",
+    "why": null,
+    "started": 1795784677.347646,
+    "ended": 1795784825.971016,
+    "files": [
+      "tune/tune.json",
+      "tune/set.json"
+    ]
+  },
+  "cruise": {
+    "state": "accepted",
+    "why": null,
+    "started": 1795784825.982544,
+    "ended": 1795784844.811666,
+    "files": [
+      "results/cruise.json"
+    ]
+  },
+  "final": {
+    "state": "accepted",
+    "why": null,
+    "started": 1795784844.837795,
+    "ended": 1795784867.893566,
+    "set": "00690f71c10b54aef094904b67159fe7a8fc9b6ee5142bcc4e86b0d24c4ac605",
+    "files": [
+      "final/inputs/measured.json",
+      "final/measured.json",
+      "final/set.json",
+      "final/results/verify.json"
+    ],
+    "set_file": "final/set.json",
+    "try": 7,
+    "checks": [
+      7
+    ],
+    "back_off": "tune/back-off.json"
+  }
+}

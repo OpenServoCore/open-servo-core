@@ -1,0 +1,808 @@
+{
+  "step": "cruise",
+  "method": "closed-loop-velocity-cruises",
+  "revision": 2,
+  "image": "production",
+  "capability_flags": 1,
+  "verdict": "accepted",
+  "why": null,
+  "accepted": true,
+  "failed_on": null,
+  "estimates": {
+    "friction_coulomb_ma": {
+      "value": 37.598027846643504,
+      "sd": 0.4511187661230177,
+      "n": 14,
+      "lo": 37.14690908052049,
+      "hi": 38.04914661276652,
+      "unit": "mA",
+      "source": "the least-squares line of each closed-loop cruise leg's held current on its goal speed over 14 valid legs at 4 speeds, 319 to 3990 counts/s, both directions pooled: the stage 5 cruise-friction method, each leg's current-loop reference replayed from its rows (the board's integer reading over the polled bias, the installed gains, Ke, window term and resistance), averaged over its MEDIUM period at the phase found, the reading on read rows and that mean on the rest, over the leg's middle half; every leg below the top speed and the top speed's legs whose speed held across their steady rows within 2%; per motor rad/s at 3.7109 counts a motor radian; on the nominal sense block's 1108.452 counts/A; its sd and band the standard error from the legs' residuals"
+    },
+    "friction_viscous_ma_s_per_rad": {
+      "value": 0.04861857326597918,
+      "sd": 0.0009444321441016212,
+      "n": 14,
+      "lo": 0.04767414112187756,
+      "hi": 0.0495630054100808,
+      "unit": "mA per motor rad/s",
+      "source": "the least-squares line of each closed-loop cruise leg's held current on its goal speed over 14 valid legs at 4 speeds, 319 to 3990 counts/s, both directions pooled: the stage 5 cruise-friction method, each leg's current-loop reference replayed from its rows (the board's integer reading over the polled bias, the installed gains, Ke, window term and resistance), averaged over its MEDIUM period at the phase found, the reading on read rows and that mean on the rest, over the leg's middle half; every leg below the top speed and the top speed's legs whose speed held across their steady rows within 2%; per motor rad/s at 3.7109 counts a motor radian; on the nominal sense block's 1108.452 counts/A; its sd and band the standard error from the legs' residuals"
+    }
+  },
+  "line": {
+    "coulomb_ma": 37.598027846643504,
+    "coulomb_se_ma": 0.4511187661230177,
+    "viscous_ma_per_kcps": 13.101523516426605,
+    "viscous_se_ma_per_kcps": 0.25450150250038167,
+    "viscous_ma_s_per_rad": 0.04861857326597918,
+    "viscous_se": 0.0009444321441016212,
+    "legs": 14,
+    "goal_cps": [
+      319.0,
+      3990.0
+    ],
+    "rms_ma": 1.0407301656038375,
+    "speeds": [
+      {
+        "goal_cps": 319.0,
+        "legs": 4,
+        "current_ma": 42.105420473729936,
+        "residual_ma": 0.3280066253463447,
+        "up_ma": 41.31023350321744,
+        "down_ma": 42.90060744424243
+      },
+      {
+        "goal_cps": 798.0,
+        "legs": 4,
+        "current_ma": 47.13119560165666,
+        "residual_ma": -0.9218480110952818,
+        "up_ma": 47.714512247579194,
+        "down_ma": 46.547878955734106
+      },
+      {
+        "goal_cps": 1516.0,
+        "legs": 4,
+        "current_ma": 58.16261596552109,
+        "residual_ma": 0.7026784679748612,
+        "up_ma": 58.527464096186435,
+        "down_ma": 57.79776783485576
+      },
+      {
+        "goal_cps": 3990.0,
+        "legs": 2,
+        "current_ma": 89.6554325127339,
+        "residual_ma": -0.2176741644517648,
+        "up_ma": 90.9150719995045,
+        "down_ma": 88.39579302596329
+      }
+    ]
+  },
+  "legs": [
+    {
+      "goal_cps": 319.0,
+      "capture": 2,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1179.0,
+        "t_winding_cc": 2251.0,
+        "current_bias_counts": 1213.0
+      },
+      "after": {
+        "vbus_raw": 1177.0,
+        "t_winding_cc": 2251.0,
+        "current_bias_counts": 1213.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 5,
+      "sd_in_ma": 0.5177498712838353,
+      "sd_worst_ma": 1.5181515359441202,
+      "held_in_ms": 188.04999999999998,
+      "read_share": 0.7636666666666667,
+      "current_read_ma": 51.925235265915106,
+      "current_held_ma": 41.645675369915665,
+      "line_installed_ma": 60.6213231515705,
+      "integrator_ma": -18.998449936295273,
+      "speed_cps": 323.161402495913,
+      "halves": 0.07626950589232417,
+      "current_inertia_ma": 0.12131871575334123
+    },
+    {
+      "goal_cps": -319.0,
+      "capture": 3,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1177.0,
+        "t_winding_cc": 2251.0,
+        "current_bias_counts": 1213.0
+      },
+      "after": {
+        "vbus_raw": 1173.0,
+        "t_winding_cc": 2252.0,
+        "current_bias_counts": 1213.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 6,
+      "sd_in_ma": 0.5430525312129537,
+      "sd_worst_ma": 1.2757448930904502,
+      "held_in_ms": 376.09999999999997,
+      "read_share": 0.7954166666666667,
+      "current_read_ma": 52.79704713724498,
+      "current_held_ma": 43.44923057695525,
+      "line_installed_ma": 60.6213231515705,
+      "integrator_ma": -17.228938350363435,
+      "speed_cps": 313.236314484279,
+      "halves": -0.05598935894727985,
+      "current_inertia_ma": -0.09219769752282489
+    },
+    {
+      "goal_cps": 319.0,
+      "capture": 4,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1173.0,
+        "t_winding_cc": 2252.0,
+        "current_bias_counts": 1213.0
+      },
+      "after": {
+        "vbus_raw": 1176.0,
+        "t_winding_cc": 2252.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 6,
+      "sd_in_ma": 0.5182214825884937,
+      "sd_worst_ma": 1.302741160629627,
+      "held_in_ms": 940.25,
+      "read_share": 0.7560833333333333,
+      "current_read_ma": 49.790068031816446,
+      "current_held_ma": 40.974791636519214,
+      "line_installed_ma": 60.6213231515705,
+      "integrator_ma": -19.668591973647935,
+      "speed_cps": 323.00984404867864,
+      "halves": 0.090609964533529,
+      "current_inertia_ma": 0.1430737022121208
+    },
+    {
+      "goal_cps": -319.0,
+      "capture": 5,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1176.0,
+        "t_winding_cc": 2252.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1176.0,
+        "t_winding_cc": 2254.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 6,
+      "sd_in_ma": 0.5295466062623778,
+      "sd_worst_ma": 1.352829438768473,
+      "held_in_ms": 940.25,
+      "read_share": 0.7409166666666667,
+      "current_read_ma": 50.66356843393696,
+      "current_held_ma": 42.35198431152961,
+      "line_installed_ma": 60.6213231515705,
+      "integrator_ma": -18.34020511433507,
+      "speed_cps": 318.01896027270067,
+      "halves": -0.05133332710023808,
+      "current_inertia_ma": -0.08561620663948404
+    },
+    {
+      "goal_cps": 798.0,
+      "capture": 7,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1179.0,
+        "t_winding_cc": 2263.0,
+        "current_bias_counts": 1213.0
+      },
+      "after": {
+        "vbus_raw": 1174.0,
+        "t_winding_cc": 2254.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 6,
+      "sd_in_ma": 0.5985752015794792,
+      "sd_worst_ma": 1.8485874789953094,
+      "held_in_ms": 75.14999999999999,
+      "read_share": 1.0,
+      "current_read_ma": 47.614598139676,
+      "current_held_ma": 47.614598139676,
+      "line_installed_ma": 66.3052166110564,
+      "integrator_ma": -18.690791778065545,
+      "speed_cps": 801.2632333247486,
+      "halves": 0.0005018522641004886,
+      "current_inertia_ma": 0.0020542498216985054
+    },
+    {
+      "goal_cps": -798.0,
+      "capture": 8,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1174.0,
+        "t_winding_cc": 2254.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1174.0,
+        "t_winding_cc": 2260.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 6,
+      "sd_in_ma": 0.5707336601732128,
+      "sd_worst_ma": 1.9731331451105412,
+      "held_in_ms": 0.0,
+      "read_share": 0.9999166666666667,
+      "current_read_ma": 46.93617657325465,
+      "current_held_ma": 46.93595723272291,
+      "line_installed_ma": 66.3052166110564,
+      "integrator_ma": -19.369041741131674,
+      "speed_cps": 801.1716218093514,
+      "halves": 0.0014520599438696546,
+      "current_inertia_ma": 0.005940267792001308
+    },
+    {
+      "goal_cps": 798.0,
+      "capture": 9,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1174.0,
+        "t_winding_cc": 2260.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1173.0,
+        "t_winding_cc": 2257.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 5,
+      "sd_in_ma": 0.5863845800404981,
+      "sd_worst_ma": 1.9342115729876213,
+      "held_in_ms": 526.0500000000001,
+      "read_share": 1.0,
+      "current_read_ma": 47.8144263554824,
+      "current_held_ma": 47.8144263554824,
+      "line_installed_ma": 66.3052166110564,
+      "integrator_ma": -18.49247624559763,
+      "speed_cps": 796.5488502711719,
+      "halves": -0.010578051232279506,
+      "current_inertia_ma": -0.04328448841211103
+    },
+    {
+      "goal_cps": -798.0,
+      "capture": 10,
+      "planned_rows": 24000,
+      "before": {
+        "vbus_raw": 1173.0,
+        "t_winding_cc": 2257.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1173.0,
+        "t_winding_cc": 2257.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 24000,
+      "rows": 12000,
+      "phase": 6,
+      "sd_in_ma": 0.5649839313418188,
+      "sd_worst_ma": 1.9695379818822922,
+      "held_in_ms": 75.14999999999999,
+      "read_share": 0.9999166666666667,
+      "current_read_ma": 46.16303707230029,
+      "current_held_ma": 46.159800678745306,
+      "line_installed_ma": 66.3052166110564,
+      "integrator_ma": -20.14370528719207,
+      "speed_cps": 798.3369795978248,
+      "halves": 0.0028760988608265148,
+      "current_inertia_ma": 0.011715938558754198
+    },
+    {
+      "goal_cps": 1516.0,
+      "capture": 12,
+      "planned_rows": 18000,
+      "before": {
+        "vbus_raw": 1179.0,
+        "t_winding_cc": 2263.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1166.0,
+        "t_winding_cc": 2265.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 18000,
+      "rows": 9000,
+      "phase": 6,
+      "sd_in_ma": 0.571379399943251,
+      "sd_worst_ma": 2.6589431981360603,
+      "held_in_ms": 39.550000000000004,
+      "read_share": 1.0,
+      "current_read_ma": 58.902461515464964,
+      "current_held_ma": 58.902461515464964,
+      "line_installed_ma": 74.82512371734214,
+      "integrator_ma": -15.933307073346512,
+      "speed_cps": 1524.9867061418158,
+      "halves": 0.015040836114854184,
+      "current_inertia_ma": 0.155107941629896
+    },
+    {
+      "goal_cps": -1516.0,
+      "capture": 13,
+      "planned_rows": 18000,
+      "before": {
+        "vbus_raw": 1166.0,
+        "t_winding_cc": 2265.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1169.0,
+        "t_winding_cc": 2267.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 18000,
+      "rows": 9000,
+      "phase": 6,
+      "sd_in_ma": 0.574035960215068,
+      "sd_worst_ma": 2.9715634920739715,
+      "held_in_ms": 118.65,
+      "read_share": 1.0,
+      "current_read_ma": 58.14324460725444,
+      "current_held_ma": 58.14324460725444,
+      "line_installed_ma": 74.82512371734214,
+      "integrator_ma": -16.691647282604414,
+      "speed_cps": 1539.1175087236795,
+      "halves": -0.021993013150887086,
+      "current_inertia_ma": -0.23318925806736476
+    },
+    {
+      "goal_cps": 1516.0,
+      "capture": 14,
+      "planned_rows": 18000,
+      "before": {
+        "vbus_raw": 1169.0,
+        "t_winding_cc": 2267.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1168.0,
+        "t_winding_cc": 2267.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 18000,
+      "rows": 9000,
+      "phase": 6,
+      "sd_in_ma": 0.565469375871412,
+      "sd_worst_ma": 2.4840480151321036,
+      "held_in_ms": 79.10000000000001,
+      "read_share": 1.0,
+      "current_read_ma": 58.152466676907906,
+      "current_held_ma": 58.152466676907906,
+      "line_installed_ma": 74.82512371734214,
+      "integrator_ma": -16.681488428186647,
+      "speed_cps": 1529.8735420766366,
+      "halves": 0.011830378973715527,
+      "current_inertia_ma": 0.12258650930582711
+    },
+    {
+      "goal_cps": -1516.0,
+      "capture": 15,
+      "planned_rows": 18000,
+      "before": {
+        "vbus_raw": 1168.0,
+        "t_winding_cc": 2267.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1167.0,
+        "t_winding_cc": 2268.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 18000,
+      "rows": 9000,
+      "phase": 6,
+      "sd_in_ma": 0.5794023005688941,
+      "sd_worst_ma": 2.970918648848177,
+      "held_in_ms": 118.65,
+      "read_share": 1.0,
+      "current_read_ma": 57.45229106245708,
+      "current_held_ma": 57.45229106245708,
+      "line_installed_ma": 74.82512371734214,
+      "integrator_ma": -17.36753119583645,
+      "speed_cps": 1543.5482828730221,
+      "halves": -0.03167532581058685,
+      "current_inertia_ma": -0.33847330523480024
+    },
+    {
+      "goal_cps": 3990.0,
+      "capture": 17,
+      "planned_rows": 12000,
+      "before": {
+        "vbus_raw": 1177.0,
+        "t_winding_cc": 2276.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1161.0,
+        "t_winding_cc": 2289.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": false,
+      "set_aside": [
+        "the top speed still changing: +2.17% across its steady rows (bound 2%)"
+      ],
+      "leg_rows": 12000,
+      "rows": 6000,
+      "phase": 6,
+      "sd_in_ma": 0.6283116178751086,
+      "sd_worst_ma": 2.0261347426347283,
+      "held_in_ms": 60.0,
+      "read_share": 1.0,
+      "current_read_ma": 92.49279770940412,
+      "current_held_ma": 92.49279770940412,
+      "line_installed_ma": 104.18201811978075,
+      "integrator_ma": -11.672807647139763,
+      "speed_cps": 4024.1761901854748,
+      "halves": 0.02167494277707216,
+      "current_inertia_ma": 0.8818500153616449
+    },
+    {
+      "goal_cps": -3990.0,
+      "capture": 18,
+      "planned_rows": 12000,
+      "before": {
+        "vbus_raw": 1161.0,
+        "t_winding_cc": 2289.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1161.0,
+        "t_winding_cc": 2301.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 12000,
+      "rows": 6000,
+      "phase": 6,
+      "sd_in_ma": 0.6396488727827476,
+      "sd_worst_ma": 1.538756906495478,
+      "held_in_ms": 120.0,
+      "read_share": 1.0,
+      "current_read_ma": 88.39579302596329,
+      "current_held_ma": 88.39579302596329,
+      "line_installed_ma": 104.18201811978075,
+      "integrator_ma": -15.820918453065033,
+      "speed_cps": 4047.2759159312973,
+      "halves": -0.01751685175027018,
+      "current_inertia_ma": -0.730937883196425
+    },
+    {
+      "goal_cps": 3990.0,
+      "capture": 19,
+      "planned_rows": 12000,
+      "before": {
+        "vbus_raw": 1161.0,
+        "t_winding_cc": 2301.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1165.0,
+        "t_winding_cc": 2306.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": true,
+      "set_aside": [],
+      "leg_rows": 12000,
+      "rows": 6000,
+      "phase": 6,
+      "sd_in_ma": 0.6393677324393181,
+      "sd_worst_ma": 2.1573133355713408,
+      "held_in_ms": 120.0,
+      "read_share": 1.0,
+      "current_read_ma": 90.9150719995045,
+      "current_held_ma": 90.9150719995045,
+      "line_installed_ma": 104.18201811978075,
+      "integrator_ma": -13.26548423682162,
+      "speed_cps": 4013.6779493730187,
+      "halves": 0.016408722328950853,
+      "current_inertia_ma": 0.6675900104102278
+    },
+    {
+      "goal_cps": -3990.0,
+      "capture": 20,
+      "planned_rows": 12000,
+      "before": {
+        "vbus_raw": 1165.0,
+        "t_winding_cc": 2306.0,
+        "current_bias_counts": 1212.0
+      },
+      "after": {
+        "vbus_raw": 1163.0,
+        "t_winding_cc": 2313.0,
+        "current_bias_counts": 1212.0
+      },
+      "valid": false,
+      "set_aside": [
+        "the top speed still changing: -2.34% across its steady rows (bound 2%)"
+      ],
+      "leg_rows": 12000,
+      "rows": 6000,
+      "phase": 5,
+      "sd_in_ma": 0.6536862000493796,
+      "sd_worst_ma": 1.660480427780672,
+      "held_in_ms": 120.0,
+      "read_share": 1.0,
+      "current_read_ma": 87.79119614427965,
+      "current_held_ma": 87.79119614427965,
+      "line_installed_ma": 104.18201811978075,
+      "integrator_ma": -16.402205618770807,
+      "speed_cps": 4049.8121417309,
+      "halves": -0.023424103143643515,
+      "current_inertia_ma": -0.9809694062705844
+    }
+  ],
+  "t_read_cc": 2251.0,
+  "plan": {
+    "speeds": [
+      {
+        "share": 0.04,
+        "speed_cps": 319.0,
+        "t_s": 1.2,
+        "t_full_s": 1.2,
+        "shortened": false,
+        "start_counts": 1679.4624375000067,
+        "extent_counts": [
+          1661.5975625000067,
+          2081.4024374999935
+        ],
+        "span_counts": [
+          258.9375,
+          3484.0625
+        ],
+        "runaway_counts": [
+          1635.1035947730784,
+          2107.896405226971
+        ]
+      },
+      {
+        "share": 0.1,
+        "speed_cps": 798.0,
+        "t_s": 1.2,
+        "t_full_s": 1.2,
+        "shortened": false,
+        "start_counts": 1388.710234374999,
+        "extent_counts": [
+          1348.8097656249988,
+          2394.190234375001
+        ],
+        "span_counts": [
+          288.875,
+          3454.125
+        ],
+        "runaway_counts": [
+          1279.7731914062783,
+          2463.226808593449
+        ]
+      },
+      {
+        "share": 0.19,
+        "speed_cps": 1516.0,
+        "t_s": 0.9,
+        "t_full_s": 0.9,
+        "shortened": false,
+        "start_counts": 1174.900746093729,
+        "extent_counts": [
+          1112.7392539062291,
+          2630.2607460937706
+        ],
+        "span_counts": [
+          333.75,
+          3409.25
+        ],
+        "runaway_counts": [
+          973.7276143042834,
+          2769.2723856955336
+        ]
+      },
+      {
+        "share": 0.5,
+        "speed_cps": 3990.0,
+        "t_s": 0.6,
+        "t_full_s": 0.6,
+        "shortened": false,
+        "start_counts": 574.7558593750402,
+        "extent_counts": [
+          534.8441406250403,
+          3208.1558593749596
+        ],
+        "span_counts": [
+          488.375,
+          3254.625
+        ],
+        "runaway_counts": [
+          299.14144235745846,
+          3443.858557642554
+        ]
+      }
+    ],
+    "left_out": [],
+    "cut_short": [],
+    "legs_each": 2,
+    "gap_s": 0.03,
+    "leg_min_share": 0.5,
+    "guard_counts": 250.0,
+    "wall_cps_per_count": 16.0,
+    "stop_hold_s": 0.1,
+    "velocity_deadman_s": 0.05,
+    "position_deadman_s": 0.5,
+    "coast_cps2": 37075.86206896552,
+    "stop_clear_counts": 100.0,
+    "clear_counts": [
+      106.0,
+      3637.0
+    ]
+  },
+  "travel": {
+    "stops_counts": [
+      6.0,
+      3737.0
+    ],
+    "from": "the stops step's stops",
+    "soft_counts": [
+      239.0,
+      3504.0
+    ],
+    "middle_counts": 1871.0,
+    "speed_ceiling_cps": 7980.0,
+    "move_cps": 3990.0,
+    "accel_cps2": 79804.6875
+  },
+  "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "counts_per_a_source": "the servo's nominal sense block, the gather's",
+    "g_window_q016": 1165,
+    "i_kp_q88": 284,
+    "i_ki_q412": 1181,
+    "ke_vpc_q": 317,
+    "r_hat_q12": 3778,
+    "j_ff_q88": 870.0,
+    "fric_fc_counts": 63.0,
+    "fric_fv_q016": 862.0,
+    "pwm_arr": 1200,
+    "tick_hz": 20000.0,
+    "bridge_min_ticks": 27.0,
+    "settle_start_ticks": 40,
+    "settle_q15": [
+      37138,
+      35303,
+      34342,
+      33918,
+      33643,
+      33470,
+      33374,
+      33259,
+      33213,
+      33156,
+      33103,
+      33052,
+      33020,
+      32982,
+      32938,
+      32900,
+      32868,
+      32841,
+      32824,
+      32806,
+      32785
+    ],
+    "counts_per_deg": 19.951871657754012,
+    "gear_ratio": 308.0533,
+    "counts_per_motor_rad": 3.710909895709574
+  },
+  "bounds": {
+    "steady_cut": 4,
+    "travel_counts": 60.0,
+    "speed_window_min_s": 0.02,
+    "speed_tol": 0.05,
+    "copper_per_c": 0.0039,
+    "kept_min_s": 0.1,
+    "steady_top_pct": 2.0
+  },
+  "enable_goal_counts": 1869.0,
+  "fault": null,
+  "recovered": null,
+  "checks": [
+    {
+      "name": "the first enable holds still",
+      "value": "the shaft read at most 1.2 counts (0.04% of the travel) off the goal it came on at, over 4000 rows",
+      "bound": "at most 1% of the travel (32.6 counts), no fault",
+      "verdict": "pass"
+    },
+    {
+      "name": "cruise speeds with a valid leg",
+      "value": "4 speeds, counts/s (valid legs): 319 (4), 798 (4), 1516 (4), 3990 (2)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the lowest valid cruise speed",
+      "value": "319 counts/s, 0.08 of the ceiling 3990",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the friction line's residuals by speed",
+      "value": "+0.33 mA at 319, -0.92 mA at 798, +0.70 mA at 1516, -0.22 mA at 3990",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the cruise directions agree",
+      "value": "up less down +0.71 mA on the mean of 4 speeds (up less down -1.59 mA at 319, up less down +1.17 mA at 798, up less down +0.73 mA at 1516, up less down +2.52 mA at 3990)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "cruise legs set aside",
+      "value": "2 of 16: 3990 up (capture 17): the top speed still changing: +2.17% across its steady rows (bound 2%) | 3990 down (capture 20): the top speed still changing: -2.34% across its steady rows (bound 2%)",
+      "bound": "every leg steady by the rule",
+      "verdict": "warning"
+    },
+    {
+      "name": "cruise speeds the travel cut",
+      "value": "none",
+      "bound": "every speed's 2 legs each way at full length",
+      "verdict": "pass"
+    }
+  ],
+  "position_before_counts": 1869.0,
+  "position_centered_counts": 1870.8125,
+  "position_after_counts": 1868,
+  "exit": [
+    "goal_duty 0",
+    "torque_enable 0, read back 0",
+    "stall_permit 0",
+    "bus_deadman_ticks 0",
+    "tel_count 0",
+    "mode put back, read back",
+    "goal_velocity put back, read back"
+  ],
+  "torque_off": true
+}

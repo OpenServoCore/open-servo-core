@@ -1,0 +1,17 @@
+{
+  "name": "mg90-d",
+  "document": "Vorpal Robotics wiki, Vorpal MG90 Micro Servo (the maker's own page for the servo; it links no PDF sheet), https://www.vorpalrobotics.com/wiki/index.php/Vorpal_MG90_Micro_Servo, page last edited 2018-08-01, read 2026-11-14",
+  "source": {"file": "notebooks/stages/5-closed-loop/calibration/vorpal-mg90.datasheet.json", "sha1": "9b890b42877683522fdb9909bdc5bdafe0a7bd4e", "registry": {"file": "notebooks/oscnb/servos.py", "sha1": "b85c244d10e299ba1eba9c6a6ebc96aba12cf3d3"}, "derates_and_voltage_choice": {"file": "notebooks/stages/5-closed-loop/calibration/policy.json", "sha1": "c6a292c59dd228b0f03cac972e6978213aa6f117"}, "count_rises_ccw": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "key": "target.theta_at_stops_deg", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"}, "travel_deg": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "key": "target.theta_at_stops_deg, the high less the low", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"}, "brushes_and_rotor_segments": {"file": "notebooks/oscnb/motors.py", "key": "MOTORS[\"mg90-d\"].brushes and .slots", "sha1": "055dbe4c7bc60bb5b779089297354bfb00ca7e96"}},
+  "gear_class": "metal",
+  "gear_ratio": 308.0533,
+  "brushes": 2,
+  "rotor_segments": 3,
+  "count_rises_ccw": true,
+  "travel_deg": 184.3328808989794,
+  "operating_v": {"min": 4.8, "max": 6.6},
+  "no_load": [{"at_v": 4.8, "seconds": 0.1, "per_deg": 60}, {"at_v": 6.0, "seconds": 0.08, "per_deg": 60}],
+  "stall": [{"at_v": 4.8}, {"at_v": 6.0}],
+  "run_v": 5.0,
+  "derate_speed": [2, 3],
+  "derate_other": 0.8
+}

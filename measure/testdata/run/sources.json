@@ -1,0 +1,14 @@
+{
+ "00000000ffffffff76e5bc220ef6abcd/20261127T130203Z": {
+  "from": "osc-dev-v006-bringup/captures/fixture-run-f/R2/00000000ffffffff76e5bc220ef6abcd/20261127T130203Z (bringup 4cd8f8d6c)",
+  "run": "one no-flag `osc-ident --baud 3000000 run --nameplate --thermal --policy` (measure/testdata/mg90-d's three files) built from open-servo-core 76ceb7c9, on the bench servo mg90-d on dev-v006 at the production image, about 5.0 V; every step, the gather, the tune, the cruise and the final check accepted, the final check after the speed gain backed off to try 7",
+  "root_as_run": "/bench/run",
+  "paths": "the bench's absolute paths rewritten: the run folder to /bench/run, the source tree the tool was built from to /bench/src; each rewritten file's new sha1 carried into the set files that record it; the gathered files regenerated from the results; TRIMMED.md says which",
+  "sha1_as_run": {
+   "run.json": "e7d000cf780bac6510071fc1013f77ab4f97580a",
+   "inputs/measured.json": "73dffa24a2e54b071fec43f57bfbba1b4f6a9a7e",
+   "final/inputs/measured.json": "beceea8bf2cb819cdf7657ba97c47aa9689a19b3"
+  },
+  "trimmed": "TRIMMED.md: 332 rows files of 777 files dropped"
+ }
+}

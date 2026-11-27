@@ -1,0 +1,232 @@
+{
+  "profile": {
+    "key": "mg90-d",
+    "revision": 0
+  },
+  "policy": {
+    "key": "policy",
+    "revision": 0
+  },
+  "fields": [
+    {
+      "field": "protection.run_v",
+      "form": "stated",
+      "value": 5.0,
+      "unit": "V",
+      "binds": "nameplate.run_v"
+    },
+    {
+      "field": "protection.speed_ceiling",
+      "form": "share",
+      "value": [
+        2,
+        3
+      ],
+      "unit": "of the stated no-load speed",
+      "binds": "nameplate.derate_speed",
+      "note": "400 deg/s at the 4.8 V rating"
+    },
+    {
+      "field": "protection.current_limit",
+      "form": "share",
+      "value": 0.8,
+      "unit": "of the stall current, the stated volts over R",
+      "binds": "nameplate.derate_other",
+      "note": "of the 4.8 V rating over the identified R, set by the run"
+    },
+    {
+      "field": "protection.yield",
+      "form": "fixed",
+      "value": 350.0,
+      "unit": "mA",
+      "binds": "policy.yield_current_ma"
+    },
+    {
+      "field": "protection.stall_release",
+      "form": "fixed",
+      "value": 126.0,
+      "unit": "mA",
+      "binds": "policy.stall_release_ma"
+    },
+    {
+      "field": "protection.stall_response",
+      "form": "stated",
+      "value": "yield",
+      "unit": "",
+      "binds": "policy.stall_response"
+    },
+    {
+      "field": "protection.stall_time_ms",
+      "form": "stated",
+      "value": 500.0,
+      "unit": "ms",
+      "binds": "policy.stall_time_ms"
+    },
+    {
+      "field": "protection.stall_speed",
+      "form": "fixed",
+      "value": 24.84,
+      "unit": "deg/s",
+      "binds": "policy.stall_omega_max_deg_s"
+    },
+    {
+      "field": "protection.cutoff_c",
+      "form": "stated",
+      "value": 90.0,
+      "unit": "C",
+      "binds": "policy.cutoff_c"
+    },
+    {
+      "field": "protection.position_error.deg",
+      "form": "stated",
+      "value": 9.9,
+      "unit": "deg",
+      "binds": "policy.pos_error_deg"
+    },
+    {
+      "field": "protection.position_error.time_ms",
+      "form": "stated",
+      "value": 100.0,
+      "unit": "ms",
+      "binds": "policy.pos_error_time_ms"
+    },
+    {
+      "field": "protection.duty_max_share",
+      "form": "stated",
+      "value": 1.0,
+      "unit": "of the rail",
+      "binds": "policy.duty_max_share"
+    },
+    {
+      "field": "protection.collision_trip",
+      "form": "stated",
+      "value": "off",
+      "unit": "",
+      "binds": "policy.collision_trip"
+    },
+    {
+      "field": "motion.move_speed",
+      "form": "fixed",
+      "value": 200.0,
+      "unit": "deg/s",
+      "binds": "policy.velocity_limit_deg_s"
+    },
+    {
+      "field": "motion.speed_up",
+      "form": "fixed",
+      "value": 4000.0,
+      "unit": "deg/s^2",
+      "binds": "policy.accel_limit_deg_s2"
+    },
+    {
+      "field": "motion.soft_margin_share",
+      "form": "stated",
+      "value": 0.0625,
+      "unit": "of the stops' span",
+      "binds": "policy.soft_margin_share"
+    },
+    {
+      "field": "motion.angle_cw_stop_deg",
+      "form": "stated",
+      "value": 0.0,
+      "unit": "deg",
+      "binds": "policy.angle_cw_stop_deg"
+    },
+    {
+      "field": "loops.current_loop",
+      "form": "fixed",
+      "value": 1000.0,
+      "unit": "Hz",
+      "binds": "policy.current_loop_hz"
+    },
+    {
+      "field": "loops.observer",
+      "form": "fixed",
+      "value": 15.0,
+      "unit": "Hz",
+      "binds": "policy.observer_hz"
+    },
+    {
+      "field": "loops.velocity_em_ratio",
+      "form": "stated",
+      "value": 1.34,
+      "unit": "",
+      "binds": "policy.velocity_em_ratio"
+    },
+    {
+      "field": "loops.velocity_zero_ratio",
+      "form": "stated",
+      "value": 3.0,
+      "unit": "",
+      "binds": "policy.velocity_zero_ratio"
+    },
+    {
+      "field": "loops.position_split",
+      "form": "stated",
+      "value": 7.104,
+      "unit": "",
+      "binds": "policy.position_split"
+    },
+    {
+      "field": "loops.hold_band_noise_multiple",
+      "form": "stated",
+      "value": 2.5,
+      "unit": "",
+      "binds": "policy.hold_band_noise_multiple"
+    },
+    {
+      "field": "loops.velocity_shelf_margin_db",
+      "form": "stated",
+      "value": 1.0,
+      "unit": "dB",
+      "binds": "policy.velocity_shelf_margin_db"
+    },
+    {
+      "field": "loops.hold_band_floor_counts",
+      "form": "stated",
+      "value": 4.0,
+      "unit": "raw counts",
+      "binds": "policy.hold_band_floor_counts"
+    },
+    {
+      "field": "sensor.pot_jump",
+      "form": "fixed",
+      "value": 64.0,
+      "unit": "raw counts",
+      "binds": "policy.sensor_delta_max_counts"
+    },
+    {
+      "field": "sensor.bad_samples",
+      "form": "stated",
+      "value": 4.0,
+      "unit": "samples",
+      "binds": "policy.sensor_bad_samples"
+    },
+    {
+      "field": "behavior.openloop_zero_brake",
+      "form": "stated",
+      "value": "off",
+      "unit": "",
+      "binds": "policy.openloop_zero_brake"
+    },
+    {
+      "field": "behavior.brush_term",
+      "form": "stated",
+      "value": "off",
+      "unit": "",
+      "binds": "policy.brush_term"
+    },
+    {
+      "field": "oc_trip",
+      "form": "board",
+      "value": 8.0,
+      "unit": "samples",
+      "binds": "policy.oc_trip_samples",
+      "note": "the board's oc_trip_us 400 at 20000 Hz"
+    }
+  ],
+  "notes": [
+    "/bench/src/measure/testdata/mg90-d/nameplate.json with /bench/src/measure/testdata/mg90-d/policy.json: the nameplate is version 0: read as the servo profile mg90-d, its run_v, derate_speed and derate_other as the policy's",
+    "/bench/src/measure/testdata/mg90-d/nameplate.json with /bench/src/measure/testdata/mg90-d/policy.json: the policy is version 0: read as the tuning policy policy with every value fixed, its oc_trip_samples 8 left to the board's oc_trip_us"
+  ]
+}

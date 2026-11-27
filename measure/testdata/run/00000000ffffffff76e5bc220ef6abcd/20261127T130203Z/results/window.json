@@ -1,0 +1,719 @@
+{
+  "step": "window",
+  "method": "window-term-onsets",
+  "revision": 2,
+  "image": "production",
+  "capability_flags": 1,
+  "verdict": "accepted",
+  "estimates": {
+    "g_window_ms": {
+      "value": 3.979494576662275,
+      "sd": 0.06530405880584,
+      "n": 22,
+      "lo": 3.914190517856435,
+      "hi": 4.044798635468116,
+      "unit": "mS",
+      "source": "open-loop onsets from rest, the window-term notebook's fit on the nominal scales, the board's terminal offset and its edge lags: g plus the crest sample's lateness past the window's middle, the term over the period's mean; its sd the bootstrap sd of g over the gated onsets"
+    }
+  },
+  "fit": {
+    "g_ms": 3.864505399173098,
+    "g_sd_ms": 0.06530405880584,
+    "lateness_ms": 0.11498917748917736,
+    "g_over_mean_ms": 3.979494576662275,
+    "g_window_q016": 1165.0,
+    "nuisance": {
+      "l_mh": 0.7700000000000009,
+      "r_ohm": 4.300000000000001,
+      "tau_periods": 3.581395348837213,
+      "note": "free on a grid inside the fit, never taken from it"
+    },
+    "rms_ma": 0.350167646711772,
+    "on_grid_edge": false,
+    "v_on_v": 4.6280108642578135,
+    "h_ticks": [
+      68,
+      73,
+      78,
+      82,
+      87,
+      92,
+      96,
+      101,
+      106,
+      110,
+      115,
+      120
+    ],
+    "resid_ma": [
+      0.24421726916364767,
+      -0.033342959916717735,
+      -0.41860540070689023,
+      -0.027903597513180556,
+      -0.4024772287038493,
+      0.35775164564341017,
+      0.38081993840654094,
+      0.35577662646673824,
+      0.31221110878557057,
+      -0.31262562072917677,
+      -0.1867571427831144,
+      -0.2740980278374654
+    ],
+    "split": {
+      "forward": {
+        "n": 10,
+        "g_free_ms": 3.800726322287907,
+        "g_pinned_ms": 3.772369519134423
+      },
+      "reverse": {
+        "n": 12,
+        "g_free_ms": 3.9703617240428564,
+        "g_pinned_ms": 3.9412530037899716
+      }
+    },
+    "draws": 2000,
+    "profiles": [
+      {
+        "onset": 1,
+        "sgn": 1,
+        "zero_counts": 1210.8666666666666,
+        "v_on_v": 4.618005981445313,
+        "g_pinned_ms": 3.61863258896818
+      },
+      {
+        "onset": 2,
+        "sgn": -1,
+        "zero_counts": 1211.3666666666666,
+        "v_on_v": 4.629768676757813,
+        "g_pinned_ms": 3.979806838367854
+      },
+      {
+        "onset": 3,
+        "sgn": 1,
+        "zero_counts": 1211.65,
+        "v_on_v": 4.630090942382813,
+        "g_pinned_ms": 3.5553926928847632
+      },
+      {
+        "onset": 4,
+        "sgn": -1,
+        "zero_counts": 1212.2833333333333,
+        "v_on_v": 4.625579223632813,
+        "g_pinned_ms": 3.8843746991887045
+      },
+      {
+        "onset": 5,
+        "sgn": 1,
+        "zero_counts": 1211.5833333333333,
+        "v_on_v": 4.626223754882812,
+        "g_pinned_ms": 3.7423937315465934
+      },
+      {
+        "onset": 6,
+        "sgn": -1,
+        "zero_counts": 1211.6666666666667,
+        "v_on_v": 4.632830200195313,
+        "g_pinned_ms": 3.917834559703043
+      },
+      {
+        "onset": 7,
+        "sgn": 1,
+        "zero_counts": 1211.7833333333333,
+        "v_on_v": 4.6268682861328125,
+        "g_pinned_ms": 3.9850721075109967
+      },
+      {
+        "onset": 8,
+        "sgn": -1,
+        "zero_counts": 1212.4333333333334,
+        "v_on_v": 4.634119262695313,
+        "g_pinned_ms": 3.9840753559969153
+      },
+      {
+        "onset": 10,
+        "sgn": -1,
+        "zero_counts": 1211.8666666666666,
+        "v_on_v": 4.630413208007812,
+        "g_pinned_ms": 3.6893351658416944
+      },
+      {
+        "onset": 12,
+        "sgn": -1,
+        "zero_counts": 1212.4,
+        "v_on_v": 4.6355694580078115,
+        "g_pinned_ms": 3.826929813933887
+      },
+      {
+        "onset": 13,
+        "sgn": 1,
+        "zero_counts": 1211.7333333333333,
+        "v_on_v": 4.633474731445312,
+        "g_pinned_ms": 3.8320620627658304
+      },
+      {
+        "onset": 14,
+        "sgn": -1,
+        "zero_counts": 1212.7166666666667,
+        "v_on_v": 4.620584106445313,
+        "g_pinned_ms": 3.967965411658108
+      },
+      {
+        "onset": 15,
+        "sgn": 1,
+        "zero_counts": 1212.4833333333333,
+        "v_on_v": 4.623323364257812,
+        "g_pinned_ms": 3.953978622122461
+      },
+      {
+        "onset": 16,
+        "sgn": -1,
+        "zero_counts": 1212.1333333333334,
+        "v_on_v": 4.628318481445312,
+        "g_pinned_ms": 4.051222967844561
+      },
+      {
+        "onset": 17,
+        "sgn": 1,
+        "zero_counts": 1213.0333333333333,
+        "v_on_v": 4.624451293945312,
+        "g_pinned_ms": 3.8160257670388513
+      },
+      {
+        "onset": 18,
+        "sgn": -1,
+        "zero_counts": 1212.25,
+        "v_on_v": 4.627835083007812,
+        "g_pinned_ms": 3.989155677703458
+      },
+      {
+        "onset": 19,
+        "sgn": 1,
+        "zero_counts": 1212.2166666666667,
+        "v_on_v": 4.637180786132812,
+        "g_pinned_ms": 3.6155078224963333
+      },
+      {
+        "onset": 20,
+        "sgn": -1,
+        "zero_counts": 1212.0166666666667,
+        "v_on_v": 4.626707153320313,
+        "g_pinned_ms": 4.011052943541508
+      },
+      {
+        "onset": 21,
+        "sgn": 1,
+        "zero_counts": 1212.5,
+        "v_on_v": 4.628318481445312,
+        "g_pinned_ms": 3.8777874987408003
+      },
+      {
+        "onset": 22,
+        "sgn": -1,
+        "zero_counts": 1211.7333333333333,
+        "v_on_v": 4.629285278320312,
+        "g_pinned_ms": 4.045342853737
+      },
+      {
+        "onset": 23,
+        "sgn": 1,
+        "zero_counts": 1211.2333333333333,
+        "v_on_v": 4.621550903320313,
+        "g_pinned_ms": 3.7270359731980918
+      },
+      {
+        "onset": 24,
+        "sgn": -1,
+        "zero_counts": 1212.9,
+        "v_on_v": 4.625740356445313,
+        "g_pinned_ms": 3.9482123692801405
+      }
+    ]
+  },
+  "gate": {
+    "gated": 22,
+    "of": 24,
+    "ramp_ticks": [
+      68,
+      73,
+      78,
+      82,
+      87,
+      92,
+      96,
+      101,
+      106,
+      110,
+      115,
+      120,
+      124,
+      129
+    ],
+    "aside": [
+      "onset 9: no still row ahead of the edge; a ramp of [101, 106, 110, 115], not the session's",
+      "onset 11: no still row ahead of the edge; a ramp of [101, 106, 110, 115], not the session's"
+    ]
+  },
+  "sets": 1,
+  "onsets": [
+    {
+      "n": 1,
+      "set": 1,
+      "duty_q15": 8191,
+      "start_counts": 1864.0,
+      "on_s": 0.05303597450256348,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 2,
+      "set": 1,
+      "duty_q15": -8191,
+      "start_counts": 2010.0,
+      "on_s": 0.05254006385803223,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 3,
+      "set": 1,
+      "duty_q15": 8847,
+      "start_counts": 1869.0,
+      "on_s": 0.05260586738586426,
+      "rows": 1010,
+      "pre_rows": 2,
+      "pre_vd_max": 1.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 4,
+      "set": 1,
+      "duty_q15": -8847,
+      "start_counts": 2029.0,
+      "on_s": 0.05282902717590332,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 5,
+      "set": 1,
+      "duty_q15": 9502,
+      "start_counts": 1872.0,
+      "on_s": 0.05262899398803711,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 3.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 6,
+      "set": 1,
+      "duty_q15": -9502,
+      "start_counts": 2041.0,
+      "on_s": 0.05277895927429199,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 3.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 7,
+      "set": 1,
+      "duty_q15": 8191,
+      "start_counts": 1871.5,
+      "on_s": 0.0529179573059082,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 1.0,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 8,
+      "set": 1,
+      "duty_q15": -8191,
+      "start_counts": 2007.0,
+      "on_s": 0.0524449348449707,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 9,
+      "set": 1,
+      "duty_q15": 8847,
+      "start_counts": 1868.0,
+      "on_s": 0.05283808708190918,
+      "rows": 1010,
+      "pre_rows": 0,
+      "pre_vd_max": null,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": false
+    },
+    {
+      "n": 10,
+      "set": 1,
+      "duty_q15": -8847,
+      "start_counts": 2031.0,
+      "on_s": 0.05242800712585449,
+      "rows": 1010,
+      "pre_rows": 2,
+      "pre_vd_max": 2.0,
+      "moved": 3.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 11,
+      "set": 1,
+      "duty_q15": 9502,
+      "start_counts": 1873.0,
+      "on_s": 0.05283403396606445,
+      "rows": 1010,
+      "pre_rows": 0,
+      "pre_vd_max": null,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": false
+    },
+    {
+      "n": 12,
+      "set": 1,
+      "duty_q15": -9502,
+      "start_counts": 2039.0,
+      "on_s": 0.05252504348754883,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 13,
+      "set": 1,
+      "duty_q15": 8191,
+      "start_counts": 1873.0,
+      "on_s": 0.052366018295288086,
+      "rows": 1010,
+      "pre_rows": 2,
+      "pre_vd_max": 1.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 14,
+      "set": 1,
+      "duty_q15": -8191,
+      "start_counts": 2014.0,
+      "on_s": 0.05248403549194336,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 15,
+      "set": 1,
+      "duty_q15": 8847,
+      "start_counts": 1872.0,
+      "on_s": 0.052876949310302734,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 16,
+      "set": 1,
+      "duty_q15": -8847,
+      "start_counts": 2030.0,
+      "on_s": 0.05287003517150879,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 17,
+      "set": 1,
+      "duty_q15": 9502,
+      "start_counts": 1868.0,
+      "on_s": 0.05263710021972656,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 18,
+      "set": 1,
+      "duty_q15": -9502,
+      "start_counts": 2039.0,
+      "on_s": 0.05294179916381836,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 19,
+      "set": 1,
+      "duty_q15": 8191,
+      "start_counts": 1869.0,
+      "on_s": 0.055101871490478516,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 20,
+      "set": 1,
+      "duty_q15": -8191,
+      "start_counts": 2020.0,
+      "on_s": 0.05246400833129883,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 21,
+      "set": 1,
+      "duty_q15": 8847,
+      "start_counts": 1875.0,
+      "on_s": 0.05248594284057617,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 1.0,
+      "moved": 2.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 22,
+      "set": 1,
+      "duty_q15": -8847,
+      "start_counts": 2033.0,
+      "on_s": 0.05255699157714844,
+      "rows": 1010,
+      "pre_rows": 3,
+      "pre_vd_max": 2.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 23,
+      "set": 1,
+      "duty_q15": 9502,
+      "start_counts": 1871.0,
+      "on_s": 0.05248689651489258,
+      "rows": 1010,
+      "pre_rows": 2,
+      "pre_vd_max": 1.0,
+      "moved": 1.0,
+      "same_sign": true,
+      "gated": true
+    },
+    {
+      "n": 24,
+      "set": 1,
+      "duty_q15": -9502,
+      "start_counts": 2041.0,
+      "on_s": 0.052607059478759766,
+      "rows": 1010,
+      "pre_rows": 2,
+      "pre_vd_max": 1.0,
+      "moved": 0.0,
+      "same_sign": true,
+      "gated": true
+    }
+  ],
+  "method_constants": {
+    "after_rows": 60,
+    "tap_gate_counts": 6.0,
+    "pot_gate_counts": 6.0,
+    "read_periods": 12,
+    "v_row_max": 30,
+    "ramp_rows": 40,
+    "draws": 2000,
+    "seed": 20261117
+  },
+  "scales": {
+    "counts_per_a": 1108.4520727272727,
+    "terminal_counts_per_v": 248.24242424242425,
+    "terminal_offset_counts": 2.375,
+    "tick_hz": 20000.0,
+    "pwm_arr": 1200,
+    "sample_ticks": 31.0,
+    "lag_on_ticks": 39.5,
+    "lag_off_ticks": 14.0,
+    "r_brake_ohm": 0.301,
+    "v_window_min_ticks": 93,
+    "settle_start_ticks": 40,
+    "settle_q15": [
+      37138,
+      35303,
+      34342,
+      33918,
+      33643,
+      33470,
+      33374,
+      33259,
+      33213,
+      33156,
+      33103,
+      33052,
+      33020,
+      32982,
+      32938,
+      32900,
+      32868,
+      32841,
+      32824,
+      32806,
+      32785
+    ],
+    "source": "the nominal sense block read off the servo, the board's burst_edges tap-on and off lags and its window_read, V_on over the board's terminal_offset_counts (notebooks stage 1 terminal-chain)"
+  },
+  "fence": {
+    "r_q12": 3816,
+    "r_25c_ohm": 4.15993592317111,
+    "source": "this run's seated R at 25 C (results/stops.json) through the rules' r_q12 on the nominal scales"
+  },
+  "drives": {
+    "duties_q15": [
+      8191,
+      8847,
+      9502
+    ],
+    "duties_v": [
+      1.1812939085689276,
+      1.2759012585898306,
+      1.3703643900893603
+    ],
+    "rows": 1010,
+    "onset_s": 0.05,
+    "coast_s": 0.5,
+    "drive_deadman_ticks": 1000,
+    "step_deadman_ticks": 10000,
+    "still_counts": 3.0,
+    "r_price_ohm": 4.050073005137513,
+    "inset_counts": 300.0
+  },
+  "band": {
+    "middle_counts": 1871.5,
+    "half_counts": 746.2,
+    "share": 0.2,
+    "stops_counts": [
+      6.0,
+      3737.0
+    ]
+  },
+  "g_window_q016": {
+    "stored": 0,
+    "driven": 0
+  },
+  "drive_polarity": {
+    "stored": true,
+    "driven": true,
+    "corrected_volatile": false
+  },
+  "checks": [
+    {
+      "name": "onsets through the gate",
+      "value": "22 of 24",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "per-period rms",
+      "value": "0.3502 mA",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "L / R",
+      "value": "3.5814 periods",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the two directions apart",
+      "value": "4.3896 %",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "g",
+      "value": "3.8645 mS",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "g_window_q016 x r_q12 <= 2^25",
+      "value": "4445640.0000 field units",
+      "bound": "at most 2^25, the firmware's bound, at this run's seated R",
+      "verdict": "pass"
+    },
+    {
+      "name": "L and R on the grid's edge",
+      "value": "0.0000 on an edge",
+      "bound": "reported",
+      "verdict": "not judged"
+    }
+  ],
+  "rail_v": 4.725752508361204,
+  "position_before_counts": 1861.75,
+  "position_after_counts": 1883.5,
+  "exit": [
+    "goal_duty 0",
+    "torque_enable 0, read back 0",
+    "stall_permit 0",
+    "bus_deadman_ticks 0",
+    "tel_count 0",
+    "mode put back, read back",
+    "current_limit_counts put back, read back",
+    "g_window_q016 put back, read back"
+  ],
+  "torque_off": true
+}

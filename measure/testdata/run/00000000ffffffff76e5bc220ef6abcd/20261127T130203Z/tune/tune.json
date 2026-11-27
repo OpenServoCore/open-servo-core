@@ -1,0 +1,163 @@
+{
+  "tool": "osc-ident 0.1.0",
+  "inputs": "/bench/run/inputs",
+  "started": 1795784687.561366,
+  "ended_at": 1795784825.970826,
+  "starting_gain": 0.5992119527107691,
+  "starting_gain_nominal": 0.6114848830207689,
+  "share": 0.8,
+  "tries_allowed": 6,
+  "backup": "backup/stored.json",
+  "tries": [
+    {
+      "try": 1,
+      "kp": 0.5992119527107691,
+      "share_of_start": 1.0,
+      "v_kp_q88": 153,
+      "set": "6fcf9d11de8263b41876458961fa16aaca53e33ac6beea3e5059a11a77a688b2",
+      "set_file": "tries/01/set.json",
+      "install": "installed",
+      "verdict": "refused",
+      "failed_on": [
+        "rest error"
+      ],
+      "why": "the set is not accepted: it failed rest error",
+      "worst": {
+        "overshoot_share_of_bound": 0.8704735376044568,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 1.040042146281218,
+        "follow_peak_counts": 23.0,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/01/results/verify.json",
+      "next": "lower"
+    },
+    {
+      "try": 2,
+      "kp": 0.4793695621686153,
+      "share_of_start": 0.8,
+      "v_kp_q88": 123,
+      "set": "fda1256861b0941bf51957d0c9691d24f6f3dfba3c9d6dea8fa367bf86d1b339",
+      "set_file": "tries/02/set.json",
+      "install": "installed",
+      "verdict": "refused",
+      "failed_on": [
+        "rest error"
+      ],
+      "why": "the set is not accepted: it failed rest error",
+      "worst": {
+        "overshoot_share_of_bound": 0.9110956360259981,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 0.6177148567641199,
+        "follow_peak_counts": 22.50732421875,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/02/results/verify.json",
+      "next": "lower"
+    },
+    {
+      "try": 3,
+      "kp": 0.3834956497348923,
+      "share_of_start": 0.6400000000000001,
+      "v_kp_q88": 98,
+      "set": "9eba3fe14a872f76e492279f31031e43092d55ee0564f1e5b6c954b08d2937c2",
+      "set_file": "tries/03/set.json",
+      "install": "installed",
+      "verdict": "refused",
+      "failed_on": [
+        "rest error"
+      ],
+      "why": "the set is not accepted: it failed rest error",
+      "worst": {
+        "overshoot_share_of_bound": 0.8298514391829155,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 0.5420384221293721,
+        "follow_peak_counts": 22.366455078125,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/03/results/verify.json",
+      "next": "lower"
+    },
+    {
+      "try": 4,
+      "kp": 0.30679651978791384,
+      "share_of_start": 0.5120000000000001,
+      "v_kp_q88": 79,
+      "set": "1584da04566650a4a4361edbad712be8e18d58f3e9b249e992857affb1774766",
+      "set_file": "tries/04/set.json",
+      "install": "installed",
+      "verdict": "refused",
+      "failed_on": [
+        "rest error"
+      ],
+      "why": "the set is not accepted: it failed rest error",
+      "worst": {
+        "overshoot_share_of_bound": 0.9742193781827928,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 0.5005947006478687,
+        "follow_peak_counts": 25.175613403320312,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/04/results/verify.json",
+      "next": "lower"
+    },
+    {
+      "try": 5,
+      "kp": 0.24543721583033112,
+      "share_of_start": 0.4096000000000002,
+      "v_kp_q88": 63,
+      "set": "a2c3a3eb84f9c497d44f677845f464db4af2d6f04c86a53d14833cd734a09711",
+      "set_file": "tries/05/set.json",
+      "install": "installed",
+      "verdict": "refused",
+      "failed_on": [
+        "rest error"
+      ],
+      "why": "the set is not accepted: it failed rest error",
+      "worst": {
+        "overshoot_share_of_bound": 0.9691272051996286,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 0.8055767836845383,
+        "follow_peak_counts": 26.381668090820312,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/05/results/verify.json",
+      "next": "lower"
+    },
+    {
+      "try": 6,
+      "kp": 0.19634977266426493,
+      "share_of_start": 0.3276800000000002,
+      "v_kp_q88": 50,
+      "set": "5becbed2342a53f4bc38f538ced4262d778fd7221a842b511819f2485aa3e426",
+      "set_file": "tries/06/set.json",
+      "install": "installed",
+      "verdict": "accepted",
+      "failed_on": [],
+      "why": null,
+      "worst": {
+        "overshoot_share_of_bound": 1.0532729805013927,
+        "tail_driven_share": 0.0,
+        "rest_error_deg": 0.3218849784815182,
+        "follow_peak_counts": 26.2723388671875,
+        "screen_counts": 198.0,
+        "moves_scored": 12
+      },
+      "check": "tries/06/results/verify.json",
+      "next": "accept"
+    }
+  ],
+  "accepted": {
+    "try": 6,
+    "kp": 0.19634977266426493,
+    "speed_kp_verified": 0.19634977266426493,
+    "set": "5becbed2342a53f4bc38f538ced4262d778fd7221a842b511819f2485aa3e426"
+  },
+  "ended": null,
+  "put_back": null
+}
