@@ -10,15 +10,14 @@
 use osc_integration::mg90::{self, Mg90};
 use osc_integration::mg90_d;
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, TIMING, duty_of, kernel, last_cmd};
-use osc_integration::sim::{DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT};
+use osc_integration::sim::{
+    DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT,
+};
 use osc_servo_core::estimator::thermal::{NtcCfg, ThermCfg, WindingTherm, ntc_cc};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::phases::loops::faults::{BIT_DATA, CODE_DATA};
-use osc_servo_core::regions::config::{
-    DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
-};
 use osc_servo_core::{
-    BaudRate, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode, MotorCmd, RegionStorage,
+    BaudRate, ConfigDefaults, ImageState, Kernel, Mode, MotorCmd, ProtectionSeed, RegionStorage,
     Shared,
 };
 
@@ -300,21 +299,7 @@ fn the_factory_block_refuses_current_mode_and_runs_openloop() {
             baud: BaudRate::B1000000,
             response_deadline_us: 500,
         },
-        &CurrentDefaults::from_sense(SENSE.shunt_r_mohm, SENSE.gain_milli, SENSE.vdd_mv),
-        vmotor_counts(
-            DEFAULT_V_UNDERVOLT_MV,
-            SENSE.vmotor_div_top as u32,
-            SENSE.vmotor_div_bot as u32,
-            SENSE.vdd_mv,
-        ),
-        rail_fold_q8(
-            DEFAULT_RAIL_SOURCE_MOHM,
-            SENSE.shunt_r_mohm,
-            SENSE.gain_milli,
-            SENSE.vdd_mv,
-            SENSE.vmotor_div_top as u32,
-            SENSE.vmotor_div_bot as u32,
-        ),
+        &ProtectionSeed::from_sense(&PROTECTION, &SENSE),
     );
     sh.table
         .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);

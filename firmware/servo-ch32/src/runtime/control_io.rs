@@ -18,6 +18,7 @@ impl Ch32ControlIo {
             wiring,
             calibration,
             defaults,
+            protection: _,
             model,
             hw_rev,
         } = cfg;

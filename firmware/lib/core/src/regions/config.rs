@@ -1,6 +1,7 @@
 use control_table::{Block, Enum, Section};
 
 use crate::kernel::phases::loops::trajectory::{GOAL_LIM_COUNTS, VEL_CAP_CPS};
+use crate::regions::calib::CalibSense;
 
 // Wire vocabulary, hoisted to the foundation crate so the host column can
 // name it (grid law 2). The table field below stays a raw index because the
@@ -212,30 +213,14 @@ pub struct ConfigLimits {
     pub _rsvd_align: u16,
 }
 
-// Boot limits until the host supplies nameplate and thermal values.
-// The maxon A-max 12 data sheet gives 59.5 K/W winding to ambient and
-// a 5.03 s winding constant (source linked in control-theory). At a 60 K
-// rise, an assumed 5 ohm winding would hold about 0.45 A in free air.
-// The 250 mA default leaves unmeasured enclosure margin; the host must
-// replace it with the actual motor's rating. The leak uses the octave
-// below that reference constant, so the estimate rises sooner.
-// Release stays below the fold so a held press does not unfold.
-pub const DEFAULT_I_CONT_MA: u16 = 250;
-pub const DEFAULT_THERMAL_TAU_S: u16 = 4;
-pub const DEFAULT_DRIVE_POLARITY: bool = true;
+// The press detector's rest speed and dwell, in the kernel's position
+// counts and ticks: no motor or supply fact, so the core's.
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_TICKS: u32 = ms_ticks(500);
-pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
 /// The collision trip boots off: identification sets it from the measured
 /// tau_d noise floor. A copy of the limit tripped the first free run under
 /// a low limit.
 pub const STALL_TAU_TRIP_OFF: u16 = u16::MAX;
-// Copper and shunt guard, not a gear-train limit: 2.2 A sits above any
-// micro-class stall on 2S (2.1 A) and below where the osc-dev-v006 chain
-// saturates (~2.3 A over its 1.10 V reference on 60 mOhm, the amplifier
-// topping out at VDD - 0.16 V), so the trip stays measurable.
-pub const DEFAULT_OC_TRIP_MA: u16 = 2200;
-pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 // Applied volts (duty x rail) a shunt-burst step may drive. A burst runs
 // past the current limit on purpose, so what bounds its load on the teeth is
 // the impulse the rotor takes in one half window: class-absolute, not a
@@ -256,14 +241,6 @@ pub struct ConfigThermal {
     pub v_undervolt_counts: u16,
     pub thermal_tau2_s: u16,
 }
-
-// 90 C.
-pub const DEFAULT_CUTOFF_CC: i16 = 9000;
-// True brown-out floor, not a battery-health line: the default must sit
-// below every legal supply, and a USB-fed 5 V bench bus idles at ~4.3 V.
-// Pack-health thresholds are per-product tuning, written by the host.
-// Reaches the chip in vcounts through `vmotor_counts`.
-pub const DEFAULT_V_UNDERVOLT_MV: u16 = 2900;
 
 /// Fusion observer correction gains, and the position reading's two
 /// current terms ahead of it (`estimator::pot_current`): tuning parameters
@@ -319,12 +296,6 @@ pub struct ConfigFaultCfg {
     pub rail_fold_q8: u16,
 }
 
-// The source a stall may sag the rail through: about 0.8 ohm, what a USB
-// lead and its connectors add, so a 500 mA cap folds over the 400 mV above
-// the floor; a pack's floor and source are per-product tuning, written by
-// the host. Reaches the chip through `rail_fold_q8`.
-pub const DEFAULT_RAIL_SOURCE_MOHM: u32 = 800;
-
 // Wide screens so healthy motion never trips; tighten per application.
 pub const DEFAULT_POS_ERROR_COUNTS: u16 = 400;
 pub const DEFAULT_POS_ERROR_TIME_TICKS: u32 = ms_ticks(500);
@@ -364,30 +335,106 @@ pub struct ConfigDefaults {
     pub response_deadline_us: u16,
 }
 
-/// Count-domain seeds for the current thresholds: the `DEFAULT_*_MA` policy
-/// scaled through the board's sense chain (`CalibSense` inputs). Const-eval
-/// only; the chip has no divide.
-#[derive(Copy, Clone, Debug)]
-pub struct CurrentDefaults {
+/// A board's protection defaults in physical units: what its motor, its
+/// supply and its sense chain stand, seeded into CONFIG at boot and
+/// host-owned after. Plain data with no core fallback, so every board
+/// states each field; `ProtectionSeed` converts them.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ProtectionDefaults {
+    /// The continuous current, `i_cont_counts`.
+    pub i_cont_ma: u16,
+    /// `stall_release_counts`, under `i_cont_ma` so a held press stays
+    /// folded.
+    pub stall_release_ma: u16,
+    pub oc_trip_ma: u16,
+    /// The overcurrent trip window, `oc_trip_ticks`.
+    pub oc_trip_us: u16,
+    pub thermal_tau_s: u16,
+    /// Deg C x100.
+    pub cutoff_cc: i16,
+    pub v_undervolt_mv: u16,
+    /// The source a stall may sag the rail through, `rail_fold_q8`.
+    pub rail_source_mohm: u32,
+    /// false = the motor leads are wired reversed.
+    pub drive_polarity: bool,
+}
+
+/// `ProtectionDefaults` in the table's units, through the board's shunt
+/// chain and motor-terminal divider. Const-eval only; the chip has no
+/// divide.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ProtectionSeed {
     pub i_cont_counts: u16,
     pub stall_release_counts: u16,
     pub oc_trip_counts: u16,
+    pub oc_trip_ticks: u8,
+    pub thermal_tau_s: u16,
+    pub cutoff_cc: i16,
+    pub v_undervolt_counts: u16,
+    pub rail_fold_q8: u16,
+    pub drive_polarity: bool,
 }
 
-impl CurrentDefaults {
-    pub const fn from_sense(shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> Self {
+impl ProtectionSeed {
+    pub const fn from_chain(
+        p: &ProtectionDefaults,
+        shunt_r_mohm: u16,
+        gain_milli: u16,
+        vdd_mv: u16,
+        div_top_ohm: u32,
+        div_bot_ohm: u32,
+    ) -> Self {
         Self {
-            i_cont_counts: current_counts(DEFAULT_I_CONT_MA, shunt_r_mohm, gain_milli, vdd_mv),
+            i_cont_counts: current_counts(p.i_cont_ma, shunt_r_mohm, gain_milli, vdd_mv),
             stall_release_counts: current_counts(
-                DEFAULT_STALL_RELEASE_MA,
+                p.stall_release_ma,
                 shunt_r_mohm,
                 gain_milli,
                 vdd_mv,
             ),
-            oc_trip_counts: current_counts(DEFAULT_OC_TRIP_MA, shunt_r_mohm, gain_milli, vdd_mv),
+            oc_trip_counts: current_counts(p.oc_trip_ma, shunt_r_mohm, gain_milli, vdd_mv),
+            oc_trip_ticks: us_ticks_u8(p.oc_trip_us),
+            thermal_tau_s: p.thermal_tau_s,
+            cutoff_cc: p.cutoff_cc,
+            v_undervolt_counts: vmotor_counts(p.v_undervolt_mv, div_top_ohm, div_bot_ohm, vdd_mv),
+            rail_fold_q8: rail_fold_q8(
+                p.rail_source_mohm,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+                div_top_ohm,
+                div_bot_ohm,
+            ),
+            drive_polarity: p.drive_polarity,
         }
     }
+
+    /// The same through the chains as CALIB carries them.
+    pub const fn from_sense(p: &ProtectionDefaults, sense: &CalibSense) -> Self {
+        Self::from_chain(
+            p,
+            sense.shunt_r_mohm,
+            sense.gain_milli,
+            sense.vdd_mv,
+            sense.vmotor_div_top as u32,
+            sense.vmotor_div_bot as u32,
+        )
+    }
 }
+
+/// The osc-dev-v006 board's values, for the core's own tests.
+#[cfg(test)]
+pub(crate) const TEST_PROTECTION: ProtectionDefaults = ProtectionDefaults {
+    i_cont_ma: 250,
+    stall_release_ma: 90,
+    oc_trip_ma: 2200,
+    oc_trip_us: 400,
+    thermal_tau_s: 4,
+    cutoff_cc: 9000,
+    v_undervolt_mv: 2900,
+    rail_source_mohm: 800,
+    drive_polarity: true,
+};
 
 const ADC_COUNTS_PER_VDD: u64 = 4096;
 
@@ -397,6 +444,16 @@ pub const fn ms_ticks(ms: u32) -> u32 {
 }
 
 const _: () = assert!(crate::kernel::TICK_HZ.is_multiple_of(1000));
+
+/// Kernel ticks in `us`, rounded, saturating at the u8 field.
+pub const fn us_ticks_u8(us: u16) -> u8 {
+    let ticks = (us as u64 * crate::kernel::TICK_HZ as u64 + 500_000) / 1_000_000;
+    if ticks > u8::MAX as u64 {
+        u8::MAX
+    } else {
+        ticks as u8
+    }
+}
 
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
 /// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4
@@ -467,10 +524,7 @@ mod tests {
 
     #[test]
     fn rail_fold_slope_follows_both_chains() {
-        assert_eq!(
-            rail_fold_q8(DEFAULT_RAIL_SOURCE_MOHM, 60, 14_884, 3300, 6_400, 1_600),
-            1430
-        );
+        assert_eq!(rail_fold_q8(800, 60, 14_884, 3300, 6_400, 1_600), 1430);
         // 500 mA x 0.8 ohm: 554 counts, 99 vcounts (400 mV) over the floor
         assert_eq!((554u32 << 8) / 1430, 99);
         assert_eq!(rail_fold_q8(0, 60, 14_884, 3300, 6_400, 1_600), 0);
@@ -479,14 +533,8 @@ mod tests {
 
     #[test]
     fn undervolt_floor_in_vcounts_follows_the_terminal_divider() {
-        assert_eq!(
-            vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 6_400, 1_600, 3300),
-            720
-        );
-        assert_eq!(
-            vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 20_000, 10_000, 3300),
-            1200
-        );
+        assert_eq!(vmotor_counts(2900, 6_400, 1_600, 3300), 720);
+        assert_eq!(vmotor_counts(2900, 20_000, 10_000, 3300), 1200);
     }
 
     #[test]
@@ -497,10 +545,19 @@ mod tests {
 
     #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {
-        let d = CurrentDefaults::from_sense(33, 15_000, 3300);
+        let d = ProtectionSeed::from_chain(&TEST_PROTECTION, 33, 15_000, 3300, 20_000, 10_000);
         assert_eq!(d.i_cont_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.oc_trip_counts, 1352);
+        assert_eq!(d.v_undervolt_counts, 1200);
+    }
+
+    #[test]
+    fn trip_window_rounds_to_ticks_and_saturates() {
+        assert_eq!(us_ticks_u8(400), 8);
+        assert_eq!(us_ticks_u8(0), 0);
+        assert_eq!(us_ticks_u8(74), 1);
+        assert_eq!(us_ticks_u8(u16::MAX), u8::MAX);
     }
 
     /// The soft limits as one write over stops at 100..=3000: 0 / 0 is off

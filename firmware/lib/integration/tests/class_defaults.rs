@@ -3,14 +3,13 @@
 //! plant rig on the osc-dev-v006 sense chain (60 mohm, G 14.884).
 
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, TIMING, duty_of, kernel};
-use osc_integration::sim::{DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT};
-use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_NONE};
-use osc_servo_core::regions::config::{
-    DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, STALL_TAU_TRIP_OFF, current_counts,
-    rail_fold_q8, vmotor_counts,
+use osc_integration::sim::{
+    DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT,
 };
+use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_NONE};
+use osc_servo_core::regions::config::{STALL_TAU_TRIP_OFF, current_counts};
 use osc_servo_core::{
-    BaudRate, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode, RegionStorage, Shared,
+    BaudRate, ConfigDefaults, ImageState, Kernel, Mode, ProtectionSeed, RegionStorage, Shared,
 };
 
 /// `limit_flags` bit 5: the cap or the speed ceiling is unset.
@@ -30,21 +29,7 @@ fn virgin() -> Shared {
             baud: BaudRate::B1000000,
             response_deadline_us: 500,
         },
-        &CurrentDefaults::from_sense(SENSE.shunt_r_mohm, SENSE.gain_milli, SENSE.vdd_mv),
-        vmotor_counts(
-            DEFAULT_V_UNDERVOLT_MV,
-            SENSE.vmotor_div_top as u32,
-            SENSE.vmotor_div_bot as u32,
-            SENSE.vdd_mv,
-        ),
-        rail_fold_q8(
-            DEFAULT_RAIL_SOURCE_MOHM,
-            SENSE.shunt_r_mohm,
-            SENSE.gain_milli,
-            SENSE.vdd_mv,
-            SENSE.vmotor_div_top as u32,
-            SENSE.vmotor_div_bot as u32,
-        ),
+        &ProtectionSeed::from_sense(&PROTECTION, &SENSE),
     );
     sh.table
         .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);
@@ -104,6 +89,53 @@ fn virgin_openloop_run_never_collision_trips() {
         let tau_d = sh.table.with(|t| t.telemetry.estimates.tau_d_counts);
         assert_eq!(tau_d, 0, "goal {goal}");
     }
+}
+
+/// Every CONFIG field the osc-dev-v006 boot seed writes: the board's
+/// protection values through its sense chain, and the core's own.
+#[test]
+fn the_dev_v006_boot_seed_is_pinned() {
+    let sh = virgin();
+    sh.table.with(|t| {
+        let c = &t.config;
+        let (phys, soft) = (&c.pos_phys, &c.pos_soft);
+        assert_eq!(
+            (phys.pos_min_phys_counts, phys.pos_max_phys_counts),
+            (0, 4095)
+        );
+        assert_eq!((soft.pos_min_soft_counts, soft.pos_max_soft_counts), (0, 0));
+        let common = &c.common;
+        assert_eq!(
+            (common.id, common.baud_rate_idx, common.response_deadline_us),
+            (1, BaudRate::B1000000.as_idx(), 500)
+        );
+        assert_eq!(c.loop_current.duty_max_q15, 32767);
+        let p = &c.loop_position;
+        assert_eq!((p.accel_limit_q88, p.pos_deadband_counts), (3840, 12));
+        assert_eq!((p.speed_ceiling_cps, p.velocity_limit_cps), (0, 0));
+        let f = &c.fusion;
+        assert_eq!((f.l1_q016, f.l2_q88, f.l3_q88), (16384, 1024, 128));
+        let l = &c.limits;
+        assert_eq!(l.current_limit_counts, 0);
+        assert!(l.drive_polarity);
+        assert_eq!((l.stall_omega_max_cps, l.stall_time_ticks), (500, 10_000));
+        assert_eq!((l.i_cont_counts, l.stall_release_counts), (277, 100));
+        assert_eq!(l.stall_tau_trip_counts, u16::MAX);
+        assert_eq!((l.oc_trip_counts, l.oc_trip_ticks), (2439, 8));
+        assert_eq!(l.thermal_tau_s, 4);
+        let th = &c.thermal;
+        assert_eq!(
+            (th.cutoff_cc, th.v_undervolt_counts, th.thermal_tau2_s),
+            (9000, 720, 0)
+        );
+        let fc = &c.fault_cfg;
+        assert_eq!(
+            (fc.pos_error_counts, fc.pos_error_time_ticks),
+            (400, 10_000)
+        );
+        assert_eq!((fc.sensor_delta_max, fc.sensor_bad_count), (256, 4));
+        assert_eq!(fc.rail_fold_q8, 1430);
+    });
 }
 
 /// One thermal limit, 90.00 C on the winding estimate.

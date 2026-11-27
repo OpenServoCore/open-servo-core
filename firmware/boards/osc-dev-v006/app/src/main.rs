@@ -123,6 +123,40 @@ fn main() -> ! {
             baud: BaudRate::B1000000,
             response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,
         },
+        // Boot limits until the host supplies nameplate and thermal values.
+        protection: ProtectionDefaults {
+            // The maxon A-max 12 data sheet gives 59.5 K/W winding to ambient
+            // and a 5.03 s winding constant (source linked in
+            // control-theory). At a 60 K rise, an assumed 5 ohm winding would
+            // hold about 0.45 A in free air. The 250 mA default leaves
+            // unmeasured enclosure margin; the host must replace it with the
+            // actual motor's rating.
+            i_cont_ma: 250,
+            // Below the fold so a held press does not unfold.
+            stall_release_ma: 90,
+            // Copper and shunt guard, not a gear-train limit: 2.2 A sits above
+            // any micro-class stall on 2S (2.1 A) and below where this chain
+            // saturates (~2.3 A over its 1.10 V reference on 60 mOhm, the
+            // amplifier topping out at VDD - 0.16 V), so the trip stays
+            // measurable.
+            oc_trip_ma: 2200,
+            oc_trip_us: 400,
+            // The octave below the reference motor's winding constant, so the
+            // estimate rises sooner.
+            thermal_tau_s: 4,
+            // 90 C.
+            cutoff_cc: 9000,
+            // True brown-out floor, not a battery-health line: the default
+            // must sit below every legal supply, and a USB-fed 5 V bench bus
+            // idles at ~4.3 V. Pack-health thresholds are per-product tuning,
+            // written by the host.
+            v_undervolt_mv: 2900,
+            // About what a USB lead and its connectors add, so a 500 mA cap
+            // folds over the 400 mV above the floor; a pack's floor and source
+            // are per-product tuning, written by the host.
+            rail_source_mohm: 800,
+            drive_polarity: true,
+        },
         model: MODEL_OSC_SERVO,
         hw_rev: 2,
     })

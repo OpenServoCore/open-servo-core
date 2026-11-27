@@ -507,8 +507,9 @@ pub(crate) fn rebooted(shared: &Shared) -> Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::config::TEST_PROTECTION;
     use crate::regions::config::addr;
-    use crate::{ConfigDefaults, CurrentDefaults, RegionStorage};
+    use crate::{ConfigDefaults, ProtectionSeed, RegionStorage};
 
     /// A plausible table snapshot: pattern data in rule-free fields, valid
     /// (zero) bytes in every enum/bool field.
@@ -574,9 +575,7 @@ mod tests {
                 id: 1,
                 ..Default::default()
             },
-            &CurrentDefaults::from_sense(33, 15_000, 3300),
-            1200,
-            1300,
+            &ProtectionSeed::from_chain(&TEST_PROTECTION, 33, 15_000, 3300, 20_000, 10_000),
         );
     }
 

@@ -10,10 +10,8 @@ use osc_servo_core::estimator::bemf::{self, RECIP_ARR_SHIFT};
 use osc_servo_core::estimator::pot_current;
 use osc_servo_core::estimator::window::WINDOW_ARR_MIN;
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::regions::config::{
-    BURST_MAX_MV, DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
-};
-use osc_servo_core::{ConfigDefaults, CurrentDefaults, KernelTiming};
+use osc_servo_core::regions::config::{BURST_MAX_MV, vmotor_counts};
+use osc_servo_core::{ConfigDefaults, KernelTiming, ProtectionDefaults, ProtectionSeed};
 
 use crate::providers::{break_wake, usart_baud};
 
@@ -22,6 +20,7 @@ pub struct BoardConfig {
     pub wiring: BoardWiring,
     pub calibration: Calibration,
     pub defaults: ConfigDefaults,
+    pub protection: ProtectionDefaults,
     /// Identity the board stamps into the RO block (protocol sec 5.4); the
     /// firmware version comes from `osc_servo_core::FIRMWARE_VERSION`, not here.
     pub model: u16,
@@ -37,10 +36,8 @@ pub struct Precomputed {
     pub usart_brr: u32,
     pub break_reload: u16,
     pub kernel_timing: KernelTiming,
-    pub current_defaults: CurrentDefaults,
+    pub protection: ProtectionSeed,
     pub burst_v_max_counts: u16,
-    pub v_undervolt_counts: u16,
-    pub rail_fold_q8: u16,
     pub vmotor_bias_nom_counts: u16,
     pub vmotor_bias_top_ohm: u16,
     pub vmotor_bias_bot_ohm: u16,
@@ -86,30 +83,19 @@ impl Precomputed {
                     cfg.calibration.vdd_mv,
                 ),
             },
-            current_defaults: CurrentDefaults::from_sense(
+            protection: ProtectionSeed::from_chain(
+                &cfg.protection,
                 cfg.calibration.shunt_r_mohm,
                 cfg.wiring.current_sense.gain_milli,
                 cfg.calibration.vdd_mv,
+                term.top_ohm,
+                term.bot_ohm,
             ),
             burst_v_max_counts: vmotor_counts(
                 BURST_MAX_MV,
                 term.top_ohm,
                 term.bot_ohm,
                 cfg.calibration.vdd_mv,
-            ),
-            v_undervolt_counts: vmotor_counts(
-                DEFAULT_V_UNDERVOLT_MV,
-                term.top_ohm,
-                term.bot_ohm,
-                cfg.calibration.vdd_mv,
-            ),
-            rail_fold_q8: rail_fold_q8(
-                DEFAULT_RAIL_SOURCE_MOHM,
-                cfg.calibration.shunt_r_mohm,
-                cfg.wiring.current_sense.gain_milli,
-                cfg.calibration.vdd_mv,
-                term.top_ohm,
-                term.bot_ohm,
             ),
             vmotor_bias_nom_counts: vmotor_counts(
                 cfg.calibration.vdd_mv,

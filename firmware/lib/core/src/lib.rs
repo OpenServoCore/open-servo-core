@@ -56,7 +56,7 @@ pub use control_table::{
 pub use data_state::ImageState;
 pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
-pub use regions::config::{BaudRate, ConfigDefaults, CurrentDefaults};
+pub use regions::config::{BaudRate, ConfigDefaults, ProtectionDefaults, ProtectionSeed};
 pub use regions::{
     CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
     CalibStamp, CalibThermal, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits,
