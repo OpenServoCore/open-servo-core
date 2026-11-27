@@ -76,7 +76,7 @@ pub struct KernelTiming {
 /// commits (`Shared::config_seq`). The kernel is the sole writer of TELEMETRY
 /// tick (its frame and `sample_tick` excepted: the ADC DMA and the tick ISR
 /// land them ahead of the kernel), estimates, refs, mode and limits (`data_flags`
-/// excepted: boot and dispatch write it, the kernel reads) and the
+/// excepted: boot and dispatch write it) and the
 /// `fault_flags` byte; TELEMETRY-EXT `health` belongs to the chip side.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,

@@ -1,9 +1,10 @@
 //! Data state, the host half of the firmware's `data_state` module:
 //! `data_flags` names every reason the persisted images and the
-//! identified set behind the closed loops are not the servo's own, and the
-//! kernel latches `fault::DATA` when an enable asks for a loop the reasons
-//! refuse. Bits and codes mirror the servo core (pinned against it by the
-//! fake-adapter test); the texts are what an operator sees.
+//! identified set behind the closed loops are not the servo's own, as
+//! information. No reason refuses a mode: the kernel's belt latches
+//! `fault::DATA`, on the constants a loop would run on. Bits and codes
+//! mirror the servo core (pinned against it by the fake-adapter test); the
+//! texts are what an operator sees.
 
 use osc_protocol::wire::Id;
 
@@ -15,7 +16,7 @@ use crate::pipe::Pipe;
 /// Boot found both CONFIG slots erased.
 pub const CONFIG_VIRGIN: u8 = 1 << 0;
 /// Boot found CONFIG bytes that parse under no version; board defaults
-/// stand in, every mode is refused, only FACTORY + reboot clears it.
+/// run, as on a blank servo.
 pub const CONFIG_CORRUPT: u8 = 1 << 1;
 pub const CALIB_VIRGIN: u8 = 1 << 2;
 pub const CALIB_CORRUPT: u8 = 1 << 3;
@@ -29,9 +30,9 @@ pub const PLANT_UNSET: u8 = 1 << 5;
 pub const CONFIG_STALE: u8 = 1 << 6;
 pub const CALIB_STALE: u8 = 1 << 7;
 
-/// The reasons a successful SAVE retires; CONFIG_CORRUPT stays.
+/// The reasons a successful SAVE retires, every image reason.
 pub const SAVE_CLEARS: u8 =
-    CONFIG_VIRGIN | CALIB_VIRGIN | CALIB_CORRUPT | CONFIG_STALE | CALIB_STALE;
+    CONFIG_VIRGIN | CONFIG_CORRUPT | CALIB_VIRGIN | CALIB_CORRUPT | CONFIG_STALE | CALIB_STALE;
 
 /// `fault_code`: the kernel's latched fault kinds.
 pub mod fault {
@@ -272,15 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn save_clears_everything_but_a_corrupt_config() {
-        assert_eq!(
-            SAVE_CLEARS & (CONFIG_CORRUPT | STAMP_MISMATCH | PLANT_UNSET),
-            0
-        );
-        assert_eq!(
-            SAVE_CLEARS,
-            CONFIG_VIRGIN | CALIB_VIRGIN | CALIB_CORRUPT | CONFIG_STALE | CALIB_STALE
-        );
+    fn save_clears_every_image_reason() {
+        assert_eq!(SAVE_CLEARS, !(STAMP_MISMATCH | PLANT_UNSET));
     }
 
     /// The bits and codes are the servo core's, not a second opinion.
@@ -306,19 +300,5 @@ mod tests {
         assert_eq!(fault::SENSOR, fwf::CODE_SENSOR);
         assert_eq!(fault::UNDER_VOLT, fwf::CODE_UNDER_VOLT);
         assert_eq!(fault::DATA, fwf::CODE_DATA);
-        for flags in 0..=u8::MAX {
-            for (mode, closed) in [
-                (osc_servo_core::Mode::OpenLoop, false),
-                (osc_servo_core::Mode::Current, false),
-                (osc_servo_core::Mode::Velocity, true),
-                (osc_servo_core::Mode::Position, true),
-            ] {
-                assert_eq!(
-                    allows(flags, closed),
-                    fw::allows(mode, flags),
-                    "{flags:#04x}"
-                );
-            }
-        }
     }
 }

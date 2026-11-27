@@ -10,7 +10,7 @@
 mod support;
 
 use osc_integration::mg90::{self, Mg90};
-use osc_integration::plant::{FakeIo, lut_live};
+use osc_integration::plant::FakeIo;
 use osc_servo_core::kernel::phases::loops::faults::{
     BIT_OVER_CURRENT, CODE_DATA, CODE_NONE, CODE_POSITION_ERROR, CODE_STALL,
 };
@@ -140,11 +140,6 @@ impl Servo {
             .with_mut(|t| t.config.limits.drive_polarity = polarity);
         self.sh.config_commit_end();
         self.sh.data_state_after_commit(DRIVE_POLARITY, 1);
-    }
-
-    /// The stamp over the set as it stands, as `osc-ident` leaves a flip.
-    fn stamp(&self) {
-        lut_live(&self.sh, &support::mg90_a());
     }
 }
 
@@ -452,31 +447,73 @@ fn a_locked_rotor_latches_stall_on_either_wiring() {
     }
 }
 
-/// A `drive_polarity` write is a covered write: it leaves the stamp stale,
-/// and the next enable of a closed loop is refused on the data state, the
-/// shaft where it was. With the stamp over the flip, as `osc-ident` leaves
-/// one, the loop runs under the new polarity and a motor wired the other
-/// way round goes to its goal.
+/// A `drive_polarity` write runs as written, never stamped: no data state
+/// refuses the next enable, so the loop runs under the new polarity and a
+/// motor wired the other way round goes to its goal. A wrong value is the
+/// reversed-motor pins' case: the shaft runs to its stop and a timer
+/// latches.
 #[test]
-fn a_polarity_write_refuses_closed_loop_until_the_stamp() {
+fn a_polarity_write_runs_closed_loop_as_written() {
     let mut s = Servo::new(1, MID, Mode::Position, |_| {});
     s.p.swapped = true;
     s.write_polarity(false);
-    let at = s.pos();
     s.control(|c| {
         c.goal_position = MID as i32 + 200;
         c.torque_enable = true;
     });
-    s.run(100 * MS);
-    assert_eq!(s.code(), CODE_DATA);
-    assert!((s.pos() - at).abs() <= 5.0, "{}", s.pos());
-    s.control(|c| c.torque_enable = false);
-    s.run(10 * MS);
-    s.stamp();
-    s.control(|c| c.torque_enable = true);
     s.run(1000 * MS);
     assert_eq!(s.code(), CODE_NONE);
     assert!((s.pos() - (MID + 200.0)).abs() <= 20.0, "{}", s.pos());
+}
+
+/// Hand-tuned nonzero values run as written: no data state refuses them,
+/// and the protections act on what the shaft does. A polarity flipped by
+/// hand on a motor wired as the set says drives the shaft into its stop
+/// and the position error timer turns the drive off, with no current at
+/// the trip, as on the reversed-motor pins; an observer gain written to 0
+/// enables and drives.
+#[test]
+fn a_hand_tuned_nonzero_set_runs_as_written() {
+    const STEP: i32 = 200;
+    for dir in [1i32, -1] {
+        let case = format!("polarity flipped {dir}");
+        let mut s = Servo::new(1, MID, Mode::Position, |t| {
+            bench_limits(t);
+            t.control.lifecycle.goal_position = MID as i32 + STEP * dir;
+        });
+        let oc_trip = s.sh.table.with(|t| t.config.limits.oc_trip_counts as f64);
+        let stop = if dir > 0 { STOPS.0 } else { STOPS.1 };
+        s.write_polarity(false);
+        s.stops = true;
+        s.control(|c| c.torque_enable = true);
+        let mut peak: f64 = 0.0;
+        s.until(2000 * MS, |s| {
+            peak = peak.max(s.p.i.abs());
+            s.code() != CODE_NONE
+        })
+        .unwrap_or_else(|| panic!("{case}: never latched"));
+        assert_eq!(s.code(), CODE_POSITION_ERROR, "{case}");
+        assert!((s.p.out - stop).abs() <= 2.0, "{case}: at {:.1}", s.p.out);
+        assert!(peak < oc_trip, "{case}: peak {peak:.0}");
+        s.run(MS);
+        assert!(
+            !matches!(s.k.io.motor.last, Some(MotorCmd::Drive { .. })),
+            "{case}: driving after the latch"
+        );
+    }
+
+    let mut s = Servo::new(1, MID, Mode::Position, |t| t.config.fusion.l1_q016 = 0);
+    s.control(|c| {
+        c.goal_position = MID as i32 + STEP;
+        c.torque_enable = true;
+    });
+    let mut drove = false;
+    for _ in 0..100 * MS {
+        s.tick();
+        drove |= matches!(s.k.io.motor.last, Some(MotorCmd::Drive { .. }));
+    }
+    assert!(drove, "observer gain 0: enabled");
+    assert_ne!(s.code(), CODE_DATA, "observer gain 0");
 }
 
 /// An OpenLoop drive overpowered by a push mid travel from the enable: the

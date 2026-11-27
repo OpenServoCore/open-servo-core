@@ -1,8 +1,8 @@
-//! The data-state fault (`data_state` module): the runaway a closed loop
-//! would run on unloaded, corrupt, stale or unidentified data is impossible
-//! by construction. Boot verdicts come from the RAM store's slots through
-//! the real overlay path, the kernel runs the plant rig on the table that
-//! left, and SAVE/FACTORY go over the wire.
+//! The data state (`data_state` module) and the belt: `data_flags` names
+//! what boot and the commits found, and only the belt refuses a mode, on
+//! the constants a loop would run on. Boot verdicts come from the RAM
+//! store's slots through the real overlay path, the kernel runs the plant
+//! rig on the table that left, and SAVE/FACTORY go over the wire.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,7 +16,7 @@ use osc_integration::sim::{
 use osc_protocol::wire::{MgmtOp, Opcode, ResultCode};
 use osc_servo_core::data_state::{
     CALIB_CORRUPT, CALIB_STALE, CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN,
-    PLANT_UNSET, STAMP_MISMATCH, allows,
+    PLANT_UNSET, STAMP_MISMATCH,
 };
 use osc_servo_core::kernel::phases::loops::faults::{BIT_DATA, CODE_DATA, CODE_NONE};
 use osc_servo_core::kernel::{DECIM_MED, phase as kernel_phase};
@@ -58,12 +58,19 @@ fn identified_store() -> &'static RamStore {
 /// unset and never stamped, as a board that was never identified), then
 /// the store's overlay and the data state it makes.
 fn boot(store: &RamStore) -> Shared {
+    boot_on(store, |_| {})
+}
+
+/// [`boot`] with `defaults` applied to the board defaults ahead of the
+/// overlay.
+fn boot_on(store: &RamStore, defaults: impl FnOnce(&mut ControlTable)) -> Shared {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
         t.calib.motor.recip_ke_q = 0;
         t.calib.motor.ke_vpc_q = 0;
         t.calib.stamp.plant_stamp = 0;
+        defaults(t);
     });
     store.boot_load(&sh);
     sh
@@ -80,6 +87,14 @@ fn fault(sh: &Shared) -> (u8, u8) {
 
 fn set(sh: &Shared, f: impl FnOnce(&mut ControlTable)) {
     sh.table.with_mut(f);
+}
+
+/// A committed CONFIG/CALIB write, as the dispatcher lands one: the kernel
+/// takes it at its next medium period.
+fn commit(sh: &Shared, f: impl FnOnce(&mut ControlTable)) {
+    sh.config_commit_begin();
+    sh.table.with_mut(f);
+    sh.config_commit_end();
 }
 
 /// Torque on in `mode` with a goal that asks for motion.
@@ -162,10 +177,10 @@ impl Fixture {
 }
 
 /// Every boot state the store can hand the kernel, times both closed-loop
-/// modes: Velocity and Position emit `Drive` only when no reason is set and
-/// both Ke are nonzero. The clean rig is the positive control. A CALIB that
-/// did not load leaves the board's never-stamped defaults under the saved
-/// gains, so the stamp mismatches too; a stamped zero-Ke set is consistent.
+/// modes: Velocity and Position emit `Drive` exactly when both Ke are
+/// nonzero, whatever reasons `data_flags` names. A CALIB that did not load
+/// leaves the board's never-stamped defaults under the saved gains, so the
+/// stamp mismatches too; a stamped zero-Ke set is consistent.
 #[test_log::test]
 fn no_boot_state_drives_closed_loop_with_zero_recip_ke() {
     const CONFIGS: [Fixture; 4] = [
@@ -211,8 +226,8 @@ fn no_boot_state_drives_closed_loop_with_zero_recip_ke() {
                 rig.run(&sh, 200);
                 enable(&sh, mode);
                 let cmds = rig.run(&sh, 3000);
-                if want == 0 {
-                    assert!(drives(&cmds), "{case}: the clean rig drives");
+                if ke_set {
+                    assert!(drives(&cmds), "{case}: Ke set drives");
                     assert_eq!(fault(&sh), (0, CODE_NONE), "{case}");
                 } else {
                     assert!(all_disabled(&cmds), "{case}: {cmds:?}");
@@ -240,8 +255,11 @@ fn calib_reset_under_saved_gains_refuses_velocity() {
     assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
 }
 
+/// An image of another layout boots stale and gates nothing itself: a
+/// stale CALIB leaves Ke unset, which the belt refuses until a Ke is
+/// written, and a stale CONFIG under a loaded CALIB drives.
 #[test_log::test]
-fn calib_version_bump_boots_stale_and_gates_closed_loop() {
+fn calib_version_bump_boots_stale_and_only_the_belt_gates() {
     let store = identified_store();
     store.stale_slot(ImageKind::Calib, Slot::A);
     let sh = boot(store);
@@ -251,15 +269,27 @@ fn calib_version_bump_boots_stale_and_gates_closed_loop() {
     rig.run(&sh, 200);
     enable(&sh, Mode::Position);
     assert!(all_disabled(&rig.run(&sh, 500)));
-    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
-    // stale is a fresh servo, not a corrupt one: open loop still runs
+    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "Ke unset");
     set(&sh, |t| t.control.lifecycle.torque_enable = false);
     rig.run(&sh, 20);
     enable(&sh, Mode::OpenLoop);
     assert!(drives(&rig.run(&sh, 500)));
     assert_eq!(fault(&sh), (0, CODE_NONE));
+    set(&sh, |t| t.control.lifecycle.torque_enable = false);
+    commit(&sh, |t| {
+        t.calib.motor.recip_ke_q = 3700;
+        t.calib.motor.ke_vpc_q = 1150;
+    });
+    rig.run(&sh, 20);
+    enable(&sh, Mode::Position);
+    assert!(drives(&rig.run(&sh, 3000)), "a written Ke drives, unsaved");
+    assert_eq!(fault(&sh), (0, CODE_NONE));
+    assert_eq!(
+        data_flags(&sh) & CALIB_STALE,
+        CALIB_STALE,
+        "the boot verdict stands until SAVE"
+    );
 
-    // a stale CONFIG says so by name and gates the same way
     let store = identified_store();
     store.stale_slot(ImageKind::Config, Slot::A);
     let sh = boot(store);
@@ -267,30 +297,61 @@ fn calib_version_bump_boots_stale_and_gates_closed_loop() {
     let mut rig = Rig::new();
     rig.run(&sh, 200);
     enable(&sh, Mode::Velocity);
-    assert!(all_disabled(&rig.run(&sh, 500)));
-    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
+    assert!(drives(&rig.run(&sh, 3000)));
+    assert_eq!(fault(&sh), (0, CODE_NONE));
 }
 
+/// An unreadable CONFIG is a blank one: board defaults run, and their
+/// unset current cap and speed ceiling are what the belt refuses, so
+/// OpenLoop drives and every closed mode latches the data fault. Once the
+/// limits are written (volatile, unsaved) Position drives under the
+/// standing CONFIG_CORRUPT.
 #[test_log::test]
-fn corrupt_config_refuses_every_mode() {
+fn corrupt_config_boots_on_defaults_and_runs_openloop() {
     let store = identified_store();
     store.corrupt_slot(ImageKind::Config, Slot::A);
-    let sh = boot(store);
-    assert_eq!(data_flags(&sh), CONFIG_CORRUPT);
-    for mode in [
-        Mode::OpenLoop,
-        Mode::Current,
-        Mode::Velocity,
-        Mode::Position,
-    ] {
-        let mut rig = Rig::new();
-        rig.run(&sh, 200);
-        enable(&sh, mode);
-        let cmds = rig.run(&sh, 500);
-        assert!(all_disabled(&cmds), "{mode:?}: {cmds:?}");
-        assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "{mode:?}");
+    let (cap, ceiling) = rig_limits();
+    let sh = boot_on(store, |t| {
+        t.config.limits.current_limit_counts = 0;
+        t.config.loop_position.speed_ceiling_cps = 0;
+    });
+    // the stamp that loaded with CALIB covers the ceiling the defaults left 0
+    let want = CONFIG_CORRUPT | STAMP_MISMATCH;
+    assert_eq!(data_flags(&sh), want);
+    let mut rig = Rig::new();
+    rig.run(&sh, 200);
+    enable(&sh, Mode::OpenLoop);
+    assert!(drives(&rig.run(&sh, 500)), "OpenLoop");
+    assert_eq!(fault(&sh), (0, CODE_NONE), "OpenLoop");
+    for mode in [Mode::Current, Mode::Velocity, Mode::Position] {
         set(&sh, |t| t.control.lifecycle.torque_enable = false);
+        rig.run(&sh, 20);
+        enable(&sh, mode);
+        assert!(all_disabled(&rig.run(&sh, 500)), "{mode:?}");
+        assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "{mode:?}: limits unset");
     }
+    set(&sh, |t| t.control.lifecycle.torque_enable = false);
+    commit(&sh, |t| {
+        t.config.limits.current_limit_counts = cap;
+        t.config.loop_position.speed_ceiling_cps = ceiling;
+    });
+    rig.run(&sh, 20);
+    enable(&sh, Mode::Position);
+    assert!(drives(&rig.run(&sh, 3000)), "limits written");
+    assert_eq!(fault(&sh), (0, CODE_NONE));
+    assert_eq!(data_flags(&sh), want, "the boot verdict stands until SAVE");
+}
+
+/// The rig's current cap and speed ceiling.
+fn rig_limits() -> (u16, u16) {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with(|t| {
+        (
+            t.config.limits.current_limit_counts,
+            t.config.loop_position.speed_ceiling_cps,
+        )
+    })
 }
 
 /// The physics belt: a zero Ke written into a running closed loop reaches
@@ -595,8 +656,10 @@ fn save_retires_stale_images_like_virgin_ones(baud_idx: u8) {
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
 }
 
+/// SAVE retires an unreadable image like a blank one: the table in RAM is
+/// what it persists and what the next boot loads.
 #[apply(matrix)]
-fn save_does_not_clear_corrupt_config(baud_idx: u8) {
+fn save_clears_corrupt_config(baud_idx: u8) {
     let store = RamStore::leak();
     store.corrupt_slot(ImageKind::Config, Slot::A);
     store.corrupt_slot(ImageKind::Calib, Slot::B);
@@ -609,13 +672,7 @@ fn save_does_not_clear_corrupt_config(baud_idx: u8) {
     write_ke(&mut sim);
     write_stamp(&mut sim, s);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
-    assert_eq!(
-        read_byte(&mut sim, DATA_FLAGS),
-        CONFIG_CORRUPT,
-        "calib recovers by SAVE, config only by FACTORY"
-    );
-    // the verdict is about what boot found: the SAVE that just persisted
-    // board defaults over the rotten slot is what the next boot loads
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
     let mut rebooted = support::sim(baud_idx);
     rebooted.add_servo_with_store(ID5, store);
     assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), 0);
@@ -641,9 +698,9 @@ fn factory_after_corrupt_config_boots_virgin(baud_idx: u8) {
 // The plant stamp over the wire
 
 /// The `osc-ident` commit sequence: write the set, stamp it with torque
-/// off, and the stamp write is the checkpoint that opens closed loop.
+/// off, and the stamp write is the checkpoint that clears the mismatch.
 #[apply(matrix)]
-fn stamp_write_verifies_and_opens_closed_loop(baud_idx: u8) {
+fn stamp_write_verifies_and_clears_the_mismatch(baud_idx: u8) {
     let store = RamStore::leak();
     let mut sim = sim(baud_idx);
     let s = sim.add_servo_with_store(ID5, store);
@@ -663,7 +720,6 @@ fn stamp_write_verifies_and_opens_closed_loop(baud_idx: u8) {
     );
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
-    assert!(allows(Mode::Position, 0));
 }
 
 #[apply(matrix)]
@@ -719,10 +775,12 @@ fn restoring_a_covered_edit_clears_the_mismatch(baud_idx: u8) {
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
 }
 
-/// A host that wrote some of the set and died: the servo refuses closed
-/// loop until a stamp over the whole set lands.
+/// A host that wrote some of the set and died: the mismatch names it until
+/// a stamp over the whole set lands. It refuses nothing (the enable under
+/// a standing mismatch is `live_gain_edit_keeps_the_running_loop_and_the_reenable_runs`);
+/// the rest is the host's check against its set.
 #[apply(matrix)]
-fn partial_covered_write_blocks_next_enable(baud_idx: u8) {
+fn partial_covered_write_marks_the_mismatch(baud_idx: u8) {
     let store = RamStore::leak();
     let mut sim = sim(baud_idx);
     let s = stamped_servo(&mut sim, store);
@@ -734,7 +792,6 @@ fn partial_covered_write_blocks_next_enable(baud_idx: u8) {
     );
     write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
-    assert!(!allows(Mode::Velocity, STAMP_MISMATCH));
     // the old stamp is not the answer
     let old = store.calib_slot(Slot::A).expect("saved");
     let at = HEADER_LEN + (PLANT_STAMP - CALIB_BASE_ADDR) as usize;
@@ -744,10 +801,11 @@ fn partial_covered_write_blocks_next_enable(baud_idx: u8) {
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
 }
 
-/// A gain edit under torque marks the mismatch but never yanks the loop;
-/// the next enable is what it refuses, until a torque-off restamp.
+/// A gain edit under torque marks the mismatch and never yanks the loop,
+/// and the next enable runs under the standing mismatch: a hand edit is
+/// information, not a refusal.
 #[test_log::test]
-fn live_gain_edit_keeps_the_running_loop_until_reenable() {
+fn live_gain_edit_keeps_the_running_loop_and_the_reenable_runs() {
     let sh = Shared::new();
     seed(&sh);
     let mut rig = Rig::new();
@@ -765,23 +823,9 @@ fn live_gain_edit_keeps_the_running_loop_until_reenable() {
     set(&sh, |t| t.control.lifecycle.torque_enable = false);
     rig.run(&sh, 20);
     set(&sh, |t| t.control.lifecycle.torque_enable = true);
-    assert!(all_disabled(&rig.run(&sh, 500)));
-    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
-
-    set(&sh, |t| t.control.lifecycle.torque_enable = false);
-    rig.run(&sh, 20);
-    stamp(&sh);
-    sh.data_state_after_commit(PLANT_STAMP, 2);
-    assert_eq!(
-        data_flags(&sh),
-        STAMP_MISMATCH,
-        "refused until the job verifies"
-    );
-    assert!(sh.data_job_service());
-    assert_eq!(data_flags(&sh), 0);
-    set(&sh, |t| t.control.lifecycle.torque_enable = true);
     assert!(drives(&rig.run(&sh, 2000)));
     assert_eq!(fault(&sh), (0, CODE_NONE));
+    assert_eq!(data_flags(&sh), STAMP_MISMATCH);
 }
 
 /// The stamp write's reply owes nothing to the ~600 B CRC: the commit site
@@ -881,4 +925,62 @@ fn torn_save_boots_stamp_mismatch(baud_idx: u8) {
     let mut rebooted = support::sim(baud_idx);
     rebooted.add_servo_with_store(ID5, store);
     assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), 0);
+}
+
+/// Only the usability validator refuses a mode. Every image that did not
+/// load (blank, unreadable or of another layout) boots on the board's
+/// defaults and gates nothing, and a saved hand edit of an identified
+/// value runs as saved: once the set a closed loop consumes is usable
+/// (both Ke nonzero, the cap and the ceiling set), Position drives on it,
+/// volatile, never stamped and never saved. While Ke is unset the
+/// validator alone refuses, with the `data` fault (code 7).
+#[test_log::test]
+fn only_the_validator_refuses_closed_loop_whatever_the_store_held() {
+    const STORED: [Fixture; 4] = [
+        Fixture::Loaded,
+        Fixture::Virgin,
+        Fixture::Corrupt,
+        Fixture::Stale,
+    ];
+    let mut cases: Vec<(String, &'static RamStore)> = Vec::new();
+    for config in STORED {
+        for calib in STORED {
+            let store = identified_store();
+            config.apply(store, ImageKind::Config);
+            calib.apply(store, ImageKind::Calib);
+            cases.push((format!("config {config:?} calib {calib:?}"), store));
+        }
+    }
+    // the user tuned a gain by hand and saved it: the stored stamp no
+    // longer describes the stored set
+    let edited = RamStore::leak();
+    let sh = Shared::new();
+    seed(&sh);
+    stamp(&sh);
+    set(&sh, |t| t.config.loop_velocity.v_kp_q88 += 8);
+    edited.save_table(&sh);
+    cases.push(("a saved hand edit".into(), edited));
+
+    for (case, store) in cases {
+        let sh = boot(store);
+        let ke_loaded = sh.table.with(|t| t.calib.motor.recip_ke_q != 0);
+        if !ke_loaded {
+            let mut rig = Rig::new();
+            rig.run(&sh, 200);
+            enable(&sh, Mode::Position);
+            assert!(all_disabled(&rig.run(&sh, 500)), "{case}: Ke unset");
+            assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "{case}: Ke unset");
+            set(&sh, |t| t.control.lifecycle.torque_enable = false);
+            set(&sh, |t| {
+                t.calib.motor.recip_ke_q = 3700;
+                t.calib.motor.ke_vpc_q = 1150;
+            });
+        }
+        let mut rig = Rig::new();
+        rig.run(&sh, 200);
+        enable(&sh, Mode::Position);
+        let cmds = rig.run(&sh, 3000);
+        assert!(drives(&cmds), "{case}: a usable set drives");
+        assert_eq!(fault(&sh), (0, CODE_NONE), "{case}");
+    }
 }

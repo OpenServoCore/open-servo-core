@@ -861,13 +861,15 @@ addresses and the stamp recipe, so a host needs no second copy of any
 of it.
 
 **Data state.** `data_flags` (u8, RO, `0x223` in TELEMETRY-MODE) names
-every reason closed loop is refused, one bit per reason; 0 means the
-saved images loaded and the set they hold is stamped and identified.
+every reason the persisted images and the identified set are not this
+servo's own, one bit per reason; 0 means the saved images loaded and the
+set they hold is stamped and identified. It is information for the host:
+no reason refuses a mode (below).
 
 | bit | reason           | set                                                                                   | cleared                          |
 | --- | ---------------- | ------------------------------------------------------------------------------------- | -------------------------------- |
 | 0   | `CONFIG_VIRGIN`  | boot: both CONFIG slots erased                                                        | a successful SAVE                |
-| 1   | `CONFIG_CORRUPT` | boot: CONFIG bytes present that parse under no version                                | FACTORY + reboot only            |
+| 1   | `CONFIG_CORRUPT` | boot: CONFIG bytes present that parse under no version                                | a successful SAVE                |
 | 2   | `CALIB_VIRGIN`   | boot: both CALIB slots erased                                                         | a successful SAVE                |
 | 3   | `CALIB_CORRUPT`  | boot: CALIB bytes present that parse under no version                                 | a successful SAVE                |
 | 4   | `STAMP_MISMATCH` | a checkpoint recompute differs from `plant_stamp`, or a covered field was written since | a matching checkpoint            |
@@ -880,20 +882,30 @@ Boot classifies each image from its two slots: *loaded* when one parses,
 CRC-valid image of another layout version (a real save this firmware
 cannot read: board defaults stand, nothing migrates), *corrupt*
 otherwise. Stale beats corrupt when one slot is stale and the other is
-rotten. `CONFIG_CORRUPT` is the one reason SAVE never retires: the
-running limits and polarity are board defaults standing in for a lost
-tuned config, and a blind SAVE must not bless them as this servo's own.
+rotten. An image that did not load, blank, corrupt or stale, leaves the
+board defaults running, and a successful SAVE retires every image reason:
+the persisted images are then the table in RAM.
 
-The verdict is a gate on use, never an alarm on state. At the
-`torque_enable` 0 to 1 edge, and at a mode change while torque is on,
-the kernel reads `data_flags`: `CONFIG_CORRUPT` refuses every mode; any
-other reason refuses Velocity and Position and leaves OpenLoop and
-Current open (they consume neither Ke nor the loop gains above the
-current loop, and calibration and identification drive only those); 0
-opens all. A refusal latches the `data` fault (below) and the servo
-stays disabled for that run. A reason that appears mid-run - a live
-edit of a covered field - waits for the next entry; the one thing that
-stops a running loop is the physics belt. A CONFIG or CALIB write
+Only the physics belt refuses a mode, on the constants a loop would run
+on; the kernel never reads `data_flags`. A zero Ke (`recip_ke_q == 0` or
+`ke_vpc_q == 0`) refuses Velocity and Position: the back-EMF boxcar
+yields nothing on it and the current loop decouples nothing. A limit
+unset (below) refuses Current, Velocity and Position, which have nothing
+to clamp against. The belt refuses a zero meaning "not identified",
+never a nonzero value: a hand-tuned gain, observer gain or polarity runs
+as written, and the protections that act on measurements (the current
+limit, the overcurrent trip, the stall and position error timers, the
+thermal cutoff, the rail fold, the soft limits) bound what follows. At
+the `torque_enable` 0 to 1 edge, at a mode change while torque is on,
+and at every medium tick a loop runs, a refused mode latches the `data`
+fault (below) and the drive stays off for that run. On a factory-fresh
+servo, and behind any image that did not load, the board defaults' zeros
+(Ke, the cap, the ceiling) are what the belt refuses, so OpenLoop runs
+and the closed modes wait for an identification; once a usable set is
+written, volatile and unsaved, every mode runs (DES
+`only_the_validator_refuses_closed_loop_whatever_the_store_held`,
+`corrupt_config_boots_on_defaults_and_runs_openloop`,
+`a_hand_tuned_nonzero_set_runs_as_written`). A CONFIG or CALIB write
 reaches the kernel whole, at one tick near the end of a medium period,
 within a medium period (0.5 ms) of the commit, or a period later when
 that tick lands inside the next commit. If that write leaves
@@ -923,7 +935,7 @@ reads no ceiling, and with the cap unset its band is the board's
 overcurrent trip `oc_trip_counts` (sec 5.8). Calibration writes the cap
 first, the ceiling once the angle scale is known; with both set the bit
 clears within a medium period of the write and Current mode is admitted
-under the data reasons that leave it open (DES
+(DES
 `a_servo_with_its_cap_unset_refuses_closed_loop_and_runs_openloop`,
 `a_live_zero_cap_write_stops_a_running_closed_loop`,
 `live_zero_limit_write_stops_a_running_closed_loop`,
@@ -975,15 +987,13 @@ the motor turns the pot's counts under a positive drive. The firmware
 does not check it against the motor at run time. `osc-ident` finds it
 from pulses each way and leaves it in the set it stamps, and the field is
 under the plant stamp (below), so a write that changes it reads as
-`STAMP_MISMATCH` and the next enable of a closed loop is refused until a
-tool stamps the set again (DES
-`a_polarity_write_refuses_closed_loop_until_the_stamp`). After a motor
-is rewired or replaced, run the calibration again; a tool that already
-knows the wiring flips the field with torque off and stamps the set. A
-hand edit alone never closes a loop.
+`STAMP_MISMATCH`, and the next enable runs under the polarity written
+(DES `a_polarity_write_runs_closed_loop_as_written`). After a motor is
+rewired or replaced, run the calibration again; a tool that already
+knows the wiring flips the field with torque off and stamps the set.
 
-A stored polarity that is wrong under a matching stamp inverts every
-closed loop, and the soft-limit walls with it: the walls judge a current
+A polarity that is wrong, written by hand or stored under a matching
+stamp, inverts every closed loop, and the soft-limit walls with it: the walls judge a current
 by its sign, so past a limit they close the side that would bring the
 shaft back. In Position and Velocity the loop drives the shaft away from
 its goal and through the soft limit toward the hard stop, at the current
@@ -1044,7 +1054,7 @@ images load; a committed write to `plant_stamp` or to a covered field;
 a table COMMIT; SAVE. A committed span that intersects a covered field
 or the stamp marks `STAMP_MISMATCH` at once, whatever value it carried,
 so a host that dies halfway through a set leaves the mismatch behind
-(DES `partial_covered_write_blocks_next_enable`); its checkpoint
+(DES `partial_covered_write_marks_the_mismatch`); its checkpoint
 clears the mark once the live set matches the stamp, so a hand edit
 put back reads clear again (DES
 `restoring_a_covered_edit_clears_the_mismatch`). Under torque the
@@ -1056,8 +1066,7 @@ recomputes anyway; flash is never refused).
 
 The recompute outlasts the reply deadline, so the write and the
 COMMIT checkpoints run in the servo's main loop after the reply: the
-commit marks `STAMP_MISMATCH` (the refused direction) and posts the
-job; the job clears the mark once the set verifies, ~0.6 ms later. A
+commit marks `STAMP_MISMATCH` at once and posts the job; the job clears the mark once the set verifies, ~0.6 ms later. A
 write that lands while the job runs discards that run and it runs again
 over the set as it is then, so the mark never clears against a set the
 stamp did not cover (DES
@@ -1068,9 +1077,9 @@ The host sequence that closes an identification or a calibration: torque
 off; write the set, each write read-back verified; compute the stamp
 over the intended set, not over a read-back, and write `plant_stamp`;
 poll `data_flags` until `STAMP_MISMATCH` clears (20 ms is ample) - a
-`STAMP_MISMATCH` still standing means a write did not land; SAVE, since
-the virgin and stale reasons clear only on SAVE; only then verify closed
-loop. `osc-ident` (install, save, restore) and `osc recover --from`
+`STAMP_MISMATCH` still standing means a write did not land; verify
+closed loop on the set as written, volatile; SAVE when the user chooses
+(the image reasons clear only on SAVE). `osc-ident` (install, save, restore) and `osc recover --from`
 commit this way, and `osc stamp [--save]` blesses a hand-tuned set
 explicitly. The drives that measure a set come before this sequence
 and write only the CONTROL fields a drive uses (sec 5.8, around a
@@ -1078,6 +1087,15 @@ drive). Nothing restamps as a side effect: `osc set` of a covered
 field leaves the mismatch standing until the value is put back, and a
 new table redefines the domain the constants were fitted in, so it is
 installed with its set under one stamp.
+
+Known limitation: no boot verdict says a SAVE tore. A power cut between
+the CONFIG and CALIB images of one SAVE (sec 9.4) boots the new CONFIG
+beside the old CALIB, and nothing refuses the mix. The stamp names a mix
+that differs in a covered field as `STAMP_MISMATCH`, as information; a
+mix that differs only in uncovered fields reads clean. The host is the
+check: the SAVE never acked (ack == durable), so the host that sent it
+knows it did not finish, and its check against its set names the mixed
+fields. A torn bit would need the two images saved and sequenced as one.
 
 **Position table.** The kernel corrects each raw pot sample through a
 per-unit position linearization table on a fixed grid over the 12-bit
@@ -1967,10 +1985,11 @@ data-state checkpoint (a mismatched stamp still persists); program the
 CONFIG image, then the CALIB image, each readback-verified, an image
 advancing its A/B state only on its own verify so a later failure
 leaves the earlier one durable and the `hardware` nack honest; on
-success clear the dirty bit and retire the virgin and stale reasons
-(sec 5.7). A power cut between the two images boots a new/old mix, and
-the boot checkpoint reports it as `STAMP_MISMATCH` when anything
-covered differed (DES `torn_save_boots_stamp_mismatch`,
+success clear the dirty bit and retire every image reason (sec 5.7). A
+power cut between the two images boots a new/old mix, and the boot
+checkpoint reports it as `STAMP_MISMATCH` when anything covered
+differed, as information (sec 5.7, the torn-save limitation; DES
+`torn_save_boots_stamp_mismatch`,
 `torn_calib_save_boots_the_previous_calibration_with_its_tables`).
 
 Timing: SAVE erases and programs five pages (one CONFIG, four CALIB),
@@ -2001,8 +2020,7 @@ of both saved images (config and calib with its tables, sec 9.4), not
 just the live table, then stages the reboot: the erased store is the
 factory state, and the servo comes back *virgin* (sec 5.7) on board
 defaults, the position table at the identity. It shares SAVE's torque
-gate, and a failed wipe nacks `hardware` without rebooting. It is the only
-exit from `CONFIG_CORRUPT`.
+gate, and a failed wipe nacks `hardware` without rebooting.
 
 ### 9.6 Firmware update
 

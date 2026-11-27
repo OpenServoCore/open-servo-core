@@ -6,8 +6,8 @@
 //! - lit for the lamp test at boot,
 //! - solid while a fault is latched (`fault_code` nonzero until the
 //!   torque ack clears it),
-//! - a ~1 Hz blink while `data_flags` names any reason closed loop is
-//!   refused (not calibrated, plant unset, stamp mismatch),
+//! - a ~1 Hz blink while `data_flags` names any reason (not calibrated,
+//!   plant unset, stamp mismatch),
 //! - dark when healthy.
 
 use osc_servo_core::kernel::TICK_HZ;
