@@ -8,14 +8,13 @@ use std::rc::Rc;
 use osc_servo_core::TelStream;
 use osc_servo_core::TelemetryTick;
 use osc_servo_core::data_state::DataJob;
-use osc_servo_core::estimator::window::SettleGain;
 use osc_servo_core::pos_lut::POINTS;
 
 use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{
-    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, ProtectionDefaults,
-    ProtectionSeed, Reboot, RegionStorage, Session, Shared,
+    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, ProtectionSeed, Reboot,
+    RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelLane};
@@ -27,63 +26,13 @@ use super::providers::{
 use super::store::RamStore;
 use crate::plant::TIMING;
 
-/// The osc-dev-v006 app's `Calibration`, copied: the board crate is a no_std
-/// binary nothing host-side links, so this is the one host mirror (the fake
-/// adapter and the class-default tests read it from here). Per-servo board
-/// facts override it through [`SimServo::set_sense`].
-pub const DEV_V006_SENSE: CalibSense = CalibSense {
-    shunt_r_mohm: 60,
-    gain_milli: 14884,
-    vmotor_div_top: 6400,
-    vmotor_div_bot: 1600,
-    vdd_mv: 3300,
-    tick_hz: 20000,
-    i_window_min_ticks: 64,
-    v_window_min_ticks: 93,
-};
-
-pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
-    vbus_div_top_ohm: 6400,
-    vbus_div_bot_ohm: 1600,
-    ntc_pullup_ohm: 10000,
-    ntc_r25_ohm: 10000,
-    ntc_beta: 3950,
-    vmotor_bias_nom_counts: 773,
-    rail_drop_mv: 250,
-    vmotor_bias_top_ohm: 430,
-    vmotor_bias_bot_ohm: 100,
-};
-
-/// The same app's `ProtectionDefaults`, copied.
-pub const DEV_V006_PROTECTION: ProtectionDefaults = ProtectionDefaults {
-    i_cont_ma: 250,
-    stall_release_ma: 90,
-    oc_trip_ma: 2200,
-    oc_trip_us: 400,
-    thermal_tau_s: 4,
-    cutoff_cc: 9000,
-    v_undervolt_mv: 2900,
-    rail_source_mohm: 800,
-    drive_polarity: true,
-};
-
-/// The same `Calibration`'s `bemf_window_min_ticks`, the floor the board
-/// hands the kernel through `KernelTiming` and not through CALIB.
-pub const DEV_V006_BEMF_MIN_TICKS: u16 = 93;
-
-/// The same `Calibration`'s `i_settle_gain`, the shunt amplifier's settle
-/// bands the board hands the kernel through `KernelTiming`.
-pub const DEV_V006_I_SETTLE_GAIN: SettleGain = SettleGain {
-    start_ticks: 40,
-    q15: &[
-        37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020,
-        32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785,
-    ],
-};
-
-/// Board travel the config defaults seed (the v006 pot's 12-bit span): the
-/// physical stops a wiped store boots, with the soft limits off.
-const PHYS_MAX_COUNTS: i32 = 4095;
+// The osc-dev-v006 board file's values (`DEV_V006_SENSE`, `_SENSE_EXT`,
+// `_PROTECTION`, `_BEMF_MIN_TICKS`, `_I_SETTLE_GAIN`, `_DEFAULTS`), written
+// by build.rs from the file the board image is built from: the one host
+// mirror, which the fake adapter and the class-default tests read from
+// here. Per-servo board facts override the sense chain through
+// [`SimServo::set_sense`].
+include!(concat!(env!("OUT_DIR"), "/dev_v006_board.rs"));
 
 pub struct SimServo {
     /// Leaked per bringup, as the TEL channel: the row copies read the
@@ -204,8 +153,7 @@ impl SimServo {
                 id: seed.id,
                 baud: seed.rate,
                 response_deadline_us: seed.response_deadline_us,
-                pos_max_phys_counts: PHYS_MAX_COUNTS,
-                ..Default::default()
+                ..DEV_V006_DEFAULTS
             },
             &ProtectionSeed::from_sense(&DEV_V006_PROTECTION, &seed.sense),
         );

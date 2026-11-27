@@ -14,6 +14,7 @@ critical-section = "1.2"
 bitflags         = "2"
 crc              = { version = "3", default-features = false }
 
+osc-board-file       = { path = "board-file" }
 osc-log              = { path = "log" }
 osc-protocol         = { path = "osc-protocol" }
 osc-servo-core             = { path = "core" }
