@@ -124,9 +124,9 @@ fn final_set(
     kp: f64,
     d: &Descriptor,
 ) -> Result<(SetFile, Vec<u8>, Option<[i16; INTERVALS]>)> {
-    let r = files::rules_inputs(inputs_dir, None, None)?;
+    let r = files::rules_inputs(inputs_dir, None)?;
     let measured = json_at(&inputs_dir.join("measured.json"))?;
-    let pair = format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name);
+    let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
     let (file, bytes, _) = crate::tune::set_at(&r, &measured, kp, &pair, d)
         .with_context(|| format!("the rules on {} at kp {kp}", inputs_dir.display()))?;
     Ok((file, bytes, r.table.as_ref().map(|t| t.points)))
@@ -157,10 +157,10 @@ where
         .as_f64()
         .context("tune.json names no accepted gain")?;
     let tune_set = files::set(&tune_dir.join("set.json"))?;
-    let first = files::rules_inputs(&root.join("inputs"), None, None)?;
+    let first = files::rules_inputs(&root.join("inputs"), None)?;
     let tune_points = first.table.as_ref().map(|t| t.points);
     let np = files::nameplate(a.nameplate, Some(a.policy))?;
-    let board = files::board(None)?;
+    let board = first.inputs.board.clone();
     let stops_result = json_at(&root.join(stops::RESULT))?;
     let keep = (&tune_set, tune_points.as_ref());
     let clock = unix_s;
@@ -444,6 +444,7 @@ mod tests {
     fn tuned(dir: &Path, g: &Given) -> (PathBuf, SetFile, Client<Spy>, Rc<RefCell<Vec<u8>>>) {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
+        files::step_0(&root);
         for f in ["rest", "probe", "stops", "window", "spins"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
@@ -455,9 +456,9 @@ mod tests {
         crate::gather::gather(&root, &g.nameplate, Some(&g.thermal), &g.policy, &inputs)
             .expect("gathers");
         let d = crate::descriptor_builtin().expect("descriptor");
-        let r = files::rules_inputs(&inputs, None, None).expect("inputs");
+        let r = files::rules_inputs(&inputs, None).expect("inputs");
         let measured = json_at(&inputs.join("measured.json")).expect("measured");
-        let pair = format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name);
+        let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
         let (set, _, _) =
             crate::tune::set_at(&r, &measured, KP, &pair, &d).expect("the tune's set");
         std::fs::create_dir_all(root.join("tune")).expect("mkdir");

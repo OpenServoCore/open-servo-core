@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
+use osc_measure::board::{self, Record};
 use osc_measure::capture::rows::Layout;
 use osc_measure::capture::tel;
 use osc_measure::envelope::{Envelope, Facts, HeatModel, Rung};
@@ -33,7 +34,6 @@ use crate::files::{self, DirSink};
 pub struct StepInputs {
     pub nameplate: Option<Nameplate>,
     pub thermal: Option<ThermalInputs>,
-    pub board: Board,
 }
 
 impl StepInputs {
@@ -45,15 +45,13 @@ impl StepInputs {
         nameplate: Option<&Path>,
         policy: Option<&Path>,
         thermal: Option<&Path>,
-        board: Option<&Path>,
     ) -> Result<Self> {
         let json = |p: &Path| -> Result<Value> {
             serde_json::from_slice(&files::read(p)?)
                 .with_context(|| format!("parsing {}", p.display()))
         };
-        let board = files::board(board)?;
         let loaded = nameplate
-            .map(|p| files::inputs(p, policy, &board).map(|l| (p, l)))
+            .map(|p| files::inputs(p, policy, None).map(|l| (p, l)))
             .transpose()?;
         let mut heat = None;
         if let Some((p, l)) = &loaded {
@@ -72,7 +70,6 @@ impl StepInputs {
         Ok(StepInputs {
             nameplate: loaded.map(|(_, l)| l.resolved.nameplate),
             thermal,
-            board,
         })
     }
 }
@@ -89,6 +86,35 @@ async fn read_u16<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, name: &str
         .with_context(|| format!("the descriptor names no {name}"))?;
     let b = c.read(id, f.addr, 2).await?;
     Ok(u16::from_le_bytes([b[0], b[1]]))
+}
+
+/// Step 0's board read: the board facts the servo publishes, refused on an
+/// image older than the block, before a run folder is made.
+pub async fn board_of<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    servo: &str,
+) -> Result<(Record, Board)> {
+    let state = state::read(c, id, d).await?;
+    let registers = board::Words::of(&state, d).map_err(|e| anyhow::anyhow!("step 0: {e}"))?;
+    let b = Board::decode(&registers).map_err(|e| anyhow::anyhow!("step 0: {e}"))?;
+    Ok((
+        Record {
+            servo: servo.to_string(),
+            registers,
+        },
+        b,
+    ))
+}
+
+/// The run folder for a step command, the board record step 0 read kept
+/// in it.
+fn folder_with(out: &Path, servo: &str, record: &Record) -> Result<(PathBuf, DirSink)> {
+    let root = files::run_folder(out, servo)?;
+    let mut sink = DirSink { root: root.clone() };
+    sink.write(files::BOARD, record.render().as_bytes())?;
+    Ok((root, sink))
 }
 
 fn nameplate_said(np: Option<&Nameplate>) -> String {
@@ -190,26 +216,39 @@ pub async fn plan<P: Pipe>(
     let np = i.nameplate.clone().unwrap_or_default();
     let mut facts = Facts::new(&np, rail);
     facts.ntc_c = Some(ntc_c);
-    let heat = match (&facts.r, &i.thermal) {
-        (_, None) => Err("no thermal values entered (--thermal)".to_string()),
-        (None, _) => Err(
+    let board = Board::of(&state, d);
+    let heat = match (&facts.r, &i.thermal, &board) {
+        (_, None, _) => Err("no thermal values entered (--thermal)".to_string()),
+        (None, _, _) => Err(
             "R is not known: the nameplate states no stall current, the probe and the stops step measure it".to_string(),
         ),
-        (Some(r), Some(t)) => {
-            HeatModel::new(&i.board, t, r.ohm, sense.counts_per_a(), sense.tick_hz)
+        (_, _, Err(e)) => Err(e.0.clone()),
+        (Some(r), Some(t), Ok(b)) => {
+            HeatModel::new(b, t, r.ohm, sense.counts_per_a(), sense.tick_hz)
         }
     };
     let mut env = Envelope::new(facts, heat);
     let admit = line
         .admit(Layout::Rest)
-        .and_then(|()| line.admit(Layout::Raw));
+        .and_then(|()| line.admit(Layout::Raw))
+        .map_err(|e| e.to_string())
+        .and_then(|()| board.as_ref().map_err(|e| e.0.clone()));
     out.push(format!(
         "step 0: connect, refuse under 3 Mbps, read the board's facts, check the nameplate: {}",
         match &admit {
-            Ok(()) => format!(
-                "the bus runs at {} Mbaud, TEL rows of {} B: passes",
+            Ok(b) => format!(
+                "the bus runs at {} Mbaud, TEL rows of {} B; the board's NTC in {}, {}: passes",
                 line.baud.as_hz() / 1_000_000,
-                line.row_bytes_max
+                line.row_bytes_max,
+                match b.ntc_site {
+                    board::NtcSite::Air => "air",
+                    board::NtcSite::Can => "on the can",
+                },
+                if b.characterization.is_some() {
+                    "stage 1 characterization published"
+                } else {
+                    "no stage 1 characterization (the probe, stops and window steps refuse)"
+                }
             ),
             Err(e) => format!("REFUSED: {e}"),
         }
@@ -305,8 +344,8 @@ pub async fn step_rest<P: Pipe>(
     servo: &str,
     stop: &AtomicBool,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    let root = files::run_folder(out, servo)?;
-    let mut sink = DirSink { root: root.clone() };
+    let (record, _) = board_of(c, id, d, servo).await?;
+    let (root, mut sink) = folder_with(out, servo, &record)?;
     let t0 = unix_s();
     let clock = unix_s;
     let ran = {
@@ -364,8 +403,8 @@ pub async fn step_probe<P: Pipe>(
         .nameplate
         .as_ref()
         .context("step probe drives the motor: it needs the servo's nameplate (--nameplate)")?;
-    let root = files::run_folder(out, servo)?;
-    let mut sink = DirSink { root: root.clone() };
+    let (record, board) = board_of(c, id, d, servo).await?;
+    let (root, mut sink) = folder_with(out, servo, &record)?;
     let clock = unix_s;
     let mut lines = Vec::new();
     let t0 = unix_s();
@@ -409,7 +448,7 @@ pub async fn step_probe<P: Pipe>(
                 &mut rig,
                 &ProbeInputs {
                     nameplate: np,
-                    board: &i.board,
+                    board: &board,
                     thermal: i.thermal.as_ref(),
                     rest: &rest_result,
                 },
@@ -486,8 +525,8 @@ pub async fn step_verify<P: Pipe>(
         .nameplate
         .as_ref()
         .context("step verify drives the motor: it needs the servo's nameplate (--nameplate)")?;
-    let root = files::run_folder(out, servo)?;
-    let mut sink = DirSink { root: root.clone() };
+    let (record, _) = board_of(c, id, d, servo).await?;
+    let (root, mut sink) = folder_with(out, servo, &record)?;
     let t0 = unix_s();
     let clock = unix_s;
     let ran = {
@@ -552,8 +591,8 @@ pub async fn step_cruise<P: Pipe>(
                 .with_context(|| format!("parsing {}", p.display()))
         })
         .transpose()?;
-    let root = files::run_folder(out, servo)?;
-    let mut sink = DirSink { root: root.clone() };
+    let (record, board) = board_of(c, id, d, servo).await?;
+    let (root, mut sink) = folder_with(out, servo, &record)?;
     let t0 = unix_s();
     let clock = unix_s;
     let ran = {
@@ -569,7 +608,7 @@ pub async fn step_cruise<P: Pipe>(
             &mut rig,
             &CruiseInputs {
                 nameplate: np,
-                board: &i.board,
+                board: &board,
                 stops: stops.as_ref(),
             },
         )
@@ -685,8 +724,8 @@ async fn chain<P: Pipe>(
     let np = i.nameplate.as_ref().with_context(|| {
         format!("step {name} drives the motor: it needs the servo's nameplate (--nameplate)")
     })?;
-    let root = files::run_folder(out, servo)?;
-    let mut sink = DirSink { root: root.clone() };
+    let (record, board) = board_of(c, id, d, servo).await?;
+    let (root, mut sink) = folder_with(out, servo, &record)?;
     let clock = unix_s;
     let mut lines = Vec::new();
     let mut ran: Vec<Kept> = Vec::new();
@@ -739,7 +778,7 @@ async fn chain<P: Pipe>(
                 &mut rig,
                 &ProbeInputs {
                     nameplate: np,
-                    board: &i.board,
+                    board: &board,
                     thermal: i.thermal.as_ref(),
                     rest: &rest_result,
                 },
@@ -784,7 +823,7 @@ async fn chain<P: Pipe>(
                 &mut rig,
                 &StopsInputs {
                     nameplate: np,
-                    board: &i.board,
+                    board: &board,
                     thermal: i.thermal.as_ref(),
                     rest: &rest_result,
                     probe: &probe_result,
@@ -833,7 +872,7 @@ async fn chain<P: Pipe>(
                     &mut rig,
                     &TableInputs {
                         nameplate: np,
-                        board: &i.board,
+                        board: &board,
                         thermal: i.thermal.as_ref(),
                         rest: &rest_result,
                         probe: &probe_result,
@@ -885,7 +924,7 @@ async fn chain<P: Pipe>(
                     &mut rig,
                     &WindowInputs {
                         nameplate: np,
-                        board: &i.board,
+                        board: &board,
                         thermal: i.thermal.as_ref(),
                         rest: &rest_result,
                         probe: &probe_result,
@@ -936,7 +975,7 @@ async fn chain<P: Pipe>(
                     &mut rig,
                     &SpinsInputs {
                         nameplate: np,
-                        board: &i.board,
+                        board: &board,
                         thermal: i.thermal.as_ref(),
                         rest: &rest_result,
                         probe: &probe_result,

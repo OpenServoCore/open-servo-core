@@ -149,9 +149,10 @@ fn the_steps_judge_returns_the_fixtures_g_from_the_recorded_onsets() {
     }
 
     // the step's own scales: the nominal sense block, the board's terminal
-    // offset, lags and crest read; the fixture's differ only in the sense
-    // scales and the lags on the captures' rail, which stage 1 measured
-    let board: osc_measure::Board = common::load("boards/osc-dev-v006.json");
+    // offset, lags and crest read as the servo publishes them; the
+    // fixture's differ in the sense scales and the lags on the captures'
+    // rail, which stage 1 measured, and in the two terms the words round
+    let board = common::board();
     let nominal = window::scales(&sense(), &board, s.pwm_arr, s.v_window_min_ticks)
         .expect("the board reads onsets");
     assert_eq!(
@@ -160,18 +161,20 @@ fn the_steps_judge_returns_the_fixtures_g_from_the_recorded_onsets() {
             terminal_counts_per_v: s.terminal_counts_per_v,
             lag_on_ticks: s.lag_on_ticks,
             lag_off_ticks: s.lag_off_ticks,
+            terminal_offset_counts: s.terminal_offset_counts,
+            r_brake_ohm: s.r_brake_ohm,
             ..nominal.clone()
         },
         s,
         "the step's other terms are the fixture's"
     );
-    let mut v: Value = common::load("boards/osc-dev-v006.json");
-    v.as_object_mut()
-        .expect("board")
-        .remove("terminal_offset_counts");
-    let bare: osc_measure::Board = serde_json::from_value(v).expect("board");
+    assert!((nominal.terminal_offset_counts - s.terminal_offset_counts).abs() <= 1.0 / 32.0);
+    assert!((nominal.r_brake_ohm - s.r_brake_ohm).abs() <= 0.5e-3);
+    let mut w = common::board_record().registers;
+    w.window_scale_q15 = 0;
+    let bare = osc_measure::Board::decode(&w).expect("decodes");
     let e = window::scales(&sense(), &bare, s.pwm_arr, s.v_window_min_ticks).expect_err("refused");
-    assert!(e.0.contains("terminal_offset_counts"), "{}", e.0);
+    assert!(e.0.contains("window_scale_q15 reads 0"), "{}", e.0);
     let n = judge(&shots, &nominal, &Method::NOTEBOOK, 3725);
     let wn = n.window.as_ref().expect("fits");
     println!(
@@ -183,4 +186,38 @@ fn the_steps_judge_returns_the_fixtures_g_from_the_recorded_onsets() {
     for c in &n.checks {
         println!("  {}", c.said());
     }
+}
+
+/// The recorded onsets refit with the terminal offset and the brake loop
+/// as the servo publishes them: g and its share over the mean move under
+/// 1e-4 of the stage 1 floats' fit.
+#[test]
+fn the_window_onsets_refit_through_the_published_words() {
+    let src = json("testdata/window/sources.json");
+    let exp = json("testdata/window/expected.json");
+    let shots = shots(&src);
+    let s = stage1(&src, &exp);
+    let c = common::board().characterization.expect("stage 1");
+    let p = Scales {
+        terminal_offset_counts: c.terminal_offset_counts,
+        r_brake_ohm: c.window_read.r_brake_ohm,
+        ..s.clone()
+    };
+    let fit = |s: &Scales| {
+        let j = judge(&shots, s, &Method::NOTEBOOK, 3725);
+        let w = j.window.expect("fits");
+        (w.g_s, w.g_over_mean_s)
+    };
+    let (was, now) = (fit(&s), fit(&p));
+    println!(
+        "g {:.6} -> {:.6} mS ({:+.2e}), over the mean {:.6} -> {:.6} mS ({:+.2e})",
+        was.0 * 1e3,
+        now.0 * 1e3,
+        now.0 / was.0 - 1.0,
+        was.1 * 1e3,
+        now.1 * 1e3,
+        now.1 / was.1 - 1.0
+    );
+    assert!((now.0 / was.0 - 1.0).abs() < 1e-4, "g");
+    assert!((now.1 / was.1 - 1.0).abs() < 1e-4, "g over the mean");
 }

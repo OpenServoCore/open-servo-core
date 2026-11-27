@@ -191,7 +191,8 @@ mod tests {
     const POLICY: &str = include_str!("../../../measure/testdata/mg90-d/policy-of-record.json");
     const NAMEPLATE: &str = include_str!("../../../measure/testdata/mg90-d/nameplate.json");
     const POLICY_V0: &str = include_str!("../../../measure/testdata/mg90-d/policy.json");
-    const BOARD: &str = include_str!("../../../measure/boards/osc-dev-v006.json");
+    /// The board facts the bench servo publishes, as step 0 keeps them.
+    const BOARD: &str = include_str!("../../../measure/testdata/mg90-d/board.json");
     /// The preview resistance the policy page shows: the record's 4.1767 ohm.
     const R_OHM: f64 = 4.18;
 
@@ -209,7 +210,7 @@ mod tests {
         (
             json(PROFILE).parse().expect("profile"),
             json(POLICY).parse().expect("policy"),
-            json(BOARD).parse().expect("board facts"),
+            json(BOARD)["registers"].parse().expect("board facts"),
         )
     }
 

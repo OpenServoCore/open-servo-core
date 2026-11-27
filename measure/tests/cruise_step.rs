@@ -350,7 +350,7 @@ fn nameplate() -> Nameplate {
 }
 
 fn board() -> Board {
-    common::load("boards/osc-dev-v006.json")
+    common::board()
 }
 
 fn run_with(
@@ -359,10 +359,20 @@ fn run_with(
     sink: &mut MemSink,
     stops: Option<&Value>,
 ) -> Result<Cruised, Refused> {
+    run_on(c, stop, sink, stops, &board())
+}
+
+fn run_on(
+    c: &mut Client<Bus>,
+    stop: &AtomicBool,
+    sink: &mut MemSink,
+    stops: Option<&Value>,
+    b: &Board,
+) -> Result<Cruised, Refused> {
     let d = descriptor();
     let time = c.pipe_mut().clock.clone();
     let clock = move || time.get();
-    let (np, b) = (nameplate(), board());
+    let np = nameplate();
     let mut rig = Rig {
         c,
         id: ID,
@@ -375,7 +385,7 @@ fn run_with(
         &mut rig,
         &CruiseInputs {
             nameplate: &np,
-            board: &b,
+            board: b,
             stops,
         },
     ))
@@ -582,6 +592,24 @@ fn every_speed_cruises_and_the_step_is_accepted() {
         "{:?}",
         sink.files.keys()
     );
+}
+
+/// The cruise reads no stage 1 word: on a board that publishes none it
+/// cruises as on the dev board, to the same line.
+#[test]
+fn a_board_without_characterization_still_cruises() {
+    let line = |b: &Board| {
+        let (mut c, _) = servo(MID_POT, Box::new(|_, _, _| {}));
+        let mut sink = MemSink::default();
+        let v = run_on(&mut c, &AtomicBool::new(false), &mut sink, None, b).expect("starts");
+        assert!(v.accepted(), "{}", said(&v));
+        result(&sink)["estimates"].clone()
+    };
+    let mut w = common::board_record().registers;
+    w.window_scale_q15 = 0;
+    let bare = Board::decode(&w).expect("decodes");
+    assert!(bare.characterization.is_none());
+    assert_eq!(line(&bare), line(&board()));
 }
 
 /// A shaft that never cruises: every leg reads a shaft at rest, set aside,

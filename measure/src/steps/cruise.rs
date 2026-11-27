@@ -68,7 +68,6 @@ use crate::capture::rows::Layout;
 use crate::capture::tel::{self, Line, StreamCfg};
 use crate::envelope::DRIVE_DEADMAN_S;
 use crate::fit::cruise::{self as fit, Leg, LegRead, Point, Reading};
-use crate::fit::window::Settle;
 use crate::guard::{self, Ledger, Way};
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
@@ -610,17 +609,10 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
                     .into(),
             )
         })?;
-    let w = i.board.window_read.as_ref().ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no crest read (window_read): the cruises' current cannot be read as the firmware reads it",
-            i.board.name
-        ))
-    })?;
     let bridge_min = i.board.bridge_min_ticks.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no bridge_min_ticks: the replay needs the bridge's shortest pulse",
-            i.board.name
-        ))
+        Refused(
+            "the servo's board states no bridge_min_ticks (CALIB reads 0): the replay needs the bridge's shortest pulse".into(),
+        )
     })?;
     let lin = Lin::new(state.lut.effective(), state.slots(rig.d).as_deref());
     let set_raw = (n("raw_min")?, n("raw_max")?);
@@ -755,10 +747,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
             pwm_arr: word_of("pwm_period_ticks")?,
             tick_hz,
             bridge_min_ticks: bridge_min,
-            settle: Settle {
-                start_ticks: w.settle_start_ticks,
-                q15: w.settle_q15.clone(),
-            },
+            settle: i.board.settle.clone(),
             counts_per_motor_rad: scale.counts_per_deg * 180.0 / core::f64::consts::PI / gear_ratio,
             ceiling_cps: move_cps,
         },

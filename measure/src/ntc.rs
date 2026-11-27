@@ -301,9 +301,10 @@ mod tests {
         beta: 3950.0,
     };
 
-    /// The dev board's parts give stage 1's design words, the board file's
-    /// and the set of record's (2048, 2430, 474, 19934), and their form
-    /// error is the notebook's (-1.02 to 5.50 C over 15 to 90 C).
+    /// The dev board's parts give stage 1's design words, the ones the
+    /// board's curve decodes to and the set of record's (2048, 2430, 474,
+    /// 19934), and their form error is the notebook's (-1.02 to 5.50 C
+    /// over 15 to 90 C).
     #[test]
     fn the_dev_boards_parts_give_stage_1s_words() {
         let w = design(&DEV, &STAGE_1).expect("designs");

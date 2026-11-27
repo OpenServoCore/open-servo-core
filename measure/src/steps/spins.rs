@@ -2357,8 +2357,7 @@ mod tests {
         .expect("connect");
         let stored = block_on(c.read(ID, addr(&d, "drive_polarity"), 1)).expect("read")[0] != 0;
         log.borrow_mut().clear();
-        let board: Board =
-            serde_json::from_str(include_str!("../../boards/osc-dev-v006.json")).expect("board");
+        let board: Board = crate::steps::testkit::board();
         let th: ThermalInputs =
             serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
                 .expect("thermal");
@@ -2981,8 +2980,7 @@ mod tests {
 
     /// The bench servo's class, a 5 V rail, the probe's R, the stops found.
     fn envelope() -> Envelope {
-        let board: Board =
-            serde_json::from_str(include_str!("../../boards/osc-dev-v006.json")).expect("board");
+        let board: Board = crate::steps::testkit::board();
         let thermal: ThermalInputs =
             serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
                 .expect("thermal");

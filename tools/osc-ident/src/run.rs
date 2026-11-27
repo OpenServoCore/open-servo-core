@@ -41,7 +41,7 @@ pub fn admit(a: &RunArgs) -> Result<StepInputs> {
     if a.tries == 0 {
         bail!("--tries is at least 1");
     }
-    StepInputs::load(Some(a.nameplate), Some(a.policy), Some(a.thermal), None)
+    StepInputs::load(Some(a.nameplate), Some(a.policy), Some(a.thermal))
 }
 
 /// The command line that runs `run` again as given.
@@ -336,7 +336,8 @@ mod tests {
             .expect("one")
             .expect("entry")
             .path();
-        assert!(!root.join("inputs").exists() && !root.join("tune").exists());
+        assert!(root.join(files::BOARD).exists(), "step 0 kept the board");
+        assert!(!root.join("inputs/measured.json").exists() && !root.join("tune").exists());
         let m: Value = serde_json::from_slice(&std::fs::read(root.join("run.json")).expect("read"))
             .expect("json");
         assert_eq!(m["steps"]["probe"]["state"], "aborted", "{m}");
@@ -363,7 +364,6 @@ mod tests {
             Some(&testdata("mg90-d/nameplate.json")),
             None,
             Some(&testdata("mg90-d/thermal.json")),
-            None,
         )
         .expect("inputs");
         let (stepped, _, root) = block_on(steps::step_spins(
@@ -402,6 +402,7 @@ mod tests {
         let dir = scratch("run-continue");
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
+        files::step_0(&root);
         for f in ["rest", "probe", "stops", "window", "spins"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),

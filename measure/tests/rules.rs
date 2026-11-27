@@ -1,14 +1,15 @@
 //! The rules against the mg90-d set of record, fed the notebooks' results
 //! of record (`testdata/mg90-d`, each value with its source file's sha1),
-//! the dev board's description, and the record's thermal values as user
+//! the board facts the bench servo publishes, and the record's thermal values as user
 //! inputs.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use osc_measure::board;
 use osc_measure::inputs::{Measured, ShelfRecord, ThermalInputs, Tuning};
 use osc_measure::rules::{Kind, rules};
-use osc_measure::{Board, Inputs, Missing, Nameplate, Outcome, Policy, build};
+use osc_measure::{Inputs, Missing, Nameplate, Outcome, Policy, build};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -25,7 +26,9 @@ fn inputs() -> Inputs {
     let mut measured: Measured = load("testdata/mg90-d/measured.json");
     measured.shelf = Some(load::<ShelfRecord>("testdata/mg90-d/shelf.json"));
     Inputs {
-        board: load::<Board>("boards/osc-dev-v006.json"),
+        board: load::<board::Record>("testdata/mg90-d/board.json")
+            .board()
+            .expect("the board"),
         measured,
         nameplate: load::<Nameplate>("testdata/mg90-d/nameplate.json"),
         policy: load::<Policy>("testdata/mg90-d/policy.json"),
