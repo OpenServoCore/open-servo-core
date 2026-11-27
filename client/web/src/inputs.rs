@@ -5,9 +5,12 @@
 //! the values cross through serde-wasm-bindgen, so serde_json stays out of
 //! the module.
 
-use osc_ident_inputs::migrate::slug;
+use osc_ident_inputs::migrate::{ThermalV0, heat_of, slug};
+use osc_ident_inputs::profile::FieldSource;
 use osc_ident_inputs::read::{self, Probe};
-use osc_ident_inputs::{BoardFacts, Policy, Report, ServoProfile, TuningPolicy, resolve, upgrade};
+use osc_ident_inputs::{
+    BoardFacts, Policy, Report, ServoProfile, TuningPolicy, resolve, upgrade_with,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tsify::{Ts, Tsify};
@@ -71,10 +74,19 @@ fn check<T: DeserializeOwned>(
     file.parse().and_then(|v| check(&v)).err()
 }
 
+/// A version 0 `thermal.json` as read, with the file's name and sha1 for
+/// the profile's provenance.
+struct Thermal<'a, F> {
+    file: &'a F,
+    name: Option<String>,
+    sha1: Option<String>,
+}
+
 fn migrate_files<F: File>(
     profile: &F,
     policy: Option<&F>,
     policy_key: Option<&str>,
+    thermal: Option<Thermal<'_, F>>,
 ) -> Result<Migrated, String> {
     let p = read::profile_with(
         profile.parse::<Probe>()?,
@@ -93,7 +105,19 @@ fn migrate_files<F: File>(
         }
         None => None,
     };
-    let u = upgrade(p, q)?;
+    let heat = match thermal {
+        Some(t) => {
+            let from = FieldSource {
+                how: Some("file".into()),
+                file: t.name,
+                sha1: t.sha1,
+                ..FieldSource::default()
+            };
+            Some((heat_of(&t.file.parse::<ThermalV0>()?)?, from))
+        }
+        None => None,
+    };
+    let u = upgrade_with(p, q, heat)?;
     Ok(Migrated {
         profile: u.profile,
         policy: u.policy,
@@ -167,18 +191,39 @@ pub fn resolve_preview(
     Ok(p.into_ts()?)
 }
 
+/// Why the run cannot go while the profile states no heat model.
+#[wasm_bindgen(js_name = noHeatModel)]
+pub fn no_heat_model() -> String {
+    osc_ident_inputs::no_heat_model()
+}
+
 /// A profile file's parsed JSON, and a policy's beside it, at version 1:
 /// a version 0 nameplate's run voltage and derates move into the policy.
-/// `policyKey` names a version 0 policy (its file's name). Throws the
-/// CLI's refusal, a newer version named.
+/// `policyKey` names a version 0 policy (its file's name). `thermal` is
+/// the version 0 `thermal.json` beside a version 0 nameplate, read as the
+/// profile's heat model, `thermalFile` and `thermalSha1` its provenance.
+/// Throws the CLI's refusal, a newer version named.
 #[wasm_bindgen]
 pub fn migrate(
     #[wasm_bindgen(unchecked_param_type = "unknown")] profile: JsValue,
     #[wasm_bindgen(unchecked_param_type = "unknown")] policy: JsValue,
-    #[wasm_bindgen(js_name = policyKey)] policy_key: Option<String>,
+    #[wasm_bindgen(js_name = policyKey, unchecked_optional_param_type = "string | null")]
+    policy_key: Option<String>,
+    #[wasm_bindgen(unchecked_optional_param_type = "unknown")] thermal: JsValue,
+    #[wasm_bindgen(js_name = thermalFile, unchecked_optional_param_type = "string")]
+    thermal_file: Option<String>,
+    #[wasm_bindgen(js_name = thermalSha1, unchecked_optional_param_type = "string")]
+    thermal_sha1: Option<String>,
 ) -> Result<Ts<Migrated>, JsError> {
-    let policy = (!policy.is_undefined() && !policy.is_null()).then_some(&policy);
-    let m = migrate_files(&profile, policy, policy_key.as_deref()).map_err(|e| JsError::new(&e))?;
+    let given = |v: &JsValue| !v.is_undefined() && !v.is_null();
+    let policy = given(&policy).then_some(&policy);
+    let thermal = given(&thermal).then_some(Thermal {
+        file: &thermal,
+        name: thermal_file,
+        sha1: thermal_sha1,
+    });
+    let m = migrate_files(&profile, policy, policy_key.as_deref(), thermal)
+        .map_err(|e| JsError::new(&e))?;
     Ok(m.into_ts()?)
 }
 
@@ -192,6 +237,7 @@ mod tests {
     const NAMEPLATE: &str = include_str!("../../../measure/testdata/mg90-d/nameplate.json");
     const POLICY_V0: &str = include_str!("../../../measure/testdata/mg90-d/policy.json");
     const DEFAULT: &str = include_str!("../../../measure/testdata/mg90-d/default-policy.json");
+    const THERMAL: &str = include_str!("../../../measure/testdata/mg90-d/thermal.json");
     /// The board facts the bench servo publishes, as step 0 keeps them.
     const BOARD: &str = include_str!("../../../measure/testdata/mg90-d/board.json");
     /// The preview resistance the policy page shows: the record's 4.1767 ohm.
@@ -336,8 +382,13 @@ mod tests {
     /// A nameplate alone (an import) gives its profile.
     #[test]
     fn a_version_0_file_migrates() {
-        let m = migrate_files(&json(NAMEPLATE), Some(&json(POLICY_V0)), Some("policy"))
-            .expect("migrates");
+        let m = migrate_files(
+            &json(NAMEPLATE),
+            Some(&json(POLICY_V0)),
+            Some("policy"),
+            None,
+        )
+        .expect("migrates");
         assert_eq!(m.profile.key, "mg90-d");
         assert_eq!(m.profile.gear_ratio, Some(308.0533));
         assert_eq!(m.policy.key, "policy");
@@ -349,7 +400,7 @@ mod tests {
         assert_eq!(p.speed_ceiling_deg_s, 400.0);
         assert_eq!(p.values.velocity_limit_deg_s, Some(200.0));
 
-        let alone = migrate_files(&json(NAMEPLATE), None, None).expect("alone");
+        let alone = migrate_files(&json(NAMEPLATE), None, None, None).expect("alone");
         let (record, _, _) = record();
         assert_eq!(alone.profile.no_load, record.no_load);
         assert_eq!(alone.profile.travel_deg, record.travel_deg);
@@ -361,15 +412,73 @@ mod tests {
         let back: ServoProfile = json(&text).parse().expect("reads back");
         assert_eq!(back, alone.profile);
 
-        let v1 = migrate_files(&json(PROFILE), Some(&json(POLICY)), None).expect("version 1");
+        let v1 = migrate_files(&json(PROFILE), Some(&json(POLICY)), None, None).expect("version 1");
         assert!(v1.notes.is_empty());
         assert_eq!(v1.profile, record);
 
         let newer = json(&PROFILE.replacen("osc.servo-profile/1", "osc.servo-profile/2", 1));
-        let e = migrate_files(&newer, None, None).expect_err("newer");
+        let e = migrate_files(&newer, None, None, None).expect_err("newer");
         assert!(e.contains("version 2") && e.contains("up to 1"), "{e}");
-        let e = migrate_files(&json(POLICY), None, None).expect_err("a policy is no profile");
+        let e = migrate_files(&json(POLICY), None, None, None).expect_err("a policy is no profile");
         assert!(e.contains("not a osc.servo-profile file"), "{e}");
+    }
+
+    /// A version 0 nameplate with the thermal.json beside it imports to the
+    /// record profile's heat model, the file named as its source; a file
+    /// short of a value, or one beside a version 1 profile, is refused.
+    #[test]
+    fn a_version_0_thermal_json_becomes_the_profiles_heat_model() {
+        let thermal = json(THERMAL);
+        let beside = |t| Thermal {
+            file: t,
+            name: Some("thermal.json".into()),
+            sha1: Some("97572d64".into()),
+        };
+        let m =
+            migrate_files(&json(NAMEPLATE), None, None, Some(beside(&thermal))).expect("migrates");
+        let (record, _, _) = record();
+        assert_eq!(m.profile.thermal, record.thermal);
+        let from = &m.profile.provenance.fields["thermal"];
+        assert_eq!(
+            (
+                from.how.as_deref(),
+                from.file.as_deref(),
+                from.sha1.as_deref()
+            ),
+            (Some("file"), Some("thermal.json"), Some("97572d64"))
+        );
+        assert!(m.notes[0].contains("thermal.json"), "{:?}", m.notes);
+        assert_eq!(
+            check(
+                &json(&serde_json::to_string(&m.profile).expect("serializes")),
+                ServoProfile::check
+            ),
+            None
+        );
+
+        let mut short = json(THERMAL);
+        short.as_object_mut().expect("object").remove("slow_tau_s");
+        let e =
+            migrate_files(&json(NAMEPLATE), None, None, Some(beside(&short))).expect_err("short");
+        assert!(
+            e.starts_with("The profile's heat model is all four values")
+                && e.contains("slow_tau_s"),
+            "{e}"
+        );
+
+        let e = migrate_files(
+            &json(PROFILE),
+            Some(&json(POLICY)),
+            None,
+            Some(beside(&thermal)),
+        )
+        .expect_err("beside version 1");
+        assert!(
+            e.starts_with("The profile is the heat model's one source"),
+            "{e}"
+        );
+
+        assert!(no_heat_model().contains("the profile has no usable thermal"));
     }
 
     /// The record's profile and policy preview the record's values: the
