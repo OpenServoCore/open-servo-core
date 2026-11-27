@@ -10,7 +10,7 @@ use serde::de::IgnoredAny;
 
 use crate::nameplate::Nameplate;
 use crate::policy::Policy;
-use crate::profile::{self, FieldSource, Model, Provenance, ServoProfile, StallRow};
+use crate::profile::{self, FieldSource, HeatModel, Model, Provenance, ServoProfile, StallRow};
 use crate::tuning::{
     CurrentLimit, CurrentLoop, MoveSpeed, Observer, PositionError, PotJump, SpeedCeiling, SpeedUp,
     StallRelease, StallSpeed, TuningPolicy, Yield,
@@ -47,6 +47,44 @@ pub enum SourceEntry {
         sha1: Option<String>,
     },
     Other(IgnoredAny),
+}
+
+/// One value of a version 0 `thermal.json`: its source is the file's.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+pub struct ThermalValue {
+    pub value: f64,
+}
+
+/// A version 0 `thermal.json`, the heat model a version 0 nameplate came
+/// beside: each value `{"value": ..}` with its unit and source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+pub struct ThermalV0 {
+    #[serde(default)]
+    pub fast_tau_s: Option<ThermalValue>,
+    #[serde(default)]
+    pub fast_gain_c_per_w: Option<ThermalValue>,
+    #[serde(default)]
+    pub slow_tau_s: Option<ThermalValue>,
+    #[serde(default)]
+    pub slow_gain_c_per_w: Option<ThermalValue>,
+}
+
+/// A version 0 `thermal.json`'s four values as the profile's heat model,
+/// refused naming the first one it lacks.
+pub fn heat_of(t: &ThermalV0) -> Result<HeatModel, String> {
+    let take = |name: &str, v: Option<ThermalValue>| {
+        v.map(|v| v.value).ok_or_else(|| {
+            format!(
+                "The profile's heat model is all four values: the thermal.json beside the version 0 nameplate has no {name}"
+            )
+        })
+    };
+    Ok(HeatModel {
+        fast_tau_s: take("fast_tau_s", t.fast_tau_s)?,
+        fast_gain_c_per_w: take("fast_gain_c_per_w", t.fast_gain_c_per_w)?,
+        slow_tau_s: take("slow_tau_s", t.slow_tau_s)?,
+        slow_gain_c_per_w: take("slow_gain_c_per_w", t.slow_gain_c_per_w)?,
+    })
 }
 
 /// A profile file as read: version 0 with its `source` block, or 1.
@@ -275,15 +313,37 @@ fn carry(c: Carried, t: &mut TuningPolicy) -> Result<(), String> {
 /// at. With no policy, one holding only what a version 0 nameplate carried:
 /// the steps read the run voltage and the derates and nothing else of it.
 pub fn upgrade(profile: ProfileIn, policy: Option<PolicyIn>) -> Result<Upgraded, String> {
+    upgrade_with(profile, policy, None)
+}
+
+/// [`upgrade`], a version 0 nameplate with the heat model of the
+/// `thermal.json` beside it ([`heat_of`]) and where that file came from.
+/// A version 1 profile holds its own, so one given beside it is refused.
+pub fn upgrade_with(
+    profile: ProfileIn,
+    policy: Option<PolicyIn>,
+    heat: Option<(HeatModel, FieldSource)>,
+) -> Result<Upgraded, String> {
     let mut notes = Vec::new();
     let (profile, carried) = match profile {
         ProfileIn::V0 { nameplate, source } => {
-            let (p, c) = profile_of(&nameplate, &source)?;
+            let (mut p, c) = profile_of(&nameplate, &source)?;
+            let with_heat = match heat {
+                Some((h, from)) => {
+                    p.thermal = Some(h);
+                    p.provenance.fields.insert("thermal".into(), from);
+                    ", and the thermal.json beside it as its thermal"
+                }
+                None => "",
+            };
             notes.push(format!(
-                "the nameplate is version 0: read as the servo profile {}, its run_v, derate_speed and derate_other as the policy's",
+                "the nameplate is version 0: read as the servo profile {}, its run_v, derate_speed and derate_other as the policy's{with_heat}",
                 p.key
             ));
             (p, Some(c))
+        }
+        ProfileIn::V1(_) if heat.is_some() => {
+            return Err("The profile is the heat model's one source: a version 1 profile states its own thermal, so a thermal.json beside it is not read; enter the four values in the profile's thermal and take the file out".into());
         }
         ProfileIn::V1(p) => (p, None),
     };

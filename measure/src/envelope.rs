@@ -635,7 +635,7 @@ mod tests {
     }
 
     fn thermal() -> ThermalInputs {
-        serde_json::from_str(include_str!("../testdata/mg90-d/thermal.json")).expect("thermal")
+        crate::steps::testkit::thermal()
     }
 
     fn nameplate() -> Nameplate {

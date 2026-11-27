@@ -4,18 +4,28 @@
 use osc_ident_inputs::migrate::{PolicyIn, ProfileIn, slug};
 use osc_ident_inputs::nameplate::GearClass;
 use osc_ident_inputs::policy::{StallResponse, Switch};
+use osc_ident_inputs::profile::{FieldSource, HeatModel};
 use osc_ident_inputs::resolve::{Form, Value};
 use osc_ident_inputs::tuning::{
     CurrentLimit, CurrentLoop, MoveSpeed, Observer, PotJump, SpeedCeiling, SpeedUp, StallRelease,
     StallSpeed, Yield,
 };
-use osc_ident_inputs::{BoardFacts, ServoProfile, TuningPolicy, read, resolve, upgrade, version};
+use osc_ident_inputs::{
+    BoardFacts, ServoProfile, TuningPolicy, read, resolve, upgrade, upgrade_with, version,
+};
 
 const NAMEPLATE: &str = include_str!("../../testdata/mg90-d/nameplate.json");
 const POLICY: &str = include_str!("../../testdata/mg90-d/policy.json");
 const PROFILE: &str = include_str!("../../testdata/mg90-d/profile.json");
 const RECORD_POLICY: &str = include_str!("../../testdata/mg90-d/policy-of-record.json");
 const DEFAULT_POLICY: &str = include_str!("../../testdata/mg90-d/default-policy.json");
+const THERMAL: &str = include_str!("../../testdata/mg90-d/thermal.json");
+const RECORD_HEAT: HeatModel = HeatModel {
+    fast_tau_s: 2.3752191114749404,
+    fast_gain_c_per_w: 20.44571009950305,
+    slow_tau_s: 128.92,
+    slow_gain_c_per_w: 76.7616,
+};
 const BOARD: BoardFacts = BoardFacts {
     tick_hz: 20_000.0,
     oc_trip_us: Some(400.0),
@@ -44,7 +54,20 @@ fn v1() -> (ServoProfile, TuningPolicy) {
 #[test]
 fn each_version_0_field_moves_to_its_version_1_place() {
     let (np, pol) = v0();
-    let u = upgrade(np, Some(pol)).expect("upgrades");
+    let from = FieldSource {
+        how: Some("file".into()),
+        file: Some("thermal.json".into()),
+        ..FieldSource::default()
+    };
+    let heat = read::thermal(THERMAL).expect("thermal.json");
+    let u = upgrade_with(np, Some(pol), Some((heat, from.clone()))).expect("upgrades");
+    assert_eq!(u.profile.thermal, Some(RECORD_HEAT));
+    assert_eq!(u.profile.provenance.fields["thermal"], from);
+    assert!(
+        u.notes[0].ends_with("and the thermal.json beside it as its thermal"),
+        "{:?}",
+        u.notes
+    );
     let (p, q) = (&u.profile, &u.policy);
     assert_eq!(p.key, "mg90-d");
     assert_eq!(p.model.name, "mg90-d");
@@ -544,4 +567,118 @@ fn a_name_becomes_a_key() {
     assert_eq!(slug("mg90-d"), "mg90-d");
     assert_eq!(slug("  Vorpal MG90 (metal)! "), "vorpal-mg90-metal");
     assert_eq!(slug(&"a".repeat(50)).len(), 40);
+}
+
+/// The record profile states the record's heat model, and it resolves to a
+/// line a value, each from the profile, not identified.
+#[test]
+fn the_profiles_heat_model_resolves_to_four_profile_lines() {
+    let (p, q) = v1();
+    assert_eq!(p.thermal, Some(RECORD_HEAT));
+    let r = resolve(&p, &q, Some(&BOARD)).expect("resolves");
+    assert_eq!(r.thermal, Some(RECORD_HEAT));
+    let lines: Vec<_> = r
+        .report
+        .fields
+        .iter()
+        .filter(|l| l.form == Form::Profile)
+        .collect();
+    let named: Vec<_> = lines.iter().map(|l| (l.field, l.unit)).collect();
+    assert_eq!(
+        named,
+        [
+            ("thermal.fast_tau_s", "s"),
+            ("thermal.fast_gain_c_per_w", "C/W"),
+            ("thermal.slow_tau_s", "s"),
+            ("thermal.slow_gain_c_per_w", "C/W"),
+        ]
+    );
+    assert_eq!(lines[0].value, Value::Number(2.3752191114749404));
+    for l in &lines {
+        assert!(
+            l.note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("from the profile, not identified")),
+            "{l:?}"
+        );
+        assert_eq!(l.clamp, None);
+    }
+    assert!(
+        lines[3]
+            .note
+            .as_deref()
+            .unwrap()
+            .ends_with("the run sets th_rise2_q016 from it over the identified R")
+    );
+    assert!(r.report.clamps().is_empty(), "{:?}", r.report.clamps());
+
+    // past the estimate's longest leak it is stored as given, and said
+    let mut long = p.clone();
+    long.thermal.as_mut().unwrap().slow_tau_s = 900.0;
+    let r = resolve(&long, &q, Some(&BOARD)).expect("resolves");
+    let l = r
+        .report
+        .fields
+        .iter()
+        .find(|l| l.field == "thermal.slow_tau_s")
+        .unwrap();
+    assert_eq!(l.value, Value::Number(900.0));
+    assert!(
+        l.note.as_deref().unwrap().contains("runs at 524 s"),
+        "{l:?}"
+    );
+
+    // none states no line
+    let mut none = p;
+    none.thermal = None;
+    let r = resolve(&none, &q, Some(&BOARD)).expect("resolves");
+    assert!(!r.report.fields.iter().any(|l| l.form == Form::Profile));
+}
+
+/// A time constant under 0.5 s stores as 0 and turns its node off, so the
+/// profile is refused; a gain of 0 likewise.
+#[test]
+fn a_heat_value_the_estimate_cannot_run_is_refused() {
+    let (p, _) = v1();
+    let mut short = p.clone();
+    short.thermal.as_mut().unwrap().slow_tau_s = 0.3;
+    let e = short.check().expect_err("0.3 s");
+    assert!(
+        e.contains("thermal.slow_tau_s is 0.3 s") && e.contains("at least 0.5 s"),
+        "{e}"
+    );
+    let mut flat = p.clone();
+    flat.thermal.as_mut().unwrap().fast_gain_c_per_w = 0.0;
+    let e = flat.check().expect_err("no gain");
+    assert!(e.contains("each node's gain over 0"), "{e}");
+    let mut half = p;
+    half.thermal.as_mut().unwrap().fast_tau_s = 0.5;
+    half.check().expect("0.5 s");
+    let e = osc_ident_inputs::no_heat_model();
+    for f in [
+        "fast_tau_s",
+        "fast_gain_c_per_w",
+        "slow_tau_s",
+        "slow_gain_c_per_w",
+    ] {
+        assert!(e.contains(f), "{e}");
+    }
+}
+
+/// The version 0 thermal.json reads as the record's four values; one value
+/// short is refused naming it, and a version 1 profile, which states its
+/// own, takes none beside it.
+#[test]
+fn a_version_0_thermal_json_folds_into_the_profile_only_beside_a_version_0_nameplate() {
+    assert_eq!(read::thermal(THERMAL), Ok(RECORD_HEAT));
+    let short = THERMAL.replacen("\"slow_tau_s\"", "\"slow_tau\"", 1);
+    let e = read::thermal(&short).expect_err("short");
+    assert!(e.contains("has no slow_tau_s"), "{e}");
+    let profile = read::profile(PROFILE).expect("profile");
+    let e = upgrade_with(profile, None, Some((RECORD_HEAT, FieldSource::default())))
+        .expect_err("a version 1 profile states its own");
+    assert!(e.contains("one source"), "{e}");
+    let (np, pol) = v0();
+    let u = upgrade(np, Some(pol)).expect("without one");
+    assert_eq!(u.profile.thermal, None);
 }

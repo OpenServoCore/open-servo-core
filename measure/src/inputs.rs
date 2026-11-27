@@ -1,6 +1,7 @@
 //! What the rules read: measured quantities with their band and source,
 //! and the values a user enters.
 
+use osc_ident_inputs::profile::HeatModel;
 use serde::Deserialize;
 
 use crate::{Board, Nameplate, Policy};
@@ -126,6 +127,34 @@ pub struct ThermalInputs {
     pub fast_gain_c_per_w: Option<Quantity>,
     pub slow_tau_s: Option<Quantity>,
     pub slow_gain_c_per_w: Option<Quantity>,
+}
+
+impl ThermalInputs {
+    /// The profile's heat model as the rules read it, each value named by
+    /// its key in the profile, read from `file` at `sha1`.
+    pub fn of_profile(h: &HeatModel, file: &str, sha1: &str) -> Self {
+        let q = |value: f64, unit: &str, key: &str| {
+            Some(Quantity {
+                value,
+                lo: None,
+                hi: None,
+                sd: None,
+                n: None,
+                unit: unit.into(),
+                source: Source {
+                    file: file.into(),
+                    key: key.into(),
+                    sha1: Some(sha1.into()),
+                },
+            })
+        };
+        ThermalInputs {
+            fast_tau_s: q(h.fast_tau_s, "s", "thermal.fast_tau_s"),
+            fast_gain_c_per_w: q(h.fast_gain_c_per_w, "C/W", "thermal.fast_gain_c_per_w"),
+            slow_tau_s: q(h.slow_tau_s, "s", "thermal.slow_tau_s"),
+            slow_gain_c_per_w: q(h.slow_gain_c_per_w, "C/W", "thermal.slow_gain_c_per_w"),
+        }
+    }
 }
 
 /// Tuning for the load at hand, never identified: each is 0, off, unless

@@ -68,9 +68,16 @@ pub fn inputs() -> Inputs {
         measured,
         nameplate: load::<Nameplate>("testdata/mg90-d/nameplate.json"),
         policy: load::<Policy>("testdata/mg90-d/policy.json"),
-        thermal: load::<ThermalInputs>("testdata/mg90-d/thermal.json"),
+        thermal: thermal(),
         tuning: Tuning::default(),
     }
+}
+
+/// The mg90-d profile's heat model, as a run reads it.
+pub fn thermal() -> ThermalInputs {
+    let p: osc_ident_inputs::ServoProfile = load("testdata/mg90-d/profile.json");
+    let h = p.thermal.expect("the profile's heat model");
+    ThermalInputs::of_profile(&h, "testdata/mg90-d/profile.json", "")
 }
 
 #[derive(serde::Deserialize)]

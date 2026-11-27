@@ -1,7 +1,7 @@
 {
   "schema": "osc.servo-profile/1",
   "key": "vorpal-mg90",
-  "revision": 1,
+  "revision": 2,
   "model": {"maker": "Vorpal Robotics", "name": "MG90 Micro Servo", "variant": ""},
   "gear_class": "metal",
   "gear_ratio": 308.0533,
@@ -13,7 +13,7 @@
   "no_load": [{"at_v": 4.8, "seconds": 0.1, "per_deg": 60}, {"at_v": 6.0, "seconds": 0.08, "per_deg": 60}],
   "stall": [{"at_v": 4.8, "torque_kg_cm": 1.8}, {"at_v": 6.0, "torque_kg_cm": 2.2}],
   "output_stopper": "plastic",
-  "thermal": null,
+  "thermal": {"fast_tau_s": 2.3752191114749404, "fast_gain_c_per_w": 20.44571009950305, "slow_tau_s": 128.92, "slow_gain_c_per_w": 76.7616},
   "provenance": {
     "document": "Vorpal Robotics wiki, Vorpal MG90 Micro Servo (the maker's own page for the servo; it links no PDF sheet), https://www.vorpalrobotics.com/wiki/index.php/Vorpal_MG90_Micro_Servo, page last edited 2018-08-01, read 2026-11-14",
     "fields": {
@@ -22,6 +22,7 @@
       "output_stopper": {"how": "file", "file": "notebooks/oscnb/servos.py", "key": "SERVOS[\"mg90-d\"].output_stopper", "sha1": "b85c244d10e299ba1eba9c6a6ebc96aba12cf3d3"},
       "count_rises_ccw": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "key": "target.theta_at_stops_deg", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"},
       "travel_deg": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "key": "target.theta_at_stops_deg, the high less the low", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"},
+      "thermal": {"how": "file", "file": "notebooks/stages/4-estimators/winding-temperature/results/mg90-d__dev-v006-2A-D.json", "key": "one_node_tau_s, joined_high_fast_gain_c_per_w, family_slow_tau_s, joined_high_fast_gain_c_per_w.slow_gain_c_per_w x policy winding_slow_basis_ratio (policy.json sha1 c6a292c59dd228b0f03cac972e6978213aa6f117)", "sha1": "97572d64c5fd200d635e678a51c50794db66cee6", "note": "the high reading; NTC in room air, board D; the slow node is the family's, from another MG90"},
       "brushes_and_rotor_segments": {"how": "counted", "file": "notebooks/oscnb/motors.py", "key": "MOTORS[\"mg90-d\"].brushes and .slots", "sha1": "055dbe4c7bc60bb5b779089297354bfb00ca7e96"}
     }
   }

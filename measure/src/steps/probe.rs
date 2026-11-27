@@ -706,7 +706,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result<Be
         )));
     }
     let thermal = i.thermal.ok_or_else(|| {
-        Refused("no thermal values entered (--thermal): the heat of a blocked shaft cannot be priced, so nothing drives".into())
+        Refused("no heat model (the profile's thermal): the heat of a blocked shaft cannot be priced, so nothing drives".into())
     })?;
     let line = tel::line(rig.c, rig.id).await?;
     line.admit(Layout::Raw)?;
@@ -1104,7 +1104,7 @@ async fn body<P: Pipe>(
     });
     let heat = match i.thermal {
         Some(t) => HeatModel::new(i.board, t, cfg.r_ohm, b.counts_per_a, b.tick_hz),
-        None => Err("no thermal values entered".into()),
+        None => Err("no heat model (the profile's thermal)".into()),
     };
     let env = std::mem::replace(
         &mut b.env,

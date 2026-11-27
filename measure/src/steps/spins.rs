@@ -279,7 +279,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
     let np = i.nameplate;
     np.check_user().map_err(Refused)?;
     let thermal = i.thermal.ok_or_else(|| {
-        Refused("no thermal values entered (--thermal): the heat of a spin cannot be priced, so nothing drives".into())
+        Refused("no heat model (the profile's thermal): the heat of a spin cannot be priced, so nothing drives".into())
     })?;
     let line = tel::line(rig.c, rig.id).await?;
     line.admit(Layout::Raw)?;
@@ -2391,9 +2391,7 @@ mod tests {
         let stored = block_on(c.read(ID, addr(&d, "drive_polarity"), 1)).expect("read")[0] != 0;
         log.borrow_mut().clear();
         let board: Board = crate::steps::testkit::board();
-        let th: ThermalInputs =
-            serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
-                .expect("thermal");
+        let th: ThermalInputs = crate::steps::testkit::thermal();
         let (rest, probe) = (rest_json(), probe_json(stored));
         let t = Cell::new(0.0);
         let clock = || {
@@ -2584,7 +2582,7 @@ mod tests {
         narrow["stops"]["high"]["median_counts"] = json!(1400.0);
         for (stops, window, thermal, says) in [
             (refused, None, true, "accepted stops step"),
-            (stops_json(), None, false, "--thermal"),
+            (stops_json(), None, false, "no heat model"),
             (
                 stops_json(),
                 Some(json!({"verdict": "refused"})),
@@ -3035,9 +3033,7 @@ mod tests {
     /// The bench servo's class, a 5 V rail, the probe's R, the stops found.
     fn envelope() -> Envelope {
         let board: Board = crate::steps::testkit::board();
-        let thermal: ThermalInputs =
-            serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
-                .expect("thermal");
+        let thermal: ThermalInputs = crate::steps::testkit::thermal();
         let mut f = Facts::new(&nameplate(), 5.0);
         f.polarity_proven = true;
         f.ntc_c = Some(25.0);

@@ -537,7 +537,7 @@ mod probe {
     }
 
     fn thermal() -> ThermalInputs {
-        common::load("testdata/mg90-d/thermal.json")
+        common::thermal()
     }
 
     /// The servo of record with the rest step run and accepted on it, and
@@ -635,7 +635,7 @@ mod probe {
         }
     }
 
-    /// A nameplate short of a value, no thermal values, a rest step not
+    /// A nameplate short of a value, no heat model, a rest step not
     /// accepted, a line under 3 Mbps: each refused naming it, nothing
     /// written.
     #[test]
@@ -649,7 +649,7 @@ mod probe {
         let t = thermal();
         let cases: [(&Nameplate, Option<&ThermalInputs>, &serde_json::Value, &str); 3] = [
             (&np, Some(&t), &rest, "travel_deg"),
-            (&full, None, &rest, "no thermal values"),
+            (&full, None, &rest, "no heat model"),
             (&full, Some(&t), &not_rested, "an accepted rest step"),
         ];
         for (np, th, r, want) in cases {

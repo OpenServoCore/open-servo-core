@@ -14,12 +14,13 @@ pub mod resolve;
 pub mod tuning;
 mod why;
 
-pub use migrate::{PolicyIn, ProfileIn, Upgraded, upgrade};
+pub use migrate::{PolicyIn, ProfileIn, Upgraded, upgrade, upgrade_with};
 pub use nameplate::Nameplate;
 pub use policy::Policy;
 pub use profile::ServoProfile;
 pub use resolve::{BoardFacts, Report, Resolved, resolve};
 pub use tuning::TuningPolicy;
+pub use why::thermal as no_heat_model;
 
 /// A file's schema version: none is version 0, the files written before
 /// the schemas. A file of another kind, or newer than this tool reads, is

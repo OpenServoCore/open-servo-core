@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use common::{descriptor, load, text};
 use osc_measure::gather::{self, RunResults, StepResult};
-use osc_measure::inputs::{Measured, ThermalInputs, Tuning};
+use osc_measure::inputs::{Measured, Tuning};
 use osc_measure::rules::speed_loop;
 use osc_measure::set::{self, FromRules, TableFile};
 use osc_measure::{Inputs, Nameplate, Outcome, Policy, build};
@@ -56,7 +56,7 @@ fn inputs_of(measured: Measured) -> Inputs {
         measured,
         nameplate: nameplate(),
         policy: load::<Policy>("testdata/mg90-d/policy.json"),
-        thermal: load::<ThermalInputs>("testdata/mg90-d/thermal.json"),
+        thermal: common::thermal(),
         tuning: Tuning::default(),
     }
 }

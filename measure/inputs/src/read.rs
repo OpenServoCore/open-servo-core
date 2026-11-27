@@ -6,8 +6,12 @@
 use serde::Deserialize;
 
 use crate::migrate::{PolicyIn, ProfileIn, Source};
+#[cfg(feature = "json")]
+use crate::migrate::{ThermalV0, heat_of};
 use crate::nameplate::Nameplate;
 use crate::policy::PolicyFile;
+#[cfg(feature = "json")]
+use crate::profile::HeatModel;
 use crate::profile::ServoProfile;
 use crate::tuning::TuningPolicy;
 use crate::{profile, tuning, version};
@@ -68,4 +72,10 @@ pub fn profile(text: &str) -> Result<ProfileIn, String> {
 #[cfg(feature = "json")]
 pub fn policy(text: &str, key: &str) -> Result<PolicyIn, String> {
     policy_with(parse(text)?, key, || parse(text), || parse(text))
+}
+
+/// A version 0 `thermal.json` as the profile's heat model.
+#[cfg(feature = "json")]
+pub fn thermal(text: &str) -> Result<HeatModel, String> {
+    heat_of(&parse::<ThermalV0>(text)?)
 }
