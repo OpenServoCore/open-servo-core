@@ -9,7 +9,9 @@
 use std::fmt;
 use std::time::Duration;
 
-use osc_client::data_state::{CONFIG_CORRUPT, PLANT_UNSET, STAMP_MISMATCH};
+use osc_client::data_state::{
+    self as data_state, CONFIG_CORRUPT, PLANT_UNSET, SAVE_CLEARS, STAMP_MISMATCH,
+};
 use osc_client::descriptor::{Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS};
 use osc_client::{BaudRate, Client, Error, Id, mgmt, pipe::Pipe, stamp};
@@ -117,6 +119,15 @@ impl fmt::Display for Step {
     }
 }
 
+/// The reason names set in `flags`, joined.
+fn names(flags: u8) -> String {
+    data_state::DataState {
+        flags,
+        fault_code: data_state::fault::NONE,
+    }
+    .names()
+}
+
 /// The lines of the moves back to the run's rate among `steps`.
 pub fn moves(steps: &[Step]) -> impl Iterator<Item = String> + '_ {
     steps
@@ -141,12 +152,34 @@ pub struct Checked {
     /// servo's value.
     pub unowned: Vec<String>,
     pub data: String,
+    pub flags: u8,
     pub stamp: String,
 }
 
 impl Checked {
     pub fn clean(&self) -> bool {
-        self.differences.is_empty() && self.data == "clean"
+        self.differences.is_empty() && self.flags == 0
+    }
+
+    /// Why a SAVE of the servo as checked is refused: the set has not
+    /// landed, or its data state holds a reason the SAVE does not retire.
+    /// The reasons it retires are no refusal: on a servo never saved they
+    /// stand until that SAVE.
+    pub fn unsaveable(&self) -> Option<String> {
+        let left = self.flags & !SAVE_CLEARS;
+        match (self.differences.is_empty(), left) {
+            (true, 0) => None,
+            (true, _) => Some(format!(
+                "after the install the servo holds the set, but its data state reads {} ({} of it a SAVE does not clear)",
+                self.data,
+                names(left)
+            )),
+            (false, _) => Some(format!(
+                "after the install the servo is not the set (data state {}): {}",
+                self.data,
+                self.differences.join("; ")
+            )),
+        }
     }
 }
 
@@ -221,6 +254,7 @@ pub async fn check<P: Pipe>(
         differences: differences(set, &state, d),
         unowned: unowned(set, &state, d),
         data: state.data_said(),
+        flags: state.data.flags,
         stamp: state.stamp_said(),
     })
 }
@@ -637,14 +671,19 @@ pub(crate) async fn reboot<P: Pipe>(
 }
 
 /// The refusal of a verb that had written: the servo is rebooted onto its
-/// saved state.
+/// saved state, which the refusal says, so no [`Step::Rebooted`] is kept.
 async fn rebooted<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
     why: Refused,
     steps: &mut Vec<Step>,
 ) -> Refused {
-    match reboot(c, id, steps).await {
+    let run = c.info().bps;
+    let back = match boot(c, id).await {
+        Ok(at) => home(c, id, at, run, steps).await,
+        Err(e) => Err(e),
+    };
+    match back {
         Ok(()) => Refused(format!(
             "{why}\nrebooted: the servo is back on its saved state"
         )),
@@ -808,14 +847,8 @@ pub async fn save<P: Pipe>(
             sink.shown(STORED)
         )));
     }
-    let checked = check(c, id, d, set).await?;
-    if !checked.clean() {
-        let why = Refused(format!(
-            "after the install the servo is not the set (data state {}): {}",
-            checked.data,
-            checked.differences.join("; ")
-        ));
-        return Err(rebooted(c, id, why, steps).await);
+    if let Some(why) = check(c, id, d, set).await?.unsaveable() {
+        return Err(rebooted(c, id, Refused(why), steps).await);
     }
     if let Err(e) = mgmt::save(c, id).await {
         let why = Refused(format!(

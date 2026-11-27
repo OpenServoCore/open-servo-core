@@ -183,6 +183,20 @@ pub fn seeded() -> (Client<Spy>, Log) {
     (c, log)
 }
 
+/// A servo off the line, never saved: board data only, its data state
+/// every reason of a never-saved, never-identified servo.
+pub fn factory() -> (Client<Spy>, Log) {
+    let mut inner = FakePipe::new(BaudRate::B1000000, &[1]);
+    inner.seed_board(0);
+    let log = Log::default();
+    let c = block_on(Client::connect(Spy {
+        inner,
+        log: log.clone(),
+    }))
+    .expect("connect");
+    (c, log)
+}
+
 /// A servo that holds the set of record, saved.
 pub fn on_record() -> (Client<Spy>, Log) {
     let (mut c, log) = seeded();
