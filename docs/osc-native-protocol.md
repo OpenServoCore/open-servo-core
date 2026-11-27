@@ -674,9 +674,16 @@ nonempty and every chunk inside the table; a row that is not, or an arm
 at any rate but 3 M, disarms instead of streaming. The write itself acks
 (the ack precedes the commit that arms), so a host checks the row and the
 rate first. The arm composes with HOLD/COMMIT, so a goal write and the
-arm commit together: the capture starts at the commit and the step edge
-lands inside it, at the first medium tick after the commit (sec 5.7). A
-committed `tel_count` of 0 disarms.
+arm commit together, and the goal is taken at the first medium tick
+after the commit (sec 5.7). A burst's first row lands on one of the two
+control ticks of each medium period with room for the arm, up to 0.45 ms
+after the arm (after its ack, when one is sent), and a frame can leave
+up to 0.1 ms later than its rows alone would let it, when one of its
+steps meets a tick the servo keeps for its heaviest work. The goal can
+then be taken up to a medium period ahead of the first row; the shaft
+has not moved by then, so the step's motion lands inside the capture.
+Every row lands on its own tick; none is skipped. A committed
+`tel_count` of 0 disarms.
 
 A burst never shares a tick with the kernel taking a CONFIG or CALIB
 write (sec 5.7): its first row waits while a committed write is not yet

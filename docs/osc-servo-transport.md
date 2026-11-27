@@ -343,13 +343,14 @@ be staged behind the CRC verdict:
   DMA lands in the block, so every row is one tick's; CH6 above the CRC
   feed's CH3 lands the copy ahead of any feed that reads it, and one arm
   a tick leaves no copy in flight at the next. The bus derives the
-  row's copies at the arm, so the kernel's first tick only takes them. A frame starts once its lead row has landed - the start rule
+  row's copies at the arm, so the burst's first tick, a CONTROL or
+  SPEED one, only takes them. A frame starts once its lead row has landed - the start rule
   leaves the DMA three ticks behind the rows and the patch - with a CRC
   reset, the written bytes' feed and the law break; the next tick arms
   CH4 for the whole image with no TCIE, the DMA reading rows as the wire
   reaches them. The bank's feed and the CRC patch follow on later ticks,
-  one lane step a tick, none on a tick that lands a head or a bank
-  or runs a SLOW stage;
+  one lane step a tick, none on a tick that lands a head or a bank,
+  runs a SLOW stage or runs phase OBSERVER or TRAJECTORY;
   the kernel polls TC and starts the next frame in the tick the last one
   ends. No bus body runs between frames. Lost ticks mid-frame ship stale
   bytes against the fresh CRC: the frame fails it, never silently, and

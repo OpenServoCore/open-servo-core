@@ -763,7 +763,25 @@ fn a_stage_tick_holds_the_tel_lane() {
                 ..refresh
             },
         );
-    assert_eq!(lane, TEL_ROW + tel_lane(false));
+    assert_eq!(lane, TEL_ROW + tel_lane(false, false));
+}
+
+/// A plain TEL tick charges by its phase: a held phase its row, the poll
+/// and the plain head, never a lane step; a start phase the pickup on the
+/// head; every other phase the dearer of the plain head and a step.
+#[test]
+fn a_tel_tick_charges_the_lane_by_its_phase() {
+    let tel = Events { tel: true, ..PLAIN };
+    let step = TEL_FEED.max(TEL_ARM).max(TEL_PATCH);
+    for p in 0..PHASES {
+        let lane = kernel_tick(Regime::Closed, p, tel) - kernel_tick(Regime::Closed, p, PLAIN);
+        let head = match p as u8 {
+            phase::OBSERVER | phase::TRAJECTORY => TEL_HEAD,
+            phase::CONTROL | phase::SPEED => (TEL_HEAD + TEL_PICKUP).max(step),
+            _ => TEL_HEAD.max(step),
+        };
+        assert_eq!(lane, TEL_ROW + TEL_POLL + head, "phase {p}");
+    }
 }
 
 #[test]

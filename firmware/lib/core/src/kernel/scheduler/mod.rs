@@ -250,10 +250,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
         self.fast
             .measure_voltage(&meas, &self.cfg, &self.faults, shared);
-        // No burst starts on the take's phase, nor while a take is pending.
-        // Asked only at a start: a count read every tick costs every tick.
-        self.tel
-            .on_publish(|| phase == phase::SPARE_A || shared.config_seq() != self.config_seq);
+        // A burst starts on CONTROL or SPEED alone, never while a take is
+        // pending. Asked only at a start: a count read every tick costs
+        // every tick.
+        self.tel.on_publish(|| {
+            !table::burst_starts(phase as usize) || shared.config_seq() != self.config_seq
+        });
         // the experiment's dead-man counts bus silence by the medium period,
         // and a burst is the host silent by design: the TEL stream is in
         // hand here; the production half counts at CONTROL (`Medium::step`)
@@ -268,7 +270,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // TRAJECTORY, the longest phase, straight from here: one call, not
         // the step's frame and dispatch around a second
         #[cfg(not(feature = "experiment"))]
-        let staged = if phase == phase::TRAJECTORY {
+        let held = if phase == phase::TRAJECTORY {
             self.medium
                 .trajectory(&self.cfg, &self.faults, &mut self.cmd, shared.frame().pos())
         } else {
@@ -283,7 +285,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             )
         };
         #[cfg(feature = "experiment")]
-        let staged = self.medium.step(
+        let held = self.medium.step(
             phase,
             &self.cfg,
             shared,
@@ -291,7 +293,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             &mut self.fast,
             &mut self.cmd,
         );
-        if staged {
+        if held {
             self.tel.hold();
         }
         self.tel.on_tick_end();

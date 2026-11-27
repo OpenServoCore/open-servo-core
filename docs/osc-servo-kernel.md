@@ -167,10 +167,10 @@ The position reading's current terms (`estimator/pot_current.rs`): where the out
 3. FAST drive on the command the last medium step left: current loop, open loop, brake or off; motor write; the late-write check.
 4. Wait for the crest scan's DMA TC (polled, at most 800 HCLK, a sensor fault past it); publish its taps under their terminals' names; swap the taps for a noted drive flip inside the idle gap, on the first tick whose window gave no reading. After a live-drive flip that is the void window after the reversal (below), so every frame that is read was sampled in its drive's order. A swap that misses the converter's idle gap on that tick runs on the next, so one read frame can be sampled in the old order; it still reads each tap under its own terminal's name.
 5. FAST measure, voltage side: the terminal differential, the back-EMF sample and the tick block, on the measured command.
-6. TEL row, while a burst streams ([sec 5](#5-cut-through-tel)); the experiment image's dead-man.
+6. TEL row, while a burst streams, a burst's first on CONTROL or SPEED only ([sec 5](#5-cut-through-tel)); the experiment image's dead-man.
 7. The configuration take on SPARE_A when due ([sec 6](#6-the-configuration-take)).
 8. The medium phase.
-9. At most one TEL lane step.
+9. At most one TEL lane step, none on an OBSERVER or TRAJECTORY tick or a SLOW stage's: the medium step's return holds the lane.
 10. Shunt-burst handshake poll; the late-write count; tick-load accounting.
 
 > **The motor write comes first.** The compares are preloaded and load at the crest and the trough. A write before the trough loads there, between pulses, so every drive pulse is built from one command and the crest's injected group samples the shunt in the middle of that pulse.
@@ -215,8 +215,10 @@ The base duty stays on the stored value on purpose: it is a ceiling, and a windi
 | --- | --- | --- |
 | Configuration take | first SPARE_A after a commit | owns the phase; holds no TX lane |
 | SLOW block | SLOW phase, every `DECIM_SLOW` periods | the due stage, then the finish on the next period's SLOW phase (`the_slow_stages_take_one_period_each`); each holds the TX lane (`slow_stage_ticks_hold_the_tel_lane`) |
+| Lane hold | OBSERVER and TRAJECTORY (`LANE_HELD`), every period | the two heaviest plain ticks hold the TX lane, in both images (`observer_and_trajectory_ticks_hold_the_tel_lane`) |
+| TEL burst start | CONTROL or SPEED (`BURST_START`) | the arm's pickup rides a tick with room for it; never on SPARE_A or while a take is pending (`a_burst_starts_only_on_control_or_speed`) |
 | Tick-load close | PUBLISH (`HEALTH_CLOSE_PHASE`) | never on a stage or take phase (`health_close_lands_only_on_publish_while_streaming`) |
-| TEL lane step | end of tick | at most one per tick; none on a head, bank or stage tick |
+| TEL lane step | end of tick | at most one per tick; none on a head, bank or held tick |
 
 Arbitration is the first `match` in `on_tick`: boot, then the take.
 
@@ -312,7 +314,7 @@ No reference is formed into a region another context writes. Cross-context acces
 | --- | --- |
 | `KERNEL`, `KERNEL_MEAN` | plain tick body by regime (Open, Closed, OpenLoop) and phase, maximum and mean, every phase's stages and the tick block's work in it |
 | `REFRESH`, `SLOW_DUE`, `SLOW_FINISH`, `HEALTH_CLOSE`, `CATCH_UP` | events on top of a tick |
-| `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps |
+| `TEL_ROW`, `TEL_BANK`, `TEL_HEAD`, `TEL_PICKUP`, `TEL_POLL`, `TEL_FEED`, `TEL_ARM`, `TEL_PATCH`, `TEL_LANE_MEAN` | TEL row and lane steps; `TEL_PICKUP`, the arm's pickup on a burst's first row, only on the start phases, and no lane step on a held one (`budget::tel_lane`) |
 | `LAYOUT` | layout allowance on every kernel row ([sec 4.2](#42-the-layout-allowance)) |
 | `STREAM_ENTRY`, `SCAN_WAIT` | estimated terms on `FRAME_DONE` in the scan deadline: the entry on the injected group with the scan poll and the late-write check, and by regime the wait for the crest scan; the measured `KERNEL` rows hold both |
 | `ENTRY_EXIT`, `ENTRY` | interrupt entry and exit; `ENTRY` from the injected group's end |
@@ -402,7 +404,8 @@ Mechanism:
 Lane rules:
 
 - At most one step per tick, at the end of the tick: frame start, CRC feed, DMA arm or CRC patch. Each has its own budget row.
-- No step on a tick that lands a head, banks a frame or runs a slow-rate stage (`tel_lane_never_steps_on_a_stage_tick`).
+- No step on a tick that lands a head, banks a frame, runs a slow-rate stage or runs phase OBSERVER or TRAJECTORY (`tel_lane_never_steps_on_a_stage_tick`, `tel_lane_never_steps_on_observer_or_trajectory`). Those two phases are the heaviest plain ticks; they carry their row and a head or a bank. The hold is the medium step's return, so the steady tick tests no phase for it. A frame whose start, arm or patch meets a held tick leaves up to two ticks (0.1 ms) later than its rows alone would let it; no row waits (`tel_kernel_lane_never_underruns_at_budget`).
+- A burst starts on CONTROL or SPEED only, the two plain ticks with room for the arm's pickup beside a lane step: its first row lands up to nine ticks (0.45 ms) after the lane is lent (`a_burst_starts_only_on_control_or_speed`), every row after it on its own tick.
 - The producer never blocks: a row that finds both images waiting for the wire is dropped and counted in `tel_drop_count`.
 
 ---
@@ -442,10 +445,10 @@ A write takes effect within one medium period, or one more when the take's tick 
 
 > **A take and a TEL row never share a tick** (`the_take_tick_fits_at_budget_without_tel`).
 
-- A burst's first row waits while the count differs from the last taken, and never starts on SPARE_A; the check runs only at a burst start.
+- A burst's first row waits while the count differs from the last taken, and starts only on CONTROL or SPEED, never on SPARE_A; the check runs only at a burst start.
 - The host is silent through a burst, so no take arrives mid-burst.
 - A burst armed in the same COMMIT as a configuration write starts up to a medium period and a tick late (`a_burst_never_streams_through_a_config_take`).
-- A take does not hold the TX lane; a slow-rate stage does.
+- A take does not hold the TX lane; a slow-rate stage, OBSERVER and TRAJECTORY do.
 
 ---
 

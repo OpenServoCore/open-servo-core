@@ -44,12 +44,13 @@ pub trait ControlIo {
 /// The kernel's per-fast-tick stream hook; core never names the transport.
 pub trait TelStream {
     /// The tick block is published: the row's first chunk may be taken.
-    /// `hold_start`, asked only when a burst would start: true on the
-    /// kernel's configuration take phase and while a take is pending, when
-    /// the burst waits a tick, so no tick carries both a take and a row.
+    /// `hold_start`, asked only when a burst would start: true on every
+    /// phase but CONTROL and SPEED and while a take is pending, when the
+    /// burst waits a tick, so no tick carries both a take and a row and the
+    /// arm's pickup lands only on a light tick.
     fn on_publish(&mut self, hold_start: impl FnOnce() -> bool);
-    /// The tick runs a SLOW stage: the TX lane takes no step
-    /// on it. Any time before [`Self::on_tick_end`].
+    /// The tick runs a SLOW stage, or phase OBSERVER or TRAJECTORY: the
+    /// TX lane takes no step on it. Any time before [`Self::on_tick_end`].
     fn hold(&mut self) {}
     /// The tick's last work, after the drive is written: the row's second
     /// chunk, then the TX lane.

@@ -203,7 +203,7 @@ impl<P: Providers> TelStream for TelLane<P> {
         bench::tel_hook(&self.clock, top);
     }
 
-    /// A stage tick's step waits a tick, as on a head's or a bank's. A hold
+    /// A held tick's step waits a tick, as on a head's or a bank's. A hold
     /// while the bus owns the lane outlives it harmlessly: a burst's first
     /// tick lands a head.
     #[inline(always)]

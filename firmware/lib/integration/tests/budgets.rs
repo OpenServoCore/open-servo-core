@@ -13,8 +13,8 @@ use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
     self, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, LAYOUT, PHASES,
-    Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_POLL, TEL_ROW, TICK_PERIOD,
-    WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    Regime, TEL_ARM, TEL_BANK, TEL_FEED, TEL_HEAD, TEL_PATCH, TEL_PICKUP, TEL_POLL, TEL_ROW,
+    TICK_PERIOD, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
 use osc_servo_core::kernel::{self, DECIM_SLOW, TICK_HZ, phase};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
@@ -152,8 +152,13 @@ fn the_des_charges_the_budget_table() {
     }
     let tel = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving).tel;
     assert_eq!(
-        (tel.row, tel.bank, tel.head),
-        (TEL_ROW as u64, TEL_BANK as u64, TEL_HEAD as u64)
+        (tel.row, tel.bank, tel.head, tel.pickup),
+        (
+            TEL_ROW as u64,
+            TEL_BANK as u64,
+            TEL_HEAD as u64,
+            TEL_PICKUP as u64
+        )
     );
     assert_eq!(
         [tel.poll, tel.feed, tel.arm, tel.patch],

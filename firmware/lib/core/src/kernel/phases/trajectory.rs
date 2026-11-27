@@ -17,8 +17,8 @@ impl Medium {
     /// `Kernel::on_tick`: one call where the step's frame and dispatch
     /// would wrap a second, and `Medium::step` keeps its cold arms in
     /// branch reach (v006-performance sec 3). `raw_pos` is the tick's pot
-    /// sample, the thrown hold's rest. Returns the step's "a SLOW stage
-    /// ran": never.
+    /// sample, the thrown hold's rest. Returns the step's "the TX lane
+    /// holds": always.
     #[inline(never)]
     #[rustc_align(4)]
     pub(in crate::kernel) fn trajectory(
@@ -29,7 +29,7 @@ impl Medium {
         raw_pos: u16,
     ) -> bool {
         if self.life == Life::Off {
-            return false;
+            return true;
         }
         let (lp, soft) = (&cfg.loop_position, &cfg.pos_soft);
         let life = &self.ctl.life;
@@ -90,7 +90,7 @@ impl Medium {
             Mode::Current | Mode::OpenLoop => self.life = Life::Run,
         }
         cmd.drive = self.drive(cfg, faults);
-        false
+        true
     }
 }
 
