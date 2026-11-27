@@ -32,8 +32,9 @@ fn parsed<T: DeserializeOwned>(p: &Path, bytes: &[u8]) -> Result<T> {
 
 /// The inputs folder `out` from the run folder `run`: `measured.json`, the
 /// table `pos_lut.json` (the table step's, else straight), the table
-/// step's slots `wide-codes.json` where it ran, the profile (as
-/// `nameplate.json`), the policy and the thermal values as given,
+/// step's slots `wide-codes.json` where it ran, the profile's
+/// cross-checks `cross-checks.json`, the profile (as `nameplate.json`),
+/// the policy and the thermal values as given,
 /// `resolved.json`, the policy's values as this run resolved them, and
 /// step 0's `board.json`, which is there already when `out` is the run's
 /// own `inputs/`. The lines it prints.
@@ -87,12 +88,17 @@ pub fn gather(
     }
     sink.write("measured.json", gather::render(&g.measured).as_bytes())?;
     sink.write("pos_lut.json", gather::render(&g.table).as_bytes())?;
+    sink.write(
+        "cross-checks.json",
+        gather::render(&g.cross_checks).as_bytes(),
+    )?;
     sink.write("nameplate.json", &np_bytes)?;
     sink.write("policy.json", &policy_bytes)?;
     sink.write("resolved.json", &resolved)?;
     let mut wrote = vec![
         "measured.json",
         "pos_lut.json",
+        "cross-checks.json",
         "nameplate.json",
         "policy.json",
         "resolved.json",
@@ -176,9 +182,14 @@ mod tests {
         .expect("gathers");
         let text = lines.join("\n");
         assert!(text.contains("stops 107 to 3729 counts"), "{text}");
+        assert!(
+            text.contains("cross-check stall current at 4.8 V, V / R"),
+            "{text}"
+        );
         for f in [
             "measured.json",
             "pos_lut.json",
+            "cross-checks.json",
             "nameplate.json",
             "policy.json",
             "resolved.json",

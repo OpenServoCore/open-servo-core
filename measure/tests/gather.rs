@@ -656,28 +656,150 @@ fn a_table_step_on_other_stops_or_refused_is_refused() {
     assert!(e.0.contains("run the table step again"), "{e}");
 }
 
-/// A stall current the profile states is reported beside the stated volts
-/// over the seated R, which the current limit derates; the record states
-/// none, so its gather says nothing of it.
+/// The profile's cross-checks equal a hand computation on the bench
+/// servo's results: the travel the ripple scale measured, the free speed
+/// V / Ke through the gear ratio at each no-load row, V / seated R at each
+/// stall row, each beside the profile's value with the difference in %,
+/// the run voltage's row marked, and nothing judged.
 #[test]
-fn a_stated_stall_current_is_reported_beside_v_over_r() {
-    let said = |np: &Nameplate| -> Vec<String> {
-        gather::gather(&run(), np)
-            .expect("gathers")
-            .lines
-            .into_iter()
-            .filter(|l| l.starts_with("stall current"))
-            .collect()
-    };
-    assert!(said(&nameplate()).is_empty());
+fn the_cross_checks_equal_a_hand_computation() {
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
+    let num = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("{v}"));
+    let mut r = run();
+    r.table = Some(result("table"));
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    let c = &g.cross_checks;
+    assert_eq!(
+        c.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["travel", "free_speed", "stall_current"]
+    );
+    assert!(!gather::render(c).contains("verdict"), "{c}");
+
+    let travel = (3729.0 - 107.0) / 19.435025359344024;
+    let stated = 184.3328808989794;
+    let t = &c["travel"];
+    assert!(close(num(&t["run"]["value"]), travel), "{t}");
+    assert_eq!(t["run"]["unit"], "deg");
+    assert_eq!(
+        (t["run"]["sd"].clone(), t["run"]["n"].clone()),
+        (Value::Null, 1.into())
+    );
+    assert_eq!(t["run"]["source"]["file"], "results/table.json");
+    assert_eq!(num(&t["stated"]["value"]), stated);
+    assert!(close(
+        num(&t["difference_pct"]),
+        100.0 * (travel - stated) / stated
+    ));
+
+    let (ke, ke_sd, ke_lo, ke_hi) = (
+        0.0011590992521478365,
+        7.2624436404701304e-06,
+        0.0011518368085073664,
+        0.0011663616957883066,
+    );
+    let gear = 308.0533;
+    let free = c["free_speed"].as_array().expect("rows");
+    assert_eq!(free.len(), 2);
+    for (row, (v, deg_s, binds)) in free.iter().zip([(4.8, 600.0, true), (6.0, 750.0, false)]) {
+        let k = v * 180.0 / (std::f64::consts::PI * gear);
+        let w = k / ke;
+        let q = &row["run"];
+        assert_eq!(
+            (num(&row["at_v"]), row["binds"].as_bool()),
+            (v, Some(binds))
+        );
+        assert!(close(num(&q["value"]), w), "{row}");
+        assert!(close(num(&q["sd"]), w * ke_sd / ke), "{row}");
+        assert!(close(num(&q["lo"]), k / ke_hi) && close(num(&q["hi"]), k / ke_lo));
+        assert_eq!(
+            (q["n"].as_u64(), q["unit"].as_str()),
+            (Some(12), Some("deg/s"))
+        );
+        assert_eq!(q["source"]["file"], "results/spins.json");
+        assert!(close(num(&row["stated"]["value"]), deg_s));
+        assert!(close(
+            num(&row["difference_pct"]),
+            100.0 * (w - deg_s) / deg_s
+        ));
+    }
+
+    let (r_ohm, r_sd) = (4.187787930981532, 0.2701972483971926);
+    let half = (4.224129621497565 - 4.038807310729814) / 2.0;
+    let stall = c["stall_current"].as_array().expect("rows");
+    assert_eq!(stall.len(), 2);
+    for (row, (v, binds)) in stall.iter().zip([(4.8, true), (6.0, false)]) {
+        let a = v / r_ohm;
+        let q = &row["run"];
+        assert_eq!(
+            (num(&row["at_v"]), row["binds"].as_bool()),
+            (v, Some(binds))
+        );
+        assert!(close(num(&q["value"]), a), "{row}");
+        assert!(close(num(&q["sd"]), a * r_sd / r_ohm), "{row}");
+        assert!(close(num(&q["lo"]), v / (r_ohm + half)));
+        assert!(close(num(&q["hi"]), v / (r_ohm - half)));
+        assert_eq!((q["n"].as_u64(), q["unit"].as_str()), (Some(20), Some("A")));
+        assert_eq!(q["source"]["file"], "results/stops.json");
+        assert!(
+            row["stated"].is_null() && row["difference_pct"].is_null(),
+            "{row}"
+        );
+    }
+
+    let said: Vec<&String> = g
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("cross-check "))
+        .collect();
+    assert_eq!(said.len(), 5, "{said:?}");
+    assert_eq!(
+        said[0],
+        &format!(
+            "cross-check travel: run 186.3646 deg n 1; profile 184.3329 deg; {:+.2} %",
+            100.0 * (travel - stated) / stated
+        )
+    );
+    assert!(said[1].starts_with(
+        "cross-check free speed at 4.8 V, V / Ke (the row the run voltage binds): run 770.2246 deg/s +/- 4.8259, n 12; profile 600.0000 deg/s; +28.37 %"
+    ));
+    assert_eq!(
+        said[3],
+        "cross-check stall current at 4.8 V, V / R (the row the run voltage binds): run 1.1462 A +/- 0.0740, n 20; profile states none"
+    );
+}
+
+/// A stall current the profile states is the cross-check's stated value
+/// beside the stated volts over the seated R; without the table or the
+/// spins step the run's side is none, its line saying why.
+#[test]
+fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
     let mut np = nameplate();
     for s in &mut np.stall {
         s.current_a = Some(0.9);
     }
-    assert_eq!(
-        said(&np),
-        [
-            "stall current at 4.8 V: V / R = 1.146 A over the seated R 4.1878 ohm, which the current limit derates; the profile states 0.9 A"
-        ]
-    );
+    let mut r = run();
+    r.spins = None;
+    let g = gather::gather(&r, &np).expect("gathers");
+    let c = &g.cross_checks;
+    let a = 4.8 / 4.187787930981532;
+    let row = &c["stall_current"][0];
+    assert_eq!(row["stated"]["value"], 0.9);
+    assert!((row["difference_pct"].as_f64().unwrap() - 100.0 * (a - 0.9) / 0.9).abs() < 1e-9);
+    assert!(c["travel"]["run"].is_null() && c["travel"]["difference_pct"].is_null());
+    assert_eq!(c["travel"]["stated"]["value"], np.travel_deg.unwrap());
+    for row in c["free_speed"].as_array().unwrap() {
+        assert!(
+            row["run"].is_null() && row["difference_pct"].is_null(),
+            "{row}"
+        );
+        assert!(row["stated"]["value"].is_number());
+    }
+    let text = g.lines.join("\n");
+    for want in [
+        "cross-check travel: run none, the run holds no results/table.json; profile 184.3329 deg",
+        "cross-check free speed at 6 V, V / Ke: run none, the run holds no results/spins.json; profile 750.0000 deg/s",
+        "cross-check stall current at 4.8 V, V / R (the row the run voltage binds): run 1.1462 A +/- 0.0740, n 20; profile 0.9000 A; +27.35 %",
+    ] {
+        assert!(text.contains(want), "{want}\n{text}");
+    }
 }

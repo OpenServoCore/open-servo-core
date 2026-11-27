@@ -4,8 +4,9 @@
 //! a line for each value and for each input the run does not give. The
 //! table and the slots are the table step's when the run has it accepted,
 //! built and written together (ident plan sec 2.4); else a straight table
-//! and the slots the servo holds. Pure: the results come in as bytes, the
-//! files go out as JSON.
+//! and the slots the servo holds. Beside them, the profile's cross-checks
+//! (`cross-checks.json`): stated values next to the run's, never judged.
+//! Pure: the results come in as bytes, the files go out as JSON.
 
 use osc_client::pos_lut::{PAGE_POINTS, PAGES};
 use osc_servo_core::adc::ADC_WIDE_SLOTS;
@@ -68,12 +69,14 @@ pub struct RunResults {
 
 /// What the gather gives: the rules' `measured.json`, the table file
 /// (`pos_lut.json`), the slots file (`wide-codes.json`) where the table
-/// step gives one, and its lines.
+/// step gives one, the profile's cross-checks (`cross-checks.json`), and
+/// its lines.
 #[derive(Clone, Debug)]
 pub struct Gathered {
     pub measured: Value,
     pub table: Value,
     pub wide_codes: Option<Value>,
+    pub cross_checks: Value,
     pub lines: Vec<String>,
 }
 
@@ -528,15 +531,6 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             )),
         ),
     );
-    if let Some(s) = nameplate.stall_row()
-        && let Some(a) = s.current_a
-    {
-        o.lines.push(format!(
-            "stall current at {} V: V / R = {:.3} A over the seated R {r:.4} ohm, which the current limit derates; the profile states {a} A",
-            s.at_v,
-            s.at_v / r
-        ));
-    }
     let ntc_key = "seated.ntc_c_by_seat";
     let mut seats: Vec<f64> = at(&stops.r.doc, ntc_key)
         .and_then(Value::as_array)
@@ -648,6 +642,27 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         "shelf: none, a margin record is no step of a run".into(),
         "speed_kp_verified: not gathered, `osc-ident tune` settles it".into(),
     ]);
+    let measured_travel = match &measured_table {
+        Some(m) if m.scale_source == table::SCALE_RIPPLE => Ok(quantity(
+            (high - low) / m.cpd,
+            None,
+            Spread {
+                sd: None,
+                n: Some(1),
+            },
+            "deg",
+            m.from.source(&format!(
+                "the stops' span {low} to {high} counts over scale.counts_per_deg ({})",
+                m.scale_source
+            )),
+        )),
+        Some(m) => Err(format!(
+            "the table step's scale is {}, not measured",
+            m.scale_source
+        )),
+        None => Err(format!("the run holds no {TABLE_RESULT}")),
+    };
+    let cross_checks = cross_checks(nameplate, travel, measured_travel, &o.m, &mut o.lines);
     o.lines.push(match &measured_table {
         Some(m) => format!(
             "wide-code slots {:?}: from {} slots, written with its table",
@@ -707,7 +722,188 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         measured: Value::Object(o.m),
         table,
         wide_codes,
+        cross_checks,
         lines: o.lines,
+    })
+}
+
+/// `k / x` for the quantity `x`: its sd to first order, its band's ends
+/// swapped, its source's key `key`.
+fn over(k: f64, x: &Value, unit: &str, key: String) -> Option<Value> {
+    let f = |name: &str| x.get(name).and_then(Value::as_f64);
+    let v = f("value").filter(|v| *v > 0.0)?;
+    let value = k / v;
+    let band = f("lo")
+        .zip(f("hi"))
+        .filter(|(lo, _)| *lo > 0.0)
+        .map(|(lo, hi)| (k / hi, k / lo));
+    let spread = Spread {
+        sd: f("sd").map(|sd| value * sd / v),
+        n: x.get("n").and_then(Value::as_u64),
+    };
+    let mut source = x["source"].clone();
+    source["key"] = key.into();
+    Some(quantity(value, band, spread, unit, source))
+}
+
+/// One cross-check: the stated row's volts and whether the run voltage
+/// binds it, where it is a row's; the profile's value (none where it
+/// states none), the run's (none where the run does not give it), and the
+/// run's over the profile's as a difference in %; its line.
+fn check(
+    what: &str,
+    row: Option<(f64, bool)>,
+    stated: Option<(f64, &str, String)>,
+    run: Result<Value, String>,
+    lines: &mut Vec<String>,
+) -> Value {
+    let run_v = run
+        .as_ref()
+        .ok()
+        .and_then(|q| q.get("value").and_then(Value::as_f64));
+    let diff = match (run_v, &stated) {
+        (Some(r), Some((s, _, _))) if *s != 0.0 => Some(100.0 * (r - s) / s),
+        _ => None,
+    };
+    let run_said = match &run {
+        Ok(q) => format!(
+            "run {} {} {}",
+            short(run_v.unwrap_or(f64::NAN)),
+            q["unit"].as_str().unwrap_or(""),
+            spread_said(q)
+        ),
+        Err(why) => format!("run none, {why}"),
+    };
+    let stated_said = match &stated {
+        Some((v, unit, _)) => format!("profile {} {unit}", short(*v)),
+        None => "profile states none".into(),
+    };
+    lines.push(match diff {
+        Some(d) => format!("cross-check {what}: {run_said}; {stated_said}; {d:+.2} %"),
+        None => format!("cross-check {what}: {run_said}; {stated_said}"),
+    });
+    let mut c = Map::new();
+    if let Some((at_v, binds)) = row {
+        c.insert("at_v".into(), at_v.into());
+        c.insert("binds".into(), binds.into());
+    }
+    c.insert(
+        "stated".into(),
+        stated.map_or(
+            Value::Null,
+            |(v, unit, from)| json!({"value": v, "unit": unit, "from": from}),
+        ),
+    );
+    c.insert("run".into(), run.unwrap_or(Value::Null));
+    c.insert("difference_pct".into(), diff.into());
+    Value::Object(c)
+}
+
+/// The profile's cross-checks (profile-policy sec 3): the travel the
+/// ripple measured against `travel_deg`; at each stated no-load voltage
+/// the free speed V / Ke through the gear ratio against the row; at each
+/// stated stall voltage V / seated R against the stated current. Each is
+/// reported, none judged, and the rules read none of them.
+fn cross_checks(
+    np: &Nameplate,
+    travel_deg: f64,
+    travel: Result<Value, String>,
+    measured: &Map<String, Value>,
+    lines: &mut Vec<String>,
+) -> Value {
+    let travel = check(
+        "travel",
+        None,
+        Some((travel_deg, "deg", "the nameplate's travel_deg".into())),
+        travel,
+        lines,
+    );
+    let said = |binds: bool| {
+        if binds {
+            " (the row the run voltage binds)"
+        } else {
+            ""
+        }
+    };
+    let ke = measured.get("ke_v_s_per_rad");
+    let gear = np.gear_ratio.filter(|g| g.is_finite() && *g > 0.0);
+    let free_speed: Vec<Value> = np
+        .no_load
+        .iter()
+        .map(|row| {
+            let run = match (ke, gear) {
+                (None, _) => Err(format!("the run holds no {SPINS_RESULT}")),
+                (_, None) => Err("the nameplate states no gear_ratio".into()),
+                (Some(ke), Some(g)) => over(
+                    row.at_v * 180.0 / (std::f64::consts::PI * g),
+                    ke,
+                    "deg/s",
+                    format!(
+                        "{} V over estimates.ke_v_s_per_rad, motor rad/s over the nameplate's gear_ratio {g} in output deg/s; sd and band through Ke's",
+                        row.at_v
+                    ),
+                )
+                .ok_or_else(|| "Ke is not over 0".to_string()),
+            };
+            let binds = np.speed_row().is_some_and(|r| r.at_v == row.at_v);
+            let stated = (row.seconds > 0.0).then(|| {
+                (
+                    row.per_deg / row.seconds,
+                    "deg/s",
+                    format!(
+                        "the nameplate's no_load at {} V: {} deg in {} s",
+                        row.at_v, row.per_deg, row.seconds
+                    ),
+                )
+            });
+            check(
+                &format!("free speed at {} V, V / Ke{}", row.at_v, said(binds)),
+                Some((row.at_v, binds)),
+                stated,
+                run,
+                lines,
+            )
+        })
+        .collect();
+    let r = measured.get("r_ohm");
+    let stall_current: Vec<Value> = np
+        .stall
+        .iter()
+        .map(|row| {
+            let run = r
+                .and_then(|r| {
+                    over(
+                        row.at_v,
+                        r,
+                        "A",
+                        format!(
+                            "{} V over estimates.r_seated_ohm, the seated R; sd and band through R's",
+                            row.at_v
+                        ),
+                    )
+                })
+                .ok_or_else(|| "no seated R over 0".to_string());
+            let binds = np.stall_row().is_some_and(|r| r.at_v == row.at_v);
+            let stated = row.current_a.map(|a| {
+                (
+                    a,
+                    "A",
+                    format!("the nameplate's stall current at {} V", row.at_v),
+                )
+            });
+            check(
+                &format!("stall current at {} V, V / R{}", row.at_v, said(binds)),
+                Some((row.at_v, binds)),
+                stated,
+                run,
+                lines,
+            )
+        })
+        .collect();
+    json!({
+        "travel": travel,
+        "free_speed": free_speed,
+        "stall_current": stall_current,
     })
 }
 

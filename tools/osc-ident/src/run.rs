@@ -151,6 +151,7 @@ async fn gather_and_tune<P: Pipe>(
     let gather_files = [
         "measured.json",
         "pos_lut.json",
+        "cross-checks.json",
         "nameplate.json",
         "policy.json",
         "resolved.json",
