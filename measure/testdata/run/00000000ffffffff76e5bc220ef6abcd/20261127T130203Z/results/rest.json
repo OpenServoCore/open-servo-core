@@ -1,0 +1,447 @@
+{
+  "step": "rest",
+  "method": "rest-noise",
+  "revision": 2,
+  "image": "production",
+  "capability_flags": 1,
+  "estimates": {
+    "current_zero_asleep_counts": {
+      "value": 1206.3857,
+      "sd": 1.0417943703053965,
+      "n": 20000,
+      "lo": 1205.3439056296947,
+      "hi": 1207.4274943703053,
+      "unit": "counts",
+      "source": "rest row current_raw, torque off"
+    },
+    "current_zero_awake_counts": {
+      "value": 1211.60555,
+      "sd": 1.0690926982727857,
+      "n": 20000,
+      "lo": 1210.5364573017273,
+      "hi": 1212.6746426982727,
+      "unit": "counts",
+      "source": "raw row current_raw, torque on at zero duty"
+    },
+    "current_zero_sd_counts": {
+      "value": 1.062289824153779,
+      "sd": null,
+      "n": 20000,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "the larger of the two rows, the VDD frame ripple out"
+    },
+    "tap_a_counts": {
+      "value": 771.63665,
+      "sd": 0.616138602507491,
+      "n": 20000,
+      "lo": 771.0205113974926,
+      "hi": 772.2527886025075,
+      "unit": "counts",
+      "source": "raw row vmotor_a, torque on"
+    },
+    "tap_b_counts": {
+      "value": 772.82815,
+      "sd": 0.6622820981273921,
+      "n": 20000,
+      "lo": 772.1658679018726,
+      "hi": 773.4904320981275,
+      "unit": "counts",
+      "source": "raw row vmotor_b, torque on"
+    },
+    "pot_rest_sd_counts": {
+      "value": 0.932867023627404,
+      "sd": null,
+      "n": 20000,
+      "lo": null,
+      "hi": null,
+      "unit": "counts",
+      "source": "rest row pos, torque off, wide codes at their band's middle by the servo's stored slots, the VDD frame ripple out"
+    },
+    "vdd_frame_ripple_mv_pp": null,
+    "vdd_v": {
+      "value": 3.2877591973244145,
+      "sd": null,
+      "n": 1,
+      "lo": null,
+      "hi": null,
+      "unit": "V",
+      "source": "vref_raw, the 1.2 V reference read once at boot"
+    },
+    "rail_v": {
+      "value": 4.724642207357859,
+      "sd": null,
+      "n": 20000,
+      "lo": null,
+      "hi": null,
+      "unit": "V",
+      "source": "rest row vbus_raw through the rail divider, the measured supply"
+    },
+    "supply_v": {
+      "value": 4.974642207357859,
+      "sd": null,
+      "n": 20000,
+      "lo": null,
+      "hi": null,
+      "unit": "V",
+      "source": "the rail and the board's input drop"
+    },
+    "board_ntc_c": {
+      "value": 21.325090657572275,
+      "sd": null,
+      "n": 20000,
+      "lo": null,
+      "hi": null,
+      "unit": "C",
+      "source": "rest row ntc_raw through the part's nominal beta"
+    },
+    "stall_room_a": {
+      "value": 2.6012802185534274,
+      "sd": null,
+      "n": 20000,
+      "lo": null,
+      "hi": null,
+      "unit": "A",
+      "source": "the awake zero to the converter's top, nominal counts per A"
+    }
+  },
+  "counts_per_a_nominal": 1108.4520727272727,
+  "rail_counts_per_v_nominal": 248.24242424242425,
+  "ntc_parts": {
+    "ntc_pullup_ohm": 10000.0,
+    "ntc_r25_ohm": 10000.0,
+    "ntc_beta": 3950.0
+  },
+  "ntc_words": {
+    "ntc_raw_ref": 2048,
+    "ntc_t_ref_cc": 2430,
+    "ntc_k1_q88": 474,
+    "ntc_k2_q24": 19934,
+    "servo": {
+      "ntc_raw_ref": 0,
+      "ntc_t_ref_cc": 0,
+      "ntc_k1_q88": 0,
+      "ntc_k2_q24": 0
+    },
+    "equal": false,
+    "form_error_c": {
+      "under": -1.0196808462391687,
+      "over": 5.498122490754298,
+      "range_c": [
+        15.0,
+        90.0
+      ]
+    },
+    "design": {
+      "pin_c": 90.0,
+      "floor_c": -1.0,
+      "low_range_c": [
+        15.0,
+        50.0
+      ]
+    }
+  },
+  "channels": {
+    "rest": {
+      "pos": {
+        "n": 20000,
+        "mean": 1902.1364,
+        "min": 1899.0,
+        "max": 1907.0,
+        "sd_raw": 1.2295507472244227,
+        "sd": 0.932867023627404,
+        "fold_16_raw": 1.7323999999998705,
+        "fold_16": 0.18609592693906052,
+        "pattern_gain": 2.0216871574445903
+      },
+      "vbus_raw": {
+        "n": 20000,
+        "mean": 1177.22335,
+        "min": 1172.0,
+        "max": 1182.0,
+        "sd_raw": 1.3526510183707727,
+        "sd": 1.2933285893384034,
+        "fold_16_raw": 0.7862500000001091,
+        "fold_16": 1.07775122160092e-10,
+        "pattern_gain": 1.0
+      },
+      "ntc_raw": {
+        "n": 20000,
+        "mean": 2216.9167,
+        "min": 2214.0,
+        "max": 2221.0,
+        "sd_raw": 1.1138047898980799,
+        "sd": 0.8347915415602463,
+        "fold_16_raw": 1.5032999999998538,
+        "fold_16": 0.15155305932694318,
+        "pattern_gain": 1.8611040054471166
+      },
+      "current_raw": {
+        "n": 20000,
+        "mean": 1206.3857,
+        "min": 1202.0,
+        "max": 1211.0,
+        "sd_raw": 1.0417943703053965,
+        "sd": 1.0379505275460696,
+        "fold_16_raw": 0.5326999999999771,
+        "fold_16": 0.46557271155938906,
+        "pattern_gain": 0.22567587314926527
+      },
+      "vmotor_a": {
+        "n": 20000,
+        "mean": 771.74785,
+        "min": 770.0,
+        "max": 774.0,
+        "sd_raw": 0.6815939975527223,
+        "sd": 0.6400024895030925,
+        "fold_16_raw": 0.4681500000000369,
+        "fold_16": 0.3388957050757426,
+        "pattern_gain": 0.5917647100983063
+      },
+      "vmotor_b": {
+        "n": 20000,
+        "mean": 772.9778,
+        "min": 771.0,
+        "max": 775.0,
+        "sd_raw": 0.667238458124269,
+        "sd": 0.6165935323653019,
+        "fold_16_raw": 0.5149999999999864,
+        "fold_16": 0.13493641159459457,
+        "pattern_gain": 0.6436049222462416
+      }
+    },
+    "raw": {
+      "pos": {
+        "n": 20000,
+        "mean": 1902.29855,
+        "min": 1900.0,
+        "max": 1906.0,
+        "sd_raw": 1.2268732198152725,
+        "sd": 0.9278252896121287,
+        "fold_16_raw": 1.667850000000044,
+        "fold_16": 0.18882291468344192,
+        "pattern_gain": 2.02610032829563
+      },
+      "current_raw": {
+        "n": 20000,
+        "mean": 1211.60555,
+        "min": 1208.0,
+        "max": 1216.0,
+        "sd_raw": 1.0690926982727857,
+        "sd": 1.062289824153779,
+        "fold_16_raw": 0.676050000000032,
+        "fold_16": 0.5856458885928078,
+        "pattern_gain": 0.30393044669326386
+      },
+      "vmotor_a": {
+        "n": 20000,
+        "mean": 771.63665,
+        "min": 767.0,
+        "max": 774.0,
+        "sd_raw": 0.616138602507491,
+        "sd": 0.5804308640695384,
+        "fold_16_raw": 0.31614999999999327,
+        "fold_16": 0.16568666578541524,
+        "pattern_gain": 0.5217319362680151
+      },
+      "vmotor_b": {
+        "n": 20000,
+        "mean": 772.82815,
+        "min": 771.0,
+        "max": 775.0,
+        "sd_raw": 0.6622820981273921,
+        "sd": 0.613934945537687,
+        "fold_16_raw": 0.47984999999994216,
+        "fold_16": 0.18093108476932684,
+        "pattern_gain": 0.6269674750293889
+      },
+      "duty_ticks": {
+        "n": 20000,
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "sd_raw": 0.0,
+        "sd": 0.0,
+        "fold_16_raw": 0.0,
+        "fold_16": 0.0,
+        "pattern_gain": 0.0
+      },
+      "current_trough": {
+        "n": 20000,
+        "mean": 1212.4329,
+        "min": 1208.0,
+        "max": 1217.0,
+        "sd_raw": 1.1076540931175225,
+        "sd": 1.1045470957349772,
+        "fold_16_raw": 0.4248999999999796,
+        "fold_16": 0.34739273648460767,
+        "pattern_gain": 0.20925702431461243
+      }
+    }
+  },
+  "pos_wide_slots": {
+    "slots": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "source": "the servo's stored adc_wide_mid_q4: the pot's codes read as the firmware reads them, a wide code at its band's middle"
+  },
+  "frame_ripple": {
+    "pattern_source": "vbus_raw",
+    "pattern_counts": [
+      -0.3177499999997053,
+      0.37585000000035507,
+      0.16705000000024484,
+      0.35425000000032014,
+      -0.24414999999976317,
+      -0.24014999999985776,
+      -0.6081499999997959,
+      -0.40574999999967076,
+      -0.3913499999996475,
+      0.29745000000025357,
+      0.4318500000001677,
+      0.7862500000003365,
+      0.35025000000018736,
+      0.15585000000032778,
+      -0.44974999999976717,
+      -0.2617499999996653
+    ],
+    "pattern_mean_counts": 1177.22335,
+    "pattern_passed_over": [],
+    "vdd_ripple_mv_pp": null,
+    "fold": 16,
+    "phase": "tick modulo 16 from a burst's first row",
+    "compensation": "each channel less its pattern_gain x pattern_counts[tick % 16]"
+  },
+  "verdict": "accepted",
+  "checks": [
+    {
+      "name": "current zero noise, torque off",
+      "value": "sd 1.04 counts (1.04 before the VDD frame ripple is taken out)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "current zero noise, torque on",
+      "value": "sd 1.06 counts (1.07 before the VDD frame ripple is taken out)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "tap a noise, torque off",
+      "value": "sd 0.64 counts (0.68 before the VDD frame ripple is taken out)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "tap a noise, torque on",
+      "value": "sd 0.58 counts (0.62 before the VDD frame ripple is taken out)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "tap b noise, torque on",
+      "value": "sd 0.61 counts (0.66 before the VDD frame ripple is taken out)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "pot noise at rest",
+      "value": "sd 0.93 counts (1.23 before the VDD frame ripple is taken out)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "pot off the converter rails",
+      "value": "1899 to 1907 counts",
+      "bound": "over 8 and under 4087: a pot lead off reads full scale",
+      "verdict": "pass"
+    },
+    {
+      "name": "taps agree, torque on",
+      "value": "a 771.6, b 772.8 counts, 1.2 apart",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "taps at the divider bias",
+      "value": "a 771.7 / 771.6, b 772.8 counts, at most 0.18% off vmotor_bias_nom_counts 773",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "chip supply",
+      "value": "3.288 V from vref_raw 1495, the boot reading, 0.37% off vdd_mv 3300",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "board NTC",
+      "value": "21.3 C from ntc_raw 2216.9 (the part's nominal beta), 2214 to 2221 counts",
+      "bound": "over 8 and under 4087: an NTC lead off or shorted reads a rail",
+      "verdict": "pass"
+    },
+    {
+      "name": "the zero leaves room for the stall current",
+      "value": "2.601 A over the zero 1211.6 before the chain saturates",
+      "bound": "the nameplate states no stall current",
+      "verdict": "not judged"
+    },
+    {
+      "name": "supply inside the nameplate's range",
+      "value": "4.97 V at the connector (rail 4.72 V and the 250 mV input drop)",
+      "bound": "4.8 to 6.6 V",
+      "verdict": "pass"
+    },
+    {
+      "name": "VDD frame ripple",
+      "value": "no mV figure: vref_raw is one boot reading, no row carries it",
+      "bound": "reported; every channel's share of it is taken out",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the frame's own pattern",
+      "value": "tick-modulo-16 means at most 0.59 counts off the mean (raw current_raw) once the VDD frame ripple from vbus_raw is out",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "nothing moved",
+      "value": "pot mean 1902.1 torque off, 1902.3 torque on, 0.2 apart",
+      "bound": "<= 5 counts",
+      "verdict": "pass"
+    },
+    {
+      "name": "NTC words",
+      "value": "designed 2048 2430 474 19934, the servo holds 0 0 0 0",
+      "bound": "the servo's equal the design (a difference is the rules' to install)",
+      "verdict": "warning"
+    }
+  ],
+  "position_before_counts": 1904.25,
+  "position_after_counts": 1907.625,
+  "exit": [
+    "goal_duty 0",
+    "torque_enable 0, read back 0",
+    "stall_permit 0",
+    "bus_deadman_ticks 0",
+    "tel_count 0",
+    "mode put back, read back"
+  ],
+  "torque_off": true
+}

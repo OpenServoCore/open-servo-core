@@ -1,0 +1,1487 @@
+{
+  "step": "spins",
+  "method": "free-spins-and-coasts",
+  "revision": 3,
+  "image": "production",
+  "capability_flags": 1,
+  "verdict": "accepted",
+  "estimates": {
+    "events_per_rev": {
+      "value": 6.0,
+      "sd": null,
+      "n": null,
+      "lo": null,
+      "hi": null,
+      "unit": "events/rev",
+      "source": "the nameplate's brushes times rotor_segments, 6"
+    },
+    "ke_v_s_per_rad": {
+      "value": 0.0011577222303715766,
+      "sd": 7.588351351950393e-6,
+      "n": 11,
+      "lo": 0.0011501338790196262,
+      "hi": 0.001165310581723527,
+      "unit": "V s/rad",
+      "source": "the mean over 11 coasts, the first 2 spins each way a level, through the ladder notebook's gate: each coast's EMF over its ripple speed in its whole cycles nearest 10 ms, the tap zero +0.00 counts, the mean of the up coasts' tail median (-1.00 over 7) and the down coasts' (+1.00 over 7)"
+    },
+    "j_kg_m2": {
+      "value": 6.584929325130751e-9,
+      "sd": 2.616756692927025e-10,
+      "n": 6,
+      "lo": 6.3232536558380484e-9,
+      "hi": 6.846604994423453e-9,
+      "unit": "kg m^2",
+      "source": "the mean over 6 run-ups from rest at 75% of the stated voltage, each against its own coast, through the order count, the window term taken off by the window step's g, 3.979 mS"
+    },
+    "friction_coulomb_ma": {
+      "value": 56.82751039196659,
+      "sd": null,
+      "n": 6,
+      "lo": null,
+      "hi": null,
+      "unit": "mA",
+      "source": "the line of the steady winding current on the steady ripple speed over 6 level and direction means, both directions pooled, the window term taken off by the window step's g, 3.979 mS; no in-drive current offset taken off"
+    },
+    "friction_viscous_ma_s_per_rad": {
+      "value": 0.04402320480678896,
+      "sd": null,
+      "n": 6,
+      "lo": null,
+      "hi": null,
+      "unit": "mA per motor rad/s",
+      "source": "the line of the steady winding current on the steady ripple speed over 6 level and direction means, both directions pooled, the window term taken off by the window step's g, 3.979 mS; no in-drive current offset taken off"
+    }
+  },
+  "fits": {
+    "events_per_rev": {
+      "value": 6,
+      "source": "the nameplate's brushes times rotor_segments, 6"
+    },
+    "ke": {
+      "v_s_per_rad": {
+        "mean": 0.0011577222303715766,
+        "sd": 7.588351351950393e-6,
+        "n": 11
+      },
+      "mv_per_rev_s": {
+        "mean": 7.2741833076658695,
+        "sd": 0.04767901772029106,
+        "n": 11
+      },
+      "by_dir": [
+        {
+          "dir": -1,
+          "v_s_per_rad": {
+            "mean": 0.0011573972302747315,
+            "sd": 9.073364231457525e-6,
+            "n": 6
+          }
+        },
+        {
+          "dir": 1,
+          "v_s_per_rad": {
+            "mean": 0.0011581122304877907,
+            "sd": 6.379788773777688e-6,
+            "n": 5
+          }
+        }
+      ],
+      "by_held_ticks": [
+        {
+          "held_ticks": 305,
+          "v_s_per_rad": {
+            "mean": 0.0011632297282310143,
+            "sd": 3.521570942219408e-7,
+            "n": 3
+          }
+        },
+        {
+          "held_ticks": 609,
+          "v_s_per_rad": {
+            "mean": 0.0011628585032398375,
+            "sd": 7.790718076238875e-7,
+            "n": 4
+          }
+        },
+        {
+          "held_ticks": 914,
+          "v_s_per_rad": {
+            "mean": 0.0011484553341087373,
+            "sd": 3.3534865048772563e-6,
+            "n": 4
+          }
+        }
+      ],
+      "coasts": 12,
+      "spins": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "levels_pooled": [
+        {
+          "level_share": 0.25,
+          "v_s_per_rad": 0.0011632297282310143
+        },
+        {
+          "level_share": 0.5,
+          "v_s_per_rad": 0.0011628585032398375
+        },
+        {
+          "level_share": 0.75,
+          "v_s_per_rad": 0.0011484553341087373
+        }
+      ],
+      "trend": 0.012761605275156988,
+      "top": {
+        "level_share": 0.75,
+        "vs_lower": -0.01254361844861207,
+        "trend_all_levels": 0.012761605275156988,
+        "levels": 3,
+        "pooled": true
+      }
+    },
+    "ke_zero": {
+      "counts": 0.0,
+      "from_tails": true,
+      "tail_s": 0.1,
+      "up_tail": {
+        "median_counts": -1.0,
+        "coasts": 7
+      },
+      "down_tail": {
+        "median_counts": 1.0,
+        "coasts": 7
+      },
+      "source": "+0.00 counts, the mean of the up coasts' tail median (-1.00 over 7) and the down coasts' (+1.00 over 7)"
+    },
+    "coasts": [
+      {
+        "n": 1,
+        "dir": 1,
+        "in_ke": true,
+        "held_ticks": 305,
+        "cut": 3,
+        "e_first_v": 0.6136474609375,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 450.0,
+        "ke_v_s_per_rad": 0.0011659603064652475,
+        "rev_s": 63.542921158161,
+        "decel_frac": 0.3852648075904519,
+        "cycles": 4,
+        "spin_rev_s": 89.4602765799094,
+        "ke_cut_v_s_per_rad": 0.0011526962608708344,
+        "gated": false
+      },
+      {
+        "n": 2,
+        "dir": -1,
+        "in_ke": true,
+        "held_ticks": 305,
+        "cut": 3,
+        "e_first_v": 0.6682535807291666,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 525.0,
+        "ke_v_s_per_rad": 0.0011628430875718382,
+        "rev_s": 80.63278854588256,
+        "decel_frac": 0.24886366172597923,
+        "cycles": 5,
+        "spin_rev_s": 100.62927041853594,
+        "ke_cut_v_s_per_rad": 0.0011457068477128936,
+        "gated": true
+      },
+      {
+        "n": 3,
+        "dir": 1,
+        "in_ke": true,
+        "held_ticks": 305,
+        "cut": 3,
+        "e_first_v": 0.6892903645833334,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 450.0,
+        "ke_v_s_per_rad": 0.001163313978081027,
+        "rev_s": 66.4817601567534,
+        "decel_frac": 0.33289553949866085,
+        "cycles": 4,
+        "spin_rev_s": 89.48148985180417,
+        "ke_cut_v_s_per_rad": 0.001128160739775112,
+        "gated": true
+      },
+      {
+        "n": 4,
+        "dir": -1,
+        "in_ke": true,
+        "held_ticks": 305,
+        "cut": 2,
+        "e_first_v": 0.6877237955729166,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 525.0,
+        "ke_v_s_per_rad": 0.0011635321190401776,
+        "rev_s": 81.46152224540434,
+        "decel_frac": 0.24619332723979653,
+        "cycles": 5,
+        "spin_rev_s": 101.32892034045915,
+        "ke_cut_v_s_per_rad": 0.0011424261449917543,
+        "gated": true
+      },
+      {
+        "n": 5,
+        "dir": 1,
+        "in_ke": true,
+        "held_ticks": 609,
+        "cut": 0,
+        "e_first_v": 1.54888916015625,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 1162.5,
+        "ke_v_s_per_rad": 0.0011631085543495267,
+        "rev_s": 191.23514554141968,
+        "decel_frac": 0.14517901907021385,
+        "cycles": 11,
+        "spin_rev_s": 212.9246654580854,
+        "ke_cut_v_s_per_rad": 0.001158096481672898,
+        "gated": true
+      },
+      {
+        "n": 6,
+        "dir": -1,
+        "in_ke": true,
+        "held_ticks": 609,
+        "cut": 3,
+        "e_first_v": 1.5815633138020833,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 1237.5,
+        "ke_v_s_per_rad": 0.0011630893856560917,
+        "rev_s": 201.19811148609685,
+        "decel_frac": 0.1374418405176016,
+        "cycles": 12,
+        "spin_rev_s": 222.5544054519844,
+        "ke_cut_v_s_per_rad": 0.0011602900609804351,
+        "gated": true
+      },
+      {
+        "n": 7,
+        "dir": 1,
+        "in_ke": true,
+        "held_ticks": 609,
+        "cut": 3,
+        "e_first_v": 1.546875,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 1175.0,
+        "ke_v_s_per_rad": 0.0011617265832059305,
+        "rev_s": 192.67130358794486,
+        "decel_frac": 0.14252033195256683,
+        "cycles": 11,
+        "spin_rev_s": 214.25788305303135,
+        "ke_cut_v_s_per_rad": 0.0011595753792244669,
+        "gated": true
+      },
+      {
+        "n": 8,
+        "dir": -1,
+        "in_ke": true,
+        "held_ticks": 609,
+        "cut": 0,
+        "e_first_v": 1.6675008138020833,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 1225.0,
+        "ke_v_s_per_rad": 0.0011635094897478012,
+        "rev_s": 201.70726239548424,
+        "decel_frac": 0.13883297011468487,
+        "cycles": 12,
+        "spin_rev_s": 222.7551794831411,
+        "ke_cut_v_s_per_rad": 0.0011588141388212956,
+        "gated": true
+      },
+      {
+        "n": 9,
+        "dir": 1,
+        "in_ke": true,
+        "held_ticks": 914,
+        "cut": 3,
+        "e_first_v": 2.4599609375,
+        "turned": true,
+        "open_rows": 1,
+        "f_seed_hz": 1887.5,
+        "ke_v_s_per_rad": 0.0011501265943194047,
+        "rev_s": 309.83666259468947,
+        "decel_frac": 0.12182577933635037,
+        "cycles": 19,
+        "spin_rev_s": 336.7395317490041,
+        "ke_cut_v_s_per_rad": 0.0011500993084999954,
+        "gated": true
+      },
+      {
+        "n": 10,
+        "dir": -1,
+        "in_ke": true,
+        "held_ticks": 914,
+        "cut": 3,
+        "e_first_v": 2.4637654622395835,
+        "turned": true,
+        "open_rows": 1,
+        "f_seed_hz": 1950.0,
+        "ke_v_s_per_rad": 0.0011464603766883157,
+        "rev_s": 323.1621063030179,
+        "decel_frac": 0.10247974838553767,
+        "cycles": 19,
+        "spin_rev_s": 344.4865328823905,
+        "ke_cut_v_s_per_rad": 0.0011502839836532825,
+        "gated": true
+      },
+      {
+        "n": 11,
+        "dir": 1,
+        "in_ke": true,
+        "held_ticks": 914,
+        "cut": 3,
+        "e_first_v": 2.4742838541666665,
+        "turned": true,
+        "open_rows": 1,
+        "f_seed_hz": 1912.5,
+        "ke_v_s_per_rad": 0.001152285442483064,
+        "rev_s": 316.4439731006333,
+        "decel_frac": 0.10736565571536497,
+        "cycles": 19,
+        "spin_rev_s": 337.8128703417628,
+        "ke_cut_v_s_per_rad": 0.0011607978654198329,
+        "gated": true
+      },
+      {
+        "n": 12,
+        "dir": -1,
+        "in_ke": true,
+        "held_ticks": 914,
+        "cut": 3,
+        "e_first_v": 2.4111735026041665,
+        "turned": true,
+        "open_rows": 3,
+        "f_seed_hz": 1962.5,
+        "ke_v_s_per_rad": 0.0011449489229441647,
+        "rev_s": 325.959238444007,
+        "decel_frac": 0.11826340885366435,
+        "cycles": 20,
+        "spin_rev_s": 344.2619283006122,
+        "ke_cut_v_s_per_rad": 0.0011671393249411048,
+        "gated": true
+      },
+      {
+        "n": 13,
+        "dir": 1,
+        "in_ke": false,
+        "held_ticks": 914,
+        "cut": 3,
+        "e_first_v": 2.4120686848958335,
+        "turned": true,
+        "open_rows": 0,
+        "f_seed_hz": 1887.5,
+        "ke_v_s_per_rad": 0.0011472389557079439,
+        "rev_s": 311.4944146775509,
+        "decel_frac": 0.12316615411861254,
+        "cycles": 19,
+        "spin_rev_s": 335.88138014905365,
+        "ke_cut_v_s_per_rad": 0.0011540810703732822,
+        "gated": true
+      },
+      {
+        "n": 14,
+        "dir": -1,
+        "in_ke": false,
+        "held_ticks": 914,
+        "cut": 3,
+        "e_first_v": 2.5315755208333335,
+        "turned": true,
+        "open_rows": 3,
+        "f_seed_hz": 1950.0,
+        "ke_v_s_per_rad": 0.0011354911780254722,
+        "rev_s": 323.67219883827573,
+        "decel_frac": 0.1106072611535752,
+        "cycles": 19,
+        "spin_rev_s": 345.0732568294243,
+        "ke_cut_v_s_per_rad": 0.001150187984682932,
+        "gated": true
+      }
+    ],
+    "steady": [
+      {
+        "level_share": 0.25,
+        "dir": 1,
+        "spins": 2,
+        "rev_s": 86.93618846349236,
+        "rad_s": 546.2361820160106,
+        "current_raw_ma": 107.41130897544505,
+        "current_ma": 93.63656826156881,
+        "pot_cps": 2055.503168166437
+      },
+      {
+        "level_share": 0.25,
+        "dir": -1,
+        "spins": 2,
+        "rev_s": 99.69348765092333,
+        "rad_s": 626.392656829771,
+        "current_raw_ma": 87.49805783817615,
+        "current_ma": 73.67868827961522,
+        "pot_cps": 2315.656476935291
+      },
+      {
+        "level_share": 0.5,
+        "dir": 1,
+        "spins": 2,
+        "rev_s": 210.7990207772932,
+        "rad_s": 1324.489310115733,
+        "current_raw_ma": 129.1092205614437,
+        "current_ma": 120.05718507106378,
+        "pot_cps": 5017.382074276714
+      },
+      {
+        "level_share": 0.5,
+        "dir": -1,
+        "spins": 2,
+        "rev_s": 220.35623351448993,
+        "rad_s": 1384.5390487636769,
+        "current_raw_ma": 115.69742105970496,
+        "current_ma": 106.63066100944857,
+        "pot_cps": 5260.689254543826
+      },
+      {
+        "level_share": 0.75,
+        "dir": 1,
+        "spins": 3,
+        "rev_s": 334.11574447058547,
+        "rad_s": 2099.3111365549516,
+        "current_raw_ma": 163.40583251784395,
+        "current_ma": 159.05054324958954,
+        "pot_cps": 7979.076111835879
+      },
+      {
+        "level_share": 0.75,
+        "dir": -1,
+        "spins": 3,
+        "rev_s": 337.8501827543866,
+        "rad_s": 2122.7753043103003,
+        "current_raw_ma": 149.02741545676875,
+        "current_ma": 144.66418238389397,
+        "pot_cps": 8634.04142853245
+      }
+    ],
+    "steady_spins": [
+      {
+        "n": 1,
+        "level_share": 0.25,
+        "dir": 1,
+        "rows": 1408,
+        "line_hz": 525.7392260623997,
+        "rev_s": 87.62320434373328,
+        "pot_cps": 2063.999056407938,
+        "current_raw_ma": 107.27515216797637,
+        "current_ma": 93.50409257557972,
+        "seed_hz": null
+      },
+      {
+        "n": 2,
+        "level_share": 0.25,
+        "dir": -1,
+        "rows": 1408,
+        "line_hz": 597.3097548508414,
+        "rev_s": 99.55162580847356,
+        "pot_cps": 2318.238325026092,
+        "current_raw_ma": 88.16962894397662,
+        "current_ma": 74.34677890197548,
+        "seed_hz": null
+      },
+      {
+        "n": 3,
+        "level_share": 0.25,
+        "dir": 1,
+        "rows": 1408,
+        "line_hz": 517.4950354995085,
+        "rev_s": 86.24917258325142,
+        "pot_cps": 2047.0072799249356,
+        "current_raw_ma": 107.54746578291373,
+        "current_ma": 93.76904394755789,
+        "seed_hz": null
+      },
+      {
+        "n": 4,
+        "level_share": 0.25,
+        "dir": -1,
+        "rows": 1413,
+        "line_hz": 599.0120969602386,
+        "rev_s": 99.8353494933731,
+        "pot_cps": 2313.0746288444902,
+        "current_raw_ma": 86.82648673237567,
+        "current_ma": 73.01059765725493,
+        "seed_hz": null
+      },
+      {
+        "n": 5,
+        "level_share": 0.5,
+        "dir": 1,
+        "rows": 1376,
+        "line_hz": 1262.08403745774,
+        "rev_s": 210.34733957628998,
+        "pot_cps": 4978.386924419722,
+        "current_raw_ma": 129.64258272467572,
+        "current_ma": 120.5881918982646,
+        "seed_hz": 1263.3084638657738
+      },
+      {
+        "n": 6,
+        "level_share": 0.5,
+        "dir": -1,
+        "rows": 1376,
+        "line_hz": 1322.1109509631183,
+        "rev_s": 220.35182516051972,
+        "pot_cps": 5364.109402276256,
+        "current_raw_ma": 115.53389140249995,
+        "current_ma": 106.46461118022853,
+        "seed_hz": 1385.6066696726984
+      },
+      {
+        "n": 7,
+        "level_share": 0.5,
+        "dir": 1,
+        "rows": 1376,
+        "line_hz": 1267.5042118697784,
+        "rev_s": 211.2507019782964,
+        "pot_cps": 5056.377224133706,
+        "current_raw_ma": 128.5758583982117,
+        "current_ma": 119.52617824386297,
+        "seed_hz": 1283.0991726282487
+      },
+      {
+        "n": 8,
+        "level_share": 0.5,
+        "dir": -1,
+        "rows": 1381,
+        "line_hz": 1322.1638512107606,
+        "rev_s": 220.3606418684601,
+        "pot_cps": 5157.269106811395,
+        "current_raw_ma": 115.86095071691,
+        "current_ma": 106.79671083866863,
+        "seed_hz": 1332.1776152929417
+      },
+      {
+        "n": 9,
+        "level_share": 0.75,
+        "dir": 1,
+        "rows": 894,
+        "line_hz": 1999.5702557579846,
+        "rev_s": 333.2617092929974,
+        "pot_cps": 8000.820919232262,
+        "current_raw_ma": 164.419624222274,
+        "current_ma": 160.06405373413355,
+        "seed_hz": 2025.4771122015802
+      },
+      {
+        "n": 10,
+        "level_share": 0.75,
+        "dir": -1,
+        "rows": 823,
+        "line_hz": 2019.9456756534648,
+        "rev_s": 336.6576126089108,
+        "pot_cps": 8628.710846901444,
+        "current_raw_ma": 148.66947879338034,
+        "current_ma": 144.30349528407388,
+        "seed_hz": 2217.675807109196
+      },
+      {
+        "n": 11,
+        "level_share": 0.75,
+        "dir": 1,
+        "rows": 888,
+        "line_hz": 2037.1302819078385,
+        "rev_s": 339.5217136513064,
+        "pot_cps": 8028.935233304528,
+        "current_raw_ma": 161.6259191922814,
+        "current_ma": 157.27194534640134,
+        "seed_hz": 2032.5944943119257
+      },
+      {
+        "n": 12,
+        "level_share": 0.75,
+        "dir": -1,
+        "rows": 824,
+        "line_hz": 2035.9209345261113,
+        "rev_s": 339.3201557543519,
+        "pot_cps": 8663.643763425953,
+        "current_raw_ma": 147.1592399676454,
+        "current_ma": 142.79721872297566,
+        "seed_hz": 2226.6539598393906
+      },
+      {
+        "n": 13,
+        "level_share": 0.75,
+        "dir": 1,
+        "rows": 881,
+        "line_hz": 1977.3828628047156,
+        "rev_s": 329.5638104674526,
+        "pot_cps": 7907.472182970846,
+        "current_raw_ma": 164.17195413897645,
+        "current_ma": 159.81563066823378,
+        "seed_hz": 2001.8450711074042
+      },
+      {
+        "n": 14,
+        "level_share": 0.75,
+        "dir": -1,
+        "rows": 818,
+        "line_hz": 2025.4366793993827,
+        "rev_s": 337.5727798998971,
+        "pot_cps": 8609.769675269947,
+        "current_raw_ma": 151.2535276092806,
+        "current_ma": 146.89183314463236,
+        "seed_hz": 2212.8077128097375
+      }
+    ],
+    "open_loop_line": {
+      "coulomb_ma": 56.82751039196659,
+      "viscous_ma_s_per_rad": 0.04402320480678896,
+      "points": [
+        {
+          "level_share": 0.25,
+          "dir": 1,
+          "rad_s": 546.2361820160106,
+          "current_ma": 93.63656826156881,
+          "current_raw_ma": 107.41130897544505,
+          "spins": 2,
+          "pot_counts_per_rev": 23.643815130331102
+        },
+        {
+          "level_share": 0.25,
+          "dir": -1,
+          "rad_s": 626.392656829771,
+          "current_ma": 73.67868827961522,
+          "current_raw_ma": 87.49805783817615,
+          "spins": 2,
+          "pot_counts_per_rev": 23.227760724387135
+        },
+        {
+          "level_share": 0.5,
+          "dir": 1,
+          "rad_s": 1324.489310115733,
+          "current_ma": 120.05718507106378,
+          "current_raw_ma": 129.1092205614437,
+          "spins": 2,
+          "pot_counts_per_rev": 23.801733308702232
+        },
+        {
+          "level_share": 0.5,
+          "dir": -1,
+          "rad_s": 1384.5390487636769,
+          "current_ma": 106.63066100944857,
+          "current_raw_ma": 115.69742105970496,
+          "spins": 2,
+          "pot_counts_per_rev": 23.873566772495682
+        },
+        {
+          "level_share": 0.75,
+          "dir": 1,
+          "rad_s": 2099.3111365549516,
+          "current_ma": 159.05054324958954,
+          "current_raw_ma": 163.40583251784395,
+          "spins": 3,
+          "pot_counts_per_rev": 23.88117364681188
+        },
+        {
+          "level_share": 0.75,
+          "dir": -1,
+          "rad_s": 2122.7753043103003,
+          "current_ma": 144.66418238389397,
+          "current_raw_ma": 149.02741545676875,
+          "spins": 3,
+          "pot_counts_per_rev": 25.55582879411761
+        }
+      ]
+    },
+    "i_drag0_a": 0.05682751039196659,
+    "inertia": {
+      "j_kg_m2": {
+        "mean": 6.584929325130751e-9,
+        "sd": 2.616756692927025e-10,
+        "n": 6
+      },
+      "by_dir": [
+        {
+          "dir": -1,
+          "j_kg_m2": {
+            "mean": 6.455583851386599e-9,
+            "sd": 3.066342904824465e-10,
+            "n": 3
+          }
+        },
+        {
+          "dir": 1,
+          "j_kg_m2": {
+            "mean": 6.714274798874903e-9,
+            "sd": 1.6422559762561104e-10,
+            "n": 3
+          }
+        }
+      ],
+      "runs": [
+        {
+          "dir": 1,
+          "j_kg_m2": 6.761344656843958e-9,
+          "fits_kept": 113,
+          "windows_flagged": 0
+        },
+        {
+          "dir": -1,
+          "j_kg_m2": 6.523233155198882e-9,
+          "fits_kept": 104,
+          "windows_flagged": 0
+        },
+        {
+          "dir": 1,
+          "j_kg_m2": 6.849825910348264e-9,
+          "fits_kept": 107,
+          "windows_flagged": 0
+        },
+        {
+          "dir": -1,
+          "j_kg_m2": 6.120773706690593e-9,
+          "fits_kept": 118,
+          "windows_flagged": 2
+        },
+        {
+          "dir": 1,
+          "j_kg_m2": 6.531653829432487e-9,
+          "fits_kept": 115,
+          "windows_flagged": 0
+        },
+        {
+          "dir": -1,
+          "j_kg_m2": 6.722744692270325e-9,
+          "fits_kept": 121,
+          "windows_flagged": 0
+        }
+      ],
+      "coast_friction": [
+        {
+          "dir": -1,
+          "a0_rad_s2": 8497.713169018105,
+          "a1_per_s": 6.316133201499965,
+          "tc_n_m": 0.00005595684064321708,
+          "b_n_m_s_per_rad": 4.159129073998909e-8,
+          "rms_n_m": 2.8927519240259355e-6,
+          "bins": 13
+        },
+        {
+          "dir": 1,
+          "a0_rad_s2": 8095.165906997134,
+          "a1_per_s": 7.474697607147834,
+          "tc_n_m": 0.0000533060953727841,
+          "b_n_m_s_per_rad": 4.922035546979243e-8,
+          "rms_n_m": 4.282819810040109e-6,
+          "bins": 13
+        }
+      ]
+    },
+    "runups": [
+      {
+        "n": 9,
+        "dir": 1,
+        "rows": 1969,
+        "crossings": 149,
+        "fits": 140,
+        "dropouts": 3
+      },
+      {
+        "n": 10,
+        "dir": -1,
+        "rows": 1828,
+        "crossings": 141,
+        "fits": 129,
+        "dropouts": 5
+      },
+      {
+        "n": 11,
+        "dir": 1,
+        "rows": 1957,
+        "crossings": 149,
+        "fits": 138,
+        "dropouts": 5
+      },
+      {
+        "n": 12,
+        "dir": -1,
+        "rows": 1829,
+        "crossings": 142,
+        "fits": 129,
+        "dropouts": 1
+      },
+      {
+        "n": 13,
+        "dir": 1,
+        "rows": 1943,
+        "crossings": 147,
+        "fits": 136,
+        "dropouts": 4
+      },
+      {
+        "n": 14,
+        "dir": -1,
+        "rows": 1817,
+        "crossings": 140,
+        "fits": 128,
+        "dropouts": 3
+      }
+    ],
+    "scales": {
+      "counts_per_a": 1108.4520727272727,
+      "drive_offset_counts": 0.0,
+      "counts_per_v": 248.24242424242425,
+      "terminal_offset_counts": -1.191500000000019,
+      "pwm_arr": 1200.0,
+      "window_s": 0.003979494576662275,
+      "r_ohm": 4.098778322527737,
+      "l_h": 0.0007875575299378776,
+      "zero_i_counts": 1211.60555,
+      "zero_e_counts": -1.191500000000019,
+      "source": "the nominal sense block read off the servo; the rest step's zeros, its tap difference the terminal offset; the stops step's seated R and L; no in-drive current offset"
+    }
+  },
+  "spins": [
+    {
+      "n": 0,
+      "pilot": true,
+      "level_share": 0.25,
+      "dir": 1,
+      "duty_q15": 8318,
+      "volts": 1.2,
+      "start_counts": 281.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the nameplate and the run's spins",
+        "t_s": 0.27374436972163685,
+        "t_rise_s": null,
+        "t_runway_s": 0.5474887394432737,
+        "runway_counts": 2906.0,
+        "bound_speed_cps": 4166.375506391015,
+        "bound_coast_counts": 416.6375506391015,
+        "travel_bound_counts": 1765.478162979326
+      },
+      "on_s": 0.27665,
+      "end_counts": 901.0,
+      "travel_counts": 620.0,
+      "drive_travel_counts": 570.0,
+      "pot_speed_cps": 2098.1650137283077,
+      "t90_s": 0.0145,
+      "coast_counts": 39.0,
+      "coast_s": 0.0422,
+      "captures": [
+        1,
+        2
+      ]
+    },
+    {
+      "n": 1,
+      "pilot": false,
+      "level_share": 0.25,
+      "dir": 1,
+      "duty_q15": 8318,
+      "volts": 1.2,
+      "start_counts": 285.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the nameplate and the run's spins",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.5911637119793579,
+        "runway_counts": 2902.0,
+        "bound_speed_cps": 4166.375506391015,
+        "bound_coast_counts": 230.67121482245966,
+        "travel_bound_counts": 1036.864875309121
+      },
+      "on_s": 0.14615,
+      "end_counts": 623.0,
+      "travel_counts": 338.0,
+      "drive_travel_counts": 274.0,
+      "pot_speed_cps": 1928.121976941363,
+      "t90_s": 0.0125,
+      "coast_counts": 59.0,
+      "coast_s": 0.035,
+      "captures": [
+        3,
+        4
+      ]
+    },
+    {
+      "n": 2,
+      "pilot": false,
+      "level_share": 0.25,
+      "dir": -1,
+      "duty_q15": -8318,
+      "volts": 1.2,
+      "start_counts": 3488.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the nameplate and the run's spins",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.5545472191493415,
+        "runway_counts": 2932.0,
+        "bound_speed_cps": 4166.375506391015,
+        "bound_coast_counts": 413.2292736793824,
+        "travel_bound_counts": 1219.422934166044
+      },
+      "on_s": 0.14915,
+      "end_counts": 3095.0,
+      "travel_counts": 393.0,
+      "drive_travel_counts": 293.0,
+      "pot_speed_cps": 2178.8706534170888,
+      "t90_s": 0.0245,
+      "coast_counts": 80.0,
+      "coast_s": null,
+      "captures": [
+        5,
+        6
+      ]
+    },
+    {
+      "n": 3,
+      "pilot": false,
+      "level_share": 0.25,
+      "dir": 1,
+      "duty_q15": 8318,
+      "volts": 1.2,
+      "start_counts": 279.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the nameplate and the run's spins",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.5426570407530888,
+        "runway_counts": 2908.0,
+        "bound_speed_cps": 4166.375506391015,
+        "bound_coast_counts": 438.76822171614907,
+        "travel_bound_counts": 1244.9618822028106
+      },
+      "on_s": 0.14615,
+      "end_counts": 606.0,
+      "travel_counts": 327.0,
+      "drive_travel_counts": 263.0,
+      "pot_speed_cps": 1919.0866988265395,
+      "t90_s": 0.0135,
+      "coast_counts": 55.0,
+      "coast_s": 0.03185,
+      "captures": [
+        7,
+        8
+      ]
+    },
+    {
+      "n": 4,
+      "pilot": false,
+      "level_share": 0.25,
+      "dir": -1,
+      "duty_q15": -8318,
+      "volts": 1.2,
+      "start_counts": 3487.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the nameplate and the run's spins",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.548177426509178,
+        "runway_counts": 2931.0,
+        "bound_speed_cps": 4166.375506391015,
+        "bound_coast_counts": 438.76822171614907,
+        "travel_bound_counts": 1244.9618822028106
+      },
+      "on_s": 0.14565,
+      "end_counts": 3103.0,
+      "travel_counts": 384.0,
+      "drive_travel_counts": 292.0,
+      "pot_speed_cps": 2174.4958897124634,
+      "t90_s": 0.0095,
+      "coast_counts": 75.0,
+      "coast_s": null,
+      "captures": [
+        9,
+        10
+      ]
+    },
+    {
+      "n": 5,
+      "pilot": false,
+      "level_share": 0.5,
+      "dir": 1,
+      "duty_q15": 16637,
+      "volts": 2.4,
+      "start_counts": 286.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the 25% level's 3 spins up",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.26103635726964475,
+        "runway_counts": 2901.0,
+        "bound_speed_cps": 6294.495041184923,
+        "bound_coast_counts": 943.1831915379988,
+        "travel_bound_counts": 2161.1679820072814
+      },
+      "on_s": 0.149,
+      "end_counts": 1172.0,
+      "travel_counts": 886.0,
+      "drive_travel_counts": 624.0,
+      "pot_speed_cps": 5084.475372974779,
+      "t90_s": 0.0315,
+      "coast_counts": 233.0,
+      "coast_s": 0.08905,
+      "captures": [
+        11,
+        12
+      ]
+    },
+    {
+      "n": 6,
+      "pilot": false,
+      "level_share": 0.5,
+      "dir": -1,
+      "duty_q15": -16637,
+      "volts": 2.4,
+      "start_counts": 3492.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the 25% level's 2 spins down",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.23393914328802468,
+        "runway_counts": 2936.0,
+        "bound_speed_cps": 6536.611960251266,
+        "bound_coast_counts": 1080.0,
+        "travel_bound_counts": 2344.83441430862
+      },
+      "on_s": 0.14615,
+      "end_counts": 2594.0,
+      "travel_counts": 898.0,
+      "drive_travel_counts": 640.0,
+      "pot_speed_cps": 5127.765488206257,
+      "t90_s": 0.0295,
+      "coast_counts": 240.0,
+      "coast_s": null,
+      "captures": [
+        13,
+        14
+      ]
+    },
+    {
+      "n": 7,
+      "pilot": false,
+      "level_share": 0.5,
+      "dir": 1,
+      "duty_q15": 16637,
+      "volts": 2.4,
+      "start_counts": 278.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the 25% level's 3 spins up",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.262307309100992,
+        "runway_counts": 2909.0,
+        "bound_speed_cps": 6294.495041184923,
+        "bound_coast_counts": 943.1831915379988,
+        "travel_bound_counts": 2161.1679820072814
+      },
+      "on_s": 0.1466,
+      "end_counts": 1151.0,
+      "travel_counts": 873.0,
+      "drive_travel_counts": 628.0,
+      "pot_speed_cps": 5118.890352587774,
+      "t90_s": 0.0345,
+      "coast_counts": 235.0,
+      "coast_s": 0.1037,
+      "captures": [
+        15,
+        16
+      ]
+    },
+    {
+      "n": 8,
+      "pilot": false,
+      "level_share": 0.5,
+      "dir": -1,
+      "duty_q15": -16637,
+      "volts": 2.4,
+      "start_counts": 3478.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the 25% level's 2 spins down",
+        "t_s": 0.14350000000000002,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.23179736095718828,
+        "runway_counts": 2922.0,
+        "bound_speed_cps": 6536.611960251266,
+        "bound_coast_counts": 1080.0,
+        "travel_bound_counts": 2344.83441430862
+      },
+      "on_s": 0.146,
+      "end_counts": 2567.0,
+      "travel_counts": 911.0,
+      "drive_travel_counts": 651.0,
+      "pot_speed_cps": 4978.833053815347,
+      "t90_s": 0.0085,
+      "coast_counts": 244.0,
+      "coast_s": null,
+      "captures": [
+        17,
+        18
+      ]
+    },
+    {
+      "n": 9,
+      "pilot": false,
+      "level_share": 0.75,
+      "dir": 1,
+      "duty_q15": 24956,
+      "volts": 3.5999999999999996,
+      "start_counts": 276.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the line through the 25% and 50% levels' fastest spins up, 8140 counts/s here",
+        "t_s": 0.0985542759698506,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.0985542759698506,
+        "runway_counts": 2911.0,
+        "bound_speed_cps": 10174.51961430905,
+        "bound_coast_counts": 1399.5316053552754,
+        "travel_bound_counts": 2911.0
+      },
+      "on_s": 0.10115,
+      "end_counts": 1385.0,
+      "travel_counts": 1109.0,
+      "drive_travel_counts": 619.0,
+      "pot_speed_cps": 7927.0647626487635,
+      "t90_s": 0.0295,
+      "coast_counts": 477.0,
+      "coast_s": 0.3971,
+      "captures": [
+        19,
+        20
+      ]
+    },
+    {
+      "n": 10,
+      "pilot": false,
+      "level_share": 0.75,
+      "dir": -1,
+      "duty_q15": -24956,
+      "volts": 3.5999999999999996,
+      "start_counts": 3489.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the line through the 25% and 50% levels' fastest spins down, 8077 counts/s here",
+        "t_s": 0.0914538277084251,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.0914538277084251,
+        "runway_counts": 2933.0,
+        "bound_speed_cps": 10095.825403744282,
+        "bound_coast_counts": 1504.906852764415,
+        "travel_bound_counts": 2933.0
+      },
+      "on_s": 0.0936,
+      "end_counts": 2409.0,
+      "travel_counts": 1080.0,
+      "drive_travel_counts": 579.0,
+      "pot_speed_cps": 8214.456789227976,
+      "t90_s": 0.0365,
+      "coast_counts": 472.0,
+      "coast_s": null,
+      "captures": [
+        21,
+        22
+      ]
+    },
+    {
+      "n": 11,
+      "pilot": false,
+      "level_share": 0.75,
+      "dir": 1,
+      "duty_q15": 24956,
+      "volts": 3.5999999999999996,
+      "start_counts": 282.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the line through the 25% and 50% levels' fastest spins up, 8140 counts/s here",
+        "t_s": 0.09796456753864745,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.09796456753864745,
+        "runway_counts": 2905.0,
+        "bound_speed_cps": 10174.51961430905,
+        "bound_coast_counts": 1399.5316053552754,
+        "travel_bound_counts": 2905.0
+      },
+      "on_s": 0.10065,
+      "end_counts": 1430.0,
+      "travel_counts": 1148.0,
+      "drive_travel_counts": 618.0,
+      "pot_speed_cps": 7984.368104568038,
+      "t90_s": 0.0285,
+      "coast_counts": 514.0,
+      "coast_s": 0.39945,
+      "captures": [
+        23,
+        24
+      ]
+    },
+    {
+      "n": 12,
+      "pilot": false,
+      "level_share": 0.75,
+      "dir": -1,
+      "duty_q15": -24956,
+      "volts": 3.5999999999999996,
+      "start_counts": 3490.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the line through the 25% and 50% levels' fastest spins down, 8077 counts/s here",
+        "t_s": 0.0915528785497391,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.0915528785497391,
+        "runway_counts": 2934.0,
+        "bound_speed_cps": 10095.825403744282,
+        "bound_coast_counts": 1504.906852764415,
+        "travel_bound_counts": 2934.0
+      },
+      "on_s": 0.09415,
+      "end_counts": 2396.0,
+      "travel_counts": 1094.0,
+      "drive_travel_counts": 584.0,
+      "pot_speed_cps": 8247.432813230409,
+      "t90_s": 0.0375,
+      "coast_counts": 489.0,
+      "coast_s": null,
+      "captures": [
+        25,
+        26
+      ]
+    },
+    {
+      "n": 13,
+      "pilot": false,
+      "level_share": 0.75,
+      "dir": 1,
+      "duty_q15": 24956,
+      "volts": 3.5999999999999996,
+      "start_counts": 289.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the line through the 25% and 50% levels' fastest spins up, 8140 counts/s here",
+        "t_s": 0.09727657436891042,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.09727657436891042,
+        "runway_counts": 2898.0,
+        "bound_speed_cps": 10174.51961430905,
+        "bound_coast_counts": 1399.5316053552754,
+        "travel_bound_counts": 2898.0
+      },
+      "on_s": 0.10015,
+      "end_counts": 1401.0,
+      "travel_counts": 1112.0,
+      "drive_travel_counts": 613.0,
+      "pot_speed_cps": 7916.562324378973,
+      "t90_s": 0.0255,
+      "coast_counts": 482.0,
+      "coast_s": 0.3839,
+      "captures": [
+        27,
+        28
+      ]
+    },
+    {
+      "n": 14,
+      "pilot": false,
+      "level_share": 0.75,
+      "dir": -1,
+      "duty_q15": -24956,
+      "volts": 3.5999999999999996,
+      "start_counts": 3484.0,
+      "attempt": 1,
+      "planned": {
+        "bounds_from": "the line through the 25% and 50% levels' fastest spins down, 8077 counts/s here",
+        "t_s": 0.09095857350185517,
+        "t_rise_s": 0.14350000000000002,
+        "t_runway_s": 0.09095857350185517,
+        "runway_counts": 2928.0,
+        "bound_speed_cps": 10095.825403744282,
+        "bound_coast_counts": 1504.906852764415,
+        "travel_bound_counts": 2928.0
+      },
+      "on_s": 0.09315,
+      "end_counts": 2407.0,
+      "travel_counts": 1077.0,
+      "drive_travel_counts": 577.0,
+      "pot_speed_cps": 8227.864207248324,
+      "t90_s": 0.0355,
+      "coast_counts": 476.0,
+      "coast_s": null,
+      "captures": [
+        29,
+        30
+      ]
+    }
+  ],
+  "left_out": [],
+  "path": [
+    "the pilot at 25%: T 274 ms (rise not yet read, runway 547 ms over 2906 counts), bound 4166 counts/s and coast 417 counts from the nameplate and the run's spins: at most 1765 counts",
+    "spin 1 at 25%: T 144 ms (rise 144 ms, runway 591 ms over 2902 counts), bound 4166 counts/s and coast 231 counts from the nameplate and the run's spins: at most 1037 counts",
+    "spin 2 at 25%: T 144 ms (rise 144 ms, runway 555 ms over 2932 counts), bound 4166 counts/s and coast 413 counts from the nameplate and the run's spins: at most 1219 counts",
+    "spin 3 at 25%: T 144 ms (rise 144 ms, runway 543 ms over 2908 counts), bound 4166 counts/s and coast 439 counts from the nameplate and the run's spins: at most 1245 counts",
+    "spin 4 at 25%: T 144 ms (rise 144 ms, runway 548 ms over 2931 counts), bound 4166 counts/s and coast 439 counts from the nameplate and the run's spins: at most 1245 counts",
+    "spin 5 at 50%: T 144 ms (rise 144 ms, runway 261 ms over 2901 counts), bound 6294 counts/s and coast 943 counts from the 25% level's 3 spins up: at most 2161 counts",
+    "spin 6 at 50%: T 144 ms (rise 144 ms, runway 234 ms over 2936 counts), bound 6537 counts/s and coast 1080 counts from the 25% level's 2 spins down: at most 2345 counts",
+    "spin 7 at 50%: T 144 ms (rise 144 ms, runway 262 ms over 2909 counts), bound 6294 counts/s and coast 943 counts from the 25% level's 3 spins up: at most 2161 counts",
+    "spin 8 at 50%: T 144 ms (rise 144 ms, runway 232 ms over 2922 counts), bound 6537 counts/s and coast 1080 counts from the 25% level's 2 spins down: at most 2345 counts",
+    "spin 9 at 75%: T 99 ms (rise 144 ms, runway 99 ms over 2911 counts), bound 10175 counts/s and coast 1400 counts from the line through the 25% and 50% levels' fastest spins up, 8140 counts/s here: at most 2911 counts",
+    "spin 10 at 75%: T 91 ms (rise 144 ms, runway 91 ms over 2933 counts), bound 10096 counts/s and coast 1505 counts from the line through the 25% and 50% levels' fastest spins down, 8077 counts/s here: at most 2933 counts",
+    "spin 11 at 75%: T 98 ms (rise 144 ms, runway 98 ms over 2905 counts), bound 10175 counts/s and coast 1400 counts from the line through the 25% and 50% levels' fastest spins up, 8140 counts/s here: at most 2905 counts",
+    "spin 12 at 75%: T 92 ms (rise 144 ms, runway 92 ms over 2934 counts), bound 10096 counts/s and coast 1505 counts from the line through the 25% and 50% levels' fastest spins down, 8077 counts/s here: at most 2934 counts",
+    "spin 13 at 75%: T 97 ms (rise 144 ms, runway 97 ms over 2898 counts), bound 10175 counts/s and coast 1400 counts from the line through the 25% and 50% levels' fastest spins up, 8140 counts/s here: at most 2898 counts",
+    "spin 14 at 75%: T 91 ms (rise 144 ms, runway 91 ms over 2928 counts), bound 10096 counts/s and coast 1505 counts from the line through the 25% and 50% levels' fastest spins down, 8077 counts/s here: at most 2928 counts"
+  ],
+  "drives": {
+    "stops_counts": [
+      6.0,
+      3737.0
+    ],
+    "guards_counts": [
+      256.0,
+      3487.0
+    ],
+    "guard_counts": 250.0,
+    "short_counts": 300.0,
+    "levels_share": [
+      0.25,
+      0.5,
+      0.75
+    ],
+    "stated_v": 4.8,
+    "nameplate_cps": 13332.401620451248,
+    "approach_q15": 4731,
+    "top_q15": 24956,
+    "drive_deadman_s": 0.05,
+    "poll_deadman_s": 0.1,
+    "coast_s": 0.4,
+    "still_counts": 3.0,
+    "rise_assumed": false
+  },
+  "drive_polarity": {
+    "stored": true,
+    "driven": true,
+    "corrected_volatile": false
+  },
+  "checks": [
+    {
+      "name": "the window term",
+      "value": "the window step's g, 3.979 mS",
+      "bound": "measured",
+      "verdict": "pass"
+    },
+    {
+      "name": "the coasts' tap zero",
+      "value": "+0.00 counts, the mean of the up coasts' tail median (-1.00 over 7) and the down coasts' (+1.00 over 7)",
+      "bound": "both directions' coasts at rest over their last 100 ms",
+      "verdict": "pass"
+    },
+    {
+      "name": "coasts pass the Ke gate",
+      "value": "11 of 12, the first 2 spins each way a level",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the top level's Ke",
+      "value": "the 75% level pooled: -1.25% against the lower levels' mean; the line through all 3 levels' means 1.28%",
+      "bound": "pooled when the line through every level's mean is within 2%",
+      "verdict": "pass"
+    },
+    {
+      "name": "Ke spread",
+      "value": "7.274 mV per rev/s, sd 0.66% over 11",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "Ke by direction",
+      "value": "up 7.277, down 7.272 mV per rev/s: 0.06% apart",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "Ke trend with level",
+      "value": "3 levels pooled: 1.28% over the levels' span by the line through their means",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "the friction line's points agree",
+      "value": "every level and direction within the share",
+      "bound": "pot counts a ripple revolution within 15% of the run's median",
+      "verdict": "pass"
+    },
+    {
+      "name": "the open-loop friction line",
+      "value": "56.8 mA + 0.0440 mA per rad/s over 6 level and direction means",
+      "bound": "2 levels at least",
+      "verdict": "pass"
+    },
+    {
+      "name": "the level J is read at",
+      "value": "75%",
+      "bound": "the 75% level, the top",
+      "verdict": "pass"
+    },
+    {
+      "name": "J from the run-ups",
+      "value": "6.585e-9 kg m^2 over 6 of 6 run-ups at 75%",
+      "bound": "the run-ups of J's level read a J",
+      "verdict": "pass"
+    },
+    {
+      "name": "J by direction",
+      "value": "up 6.714e-9, down 6.456e-9 kg m^2: 3.9% apart",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "levels the runway left out",
+      "value": "none",
+      "bound": "every level's T at least 60 ms both ways, a higher level's bounds from the level below it",
+      "verdict": "pass"
+    }
+  ],
+  "rail_v": 4.7267558528428095,
+  "position_before_counts": 1866.375,
+  "position_after_counts": 1884.75,
+  "exit": [
+    "goal_duty 0",
+    "torque_enable 0, read back 0",
+    "stall_permit 0",
+    "bus_deadman_ticks 0",
+    "tel_count 0",
+    "mode put back, read back",
+    "current_limit_counts put back, read back",
+    "pos_min_soft_counts put back, read back",
+    "pos_max_soft_counts put back, read back"
+  ],
+  "torque_off": true
+}
