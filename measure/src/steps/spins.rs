@@ -58,7 +58,7 @@ use crate::capture::tel::{self, Line, StreamCfg};
 use crate::envelope::{DRIVE_DEADMAN_S, Envelope, Facts, HeatModel, Kind, Resistance, Rung};
 use crate::fit::coast::{self, CoastKe, KePooled};
 use crate::fit::runup::{self, Inertia, RowScales, RunUp};
-use crate::fit::{mean, median, polyfit};
+use crate::fit::{line_se, mean, median, polyfit};
 use crate::guard::{self, Ledger, Way};
 use crate::inputs::ThermalInputs;
 use crate::install::Refused;
@@ -930,11 +930,14 @@ pub struct PerRev {
 }
 
 /// The open-loop friction line: steady current against steady speed over
-/// each level and direction's mean.
+/// each level and direction's mean, with the standard errors from the
+/// points' residuals, as the cruise step's line carries them; none under
+/// three points.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenLine {
     pub coulomb_ma: f64,
     pub viscous_ma_s_per_rad: f64,
+    pub se: Option<(f64, f64)>,
     pub points: Vec<LinePoint>,
 }
 
@@ -1220,6 +1223,7 @@ fn open_line(steady: &[Steady]) -> (Option<OpenLine>, Vec<(LinePoint, f64)>) {
     let line = polyfit::<2>(&w, &i).map(|[a, b]| OpenLine {
         coulomb_ma: a,
         viscous_ma_s_per_rad: b,
+        se: line_se(&w, &i, a, b),
         points: kept,
     });
     (line, aside)
@@ -2021,17 +2025,28 @@ fn result_json(
         }
         if let Some(l) = &j.line {
             let src = format!(
-                "the line of the steady winding current on the steady ripple speed over {} level and direction means, both directions pooled, {g_words}; no in-drive current offset taken off",
-                l.points.len()
+                "the line of the steady winding current on the steady ripple speed over {} level and direction means, both directions pooled, {g_words}; no in-drive current offset taken off{}",
+                l.points.len(),
+                if l.se.is_some() {
+                    "; its sd and band the standard error from the means' residuals"
+                } else {
+                    ""
+                }
             );
-            let n = Scatter::Once(l.points.len());
+            let n = l.points.len();
+            let s = |se: Option<f64>| se.map_or(Scatter::Once(n), |se| Scatter::of(se, n));
             estimates.insert(
                 "friction_coulomb_ma".into(),
-                estimate(l.coulomb_ma, n, "mA", &src),
+                estimate(l.coulomb_ma, s(l.se.map(|s| s.0)), "mA", &src),
             );
             estimates.insert(
                 "friction_viscous_ma_s_per_rad".into(),
-                estimate(l.viscous_ma_s_per_rad, n, "mA per motor rad/s", &src),
+                estimate(
+                    l.viscous_ma_s_per_rad,
+                    s(l.se.map(|s| s.1)),
+                    "mA per motor rad/s",
+                    &src,
+                ),
             );
         }
         let wiring = |bridge: i8| cfg.logical(bridge);
@@ -2922,9 +2937,10 @@ mod tests {
 
     /// The open-loop line needs two levels: one level's two directions
     /// fit nothing, and its check refuses saying the higher levels did not
-    /// run. A point whose pot counts a ripple revolution lie more than
-    /// 15 % from the run's median is set aside, and the line still needs
-    /// two levels without it.
+    /// run. Its standard errors are the least-squares ones from the means'
+    /// residuals, none from two means. A point whose pot counts a ripple
+    /// revolution lie more than 15 % from the run's median is set aside,
+    /// and the line still needs two levels without it.
     #[test]
     fn the_friction_line_needs_two_levels_that_agree() {
         let at = |level: f64, dir: i8, w: f64, i: f64, cpr: f64| Steady {
@@ -2950,6 +2966,25 @@ mod tests {
         let (l, aside) = open_line(&run2);
         let l = l.expect("a line");
         assert!(aside.is_empty() && l.points.len() == 4, "{l:?}");
+        let (w, i) = ([545.0, 602.0, 1330.0, 1379.0], [89.2, 74.6, 118.8, 105.5]);
+        let (a, b) = (l.coulomb_ma, l.viscous_ma_s_per_rad);
+        let xm = w.iter().sum::<f64>() / 4.0;
+        let sxx: f64 = w.iter().map(|x| (x - xm) * (x - xm)).sum();
+        let s2 = w
+            .iter()
+            .zip(i)
+            .map(|(x, y)| (y - a - b * x) * (y - a - b * x))
+            .sum::<f64>()
+            / 2.0;
+        let (a_se, b_se) = l.se.expect("four points give the standard errors");
+        assert!((a_se - (s2 * (0.25 + xm * xm / sxx)).sqrt()).abs() < 1e-9);
+        assert!((b_se - (s2 / sxx).sqrt()).abs() < 1e-12);
+        let (two, _) = open_line(&[run2[0].clone(), run2[2].clone()]);
+        assert_eq!(
+            two.expect("two levels").se,
+            None,
+            "two points leave no residual"
+        );
         // the 75 % up point read at half its speed: 48 counts a revolution
         run2.push(at(0.75, 1, 1029.0, 143.8, 48.0));
         let (l, aside) = open_line(&run2);

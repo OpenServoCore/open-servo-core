@@ -384,7 +384,10 @@ fn the_r_band_is_built_from_the_spreads_the_stops_step_read() {
 
 /// Each gathered term carries one sd over the repeats it was taken over
 /// and their count, `n` alone where nothing repeated, or neither where it
-/// is the board's nominal value; its line says the same.
+/// is the board's nominal value; its line says the same. The sign is the
+/// probe's agreeing pairs, the table step's scale one fit, a straight
+/// table's scale nominal, and the spin line's sd reaches the friction
+/// terms.
 #[test]
 fn each_term_carries_its_sd_and_n_or_is_nominal() {
     let g = gather::gather(&run(), &nameplate()).expect("gathers");
@@ -409,8 +412,54 @@ fn each_term_carries_its_sd_and_n_or_is_nominal() {
     ] {
         assert_eq!(sd_n(k), (None, None), "{k} is nominal");
         assert!(m[k].get("n").is_some_and(Value::is_null), "{k}: n null");
+        assert!(m[k].get("sd").is_some_and(Value::is_null), "{k}: sd null");
     }
     assert_eq!(m["stops"]["n"], 2, "the seats a stop");
+    assert_eq!(
+        sd_n("drive_polarity"),
+        (None, Some(2)),
+        "the pulse pairs that agree"
+    );
+    assert!(m["drive_polarity"].get("sd").is_some_and(Value::is_null));
+    let t = &m["table"];
+    assert!(
+        t.get("sd").is_some_and(Value::is_null) && t.get("n").is_some_and(Value::is_null),
+        "a straight table's scale is nominal, the stated travel's: {t}"
+    );
+    let mut r = run();
+    r.table = Some(result("table"));
+    let tabled = gather::gather(&r, &nameplate()).expect("gathers");
+    let t = &tabled.measured["table"];
+    assert!(
+        t.get("sd").is_some_and(Value::is_null) && t["n"] == 1,
+        "the table step's scale is one fit: {t}"
+    );
+    assert!(
+        tabled.lines.iter().any(
+            |l| l.starts_with("table from the table step, ") && l.contains(" counts/deg n 1 (")
+        ),
+        "{:?}",
+        tabled.lines
+    );
+    let r = RunResults {
+        spins: Some(edited("spins", |v| {
+            v["estimates"]["friction_coulomb_ma"]["sd"] = 1.25.into();
+            v["estimates"]["friction_viscous_ma_s_per_rad"]["sd"] = 0.002.into();
+        })),
+        ..run()
+    };
+    let spun = gather::gather(&r, &nameplate()).expect("gathers");
+    for (k, sd) in [
+        ("cruise_coulomb_ma", 1.25),
+        ("cruise_viscous_ma_s_per_rad", 0.002),
+    ] {
+        let q = &spun.measured[k];
+        assert_eq!(
+            (q["sd"].as_f64(), q["n"].as_u64()),
+            (Some(sd), Some(6)),
+            "{k}: the spin line's standard error over its means"
+        );
+    }
     let line = |k: &str| {
         g.lines
             .iter()
@@ -426,6 +475,11 @@ fn each_term_carries_its_sd_and_n_or_is_nominal() {
     assert!(line("current_counts_per_a").contains("counts/A nominal: "));
     assert!(line("pot_rest_sd_counts").contains("counts n 20000: "));
     assert!(line("stops").contains("+/- 1.4142 / 1.0607, n 2: "));
+    assert!(line("drive_polarity").starts_with("drive_polarity on n 2: "));
+    assert!(
+        line("table").starts_with("table straight, ")
+            && line("table").contains(" counts/deg nominal: ")
+    );
     let measured: Measured = serde_json::from_str(&gather::render(m)).expect("loads");
     let ke = measured.ke_v_s_per_rad.expect("ke");
     assert_eq!((ke.n, ke.sd.is_some()), (Some(12), true));

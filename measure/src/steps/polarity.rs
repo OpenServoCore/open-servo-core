@@ -371,6 +371,10 @@ impl Refusal {
     }
 }
 
+/// The pulse pairs a proven sign rests on: a decisive pair and its repeat
+/// at the same volts, agreeing.
+pub const PROVING_PAIRS: u64 = 2;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     /// The sign the pulses proved: whether the stored `drive_polarity` is
@@ -1069,7 +1073,8 @@ mod tests {
     /// Mid travel, at the low stop and at the high stop, the stored sign
     /// right and wrong, both wirings: the right sign every time. A start
     /// at a stop leaves +duty still when it drives toward the stop; when
-    /// +duty drives away, -duty brings the shaft back and both move.
+    /// +duty drives away, -duty brings the shaft back and both move. The
+    /// sign rests on [`PROVING_PAIRS`] pairs at the volts it is proven at.
     #[test]
     fn the_sign_is_found_from_either_stored_value_and_three_start_positions() {
         let mut still_seen = 0;
@@ -1096,6 +1101,16 @@ mod tests {
                         l.path()
                     );
                     assert!(l.pulses().iter().all(|p| !p.planned.unwedge));
+                    let Some(Outcome::Proven { volts, .. }) = l.outcome() else {
+                        unreachable!()
+                    };
+                    let pairs = l
+                        .pulses()
+                        .iter()
+                        .filter(|p| p.planned.volts == *volts)
+                        .count()
+                        / 2;
+                    assert_eq!(pairs as u64, PROVING_PAIRS, "{:?}", l.path());
                     if still.is_some() {
                         still_seen += 1;
                         assert!(

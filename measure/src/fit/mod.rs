@@ -104,6 +104,25 @@ pub fn polyfit<const N: usize>(x: &[f64], y: &[f64]) -> Option<[f64; N]> {
     Some(c)
 }
 
+/// The standard errors of the intercept and the slope of the least-squares
+/// line `a + b x` through `x`, `y`, from its residuals over n - 2 degrees
+/// of freedom. None under three points.
+pub fn line_se(x: &[f64], y: &[f64], a: f64, b: f64) -> Option<(f64, f64)> {
+    if x.len() < 3 || x.len() != y.len() {
+        return None;
+    }
+    let n = x.len() as f64;
+    let xm = x.iter().sum::<f64>() / n;
+    let sxx: f64 = x.iter().map(|v| (v - xm) * (v - xm)).sum();
+    let ss: f64 = x
+        .iter()
+        .zip(y)
+        .map(|(xi, yi)| (yi - a - b * xi) * (yi - a - b * xi))
+        .sum();
+    let s2 = ss / (n - 2.0);
+    Some(((s2 * (1.0 / n + xm * xm / sxx)).sqrt(), (s2 / sxx).sqrt()))
+}
+
 /// A polynomial, lowest power first, at `x`.
 pub fn polyval(c: &[f64], x: f64) -> f64 {
     c.iter().rev().fold(0.0, |acc, ck| acc * x + ck)

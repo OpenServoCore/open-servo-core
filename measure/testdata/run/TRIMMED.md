@@ -18,8 +18,11 @@ note and `sources.json` sit beside it.
 - **Regenerated.** `measured.json`, `pos_lut.json`, `wide-codes.json` and `cross-checks.json` in `inputs/` (gathered
   without `results/cruise.json`, as the run gathered before its cruise step) and in `final/inputs/` (with it) are
   the gather's output over `results/` named under `/bench/run`. The results files carry no path and are the run's
-  bytes, so the regenerated files equal the rewritten ones byte for byte.
-  `the_recorded_run_gathers_to_its_own_inputs` gathers them again on every test run.
+  bytes, so the regenerated files equal the rewritten ones byte for byte, but for the two `measured.json` files: a
+  later gather gives `drive_polarity` `sd` null and `n` 2, and the table step's `table` `sd` null and `n` 1, which
+  the run's gather did not write. The tune's and the final check's files (`tune/`, `final/measured.json`,
+  `final/set.json`) are the run's, read from its own `measured.json`. No file records either `measured.json`'s
+  sha1. `the_recorded_run_gathers_to_its_own_inputs` gathers them again on every test run.
 - The run's own sha1s of `run.json` and both `measured.json` files are in `sources.json`.
 
 ## Kept

@@ -508,14 +508,11 @@ pub fn line(points: &[Point], counts_per_motor_rad: f64) -> Option<Line> {
     let y: Vec<f64> = points.iter().map(|p| p.i_ma).collect();
     let n = x.len() as f64;
     let xm = x.iter().sum::<f64>() / n;
-    let sxx: f64 = x.iter().map(|v| (v - xm) * (v - xm)).sum();
     let b = slope(&x, &y);
     let a = y.iter().sum::<f64>() / n - b * xm;
     let resid: Vec<f64> = x.iter().zip(&y).map(|(xi, yi)| yi - a - b * xi).collect();
     let ss: f64 = resid.iter().map(|r| r * r).sum();
-    let s2 = ss / (n - 2.0).max(1.0);
-    let b_se = (s2 / sxx).sqrt();
-    let a_se = (s2 * (1.0 / n + xm * xm / sxx)).sqrt();
+    let (a_se, b_se) = super::line_se(&x, &y, a, b)?;
     let mean = |v: &[f64]| super::mean(v).unwrap_or(f64::NAN);
     let speeds: Vec<BySpeed> = groups
         .iter()
