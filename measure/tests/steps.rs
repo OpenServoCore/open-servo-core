@@ -524,6 +524,7 @@ mod probe {
     use osc_measure::Board;
     use osc_measure::inputs::ThermalInputs;
     use osc_measure::nameplate::GearClass;
+    use osc_measure::state::State;
     use osc_measure::steps::probe::{self, NOT_METAL, ProbeInputs, Probed};
 
     const DUTY_Q15: u16 = 0x196;
@@ -727,17 +728,31 @@ mod probe {
 
     /// What every way out after a write leaves: torque off and read back,
     /// the dead-man and the telemetry count 0, every volatile field the
-    /// step wrote back as it was.
-    fn ends(c: &mut Client<Bus>, before: &[Vec<u8>], p: &Probed) {
+    /// step wrote back as it was, every stored field as `start` read it.
+    fn ends(c: &mut Client<Bus>, before: &[Vec<u8>], start: &State, p: &Probed) {
         assert_eq!(torque(c), 0, "{:?}", p.ended);
         assert!(p.ended.exit.torque_off, "{}", p.ended.exit);
         assert_eq!(block_on(c.read(ID, 0x192, 2)).expect("dead-man"), [0, 0]);
         assert_eq!(block_on(c.read(ID, 0x1ea, 2)).expect("tel_count"), [0, 0]);
         assert_eq!(table_bytes(c), before, "{}", p.ended.exit);
         // each field went back, but a write to a stored field set the
-        // unsaved bit, which only a SAVE or a reboot clears
-        let s = block_on(osc_measure::state::read(c, ID, &descriptor())).expect("state");
+        // unsaved bit, which only a SAVE or a reboot clears: the command's
+        // end reboots onto the stored state where the step began on it,
+        // and leaves a servo that began with a volatile value as it is
+        let d = descriptor();
+        let s = block_on(osc_measure::state::read(c, ID, &d)).expect("state");
         assert!(s.unsaved, "{}", p.ended.exit);
+        assert_eq!(s.hash(&d), start.hash(&d), "{}", p.ended.exit);
+        let mut steps = Vec::new();
+        let after = block_on(install::clear_unsaved(c, ID, &d, start, &mut steps)).expect("reads");
+        if start.unsaved {
+            assert!(after.is_none() && steps.is_empty(), "{steps:?}");
+        } else {
+            let after = after.expect("rebooted to clear unsaved");
+            assert!(steps.contains(&install::Step::Rebooted), "{steps:?}");
+            assert_eq!(after.hash(&d), start.hash(&d), "{}", p.ended.exit);
+            assert!(!after.unsaved, "{}", p.ended.exit);
+        }
         for name in [
             "current_limit_counts",
             "pos_min_soft_counts",
@@ -767,6 +782,7 @@ mod probe {
     fn a_burst_that_never_completes_ends_through_the_way_out() {
         let (mut c, writes, rest) = rested(BaudRate::B3000000);
         let before = table_bytes(&mut c);
+        let start = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
         let mut sink = MemSink::default();
         let p = probe_on(
             &mut c,
@@ -784,7 +800,7 @@ mod probe {
             "{why}"
         );
         assert!(armed(&writes) && torque_went_on(&writes));
-        ends(&mut c, &before, &p);
+        ends(&mut c, &before, &start, &p);
         let result: serde_json::Value =
             serde_json::from_slice(&sink.files[probe::RESULT]).expect("probe.json");
         assert_eq!(result["verdict"], "aborted");
@@ -808,6 +824,7 @@ mod probe {
             false
         });
         let before = table_bytes(&mut c);
+        let start = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
         let p = probe_on(
             &mut c,
             &nameplate(),
@@ -824,7 +841,7 @@ mod probe {
             "{why}"
         );
         assert!(torque_went_on(&writes));
-        ends(&mut c, &before, &p);
+        ends(&mut c, &before, &start, &p);
     }
 
     /// The cable comes out on the first burst's duty write: an error, the
@@ -839,6 +856,7 @@ mod probe {
             now
         });
         let before = table_bytes(&mut c);
+        let start = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
         let p = probe_on(
             &mut c,
             &nameplate(),
@@ -854,7 +872,7 @@ mod probe {
             "{:?}",
             p.ended.why
         );
-        ends(&mut c, &before, &p);
+        ends(&mut c, &before, &start, &p);
     }
 
     /// Soft limits 0 / 0, off: the step widens them to the physical range
@@ -867,6 +885,7 @@ mod probe {
         let phys = block_on(c.read(ID, 0x020, 8)).expect("stops");
         writes.borrow_mut().clear();
         let before = table_bytes(&mut c);
+        let start = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
         assert_eq!(before[0], [0; 8]);
         let p = probe_on(
             &mut c,
@@ -888,7 +907,7 @@ mod probe {
             })
             .collect();
         assert_eq!(soft, [phys, vec![0; 8]]);
-        ends(&mut c, &before, &p);
+        ends(&mut c, &before, &start, &p);
     }
 
     /// The flag set before the first burst: the step stops there, no burst
@@ -897,6 +916,7 @@ mod probe {
     fn the_interrupt_flag_stops_the_probe_before_a_burst() {
         let (mut c, writes, rest) = rested(BaudRate::B3000000);
         let before = table_bytes(&mut c);
+        let start = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
         let p = probe_on(
             &mut c,
             &nameplate(),
@@ -908,6 +928,6 @@ mod probe {
         .expect("starts");
         assert_eq!(p.ended.way, Way::Interrupted, "{:?}", p.ended.why);
         assert!(!armed(&writes), "no burst armed");
-        ends(&mut c, &before, &p);
+        ends(&mut c, &before, &start, &p);
     }
 }

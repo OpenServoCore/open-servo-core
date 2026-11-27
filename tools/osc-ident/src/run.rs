@@ -325,6 +325,7 @@ mod tests {
         let policy = testdata("mg90-d/policy.json");
         let g = given();
         let a = args(&g, &dir, &policy);
+        let before = block_on(osc_measure::state::read(&mut c, ID, &d)).expect("state");
         let (lines, accepted) =
             block_on(run(&mut c, ID, &d, &a, "uid", &AtomicBool::new(false))).expect("runs");
         let text = lines.join("\n");
@@ -353,6 +354,13 @@ mod tests {
         assert_eq!(m["gather"]["state"], "not run", "{m}");
         assert_eq!(m["tune"]["state"], "not run", "{m}");
         assert_eq!(block_on(c.read(ID, 0x180, 1)).expect("read"), [0]);
+        // the steps put every stored field back: the run's end reboots to
+        // clear the unsaved bit their writes set
+        let more = block_on(steps::clear_unsaved(&mut c, ID, &d, &before)).expect("clears");
+        assert!(
+            more[0].ends_with("now unsaved no, 0 differences"),
+            "{more:?}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

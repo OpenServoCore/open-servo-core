@@ -1526,6 +1526,16 @@ mod tests {
         );
         assert!(e.exit.torque_off && torque_off(&mut r.c), "{}", e.exit);
         testkit::as_it_was(&mut r.c, &d, &r.before, true, &e.exit.to_string());
+        // the g_window_q016 written before the step is volatile: the
+        // command's end leaves it, no reboot
+        let mut steps = Vec::new();
+        let left = block_on(crate::install::clear_unsaved(
+            &mut r.c, ID, &d, &r.before, &mut steps,
+        ));
+        assert!(
+            left.expect("reads").is_none() && steps.is_empty(),
+            "{steps:?}"
+        );
         assert!(r.sink.read(RESULT).is_ok(), "the result is kept");
         let res = w.result.as_ref().expect("result");
         assert_eq!(res["g_window_q016"]["stored"], 1178);
