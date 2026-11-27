@@ -11,6 +11,7 @@ license     = "MIT OR Apache-2.0"
 [dependencies]
 flate2         = { version = "1", default-features = false, features = ["rust_backend"] }
 osc-client     = { path = "../client", default-features = false }
+osc-ident-inputs = { path = "inputs" }
 osc-protocol   = { path = "../firmware/lib/osc-protocol" }
 osc-servo-core = { path = "../firmware/lib/core" }
 serde          = { version = "1", features = ["derive"] }
@@ -21,3 +22,4 @@ sha2           = "0.10"
 [dev-dependencies]
 futures-lite = "2"
 osc-client   = { path = "../client", default-features = false, features = ["fake-adapter"] }
+osc-ident-inputs = { path = "inputs", features = ["json"] }

@@ -15,7 +15,6 @@ use anyhow::{Context, Result, bail};
 use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
-use osc_measure::Policy;
 use serde_json::{Value, json};
 
 use crate::files;
@@ -36,16 +35,13 @@ fn unix_s() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// The refusals that need no servo: the three files parse and `--tries`
-/// is at least 1.
+/// The refusals that need no servo: the three files parse, the profile and
+/// the policy resolve, and `--tries` is at least 1.
 pub fn admit(a: &RunArgs) -> Result<StepInputs> {
     if a.tries == 0 {
         bail!("--tries is at least 1");
     }
-    let policy = files::read(a.policy)?;
-    serde_json::from_slice::<Policy>(&policy)
-        .with_context(|| format!("parsing {}", a.policy.display()))?;
-    StepInputs::load(Some(a.nameplate), Some(a.thermal), None)
+    StepInputs::load(Some(a.nameplate), Some(a.policy), Some(a.thermal), None)
 }
 
 /// The command line that runs `run` again as given.
@@ -157,6 +153,7 @@ async fn gather_and_tune<P: Pipe>(
         "pos_lut.json",
         "nameplate.json",
         "policy.json",
+        "resolved.json",
         "thermal.json",
     ]
     .map(|f| format!("inputs/{f}"));
@@ -364,6 +361,7 @@ mod tests {
         let (mut c, d) = fake();
         let inputs = StepInputs::load(
             Some(&testdata("mg90-d/nameplate.json")),
+            None,
             Some(&testdata("mg90-d/thermal.json")),
             None,
         )

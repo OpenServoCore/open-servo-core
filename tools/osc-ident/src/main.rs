@@ -63,10 +63,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Measured inputs, the nameplate and a policy to a set file. Touches no servo.
+    /// Measured inputs, the servo profile and a policy to a set file. Touches no servo.
     Rules {
-        /// The inputs folder: measured.json, nameplate.json, policy.json and,
-        /// where measured, thermal.json, shelf.json, pos_lut.json, wide-codes.json.
+        /// The inputs folder: measured.json, nameplate.json (the profile, either
+        /// version), policy.json and, where measured, thermal.json, shelf.json,
+        /// pos_lut.json, wide-codes.json.
         #[arg(long)]
         inputs: PathBuf,
         /// A policy file other than the folder's.
@@ -129,8 +130,8 @@ enum Cmd {
         /// The run folder: `<out>/<servo uid>/<UTC time>/` of a `step stops` run.
         #[arg(long)]
         run: PathBuf,
-        /// The servo's nameplate file.
-        #[arg(long)]
+        /// The servo profile, or a version 0 nameplate.json.
+        #[arg(long, visible_alias = "profile")]
         nameplate: PathBuf,
         /// The user's thermal values, copied into the inputs folder.
         #[arg(long)]
@@ -159,8 +160,8 @@ enum Cmd {
     /// accepts, the cruise step for the friction line, the gather again into `final/inputs/` and
     /// the final set installed volatile and checked in `final/`. Never saves.
     Run {
-        /// The servo's nameplate file.
-        #[arg(long)]
+        /// The servo profile, or a version 0 nameplate.json.
+        #[arg(long, visible_alias = "profile")]
         nameplate: PathBuf,
         /// The user's thermal values.
         #[arg(long)]
@@ -268,14 +269,20 @@ enum StepName {
 
 #[derive(clap::Args, Debug)]
 struct StepArgs {
-    /// The servo's nameplate file (JSON, the rules' nameplate.json): the
-    /// maker's sheet (gear class, operating and run voltage, no-load and
-    /// stall rows, derates), the counted gear ratio, the travel, the count's
-    /// sense, and the motor's brushes and rotor_segments (commutator
-    /// segments), counted on a teardown or stated by the maker.
-    #[arg(long)]
+    /// The servo profile (JSON, `osc.servo-profile/1`), or a version 0
+    /// nameplate.json: the maker's sheet (gear class, operating voltage,
+    /// no-load and stall rows), the counted gear ratio, the travel, the
+    /// count's sense, and the motor's brushes and rotor_segments
+    /// (commutator segments), counted on a teardown or stated by the maker.
+    #[arg(long, visible_alias = "profile")]
     nameplate: Option<PathBuf>,
-    /// The user's thermal values (JSON, the rules' thermal.json).
+    /// The tuning policy (JSON, `osc.tuning-policy/1`, or a version 0
+    /// policy.json): the run voltage and the derates the steps read. A
+    /// version 0 nameplate carries them instead.
+    #[arg(long)]
+    policy: Option<PathBuf>,
+    /// The user's thermal values (JSON, the rules' thermal.json); the
+    /// profile's heat model if omitted.
     #[arg(long)]
     thermal: Option<PathBuf>,
     /// The board's description; the dev board's if omitted.
@@ -287,6 +294,7 @@ impl StepArgs {
     fn load(&self) -> Result<steps::StepInputs> {
         steps::StepInputs::load(
             self.nameplate.as_deref(),
+            self.policy.as_deref(),
             self.thermal.as_deref(),
             self.board.as_deref(),
         )
@@ -312,6 +320,9 @@ fn rules(
     out: &Path,
 ) -> Result<()> {
     let r = files::rules_inputs(inputs, policy, board)?;
+    for n in &r.notes {
+        eprintln!("{n}");
+    }
     let pair = pair.map_or_else(
         || format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name),
         str::to_string,
@@ -723,6 +734,74 @@ mod tests {
         assert!(matches!(cli.cmd, Cmd::Table { json: true }));
     }
 
+    /// `--profile` names the same file `--nameplate` does, on every command
+    /// that reads one.
+    #[test]
+    fn profile_is_another_name_for_nameplate() {
+        let cli = Cli::try_parse_from([
+            "osc-ident",
+            "step",
+            "probe",
+            "--profile",
+            "p.json",
+            "--policy",
+            "q.json",
+        ])
+        .expect("parses");
+        let Cmd::Step {
+            step: StepName::Probe { i, .. },
+        } = cli.cmd
+        else {
+            panic!("step probe")
+        };
+        assert_eq!(i.nameplate.as_deref(), Some(Path::new("p.json")));
+        assert_eq!(i.policy.as_deref(), Some(Path::new("q.json")));
+        for verb in [
+            vec!["gather", "--run", "r", "--policy", "q", "--out", "o"],
+            vec!["run", "--thermal", "t", "--policy", "q", "--out", "o"],
+        ] {
+            let mut args = vec!["osc-ident"];
+            args.extend(verb);
+            args.extend(["--profile", "p.json"]);
+            match Cli::try_parse_from(&args).expect("parses").cmd {
+                Cmd::Gather { nameplate, .. } | Cmd::Run { nameplate, .. } => {
+                    assert_eq!(nameplate, PathBuf::from("p.json"))
+                }
+                c => panic!("{c:?}"),
+            }
+        }
+    }
+
+    /// A version 1 profile resolves only with its policy, and with the
+    /// record's own it gives the steps the version 0 nameplate's values.
+    #[test]
+    fn a_version_1_profile_loads_with_its_policy() {
+        let profile = testdata("profile.json");
+        let e = steps::StepInputs::load(Some(&profile), None, None, None)
+            .err()
+            .expect("refused");
+        assert!(format!("{e:#}").contains("--policy"), "{e:#}");
+        let v1 = steps::StepInputs::load(
+            Some(&profile),
+            Some(&testdata("policy-of-record.json")),
+            None,
+            None,
+        )
+        .expect("loads");
+        let v0 = inputs();
+        let (a, b) = (v1.nameplate.expect("v1"), v0.nameplate.expect("v0"));
+        assert_eq!(a.name, "vorpal-mg90");
+        assert_eq!(
+            (a.run_v, a.derate_speed, a.derate_other, a.travel_deg),
+            (b.run_v, b.derate_speed, b.derate_other, b.travel_deg)
+        );
+        assert_eq!(
+            (a.speed_row(), a.stall_row()),
+            (b.speed_row(), b.stall_row())
+        );
+        assert!(v1.thermal.is_none(), "the profile states no heat model");
+    }
+
     /// `rules` on the mg90-d inputs writes a set that `check` reads as the
     /// servo's, on a simulated servo that holds the set of record.
     #[test]
@@ -792,6 +871,7 @@ mod tests {
     fn inputs() -> steps::StepInputs {
         steps::StepInputs::load(
             Some(&testdata("nameplate.json")),
+            None,
             Some(&testdata("thermal.json")),
             None,
         )
@@ -995,7 +1075,7 @@ mod tests {
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
 
-        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
         let dir = scratch("step-stops-none");
         let e = block_on(steps::step_stops(
             &mut c,
@@ -1047,7 +1127,7 @@ mod tests {
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
 
-        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
         let dir = scratch("step-window-none");
         let e = block_on(steps::step_window(
             &mut c,
@@ -1107,7 +1187,7 @@ mod tests {
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
 
-        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
         let dir = scratch("step-spins-none");
         let e = block_on(steps::step_spins(
             &mut c,
@@ -1161,7 +1241,7 @@ mod tests {
         assert!(!root.join("results/verify.json").exists());
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
 
-        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
         let e = block_on(steps::step_verify(
             &mut c,
             Id::new(1),
@@ -1189,7 +1269,7 @@ mod tests {
         v.as_object_mut().expect("object").remove("travel_deg");
         let p = dir.join("nameplate.json");
         std::fs::write(&p, serde_json::to_vec(&v).expect("json")).expect("write");
-        let e = steps::StepInputs::load(Some(&p), None, None)
+        let e = steps::StepInputs::load(Some(&p), None, None, None)
             .err()
             .expect("refused");
         let e = format!("{e:#}");
@@ -1199,7 +1279,7 @@ mod tests {
         );
 
         let (mut c, d) = fake(BaudRate::B3000000);
-        let none = steps::StepInputs::load(None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
         let e = block_on(steps::step_probe(
             &mut c,
             Id::new(1),

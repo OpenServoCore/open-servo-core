@@ -37,8 +37,13 @@ pub struct StepInputs {
 }
 
 impl StepInputs {
+    /// The profile resolved with the policy where one is named (a version
+    /// 0 nameplate carries the choices the steps read); the thermal values
+    /// from their file, else the profile's heat model. Each line said about
+    /// a file read at an older version goes to stderr.
     pub fn load(
         nameplate: Option<&Path>,
+        policy: Option<&Path>,
         thermal: Option<&Path>,
         board: Option<&Path>,
     ) -> Result<Self> {
@@ -46,12 +51,28 @@ impl StepInputs {
             serde_json::from_slice(&files::read(p)?)
                 .with_context(|| format!("parsing {}", p.display()))
         };
+        let board = files::board(board)?;
+        let loaded = nameplate
+            .map(|p| files::inputs(p, policy, &board).map(|l| (p, l)))
+            .transpose()?;
+        let mut heat = None;
+        if let Some((p, l)) = &loaded {
+            for n in &l.notes {
+                eprintln!("{n}");
+            }
+            if let Some(h) = &l.resolved.thermal {
+                let sha = osc_measure::set::file_sha1(&files::read(p)?);
+                heat = Some(files::thermal_of(h, p, &sha));
+            }
+        }
+        let thermal = match thermal {
+            Some(p) => Some(serde_json::from_value(json(p)?)?),
+            None => heat,
+        };
         Ok(StepInputs {
-            nameplate: nameplate.map(files::nameplate).transpose()?,
-            thermal: thermal
-                .map(|p| Ok::<_, anyhow::Error>(serde_json::from_value(json(p)?)?))
-                .transpose()?,
-            board: files::board(board)?,
+            nameplate: loaded.map(|(_, l)| l.resolved.nameplate),
+            thermal,
+            board,
         })
     }
 }

@@ -12,6 +12,10 @@ pub struct Board {
     /// so a measured supply is reported and never written.
     pub vdd_mv: f64,
     pub oc_trip_ma: f64,
+    /// The overcurrent detector's window, us: a board fact a policy no
+    /// longer states.
+    #[serde(default)]
+    pub oc_trip_us: Option<f64>,
     /// The supply's source resistance the rail fold is designed for: the
     /// board's default, which the image seeds the fold's slope from.
     pub rail_source_mohm: f64,
@@ -36,6 +40,16 @@ pub struct Board {
     /// What the window-term fit reads a crest shunt sample by.
     #[serde(default)]
     pub window_read: Option<WindowRead>,
+}
+
+impl Board {
+    /// What a tuning policy resolves from.
+    pub fn facts(&self) -> osc_ident_inputs::BoardFacts {
+        osc_ident_inputs::BoardFacts {
+            tick_hz: self.tick_hz,
+            oc_trip_us: self.oc_trip_us,
+        }
+    }
 }
 
 /// The crest sample's place, the loop the winding decays through between

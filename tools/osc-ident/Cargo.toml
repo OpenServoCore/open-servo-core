@@ -18,6 +18,7 @@ clap         = { version = "4", features = ["derive"] }
 ctrlc        = "3"
 futures-lite = "2"
 osc-client   = { path = "../../client" }
+osc-ident-inputs = { path = "../../measure/inputs", features = ["json"] }
 osc-measure  = { path = "../../measure" }
 osc-servo-core = { path = "../../firmware/lib/core" }
 serde        = { version = "1", features = ["derive"] }
