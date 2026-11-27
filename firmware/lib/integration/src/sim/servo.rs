@@ -13,8 +13,8 @@ use osc_servo_core::pos_lut::POINTS;
 use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{
-    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, ProtectionSeed, Reboot,
-    RegionStorage, Session, Shared,
+    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, ProtectionDefaults,
+    ProtectionSeed, Reboot, RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelLane};
@@ -26,13 +26,24 @@ use super::providers::{
 use super::store::RamStore;
 use crate::plant::TIMING;
 
-// The osc-dev-v006 board file's values (`DEV_V006_SENSE`, `_SENSE_EXT`,
-// `_PROTECTION`, `_BEMF_MIN_TICKS`, `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN`,
-// `_DEFAULTS`), written by build.rs from the file the board image is built
-// from: the one host mirror, which the fake adapter and the class-default
-// tests read from here. Per-servo board facts override the sense chain
-// through [`SimServo::set_sense`].
-include!(concat!(env!("OUT_DIR"), "/dev_v006_board.rs"));
+// Every board file's values, written by build.rs from the files the board
+// images are built from and held to the image's value rules: osc-dev-v006's
+// `DEV_V006_SENSE`, `_SENSE_EXT`, `_PROTECTION`, `_BEMF_MIN_TICKS`,
+// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN` and `_DEFAULTS` (the one host mirror,
+// which the fake adapter and the class-default tests read from here), and
+// `BOARD_FILES`. Per-servo board facts override the sense chain through
+// [`SimServo::set_sense`].
+include!(concat!(env!("OUT_DIR"), "/board_files.rs"));
+
+/// A servo board file as the sim seeds it.
+#[derive(Copy, Clone)]
+pub struct BoardFile {
+    /// The board's directory under `firmware/boards`.
+    pub name: &'static str,
+    pub sense: CalibSense,
+    pub defaults: ConfigDefaults,
+    pub protection: ProtectionDefaults,
+}
 
 /// `DEV_V006_RAIL_FLOOR_MV` through the terminal divider, as the image's
 /// `Precomputed` hands it the kernel.

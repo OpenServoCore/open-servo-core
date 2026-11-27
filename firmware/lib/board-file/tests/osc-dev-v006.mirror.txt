@@ -64,3 +64,17 @@ pub const DEV_V006_DEFAULTS: ::osc_servo_core::ConfigDefaults = ::osc_servo_core
     response_deadline_us: ::osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US,
 };
 
+// The image's value rules on the same board (`BoardConfig::assert_valid`).
+const _: () = DEV_V006_PROTECTION.assert_valid(
+    DEV_V006_SENSE.shunt_r_mohm,
+    DEV_V006_SENSE.gain_milli,
+    DEV_V006_SENSE.vdd_mv,
+    DEV_V006_SENSE.vmotor_div_top as u32,
+    DEV_V006_SENSE.vmotor_div_bot as u32,
+);
+const _: () = ::osc_servo_core::regions::config::assert_rail_floor(
+    DEV_V006_RAIL_FLOOR_MV,
+    DEV_V006_SENSE_EXT.vbus_div_top_ohm as u32,
+    DEV_V006_SENSE_EXT.vbus_div_bot_ohm as u32,
+    DEV_V006_SENSE.vdd_mv,
+);
