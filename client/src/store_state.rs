@@ -31,6 +31,9 @@ pub mod fault {
     /// An enable refused by the kernel's belt: Ke, the current cap or the
     /// speed ceiling unset.
     pub const CONFIG: u8 = 7;
+    /// The bus fell silent under torque for `bus_deadman_ticks`
+    /// (protocol sec 5.8).
+    pub const DEADMAN: u8 = 9;
 
     pub fn name(code: u8) -> Option<&'static str> {
         Some(match code {
@@ -41,6 +44,7 @@ pub mod fault {
             POSITION_ERROR => "position_error",
             SENSOR => "sensor",
             CONFIG => "config",
+            DEADMAN => "deadman",
             _ => return None,
         })
     }
@@ -208,6 +212,8 @@ mod tests {
         assert!(!state(0, 0b1100, 0).refuses(0));
         assert!(!state(0, 0xFF, 0).refuses(9));
         assert_eq!(fault::name(fault::CONFIG), Some("config"));
+        assert_eq!(fault::name(fault::DEADMAN), Some("deadman"));
+        assert_eq!(fault::name(6), None, "code 6 (undervolt) is gone");
         assert_eq!(fault::name(8), None);
     }
 
@@ -239,5 +245,6 @@ mod tests {
         assert_eq!(fault::POSITION_ERROR, fwf::CODE_POSITION_ERROR);
         assert_eq!(fault::SENSOR, fwf::CODE_SENSOR);
         assert_eq!(fault::CONFIG, fwf::CODE_CONFIG);
+        assert_eq!(fault::DEADMAN, fwf::CODE_DEADMAN);
     }
 }
