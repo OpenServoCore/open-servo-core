@@ -599,3 +599,34 @@ fn the_crawl_set_names_carry_3_thin() {
         Ok(())
     );
 }
+
+/// The pot-hole rule over the four clean mid-travel passes, each its own
+/// pass, at the stops of record: every cycle inner, no hole, the noise and
+/// the line as the reference reads them (bringup `kb/scratch/pot-holes`,
+/// `run_all.py`'s ident-slice2 A reading: s 1.37, line 6.49).
+#[test]
+fn the_clean_passes_hold_no_pot_hole() {
+    use osc_measure::steps::table::{HoleRead, judge_pot_holes};
+    let reads: Vec<HoleRead> = passes()
+        .into_iter()
+        .enumerate()
+        .map(|(k, (_, s))| HoleRead {
+            n: k + 1,
+            pass: k + 1,
+            dir: s.dir,
+            cycles: postable::cycles(&s),
+        })
+        .collect();
+    let lens: Vec<usize> = reads.iter().map(|r| r.cycles.len()).collect();
+    assert_eq!(lens, [588, 617, 596, 617]);
+    let h = judge_pot_holes(&reads, RECORD_STOPS.0, RECORD_STOPS.1);
+    assert_eq!(h.holes, []);
+    assert_eq!((h.cycles, h.inner_cycles), (2418, 2418));
+    let s = h.s.expect("s");
+    let line = h.line.expect("line");
+    assert!((s - 1.3727).abs() < 1e-4, "{s}");
+    assert!((line - 6.4909).abs() < 1e-4, "{line}");
+    for ((p, m), want) in h.m.iter().zip([3.609938, 3.654352, 3.512799, 3.668031]) {
+        assert!((m - want).abs() < 1e-5, "pass {p}: {m}");
+    }
+}

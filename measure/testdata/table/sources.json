@@ -55,5 +55,29 @@
    "tick",
    "pos"
   ]
+ },
+ "dead-low-stop.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/dsr-gate/R/00000000ffffffff76e5bc220ef6abcd/20261127T040624Z/captures/table/05-raw.csv.gz",
+  "sha1": "75b71fcbf845215d015f1368ba0dd97f818c6e73",
+  "rows": "every row: rung 3 (pass 1 down, onto the low stop), the pot's low end dead",
+  "columns": [
+   "tick",
+   "pos",
+   "duty_counts",
+   "current_raw"
+  ],
+  "expected": "low-stop.expected.json (bringup kb/scratch/pot-holes scripts/fixtures.py)"
+ },
+ "clean-low-stop.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/ident-hunt/run4/R/00000000ffffffff76e5bc220ef6abcd/20261125T194450Z/captures/table/05-raw.csv.gz",
+  "sha1": "2e989d6fc3bfce80b83bfdaecc8f533ef60657ed",
+  "rows": "every row: rung 3 (pass 1 down, onto the low stop), the pot clean",
+  "columns": [
+   "tick",
+   "pos",
+   "duty_counts",
+   "current_raw"
+  ],
+  "expected": "low-stop.expected.json (bringup kb/scratch/pot-holes scripts/fixtures.py)"
  }
 }

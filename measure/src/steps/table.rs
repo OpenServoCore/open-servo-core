@@ -41,6 +41,10 @@
 //! brake points: of a slow rung only its samples past the fast rungs'
 //! reach plus [`SLOW_OVERLAP_COUNTS`] into it, each stretch its own piece
 //! with its own offset, nothing within [`NEAR_STOP_COUNTS`] of a stop.
+//! Then the position holes, both kinds listed whole: the pot's, where it
+//! moved far more counts a ripple cycle than typical over a slow rung's
+//! whole drive ([`judge_pot_holes`]); the ADC's, its wide codes, the codes
+//! the slow passes crossed but never read ([`adc_holes`]).
 
 use std::time::Duration;
 
@@ -68,8 +72,8 @@ use crate::envelope::{
 use crate::fit::median;
 use crate::fit::polyfit;
 use crate::fit::postable::{
-    self, Agreement, PLAY_COUNTS, PooledFit, SMOOTH_WEIGHT, SPIN_UP_S, Segment, SegmentError, Span,
-    Table, TableError, Term,
+    self, Agreement, Cycle, PLAY_COUNTS, PooledFit, SMOOTH_WEIGHT, SPIN_UP_S, Segment,
+    SegmentError, Span, Table, TableError, Term,
 };
 use crate::fit::widecodes::{self, EDGE_MARGIN_COUNTS, Finding, HALF_THIN_ROWS, State, THIN_ROWS};
 use crate::guard::{self, Ledger, Way};
@@ -78,7 +82,7 @@ use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::ntc::{ADC_COUNTS, Parts};
 use crate::state::{self, State as ServoState, field};
-use osc_servo_core::adc::{ADC_WIDE_MASK, ADC_WIDE_SLOTS};
+use osc_servo_core::adc::{ADC_MASK, ADC_WIDE_MASK, ADC_WIDE_SLOTS};
 use osc_servo_core::pos_lut::{self, GRID, INTERVALS, PAGE_POINTS, POINTS};
 
 pub const STEP: &str = "table";
@@ -2279,7 +2283,8 @@ pub struct Judged {
     /// The histogram's range, the stops less [`NEAR_STOP_COUNTS`].
     pub swept: (u16, u16),
     pub rows_a_code: f64,
-    pub holes: Holes,
+    pub pot_holes: PotHoles,
+    pub adc_holes: AdcHoles,
     pub table: TableRead,
     pub checks: Vec<Check>,
 }
@@ -2363,14 +2368,7 @@ fn rung_segment(
             None => r.rows,
         },
     };
-    let (mut pos, mut cur, mut duty) = (Vec::new(), Vec::new(), Vec::new());
-    for f in rows {
-        if let (Some(p), Some(i), Some(d)) = (f.pos, f.current_raw, f.duty_counts) {
-            pos.push(p);
-            cur.push(i);
-            duty.push(d);
-        }
-    }
+    let (pos, cur, duty) = columns(rows);
     let read = postable::segment_seeded(&pos, &cur, &duty, slots, c.fs, seed)
         .and_then(|mut s| {
             let keep: Vec<bool> = s.x.iter().map(|&x| (lo..=hi).contains(&x)).collect();
@@ -2409,6 +2407,19 @@ fn rung_segment(
         ratio: None,
         speed_cps,
     }
+}
+
+/// The rows that carry the pot, the current and the duty, as columns.
+fn columns(rows: &[TelFrame]) -> (Vec<u16>, Vec<u16>, Vec<i16>) {
+    let (mut pos, mut cur, mut duty) = (Vec::new(), Vec::new(), Vec::new());
+    for f in rows {
+        if let (Some(p), Some(i), Some(d)) = (f.pos, f.current_raw, f.duty_counts) {
+            pos.push(p);
+            cur.push(i);
+            duty.push(d);
+        }
+    }
+    (pos, cur, duty)
 }
 
 /// A slow rung whose cycles over the counts it shares with a
@@ -2659,26 +2670,35 @@ pub fn judge(rungs: &[RungRows], c: &JudgeCfg) -> Judged {
 
 /// A run of codes never read, `from..=to` raw counts.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Hole {
+pub struct CodeRun {
     pub from: u16,
     pub to: u16,
 }
 
-impl Hole {
+impl CodeRun {
     pub fn codes(&self) -> usize {
         (self.to - self.from) as usize + 1
     }
+
+    /// The carry right under it, if any.
+    pub fn above_carry(&self) -> Option<u16> {
+        self.from
+            .checked_sub(1)
+            .filter(|&c| c & ADC_WIDE_MASK == ADC_WIDE_MASK)
+    }
 }
 
-/// The codes the slow passes never read that the shaft crossed, as stage
-/// 1's finder (oscnb `widecodes.find`) counts a run: wholly inside the
-/// codes a sweep crossed less [`EDGE_MARGIN_COUNTS`] at each turn, since a
-/// code next to a turnaround is crossed slowly or not at all.
+/// The ADC's holes, its wide codes: the codes the slow passes never read
+/// that the shaft crossed, as stage 1's finder (oscnb `widecodes.find`)
+/// counts a run: wholly inside the codes a sweep crossed less
+/// [`EDGE_MARGIN_COUNTS`] at each turn, since a code next to a turnaround
+/// is crossed slowly or not at all.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Holes {
+pub struct AdcHoles {
+    /// Raw order.
+    pub runs: Vec<CodeRun>,
     /// Ties go to the lowest.
-    pub longest: Option<Hole>,
-    pub runs: usize,
+    pub longest: Option<CodeRun>,
     /// Codes in all the runs.
     pub codes: usize,
     /// Codes the shaft crossed, and the least and most of them.
@@ -2686,10 +2706,10 @@ pub struct Holes {
     pub span: Option<(u16, u16)>,
 }
 
-/// [`Holes`] of the slow rungs: each rung's driven codes inside the
+/// [`AdcHoles`] of the slow rungs: each rung's driven codes inside the
 /// histogram's range cross every code from their least to their most, less
 /// the margin at each end.
-pub fn holes(rungs: &[RungRows], c: &JudgeCfg) -> Holes {
+pub fn adc_holes(rungs: &[RungRows], c: &JudgeCfg) -> AdcHoles {
     let (_, lo, hi) = histogram_rows(&[], c.raw_min, c.raw_max);
     let mut read = vec![false; widecodes::CODES];
     let mut crossed = vec![false; widecodes::CODES];
@@ -2713,7 +2733,7 @@ pub fn holes(rungs: &[RungRows], c: &JudgeCfg) -> Holes {
             crossed[a..=b.min(widecodes::CODES - 1)].fill(true);
         }
     }
-    let mut h = Holes::default();
+    let mut h = AdcHoles::default();
     let mut run: Option<u16> = None;
     for k in 0..widecodes::CODES {
         if crossed[k] {
@@ -2728,24 +2748,24 @@ pub fn holes(rungs: &[RungRows], c: &JudgeCfg) -> Holes {
             // a run opened right past an uncrossed code is not wholly inside
             let below = (from as usize).checked_sub(1);
             if below.is_some_and(|j| crossed[j] && read[j]) {
-                let hole = Hole {
+                let hole = CodeRun {
                     from,
                     to: k as u16 - 1,
                 };
-                h.runs += 1;
                 h.codes += hole.codes();
                 if h.longest.is_none_or(|l| hole.codes() > l.codes()) {
                     h.longest = Some(hole);
                 }
+                h.runs.push(hole);
             }
         }
     }
     h
 }
 
-/// The holes' line: the longest run in counts and degrees, where it sits
-/// and over what the shaft crossed.
-fn holes_said(h: &Holes, counts_per_deg: Option<f64>) -> String {
+/// The ADC holes' words: the longest run in counts and degrees, where it
+/// sits and over what the shaft crossed.
+fn adc_said(h: &AdcHoles, counts_per_deg: Option<f64>) -> String {
     let deg = |n: usize| {
         counts_per_deg.map_or(String::new(), |cpd| format!(" ({:.2} deg)", n as f64 / cpd))
     };
@@ -2759,22 +2779,312 @@ fn holes_said(h: &Holes, counts_per_deg: Option<f64>) -> String {
     );
     match h.longest {
         None => format!("no code the shaft crossed went unread, {over}"),
-        Some(l) => {
-            let carry = l
-                .from
-                .checked_sub(1)
-                .filter(|&c| c & ADC_WIDE_MASK == ADC_WIDE_MASK);
-            format!(
-                "the longest run of codes never read {} counts{} at raw {}..{}{}; {} runs, {} codes in all, {over}",
-                l.codes(),
-                deg(l.codes()),
-                l.from,
-                l.to,
-                carry.map_or(String::new(), |c| format!(", just above carry {c}")),
-                h.runs,
-                h.codes
-            )
+        Some(l) => format!(
+            "the longest run of codes never read {} counts{} at raw {}..{}{}; {} runs, {} codes in all, {over}",
+            l.codes(),
+            deg(l.codes()),
+            l.from,
+            l.to,
+            l.above_carry()
+                .map_or(String::new(), |c| format!(", just above carry {c}")),
+            h.runs.len(),
+            h.codes
+        ),
+    }
+}
+
+/// A cycle is far over typical past `1 + FAR_K x` the run's noise: a
+/// multiple of the statistic's own noise in the run, as a pot jump is
+/// judged.
+pub const FAR_K: f64 = 4.0;
+/// The noise is this percentile of `|r - 1|` over the inner cycles, not
+/// the maximum, which holds the holes sought.
+pub const NOISE_PERCENTILE: f64 = 99.0;
+/// Unflagged cycles one rung's hole may hold.
+pub const MERGE_GAP_CYCLES: usize = 1;
+/// Holes from different rungs this close, counts, are one.
+pub const TOUCH_COUNTS: f64 = 2.0;
+
+/// One slow rung read again for pot holes: its whole drive's cycles.
+#[derive(Clone, Debug)]
+pub struct HoleRead {
+    pub n: usize,
+    pub pass: usize,
+    pub dir: i8,
+    pub cycles: Vec<Cycle>,
+}
+
+/// Where the pot moved far more counts a ripple cycle than typical: a hole
+/// in its track, judged against the shaft's motion.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PotHole {
+    /// The least and the most pot counts over its cycles' ends.
+    pub from: f64,
+    pub to: f64,
+    /// Cycles it spans, the most on one rung.
+    pub cycles: usize,
+    /// The most counts a cycle over typical among them.
+    pub r_max: f64,
+    /// The rungs, passes and directions that saw it, ascending.
+    pub rungs: Vec<usize>,
+    pub passes: Vec<usize>,
+    pub dirs: Vec<i8>,
+}
+
+impl PotHole {
+    pub fn counts(&self) -> f64 {
+        self.to - self.from
+    }
+}
+
+/// The pot's holes over the slow rungs: pot counts a ripple cycle far over
+/// the pass's typical.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PotHoles {
+    /// Raw order.
+    pub holes: Vec<PotHole>,
+    /// Each pass's typical counts a cycle: the median over its inner
+    /// cycles.
+    pub m: Vec<(usize, f64)>,
+    /// The noise of the cycles over typical, and the line a cycle is far
+    /// over past; None without an inner cycle.
+    pub s: Option<f64>,
+    pub line: Option<f64>,
+    pub cycles: usize,
+    /// Cycles both of whose ends lie more than [`NEAR_STOP_COUNTS`] inside
+    /// the stops: the ones typical and the noise are read over.
+    pub inner_cycles: usize,
+    /// Slow rungs not read for holes, and why.
+    pub not_read: Vec<(usize, String)>,
+}
+
+impl PotHoles {
+    /// Ties go to the lowest.
+    pub fn longest(&self) -> Option<&PotHole> {
+        self.holes.iter().fold(None, |l, h| match l {
+            Some(l) if l.counts() >= h.counts() => Some(l),
+            _ => Some(h),
+        })
+    }
+}
+
+/// The slow rungs the table read, each read again over its whole drive on
+/// the line its table read was seeded on: the table's read stops short of
+/// the stops, where a hole at the end of the track lies. Rungs the table
+/// did not read are not read.
+pub fn hole_reads(
+    rungs: &[RungRows],
+    read: &[RungSegment],
+    slots: &[u8; ADC_WIDE_SLOTS],
+    fs: f64,
+) -> (Vec<HoleRead>, Vec<(usize, String)>) {
+    let (mut out, mut not_read) = (Vec::new(), Vec::new());
+    for r in rungs.iter().filter(|r| r.pass_kind != PassKind::Fast) {
+        let line = match read.iter().find(|s| s.n == r.n).map(|s| &s.read) {
+            Some(Ok(s)) => s.f_seed,
+            Some(Err(why)) => {
+                not_read.push((r.n, format!("the table did not read it: {why}")));
+                continue;
+            }
+            None => continue,
+        };
+        let (pos, cur, duty) = columns(r.rows);
+        match postable::segment_seeded(&pos, &cur, &duty, slots, fs, postable::Seed::Line(line)) {
+            Ok(s) => out.push(HoleRead {
+                n: r.n,
+                pass: r.pass,
+                dir: r.dir,
+                cycles: postable::cycles(&s),
+            }),
+            Err(e) => not_read.push((r.n, segment_said(&e))),
         }
+    }
+    (out, not_read)
+}
+
+/// numpy's default percentile `q` of `v`, linear between the ranks; None
+/// when empty.
+fn percentile(v: &[f64], q: f64) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let h = q / 100.0 * (s.len() - 1) as f64;
+    let j = h.floor() as usize;
+    let next = s[(j + 1).min(s.len() - 1)];
+    Some(s[j] + (h - j as f64) * (next - s[j]))
+}
+
+/// The pot-hole rule over `reads`: `r` is a cycle's counts over its pass's
+/// typical, the noise `s` the [`NOISE_PERCENTILE`] of `|r - 1|` over the
+/// inner cycles of every rung, and a cycle anywhere on the read flags past
+/// `1 + FAR_K s`. Flagged cycles on one rung at most
+/// [`MERGE_GAP_CYCLES`] apart are one hole; holes from any rungs that
+/// overlap or lie within [`TOUCH_COUNTS`] merge.
+pub fn judge_pot_holes(reads: &[HoleRead], raw_min: u16, raw_max: u16) -> PotHoles {
+    let (lo, hi) = (
+        raw_min as f64 + NEAR_STOP_COUNTS,
+        raw_max as f64 - NEAR_STOP_COUNTS,
+    );
+    let inner = |c: &Cycle| lo <= c.lo() && c.hi() <= hi;
+    let mut passes: Vec<usize> = reads.iter().map(|r| r.pass).collect();
+    passes.sort_unstable();
+    passes.dedup();
+    let counts = |p: usize, only_inner: bool| -> Vec<f64> {
+        reads
+            .iter()
+            .filter(|r| r.pass == p)
+            .flat_map(|r| &r.cycles)
+            .filter(|c| !only_inner || inner(c))
+            .map(Cycle::counts)
+            .collect()
+    };
+    let m: Vec<(usize, f64)> = passes
+        .iter()
+        .filter_map(|&p| {
+            median(&counts(p, true))
+                .or_else(|| median(&counts(p, false)))
+                .map(|v| (p, v))
+        })
+        .collect();
+    let typical = |p: usize| {
+        m.iter()
+            .find(|(q, _)| *q == p)
+            .map_or(f64::NAN, |(_, v)| *v)
+    };
+    let off: Vec<f64> = reads
+        .iter()
+        .flat_map(|rd| rd.cycles.iter().map(move |c| (rd.pass, c)))
+        .filter(|(_, c)| inner(c))
+        .map(|(p, c)| (c.counts() / typical(p) - 1.0).abs())
+        .collect();
+    let mut out = PotHoles {
+        cycles: reads.iter().map(|r| r.cycles.len()).sum(),
+        inner_cycles: off.len(),
+        ..PotHoles::default()
+    };
+    let Some(s) = percentile(&off, NOISE_PERCENTILE) else {
+        out.m = m;
+        return out;
+    };
+    let line = 1.0 + FAR_K * s;
+    let mut found: Vec<PotHole> = reads
+        .iter()
+        .flat_map(|rd| rung_holes(rd, typical(rd.pass), line))
+        .collect();
+    (out.m, out.s, out.line) = (m, Some(s), Some(line));
+    found.sort_by(|a, b| a.from.total_cmp(&b.from));
+    for h in found {
+        match out.holes.last_mut() {
+            Some(o) if h.from <= o.to + TOUCH_COUNTS => {
+                o.to = o.to.max(h.to);
+                o.cycles = o.cycles.max(h.cycles);
+                o.r_max = o.r_max.max(h.r_max);
+                o.rungs.extend(h.rungs);
+                o.passes.extend(h.passes);
+                o.dirs.extend(h.dirs);
+            }
+            _ => out.holes.push(h),
+        }
+    }
+    for h in &mut out.holes {
+        for v in [&mut h.rungs, &mut h.passes] {
+            v.sort_unstable();
+            v.dedup();
+        }
+        h.dirs.sort_unstable();
+        h.dirs.dedup();
+    }
+    out
+}
+
+/// One rung's holes: its cycles over `m` counts a cycle past `line`, those
+/// at most [`MERGE_GAP_CYCLES`] apart one hole.
+pub fn rung_holes(rd: &HoleRead, m: f64, line: f64) -> Vec<PotHole> {
+    let r: Vec<f64> = rd.cycles.iter().map(|c| c.counts() / m).collect();
+    let mut groups: Vec<(usize, usize)> = Vec::new();
+    for i in (0..r.len()).filter(|&i| r[i] > line) {
+        match groups.last_mut() {
+            Some(g) if i - g.1 <= MERGE_GAP_CYCLES + 1 => g.1 = i,
+            _ => groups.push((i, i)),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(a, b)| {
+            let cs = &rd.cycles[a..=b];
+            PotHole {
+                from: cs.iter().map(Cycle::lo).fold(f64::INFINITY, f64::min),
+                to: cs.iter().map(Cycle::hi).fold(f64::NEG_INFINITY, f64::max),
+                cycles: b - a + 1,
+                r_max: r[a..=b].iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                rungs: vec![rd.n],
+                passes: vec![rd.pass],
+                dirs: vec![rd.dir],
+            }
+        })
+        .collect()
+}
+
+/// [`hole_reads`] judged by [`judge_pot_holes`].
+pub fn pot_holes(
+    rungs: &[RungRows],
+    read: &[RungSegment],
+    slots: &[u8; ADC_WIDE_SLOTS],
+    c: &JudgeCfg,
+) -> PotHoles {
+    let (reads, not_read) = hole_reads(rungs, read, slots, c.fs);
+    PotHoles {
+        not_read,
+        ..judge_pot_holes(&reads, c.raw_min, c.raw_max)
+    }
+}
+
+/// Degrees from the low stop of a pot reading, through the run's table and
+/// its counts a degree; None without either.
+fn from_low_stop(t: &TableRead, raw_min: u16) -> Option<impl Fn(f64) -> f64 + use<>> {
+    let (points, (cpd, _)) = (t.points?, t.scale?);
+    let mut full = [0i16; POINTS];
+    full[..INTERVALS].copy_from_slice(&points);
+    let lin = move |raw: f64| {
+        let raw = raw.round_ties_even().clamp(0.0, ADC_MASK as f64) as u16;
+        pos_lut::interp_q4(raw, &full) as f64 / 16.0
+    };
+    let zero = lin(raw_min as f64);
+    Some(move |raw: f64| (lin(raw) - zero) / cpd)
+}
+
+/// The pot holes' words: the longest in counts and degrees and how many.
+fn pot_said(h: &PotHoles, deg: Option<&dyn Fn(f64) -> f64>) -> String {
+    let Some(line) = h.line else {
+        return match h.cycles {
+            0 => "no slow rung read for holes".into(),
+            n => format!(
+                "none judged: of the {n} cycles read none lies {NEAR_STOP_COUNTS} counts inside both stops"
+            ),
+        };
+    };
+    let over = format!(
+        "the cycles over {line:.2} x their pass's typical counts a ripple cycle, of {} read",
+        h.cycles
+    );
+    match h.longest() {
+        None => format!("no hole, {over}"),
+        Some(l) => format!(
+            "the longest hole {:.0} counts{} at raw {:.0}..{:.0}; {} in all, {over}",
+            l.counts(),
+            deg.map_or(String::new(), |f| format!(
+                " ({:.2} deg)",
+                f(l.to) - f(l.from)
+            )),
+            l.from,
+            l.to,
+            match h.holes.len() {
+                1 => "1 hole".to_string(),
+                n => format!("{n} holes"),
+            }
+        ),
     }
 }
 
@@ -2855,17 +3165,24 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let slots = finding.as_ref().map_or([0; ADC_WIDE_SLOTS], |f| f.slots);
     let table = read_table_with(rungs, &slots, c, from_fast);
     checks.extend(table_checks(&table, c));
-    let holes = holes(rungs, c);
+    let pot = pot_holes(rungs, &table.rungs, &slots, c);
+    let adc = adc_holes(rungs, c);
+    let low = from_low_stop(&table, c.raw_min);
     checks.push(Check::reported(
         HOLES,
-        holes_said(&holes, table.scale.map(|s| s.0)),
+        format!(
+            "pot: {}; ADC wide codes: {}",
+            pot_said(&pot, low.as_ref().map(|f| f as &dyn Fn(f64) -> f64)),
+            adc_said(&adc, table.scale.map(|s| s.0))
+        ),
     ));
     Judged {
         finding,
         halves,
         swept: (lo, hi),
         rows_a_code,
-        holes,
+        pot_holes: pot,
+        adc_holes: adc,
         table,
         checks,
     }
@@ -3325,25 +3642,59 @@ fn result_json(
             }),
         );
         o.insert("table".into(), table_json(&j.table));
-        let cpd = j.table.scale.map(|s| s.0);
-        let deg = |n: usize| cpd.map(|cpd| n as f64 / cpd);
-        o.insert(
-            "holes".into(),
-            json!({
-                "longest": j.holes.longest.map(|l| json!({"from_counts": l.from, "to_counts": l.to,
-                    "counts": l.codes(), "deg": deg(l.codes())})),
-                "runs": j.holes.runs, "codes": j.holes.codes,
-                "crossed": {"counts": j.holes.crossed, "deg": deg(j.holes.crossed),
-                    "from_counts": j.holes.span.map(|s| s.0), "to_counts": j.holes.span.map(|s| s.1)},
-                "edge_margin_counts": EDGE_MARGIN_COUNTS,
-                "source": "runs of codes the slow passes' driven rows never read, each wholly inside the codes a slow rung crossed less the edge margin at each turn (oscnb widecodes.find's rule); degrees over the table's counts_per_deg",
-            }),
-        );
+        o.insert("holes".into(), holes_json(j, cfg));
         if way == Way::Done {
             accepted(o, j);
         }
     }
     out
+}
+
+/// Both kinds of hole, every one listed: the pot's by the ripple rate,
+/// the ADC's by codes never read.
+fn holes_json(j: &Judged, cfg: &JudgeCfg) -> Value {
+    let cpd = j.table.scale.map(|s| s.0);
+    let deg = |n: usize| cpd.map(|cpd| n as f64 / cpd);
+    let low = from_low_stop(&j.table, cfg.raw_min);
+    let shaft = cfg
+        .gear_ratio
+        .map(|g| 360.0 / (cfg.events_per_rev as f64 * g));
+    let p = &j.pot_holes;
+    let pot = |h: &PotHole| {
+        json!({"from_counts": h.from, "to_counts": h.to, "counts": h.counts(),
+            "deg_from_low_stop": low.as_ref().map(|f| [f(h.from), f(h.to)]),
+            "deg": low.as_ref().map(|f| f(h.to) - f(h.from)),
+            "cycles": h.cycles, "shaft_deg": shaft.map(|d| h.cycles as f64 * d), "r_max": h.r_max,
+            "rungs": h.rungs, "passes": h.passes, "dirs": h.dirs})
+    };
+    let a = &j.adc_holes;
+    let run = |r: &CodeRun| {
+        json!({"from_counts": r.from, "to_counts": r.to, "counts": r.codes(), "deg": deg(r.codes()),
+            "above_carry": r.above_carry()})
+    };
+    json!({
+        "pot": {
+            "holes": p.holes.iter().map(pot).collect::<Vec<_>>(),
+            "longest": p.longest().map(pot),
+            "m": p.m.iter().map(|(pass, m)| json!({"pass": pass, "counts_per_cycle": m})).collect::<Vec<_>>(),
+            "s": p.s, "line": p.line, "cycles": p.cycles, "inner_cycles": p.inner_cycles,
+            "not_read": p.not_read.iter().map(|(n, why)| json!({"rung": n, "why": why})).collect::<Vec<_>>(),
+            "far_k": FAR_K, "noise_percentile": NOISE_PERCENTILE, "inner_margin_counts": NEAR_STOP_COUNTS,
+            "merge_gap_cycles": MERGE_GAP_CYCLES, "touch_counts": TOUCH_COUNTS,
+        },
+        "adc": {
+            "runs": a.runs.iter().map(run).collect::<Vec<_>>(),
+            "longest": a.longest.as_ref().map(run),
+            "codes": a.codes,
+            "crossed": {"counts": a.crossed, "deg": deg(a.crossed),
+                "from_counts": a.span.map(|s| s.0), "to_counts": a.span.map(|s| s.1)},
+            "edge_margin_counts": EDGE_MARGIN_COUNTS,
+        },
+        "source": {
+            "pot": "pot counts a ripple cycle on each slow rung the table read, read again over its whole drive on the line the table read was seeded on; r the counts over the pass's median over its cycles more than inner_margin_counts inside both stops; a hole where r > 1 + far_k s, s the noise_percentile of |r - 1| over those inner cycles; flagged cycles merge_gap_cycles apart on a rung, and holes from any rungs within touch_counts, are one; degrees from the low stop through the run's table over its counts_per_deg, shaft_deg the cycles x 360 over the nameplate's brushes x rotor_segments x gear_ratio",
+            "adc": "the ADC's wide codes: runs of codes the slow passes' driven rows never read, each wholly inside the codes a slow rung crossed less the edge margin at each turn (oscnb widecodes.find's rule); degrees over the table's counts_per_deg",
+        },
+    })
 }
 
 fn segment_json(r: &RungSegment) -> Value {
@@ -3686,6 +4037,7 @@ mod tests {
         testkit::fields_back(&mut r.c, &descriptor(), true, &e.exit.to_string());
         let res = result(&mut r.sink);
         assert_eq!(res["verdict"], "accepted");
+        holes_block_is_whole(&res["holes"], &t.checks);
         assert!(
             t.checks
                 .iter()
@@ -4106,10 +4458,11 @@ mod tests {
         assert!(res["points_by_page"].is_array() && res["slots"].is_array());
     }
 
-    /// A hole counts only where the shaft crossed it: wholly inside a slow
-    /// rung's codes less the edge margin at each turn. Codes between two
-    /// rungs' reach, next to a turn or read only by a fast pass are no
-    /// hole of the slow passes'.
+    /// An ADC hole counts only where the shaft crossed it: wholly inside a
+    /// slow rung's codes less the edge margin at each turn. Codes between
+    /// two rungs' reach, next to a turn or read only by a fast pass are no
+    /// hole of the slow passes'. Every run is listed, with the carry under
+    /// it.
     #[test]
     fn a_hole_is_a_run_never_read_inside_the_codes_crossed() {
         let drive = |codes: Vec<u16>| -> Vec<TelFrame> {
@@ -4152,26 +4505,186 @@ mod tests {
             gear_ratio: None,
             travel_deg: 180.0,
         };
-        let h = holes(&rungs, &c);
-        assert_eq!(h.longest, Some(Hole { from: 300, to: 304 }));
-        assert_eq!((h.runs, h.codes), (2, 7));
+        let h = adc_holes(&rungs, &c);
+        assert_eq!(h.longest, Some(CodeRun { from: 300, to: 304 }));
+        assert_eq!(
+            h.runs,
+            [
+                CodeRun { from: 300, to: 304 },
+                CodeRun { from: 750, to: 751 }
+            ]
+        );
+        assert_eq!(h.codes, 7);
         assert_eq!(h.crossed, (585 - 115 + 1) + (785 - 715 + 1));
         assert_eq!(h.span, Some((115, 785)));
         assert_eq!(
-            holes_said(&h, Some(20.0)),
+            adc_said(&h, Some(20.0)),
             "the longest run of codes never read 5 counts (0.25 deg) at raw 300..304; 2 runs, 7 codes in all, over the 542 codes (27.10 deg) the slow passes crossed, raw 115..785, 15 counts off each turn"
         );
         let carry = drive((200..=300).filter(|c| !(256..=258).contains(c)).collect());
-        let h = holes(&[rung(1, PassKind::Slow, &carry)], &c);
-        assert!(holes_said(&h, None).contains("at raw 256..258, just above carry 255;"));
+        let h = adc_holes(&[rung(1, PassKind::Slow, &carry)], &c);
+        assert_eq!(h.runs, [CodeRun { from: 256, to: 258 }]);
+        assert_eq!(h.runs[0].above_carry(), Some(255));
+        assert_eq!(h.longest.and_then(|l| l.above_carry()), Some(255));
+        assert!(adc_said(&h, None).contains("at raw 256..258, just above carry 255;"));
         let whole = drive((700..=800).collect());
         assert_eq!(
-            holes_said(&holes(&[rung(1, PassKind::Slow, &whole)], &c), None),
+            adc_said(&adc_holes(&[rung(1, PassKind::Slow, &whole)], &c), None),
             "no code the shaft crossed went unread, over the 71 codes the slow passes crossed, raw 715..785, 15 counts off each turn"
         );
         assert_eq!(
-            holes_said(&holes(&[rung(1, PassKind::Slow, &whole[..10])], &c), None),
+            adc_said(
+                &adc_holes(&[rung(1, PassKind::Slow, &whole[..10])], &c),
+                None
+            ),
             "no slow rung crossed a code"
+        );
+    }
+
+    /// The result's holes block: both kinds, every hole listed, each
+    /// longest the list's, and the check naming both.
+    fn holes_block_is_whole(h: &Value, checks: &[Check]) {
+        let keys: Vec<&str> = h
+            .as_object()
+            .expect("holes")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(keys, ["pot", "adc", "source"], "{h}");
+        let pot = &h["pot"];
+        let (s, line) = (n(&pot["s"]), n(&pot["line"]));
+        assert!((line - (1.0 + FAR_K * s)).abs() < 1e-12, "{pot}");
+        assert!(n(&pot["cycles"]) >= n(&pot["inner_cycles"]) && n(&pot["inner_cycles"]) > 0.0);
+        assert!(!pot["m"].as_array().expect("m").is_empty(), "{pot}");
+        let holes = pot["holes"].as_array().expect("pot holes");
+        for p in holes {
+            assert!(n(&p["to_counts"]) >= n(&p["from_counts"]), "{p}");
+            assert!((n(&p["counts"]) - (n(&p["to_counts"]) - n(&p["from_counts"]))).abs() < 1e-9);
+            assert!(n(&p["r_max"]) > line && n(&p["cycles"]) >= 1.0, "{p}");
+            assert_eq!(
+                p["deg_from_low_stop"].as_array().map(Vec::len),
+                Some(2),
+                "{p}"
+            );
+            assert!(p["shaft_deg"].is_number() && p["deg"].is_number(), "{p}");
+        }
+        let widest = |v: &[Value]| {
+            v.iter()
+                .fold(None::<&Value>, |l, x| match l {
+                    Some(l) if n(&l["counts"]) >= n(&x["counts"]) => Some(l),
+                    _ => Some(x),
+                })
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(pot["longest"], widest(holes), "{pot}");
+        let adc = &h["adc"];
+        let runs = adc["runs"].as_array().expect("adc runs");
+        assert!(!runs.is_empty(), "{adc}");
+        assert_eq!(adc["longest"], widest(runs), "{adc}");
+        let codes: f64 = runs.iter().map(|r| n(&r["counts"])).sum();
+        assert_eq!(codes, n(&adc["codes"]));
+        assert!(runs.iter().all(|r| r.get("above_carry").is_some()), "{adc}");
+        assert!(
+            n(&adc["crossed"]["counts"]) > 0.0 && adc["edge_margin_counts"] == EDGE_MARGIN_COUNTS
+        );
+        let said = checks
+            .iter()
+            .find(|c| c.name == HOLES)
+            .map(Check::said)
+            .expect("the holes check");
+        assert!(
+            said.contains("pot: ") && said.contains("; ADC wide codes: "),
+            "{said}"
+        );
+    }
+
+    /// The pot-hole rule on hand-made cycles at 0.9, 1.0 and 1.1 counts a
+    /// cycle, each pass's typical 1: the noise is the 99th percentile of
+    /// |r - 1| over the inner cycles, 0.1, so the line is 1.4. Flagged
+    /// cycles one unflagged cycle apart are one hole, two apart are two; a
+    /// cycle by a stop flags though it is not inner; holes from two rungs
+    /// within 2 counts merge, 2.5 apart do not.
+    #[test]
+    fn pot_holes_flag_far_over_typical_and_merge_by_the_rules() {
+        let regular = |i: usize, at: f64, dir: f64| {
+            let c = [0.9, 1.0, 1.1][i % 3];
+            Cycle {
+                k: i,
+                from: at,
+                to: at + dir * c,
+            }
+        };
+        let cyc = |k: usize, from: f64, to: f64| Cycle { k, from, to };
+        let mut down: Vec<Cycle> = (0..600)
+            .map(|i| regular(i, 3000.0 - i as f64, -1.0))
+            .collect();
+        down[300] = cyc(300, 1500.0, 1495.0);
+        down[301] = cyc(301, 1495.0, 1494.0);
+        down[302] = cyc(302, 1494.0, 1491.0);
+        down[305] = cyc(305, 1300.0, 1297.0);
+        down.push(cyc(600, 20.0, 2.0));
+        let mut up: Vec<Cycle> = (0..600)
+            .map(|i| regular(i, 500.0 + i as f64, 1.0))
+            .collect();
+        up[100] = cyc(100, 1501.5, 1504.5);
+        up[400] = cyc(400, 1302.5, 1305.5);
+        let reads = [
+            HoleRead {
+                n: 1,
+                pass: 1,
+                dir: -1,
+                cycles: down,
+            },
+            HoleRead {
+                n: 2,
+                pass: 2,
+                dir: 1,
+                cycles: up,
+            },
+        ];
+        let h = judge_pot_holes(&reads, 0, 4000);
+        assert_eq!(h.m, [(1, 1.0), (2, 1.0)]);
+        assert_eq!((h.cycles, h.inner_cycles), (1201, 1200));
+        assert!((h.s.expect("s") - 0.1).abs() < 1e-9, "{h:?}");
+        assert!((h.line.expect("line") - 1.4).abs() < 1e-9, "{h:?}");
+        let hole =
+            |from, to, cycles, r_max, rungs: &[usize], passes: &[usize], dirs: &[i8]| PotHole {
+                from,
+                to,
+                cycles,
+                r_max,
+                rungs: rungs.to_vec(),
+                passes: passes.to_vec(),
+                dirs: dirs.to_vec(),
+            };
+        assert_eq!(
+            h.holes,
+            [
+                hole(2.0, 20.0, 1, 18.0, &[1], &[1], &[-1]),
+                hole(1297.0, 1300.0, 1, 3.0, &[1], &[1], &[-1]),
+                hole(1302.5, 1305.5, 1, 3.0, &[2], &[2], &[1]),
+                hole(1491.0, 1504.5, 3, 5.0, &[1, 2], &[1, 2], &[-1, 1]),
+            ]
+        );
+        assert_eq!(h.longest().map(|p| p.from), Some(2.0));
+        assert_eq!(
+            pot_said(&h, None),
+            "the longest hole 18 counts at raw 2..20; 4 holes in all, the cycles over 1.40 x their pass's typical counts a ripple cycle, of 1201 read"
+        );
+        // no inner cycle: typical from every cycle of the pass, no line
+        let outside = judge_pot_holes(&reads[1..2], 0, 400);
+        assert_eq!(
+            (&outside.m, outside.s, &outside.holes),
+            (&vec![(2, 1.0)], None, &vec![])
+        );
+        assert_eq!(
+            pot_said(&outside, None),
+            "none judged: of the 600 cycles read none lies 32 counts inside both stops"
+        );
+        assert_eq!(
+            pot_said(&judge_pot_holes(&[], 0, 4000), None),
+            "no slow rung read for holes"
         );
     }
 
