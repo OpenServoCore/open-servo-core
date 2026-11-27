@@ -171,6 +171,8 @@ The grid laws:
 4. **Foundation crates stay end-neutral.** No servo-shaped or host-shaped types in the shared row; each end brings its own vocabulary.
 5. **Roles compose on one die.** A limb gateway instantiates the servo stack toward its upstream bus and the host stack toward its downstream bus. The grid names roles, not chips — which is why the columns must never fuse.
 
+A servo board bin states its board facts in one `BoardConfig` literal passed to `run!`: the wiring, the `Calibration` (sense chain, dividers, NTC, the window floors), the `ConfigDefaults` (comms and travel) and the `ProtectionDefaults`. The last holds what the board's motor, supply and sense chain stand, in physical units: the continuous current and its release, the overcurrent trip and its window, the winding's thermal constant and cutoff, the undervolt floor, the supply's source resistance and the drive polarity. The core converts them through the board's chain at build time (`ProtectionSeed`) and seeds CONFIG with them at boot, where the host may rewrite and SAVE them; it has no fallback for any of them, so a new board states each one. Defaults that are no board fact (the duty ceiling, the profile acceleration, the hold deadband, the observer gains, the press detector's rest, the fault screens) stay in the core's `regions/config.rs`. The sim mirrors the osc-dev-v006 values as `DEV_V006_PROTECTION`, and `the_dev_v006_boot_seed_is_pinned` pins the CONFIG they seed.
+
 ---
 
 ## 3. The driver convention

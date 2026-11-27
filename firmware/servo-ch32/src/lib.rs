@@ -7,7 +7,7 @@
 #![allow(clippy::manual_clamp)]
 
 pub use osc_servo_core::bp;
-pub use osc_servo_core::{BaudRate, ConfigDefaults, FIRMWARE_VERSION};
+pub use osc_servo_core::{BaudRate, ConfigDefaults, FIRMWARE_VERSION, ProtectionDefaults};
 
 pub mod cfg;
 pub mod hal;

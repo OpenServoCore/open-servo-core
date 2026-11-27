@@ -45,7 +45,7 @@ pub use telemetry::{
 };
 pub use telemetry_ext::TelemetryExtRegs;
 
-use crate::regions::config::{ConfigDefaults, CurrentDefaults};
+use crate::regions::config::{ConfigDefaults, ProtectionSeed};
 use control_table::{RegionStorage, Table};
 use osc_protocol::table;
 
@@ -79,19 +79,10 @@ pub struct ControlTable {
 }
 
 impl ControlTableCell {
-    /// The soft limits stay 0 / 0, off. Caller must be sole writer
-    /// (install-time, pre-IRQ).
-    /// `v_undervolt_counts` is `config::DEFAULT_V_UNDERVOLT_MV` through the
-    /// board's terminal divider (`config::vmotor_counts`), `rail_fold_q8`
-    /// `config::DEFAULT_RAIL_SOURCE_MOHM` through both chains
-    /// (`config::rail_fold_q8`).
-    pub fn seed_config_defaults(
-        &self,
-        defaults: &ConfigDefaults,
-        current: &CurrentDefaults,
-        v_undervolt_counts: u16,
-        rail_fold_q8: u16,
-    ) {
+    /// The soft limits stay 0 / 0, off. `protection` is the board's
+    /// `config::ProtectionDefaults` through its chains. Caller must be sole
+    /// writer (install-time, pre-IRQ).
+    pub fn seed_config_defaults(&self, defaults: &ConfigDefaults, protection: &ProtectionSeed) {
         crate::log::debug!(
             "seed CONFIG: phys=[{}, {}] counts  id={}  baud_idx={}",
             defaults.pos_min_phys_counts,
@@ -118,22 +109,23 @@ impl ControlTableCell {
             cfg.fusion.l1_q016 = config::DEFAULT_L1_Q016;
             cfg.fusion.l2_q88 = config::DEFAULT_L2_Q88;
             cfg.fusion.l3_q88 = config::DEFAULT_L3_Q88;
-            cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
+            let p = protection;
+            cfg.limits.drive_polarity = p.drive_polarity;
             cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
             cfg.limits.stall_time_ticks = config::DEFAULT_STALL_TIME_TICKS;
-            cfg.limits.i_cont_counts = current.i_cont_counts;
-            cfg.limits.stall_release_counts = current.stall_release_counts;
+            cfg.limits.i_cont_counts = p.i_cont_counts;
+            cfg.limits.stall_release_counts = p.stall_release_counts;
             cfg.limits.stall_tau_trip_counts = config::STALL_TAU_TRIP_OFF;
-            cfg.limits.oc_trip_counts = current.oc_trip_counts;
-            cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
-            cfg.limits.thermal_tau_s = config::DEFAULT_THERMAL_TAU_S;
-            cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
-            cfg.thermal.v_undervolt_counts = v_undervolt_counts;
+            cfg.limits.oc_trip_counts = p.oc_trip_counts;
+            cfg.limits.oc_trip_ticks = p.oc_trip_ticks;
+            cfg.limits.thermal_tau_s = p.thermal_tau_s;
+            cfg.thermal.cutoff_cc = p.cutoff_cc;
+            cfg.thermal.v_undervolt_counts = p.v_undervolt_counts;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
             cfg.fault_cfg.pos_error_time_ticks = config::DEFAULT_POS_ERROR_TIME_TICKS;
             cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
             cfg.fault_cfg.sensor_bad_count = config::DEFAULT_SENSOR_BAD_COUNT;
-            cfg.fault_cfg.rail_fold_q8 = rail_fold_q8;
+            cfg.fault_cfg.rail_fold_q8 = p.rail_fold_q8;
         });
     }
 

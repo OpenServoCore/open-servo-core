@@ -10,15 +10,12 @@ use osc_servo_core::TelemetryTick;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::estimator::window::SettleGain;
 use osc_servo_core::pos_lut::POINTS;
-use osc_servo_core::regions::config::{
-    DEFAULT_RAIL_SOURCE_MOHM, DEFAULT_V_UNDERVOLT_MV, rail_fold_q8, vmotor_counts,
-};
 
 use super::support::TelSample;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{
-    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults, Reboot,
-    RegionStorage, Session, Shared,
+    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, ProtectionDefaults,
+    ProtectionSeed, Reboot, RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelLane};
@@ -55,6 +52,19 @@ pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
     rail_drop_mv: 250,
     vmotor_bias_top_ohm: 430,
     vmotor_bias_bot_ohm: 100,
+};
+
+/// The same app's `ProtectionDefaults`, copied.
+pub const DEV_V006_PROTECTION: ProtectionDefaults = ProtectionDefaults {
+    i_cont_ma: 250,
+    stall_release_ma: 90,
+    oc_trip_ma: 2200,
+    oc_trip_us: 400,
+    thermal_tau_s: 4,
+    cutoff_cc: 9000,
+    v_undervolt_mv: 2900,
+    rail_source_mohm: 800,
+    drive_polarity: true,
 };
 
 /// The same `Calibration`'s `bemf_window_min_ticks`, the floor the board
@@ -197,25 +207,7 @@ impl SimServo {
                 pos_max_phys_counts: PHYS_MAX_COUNTS,
                 ..Default::default()
             },
-            &CurrentDefaults::from_sense(
-                seed.sense.shunt_r_mohm,
-                seed.sense.gain_milli,
-                seed.sense.vdd_mv,
-            ),
-            vmotor_counts(
-                DEFAULT_V_UNDERVOLT_MV,
-                seed.sense.vmotor_div_top as u32,
-                seed.sense.vmotor_div_bot as u32,
-                seed.sense.vdd_mv,
-            ),
-            rail_fold_q8(
-                DEFAULT_RAIL_SOURCE_MOHM,
-                seed.sense.shunt_r_mohm,
-                seed.sense.gain_milli,
-                seed.sense.vdd_mv,
-                seed.sense.vmotor_div_top as u32,
-                seed.sense.vmotor_div_bot as u32,
-            ),
+            &ProtectionSeed::from_sense(&DEV_V006_PROTECTION, &seed.sense),
         );
         if let Some(store) = seed.store {
             store.boot_load(shared);

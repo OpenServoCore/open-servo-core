@@ -5,7 +5,7 @@ pub use crate::cfg::{
     Divider, DrvEn, Ntc,
 };
 pub use crate::hal::{Pin, opa};
-pub use crate::{BaudRate, ConfigDefaults};
+pub use crate::{BaudRate, ConfigDefaults, ProtectionDefaults};
 pub use osc_protocol::models::MODEL_OSC_SERVO;
 pub use osc_servo_core::estimator::window::SettleGain;
 pub use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
