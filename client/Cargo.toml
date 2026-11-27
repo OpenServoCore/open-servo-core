@@ -56,3 +56,9 @@ required-features = ["nusb"]
 [[example]]
 name = "mute_probe"
 required-features = ["nusb"]
+
+# The web packages ship over the network; size over speed (host-side code, no tick budget).
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
