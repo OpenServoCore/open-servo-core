@@ -9,6 +9,10 @@
 //! hardware. It lives behind the `fake` feature, on by default so the
 //! shipped package carries it; each servo's UID is derived from its id, so
 //! the same roster always discovers the same UIDs.
+//!
+//! The identification's inputs (`inputs`) are osc-ident-inputs' own types
+//! and rules: `validateProfile`, `validatePolicy`, `resolvePreview` and
+//! `migrate` give the CLI's messages and values.
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod boot;
@@ -18,6 +22,7 @@ mod descriptor;
 #[cfg(feature = "fake")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod fake;
+mod inputs;
 mod types;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod uid;
@@ -28,6 +33,7 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 pub use client::{OscClient, request_device};
 pub use descriptor::{Descriptor, Registry};
+pub use inputs::{Migrated, Preview};
 pub use types::*;
 
 /// The osc-adapter's USB vendor id.

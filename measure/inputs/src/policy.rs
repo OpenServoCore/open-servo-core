@@ -5,6 +5,11 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Switch {
     Off,
@@ -12,6 +17,11 @@ pub enum Switch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[serde(rename_all = "lowercase")]
 pub enum StallResponse {
     Fault,
@@ -36,7 +46,13 @@ impl StallResponse {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[serde(default)]
 pub struct Policy {
     /// The angle map's value at the clockwise stop.
     pub angle_cw_stop_deg: Option<f64>,
