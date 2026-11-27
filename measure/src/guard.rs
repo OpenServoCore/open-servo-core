@@ -4,7 +4,8 @@
 //! then the volatile fields the run changed put back, or the servo
 //! rebooted onto its saved state when one does not go back. If the bus is
 //! gone the dead-man has already dropped torque, so it is left armed
-//! until torque reads off.
+//! until torque reads off. Its last line counts the instructions the bus
+//! sent once more after no reply, when there were any.
 
 use std::fmt;
 
@@ -125,8 +126,10 @@ pub async fn exit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, ledger: &L
                 .is_ok_and(|b| b.first() == Some(&0)),
             Err(_) => false,
         };
+        let mut lines = vec!["nothing was written".into()];
+        resent(c, &mut lines);
         return Exit {
-            lines: vec!["nothing was written".into()],
+            lines,
             torque_off: off,
             rebooted: false,
         };
@@ -211,10 +214,21 @@ pub async fn exit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, ledger: &L
             )),
         }
     }
+    resent(c, &mut lines);
     Exit {
         lines,
         torque_off,
         rebooted,
+    }
+}
+
+fn resent<P: Pipe>(c: &mut Client<P>, lines: &mut Vec<String>) {
+    match c.take_resent() {
+        0 => {}
+        1 => lines.push("1 instruction drew no reply and was sent once more".into()),
+        n => lines.push(format!(
+            "{n} instructions drew no reply and were sent once more"
+        )),
     }
 }
 

@@ -49,6 +49,14 @@ impl<P: Pipe> Client<P> {
         self.0.set_guard(guard);
     }
 
+    pub fn set_resend(&mut self, on: bool) {
+        self.0.set_resend(on);
+    }
+
+    pub fn take_resent(&mut self) -> u32 {
+        self.0.take_resent()
+    }
+
     pub fn ticks(&self, span: u32) -> Duration {
         self.0.ticks(span)
     }

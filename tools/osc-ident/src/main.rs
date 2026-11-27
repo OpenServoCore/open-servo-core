@@ -364,6 +364,7 @@ fn parse_rate(s: &str) -> Result<BaudRate> {
 
 async fn connect(baud: &str, id: Id) -> Result<(Client<NusbPipe>, Descriptor)> {
     let mut c = Client::connect(NusbPipe::open()?).await?;
+    c.set_resend(true);
     match baud {
         "auto" => match mgmt::find_bus_baud(&mut c).await? {
             Some(rate) => eprintln!("bus at {} baud", rate.as_hz()),

@@ -1822,13 +1822,14 @@ mod tests {
         inner.seed_calibrated(0);
         inner.set_track(0, still());
         let log = Log::default();
-        let c = block_on(Client::connect(Spy {
+        let mut c = block_on(Client::connect(Spy {
             inner,
             log: log.clone(),
             on_write,
             on_read,
         }))
         .expect("connect");
+        c.set_resend(true);
         (c, log)
     }
 
@@ -2177,6 +2178,101 @@ mod tests {
             lines.contains("leg 1, approach toward the low stop"),
             "{lines}"
         );
+    }
+
+    /// The run of [`an_approach_and_seat_write_in_order_under_the_ceiling`]
+    /// with the approach's first duty write lost `write` times in a row and
+    /// its first poll read of the pos `read` times.
+    fn lost_in_the_approach(write: u32, read: u32) -> Ran {
+        let driven = Rc::new(Cell::new(false));
+        let on_write = {
+            let driven = driven.clone();
+            move |d: &Descriptor| -> OnWrite {
+                let (duty, driven) = (addr(d, "goal_duty"), driven.clone());
+                Box::new(move |a, b, pipe| {
+                    if a == duty && b != [0, 0] && !driven.get() {
+                        driven.set(true);
+                        pipe.lose_next(write);
+                        pipe.set_track(0, still_at(1900));
+                    }
+                })
+            }
+        };
+        let on_read = move |d: &Descriptor| -> OnRead {
+            let (pos, driven, mut first) = (addr(d, "pos"), driven.clone(), true);
+            Box::new(move |a, pipe| {
+                if a == pos && driven.get() && first {
+                    first = false;
+                    pipe.lose_next(read);
+                }
+            })
+        };
+        run_read(false, on_write, on_read, &AtomicBool::new(false))
+    }
+
+    /// One reply lost in the approach, a write's or a read's, is sent once
+    /// more: the step runs on to the end of a run that lost none, and the
+    /// way out counts the resends. The same one lost twice in a row aborts
+    /// the step through the way out, torque off.
+    #[test]
+    fn a_reply_lost_once_in_the_approach_is_resent_and_twice_aborts() {
+        let clean = lost_in_the_approach(0, 0);
+        let e = &clean.stopped.ended;
+        let why = e.why.clone().unwrap_or_default();
+        assert_eq!(e.way, Way::Error, "no shunt burst on the fake: {why}");
+        assert!(why.contains("seat 1 burst 1"), "{why}");
+        assert!(
+            !e.exit.lines.iter().any(|l| l.contains("sent once more")),
+            "{}",
+            e.exit
+        );
+        for (write, read, said) in [
+            (1, 0, "1 instruction drew no reply and was sent once more"),
+            (0, 1, "1 instruction drew no reply and was sent once more"),
+            (1, 1, "2 instructions drew no reply and were sent once more"),
+        ] {
+            let r = lost_in_the_approach(write, read);
+            let e = &r.stopped.ended;
+            assert_eq!(
+                (e.way, e.why.as_deref()),
+                (Way::Error, Some(why.as_str())),
+                "lost {write} write, {read} read"
+            );
+            assert_eq!(e.exit.lines.last().map(String::as_str), Some(said));
+            let res = r.stopped.result.as_ref().expect("result");
+            assert_eq!(
+                res["exit"].as_array().and_then(|l| l.last()),
+                Some(&json!(said))
+            );
+            let duties: Vec<&(&str, Vec<u8>)> = r
+                .writes
+                .iter()
+                .filter(|w| w.0 == "goal_duty" && w.1 != [0, 0])
+                .collect();
+            let sent: Vec<&(&str, Vec<u8>)> = clean
+                .writes
+                .iter()
+                .filter(|w| w.0 == "goal_duty" && w.1 != [0, 0])
+                .collect();
+            assert_eq!(duties[0], duties[write as usize], "the same duty again");
+            assert_eq!(
+                duties[write as usize..],
+                sent[..],
+                "then the clean run's duties"
+            );
+        }
+        for (write, read) in [(2, 0), (0, 2)] {
+            let r = lost_in_the_approach(write, read);
+            let e = &r.stopped.ended;
+            assert_eq!(e.way, Way::Error, "{:?}", e.why);
+            let why = e.why.as_deref().unwrap_or("");
+            assert!(why.starts_with("bus: no reply (slot 0)"), "{why}");
+            assert!(e.exit.torque_off, "{}", e.exit);
+            assert_eq!(
+                e.exit.lines.last().map(String::as_str),
+                Some("1 instruction drew no reply and was sent once more")
+            );
+        }
     }
 
     /// A dead-man latched in a drive refuses with the stall sentence; an

@@ -1588,6 +1588,13 @@ it):
   volatile fields the run changed, or reboots the servo onto its saved
   state where one does not go back. With the bus gone the dead-man has
   already dropped torque, so it is left armed until torque reads off.
+- A unicast READ or WRITE that draws no reply goes once more after its
+  timeout (sec 5.3: a frame the servo dropped draws none), and a second
+  silence in a row ends the step by the way out above, which counts the
+  resends. Every write a drive makes leaves the table as one receipt
+  does. MGMT, PING, the WRITE or COMMIT that carries a TEL burst, and a
+  write over `id` or `baud_rate_idx`, which the servo applies after its
+  reply, go once only.
 - A shunt burst arms, then polls BURST `state`: 3 `DONE` walks the eight
   pages, 4 `REJECTED` is a refused arm. `REJECTED` does not say which
   rule refused it, so the host treats it as a failure, and a rejected or

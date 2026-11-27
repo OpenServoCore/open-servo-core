@@ -217,6 +217,106 @@ fn absent_servo_times_out() {
     }
 }
 
+fn host_frames(c: &mut Client<FakePipe>) -> usize {
+    c.pipe_mut()
+        .take_frames()
+        .iter()
+        .filter(|f| matches!(f.from, Source::Host))
+        .count()
+}
+
+/// A READ or a WRITE lost once goes again and lands; the take counts it
+/// and restarts.
+#[test]
+fn a_read_or_a_write_lost_once_is_sent_once_more() {
+    let id = Id::new(5);
+    let mut c = fleet(&[5]);
+    c.set_resend(true);
+    c.pipe_mut().take_frames();
+    c.pipe_mut().lose_next(1);
+    c.write(id, GOAL_VELOCITY, &[7, 0, 0, 0]).expect("write");
+    assert_eq!(host_frames(&mut c), 2, "the write and its resend");
+    assert_eq!(c.take_resent(), 1);
+    c.pipe_mut().lose_next(1);
+    assert_eq!(read_u16(&mut c, id, GOAL_VELOCITY), 7);
+    assert_eq!(host_frames(&mut c), 2, "the read and its resend");
+    assert_eq!(c.take_resent(), 1);
+    assert_eq!(c.take_resent(), 0, "the take restarts the count");
+}
+
+/// Two losses in a row time out as one did before; with resend off, one
+/// does.
+#[test]
+fn a_second_loss_in_a_row_or_resend_off_times_out() {
+    let id = Id::new(5);
+    let mut c = fleet(&[5]);
+    c.set_resend(true);
+    c.pipe_mut().lose_next(2);
+    assert_eq!(
+        c.read(id, GOAL_VELOCITY, 2),
+        Err(Error::Timeout { slot: 0 })
+    );
+    assert_eq!(c.take_resent(), 1);
+    c.set_resend(false);
+    c.pipe_mut().take_frames();
+    c.pipe_mut().lose_next(1);
+    assert_eq!(
+        c.write(id, GOAL_VELOCITY, &[1, 0, 0, 0]),
+        Err(Error::Timeout { slot: 0 })
+    );
+    assert_eq!(host_frames(&mut c), 1);
+    assert_eq!(c.take_resent(), 0);
+}
+
+/// What acts on each receipt or moves the servo after its reply goes on
+/// the wire once, lost or not: SAVE, REBOOT, FACTORY, PING, a write over
+/// `id` or `baud_rate_idx`, and the WRITE that carries a TEL burst.
+#[test]
+fn a_command_or_a_move_is_never_sent_again() {
+    let id = Id::new(5);
+    let mut c = fleet(&[5]);
+    c.set_resend(true);
+    let idx = BaudRate::B1000000.as_idx();
+    type Once = fn(&mut Client<FakePipe>, Id, u8) -> Result<(), Error>;
+    let once: [(&str, Once); 7] = [
+        ("save", |c, id, _| c.save(id)),
+        ("reboot", |c, id, _| c.reboot(id)),
+        ("factory", |c, id, _| c.factory(id)),
+        ("ping", |c, id, _| c.ping(id).map(|_| ())),
+        ("baud_rate_idx", |c, id, idx| {
+            c.write(id, table::BAUD_RATE_IDX, &[idx])
+        }),
+        ("id and baud_rate_idx", |c, id, idx| {
+            c.write(id, table::ID, &[id.as_byte(), idx])
+        }),
+        ("the TEL carrier", |c, id, _| {
+            let mut p = [0u8; 8];
+            let n = osc_protocol::build::write(&mut p, GOAL_VELOCITY, &[0; 4]).expect("fits");
+            let inst = Inst::instruction(Opcode::Write, 0);
+            match c
+                .exchange_stream(id, inst, &p[..n], Duration::from_millis(5))?
+                .outcome
+            {
+                Outcome::Timeout { slot } => Err(Error::Timeout { slot }),
+                _ => Ok(()),
+            }
+        }),
+    ];
+    for (what, send) in once {
+        c.pipe_mut().take_frames();
+        c.pipe_mut().lose_next(1);
+        assert_eq!(
+            send(&mut c, id, idx),
+            Err(Error::Timeout { slot: 0 }),
+            "{what}"
+        );
+        assert_eq!(host_frames(&mut c), 1, "{what}: one frame on the wire");
+        assert_eq!(c.take_resent(), 0, "{what}");
+    }
+    c.ping(id)
+        .expect("the servo still answers on its id and rate");
+}
+
 #[test]
 fn invalid_id_rejects_before_the_wire() {
     let mut c = fleet(&[5]);
