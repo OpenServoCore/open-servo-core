@@ -1,6 +1,5 @@
 //! Data state, the host half of the firmware's `data_state` module:
-//! `data_flags` names every reason the persisted images and the
-//! identified set behind the closed loops are not the servo's own, as
+//! `data_flags` names every persisted image the servo did not load, as
 //! information. No reason refuses a mode: the kernel's belt latches
 //! `fault::DATA`, on the constants a loop would run on. Bits and codes
 //! mirror the servo core (pinned against it by the fake-adapter test); the
@@ -20,11 +19,6 @@ pub const CONFIG_VIRGIN: u8 = 1 << 0;
 pub const CONFIG_CORRUPT: u8 = 1 << 1;
 pub const CALIB_VIRGIN: u8 = 1 << 2;
 pub const CALIB_CORRUPT: u8 = 1 << 3;
-/// The last checkpoint's recompute differed from `plant_stamp`, or a
-/// covered field was written since.
-pub const STAMP_MISMATCH: u8 = 1 << 4;
-/// `recip_ke_q == 0 || ke_vpc_q == 0` at the last checkpoint.
-pub const PLANT_UNSET: u8 = 1 << 5;
 /// A CRC-valid CONFIG image of another layout version, handled like a
 /// fresh servo.
 pub const CONFIG_STALE: u8 = 1 << 6;
@@ -70,21 +64,17 @@ pub enum Reason {
     CalibStale,
     ConfigVirgin,
     CalibVirgin,
-    StampMismatch,
-    PlantUnset,
 }
 
 impl Reason {
     /// Every reason, most urgent first: the order a host reports them in.
-    pub const ALL: [Reason; 8] = [
+    pub const ALL: [Reason; 6] = [
         Reason::ConfigCorrupt,
         Reason::CalibCorrupt,
         Reason::ConfigStale,
         Reason::CalibStale,
         Reason::ConfigVirgin,
         Reason::CalibVirgin,
-        Reason::StampMismatch,
-        Reason::PlantUnset,
     ];
 
     pub const fn bit(self) -> u8 {
@@ -95,8 +85,6 @@ impl Reason {
             Reason::CalibStale => CALIB_STALE,
             Reason::ConfigVirgin => CONFIG_VIRGIN,
             Reason::CalibVirgin => CALIB_VIRGIN,
-            Reason::StampMismatch => STAMP_MISMATCH,
-            Reason::PlantUnset => PLANT_UNSET,
         }
     }
 
@@ -108,30 +96,13 @@ impl Reason {
             Reason::CalibStale => "CALIB_STALE",
             Reason::ConfigVirgin => "CONFIG_VIRGIN",
             Reason::CalibVirgin => "CALIB_VIRGIN",
-            Reason::StampMismatch => "STAMP_MISMATCH",
-            Reason::PlantUnset => "PLANT_UNSET",
         }
     }
 
     /// What it means and what to do about it. Information: no reason
-    /// refuses a mode.
+    /// refuses a mode, and every reason means the same to an operator.
     pub const fn text(self) -> &'static str {
-        match self {
-            Reason::ConfigCorrupt
-            | Reason::CalibCorrupt
-            | Reason::ConfigStale
-            | Reason::CalibStale
-            | Reason::ConfigVirgin
-            | Reason::CalibVirgin => {
-                "Settings not identified (defaults); run an identification: osc-ident run, then osc-ident save."
-            }
-            Reason::StampMismatch => {
-                "Changed since a tool stamped the set (edited, rebuilt or partly written); it runs as written. osc-ident check compares it with a set."
-            }
-            Reason::PlantUnset => {
-                "Motor not identified (Ke 0): closed loop refused. Run an identification: osc-ident run."
-            }
-        }
+        "Settings not identified (defaults); run an identification: osc-ident run, then osc-ident save."
     }
 }
 
@@ -205,7 +176,7 @@ mod tests {
 
     #[test]
     fn every_bit_is_one_reason_and_reasons_come_most_urgent_first() {
-        assert_eq!(Reason::ALL.iter().fold(0, |m, r| m | r.bit()), 0xFF);
+        assert_eq!(Reason::ALL.iter().fold(0, |m, r| m | r.bit()), SAVE_CLEARS);
         for (i, a) in Reason::ALL.iter().enumerate() {
             for b in &Reason::ALL[i + 1..] {
                 assert_ne!(a.bit(), b.bit());
@@ -213,13 +184,10 @@ mod tests {
         }
         assert_eq!(reasons(0), []);
         assert_eq!(
-            reasons(PLANT_UNSET | CALIB_STALE | STAMP_MISMATCH),
-            [
-                Reason::CalibStale,
-                Reason::StampMismatch,
-                Reason::PlantUnset
-            ]
+            reasons(CALIB_VIRGIN | CALIB_STALE),
+            [Reason::CalibStale, Reason::CalibVirgin]
         );
+        assert_eq!(reasons(0x30), [], "bits 4 and 5 are reserved");
         assert_eq!(reasons(0xFF)[0], Reason::ConfigCorrupt);
     }
 
@@ -232,12 +200,12 @@ mod tests {
         assert_eq!(s.message(), None);
         assert_eq!(s.names(), "");
         let s = DataState {
-            flags: CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET,
+            flags: CALIB_STALE | CONFIG_VIRGIN,
             fault_code: fault::NONE,
         };
-        assert_eq!(s.names(), "CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET");
+        assert_eq!(s.names(), "CALIB_STALE | CONFIG_VIRGIN");
         assert_eq!(s.message().unwrap(), Reason::CalibStale.text());
-        for flags in [0, PLANT_UNSET] {
+        for flags in [0, CALIB_VIRGIN] {
             let s = DataState {
                 flags,
                 fault_code: fault::DATA,
@@ -250,7 +218,7 @@ mod tests {
 
     #[test]
     fn save_clears_every_image_reason() {
-        assert_eq!(SAVE_CLEARS, !(STAMP_MISMATCH | PLANT_UNSET));
+        assert_eq!(SAVE_CLEARS, !0x30);
     }
 
     /// The bits and codes are the servo core's, not a second opinion.
@@ -263,8 +231,6 @@ mod tests {
         assert_eq!(CONFIG_CORRUPT, fw::CONFIG_CORRUPT);
         assert_eq!(CALIB_VIRGIN, fw::CALIB_VIRGIN);
         assert_eq!(CALIB_CORRUPT, fw::CALIB_CORRUPT);
-        assert_eq!(STAMP_MISMATCH, fw::STAMP_MISMATCH);
-        assert_eq!(PLANT_UNSET, fw::PLANT_UNSET);
         assert_eq!(CONFIG_STALE, fw::CONFIG_STALE);
         assert_eq!(CALIB_STALE, fw::CALIB_STALE);
         assert_eq!(SAVE_CLEARS, fw::SAVE_CLEARS);

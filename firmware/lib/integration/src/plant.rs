@@ -12,7 +12,6 @@ use osc_servo_core::estimator::{pot_current, window};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::regions::config::ms_ticks;
-use osc_servo_core::stamp;
 use osc_servo_core::{
     ControlIo, ControlTable, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd,
     RegionStorage, SensorFrame, Sensors, Shared, StallResponse, TelStream,
@@ -123,8 +122,8 @@ pub fn last_cmd(k: &Kernel<FakeIo>) -> MotorCmd {
 /// Hand-stable rig baseline: the gains the core kernel tests settle the
 /// plant with, the stored cold R and the motion model at the plant's own,
 /// position tracking screen out (the plant/gain pair is qualitative), zero
-/// open-loop duty braking. A fully loaded servo: both images loaded, Ke set, the set
-/// stamped, so the data state opens every mode.
+/// open-loop duty braking. A fully loaded servo: both images loaded, Ke and
+/// the limits set, so the belt opens every mode.
 pub fn seed(shared: &Shared) {
     shared.table.with_mut(|t| {
         let c = &mut t.config;
@@ -180,26 +179,15 @@ pub fn seed(shared: &Shared) {
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
     });
-    stamp(shared);
     shared.publish_data_state(ImageState::Loaded, ImageState::Loaded);
 }
 
-/// The host's stamp over the live set, as `osc-ident` writes it last.
-pub fn stamp(shared: &Shared) {
-    shared
-        .table
-        .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
-}
-
-/// `points` in the array and LIVE, as a COMMIT lands them, restamped over
-/// the array so the data state stays open. After `seed`.
+/// `points` in the array and LIVE, as a COMMIT lands them. After `seed`.
 pub fn lut_live(shared: &Shared, points: &[i16; POINTS]) {
     shared.with_pos_lut_mut(|k| *k = *points);
-    shared.table.with_mut(|t| {
-        t.control.pos_lut.pos_lut_state = pos_lut::state::LIVE;
-        t.calib.stamp.plant_stamp = stamp::compute(t, points.first_chunk());
-    });
-    shared.data_state_checkpoint();
+    shared
+        .table
+        .with_mut(|t| t.control.pos_lut.pos_lut_state = pos_lut::state::LIVE);
 }
 
 /// Rail-tap counts that scale to exactly `vmotor` terminal counts.

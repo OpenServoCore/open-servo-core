@@ -5,11 +5,11 @@
 
 use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
+use osc_servo_core::ControlTable;
 use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
 use osc_servo_core::kernel::phases::loops::limits::{
     FoldIn, LimitState, SLOW_PERIOD_MS, i_cont_or_cap, tau_shift,
 };
-use osc_servo_core::{ControlTable, stamp};
 
 use crate::pipe::{Pipe, PipeError};
 
@@ -20,8 +20,8 @@ pub use osc_servo_core::regions::telemetry::tick_flag;
 
 /// The dev board's own facts, one real SG90's calibration dumped off it and
 /// a bench MG90's identified motor: what a simulated servo needs to read
-/// back like a servo that left the bench calibrated, identified and
-/// stamped, instead of "not calibrated".
+/// back like a servo that left the bench calibrated and identified,
+/// instead of "not calibrated".
 pub mod seed {
     use osc_integration::sim::{CalibSense, CalibSenseExt, DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 
@@ -54,7 +54,7 @@ pub mod seed {
     );
     pub const SPEED_CEILING_CPS: u16 = 1500;
     // The identified motor (an `osc-ident` fit on a 2S rail): nonzero Ke is
-    // what lets the closed loops open once the set is stamped.
+    // what lets the closed loops open.
     pub const R_Q12: u16 = 7270;
     pub const RECIP_KE_Q: u16 = 6957;
     pub const B_I_Q313: u16 = 2427;
@@ -186,7 +186,7 @@ impl FakePipe {
 
     /// Servo `i` comes up like one off the calibration bench ([`seed`]): the
     /// dumped CALIB, the travel limits and the identified motor are
-    /// written, stamped and SAVEd, then the board data goes in. So the app
+    /// written and SAVEd, then the board data goes in. So the app
     /// reads real units from the first scan with `data_flags` clear, a
     /// reboot keeps them, and FACTORY wipes them back to board defaults -
     /// exactly what the hardware does (protocol sec 9.4/9.5).
@@ -224,7 +224,6 @@ impl FakePipe {
                 th.ntc_k1_q88 = seed::NTC_K1_Q88;
                 th.ntc_k2_q24 = seed::NTC_K2_Q24;
             }
-            t.calib.stamp.plant_stamp = stamp::compute(t, None);
         });
         self.sim.persist_servo(i);
         // The sense swap power-cycles the servo onto the images just saved:

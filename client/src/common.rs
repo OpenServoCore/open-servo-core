@@ -19,13 +19,14 @@ pub struct Identity {
     pub capabilities: u32,
 }
 
-/// TELEMETRY-COMMON front: alarm, dirty, applied trim, transport counters.
+/// TELEMETRY-COMMON front: alarm, unsaved, applied trim, transport counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Health {
     /// The sec 5.3 alarm register -- nonzero is what sets ALERT.
     pub fault_flags: u8,
-    /// Modified-since-save (sec 9.4).
-    pub config_dirty: bool,
+    /// A persisted byte (CONFIG, CALIB, PROFILE, the position table)
+    /// changed since boot or the last SAVE (protocol sec 5.7, sec 9.4).
+    pub unsaved: bool,
     pub trim_steps: i8,
     pub crc_fail_count: u32,
     pub framing_drop_count: u32,
@@ -51,7 +52,7 @@ pub async fn health<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Health, Error>
     }
     Ok(Health {
         fault_flags: b[0],
-        config_dirty: b[1] & table::STATUS_FLAG_CONFIG_DIRTY != 0,
+        unsaved: b[1] & table::STATUS_FLAG_UNSAVED != 0,
         trim_steps: b[2] as i8,
         crc_fail_count: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
         framing_drop_count: u32::from_le_bytes([b[8], b[9], b[10], b[11]]),

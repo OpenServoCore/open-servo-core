@@ -43,7 +43,7 @@ pub const TELEMETRY_COMMON_END: u16 = 0x220;
 
 /// u8 RO -- the sec 5.3 alarm register, ALERT's read target.
 pub const FAULT_FLAGS: u16 = 0x200;
-/// u8 RO -- common node state bits; see `STATUS_FLAG_CONFIG_DIRTY`.
+/// u8 RO -- common node state bits; see `STATUS_FLAG_UNSAVED`.
 pub const STATUS_FLAGS: u16 = 0x201;
 /// i8 RO -- applied clock-trim total in chip trim steps (sec 9.3).
 pub const TRIM_STEPS: u16 = 0x202;
@@ -52,8 +52,10 @@ pub const CRC_FAIL_COUNT: u16 = 0x204;
 /// u32 RW -- sec 5.3 frame-level counter; hosts write 0 to clear.
 pub const FRAMING_DROP_COUNT: u16 = 0x208;
 
-/// `STATUS_FLAGS` bit 0: modified-since-save (sec 9.4).
-pub const STATUS_FLAG_CONFIG_DIRTY: u8 = 1 << 0;
+/// `STATUS_FLAGS` bit 0: unsaved, a persisted byte (CONFIG, PROFILE,
+/// CALIB or the position table) modified since boot or the last SAVE
+/// (sec 9.4).
+pub const STATUS_FLAG_UNSAVED: u8 = 1 << 0;
 
 /// PROFILE region span (sec 5.2, pinned by sec 5.4): read-profile slots.
 pub const PROFILE_START: u16 = 0x280;

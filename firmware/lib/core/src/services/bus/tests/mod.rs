@@ -5,7 +5,7 @@
 use heapless::Vec;
 
 use osc_protocol::FrameBytes;
-use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
+use osc_protocol::table::STATUS_FLAG_UNSAVED;
 use osc_protocol::wire::{MgmtOp, ResultCode};
 
 use crate::regions::CONTROL_BASE_ADDR;
@@ -749,7 +749,7 @@ fn mgmt_req(op: MgmtOp) -> Request<'static> {
 fn dirty(shared: &Shared) -> u8 {
     shared
         .table
-        .with(|t| t.telemetry.common.status_flags & STATUS_FLAG_CONFIG_DIRTY)
+        .with(|t| t.telemetry.common.status_flags & STATUS_FLAG_UNSAVED)
 }
 
 /// CRC fingerprint of the live persisted regions, mirroring FakeStore::save.
@@ -931,6 +931,47 @@ fn dirty_bit_tracks_persistent_regions_only() {
 
     write_at(&shared, &mut staged, PROFILE_BASE_ADDR, &[0x41, 0x00]);
     assert_eq!(dirty(&shared), 1, "PROFILE writes mark too");
+}
+
+/// An install writes CALIB and the position table, and both are persisted:
+/// each marks the servo unsaved, so a set written but never saved reads
+/// so until SAVE.
+#[test]
+fn a_calib_write_or_a_table_commit_marks_unsaved() {
+    use crate::pos_lut::cmd;
+    use crate::regions::calib::addr::adc::ADC_WIDE_MID_Q4;
+    use crate::regions::calib::addr::motor::RECIP_KE_Q;
+    use crate::regions::control::addr::pos_lut::{POS_LUT_CMD, POS_LUT_POINTS};
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    shared.table.with_mut(|t| {
+        t.calib.pot.raw_min = 200;
+        t.calib.pot.raw_max = 3800;
+    });
+    let mut staged = StagedWrites::new();
+    let save = |shared: &Shared, staged: &mut StagedWrites| {
+        go(shared, staged, mgmt_req(MgmtOp::Save), true);
+        assert_eq!(dirty(shared), 0);
+    };
+    save(&shared, &mut staged);
+
+    write_at(&shared, &mut staged, RECIP_KE_Q, &3700u16.to_le_bytes());
+    assert_eq!(dirty(&shared), 1, "a CALIB write of the kernel's span");
+    save(&shared, &mut staged);
+    write_at(&shared, &mut staged, ADC_WIDE_MID_Q4, &[3; 16]);
+    assert_eq!(dirty(&shared), 1, "a CALIB write past it");
+    save(&shared, &mut staged);
+
+    write_at(&shared, &mut staged, POS_LUT_POINTS, &[0; 64]);
+    assert_eq!(dirty(&shared), 0, "the window alone is volatile");
+    write_at(&shared, &mut staged, POS_LUT_CMD, &[cmd::STORE]);
+    assert_eq!(dirty(&shared), 1, "a table STORE");
+    save(&shared, &mut staged);
+    write_at(&shared, &mut staged, POS_LUT_CMD, &[cmd::FETCH]);
+    assert_eq!(dirty(&shared), 0, "a FETCH changes nothing");
+    write_at(&shared, &mut staged, POS_LUT_CMD, &[cmd::COMMIT]);
+    assert_eq!(dirty(&shared), 1, "a table COMMIT");
 }
 
 #[test]
@@ -1666,8 +1707,8 @@ pub(crate) fn write_committed(shared: &Shared, addr: u16, data: &[u8]) {
 /// else moves it.
 #[test]
 fn config_commits_step_the_count_one_pair_per_frame() {
+    use crate::regions::calib::addr::kinematics::GEAR_RATIO_CENTI;
     use crate::regions::calib::addr::motor::R_Q12;
-    use crate::regions::calib::addr::stamp::PLANT_STAMP;
     use crate::regions::calib::addr::thermal::NTC_K2_Q24;
     use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
     use crate::regions::config::addr::pos_phys::POS_MIN_PHYS_COUNTS;
@@ -1688,8 +1729,8 @@ fn config_commits_step_the_count_one_pair_per_frame() {
     assert_eq!(shared.config_seq(), 2);
     go(write(R_Q12, &[0, 1], false));
     assert_eq!(shared.config_seq(), 4, "CALIB is");
-    go(write(PLANT_STAMP, &[0, 1], false));
-    assert_eq!(shared.config_seq(), 4, "the stamp sits past the span");
+    go(write(GEAR_RATIO_CENTI, &[0, 1], false));
+    assert_eq!(shared.config_seq(), 4, "the kinematics sit past the span");
 
     // held writes move it at their COMMIT, once for the frame
     go(write(DUTY_MAX_Q15, &[0, 2], true));

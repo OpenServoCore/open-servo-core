@@ -24,7 +24,6 @@ pub mod mgmt;
 pub mod pipe;
 pub mod pos_lut;
 pub mod session;
-pub mod stamp;
 #[cfg(feature = "bench")]
 pub mod wire;
 

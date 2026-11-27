@@ -177,11 +177,10 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // ~120 words and has no business inside a 20 kHz ISR.
         crate::runtime::burst::poll_page(&crate::runtime::statics::SHARED);
 
-        // Data job (core `data_state`): the stamp checkpoint a covered or
-        // stamp write posts and the verdict a LUT COMMIT posts, ~0.6 ms of
-        // software CRC that outlasts a bus body. The run is preemptible;
-        // the publish masks the bus so dispatch cannot land a write between
-        // its generation check and the table stores. The kernel only reads
+        // Data job (core `data_state`): the verdict a LUT COMMIT posts, a
+        // validation over the array that outlasts a bus body. The run is
+        // preemptible; the publish masks the bus so dispatch cannot land a
+        // write between its generation check and the table store. The kernel only reads
         // the published bytes, each in its own phase. The posting ISR's
         // return is the wfi wake, so the job runs before the next frame can
         // arrive.

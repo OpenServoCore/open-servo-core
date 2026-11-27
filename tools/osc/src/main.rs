@@ -133,14 +133,6 @@ enum Cmd {
     },
     /// Persist the live config + profiles (protocol sec 9.4; torque must be off).
     Save,
-    /// Bless the set the servo holds now as the identified set (after
-    /// deliberate manual tuning of stamp-covered fields): torque off, the
-    /// plant stamp over the live set, SAVE with --save.
-    Stamp {
-        /// Persist with MGMT SAVE after the stamp.
-        #[arg(long)]
-        save: bool,
-    },
     /// Wipe both saved slots; the servo reboots itself to board defaults.
     Factory,
     /// Ack, then reset once the ack has drained.
@@ -150,7 +142,7 @@ enum Cmd {
         bootloader: Option<String>,
     },
     /// Report a servo's data state and, with --from, restore a saved
-    /// table, restamp and SAVE; --factory wipes the saved images first.
+    /// table and SAVE; --factory wipes the saved images first.
     Recover(state::RecoverArgs),
     /// Read or configure a protocol sec 5.2 profile slot.
     Profile {
@@ -176,8 +168,8 @@ enum Cmd {
     /// One ping: model, firmware, the ALERT bit.
     Ping,
     /// Identity + health from the common register block (protocol sec 5.4),
-    /// then the data state, the plant stamp verdict and the servo's own
-    /// health (protocol sec 5.9).
+    /// then the data state, the latched fault and the servo's own health
+    /// (protocol sec 5.9).
     Status,
     /// Zero the telemetry transport counters (rw-clear).
     Clear {
@@ -630,8 +622,8 @@ fn status(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         i.capabilities,
     );
     println!(
-        "      fault {:#04x}  dirty {}  trim {}  crc_fail {}  framing_drop {}",
-        h.fault_flags, h.config_dirty, h.trim_steps, h.crc_fail_count, h.framing_drop_count,
+        "      fault {:#04x}  unsaved {}  trim {}  crc_fail {}  framing_drop {}",
+        h.fault_flags, h.unsaved, h.trim_steps, h.crc_fail_count, h.framing_drop_count,
     );
     let d = state::descriptor(c, id)?;
     state::report(c, id, &d)?;
@@ -750,8 +742,7 @@ fn get(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor, name: &str)
     Ok(())
 }
 
-/// A hand edit; a stamp-covered field leaves the set marked stale until
-/// `osc stamp` or an osc-ident refit blesses it (`state::covered_note`).
+/// A hand edit: it runs as written and reads unsaved until `osc save`.
 fn set(
     c: &mut Client<NusbPipe>,
     id: Id,
@@ -776,7 +767,6 @@ fn set(
         c.write(id, f.addr, &data)?;
         println!("wrote {} = {value} at {:#06x}", f.name, f.addr);
     }
-    state::covered_note(d, f);
     Ok(())
 }
 
@@ -880,7 +870,6 @@ fn main() -> Result<()> {
             parse_rate(to)?,
         ),
         Cmd::Save => save(&mut connect_bus(&cli)?, id),
-        Cmd::Stamp { save } => state::stamp(&mut connect_bus(&cli)?, id, *save),
         Cmd::Factory => {
             let mut c = connect_bus(&cli)?;
             state::check(&mut c, id)?;

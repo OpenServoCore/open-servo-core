@@ -6,8 +6,8 @@
 //! - lit for the lamp test at boot,
 //! - solid while a fault is latched (`fault_code` nonzero until the
 //!   torque ack clears it),
-//! - a ~1 Hz blink while `data_flags` names any reason (not calibrated,
-//!   plant unset, stamp mismatch),
+//! - a ~1 Hz blink while `data_flags` names any reason (an image that did
+//!   not load: never saved, unreadable or of another layout),
 //! - dark when healthy.
 
 use osc_servo_core::kernel::TICK_HZ;
@@ -86,7 +86,7 @@ impl Flash {
 
 #[cfg(test)]
 mod tests {
-    use osc_servo_core::data_state::{CALIB_VIRGIN, PLANT_UNSET};
+    use osc_servo_core::data_state::{CALIB_VIRGIN, CONFIG_STALE};
     use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_STALL};
 
     use super::*;
@@ -99,12 +99,12 @@ mod tests {
     #[test]
     fn a_latched_fault_is_solid_and_wins_over_setup() {
         assert!(pattern(false, false, CODE_STALL, 0) == Pattern::SolidOn);
-        assert!(pattern(false, false, CODE_DATA, PLANT_UNSET) == Pattern::SolidOn);
+        assert!(pattern(false, false, CODE_DATA, CALIB_VIRGIN) == Pattern::SolidOn);
     }
 
     #[test]
     fn any_setup_reason_blinks_at_1_hz() {
-        for flags in [PLANT_UNSET, CALIB_VIRGIN, PLANT_UNSET | CALIB_VIRGIN] {
+        for flags in [CONFIG_STALE, CALIB_VIRGIN, CONFIG_STALE | CALIB_VIRGIN] {
             assert!(
                 pattern(false, false, CODE_NONE, flags)
                     == Pattern::Blink {
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_flash_lights_the_lamp_over_everything() {
-        assert!(pattern(true, false, CODE_STALL, PLANT_UNSET) == Pattern::SolidOn);
+        assert!(pattern(true, false, CODE_STALL, CALIB_VIRGIN) == Pattern::SolidOn);
         assert!(pattern(true, false, CODE_NONE, 0) == Pattern::SolidOn);
     }
 

@@ -4,7 +4,7 @@
 //! window one tick late.
 
 use osc_integration::plant::{
-    FakeIo, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd, rl_motor, seed, stamp,
+    FakeIo, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd, rl_motor, seed,
 };
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::phases::loops::duty_limit::UP_Q15;
@@ -57,7 +57,6 @@ fn rig(lim: u16) -> Shared {
         t.config.fusion.l3_q88 = 84;
         rl_motor(t);
     });
-    stamp(&sh);
     sh
 }
 
@@ -72,7 +71,6 @@ fn stall_rig(response: StallResponse) -> Shared {
         l.i_cont_counts = YIELD;
         l.stall_release_counts = RELEASE;
     });
-    stamp(&sh);
     sh
 }
 
@@ -354,7 +352,6 @@ fn openloop_slew_never_counts_as_a_stall() {
         let sh = stall_rig(StallResponse::Fault);
         sh.table
             .with_mut(|t| t.config.limits.stall_time_ticks = ms_ticks(1));
-        stamp(&sh);
         let mut p = RlPlant::new(from);
         let mut k = start(&sh, &mut p, cruise);
         run(&mut k, &sh, &mut p, 2_000);
@@ -451,7 +448,6 @@ fn virgin_blind_band_passes_to_the_window_floor() {
     for goal in [GOAL_64, -GOAL_64] {
         let sh = rig(BLIND_LIM);
         sh.table.with_mut(|t| t.calib.motor.r_q12 = 0);
-        stamp(&sh);
         let mut p = RlPlant::new(MID);
         p.locked = true;
         let mut k = start(&sh, &mut p, goal);
@@ -475,7 +471,6 @@ fn window_floor_is_published_as_the_limiter_uses_it() {
             t.calib.sense.i_window_min_ticks = ticks;
             t.calib.motor.r_q12 = 0;
         });
-        stamp(&sh);
         let mut p = RlPlant::new(MID);
         p.locked = true;
         let mut k = start(&sh, &mut p, GOAL_64);
@@ -503,7 +498,6 @@ fn window_v_floor_is_published_beside_the_current_floor() {
         t.calib.sense.i_window_min_ticks = 64;
         t.calib.sense.v_window_min_ticks = 160;
     });
-    stamp(&sh);
     let floors = || {
         sh.table.with(|t| {
             (
@@ -526,7 +520,6 @@ fn low_l_rig(lim: u16, floor_ticks: u16) -> Shared {
         t.calib.sense.i_window_min_ticks = floor_ticks;
         t.config.limits.oc_trip_counts = LOW_L_OC_TRIP;
     });
-    stamp(&sh);
     sh
 }
 

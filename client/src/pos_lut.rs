@@ -6,6 +6,7 @@
 //! (pinned against it by the fake-adapter test).
 
 use std::fmt;
+use std::time::Duration;
 
 use osc_protocol::wire::Id;
 
@@ -13,7 +14,12 @@ use crate::client::Client;
 use crate::descriptor::{Descriptor, Field};
 use crate::error::{Error, LinkError};
 use crate::pipe::Pipe;
-use crate::stamp::{VERDICT_TICK, VERDICT_TRIES};
+
+/// How long a host waits for the verdict the servo's main loop lands
+/// after a COMMIT's reply, polled once per [`VERDICT_TICK`].
+pub const VERDICT_WAIT: Duration = Duration::from_millis(20);
+pub const VERDICT_TICK: Duration = Duration::from_millis(1);
+const VERDICT_TRIES: u32 = (VERDICT_WAIT.as_millis() / VERDICT_TICK.as_millis()) as u32;
 
 /// Host-written points; the fixed last point has no page.
 pub const INTERVALS: usize = 256;
@@ -65,7 +71,7 @@ pub enum LutError {
     RejectEnds,
     /// An interval with local gain outside `[1/16, 16)` of nominal.
     RejectShape,
-    /// Still LOADING after [`crate::stamp::VERDICT_WAIT`]: the servo's
+    /// Still LOADING after [`VERDICT_WAIT`]: the servo's
     /// main loop has not judged the COMMIT.
     Pending,
     /// `pos_lut_state` after COMMIT is none of the above and not the state
@@ -267,9 +273,7 @@ async fn torque_off<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Resul
 /// (IDENTITY when every point is zero, the servo's rule for a table that
 /// corrects nothing) and point for point what was sent, or the error says
 /// why not. Torque must be off, checked here before anything is sent.
-/// Never stamps: a new table re-defines the domain the identified set was
-/// fitted in, so the COMMIT checkpoint leaves STAMP_MISMATCH for `osc
-/// ident` to clear.
+/// The servo reads unsaved after it until SAVE.
 pub async fn write<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -304,8 +308,7 @@ pub async fn write<P: Pipe>(
     Ok(())
 }
 
-/// Back to IDENTITY: all-zero points STOREd and COMMITted. They hash like
-/// no table, so a servo stamped over the identity stays stamped.
+/// Back to IDENTITY: all-zero points STOREd and COMMITted.
 pub async fn clear<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<(), Error> {
     write(c, id, d, &[0; INTERVALS]).await
 }

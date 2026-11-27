@@ -92,7 +92,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Make the servo equal the set, volatile, every write read back, then stamp it.
+    /// Make the servo equal the set, volatile, every write read back.
     Install {
         #[arg(long)]
         set: PathBuf,
@@ -239,7 +239,7 @@ enum StepName {
         #[arg(long, default_value = "osc-ident-runs")]
         out: PathBuf,
     },
-    /// The closed-loop check of the installed, stamped set: the position
+    /// The closed-loop check of the installed set: the position
     /// loop turned on, small steps, then moves of 1, 10 and 33 % of the
     /// travel scored. Drives the motor under its own loops; changes no
     /// constant.
@@ -250,7 +250,7 @@ enum StepName {
         out: PathBuf,
     },
     /// The friction line from closed-loop Velocity cruises at mid travel on
-    /// the installed, stamped set: four speeds from 0.075 of the move speed
+    /// the installed set: four speeds from 0.075 of the move speed
     /// to all of it, two legs each way a speed, each leg sized and centered
     /// from the travel, the shaft left at the middle. Drives the motor under
     /// its own loops; changes no constant.
@@ -413,11 +413,12 @@ async fn check<P: Pipe>(
         println!("not in the set: {}", checked.unowned.join(", "));
     }
     println!(
-        "{} differences; data state {}; stamp {}; set {}",
+        "{} differences; data state {}; unsaved {}; set {}; servo {}",
         checked.differences.len(),
         checked.data,
-        checked.stamp,
-        &set.hash()[..12.min(set.hash().len())]
+        if checked.unsaved { "yes" } else { "no" },
+        &set.hash()[..12.min(set.hash().len())],
+        &checked.servo[..12.min(checked.servo.len())]
     );
     Ok(checked.clean())
 }

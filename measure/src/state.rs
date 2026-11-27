@@ -5,17 +5,19 @@
 use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::{Access, Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS, PosLut};
-use osc_client::stamp::{UNSTAMPED, Verdict};
-use osc_client::{Client, Error, Id, LinkError, pipe::Pipe};
+use osc_client::{Client, Error, Id, common, pipe::Pipe};
 use serde_json::{Map, Value, json};
 
 use crate::pyjson::{self, hex};
-use crate::set::{self, COMMS, NEVER, STAMP, SetError, SetFile, WIDE, points_sha1, text_of};
+use crate::set::{self, COMMS, NEVER, SetError, SetFile, WIDE, points_sha1, text_of};
 
 /// The first field of CONTROL: CONFIG and CALIB, the regions a SAVE keeps,
 /// are the table from its first field up to this one.
 const CONTROL_FIRST: &str = "torque_enable";
 const ORIGIN: &str = "servo-state";
+/// The register a record read on CALIB layout 7 holds and no servo has
+/// since: a restore never writes it.
+const OLD_STAMP: &str = "plant_stamp";
 
 pub(crate) fn field<'a>(d: &'a Descriptor, name: &str) -> Result<&'a Field, Error> {
     d.field(name)
@@ -28,8 +30,10 @@ pub struct State {
     pub base: u16,
     pub raw: Vec<u8>,
     pub lut: PosLut,
-    pub stamp: Verdict,
     pub data: DataState,
+    /// `status_flags` UNSAVED: what the servo runs differs from what a
+    /// reboot loads.
+    pub unsaved: bool,
     pub torque: bool,
 }
 
@@ -45,35 +49,21 @@ pub async fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<
     let raw = c.read_span(id, base, end).await?;
     let lut = pos_lut::read(c, id, d).await?;
     let data = data_state::read(c, id, d).await?;
+    let unsaved = common::health(c, id).await?.unsaved;
     let torque = field(d, CONTROL_FIRST)?;
     let torque = c
         .read(id, torque.addr, 1)
         .await?
         .first()
         .is_some_and(|&b| b != 0);
-    let mut state = State {
+    Ok(State {
         base,
         raw,
         lut,
-        stamp: Verdict {
-            stored: UNSTAMPED,
-            computed: UNSTAMPED,
-        },
         data,
+        unsaved,
         torque,
-    };
-    let desync = |m: String| Error::Link(LinkError::Desync(m));
-    let stamp = d.stamp()?;
-    let Some(&[lo, hi]) = state.bytes(field(d, STAMP)?) else {
-        return Err(desync("plant_stamp is not two bytes".into()));
-    };
-    state.stamp = Verdict {
-        stored: u16::from_le_bytes([lo, hi]),
-        computed: stamp
-            .compute(base, &state.raw, state.lut.effective().map(|k| &k[..]))
-            .map_err(|e| desync(e.to_string()))?,
-    };
-    Ok(state)
+    })
 }
 
 impl State {
@@ -109,16 +99,13 @@ impl State {
         }
     }
 
-    /// The stamp as `osc status` says it.
-    pub fn stamp_said(&self) -> String {
-        let v = self.stamp;
-        if v.stored == UNSTAMPED {
-            format!("unstamped; live set {:#06x}", v.computed)
-        } else if v.matches() {
-            format!("{:#06x} = live set", v.stored)
-        } else {
-            format!("{:#06x} != live set {:#06x}", v.stored, v.computed)
-        }
+    pub fn unsaved_said(&self) -> &'static str {
+        if self.unsaved { "yes" } else { "no" }
+    }
+
+    /// The servo's fingerprint: its record's hash.
+    pub fn hash(&self, d: &Descriptor) -> String {
+        self.record(d)["hash"].as_str().unwrap_or_default().into()
     }
 
     /// The record of this state, its hash the notebooks' `state_hash`.
@@ -151,8 +138,8 @@ impl State {
             "writable": writable,
             "pos_table": {"state": self.table_state(), "points_sha1": self.points_sha1(), "points": hex(&points)},
             "wide_codes": self.slots(d).map(|s| hex(&s)),
-            "stamp": self.stamp_said(),
             "data_state": self.data_said(),
+            "unsaved": self.unsaved,
         });
         let hash = state_hash(&doc);
         if let Some(m) = doc.as_object_mut() {
@@ -162,21 +149,36 @@ impl State {
     }
 }
 
-/// What a state record's hash covers: all of it but the decoded fields,
-/// which `raw` holds, the descriptor's writable list, and the points,
-/// which their sha1 stands for.
+/// What a state record's hash covers: the table bytes and the position
+/// table. Not the decoded fields, which `raw` holds, the descriptor's
+/// writable list, the points, which their sha1 stands for, or what the
+/// servo says of its state (`data_state`, `unsaved`).
 pub fn state_hash(doc: &Value) -> String {
+    pyjson::hash(&hashed(doc))
+}
+
+fn hashed(doc: &Value) -> Value {
     let get = |k: &str| doc.get(k).cloned().unwrap_or(Value::Null);
     let table = doc.get("pos_table");
     let t = |k: &str| table.and_then(|t| t.get(k)).cloned().unwrap_or(Value::Null);
-    pyjson::hash(&json!({
+    json!({
         "addr": get("addr"),
         "raw": get("raw"),
         "pos_table": {"state": t("state"), "points_sha1": t("points_sha1")},
         "wide_codes": get("wide_codes"),
-        "stamp": get("stamp"),
-        "data_state": get("data_state"),
-    }))
+    })
+}
+
+/// The hash a record written while servos carried a plant stamp holds:
+/// the same and the `stamp` and `data_state` lines.
+fn stamped_hash(doc: &Value) -> String {
+    let mut h = hashed(doc);
+    if let Some(m) = h.as_object_mut() {
+        for k in ["stamp", "data_state"] {
+            m.insert(k.into(), doc.get(k).cloned().unwrap_or(Value::Null));
+        }
+    }
+    pyjson::hash(&h)
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
@@ -199,11 +201,20 @@ pub struct Record {
 impl Record {
     /// Refused when its hash is not its content's or when its points are
     /// not the ones its sha1 names. The data state it was read in is no
-    /// refusal: a record of a servo on its defaults restores like any.
+    /// refusal: a record of a servo on its defaults restores like any. A
+    /// record from a servo with a plant stamp reads under the hash it was
+    /// written with.
     pub fn parse(text: &str) -> Result<Self, SetError> {
         let bad = |why: &str| SetError(format!("the record {why}"));
         let doc: Value = serde_json::from_str(text).map_err(|e| SetError(e.to_string()))?;
-        if doc.get("hash").and_then(Value::as_str) != Some(state_hash(&doc).as_str()) {
+        let held = doc.get("hash").and_then(Value::as_str);
+        let stamped = doc.get("stamp").is_some();
+        let want = if stamped {
+            stamped_hash(&doc)
+        } else {
+            state_hash(&doc)
+        };
+        if held != Some(want.as_str()) {
             return Err(bad("is not what its hash says"));
         }
         let table = doc.get("pos_table");
@@ -247,7 +258,7 @@ impl Record {
             .flatten()
             .filter_map(Value::as_str)
         {
-            if COMMS.contains(&name) || NEVER.contains(&name) || name == WIDE {
+            if COMMS.contains(&name) || NEVER.contains(&name) || name == WIDE || name == OLD_STAMP {
                 continue;
             }
             let mut e = Map::new();

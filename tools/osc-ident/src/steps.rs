@@ -151,10 +151,10 @@ pub async fn plan<P: Pipe>(
             line.baud.as_hz()
         ),
         format!(
-            "rail {rail:.2} V ({:.2} V at the connector), board NTC {ntc_c:.1} C, position {pos:.0} counts; data state {}, stamp {}",
+            "rail {rail:.2} V ({:.2} V at the connector), board NTC {ntc_c:.1} C, position {pos:.0} counts; data state {}, unsaved {}",
             sense.supply_v(rail),
             state.data_said(),
-            state.stamp_said()
+            state.unsaved_said()
         ),
         format!(
             "floors: {}, {}; published window_floor_q15 {}, window_v_floor_q15 {}",
@@ -449,7 +449,7 @@ fn result_of(sink: &mut DirSink, rel: &str, what: &str) -> Result<Value> {
 }
 
 /// `step verify` into `<out>/<servo>/<UTC time>/`: the closed-loop check
-/// of the installed, stamped set. The lines it prints, and whether the set
+/// of the installed set. The lines it prints, and whether the set
 /// was accepted.
 pub async fn step_verify<P: Pipe>(
     c: &mut Client<P>,
@@ -505,7 +505,7 @@ pub async fn step_verify<P: Pipe>(
 }
 
 /// `step cruise` into `<out>/<servo>/<UTC time>/`: the friction line from
-/// closed-loop cruises on the installed, stamped set, the travel the stops
+/// closed-loop cruises on the installed set, the travel the stops
 /// step's of the run folder `run` where given, else the set's. The lines it
 /// prints, and whether the line was accepted.
 #[allow(clippy::too_many_arguments)]

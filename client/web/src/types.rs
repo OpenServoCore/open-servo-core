@@ -339,7 +339,7 @@ impl From<osc_client::common::Identity> for Identity {
 #[serde(rename_all = "camelCase")]
 pub struct Health {
     pub fault_flags: u8,
-    pub config_dirty: bool,
+    pub unsaved: bool,
     pub trim_steps: i8,
     pub crc_fail_count: u32,
     pub framing_drop_count: u32,
@@ -349,7 +349,7 @@ impl From<osc_client::common::Health> for Health {
     fn from(h: osc_client::common::Health) -> Self {
         Health {
             fault_flags: h.fault_flags,
-            config_dirty: h.config_dirty,
+            unsaved: h.unsaved,
             trim_steps: h.trim_steps,
             crc_fail_count: h.crc_fail_count,
             framing_drop_count: h.framing_drop_count,
@@ -402,25 +402,6 @@ impl From<data_state::DataState> for DataState {
             fault: data_state::fault::name(s.fault_code).map(String::from),
             reasons: s.reasons().into_iter().map(DataReason::from).collect(),
             message: s.message(),
-        }
-    }
-}
-
-/// The stamp the servo holds beside the one its live set computes to.
-#[derive(Debug, Clone, Copy, Serialize, Tsify)]
-#[serde(rename_all = "camelCase")]
-pub struct StampVerdict {
-    pub stored: u16,
-    pub computed: u16,
-    pub matches: bool,
-}
-
-impl From<osc_client::stamp::Verdict> for StampVerdict {
-    fn from(v: osc_client::stamp::Verdict) -> Self {
-        StampVerdict {
-            stored: v.stored,
-            computed: v.computed,
-            matches: v.matches(),
         }
     }
 }
@@ -564,7 +545,7 @@ pub struct Track {
 
 /// One `fakeWithTracks` roster entry: a servo id, optionally playing a
 /// track back, optionally factory-fresh (never calibrated, identified or
-/// saved: every `data_flags` reason set) instead of stamped, optionally
+/// saved: every `data_flags` reason set) instead of seeded, optionally
 /// with its winding estimate off or holding another response deadline,
 /// optionally a board that carries only its bootloader or one whose next
 /// erase or write fails.

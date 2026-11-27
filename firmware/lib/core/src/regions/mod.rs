@@ -31,7 +31,7 @@ pub mod telemetry_ext;
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
     CalibGear, CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense,
-    CalibSenseExt, CalibStamp, CalibThermal,
+    CalibSenseExt, CalibThermal,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
@@ -382,13 +382,13 @@ mod tests {
     }
 
     /// Pins the CALIB layout: the kernel's blocks at the region front, then
-    /// the rest of the host-written blocks contiguous through the stamp, the
-    /// RO board facts behind them; the gear class took the first reserved
-    /// byte after those, so nothing before it moved.
+    /// the rest of the host-written blocks contiguous through the
+    /// kinematics, the RO board facts right behind them, then the gear
+    /// class.
     #[test]
     fn calib_layout_keeps_the_host_written_blocks_contiguous() {
         use super::calib::addr::{
-            gear, kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, stamp, thermal,
+            gear, kinematics, motor, motor_ext, pot, pwm, sense, sense_ext, thermal,
         };
         assert_eq!(motor::R_Q12, super::CALIB_BASE_ADDR);
         assert_eq!(motor::KE_VPC_Q, 0x08A);
@@ -400,40 +400,38 @@ mod tests {
         assert_eq!(motor_ext::KE_UVS_PER_RAD, 0x0A0);
         assert_eq!(pot::RAW_MIN, 0x0A4);
         assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0AC);
-        assert_eq!(stamp::PLANT_STAMP, 0x0AE);
-        assert_eq!(sense::SHUNT_R_MOHM, 0x0B0);
-        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0CC);
-        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CE);
-        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0D0);
-        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0D2);
-        assert_eq!(gear::GEAR_CLASS, 0x0D4);
+        assert_eq!(sense::SHUNT_R_MOHM, 0x0AE);
+        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0CA);
+        assert_eq!(sense_ext::VMOTOR_BIAS_TOP_OHM, 0x0CC);
+        assert_eq!(sense_ext::VMOTOR_BIAS_BOT_OHM, 0x0CE);
+        assert_eq!(pwm::PWM_PERIOD_TICKS, 0x0D0);
+        assert_eq!(gear::GEAR_CLASS, 0x0D2);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
                 .filter(|d| d.addr >= lo && d.addr < hi)
                 .all(|d| d.writable)
         };
-        assert!(rw(motor::R_Q12, stamp::PLANT_STAMP + 2));
+        assert!(rw(motor::R_Q12, kinematics::GEAR_RATIO_CENTI + 2));
         assert!(!rw(sense::SHUNT_R_MOHM, pwm::PWM_PERIOD_TICKS + 2));
         assert!(rw(gear::GEAR_CLASS, gear::GEAR_CLASS + 1));
     }
 
     /// The ADC wide-code map takes the reserved bytes right behind the gear
-    /// class, one byte per slot, host-written, outside the plant stamp; the
-    /// rest of the tail stays reserved, so the region keeps its size.
+    /// class, one byte per slot, host-written; the rest of the tail stays
+    /// reserved, so the region keeps its size.
     #[test]
     fn calib_adc_appends_after_gear() {
         use super::calib::addr::{adc, gear};
         use crate::adc::ADC_WIDE_SLOTS;
-        assert_eq!(gear::GEAR_CLASS, 0x0D4);
-        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D5);
+        assert_eq!(gear::GEAR_CLASS, 0x0D2);
+        assert_eq!(adc::ADC_WIDE_MID_Q4, 0x0D3);
         let f = ControlTable::FIELDS;
         let w = f.iter().find(|d| d.name == "adc_wide_mid_q4").unwrap();
-        assert_eq!(w.addr, 0x0D5);
+        assert_eq!(w.addr, 0x0D3);
         assert_eq!(w.width, ADC_WIDE_SLOTS as u16);
         assert_eq!(w.kind, FieldKind::Bytes);
         assert!(w.writable);
-        assert!(!crate::stamp::COVERED_NAMES.contains(&"adc_wide_mid_q4"));
         let calib_end = super::CALIB_BASE_ADDR + super::CALIB_REGION_SIZE;
         assert!(
             f.iter()
@@ -445,7 +443,7 @@ mod tests {
 
     /// The position reading's current terms close the fusion block, ahead
     /// of the fault thresholds, which run to the region's end; both export
-    /// their bound and stay outside the plant stamp, as tuning parameters.
+    /// their bound, as tuning parameters.
     #[test]
     fn config_current_terms_close_the_fusion_block() {
         use super::config::addr::{fault_cfg, fusion};
@@ -474,7 +472,6 @@ mod tests {
                 (None, Some(POT_COUNTS_PER_A_MAX as i32)),
                 "{name}"
             );
-            assert!(!crate::stamp::COVERED_NAMES.contains(&name), "{name}");
         }
     }
 

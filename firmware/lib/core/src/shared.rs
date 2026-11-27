@@ -19,8 +19,8 @@ pub struct Shared {
     /// dispatch posts and cancels; the main loop's publish clears what it
     /// ran, under a generation check.
     data_job: AtomicU8,
-    /// Bumped by dispatch on every write the job hashes or validates (covered,
-    /// stamp, LUT array, torque). A job whose generation moved discards
+    /// Bumped by dispatch on every write the job validates against (LUT
+    /// array, stops, torque). A job whose generation moved discards
     /// its result. Dispatch is the sole writer, so plain load/store suffice.
     data_gen: AtomicU16,
     /// Bumped by dispatch on every committed grant of the stall permit; the
@@ -67,7 +67,7 @@ impl Shared {
         }
     }
 
-    /// Bus dispatch: a write the job hashes or validates landed; `post` what it
+    /// Bus dispatch: a write the job validates against landed; `post` what it
     /// leaves for the main loop, `cancel` what it retires.
     pub(crate) fn data_touch(&self, post: u8, cancel: u8) {
         self.data_gen.store(

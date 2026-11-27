@@ -667,9 +667,6 @@ fn soft_limits_on_the_stops_or_off_cruise() {
             vec![0; 8]
         };
         block_on(c.write(ID, lo.addr, &soft)).expect("soft limits moved");
-        let s = block_on(state::read(&mut c, ID, &d)).expect("state");
-        let f = d.field("plant_stamp").expect("plant_stamp");
-        block_on(c.write(ID, f.addr, &s.stamp.computed.to_le_bytes())).expect("restamped");
         log.borrow_mut().clear();
         let mut sink = MemSink::default();
         let v = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");

@@ -84,11 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!(
                     "      fault {:#04x} dirty {} trim {} | crc_fail {} framing_drop {}",
-                    h.fault_flags,
-                    h.config_dirty,
-                    h.trim_steps,
-                    h.crc_fail_count,
-                    h.framing_drop_count,
+                    h.fault_flags, h.unsaved, h.trim_steps, h.crc_fail_count, h.framing_drop_count,
                 );
             }
         }

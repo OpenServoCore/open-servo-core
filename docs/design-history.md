@@ -274,8 +274,7 @@ a load carrying a reversed motor the way its velocity command pointed, and
 a reversed motor stepped the way it had already drifted. Each fix would
 have added a term and a budget row to a check that servos of this class do
 not carry at all. So the check went. The polarity is a calibration fact
-that `osc cal` measures and the plant stamp covers, a write that changes it
-runs as written, and a servo that carries a wrong one runs to its stop and
+that `osc cal` measures, a write that changes it runs as written, and a servo that carries a wrong one runs to its stop and
 ends on the position error timer or the stall timer. Lesson: a fact the calibration measures is not one for
 the control loop to keep re-deriving from evidence a load can forge.
 
@@ -316,6 +315,27 @@ measurements: the current limit, the overcurrent trip, the stall and
 position error timers, the thermal cutoff, the rail fold and the soft
 limits. Lesson: refuse what the math cannot run on, not what the firmware
 cannot vouch for.
+
+### The plant stamp
+
+A host once sealed every identified value and the position table under one
+CRC, the plant stamp, written last into CALIB. The firmware recomputed it
+over what had landed at every checkpoint (boot, a write to any of 44
+covered fields, a table COMMIT, SAVE), and a difference read as a stamp
+mismatch: a write that never landed, a hand edit, a table rebuilt under old
+constants or a torn save all looked the same. While the data state gated
+closed loop the mismatch was a refusal; once the gate went it changed
+nothing the user does. The user's question about a servo is whether what it
+runs is saved, and which values differ from a set, and the stamp answered
+neither: it said "something covered moved" and kept a 0.6 ms software CRC
+in the main loop, 300 B of covered-field tables, a recipe in the descriptor
+and a restamp step in every tool. So it went. The unsaved bit, widened from
+CONFIG to every persisted byte, says whether a reboot would lose anything;
+the host's check against its set names each field that differs; and the
+host fingerprints the raw table bytes to tell two servo states apart. A
+power cut between the two images of a SAVE now boots the mix unflagged:
+that SAVE never acked, so the host knows. Lesson: a check whose verdict
+does not change what the user does is cost, not safety.
 
 ## Recurring lessons
 

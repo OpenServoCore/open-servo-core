@@ -25,16 +25,14 @@ const WAS: [&str; 2] = ["held", "adopted"];
 
 /// Where a servo answers, not what it is (protocol sec 5): in no set.
 pub const COMMS: [&str; 3] = ["id", "baud_rate_idx", "response_deadline_us"];
-pub const STAMP: &str = "plant_stamp";
 pub const WIDE: &str = "adc_wide_mid_q4";
 /// What this tool never writes, whatever a set holds: the bus front, the
-/// stamp (it is computed), the supply word a capture is matched to its
-/// board by, and the pot force terms, which are tuning for the load.
-pub const NEVER: [&str; 7] = [
+/// supply word a capture is matched to its board by, and the pot force
+/// terms, which are tuning for the load.
+pub const NEVER: [&str; 6] = [
     "id",
     "baud_rate_idx",
     "response_deadline_us",
-    STAMP,
     "vdd_mv",
     "pot_steady_counts_per_a",
     "pot_fast_counts_per_a",

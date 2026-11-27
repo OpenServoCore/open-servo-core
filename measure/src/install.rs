@@ -1,6 +1,6 @@
 //! The safe configuration path, async over the client: `check` reads the
-//! servo against a set, `install` makes it equal the set volatile and
-//! stamps it, `save` keeps a backup of the stored state and then makes the
+//! servo against a set, `install` makes it equal the set volatile, every
+//! write read back, `save` keeps a backup of the stored state and then makes the
 //! set permanent, `restore` puts a recorded state back. Nothing drives the
 //! motor, every write is refused under torque, and there is no path that
 //! wipes the stored data. The data state is information: no verb refuses
@@ -9,10 +9,9 @@
 use std::fmt;
 use std::time::Duration;
 
-use osc_client::data_state::{PLANT_UNSET, STAMP_MISMATCH};
 use osc_client::descriptor::{Descriptor, Field};
 use osc_client::pos_lut::{self, INTERVALS};
-use osc_client::{BaudRate, Client, Error, Id, mgmt, pipe::Pipe, stamp};
+use osc_client::{BaudRate, Client, Error, Id, mgmt, pipe::Pipe};
 use serde_json::Value;
 
 use crate::pyjson::dumps;
@@ -29,9 +28,6 @@ const STOPS: [&str; 2] = ["raw_min", "raw_max"];
 const BOOT_WAIT: Duration = Duration::from_millis(500);
 const BOOT_TRIES: u32 = 10;
 const SWEEP_QUIET: Duration = Duration::from_secs(5);
-/// The data-state reasons of an image that did not load: a SAVE that
-/// landed leaves none after its reboot.
-const IMAGE: u8 = !(STAMP_MISMATCH | PLANT_UNSET);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused(pub String);
@@ -78,7 +74,6 @@ pub enum Step {
         from: String,
         to: String,
     },
-    Stamped(u16),
     Backup(String),
     Saved,
     After(String),
@@ -99,10 +94,6 @@ impl fmt::Display for Step {
             Step::Table { from, to } => {
                 write!(f, "position table: {from} -> {to}, every page read back")
             }
-            Step::Stamped(s) => write!(
-                f,
-                "stamped {s:#06x}: the data state reads no stamp mismatch"
-            ),
             Step::Backup(p) => write!(
                 f,
                 "the stored state is backed up to {p}, read back the same"
@@ -145,7 +136,9 @@ pub struct Checked {
     pub unowned: Vec<String>,
     pub data: String,
     pub flags: u8,
-    pub stamp: String,
+    pub unsaved: bool,
+    /// The servo's fingerprint (`State::hash`).
+    pub servo: String,
 }
 
 impl Checked {
@@ -239,7 +232,8 @@ pub async fn check<P: Pipe>(
         unowned: unowned(set, &state, d),
         data: state.data_said(),
         flags: state.data.flags,
-        stamp: state.stamp_said(),
+        unsaved: state.unsaved,
+        servo: state.hash(d),
     })
 }
 
@@ -515,7 +509,7 @@ async fn apply<P: Pipe>(
         }
         pending = again;
     }
-    let now = if *written {
+    if *written {
         let now = state::read(c, id, d).await?;
         let left = differences(set, &now, d);
         if !left.is_empty() {
@@ -524,24 +518,6 @@ async fn apply<P: Pipe>(
                 left.join("; ")
             )));
         }
-        now
-    } else {
-        state.clone()
-    };
-    if *written || !now.stamp.matches() || now.data.flags & STAMP_MISMATCH != 0 {
-        *written = true;
-        let s = stamp::restamp(c, id, d).await?;
-        let v = stamp::verdict(c, id, d).await?;
-        let data = osc_client::data_state::read(c, id, d).await?;
-        if v.stored != s || !v.matches() || data.flags & STAMP_MISMATCH != 0 {
-            return Err(Refused(format!(
-                "the stamp {s:#06x} did not bless the set: stamp reads {:#06x} over a live set of {:#06x}, data state {}",
-                v.stored,
-                v.computed,
-                data.names()
-            )));
-        }
-        steps.push(Step::Stamped(s));
     }
     Ok(())
 }
@@ -671,13 +647,13 @@ async fn rebooted<P: Pipe>(
     }
 }
 
-/// Make the servo equal the set, volatile, then stamp it. Refused with
+/// Make the servo equal the set, volatile. Refused with
 /// nothing written unless torque is off, every field of the set is one
 /// the servo lets a host write and this tool writes, and the table can be
 /// written. Then the slots, the stops, the table, the other fields that
 /// differ in table order, each read back, a field the servo refuses tried
-/// once more after the rest; the whole state read back must be the set
-/// before it is stamped. A refusal after the first write reboots the
+/// once more after the rest; the whole state read back must be the set.
+/// A refusal after the first write reboots the
 /// servo onto its saved state. `points` are the table's when the set's
 /// is LIVE.
 pub async fn install<P: Pipe>(
@@ -751,7 +727,7 @@ pub async fn put_back<P: Pipe>(
     let now = state::read(c, id, d).await;
     home(c, id, at, run, steps).await?;
     let now = now?;
-    if now.record(d)["hash"] == stored.record(d)["hash"] {
+    if now.hash(d) == stored.hash(d) && now.data_said() == stored.data_said() {
         return Ok(Vec::new());
     }
     let mut out: Vec<String> = d
@@ -785,9 +761,9 @@ pub async fn put_back<P: Pipe>(
     }
     if out.is_empty() {
         out.push(format!(
-            "the state read is not the backup's: stamp stored {}, now {}",
-            stored.stamp_said(),
-            now.stamp_said()
+            "the state read is not the backup's: servo stored {}, now {}",
+            stored.hash(d),
+            now.hash(d)
         ));
     }
     Ok(out)
@@ -843,10 +819,11 @@ pub async fn save<P: Pipe>(
     sink.write(AFTER, &bytes)?;
     steps.push(Step::After(sink.shown(AFTER)));
     let left = differences(set, &after, d);
-    if !left.is_empty() || after.data.flags & IMAGE != 0 {
+    if !left.is_empty() || after.data.flags != 0 || after.unsaved {
         return Err(Refused(format!(
-            "after the SAVE and a reboot the servo is not the set (data state {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc save` then makes it permanent",
+            "after the SAVE and a reboot the servo is not the set (data state {}, unsaved {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc save` then makes it permanent",
             after.data_said(),
+            after.unsaved_said(),
             left.iter().map(|l| format!("; {l}")).collect::<String>(),
             sink.shown(AFTER)
         )));

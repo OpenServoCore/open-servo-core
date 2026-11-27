@@ -6,7 +6,7 @@
 //! cap, and the kernel reads that current through the shunt window one
 //! tick late. Every pin runs every seed: the worst seed is the verdict.
 
-use osc_integration::plant::{FakeIo, RL_VBUS, RlPlant, duty_of, kernel, rl_motor, seed, stamp};
+use osc_integration::plant::{FakeIo, RL_VBUS, RlPlant, duty_of, kernel, rl_motor, seed};
 use osc_servo_core::kernel::phases::loops::limits::flag;
 use osc_servo_core::regions::config::ms_ticks;
 use osc_servo_core::{Kernel, Mode, RegionStorage, Shared, StallResponse};
@@ -87,7 +87,6 @@ impl Family {
             rl_motor(t);
             t.calib.motor.r_q12 = self.r_q12;
         });
-        stamp(&sh);
         sh
     }
 }
@@ -134,7 +133,6 @@ fn fold_tick(f: &Family, frac: u32, cap: u16) -> Option<u32> {
     let sh = f.rig(StallResponse::Yield);
     sh.table
         .with_mut(|t| t.config.limits.current_limit_counts = cap);
-    stamp(&sh);
     let (mut k, mut p) = locked(&sh, f.r_q12, f.duty_at(frac));
     (0..(STALL_MS + SETTLE_MS) * MS).find(|_| {
         run(&mut k, &sh, &mut p, 1);
@@ -187,7 +185,6 @@ fn raising_the_cap_does_not_move_the_trip() {
         let sh = f.rig(StallResponse::Yield);
         sh.table
             .with_mut(|t| t.config.limits.current_limit_counts = f.cap.saturating_mul(2));
-        stamp(&sh);
         let (mut k, mut p) = locked(&sh, f.r_q12, f.duty_at(over));
         run(&mut k, &sh, &mut p, (STALL_MS + SETTLE_MS) * MS);
         assert_eq!(i_lim(&sh), f.i_cont, "{what}: the fold is the rating");
