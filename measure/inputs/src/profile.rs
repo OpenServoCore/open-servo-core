@@ -89,6 +89,8 @@ pub struct StallRow {
     pub at_v: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torque_kg_cm: Option<f64>,
+    /// A cross-check the gather reports beside the stated volts over R;
+    /// the current limit never reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_a: Option<f64>,
 }

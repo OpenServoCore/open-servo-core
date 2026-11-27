@@ -468,6 +468,15 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             )),
         ),
     );
+    if let Some(s) = nameplate.stall_row()
+        && let Some(a) = s.current_a
+    {
+        o.lines.push(format!(
+            "stall current at {} V: V / R = {:.3} A over the seated R {r:.4} ohm, which the current limit derates; the profile states {a} A",
+            s.at_v,
+            s.at_v / r
+        ));
+    }
     let ntc_key = "seated.ntc_c_by_seat";
     let mut seats: Vec<f64> = at(&stops.r.doc, ntc_key)
         .and_then(Value::as_array)

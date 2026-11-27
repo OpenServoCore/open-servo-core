@@ -247,6 +247,33 @@ fn a_current_limit_over_the_board_trip_is_stored_at_the_trip() {
     assert!(why.contains("not under the yield current 908"), "{why}");
 }
 
+/// The current limit is the derate of the stated stall volts over the
+/// seated R: a stated stall current no longer binds it. The record states
+/// none, so its limit is the record's either way.
+#[test]
+fn a_stated_stall_current_does_not_bind_the_current_limit() {
+    let i = inputs();
+    assert!(i.nameplate.stall.iter().all(|s| s.current_a.is_none()));
+    let set = build(&i);
+    assert_eq!(bound(&set, "current_limit_counts"), 1043);
+    for a in [0.5, 2.0] {
+        let mut i = inputs();
+        for s in &mut i.nameplate.stall {
+            s.current_a = Some(a);
+        }
+        let set = build(&i);
+        assert_eq!(bound(&set, "current_limit_counts"), 1043, "{a} A");
+        let Some(Outcome::Bound(e)) = set.get("current_limit_counts") else {
+            panic!("bound")
+        };
+        assert!(e.inputs.contains(&"measured.r_ohm"), "{:?}", e.inputs);
+    }
+    let mut i = inputs();
+    i.measured.r_ohm = None;
+    i.nameplate.stall[0].current_a = Some(0.9);
+    assert_eq!(held(&build(&i), "current_limit_counts"), "measured.r_ohm");
+}
+
 #[test]
 fn a_missing_input_holds_the_field_and_names_it() {
     let mut i = inputs();
