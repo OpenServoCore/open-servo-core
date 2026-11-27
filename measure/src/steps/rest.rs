@@ -51,14 +51,6 @@ const VREF_V: f64 = 1.2;
 /// Reads a position, or the rail tap, is the mean of.
 const POS_READS: u32 = 8;
 
-const ZERO_SD_MAX: f64 = 2.0;
-const TAP_SD_MAX: f64 = 1.5;
-const POT_SD: (f64, f64) = (0.3, 3.0);
-const TAPS_APART_MAX: f64 = 5.0;
-const BIAS_SHARE: f64 = 0.03;
-const VDD_SHARE: f64 = 0.03;
-const NTC_C: (f64, f64) = (-10.0, 60.0);
-const FOLD_MAX: f64 = 1.0;
 /// The most the position may move between the two seconds, counts.
 const STILL_MAX: f64 = 5.0;
 
@@ -429,13 +421,9 @@ impl Channels {
             .map_or(NO_CHANNEL, |c| c.1)
     }
 
-    /// The frame's own pattern a channel keeps once VDD's is out: flat
-    /// within a count, every channel, else warned; not judged without a
-    /// supply pattern. Never a refusal: the supply's frame
-    /// ripple does not keep one shape from capture to capture, so the
-    /// torque-on second can keep over a count of it against the rest
-    /// second's pattern on a healthy board. A channel no row carried (NaN)
-    /// is no flatness.
+    /// The frame's own pattern a channel keeps once VDD's is out, the
+    /// worst channel's, reported. A channel no row carried (NaN) is the
+    /// worst.
     pub fn pattern_check(&self) -> Check {
         let (worst, fold) = self
             .rest
@@ -450,30 +438,18 @@ impl Channels {
                 if b.1.is_nan() || b.1 > a.1 { b } else { a }
             });
         let worst = if worst.is_empty() { "none" } else { &worst };
-        let bound = format!("flat within {FOLD_MAX} count");
-        let Some(p) = &self.pattern else {
-            return Check {
-                name: "the frame's own pattern".into(),
-                value: format!(
+        Check::reported(
+            "the frame's own pattern",
+            match &self.pattern {
+                None => format!(
                     "no supply frame pattern: tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}), nothing taken out"
                 ),
-                bound,
-                verdict: Verdict::NotJudged,
-            };
-        };
-        Check {
-            name: "the frame's own pattern".into(),
-            value: format!(
-                "tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}) once the VDD frame ripple from {} is out",
-                p.source
-            ),
-            bound,
-            verdict: if fold <= FOLD_MAX {
-                Verdict::Pass
-            } else {
-                Verdict::Warn
+                Some(p) => format!(
+                    "tick-modulo-16 means at most {fold:.2} counts off the mean ({worst}) once the VDD frame ripple from {} is out",
+                    p.source
+                ),
             },
-        }
+        )
     }
 
     pub fn json(&self) -> Value {
@@ -765,14 +741,6 @@ fn est(value: f64, unit: &str, source: &str) -> Value {
 fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judged {
     let s = &b.sense;
     let mut checks = Vec::new();
-    let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
-        checks.push(Check {
-            name: name.into(),
-            value,
-            bound,
-            verdict,
-        })
-    };
     let pass = |ok: bool| if ok { Verdict::Pass } else { Verdict::Fail };
     let ch = Channels::of(&rest.rows, &raw.rows, &b.slots);
     let mut lines = vec![ch.said()];
@@ -802,51 +770,31 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             x.comp.sd, x.raw.sd
         )
     };
-    check(
-        "current zero noise, torque off",
-        sd(r_zero),
-        format!("<= {ZERO_SD_MAX}"),
-        pass(r_zero.comp.sd <= ZERO_SD_MAX),
-    );
-    check(
-        "current zero noise, torque on",
-        sd(w_zero),
-        format!("<= {ZERO_SD_MAX}"),
-        pass(w_zero.comp.sd <= ZERO_SD_MAX),
-    );
     for (name, x) in [
+        ("current zero noise, torque off", r_zero),
+        ("current zero noise, torque on", w_zero),
         ("tap a noise, torque off", r_a),
         ("tap a noise, torque on", w_a),
         ("tap b noise, torque on", w_b),
+        ("pot noise at rest", r_pos),
     ] {
-        check(
-            name,
-            sd(x),
-            format!("<= {TAP_SD_MAX}"),
-            pass(x.comp.sd <= TAP_SD_MAX),
-        );
+        checks.push(Check::reported(name, sd(x)));
     }
-    check(
-        "pot noise at rest",
-        sd(r_pos),
-        format!("{} to {}", POT_SD.0, POT_SD.1),
-        pass((POT_SD.0..=POT_SD.1).contains(&r_pos.comp.sd)),
-    );
     let (r_pos, r_zero, r_a, w_pos, w_zero, w_a, w_b) = (
         r_pos.raw, r_zero.raw, r_a.raw, w_pos.raw, w_zero.raw, w_a.raw, w_b.raw,
     );
     let pot_lo = r_pos.min.min(w_pos.min);
     let pot_hi = r_pos.max.max(w_pos.max);
-    check(
-        "pot off the converter rails",
-        format!("{pot_lo:.0} to {pot_hi:.0} counts"),
-        format!(
+    checks.push(Check {
+        name: "pot off the converter rails".into(),
+        value: format!("{pot_lo:.0} to {pot_hi:.0} counts"),
+        bound: format!(
             "over {RAIL_COUNTS:.0} and under {:.0}: a pot lead off reads full scale",
             ADC_TOP - RAIL_COUNTS
         ),
-        pass(pot_lo > RAIL_COUNTS && pot_hi < ADC_TOP - RAIL_COUNTS),
-    );
-    check(
+        verdict: pass(pot_lo > RAIL_COUNTS && pot_hi < ADC_TOP - RAIL_COUNTS),
+    });
+    checks.push(Check::reported(
         "taps agree, torque on",
         format!(
             "a {:.1}, b {:.1} counts, {:.1} apart",
@@ -854,65 +802,65 @@ fn judge(b: &Before, rest: &Burst, raw: &Burst, np: Option<&Nameplate>) -> Judge
             w_b.mean,
             (w_a.mean - w_b.mean).abs()
         ),
-        format!("<= {TAPS_APART_MAX} apart"),
-        pass((w_a.mean - w_b.mean).abs() <= TAPS_APART_MAX),
-    );
+    ));
     let worst_bias = [r_a.mean, w_a.mean, w_b.mean]
         .into_iter()
         .map(|m| (m - s.bias_nom).abs() / s.bias_nom)
         .fold(0.0, f64::max);
-    check(
+    checks.push(Check::reported(
         "taps at the divider bias",
         format!(
-            "a {:.1} / {:.1}, b {:.1} counts, at most {:.2}% off {}",
+            "a {:.1} / {:.1}, b {:.1} counts, at most {:.2}% off vmotor_bias_nom_counts {}",
             r_a.mean,
             w_a.mean,
             w_b.mean,
             100.0 * worst_bias,
             s.bias_nom
         ),
-        format!(
-            "within {:.0}% of vmotor_bias_nom_counts",
-            100.0 * BIAS_SHARE
-        ),
-        pass(worst_bias <= BIAS_SHARE),
-    );
-    let vdd_bound = format!("within {:.0}% of vdd_mv {}", 100.0 * VDD_SHARE, s.vdd_mv);
+    ));
     let vdd = match &b.vref {
         Ok(v) => {
             let vdd = s.vdd_v(f64::from(*v));
             let vdd_off = (vdd * 1000.0 - s.vdd_mv).abs() / s.vdd_mv;
-            check(
+            checks.push(Check::reported(
                 "chip supply",
                 format!(
-                    "{vdd:.3} V from vref_raw {v}, the boot reading, {:.2}% off",
-                    100.0 * vdd_off
+                    "{vdd:.3} V from vref_raw {v}, the boot reading, {:.2}% off vdd_mv {}",
+                    100.0 * vdd_off,
+                    s.vdd_mv
                 ),
-                vdd_bound,
-                pass(vdd_off <= VDD_SHARE),
-            );
+            ));
             vdd
         }
         Err(why) => {
-            check(
+            checks.push(Check::reported(
                 "chip supply",
                 format!("{why}; the nominal vdd_mv {} is used", s.vdd_mv),
-                vdd_bound,
-                Verdict::NotJudged,
-            );
+            ));
             s.vdd_mv / 1000.0
         }
     };
     let ntc_c = s.ntc.c_of_raw(r_ntc.mean);
     let ntc_railed = r_ntc.min <= RAIL_COUNTS || r_ntc.max >= ADC_TOP - RAIL_COUNTS;
+    let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
+        checks.push(Check {
+            name: name.into(),
+            value,
+            bound,
+            verdict,
+        })
+    };
     check(
         "board NTC",
         format!(
-            "{ntc_c:.1} C from ntc_raw {:.1} (the part's nominal beta)",
-            r_ntc.mean
+            "{ntc_c:.1} C from ntc_raw {:.1} (the part's nominal beta), {:.0} to {:.0} counts",
+            r_ntc.mean, r_ntc.min, r_ntc.max
         ),
-        format!("{} to {} C, off both rails", NTC_C.0, NTC_C.1),
-        pass(!ntc_railed && (NTC_C.0..=NTC_C.1).contains(&ntc_c)),
+        format!(
+            "over {RAIL_COUNTS:.0} and under {:.0}: an NTC lead off or shorted reads a rail",
+            ADC_TOP - RAIL_COUNTS
+        ),
+        pass(!ntc_railed),
     );
     let cpa = s.counts_per_a();
     let room_a = (ADC_TOP - w_zero.mean) / cpa;
@@ -1172,7 +1120,7 @@ mod tests {
         );
         assert_eq!(ch.rest("vbus_raw").gain, 1.0);
         let c = ch.pattern_check();
-        assert_eq!(c.verdict, Verdict::Pass, "{}", c.value);
+        assert_eq!(c.verdict, Verdict::NotJudged, "{}", c.value);
         assert!(c.value.contains("from vbus_raw"), "{}", c.value);
         assert_eq!(ch.said(), "the supply's frame pattern from vbus_raw");
     }
@@ -1238,13 +1186,13 @@ mod tests {
         assert_eq!(j.result["channels"]["raw"]["pos"]["pattern_gain"], 0.0);
     }
 
-    /// A frame pattern that is not VDD's is said, not refused.
+    /// A frame pattern that is not VDD's is reported, its channel named.
     #[test]
-    fn a_frame_pattern_unlike_vdds_is_warned() {
+    fn a_frame_pattern_unlike_vdds_is_reported() {
         let own = |i: u64| 2.0 * (2.0 * core::f64::consts::PI * 3.0 * (i % 16) as f64 / 16.0).sin();
         let (rest, raw) = rows(own);
         let c = Channels::of(&rest, &raw, &[0; ADC_WIDE_SLOTS]).pattern_check();
-        assert_eq!(c.verdict, Verdict::Warn, "{}", c.value);
+        assert_eq!(c.verdict, Verdict::NotJudged, "{}", c.value);
         assert!(c.value.contains("(rest pos)"), "{}", c.value);
     }
 
@@ -1328,6 +1276,59 @@ mod tests {
         assert!((mean - (2052.5 + 2059.0) / 2.0).abs() < 0.2, "{mean}");
     }
 
+    /// A centred horn on one code reads a rest sd of 0, and a board whose
+    /// readings are far from the nominal parts: every one reported, none
+    /// refuses, the estimates written as read.
+    #[test]
+    fn a_pot_on_one_code_and_readings_off_nominal_are_reported_not_refused() {
+        let (mut rest, mut raw) = rows_at(2047.0, |_| 0.0);
+        for f in &mut rest {
+            f.pos = Some(2047);
+            f.current_raw = f.current_raw.map(|c| c + (f.tick % 2) as u16 * 12);
+            f.vmotor_a = Some(900);
+            f.ntc_raw = Some(300);
+        }
+        for f in &mut raw {
+            f.pos = Some(2047);
+            f.vmotor_a = Some(900);
+        }
+        let j = judged_rows(2047.0, rest, raw, Ok(1200));
+        assert!(failed(&j).is_empty(), "{:?}", failed(&j));
+        let sd = j.result["estimates"]["pot_rest_sd_counts"]["value"]
+            .as_f64()
+            .expect("sd");
+        assert!(sd.abs() < 1e-9, "{sd}");
+        for name in [
+            "pot noise at rest",
+            "current zero noise, torque off",
+            "taps agree, torque on",
+            "taps at the divider bias",
+            "chip supply",
+            "the frame's own pattern",
+        ] {
+            let c = named(&j, name);
+            assert_eq!(
+                (c.verdict, c.bound.as_str()),
+                (Verdict::NotJudged, crate::steps::REPORTED),
+                "{}",
+                c.said()
+            );
+        }
+        assert!(
+            named(&j, "pot noise at rest")
+                .value
+                .starts_with("sd 0.00 counts"),
+            "{}",
+            named(&j, "pot noise at rest").value
+        );
+        let ntc = named(&j, "board NTC");
+        assert_eq!(ntc.verdict, Verdict::Pass, "{}", ntc.said());
+        let c = j.result["estimates"]["board_ntc_c"]["value"]
+            .as_f64()
+            .expect("ntc");
+        assert!(c > 60.0, "the board reads hot and is reported: {c}");
+    }
+
     /// [`judge`] on the rows of [`rows_at`], the boot reading `vref`.
     fn judged(pos: f64, vref: Result<u16, String>) -> Judged {
         let (rest, raw) = rows_at(pos, |_| 0.0);
@@ -1403,14 +1404,13 @@ mod tests {
             let j = judged(pos, Ok(1490));
             assert!(failed(&j).is_empty(), "{pos}: {:?}", failed(&j));
             let vdd = named(&j, "chip supply");
-            assert_eq!(vdd.verdict, Verdict::Pass, "{pos}: {}", vdd.value);
+            assert_eq!(vdd.verdict, Verdict::NotJudged, "{pos}: {}", vdd.value);
             assert!(
                 vdd.value
                     .contains("3.299 V from vref_raw 1490, the boot reading"),
                 "{}",
                 vdd.value
             );
-            assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
             let est = &j.result["estimates"];
             assert_eq!(est["vdd_v"]["value"].as_f64(), Some(1.2 * 4096.0 / 1490.0));
             let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]
@@ -1466,7 +1466,6 @@ mod tests {
                 "{:?}",
                 j.lines
             );
-            assert_eq!(named(&j, "the frame's own pattern").verdict, Verdict::Pass);
             let est = &j.result["estimates"];
             assert!(est["vdd_v"].is_null() && est["vdd_frame_ripple_mv_pp"].is_null());
             let vbus = j.result["channels"]["rest"]["vbus_raw"]["mean"]

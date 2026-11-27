@@ -278,7 +278,7 @@ mod synthetic {
         assert_eq!(a.reads.iter().filter(|r| r.shot.in_fit).count(), 14);
         assert_eq!(a.reads.iter().filter(|r| r.kept()).count(), 14);
         assert_eq!(aside(&a), [0usize; 0]);
-        assert_eq!(check(&a, "few bursts set aside").verdict, Verdict::Pass);
+        assert_eq!(check(&a, "bursts set aside").verdict, Verdict::NotJudged);
     }
 
     /// The bursts of a sign and level run in a row, the first after each
@@ -318,10 +318,9 @@ mod synthetic {
             five.said(RAIL, a.period_s)
         );
         assert_eq!(
-            check(&a, "both signs read the same current").verdict,
+            check(&a, "the rotor held still for the bursts").verdict,
             Verdict::Pass
         );
-        assert_eq!(check(&a, "few bursts set aside").verdict, Verdict::Pass);
         assert!(a.accepted());
         let (p, c) = (
             a.r_plan_free().expect("priced"),
@@ -339,11 +338,11 @@ mod synthetic {
     }
 
     /// Two low bursts in one group of four leave it no current to compare:
-    /// the signs check fails and says what to do.
+    /// the still check fails and says what to do.
     #[test]
     fn two_low_bursts_in_a_group_refuse_with_the_sentence() {
         let a = with_low(&[5, 6]);
-        let c = check(&a, "both signs read the same current");
+        let c = check(&a, "the rotor held still for the bursts");
         println!("{}", c.said());
         assert_eq!(c.verdict, Verdict::Fail);
         assert!(
@@ -357,24 +356,56 @@ mod synthetic {
         assert!(a.r_plan_free().is_none());
     }
 
-    /// Three set aside across the groups warn, never refuse.
+    /// Three set aside across the groups are reported, never refuse.
     #[test]
-    fn three_set_aside_warn() {
+    fn three_set_aside_are_reported() {
         let a = with_low(&[2, 5, 13]);
         assert_eq!(aside(&a), [2, 5, 13]);
-        let c = check(&a, "few bursts set aside");
+        let c = check(&a, "bursts set aside");
         println!("{}", c.said());
-        assert_eq!(c.verdict, Verdict::Warn);
+        assert_eq!(c.verdict, Verdict::NotJudged);
         assert!(
-            c.value.contains("brush bridges two segments") && c.value.contains("the safe side"),
+            c.value.starts_with("3 of 16 set aside")
+                && c.value.contains("brush bridges two segments"),
             "{}",
             c.value
         );
         assert_eq!(
             check(&a, "both signs read the same current").verdict,
-            Verdict::Pass
+            Verdict::NotJudged
         );
         assert!(a.accepted() && a.r_plan_free().is_some());
+    }
+
+    /// The two signs reading different currents, and an L / R past the
+    /// board's old range, are reported: part A is accepted and prices
+    /// part B.
+    #[test]
+    fn signs_apart_and_a_long_l_over_r_are_reported_not_refused() {
+        let short = 0.7 * R * 50e-6;
+        let a = judge(
+            &facts(),
+            &reads_by(
+                |s| {
+                    if s.dir < 0 {
+                        (1.3 * R, 1.3 * short)
+                    } else {
+                        (R, short)
+                    }
+                },
+                false,
+                false,
+            ),
+        );
+        for c in &a.checks {
+            println!("{}", c.said());
+        }
+        let lr = check(&a, "L / R");
+        assert_eq!(lr.verdict, Verdict::NotJudged, "{}", lr.said());
+        assert!(lr.value.contains("PWM periods"), "{}", lr.value);
+        let signs = check(&a, "both signs read the same current");
+        assert_eq!(signs.verdict, Verdict::NotJudged, "{}", signs.said());
+        assert!(a.accepted() && a.r_plan_free().is_some(), "{:?}", a.checks);
     }
 
     #[test]

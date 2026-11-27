@@ -81,23 +81,8 @@ pub const BURSTS_A_LEVEL: usize = 4;
 pub const ZERO_WAIT_S: f64 = 1.0;
 /// A stop's seats within this, counts.
 pub const SEATS_APART_MAX: f64 = seek::WALK_MAX_COUNTS;
-/// The stops at least a quarter of the converter's range apart.
-pub const SPAN_MIN_COUNTS: f64 = ADC_COUNTS / 4.0;
-/// The span over the nameplate's travel, counts a degree.
-pub const COUNTS_PER_DEG: (f64, f64) = (10.0, 30.0);
 /// A stop this close to a converter rail is flagged.
 pub const RAIL_NEAR_COUNTS: f64 = 8.0;
-pub const KEPT_MIN: usize = 6;
-/// The two stops' R within this share of their mean: the winding's R
-/// moves a few percent with the rotor's angle, and the two stops are two
-/// angles.
-pub const STOPS_R_SHARE: f64 = 0.10;
-/// The burst-to-burst sd of R inside the groups, over the median.
-pub const R_SD_MAX: f64 = 0.03;
-/// The two stops' R are compared only when each keeps this many bursts.
-pub const KEPT_A_STOP_MIN: usize = 2;
-/// Over this share of the bursts in the fit set aside as bridged warns.
-pub const BRIDGED_WARN_SHARE: f64 = 0.25;
 /// Two reads of the pos this far apart hold a torn read: the reply copies
 /// a two-byte field a byte at a time out of the tick block the ADC DMA
 /// lands each scan, so a read that straddles a landing across a byte
@@ -1199,17 +1184,8 @@ pub fn advice(name: &str) -> &'static str {
         "each stop's seats agree" => {
             "a stopper that yields or a stall that was no stop: check the horn and the stops, then run the step again"
         }
-        "the stops are a travel apart" | "the span fits the nameplate's travel" => {
-            "a stall short of a stop, or a nameplate travel_deg that is not this servo's: check travel_deg and that the horn turns freely, then run the step again"
-        }
         "the start lies between the stops" => HANDS,
-        "kept bursts in the fit" | "burst-to-burst spread of R" => {
-            "the bursts scattered: run the step again with the cable seated; if it is refused again, check the motor leads"
-        }
-        "the two stops read the same R" => {
-            "a seat that was no stop, or the brushes bridging two commutator bars at one seat: run the step again; if it is refused again, check the horn and the stops"
-        }
-        "R is a motor's this board can read" | "L / R is a motor's this board can read" => {
+        "R is a motor's this board can read" => {
             "not a motor this board can read: check the motor leads and the board"
         }
         "the current is back at zero after each burst" => {
@@ -1255,31 +1231,21 @@ pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
         ),
     ));
     let span = hi.median - lo.median;
-    out.push(check(
-        "the stops are a travel apart",
+    out.push(Check::reported(
+        "the stops' span",
         format!(
-            "low {:.0}, high {:.0}: {span:.0} counts",
-            lo.median, hi.median
+            "low {:.0}, high {:.0}: {span:.0} counts, {:.0}% of the converter's range",
+            lo.median,
+            hi.median,
+            100.0 * span / ADC_COUNTS
         ),
-        format!("at least {SPAN_MIN_COUNTS:.0} counts, a quarter of the converter's range"),
-        pass(span >= SPAN_MIN_COUNTS),
     ));
-    let cpd = span / travel_deg;
-    let (a, z) = COUNTS_PER_DEG;
-    out.push(check(
-        "the span fits the nameplate's travel",
+    out.push(Check::reported(
+        "the span over the nameplate's travel",
         format!(
-            "{span:.0} counts over the nameplate's {travel_deg:.1} deg: {cpd:.2} counts/deg{}",
-            if cpd < a {
-                ": too few, the stops closer than the travel needs"
-            } else if cpd > z {
-                ": too many, the stops farther apart than the travel allows"
-            } else {
-                ""
-            }
+            "{span:.0} counts over the nameplate's {travel_deg:.1} deg: {:.2} counts/deg",
+            span / travel_deg
         ),
-        format!("{a} to {z} counts/deg: a {ADC_COUNTS:.0}-count pot over 60 to 360 deg"),
-        pass((a..=z).contains(&cpd)),
     ));
     let start = seek.start_pos().unwrap_or(f64::NAN);
     out.push(check(
@@ -1349,98 +1315,55 @@ pub fn judge_reads(seek: Option<&Seek>, torn: &[Torn]) -> Check {
     )
 }
 
-/// The seated read's checks, pure.
+/// The seated read's checks, pure: the winding R this board can read and
+/// the bridge letting go refuse; the counts, the stops' agreement and the
+/// spreads are reported.
 pub fn judge_r(r: &SeatedRead, shots: &[SeatShot]) -> Vec<Check> {
     let mut out = Vec::new();
     let at = |s: usize| move |b: &seated::BurstRead| b.stop == s;
     let kept = [0, 1].map(|s| r.kept().filter(|b| b.stop == s).count());
-    let all = kept[0] + kept[1];
-    out.push(check(
-        "kept bursts in the fit",
-        format!("{all} (low {}, high {})", kept[0], kept[1]),
-        format!("at least {KEPT_MIN} in all"),
-        pass(all >= KEPT_MIN),
-    ));
-    let (lo, hi) = (r.r(at(0)), r.r(at(1)));
-    let enough = kept.map(|k| k >= KEPT_A_STOP_MIN);
-    let one = match enough {
-        [true, false] => lo.map(|s| (Stop::Low, s, Stop::High, kept[1])),
-        [false, true] => hi.map(|s| (Stop::High, s, Stop::Low, kept[0])),
-        _ => None,
-    };
-    match (lo.filter(|_| enough[0]), hi.filter(|_| enough[1]), one) {
-        (_, _, Some((s, r, other, n))) => out.push(check(
-            "the two stops read the same R",
-            format!(
-                "the R is the {} stop's alone, {:.4} ohm: the {} stop keeps {n}",
-                s.word(),
-                r.median,
-                other.word()
-            ),
-            format!(
-                "compared when each stop keeps {KEPT_A_STOP_MIN}; a warning when one keeps fewer"
-            ),
-            Verdict::Warn,
-        )),
-        (Some(a), Some(b), None) => {
-            let apart = (a.median - b.median).abs() / ((a.median + b.median) / 2.0);
-            out.push(check(
-                "the two stops read the same R",
-                format!(
-                    "low {:.4} ohm, high {:.4} ohm: {:.2}% apart",
-                    a.median,
-                    b.median,
-                    100.0 * apart
-                ),
-                format!(
-                    "within {:.0}%: more is a bridged seat or a seat that was no stop",
-                    100.0 * STOPS_R_SHARE
-                ),
-                pass(apart <= STOPS_R_SHARE),
-            ));
-        }
-        _ => out.push(check(
-            "the two stops read the same R",
-            format!("low keeps {}, high {}", kept[0], kept[1]),
-            format!("{KEPT_A_STOP_MIN} kept at a stop at least"),
-            Verdict::Fail,
-        )),
-    }
     let bridged = [0, 1].map(|s| r.bridged().filter(|b| b.stop == s).count());
-    let cut = bridged[0] + bridged[1];
-    let in_fit = cut + all;
-    let share = if in_fit == 0 {
-        0.0
-    } else {
-        cut as f64 / in_fit as f64
+    out.push(Check::reported(
+        "kept bursts in the fit",
+        format!(
+            "{} (low {}, high {}); {} more set aside as bridged (low {}, high {})",
+            kept[0] + kept[1],
+            kept[0],
+            kept[1],
+            bridged[0] + bridged[1],
+            bridged[0],
+            bridged[1]
+        ),
+    ));
+    let ohm = |x: Option<Spread>| {
+        x.map_or("no kept burst".to_string(), |s| {
+            format!("{:.4} ohm", s.median)
+        })
     };
-    out.push(check(
-        "few bursts read a bridged brush",
-        format!(
-            "{cut} of {in_fit} bursts in the fit set aside as bridged (low {}, high {})",
-            bridged[0], bridged[1]
-        ),
-        format!(
-            "at most {:.0}% of them; a warning, never a refusal",
-            100.0 * BRIDGED_WARN_SHARE
-        ),
-        if share > BRIDGED_WARN_SHARE {
-            Verdict::Warn
-        } else {
-            Verdict::Pass
+    let (lo, hi) = (r.r(at(0)), r.r(at(1)));
+    out.push(Check::reported(
+        "the two stops' R",
+        match (lo, hi) {
+            (Some(a), Some(b)) => format!(
+                "low {:.4} ohm ({} kept), high {:.4} ohm ({} kept): {:.2}% apart",
+                a.median,
+                kept[0],
+                b.median,
+                kept[1],
+                100.0 * (a.median - b.median).abs() / ((a.median + b.median) / 2.0)
+            ),
+            _ => format!("low {}, high {}", ohm(lo), ohm(hi)),
         },
     ));
-    let sd = r.r_sd_within_groups();
-    out.push(check(
+    out.push(Check::reported(
         "burst-to-burst spread of R",
-        sd.map_or("no group of two kept bursts".into(), |s| {
-            format!(
-                "{:.2}% (the median of each group's sd over the pooled median)",
-                100.0 * s
-            )
-        }),
-        format!("within {:.0}%", 100.0 * R_SD_MAX),
-        pass(sd.is_some_and(|s| s <= R_SD_MAX)),
+        r.r_sd_within_groups()
+            .map_or("no group of two kept bursts".into(), |s| {
+                format!(
+                    "{:.2}% (the median of each group's sd over the pooled median)",
+                    100.0 * s
+                )
+            }),
     ));
     let (r0, r1) = probe::R_RANGE_OHM;
     match r.r(|_| true) {
@@ -1457,23 +1380,15 @@ pub fn judge_r(r: &SeatedRead, shots: &[SeatShot]) -> Vec<Check> {
             Verdict::Fail,
         )),
     }
-    let (t0, t1) = probe::TAU_RANGE_PERIODS;
-    match r.tau(|_| true) {
-        Some(t) => {
-            let periods = t.median / r.period_s;
-            out.push(check(
-                "L / R is a motor's this board can read",
-                format!("{:.1} us, {periods:.2} PWM periods", 1e6 * t.median),
-                format!("{t0} to {t1} periods"),
-                pass((t0..=t1).contains(&periods)),
-            ));
-        }
-        None => out.push(check(
-            "L / R is a motor's this board can read",
-            "no kept burst".into(),
-            "a median".into(),
-            Verdict::Fail,
-        )),
+    if let Some(t) = r.tau(|_| true) {
+        out.push(Check::reported(
+            "L / R",
+            format!(
+                "{:.1} us, {:.2} PWM periods",
+                1e6 * t.median,
+                t.median / r.period_s
+            ),
+        ));
     }
     let after = shots.iter().map(|s| s.after_a.abs()).fold(0.0, f64::max);
     out.push(check(
@@ -2467,25 +2382,29 @@ mod tests {
     }
 
     /// The stops of the bench servo pass; a jam short of the low stop that
-    /// seated three times is refused by the span against the nameplate's
-    /// travel; a stop by a converter rail is accepted and flagged.
+    /// seated three times is accepted, its short span reported against the
+    /// nameplate's travel; a stop by a converter rail is accepted and
+    /// flagged.
     #[test]
-    fn the_stops_are_judged_by_their_seats_span_and_start() {
+    fn the_stops_are_judged_by_their_seats_and_start_and_the_span_reported() {
         let travel = 184.33;
         let ok = judge_stops(&found(2000.0, 432.0, 3626.0, None), travel);
-        assert!(ok.iter().all(|c| c.verdict == Verdict::Pass), "{ok:?}");
+        assert!(
+            ok.iter()
+                .all(|c| matches!(c.verdict, Verdict::Pass | Verdict::NotJudged)),
+            "{ok:?}"
+        );
 
         let jam = judge_stops(&found(2000.0, 432.0, 3626.0, Some(1900.0)), travel);
-        let (v, said) = verdict(&jam, "the span fits the nameplate's travel");
-        assert_eq!(v, Verdict::Fail, "{said}");
-        assert!(said.contains("too few"), "{said}");
-        assert!(advice("the span fits the nameplate's travel").contains("travel_deg"));
+        assert!(jam.iter().all(|c| c.verdict != Verdict::Fail), "{jam:?}");
+        let (v, said) = verdict(&jam, "the span over the nameplate's travel");
+        assert_eq!(v, Verdict::NotJudged, "{said}");
+        assert!(said.contains("counts/deg"), "{said}");
 
         let short = judge_stops(&found(2000.0, 1500.0, 2400.0, None), travel);
-        assert_eq!(
-            verdict(&short, "the stops are a travel apart").0,
-            Verdict::Fail
-        );
+        let (v, said) = verdict(&short, "the stops' span");
+        assert_eq!(v, Verdict::NotJudged, "{said}");
+        assert!(said.contains("900 counts"), "{said}");
 
         let rail = judge_stops(&found(2000.0, 4.0, 3626.0, None), travel);
         let (v, said) = verdict(&rail, "no stop at a converter rail");
@@ -2526,58 +2445,67 @@ mod tests {
             .collect()
     }
 
-    /// The two stops' R within 10 % pass; 11 % apart refuses and names both;
-    /// under six kept bursts in all refuses; a stop that keeps under two
-    /// leaves the R the other stop's alone, a warning.
+    /// The two stops' R, however far apart, and however few bursts each
+    /// keeps, are reported; a read with no kept burst has no R and
+    /// refuses.
     #[test]
-    fn the_seated_r_is_judged_across_the_stops() {
+    fn the_seated_r_across_the_stops_is_reported() {
         let read = |a: f64, b: f64, n: usize| SeatedRead {
             bursts: [burst_reads(0, a, n), burst_reads(1, b, n)].concat(),
             period_s: 50e-6,
         };
-        // the two seats of a bench run: about 7 % apart, two rotor angles
-        for (a, b) in [(4.20, 4.30), (4.40, 4.12)] {
+        let not_failed = |c: &[Check]| c.iter().all(|c| c.verdict != Verdict::Fail);
+        for (a, b) in [(4.20, 4.30), (4.40, 4.12), (4.20, 4.70)] {
             let ok = judge_r(&read(a, b, 3), &[]);
-            assert!(ok.iter().all(|c| c.verdict == Verdict::Pass), "{ok:?}");
+            assert!(not_failed(&ok), "{ok:?}");
         }
         let apart = judge_r(&read(4.20, 4.70, 3), &[]);
-        let (v, said) = verdict(&apart, "the two stops read the same R");
-        assert_eq!(v, Verdict::Fail);
+        let (v, said) = verdict(&apart, "the two stops' R");
+        assert_eq!(v, Verdict::NotJudged);
         assert!(
-            said.contains("low 4.2") && said.contains("high 4.7"),
+            said.contains("low 4.2") && said.contains("high 4.7") && said.contains("% apart"),
             "{said}"
         );
-        let lone = |n: usize| SeatedRead {
+        let lone = SeatedRead {
             bursts: [
                 burst_reads(0, 4.20, 3),
-                burst_reads(1, 3.0, 1)[..n].to_vec(),
+                burst_reads(1, 3.0, 1)[..1].to_vec(),
             ]
             .concat(),
             period_s: 50e-6,
         };
-        let one = judge_r(&lone(1), &[]);
-        assert!(one.iter().all(|c| c.verdict != Verdict::Fail), "{one:?}");
-        let (v, said) = verdict(&one, "the two stops read the same R");
-        assert_eq!(v, Verdict::Warn);
-        assert!(
-            said.contains("the low stop's alone") && said.contains("high stop keeps 1"),
-            "{said}"
-        );
+        let one = judge_r(&lone, &[]);
+        assert!(not_failed(&one), "{one:?}");
+        let (_, said) = verdict(&one, "kept bursts in the fit");
+        assert!(said.contains("low 12, high 1"), "{said}");
         let few = SeatedRead {
             bursts: [
-                burst_reads(0, 4.20, 1),
+                burst_reads(0, 4.20, 1)[..1].to_vec(),
                 burst_reads(1, 4.25, 1)[..1].to_vec(),
             ]
             .concat(),
             period_s: 50e-6,
         };
         let few = judge_r(&few, &[]);
-        assert_eq!(verdict(&few, "kept bursts in the fit").0, Verdict::Fail);
+        assert!(not_failed(&few), "{few:?}");
+        let (_, said) = verdict(&few, "burst-to-burst spread of R");
+        assert_eq!(said, "no group of two kept bursts");
+        let none = judge_r(
+            &SeatedRead {
+                bursts: Vec::new(),
+                period_s: 50e-6,
+            },
+            &[],
+        );
+        assert_eq!(
+            verdict(&none, "R is a motor's this board can read").0,
+            Verdict::Fail
+        );
     }
 
     /// Bursts reading low at one stop are set aside by their own R against
-    /// the level's median, both stops together; over a quarter of the fit
-    /// set aside warns, and the stops then agree.
+    /// the level's median, both stops together, and counted; the stops
+    /// then agree.
     #[test]
     fn bridged_bursts_are_set_aside_by_their_own_r() {
         let mut low = burst_reads(1, 4.10, 3);
@@ -2590,11 +2518,7 @@ mod tests {
             bursts: [burst_reads(0, 4.20, 3), low].concat(),
             period_s: 50e-6,
         };
-        let before = judge_r(&r, &[]);
-        assert_eq!(
-            verdict(&before, "the two stops read the same R").0,
-            Verdict::Fail
-        );
+        let (_, before) = verdict(&judge_r(&r, &[]), "the two stops' R");
         r.set_aside_bridged();
         assert_eq!(r.bridged().count(), 8, "{:?}", r.bursts);
         assert!(r.bridged().all(|b| b.stop == 1 && b.k > 1));
@@ -2603,11 +2527,19 @@ mod tests {
             after.iter().all(|c| c.verdict != Verdict::Fail),
             "{after:?}"
         );
-        let (v, said) = verdict(&after, "few bursts read a bridged brush");
-        assert_eq!(v, Verdict::Warn, "8 of 24: {said}");
-        assert!(said.contains("8 of 24"), "{said}");
-        let (v, _) = verdict(&after, "the two stops read the same R");
-        assert_eq!(v, Verdict::Pass);
+        let (_, said) = verdict(&after, "kept bursts in the fit");
+        assert!(
+            said.contains("8 more set aside as bridged (low 0, high 8)"),
+            "{said}"
+        );
+        let (_, apart) = verdict(&after, "the two stops' R");
+        let share = |s: &str| -> f64 {
+            s.rsplit(": ")
+                .next()
+                .and_then(|t| t.trim_end_matches("% apart").parse().ok())
+                .expect("share")
+        };
+        assert!(share(&apart) < share(&before), "{before} -> {apart}");
     }
 
     #[test]

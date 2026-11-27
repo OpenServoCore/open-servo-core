@@ -74,14 +74,9 @@ const REVISION: u32 = 3;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 
-/// The acceptance bounds (plan sec 2.7 and 2.9).
-pub const GATED_MIN: usize = 8;
-pub const KE_SD_MAX: f64 = 0.02;
-pub const KE_DIRS_MAX: f64 = 0.015;
+/// The top level is pooled into Ke when the line through every level's
+/// mean moves under this share (plan sec 2.7).
 pub const KE_TREND_MAX: f64 = 0.02;
-pub const J_DIRS_MAX: f64 = 0.15;
-/// Over this many times its bound a check that warns refuses.
-pub const WARN_SPAN: f64 = 2.0;
 /// The steady stretch: the held duty's last 100 ms, half its rows at
 /// most, 20 ms at least (the ladder notebook's `spin_window`).
 pub const STEADY_S: f64 = 0.100;
@@ -1050,22 +1045,6 @@ fn check(name: &str, value: String, bound: String, verdict: Verdict) -> Check {
     }
 }
 
-fn pass(ok: bool) -> Verdict {
-    if ok { Verdict::Pass } else { Verdict::Fail }
-}
-
-/// Pass within the bound, a warning up to [`WARN_SPAN`] times it, else a
-/// refusal.
-fn warn_within(v: f64, bound: f64) -> Verdict {
-    if v <= bound {
-        Verdict::Pass
-    } else if v <= WARN_SPAN * bound {
-        Verdict::Warn
-    } else {
-        Verdict::Fail
-    }
-}
-
 /// The held duty's rows of a spin's steady stretch.
 pub fn steady_rows(drive: &[TelFrame], fs: f64) -> Option<Vec<&TelFrame>> {
     let ticks = |f: &TelFrame| f.duty_counts.map(|d| f64::from(d.unsigned_abs()));
@@ -1433,7 +1412,8 @@ fn pool_ke(coasts: &[(f64, CoastKe)]) -> KePool {
 /// The spins read: the events a revolution, each steady stretch and
 /// coast, Ke pooled, the open-loop line, J from the run-ups of the
 /// highest level that ran both ways ([`j_level`]),
-/// and the acceptance checks (plan sec 2.7 and 2.9).
+/// and the checks (plan sec 2.7 and 2.9): no Ke, no J or no line refuses,
+/// the spreads and the counts are reported.
 pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
     let mut checks = Vec::new();
     let st = steadies(spins, c);
@@ -1507,15 +1487,13 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
         top,
     } = pool_ke(&read);
     let gated = read.iter().filter(|(_, k)| k.ke().is_some()).count();
-    checks.push(check(
+    checks.push(Check::reported(
         "coasts pass the Ke gate",
         format!(
             "{gated} of {}, the first {} spins each way a level",
             ke_n.len(),
             runway::SPINS_EACH
         ),
-        format!("at least {GATED_MIN}"),
-        pass(gated >= GATED_MIN),
     ));
     checks.push(match &top {
         Some(t) => {
@@ -1553,18 +1531,22 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
     match &ke {
         Some(p) => {
             let sd = p.all.sd.map(|s| s / p.all.mean);
-            checks.push(check(
+            checks.push(Check::reported(
                 "Ke spread",
-                sd.map_or("one coast".into(), |s| {
+                sd.map_or(
                     format!(
-                        "{:.3} mV per rev/s, sd {:.2}% over {}",
-                        coast::mv_per_rev_s(p.all.mean),
-                        100.0 * s,
-                        p.all.n
-                    )
-                }),
-                format!("sd within {:.0}%", 100.0 * KE_SD_MAX),
-                pass(sd.is_some_and(|s| s <= KE_SD_MAX)),
+                        "{:.3} mV per rev/s from one coast",
+                        coast::mv_per_rev_s(p.all.mean)
+                    ),
+                    |s| {
+                        format!(
+                            "{:.3} mV per rev/s, sd {:.2}% over {}",
+                            coast::mv_per_rev_s(p.all.mean),
+                            100.0 * s,
+                            p.all.n
+                        )
+                    },
+                ),
             ));
             let dir = |d: i8| {
                 p.by_dir
@@ -1572,47 +1554,29 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
                     .find(|(b, _)| c.logical(*b) == d)
                     .map(|(_, x)| x.mean)
             };
-            checks.push(match (dir(1), dir(-1)) {
-                (Some(u), Some(d)) => check(
-                    "Ke by direction",
-                    format!(
+            checks.push(Check::reported(
+                "Ke by direction",
+                match (dir(1), dir(-1)) {
+                    (Some(u), Some(d)) => format!(
                         "up {:.3}, down {:.3} mV per rev/s: {:.2}% apart",
                         coast::mv_per_rev_s(u),
                         coast::mv_per_rev_s(d),
                         100.0 * split(u, d)
                     ),
-                    format!("within {:.1}%", 100.0 * KE_DIRS_MAX),
-                    pass(split(u, d) <= KE_DIRS_MAX),
-                ),
-                _ => check(
-                    "Ke by direction",
-                    "a direction has no gated coast".into(),
-                    "both directions".into(),
-                    Verdict::Fail,
-                ),
-            });
+                    _ => "a direction has no gated coast".into(),
+                },
+            ));
             let n = levels.len();
-            checks.push(match trend {
-                Some(trend) => check(
-                    "Ke trend with level",
-                    format!(
+            checks.push(Check::reported(
+                "Ke trend with level",
+                match trend {
+                    Some(trend) => format!(
                         "{n} levels pooled: {:.2}% over the levels' span by the line through their means",
                         100.0 * trend
                     ),
-                    format!(
-                        "within {:.0}%; a warning to {:.0}%",
-                        100.0 * KE_TREND_MAX,
-                        100.0 * WARN_SPAN * KE_TREND_MAX
-                    ),
-                    warn_within(trend, KE_TREND_MAX),
-                ),
-                None => check(
-                    "Ke trend with level",
-                    format!("{n} level pooled"),
-                    format!("Ke pooled over {KE_LEVELS} levels at least"),
-                    Verdict::Fail,
-                ),
-            });
+                    None => format!("{n} level pooled: no trend to read"),
+                },
+            ));
         }
         None => checks.push(check(
             "Ke spread",
@@ -1744,27 +1708,16 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
                     .find(|(b, _)| c.logical(*b) == d)
                     .map(|(_, x)| x.mean)
             };
-            checks.push(match (dir(1), dir(-1)) {
-                (Some(u), Some(d)) => check(
-                    "J by direction",
-                    format!(
+            checks.push(Check::reported(
+                "J by direction",
+                match (dir(1), dir(-1)) {
+                    (Some(u), Some(d)) => format!(
                         "up {u:.3e}, down {d:.3e} kg m^2: {:.1}% apart",
                         100.0 * split(u, d)
                     ),
-                    format!(
-                        "within {:.0}%; a warning to {:.0}%",
-                        100.0 * J_DIRS_MAX,
-                        100.0 * WARN_SPAN * J_DIRS_MAX
-                    ),
-                    warn_within(split(u, d), J_DIRS_MAX),
-                ),
-                _ => check(
-                    "J by direction",
-                    "a direction has no J".into(),
-                    "both directions".into(),
-                    Verdict::Fail,
-                ),
-            });
+                    _ => "a direction has no J".into(),
+                },
+            ));
         }
         Err(e) => checks.push(check(
             "J from the run-ups",
@@ -1795,20 +1748,11 @@ pub fn judge(spins: &[Spin], c: &JudgeCfg) -> Judged {
 /// What to do when a check refuses the step.
 pub fn advice(name: &str) -> &'static str {
     match name {
-        "coasts pass the Ke gate" => {
-            "too few coasts read a Ke: check the cable and its contacts and that the horn turns freely, then run the step again"
-        }
-        "Ke spread" | "Ke by direction" => {
-            "the coasts scatter: let the motor cool and run the step again; if it is refused again, the brushes may want running in"
-        }
-        "Ke trend with level" => {
-            "Ke moves with the level, or fewer than two levels were pooled: run the step again; if it is refused again, check the board's terminal taps, the stops and the nameplate's speed"
+        "Ke spread" => {
+            "no coast read a Ke: check the cable and its contacts and that the horn turns freely, then run the step again"
         }
         "J from the run-ups" => {
             "no run-up read a J: the runway may have left the levels out or their rows read too few crossings; check the stops and the nameplate's speed, then run the step again"
-        }
-        "J by direction" => {
-            "the run-ups disagree by direction: check that nothing drags on the horn, then run the step again"
         }
         "the level J is read at" => {
             "no level ran its spins both ways: check the stops and the nameplate's speed, then run the step again"
@@ -2860,7 +2804,7 @@ mod tests {
         );
         for name in ["Ke spread", "Ke by direction", "Ke trend with level"] {
             let ck = named(&j, name);
-            assert_eq!(ck.verdict, Verdict::Pass, "{}", ck.said());
+            assert_eq!(ck.verdict, Verdict::NotJudged, "{}", ck.said());
         }
         assert!(
             named(&j, "Ke trend with level")
@@ -2885,7 +2829,7 @@ mod tests {
         assert!((p.all.mean / m - 1.0).abs() < 1e-12);
         assert!(p.all.mean < KE, "the third spins at 1.10 are J's only");
         let trend = named(&j, "Ke trend with level");
-        assert_eq!(trend.verdict, Verdict::Pass, "{}", trend.said());
+        assert_eq!(trend.verdict, Verdict::NotJudged, "{}", trend.said());
         assert!(trend.value.starts_with("3 levels pooled"));
     }
 
@@ -2944,16 +2888,20 @@ mod tests {
         );
     }
 
-    /// Ke is pooled over two levels at least: one level refuses on the
-    /// trend check, with nothing to compare.
+    /// Ke from one level has no trend to read: it is reported, Ke stands,
+    /// and nothing about Ke refuses.
     #[test]
-    fn one_level_is_too_few_to_pool() {
+    fn one_level_of_ke_is_reported() {
         let j = ke_judge(&ke_run(&[0.25], 1.0, 0, 8000), &ke_cfg());
         assert_eq!(j.top, None);
+        assert!(j.ke.is_some());
         assert_eq!(named(&j, "the top level's Ke").verdict, Verdict::NotJudged);
         let ck = named(&j, "Ke trend with level");
-        assert_eq!(ck.verdict, Verdict::Fail, "{}", ck.said());
-        assert_eq!(ck.value, "1 level pooled");
+        assert_eq!(ck.verdict, Verdict::NotJudged, "{}", ck.said());
+        assert_eq!(ck.value, "1 level pooled: no trend to read");
+        for name in ["coasts pass the Ke gate", "Ke spread", "Ke by direction"] {
+            assert_ne!(named(&j, name).verdict, Verdict::Fail, "{name}");
+        }
     }
 
     /// The open-loop line needs two levels: one level's two directions

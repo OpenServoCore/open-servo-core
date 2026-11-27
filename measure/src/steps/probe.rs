@@ -70,8 +70,6 @@ pub const LEVELS: [f64; 2] = [0.20, 0.32];
 pub const BURSTS_A_GROUP: usize = 4;
 /// A sign and level keeping fewer bursts reads no current to compare.
 pub const KEPT_MIN: usize = 2;
-/// This many bursts set aside warns that the planning R may read low.
-pub const ASIDE_WARN: usize = 3;
 /// The drive a burst applies: the half of its 960 samples after the step.
 pub const BURST_S: f64 = 0.000_52;
 /// Between bursts: the firmware wants 100 ms.
@@ -79,9 +77,6 @@ pub const GAP_S: f64 = 0.12;
 /// The acceptance floor of R, ohm: a blocked burst is priced at no less.
 pub const R_FLOOR_OHM: f64 = 0.5;
 pub const R_RANGE_OHM: (f64, f64) = (R_FLOOR_OHM, 50.0);
-/// L / R in PWM periods.
-pub const TAU_RANGE_PERIODS: (f64, f64) = (1.0, 20.0);
-pub const SIGNS_SHARE: f64 = 0.10;
 pub const TAPS_SHARE: f64 = 0.10;
 /// A sign whose current is under this share of the other's carries none.
 pub const DEAD_SHARE: f64 = 0.25;
@@ -402,19 +397,15 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
         ),
         pass(!bridge_fault),
     );
-    let worst = apart.iter().copied().fold(0.0, f64::max);
     check(
-        "both signs read the same current",
+        "the rotor held still for the bursts",
         if unheld.is_empty() {
-            said.join("; ")
+            format!("at least {KEPT_MIN} kept at each sign and level")
         } else {
-            format!("{}; {}", unheld.join("; "), said.join("; "))
+            unheld.join("; ")
         },
-        format!(
-            "the median of each sign's kept bursts within {:.0}%, at least {KEPT_MIN} kept a sign and level",
-            100.0 * SIGNS_SHARE
-        ),
-        pass(unheld.is_empty() && worst <= SIGNS_SHARE),
+        format!("at least {KEPT_MIN} kept a sign and level"),
+        pass(unheld.is_empty()),
     );
     let aside: Vec<String> = rs
         .iter()
@@ -424,32 +415,36 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
                 .map(|a| format!("burst {}: {}", r.shot.k, a.said()))
         })
         .collect();
+    let mut check = |name: &str, value: String| checks.push(Check::reported(name, value));
     check(
-        "few bursts set aside",
-        if aside.len() >= ASIDE_WARN {
-            format!(
-                "{} of {} set aside ({}): the rotor rests where a brush bridges two segments, and the planning R may read low; a low R prices the current high, the safe side",
-                aside.len(),
-                rs.len(),
-                aside.join("; ")
-            )
-        } else if aside.is_empty() {
+        "both signs read the same current",
+        format!(
+            "{}; the most apart {:.1}%",
+            said.join("; "),
+            100.0 * apart.iter().copied().fold(0.0, f64::max)
+        ),
+    );
+    check(
+        "bursts set aside",
+        if aside.is_empty() {
             format!("none of {} set aside", rs.len())
         } else {
             format!(
-                "{} of {} set aside ({})",
+                "{} of {} set aside ({}): a rotor resting where a brush bridges two segments reads the planning R low, and a low R prices the current high",
                 aside.len(),
                 rs.len(),
                 aside.join("; ")
             )
         },
-        format!("under {ASIDE_WARN}; a warning, never a refusal"),
-        if aside.len() >= ASIDE_WARN {
-            Verdict::Warn
-        } else {
-            Verdict::Pass
-        },
     );
+    let mut check = |name: &str, value: String, bound: String, verdict: Verdict| {
+        checks.push(Check {
+            name: name.into(),
+            value,
+            bound,
+            verdict,
+        })
+    };
     let taps: Vec<String> = rs
         .iter()
         .map(|r| {
@@ -510,17 +505,15 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
                 format!("{} to {} ohm", R_RANGE_OHM.0, R_RANGE_OHM.1),
                 pass((R_RANGE_OHM.0..=R_RANGE_OHM.1).contains(&p.r_ohm)),
             );
-            let periods = p.tau_s / period_s;
-            check(
-                "L / R is a motor's this board can read",
+            checks.push(Check::reported(
+                "L / R",
                 format!(
-                    "L {:.3} mH, L / R {:.1} us, {periods:.2} PWM periods",
+                    "L {:.3} mH, L / R {:.1} us, {:.2} PWM periods",
                     1e3 * p.l_h,
-                    1e6 * p.tau_s
+                    1e6 * p.tau_s,
+                    p.tau_s / period_s
                 ),
-                format!("{} to {} periods", TAU_RANGE_PERIODS.0, TAU_RANGE_PERIODS.1),
-                pass((TAU_RANGE_PERIODS.0..=TAU_RANGE_PERIODS.1).contains(&periods)),
-            );
+            ));
         }
         None => check(
             "R is a motor's this board can read",
@@ -529,9 +522,10 @@ pub fn judge(f: &AFacts, reads: &[Read]) -> PartA {
             Verdict::Fail,
         ),
     }
-    for c in checks.iter_mut().filter(|c| {
-        c.verdict == Verdict::Fail && (c.name.starts_with("R is") || c.name.starts_with("L / R"))
-    }) {
+    for c in checks
+        .iter_mut()
+        .filter(|c| c.verdict == Verdict::Fail && c.name.starts_with("R is"))
+    {
         c.bound.push_str(": not a motor this board can read");
     }
     PartA {

@@ -639,7 +639,7 @@ fn judge_run(run: &Value, per_rev: u32, dir: &Path) -> osc_measure::steps::spins
 
 /// The judge's Ke against the replay note's variant C on one run: the
 /// zero, the coasts pooled, the top's compare, the pooled Ke, its spread
-/// and trend within `rel`, and the plan's verdict.
+/// and trend within `rel`, each reported.
 fn check_c(j: &osc_measure::steps::spins::Judged, run: &Value, rel: f64) {
     use osc_measure::steps::Verdict;
     let name = run["name"].as_str().expect("name");
@@ -713,20 +713,15 @@ fn check_c(j: &osc_measure::steps::spins::Judged, run: &Value, rel: f64) {
     }
     match c["trend"].as_f64() {
         Some(want) => close(trend.expect("a trend"), want, rel, &format!("{name} trend")),
-        None => assert_eq!(v("Ke trend with level"), Verdict::Fail, "{name}"),
+        None => assert!(trend.is_none(), "{name}"),
     }
-    let ke_checks = [
+    for n in [
         "coasts pass the Ke gate",
         "Ke spread",
         "Ke by direction",
         "Ke trend with level",
-    ];
-    if c["plan"] == "pass" {
-        for n in ke_checks {
-            assert_eq!(v(n), Verdict::Pass, "{name}: {n}");
-        }
-    } else {
-        assert!(ke_checks.iter().any(|n| v(n) == Verdict::Fail), "{name}");
+    ] {
+        assert_eq!(v(n), Verdict::NotJudged, "{name}: {n} is reported");
     }
 }
 

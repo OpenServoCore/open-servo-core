@@ -353,6 +353,37 @@ fn the_stops_round_inward() {
     assert!(e.0.contains("no travel"), "{e}");
 }
 
+/// A stops step that kept too few bursts for a spread, or none at one
+/// stop, is accepted: the gather takes R and bands it by the terms it has,
+/// and gives no band when it has neither.
+#[test]
+fn the_r_band_is_built_from_the_spreads_the_stops_step_read() {
+    let r_of = |edit: fn(&mut Value)| {
+        let mut r = run();
+        r.stops = Some(edited("stops", edit));
+        let g = gather::gather(&r, &nameplate()).expect("gathers");
+        let q = g.measured["r_ohm"].clone();
+        let n = |k: &str| q[k].as_f64();
+        (n("value").expect("r"), n("lo"), n("hi"))
+    };
+    let half = (4.224129621497565 - 4.038807310729814) / 2.0;
+    let (r, _, hi) = r_of(|v| v["seated"]["r_sd_within_groups"] = Value::Null);
+    assert!(
+        (hi.expect("hi") - r - half).abs() < 1e-12,
+        "the stops' half"
+    );
+    let (r, _, hi) = r_of(|v| v["seated"]["by_stop"]["high"]["r_ohm"] = Value::Null);
+    assert!(
+        (hi.expect("hi") - r - 0.0057548987837365406 * r).abs() < 1e-12,
+        "the burst spread"
+    );
+    let (_, lo, hi) = r_of(|v| {
+        v["seated"]["r_sd_within_groups"] = Value::Null;
+        v["seated"]["by_stop"]["high"]["r_ohm"] = Value::Null;
+    });
+    assert_eq!((lo, hi), (None, None));
+}
+
 /// The friction line is the cruise step's where the run holds it
 /// accepted, a line saying so; else the spins', a line saying why and
 /// that the spin line reads high at low speed. A cruise on another sense

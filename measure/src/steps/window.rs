@@ -21,10 +21,10 @@
 //! carries the whole term whatever the field holds, and with the cap
 //! unset nothing in OpenLoop acts on the reading.
 //!
-//! The notebook's direction check is a warning here: when it fails, a
-//! second set of 24 is taken once and all 48 fitted. Every other check
-//! refuses, and so do fewer than [`GATED_MIN`] of every 24 onsets through
-//! the gate.
+//! The notebook's checks are reported, not judged, but for the firmware's
+//! bound on the term and a fit at all, which refuse. When the two
+//! directions differ by over 10 %, a second set of 24 is taken once and
+//! all 48 fitted.
 
 use std::time::Duration;
 
@@ -82,10 +82,10 @@ pub const STILL_MAX_S: f64 = 2.0;
 pub const BAND_SHARE: f64 = 0.20;
 /// The least an onset's worst case keeps from either stop, counts.
 pub const INSET_COUNTS: f64 = 300.0;
-/// Onsets through the gate, of every [`SET`].
-pub const GATED_MIN: usize = 20;
 /// The name `fit::window::acceptance` gives the direction check.
 pub const DIRECTIONS: &str = "the two directions within 10 %";
+/// The fit's check of the firmware's bound on the term.
+pub const FENCE: &str = "g_window_q016 x r_q12 <= 2^25";
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 
@@ -202,55 +202,53 @@ pub fn still(readings: &[f64], band: f64) -> bool {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum After {
     Accept,
-    /// The direction check alone warned: one more set, all fitted.
+    /// The two directions differ by over 10 %: one more set, all fitted.
     Second,
     Refuse,
 }
 
-/// The second-set rule, `sets` taken so far.
-pub fn after(checks: &[Check], sets: usize) -> After {
+/// The second-set rule, `apart` the fit's two directions over 10 %, `sets`
+/// taken so far.
+pub fn after(checks: &[Check], apart: bool, sets: usize) -> After {
     if checks.iter().any(|c| c.verdict == Verdict::Fail) {
         After::Refuse
-    } else if sets < SETS_MAX
-        && checks
-            .iter()
-            .any(|c| c.name == DIRECTIONS && c.verdict == Verdict::Warn)
-    {
+    } else if sets < SETS_MAX && apart {
         After::Second
     } else {
         After::Accept
     }
 }
 
-fn bound_of(name: &str) -> &'static str {
+/// The fit's check as the step names it, the range left out.
+fn reported_name(name: &str) -> &str {
     match name {
-        "per-period rms <= 1 mA" => "at most 1 mA",
-        "L / R inside 2 to 8 periods" => "2 to 8 PWM periods",
-        DIRECTIONS => "within 10 %: a warning, and once a second set",
-        "g >= 0" => "at least 0",
-        "g_window_q016 x r_q12 <= 2^25" => {
-            "at most 2^25, the firmware's bound, at this run's seated R"
-        }
-        "L and R inside the grid" => "off the grid's edge",
-        _ => "the notebook's acceptance",
+        "per-period rms <= 1 mA" => "per-period rms",
+        "L / R inside 2 to 8 periods" => "L / R",
+        DIRECTIONS => "the two directions apart",
+        "g >= 0" => "g",
+        "L and R inside the grid" => "L and R on the grid's edge",
+        other => other,
     }
 }
 
-/// The fit's acceptance as the step judges it: the direction check warns,
-/// every other refuses.
+/// The fit's acceptance as the step reports it: the firmware's bound on
+/// the term refuses, every other is reported.
 pub fn verdicts(fit: &[term::Check]) -> Vec<Check> {
     fit.iter()
-        .map(|c| Check {
-            name: c.name.into(),
-            value: c
+        .map(|c| {
+            let value = c
                 .value
-                .map_or("nothing to judge".into(), |v| format!("{v:.4} {}", c.unit)),
-            bound: bound_of(c.name).into(),
-            verdict: match (c.pass, c.name == DIRECTIONS) {
-                (true, _) => Verdict::Pass,
-                (false, true) => Verdict::Warn,
-                (false, false) => Verdict::Fail,
-            },
+                .map_or("nothing to read".into(), |v| format!("{v:.4} {}", c.unit));
+            if c.name == FENCE {
+                Check {
+                    name: c.name.into(),
+                    value,
+                    bound: "at most 2^25, the firmware's bound, at this run's seated R".into(),
+                    verdict: if c.pass { Verdict::Pass } else { Verdict::Fail },
+                }
+            } else {
+                Check::reported(reported_name(c.name), value)
+            }
         })
         .collect()
 }
@@ -296,26 +294,9 @@ pub fn gate_said(o: &Onset, ramp: Option<&[u16]>, m: &Method) -> Option<String> 
     Some(format!("onset {}: {}", o.seg, why.join("; ")))
 }
 
-/// The least of `n` onsets through the gate.
-pub fn gated_min(n: usize) -> usize {
-    (GATED_MIN * n).div_ceil(SET)
-}
-
 pub fn gate_check(onsets: &[Onset], n: usize) -> Check {
     let k = onsets.iter().filter(|o| o.ok).count();
-    Check {
-        name: "onsets through the gate".into(),
-        value: format!("{k} of {n}"),
-        bound: format!(
-            "at least {GATED_MIN} of every {SET}: {} of {n}",
-            gated_min(n)
-        ),
-        verdict: if k >= gated_min(n) {
-            Verdict::Pass
-        } else {
-            Verdict::Fail
-        },
-    }
+    Check::reported("onsets through the gate", format!("{k} of {n}"))
 }
 
 /// One onset as captured: its rows from the commit on.
@@ -352,6 +333,8 @@ pub struct Judged {
     pub checks: Vec<Check>,
     /// The gate's reason for each onset it set aside.
     pub aside: Vec<String>,
+    /// The fit's two directions differ by over 10 %.
+    pub apart: bool,
 }
 
 /// The shots gated as one session, fitted and judged: the gate's count,
@@ -370,6 +353,7 @@ pub fn judge(shots: &[Shot], s: &Scales, m: &Method, r_q12: u16) -> Judged {
             window: Err(e),
             checks,
             aside,
+            apart: false,
         }
     };
     let mut ons = match term::onsets(0, &segments(shots), m) {
@@ -390,13 +374,15 @@ pub fn judge(shots: &[Shot], s: &Scales, m: &Method, r_q12: u16) -> Judged {
     let mut checks = vec![gate_check(&ons, shots.len())];
     match term::fit(&ons, s, m) {
         Ok(w) => {
-            checks.extend(verdicts(&acceptance(&w, s, r_q12)));
+            let fit = acceptance(&w, s, r_q12);
+            checks.extend(verdicts(&fit));
             Judged {
                 onsets: ons,
                 ramp,
                 window: Ok(w),
                 checks,
                 aside,
+                apart: fit.iter().any(|c| c.name == DIRECTIONS && !c.pass),
             }
         }
         Err(e) => failed(e, ons, ramp, checks, aside),
@@ -941,7 +927,7 @@ async fn body<P: Pipe>(
         // the dead-man has nothing to cut
         write(rig, "torque_enable", &[0]).await?;
         let j = judge(&found.shots, &b.scales, &quick, b.r_q12);
-        match after(&j.checks, found.sets) {
+        match after(&j.checks, j.apart, found.sets) {
             After::Second => lines.push(format!(
                 "set {}: the two directions differ by more than 10 %: a second set of {SET}, all fitted",
                 set + 1
@@ -955,12 +941,10 @@ async fn body<P: Pipe>(
 /// What to do when a check refuses the step.
 pub fn advice(name: &str) -> &'static str {
     match name {
-        "onsets through the gate" => {
-            "the onsets did not start from rest: check that nothing touches the horn and that the cable is seated, then run the steps again"
+        "the fit" => {
+            "no onset gave a fit: check that nothing touches the horn and that the cable is seated, then run the steps again"
         }
-        "g >= 0" | "g_window_q016 x r_q12 <= 2^25" => {
-            "a term this board cannot hold: check the motor leads and the board"
-        }
+        FENCE => "a term this board cannot hold: check the motor leads and the board",
         "torque off at the end" => "power the servo off and on",
         _ => {
             "the onsets do not read as an empty winding's: run the steps again; if it is refused again, check the motor leads"
@@ -1029,7 +1013,7 @@ pub async fn window<P: Pipe>(
             what.dedup();
             let gate = judged
                 .as_ref()
-                .filter(|_| failed.iter().any(|c| c.name == "onsets through the gate"))
+                .filter(|_| failed.iter().any(|c| c.name == "the fit"))
                 .map_or(String::new(), |j| {
                     format!(" (the gate: {})", j.aside.join("; "))
                 });
@@ -1176,7 +1160,7 @@ fn result_json(
         "fit": fit,
         "gate": judged.map_or(Value::Null, |j| json!({
             "gated": j.onsets.iter().filter(|o| o.ok).count(), "of": found.shots.len(),
-            "least": gated_min(found.shots.len()), "ramp_ticks": j.ramp, "aside": j.aside,
+            "ramp_ticks": j.ramp, "aside": j.aside,
         })),
         "sets": found.sets,
         "onsets": onsets,
@@ -1297,23 +1281,27 @@ mod tests {
     }
 
     #[test]
-    fn the_direction_check_warns_and_every_other_refuses() {
+    fn the_fits_checks_are_reported_and_only_the_fence_refuses() {
         let v = verdicts(&[
             fit_check("per-period rms <= 1 mA", true, Some(0.3)),
             fit_check(DIRECTIONS, false, Some(14.0)),
             fit_check("g >= 0", false, Some(-1.0)),
             fit_check("L and R inside the grid", false, None),
+            fit_check(FENCE, false, Some(4e7)),
         ]);
-        let got: Vec<Verdict> = v.iter().map(|c| c.verdict).collect();
+        let got: Vec<(&str, Verdict)> = v.iter().map(|c| (c.name.as_str(), c.verdict)).collect();
         assert_eq!(
             got,
-            [Verdict::Pass, Verdict::Warn, Verdict::Fail, Verdict::Fail]
+            [
+                ("per-period rms", Verdict::NotJudged),
+                ("the two directions apart", Verdict::NotJudged),
+                ("g", Verdict::NotJudged),
+                ("L and R on the grid's edge", Verdict::NotJudged),
+                (FENCE, Verdict::Fail),
+            ]
         );
-        assert_eq!(v[3].value, "nothing to judge");
-        assert_eq!(
-            verdicts(&[fit_check(DIRECTIONS, false, None)])[0].verdict,
-            Verdict::Warn
-        );
+        assert_eq!(v[3].value, "nothing to read");
+        assert_eq!(v[2].value, "-1.0000 u");
     }
 
     fn check(name: &str, verdict: Verdict) -> Check {
@@ -1326,23 +1314,18 @@ mod tests {
     }
 
     #[test]
-    fn a_second_set_only_on_the_direction_warning_and_once() {
-        let pass = check("g >= 0", Verdict::Pass);
-        let warn = check(DIRECTIONS, Verdict::Warn);
-        let fail = check("per-period rms <= 1 mA", Verdict::Fail);
+    fn a_second_set_only_when_the_directions_are_apart_and_once() {
+        let pass = check("g", Verdict::NotJudged);
+        let fail = check(FENCE, Verdict::Fail);
+        assert_eq!(after(std::slice::from_ref(&pass), false, 1), After::Accept);
+        assert_eq!(after(std::slice::from_ref(&pass), true, 1), After::Second);
         assert_eq!(
-            after(&[pass.clone(), check(DIRECTIONS, Verdict::Pass)], 1),
-            After::Accept
-        );
-        assert_eq!(after(&[pass.clone(), warn.clone()], 1), After::Second);
-        assert_eq!(
-            after(&[pass.clone(), warn.clone()], 2),
+            after(std::slice::from_ref(&pass), true, 2),
             After::Accept,
             "once"
         );
-        assert_eq!(after(&[fail.clone(), warn.clone()], 1), After::Refuse);
-        assert_eq!(after(&[fail], 2), After::Refuse);
-        assert_eq!((gated_min(24), gated_min(48)), (20, 40));
+        assert_eq!(after(&[fail.clone(), pass], true, 1), After::Refuse);
+        assert_eq!(after(&[fail], false, 2), After::Refuse);
     }
 
     #[test]
@@ -1478,10 +1461,9 @@ mod tests {
         let e = &w.ended;
         assert_eq!(e.way, Way::Refused, "{:?}", e.why);
         assert!(
-            e.why
-                .as_deref()
-                .unwrap_or("")
-                .contains("onsets through the gate 0 of 24"),
+            e.why.as_deref().unwrap_or("").contains(
+                "refused by the fit no onset from rest passed the gates (the gate: onset 1:"
+            ),
             "{:?}",
             e.why
         );

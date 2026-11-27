@@ -287,7 +287,7 @@ fn rest_on_the_simulated_servo_accepts_and_moves_nothing() {
         .iter()
         .find(|c| c.name == "chip supply")
         .expect("checked");
-    assert_eq!(vdd.verdict, Verdict::Pass, "{}", vdd.value);
+    assert_eq!(vdd.verdict, Verdict::NotJudged, "{}", vdd.value);
 
     for name in ["captures/rest/01-rest", "captures/rest/02-raw"] {
         let csv = gunzip(&sink.files[&format!("{name}.csv.gz")]).expect("gzip");
@@ -366,20 +366,41 @@ fn rest_refuses_a_pot_lead_off() {
     assert_eq!(torque(&mut c), 0);
 }
 
+/// A centred horn resting on one code (a wide code reads the same count
+/// every row, sd about 0) and a noisy current zero: the step is accepted
+/// and reports both.
 #[test]
-fn rest_refuses_a_noisy_current_zero() {
-    let (mut c, _) = servo(BaudRate::B3000000, track(None, 5), Box::new(|_, _| false));
-    let r = run(&mut c, &AtomicBool::new(false), &mut MemSink::default()).expect("starts");
-    assert_eq!(r.ended.way, Way::Refused);
-    assert_eq!(
-        failed(&r),
-        [
-            "current zero noise, torque off",
-            "current zero noise, torque on"
-        ],
-        "{:?}",
-        r.checks
+fn rest_on_one_pot_code_is_accepted_and_reports_its_noise() {
+    let (mut c, _) = servo(
+        BaudRate::B3000000,
+        track(Some(2047), 5),
+        Box::new(|_, _| false),
     );
+    let mut sink = MemSink::default();
+    let r = run(&mut c, &AtomicBool::new(false), &mut sink).expect("starts");
+    assert_eq!(r.ended.way, Way::Done, "{:?} {:?}", r.ended.why, failed(&r));
+    let said = |name: &str| {
+        r.checks
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .clone()
+    };
+    let pot = said("pot noise at rest");
+    assert_eq!(pot.verdict, Verdict::NotJudged, "{}", pot.said());
+    let zero = said("current zero noise, torque off");
+    assert_eq!(zero.verdict, Verdict::NotJudged, "{}", zero.said());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&sink.files[rest::RESULT]).expect("rest.json");
+    assert_eq!(doc["verdict"], "accepted");
+    let sd = doc["estimates"]["pot_rest_sd_counts"]["value"]
+        .as_f64()
+        .expect("sd");
+    assert!(sd < 0.05, "{sd}");
+    let zero_sd = doc["estimates"]["current_zero_sd_counts"]["value"]
+        .as_f64()
+        .expect("zero sd");
+    assert!(zero_sd > 2.0, "the noisy zero is reported: {zero_sd}");
     assert_eq!(torque(&mut c), 0);
 }
 

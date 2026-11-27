@@ -8,7 +8,11 @@
 //! the tune in one, then the cruises for the friction line and the final
 //! set's check. The tool reports measurements, calculations and their
 //! spread; judging them is the user's, so a set installs whatever it
-//! moves, each change printed.
+//! moves, each change printed. A step stops only where going on would
+//! drive the motor blind or into harm (a pot or tap at a converter rail,
+//! a horn that moves when it should rest, a fault, a drive the firmware
+//! refuses, a wrong-way or blocked move) or where it has no value to
+//! give; the tune's check keeps its scores, which choose the gain.
 
 mod files;
 mod finish;
@@ -44,7 +48,7 @@ const DESCRIPTORS: &[&str] = &[include_str!("../../../descriptors/osc-servo/0.1.
     name = "osc-ident",
     version,
     about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo",
-    long_about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo. It reports measurements, calculations and their spread; judging them is the user's, so a set installs whatever it moves, each change printed."
+    long_about = "The identification, calibration and tuning tool: a servo's constant set, and the safe path that puts it on the servo. It reports measurements, calculations and their spread; judging them is the user's, so a set installs whatever it moves, each change printed. A step stops only where going on would drive the motor blind or into harm (a pot or tap at a converter rail, a horn that moves when it should rest, a fault, a drive the firmware refuses, a wrong-way or blocked move) or where it has no value to give; every other reading is reported, and the tune's check keeps its scores, which choose the gain."
 )]
 struct Cli {
     /// The servo's bus id.

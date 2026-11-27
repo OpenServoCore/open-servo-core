@@ -139,6 +139,13 @@ impl<'a> Taken<'a> {
             .ok_or_else(|| self.lacks(key))
     }
 
+    /// A number the result may lack: a spread over too few repeats.
+    fn opt(&self, key: &str) -> Option<f64> {
+        at(&self.r.doc, key)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+    }
+
     fn flag(&self, key: &str) -> Result<bool, Refused> {
         at(&self.r.doc, key)
             .and_then(Value::as_bool)
@@ -438,17 +445,26 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         "seated.by_stop.low.r_ohm.median",
         "seated.by_stop.high.r_ohm.median",
     );
-    let spread = stops.num(sd_key)? * r;
-    let half = (stops.num(low_key)? - stops.num(high_key)?).abs() / 2.0;
-    let h = spread.max(half);
+    let spread = stops.opt(sd_key).map(|sd| sd * r);
+    let half = stops
+        .opt(low_key)
+        .zip(stops.opt(high_key))
+        .map(|(lo, hi)| (lo - hi).abs() / 2.0);
+    let h = match (spread, half) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let term = |x: Option<f64>| x.map_or("none".to_string(), |x| format!("{x:.4} ohm"));
     o.put(
         "r_ohm",
         quantity(
             r,
-            Some((r - h, r + h)),
+            h.map(|h| (r - h, r + h)),
             "ohm",
             stops.source(&format!(
-                "estimates.r_seated_ohm; band +/- the larger of {sd_key} x R ({spread:.4} ohm) and half of {low_key} less {high_key} ({half:.4} ohm)"
+                "estimates.r_seated_ohm; band +/- the larger of {sd_key} x R ({}) and half of {low_key} less {high_key} ({}), no band when neither is read",
+                term(spread),
+                term(half)
             )),
         ),
     );
