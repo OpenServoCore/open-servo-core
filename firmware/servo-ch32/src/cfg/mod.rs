@@ -11,7 +11,9 @@ use osc_servo_core::estimator::pot_current;
 use osc_servo_core::estimator::window::WINDOW_ARR_MIN;
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::regions::config::{BURST_MAX_MV, assert_rail_floor, vmotor_counts};
-use osc_servo_core::{ConfigDefaults, KernelTiming, ProtectionDefaults, ProtectionSeed};
+use osc_servo_core::{
+    CalibBoard, Characterization, ConfigDefaults, KernelTiming, ProtectionDefaults, ProtectionSeed,
+};
 
 use crate::providers::{break_wake, usart_baud};
 
@@ -21,6 +23,7 @@ pub struct BoardConfig {
     pub calibration: Calibration,
     pub defaults: ConfigDefaults,
     pub protection: ProtectionDefaults,
+    pub characterization: Characterization,
     /// Identity the board stamps into the RO block (protocol sec 5.4); the
     /// firmware version comes from `osc_servo_core::FIRMWARE_VERSION`, not here.
     pub model: u16,
@@ -29,8 +32,9 @@ pub struct BoardConfig {
 
 impl BoardConfig {
     /// The value rules on the literal: the wiring's, the protection
-    /// defaults' through the sense chain, and the rail floor's through the
-    /// rail divider. Compile-time call site: `run!`.
+    /// defaults' through the sense chain, the rail floor's through the
+    /// rail divider, and the board facts' as CALIB words. Compile-time call
+    /// site: `run!`.
     pub const fn assert_valid(&self) {
         self.wiring.assert_valid();
         let cal = &self.calibration;
@@ -47,6 +51,7 @@ impl BoardConfig {
             cal.vbus_divider.bot_ohm,
             cal.vdd_mv,
         );
+        CalibBoard::assert_valid(&cal.i_settle_gain, &self.protection, &self.characterization);
     }
 }
 
@@ -64,6 +69,7 @@ pub struct Precomputed {
     pub vmotor_bias_nom_counts: u16,
     pub vmotor_bias_top_ohm: u16,
     pub vmotor_bias_bot_ohm: u16,
+    pub calib_board: CalibBoard,
 }
 
 impl Precomputed {
@@ -134,6 +140,12 @@ impl Precomputed {
             ),
             vmotor_bias_top_ohm: ohm16(bias.top_ohm),
             vmotor_bias_bot_ohm: ohm16(bias.bot_ohm),
+            calib_board: CalibBoard::from_board(
+                cfg.calibration.bridge_min_ticks,
+                &cfg.calibration.i_settle_gain,
+                &cfg.protection,
+                &cfg.characterization,
+            ),
         }
     }
 }

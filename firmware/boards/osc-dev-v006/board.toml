@@ -74,7 +74,8 @@ vmotor_divider = { top_ohm = 6_400, bot_ohm = 1_600 }
 vbus_divider = { top_ohm = 6_400, bot_ohm = 1_600 }
 # VB: 3V3 -430- VB -100- GND.
 vmotor_bias = { top_ohm = 430, bot_ohm = 100 }
-ntc = { pullup_ohm = 10_000, r25_ohm = 10_000, beta = 3950 }
+# The NTC sits in room air beside the bridge, not on the motor can.
+ntc = { pullup_ohm = 10_000, r25_ohm = 10_000, beta = 3950, site = "Air" }
 
 # The amplifier's step response at the crest sample, op-amp in normal mode,
 # board #1: the shunt approaches its plateau from below, about 4.5% low at
@@ -90,6 +91,29 @@ q15 = [
     37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103,
     33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785,
 ]
+
+# Stage 1 characterization of the bring-up unit (rev 2A board D, notebooks
+# stages/1-board), published read-only in CALIB for the host; the firmware
+# reads none of it. A board with no stage 1 states every word 0.
+[characterization]
+# sample-timing results/dev-v006-2A-D.json window_scale, 1.006332: the k the
+# identification notebook's seated burst fit divides R and L by. Q15.
+window_scale_q15 = 32975
+# terminal-chain results/dev-v006-2A-D.json terminal_offset_counts, +2.382
+# counts off the driven tap difference. Q4 counts.
+terminal_offset_q4 = 38
+# bridge-states results/dev-v006-2A-D.json low_side_loop_ohm, 0.3008 ohm.
+brake_loop_mohm = 301
+# sample-timing results/dev-v006-2A-D.json crest_sample_ticks shunt.
+crest_sample_ticks = 31
+# sample-timing results/dev-v006-2A-D.json slow-decay edge lags, each the
+# mean of its 7.4 V and 3.7 V medians as oscnb scales.edge_lags takes it:
+# shunt on 47 / 41, tap on 42 / 37, off 15 / 13, shunt settle 75 / 69.
+# Q4 ticks.
+shunt_on_lag_q4 = 704
+tap_on_lag_q4 = 632
+off_lag_q4 = 224
+shunt_settle_q4 = 1152
 
 [defaults]
 pos_min_phys_counts = 0
@@ -112,6 +136,7 @@ stall_release_ma = 90
 # (~2.3 A over its 1.10 V reference on 60 mOhm, the amplifier topping out
 # at VDD - 0.16 V), so the trip stays measurable.
 oc_trip_ma = 2200
+# The trip's window: 8 samples at the 20 kHz tick.
 oc_trip_us = 400
 # The octave below the reference motor's winding constant, so the estimate
 # rises sooner.

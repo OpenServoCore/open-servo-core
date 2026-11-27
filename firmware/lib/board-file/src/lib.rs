@@ -120,9 +120,10 @@ pub fn generate(text: &str, file: &str) -> Result<Generated, Error> {
 
 /// Reads `path` and writes the sim's mirror of the board: items named
 /// `<prefix>_SENSE`, `_SENSE_EXT`, `_PROTECTION`, `_BEMF_MIN_TICKS`,
-/// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN` and `_DEFAULTS` over the core's host
-/// types, and the image's value rules on them as const asserts, so the sim
-/// never seeds a board the image refuses.
+/// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN`, `_NTC_SITE`, `_CHARACTERIZATION`,
+/// `_BOARD` and `_DEFAULTS` over the core's host types, and the image's
+/// value rules on them as const asserts, so the sim never seeds a board the
+/// image refuses.
 pub fn emit_sim_mirror(path: &Path, prefix: &str) -> Result<String, Error> {
     let (file, text) = read(path)?;
     sim_mirror(&text, &file, prefix)
@@ -256,6 +257,36 @@ pub fn sim_mirror(text: &str, file: &str, prefix: &str) -> Result<String, Error>
         "calibration.i_settle_gain",
     )?;
 
+    out.push_str("/// Where the board's NTC sits, CALIB `ntc_site`.\n");
+    let (v, tag) = m.variant("calibration.ntc.site", "NtcSite")?;
+    let _ = writeln!(
+        out,
+        "pub const {prefix}_NTC_SITE: {CORE}::NtcSite = {v}; {tag}\n"
+    );
+
+    out.push_str("/// The board's stage 1 characterization.\n");
+    m.table_item(
+        &mut out,
+        &format!("{prefix}_CHARACTERIZATION"),
+        &format!("{CORE}::Characterization"),
+        "characterization",
+    )?;
+
+    out.push_str("/// The board facts CALIB publishes past the sense chain.\n");
+    let _ = writeln!(
+        out,
+        "pub const {prefix}_BOARD: {CORE}::CalibBoard = {CORE}::CalibBoard::from_board("
+    );
+    let (v, tag) = m.value("calibration.bridge_min_ticks")?;
+    let _ = writeln!(
+        out,
+        "    {v}, {tag}\n    \
+         &{prefix}_I_SETTLE_GAIN,\n    \
+         &{prefix}_PROTECTION,\n    \
+         &{prefix}_CHARACTERIZATION,\n\
+         );\n"
+    );
+
     out.push_str("/// The boot seed's comms and travel.\n");
     m.table_item(
         &mut out,
@@ -279,6 +310,11 @@ pub fn sim_mirror(text: &str, file: &str, prefix: &str) -> Result<String, Error>
          {prefix}_SENSE_EXT.vbus_div_top_ohm as u32,\n    \
          {prefix}_SENSE_EXT.vbus_div_bot_ohm as u32,\n    \
          {prefix}_SENSE.vdd_mv,\n\
+         );\n\
+         const _: () = {CORE}::CalibBoard::assert_valid(\n    \
+         &{prefix}_I_SETTLE_GAIN,\n    \
+         &{prefix}_PROTECTION,\n    \
+         &{prefix}_CHARACTERIZATION,\n\
          );"
     );
     Ok(out)
@@ -330,6 +366,20 @@ impl<'a, 'i> Mirror<'_, 'a, 'i> {
             )
         })?;
         Ok((text, self.doc.tag(at, key)))
+    }
+
+    /// A variant of the core's `ty` and its line comment.
+    fn variant(&self, key: &str, ty: &str) -> Result<(String, String), Error> {
+        let (at, v) = self.get(key)?;
+        let DeValue::String(s) = v.get_ref() else {
+            return Err(self.doc.err(
+                v.span().start,
+                key,
+                "the sim's mirror takes a variant name here",
+            ));
+        };
+        let name = self.doc.variant(v.span().start, key, s)?;
+        Ok((format!("{CORE}::{ty}::{name}"), self.doc.tag(at, key)))
     }
 
     fn leaf(&self, out: &mut String, field: &str, key: &str) -> Result<(), Error> {
@@ -402,11 +452,13 @@ fn shape(path: &str) -> Option<Shape> {
             Struct("Divider")
         }
         "calibration.ntc" => Struct("Ntc"),
+        "calibration.ntc.site" => Enum("NtcSite"),
         "calibration.i_settle_gain" => Struct("SettleGain"),
         "calibration.i_settle_gain.q15" => Slice,
         "defaults" => Struct("ConfigDefaults"),
         "defaults.baud" => Enum("BaudRate"),
         "protection" => Struct("ProtectionDefaults"),
+        "characterization" => Struct("Characterization"),
         _ => return None,
     })
 }

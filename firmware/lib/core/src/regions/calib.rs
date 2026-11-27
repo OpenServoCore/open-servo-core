@@ -1,5 +1,8 @@
 use control_table::{Block, Section};
 
+use crate::estimator::window::SettleGain;
+use crate::regions::config::ProtectionDefaults;
+
 /// The pot's mechanical stops in raw ADC counts: the ends of the angle map
 /// (`CalibKinematics`) and the domain a position table is validated against.
 #[repr(C)]
@@ -182,6 +185,175 @@ pub struct CalibAdc {
     pub adc_wide_mid_q4: [u8; crate::adc::ADC_WIDE_SLOTS],
 }
 
+/// Where the board's NTC sits, the code CALIB `ntc_site` publishes. 0 is
+/// no site: an image older than the board facts block.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NtcSite {
+    /// In room air beside the bridge.
+    Air = 1,
+    /// On the motor can.
+    Can = 2,
+}
+
+/// [`NtcSite`] as its code.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibNtcSite {
+    #[ct_field(access = ro)]
+    pub ntc_site: u8,
+}
+
+/// The board's stage 1 characterization, published for the host; the
+/// firmware reads none of it. Q15 ratio, Q4 ADC counts, milliohms and TIM1
+/// ticks (the Q4 lags too). `window_scale_q15` 0 states no characterization,
+/// and then every word is 0 (`CalibBoard::violation`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Characterization {
+    /// The drive window's V_on / i over the 100% window's.
+    pub window_scale_q15: u16,
+    /// The driven tap difference's offset at zero current.
+    pub terminal_offset_q4: i16,
+    /// The low-side loop a braking winding closes through.
+    pub brake_loop_mohm: u16,
+    /// Where the shunt's crest sample sits in the drive window.
+    pub crest_sample_ticks: u16,
+    /// The slow-decay burst edges' lags: the shunt's and the tap's on
+    /// edges, the off edge, and the shunt's settle.
+    pub shunt_on_lag_q4: u16,
+    pub tap_on_lag_q4: u16,
+    pub off_lag_q4: u16,
+    pub shunt_settle_q4: u16,
+}
+
+/// The settle table's words in CALIB.
+pub const SETTLE_WORDS: usize = 24;
+
+/// The board facts a host takes off the servo that no other register holds
+/// (protocol sec 5.5): the bridge's shortest pulse, the settle table (0 past
+/// its last band), the protection defaults CONFIG is seeded from, and the
+/// stage 1 characterization. Stamped at install after the calib overlay;
+/// the firmware never reads the block.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibBoard {
+    #[ct_field(access = ro)]
+    pub bridge_min_ticks: u16,
+    #[ct_field(access = ro)]
+    pub i_settle_start_ticks: u16,
+    #[ct_field(access = ro)]
+    pub i_settle_q15: [u16; SETTLE_WORDS],
+    #[ct_field(access = ro)]
+    pub oc_trip_ma: u16,
+    #[ct_field(access = ro)]
+    pub oc_trip_us: u16,
+    #[ct_field(access = ro)]
+    pub rail_source_mohm: u16,
+    #[ct_field(access = ro)]
+    pub window_scale_q15: u16,
+    #[ct_field(access = ro)]
+    pub terminal_offset_q4: i16,
+    #[ct_field(access = ro)]
+    pub brake_loop_mohm: u16,
+    #[ct_field(access = ro)]
+    pub crest_sample_ticks: u16,
+    #[ct_field(access = ro)]
+    pub shunt_on_lag_q4: u16,
+    #[ct_field(access = ro)]
+    pub tap_on_lag_q4: u16,
+    #[ct_field(access = ro)]
+    pub off_lag_q4: u16,
+    #[ct_field(access = ro)]
+    pub shunt_settle_q4: u16,
+}
+
+impl CalibBoard {
+    /// The block from the board's values, which [`Self::assert_valid`]
+    /// holds to CALIB's words. Const-eval only.
+    pub const fn from_board(
+        bridge_min_ticks: u16,
+        settle: &SettleGain,
+        protection: &ProtectionDefaults,
+        ch: &Characterization,
+    ) -> Self {
+        let mut i_settle_q15 = [0u16; SETTLE_WORDS];
+        let mut i = 0;
+        while i < settle.q15.len() && i < SETTLE_WORDS {
+            i_settle_q15[i] = settle.q15[i];
+            i += 1;
+        }
+        Self {
+            bridge_min_ticks,
+            i_settle_start_ticks: settle.start_ticks,
+            i_settle_q15,
+            oc_trip_ma: protection.oc_trip_ma,
+            oc_trip_us: protection.oc_trip_us,
+            rail_source_mohm: protection.rail_source_mohm as u16,
+            window_scale_q15: ch.window_scale_q15,
+            terminal_offset_q4: ch.terminal_offset_q4,
+            brake_loop_mohm: ch.brake_loop_mohm,
+            crest_sample_ticks: ch.crest_sample_ticks,
+            shunt_on_lag_q4: ch.shunt_on_lag_q4,
+            tap_on_lag_q4: ch.tap_on_lag_q4,
+            off_lag_q4: ch.off_lag_q4,
+            shunt_settle_q4: ch.shunt_settle_q4,
+        }
+    }
+
+    /// The rule the board's values break as CALIB words, or None.
+    /// Const-eval only.
+    pub const fn violation(
+        settle: &SettleGain,
+        protection: &ProtectionDefaults,
+        ch: &Characterization,
+    ) -> Option<&'static str> {
+        if settle.q15.len() > SETTLE_WORDS {
+            return Some(
+                "Calibration: calibration.i_settle_gain.q15 must hold at most 24 bands, \
+                 CALIB's settle words",
+            );
+        }
+        let mut i = 0;
+        while i < settle.q15.len() {
+            if settle.q15[i] == 0 {
+                return Some(
+                    "Calibration: calibration.i_settle_gain.q15 must hold no 0, \
+                     which ends the table in CALIB",
+                );
+            }
+            i += 1;
+        }
+        if protection.rail_source_mohm > u16::MAX as u32 {
+            return Some("ProtectionDefaults: rail_source_mohm must fit CALIB's u16 word");
+        }
+        let rest = ch.terminal_offset_q4 != 0
+            || ch.brake_loop_mohm != 0
+            || ch.crest_sample_ticks != 0
+            || ch.shunt_on_lag_q4 != 0
+            || ch.tap_on_lag_q4 != 0
+            || ch.off_lag_q4 != 0
+            || ch.shunt_settle_q4 != 0;
+        if ch.window_scale_q15 == 0 && rest {
+            return Some(
+                "Characterization: window_scale_q15 0 states no characterization, \
+                 so every word must be 0",
+            );
+        }
+        None
+    }
+
+    /// Compile-time call site: the board's `run!` and the sim's mirror.
+    pub const fn assert_valid(
+        settle: &SettleGain,
+        protection: &ProtectionDefaults,
+        ch: &Characterization,
+    ) {
+        if let Some(rule) = Self::violation(settle, protection, ch) {
+            panic!("{}", rule);
+        }
+    }
+}
+
 /// Calibration section: always writable (normal field validation applies),
 /// volatile until persisted -- persistence is SAVE's job, not a write gate.
 #[repr(C)]
@@ -201,6 +373,165 @@ pub struct CalibRegs {
     pub pwm: CalibPwm,
     pub gear: CalibGear,
     pub adc: CalibAdc,
+    pub ntc_site: CalibNtcSite,
+    pub board: CalibBoard,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 157],
+    pub _rsvd_tail: [u8; 82],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::regions::config::TEST_PROTECTION;
+
+    const SETTLE: SettleGain = SettleGain {
+        start_ticks: 40,
+        q15: &[
+            37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052,
+            33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785,
+        ],
+    };
+
+    const STAGE_1: Characterization = Characterization {
+        window_scale_q15: 32975,
+        terminal_offset_q4: 38,
+        brake_loop_mohm: 301,
+        crest_sample_ticks: 31,
+        shunt_on_lag_q4: 704,
+        tap_on_lag_q4: 632,
+        off_lag_q4: 224,
+        shunt_settle_q4: 1152,
+    };
+
+    const NONE: Characterization = Characterization {
+        window_scale_q15: 0,
+        terminal_offset_q4: 0,
+        brake_loop_mohm: 0,
+        crest_sample_ticks: 0,
+        shunt_on_lag_q4: 0,
+        tap_on_lag_q4: 0,
+        off_lag_q4: 0,
+        shunt_settle_q4: 0,
+    };
+
+    fn dev(settle: &SettleGain, ch: &Characterization) -> Option<&'static str> {
+        CalibBoard::violation(settle, &TEST_PROTECTION, ch)
+    }
+
+    #[test]
+    fn the_dev_board_and_a_board_with_no_stage_1_pass() {
+        assert_eq!(dev(&SETTLE, &STAGE_1), None);
+        assert_eq!(dev(&SETTLE, &NONE), None);
+        assert_eq!(dev(&SettleGain::UNITY, &STAGE_1), None);
+        CalibBoard::assert_valid(&SETTLE, &TEST_PROTECTION, &STAGE_1);
+    }
+
+    #[test]
+    fn the_block_holds_the_boards_words_and_zeros_past_the_settle_table() {
+        let b = CalibBoard::from_board(27, &SETTLE, &TEST_PROTECTION, &STAGE_1);
+        assert_eq!(b.bridge_min_ticks, 27);
+        assert_eq!(b.i_settle_start_ticks, 40);
+        assert_eq!(b.i_settle_q15[..21], *SETTLE.q15);
+        assert_eq!(b.i_settle_q15[21..], [0; 3]);
+        assert_eq!(
+            (b.oc_trip_ma, b.oc_trip_us, b.rail_source_mohm),
+            (2200, 400, 800)
+        );
+        assert_eq!(
+            [
+                b.window_scale_q15,
+                b.terminal_offset_q4 as u16,
+                b.brake_loop_mohm,
+                b.crest_sample_ticks,
+                b.shunt_on_lag_q4,
+                b.tap_on_lag_q4,
+                b.off_lag_q4,
+                b.shunt_settle_q4,
+            ],
+            [32975, 38, 301, 31, 704, 632, 224, 1152]
+        );
+    }
+
+    #[test]
+    fn a_settle_table_over_calibs_words_or_with_a_zero_is_refused() {
+        const LONG: [u16; SETTLE_WORDS + 1] = [32768; SETTLE_WORDS + 1];
+        let over = SettleGain {
+            start_ticks: 40,
+            q15: &LONG,
+        };
+        assert_eq!(
+            dev(&over, &STAGE_1),
+            Some(
+                "Calibration: calibration.i_settle_gain.q15 must hold at most 24 bands, \
+                 CALIB's settle words"
+            )
+        );
+        let full = SettleGain {
+            start_ticks: 40,
+            q15: &LONG[..SETTLE_WORDS],
+        };
+        assert_eq!(dev(&full, &STAGE_1), None);
+        let zero = SettleGain {
+            start_ticks: 40,
+            q15: &[37138, 0, 34342],
+        };
+        assert_eq!(
+            dev(&zero, &STAGE_1),
+            Some(
+                "Calibration: calibration.i_settle_gain.q15 must hold no 0, \
+                 which ends the table in CALIB"
+            )
+        );
+    }
+
+    #[test]
+    fn a_source_resistance_over_the_word_is_refused() {
+        let p = |mohm| ProtectionDefaults {
+            rail_source_mohm: mohm,
+            ..TEST_PROTECTION
+        };
+        assert_eq!(CalibBoard::violation(&SETTLE, &p(65_535), &STAGE_1), None);
+        assert_eq!(
+            CalibBoard::violation(&SETTLE, &p(65_536), &STAGE_1),
+            Some("ProtectionDefaults: rail_source_mohm must fit CALIB's u16 word")
+        );
+    }
+
+    #[test]
+    fn a_half_stated_characterization_is_refused() {
+        let refused = Some(
+            "Characterization: window_scale_q15 0 states no characterization, \
+             so every word must be 0",
+        );
+        assert_eq!(
+            dev(
+                &SETTLE,
+                &Characterization {
+                    window_scale_q15: 0,
+                    ..STAGE_1
+                }
+            ),
+            refused
+        );
+        assert_eq!(
+            dev(
+                &SETTLE,
+                &Characterization {
+                    terminal_offset_q4: -1,
+                    ..NONE
+                }
+            ),
+            refused
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Characterization: window_scale_q15 0 states no characterization")]
+    fn assert_valid_panics_with_the_rule() {
+        let ch = Characterization {
+            shunt_settle_q4: 1,
+            ..NONE
+        };
+        CalibBoard::assert_valid(&SETTLE, &TEST_PROTECTION, &ch);
+    }
 }

@@ -674,6 +674,111 @@
       "kind": "bytes"
     },
     {
+      "name": "ntc_site",
+      "addr": 227,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "bridge_min_ticks",
+      "addr": 228,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_settle_start_ticks",
+      "addr": 230,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_settle_q15",
+      "addr": 232,
+      "width": 48,
+      "access": "ro",
+      "kind": "bytes"
+    },
+    {
+      "name": "oc_trip_ma",
+      "addr": 280,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "oc_trip_us",
+      "addr": 282,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "rail_source_mohm",
+      "addr": 284,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "window_scale_q15",
+      "addr": 286,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "terminal_offset_q4",
+      "addr": 288,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "brake_loop_mohm",
+      "addr": 290,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "crest_sample_ticks",
+      "addr": 292,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "shunt_on_lag_q4",
+      "addr": 294,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "tap_on_lag_q4",
+      "addr": 296,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "off_lag_q4",
+      "addr": 298,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "shunt_settle_q4",
+      "addr": 300,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "torque_enable",
       "addr": 384,
       "width": 1,

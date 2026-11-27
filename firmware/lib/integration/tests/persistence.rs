@@ -6,9 +6,8 @@
 use osc_integration::sim::{RamStore, Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::table::STATUS_FLAG_UNSAVED;
 use osc_protocol::wire::{Id, MgmtOp, Opcode, ResultCode};
-use osc_servo_core::adc::ADC_WIDE_SLOTS;
 use osc_servo_core::persist::{CALIB_LEN, CalibImage, Image, Slot};
-use osc_servo_core::regions::calib::addr::adc::ADC_WIDE_MID_Q4;
+use osc_servo_core::regions::calib::addr::board::SHUNT_SETTLE_Q4;
 use osc_servo_core::regions::calib::addr::motor::R_Q12;
 use osc_servo_core::regions::calib::addr::sense::TICK_HZ;
 use osc_servo_core::regions::calib::addr::thermal::TH_RISE_Q016;
@@ -213,8 +212,8 @@ fn board_sense_wins_over_a_stale_calib_image(baud_idx: u8) {
 #[apply(matrix)]
 fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
     const JUNK: u8 = 0xA5;
-    /// The CALIB reserved tail's first byte, behind the ADC wide-code map.
-    const RESERVED: u16 = ADC_WIDE_MID_Q4 + ADC_WIDE_SLOTS as u16;
+    /// The CALIB reserved tail's first byte, behind the board facts block.
+    const RESERVED: u16 = SHUNT_SETTLE_Q4 + 2;
     const SEALED: usize = (CALIB_BASE_ADDR + CALIB_LEN as u16) as usize;
     let mut covered = [false; SEALED];
     for f in ControlTable::FIELDS.iter() {

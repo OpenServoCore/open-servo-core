@@ -178,3 +178,17 @@ fn the_mirror_refuses_what_the_image_refuses() {
         .to_string();
     assert!(e.contains("calibration.vdd_mv: integers only"), "{e}");
 }
+
+#[test]
+fn the_mirror_takes_the_ntc_site_as_a_variant() {
+    let dev = std::fs::read_to_string(DEV).unwrap();
+    let bad = dev.replace("site = \"Air\"", "site = 1");
+    assert_ne!(bad, dev);
+    let e = osc_board_file::sim_mirror(&bad, "board.toml", "DEV_V006")
+        .expect_err("a number is no site")
+        .to_string();
+    assert!(
+        e.ends_with("calibration.ntc.site: the sim's mirror takes a variant name here"),
+        "{e}"
+    );
+}
