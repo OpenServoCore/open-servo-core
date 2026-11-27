@@ -10,7 +10,8 @@
 //! snippet prints, so its errors name the key and its line.
 //!
 //! The literal is one expression with no arithmetic: every conversion stays
-//! in the core's const fns.
+//! in the core's const fns. The same file feeds the sim's mirror of the
+//! board ([`emit_sim_mirror`]), so the sim and the image seed one board.
 
 use std::fmt;
 use std::fmt::Write as _;
@@ -20,6 +21,8 @@ use toml::Spanned;
 use toml::de::{DeTable, DeValue};
 
 const PRELUDE: &str = "::osc_servo_ch32::prelude";
+const CORE: &str = "::osc_servo_core";
+const CORE_CONFIG: &str = "::osc_servo_core::regions::config";
 
 /// What the build script writes to OUT_DIR.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,26 +60,20 @@ impl std::error::Error for Error {}
 
 /// Reads `path` and writes its literal and compatibility key.
 pub fn emit_board_config(path: &Path) -> Result<Generated, Error> {
-    let file = file_name(path);
-    let text = std::fs::read_to_string(path).map_err(|e| Error {
-        file: path.display().to_string(),
-        at: None,
-        key: None,
-        rule: format!("reading the board file: {e}"),
-    })?;
+    let (file, text) = read(path)?;
     generate(&text, &file)
 }
 
 /// [`emit_board_config`] over text already read; `file` names it in the
 /// line comments and the errors.
 pub fn generate(text: &str, file: &str) -> Result<Generated, Error> {
-    let doc = Doc { text, file };
-    let root = DeTable::parse(text).map_err(|e| Error {
-        file: file.to_owned(),
-        at: e.span().map(|s| doc.line_col(s.start)),
-        key: None,
-        rule: e.message().to_owned(),
-    })?;
+    let doc = Doc {
+        text,
+        file,
+        types: PRELUDE,
+        consts: PRELUDE,
+    };
+    let root = doc.parse()?;
     let root = root.get_ref();
 
     let mut compat = None;
@@ -115,9 +112,234 @@ pub fn generate(text: &str, file: &str) -> Result<Generated, Error> {
             .to_owned(),
     })?;
 
-    let mut config = String::new();
-    doc.emit_struct(&mut config, "", "BoardConfig", &fields, 0)?;
+    let mut config = format!("{PRELUDE}::BoardConfig {{\n");
+    doc.emit_struct(&mut config, "", &fields, 0)?;
+    config.push_str("}\n");
     Ok(Generated { config, compat })
+}
+
+/// Reads `path` and writes the sim's mirror of the board: items named
+/// `<prefix>_SENSE`, `_SENSE_EXT`, `_PROTECTION`, `_BEMF_MIN_TICKS`,
+/// `_I_SETTLE_GAIN` and `_DEFAULTS` over the core's host types.
+pub fn emit_sim_mirror(path: &Path, prefix: &str) -> Result<String, Error> {
+    let (file, text) = read(path)?;
+    sim_mirror(&text, &file, prefix)
+}
+
+/// [`emit_sim_mirror`] over text already read. The file passes the image's
+/// form checks first, so the sim never takes a file the image refuses.
+/// The mapping onto CALIB's fields is stated here once; the bias count is
+/// the core's own const fn, so the mirror holds no arithmetic either.
+pub fn sim_mirror(text: &str, file: &str, prefix: &str) -> Result<String, Error> {
+    generate(text, file)?;
+    let doc = Doc {
+        text,
+        file,
+        types: CORE,
+        consts: CORE_CONFIG,
+    };
+    let root = doc.parse()?;
+    let m = Mirror {
+        doc: &doc,
+        root: root.get_ref(),
+    };
+    let mut out = String::new();
+
+    out.push_str("/// The board's sense chain, as CALIB publishes it.\n");
+    let _ = writeln!(
+        out,
+        "pub const {prefix}_SENSE: {CORE}::CalibSense = {CORE}::CalibSense {{"
+    );
+    m.leaf(&mut out, "shunt_r_mohm", "calibration.shunt_r_mohm")?;
+    m.leaf(&mut out, "gain_milli", "wiring.current_sense.gain_milli")?;
+    m.leaf(
+        &mut out,
+        "vmotor_div_top",
+        "calibration.vmotor_divider.top_ohm",
+    )?;
+    m.leaf(
+        &mut out,
+        "vmotor_div_bot",
+        "calibration.vmotor_divider.bot_ohm",
+    )?;
+    m.leaf(&mut out, "vdd_mv", "calibration.vdd_mv")?;
+    let _ = writeln!(out, "    tick_hz: {CORE}::kernel::TICK_HZ as u16,");
+    m.leaf(
+        &mut out,
+        "i_window_min_ticks",
+        "calibration.i_window_min_ticks",
+    )?;
+    m.leaf(
+        &mut out,
+        "v_window_min_ticks",
+        "calibration.v_window_min_ticks",
+    )?;
+    out.push_str("};\n\n");
+
+    out.push_str("/// The rest of the board's CALIB facts.\n");
+    let _ = writeln!(
+        out,
+        "pub const {prefix}_SENSE_EXT: {CORE}::CalibSenseExt = {CORE}::CalibSenseExt {{"
+    );
+    m.leaf(
+        &mut out,
+        "vbus_div_top_ohm",
+        "calibration.vbus_divider.top_ohm",
+    )?;
+    m.leaf(
+        &mut out,
+        "vbus_div_bot_ohm",
+        "calibration.vbus_divider.bot_ohm",
+    )?;
+    m.leaf(&mut out, "ntc_pullup_ohm", "calibration.ntc.pullup_ohm")?;
+    m.leaf(&mut out, "ntc_r25_ohm", "calibration.ntc.r25_ohm")?;
+    m.leaf(&mut out, "ntc_beta", "calibration.ntc.beta")?;
+    let _ = writeln!(
+        out,
+        "    vmotor_bias_nom_counts: {CORE_CONFIG}::vmotor_counts("
+    );
+    for key in [
+        "calibration.vdd_mv",
+        "calibration.vmotor_bias.top_ohm",
+        "calibration.vmotor_bias.bot_ohm",
+        "calibration.vdd_mv",
+    ] {
+        let (v, tag) = m.value(key)?;
+        let _ = writeln!(out, "        {v}, {tag}");
+    }
+    out.push_str("    ),\n");
+    m.leaf(&mut out, "rail_drop_mv", "calibration.rail_drop_mv")?;
+    m.leaf(
+        &mut out,
+        "vmotor_bias_top_ohm",
+        "calibration.vmotor_bias.top_ohm",
+    )?;
+    m.leaf(
+        &mut out,
+        "vmotor_bias_bot_ohm",
+        "calibration.vmotor_bias.bot_ohm",
+    )?;
+    out.push_str("};\n\n");
+
+    out.push_str("/// The board's protection defaults.\n");
+    m.table_item(
+        &mut out,
+        &format!("{prefix}_PROTECTION"),
+        &format!("{CORE}::ProtectionDefaults"),
+        "protection",
+    )?;
+
+    out.push_str(
+        "/// The back-EMF observer's window floor, which the board hands the\n\
+         /// kernel through `KernelTiming` and not through CALIB.\n",
+    );
+    let (v, tag) = m.value("calibration.bemf_window_min_ticks")?;
+    let _ = writeln!(out, "pub const {prefix}_BEMF_MIN_TICKS: u16 = {v}; {tag}\n");
+
+    out.push_str(
+        "/// The shunt amplifier's settle bands, which the board hands the\n\
+         /// kernel through `KernelTiming`.\n",
+    );
+    m.table_item(
+        &mut out,
+        &format!("{prefix}_I_SETTLE_GAIN"),
+        &format!("{CORE}::estimator::window::SettleGain"),
+        "calibration.i_settle_gain",
+    )?;
+
+    out.push_str("/// The boot seed's comms and travel.\n");
+    m.table_item(
+        &mut out,
+        &format!("{prefix}_DEFAULTS"),
+        &format!("{CORE}::ConfigDefaults"),
+        "defaults",
+    )?;
+    Ok(out)
+}
+
+/// The leaves the mirror picks by key, rendered as the image's literal
+/// renders them.
+struct Mirror<'d, 'a, 'i> {
+    doc: &'d Doc<'d>,
+    root: &'a DeTable<'i>,
+}
+
+impl<'a, 'i> Mirror<'_, 'a, 'i> {
+    fn get(&self, key: &str) -> Result<(usize, &'a Spanned<DeValue<'i>>), Error> {
+        let missing = || Error {
+            file: self.doc.file.to_owned(),
+            at: Some((1, 1)),
+            key: Some(key.to_owned()),
+            rule: "missing: the sim's mirror of the board reads it".to_owned(),
+        };
+        let mut table = self.root;
+        let mut keys = key.split('.').peekable();
+        while let Some(k) = keys.next() {
+            let (name, v) = table.get_key_value(k).ok_or_else(missing)?;
+            if keys.peek().is_none() {
+                return Ok((name.span().start, v));
+            }
+            let DeValue::Table(t) = v.get_ref() else {
+                return Err(missing());
+            };
+            table = t;
+        }
+        Err(missing())
+    }
+
+    /// A number or a flag and its line comment.
+    fn value(&self, key: &str) -> Result<(String, String), Error> {
+        let (at, v) = self.get(key)?;
+        let text = match v.get_ref() {
+            DeValue::Integer(i) => integer(i).map(|n| n.to_string()),
+            DeValue::Boolean(b) => Some(b.to_string()),
+            _ => None,
+        };
+        let text = text.ok_or_else(|| {
+            self.doc.err(
+                v.span().start,
+                key,
+                "the sim's mirror takes a number or a flag here",
+            )
+        })?;
+        Ok((text, self.doc.tag(at, key)))
+    }
+
+    fn leaf(&self, out: &mut String, field: &str, key: &str) -> Result<(), Error> {
+        let (v, tag) = self.value(key)?;
+        let _ = writeln!(out, "    {field}: {v}, {tag}");
+        Ok(())
+    }
+
+    /// A struct the file states field for field, walked as the image's
+    /// literal walks it.
+    fn table_item(&self, out: &mut String, name: &str, ty: &str, key: &str) -> Result<(), Error> {
+        let (at, v) = self.get(key)?;
+        let DeValue::Table(t) = v.get_ref() else {
+            return Err(self
+                .doc
+                .err(v.span().start, key, "the sim's mirror takes a table here"));
+        };
+        let _ = writeln!(
+            out,
+            "pub const {name}: {ty} = {ty} {{ {}",
+            self.doc.tag(at, key)
+        );
+        let fields = self.doc.children(t, key, key);
+        self.doc.emit_struct(out, key, &fields, 0)?;
+        out.push_str("};\n\n");
+        Ok(())
+    }
+}
+
+fn read(path: &Path) -> Result<(String, String), Error> {
+    let text = std::fs::read_to_string(path).map_err(|e| Error {
+        file: path.display().to_string(),
+        at: None,
+        key: None,
+        rule: format!("reading the board file: {e}"),
+    })?;
+    Ok((file_name(path), text))
 }
 
 /// How a key path's value is written.
@@ -224,9 +446,32 @@ fn file_name(path: &Path) -> String {
 struct Doc<'t> {
     text: &'t str,
     file: &'t str,
+    /// The module the shape map's type names resolve in.
+    types: &'t str,
+    /// The module the generator-owned constants resolve in.
+    consts: &'t str,
 }
 
-impl Doc<'_> {
+impl<'t> Doc<'t> {
+    fn parse(&self) -> Result<Spanned<DeTable<'t>>, Error> {
+        DeTable::parse(self.text).map_err(|e| Error {
+            file: self.file.to_owned(),
+            at: e.span().map(|s| self.line_col(s.start)),
+            key: None,
+            rule: e.message().to_owned(),
+        })
+    }
+
+    fn children<'a, 'i>(&self, t: &'a DeTable<'i>, key: &str, path: &str) -> Vec<Field<'a, 'i>> {
+        in_file_order(t)
+            .into_iter()
+            .map(|(k, v)| {
+                let child = k.get_ref().as_ref();
+                Field::new(k, v, format!("{key}.{child}"), format!("{path}.{child}"))
+            })
+            .collect()
+    }
+
     fn line_col(&self, at: usize) -> (usize, usize) {
         let before = &self.text[..at.min(self.text.len())];
         let line = before.matches('\n').count() + 1;
@@ -251,7 +496,6 @@ impl Doc<'_> {
         &self,
         out: &mut String,
         path: &str,
-        ty: &str,
         fields: &[Field<'_, '_>],
         depth: usize,
     ) -> Result<(), Error> {
@@ -268,20 +512,13 @@ impl Doc<'_> {
                 ));
             }
         }
-        if depth == 0 {
-            let _ = writeln!(out, "{PRELUDE}::{ty} {{");
-        }
         for f in fields {
             self.emit_field(out, f, &pad, depth)?;
         }
         for (at, name, konst) in OWNED {
             if at == path {
-                let _ = writeln!(out, "{pad}{name}: {PRELUDE}::{konst},");
+                let _ = writeln!(out, "{pad}{name}: {}::{konst},", self.consts);
             }
-        }
-        if depth == 0 {
-            out.push('}');
-            out.push('\n');
         }
         Ok(())
     }
@@ -298,20 +535,9 @@ impl Doc<'_> {
         let at = f.value.span().start;
         match (f.value.get_ref(), shape(&f.path)) {
             (DeValue::Table(t), Some(Shape::Struct(ty))) => {
-                let _ = writeln!(out, "{pad}{name}: {PRELUDE}::{ty} {{ {tag}");
-                let children: Vec<_> = in_file_order(t)
-                    .into_iter()
-                    .map(|(k, v)| {
-                        let child = k.get_ref().as_ref();
-                        Field::new(
-                            k,
-                            v,
-                            format!("{}.{child}", f.key),
-                            format!("{}.{child}", f.path),
-                        )
-                    })
-                    .collect();
-                self.emit_struct(out, &f.path, ty, &children, depth + 1)?;
+                let _ = writeln!(out, "{pad}{name}: {}::{ty} {{ {tag}", self.types);
+                let children = self.children(t, &f.key, &f.path);
+                self.emit_struct(out, &f.path, &children, depth + 1)?;
                 let _ = writeln!(out, "{pad}}},");
             }
             (DeValue::Table(_), None) => {
@@ -345,7 +571,7 @@ impl Doc<'_> {
             }
             (DeValue::String(s), Some(Shape::Enum(ty))) => {
                 let v = self.variant(at, &f.key, s)?;
-                let _ = writeln!(out, "{pad}{name}: {PRELUDE}::{ty}::{v}, {tag}");
+                let _ = writeln!(out, "{pad}{name}: {}::{ty}::{v}, {tag}", self.types);
             }
             (DeValue::String(_), _) => {
                 return Err(self.err(
@@ -365,7 +591,7 @@ impl Doc<'_> {
                         ));
                     };
                     let v = self.variant(e.span().start, &f.key, s)?;
-                    items.push(format!("{PRELUDE}::{ty}::{v}"));
+                    items.push(format!("{}::{ty}::{v}", self.types));
                 }
                 let _ = writeln!(out, "{pad}{name}: ({}), {tag}", items.join(", "));
             }

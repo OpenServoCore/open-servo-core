@@ -149,3 +149,32 @@ fn a_missing_file_names_its_path() {
         "{e}"
     );
 }
+
+/// The sim's dev-v006 board, as osc-integration includes it.
+#[test]
+fn the_dev_v006_board_file_emits_its_sim_mirror() {
+    let m = osc_board_file::emit_sim_mirror(Path::new(DEV), "DEV_V006")
+        .expect("the dev board file is well formed");
+    assert_eq!(m, include_str!("osc-dev-v006.mirror.txt"));
+}
+
+#[test]
+fn the_mirror_names_a_key_it_lacks() {
+    let e = osc_board_file::sim_mirror(MIN, "board.toml", "B")
+        .expect_err("the mirror reads the sense chain")
+        .to_string();
+    assert_eq!(
+        e,
+        "board.toml:1:1: calibration.shunt_r_mohm: missing: the sim's mirror of the board reads it"
+    );
+}
+
+#[test]
+fn the_mirror_refuses_what_the_image_refuses() {
+    let dev = std::fs::read_to_string(DEV).unwrap();
+    let bad = dev.replace("vdd_mv = 3300", "vdd_mv = 3.3");
+    let e = osc_board_file::sim_mirror(&bad, "board.toml", "DEV_V006")
+        .expect_err("a float is refused")
+        .to_string();
+    assert!(e.contains("calibration.vdd_mv: integers only"), "{e}");
+}

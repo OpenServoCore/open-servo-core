@@ -11,15 +11,13 @@ use osc_integration::mg90::{self, Mg90};
 use osc_integration::mg90_d;
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, TIMING, duty_of, kernel, last_cmd};
 use osc_integration::sim::{
-    DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT,
+    DEV_V006_DEFAULTS as DEFAULTS, DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE,
+    DEV_V006_SENSE_EXT as SENSE_EXT,
 };
 use osc_servo_core::estimator::thermal::{NtcCfg, ThermCfg, WindingTherm, ntc_cc};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::phases::loops::faults::{BIT_DATA, CODE_DATA};
-use osc_servo_core::{
-    BaudRate, ConfigDefaults, ImageState, Kernel, Mode, MotorCmd, ProtectionSeed, RegionStorage,
-    Shared,
-};
+use osc_servo_core::{ImageState, Kernel, Mode, MotorCmd, ProtectionSeed, RegionStorage, Shared};
 
 /// The set of record's speed ceiling, c/s: the maker's 600 deg/s at
 /// 4.8 V derated by 2/3, on the set's 20.13 counts per degree, 8050.65
@@ -291,16 +289,8 @@ fn a_live_zero_cap_write_stops_a_running_closed_loop() {
 #[test]
 fn the_factory_block_refuses_current_mode_and_runs_openloop() {
     let sh = Shared::new();
-    sh.table.seed_config_defaults(
-        &ConfigDefaults {
-            pos_min_phys_counts: 0,
-            pos_max_phys_counts: 4095,
-            id: 1,
-            baud: BaudRate::B1000000,
-            response_deadline_us: 500,
-        },
-        &ProtectionSeed::from_sense(&PROTECTION, &SENSE),
-    );
+    sh.table
+        .seed_config_defaults(&DEFAULTS, &ProtectionSeed::from_sense(&PROTECTION, &SENSE));
     sh.table
         .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);
     sh.table.seed_current_bias(BIAS);

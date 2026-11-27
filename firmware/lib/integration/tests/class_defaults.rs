@@ -4,13 +4,12 @@
 
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, TIMING, duty_of, kernel};
 use osc_integration::sim::{
-    DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT,
+    DEV_V006_DEFAULTS as DEFAULTS, DEV_V006_PROTECTION as PROTECTION, DEV_V006_SENSE as SENSE,
+    DEV_V006_SENSE_EXT as SENSE_EXT,
 };
 use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_NONE};
 use osc_servo_core::regions::config::{STALL_TAU_TRIP_OFF, current_counts};
-use osc_servo_core::{
-    BaudRate, ConfigDefaults, ImageState, Kernel, Mode, ProtectionSeed, RegionStorage, Shared,
-};
+use osc_servo_core::{BaudRate, ImageState, Kernel, Mode, ProtectionSeed, RegionStorage, Shared};
 
 /// `limit_flags` bit 5: the cap or the speed ceiling is unset.
 const FLAG_UNSET: u8 = 1 << 5;
@@ -21,16 +20,8 @@ const MID: u16 = 2050;
 /// the measured shunt bias, the virgin data state.
 fn virgin() -> Shared {
     let sh = Shared::new();
-    sh.table.seed_config_defaults(
-        &ConfigDefaults {
-            pos_min_phys_counts: 0,
-            pos_max_phys_counts: 4095,
-            id: 1,
-            baud: BaudRate::B1000000,
-            response_deadline_us: 500,
-        },
-        &ProtectionSeed::from_sense(&PROTECTION, &SENSE),
-    );
+    sh.table
+        .seed_config_defaults(&DEFAULTS, &ProtectionSeed::from_sense(&PROTECTION, &SENSE));
     sh.table
         .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);
     sh.table.seed_current_bias(BIAS);
@@ -107,7 +98,7 @@ fn the_dev_v006_boot_seed_is_pinned() {
         let common = &c.common;
         assert_eq!(
             (common.id, common.baud_rate_idx, common.response_deadline_us),
-            (1, BaudRate::B1000000.as_idx(), 500)
+            (1, BaudRate::B1000000.as_idx(), 1000)
         );
         assert_eq!(c.loop_current.duty_max_q15, 32767);
         let p = &c.loop_position;
