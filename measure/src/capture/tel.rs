@@ -150,7 +150,7 @@ impl Line {
     pub fn admit(&self, layout: Layout) -> Result<(), Refused> {
         if self.baud != tel::BAUD {
             return Err(Refused(format!(
-                "identification captures on TEL bursts, which a servo streams at {} Mbaud only, and the bus runs at {} kbaud: move the bus to 3M (`osc baud 3000000`), on a short cable with good contacts",
+                "identification captures on TEL bursts, which a servo streams at {} Mbaud only, and the bus runs at {} kbaud: move the bus to 3M (`osc baud 3000000`), on a short cable with good contacts; that move is volatile, and a run reboots the servo, after which this tool moves it back to 3M",
                 tel::BAUD.as_hz() / 1_000_000,
                 self.baud.as_hz() / 1000
             )));
