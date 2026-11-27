@@ -1,7 +1,8 @@
 //! The current loop (ident gains.rs synthesize): the proportional gain
 //! cancels the winding's electrical pole, w x L, the integral gain sets
 //! the crossover, w x R a FAST tick, the anti-windup gain is twice the
-//! integral one; w is the policy's bandwidth. And the duty cap.
+//! integral one; w is the bandwidth the policy states or sets by its rule.
+//! And the duty cap.
 
 use osc_servo_core::regions::config::DEFAULT_DUTY_MAX_Q15;
 
@@ -9,13 +10,16 @@ use super::units::{r_vcounts, share, shunt_counts_per_a, tap_counts_per_v};
 use super::{Ctx, Fail, Format, Kind, Rule, board, get, q, table};
 use crate::policy::CurrentLoop;
 
-/// The policy's bandwidth, Hz.
-fn loop_hz(c: &mut Ctx) -> Result<f64, Fail> {
+/// The bandwidth, Hz: the policy's, or its multiple of the electrical
+/// corner R / (2 pi L), the winding's pole, which the PI cancels.
+pub fn loop_hz(c: &mut Ctx) -> Result<f64, Fail> {
     match get!(c, policy, current_loop)? {
         CurrentLoop::Hz(hz) => Ok(hz),
-        CurrentLoop::MultipleOfElectricalCorner(_) => Err(Fail::refused(
-            "policy.current_loop is a multiple of the electrical corner, which this tool does not bind yet",
-        )),
+        CurrentLoop::MultipleOfElectricalCorner(m) => {
+            let r = q!(c, measured, r_ohm)?;
+            let l = q!(c, measured, l_mh)?;
+            Ok(m * r / (2.0 * core::f64::consts::PI * l / 1000.0))
+        }
     }
 }
 

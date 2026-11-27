@@ -16,7 +16,7 @@ use crate::install::Refused;
 use crate::nameplate::Nameplate;
 use crate::set::file_sha1;
 use crate::steps::polarity::PROVING_PAIRS;
-use crate::steps::{cruise, probe, rest, stops, table};
+use crate::steps::{cruise, probe, rest, stops, table, verify};
 
 /// The later steps the gather reads where a run has them.
 pub const WINDOW_STEP: &str = "window";
@@ -28,6 +28,9 @@ pub const SPINS_RESULT: &str = "results/spins.json";
 pub const CRUISE_RESULT: &str = cruise::RESULT;
 /// The table and the slots where the run has the step accepted.
 pub const TABLE_RESULT: &str = table::RESULT;
+/// The worst 4-step pot run a driven step reads over its drive rows; the
+/// gather takes the larger of the spins' and the table's.
+pub const POT_STEP4: &str = "pot_step4_counts";
 /// Why the cruise line is the one the loop needs over the spins'.
 const SPIN_LINE_HIGH: &str = "the spin line reads high at low speed: its spins are short, still speeding up and at the low end of the travel, and its lowest point is a fast spin, so its offset is an extrapolation";
 
@@ -646,8 +649,30 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             "cruise_coulomb_ma, cruise_viscous_ma_s_per_rad: missing, the run holds no {SPINS_RESULT} and {why}"
         )),
     }
+    let step4 = [&spins, &tabled].into_iter().flatten().filter_map(|t| {
+        let key = format!("estimates.{POT_STEP4}");
+        at(&t.r.doc, &key)?;
+        Some(
+            t.estimate(POT_STEP4, 1.0, None)
+                .map(|q| (q["value"].as_f64(), q)),
+        )
+    });
+    let mut worst: Option<(Option<f64>, Value)> = None;
+    for got in step4 {
+        let got = got?;
+        if worst.as_ref().is_none_or(|w| got.0 > w.0) {
+            worst = Some(got);
+        }
+    }
+    match worst {
+        Some((_, q)) => o.put(POT_STEP4, q),
+        None => o.lines.push(format!(
+            "{POT_STEP4}: missing, neither {SPINS_RESULT} nor {TABLE_RESULT} holds it; run the spins step"
+        )),
+    }
     o.lines.extend([
         "breakaway_ma: not gathered, no step measures it".to_string(),
+        "still_speed_cps: not gathered, the tune's accepted check gives it".into(),
         "shelf: none, a margin record is no step of a run".into(),
         "speed_kp_verified: not gathered, `osc-ident tune` settles it".into(),
     ]);
@@ -731,6 +756,50 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         cross_checks,
         lines: o.lines,
     })
+}
+
+/// The largest observer speed over the still holds of an accepted
+/// closed-loop check (`results/verify.json` of the tune's accepted try), as
+/// a measured term naming that file; none where the check holds none, a
+/// check written before it streamed the holds. Refused when the result is
+/// not an accepted check.
+pub fn still_speed(check: &StepResult) -> Result<Option<Value>, Refused> {
+    check_estimate(check, verify::STILL_SPEED)
+}
+
+/// The worst 4-step pot run over an accepted closed-loop check's raw
+/// bursts, its wide-code holds too, outside the run's pot holes
+/// (`results/verify.json` of the tune's accepted try), as a measured term
+/// naming that file; none where the check holds none. Refused when the
+/// result is not an accepted check.
+pub fn check_pot_step4(check: &StepResult) -> Result<Option<Value>, Refused> {
+    check_estimate(check, POT_STEP4)
+}
+
+fn check_estimate(check: &StepResult, key: &str) -> Result<Option<Value>, Refused> {
+    let t = Taken::of(
+        Some(check),
+        verify::STEP,
+        verify::RESULT,
+        "run the tune again",
+    )?
+    .expect("a result was given");
+    if at(&t.r.doc, &format!("estimates.{key}")).is_none() {
+        return Ok(None);
+    }
+    t.estimate(key, 1.0, None).map(Some)
+}
+
+/// The pot statistic over the whole population, the worst of the
+/// gather's (the spins' and the table's) and the check's: the larger
+/// term, the gather's on a tie; none where neither holds one.
+pub fn worst_pot_step4(gathered: Option<&Value>, check: Option<&Value>) -> Option<Value> {
+    let v = |q: &Value| q["value"].as_f64();
+    match (gathered, check) {
+        (Some(g), Some(c)) if v(c) > v(g) => Some(c.clone()),
+        (Some(g), _) => Some(g.clone()),
+        (None, c) => c.cloned(),
+    }
 }
 
 /// `k / x` for the quantity `x`: its sd to first order, its band's ends

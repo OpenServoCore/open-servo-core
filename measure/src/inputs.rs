@@ -110,6 +110,12 @@ pub struct Measured {
     /// The speed gain a closed-loop check settled on, at or under the
     /// starting gain the rules give (`rules::speed_loop::starting_kp`).
     pub speed_kp_verified: Option<f64>,
+    /// The largest |omega_hat| over the still holds of a closed-loop check,
+    /// count/s ([`crate::screens::still_speed_cps`]).
+    pub still_speed_cps: Option<Quantity>,
+    /// The worst level 4 successive RAIL-period pot steps all pass over the
+    /// run's driven rows, raw counts ([`crate::screens::step_run`]).
+    pub pot_step4_counts: Option<Quantity>,
 }
 
 /// The winding model, entered by the user: each node's time constant and

@@ -214,10 +214,13 @@ pub struct NoLoad {
     pub per_deg: f64,
 }
 
-/// A stated stall: the voltage, and the current where the sheet gives one.
+/// A stated stall: the voltage, and the torque and the current where the
+/// sheet gives them.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct Stall {
     pub at_v: f64,
+    #[serde(default)]
+    pub torque_kg_cm: Option<f64>,
     #[serde(default)]
     pub current_a: Option<f64>,
 }

@@ -857,3 +857,50 @@ fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
         assert!(text.contains(want), "{want}\n{text}");
     }
 }
+
+/// The worst 4-step pot run is the larger of the spins' and the table's,
+/// named by its result; with neither the term is missing and said, and the
+/// still-shaft speed is left to the tune.
+#[test]
+fn the_pot_step_run_is_the_larger_of_the_driven_steps() {
+    let step4 = |v: f64| {
+        move |d: &mut Value| {
+            d["estimates"]["pot_step4_counts"] =
+                serde_json::json!({"value": v, "sd": null, "n": 12, "unit": "raw counts"});
+        }
+    };
+    let g = gather::gather(&run(), &nameplate()).expect("gathers");
+    assert!(g.measured.get("pot_step4_counts").is_none());
+    let said = |g: &gather::Gathered, start: &str| g.lines.iter().any(|l| l.starts_with(start));
+    assert!(said(
+        &g,
+        "pot_step4_counts: missing, neither results/spins.json nor"
+    ));
+    assert!(said(
+        &g,
+        "still_speed_cps: not gathered, the tune's accepted check gives it"
+    ));
+
+    let mut r = run();
+    r.spins = Some(edited("spins", step4(13.0)));
+    r.table = Some(edited("table", step4(15.0)));
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    let q = &g.measured["pot_step4_counts"];
+    assert_eq!(
+        (q["value"].as_f64(), q["n"].as_u64()),
+        (Some(15.0), Some(12))
+    );
+    assert_eq!(q["source"]["file"], "results/table.json");
+    assert!(said(
+        &g,
+        "pot_step4_counts 15.0000 raw counts n 12: results/table.json"
+    ));
+    r.spins = Some(edited("spins", step4(17.0)));
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    assert_eq!(
+        g.measured["pot_step4_counts"]["source"]["file"],
+        "results/spins.json"
+    );
+    let m: Measured = serde_json::from_value(g.measured).expect("loads");
+    assert_eq!(m.pot_step4_counts.map(|q| q.value), Some(17.0));
+}

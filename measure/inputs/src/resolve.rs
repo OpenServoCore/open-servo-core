@@ -1,15 +1,14 @@
 //! A profile and a tuning policy to the absolute values the rules and the
 //! steps read, with a line for each value saying what it was stated as and
 //! what it binds. The forms that need nothing measured resolve here; a
-//! form whose rule this tool does not have yet is refused, naming the fixed
-//! form to state instead, so a run never leaves a field out unannounced. A
-//! value that cannot act is stored at the bound it is over, and its line
-//! says so.
+//! rule form over what the run measures goes to the rules as it is stated,
+//! its line saying what the run sets it from. A value that cannot act is
+//! stored at the bound it is over, and its line says so.
 
 use serde::{Deserialize, Serialize};
 
-use crate::nameplate::{Nameplate, Stall};
-use crate::policy::Policy;
+use crate::nameplate::{GearClass, Nameplate, Stall};
+use crate::policy::{Policy, yield_torque};
 use crate::profile::{HeatModel, ServoProfile};
 use crate::tuning::{
     CurrentLimit, CurrentLoop, MoveSpeed, Observer, PotJump, SpeedCeiling, SpeedUp, StallRelease,
@@ -84,7 +83,7 @@ pub struct Named {
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Form {
-    /// A share or a time over another value the run knows.
+    /// A share, a multiple or a time over another value the run knows.
     Share,
     /// An absolute value: it ties the policy to one servo.
     Fixed,
@@ -129,12 +128,6 @@ pub struct Line {
     /// the value stored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clamp: Option<String>,
-}
-
-fn not_yet(field: &str, rule: &str, fixed: &str) -> String {
-    format!(
-        "This tool does not set {field} by its rule yet ({rule}), so the run would leave it as the servo holds it: state it fixed, as {fixed}"
-    )
 }
 
 struct Lines(Vec<Line>);
@@ -233,6 +226,7 @@ pub fn resolve(
             .iter()
             .map(|s| Stall {
                 at_v: s.at_v,
+                torque_kg_cm: s.torque_kg_cm,
                 current_a: s.current_a,
             })
             .collect(),
@@ -295,12 +289,63 @@ pub fn resolve(
                 "policy.yield",
             );
         }
-        Some(Yield::TorqueKgCm(_)) => {
-            return Err(not_yet(
-                "protection.yield",
-                "a max yield torque over the stated stall torque, times the stated volts over R",
-                "{\"ma\": ...}",
-            ));
+        Some(Yield::TorqueKgCm(stated)) => {
+            let metal = profile.gear_class == Some(GearClass::Metal);
+            let torque = yield_torque(
+                metal,
+                stated,
+                q.plastic_torque_limit_kg_cm,
+                q.above_plastic_limit,
+            )
+            .map_err(|e| {
+                format!(
+                    "The yield current a stalled horn folds to cannot be set: {}",
+                    e.said()
+                )
+            })?;
+            out.yield_ = Some(Yield::TorqueKgCm(stated));
+            out.plastic_torque_limit_kg_cm = q.plastic_torque_limit_kg_cm;
+            out.above_plastic_limit = q.above_plastic_limit;
+            match torque {
+                None => {
+                    l.push(
+                        "protection.yield",
+                        Form::Share,
+                        Value::Text("the cap".into()),
+                        "",
+                        "policy.yield",
+                    );
+                    l.note("no yield torque on a metal train: the cap, no fold".into());
+                }
+                Some(t) => {
+                    let Some(row) = stall.torque_kg_cm else {
+                        return Err(format!(
+                            "The yield torque cannot be taken to a current: the profile states no stall torque at {} V, the stall row the run voltage picks; state it as stall torque_kg_cm",
+                            stall.at_v
+                        ));
+                    };
+                    l.number(
+                        "protection.yield",
+                        Form::Share,
+                        Some(t),
+                        "kg cm",
+                        "policy.yield",
+                    );
+                    let mut note = format!(
+                        "over the {row} kg cm stall torque at {} V, times {} V over the identified R, set by the run",
+                        stall.at_v, stall.at_v
+                    );
+                    if stated.is_none() {
+                        note = format!("the plastic torque limit, {note}");
+                    }
+                    if t / row >= other {
+                        note.push_str(&format!(
+                            "; at or over the current limit, {other} of the stall torque: the press never trips"
+                        ));
+                    }
+                    l.note(note);
+                }
+            }
         }
         None => {}
     }
@@ -315,12 +360,18 @@ pub fn resolve(
                 "policy.stall_release",
             );
         }
-        Some(StallRelease::ShareOfYield(_)) => {
-            return Err(not_yet(
+        Some(StallRelease::ShareOfYield(s)) => {
+            out.stall_release = Some(StallRelease::ShareOfYield(s));
+            l.number(
                 "protection.stall_release",
-                "a share of the yield current as the kernel runs it",
-                "{\"ma\": ...}",
-            ));
+                Form::Share,
+                Some(s),
+                "of the yield current as the kernel runs it",
+                "policy.stall_release",
+            );
+            l.note(
+                "of the current limit while the yield current is the cap, set by the run".into(),
+            );
         }
         None => {}
     }
@@ -349,12 +400,16 @@ pub fn resolve(
                 "policy.stall_speed",
             );
         }
-        Some(StallSpeed::MultipleOfStillSpeed(_)) => {
-            return Err(not_yet(
+        Some(StallSpeed::MultipleOfStillSpeed(m)) => {
+            out.stall_speed = Some(StallSpeed::MultipleOfStillSpeed(m));
+            l.number(
                 "protection.stall_speed",
-                "a multiple of the largest observer speed over the check's still holds",
-                "{\"deg_s\": ...}",
-            ));
+                Form::Share,
+                Some(m),
+                "x the largest observer speed over the check's still holds",
+                "policy.stall_speed",
+            );
+            l.note("count/s, set by the run".into());
         }
         None => {}
     }
@@ -487,12 +542,16 @@ pub fn resolve(
                 "policy.current_loop",
             );
         }
-        Some(CurrentLoop::MultipleOfElectricalCorner(_)) => {
-            return Err(not_yet(
+        Some(CurrentLoop::MultipleOfElectricalCorner(m)) => {
+            out.current_loop = Some(CurrentLoop::MultipleOfElectricalCorner(m));
+            l.number(
                 "loops.current_loop",
-                "a multiple of the electrical corner R / (2 pi L)",
-                "{\"hz\": ...}",
-            ));
+                Form::Share,
+                Some(m),
+                "x the electrical corner R / (2 pi L)",
+                "policy.current_loop",
+            );
+            l.note("Hz, on the identified R and L, set by the run".into());
         }
         None => {}
     }
@@ -507,12 +566,16 @@ pub fn resolve(
                 "policy.observer",
             );
         }
-        Some(Observer::MultipleOfMechanicalCorner(_)) => {
-            return Err(not_yet(
+        Some(Observer::MultipleOfMechanicalCorner(m)) => {
+            out.observer = Some(Observer::MultipleOfMechanicalCorner(m));
+            l.number(
                 "loops.observer",
-                "a multiple of the mechanical corner Ke^2 / (2 pi J R)",
-                "{\"hz\": ...}",
-            ));
+                Form::Share,
+                Some(m),
+                "x the mechanical corner Ke^2 / (2 pi J R)",
+                "policy.observer",
+            );
+            l.note("Hz, on the identified Ke, J and R, set by the run".into());
         }
         None => {}
     }
@@ -574,12 +637,16 @@ pub fn resolve(
                 "policy.pot_jump",
             );
         }
-        Some(PotJump::MultipleOfStep4(_)) => {
-            return Err(not_yet(
+        Some(PotJump::MultipleOfStep4(m)) => {
+            out.pot_jump = Some(PotJump::MultipleOfStep4(m));
+            l.number(
                 "sensor.pot_jump",
-                "a multiple of the worst run of 4 successive pot steps while driving",
-                "{\"counts\": ...}",
-            ));
+                Form::Share,
+                Some(m),
+                "x the worst run of 4 successive pot steps over the run's driven rows",
+                "policy.pot_jump",
+            );
+            l.note("raw counts, set by the run".into());
         }
         None => {}
     }

@@ -27,7 +27,7 @@ use osc_client::{Client, Error, Id, pipe::Pipe};
 use serde_json::{Map, Value, json};
 
 use crate::capture::meta;
-use crate::capture::rows::Layout;
+use crate::capture::rows::{Layout, TelFrame};
 use crate::capture::tel::{self, Burst, StreamCfg};
 use crate::guard::{Exit, Way};
 use crate::install::Refused;
@@ -192,6 +192,34 @@ pub fn estimate(value: f64, s: Scatter, unit: &str, source: &str) -> Value {
     };
     json!({"value": value, "sd": sd, "n": n, "lo": sd.map(|sd| value - sd),
            "hi": sd.map(|sd| value + sd), "unit": unit, "source": source})
+}
+
+/// A driven step's result with the worst level 4 successive RAIL-period
+/// pot steps all pass over its drive bursts `driven`, raw counts, the
+/// samples inside the run's pot holes `holes` left out, as
+/// `estimates.pot_step4_counts` ([`crate::screens::step_run`]); nothing
+/// where no burst holds a run of 4.
+pub(crate) fn with_pot_step4(
+    result: &mut Value,
+    driven: &[&[TelFrame]],
+    holes: &crate::screens::Holes,
+    what: &str,
+) {
+    let Some(level) = crate::screens::step_run(driven, crate::screens::SCREEN_RUN, holes) else {
+        return;
+    };
+    let src = format!(
+        "the worst level {} successive RAIL-period pot steps all pass, every phase of the MEDIUM period, over the {} drive bursts of {what}; no run spans a hole in the ticks; samples inside a pot hole left out: {}",
+        crate::screens::SCREEN_RUN,
+        driven.len(),
+        holes.source
+    );
+    result["estimates"][crate::gather::POT_STEP4] = estimate(
+        level as f64,
+        Scatter::Once(driven.len()),
+        "raw counts",
+        &src,
+    );
 }
 
 pub(crate) fn interrupted(stop: &AtomicBool) -> Result<(), Halt> {
@@ -412,8 +440,50 @@ pub(crate) fn mode_value(d: &Descriptor, name: &str) -> Result<u8, Halt> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Scatter, estimate};
+    use super::{Scatter, TelFrame, estimate, with_pot_step4};
     use serde_json::json;
+
+    /// A driven step's result carries its worst 4-step pot run as an
+    /// estimate over its drive bursts, its own `estimates` block or a new
+    /// one; a step with no run of 4 steps says nothing.
+    #[test]
+    fn a_driven_step_writes_its_worst_four_step_pot_run() {
+        let burst: Vec<TelFrame> = (0..60u64)
+            .map(|t| TelFrame {
+                tick: t,
+                pos: Some(2048 + if (t / 10) % 2 == 0 { 0 } else { 15 }),
+                ..TelFrame::default()
+            })
+            .collect();
+        let mut with = json!({"estimates": {"ke": 1}});
+        let none = crate::screens::Holes::none("no table result given");
+        with_pot_step4(&mut with, &[&burst, &burst[..20]], &none, "the spins");
+        let e = &with["estimates"]["pot_step4_counts"];
+        assert_eq!(
+            (e["value"].as_f64(), e["n"].as_u64()),
+            (Some(15.0), Some(2))
+        );
+        assert_eq!(e["unit"], "raw counts");
+        assert!(
+            e["source"]
+                .as_str()
+                .unwrap()
+                .contains("over the 2 drive bursts of the spins")
+        );
+        assert_eq!(with["estimates"]["ke"], 1);
+        let mut without = json!({"verdict": "accepted"});
+        with_pot_step4(&mut without, &[&burst], &none, "the table's rungs");
+        assert_eq!(without["estimates"]["pot_step4_counts"]["value"], 15.0);
+        let mut short = json!({"verdict": "accepted"});
+        with_pot_step4(&mut short, &[&burst[..30]], &none, "a short burst");
+        assert_eq!(short, json!({"verdict": "accepted"}));
+        // a burst inside a pot hole reads nothing
+        let hole =
+            crate::screens::Holes::new(vec![(2000.0, 2100.0)], "a hole".into()).expect("hole");
+        let mut holed = json!({"verdict": "accepted"});
+        with_pot_step4(&mut holed, &[&burst], &hole, "a burst in a hole");
+        assert_eq!(holed, json!({"verdict": "accepted"}));
+    }
 
     #[test]
     fn an_estimate_says_its_sd_and_n_or_that_it_is_nominal() {

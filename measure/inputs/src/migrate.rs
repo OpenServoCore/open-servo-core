@@ -170,7 +170,7 @@ fn profile_of(np: &Nameplate, source: &Source) -> Result<(ServoProfile, Carried)
             .iter()
             .map(|s| StallRow {
                 at_v: s.at_v,
-                torque_kg_cm: None,
+                torque_kg_cm: s.torque_kg_cm,
                 current_a: s.current_a,
             })
             .collect(),
@@ -194,6 +194,8 @@ fn policy_of(p: &Policy, source: &Source, key: &str) -> TuningPolicy {
     let mut t = TuningPolicy::empty(&slug(key));
     let q = &mut t.protection;
     q.yield_ = p.yield_;
+    q.plastic_torque_limit_kg_cm = p.plastic_torque_limit_kg_cm;
+    q.above_plastic_limit = p.above_plastic_limit;
     q.stall_release = p.stall_release;
     q.stall_response = p.stall_response;
     q.stall_time_ms = p.stall_time_ms;

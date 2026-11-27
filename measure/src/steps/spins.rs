@@ -161,6 +161,9 @@ pub struct SpinsInputs<'a> {
     pub probe: &'a Value,
     pub stops: &'a Value,
     pub window: Option<&'a Value>,
+    /// The same run's `results/table.json`, whose pot holes the spins' pot
+    /// steps leave out; none where the run holds none.
+    pub table: Option<&'a Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +215,7 @@ struct Before {
     pwm_arr: f64,
     counts_per_a: f64,
     counts_per_v: f64,
+    holes: crate::screens::Holes,
 }
 
 fn num(state: &State, d: &osc_client::descriptor::Descriptor, name: &str) -> Result<f64, Refused> {
@@ -283,6 +287,10 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
     let probe = FromProbe::of(i.probe)?;
     let stops = FromStops::of(i.stops)?;
     let window = window_term(i.window)?;
+    let holes = match i.table {
+        Some(t) => crate::screens::Holes::of_table(t, super::table::RESULT).map_err(Refused)?,
+        None => crate::screens::Holes::none(format!("the run holds no {}", super::table::RESULT)),
+    };
     let state = state::read(rig.c, rig.id, rig.d).await?;
     if state.torque {
         return Err(Refused(
@@ -421,6 +429,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
         pwm_arr,
         counts_per_a: sense.counts_per_a(),
         counts_per_v: sense.terminal_counts_per_v(),
+        holes,
     };
     if b.approach_q15 > b.top_q15 {
         return Err(Refused(format!(
@@ -1905,7 +1914,7 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
             after.map_or("a position not read".into(), |p| format!("{p:.0}"))
         ));
     }
-    let result = result_json(
+    let mut result = result_json(
         &b,
         &found,
         judged.as_ref(),
@@ -1915,6 +1924,14 @@ pub async fn spins<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result
         &exit,
         after,
     );
+    if finished {
+        let driven: Vec<&[TelFrame]> = found
+            .spins
+            .iter()
+            .map(|s| taken[s.drive_k].burst.rows.as_slice())
+            .collect();
+        super::with_pot_step4(&mut result, &driven, &b.holes, "the spins, the pilot's too");
+    }
     let mut text = serde_json::to_vec_pretty(&result).unwrap_or_default();
     text.push(b'\n');
     match rig.sink.write(RESULT, &text) {
@@ -2402,6 +2419,7 @@ mod tests {
                     probe: &probe,
                     stops: &stops,
                     window: window.as_ref(),
+                    table: None,
                 },
             ))
         };

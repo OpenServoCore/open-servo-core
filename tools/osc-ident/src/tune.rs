@@ -13,8 +13,8 @@ use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::{Client, Id};
 use osc_measure::build;
+use osc_measure::gather::POT_STEP4;
 use osc_measure::install::{self, Refused, STORED};
-use osc_measure::nameplate::Nameplate;
 use osc_measure::rules::{Fail, speed_loop};
 use osc_measure::set::{self, FromRules, SetFile, file_sha1};
 use osc_measure::sink::Sink;
@@ -31,13 +31,25 @@ fn unix_s() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
+/// The terms an accepted closed-loop check gives the final set: the still
+/// speed, and the pot statistic over the whole population, the worst of
+/// the gather's and the check's.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Checked {
+    pub still: Option<Value>,
+    pub step4: Option<Value>,
+}
+
 /// The set the rules give at the speed gain `kp`, the measured file it was
-/// given with (the inputs' own, `speed_kp_verified` set to `kp`), and a
-/// line for each field the rules stored at a bound.
+/// given with (the inputs' own, `speed_kp_verified` set to `kp`, and
+/// `still_speed_cps` and `pot_step4_counts` to `checked`'s, an accepted
+/// check's terms, where given), and a line for each field the rules stored
+/// at a bound.
 pub(crate) fn set_at(
     r: &RulesInputs,
     measured: &Value,
     kp: f64,
+    checked: &Checked,
     pair: &str,
     d: &Descriptor,
 ) -> Result<(SetFile, Vec<u8>, Vec<String>)> {
@@ -45,6 +57,16 @@ pub(crate) fn set_at(
     inputs.measured.speed_kp_verified = Some(kp);
     let mut doc = measured.clone();
     doc["speed_kp_verified"] = kp.into();
+    if let Some(q) = &checked.still {
+        inputs.measured.still_speed_cps =
+            Some(serde_json::from_value(q.clone()).context("the check's still_speed_cps")?);
+        doc["still_speed_cps"] = q.clone();
+    }
+    if let Some(q) = &checked.step4 {
+        inputs.measured.pot_step4_counts =
+            Some(serde_json::from_value(q.clone()).context("the pot_step4_counts")?);
+        doc[POT_STEP4] = q.clone();
+    }
     let mut bytes = serde_json::to_vec_pretty(&doc)?;
     bytes.push(b'\n');
     let files: Vec<(String, String, String)> = r
@@ -52,9 +74,19 @@ pub(crate) fn set_at(
         .iter()
         .map(|(n, p, s)| {
             if n == "measured" {
+                let still = if checked.still.is_some() {
+                    ", still_speed_cps of the tune's check"
+                } else {
+                    ""
+                };
+                let step4 = if checked.step4.is_some() {
+                    ", pot_step4_counts with the tune's check"
+                } else {
+                    ""
+                };
                 (
                     n.clone(),
-                    format!("{p}, speed_kp_verified {kp}"),
+                    format!("{p}, speed_kp_verified {kp}{still}{step4}"),
                     file_sha1(&bytes),
                 )
             } else {
@@ -164,9 +196,7 @@ pub async fn tune<P: Pipe>(
     tries: u32,
     stop: &AtomicBool,
 ) -> Result<(Vec<String>, bool)> {
-    let check = async |rig: &mut Rig<'_, P>, np: &Nameplate| {
-        verify::verify(rig, &VerifyInputs { nameplate: np }).await
-    };
+    let check = async |rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>| verify::verify(rig, i).await;
     tune_with(c, id, d, inputs, out, tries, stop, check).await
 }
 
@@ -184,7 +214,7 @@ async fn tune_with<P: Pipe, F>(
     mut check: F,
 ) -> Result<(Vec<String>, bool)>
 where
-    F: AsyncFnMut(&mut Rig<'_, P>, &Nameplate) -> Result<Verified, Refused>,
+    F: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
 {
     if tries == 0 {
         bail!("--tries is at least 1");
@@ -193,6 +223,8 @@ where
     let measured: Value = serde_json::from_slice(&files::read(&inputs.join("measured.json"))?)
         .context("parsing measured.json")?;
     let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
+    let holes = files::run_holes(&measured)
+        .with_context(|| format!("the pot holes of {}", inputs.display()))?;
     let no_gain = |e: Fail| {
         let why = match e {
             Fail::Missing(m) => format!("it reads {}, which is not there", m.input),
@@ -205,7 +237,7 @@ where
     };
     let k0 = speed_loop::starting_gain(&r.inputs).map_err(no_gain)?;
     let nominal = speed_loop::nominal_starting_gain(&r.inputs).map_err(no_gain)?;
-    let (first, _, clamps) = set_at(&r, &measured, k0, &pair, d)
+    let (first, _, clamps) = set_at(&r, &measured, k0, &Checked::default(), &pair, d)
         .with_context(|| format!("the rules on {} at the starting gain", inputs.display()))?;
     if out.exists() {
         bail!("{} exists: a tune runs into a new folder", out.display());
@@ -226,6 +258,10 @@ where
         q88(nominal)
     )];
     lines.extend(clamps);
+    lines.push(format!(
+        "the check's pot steps leave out the samples inside a pot hole: {}",
+        holes.source
+    ));
     let mut steps = Vec::new();
     let stored = install::backup(c, id, d, &mut sink, &mut steps)
         .await
@@ -244,11 +280,13 @@ where
         }
         let kp = tune::gain(k0, n);
         let dir = format!("tries/{:02}", n + 1);
-        let prepared = set_at(&r, &measured, kp, &pair, d).and_then(|(file, bytes, _)| {
-            sink.write(&format!("{dir}/measured.json"), &bytes)?;
-            sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
-            Ok(file)
-        });
+        let prepared = set_at(&r, &measured, kp, &Checked::default(), &pair, d).and_then(
+            |(file, bytes, _)| {
+                sink.write(&format!("{dir}/measured.json"), &bytes)?;
+                sink.write(&format!("{dir}/set.json"), file.render().as_bytes())?;
+                Ok(file)
+            },
+        );
         let file = match prepared {
             Ok(f) => f,
             Err(e) => {
@@ -288,7 +326,14 @@ where
                 stop,
                 clock: &clock,
             };
-            check(&mut rig, np).await
+            check(
+                &mut rig,
+                &VerifyInputs {
+                    nameplate: np,
+                    holes: &holes,
+                },
+            )
+            .await
         };
         let s = Scored::of(&ran);
         let next = match &ran {
@@ -731,7 +776,7 @@ mod tests {
         script: Vec<(Way, Vec<&'static str>)>,
     ) -> Result<(Vec<String>, bool)> {
         let mut at = 0;
-        let check = async |rig: &mut Rig<'_, Spy>, _: &Nameplate| {
+        let check = async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
             let (way, failed) = script[at.min(script.len() - 1)].clone();
             at += 1;
             verified(rig, way, &failed)
