@@ -383,6 +383,6 @@ The `tool-*` binaries in `tools/bench/src/bin` are the forensic instruments
 behind these tests — `tool-burst` shares the exact cycle engine the hot-loop
 test asserts on; `tool-snoop` passively dumps the decoded edge capture when
 a wire artifact needs root-causing. Bus operation (discovery, provisioning,
-rescue) is the job of the `osc` CLI, the bus driver (`tools/osc`, built on
+rescue) is the job of the `osc-bus` CLI, the bus driver (`tools/osc-bus`, built on
 osc-client), and identification, calibration and tuning that of `osc-ident`
 (`tools/osc-ident`), not the bench's.

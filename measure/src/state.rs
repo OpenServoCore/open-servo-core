@@ -94,13 +94,13 @@ impl State {
         points_sha1(&self.lut.points)
     }
 
-    /// The settings word as `osc status` says it: `loaded`, or
+    /// The settings word as `osc-bus status` says it: `loaded`, or
     /// `defaults: CONFIG, CALIB`.
     pub fn settings_said(&self) -> String {
         self.store.settings()
     }
 
-    /// The modes the servo refuses now, as `osc status` says them.
+    /// The modes the servo refuses now, as `osc-bus status` says them.
     pub fn refused_said(&self) -> String {
         self.store.refused_said()
     }

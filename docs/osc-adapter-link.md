@@ -1,6 +1,6 @@
 # OSC Adapter Link
 
-The normative specification of the link between a client (the `osc` CLI,
+The normative specification of the link between a client (the `osc-bus` CLI,
 osc-web, or anyone's own program) and an osc adapter: the device that owns
 the servo bus and runs every bus protocol deadline itself. A client never
 touches the wire. It sends requests over a reliable ordered byte pipe, and

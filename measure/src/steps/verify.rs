@@ -339,7 +339,7 @@ pub async fn admit<P: Pipe>(
     };
     if faults != 0 {
         return Err(Refused(format!(
-            "a fault is latched (fault_flags {faults:#04x}): `osc status` names it"
+            "a fault is latched (fault_flags {faults:#04x}): `osc-bus status` names it"
         )));
     }
     Ok((line, state))

@@ -1,7 +1,7 @@
 //! Crash record in reset-surviving RAM plus the boot snapshot. The two
 //! ways the adapter can leave the USB bus silently, a synchronous
 //! exception (trap -> reset) and a hang (IWDG reset), both leave their
-//! trace here, and INFO carries it to `osc info`.
+//! trace here, and INFO carries it to `osc-bus info`.
 //!
 //! Home: the board's CRASH region, mid-RAM (`osc-crash.x` resolves
 //! `_crash` against it; `-Tosc-crash.x` in the board link). Both ends of

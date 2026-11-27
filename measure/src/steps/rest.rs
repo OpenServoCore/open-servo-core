@@ -526,7 +526,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, np: &Nameplate) -> Result<Before,
     };
     if faults != 0 {
         return Err(Refused(format!(
-            "a fault is latched (fault_flags {faults:#04x}): every burst would carry it; `osc status` names it"
+            "a fault is latched (fault_flags {faults:#04x}): every burst would carry it; `osc-bus status` names it"
         )));
     }
     let vref = boot_vref(rig.c, rig.id).await;

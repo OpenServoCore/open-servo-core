@@ -1,6 +1,6 @@
-//! Firmware update (link sec 5): `osc boot` steps one at a time, for fresh
-//! boards and recovery, and `osc flash`, the whole session over the running
-//! fleet. `osc tb`: one raw tinyboot exchange (link sec 7) for the bench.
+//! Firmware update (link sec 5): `osc-bus boot` steps one at a time, for fresh
+//! boards and recovery, and `osc-bus flash`, the whole session over the running
+//! fleet. `osc-bus tb`: one raw tinyboot exchange (link sec 7) for the bench.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -359,7 +359,9 @@ fn fate(f: &Fate) -> String {
         Fate::NotFound => "NOT FOUND: not on the roster".into(),
         Fate::Missing => "MISSING: silent after its reboot, not in the bootloader walk".into(),
         Fate::NotBack => "NOT BACK: reached its bootloader, absent after the session".into(),
-        Fate::Waiting => "WAITING: a bootloader off the roster, left alone (osc boot flash)".into(),
+        Fate::Waiting => {
+            "WAITING: a bootloader off the roster, left alone (osc-bus boot flash)".into()
+        }
     }
 }
 
@@ -455,25 +457,26 @@ mod tests {
 
     #[test]
     fn flash_takes_a_file_a_required_rate_and_optional_ids() {
-        let Ok(Cmd::Flash(a)) = parse(&["osc", "flash", "app.bin", "--rate", "500000"]) else {
+        let Ok(Cmd::Flash(a)) = parse(&["osc-bus", "flash", "app.bin", "--rate", "500000"]) else {
             panic!("flash parses");
         };
         assert_eq!(
             (a.file, a.rate, a.ids),
             ("app.bin".into(), "500000".into(), vec![])
         );
-        let Ok(Cmd::Flash(a)) = parse(&["osc", "flash", "app.bin", "--rate", "1000000", "3", "7"])
+        let Ok(Cmd::Flash(a)) =
+            parse(&["osc-bus", "flash", "app.bin", "--rate", "1000000", "3", "7"])
         else {
             panic!("flash parses ids");
         };
         assert_eq!(a.ids, [3, 7]);
-        let e = parse(&["osc", "flash", "app.bin", "1"]).unwrap_err();
+        let e = parse(&["osc-bus", "flash", "app.bin", "1"]).unwrap_err();
         assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
     fn tb_takes_a_command_name_and_defaults() {
-        let Ok(Cmd::Tb(a)) = parse(&["osc", "tb", "--rate", "115200", "info"]) else {
+        let Ok(Cmd::Tb(a)) = parse(&["osc-bus", "tb", "--rate", "115200", "info"]) else {
             panic!("tb parses");
         };
         assert_eq!(
@@ -482,7 +485,7 @@ mod tests {
         );
         assert_eq!((a.expect, a.window_us), (Expect::One, TB_WINDOW_US));
         let Ok(Cmd::Tb(a)) = parse(&[
-            "osc",
+            "osc-bus",
             "tb",
             "--rate",
             "500000",
@@ -500,9 +503,9 @@ mod tests {
             (a.cmd, a.data.as_str(), a.expect, a.window_us),
             (TbCmd::Select, "0000", Expect::Collect, 800)
         );
-        let e = parse(&["osc", "tb", "info"]).unwrap_err();
+        let e = parse(&["osc-bus", "tb", "info"]).unwrap_err();
         assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-        assert!(parse(&["osc", "tb", "--rate", "500000", "boot"]).is_err());
+        assert!(parse(&["osc-bus", "tb", "--rate", "500000", "boot"]).is_err());
     }
 
     #[test]
@@ -569,7 +572,7 @@ mod tests {
         let Ok(Cmd::Boot {
             cmd: BootCmd::Flash { file, rate, uids },
         }) = parse(&[
-            "osc", "boot", "flash", "app.bin", "--rate", "500000", "0a0b", "0c",
+            "osc-bus", "boot", "flash", "app.bin", "--rate", "500000", "0a0b", "0c",
         ])
         else {
             panic!("boot flash parses");
@@ -578,13 +581,13 @@ mod tests {
             (file, rate, uids),
             ("app.bin".into(), 500_000, vec!["0a0b".into(), "0c".into()])
         );
-        let no_uid = parse(&["osc", "boot", "flash", "app.bin", "--rate", "500000"]);
+        let no_uid = parse(&["osc-bus", "boot", "flash", "app.bin", "--rate", "500000"]);
         assert_eq!(
             no_uid.unwrap_err().kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
         for step in ["enter", "list", "reset"] {
-            let e = parse(&["osc", "boot", step]).unwrap_err();
+            let e = parse(&["osc-bus", "boot", step]).unwrap_err();
             assert_eq!(
                 e.kind(),
                 clap::error::ErrorKind::MissingRequiredArgument,
@@ -592,13 +595,13 @@ mod tests {
             );
         }
         assert!(matches!(
-            parse(&["osc", "boot", "check"]),
+            parse(&["osc-bus", "boot", "check"]),
             Ok(Cmd::Boot {
                 cmd: BootCmd::Check
             })
         ));
         assert!(matches!(
-            parse(&["osc", "boot", "enter", "--rate", "1000000"]),
+            parse(&["osc-bus", "boot", "enter", "--rate", "1000000"]),
             Ok(Cmd::Boot { cmd: BootCmd::Enter { rate } }) if rate == "1000000"
         ));
     }

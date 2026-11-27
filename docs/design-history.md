@@ -274,7 +274,7 @@ a load carrying a reversed motor the way its velocity command pointed, and
 a reversed motor stepped the way it had already drifted. Each fix would
 have added a term and a budget row to a check that servos of this class do
 not carry at all. So the check went. The polarity is a calibration fact
-that `osc cal` measures, a write that changes it runs as written, and a servo that carries a wrong one runs to its stop and
+that `osc-ident` measures, a write that changes it runs as written, and a servo that carries a wrong one runs to its stop and
 ends on the position error timer or the stall timer. Lesson: a fact the calibration measures is not one for
 the control loop to keep re-deriving from evidence a load can forge.
 

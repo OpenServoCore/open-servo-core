@@ -749,7 +749,7 @@ const DECIM_MED_TICKS: u64 = PHASES as u64;
 enum ConfigArm {
     /// Addressed: the lane lends at its ack's release.
     Acked,
-    /// Broadcast, as `osc` arms a step: no ack, the lane lends at the arm,
+    /// Broadcast, as `osc-ident` arms a step: no ack, the lane lends at the arm,
     /// with the take still pending.
     Silent,
 }

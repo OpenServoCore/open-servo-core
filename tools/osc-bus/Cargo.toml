@@ -2,7 +2,7 @@
 resolver = "2"
 
 [package]
-name        = "osc"
+name        = "osc-bus"
 version     = "0.1.0"
 edition     = "2024"
 description = "The bus driver CLI for an osc-native bus through the osc-adapter: discover, provision, update, manage. osc-ident is the identification, calibration and tuning tool."

@@ -374,7 +374,7 @@ fn discover_walks_out_every_uid_with_its_id() {
     assert_eq!(found, want);
 }
 
-/// `osc discover`'s sweep: a walk that found the fleet leaves nothing behind
+/// `osc-bus discover`'s sweep: a walk that found the fleet leaves nothing behind
 /// that the next rate's baud switch or walk trips over.
 #[test]
 fn discover_sweeps_every_rate_past_the_one_that_answers() {

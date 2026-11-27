@@ -312,12 +312,12 @@ jobs:
         working-directory: client/web
         run: wasm-pack build --target web --out-dir pkg
 
-  osc-cli:
-    name: build (tools/osc)
+  osc-bus-cli:
+    name: build (tools/osc-bus)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: tools/osc
+        working-directory: tools/osc-bus
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (nightly + clippy + rustfmt)
@@ -326,7 +326,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/osc
+          workspaces: tools/osc-bus
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy

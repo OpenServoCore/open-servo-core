@@ -568,7 +568,7 @@ mod tests {
     }
 
     /// [`servo`] with its saved baud `saved`, the bus then moved to 3M
-    /// volatile, as `osc baud 3000000` does after a FACTORY.
+    /// volatile, as `osc-bus baud 3000000` does after a FACTORY.
     fn servo_at(saved: BaudRate, hook: Hook) -> (Client<Spy>, Log) {
         let mut inner = FakePipe::new(saved, &[1]);
         inner.seed_calibrated(0);
