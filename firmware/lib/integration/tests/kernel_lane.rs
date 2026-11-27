@@ -162,7 +162,6 @@ fn slow_stages_fit_at_budget_while_streaming() {
 /// TEL row and a bank or the TX lane's dearest step, with the health close
 /// where it can land and interrupt entry and exit.
 #[test]
-#[ignore = "TRAJECTORY is over at budget on estimated rows (budget::THROWN_HOLD) until the silicon refill"]
 fn plain_phases_fit_at_budget_while_streaming() {
     let carried = Events {
         tel: true,
@@ -196,8 +195,9 @@ const ROW_COPY_TICKS_PER_BYTE: u32 = budget::TICKS_PER_US / 8;
 /// tick's row arms an exit and an entry behind the last at least.
 ///
 /// Two ticks bound the crest, apart: the scheduler's publish gate starts
-/// no burst on SPARE_A nor while a take is pending, so a refresh tick
-/// carries no row and a row rides no stage ahead of the fast step.
+/// a burst only on CONTROL or SPEED, never while a take is pending, so a
+/// refresh tick carries no row and a row rides no stage ahead of the fast
+/// step.
 #[test]
 fn the_tick_reads_its_scan_before_the_next_lands() {
     use budget::{
@@ -522,7 +522,6 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
 /// at budget at 3M: every frame good, no row dropped, no body over the
 /// period.
 #[test]
-#[ignore = "TRAJECTORY is over at budget on estimated rows (budget::THROWN_HOLD) until the silicon refill"]
 fn tel_twelve_byte_rows_fit_at_budget_while_stepping() {
     assert_eq!(SIX.row_bytes(), osc_servo_core::tel::ROW_BYTES_MAX);
     for k in 0..STARTS {
@@ -818,7 +817,6 @@ fn config_apply_lands_within_its_bound_at_budget() {
 /// row charged where the feed copied one. Some offsets must hold, or the
 /// pin tests nothing.
 #[test]
-#[ignore = "TRAJECTORY is over at budget on estimated rows (budget::THROWN_HOLD) until the silicon refill"]
 fn a_burst_never_streams_through_a_config_take() {
     let mut held = 0;
     for (how, k) in [ConfigArm::Acked, ConfigArm::Silent]

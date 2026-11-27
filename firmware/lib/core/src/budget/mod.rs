@@ -90,75 +90,75 @@ pub const EVENT_REGIMES: usize = Regime::EVENT_ROWS.len();
 /// a window may show.
 ///
 /// M, every gated window's ticks by drive arm, the TEL windows' plain
-/// ticks among them, a closing tick booked apart, one run of the budgets
-/// hardware test on a `scripts/build-image.sh` bench image of this stack,
-/// which carries the window-current work, so each cell upper-bounds the
-/// kernels below it: Open over the Open ticks, Closed over the Closed
-/// ticks, OpenLoop over the openloop window's OpenLoop ticks. A
-/// report-only window feeds no row. Each cell is its measured maximum
-/// with the rule's margin; the bodies hold the tick block's work, the
-/// entry on the injected group, the window term off the reading, the motor
-/// write ahead of the voltage side, the reversal's no-reading test, the
-/// wait for the crest scan and every phase's stages, RAIL's window term on
-/// the rail among them. The Closed and OpenLoop rows carry
-/// [`WINDOW_CARRY`] on top, every row [`DEADMAN`], phase TRAJECTORY
-/// [`PARK_GATE`] and [`THROWN_HOLD`], phases TRAJECTORY and VELOCITY
-/// [`HELD`], phases OBSERVER and VELOCITY [`POT_CURRENT`] and phase
-/// OBSERVER [`VISCOUS_PREDICT`], which the measurement predates.
-/// Phase SLOW off its due period is a plain tick; the due body is
-/// [`SLOW_DUE`].
+/// ticks among them, a closing tick booked apart, three runs of the
+/// budgets hardware test (timing-pass) on a `scripts/build-image.sh` bench
+/// image of this stack, which carries the window-current work, so each
+/// cell upper-bounds the kernels below it: Open over the Open ticks,
+/// Closed over the Closed ticks, OpenLoop over the openloop window's
+/// OpenLoop ticks. That window's sweep drives a window over the board's
+/// `bemf_window_min_ticks`, so its OpenLoop ticks feed the back-EMF boxcar
+/// every period: the fast path's sample, SPEED's half close and
+/// OBSERVER's blend on the boxcar. A report-only window feeds no row. Each
+/// cell is the largest maximum of the runs with the rule's margin; the
+/// bodies hold the tick block's work, the entry on the injected group, the
+/// window term off the reading and its carry, the motor write ahead of the
+/// voltage side, the reversal's no-reading test, the wait for the crest
+/// scan and every phase's stages, RAIL's window term on the rail, the
+/// dead-man's streaming flag, the parked and driven holds, the observer's
+/// viscous predict and the position reading's current terms among them.
+/// Every row carries [`DEADMAN`] on top, phases TRAJECTORY and VELOCITY
+/// [`HELD`], and the OpenLoop row's TRAJECTORY [`PARK_GATE`] and
+/// [`THROWN_HOLD`]: paths no window takes. Phase SLOW off its due period
+/// is a plain tick; the due body is [`SLOW_DUE`].
 pub const KERNEL: [[u32; PHASES]; REGIMES] = with_e_cells([
-    [942, 1176, 1053, 1374, 834, 1239, 810, 969, 795, 855],
-    [1401, 1719, 1694, 1685, 1608, 1694, 1242, 1434, 1224, 1500],
-    [1365, 1638, 1218, 1605, 1218, 1605, 1200, 1380, 1185, 1302],
+    [840, 1095, 1140, 1365, 747, 1104, 684, 840, 666, 726],
+    [1467, 1792, 1798, 1693, 1687, 1715, 1281, 1473, 1263, 1536],
+    [1470, 1805, 1284, 1675, 1329, 1669, 1269, 1461, 1251, 1527],
 ]);
 
 /// The same bodies' mean over a window: the most it may show.
 ///
 /// M: per phase the largest window mean over the same windows and ticks,
 /// judged over [`MEAN_MIN_BODIES`], with the rule's margin, at most the
-/// maximum's row (Open phase 5, OpenLoop phases 0, 3, 5 and 7: the bodies
-/// barely vary); with [`WINDOW_CARRY`], [`DEADMAN`], [`PARK_GATE`],
-/// [`THROWN_HOLD`], [`HELD`], [`POT_CURRENT`] and [`VISCOUS_PREDICT`], as
-/// the maximum's.
+/// maximum's row (Open phase 5, OpenLoop phases 0, 3, 4, 5, 7 and 9: the
+/// bodies barely vary); with [`DEADMAN`], [`HELD`], [`PARK_GATE`] and
+/// [`THROWN_HOLD`], as the maximum's.
 pub const KERNEL_MEAN: [[u32; PHASES]; REGIMES] = with_e_cells([
-    [931, 1171, 1039, 1224, 821, 1239, 790, 957, 771, 834],
-    [1364, 1619, 1593, 1628, 1556, 1650, 1197, 1348, 1179, 1437],
-    [1365, 1579, 1212, 1605, 1212, 1605, 1196, 1380, 1178, 1300],
+    [826, 1092, 1064, 1087, 730, 1104, 660, 824, 642, 705],
+    [1436, 1715, 1697, 1671, 1665, 1694, 1243, 1403, 1222, 1496],
+    [1470, 1745, 1281, 1675, 1329, 1669, 1265, 1461, 1246, 1527],
 ]);
 
-/// E, on every Closed and OpenLoop cell, maximum and mean, and on
-/// [`WRITE_DONE`] and [`FRAME_DONE`]: the window term's carry
-/// (`WindowTerm::take`) on the reading ahead of the write. An Open tick
-/// measures a window its own arm left undriven and takes no reading. The
-/// take loads the carry, adds it and stores the new one, a halfword each:
-/// 8.5 HCLK priced on the executed path of the release image with the
-/// fetch model ([`REFRESH`]), no credit for the rounding RAIL no longer
-/// adds; plus 10%, rounded up. The bench must refill the rows.
+/// E, on [`WRITE_DONE`] and [`FRAME_DONE`]: the window term's carry
+/// (`WindowTerm::take`) on the reading ahead of the write. The take loads
+/// the carry, adds it and stores the new one, a halfword each: 8.5 HCLK
+/// priced on the executed path of the release image with the fetch model
+/// ([`REFRESH`]), no credit for the rounding RAIL no longer adds; plus
+/// 10%, rounded up. The measured [`KERNEL`] rows hold it.
 pub const WINDOW_CARRY: u32 = 10;
 
-/// E, on every cell by phase, maximum and mean: the bus dead-man (kernel
-/// sec 2.7), against the image without it. Priced on the executed path of
-/// the release image with the fetch model ([`REFRESH`]): the streaming
-/// flag the step takes, a load and a load, 6.5 HCLK on every phase but
-/// TRAJECTORY's, whose path is unchanged; CONTROL on top the generation's
-/// read, 8.5, the countdown's period inline, 56.75 on its dearest path (a
-/// lapse), and its start on the enable edge, 11.75, with no credit for the
-/// branch the period shares with the edge's test. Plus 10%, rounded up.
-/// The bench must refill the rows.
-pub const DEADMAN: [u32; PHASES] = [92, 8, 0, 8, 8, 8, 8, 8, 8, 8];
+/// E, on phase CONTROL of every regime, maximum and mean: the bus
+/// dead-man's armed paths (kernel sec 2.7), which no probe window takes
+/// (the probe leaves `bus_deadman_ticks` at 0); the streaming flag every
+/// phase's step takes is in the measured rows. Priced on the executed path
+/// of the release image with the fetch model ([`REFRESH`]): the
+/// generation's read, 8.5 HCLK, the countdown's period inline, 56.75 on its
+/// dearest path (a lapse), and its start on the enable edge, 11.75, with
+/// no credit for the branch the period shares with the edge's test: 77,
+/// plus 10%, rounded up.
+pub const DEADMAN: [u32; PHASES] = [85, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-/// E, on phase TRAJECTORY of every regime, maximum and mean: the hold's
-/// load gate (`position::unloaded`), against the image without it. Priced
-/// on the executed path of the release image with the fetch model
+/// E, on phase TRAJECTORY of the OpenLoop row, maximum and mean: the
+/// hold's load gate (`position::unloaded`), against the image without it.
+/// Priced on the executed path of the release image with the fetch model
 /// ([`REFRESH`]): within twice the band of a stopped goal, the disturbance
 /// and the friction level loaded, a word and a halfword, and eight ALU
 /// (three for the magnitude, the shift, the compare, its sense, the join,
 /// and one the allocation moved into the dwell's compare), 22.5 HCLK; off
-/// that path the same instructions as before. Every regime, since a Position
-/// hold can run on an Open tick (parked) and on an OpenLoop one (the first
-/// TRAJECTORY after a mode change from OpenLoop). Plus 10%, rounded up.
-/// The bench must refill the rows.
+/// that path the same instructions as before. Plus 10%, rounded up. The
+/// Open and Closed rows measure it (parked and driven holds); a Position
+/// hold runs on an OpenLoop-booked tick only on the first TRAJECTORY after
+/// a mode change from OpenLoop, which no window takes.
 pub const PARK_GATE: u32 = 25;
 
 /// E, on phases TRAJECTORY and VELOCITY of every regime, maximum and mean:
@@ -172,11 +172,12 @@ pub const PARK_GATE: u32 = 25;
 /// for the same 576. VELOCITY, on a driven period: the freeze's test, two
 /// ALU, and the integral's saturation one taken transfer where the image
 /// without it falls through, less a taken transfer in its clamp, 6 HCLK; a
-/// held period skips the charge. Every regime, as [`PARK_GATE`]. Plus 10%,
-/// rounded up. The bench must refill the rows.
+/// held period skips the charge. Every regime, since a Position hold can
+/// run on an Open tick (parked) and on an OpenLoop one. Plus 10%, rounded
+/// up. No probe window seats the shaft, so the rows never measure it.
 pub const HELD: [u32; PHASES] = held_cells();
 
-/// E, on phase TRAJECTORY of every regime, maximum and mean: the thrown
+/// E, on phase TRAJECTORY of the OpenLoop row, maximum and mean: the thrown
 /// hold (`position::Thrown`), against the image without it. Priced on the
 /// executed path of the release image with the fetch model ([`REFRESH`]),
 /// from the phase's entry to its return. On a profile resting on its goal
@@ -188,48 +189,11 @@ pub const HELD: [u32; PHASES] = held_cells();
 /// 564.25, its park kept 545 and lost 586, each against the driven 403.25.
 /// The landing period takes the spills and the clear, not the rule, 722.5
 /// against 650.25 driven, 684 against 613.75 parked: still the dearest
-/// path, by 72.25. Every regime, as [`PARK_GATE`]. The driven rest's
-/// 150.25 plus 10%, rounded up; it bounds the maximum's 72.25 too. The
-/// bench must refill the rows.
+/// path, by 72.25. The driven rest's 150.25 plus 10%, rounded up; it
+/// bounds the maximum's 72.25 too. The Open and Closed rows measure it
+/// (the holds and the stepping windows' landings); on the OpenLoop row as
+/// [`PARK_GATE`].
 pub const THROWN_HOLD: u32 = 166;
-
-/// E, on phase OBSERVER of every regime, maximum and mean: the friction
-/// line's viscous part in the observer's predict (`FusionObs::step`),
-/// against the image without it. Priced on the executed path of the
-/// release image with the fetch model ([`REFRESH`]): the word loaded, one
-/// load; its multiply on the speed's whole c/s; the two shifts and the add
-/// to the disturbance, three ALU; 19.25 HCLK, straight line, on every path
-/// through the predict. Every regime: the observer runs with torque off.
-/// Plus 10%, rounded up. The bench must refill the rows.
-pub const VISCOUS_PREDICT: u32 = 22;
-
-/// E, on phases OBSERVER and VELOCITY of every regime, maximum and mean:
-/// the position reading's current terms (`estimator::pot_current`),
-/// against the image without them. Priced on the executed path of the
-/// release image with the fetch model ([`REFRESH`]), each cell plus 10%,
-/// rounded up; the same paths with both terms at 0. Every regime: both
-/// phases run with torque off. To be probed on silicon: the bench must
-/// refill the rows.
-pub const POT_CURRENT: [u32; PHASES] = pot_current_cells();
-
-/// OBSERVER's cell: the stored term loaded, one load; the sample's mask,
-/// the add, the bound's low half and the floor's three ALU, six; and the
-/// ceiling's taken transfer, 21.25 HCLK.
-pub const POT_TERM: u32 = 24;
-
-/// VELOCITY's cell, on the tail every path of the phase joins: both
-/// averages and both gains loaded, four loads (the reference is in a
-/// register); the averages and the term stored, three; the averages'
-/// steps, the lead and the sum, nine ALU; two widening multiplies (high
-/// word only), 60.75 HCLK, straight line.
-pub const POT_AVERAGES: u32 = 67;
-
-const fn pot_current_cells() -> [u32; PHASES] {
-    let mut cells = [0; PHASES];
-    cells[phase::OBSERVER as usize] = POT_TERM;
-    cells[phase::VELOCITY as usize] = POT_AVERAGES;
-    cells
-}
 
 const fn held_cells() -> [u32; PHASES] {
     let mut cells = [0; PHASES];
@@ -239,28 +203,16 @@ const fn held_cells() -> [u32; PHASES] {
 }
 
 const fn with_e_cells(mut rows: [[u32; PHASES]; REGIMES]) -> [[u32; PHASES]; REGIMES] {
-    let mut p = 0;
-    while p < PHASES {
-        rows[Regime::Closed as usize][p] += WINDOW_CARRY;
-        rows[Regime::OpenLoop as usize][p] += WINDOW_CARRY;
-        let mut r = 0;
-        while r < REGIMES {
-            rows[r][p] += DEADMAN[p];
-            r += 1;
-        }
-        p += 1;
-    }
     let mut r = 0;
     while r < REGIMES {
-        rows[r][phase::TRAJECTORY as usize] += PARK_GATE + THROWN_HOLD;
-        rows[r][phase::OBSERVER as usize] += VISCOUS_PREDICT;
         let mut p = 0;
         while p < PHASES {
-            rows[r][p] += HELD[p] + POT_CURRENT[p];
+            rows[r][p] += DEADMAN[p] + HELD[p];
             p += 1;
         }
         r += 1;
     }
+    rows[Regime::OpenLoop as usize][phase::TRAJECTORY as usize] += PARK_GATE + THROWN_HOLD;
     rows
 }
 
@@ -289,10 +241,12 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// no credit for three fewer transfers), so the path is under 836. The
 /// position reading's current terms' gains (`PotGains::new`) add 49.75
 /// (two stores and a load, two multiplies, four ALU, the two bounds'
-/// taken transfers), 55 with 10%, to be probed on silicon: the row is 891.
+/// taken transfers), 55 with 10%, to be probed on silicon: 891. The
+/// belt's publish as `refused_modes` adds a byte load and a byte store
+/// (the base is in a register), 6.5, 8 with 10%: the row is 899.
 /// The fetch model prices loads/stores at 3.25, ALU at 2, multiplies at
 /// 10, taken transfers at 6, and call plus return at 12 HCLK.
-pub const REFRESH: u32 = 891;
+pub const REFRESH: u32 = 899;
 
 /// Code layout on top of every kernel row, maximum and mean: one source
 /// compiles to tick bodies that differ by register allocation and block
@@ -381,32 +335,33 @@ pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
 /// DECIM_SLOW periods): the permit lease and the two heats, on top of the
-/// phase's row, per regime. M: the due bodies' maximum over
-/// the phase's plain maximum that sets its row, every gated window with no
-/// TEL, on the image and run of [`KERNEL`], with the rule's margin: Open
-/// 876 over 762, the 1M write window's; Closed 1305 over 1194, the
+/// phase's row, per regime. M: the due bodies' maximum over the phase's
+/// plain maximum that sets its row, every gated window with no TEL, on the
+/// image and runs of [`KERNEL`] (timing-pass), with the rule's margin:
+/// Open 744 over 636, the READ windows'; Closed 1341 over 1233, the
 /// stepping window's.
-pub const SLOW_DUE: [u32; EVENT_REGIMES] = [162, 159];
+pub const SLOW_DUE: [u32; EVENT_REGIMES] = [156, 156];
 
 /// The second stage on the next period's SLOW phase: the NTC's check and
 /// quadratic, the two rise multiplies, the cutoff fault and the winding
 /// resistance read at the estimate's temperature (`Medium::r_hat`). M as
-/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1584, the
-/// stepping window's, over 1194.
+/// [`SLOW_DUE`], over the Closed row the stage is budgeted on: 1623, the
+/// stepping window's, over 1233.
 pub const SLOW_FINISH: u32 = 438;
 
 /// The tick-load counters' close every `kernel::HEALTH_CLOSE_TICKS` ticks, on top
 /// of the tick it lands on, and the catch-up it adds after a lost tick.
-/// HEALTH_CLOSE, M: r3-refill, the closing ticks' maximum over the plain
+/// HEALTH_CLOSE, M: timing-pass, the closing ticks' maximum over the plain
 /// maximum (in the TEL windows over the TEL ticks'), either regime, every
-/// window with the report-only one, 3 runs: 228 (Closed, hold raw pos;
-/// 159 in the TEL windows). The probe books a close ahead of a bank, so
-/// that cell may hold a bank too. CATCH_UP, E: priced on the executed path,
-/// one step. The first close after a hold-off of many periods runs the
-/// step once a period owed, up to `kernel::HEALTH_LOST_MAX`, and costs
-/// several hundred HCLK more; no kernel row books it when the hold-off is
-/// a probe dump, which reads the kernel record before that close runs.
-pub const HEALTH_CLOSE: u32 = 276;
+/// window with the report-only one, 3 runs, with the rule's margin: 138
+/// (Closed, the openloop window's; 126 in the TEL windows). The probe
+/// books a close ahead of a bank, so that cell may hold a bank too.
+/// CATCH_UP, E: priced on the executed path, one step. The first close
+/// after a hold-off of many periods runs the step once a period owed, up
+/// to `kernel::HEALTH_LOST_MAX`, and costs several hundred HCLK more; no
+/// kernel row books it when the hold-off is a probe dump, which reads the
+/// kernel record before that close runs.
+pub const HEALTH_CLOSE: u32 = 186;
 pub const CATCH_UP: u32 = 111;
 
 /// Interrupt entry and exit around a stamped body: trampoline and prologue
@@ -486,17 +441,17 @@ pub const WINDOW_TICKS: [usize; 4] = [2, 4, 10, 20];
 
 /// gamma(k) on the bench by regime: the most the bodies of k consecutive
 /// ticks took, events included. M: the quiet windows (Open) and the
-/// stepping windows (Closed), 3 runs, on the window-record image, with the
-/// rule's margin. The record updates after the exit stamp, outside every
-/// body; that image's quiet-window plain maxima read 4 to 7 ticks over
-/// the bench image's, layout.
+/// stepping windows (Closed), 3 runs (timing-pass), on the window-record
+/// image, with the rule's margin. The record updates after the exit stamp, outside every
+/// body; that image's quiet-window plain maxima read within 3 ticks of the
+/// bench image's, layout.
 pub const WINDOW_LOAD: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[1781, 3155, 7015, 13428], [3225, 6073, 13729, 27067]];
+    [[2148, 3921, 9001, 17156], [3526, 6869, 15978, 31481]];
 
 /// The same with six fields streaming at 3M. M as [`WINDOW_LOAD`]: TEL
 /// still (Open) and TEL stepping (Closed).
 pub const WINDOW_LOAD_TEL: [[u32; WINDOW_TICKS.len()]; 2] =
-    [[2441, 4405, 9888, 18956], [4091, 7362, 16665, 32527]];
+    [[2670, 5148, 11452, 22084], [4283, 8145, 18667, 36641]];
 
 /// Bus vector bodies.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
