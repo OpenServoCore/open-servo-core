@@ -19,8 +19,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use osc_client::blocking::Client;
 use osc_client::calib::GearClass;
-use osc_client::mgmt::Uid;
+use osc_client::mgmt::{Found, Uid};
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_client::record::{self, Diag};
 use osc_client::session::LinkInfo;
 use osc_client::{BaudRate, Id, Inst, Opcode, ResultCode};
@@ -491,9 +492,7 @@ fn discover(cli: &Cli) -> Result<()> {
         s => vec![parse_rate(s)?],
     };
     let mut total = 0;
-    for rate in rates {
-        c.host_baud(rate)?;
-        let found = c.discover()?;
+    for (rate, found) in sweep(&mut c, &rates)? {
         if found.is_empty() {
             println!("{:>8}: -", rate.as_hz());
         }
@@ -510,6 +509,39 @@ fn discover(cli: &Cli) -> Result<()> {
     println!("{total} servo(s)");
     Ok(())
 }
+
+/// One discovery per rate, then one throwaway root ENUM and a pause at each
+/// rate that found a servo. Leaves the host at the last rate flushed, or at
+/// the last rate walked when there is nothing to flush.
+fn sweep<P: Pipe>(c: &mut Client<P>, rates: &[BaudRate]) -> Result<Vec<(BaudRate, Vec<Found>)>> {
+    let mut out = Vec::with_capacity(rates.len());
+    for &rate in rates {
+        c.host_baud(rate)?;
+        out.push((rate, c.discover()?));
+    }
+    // Faster-rate frames a slower servo cannot frame stay queued as junk until
+    // a real frame at its rate, which they then hold past its window. Silence
+    // does not clear them (the protocol sec 3.4 pacing rule's quiet is not
+    // enough); one throwaway frame and a pause do.
+    if rates.len() > 1 {
+        let mut p = [0u8; 2 + UID_LEN];
+        let n = build::mgmt_enum(&mut p, 0, &[0u8; UID_LEN]).expect("root enum fits");
+        for (rate, found) in &out {
+            if found.is_empty() {
+                continue;
+            }
+            c.host_baud(*rate)?;
+            c.exchange(Id::BROADCAST, Inst::instruction(Opcode::Mgmt, 0), &p[..n])?;
+            c.pause(SWEEP_FLUSH_PAUSE);
+        }
+    }
+    Ok(out)
+}
+
+/// 2.5x the 20 ms bound on that hold (an adapter window that long answered
+/// every first unicast after a sweep), so the throwaway's late reply lands in
+/// the pause.
+const SWEEP_FLUSH_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
 
 fn rescue(set_baud: Option<&str>, do_save: bool) -> Result<()> {
     let mut c = connect()?;
@@ -1082,9 +1114,84 @@ fn main() -> Result<()> {
 mod tests {
     use osc_client::blocking::Client;
     use osc_client::fake::FakePipe;
-    use osc_client::{BaudRate, Id};
+    use osc_client::{BaudRate, Id, MgmtOp};
+    use osc_protocol::table::BAUD_RATE_IDX;
 
-    use super::{fmt_uptime, health_line};
+    use super::{fmt_uptime, health_line, sweep};
+
+    /// After the walks, each rate that found a servo gets one root ENUM
+    /// (answered by the servo at that rate) and then 50 ms of quiet before
+    /// the next frame; a single-rate discover sends no flush.
+    #[test]
+    fn a_sweep_flushes_each_found_rate_with_an_enum_then_a_pause() {
+        const ALL: [BaudRate; 4] = [
+            BaudRate::B500000,
+            BaudRate::B1000000,
+            BaudRate::B2000000,
+            BaudRate::B3000000,
+        ];
+        let mut c = Client::connect(FakePipe::new(BaudRate::B1000000, &[1, 2])).unwrap();
+        c.write(Id::new(2), BAUD_RATE_IDX, &[BaudRate::B3000000.as_idx()])
+            .unwrap();
+        c.pipe_mut().take_frames();
+
+        let found: Vec<(u32, Vec<u8>)> = sweep(&mut c, &ALL)
+            .unwrap()
+            .iter()
+            .map(|(r, f)| (r.as_hz(), f.iter().map(|f| f.id.as_byte()).collect()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (500_000, vec![]),
+                (1_000_000, vec![1]),
+                (2_000_000, vec![]),
+                (3_000_000, vec![2])
+            ]
+        );
+        let end_us = c.pipe_mut().sim_mut().now_us();
+        let frames = c.pipe_mut().take_frames();
+        let us = |ticks: u64| ticks / 48; // sim ticks
+        // Ring image: break 0x00, ID, LEN, INST, then MGMT op and prefix_len.
+        let root_enum =
+            |b: &[u8]| b[1] == Id::BROADCAST.as_byte() && b[4] == MgmtOp::Enum as u8 && b[5] == 0;
+        let host: Vec<usize> = (0..frames.len())
+            .filter(|&k| frames[k].bytes[1] == Id::BROADCAST.as_byte())
+            .collect();
+        let flush = &host[host.len() - 2..];
+        let gap = |a: u64, b: u64| us(b).saturating_sub(us(a));
+        for (n, &k) in flush.iter().enumerate() {
+            assert!(root_enum(&frames[k].bytes), "flush {n} is a root ENUM");
+            let reply = &frames[k + 1];
+            assert_eq!(reply.bytes[1], [1, 2][n], "the servo at that rate answers");
+            let quiet = frames
+                .get(k + 2)
+                .map_or(end_us.saturating_sub(us(reply.end)), |f| {
+                    gap(reply.end, f.at)
+                });
+            assert!(
+                quiet >= 50_000,
+                "flush {n}: 50 ms of quiet after it, got {quiet} us"
+            );
+        }
+        let longest =
+            |spans: Vec<(u64, u64)>| spans.windows(2).map(|w| gap(w[0].1, w[1].0)).max().unwrap();
+        let walks = frames[..flush[0]].iter().map(|f| (f.at, f.end)).collect();
+        assert!(longest(walks) < 50_000, "no flush pause inside the walks");
+
+        c.pipe_mut().take_frames();
+        sweep(&mut c, &[BaudRate::B3000000]).unwrap();
+        let single = c
+            .pipe_mut()
+            .take_frames()
+            .iter()
+            .map(|f| (f.at, f.end))
+            .collect();
+        assert!(
+            longest(single) < 50_000,
+            "a single-rate discover sends no flush"
+        );
+    }
 
     #[test]
     fn uptime_drops_leading_zero_units() {
