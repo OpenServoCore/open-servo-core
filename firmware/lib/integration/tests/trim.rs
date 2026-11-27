@@ -153,6 +153,56 @@ fn dead_train_frees_the_transport() {
     assert_eq!(sim.poll_clock_trim(s), None);
 }
 
+/// A train, whole or dead, hands the break latch back to ring positions:
+/// junk spelling a frame head ahead of a ping dies at the ping's break, so
+/// the ping answers as fast as with no junk, and a train after the junk
+/// still decides.
+#[test_log::test]
+fn a_train_hands_the_latch_back_to_ring_positions() {
+    let byte = 10 * 48; // one byte-time at 1M, ticks
+    for marks in [GAPS as u64 + 1, 2] {
+        let run = |junk: bool| {
+            let mut sim = Sim::new(BaudRate::B1000000);
+            let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
+            send_train(&mut sim, 0, marks);
+            sim.run();
+            let first = sim.poll_clock_trim(s);
+            let t = train_end(0) + 2_000;
+            if junk {
+                for (k, &b) in [0x00, 0x00, 0x07].iter().enumerate() {
+                    sim.inject_garble_at(t + 10 * k as u64, b);
+                }
+            }
+            sim.host_send_at(t + 31, &instruction(ID, Opcode::Ping, 0, &[]));
+            let frames = sim.run();
+            let ping = frames
+                .iter()
+                .rfind(|f| f.from == Source::Host)
+                .expect("the ping");
+            let replies: Vec<_> = frames
+                .iter()
+                .filter(|f| matches!(f.from, Source::Servo(_)))
+                .collect();
+            assert_eq!(replies.len(), 1, "the ping's ack: {frames:#?}");
+            let lead = replies[0].at - ping.end;
+            send_train(&mut sim, t + 2_000, GAPS as u64 + 1);
+            sim.run();
+            (first, lead, sim.poll_clock_trim(s))
+        };
+        let (first, clean, _) = run(false);
+        let (_, lead, again) = run(true);
+        assert!(
+            lead <= clean + byte,
+            "{marks} marks: the ping behind the junk led by {} us, {} us clean",
+            lead / 48,
+            clean / 48
+        );
+        if first.is_none() {
+            assert_eq!(again, Some(2), "{marks} marks: the next train decides");
+        }
+    }
+}
+
 /// CAL is broadcast-only (sec 9.3): a unicast CAL's ack would put our own break
 /// on the wire exactly where the train starts, so it decodes Unsupported and
 /// is answered as an instruction error.

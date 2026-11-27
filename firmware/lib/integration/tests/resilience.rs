@@ -5,10 +5,12 @@
 //! observed diagnostics counters.
 
 use osc_integration::sim::{
-    Sim, Source, WireFrame, assert_valid, instruction, status, status_frame,
+    BreakWake, HandlerCost, KernelLane, KernelLevel, Motion, Sim, Source, StampOrder, WireFrame,
+    assert_valid, instruction, status, status_frame,
 };
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, ResultCode, STARVE_HORIZON_BYTE_TIMES};
 use osc_servo_core::BaudRate;
+use osc_servo_core::budget::Frame;
 use osc_servo_core::regions::control::addr::lifecycle::{
     GOAL_POSITION, GOAL_VELOCITY, TORQUE_ENABLE,
 };
@@ -134,10 +136,9 @@ fn truncated_foreign_frame_starves_then_recovers(baud_idx: u8) {
 }
 
 /// Another servo's status with its LEN garbled long, back to back with a
-/// ping for us: the claimed footprint swallows the ping's head. The status
-/// gets its CRC verdict at the next wake (the starve horizon, on the quiet
-/// bus behind the ping), fails it and is counted, and the hunt finds the
-/// ping's break - answered late, but answered.
+/// ping for us: the claimed footprint swallows the ping's head. The ping's
+/// break lies inside the claim, so the status dies there, a framing drop
+/// with no CRC verdict, and the hunt finds the ping's break.
 #[apply(matrix)]
 fn garbled_status_len_costs_only_the_status(baud_idx: u8) {
     let mut sim = sim(baud_idx);
@@ -151,8 +152,8 @@ fn garbled_status_len_costs_only_the_status(baud_idx: u8) {
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let d = sim.servo_diag(s);
-    assert_eq!(d.crc_fail_count, 1);
-    assert_eq!(d.framing_drop_count, 0);
+    assert_eq!(d.crc_fail_count, 0);
+    assert_eq!(d.framing_drop_count, 1);
 }
 
 #[apply(matrix)]
@@ -559,8 +560,7 @@ fn wrong_baud_marination_never_deafens() {
     }
     sim.run();
 
-    // One starve horizon of bus silence (sec 3.4 host pacing), then a ping at
-    // the configured rate must answer.
+    // Quiet, then a ping at the configured rate must answer.
     sim.set_host_baud(BaudRate::B1000000);
     let settle = sim.now_us() + 1_000;
     sim.host_send_at(settle, &instruction(ID5, Opcode::Ping, 0, &[]));
@@ -598,4 +598,154 @@ fn rescue_reaches_a_marinated_servo() {
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// A tinyboot frame as the adapter lays it on the wire (link sec 7): sync,
+/// cmd, status, addr, flags, len, data, CRC-16/CCITT. Same-rate bytes with
+/// no break: at an osc servo they ring without a wake.
+fn tinyboot_frame(cmd: u8, data: &[u8]) -> Vec<u8> {
+    let mut f = vec![
+        0xAA,
+        0x55,
+        cmd,
+        0x00,
+        0x00,
+        0x00,
+        0x08,
+        0x00,
+        data.len() as u8,
+        0x00,
+    ];
+    f.extend_from_slice(data);
+    let mut crc = 0xFFFFu16;
+    for &b in &f {
+        crc ^= (b as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    f.extend_from_slice(&crc.to_le_bytes());
+    f
+}
+
+/// Ping id 5 at `ping_us` with `junk` ringed breakless at wire pace from
+/// `junk_us`, and `ahead`, a frame on the wire right before it. The servo
+/// runs at budget: every bus body at its budget cost, the kernel above the
+/// bus and moving. Returns the reply's lead from the ping's wire end, in
+/// sim ticks; one valid OK reply is required.
+fn ping_behind_junk(
+    baud_idx: u8,
+    order: StampOrder,
+    ahead: Option<&[u8]>,
+    junk: &[u8],
+    junk_us: u64,
+    ping_us: u64,
+) -> u64 {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+    sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Ping));
+    sim.set_kernel_lane(
+        s,
+        KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving),
+        ping_us + 100_000,
+    );
+    sim.set_break_wake(BreakWake::Alternating);
+    sim.set_stamp_order(order);
+    let bt_us = byte_ticks(baud_idx) as f64 / 48.0;
+    if let Some(f) = ahead {
+        sim.host_send_at(junk_us - (f.len() as f64 * bt_us).ceil() as u64 - 1, f);
+    }
+    for (k, &b) in junk.iter().enumerate() {
+        sim.inject_garble_at(junk_us + (k as f64 * bt_us).ceil() as u64, b);
+    }
+    sim.host_send_at(ping_us, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let ping = frames
+        .iter()
+        .rev()
+        .find(|f| f.from == Source::Host)
+        .expect("ping recorded");
+    let reply = sole_reply(&frames);
+    assert_eq!(status(reply).0.result(), Some(ResultCode::Ok));
+    reply.at - ping.end
+}
+
+/// Bytes before a break never delay the frame after it. Same-rate bytes
+/// with no break (tinyboot traffic on the shared wire, noise, a frame cut
+/// mid-send) ring without a wake; the next frame's break settles everything
+/// before it, so its reply leads by what a clean ping's does, whatever the
+/// junk spelt and however long the wire was quiet in between, and in
+/// either order of the break's stamp and its byte. Pinned against the
+/// clean turnaround at the same instant, so the kernel's phase cancels;
+/// the budget's worst body is the only slack.
+#[apply(matrix)]
+fn bytes_before_a_break_never_delay_the_frame_after_it(baud_idx: u8) {
+    const JUNK_US: u64 = 1_000;
+    let bt = byte_ticks(baud_idx);
+    let bt_us = bt as f64 / 48.0;
+    let horizon_us = (STARVE_HORIZON_BYTE_TIMES as f64 * bt_us).ceil() as u64;
+    // A WRITE to id 5 with a 20 B payload cut after its header: a break, a
+    // LEN that claims 25 bytes, and no more.
+    let long_write = {
+        let a = GOAL_VELOCITY.to_le_bytes();
+        let mut p = vec![a[0], a[1]];
+        p.extend_from_slice(&[0x11; 20]);
+        instruction(ID5, Opcode::Write, 0, &p)
+    };
+    let cases: [(&str, Vec<u8>); 4] = [
+        // The smallest repro: ID 0, LEN 7, a claim the ping leaves one byte short.
+        ("00 00 07", vec![0x00, 0x00, 0x07]),
+        // Spelt as the servo's own frame: ID 5, LEN 10.
+        ("00 05 0a", vec![0x00, 0x05, 0x0A]),
+        // One tinyboot Info request on the shared wire.
+        ("tinyboot info", tinyboot_frame(0, &[])),
+        // A tinyboot session: three frames back to back.
+        (
+            "tinyboot session",
+            [
+                tinyboot_frame(0, &[]),
+                tinyboot_frame(1, &[1, 2, 3, 4]),
+                tinyboot_frame(3, &[0xAA, 0x55, 0xFF, 0x00, 0x00, 0x09]),
+            ]
+            .concat(),
+        ),
+    ];
+    let breakless = cases
+        .iter()
+        .map(|(name, junk)| (*name, None, None, junk.as_slice()));
+    // A frame cut mid-send, then the sender's last bytes as noise. Its own
+    // break wakes the servo, and that wake's body is still running when a
+    // ping right behind it breaks at the higher rates, so its reference is
+    // a whole frame for another servo in the cut's place: the same break,
+    // nothing left unfinished.
+    let tail = [0x00u8, 0x00, 0x00];
+    let whole = instruction(9, Opcode::Ping, 0, &[]);
+    let cut = [(
+        "cut write",
+        Some(&long_write[..6]),
+        Some(&whole[..]),
+        &tail[..],
+    )];
+    for (name, cut, whole, junk) in breakless.chain(cut.iter().copied()) {
+        let junk_end = JUNK_US + (junk.len() as f64 * bt_us).ceil() as u64;
+        // Back to back, one starve horizon of quiet, and a long pause.
+        for gap_us in [1, horizon_us, 20_000] {
+            let ping_us = junk_end + gap_us;
+            for order in [StampOrder::LatchFirst, StampOrder::DrainFirst] {
+                let clean = ping_behind_junk(baud_idx, order, whole, &[], JUNK_US, ping_us);
+                let lead = ping_behind_junk(baud_idx, order, cut, junk, JUNK_US, ping_us);
+                assert!(
+                    lead <= clean + bt,
+                    "{name}, gap {gap_us} us, {order:?}: reply led by {} us behind the junk, \
+                     {} us clean",
+                    lead / 48,
+                    clean / 48
+                );
+            }
+        }
+    }
 }

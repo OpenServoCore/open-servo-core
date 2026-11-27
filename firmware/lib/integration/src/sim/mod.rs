@@ -36,7 +36,7 @@ use osc_servo_drivers::bus::LinkDiag;
 use self::boot::{BootTx, FakeBoot};
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
 use self::cpu::{Cpu, KERNEL_PERIOD, Vector};
-use self::providers::Handles;
+use self::providers::{Handles, RING_LEN};
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
@@ -74,6 +74,19 @@ pub enum BreakWake {
     /// Each wake flips between the two: service latency straddling the
     /// byte's landing.
     Alternating,
+}
+
+/// Which of a break's two DMA transfers lands first, both due at the
+/// detector's fire: the stamp's latch of the RX ring's position, or the
+/// drain of the break's `0x00` (protocol sec 3.4).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StampOrder {
+    /// The stamp reads the `0x00`'s own ring index, as the bench reads it
+    /// at every rate.
+    LatchFirst,
+    /// The stamp reads one past it: the byte drained first, so every wake
+    /// finds it rung, whatever its [`BreakWake`] order.
+    DrainFirst,
 }
 
 /// Who put a frame on the wire, as recorded.
@@ -140,6 +153,8 @@ pub struct Sim {
     break_wake: BreakWake,
     /// The next [`BreakWake::Alternating`] wake trails its byte.
     alternate_after: bool,
+    /// Stamp order of every break (see [`Self::set_stamp_order`]).
+    stamp_order: StampOrder,
     /// Service lag of every break wake, us (see [`Self::set_wake_lag_us`]).
     wake_lag_us: Option<Box<dyn FnMut() -> f64>>,
 }
@@ -225,6 +240,7 @@ impl Sim {
             data_jobs: true,
             break_wake: BreakWake::BeforeByte,
             alternate_after: false,
+            stamp_order: StampOrder::LatchFirst,
             wake_lag_us: None,
         }
     }
@@ -246,6 +262,12 @@ impl Sim {
     /// ([`BreakWake::BeforeByte`] by default).
     pub fn set_break_wake(&mut self, w: BreakWake) {
         self.break_wake = w;
+    }
+
+    /// Order every later break's position stamp against its 0x00's drain
+    /// ([`StampOrder::LatchFirst`] by default).
+    pub fn set_stamp_order(&mut self, o: StampOrder) {
+        self.stamp_order = o;
     }
 
     /// Attach the production host engine at the sim's wire rate. Submit
@@ -1516,7 +1538,9 @@ impl Sim {
         }
         let now = self.core.borrow().now();
         let h = &self.handles[j];
-        h.stamps.latch(h.deadline.local_u64(now) as u16);
+        let past = (self.stamp_order == StampOrder::DrainFirst) as usize;
+        let at = (h.ring.cursor() as usize + past) % RING_LEN;
+        h.stamps.latch(h.deadline.local_u64(now) as u16, at as u16);
         let after = match self.break_wake {
             BreakWake::BeforeByte => false,
             BreakWake::AfterByte => true,
@@ -1524,7 +1548,7 @@ impl Sim {
                 self.alternate_after = !self.alternate_after;
                 !self.alternate_after
             }
-        };
+        } || past == 1;
         if after {
             self.handles[j].ring.push(0x00);
             self.wake(j);

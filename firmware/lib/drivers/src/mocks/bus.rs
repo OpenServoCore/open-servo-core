@@ -365,23 +365,49 @@ impl UsartBaud for FakeBaud {
     }
 }
 
-/// Break stamps a scenario latches ahead of the wakes that take them.
+/// Break stamps a scenario latches ahead of the wakes that read them: times
+/// while the bus has the latch on the clock, ring positions otherwise.
 #[derive(Clone, Default)]
-pub struct FakeStamps(Rc<RefCell<VecDeque<u16>>>);
+pub struct FakeStamps(Rc<RefCell<StampLatch>>);
+
+#[derive(Default)]
+pub struct StampLatch {
+    times: VecDeque<u16>,
+    newest: Option<u16>,
+    timing: bool,
+}
 
 impl FakeStamps {
-    pub fn latch(&self, stamp: u16) {
-        self.0.borrow_mut().push_back(stamp);
+    /// One break: `time` on the time ruler, `position` on the ring's.
+    pub fn latch(&self, time: u16, position: u16) {
+        let mut l = self.0.borrow_mut();
+        if l.timing {
+            l.times.push_back(time);
+        } else {
+            l.newest = Some(position);
+        }
     }
 }
 
 impl BreakStamps for FakeStamps {
-    fn take(&mut self) -> Option<u16> {
-        self.0.borrow_mut().pop_front()
+    fn newest(&mut self) -> Option<u16> {
+        self.0.borrow().newest
     }
 
-    fn clear(&mut self) {
-        self.0.borrow_mut().clear();
+    fn take(&mut self) -> Option<u16> {
+        self.0.borrow_mut().times.pop_front()
+    }
+
+    fn time(&mut self) {
+        let mut l = self.0.borrow_mut();
+        l.timing = true;
+        l.times.clear();
+    }
+
+    fn position(&mut self) {
+        let mut l = self.0.borrow_mut();
+        l.timing = false;
+        l.newest = None;
     }
 }
 

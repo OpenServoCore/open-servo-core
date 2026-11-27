@@ -197,8 +197,8 @@ so the rate after a switch is never a leftover.
 
 Any other rate answers `BAD_RATE`. A switch is a bus request, so it waits
 for the bus to be idle. After every `SET_BUS` the adapter keeps the wire
-quiet for 64 byte-times at the new rate before the next frame (protocol
-sec 3.4), so every receiver's framer has settled.
+quiet for 64 byte-times at the new rate before the next frame, a margin
+no receiver's framing depends on (protocol sec 3.4).
 
 What each mode accepts:
 
@@ -220,12 +220,13 @@ all start with a break, are `WRONG_MODE` in tinyboot mode.
 Tinyboot mode assumes no osc app is listening: the host moves every servo
 on the wire to its bootloader before the first `TB_EXCHANGE` and resets
 them all to their apps after the last. An app servo frames only after a
-break (transport sec 7), but breakless bytes still land in its receive
-ring, and its framer can park on them at the next break, so its next reply
-comes late by whole starve horizons (protocol sec 3.4). A tinyboot rate
-below the app's holds lows long enough to fire its break detector, and at
-19200 and below a `0x00` is long enough to read as a rescue pulse
-(protocol sec 9.1). Every bootloader on the wire is addressable and silent until
+break (transport sec 7). Breakless bytes still land in its receive ring,
+but at any tinyboot rate they never delay the frame after the next
+break: that break's latched position ends every candidate they spelt
+(protocol sec 3.4). Which rates wake or rescue the fleet is a separate
+matter: a tinyboot rate below the app's holds lows long enough to fire
+its break detector, and at 19200 and below a `0x00` is long enough to
+read as a rescue pulse (protocol sec 9.1). Every bootloader on the wire is addressable and silent until
 selected, so the whole fleet can wait in tinyboot together.
 
 A new session returns the bus to osc mode (sec 2). A client that dies

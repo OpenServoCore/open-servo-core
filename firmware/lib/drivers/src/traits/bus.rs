@@ -97,15 +97,23 @@ pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
 }
 
-/// Break times latched by hardware at the break detector's trigger
-/// (transport sec 8): the low 16 bits of a [`Deadline`]-rate count, one per
-/// break the detector heard, in wire order, however late or coalesced the
-/// wake's service runs. The servo's own breaks never latch.
+/// What hardware latches at the break detector's trigger (transport sec 8),
+/// one stamp per break the detector heard, in wire order, however late or
+/// coalesced the wake's service runs. The servo's own breaks never latch.
+/// One latch, two rulers: in traffic it reads the RX ring's position, in a
+/// CAL train the low 16 bits of a [`Deadline`]-rate count.
 pub trait BreakStamps {
-    /// The oldest stamp not yet taken.
+    /// The ring index the newest break latched since [`Self::position`]:
+    /// its `0x00`'s, or one past it when the byte rang first (protocol
+    /// sec 3.4). `None` before the first, and on the time ruler.
+    fn newest(&mut self) -> Option<u16>;
+    /// The oldest time stamp not yet taken.
     fn take(&mut self) -> Option<u16>;
-    /// Drop every stamp not yet taken.
-    fn clear(&mut self);
+    /// Latch times for a CAL train: every stamp so far is dropped, and the
+    /// train's first mark latches next.
+    fn time(&mut self);
+    /// Latch ring positions again.
+    fn position(&mut self);
 }
 
 /// Role bundle for the `ServoBus` composite (driver-pattern sec 5.4).

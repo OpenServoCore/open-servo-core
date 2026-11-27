@@ -1860,10 +1860,8 @@ mod wire {
         c.wire_send(&[0x01, 0x03, 0x10, 0xFF, 0xFF]).expect("send");
         c.wire_pulse_low(50).expect("pulse");
         // The pulse reads as a break at the fleet (any >=10-bit low span), so
-        // the servo parks on a phantom candidate -- instrument traffic obeys
-        // the sec 8 pacing rule like any other garble source: one starve
-        // horizon of quiet before expecting crisp turnarounds.
-        c.pause(std::time::Duration::from_millis(1));
+        // the servo parks on a phantom candidate, which the ping's own break
+        // ends (protocol sec 3.4): no quiet is owed before it.
         let ping = c.ping(Id::new(5)).expect("ping after instrument ops");
         assert!(ping.model > 0);
     }

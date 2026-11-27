@@ -77,6 +77,7 @@ impl<P: Providers> ServoBus<P> {
                 FramerOut::Frame(span) => {
                     self.on_frame_end(span, d);
                 }
+                FramerOut::Cut => {}
             }
         }
         self.framer_at = Some(self.deadline.now());
@@ -236,10 +237,10 @@ impl<P: Providers> ServoBus<P> {
                 self.sequence_reply(slot, packet_end);
             }
         }
-        // A CAL announce: every stamp latched so far is traffic's, and the
-        // train's first mark latches next.
+        // A CAL announce: the latch turns to the clock, and the train's
+        // first mark latches next.
         if self.clock.pending_cal.is_some() {
-            self.stamps.clear();
+            self.stamps.time();
         }
     }
 

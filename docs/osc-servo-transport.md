@@ -36,7 +36,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | SysTick vector  | PFIC LOW (0xC0), after a pending wake or TC. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1-5 us; dispatch bodies ~10-70 us |
 | DMA1 CH5        | USART1 RX -> 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (sec 7) | zero CPU |
 | DMA1 CH7        | TIM2_CH2 (IC2, rising edge) -> a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (sec 7) | zero CPU |
-| DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> TIM3's free-running HCLK count into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 8) | zero CPU; read only during a CAL train |
+| DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> the RX ring's remaining count (DMA1 CNTR5), or through a CAL train TIM3's free-running HCLK count, into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 5.3, sec 8) | zero CPU; the newest read once per break wake, every stamp during a CAL train; re-pointed at a CAL announce and at the train's end |
 | DMA1 CH4        | TX arms -> USART1 DR (header, snapshot payload, CRC tail; a TEL frame's whole image); HIGH | zero CPU; TC surfaces as USART TC, polled by the kernel for TEL frames |
 | DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
@@ -56,7 +56,7 @@ TC runs before a pending deadline or stage. The main loop reaches into
 bus state only under `pfic::mask_bus` (PFIC_ITHRESDR at the LOW level),
 which holds the bus off and leaves the kernel live. Free and reserved: TIM1 (motor PWM),
 I2C1_EV (30), I2C1_ER (31). The break detector holds DMA1 CH7, I2C1_RX's
-request channel. The CAL stamps hold DMA1 CH2 (TIM2_UP) and TIM3.
+request channel. The break stamps hold DMA1 CH2 (TIM2_UP) and TIM3.
 
 The kernel side of this split is
 [kernel sec 3](osc-servo-kernel.md#3-the-kernel-above-the-bus).
@@ -231,9 +231,9 @@ measured from the estimate never fires into its own frame's tail (the
 reply-gap safety property, sim-pinned). The reply-grid estimate is frozen
 at the covered checkpoint, where missing ≤ 2 makes it tightest. Aims are
 self-pacing for free: a stalled wire re-projects at each wake ≥ one
-byte-time out, so no recheck/park budget machinery exists; the
-64-byte-time progress-idle horizon (the starve horizon) is the sole death
-authority. One epsilon survives, on header aims only: the break rings at
+byte-time out, so no recheck/park budget machinery exists; with no break
+behind the frontier, the 64-byte-time progress-idle horizon (the starve
+horizon) is the sole death authority. One epsilon survives, on header aims only: the break rings at
 its wake point ~4 bit-times before the line rises [F5], so the first data
 byte sits that far outside the byte cadence.
 
@@ -241,8 +241,9 @@ The wake can beat its own byte. The detector fires 9.5 bit-times into
 the break, ahead of the stop-bit sample that rings the `0x00`, so a wake
 whose break byte has not rung gets its ring-dependent service - the
 resolver, the staged-reply kill - one byte-time later, at a third
-deadline slot. The break's position comes from the ladder, never from
-the wake: the
+deadline slot (two, when the byte that judges its stamp is the ID behind
+the break's tail, sec 5.3). The break's position comes from the ladder,
+never from the wake: the
 resolver walks the ladder onto the break's own byte through every frame
 whole in the ring, however many data bytes a late service finds ringed
 behind it (under 1M bursts the frame-end body spans the next detector
@@ -280,7 +281,7 @@ and never reloaded. From then on:
   starve. DES: `truncated_foreign_frame_starves_then_recovers`,
   `snooped_slot_answers_a_reply_gap_after_its_predecessor`.
 
-### 5.3 Garble dies by data only
+### 5.3 Garble dies by data and the next break
 
 Per the fault contract (protocol sec 3.4), no frame is dropped, killed, or
 rejected on wake evidence — wake-time observations (service-time cursors,
@@ -288,12 +289,30 @@ latched re-fires) lie under exactly the conditions a busy fleet produces:
 coalesced or lagged break service at high ISR occupancy, and latched-flag
 re-fires after NOREPLY frames (nothing transmits, so nothing retires a
 flag). A death decision derived from them plants itself inside live
-frames. Data is the only death authority: a phantom candidate born from
-garble is killed by its footprint-fill CRC verdict or by the starve
-horizon — never by fault position. The cost is bounded, documented
-recovery latency (the host pacing rule, protocol sec 3.4) instead of
-fault-speed phantom kills; a phantom's CRC rejection flips the hunt on,
-and the hunt converges from ring data.
+frames. The one position that is not data is the break's own, latched by
+hardware at the detector's fire: DMA1 CH2 copies the RX ring's remaining
+count into the stamp ring, so a stamp is where the break's `0x00` lands
+(`512 - CNTR5`), whatever the wake's service lag. A frame never straddles
+a break, so a frontier candidate the newest stamp lies strictly inside
+(between its anchor and the cursor) is junk and dies at once, a framing
+drop counted once per episode, and the hunt goes on one byte in. The
+stamp only ends candidates: a whole frame in the ring is the CRC's alone,
+and the backlog walk never consults it. Two details keep it honest. A
+stamp at the cursor is a break whose byte has not rung, judged when it
+has. The latch and the drain of the break's `0x00` race at the stop-bit
+sample, so a stamp can read one past the byte: one a byte past the
+anchor over a data byte is the candidate's own break (an ID is never
+`0x00`).
+
+So each kind of junk has its own death: junk before a break (another
+protocol's traffic, noise, a frame cut mid-send and followed by the next)
+dies at that break's stamp, garble inside a frame by its footprint-fill
+CRC verdict, and a truncated frame with no break after it by the starve
+horizon. A phantom's CRC rejection flips the hunt on, and the hunt
+converges from ring data. DES:
+`bytes_before_a_break_never_delay_the_frame_after_it` (five junk shapes,
+three gaps, both latch orders, at budget),
+`a_phantom_dies_at_the_next_frames_break`.
 
 Corruption recovery is bounded: a corrupted LEN mis-strides the ladder;
 the next resolution finds no `0x00` at the expected anchor (or the frame
@@ -310,7 +329,9 @@ predecessor's reply, so a LEN that is neither that span's nor an empty
 error status's is a framing drop before it counts (a short one would time
 the slot into its predecessor's tail; the slot answers at its reclaim
 instead, flagged). Any other status gets the CRC verdict at the next
-wake, like a foreign op. DES: `garbled_status_len_costs_only_the_status`,
+wake, like a foreign op, or dies at the stamp of the frame behind it when
+its LEN claims across that frame's break. DES:
+`garbled_status_len_costs_only_the_status`,
 `waiting_slot_drops_a_status_len_its_gread_rules_out`.
 
 ## 6. Instruction classes
@@ -477,14 +498,20 @@ the servo measures the host's crystal and slews HSITRIM toward it.
 The one measurement is **MGMT CAL**: a broadcast instruction announcing N
 breaks spaced exactly T us; the servo times each break by hardware, gates
 each gap at |d - T| <= T/16, and trims off the sum. The detector's
-overflow (TIM2_UP) requests DMA1 CH2, which copies TIM3's free-running
-HCLK count into an 8-entry ring, so every stamp sits the same 9.25
-bit-times into its break and the offset cancels in the difference. The
-wake only collects: during a live train each break service takes the
-stamps in wire order, however late or coalesced it runs, and a gap is the
-16-bit difference of two. The servo's own breaks never latch (the mute
-drops the request with the interrupt), and a CAL announce drops what
-traffic left, so the train's first mark opens the ruler. Nothing is
+overflow (TIM2_UP) requests DMA1 CH2, which copies a count into an
+8-entry ring. CH2 serves two rulers: position in traffic (the RX ring's
+count, sec 5.3) and time in a train. A CAL announce's verdict re-points
+it at TIM3's free-running HCLK count, so every stamp sits the same 9.25
+bit-times into its break and the offset cancels in the difference; the
+train's end or its watchdog points it back at the ring. A request
+latched across a re-point fires on the enable, reading the new source
+before any break could: it is skipped. The wake only collects: during a
+live train each break service takes the stamps in wire order, however
+late or coalesced it runs, and a gap is the 16-bit difference of two.
+The servo's own breaks never latch (the mute drops the request with the
+interrupt), and the re-point drops what traffic left, so the train's
+first mark opens the ruler. During a train no frame positions are
+needed; the first frame after it stamps as any. Nothing is
 paired with ring positions: a train is bare breaks, so stamps are marks.
 A wake lagging past the ring's 8 marks loses those gaps to the gate, and
 a train with fewer than half its gaps valid decides nothing. Break time
@@ -606,4 +633,5 @@ fires — so the pipeline serializes after the frame end.
 - **fast path / scheduled path** - sec 5.2's split: complete-in-ring frames
   resolved from data with no clock / the newest frame timed by deadlines.
 - **starve horizon** — 64 byte-times of ring silence on a pending frame;
-  the fallback death authority for garble-born candidates (sec 5.3).
+  the death authority for a garble-born candidate with no break behind it
+  (sec 5.3).

@@ -1,11 +1,11 @@
 //! Cross-baud garble and the parked resolver (the fleet-mute RCA,
 //! `docs/osc-native-protocol.md` sec 3.4 / sec 8): garble that spells a
-//! plausible frame prefix parks the resolver on a phantom footprint, frames
-//! that follow FEED the phantom instead of dispatching, and recovery is the
-//! starve giveup -- which needs one horizon of NO ring progress, exactly
-//! what back-to-back traffic denies. Silicon-measured as 8-19 ms of fleet
-//! mute during unpaced toward-faster baud migrations (survivor = the
-//! last-written servo); here the mechanism is pinned exactly.
+//! plausible frame prefix parks the resolver on a phantom footprint until
+//! the next frame's break, whose hardware ring position ends it (a frame
+//! never straddles a break). Data alone would recover only by the starve
+//! giveup, one horizon of NO ring progress, exactly what back-to-back
+//! traffic denies: silicon-measured as 8-19 ms of fleet mute during
+//! unpaced toward-faster baud migrations.
 //!
 //! These scenarios run on the SCRIPTED host with overlapping schedules: the
 //! link-mode client rig cannot hold a park across commands (every exchange
@@ -25,8 +25,20 @@ fn servo_frames_after(frames: &[osc_integration::sim::WireFrame], at: u64) -> Ve
         .collect()
 }
 
+/// The reply's lead from the ping's wire end, ticks, and the one reply.
+fn reply_lead(frames: &[osc_integration::sim::WireFrame]) -> u64 {
+    let replies = servo_frames_after(frames, 0);
+    assert_eq!(replies.len(), 1, "the ping dispatches once");
+    let ping_end = frames
+        .iter()
+        .find(|f| matches!(f.from, Source::Host))
+        .expect("the ping was recorded")
+        .end;
+    replies[0].0 - ping_end
+}
+
 #[test]
-fn a_parked_resolver_eats_the_next_frame_and_replies_late() {
+fn a_phantom_dies_at_the_next_frames_break() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
     sim.run();
@@ -37,38 +49,30 @@ fn a_parked_resolver_eats_the_next_frame_and_replies_late() {
     sim.inject_break_at(t);
     sim.inject_garble_at(t + 15, 0x05);
     sim.inject_garble_at(t + 30, 0xFA);
-    // The ping lands inside the park, well under the giveup horizon.
+    // The ping lands inside the claim, well under the giveup horizon.
     sim.host_send_at(t + 100, &instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
-
-    // The ping was eaten: no reply within anything resembling a turnaround.
-    // The starve giveup (64 byte-times of no progress = 640 us at 1M) then
-    // sacrificed the phantom, the hunt recovered the eaten ping from the
-    // ring, and the reply left LATE -- past any host response window, which
-    // is how an eaten frame reads as a timeout AND as unexpected wire bytes.
-    let replies = servo_frames_after(&frames, 0);
-    assert_eq!(replies.len(), 1, "the eaten ping still dispatches once");
-    let ping_end_us = frames
-        .iter()
-        .find(|f| matches!(f.from, Source::Host))
-        .expect("the ping was recorded")
-        .end
-        / 48; // ticks -> us
-    let reply_at_us = replies[0].0 / 48;
-    let horizon_us = STARVE_HORIZON_BYTE_TIMES as u64 * 10; // byte-times at 1M
-    assert!(
-        reply_at_us >= ping_end_us + horizon_us,
-        "the reply must wait out the giveup horizon: reply at {reply_at_us} us, \
-         ping ended {ping_end_us} us, horizon {horizon_us} us"
-    );
-    // The sacrificed phantom is the frame-drop the fleet's counters showed.
+    let lead = reply_lead(&frames);
+    // The ping's break lies inside the phantom's claim: a frame never
+    // straddles a break, so the phantom is the frame-drop the fleet's
+    // counters showed, sacrificed at that break instead of a horizon later.
     assert_eq!(sim.servo_diag(s).framing_drop_count, 1);
 
-    // With the bus quiet again, the next exchange is a normal turnaround.
+    // The same ping on a quiet bus: the eaten one answered as fast.
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
-    let replies = servo_frames_after(&frames, 0);
-    assert_eq!(replies.len(), 1, "clean turnaround after quiet");
+    let clean = reply_lead(&frames);
+    let byte = 10 * 48; // one byte-time at 1M, ticks
+    assert!(
+        lead <= clean + byte,
+        "the ping behind the phantom led by {} us, a clean one by {} us",
+        lead / 48,
+        clean / 48
+    );
+    assert!(
+        lead < STARVE_HORIZON_BYTE_TIMES as u64 * byte,
+        "no giveup horizon"
+    );
 }
 
 #[test]
