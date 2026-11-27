@@ -635,12 +635,16 @@ impl Still {
 }
 
 /// The shaft coming to rest at zero duty: a still window of [`WINDOW_S`],
-/// within [`SETTLE_MAX_S`].
+/// or past [`SETTLE_MAX_S`] the median of the last [`WINDOW_S`] of rows.
+/// Nothing drives the horn at zero duty, so a window never still is a pot
+/// flickering across a code gap, not a moving shaft.
 #[derive(Clone, Debug)]
 pub struct Settle {
     t0: f64,
     band: f64,
     window: Still,
+    recent: Vec<(f64, f64)>,
+    note: Option<String>,
 }
 
 impl Settle {
@@ -649,25 +653,40 @@ impl Settle {
             t0: t,
             band,
             window: Still::new(t, pos),
+            recent: vec![(t, pos)],
+            note: None,
         }
     }
 
-    /// The pot at `t`: the rest position once still, an error past
-    /// [`SETTLE_MAX_S`], else None.
+    /// The pot at `t`: the rest position once still or past
+    /// [`SETTLE_MAX_S`], an error on a pot that reads no number, else None.
     pub fn feed(&mut self, t: f64, pos: f64) -> Option<Result<f64, String>> {
         if !pos.is_finite() {
             return Some(Err(dead(pos)));
         }
+        self.recent.retain(|(tr, _)| t - tr <= WINDOW_S + 1e-9);
+        self.recent.push((t, pos));
         match self.window.judge(t, pos, self.band) {
             Some(Some(m)) => return Some(Ok(m)),
             Some(None) => self.window = Still::new(t, pos),
             None => {}
         }
-        (t - self.t0 > SETTLE_MAX_S).then(|| {
-            Err(format!(
-                "the shaft did not come to rest at zero duty within {SETTLE_MAX_S} s (at {pos:.0}): something drives the horn, or the pot is noisy. Nothing more drives; {HANDS}"
-            ))
-        })
+        if t - self.t0 <= SETTLE_MAX_S {
+            return None;
+        }
+        let rows: Vec<f64> = self.recent.iter().map(|(_, p)| *p).collect();
+        let m = median(&rows)?;
+        self.note = Some(format!(
+            "rest at {m:.0} read as the median of the last {:.0} ms: the pot never held still within {:.0} counts in {SETTLE_MAX_S} s",
+            WINDOW_S * 1e3,
+            self.band
+        ));
+        Some(Ok(m))
+    }
+
+    /// Why the rest is a median past [`SETTLE_MAX_S`], when it is.
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
     }
 }
 
@@ -706,6 +725,7 @@ pub struct GoTo {
     from: f64,
     best: f64,
     window: Still,
+    rest_note: Option<String>,
 }
 
 impl GoTo {
@@ -720,11 +740,17 @@ impl GoTo {
             from: 0.0,
             best: 0.0,
             window: Still::new(0.0, 0.0),
+            rest_note: None,
         }
     }
 
     pub fn target(&self) -> f64 {
         self.target
+    }
+
+    /// Why the arrival's rest is a median past [`SETTLE_MAX_S`], when it is.
+    pub fn rest_note(&self) -> Option<&str> {
+        self.rest_note.as_deref()
     }
 
     fn stop(&mut self, why: String) -> Go {
@@ -762,7 +788,10 @@ impl GoTo {
         match std::mem::replace(&mut self.phase, GoPhase::Over) {
             GoPhase::Drive { dir } => self.on_drive(dir, t, pos),
             GoPhase::Settle(mut s) => match s.feed(t, pos) {
-                Some(Ok(at)) => Go::Arrived(at),
+                Some(Ok(at)) => {
+                    self.rest_note = s.note().map(str::to_string);
+                    Go::Arrived(at)
+                }
                 Some(Err(why)) => self.stop(why),
                 None => {
                     self.phase = GoPhase::Settle(s);
@@ -1169,13 +1198,75 @@ mod tests {
         assert!(got.expect_err("wrong way").contains("other way"));
         let mut s = Settle::new(0.0, 100.0, 3.0);
         let mut t = 0.0;
+        let mut fed = Vec::new();
         let out = loop {
             t += POLL_S;
-            if let Some(r) = s.feed(t, 100.0 + 10.0 * (t * 50.0).sin()) {
+            let pos = 100.0 + 10.0 * (t * 50.0).sin();
+            fed.push((t, pos));
+            if let Some(r) = s.feed(t, pos) {
                 break r;
             }
         };
-        assert!(out.expect_err("restless").contains("did not come to rest"));
-        assert!(t > SETTLE_MAX_S);
+        let last: Vec<f64> = fed
+            .iter()
+            .filter(|(tr, _)| t - tr <= WINDOW_S + 1e-9)
+            .map(|(_, p)| *p)
+            .collect();
+        assert_eq!(last.len(), 8);
+        assert_eq!(out, Ok(median(&last).unwrap()), "restless");
+        assert!(t > SETTLE_MAX_S && t < SETTLE_MAX_S + POLL_S + 1e-9, "{t}");
+        assert!(s.note().unwrap().contains("median of the last 150 ms"));
+        let mut s = Settle::new(0.0, 100.0, 3.0);
+        assert!(
+            s.feed(POLL_S, f64::NAN)
+                .unwrap()
+                .unwrap_err()
+                .contains("no number")
+        );
+    }
+
+    /// A pot flickering across a code gap at zero duty is never still, so
+    /// the rest at 2 s is the median of the last window: the two codes'
+    /// middle, with the note why; a go-to arrives there.
+    #[test]
+    fn a_pot_flickering_between_two_codes_rests_at_their_median_at_two_seconds() {
+        let code = |k: usize| if k % 2 == 0 { 2060.0 } else { 2064.0 };
+        let mut s = Settle::new(0.0, code(0), 3.0);
+        let mut t = 0.0;
+        let mut k = 0;
+        let out = loop {
+            k += 1;
+            t += POLL_S;
+            if let Some(r) = s.feed(t, code(k)) {
+                break r;
+            }
+        };
+        assert_eq!(out, Ok(2062.0));
+        assert!(t > SETTLE_MAX_S && t < SETTLE_MAX_S + POLL_S + 1e-9, "{t}");
+        let why = s.note().expect("note");
+        assert!(
+            why.contains("rest at 2062") && why.contains("within 3 counts in 2 s"),
+            "{why}"
+        );
+        let mut g = GoTo::new(2050.0, 1000, 3.0);
+        let mut act = g.start(0.0, code(0));
+        let (mut t, mut k) = (0.0, 0);
+        while act == Go::Zero {
+            k += 1;
+            t += POLL_S;
+            act = g.feed(t, code(k));
+        }
+        assert_eq!(act, Go::Arrived(2062.0));
+        assert!(t > SETTLE_MAX_S, "{t}");
+        assert!(g.rest_note().is_some());
+        let mut still = GoTo::new(2050.0, 1000, 3.0);
+        let mut act = still.start(0.0, 2060.0);
+        let mut t = 0.0;
+        while act == Go::Zero {
+            t += POLL_S;
+            act = still.feed(t, 2060.0);
+        }
+        assert_eq!(act, Go::Arrived(2060.0));
+        assert!(t < SETTLE_MAX_S && still.rest_note().is_none());
     }
 }

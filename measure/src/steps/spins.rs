@@ -554,6 +554,7 @@ async fn go_to<P: Pipe>(
                     "to {name} {target:.0}: from {from:.0}, at rest at {at:.0} in {:.1} s",
                     (rig.clock)() - t0
                 ));
+                lines.extend(g.rest_note().map(|n| format!("to {name} {target:.0}: {n}")));
                 return Ok(at);
             }
             Go::Stopped(why) => {
