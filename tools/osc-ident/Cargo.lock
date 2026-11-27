@@ -786,6 +786,7 @@ dependencies = [
 name = "osc-measure"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "flate2",
  "osc-client",
  "osc-ident-inputs",

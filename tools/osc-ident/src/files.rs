@@ -1,245 +1,106 @@
-//! The tool's files: the inputs the rules read, the set and table files,
-//! and the run folder a save keeps its backup in.
+//! The tool's files on disk: the [`Store`] the run reads and writes
+//! through, and the inputs, set and table files and run folders over it,
+//! by their paths.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
-use osc_ident_inputs::migrate::{ProfileIn, slug};
-use osc_ident_inputs::profile::{FieldSource, HeatModel};
-use osc_ident_inputs::{BoardFacts, Resolved, read as file_of, resolve, upgrade_with};
-use osc_measure::board::{self, Record};
-use osc_measure::inputs::{Measured, ShelfRecord, ThermalInputs, Tuning};
-use osc_measure::screens::Holes;
-use osc_measure::set::{SetFile, TableFile, file_sha1};
-use osc_measure::sink::{Sink, SinkError};
-use osc_measure::steps::table as table_step;
-use osc_measure::{Board, Inputs, Nameplate};
-use serde::de::DeserializeOwned;
+use anyhow::Result;
+use osc_measure::run::Store;
+use osc_measure::run::files as of;
+use osc_measure::set::{SetFile, TableFile};
+#[cfg(test)]
+use {
+    osc_ident_inputs::BoardFacts,
+    osc_measure::board::Record,
+    osc_measure::run::files::Loaded,
+    osc_measure::screens::Holes,
+    osc_measure::set::file_sha1,
+    osc_measure::steps::table as table_step,
+    osc_measure::{Board, Nameplate},
+    std::time::{SystemTime, UNIX_EPOCH},
+};
 
-/// The run's pot holes the closed-loop check's pot steps leave out: those
-/// of the table step's result the gathered inputs `measured` (a
-/// `measured.json`) name as their table's source, read again and checked
-/// against its sha1. None, said, where the inputs hold no table or name no
-/// table step's result. Refused where that result is gone or changed.
-pub fn run_holes(measured: &serde_json::Value) -> Result<Holes> {
-    let src = &measured["table"]["source"];
-    let Some(file) = src["file"].as_str() else {
-        return Ok(Holes::none(
-            "the inputs hold no table: no pot hole left out",
-        ));
-    };
-    if !file.ends_with(table_step::RESULT) {
-        return Ok(Holes::none(format!(
-            "the inputs' table is {file}, no table step's result: no pot hole left out"
-        )));
+#[cfg(test)]
+pub use osc_measure::run::files::BOARD;
+pub use osc_measure::run::files::RulesInputs;
+
+/// The file system, paths as the user gives them.
+pub struct Fs;
+
+impl Store for Fs {
+    fn read_file(&mut self, path: &Path) -> Result<Vec<u8>, String> {
+        std::fs::read(path).map_err(|e| e.to_string())
     }
-    let p = Path::new(file);
-    let bytes = read(p).context(
-        "the table result the inputs' table names, whose pot holes the check's pot steps leave out",
-    )?;
-    if let Some(want) = src["sha1"].as_str()
-        && file_sha1(&bytes) != want
-    {
-        bail!("{file} changed since the inputs were gathered (sha1 {want}): gather again");
+
+    fn write_file(&mut self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        std::fs::write(path, bytes).map_err(|e| e.to_string())
     }
-    let doc: serde_json::Value = json(p, &bytes)?;
-    Holes::of_table(&doc, file).map_err(|e| anyhow::anyhow!(e))
+
+    fn make_dirs(&mut self, path: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(path).map_err(|e| e.to_string())
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn entries(&self, path: &Path) -> Result<Vec<(String, bool)>, String> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+            let name = e.map_err(|e| e.to_string())?.file_name();
+            let is_dir = path.join(&name).is_dir();
+            out.push((name.to_string_lossy().into_owned(), is_dir));
+        }
+        Ok(out)
+    }
+
+    fn canonical(&self, path: &Path) -> Result<PathBuf, String> {
+        path.canonicalize().map_err(|e| e.to_string())
+    }
 }
 
-/// A run's board file, `inputs/board.json`: what step 0 read off the servo.
-pub const BOARD: &str = "inputs/board.json";
+/// The run's pot holes the closed-loop check's pot steps leave out
+/// ([`of::run_holes`]).
+#[cfg(test)]
+pub fn run_holes(measured: &serde_json::Value) -> Result<Holes> {
+    of::run_holes(&mut Fs, measured)
+}
 
 /// The board record in the inputs folder `dir`, refused where step 0 wrote
 /// none.
+#[cfg(test)]
 pub fn board_in(dir: &Path) -> Result<(Record, Board, Vec<u8>)> {
-    let p = dir.join(board::FILE);
-    if !p.exists() {
-        bail!(
-            "{} is not there: the board's facts are read off the servo, so rerun step 0 on the servo",
-            p.display()
-        );
-    }
-    let bytes = read(&p)?;
-    let record: Record = json(&p, &bytes)?;
-    let b = record
-        .board()
-        .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
-    Ok((record, b, bytes))
+    of::board_in(&mut Fs, dir)
 }
 
-/// A profile (or a version 0 nameplate) and the policy beside it as the
-/// rules read them, with a line for each file read at an older version and
-/// for each value stored at a bound it is over.
-pub struct Loaded {
-    pub resolved: Resolved,
-    pub notes: Vec<String>,
-    /// The file the heat model was read from and its sha1: the profile, or
-    /// the thermal.json beside a version 0 nameplate.
-    pub heat_from: (PathBuf, String),
-    /// That thermal.json's bytes, where a version 0 nameplate took one.
-    pub thermal_json: Option<Vec<u8>>,
-}
-
-impl Loaded {
-    /// The profile's heat model as the rules and the steps read it.
-    pub fn thermal(&self) -> Option<ThermalInputs> {
-        let (file, sha1) = &self.heat_from;
-        self.resolved
-            .thermal
-            .map(|h| ThermalInputs::of_profile(&h, &file.display().to_string(), sha1))
-    }
-
-    /// Where the heat model came from, and its four values.
-    pub fn heat_said(&self) -> String {
-        let named = &self.resolved.report.profile;
-        let Some(h) = self.resolved.thermal else {
-            return format!(
-                "heat model: none, the profile {} states no thermal: no step that drives runs",
-                named.key
-            );
-        };
-        let from = match &self.thermal_json {
-            Some(_) => format!(
-                "{} beside the version 0 nameplate",
-                self.heat_from.0.display()
-            ),
-            None => format!(
-                "the profile {} rev {}",
-                named.key,
-                named.revision.unwrap_or(0)
-            ),
-        };
-        format!(
-            "heat model: from {from}, not identified: fast {:.2} s {:.1} C/W, slow {:.1} s {:.1} C/W",
-            h.fast_tau_s, h.fast_gain_c_per_w, h.slow_tau_s, h.slow_gain_c_per_w
-        )
-    }
-}
-
-/// The profile file and the policy file, either at version 0 or 1, resolved
-/// over the board's facts where they are read; refused naming the files and
-/// the first value the run cannot use. With no policy, a version 0 nameplate
-/// carries the three choices the steps read. A version 0 nameplate takes
-/// its heat model from the `thermal.json` beside it, where there is one.
-pub fn inputs(profile: &Path, policy: Option<&Path>, board: Option<&BoardFacts>) -> Result<Loaded> {
-    let policy = match policy {
-        Some(p) => Some((p, read(p)?)),
-        None => None,
-    };
-    inputs_of(profile, &read(profile)?, policy, board)
-}
-
-fn utf8<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a str> {
-    std::str::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
-}
-
-/// The `thermal.json` beside a version 0 nameplate: its path, bytes and
-/// heat model.
-struct Beside {
-    path: PathBuf,
-    bytes: Vec<u8>,
-    heat: HeatModel,
-}
-
-/// The `thermal.json` beside the version 0 nameplate `profile`, where
-/// there is one.
-fn beside_v0(profile: &Path) -> Result<Option<Beside>> {
-    let path = profile.with_file_name("thermal.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = read(&path)?;
-    let heat = file_of::thermal(utf8(&path, &bytes)?)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    Ok(Some(Beside { path, bytes, heat }))
-}
-
+#[cfg(test)]
 fn inputs_of(
     profile: &Path,
     bytes: &[u8],
     policy: Option<(&Path, Vec<u8>)>,
     board: Option<&BoardFacts>,
 ) -> Result<Loaded> {
-    let p = file_of::profile(utf8(profile, bytes)?)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", profile.display()))?;
-    let named = match &policy {
-        Some((q, _)) => format!("{} with {}", profile.display(), q.display()),
-        None => profile.display().to_string(),
-    };
-    let q = match &policy {
-        Some((path, bytes)) => {
-            let key = path
-                .file_stem()
-                .map_or("policy".into(), |s| slug(&s.to_string_lossy()));
-            Some(
-                file_of::policy(utf8(path, bytes)?, &key)
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
-            )
-        }
-        None if matches!(p, ProfileIn::V1(_)) => bail!(
-            "{named}: a version 1 profile holds no run voltage or derates, which are the tuning policy's: name the policy with --policy"
-        ),
-        None => None,
-    };
-    let beside = match p {
-        ProfileIn::V0 { .. } => beside_v0(profile)?,
-        ProfileIn::V1(_) => None,
-    };
-    let mut heat_from = (profile.to_path_buf(), file_sha1(bytes));
-    let mut thermal_json = None;
-    let heat = beside.map(|b| {
-        let sha1 = file_sha1(&b.bytes);
-        let from = FieldSource {
-            how: Some("file".into()),
-            file: Some(b.path.display().to_string()),
-            sha1: Some(sha1.clone()),
-            ..FieldSource::default()
-        };
-        heat_from = (b.path, sha1);
-        thermal_json = Some(b.bytes);
-        (b.heat, from)
-    });
-    let u = upgrade_with(p, q, heat).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
-    let resolved =
-        resolve(&u.profile, &u.policy, board).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
-    let notes = u
-        .notes
-        .iter()
-        .cloned()
-        .chain(resolved.report.clamps())
-        .map(|n| format!("{named}: {n}"))
-        .collect();
-    Ok(Loaded {
-        resolved,
-        notes,
-        heat_from,
-        thermal_json,
-    })
+    of::inputs_of(&mut Fs, profile, bytes, policy, board)
 }
 
 /// The steps' nameplate: the profile resolved with the policy, where one is
 /// named.
+#[cfg(test)]
 pub fn nameplate(path: &Path, policy: Option<&Path>) -> Result<Nameplate> {
-    Ok(inputs(path, policy, None)?.resolved.nameplate)
+    of::nameplate(&mut Fs, path, policy)
 }
 
 pub fn read(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path).with_context(|| format!("reading {}", path.display()))
-}
-
-fn json<T: DeserializeOwned>(path: &Path, bytes: &[u8]) -> Result<T> {
-    serde_json::from_slice(bytes).with_context(|| format!("parsing {}", path.display()))
+    of::read(&mut Fs, path)
 }
 
 pub fn set(path: &Path) -> Result<SetFile> {
-    let text = String::from_utf8(read(path)?).context("a set file is UTF-8")?;
-    SetFile::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    of::set(&mut Fs, path)
 }
 
+#[cfg(test)]
 pub fn table(path: &Path) -> Result<TableFile> {
-    let text = String::from_utf8(read(path)?).context("a table file is UTF-8")?;
-    TableFile::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    of::table(&mut Fs, path)
 }
 
 /// The table file for a set: the one named, else the notebooks' layout,
@@ -250,192 +111,35 @@ pub fn table_for(
     named: Option<&Path>,
 ) -> Result<Option<TableFile>> {
     if let Some(p) = named {
-        return table(p).map(Some);
+        return of::table(&mut Fs, p).map(Some);
     }
     let beside = set_path
         .parent()
         .unwrap_or(Path::new("."))
         .join(format!("{}.pos_lut.json", set.pair()));
     if beside.exists() {
-        table(&beside).map(Some)
+        of::table(&mut Fs, &beside).map(Some)
     } else {
         Ok(None)
     }
 }
 
-#[derive(serde::Deserialize)]
-struct Slots {
-    slots: Vec<u8>,
-}
-
-/// What the rules read from an inputs folder, every file read named with
-/// its sha1.
-pub struct RulesInputs {
-    pub inputs: Inputs,
-    /// The servo step 0 read the board off, by its run folder's name.
-    pub servo: String,
-    pub table: Option<TableFile>,
-    pub slots: Option<Vec<u8>>,
-    pub files: Vec<(String, String, String)>,
-    /// A line for each input file read at an older version.
-    pub notes: Vec<String>,
-}
-
-/// `dir` holds `measured.json`, `nameplate.json` (the servo profile, either
-/// version), `policy.json` and `board.json` (step 0's), and where they exist
-/// `thermal.json` (beside a version 0 nameplate only: a version 1 profile
-/// states its heat model), `shelf.json`, `pos_lut.json` (the table, a
-/// notebooks table file) and `wide-codes.json` (the slots).
+/// What the rules read from the inputs folder `dir` ([`of::rules_inputs`]).
 pub fn rules_inputs(dir: &Path, policy: Option<&Path>) -> Result<RulesInputs> {
-    let (record, board, board_bytes) = board_in(dir)?;
-    let mut files = vec![(
-        "board".to_string(),
-        dir.join(board::FILE).display().to_string(),
-        file_sha1(&board_bytes),
-    )];
-    let mut take = |name: &str, path: PathBuf| -> Result<Option<Vec<u8>>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let bytes = read(&path)?;
-        files.push((
-            name.to_string(),
-            path.display().to_string(),
-            file_sha1(&bytes),
-        ));
-        Ok(Some(bytes))
-    };
-    let need = |name: &str, b: Option<Vec<u8>>, path: &Path| match b {
-        Some(b) => Ok(b),
-        None => Err(anyhow::anyhow!("{name}: {} is not there", path.display())),
-    };
-    let p = dir.join("measured.json");
-    let mut measured: Measured = json(&p, &need("measured", take("measured", p.clone())?, &p)?)?;
-    let p = dir.join("shelf.json");
-    if let Some(b) = take("shelf", p.clone())? {
-        measured.shelf = Some(json::<ShelfRecord>(&p, &b)?);
-    }
-    let np_path = dir.join("nameplate.json");
-    let np_bytes = need("nameplate", take("nameplate", np_path.clone())?, &np_path)?;
-    let q = policy.map_or_else(|| dir.join("policy.json"), Path::to_path_buf);
-    let q_bytes = need("policy", take("policy", q.clone())?, &q)?;
-    let l = inputs_of(
-        &np_path,
-        &np_bytes,
-        Some((&q, q_bytes)),
-        Some(&board.facts()),
-    )?;
-    let p = dir.join("thermal.json");
-    match &l.thermal_json {
-        Some(_) => {
-            take("thermal", p)?;
-        }
-        None if p.exists() => bail!(
-            "{}: the profile is the heat model's one source, and a version 1 profile states its own thermal: enter the values in the profile and take the file out",
-            p.display()
-        ),
-        None => {}
-    }
-    let thermal = l.thermal().unwrap_or_default();
-    let Loaded {
-        resolved: loaded,
-        notes,
-        ..
-    } = l;
-    let p = dir.join("pos_lut.json");
-    let table = match take("pos_table", p.clone())? {
-        Some(b) => Some(
-            TableFile::parse(std::str::from_utf8(&b).context("UTF-8")?)
-                .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?,
-        ),
-        None => None,
-    };
-    let p = dir.join("wide-codes.json");
-    let slots = match take("wide_codes", p.clone())? {
-        Some(b) => Some(json::<Slots>(&p, &b)?.slots),
-        None => None,
-    };
-    Ok(RulesInputs {
-        inputs: Inputs {
-            board,
-            measured,
-            nameplate: loaded.nameplate,
-            policy: loaded.policy,
-            thermal,
-            tuning: Tuning::default(),
-        },
-        servo: record.servo,
-        table,
-        slots,
-        files,
-        notes,
-    })
-}
-
-/// A run's folder on disk. A file a run kept is never written over.
-pub struct DirSink {
-    pub root: PathBuf,
-}
-
-impl Sink for DirSink {
-    fn write(&mut self, path: &str, bytes: &[u8]) -> Result<(), SinkError> {
-        let p = self.root.join(path);
-        if p.exists() {
-            return Err(SinkError(format!(
-                "{} exists: a run never writes over its files",
-                p.display()
-            )));
-        }
-        if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| SinkError(format!("{}: {e}", dir.display())))?;
-        }
-        std::fs::write(&p, bytes).map_err(|e| SinkError(format!("{}: {e}", p.display())))
-    }
-
-    fn read(&mut self, path: &str) -> Result<Vec<u8>, SinkError> {
-        let p = self.root.join(path);
-        std::fs::read(&p).map_err(|e| SinkError(format!("{}: {e}", p.display())))
-    }
-
-    fn shown(&self, path: &str) -> String {
-        self.root.join(path).display().to_string()
-    }
+    of::rules_inputs(&mut Fs, dir, policy)
 }
 
 /// `<out>/<servo>/<UTC time>/`, refused when it exists.
 pub fn run_folder(out: &Path, servo: &str) -> Result<PathBuf> {
-    let p = out.join(servo).join(utc(SystemTime::now()));
-    if p.exists() {
-        bail!("{} exists", p.display());
-    }
-    Ok(p)
+    of::run_folder(&Fs, out, servo, crate::unix_s())
 }
 
 /// `YYYYMMDDTHHMMSSZ`.
+#[cfg(test)]
 pub fn utc(t: SystemTime) -> String {
-    let secs = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // days to a civil date, the proleptic Gregorian calendar in 400-year eras
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z",
-        rem / 3_600,
-        rem / 60 % 60,
-        rem % 60
-    )
+    of::utc(t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as f64)
 }
 
-/// The board file step 0 writes on the bench servo, in the run folder
-/// `run`.
 #[cfg(test)]
 pub(crate) fn step_0(run: &Path) {
     let rec =

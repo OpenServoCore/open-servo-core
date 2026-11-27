@@ -1,119 +1,15 @@
 //! `gather`: a run folder's step results to an inputs folder the rules
-//! read. Touches no servo.
+//! read ([`osc_measure::run::gather`]). Touches no servo.
 
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
-use osc_measure::board;
-use osc_measure::gather::{
-    self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, TABLE_RESULT, WINDOW_RESULT,
-};
-use osc_measure::sink::Sink;
-use osc_measure::steps::{probe, rest, stops};
+#[cfg(test)]
+use crate::files;
+use crate::files::Fs;
+use anyhow::Result;
 
-use crate::files::{self, DirSink};
-
-fn result(run: &Path, rel: &str) -> Result<Option<StepResult>> {
-    let p = run.join(rel);
-    if !p.exists() {
-        return Ok(None);
-    }
-    let bytes = files::read(&p)?;
-    Ok(Some(
-        StepResult::parse(&p.display().to_string(), &bytes).map_err(|e| anyhow::anyhow!("{e}"))?,
-    ))
-}
-
-/// The inputs folder `out` from the run folder `run`: `measured.json`, the
-/// table `pos_lut.json` (the table step's, else straight), the table
-/// step's slots `wide-codes.json` where it ran, the profile's
-/// cross-checks `cross-checks.json`, the profile (as `nameplate.json`,
-/// with the `thermal.json` a version 0 nameplate took), the policy,
-/// `resolved.json`, the policy's values as this run resolved them, and
-/// step 0's `board.json`, which is there already when `out` is the run's
-/// own `inputs/`. The lines it prints.
 pub fn gather(run: &Path, nameplate: &Path, policy: &Path, out: &Path) -> Result<Vec<String>> {
-    let own = run.join("inputs");
-    let (_, board, board_bytes) = files::board_in(&own)?;
-    let loaded = files::inputs(nameplate, Some(policy), Some(&board.facts()))?;
-    let np = &loaded.resolved.nameplate;
-    let np_bytes = files::read(nameplate)?;
-    let policy_bytes = files::read(policy)?;
-    let mut resolved = serde_json::to_value(&loaded.resolved.report)?;
-    resolved["notes"] = loaded.notes.clone().into();
-    let mut resolved = serde_json::to_vec_pretty(&resolved)?;
-    resolved.push(b'\n');
-    let results = RunResults {
-        rest: result(run, rest::RESULT)?,
-        probe: result(run, probe::RESULT)?,
-        stops: result(run, stops::RESULT)?,
-        window: result(run, WINDOW_RESULT)?,
-        spins: result(run, SPINS_RESULT)?,
-        cruise: result(run, CRUISE_RESULT)?,
-        table: result(run, TABLE_RESULT)?,
-    };
-    let g = gather::gather(&results, np).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let into_own = out.exists() && same(out, &own)?;
-    if out.exists() && !(into_own && only_board(out)?) {
-        bail!(
-            "{} exists: an inputs folder is gathered into a new one",
-            out.display()
-        );
-    }
-    let mut sink = DirSink {
-        root: out.to_path_buf(),
-    };
-    if !into_own {
-        sink.write(board::FILE, &board_bytes)?;
-    }
-    sink.write("measured.json", gather::render(&g.measured).as_bytes())?;
-    sink.write("pos_lut.json", gather::render(&g.table).as_bytes())?;
-    sink.write(
-        "cross-checks.json",
-        gather::render(&g.cross_checks).as_bytes(),
-    )?;
-    sink.write("nameplate.json", &np_bytes)?;
-    sink.write("policy.json", &policy_bytes)?;
-    sink.write("resolved.json", &resolved)?;
-    let mut wrote = vec![
-        "measured.json",
-        "pos_lut.json",
-        "cross-checks.json",
-        "nameplate.json",
-        "policy.json",
-        "resolved.json",
-    ];
-    if !into_own {
-        wrote.push(board::FILE);
-    }
-    if let Some(w) = &g.wide_codes {
-        sink.write("wide-codes.json", gather::render(w).as_bytes())?;
-        wrote.push("wide-codes.json");
-    }
-    if let Some(b) = &loaded.thermal_json {
-        sink.write("thermal.json", b)?;
-        wrote.push("thermal.json");
-    }
-    let mut lines = loaded.notes;
-    lines.extend(g.lines);
-    lines.push(format!("wrote {}: {}", out.display(), wrote.join(", ")));
-    Ok(lines)
-}
-
-fn same(a: &Path, b: &Path) -> Result<bool> {
-    let canon = |p: &Path| p.canonicalize().with_context(|| format!("{}", p.display()));
-    Ok(b.exists() && canon(a)? == canon(b)?)
-}
-
-/// The run's own `inputs/` as step 0 left it: its board file and nothing
-/// a gather writes.
-fn only_board(dir: &Path) -> Result<bool> {
-    for e in std::fs::read_dir(dir).with_context(|| format!("{}", dir.display()))? {
-        if e?.file_name() != board::FILE {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    osc_measure::run::gather::gather(&mut Fs, run, nameplate, policy, out)
 }
 
 #[cfg(test)]

@@ -525,7 +525,14 @@ fn the_tool_has_no_factory_path() {
     // (the CLI's own test says the same of its sources); the spy pipe
     // under every test of this file fails on a FACTORY on the bus.
     let mut sources = Vec::new();
-    for dir in ["src", "src/rules", "src/capture", "src/steps", "src/fit"] {
+    for dir in [
+        "src",
+        "src/rules",
+        "src/capture",
+        "src/steps",
+        "src/fit",
+        "src/run",
+    ] {
         for e in std::fs::read_dir(path(dir)).unwrap_or_else(|e| panic!("{dir}: {e}")) {
             let p = e.expect("entry").path();
             if p.extension().is_some_and(|x| x == "rs") {

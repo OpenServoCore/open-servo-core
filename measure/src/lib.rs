@@ -1,9 +1,11 @@
 //! Servo identification, sans io: what a run measured, the servo's
 //! nameplate, the board facts it publishes and a policy, turned into the
 //! servo's constant set by rules; the set file, and the path that installs
-//! it on a servo safely. Pure but for the bus, which is the client's, and
-//! files, which are a [`sink::Sink`]'s, so the same code runs in the CLI
-//! and, built for wasm, in the browser.
+//! it on a servo safely; and the whole run that measures, gathers, tunes
+//! and checks ([`run`]). Pure but for the bus, which is the client's,
+//! files, which are a [`sink::Sink`]'s or a [`run::Store`]'s, and the
+//! clock, which is the host's, so the same code runs in the CLI and,
+//! built for wasm, in the browser.
 
 pub mod board;
 pub mod capture;
@@ -19,6 +21,7 @@ pub mod policy;
 pub mod pyjson;
 pub mod ripple;
 pub mod rules;
+pub mod run;
 pub mod scorecard;
 pub mod screens;
 pub mod set;
