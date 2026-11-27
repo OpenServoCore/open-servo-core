@@ -1,8 +1,7 @@
 //! Data state on every servo verb: the one-line warning a command prints
 //! when `data_flags` names a reason (information: the command still runs,
 //! and the servo refuses a mode only on a constant it cannot run on), the
-//! `osc status` report with the stamp verdict, the torque-off restamp
-//! behind `osc set`, and `osc recover`.
+//! `osc status` report, and `osc recover`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,11 +9,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use osc_client::blocking::Client;
-use osc_client::data_state::{DataState, SAVE_CLEARS, STAMP_MISMATCH, fault};
+use osc_client::data_state::{DataState, fault};
 use osc_client::descriptor::{Access, Descriptor, Field};
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
-use osc_client::stamp::UNSTAMPED;
 use osc_client::{Error, Id, ResultCode};
 use osc_protocol::table::CONFIG_COMMON_END;
 use osc_servo_core::regions::CONTROL_BASE_ADDR;
@@ -69,8 +67,8 @@ fn fault_name(code: u8) -> String {
     }
 }
 
-/// The `osc status` tail: reasons, the operator line, the latched fault
-/// and the stamp beside what the live set computes to.
+/// The `osc status` tail: reasons, the operator line and the latched
+/// fault.
 pub(crate) fn report(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<()> {
     let s = c.data_state(id, d)?;
     if s.flags == 0 {
@@ -84,70 +82,16 @@ pub(crate) fn report(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result
     if s.fault_code != fault::NONE {
         println!("      fault {}", fault_name(s.fault_code));
     }
-    match c.stamp_verdict(id, d) {
-        Ok(v) if v.stored == UNSTAMPED => {
-            println!("      stamp unstamped; live set {:#06x}", v.computed)
-        }
-        Ok(v) if v.matches() => println!("      stamp {:#06x} = live set", v.stored),
-        Ok(v) => println!(
-            "      stamp {:#06x} != live set {:#06x}",
-            v.stored, v.computed
-        ),
-        Err(Error::Descriptor(_)) => {}
-        Err(e) => return Err(e.into()),
-    }
     Ok(())
 }
 
-/// After a hand edit of `f`: a covered write leaves STAMP_MISMATCH standing
-/// (the servo marks it, as information: the edit runs as written) and the
-/// note names the deliberate ways out. No tool restamps as a side effect of
-/// a write: an auto-restamp would bless any edit, plant constants included,
-/// as the identified set.
-pub(crate) fn covered_note(d: &Descriptor, f: &Field) {
-    let covered = match d.stamp() {
-        Ok(s) => s.covers(f.addr, f.width),
-        Err(_) => false,
-    };
-    if covered {
-        println!(
-            "note: {} is stamp-covered: the set is marked changed and runs as written; osc stamp [--save] blesses the tuned set, osc-ident refits it",
-            f.name
-        );
-    }
-}
-
-/// The commit that closes a write of the identified or calibrated set:
-/// torque off, the stamp over the set as the servo holds it (every write
-/// before it was read-back verified, so this is the intended set), the
-/// firmware's checkpoint as the witness, then SAVE when asked. The image
-/// reasons clear only on SAVE; they are information and refuse nothing.
-/// The state after is printed and returned.
-pub(crate) fn commit<P: Pipe>(
-    c: &mut Client<P>,
-    id: Id,
-    d: &Descriptor,
-    save: bool,
-) -> Result<DataState> {
+/// The SAVE that closes a write of a set: torque off (every write before
+/// it was read-back verified), then SAVE. The data state after is printed
+/// and returned.
+pub(crate) fn save_set<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<DataState> {
     let f = descriptor::field(d, "torque_enable")?;
     c.write(id, f.addr, &[0])?;
-    let stamp = c.restamp(id, d)?;
-    let s = c.data_state(id, d)?;
-    if s.flags & STAMP_MISMATCH != 0 {
-        bail!(
-            "id {}: stamp {stamp:#06x} did not verify (a write did not land); torque left off",
-            id.as_byte()
-        );
-    }
-    println!("stamped {stamp:#06x}");
-    if save {
-        mgmt_save(c, id)?;
-    } else if s.flags & SAVE_CLEARS != 0 {
-        println!(
-            "not saved: {} stands until SAVE (osc stamp --save, or osc save)",
-            s.names()
-        );
-    }
+    mgmt_save(c, id)?;
     let s = c.data_state(id, d)?;
     match s.message() {
         None => println!("data state clean"),
@@ -168,28 +112,18 @@ pub(crate) fn mgmt_save<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
     Ok(())
 }
 
-/// `osc stamp`: bless the set the servo holds now, after deliberate manual
-/// tuning (`osc set` of covered fields). The one explicit path besides the
-/// tools that write the set themselves (osc-ident, recover --from).
-pub(crate) fn stamp(c: &mut Client<NusbPipe>, id: Id, save: bool) -> Result<()> {
-    let d = descriptor(c, id)?;
-    warn(c, id, &d)?;
-    commit(c, id, &d, save)?;
-    Ok(())
-}
-
 /// `osc recover`: a saved table back onto a servo whose data state names a
 /// reason.
 ///
 /// No reason needs a wipe: a servo whose images did not load (VIRGIN,
 /// CORRUPT, STALE) runs board defaults, and `--from` restores a saved
-/// table, restamps and SAVEs over them; the normal fresh flow is
+/// table and SAVEs over them; the normal fresh flow is
 /// `osc-ident run`, then `osc-ident save`. `--factory` wipes every saved
 /// image first, and the servo comes back factory-fresh on its board id and
 /// baud.
 ///
-/// The bench MG90 after a CALIB layout change boots CALIB_STALE |
-/// STAMP_MISMATCH | PLANT_UNSET; with no motion at all:
+/// The bench MG90 after a CALIB layout change boots CALIB_STALE; with no
+/// motion at all:
 ///   osc status
 ///   osc recover --from profiles/mg90-a.json
 ///   osc status
@@ -198,7 +132,7 @@ pub(crate) struct RecoverArgs {
     /// Restore CONFIG + CALIB fields from a JSON table: `{"fields": {name:
     /// value}}` (an exported profile) or `{name: value}` (a flat
     /// snapshot). Identity/comms fields, read-only fields and the volatile
-    /// blocks are skipped; then restamp + SAVE.
+    /// blocks are skipped; then SAVE.
     #[arg(long)]
     from: Option<PathBuf>,
     /// FACTORY-reset first: wipe every saved image.
@@ -245,7 +179,7 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
     match &args.from {
         Some(path) => {
             restore(&mut c, id, &d, path)?;
-            commit(&mut c, id, &d, true)?;
+            save_set(&mut c, id, &d)?;
         }
         None if args.factory => {
             println!(
@@ -388,7 +322,6 @@ mod tests {
             "current_limit_counts",
             "raw_min",
             "recip_ke_q",
-            "plant_stamp",
             "rail_drop_mv",
         ] {
             assert!(persisted(d.field(name).unwrap()), "{name}");

@@ -1,5 +1,5 @@
 {
-  "source": {"file": "osc-dev-v006-bringup/kb/scratch/hands/gate/config-main.json", "sha1": "c54998c4a30c56b58f245315ae1d4ad864e83837", "plant_stamp": "0xd1c4"},
+  "source": {"file": "osc-dev-v006-bringup/kb/scratch/hands/gate/config-main.json", "sha1": "c54998c4a30c56b58f245315ae1d4ad864e83837"},
   "pos_min_phys_counts": 82,
   "pos_max_phys_counts": 3792,
   "pos_min_soft_counts": 314,

@@ -104,7 +104,7 @@ fn rules_reproduce_the_set_of_record() {
     }
     assert_eq!(set.fields.len(), record.fields.len() + TUNING.len());
 
-    // The stamped CONFIG the bench ran (plant stamp 0xd1c4) is the set's.
+    // The CONFIG the bench ran is the set's.
     let gate: BTreeMap<String, serde_json::Value> = load("testdata/mg90-d/config-main.json");
     let mut config = 0;
     for (name, v) in gate.iter().filter(|(n, _)| *n != "source") {
@@ -256,7 +256,7 @@ fn field_formats_match_the_descriptor() {
         fields: Vec<Field>,
     }
     const COMMS: [&str; 3] = ["id", "baud_rate_idx", "response_deadline_us"];
-    const NOT_RULES: [&str; 2] = ["plant_stamp", "adc_wide_mid_q4"];
+    const NOT_RULES: [&str; 1] = ["adc_wide_mid_q4"];
     const CONTROL_BASE: u32 = 0x180;
 
     let d: Descriptor = load("../descriptors/osc-servo/0.1.json");

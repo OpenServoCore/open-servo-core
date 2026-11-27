@@ -14,10 +14,8 @@ use osc_client::boot::{
 use osc_client::calib::GearClass;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
-use osc_client::data_state::{
-    self, CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, Reason, STAMP_MISMATCH, fault,
-};
-use osc_client::descriptor::{Descriptor, Kind, Value, encode};
+use osc_client::data_state::{self, CALIB_VIRGIN, CONFIG_VIRGIN, Reason, fault};
+use osc_client::descriptor::{Descriptor, Value, encode};
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick, Therm, heat_tau_s, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::pipe::{Pipe, PipeError};
@@ -55,7 +53,7 @@ const FACTORY_VELOCITY_LIMIT_CPS: u16 = 0;
 const RAW_MAX: u16 = 166;
 const ANGLE_MAX_CDEG: u16 = 170;
 const GEAR_RATIO_CENTI: u16 = 172;
-const SHUNT_R_MOHM: u16 = 176;
+const SHUNT_R_MOHM: u16 = 174;
 const POS_MAX_SOFT_COUNTS: u16 = 44;
 /// The soft limit a wiped store boots: 0, with the other at 0 off, so the
 /// physical stops are the travel.
@@ -1190,7 +1188,7 @@ fn health_reads_the_telemetry_front_and_tracks_dirty() {
         got,
         Health {
             fault_flags: 0x04,
-            config_dirty: false,
+            unsaved: false,
             trim_steps: -3,
             crc_fail_count: 7,
             framing_drop_count: 9,
@@ -1202,7 +1200,7 @@ fn health_reads_the_telemetry_front_and_tracks_dirty() {
         &60u16.to_le_bytes(),
     )
     .expect("config write");
-    assert!(c.health(Id::new(5)).expect("health").config_dirty);
+    assert!(c.health(Id::new(5)).expect("health").unsaved);
 }
 
 #[test]
@@ -1241,7 +1239,7 @@ fn deadline_sync_writes_a_differing_servo_once() {
         read_u16(&mut c, Id::new(5), table::RESPONSE_DEADLINE_US),
         DEFAULT_RESPONSE_DEADLINE_US
     );
-    assert!(c.health(Id::new(5)).expect("health").config_dirty);
+    assert!(c.health(Id::new(5)).expect("health").unsaved);
 }
 
 #[test]
@@ -1257,7 +1255,7 @@ fn deadline_sync_leaves_a_matching_servo_clean() {
         1,
         "the READ only"
     );
-    assert!(!c.health(Id::new(5)).expect("health").config_dirty);
+    assert!(!c.health(Id::new(5)).expect("health").unsaved);
 }
 
 #[test]
@@ -1278,15 +1276,15 @@ fn deadline_sync_sets_the_engine_mirror_with_no_servo_listed() {
     assert!(timeout_us(&mut c) >= STRETCHED_US as u64);
 }
 
-// --- data state and the plant stamp ---
+// --- data state and the unsaved bit ---
 
-/// The checked-in descriptor: the stamp recipe and the register names the
-/// data-state helpers resolve.
+/// The checked-in descriptor: the register names the data-state helpers
+/// resolve.
 const DESCRIPTOR: &str = include_str!("../../descriptors/osc-servo/0.1.json");
 /// The kernel's latched data fault (`kernel/phases/loops/faults.rs` BIT_DATA).
 const BIT_DATA: u8 = 1 << 6;
-/// A never-saved, never-identified servo.
-const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET;
+/// A never-saved servo.
+const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN;
 
 fn descriptor() -> Descriptor {
     Descriptor::parse(DESCRIPTOR).expect("descriptor parses")
@@ -1301,14 +1299,21 @@ fn write_field(c: &mut Client<FakePipe>, id: Id, d: &Descriptor, name: &str, v: 
         .unwrap_or_else(|e| panic!("{name}: {e}"));
 }
 
-fn firmware_stamp(c: &mut Client<FakePipe>) -> u16 {
-    c.pipe_mut()
-        .sim_mut()
-        .servo_table(0, |t| osc_servo_core::stamp::compute(t, None))
+fn unsaved(c: &mut Client<FakePipe>, id: Id) -> bool {
+    c.health(id).expect("health").unsaved
+}
+
+/// The checked-in descriptor carries no stamp: no recipe block, no
+/// `plant_stamp` register.
+#[test]
+fn the_descriptor_carries_no_plant_stamp() {
+    let v: serde_json::Value = serde_json::from_str(DESCRIPTOR).expect("json");
+    assert!(v.get("stamp").is_none());
+    assert!(descriptor().field("plant_stamp").is_none());
 }
 
 #[test]
-fn seeded_servo_boots_identified_and_stamped() {
+fn seeded_servo_boots_identified_and_saved() {
     let d = descriptor();
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
     pipe.seed_calibrated(0);
@@ -1318,9 +1323,7 @@ fn seeded_servo_boots_identified_and_stamped() {
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!((s.flags, s.fault_code), (0, fault::NONE));
     assert_eq!(s.message(), None);
-    let v = c.stamp_verdict(id, &d).expect("verdict");
-    assert!(v.matches(), "{v:?}");
-    assert_eq!(v.stored, firmware_stamp(&mut c));
+    assert!(!unsaved(&mut c, id));
 
     c.reboot(id).expect("reboot");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
@@ -1329,10 +1332,6 @@ fn seeded_servo_boots_identified_and_stamped() {
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, FRESH, "a wiped store boots factory-fresh");
     assert_eq!(s.reasons()[0], Reason::ConfigVirgin);
-    assert_eq!(
-        c.stamp_verdict(id, &d).expect("verdict").stored,
-        osc_client::stamp::UNSTAMPED
-    );
 }
 
 /// Board data alone leaves the servo factory-fresh: the GUI's virgin
@@ -1351,87 +1350,12 @@ fn board_seed_alone_is_factory_fresh() {
     );
 }
 
-/// The host stamp is the firmware's, byte for byte: over the seeded set,
-/// over a set written through the wire, and over tables filled with
-/// arbitrary bytes; the firmware's own checkpoint (a torque-off stamp
-/// write) is the second witness each time.
-#[test]
-fn host_stamp_is_the_firmwares_over_the_same_table() {
-    let d = descriptor();
-    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
-    pipe.seed_calibrated(0);
-    let mut c = Client::connect(pipe).expect("connect");
-    let id = Id::new(1);
-    let stamp = d.stamp().expect("recipe");
-    assert_eq!(stamp.covered().len(), 44);
-
-    let check = |c: &mut Client<FakePipe>, case: &str| {
-        let host = c.plant_stamp(id, &d).expect("host stamp");
-        assert_eq!(host, firmware_stamp(c), "{case}");
-        assert_eq!(c.restamp(id, &d).expect("restamp"), host);
-        let s = c.data_state(id, &d).expect("data state");
-        assert_eq!(s.flags & STAMP_MISMATCH, 0, "{case}: the checkpoint agrees");
-        host
-    };
-    let seeded = check(&mut c, "seeded");
-
-    write_field(&mut c, id, &d, "v_kp_q88", Value::Uint(700));
-    write_field(&mut c, id, &d, "recip_ke_q", Value::Uint(4321));
-    write_field(&mut c, id, &d, "drive_polarity", Value::Bool(false));
-    write_field(&mut c, id, &d, "pos_deadband_counts", Value::Uint(9));
-    write_field(&mut c, id, &d, "l1_q016", Value::Uint(12345));
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        STAMP_MISMATCH,
-        "covered writes mark the set stale"
-    );
-    let wired = check(&mut c, "wire-written");
-    assert_ne!(wired, seeded);
-
-    // Arbitrary bytes in every covered field, past any write rule: the
-    // hash must not depend on what the values mean.
-    let mut x = 0x2545_F491u32;
-    for round in 0..4 {
-        c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
-            let bytes = table_bytes(t);
-            for f in stamp.covered() {
-                for b in &mut bytes[f.addr as usize..f.end() as usize] {
-                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    *b = (x >> 24) as u8;
-                    if f.kind == Kind::Bool {
-                        *b &= 1;
-                    }
-                }
-            }
-        });
-        let table = c
-            .pipe_mut()
-            .sim_mut()
-            .servo_table_mut(0, |t| table_bytes(t).to_vec());
-        let offline = stamp.compute(0, &table, None).expect("offline");
-        let host = check(&mut c, &format!("fill round {round}"));
-        assert_eq!(host, offline, "the span read and the whole table agree");
-    }
-}
-
-/// The table as the flat byte map the firmware hashes (repr(C), padding-free
-/// by the derive's assert, every byte initialized).
-fn table_bytes(t: &mut osc_servo_core::ControlTable) -> &mut [u8] {
-    // SAFETY: see fn doc; the borrow of `t` bounds the slice, and the
-    // caller writes only int and 0/1 bool bytes.
-    unsafe {
-        std::slice::from_raw_parts_mut(
-            (t as *mut osc_servo_core::ControlTable).cast::<u8>(),
-            std::mem::size_of::<osc_servo_core::ControlTable>(),
-        )
-    }
-}
-
 /// The commit sequence on a factory-fresh servo, as `osc-ident save` runs
-/// it: the set, the stamp, SAVE, and only then a clean data state; a
-/// covered edit afterwards reads as a mismatch until a restamp.
+/// it: the set reads unsaved and the image reasons stand until SAVE, which
+/// clears both; an edit afterwards reads unsaved again, and names no
+/// reason.
 #[test]
-fn virgin_servo_commit_sequence_then_a_covered_edit_marks_the_mismatch() {
+fn virgin_servo_commit_sequence_reads_unsaved_until_save() {
     let d = descriptor();
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
     pipe.seed_board(0);
@@ -1440,6 +1364,7 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_marks_the_mismatch() {
 
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, FRESH);
+    assert!(!unsaved(&mut c, id), "a boot reads saved");
 
     // cal: stops, travel, polarity, angles, gear
     for (name, v) in [
@@ -1476,33 +1401,23 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_marks_the_mismatch() {
     ] {
         write_field(&mut c, id, &d, name, Value::Uint(v as u64));
     }
-    // each covered write checkpoints: identified now, never stamped
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        FRESH & !PLANT_UNSET
-    );
-
-    // the stamp, with torque off, is the checkpoint
-    let stamp = c.restamp(id, &d).expect("restamp");
-    assert_eq!(stamp, firmware_stamp(&mut c));
     let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, CONFIG_VIRGIN | CALIB_VIRGIN);
+    assert_eq!(s.flags, FRESH, "writes name no reason");
     assert_eq!(s.reasons(), [Reason::ConfigVirgin, Reason::CalibVirgin]);
+    assert!(unsaved(&mut c, id), "the set is not saved yet");
 
     c.save(id).expect("save");
     let s = c.data_state(id, &d).expect("data state");
     assert_eq!(s.flags, 0, "VIRGIN clears on SAVE");
+    assert!(!unsaved(&mut c, id));
     c.reboot(id).expect("reboot");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
-    assert!(c.stamp_verdict(id, &d).expect("verdict").matches());
+    assert!(!unsaved(&mut c, id));
 
-    // a gain edit: the set is no longer the stamped one
+    // a gain edit: unsaved, no reason
     write_field(&mut c, id, &d, "v_kp_q88", Value::Uint(600));
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, STAMP_MISMATCH);
-    let v = c.stamp_verdict(id, &d).expect("verdict");
-    assert!(!v.matches());
-    assert_eq!(v.stored, stamp);
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    assert!(unsaved(&mut c, id));
 
     // the belt's refusal of an enable, as the fault ISR publishes it (the
     // fake adapter runs no kernel): the operator line is the refusal's
@@ -1514,17 +1429,6 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_marks_the_mismatch() {
     assert_eq!(fault::name(s.fault_code), Some("data"));
     assert_eq!(s.message().as_deref(), Some(data_state::REFUSED));
     assert_eq!(c.health(id).expect("health").fault_flags, BIT_DATA);
-
-    // torque on: the restamp lands unverified until torque drops
-    write_field(&mut c, id, &d, "torque_enable", Value::Bool(true));
-    c.restamp(id, &d).expect("restamp under torque");
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        STAMP_MISMATCH
-    );
-    write_field(&mut c, id, &d, "torque_enable", Value::Bool(false));
-    c.restamp(id, &d).expect("restamp");
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 }
 
 // --- position table ---
@@ -1543,7 +1447,7 @@ fn mg90_a() -> [i16; INTERVALS] {
     points.try_into().expect("256 points")
 }
 
-/// A stamped servo with the mg90-a stops in place of the seeded SG90's.
+/// A saved servo with the mg90-a stops in place of the seeded SG90's.
 fn mg90_servo() -> (Descriptor, Client<FakePipe>, Id) {
     let d = descriptor();
     let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
@@ -1552,8 +1456,9 @@ fn mg90_servo() -> (Descriptor, Client<FakePipe>, Id) {
     let id = Id::new(1);
     write_field(&mut c, id, &d, "raw_min", Value::Uint(209));
     write_field(&mut c, id, &d, "raw_max", Value::Uint(3849));
-    c.restamp(id, &d).expect("restamp");
+    c.save(id).expect("save");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    assert!(!unsaved(&mut c, id));
     (d, c, id)
 }
 
@@ -1571,10 +1476,9 @@ fn servo_lut(c: &mut Client<FakePipe>) -> (u8, [i16; INTERVALS]) {
 }
 
 /// The per-servo switch: the table goes LIVE and reads back point for point,
-/// the COMMIT checkpoint marks the set stale, and the host stamp hashes the
-/// live points exactly as the firmware does, so a restamp clears it.
+/// and the servo reads unsaved until SAVE persists it.
 #[test]
-fn lut_write_goes_live_and_the_stamp_hashes_the_live_points() {
+fn lut_write_goes_live_and_reads_unsaved() {
     let (d, mut c, id) = mg90_servo();
     let points = mg90_a();
     assert_eq!(
@@ -1594,42 +1498,19 @@ fn lut_write_goes_live_and_the_stamp_hashes_the_live_points() {
         c.pos_lut_state(id, &d).expect("state"),
         pos_lut::state::LIVE
     );
-
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, STAMP_MISMATCH, "the hashed points changed");
-    let v = c.stamp_verdict(id, &d).expect("verdict");
-    assert!(!v.matches());
-    let firmware = c
-        .pipe_mut()
-        .sim_mut()
-        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&points)));
-    assert_eq!(v.computed, firmware, "the host hashes the live array");
-    assert_ne!(v.computed, firmware_stamp(&mut c), "not the identity");
-
-    let stamp = c.restamp(id, &d).expect("restamp");
-    assert_eq!(stamp, firmware);
-    let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, 0, "stamped over the live table");
-    assert!(c.stamp_verdict(id, &d).expect("verdict").matches());
-
-    // the same table again: STORE marks the set stale, COMMIT lands the
-    // same hash, so the checkpoint matches with no restamp
-    c.write_pos_lut(id, &d, &points).expect("rewrite");
+    assert!(unsaved(&mut c, id), "the table is not saved yet");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    c.save(id).expect("save");
+    assert!(!unsaved(&mut c, id));
 
-    // an all-zero table lands IDENTITY and hashes like no table
+    // an all-zero table lands IDENTITY
     c.clear_pos_lut(id, &d).expect("clear");
     let lut = c.pos_lut(id, &d).expect("read");
     assert_eq!(
         (lut.state, lut.points),
         (pos_lut::state::IDENTITY, [0; INTERVALS])
     );
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        STAMP_MISMATCH
-    );
-    assert_eq!(c.restamp(id, &d).expect("restamp"), firmware_stamp(&mut c));
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    assert!(unsaved(&mut c, id));
 }
 
 #[test]
@@ -1647,11 +1528,6 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
     assert_eq!(
         c.pos_lut_state(id, &d).expect("state"),
         pos_lut::state::REJECT_ENDS
-    );
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        0,
-        "identity hashes as before"
     );
     let mut shape = good;
     shape[100] = shape[99] - 16;
@@ -1701,45 +1577,25 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
 
 /// Cal moving the stops under a LIVE table: the servo validates a table
 /// only at COMMIT and at boot, so the host re-COMMITs the array in RAM and
-/// the state says whether it still fits the new stops. Either way the
-/// stamp that follows hashes what the kernel applies.
+/// the state says whether it still fits the new stops.
 #[test]
 fn lut_recommit_judges_the_live_table_against_the_new_stops() {
     let (d, mut c, id) = mg90_servo();
     let points = mg90_a();
     c.write_pos_lut(id, &d, &points).expect("write");
-    c.restamp(id, &d).expect("restamp");
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
     // the stops move inside the insets: the table still fits
     write_field(&mut c, id, &d, "raw_min", Value::Uint(232));
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        STAMP_MISMATCH,
-        "a covered write"
-    );
     assert_eq!(c.recommit_pos_lut(id, &d), Ok(pos_lut::state::LIVE));
     assert_eq!(servo_lut(&mut c), (pos_lut::state::LIVE, points));
-    let live = c
-        .pipe_mut()
-        .sim_mut()
-        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&points)));
-    assert_eq!(c.restamp(id, &d).expect("restamp"), live);
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
-    // a stop into the covered span: a nonzero point lands in the low inset,
-    // the kernel runs the identity, the array stays for a rebuild to
-    // overwrite, and the stamp hashes the identity
+    // a stop into the corrected span: a nonzero point lands in the low
+    // inset, the kernel runs the identity, and the array stays for a
+    // rebuild to overwrite
     write_field(&mut c, id, &d, "raw_min", Value::Uint(600));
     assert_eq!(c.recommit_pos_lut(id, &d), Ok(pos_lut::state::REJECT_ENDS));
     assert_eq!(servo_lut(&mut c).0, pos_lut::state::REJECT_ENDS);
     assert_eq!(c.pos_lut(id, &d).expect("read").points, points);
-    assert_eq!(
-        c.data_state(id, &d).expect("data state").flags,
-        STAMP_MISMATCH
-    );
-    assert_eq!(c.restamp(id, &d).expect("restamp"), firmware_stamp(&mut c));
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
     // torque on: refused before the wire, the state stands
     write_field(&mut c, id, &d, "torque_enable", Value::Bool(true));

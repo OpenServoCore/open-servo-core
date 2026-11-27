@@ -170,7 +170,7 @@ pub fn writes_below(log: &Log, end: u16) -> Vec<(u16, u16)> {
 }
 
 /// A servo as it leaves the calibration bench (the client's seed): SAVEd,
-/// stamped, data state clean.
+/// data state clean.
 pub fn seeded() -> (Client<Spy>, Log) {
     let mut inner = FakePipe::new(BaudRate::B1000000, &[1]);
     inner.seed_calibrated(0);

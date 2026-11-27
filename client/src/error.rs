@@ -25,8 +25,8 @@ pub enum Error {
     Servo(ResultCode),
     /// A tinyboot reply whose status is not `Ok`.
     Boot(BootStatus),
-    /// The descriptor cannot name what the call needs (a field, the stamp
-    /// recipe): the servo was never asked.
+    /// The descriptor cannot name what the call needs (a field): the servo
+    /// was never asked.
     Descriptor(String),
     /// A position table write that did not go live.
     Lut(LutError),

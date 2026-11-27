@@ -6,12 +6,10 @@ mod common;
 
 use common::*;
 use futures_lite::future::block_on;
-use osc_client::data_state::{
-    CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN, PLANT_UNSET, STAMP_MISMATCH,
-};
+use osc_client::data_state::{CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN};
 use osc_client::pos_lut;
-use osc_client::stamp;
 use osc_measure::install::{self, AFTER, STORED, Step, check, restore, save};
+use osc_measure::pyjson;
 use osc_measure::set::SetFile;
 use osc_measure::state::{self, Record};
 use serde_json::json;
@@ -59,10 +57,10 @@ fn install_writes_only_what_differs() {
     let (r, steps) = install_set(&mut c, &set);
     r.expect("one plant field installs");
     assert_eq!(wrote(&steps), ["velocity_limit_cps"]);
-    assert!(matches!(steps.last(), Some(Step::Stamped(_))));
     assert_eq!(
         writes_below(&log, CONTROL),
-        [field_addr("velocity_limit_cps"), field_addr("plant_stamp")]
+        [field_addr("velocity_limit_cps")],
+        "the field alone: nothing is stamped"
     );
     assert_eq!(
         read_u16(&mut c, "velocity_limit_cps") as i64,
@@ -153,21 +151,22 @@ fn every_write_is_read_back() {
     assert!(wrote(&steps).iter().any(|w| w == "table"));
 }
 
+/// An install lands volatile: the table LIVE, the check clean, and the
+/// servo unsaved. The check names the servo by its fingerprint, the hash
+/// of its state record, which moves with any byte of the set.
 #[test]
-fn the_table_lands_live_and_the_stamp_matches() {
+fn the_table_lands_live_and_the_install_reads_unsaved() {
     let (mut c, _) = seeded();
     let rec = record();
+    let d = descriptor();
+    let before = block_on(check(&mut c, ID, &d, &rec)).expect("check");
+    assert!(!before.unsaved, "the seed is saved");
     let (r, steps) = install_set(&mut c, &rec);
     r.expect("installs");
-    let d = descriptor();
+    assert!(wrote(&steps).iter().any(|w| w == "table"));
     let lut = block_on(pos_lut::read(&mut c, ID, &d)).expect("lut");
     assert!(lut.live());
     assert_eq!(lut.points, table().points);
-    let v = block_on(stamp::verdict(&mut c, ID, &d)).expect("verdict");
-    assert!(v.matches());
-    // The bench servo's stored set of record carries this stamp.
-    assert_eq!(v.stored, 0xd1c4);
-    assert_eq!(steps.last(), Some(&Step::Stamped(0xd1c4)));
     let checked = block_on(check(&mut c, ID, &d, &rec)).expect("check");
     assert!(
         checked.clean(),
@@ -175,7 +174,14 @@ fn the_table_lands_live_and_the_stamp_matches() {
         checked.differences,
         checked.data
     );
-    assert_eq!(checked.stamp, "0xd1c4 = live set");
+    assert!(checked.unsaved, "installed, not saved");
+    let state = block_on(state::read(&mut c, ID, &d)).expect("state");
+    assert_eq!(checked.servo, state.hash(&d));
+    assert_eq!(checked.servo, state.record(&d)["hash"]);
+    assert_eq!(checked.servo.len(), 64);
+    assert_ne!(checked.servo, before.servo, "the set moved the bytes");
+    let again = block_on(check(&mut c, ID, &d, &rec)).expect("check");
+    assert_eq!(again.servo, checked.servo, "a read moves nothing");
 }
 
 #[test]
@@ -281,8 +287,8 @@ fn save_writes_the_backup_before_anything_else() {
 }
 
 /// A servo never saved boots `CONFIG_VIRGIN | CALIB_VIRGIN`, which only
-/// the SAVE retires: the check before it is the set landed and stamped,
-/// and after it the servo boots the set, data state clean.
+/// the SAVE retires: the check before it is the set landed, and after it
+/// the servo boots the set, data state clean, nothing unsaved.
 #[test]
 fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
     let (mut c, log) = factory();
@@ -333,7 +339,9 @@ fn save_on_a_factory_fresh_servo_saves_and_boots_clean() {
         checked.differences,
         checked.data
     );
-    assert_eq!(checked.stamp, "0xd1c4 = live set");
+    assert!(!checked.unsaved);
+    let after: serde_json::Value = serde_json::from_slice(&sink.files[AFTER]).expect("json");
+    assert_eq!(checked.servo, after["hash"], "the state the SAVE left");
 }
 
 /// The check before the SAVE refuses a set that did not land, never a
@@ -345,12 +353,13 @@ fn the_check_before_a_save_refuses_only_a_set_that_did_not_land() {
         unowned: vec![],
         data: "said".into(),
         flags,
-        stamp: "0xd1c4 = live set".into(),
+        unsaved: true,
+        servo: "0".repeat(64),
     };
     for flags in [
         0,
         CONFIG_VIRGIN | CALIB_VIRGIN | CONFIG_STALE,
-        CONFIG_CORRUPT | STAMP_MISMATCH | PLANT_UNSET,
+        CONFIG_CORRUPT,
     ] {
         let c = checked(vec![], flags);
         assert!(c.clean(), "{flags:#04x}");
@@ -545,5 +554,59 @@ fn the_tool_has_no_factory_path() {
     assert!(log.borrow().iter().all(|e| !matches!(e, Ev::Mgmt(_))));
     let s = block_on(state::read(&mut c, ID, &d)).expect("state");
     assert_eq!(s.data.flags & CONFIG_CORRUPT, CONFIG_CORRUPT, "information");
-    assert_eq!(s.data.flags & STAMP_MISMATCH, 0);
+}
+
+/// A record kept while servos carried a plant stamp (CALIB layout 7: a
+/// `stamp` line and `plant_stamp` among its fields, both under its hash)
+/// still restores: it reads under the hash it was written with, and the
+/// register no servo has any more is never written.
+#[test]
+fn a_record_from_a_stamped_servo_still_restores() {
+    let (mut c, log) = on_record();
+    let d = descriptor();
+    let mut doc = block_on(state::read(&mut c, ID, &d))
+        .expect("state")
+        .record(&d);
+    let m = doc.as_object_mut().expect("object");
+    m.remove("unsaved");
+    m.remove("hash");
+    m.insert("stamp".into(), json!("0xd1c4 = live set"));
+    m["fields"]
+        .as_object_mut()
+        .expect("fields")
+        .insert("plant_stamp".into(), json!(53700));
+    m["writable"]
+        .as_array_mut()
+        .expect("writable")
+        .push(json!("plant_stamp"));
+    let old_hash = pyjson::hash(&json!({
+        "addr": doc["addr"],
+        "raw": doc["raw"],
+        "pos_table": {"state": doc["pos_table"]["state"], "points_sha1": doc["pos_table"]["points_sha1"]},
+        "wide_codes": doc["wide_codes"],
+        "stamp": doc["stamp"],
+        "data_state": doc["data_state"],
+    }));
+    let mut bad = doc.clone();
+    bad["hash"] = json!(state::state_hash(&doc));
+    assert!(Record::parse(&bad.to_string()).is_err(), "not its hash");
+    doc["hash"] = json!(old_hash);
+    let r = Record::parse(&doc.to_string()).expect("the old record reads");
+    assert!(
+        r.adopted(json!({}))
+            .expect("adopted")
+            .value("plant_stamp")
+            .is_none(),
+        "never written"
+    );
+    log.borrow_mut().clear();
+    block_on(restore(
+        &mut c,
+        ID,
+        &d,
+        &doc.to_string(),
+        json!({}),
+        &mut Vec::new(),
+    ))
+    .expect("restores");
 }

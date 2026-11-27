@@ -13,9 +13,10 @@ pub struct TelemetryCommon {
     /// The sec 5.3 alarm register -- ALERT's read target.
     #[ct_field(access = ro)]
     pub fault_flags: u8,
-    /// Bit 0 = config-dirty, modified-since-save (sec 9.4): set when a
-    /// committed write lands in CONFIG or PROFILE, cleared by a successful
-    /// SAVE; boot state is clean. Bits 1-7 reserved.
+    /// Bit 0 = unsaved (sec 9.4): set when a committed write lands in
+    /// CONFIG, CALIB or PROFILE or a position table STORE or COMMIT runs,
+    /// cleared by a successful SAVE; boot state is saved. Bits 1-7
+    /// reserved.
     #[ct_field(access = ro)]
     pub status_flags: u8,
     #[ct_field(access = ro)]
@@ -44,12 +45,10 @@ pub struct TelemetryMode {
     /// boxcar, 0 = none closed.
     #[ct_field(access = ro)]
     pub omega_hat_src: u8,
-    /// Why the persisted images and the identified set are not this
-    /// servo's own, one bit per reason (`data_state` module consts); 0 =
-    /// they are. Information for the host: no reason refuses a mode.
-    /// Written by boot, SAVE and the bus dispatcher's commits (a covered
-    /// write marks STAMP_MISMATCH, a stamp write and a LUT COMMIT
-    /// checkpoint) - the one TELEMETRY-MODE byte the kernel does not own.
+    /// Why the persisted images are not this servo's own, one bit per
+    /// reason (`data_state` module consts); 0 = they are. Information for
+    /// the host: no reason refuses a mode. Written by boot and SAVE - the
+    /// one TELEMETRY-MODE byte the kernel does not own.
     #[ct_field(access = ro)]
     pub data_flags: u8,
 }

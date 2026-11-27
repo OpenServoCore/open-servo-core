@@ -249,13 +249,13 @@ mod tests {
 
     #[test]
     fn data_state_mirrors_name_text_and_the_refusal() {
-        use osc_client::data_state::{self, CALIB_STALE, PLANT_UNSET, STAMP_MISMATCH, fault};
+        use osc_client::data_state::{self, CALIB_STALE, CONFIG_VIRGIN, fault};
         let s = DataState::from(data_state::DataState {
-            flags: CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET,
+            flags: CALIB_STALE | CONFIG_VIRGIN,
             fault_code: fault::DATA,
         });
         let names: Vec<&str> = s.reasons.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["CALIB_STALE", "STAMP_MISMATCH", "PLANT_UNSET"]);
+        assert_eq!(names, ["CALIB_STALE", "CONFIG_VIRGIN"]);
         assert_eq!(s.fault.as_deref(), Some("data"));
         assert_eq!(s.message.as_deref(), Some(data_state::REFUSED));
         let clean = DataState::from(data_state::DataState {

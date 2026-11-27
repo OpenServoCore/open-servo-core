@@ -29,9 +29,8 @@
 //! otherwise. Boot loads the points beside the calibration and validates
 //! them against the stops it just overlaid: a table that fails, or is all
 //! zero, is the identity. An image that does not load leaves the identity
-//! too, under the CALIB_* reason; the plant stamp (which covers the
-//! effective points) is what reports a lost or stale table as
-//! `STAMP_MISMATCH`.
+//! too, under the CALIB_* reason; a table lost that way is the host's
+//! check against its set to name.
 
 use control_table::{RegisterFile, RegisterMap};
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
@@ -54,14 +53,13 @@ pub const CALIB_IMAGE_LEN: usize = HEADER_LEN + CALIB_LEN + LUT_LEN;
 
 pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout or unit change; a mismatched image boots
-/// `ImageState::Stale` (board defaults stand, closed loop gated) rather
-/// than migrating.
+/// `ImageState::Stale` (board defaults stand) rather than migrating.
 pub const IMAGE_VERSION: u8 = 12;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 7;
+pub const CALIB_IMAGE_VERSION: u8 = 8;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -446,8 +444,8 @@ pub fn boot_overlay(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> B
 /// LIVE only if they validate against the stops just overlaid and correct
 /// something, the rule a COMMIT lands by (`pos_lut::verdict`: the all-zero
 /// image SAVE persists for the identity reads IDENTITY); otherwise the
-/// array returns to the identity, and the stamp checkpoint reports the
-/// loss. Bringup-only, pre-IRQ; caller re-seeds RO board facts after.
+/// array returns to the identity. Bringup-only, pre-IRQ; caller re-seeds
+/// RO board facts after.
 pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> BootPick {
     let (img, next_slot) = pick_newest(CalibImage::parse(slot_a), CalibImage::parse(slot_b), |i| {
         i.seq
@@ -1084,6 +1082,30 @@ mod tests {
         );
         let m = sh.table.with(|t| t.calib.motor);
         assert_eq!((m.r_q12, m.g_window_q016), (0, 0), "seeds stand");
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+    }
+
+    /// CALIB images SAVEd with the plant stamp (CALIB 7, `plant_stamp` at
+    /// 0x0AE) boot stale: the gear class and the ADC wide-code map sit 2 B
+    /// later there.
+    #[test]
+    fn calib_images_of_the_stamp_layout_are_stale() {
+        use crate::regions::calib::addr::gear::GEAR_CLASS;
+        let mut old = calib_image_of(7);
+        old[HEADER_LEN + (GEAR_CLASS + 2 - CALIB_BASE_ADDR) as usize] = 2;
+        reseal_version(&mut old, 7);
+        let sh = seeded_servo();
+        assert_eq!(
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Stale
+        );
+        let seeded = seeded_servo().table.with(|t| t.calib.gear.gear_class);
+        assert_ne!(seeded, 2);
+        assert_eq!(
+            sh.table.with(|t| t.calib.gear.gear_class),
+            seeded,
+            "seeds stand"
+        );
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 

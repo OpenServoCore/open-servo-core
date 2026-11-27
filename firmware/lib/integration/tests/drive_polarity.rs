@@ -1,8 +1,8 @@
 //! A motor wired the other way round from `drive_polarity`, and a load on
 //! a hold, on the bench MG90 plant with its saved set, the mg90-a position
 //! table and the soft limits of its 2S pilot envelope. The kernel does not
-//! read the wiring at run time: `drive_polarity` is a calibration fact
-//! under the plant stamp (protocol sec 5.7). A wrong one inverts every
+//! read the wiring at run time: `drive_polarity` is a calibration fact the
+//! identification writes (protocol sec 5.7). A wrong one inverts every
 //! closed loop and the soft-limit walls with it, and what ends the run is
 //! what ends any losing drive, the position error timer and the press. A
 //! load the limit cannot hold is the press's case too.
@@ -131,8 +131,7 @@ impl Servo {
         })
     }
 
-    /// A committed `drive_polarity` write, as the dispatcher lands one: a
-    /// covered write, so the stamp reads stale from here.
+    /// A committed `drive_polarity` write, as the dispatcher lands one.
     fn write_polarity(&self, polarity: bool) {
         self.sh.config_commit_begin();
         self.sh
@@ -447,8 +446,8 @@ fn a_locked_rotor_latches_stall_on_either_wiring() {
     }
 }
 
-/// A `drive_polarity` write runs as written, never stamped: no data state
-/// refuses the next enable, so the loop runs under the new polarity and a
+/// A `drive_polarity` write runs as written: no data state refuses the
+/// next enable, so the loop runs under the new polarity and a
 /// motor wired the other way round goes to its goal. A wrong value is the
 /// reversed-motor pins' case: the shaft runs to its stop and a timer
 /// latches.

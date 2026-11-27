@@ -1,6 +1,6 @@
 //! `tune`: the speed gain a closed-loop check settles, from the rules'
 //! starting gain down. A try at a time: the rules to a set at the try's
-//! gain, the set installed volatile and stamped, the check. The first set
+//! gain, the set installed volatile, the check. The first set
 //! the check accepts is the result; the tune never saves. A tune that ends
 //! without one reboots the servo onto its stored state.
 
@@ -256,7 +256,7 @@ where
             Ok(_) => tune::next(&verdict, &failed, why.as_deref()),
         };
         lines.push(format!(
-            "{head}: installed and stamped; the check {verdict}{}; {}",
+            "{head}: installed; the check {verdict}{}; {}",
             if failed.is_empty() {
                 String::new()
             } else {
@@ -274,7 +274,7 @@ where
             kp,
             k0,
             &file,
-            json!({"install": "installed and stamped", "verdict": verdict, "failed_on": failed,
+            json!({"install": "installed", "verdict": verdict, "failed_on": failed,
                    "why": why, "worst": worst, "check": format!("{dir}/{}", verify::RESULT),
                    "next": match &next { Next::Accept => "accept", Next::Lower => "lower", Next::Stop(_) => "stop" }}),
         ));
@@ -794,7 +794,7 @@ mod tests {
         }
         assert_eq!(l.iter().filter(|e| **e == Ev::Check).count(), 3);
         // between a try's check and the next install only the speed gains
-        // and the stamp move: every other field is the same set's
+        // move: every other field is the same set's
         let checks: Vec<usize> = (0..l.len()).filter(|&k| l[k] == Ev::Check).collect();
         let name_at = |a: u16| {
             d.fields
@@ -814,13 +814,7 @@ mod tests {
             moved.dedup();
             assert_eq!(
                 moved,
-                [
-                    "p_kp_q88",
-                    "plant_stamp",
-                    "v_kaw_q412",
-                    "v_ki_q412",
-                    "v_kp_q88"
-                ],
+                ["p_kp_q88", "v_kaw_q412", "v_ki_q412", "v_kp_q88"],
                 "{moved:?}"
             );
         }
@@ -969,7 +963,7 @@ mod tests {
         let doc = json_at(&out.join("tune.json"));
         let tries = doc["tries"].as_array().expect("tries");
         assert_eq!(tries.len(), 1, "{doc}");
-        assert_eq!(tries[0]["install"], "installed and stamped", "{doc}");
+        assert_eq!(tries[0]["install"], "installed", "{doc}");
         assert_eq!(
             tries[0]["failed_on"],
             json!(["the first enable holds still"]),

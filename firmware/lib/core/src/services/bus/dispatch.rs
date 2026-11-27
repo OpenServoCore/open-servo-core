@@ -4,7 +4,7 @@ use control_table::{RegisterFile, Snapshot};
 use heapless::Vec;
 use osc_protocol::FrameBytes;
 use osc_protocol::frame::uid_prefix_matches;
-use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
+use osc_protocol::table::STATUS_FLAG_UNSAVED;
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::kernel;
@@ -242,28 +242,34 @@ impl Dispatcher<'_> {
         );
     }
 
-    /// The post-commit bookkeeping every committed span gets: the dirty
+    /// The post-commit bookkeeping every committed span gets: the unsaved
     /// bit, a position table command, a stall permit grant, then the
-    /// data-state consequences of a covered or stamp write.
+    /// generation a posted COMMIT's verdict is judged under.
     fn after_commit(&self, addr: u16, len: u16) {
-        self.mark_dirty_if_persistent(addr, len);
+        self.mark_unsaved_if_persistent(addr, len);
         self.shared.pos_lut_after_commit(addr, len);
         self.shared.permit_after_commit(addr, len);
         self.shared.data_state_after_commit(addr, len);
     }
 
-    /// sec 9.4 modified-since-save: a committed span landing in CONFIG or
-    /// PROFILE sets the telemetry dirty bit (a successful SAVE clears it).
-    fn mark_dirty_if_persistent(&self, addr: u16, len: u16) {
-        const CONFIG_END: u16 = CONFIG_BASE_ADDR + CONFIG_REGION_SIZE;
+    /// sec 9.4 unsaved: a committed span landing in CONFIG, CALIB or
+    /// PROFILE sets the telemetry unsaved bit (a successful SAVE clears
+    /// it); a position table STORE or COMMIT marks it at its run
+    /// (`pos_lut_after_commit`).
+    fn mark_unsaved_if_persistent(&self, addr: u16, len: u16) {
+        const CALIB_END: u16 = CALIB_BASE_ADDR + CALIB_REGION_SIZE;
         const PROFILE_END: u16 = PROFILE_BASE_ADDR + PROFILE_REGION_SIZE;
+        // CONFIG starts at 0 and CALIB follows it, so "before CALIB's end"
+        // is their whole intersect test.
+        const _: () = assert!(
+            CONFIG_BASE_ADDR == 0 && CALIB_BASE_ADDR == CONFIG_BASE_ADDR + CONFIG_REGION_SIZE
+        );
         let end = addr.saturating_add(len);
-        // CONFIG starts at 0, so "before its end" is its whole intersect test.
-        let hits = addr < CONFIG_END || (addr < PROFILE_END && end > PROFILE_BASE_ADDR);
+        let hits = addr < CALIB_END || (addr < PROFILE_END && end > PROFILE_BASE_ADDR);
         if hits {
             self.shared
                 .table
-                .with_mut(|t| t.telemetry.common.status_flags |= STATUS_FLAG_CONFIG_DIRTY);
+                .with_mut(|t| t.telemetry.common.status_flags |= STATUS_FLAG_UNSAVED);
         }
     }
 
@@ -540,7 +546,7 @@ impl Dispatcher<'_> {
         }
         self.shared.table.with_mut(|t| {
             t.config.common.id = new_id;
-            t.telemetry.common.status_flags |= STATUS_FLAG_CONFIG_DIRTY;
+            t.telemetry.common.status_flags |= STATUS_FLAG_UNSAVED;
         });
         reply.set_id(new_id);
         Self::ack(alert, ctx, Ok(()), reply);
@@ -571,10 +577,9 @@ impl Dispatcher<'_> {
     /// the ack leaves AFTER the store returns: ack == durable, and a failed
     /// program surfaces as `hardware` instead of a lie. A posted data job
     /// runs here first (a COMMIT the main loop has not judged yet must not
-    /// persist as the identity), the position table settles to what the kernel
-    /// applies and a data-state checkpoint precedes the program (a stale
-    /// stamp still persists: the reboot recomputes it anyway); success
-    /// retires every image reason (`data_state::SAVE_CLEARS`).
+    /// persist as the identity) and the position table settles to what the
+    /// kernel applies; success clears the unsaved bit and retires every
+    /// image reason (`data_state::SAVE_CLEARS`).
     fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
         if self
             .shared
@@ -585,13 +590,12 @@ impl Dispatcher<'_> {
         }
         self.shared.data_job_service();
         self.shared.pos_lut_settle();
-        self.shared.data_state_checkpoint();
         let saved = self.persist_table();
         let code = match saved {
             Ok(()) => {
                 self.shared
                     .table
-                    .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_FLAG_CONFIG_DIRTY);
+                    .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_FLAG_UNSAVED);
                 self.shared.data_state_saved();
                 ResultCode::Ok
             }

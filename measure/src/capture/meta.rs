@@ -53,7 +53,7 @@ pub fn servo(state: &State, d: &Descriptor, line: &Line) -> Map<String, Value> {
         "plant".into(),
         json!({
             "lut_state": state.table_state(),
-            "stamp": state.stamp_said(),
+            "servo": state.hash(d),
             "data_state": state.data_said(),
         }),
     );

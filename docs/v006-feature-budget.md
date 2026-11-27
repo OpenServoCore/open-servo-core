@@ -64,7 +64,7 @@ Columns:
 | TEL streaming | 1,744: out of line 1,256 (row 222, head 220, pickup 142, lane 672), the rest the inline gate and lane poll, the bus-side post and the row encoding | 436 (two 202 B frame images, the arm mailbox) + 48 lane state in `KERNEL` | A row is one DMA copy of its longer chunk (CH6, halfwords), armed first, and a CPU copy of the shorter while it runs, as the tick block is published: per streamed tick S: 65 ins over the gate's 25 (54 with one chunk), E 129-153 HCLK; a burst's first tick takes the bus-built copies, 178 ins in all over the plain tick (E 250 HCLK over a row). The ADC DMA lands the scans in the tick block and its publish runs every tick, inside the measured `budget::KERNEL` rows (E 0-58 HCLK a phase over the frame copy it replaced). Burst TX by DMA costs ~0 (M) | runtime (`tel_count` 0) |
 | Dispatch + control table (map, rules, staging) | 6,032 | table 1,024, write staging 252, misc 34 | per frame | core |
 | Persistence (SAVE/FACTORY, flash driver) | 3,126 | 8 | on SAVE only (blocking flash program) | core |
-| Stamp + data state | 1,046 | - | off the tick | core |
+| Data state, with the plant stamp of this image (the stamp is removed since: -1,012 B of flash on the image that dropped it) | 1,046 | - | off the tick | core |
 | Chip HAL, init, scan, motor write | 6,430 | small statics ~44 | motor write runs every tick (38 ins, inline in the kernel ISR) | core |
 | Runtime glue (ISRs, main loop, registry, statics, LED, own `memcpy`/`memset`) | 1,884 | LED 16 | - | core |
 | Third party (core helpers with no project call site, qingke-rt, critical-section) | 742 | - | - | core |

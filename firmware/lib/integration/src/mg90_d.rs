@@ -49,7 +49,7 @@ pub const WINDOW_G: f64 = 3.81e-3 * CURRENT_COUNTS_PER_A / TERMINAL_COUNTS_PER_V
 /// shaft motion, not the pot.
 pub const POT_RESIDUAL: &[(f64, f64)] = &[(0.64, 21.0), (1.29, 47.0), (0.64, 86.0), (0.95, 191.0)];
 
-/// Set of record stamped 0xec1d, every field it stores, its resistance as
+/// Set of record, every field it stores, its resistance as
 /// the winding at 25.00 C, the field's meaning. The window conductance is
 /// the whole-pulse fit with the sample's lateness in it, 3.93 mS; the
 /// friction line is the one refit under it over the 18 legs and the steady

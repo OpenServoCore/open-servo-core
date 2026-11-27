@@ -13,7 +13,7 @@ use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
 use osc_client::{
-    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, data_state, mgmt, pos_lut, stamp,
+    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, data_state, mgmt, pos_lut,
 };
 use osc_protocol::build;
 use tsify::{Ts, Tsify};
@@ -27,7 +27,7 @@ use crate::descriptor::Descriptor;
 use crate::types::FakeServo;
 use crate::types::{
     Alive, BaudRate, BootRow, DataState, DeadlineRewrite, Found, Health, Identity, InstallVerdict,
-    LinkInfo, Ping, PosLut, Rails, StampVerdict, TelBurst, TelChunk, tel_chunks,
+    LinkInfo, Ping, PosLut, Rails, TelBurst, TelChunk, tel_chunks,
 };
 
 /// Floor under `setGuard`: below this the watchdog would fire inside a
@@ -194,23 +194,6 @@ impl OscClient {
         Ok(DataState::from(s).into_ts()?)
     }
 
-    /// The stored `plant_stamp` beside the stamp the live covered set
-    /// computes to (the descriptor's `stamp` recipe), over the position table
-    /// points the kernel applies.
-    #[wasm_bindgen(js_name = plantStamp)]
-    pub async fn plant_stamp(&self, id: u8, d: &Descriptor) -> Result<Ts<StampVerdict>, JsError> {
-        let v = cmd!(self, |c| stamp::verdict(c, Id::new(id), d.inner()).await?);
-        Ok(StampVerdict::from(v).into_ts()?)
-    }
-
-    /// Stamp the set the servo holds now; resolves to the stamp written.
-    /// The servo verifies it only with torque off - under torque it lands
-    /// unverified and STAMP_MISMATCH waits for the next torque-off
-    /// checkpoint.
-    pub async fn restamp(&self, id: u8, d: &Descriptor) -> Result<u16, JsError> {
-        Ok(cmd!(self, |c| stamp::restamp(c, Id::new(id), d.inner()).await?))
-    }
-
     /// The position table as the servo holds it: every page FETCHed, with
     /// `pos_lut_state`.
     #[wasm_bindgen(js_name = readPosLut)]
@@ -228,8 +211,7 @@ impl OscClient {
     /// STORE the 256 points, COMMIT and read them back: resolves once the
     /// table is LIVE point for point (IDENTITY when every point is zero),
     /// rejects with the servo's reason (ends, shape, torque). Torque must
-    /// be off. Never stamps: the COMMIT checkpoint leaves STAMP_MISMATCH
-    /// until the set is re-identified.
+    /// be off. The servo reads unsaved after it until SAVE.
     #[wasm_bindgen(js_name = writePosLut)]
     pub async fn write_pos_lut(
         &self,
@@ -438,7 +420,7 @@ impl OscClient {
 impl OscClient {
     /// A fleet of `ids` on a simulated bus, already past GET_INFO. No hardware,
     /// no user gesture; each servo's UID is derived from its id, and every
-    /// servo boots calibrated, identified and stamped (`dataState` clean).
+    /// servo boots calibrated, identified and saved (`dataState` clean).
     pub async fn fake(
         #[wasm_bindgen(unchecked_param_type = "number[]")] ids: Vec<u8>,
     ) -> Result<OscClient, JsError> {

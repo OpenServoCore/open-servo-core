@@ -22,7 +22,6 @@ use crate::mgmt::{self, CalTrace, Found, Uid};
 use crate::pipe::Pipe;
 use crate::pos_lut::{self, PosLut};
 use crate::session::{BusMode, LinkInfo};
-use crate::stamp::{self, Verdict};
 #[cfg(feature = "bench")]
 use crate::wire::EdgeDrain;
 
@@ -321,20 +320,6 @@ impl<P: Pipe> Client<P> {
         block_on(calib::gear_class(&mut self.0, id, d))
     }
 
-    /// The stamp of the set the servo holds now.
-    pub fn plant_stamp(&mut self, id: Id, d: &Descriptor) -> Result<u16, Error> {
-        block_on(stamp::compute(&mut self.0, id, d))
-    }
-
-    pub fn stamp_verdict(&mut self, id: Id, d: &Descriptor) -> Result<Verdict, Error> {
-        block_on(stamp::verdict(&mut self.0, id, d))
-    }
-
-    /// Stamp the live set; the firmware verifies it only with torque off.
-    pub fn restamp(&mut self, id: Id, d: &Descriptor) -> Result<u16, Error> {
-        block_on(stamp::restamp(&mut self.0, id, d))
-    }
-
     /// The position table as the servo holds it (every page FETCHed) and its
     /// state.
     pub fn pos_lut(&mut self, id: Id, d: &Descriptor) -> Result<PosLut, Error> {
@@ -345,8 +330,7 @@ impl<P: Pipe> Client<P> {
         block_on(pos_lut::state(&mut self.0, id, d))
     }
 
-    /// STORE, COMMIT and verify a position table; torque must be off. Never
-    /// stamps.
+    /// STORE, COMMIT and verify a position table; torque must be off.
     pub fn write_pos_lut(
         &mut self,
         id: Id,

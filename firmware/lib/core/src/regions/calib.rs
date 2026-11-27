@@ -175,23 +175,11 @@ pub struct CalibGear {
 /// The ADC's wide codes, per board since the converter is the chip's:
 /// slot `k` belongs to code `(k << 8) | 0xff` on any channel and holds half
 /// the span the converter skips after that code, Q4 counts; 0 = no wide
-/// code there (`adc` module). Host-written by calibration, outside the
-/// plant stamp.
+/// code there (`adc` module). Host-written by calibration.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibAdc {
     pub adc_wide_mid_q4: [u8; crate::adc::ADC_WIDE_SLOTS],
-}
-
-/// The plant stamp (`stamp` module): the host's CRC over the identified and
-/// calibrated set plus the effective position table, 0 = never stamped.
-/// Firmware recomputes it at every checkpoint; a mismatch is
-/// `STAMP_MISMATCH`. Sits right after the blocks a fit writes so one WRITE
-/// can carry the whole identified set and its stamp.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct CalibStamp {
-    pub plant_stamp: u16,
 }
 
 /// Calibration section: always writable (normal field validation applies),
@@ -208,12 +196,11 @@ pub struct CalibRegs {
     pub motor_ext: CalibMotorExt,
     pub pot: CalibPot,
     pub kinematics: CalibKinematics,
-    pub stamp: CalibStamp,
     pub sense: CalibSense,
     pub sense_ext: CalibSenseExt,
     pub pwm: CalibPwm,
     pub gear: CalibGear,
     pub adc: CalibAdc,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 155],
+    pub _rsvd_tail: [u8; 157],
 }
