@@ -802,7 +802,24 @@ mod tests {
         );
         // the profile states the stall torque a yield torque is taken over
         assert_eq!(a.stall_row().and_then(|s| s.torque_kg_cm), Some(1.8));
-        assert!(v1.thermal.is_none(), "the profile states no heat model");
+        let heat = v1
+            .thermal
+            .expect("the profile states the record's heat model");
+        let value = |q: Option<osc_measure::Quantity>| q.map(|q| q.value);
+        assert_eq!(
+            [
+                value(heat.fast_tau_s),
+                value(heat.fast_gain_c_per_w),
+                value(heat.slow_tau_s),
+                value(heat.slow_gain_c_per_w)
+            ],
+            [
+                Some(2.3752191114749404),
+                Some(20.44571009950305),
+                Some(128.92),
+                Some(76.7616)
+            ]
+        );
     }
 
     /// `rules` on the mg90-d inputs writes a set that `check` reads as the

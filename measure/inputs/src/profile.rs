@@ -11,6 +11,11 @@ use crate::why;
 
 pub const SCHEMA: &str = "osc.servo-profile/1";
 
+/// A heat node's time constant, s: under the least it rounds to 0 in
+/// storage, which turns the node off; the most is what the field holds.
+pub const TAU_MIN_S: f64 = 0.5;
+pub const TAU_MAX_S: f64 = 65535.0;
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(
     feature = "tsify",
@@ -53,7 +58,7 @@ pub struct ServoProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_stopper: Option<Stopper>,
     /// The winding's heat model while thermal identification is out of the
-    /// tool; none leaves the servo's heat values as they are.
+    /// tool, entered by the user; a run is refused without it.
     #[serde(default)]
     pub thermal: Option<HeatModel>,
     #[serde(default)]
@@ -228,14 +233,18 @@ impl ServoProfile {
             return Err(why::operating_v());
         }
         if let Some(h) = self.thermal {
-            let all = [
-                h.fast_tau_s,
-                h.fast_gain_c_per_w,
-                h.slow_tau_s,
-                h.slow_gain_c_per_w,
-            ];
-            if !all.iter().all(|v| v.is_finite() && *v > 0.0) {
-                return Err("The winding temperature estimate needs every heat value over 0: the profile's thermal states one that is not; leave thermal out to keep the servo's own".into());
+            if ![h.fast_gain_c_per_w, h.slow_gain_c_per_w]
+                .iter()
+                .all(|v| v.is_finite() && *v > 0.0)
+            {
+                return Err("The winding temperature estimate needs each node's gain over 0: the profile's thermal states one that is not".into());
+            }
+            for (name, tau) in [("fast_tau_s", h.fast_tau_s), ("slow_tau_s", h.slow_tau_s)] {
+                if !(tau.is_finite() && (TAU_MIN_S..=TAU_MAX_S).contains(&tau)) {
+                    return Err(format!(
+                        "A time constant is stored in whole seconds, and one under 0.5 s stores as 0, which turns its node off: the profile's thermal.{name} is {tau} s; state it at least 0.5 s and at most {TAU_MAX_S} s"
+                    ));
+                }
             }
         }
         Ok(())

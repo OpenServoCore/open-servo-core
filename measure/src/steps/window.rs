@@ -582,7 +582,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &WindowInputs<'_>) -> Result<B
     let np = i.nameplate;
     np.check_user().map_err(Refused)?;
     let thermal = i.thermal.ok_or_else(|| {
-        Refused("no thermal values entered (--thermal): the heat of a drive cannot be priced, so nothing drives".into())
+        Refused("no heat model (the profile's thermal): the heat of a drive cannot be priced, so nothing drives".into())
     })?;
     let line = tel::line(rig.c, rig.id).await?;
     line.admit(Layout::Raw)?;

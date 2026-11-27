@@ -1787,9 +1787,7 @@ mod tests {
                 serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
                     .expect("nameplate");
             let board: Board = steps::testkit::board();
-            let thermal: ThermalInputs =
-                serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
-                    .expect("thermal");
+            let thermal: ThermalInputs = crate::steps::testkit::thermal();
             let mut f = Facts::new(&np, c.rail_v);
             f.r = Some(Resistance {
                 ohm: c.r_ohm,

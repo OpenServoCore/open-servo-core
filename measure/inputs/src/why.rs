@@ -115,3 +115,14 @@ pub fn current_limit() -> String {
         "the share of the stall current, the stated volts over R, over 0 and at most 1; derate_other in a version 0 nameplate",
     )
 }
+
+/// No heat model: the run cannot price a drive's heat or write the winding
+/// estimate, so it is refused before the bus.
+pub fn thermal() -> String {
+    no_usable(
+        "The run prices the heat of every drive and writes the winding temperature estimate from the motor's heat model",
+        "profile",
+        "thermal",
+        "fast_tau_s, fast_gain_c_per_w, slow_tau_s and slow_gain_c_per_w: each node's time constant, s, and its rise over the board NTC per watt of copper loss, C/W",
+    ) + ": enter all four"
+}

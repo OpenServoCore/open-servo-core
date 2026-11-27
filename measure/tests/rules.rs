@@ -1,7 +1,7 @@
 //! The rules against the mg90-d set of record, fed the notebooks' results
 //! of record (`testdata/mg90-d`, each value with its source file's sha1),
-//! the board facts the bench servo publishes, and the record's thermal values as user
-//! inputs.
+//! the board facts the bench servo publishes, and the record profile's heat
+//! model.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -33,9 +33,15 @@ fn inputs() -> Inputs {
         measured,
         nameplate: load::<Nameplate>("testdata/mg90-d/nameplate.json"),
         policy: load::<Policy>("testdata/mg90-d/policy.json"),
-        thermal: load::<ThermalInputs>("testdata/mg90-d/thermal.json"),
+        thermal: thermal(),
         tuning: Tuning::default(),
     }
+}
+
+fn thermal() -> ThermalInputs {
+    let p: osc_ident_inputs::ServoProfile = load("testdata/mg90-d/profile.json");
+    let h = p.thermal.expect("the profile's heat model");
+    ThermalInputs::of_profile(&h, "testdata/mg90-d/profile.json", "")
 }
 
 #[derive(Deserialize)]
@@ -302,7 +308,7 @@ fn a_missing_input_holds_the_field_and_names_it() {
     assert_eq!(held(&set, "thermal_tau2_s"), "thermal.slow_tau_s");
     assert_eq!(held(&set, "th_rise2_q016"), "thermal.slow_gain_c_per_w");
     assert_eq!(bound(&set, "th_rise_q016"), 434);
-    i.thermal = load("testdata/mg90-d/thermal.json");
+    i.thermal = thermal();
     i.thermal.slow_tau_s = None;
     assert!(refused(&build(&i), "th_rise2_q016").contains("entered whole"));
 
@@ -503,16 +509,57 @@ fn a_policy_naming_the_old_keys_still_reads() {
     assert!(e.starts_with("The policy states observer twice"), "{e}");
 }
 
+/// On a board whose NTC sits on the can, the NTC is the body node: the
+/// profile's slow node binds 0 and the set says why; the rotor node stays.
 #[test]
 fn a_board_with_its_ntc_on_the_can_has_no_body_node() {
     let mut i = inputs();
     i.board.ntc_site = osc_measure::board::NtcSite::Can;
-    assert!(refused(&build(&i), "thermal_tau2_s").contains("on the can"));
+    let set = build(&i);
+    assert_eq!(
+        (bound(&set, "thermal_tau2_s"), bound(&set, "th_rise2_q016")),
+        (0, 0)
+    );
+    assert_eq!(bound(&set, "th_rise_q016"), 434);
+    let said = set.clamps();
+    for f in ["thermal_tau2_s", "th_rise2_q016"] {
+        assert!(
+            said.iter()
+                .any(|c| c.starts_with(&format!("{f}: 0")) && c.contains("sits on the can")),
+            "{f}: {said:?}"
+        );
+    }
     i.thermal.slow_tau_s = None;
     i.thermal.slow_gain_c_per_w = None;
     let set = build(&i);
     assert_eq!(
         (bound(&set, "thermal_tau2_s"), bound(&set, "th_rise2_q016")),
         (0, 0)
+    );
+    assert!(set.clamps().is_empty(), "{:?}", set.clamps());
+}
+
+/// A gain over 0 that rounds to a rise of 0 would turn its node off, so it
+/// is refused; a time constant past the estimate's longest leak is stored
+/// as given.
+#[test]
+fn a_heat_node_never_stores_off_from_a_gain_over_0() {
+    let mut i = inputs();
+    i.thermal.fast_gain_c_per_w.as_mut().expect("gain").value = 0.001;
+    let e = refused(&build(&i), "th_rise_q016");
+    assert!(e.contains("the node would be off"), "{e}");
+    let mut i = inputs();
+    i.thermal.slow_tau_s.as_mut().expect("tau").value = 900.0;
+    assert_eq!(bound(&build(&i), "thermal_tau2_s"), 900);
+}
+
+/// The resolve line's longest leak is the kernel's: 2^15 SLOW periods.
+#[test]
+fn the_longest_leak_a_profile_line_names_is_the_kernels() {
+    use osc_servo_core::kernel::phases::loops::limits::{SLOW_PERIOD_MS, TAU_SHIFT_MAX};
+    let ms = (1u64 << TAU_SHIFT_MAX) * u64::from(SLOW_PERIOD_MS);
+    assert_eq!(
+        (ms / 1000) as f64,
+        osc_ident_inputs::resolve::LONGEST_LEAK_S
     );
 }

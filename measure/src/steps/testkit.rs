@@ -200,8 +200,12 @@ pub fn board() -> Board {
         .expect("the board")
 }
 
+/// The mg90-d profile's heat model, as a run reads it.
 pub fn thermal() -> ThermalInputs {
-    serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json")).expect("thermal")
+    let p: osc_ident_inputs::ServoProfile =
+        serde_json::from_str(include_str!("../../testdata/mg90-d/profile.json")).expect("profile");
+    let h = p.thermal.expect("the profile's heat model");
+    ThermalInputs::of_profile(&h, "testdata/mg90-d/profile.json", "")
 }
 
 /// A brushed motor behind the simulated servo's pot, the least the table

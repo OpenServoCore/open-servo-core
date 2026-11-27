@@ -91,6 +91,8 @@ pub enum Form {
     Stated,
     /// The board's.
     Board,
+    /// The profile's: the motor model's, not identified.
+    Profile,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -194,6 +196,44 @@ fn under_ceiling(l: &mut Lines, v: f64, ceiling: f64) -> f64 {
         return ceiling;
     }
     v
+}
+
+/// The longest leak the winding estimate runs, s: 2^15 SLOW periods
+/// (core `limits::tau_shift`). A time constant over it is stored as given
+/// and runs at this.
+pub const LONGEST_LEAK_S: f64 = 524.0;
+
+/// The profile's heat model, a line a value, after the policy's.
+fn heat_lines(l: &mut Lines, h: &HeatModel) {
+    for (field, v, unit, rise) in [
+        ("thermal.fast_tau_s", h.fast_tau_s, "s", None),
+        (
+            "thermal.fast_gain_c_per_w",
+            h.fast_gain_c_per_w,
+            "C/W",
+            Some("th_rise_q016"),
+        ),
+        ("thermal.slow_tau_s", h.slow_tau_s, "s", None),
+        (
+            "thermal.slow_gain_c_per_w",
+            h.slow_gain_c_per_w,
+            "C/W",
+            Some("th_rise2_q016"),
+        ),
+    ] {
+        l.number(field, Form::Profile, Some(v), unit, field);
+        let mut note = String::from("from the profile, not identified");
+        match rise {
+            Some(word) => {
+                note.push_str(&format!("; the run sets {word} from it over the identified R"))
+            }
+            None if v > LONGEST_LEAK_S => note.push_str(&format!(
+                "; over {LONGEST_LEAK_S} s it runs at {LONGEST_LEAK_S} s, the estimate's longest leak"
+            )),
+            None => {}
+        }
+        l.note(note);
+    }
 }
 
 /// The absolute inputs from `profile` and `policy`, each refused the
@@ -684,6 +724,10 @@ pub fn resolve(
             "policy.oc_trip_samples",
         );
         l.note(format!("the board's oc_trip_us {us} at {hz} Hz"));
+    }
+
+    if let Some(h) = &profile.thermal {
+        heat_lines(&mut l, h);
     }
 
     Ok(Resolved {

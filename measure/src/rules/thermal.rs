@@ -4,24 +4,35 @@
 //! nodes are entered by the user: a node's time constant and its gain in
 //! C/W. Only the rise derives by rule, through the winding's resistance as
 //! identified and the shunt's counts per A. A node is entered whole, and
-//! with the NTC on the can the NTC is the body node, so the model has none.
+//! with the NTC on the can the NTC is the body node, so the body node's
+//! words bind 0 whatever the profile states, and the set says so.
 
 use super::units::shunt_counts_per_a;
-use super::{Ctx, Fail, Format, Kind, Rule, board, q, table};
+use super::{Ctx, Fail, Format, Kind, Outcome, Rule, Set, board, q, table};
 use crate::board::NtcSite;
 use crate::inputs::Inputs;
 
 /// The slow node: the user's, none on a board whose NTC sits on the can.
 fn body_node(c: &mut Ctx) -> Result<bool, Fail> {
-    let t = &c.inputs.thermal;
-    let given = t.slow_tau_s.is_some() || t.slow_gain_c_per_w.is_some();
-    match board!(c, ntc_site) {
-        NtcSite::Air => Ok(true),
-        NtcSite::Can if given => Err(Fail::refused(
-            "thermal.slow_tau_s, thermal.slow_gain_c_per_w: the board's NTC sits on the can, \
-             so it is the body node and the model has no other",
-        )),
-        NtcSite::Can => Ok(false),
+    Ok(board!(c, ntc_site) == NtcSite::Air)
+}
+
+/// On a board whose NTC sits on the can, the body node's words, bound 0,
+/// say that the slow node the user entered is not used.
+pub(super) fn can_body(set: &mut Set, inputs: &Inputs) {
+    let t = &inputs.thermal;
+    if inputs.board.ntc_site != NtcSite::Can
+        || (t.slow_tau_s.is_none() && t.slow_gain_c_per_w.is_none())
+    {
+        return;
+    }
+    for (name, o) in &mut set.fields {
+        if let ("thermal_tau2_s" | "th_rise2_q016", Outcome::Bound(e)) = (*name, o) {
+            e.clamp = Some(
+                "0: the board's NTC sits on the can, so it is the body node; the profile's slow node is not used"
+                    .into(),
+            );
+        }
     }
 }
 
@@ -60,10 +71,17 @@ fn slow_whole(c: &Ctx) -> Result<(), Fail> {
 }
 
 /// A gain, C/W, as a stored rise: 100 x G x R / (counts per A)^2, the
-/// copper loss at the winding's resistance with the current in counts.
-fn rise(c: &mut Ctx, gain: f64) -> Result<f64, Fail> {
+/// copper loss at the winding's resistance with the current in counts. A
+/// gain over 0 that rounds to a rise of 0 is refused: 0 turns the node off.
+fn rise(c: &mut Ctx, field: &str, gain: f64) -> Result<f64, Fail> {
     let r = q!(c, measured, r_ohm)?;
-    Ok(100.0 * gain * r / shunt_counts_per_a(c)?.powf(2.0))
+    let x = 100.0 * gain * r / shunt_counts_per_a(c)?.powf(2.0);
+    if gain > 0.0 && (x * f64::from(1u32 << 16)).round() == 0.0 {
+        return Err(Fail::refused(format!(
+            "{field}: {gain} C/W over {r:.2} ohm is under the field's least step, so the node would be off; the gain is too small for this board's current scale"
+        )));
+    }
+    Ok(x)
 }
 
 fn thermal_tau(c: &mut Ctx) -> Result<f64, Fail> {
@@ -74,7 +92,7 @@ fn thermal_tau(c: &mut Ctx) -> Result<f64, Fail> {
 fn th_rise(c: &mut Ctx) -> Result<f64, Fail> {
     fast_whole(c)?;
     let g = q!(c, thermal, fast_gain_c_per_w)?;
-    rise(c, g)
+    rise(c, "th_rise_q016", g)
 }
 
 fn thermal_tau2(c: &mut Ctx) -> Result<f64, Fail> {
@@ -91,7 +109,7 @@ fn th_rise2(c: &mut Ctx) -> Result<f64, Fail> {
     }
     slow_whole(c)?;
     let g = q!(c, thermal, slow_gain_c_per_w)?;
-    rise(c, g)
+    rise(c, "th_rise2_q016", g)
 }
 
 fn ntc_raw_ref(c: &mut Ctx) -> Result<f64, Fail> {

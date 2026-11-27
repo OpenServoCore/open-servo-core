@@ -355,7 +355,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
         )));
     }
     let thermal = i.thermal.ok_or_else(|| {
-        Refused("no thermal values entered (--thermal): the heat of a press cannot be priced, so nothing drives".into())
+        Refused("no heat model (the profile's thermal): the heat of a press cannot be priced, so nothing drives".into())
     })?;
     let line = tel::line(rig.c, rig.id).await?;
     line.admit(Layout::Raw)?;
@@ -1886,9 +1886,7 @@ mod tests {
             serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
                 .expect("nameplate");
         let board: Board = crate::steps::testkit::board();
-        let thermal: ThermalInputs =
-            serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
-                .expect("thermal");
+        let thermal: ThermalInputs = crate::steps::testkit::thermal();
         let (rest, probe) = (rest_json(), probe_json(stored, stored != found_flips));
         let t = Cell::new(0.0);
         let clock = || {
@@ -2359,9 +2357,7 @@ mod tests {
             serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
                 .expect("nameplate");
         let board: Board = crate::steps::testkit::board();
-        let thermal: ThermalInputs =
-            serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
-                .expect("thermal");
+        let thermal: ThermalInputs = crate::steps::testkit::thermal();
         let mut f = Facts::new(&np, rail_v);
         f.polarity_proven = true;
         f.ntc_c = Some(25.0);

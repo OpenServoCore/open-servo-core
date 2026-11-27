@@ -6,8 +6,10 @@
 mod common;
 
 use common::{descriptor, inputs, record, rules_set, table, text};
-use osc_ident_inputs::{read, resolve, upgrade};
+use osc_ident_inputs::profile::FieldSource;
+use osc_ident_inputs::{read, resolve, upgrade_with};
 use osc_measure::build;
+use osc_measure::inputs::ThermalInputs;
 use osc_measure::set::{self, FromRules, SetFile, file_sha1, points_sha1};
 
 #[test]
@@ -73,7 +75,8 @@ fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
 /// The record's servo profile and its own policy, every rule-bound value in
 /// its fixed form, over the record's measured inputs give the set the
 /// version 0 files give, byte for byte; so do the version 0 files read
-/// through the migration. The overcurrent window comes from the board.
+/// through the migration, the thermal.json beside the nameplate folded
+/// into its heat model. The overcurrent window comes from the board.
 #[test]
 fn the_record_inputs_as_profile_and_policy_bind_the_record_set() {
     let v0 = rules_set(&inputs(), &table()).render();
@@ -81,23 +84,32 @@ fn the_record_inputs_as_profile_and_policy_bind_the_record_set() {
         (
             "testdata/mg90-d/profile.json",
             "testdata/mg90-d/policy-of-record.json",
+            None,
         ),
         (
             "testdata/mg90-d/nameplate.json",
             "testdata/mg90-d/policy.json",
+            Some("testdata/mg90-d/thermal.json"),
         ),
     ];
-    for (profile, policy) in pairs {
+    for (profile, policy, beside) in pairs {
         let mut i = inputs();
-        let u = upgrade(
+        let heat = beside.map(|f| {
+            let h = read::thermal(&text(f)).expect("thermal.json");
+            (h, FieldSource::default())
+        });
+        let u = upgrade_with(
             read::profile(&text(profile)).expect("profile"),
             Some(read::policy(&text(policy), "policy").expect("policy")),
+            heat,
         )
         .expect("upgrades");
         let r = resolve(&u.profile, &u.policy, Some(&i.board.facts())).expect("resolves");
         assert_eq!(r.policy.oc_trip_samples, Some(8.0));
         i.nameplate = r.nameplate;
         i.policy = r.policy;
+        let h = r.thermal.expect("the record's heat model");
+        i.thermal = ThermalInputs::of_profile(&h, profile, "");
         assert_eq!(
             rules_set(&i, &table()).render(),
             v0,
