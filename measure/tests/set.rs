@@ -54,13 +54,13 @@ fn a_notebook_set_file_loads_and_round_trips() {
 }
 
 #[test]
-fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
+fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_and_retired_fields() {
     let ours = rules_set(&inputs(), &table());
     let rec = record();
-    assert_eq!(ours.values().len(), 63);
+    assert_eq!(ours.values().len(), 62);
     for (name, v) in rec.values() {
         match name {
-            "fric_breakaway_counts" => assert_eq!(ours.value(name), None),
+            "fric_breakaway_counts" | "v_undervolt_counts" => assert_eq!(ours.value(name), None),
             _ => assert_eq!(ours.value(name), Some(v), "{name}"),
         }
     }

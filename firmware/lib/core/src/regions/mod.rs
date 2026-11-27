@@ -120,7 +120,6 @@ impl ControlTableCell {
             cfg.limits.oc_trip_ticks = p.oc_trip_ticks;
             cfg.limits.thermal_tau_s = p.thermal_tau_s;
             cfg.thermal.cutoff_cc = p.cutoff_cc;
-            cfg.thermal.v_undervolt_counts = p.v_undervolt_counts;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
             cfg.fault_cfg.pos_error_time_ticks = config::DEFAULT_POS_ERROR_TIME_TICKS;
             cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;

@@ -115,10 +115,10 @@ fn the_dev_v006_boot_seed_is_pinned() {
         assert_eq!((l.oc_trip_counts, l.oc_trip_ticks), (2439, 8));
         assert_eq!(l.thermal_tau_s, 4);
         let th = &c.thermal;
-        assert_eq!(
-            (th.cutoff_cc, th.v_undervolt_counts, th.thermal_tau2_s),
-            (9000, 720, 0)
-        );
+        assert_eq!((th.cutoff_cc, th._rsvd, th.thermal_tau2_s), (9000, 0, 0));
+        // the fold's floor is no CONFIG field: 3.5 V on the terminal taps,
+        // over the 857-862 counts the rail reading stops at
+        assert_eq!(osc_integration::sim::DEV_V006_RAIL_FLOOR_COUNTS, 869);
         let fc = &c.fault_cfg;
         assert_eq!(
             (fc.pos_error_counts, fc.pos_error_time_ticks),

@@ -3,6 +3,7 @@
   "tick_hz": 20000,
   "vdd_mv": 3300,
   "oc_trip_ma": 2200,
+  "rail_source_mohm": 800,
   "ntc_site": "air",
   "ntc_curve": {"raw_ref": 2048, "t_ref_cc": 2430, "k1_q88": 474, "k2_q24": 19934},
   "bridge_min_ticks": 27,
@@ -19,6 +20,7 @@
     "tick_hz": "the kernel tick, read-only CALIB tick_hz on the servo",
     "vdd_mv": "the board's nominal chip supply, the word a capture is matched to its board by (notebooks oscnb/boards.py, sha1 d549ec8ce94ced790c81bd6f032b55e21b3d3421)",
     "oc_trip_ma": "a wiring or bridge fault detector above the locked-rotor current on a full 2S pack and under where the sense chain saturates (firmware boards/osc-dev-v006/board.toml, protection oc_trip_ma)",
+    "rail_source_mohm": "about what a USB lead and its connectors add, the source the image seeds the rail fold for (firmware boards/osc-dev-v006/board.toml, protection rail_source_mohm)",
     "ntc_site": "in room air beside the bridge, not on the motor can",
     "bridge_min_ticks": "the osc-dev-v006 board's calibration bridge_min_ticks (firmware boards/osc-dev-v006/board.toml), the drive width under which the kernel drops a pulse",
     "burst_edges": {

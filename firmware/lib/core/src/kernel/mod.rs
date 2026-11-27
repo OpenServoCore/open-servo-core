@@ -6,8 +6,8 @@
 //! `phase`: CONTROL and the edges, fusion, trajectory and position, limits,
 //! velocity, vbus and detectors, slow, the shunt zero's sample and the
 //! publishes, the back-EMF close); SLOW every DECIM_SLOW periods inside
-//! the medium half in two stages a period apart (undervolt and the heats
-//! on the due tick; the winding estimate, its cutoff, the winding
+//! the medium half in two stages a period apart (the permit lease and the
+//! heats on the due tick; the winding estimate, its cutoff, the winding
 //! resistance and the shunt zero's aging on the next period's). The
 //! schedule itself is one table (`scheduler::table`); the loops and
 //! detectors the phases run live in `phases::loops`. The medium half

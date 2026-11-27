@@ -67,6 +67,8 @@ pub const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: 0,
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
+    // 800 vcounts under the rail
+    rail_floor_counts: 2200,
     brush_dev_max: bemf::brush_dev_max(
         DEV_V006_SENSE.shunt_r_mohm,
         DEV_V006_SENSE.gain_milli,
@@ -156,7 +158,6 @@ pub fn seed(shared: &Shared) {
         c.limits.openloop_zero_brake = true;
         c.limits.thermal_tau_s = 4;
         c.thermal.cutoff_cc = 10000;
-        c.thermal.v_undervolt_counts = 2200;
         // 1200 counts over 200 vcounts: 6 counts per vcount
         c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;

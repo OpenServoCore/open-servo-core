@@ -2,8 +2,8 @@
 //! inputs (`SPAN_START..SPAN_END`), block for block as the table lays it
 //! out, then what the kernel derives from it. The consumers take the blocks
 //! as stored, so taking a configuration is one word copy of the span; the
-//! window floors come from read-only board facts and are derived once, at
-//! the first tick.
+//! window floors and the rail floor come from read-only board facts and are
+//! derived once, at the first tick.
 
 use super::KernelTiming;
 use super::phases::loops::limits;
@@ -90,6 +90,8 @@ pub struct KernelConfig {
     pub ol_floor_q15: u16,
     /// `v_floor_ticks` as a duty, published as `window_v_floor_q15`.
     pub v_floor_q15: u16,
+    /// `KernelTiming::rail_floor_counts`.
+    pub rail_floor_counts: u16,
     /// The take's choice of the resistance the current loop commands
     /// through on a tick with no reading, Q.12 vcounts per ccount:
     /// `motor.r_q12` as stored, or the loop's own `i_kp_q88` where the
@@ -163,6 +165,7 @@ impl KernelConfig {
             v_floor_ticks: 0,
             ol_floor_q15: 0,
             v_floor_q15: 0,
+            rail_floor_counts: 0,
             r_loop_q12: 0,
             therm: ThermCfg::default(),
             brush_rc_q12: 0,
@@ -172,9 +175,11 @@ impl KernelConfig {
         }
     }
 
-    /// The window floors. Every input is a read-only board fact
-    /// (`floor_inputs_are_read_only`), so the first tick derives them once.
+    /// The window floors and the rail floor. Every input is a read-only
+    /// board fact (`floor_inputs_are_read_only`), so the first tick derives
+    /// them once.
     pub(super) fn load_floors(&mut self, shared: &Shared, timing: &KernelTiming) {
+        self.rail_floor_counts = timing.rail_floor_counts;
         let p = shared.table.region_ptr();
         // SAFETY: raw-pointer volatile reads of aligned repr(C) fields in the
         // static table, no `&T` formed (single-writer contract on `Kernel`).

@@ -87,13 +87,14 @@ pub struct Command {
 
 #[cfg(not(feature = "experiment"))]
 impl Command {
-    /// The clamp on the undervolt-floored vbus: the same floor `VbusEst`
-    /// applies to the reciprocal, so (clamp, recip) stay the contract pair
-    /// even before the first seed. Runs at the first tick and at every RAIL
-    /// phase, which is where a `duty_max_q15` write reaches it. Returns the
-    /// floored vbus, the window term's rail (`Fast::prepare_window`).
+    /// The clamp on the vbus floored at the board's rail floor: the same
+    /// floor `VbusEst` applies to the reciprocal, so (clamp, recip) stay the
+    /// contract pair even before the first seed. Runs at the first tick and
+    /// at every RAIL phase, which is where a `duty_max_q15` write reaches
+    /// it. Returns the floored vbus, the window term's rail
+    /// (`Fast::prepare_window`).
     pub fn prepare_rail(&mut self, cfg: &KernelConfig) -> u16 {
-        let vbus_eff = self.vbus_counts.max(cfg.thermal.v_undervolt_counts);
+        let vbus_eff = self.vbus_counts.max(cfg.rail_floor_counts);
         self.rail = RailClamp::new(cfg.loop_current.duty_max_q15, vbus_eff);
         vbus_eff
     }

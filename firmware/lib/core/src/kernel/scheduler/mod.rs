@@ -55,6 +55,11 @@ pub struct KernelTiming {
     /// Board data: the shunt amplifier's settle gain by drive width
     /// (`window::i_from_frame`).
     pub i_settle_gain: window::SettleGain,
+    /// Board data: the lowest rail the board reads, in the rail estimate's
+    /// vcounts: under it the chip's supply, the ADC's reference, leaves
+    /// regulation and the reading stops falling. The rail fold reaches zero here, and the voltage
+    /// math and the supply reciprocal floor the rail at it.
+    pub rail_floor_counts: u16,
     /// The brush term's bound on a half's current deviation, `sum_i` units:
     /// `bemf::BRUSH_DEV_MA` through the board's sense chain
     /// (`bemf::brush_dev_max`), within `bemf::brush_dev_max_fits`.

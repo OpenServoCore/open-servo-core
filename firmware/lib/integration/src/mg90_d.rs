@@ -86,7 +86,6 @@ pub fn set_of_record(t: &mut ControlTable) {
     c.limits.openloop_zero_brake = false;
     c.limits.thermal_tau_s = 2;
     c.thermal.cutoff_cc = 9000;
-    c.thermal.v_undervolt_counts = 922;
     c.thermal.thermal_tau2_s = 129;
     c.fault_cfg.pos_error_time_ticks = 2000;
     c.fault_cfg.pos_error_counts = 199;

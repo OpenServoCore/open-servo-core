@@ -90,6 +90,9 @@ pub struct Calibration {
     pub vmotor_bias: Divider,
     /// Supply connector -> VSYS drop across the input diode at rest, mV.
     pub rail_drop_mv: u16,
+    /// The lowest rail the board reads, mV at the rail tap: the rail
+    /// fold's zero and the voltage math's floor (`KernelTiming`).
+    pub rail_floor_mv: u16,
     /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
     /// Shortest drive window (TIM1 ticks) with a valid shunt sample.

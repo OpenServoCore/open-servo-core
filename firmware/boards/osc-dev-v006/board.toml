@@ -32,6 +32,15 @@ ntc = "A0"
 shunt_r_mohm = 60
 # SS54 OR-ing Schottkys (Dp1, Dp2) between the supply inputs and VSYS.
 rail_drop_mv = 250
+# The lowest rail the board can read, not a battery-health line: the rail
+# fold takes the current to 0 here so a stall cannot sag the chip off its
+# own supply. Under a 3.70 V supply the regulator leaves regulation, VDD
+# (the ADC's reference) follows the rail down, and the rail reading stops
+# at 857-862 counts at every level to 2.70 V (notebooks
+# stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.rail-walk-2026-11-14.json),
+# so a floor under that plateau never binds. 3.5 V is 869 counts, just over
+# it. Battery protection is the application's, on the vbus it reads.
+rail_floor_mv = 3500
 vdd_mv = 3300
 # Scan order is [high tap, low tap, shunt, pos, vbus, ntc], the taps
 # following the drive direction. The i floor sits inside the settle gain's
@@ -109,12 +118,8 @@ oc_trip_us = 400
 thermal_tau_s = 4
 # 90 C.
 cutoff_cc = 9000
-# True brown-out floor, not a battery-health line: the default must sit
-# below every legal supply, and a USB-fed 5 V bench bus idles at ~4.3 V.
-# Pack-health thresholds are per-product tuning, written by the host.
-v_undervolt_mv = 2900
 # About what a USB lead and its connectors add, so a 500 mA cap folds over
-# the 400 mV above the floor; a pack's floor and source are per-product
-# tuning, written by the host.
+# the 400 mV above the rail floor. A board default: the host may write the
+# fold's slope for the source at hand.
 rail_source_mohm = 800
 drive_polarity = true

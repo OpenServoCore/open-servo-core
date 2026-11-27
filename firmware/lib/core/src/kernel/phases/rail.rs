@@ -23,14 +23,14 @@ impl Medium {
         self.vbus.step(
             vbus_raw,
             shared.adc_wide_q4(vbus_raw),
-            cfg.thermal.v_undervolt_counts,
+            cfg.rail_floor_counts,
         );
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
         let vbus_eff = cmd.prepare_rail(cfg);
         self.limits.update_rail(
             cmd.vbus_counts,
-            cfg.thermal.v_undervolt_counts,
+            cfg.rail_floor_counts,
             fault_cfg.rail_fold_q8,
         );
         // raw-pot sanity screen runs in every mode, torque-off included

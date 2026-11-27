@@ -244,7 +244,7 @@ impl LimitState {
     }
 
     /// RAIL-rate: the rail fold, `slope_q8` counts per vcount over the
-    /// undervolt floor (`rail_fold_q8`; 0 = off), zero at the floor. One
+    /// board's rail floor (`rail_fold_q8`; 0 = off), zero at the floor. One
     /// multiply; two u16 factors never overflow.
     pub fn update_rail(&mut self, vbus_counts: u16, floor: u16, slope_q8: u16) {
         let v = vbus_counts.saturating_sub(floor) as u32;
@@ -408,7 +408,7 @@ mod tests {
         stall_release_counts: u16,
         stall_tau_trip_counts: u16,
         thermal_tau_s: u16,
-        v_undervolt_counts: u16,
+        rail_floor_counts: u16,
         rail_fold_q8: u16,
         pos_min_soft_counts: i32,
         pos_max_soft_counts: i32,
@@ -456,7 +456,7 @@ mod tests {
     }
 
     fn rail(st: &mut LimitState, vbus: u16, cfg: &LimitCfg) {
-        st.update_rail(vbus, cfg.v_undervolt_counts, cfg.rail_fold_q8);
+        st.update_rail(vbus, cfg.rail_floor_counts, cfg.rail_fold_q8);
     }
 
     /// One SLOW cycle of a steady `i_held` as the kernel runs it: a sample
@@ -485,7 +485,7 @@ mod tests {
         stall_release_counts: 150,
         stall_tau_trip_counts: 1200,
         thermal_tau_s: 2,
-        v_undervolt_counts: 700,
+        rail_floor_counts: 700,
         // 6 counts per vcount: the cap 200 vcounts over the floor
         rail_fold_q8: 6 << 8,
         pos_min_soft_counts: -4000,
@@ -779,7 +779,7 @@ mod tests {
     }
 
     /// the rail fold narrows as vbus enters the band and releases
-    /// on recovery; the fault at the floor is the slow block's.
+    /// on recovery; at and under the floor it holds zero.
     #[test]
     fn rail_fold_narrows_in_the_band_and_releases() {
         let mut st = LimitState::new();

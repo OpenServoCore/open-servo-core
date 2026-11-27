@@ -47,7 +47,8 @@ fn install_writes_only_what_differs() {
     let (mut c, log) = on_record();
     let (r, steps) = install_set(&mut c, &record());
     r.expect("the set it holds installs");
-    assert_eq!(steps, []);
+    // the record's undervolt floor has no field on this firmware
+    assert_eq!(steps, [Step::Retired("v_undervolt_counts".to_owned())]);
     assert_eq!(writes_below(&log, CONTROL), [], "nothing written");
 
     let mut i = inputs();

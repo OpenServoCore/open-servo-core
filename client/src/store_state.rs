@@ -28,7 +28,6 @@ pub mod fault {
     pub const STALL: u8 = 3;
     pub const POSITION_ERROR: u8 = 4;
     pub const SENSOR: u8 = 5;
-    pub const UNDER_VOLT: u8 = 6;
     /// An enable refused by the kernel's belt: Ke, the current cap or the
     /// speed ceiling unset.
     pub const CONFIG: u8 = 7;
@@ -41,7 +40,6 @@ pub mod fault {
             STALL => "stall",
             POSITION_ERROR => "position_error",
             SENSOR => "sensor",
-            UNDER_VOLT => "under_volt",
             CONFIG => "config",
             _ => return None,
         })
@@ -240,7 +238,6 @@ mod tests {
         assert_eq!(fault::STALL, fwf::CODE_STALL);
         assert_eq!(fault::POSITION_ERROR, fwf::CODE_POSITION_ERROR);
         assert_eq!(fault::SENSOR, fwf::CODE_SENSOR);
-        assert_eq!(fault::UNDER_VOLT, fwf::CODE_UNDER_VOLT);
         assert_eq!(fault::CONFIG, fwf::CODE_CONFIG);
     }
 }

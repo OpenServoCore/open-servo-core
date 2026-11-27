@@ -2,62 +2,65 @@
 pub const DEV_V006_SENSE: ::osc_servo_core::CalibSense = ::osc_servo_core::CalibSense {
     shunt_r_mohm: 60, // board.toml:32 calibration.shunt_r_mohm
     gain_milli: 14884, // board.toml:17 wiring.current_sense.gain_milli
-    vmotor_div_top: 6400, // board.toml:63 calibration.vmotor_divider.top_ohm
-    vmotor_div_bot: 1600, // board.toml:63 calibration.vmotor_divider.bot_ohm
-    vdd_mv: 3300, // board.toml:35 calibration.vdd_mv
+    vmotor_div_top: 6400, // board.toml:72 calibration.vmotor_divider.top_ohm
+    vmotor_div_bot: 1600, // board.toml:72 calibration.vmotor_divider.bot_ohm
+    vdd_mv: 3300, // board.toml:44 calibration.vdd_mv
     tick_hz: ::osc_servo_core::kernel::TICK_HZ as u16,
-    i_window_min_ticks: 64, // board.toml:49 calibration.i_window_min_ticks
-    v_window_min_ticks: 93, // board.toml:50 calibration.v_window_min_ticks
+    i_window_min_ticks: 64, // board.toml:58 calibration.i_window_min_ticks
+    v_window_min_ticks: 93, // board.toml:59 calibration.v_window_min_ticks
 };
 
 /// The rest of the board's CALIB facts.
 pub const DEV_V006_SENSE_EXT: ::osc_servo_core::CalibSenseExt = ::osc_servo_core::CalibSenseExt {
-    vbus_div_top_ohm: 6400, // board.toml:65 calibration.vbus_divider.top_ohm
-    vbus_div_bot_ohm: 1600, // board.toml:65 calibration.vbus_divider.bot_ohm
-    ntc_pullup_ohm: 10000, // board.toml:68 calibration.ntc.pullup_ohm
-    ntc_r25_ohm: 10000, // board.toml:68 calibration.ntc.r25_ohm
-    ntc_beta: 3950, // board.toml:68 calibration.ntc.beta
+    vbus_div_top_ohm: 6400, // board.toml:74 calibration.vbus_divider.top_ohm
+    vbus_div_bot_ohm: 1600, // board.toml:74 calibration.vbus_divider.bot_ohm
+    ntc_pullup_ohm: 10000, // board.toml:77 calibration.ntc.pullup_ohm
+    ntc_r25_ohm: 10000, // board.toml:77 calibration.ntc.r25_ohm
+    ntc_beta: 3950, // board.toml:77 calibration.ntc.beta
     vmotor_bias_nom_counts: ::osc_servo_core::regions::config::vmotor_counts(
-        3300, // board.toml:35 calibration.vdd_mv
-        430, // board.toml:67 calibration.vmotor_bias.top_ohm
-        100, // board.toml:67 calibration.vmotor_bias.bot_ohm
-        3300, // board.toml:35 calibration.vdd_mv
+        3300, // board.toml:44 calibration.vdd_mv
+        430, // board.toml:76 calibration.vmotor_bias.top_ohm
+        100, // board.toml:76 calibration.vmotor_bias.bot_ohm
+        3300, // board.toml:44 calibration.vdd_mv
     ),
     rail_drop_mv: 250, // board.toml:34 calibration.rail_drop_mv
-    vmotor_bias_top_ohm: 430, // board.toml:67 calibration.vmotor_bias.top_ohm
-    vmotor_bias_bot_ohm: 100, // board.toml:67 calibration.vmotor_bias.bot_ohm
+    vmotor_bias_top_ohm: 430, // board.toml:76 calibration.vmotor_bias.top_ohm
+    vmotor_bias_bot_ohm: 100, // board.toml:76 calibration.vmotor_bias.bot_ohm
 };
 
 /// The board's protection defaults.
-pub const DEV_V006_PROTECTION: ::osc_servo_core::ProtectionDefaults = ::osc_servo_core::ProtectionDefaults { // board.toml:92 protection
-    yield_current_ma: 250, // board.toml:98 protection.yield_current_ma
-    stall_release_ma: 90, // board.toml:100 protection.stall_release_ma
-    oc_trip_ma: 2200, // board.toml:105 protection.oc_trip_ma
-    oc_trip_us: 400, // board.toml:106 protection.oc_trip_us
-    thermal_tau_s: 4, // board.toml:109 protection.thermal_tau_s
-    cutoff_cc: 9000, // board.toml:111 protection.cutoff_cc
-    v_undervolt_mv: 2900, // board.toml:115 protection.v_undervolt_mv
-    rail_source_mohm: 800, // board.toml:119 protection.rail_source_mohm
-    drive_polarity: true, // board.toml:120 protection.drive_polarity
+pub const DEV_V006_PROTECTION: ::osc_servo_core::ProtectionDefaults = ::osc_servo_core::ProtectionDefaults { // board.toml:101 protection
+    yield_current_ma: 250, // board.toml:107 protection.yield_current_ma
+    stall_release_ma: 90, // board.toml:109 protection.stall_release_ma
+    oc_trip_ma: 2200, // board.toml:114 protection.oc_trip_ma
+    oc_trip_us: 400, // board.toml:115 protection.oc_trip_us
+    thermal_tau_s: 4, // board.toml:118 protection.thermal_tau_s
+    cutoff_cc: 9000, // board.toml:120 protection.cutoff_cc
+    rail_source_mohm: 800, // board.toml:124 protection.rail_source_mohm
+    drive_polarity: true, // board.toml:125 protection.drive_polarity
 };
 
 /// The back-EMF observer's window floor, which the board hands the
 /// kernel through `KernelTiming` and not through CALIB.
-pub const DEV_V006_BEMF_MIN_TICKS: u16 = 93; // board.toml:53 calibration.bemf_window_min_ticks
+pub const DEV_V006_BEMF_MIN_TICKS: u16 = 93; // board.toml:62 calibration.bemf_window_min_ticks
+
+/// The lowest rail the board reads, mV, which the board hands the
+/// kernel through `KernelTiming` and not through CALIB.
+pub const DEV_V006_RAIL_FLOOR_MV: u16 = 3500; // board.toml:43 calibration.rail_floor_mv
 
 /// The shunt amplifier's settle bands, which the board hands the
 /// kernel through `KernelTiming`.
-pub const DEV_V006_I_SETTLE_GAIN: ::osc_servo_core::estimator::window::SettleGain = ::osc_servo_core::estimator::window::SettleGain { // board.toml:78 calibration.i_settle_gain
-    start_ticks: 40, // board.toml:79 calibration.i_settle_gain.start_ticks
-    q15: &[37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785], // board.toml:80 calibration.i_settle_gain.q15
+pub const DEV_V006_I_SETTLE_GAIN: ::osc_servo_core::estimator::window::SettleGain = ::osc_servo_core::estimator::window::SettleGain { // board.toml:87 calibration.i_settle_gain
+    start_ticks: 40, // board.toml:88 calibration.i_settle_gain.start_ticks
+    q15: &[37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103, 33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785], // board.toml:89 calibration.i_settle_gain.q15
 };
 
 /// The boot seed's comms and travel.
-pub const DEV_V006_DEFAULTS: ::osc_servo_core::ConfigDefaults = ::osc_servo_core::ConfigDefaults { // board.toml:85 defaults
-    pos_min_phys_counts: 0, // board.toml:86 defaults.pos_min_phys_counts
-    pos_max_phys_counts: 4095, // board.toml:87 defaults.pos_max_phys_counts
-    id: 1, // board.toml:88 defaults.id
-    baud: ::osc_servo_core::BaudRate::B1000000, // board.toml:89 defaults.baud
+pub const DEV_V006_DEFAULTS: ::osc_servo_core::ConfigDefaults = ::osc_servo_core::ConfigDefaults { // board.toml:94 defaults
+    pos_min_phys_counts: 0, // board.toml:95 defaults.pos_min_phys_counts
+    pos_max_phys_counts: 4095, // board.toml:96 defaults.pos_max_phys_counts
+    id: 1, // board.toml:97 defaults.id
+    baud: ::osc_servo_core::BaudRate::B1000000, // board.toml:98 defaults.baud
     response_deadline_us: ::osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US,
 };
 

@@ -223,7 +223,7 @@ fn a_run_without_window_or_spins_says_what_is_missing() {
 }
 
 /// A rest result older than its rail scale leaves the two rail fields out,
-/// said in a line; the rules then hold the undervolt floor and the fold.
+/// said in a line; the rules then hold the fold.
 #[test]
 fn a_rest_result_without_the_rail_scale_leaves_the_rail_out() {
     let mut r = run();
@@ -245,9 +245,7 @@ fn a_rest_result_without_the_rail_scale_leaves_the_rail_out() {
     let set = build(&inputs_of(
         serde_json::from_value(g.measured).expect("loads"),
     ));
-    for f in ["v_undervolt_counts", "rail_fold_q8"] {
-        assert!(matches!(set.get(f), Some(Outcome::Held(_))), "{f}");
-    }
+    assert!(matches!(set.get("rail_fold_q8"), Some(Outcome::Held(_))));
 }
 
 /// A missing required result, or one not accepted, is refused naming the

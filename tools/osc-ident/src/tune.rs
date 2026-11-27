@@ -1055,7 +1055,6 @@ mod tests {
         let installed: Vec<&str> = [
             "stall_omega_max_cps",
             "yield_current_counts",
-            "v_undervolt_counts",
             "rail_fold_q8",
         ]
         .into_iter()
@@ -1063,7 +1062,7 @@ mod tests {
         .collect();
         assert_eq!(
             installed.len(),
-            4,
+            3,
             "the install's lines name each move: {text}"
         );
         let save = format!(

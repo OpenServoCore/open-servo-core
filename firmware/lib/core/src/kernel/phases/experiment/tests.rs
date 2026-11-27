@@ -27,6 +27,7 @@ const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: 0,
     bridge_min_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
+    rail_floor_counts: 0,
     brush_dev_max: 0,
     amps_per_count_q17: 0,
 };

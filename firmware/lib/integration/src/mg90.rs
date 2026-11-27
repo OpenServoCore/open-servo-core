@@ -23,7 +23,9 @@ use osc_servo_core::{
 };
 
 use crate::plant::{self, BIAS, FakeIo, FakeMotor, FakeSensors, lut_live, seed, vbus_raw};
-use crate::sim::{DEV_V006_BEMF_MIN_TICKS, DEV_V006_I_SETTLE_GAIN, DEV_V006_SENSE};
+use crate::sim::{
+    DEV_V006_BEMF_MIN_TICKS, DEV_V006_I_SETTLE_GAIN, DEV_V006_RAIL_FLOOR_COUNTS, DEV_V006_SENSE,
+};
 
 /// 7.1 V in vmotor-tap counts.
 pub const VBUS: f64 = 2880.0;
@@ -97,11 +99,12 @@ pub const MOTOR: Motor = Motor {
     fv: FV,
 };
 
-/// The generic rig's timing with the board's back-EMF observer floor and
-/// its shunt settle bands.
+/// The generic rig's timing with the board's back-EMF observer floor, its
+/// shunt settle bands and its rail floor.
 pub const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: DEV_V006_BEMF_MIN_TICKS,
     i_settle_gain: DEV_V006_I_SETTLE_GAIN,
+    rail_floor_counts: DEV_V006_RAIL_FLOOR_COUNTS,
     ..plant::TIMING
 };
 
@@ -385,7 +388,6 @@ pub fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         c.limits.oc_trip_counts = 1843;
         c.limits.oc_trip_ticks = 8;
         c.limits.openloop_zero_brake = false;
-        c.thermal.v_undervolt_counts = 1200;
         c.fusion.l1_q016 = 8640;
         c.fusion.l2_q88 = 3180;
         c.fusion.l3_q88 = 81;

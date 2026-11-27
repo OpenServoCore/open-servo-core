@@ -724,14 +724,16 @@ fn exchange_at(sim: &mut Sim, at_us: u64, frame: &[u8]) -> u64 {
 }
 
 /// The kernel's inputs in their writable runs: the span less the reserved
-/// bytes behind the limits and the fault blocks.
-fn span_runs() -> [(u16, u16); 3] {
+/// bytes behind the limits block, inside the thermal block and behind the
+/// fault blocks.
+fn span_runs() -> [(u16, u16); 4] {
     use osc_servo_core::kernel::{SPAN_END, SPAN_START};
     use osc_servo_core::regions::CALIB_BASE_ADDR;
     use osc_servo_core::regions::config::addr::{fault_cfg, limits, thermal};
     [
         (SPAN_START, limits::THERMAL_TAU_S + 2),
-        (thermal::CUTOFF_CC, fault_cfg::SENSOR_BAD_COUNT + 1),
+        (thermal::CUTOFF_CC, thermal::CUTOFF_CC + 2),
+        (thermal::THERMAL_TAU2_S, fault_cfg::SENSOR_BAD_COUNT + 1),
         (CALIB_BASE_ADDR, SPAN_END),
     ]
 }

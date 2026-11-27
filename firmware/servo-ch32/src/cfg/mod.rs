@@ -72,6 +72,12 @@ impl Precomputed {
                 bemf_min_ticks: cfg.calibration.bemf_window_min_ticks,
                 bridge_min_ticks: cfg.calibration.bridge_min_ticks,
                 i_settle_gain: cfg.calibration.i_settle_gain,
+                rail_floor_counts: vmotor_counts(
+                    cfg.calibration.rail_floor_mv,
+                    term.top_ohm,
+                    term.bot_ohm,
+                    cfg.calibration.vdd_mv,
+                ),
                 brush_dev_max: bemf::brush_dev_max(
                     cfg.calibration.shunt_r_mohm,
                     cfg.wiring.current_sense.gain_milli,
