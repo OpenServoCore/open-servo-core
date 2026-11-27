@@ -457,7 +457,8 @@ fn a_set_that_moves_a_protection_installs_and_says_the_move() {
     let said = steps[0].to_string();
     assert!(said.starts_with("current_limit_counts: 1043 -> "), "{said}");
 
-    let slower = with(&|i| i.policy.stall_omega_max_deg_s = Some(10.0));
+    let slower =
+        with(&|i| i.policy.stall_speed = Some(osc_measure::policy::StallSpeed::DegS(10.0)));
     let (r, steps) = install_set(&mut c, &slower);
     r.expect("a lower stall speed installs");
     let (from, to) = moved(&steps, "stall_omega_max_cps").expect("the move is a step");

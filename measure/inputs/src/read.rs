@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::migrate::{PolicyIn, ProfileIn, Source};
 use crate::nameplate::Nameplate;
-use crate::policy::Policy;
+use crate::policy::PolicyFile;
 use crate::profile::ServoProfile;
 use crate::tuning::TuningPolicy;
 use crate::{profile, tuning, version};
@@ -41,12 +41,12 @@ pub fn profile_with(
 pub fn policy_with(
     probe: Probe,
     key: &str,
-    v0: impl FnOnce() -> Result<Policy, String>,
+    v0: impl FnOnce() -> Result<PolicyFile, String>,
     v1: impl FnOnce() -> Result<TuningPolicy, String>,
 ) -> Result<PolicyIn, String> {
     match version(probe.schema.as_deref(), tuning::SCHEMA)? {
         0 => Ok(PolicyIn::V0 {
-            policy: Box::new(v0()?),
+            policy: Box::new(v0()?.policy()?),
             source: probe.source.unwrap_or_default(),
             key: key.into(),
         }),

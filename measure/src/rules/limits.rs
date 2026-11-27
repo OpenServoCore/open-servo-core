@@ -11,7 +11,7 @@ use super::units::{
     counts_per_deg, deg_to_counts, ma_to_counts, ms_to_ticks, share, shunt_counts_per_a,
 };
 use super::{Ctx, Fail, Format, Kind, Rule, Set, board, get, q, table};
-use crate::policy::{StallResponse, Switch};
+use crate::policy::{PotJump, StallRelease, StallResponse, StallSpeed, Switch, Yield};
 
 /// The row the maker states at the stated voltage nearest the one the
 /// servo runs on, the lower of two as near, of the rows inside the
@@ -69,13 +69,22 @@ fn current_limit(c: &mut Ctx) -> Result<f64, Fail> {
 }
 
 fn yield_current(c: &mut Ctx) -> Result<f64, Fail> {
-    let ma = get!(c, policy, yield_current_ma)?;
-    ma_to_counts(c, ma)
+    let v = c.inputs.policy.yield_;
+    match c.get("policy.yield", v)? {
+        Yield::Ma(ma) => ma_to_counts(c, ma),
+        Yield::TorqueKgCm(_) => Err(Fail::refused(
+            "policy.yield is a max yield torque, which this tool does not bind yet",
+        )),
+    }
 }
 
 fn stall_release(c: &mut Ctx) -> Result<f64, Fail> {
-    let ma = get!(c, policy, stall_release_ma)?;
-    ma_to_counts(c, ma)
+    match get!(c, policy, stall_release)? {
+        StallRelease::Ma(ma) => ma_to_counts(c, ma),
+        StallRelease::ShareOfYield(_) => Err(Fail::refused(
+            "policy.stall_release is a share of the yield current, which this tool does not bind yet",
+        )),
+    }
 }
 
 fn oc_trip(c: &mut Ctx) -> Result<f64, Fail> {
@@ -100,8 +109,12 @@ fn stall_time(c: &mut Ctx) -> Result<f64, Fail> {
 }
 
 fn stall_omega_max(c: &mut Ctx) -> Result<f64, Fail> {
-    let deg = get!(c, policy, stall_omega_max_deg_s)?;
-    deg_to_counts(c, deg)
+    match get!(c, policy, stall_speed)? {
+        StallSpeed::DegS(deg) => deg_to_counts(c, deg),
+        StallSpeed::MultipleOfStillSpeed(_) => Err(Fail::refused(
+            "policy.stall_speed is a multiple of the still-shaft speed, which this tool does not bind yet",
+        )),
+    }
 }
 
 /// The collision trip, off by the policy: the field's largest value,
@@ -145,7 +158,12 @@ fn pos_error_time(c: &mut Ctx) -> Result<f64, Fail> {
 }
 
 fn sensor_delta(c: &mut Ctx) -> Result<f64, Fail> {
-    get!(c, policy, sensor_delta_max_counts)
+    match get!(c, policy, pot_jump)? {
+        PotJump::Counts(n) => Ok(n),
+        PotJump::MultipleOfStep4(_) => Err(Fail::refused(
+            "policy.pot_jump is a multiple of the pot's 4-step run, which this tool does not bind yet",
+        )),
+    }
 }
 
 fn sensor_bad(c: &mut Ctx) -> Result<f64, Fail> {

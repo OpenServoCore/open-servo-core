@@ -1,5 +1,5 @@
 {
- "source": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.constants.json", "sha1": "c94abef7c670b1a3c3d5732374e72d478953c931", "text_values": "written as the field holds them: Yield (1) -> 1, on -> 1, off -> 0, 2 (metal) -> 2"},
+ "source": {"file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.constants.json", "sha1": "debfe7ecaafae6ec1d7f17dccfcb99ee51a5a430", "text_values": "written as the field holds them: Yield (1) -> 1, on -> 1, off -> 0, 2 (metal) -> 2"},
  "fields": {
    "pos_min_phys_counts": {"value": 82, "class": "bench"},
    "pos_max_phys_counts": {"value": 3792, "class": "bench"},

@@ -15,6 +15,20 @@ use crate::tuning::{
     CurrentLimit, CurrentLoop, MoveSpeed, Observer, PositionError, PotJump, SpeedCeiling, SpeedUp,
     StallRelease, StallSpeed, TuningPolicy, Yield,
 };
+
+/// Whether every one of the six form values a version 0 policy states is
+/// its fixed form.
+fn all_fixed(p: &Policy) -> bool {
+    !matches!(p.yield_, Some(Yield::TorqueKgCm(_)))
+        && !matches!(p.stall_release, Some(StallRelease::ShareOfYield(_)))
+        && !matches!(p.stall_speed, Some(StallSpeed::MultipleOfStillSpeed(_)))
+        && !matches!(p.pot_jump, Some(PotJump::MultipleOfStep4(_)))
+        && !matches!(
+            p.current_loop,
+            Some(CurrentLoop::MultipleOfElectricalCorner(_))
+        )
+        && !matches!(p.observer, Some(Observer::MultipleOfMechanicalCorner(_)))
+}
 use crate::why;
 
 /// A version 0 file's `source` block: file references, by what they are
@@ -179,11 +193,11 @@ fn profile_of(np: &Nameplate, source: &Source) -> Result<(ServoProfile, Carried)
 fn policy_of(p: &Policy, source: &Source, key: &str) -> TuningPolicy {
     let mut t = TuningPolicy::empty(&slug(key));
     let q = &mut t.protection;
-    q.yield_ = p.yield_current_ma.map(Yield::Ma);
-    q.stall_release = p.stall_release_ma.map(StallRelease::Ma);
+    q.yield_ = p.yield_;
+    q.stall_release = p.stall_release;
     q.stall_response = p.stall_response;
     q.stall_time_ms = p.stall_time_ms;
-    q.stall_speed = p.stall_omega_max_deg_s.map(StallSpeed::DegS);
+    q.stall_speed = p.stall_speed;
     q.cutoff_c = p.cutoff_c;
     if p.pos_error_deg.is_some() || p.pos_error_time_ms.is_some() {
         q.position_error = Some(PositionError {
@@ -199,15 +213,15 @@ fn policy_of(p: &Policy, source: &Source, key: &str) -> TuningPolicy {
     m.soft_margin_share = p.soft_margin_share;
     m.angle_cw_stop_deg = p.angle_cw_stop_deg;
     let l = &mut t.loops;
-    l.current_loop = p.current_loop_hz.map(CurrentLoop::Hz);
-    l.observer = p.observer_hz.map(Observer::Hz);
+    l.current_loop = p.current_loop;
+    l.observer = p.observer;
     l.velocity_em_ratio = p.velocity_em_ratio;
     l.velocity_zero_ratio = p.velocity_zero_ratio;
     l.velocity_shelf_margin_db = p.velocity_shelf_margin_db;
     l.position_split = p.position_split;
     l.hold_band_noise_multiple = p.hold_band_noise_multiple;
     l.hold_band_floor_counts = p.hold_band_floor_counts;
-    t.sensor.pot_jump = p.sensor_delta_max_counts.map(PotJump::Counts);
+    t.sensor.pot_jump = p.pot_jump;
     t.sensor.bad_samples = p.sensor_bad_samples;
     t.behavior.openloop_zero_brake = p.openloop_zero_brake;
     t.behavior.brush_term = p.brush_term;
@@ -282,8 +296,13 @@ pub fn upgrade(profile: ProfileIn, policy: Option<PolicyIn>) -> Result<Upgraded,
                 Some(n) => format!(", its oc_trip_samples {n} left to the board's oc_trip_us"),
                 None => String::new(),
             };
+            let stated = if all_fixed(&policy) {
+                "with every value fixed"
+            } else {
+                "with each value in the form it states"
+            };
             notes.push(format!(
-                "the policy is version 0: read as the tuning policy {} with every value fixed{board}",
+                "the policy is version 0: read as the tuning policy {} {stated}{board}",
                 t.key
             ));
             t

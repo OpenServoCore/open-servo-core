@@ -286,13 +286,13 @@ pub fn resolve(
     });
     match q.yield_ {
         Some(Yield::Ma(ma)) => {
-            out.yield_current_ma = Some(ma);
+            out.yield_ = Some(Yield::Ma(ma));
             l.number(
                 "protection.yield",
                 Form::Fixed,
                 Some(ma),
                 "mA",
-                "policy.yield_current_ma",
+                "policy.yield",
             );
         }
         Some(Yield::TorqueKgCm(_)) => {
@@ -306,13 +306,13 @@ pub fn resolve(
     }
     match q.stall_release {
         Some(StallRelease::Ma(ma)) => {
-            out.stall_release_ma = Some(ma);
+            out.stall_release = Some(StallRelease::Ma(ma));
             l.number(
                 "protection.stall_release",
                 Form::Fixed,
                 Some(ma),
                 "mA",
-                "policy.stall_release_ma",
+                "policy.stall_release",
             );
         }
         Some(StallRelease::ShareOfYield(_)) => {
@@ -340,13 +340,13 @@ pub fn resolve(
     );
     match q.stall_speed {
         Some(StallSpeed::DegS(v)) => {
-            out.stall_omega_max_deg_s = Some(v);
+            out.stall_speed = Some(StallSpeed::DegS(v));
             l.number(
                 "protection.stall_speed",
                 Form::Fixed,
                 Some(v),
                 "deg/s",
-                "policy.stall_omega_max_deg_s",
+                "policy.stall_speed",
             );
         }
         Some(StallSpeed::MultipleOfStillSpeed(_)) => {
@@ -478,13 +478,13 @@ pub fn resolve(
     let p = &policy.loops;
     match p.current_loop {
         Some(CurrentLoop::Hz(hz)) => {
-            out.current_loop_hz = Some(hz);
+            out.current_loop = Some(CurrentLoop::Hz(hz));
             l.number(
                 "loops.current_loop",
                 Form::Fixed,
                 Some(hz),
                 "Hz",
-                "policy.current_loop_hz",
+                "policy.current_loop",
             );
         }
         Some(CurrentLoop::MultipleOfElectricalCorner(_)) => {
@@ -498,13 +498,13 @@ pub fn resolve(
     }
     match p.observer {
         Some(Observer::Hz(hz)) => {
-            out.observer_hz = Some(hz);
+            out.observer = Some(Observer::Hz(hz));
             l.number(
                 "loops.observer",
                 Form::Fixed,
                 Some(hz),
                 "Hz",
-                "policy.observer_hz",
+                "policy.observer",
             );
         }
         Some(Observer::MultipleOfMechanicalCorner(_)) => {
@@ -565,13 +565,13 @@ pub fn resolve(
     let s = &policy.sensor;
     match s.pot_jump {
         Some(PotJump::Counts(n)) => {
-            out.sensor_delta_max_counts = Some(n);
+            out.pot_jump = Some(PotJump::Counts(n));
             l.number(
                 "sensor.pot_jump",
                 Form::Fixed,
                 Some(n),
                 "raw counts",
-                "policy.sensor_delta_max_counts",
+                "policy.pot_jump",
             );
         }
         Some(PotJump::MultipleOfStep4(_)) => {

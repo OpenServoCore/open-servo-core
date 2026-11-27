@@ -97,7 +97,7 @@ fn each_version_0_field_moves_to_its_version_1_place() {
     assert_eq!(q.behavior.brush_term, Some(Switch::Off));
     assert_eq!(
         q.source.as_ref().and_then(|s| s.sha1.as_deref()),
-        Some("b12f35ed8cb4b322d6c57b8678065cf674464283")
+        Some("06b6b91594ab18cfb66f785e121c975196361bce")
     );
     assert_eq!(u.notes.len(), 2, "{:?}", u.notes);
     assert!(u.notes[1].contains("oc_trip_samples 8"), "{:?}", u.notes);
@@ -418,7 +418,7 @@ fn a_version_0_nameplate_beside_a_version_1_policy_must_agree_with_it() {
     let u = upgrade(np, None).expect("alone");
     let r = resolve(&u.profile, &u.policy, None).expect("resolves");
     assert_eq!(r.nameplate.run_v, Some(5.0));
-    assert_eq!(r.policy.yield_current_ma, None);
+    assert_eq!(r.policy.yield_, None);
 }
 
 #[test]

@@ -7,9 +7,20 @@ use osc_servo_core::regions::config::DEFAULT_DUTY_MAX_Q15;
 
 use super::units::{r_vcounts, share, shunt_counts_per_a, tap_counts_per_v};
 use super::{Ctx, Fail, Format, Kind, Rule, board, get, q, table};
+use crate::policy::CurrentLoop;
+
+/// The policy's bandwidth, Hz.
+fn loop_hz(c: &mut Ctx) -> Result<f64, Fail> {
+    match get!(c, policy, current_loop)? {
+        CurrentLoop::Hz(hz) => Ok(hz),
+        CurrentLoop::MultipleOfElectricalCorner(_) => Err(Fail::refused(
+            "policy.current_loop is a multiple of the electrical corner, which this tool does not bind yet",
+        )),
+    }
+}
 
 fn loop_rad_s(c: &mut Ctx) -> Result<f64, Fail> {
-    Ok(2.0 * core::f64::consts::PI * get!(c, policy, current_loop_hz)?)
+    Ok(2.0 * core::f64::consts::PI * loop_hz(c)?)
 }
 
 fn i_kp(c: &mut Ctx) -> Result<f64, Fail> {

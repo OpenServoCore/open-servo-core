@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use osc_measure::board;
 use osc_measure::inputs::{Measured, ShelfRecord, ThermalInputs, Tuning};
+use osc_measure::policy::{CurrentLoop, Observer, PolicyFile, PotJump, StallRelease, Yield};
 use osc_measure::rules::{Kind, rules};
 use osc_measure::{Inputs, Missing, Nameplate, Outcome, Policy, build};
 use serde::Deserialize;
@@ -155,7 +156,7 @@ fn clamp(set: &osc_measure::Set, field: &str) -> String {
 #[test]
 fn a_value_its_storage_cannot_hold_is_refused() {
     let mut i = inputs();
-    i.policy.current_loop_hz = Some(1e6);
+    i.policy.current_loop = Some(CurrentLoop::Hz(1e6));
     let set = build(&i);
     assert!(refused(&set, "i_kp_q88").contains("does not fit its 0..65535"));
 
@@ -244,8 +245,8 @@ fn a_current_limit_over_the_board_trip_is_stored_at_the_trip() {
         "the derate gives 1043 ccounts, over the board's overcurrent trip oc_trip_counts 908, which fires before the limit folds: stored as 908"
     );
     // the yield current 0 reads as the cap: the cap the servo holds
-    i.policy.yield_current_ma = Some(0.0);
-    i.policy.stall_release_ma = Some(850.0);
+    i.policy.yield_ = Some(Yield::Ma(0.0));
+    i.policy.stall_release = Some(StallRelease::Ma(850.0));
     let why = refused(&build(&i), "stall_release_counts");
     assert!(why.contains("not under the yield current 908"), "{why}");
 }
@@ -420,28 +421,86 @@ fn release_sits_under_the_yield_current() {
 
     for release in [350.0, 400.0] {
         let mut i = inputs();
-        i.policy.stall_release_ma = Some(release);
+        i.policy.stall_release = Some(StallRelease::Ma(release));
         assert!(
             refused(&build(&i), "stall_release_counts").contains("not under the yield current")
         );
     }
     // 0 reads as the cap.
     let mut i = inputs();
-    i.policy.yield_current_ma = Some(0.0);
-    i.policy.stall_release_ma = Some(400.0);
+    i.policy.yield_ = Some(Yield::Ma(0.0));
+    i.policy.stall_release = Some(StallRelease::Ma(400.0));
     assert_eq!(bound(&build(&i), "stall_release_counts"), 454);
 
     let mut i = inputs();
-    i.policy.yield_current_ma = None;
+    i.policy.yield_ = None;
     assert!(refused(&build(&i), "stall_release_counts").contains("not bound"));
 }
 
-/// A policy file written before the rename names the yield current
-/// `i_cont_ma`; it still reads.
+/// A policy file written before the forms names each of the six values by
+/// its unit, a bare number, and one before the rename names the yield
+/// current `i_cont_ma`; each still reads, as the fixed form. A form is one
+/// key of its two; anything else is refused naming both, as is a value
+/// stated both ways.
 #[test]
-fn a_policy_naming_the_old_key_still_reads() {
-    let p: Policy = serde_json::from_str(r#"{"i_cont_ma": 350.0}"#).expect("parses");
-    assert_eq!(p.yield_current_ma, Some(350.0));
+fn a_policy_naming_the_old_keys_still_reads() {
+    let read = |text: &str| {
+        serde_json::from_str::<PolicyFile>(text)
+            .map_err(|e| e.to_string())
+            .and_then(PolicyFile::policy)
+    };
+    assert_eq!(
+        read(r#"{"i_cont_ma": 350.0}"#).map(|p| p.yield_),
+        Ok(Some(Yield::Ma(350.0)))
+    );
+    let old = read(
+        r#"{"observer_hz": 15.0, "current_loop_hz": 1000, "yield_current_ma": 350.0,
+            "stall_release_ma": 126.0, "stall_omega_max_deg_s": 24.84,
+            "sensor_delta_max_counts": 64}"#,
+    )
+    .expect("reads");
+    let forms: Policy = serde_json::from_str(
+        r#"{"observer": {"hz": 15.0}, "current_loop": {"hz": 1000}, "yield": {"ma": 350.0},
+            "stall_release": {"ma": 126.0}, "stall_speed": {"deg_s": 24.84},
+            "pot_jump": {"counts": 64}}"#,
+    )
+    .expect("parses");
+    assert_eq!(old, forms);
+    assert_eq!(old.observer, Some(Observer::Hz(15.0)));
+    assert_eq!(old.pot_jump, Some(PotJump::Counts(64.0)));
+    let rules: Policy = serde_json::from_str(
+        r#"{"yield": {"torque_kg_cm": null}, "pot_jump": {"multiple_of_step4": 4}}"#,
+    )
+    .expect("parses");
+    assert_eq!(rules.yield_, Some(Yield::TorqueKgCm(None)));
+    assert_eq!(rules.pot_jump, Some(PotJump::MultipleOfStep4(4.0)));
+
+    for (text, said) in [
+        (
+            r#"{"current_loop": 1000.0}"#,
+            "expected one of {\"hz\": ...}, {\"multiple_of_electrical_corner\": ...}",
+        ),
+        (
+            r#"{"observer": {"hz": 15.0, "x": 1}}"#,
+            "a map of more keys than \"hz\": it is one of",
+        ),
+        (
+            r#"{"pot_jump": {"multiple_of_step2": 4}}"#,
+            "\"multiple_of_step2\": it is one of {\"counts\": ...}, {\"multiple_of_step4\": ...}",
+        ),
+        (
+            r#"{"yield": {"a": 1}}"#,
+            "\"a\": it is one of {\"ma\": ...}, {\"torque_kg_cm\": ...}",
+        ),
+        (r#"{"yield": {"ma": null}}"#, "\"ma\" with no value"),
+    ] {
+        let e = serde_json::from_str::<Policy>(text)
+            .expect_err(text)
+            .to_string();
+        assert!(e.contains(said), "{text}: {e}");
+    }
+    let e = read(r#"{"observer": {"hz": 15}, "observer_hz": 15}"#).expect_err("both ways");
+    assert!(e.starts_with("The policy states observer twice"), "{e}");
 }
 
 #[test]
