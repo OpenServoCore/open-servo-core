@@ -533,7 +533,7 @@ mod probe {
     const DRIVE_POLARITY: u16 = 0x04f;
 
     fn board() -> Board {
-        common::load("boards/osc-dev-v006.json")
+        common::board()
     }
 
     fn thermal() -> ThermalInputs {
@@ -564,9 +564,20 @@ mod probe {
         stop: &AtomicBool,
         sink: &mut MemSink,
     ) -> Result<Probed, install::Refused> {
+        probe_with(c, np, thermal, rest, stop, sink, &board())
+    }
+
+    fn probe_with(
+        c: &mut Client<Bus>,
+        np: &Nameplate,
+        thermal: Option<&ThermalInputs>,
+        rest: &serde_json::Value,
+        stop: &AtomicBool,
+        sink: &mut MemSink,
+        b: &Board,
+    ) -> Result<Probed, install::Refused> {
         let d = descriptor();
         let clock = || 1.7e9;
-        let b = board();
         let mut rig = Rig {
             c,
             id: ID,
@@ -579,7 +590,7 @@ mod probe {
             &mut rig,
             &ProbeInputs {
                 nameplate: np,
-                board: &b,
+                board: b,
                 thermal,
                 rest,
             },
@@ -660,6 +671,58 @@ mod probe {
         .expect_err("refused");
         assert!(e.0.contains("3 Mbaud"), "{e}");
         assert_eq!(*writes.borrow(), []);
+    }
+
+    /// A board that publishes no stage 1 characterization: the probe, the
+    /// stops step's seated read and the window term, which read a burst
+    /// through its edges, refuse before any write, naming the word; the
+    /// rules and the heat model, which read none of it, give what they give
+    /// on the dev board, and the cruise cruises
+    /// (`a_board_without_characterization_still_cruises`).
+    #[test]
+    fn a_board_without_characterization_refuses_only_the_steps_that_need_it() {
+        let mut w = common::board_record().registers;
+        w.window_scale_q15 = 0;
+        let bare = Board::decode(&w).expect("decodes");
+        let (mut c, writes, rest) = rested(BaudRate::B3000000);
+        let mut sink = MemSink::default();
+        let e = probe_with(
+            &mut c,
+            &nameplate(),
+            Some(&thermal()),
+            &rest,
+            &AtomicBool::new(false),
+            &mut sink,
+            &bare,
+        )
+        .expect_err("refused");
+        let word = "CALIB window_scale_q15 reads 0";
+        assert!(e.0.contains(word), "{e}");
+        let page = descriptor().field("pos_lut_page").expect("page").addr;
+        assert!(
+            writes.borrow().iter().all(|(a, _)| *a == page),
+            "nothing written but the table read's page selects: {:?}",
+            writes.borrow()
+        );
+        assert!(sink.files.is_empty());
+        let e = osc_measure::steps::stops::seated_scales(&bare, 1135.0, 248.0)
+            .expect_err("the seated read");
+        assert!(e.0.contains(word), "{e}");
+        let s = block_on(osc_measure::state::read(&mut c, ID, &descriptor())).expect("state");
+        let sense = rest::Sense::of(&s, &descriptor()).expect("sense");
+        let e = osc_measure::steps::window::scales(&sense, &bare, 1200, 93)
+            .expect_err("the window term");
+        assert!(e.0.contains(word), "{e}");
+
+        let mut i = common::inputs();
+        let full = common::rules_set(&i, &common::table()).render();
+        i.board = bare.clone();
+        assert_eq!(common::rules_set(&i, &common::table()).render(), full);
+        let heat = |b: &Board| {
+            osc_measure::envelope::HeatModel::new(b, &thermal(), 4.18, 1135.0, 20_000.0)
+                .map(|h| format!("{h:?}"))
+        };
+        assert_eq!(heat(&bare), heat(&board()));
     }
 
     /// What every way out after a write leaves: torque off and read back,

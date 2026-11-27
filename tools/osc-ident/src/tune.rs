@@ -132,10 +132,10 @@ where
     if tries == 0 {
         bail!("--tries is at least 1");
     }
-    let r = files::rules_inputs(inputs, None, None)?;
+    let r = files::rules_inputs(inputs, None)?;
     let measured: Value = serde_json::from_slice(&files::read(&inputs.join("measured.json"))?)
         .context("parsing measured.json")?;
-    let pair = format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name);
+    let pair = format!("{}__{}", r.inputs.nameplate.name, r.servo);
     let no_gain = |e: Fail| {
         let why = match e {
             Fail::Missing(m) => format!("it reads {}, which is not there", m.input),
@@ -907,6 +907,7 @@ mod tests {
             "thermal.json",
             "pos_lut.json",
             "wide-codes.json",
+            "board.json",
         ] {
             std::fs::copy(testdata(&format!("mg90-d/{f}")), inputs.join(f)).expect("copy");
         }
@@ -1069,6 +1070,7 @@ mod tests {
         // the bench servo's run gathered: its nominal scales move protections
         let run_dir = dir.join("bench-run");
         std::fs::create_dir_all(run_dir.join("results")).expect("mkdir");
+        files::step_0(&run_dir);
         for f in ["rest", "probe", "stops", "window", "spins"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),

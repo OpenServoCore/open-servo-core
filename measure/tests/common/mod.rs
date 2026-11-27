@@ -38,6 +38,16 @@ pub fn load<T: DeserializeOwned>(rel: &str) -> T {
     serde_json::from_str(&text(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
+/// The board record step 0 writes on the bench servo.
+pub fn board_record() -> osc_measure::board::Record {
+    load("testdata/mg90-d/board.json")
+}
+
+/// The board the bench servo publishes.
+pub fn board() -> Board {
+    board_record().board().expect("the board decodes")
+}
+
 pub fn descriptor() -> Descriptor {
     Descriptor::parse(&text("../descriptors/osc-servo/0.1.json")).expect("descriptor")
 }
@@ -54,7 +64,7 @@ pub fn inputs() -> Inputs {
     let mut measured: Measured = load("testdata/mg90-d/measured.json");
     measured.shelf = Some(load::<ShelfRecord>("testdata/mg90-d/shelf.json"));
     Inputs {
-        board: load::<Board>("boards/osc-dev-v006.json"),
+        board: board(),
         measured,
         nameplate: load::<Nameplate>("testdata/mg90-d/nameplate.json"),
         policy: load::<Policy>("testdata/mg90-d/policy.json"),

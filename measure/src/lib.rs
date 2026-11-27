@@ -1,5 +1,5 @@
 //! Servo identification, sans io: what a run measured, the servo's
-//! nameplate, the board's description and a policy, turned into the
+//! nameplate, the board facts it publishes and a policy, turned into the
 //! servo's constant set by rules; the set file, and the path that installs
 //! it on a servo safely. Pure but for the bus, which is the client's, and
 //! files, which are a [`sink::Sink`]'s, so the same code runs in the CLI

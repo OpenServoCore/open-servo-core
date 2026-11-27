@@ -246,24 +246,13 @@ pub fn seated_scales(
     counts_per_a: f64,
     terminal_counts_per_v: f64,
 ) -> Result<Scales, Refused> {
-    let missing = |what: &str| {
-        Refused(format!(
-            "the board's description ({}) holds no {what}: a seated burst cannot be read",
-            b.name
-        ))
-    };
-    let edges = b
-        .burst_edges
-        .ok_or_else(|| missing("bridge edge lags (burst_edges)"))?;
+    let c = b.stage_1("a seated burst cannot be read")?;
+    let edges = c.burst_edges;
     Ok(Scales {
         counts_per_a,
         terminal_counts_per_v,
-        terminal_offset_counts: b
-            .terminal_offset_counts
-            .ok_or_else(|| missing("terminal offset (terminal_offset_counts)"))?,
-        window_scale: b
-            .window_scale
-            .ok_or_else(|| missing("window scale (window_scale)"))?,
+        terminal_offset_counts: c.terminal_offset_counts,
+        window_scale: c.window_scale,
         lags: Lags {
             on: edges.on_ticks,
             tap_on: edges.tap_on_ticks,
@@ -397,18 +386,16 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
     }
     let b = i.board;
     if !(b.oc_trip_ma.is_finite() && b.oc_trip_ma > 0.0) {
-        return Err(Refused(format!(
-            "the board's description ({}) states no overcurrent trip: a burst cannot be priced",
-            b.name
-        )));
+        return Err(Refused(
+            "the servo's board states no overcurrent trip (CALIB oc_trip_ma reads 0): a burst cannot be priced".into(),
+        ));
     }
     let sense = rest::Sense::of(&state, rig.d)?;
     let scales = seated_scales(b, sense.counts_per_a(), sense.terminal_counts_per_v())?;
     let bridge_min_ticks = b.bridge_min_ticks.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) states no bridge_min_ticks: the seat duty cannot be checked against the bridge's shortest pulse",
-            b.name
-        ))
+        Refused(
+            "the servo's board states no bridge_min_ticks (CALIB reads 0): the seat duty cannot be checked against the bridge's shortest pulse".into(),
+        )
     })?;
     let speed = np
         .speed_row()
@@ -1898,8 +1885,7 @@ mod tests {
         let np: Nameplate =
             serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
                 .expect("nameplate");
-        let board: Board =
-            serde_json::from_str(include_str!("../../boards/osc-dev-v006.json")).expect("board");
+        let board: Board = crate::steps::testkit::board();
         let thermal: ThermalInputs =
             serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
                 .expect("thermal");
@@ -2372,8 +2358,7 @@ mod tests {
         let np: Nameplate =
             serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
                 .expect("nameplate");
-        let board: Board =
-            serde_json::from_str(include_str!("../../boards/osc-dev-v006.json")).expect("board");
+        let board: Board = crate::steps::testkit::board();
         let thermal: ThermalInputs =
             serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
                 .expect("thermal");

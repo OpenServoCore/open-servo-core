@@ -631,7 +631,7 @@ mod tests {
     use crate::nameplate::VoltRange;
 
     fn board() -> Board {
-        serde_json::from_str(include_str!("../boards/osc-dev-v006.json")).expect("board")
+        crate::steps::testkit::board()
     }
 
     fn thermal() -> ThermalInputs {

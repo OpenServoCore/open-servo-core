@@ -1771,8 +1771,7 @@ mod tests {
             let np: Nameplate =
                 serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json"))
                     .expect("nameplate");
-            let board: Board = serde_json::from_str(include_str!("../../boards/osc-dev-v006.json"))
-                .expect("board");
+            let board: Board = steps::testkit::board();
             let thermal: ThermalInputs =
                 serde_json::from_str(include_str!("../../testdata/mg90-d/thermal.json"))
                     .expect("thermal");

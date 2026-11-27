@@ -47,8 +47,7 @@ use crate::capture::tel::{self, Line, StreamCfg};
 use crate::envelope::{Envelope, Facts, HeatModel, Kind, Price, Resistance, Rung};
 use crate::fit::median;
 use crate::fit::window::{
-    self as term, Method, Onset, Scales, Segment, Settle, Window, WindowError, acceptance,
-    field_q016,
+    self as term, Method, Onset, Scales, Segment, Window, WindowError, acceptance, field_q016,
 };
 use crate::guard::{self, Ledger, Way};
 use crate::inputs::{Inputs, Measured, Quantity, Source, ThermalInputs};
@@ -398,24 +397,9 @@ pub fn scales(
     pwm_arr: u16,
     v_window_min_ticks: u16,
 ) -> Result<Scales, Refused> {
-    let edges = board.burst_edges.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no bridge edge lags (burst_edges): the onsets cannot be read",
-            board.name
-        ))
-    })?;
-    let w = board.window_read.as_ref().ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no crest read (window_read): the onsets cannot be read",
-            board.name
-        ))
-    })?;
-    let terminal_offset_counts = board.terminal_offset_counts.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no terminal offset (terminal_offset_counts): the onsets cannot be read",
-            board.name
-        ))
-    })?;
+    let c = board.stage_1("the onsets cannot be read")?;
+    let (edges, w, terminal_offset_counts) =
+        (c.burst_edges, c.window_read, c.terminal_offset_counts);
     Ok(Scales {
         counts_per_a: sense.counts_per_a(),
         terminal_counts_per_v: sense.terminal_counts_per_v(),
@@ -427,10 +411,7 @@ pub fn scales(
         lag_off_ticks: edges.off_ticks,
         r_brake_ohm: w.r_brake_ohm,
         v_window_min_ticks,
-        settle: Settle {
-            start_ticks: w.settle_start_ticks,
-            q15: w.settle_q15.clone(),
-        },
+        settle: board.settle.clone(),
     })
 }
 

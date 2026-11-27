@@ -192,8 +192,12 @@ pub fn nameplate() -> Nameplate {
     serde_json::from_str(include_str!("../../testdata/mg90-d/nameplate.json")).expect("nameplate")
 }
 
+/// The board the bench servo publishes, as step 0 keeps it.
 pub fn board() -> Board {
-    serde_json::from_str(include_str!("../../boards/osc-dev-v006.json")).expect("board")
+    serde_json::from_str::<crate::board::Record>(include_str!("../../testdata/mg90-d/board.json"))
+        .expect("the board record")
+        .board()
+        .expect("the board")
 }
 
 pub fn thermal() -> ThermalInputs {

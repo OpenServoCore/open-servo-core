@@ -411,7 +411,7 @@ macro_rules! get {
     }};
 }
 
-/// `board!(c, name)`: the board description's `name`.
+/// `board!(c, name)`: the servo's published board fact `name`.
 macro_rules! board {
     ($c:expr, $name:ident) => {{
         let v = $c.inputs.board.$name;

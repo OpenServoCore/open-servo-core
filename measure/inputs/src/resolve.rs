@@ -16,7 +16,7 @@ use crate::tuning::{
     StallSpeed, TuningPolicy, Yield,
 };
 
-/// The board's facts a policy value resolves from, as the board file
+/// The board's facts a policy value resolves from, as the servo's CALIB
 /// names them.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(

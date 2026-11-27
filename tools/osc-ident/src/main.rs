@@ -66,17 +66,16 @@ enum Cmd {
     /// Measured inputs, the servo profile and a policy to a set file. Touches no servo.
     Rules {
         /// The inputs folder: measured.json, nameplate.json (the profile, either
-        /// version), policy.json and, where measured, thermal.json, shelf.json,
+        /// version), policy.json, board.json (the board's facts step 0 read
+        /// off the servo) and, where measured, thermal.json, shelf.json,
         /// pos_lut.json, wide-codes.json.
         #[arg(long)]
         inputs: PathBuf,
         /// A policy file other than the folder's.
         #[arg(long)]
         policy: Option<PathBuf>,
-        /// The board's description; the dev board's if omitted.
-        #[arg(long)]
-        board: Option<PathBuf>,
-        /// The set's pair name; `<servo>__<board>` if omitted.
+        /// The set's pair name; `<profile>__<servo>` if omitted, the servo
+        /// as the inputs folder's board.json names it.
         #[arg(long)]
         pair: Option<String>,
         #[arg(long, default_value = "set.json")]
@@ -285,9 +284,6 @@ struct StepArgs {
     /// profile's heat model if omitted.
     #[arg(long)]
     thermal: Option<PathBuf>,
-    /// The board's description; the dev board's if omitted.
-    #[arg(long)]
-    board: Option<PathBuf>,
 }
 
 impl StepArgs {
@@ -296,7 +292,6 @@ impl StepArgs {
             self.nameplate.as_deref(),
             self.policy.as_deref(),
             self.thermal.as_deref(),
-            self.board.as_deref(),
         )
     }
 }
@@ -312,19 +307,13 @@ struct WriteArgs {
     table: Option<PathBuf>,
 }
 
-fn rules(
-    inputs: &Path,
-    policy: Option<&Path>,
-    board: Option<&Path>,
-    pair: Option<&str>,
-    out: &Path,
-) -> Result<()> {
-    let r = files::rules_inputs(inputs, policy, board)?;
+fn rules(inputs: &Path, policy: Option<&Path>, pair: Option<&str>, out: &Path) -> Result<()> {
+    let r = files::rules_inputs(inputs, policy)?;
     for n in &r.notes {
         eprintln!("{n}");
     }
     let pair = pair.map_or_else(
-        || format!("{}__{}", r.inputs.nameplate.name, r.inputs.board.name),
+        || format!("{}__{}", r.inputs.nameplate.name, r.servo),
         str::to_string,
     );
     let (file, notes) = set::from_rules(
@@ -547,17 +536,10 @@ fn run(cli: &Cli) -> Result<bool> {
         Cmd::Rules {
             inputs,
             policy,
-            board,
             pair,
             out,
         } => {
-            rules(
-                inputs,
-                policy.as_deref(),
-                board.as_deref(),
-                pair.as_deref(),
-                out,
-            )?;
+            rules(inputs, policy.as_deref(), pair.as_deref(), out)?;
             Ok(true)
         }
         Cmd::Check { set } => block_on(async {
@@ -794,14 +776,13 @@ mod tests {
     #[test]
     fn a_version_1_profile_loads_with_its_policy() {
         let profile = testdata("profile.json");
-        let e = steps::StepInputs::load(Some(&profile), None, None, None)
+        let e = steps::StepInputs::load(Some(&profile), None, None)
             .err()
             .expect("refused");
         assert!(format!("{e:#}").contains("--policy"), "{e:#}");
         let v1 = steps::StepInputs::load(
             Some(&profile),
             Some(&testdata("policy-of-record.json")),
-            None,
             None,
         )
         .expect("loads");
@@ -825,9 +806,9 @@ mod tests {
     fn rules_on_the_record_inputs_checks_clean_against_the_set_of_record() {
         let dir = scratch("rules");
         let out = dir.join("set.json");
-        rules(&testdata(""), None, None, None, &out).expect("rules");
+        rules(&testdata(""), None, None, &out).expect("rules");
         assert!(
-            rules(&testdata(""), None, None, None, &out).is_err(),
+            rules(&testdata(""), None, None, &out).is_err(),
             "never writes over a set"
         );
 
@@ -906,7 +887,6 @@ mod tests {
             Some(&testdata("nameplate.json")),
             None,
             Some(&testdata("thermal.json")),
-            None,
         )
         .expect("inputs")
     }
@@ -994,6 +974,61 @@ mod tests {
                 .any(|l| l.contains("torque_enable 0, read back 0")),
             "{lines:?}"
         );
+        assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
+        let kept: osc_measure::board::Record =
+            serde_json::from_slice(&std::fs::read(root.join(files::BOARD)).expect("read"))
+                .expect("the board record");
+        let rec: osc_measure::board::Record =
+            serde_json::from_slice(&std::fs::read(testdata("board.json")).expect("read"))
+                .expect("the record's board");
+        assert_eq!(kept.servo, "uid");
+        assert_eq!(
+            kept.registers, rec.registers,
+            "step 0 kept what the servo publishes"
+        );
+        let _ = std::fs::remove_dir_all(out);
+    }
+
+    /// An image older than the board facts block (CALIB ntc_site reads 0)
+    /// is refused at step 0: `plan` says so and would not start, a step
+    /// makes no run folder and the servo stays torque off.
+    #[test]
+    fn an_image_without_board_facts_is_refused_at_step_0() {
+        let older = || {
+            let (mut c, d) = fake(BaudRate::B3000000);
+            c.pipe_mut()
+                .sim_mut()
+                .servo_table_mut(0, |t| t.calib.ntc_site.ntc_site = 0);
+            (c, d)
+        };
+        let (mut c, d) = older();
+        let (lines, starts) =
+            block_on(steps::plan(&mut c, Id::new(1), &d, &inputs())).expect("plan");
+        assert!(!starts);
+        assert!(
+            lines.iter().any(|l| l.starts_with("step 0")
+                && l.contains("REFUSED")
+                && l.contains(osc_measure::board::OLDER_IMAGE)),
+            "{lines:?}"
+        );
+        let (mut c, d) = older();
+        let out = scratch("step-older");
+        let e = block_on(steps::step_rest(
+            &mut c,
+            Id::new(1),
+            &d,
+            &inputs(),
+            &out,
+            "uid",
+            &AtomicBool::new(false),
+        ))
+        .expect_err("refused");
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("step 0") && e.contains(osc_measure::board::OLDER_IMAGE),
+            "{e}"
+        );
+        assert!(!out.join("uid").exists(), "no run folder");
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
     }
@@ -1108,7 +1143,7 @@ mod tests {
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
 
-        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
         let dir = scratch("step-stops-none");
         let e = block_on(steps::step_stops(
             &mut c,
@@ -1160,7 +1195,7 @@ mod tests {
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
 
-        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
         let dir = scratch("step-window-none");
         let e = block_on(steps::step_window(
             &mut c,
@@ -1220,7 +1255,7 @@ mod tests {
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
         let _ = std::fs::remove_dir_all(out);
 
-        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
         let dir = scratch("step-spins-none");
         let e = block_on(steps::step_spins(
             &mut c,
@@ -1274,7 +1309,7 @@ mod tests {
         assert!(!root.join("results/verify.json").exists());
         assert_eq!(block_on(c.read(Id::new(1), 0x180, 1)).expect("read"), [0]);
 
-        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
         let e = block_on(steps::step_verify(
             &mut c,
             Id::new(1),
@@ -1302,7 +1337,7 @@ mod tests {
         v.as_object_mut().expect("object").remove("travel_deg");
         let p = dir.join("nameplate.json");
         std::fs::write(&p, serde_json::to_vec(&v).expect("json")).expect("write");
-        let e = steps::StepInputs::load(Some(&p), None, None, None)
+        let e = steps::StepInputs::load(Some(&p), None, None)
             .err()
             .expect("refused");
         let e = format!("{e:#}");
@@ -1312,7 +1347,7 @@ mod tests {
         );
 
         let (mut c, d) = fake(BaudRate::B3000000);
-        let none = steps::StepInputs::load(None, None, None, None).expect("inputs");
+        let none = steps::StepInputs::load(None, None, None).expect("inputs");
         let e = block_on(steps::step_probe(
             &mut c,
             Id::new(1),

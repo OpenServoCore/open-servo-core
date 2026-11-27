@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use osc_measure::board;
 use osc_measure::gather::{
     self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, TABLE_RESULT, WINDOW_RESULT,
 };
@@ -32,9 +33,10 @@ fn parsed<T: DeserializeOwned>(p: &Path, bytes: &[u8]) -> Result<T> {
 /// The inputs folder `out` from the run folder `run`: `measured.json`, the
 /// table `pos_lut.json` (the table step's, else straight), the table
 /// step's slots `wide-codes.json` where it ran, the profile (as
-/// `nameplate.json`), the policy and the thermal values as given, and
-/// `resolved.json`, the policy's values as this run resolved them. The
-/// lines it prints.
+/// `nameplate.json`), the policy and the thermal values as given,
+/// `resolved.json`, the policy's values as this run resolved them, and
+/// step 0's `board.json`, which is there already when `out` is the run's
+/// own `inputs/`. The lines it prints.
 pub fn gather(
     run: &Path,
     nameplate: &Path,
@@ -42,7 +44,9 @@ pub fn gather(
     policy: &Path,
     out: &Path,
 ) -> Result<Vec<String>> {
-    let loaded = files::inputs(nameplate, Some(policy), &files::board(None)?)?;
+    let own = run.join("inputs");
+    let (_, board, board_bytes) = files::board_in(&own)?;
+    let loaded = files::inputs(nameplate, Some(policy), Some(&board.facts()))?;
     let np = &loaded.resolved.nameplate;
     let np_bytes = files::read(nameplate)?;
     let policy_bytes = files::read(policy)?;
@@ -68,7 +72,8 @@ pub fn gather(
         table: result(run, TABLE_RESULT)?,
     };
     let g = gather::gather(&results, np).map_err(|e| anyhow::anyhow!("{e}"))?;
-    if out.exists() {
+    let into_own = out.exists() && same(out, &own)?;
+    if out.exists() && !(into_own && only_board(out)?) {
         bail!(
             "{} exists: an inputs folder is gathered into a new one",
             out.display()
@@ -77,6 +82,9 @@ pub fn gather(
     let mut sink = DirSink {
         root: out.to_path_buf(),
     };
+    if !into_own {
+        sink.write(board::FILE, &board_bytes)?;
+    }
     sink.write("measured.json", gather::render(&g.measured).as_bytes())?;
     sink.write("pos_lut.json", gather::render(&g.table).as_bytes())?;
     sink.write("nameplate.json", &np_bytes)?;
@@ -89,6 +97,9 @@ pub fn gather(
         "policy.json",
         "resolved.json",
     ];
+    if !into_own {
+        wrote.push(board::FILE);
+    }
     if let Some(w) = &g.wide_codes {
         sink.write("wide-codes.json", gather::render(w).as_bytes())?;
         wrote.push("wide-codes.json");
@@ -101,6 +112,22 @@ pub fn gather(
     lines.extend(g.lines);
     lines.push(format!("wrote {}: {}", out.display(), wrote.join(", ")));
     Ok(lines)
+}
+
+fn same(a: &Path, b: &Path) -> Result<bool> {
+    let canon = |p: &Path| p.canonicalize().with_context(|| format!("{}", p.display()));
+    Ok(b.exists() && canon(a)? == canon(b)?)
+}
+
+/// The run's own `inputs/` as step 0 left it: its board file and nothing
+/// a gather writes.
+fn only_board(dir: &Path) -> Result<bool> {
+    for e in std::fs::read_dir(dir).with_context(|| format!("{}", dir.display()))? {
+        if e?.file_name() != board::FILE {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -130,6 +157,7 @@ mod tests {
         let dir = scratch("gather");
         let run = dir.join("run");
         std::fs::create_dir_all(run.join("results")).expect("mkdir");
+        files::step_0(&run);
         for f in ["rest", "probe", "stops", "window", "spins"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
@@ -189,11 +217,11 @@ mod tests {
             .is_err(),
             "never writes over an inputs folder"
         );
-        let r = files::rules_inputs(&out, None, None).expect("the rules read it");
+        let r = files::rules_inputs(&out, None).expect("the rules read it");
         assert_eq!(r.table.as_ref().map(|t| t.stops), Some((107, 3729)));
         // without a gain the speed loop is held: `rules` still writes a set
         let set_out = dir.join("set.json");
-        crate::rules(&out, None, None, None, &set_out).expect("rules");
+        crate::rules(&out, None, None, &set_out).expect("rules");
         let set = files::set(&set_out).expect("set");
         assert_eq!(set.table().0, "IDENTITY");
         assert!(set.value("v_kp_q88").is_none() && set.value("r_q12").is_some());
@@ -212,6 +240,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A run folder without step 0's board file is refused before anything
+    /// is written, and so is an inputs folder the rules would read.
+    #[test]
+    fn a_run_folder_without_step_0s_board_is_refused() {
+        let dir = scratch("gather-no-board");
+        let run = dir.join("run");
+        std::fs::create_dir_all(run.join("results")).expect("mkdir");
+        let out = dir.join("inputs");
+        let e = gather(
+            &run,
+            &testdata("mg90-d/nameplate.json"),
+            None,
+            &testdata("mg90-d/policy.json"),
+            &out,
+        )
+        .expect_err("refused");
+        assert!(
+            format!("{e:#}").contains("rerun step 0 on the servo"),
+            "{e:#}"
+        );
+        assert!(!out.exists());
+        let e = files::rules_inputs(&run, None).err().expect("refused");
+        assert!(
+            format!("{e:#}").contains("rerun step 0 on the servo"),
+            "{e:#}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The record's version 1 profile and policy gather into an inputs
     /// folder whose set is the version 0 files' own, every field byte for
     /// byte; only the input files' names and hashes differ.
@@ -220,6 +277,7 @@ mod tests {
         let dir = scratch("gather-v1");
         let run = dir.join("run");
         std::fs::create_dir_all(run.join("results")).expect("mkdir");
+        files::step_0(&run);
         for f in ["rest", "probe", "stops", "window", "spins"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
@@ -242,7 +300,7 @@ mod tests {
             )
             .expect("gathers");
             let set_out = dir.join(format!("{name}.json"));
-            crate::rules(&out, None, None, Some("pair"), &set_out).expect("rules");
+            crate::rules(&out, None, Some("pair"), &set_out).expect("rules");
             let text = files::set(&set_out).expect("set").render();
             let fields = text.split_once("\n \"fields\": {").expect("fields").1;
             sets.push(fields.to_string());
@@ -259,6 +317,7 @@ mod tests {
         let dir = scratch("gather-table");
         let run = dir.join("run");
         std::fs::create_dir_all(run.join("results")).expect("mkdir");
+        files::step_0(&run);
         for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
@@ -279,7 +338,7 @@ mod tests {
             lines.iter().any(|l| l.contains("wide-codes.json")),
             "{lines:?}"
         );
-        let r = files::rules_inputs(&out, None, None).expect("the rules read it");
+        let r = files::rules_inputs(&out, None).expect("the rules read it");
         let t = r.table.as_ref().expect("the table");
         assert!(t.points.iter().any(|&k| k != 0));
         assert_eq!(
@@ -287,7 +346,7 @@ mod tests {
             Some(&[0, 48, 0, 80, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0][..])
         );
         let set_out = dir.join("set.json");
-        crate::rules(&out, None, None, None, &set_out).expect("rules");
+        crate::rules(&out, None, None, &set_out).expect("rules");
         let set = files::set(&set_out).expect("set");
         assert_eq!(set.table().0, "LIVE");
         assert_eq!(set.slots().expect("slots").as_deref(), r.slots.as_deref());

@@ -733,22 +733,17 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result<Be
     }
     let b = i.board;
     if !(b.oc_trip_ma.is_finite() && b.oc_trip_ma > 0.0) {
-        return Err(Refused(format!(
-            "the board's description ({}) states no overcurrent trip: before R is measured a burst is priced blocked at the trip, so part A cannot be priced",
-            b.name
-        )));
+        return Err(Refused(
+            "the servo's board states no overcurrent trip (CALIB oc_trip_ma reads 0): before R is measured a burst is priced blocked at the trip, so part A cannot be priced".into(),
+        ));
     }
-    let edges = b.burst_edges.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) holds no bridge edge lags (burst_edges): a burst cannot be read",
-            b.name
-        ))
-    })?;
+    let edges = b
+        .stage_1("the bridge's edge lags are unknown, so a burst cannot be read")?
+        .burst_edges;
     let bridge_min_ticks = b.bridge_min_ticks.ok_or_else(|| {
-        Refused(format!(
-            "the board's description ({}) states no bridge_min_ticks: part B starts at the bridge's shortest pulse",
-            b.name
-        ))
+        Refused(
+            "the servo's board states no bridge_min_ticks (CALIB reads 0): part B starts at the bridge's shortest pulse".into(),
+        )
     })?;
     // check_user holds a speed row and the travel
     let speed = np

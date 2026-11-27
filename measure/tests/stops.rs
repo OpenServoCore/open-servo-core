@@ -33,7 +33,7 @@ const R_RECORD_OHM: f64 = 4.2174;
 const STOP_40_R_OHM: f64 = 4.341;
 
 fn board() -> Board {
-    common::load("boards/osc-dev-v006.json")
+    common::board()
 }
 
 fn sources() -> Value {
@@ -41,11 +41,30 @@ fn sources() -> Value {
 }
 
 /// The scales the step reads its bursts through, on stage 1's measured
-/// sense scales in place of the nominal ones the servo reports.
+/// sense scales in place of the nominal ones the servo reports, and stage
+/// 1's own floats for the board's terms: the parity fixture.
 fn stage1() -> Scales {
     let s = sources();
     let v = |k: &str| s["scales"][k]["value"].as_f64().expect(k);
-    stops::seated_scales(&board(), v("counts_per_a"), v("terminal_counts_per_v"))
+    let lag = |k: &str| s["scales"]["lags"][k]["value"].as_f64().expect(k);
+    Scales {
+        counts_per_a: v("counts_per_a"),
+        terminal_counts_per_v: v("terminal_counts_per_v"),
+        terminal_offset_counts: v("terminal_offset_counts"),
+        window_scale: v("window_scale"),
+        lags: Lags {
+            on: lag("on"),
+            tap_on: lag("tap_on"),
+            off: lag("off"),
+            settle: lag("settle"),
+        },
+    }
+}
+
+/// [`stage1`] with the board's terms as the servo publishes them.
+fn published() -> Scales {
+    let s = stage1();
+    stops::seated_scales(&board(), s.counts_per_a, s.terminal_counts_per_v)
         .expect("the board reads a seated burst")
 }
 
@@ -67,33 +86,72 @@ fn bare(s: &Scales) -> Scales {
     }
 }
 
+/// Each characterization word the servo publishes decodes within half its
+/// LSB of stage 1's value: the window scale a Q15 word, the terminal
+/// offset and the lags Q4; a board publishing none refuses the seated read.
 #[test]
-fn the_board_carries_stage_1s_burst_terms() {
-    let s = sources();
-    let v = |k: &str| s["scales"][k]["value"].as_f64().expect(k);
-    let lag = |k: &str| s["scales"]["lags"][k]["value"].as_f64().expect(k);
-    let b = board();
-    assert_eq!(b.window_scale, Some(v("window_scale")));
-    assert_eq!(b.terminal_offset_counts, Some(v("terminal_offset_counts")));
-    let sc = stage1();
-    assert_eq!(sc.window_scale, v("window_scale"));
-    assert_eq!(sc.terminal_offset_counts, v("terminal_offset_counts"));
-    assert_eq!(
-        sc.lags,
-        Lags {
-            on: lag("on"),
-            tap_on: lag("tap_on"),
-            off: lag("off"),
-            settle: lag("settle"),
-        }
+fn the_published_characterization_rounds_stage_1s_values() {
+    let (s, p) = (stage1(), published());
+    let within = |what: &str, got: f64, want: f64, lsb: f64| {
+        assert!(
+            (got - want).abs() <= lsb / 2.0,
+            "{what}: {got} against stage 1's {want}"
+        );
+        println!("{what}: {want} -> {got} ({:+.2e})", got - want);
+    };
+    within(
+        "window_scale",
+        p.window_scale,
+        s.window_scale,
+        1.0 / 32768.0,
     );
-    for key in ["window_scale", "terminal_offset_counts"] {
-        let mut v: Value = common::load("boards/osc-dev-v006.json");
-        v.as_object_mut().expect("board").remove(key);
-        let b: Board = serde_json::from_value(v).expect("board");
-        let e = stops::seated_scales(&b, 1135.0, 248.0).expect_err(key);
-        assert!(e.0.contains(key), "{key}: {}", e.0);
+    within(
+        "terminal_offset_counts",
+        p.terminal_offset_counts,
+        s.terminal_offset_counts,
+        1.0 / 16.0,
+    );
+    for (what, got, want) in [
+        ("on", p.lags.on, s.lags.on),
+        ("tap_on", p.lags.tap_on, s.lags.tap_on),
+        ("off", p.lags.off, s.lags.off),
+        ("settle", p.lags.settle, s.lags.settle),
+    ] {
+        within(what, got, want, 1.0 / 16.0);
     }
+    assert_eq!(
+        Scales {
+            window_scale: s.window_scale,
+            terminal_offset_counts: s.terminal_offset_counts,
+            ..p
+        },
+        s,
+        "the sense scales are the ones given"
+    );
+    let mut w = common::board_record().registers;
+    w.window_scale_q15 = 0;
+    let bare = Board::decode(&w).expect("a board without stage 1 decodes");
+    let e = stops::seated_scales(&bare, 1135.0, 248.0).expect_err("refused");
+    assert!(e.0.contains("window_scale_q15 reads 0"), "{}", e.0);
+}
+
+/// The recorded seated bursts refit through the published words: R moves
+/// under 1e-4 of the stage 1 floats' R.
+#[test]
+fn the_seated_bursts_refit_through_the_published_words() {
+    let name = "stop-g2-fwd-40-burst-1.csv";
+    let cap = burst::from_csv(&common::text(&format!("testdata/bursts/{name}"))).expect(name);
+    let (r, was) = (r_of(&cap, &published()), r_of(&cap, &stage1()));
+    println!("{name}: R {was:.6} -> {r:.6} ohm ({:+.2e})", r / was - 1.0);
+    assert!((r / was - 1.0).abs() < 1e-4, "R {r:.6} against {was:.6}");
+    let all = shots(&path("testdata/seated"));
+    let pool = |s: &Scales| seated::read(&all, s).r(|_| true).expect("a pool").median;
+    let (r, was) = (pool(&published()), pool(&stage1()));
+    println!(
+        "the seated pool: R {was:.6} -> {r:.6} ohm ({:+.2e})",
+        r / was - 1.0
+    );
+    assert!((r / was - 1.0).abs() < 1e-4, "R {r:.6} against {was:.6}");
 }
 
 #[test]
@@ -170,6 +228,15 @@ fn the_identification_pass_reads_the_notebooks_burst_r() {
         100.0 * (r / was - 1.0)
     );
     assert!((r - want).abs() < 5e-5, "R {r:.6} against {want:.6}");
+    let on_words = mean(&published());
+    println!(
+        "through the published words: R {on_words:.6} ohm ({:+.2e} of the notebook's)",
+        on_words / want - 1.0
+    );
+    assert!(
+        (on_words / want - 1.0).abs() < 1e-4,
+        "R {on_words:.6} against {want:.6}"
+    );
 }
 
 /// Every burst of the seated set under `root`, a group a folder.

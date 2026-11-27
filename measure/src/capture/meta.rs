@@ -8,7 +8,7 @@ use std::io::Write as _;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use osc_client::descriptor::Descriptor;
+use osc_client::descriptor::{Descriptor, Kind};
 use serde_json::{Map, Value, json};
 
 use super::burst::{self, Capture};
@@ -35,12 +35,48 @@ pub const SENSE: [&str; 14] = [
     "vmotor_bias_bot_ohm",
 ];
 
+/// The board facts block (protocol sec 5.5), so a capture names the image
+/// constants and the characterization its board published.
+pub const BOARD: [&str; 15] = [
+    "ntc_site",
+    "bridge_min_ticks",
+    "i_settle_start_ticks",
+    "i_settle_q15",
+    "oc_trip_ma",
+    "oc_trip_us",
+    "rail_source_mohm",
+    "window_scale_q15",
+    "terminal_offset_q4",
+    "brake_loop_mohm",
+    "crest_sample_ticks",
+    "shunt_on_lag_q4",
+    "tap_on_lag_q4",
+    "off_lag_q4",
+    "shunt_settle_q4",
+];
+
 /// What every capture's meta opens with, as osc-lab's does: the servo, its
-/// tick rate, the PWM period its duty counts are of, the plant it ran and
-/// its sense constants; and the image.
+/// tick rate, the PWM period its duty counts are of, the plant it ran, its
+/// sense constants and its board facts; and the image.
 pub fn servo(state: &State, d: &Descriptor, line: &Line) -> Map<String, Value> {
     let num = |name: &str| d.field(name).map_or(Value::Null, |f| state.text(f));
     let sense: Map<String, Value> = SENSE.iter().map(|n| (n.to_string(), num(n))).collect();
+    let board: Map<String, Value> = BOARD
+        .iter()
+        .map(|n| {
+            let v = match d.field(n) {
+                Some(f) if f.kind == Kind::Bytes => state.bytes(f).map_or(Value::Null, |b| {
+                    b.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|w| u16::from_le_bytes(*w))
+                        .collect()
+                }),
+                _ => num(n),
+            };
+            (n.to_string(), v)
+        })
+        .collect();
     let mut m = Map::new();
     m.insert("model".into(), num("model_number"));
     m.insert("fw".into(), num("firmware_version"));
@@ -59,6 +95,7 @@ pub fn servo(state: &State, d: &Descriptor, line: &Line) -> Map<String, Value> {
         }),
     );
     m.insert("sense".into(), Value::Object(sense));
+    m.insert("board".into(), Value::Object(board));
     m
 }
 
