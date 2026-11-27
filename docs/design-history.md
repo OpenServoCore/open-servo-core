@@ -275,9 +275,8 @@ a reversed motor stepped the way it had already drifted. Each fix would
 have added a term and a budget row to a check that servos of this class do
 not carry at all. So the check went. The polarity is a calibration fact
 that `osc cal` measures and the plant stamp covers, a write that changes it
-refuses closed loop until a tool stamps the set again, and a servo that
-carries a wrong one runs to its stop and ends on the position error timer
-or the stall timer. Lesson: a fact the calibration measures is not one for
+runs as written, and a servo that carries a wrong one runs to its stop and
+ends on the position error timer or the stall timer. Lesson: a fact the calibration measures is not one for
 the control loop to keep re-deriving from evidence a load can forge.
 
 ### The compiled current cap and move speed
@@ -295,6 +294,28 @@ board's overcurrent trip, and the host protects the train. The servos of
 this class ship limits for their own motor because their factory is the
 calibration. Lesson: a default that stands in for a measurement is a guess
 the servo will run on; refuse instead.
+
+### The data state as a gate
+
+The servo once kept a verdict on its own data and refused closed loop on
+it. A byte named every reason the saved images or the identified set might
+not be this servo's own: blank, unreadable, of an older layout, or edited
+since a tool stamped the set. Any reason refused Velocity and Position at
+the enable, and an unreadable configuration refused every mode until a
+factory reset. The refusals were about where a set came from, not about
+anything the loops run on. A factory-fresh servo with a whole
+identification written could not close a loop on it until the set was
+saved, so an identification had to persist a set before it could verify
+it, and a gain tuned by hand refused closed loop until a tool stamped the
+set again. The refusals that protect a motor are the ones on a constant the
+loop's math cannot run on, a zero Ke or an unset cap or ceiling, and the
+kernel's belt already made them. So the gate went and the belt is the one
+check that refuses a mode. The byte stays as information for the host, and
+a hand-tuned set runs as written, bounded by the protections that act on
+measurements: the current limit, the overcurrent trip, the stall and
+position error timers, the thermal cutoff, the rail fold and the soft
+limits. Lesson: refuse what the math cannot run on, not what the firmware
+cannot vouch for.
 
 ## Recurring lessons
 

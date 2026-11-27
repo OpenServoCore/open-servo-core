@@ -11,10 +11,10 @@ pub const BIT_STALL: u8 = 1 << 2;
 pub const BIT_POSITION_ERROR: u8 = 1 << 3;
 pub const BIT_SENSOR: u8 = 1 << 4;
 pub const BIT_UNDER_VOLT: u8 = 1 << 5;
-/// The stored set does not describe this servo. `CODE_DATA`: closed loop
-/// refused on the data state (`data_state` module), raised at entry while
-/// `data_flags` names a reason, and every tick a Velocity or Position loop
-/// runs on a zero Ke; raised on use, never on state alone.
+/// The configuration leaves the mode unusable. `CODE_DATA`: raised by the
+/// belt (`kernel::config::belt`) on every tick a mode runs on the
+/// constants it refuses (a zero Ke under Velocity or Position, an unset
+/// limit under any closed mode); raised on use, never on state alone.
 pub const BIT_DATA: u8 = 1 << 6;
 /// The bus fell silent under torque for `bus_deadman_ticks`: the host-loss
 /// guard (kernel sec 2.7).

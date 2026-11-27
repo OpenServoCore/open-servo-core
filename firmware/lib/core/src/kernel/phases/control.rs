@@ -85,7 +85,7 @@ impl Medium {
             streaming,
             faults,
         );
-        self.admit(cfg, shared, faults, fast);
+        self.admit(cfg, faults, fast);
         #[cfg(feature = "loop-margin")]
         self.gate_inject(streaming);
         self.edges(raw_pos, cfg, shared, faults, fast, cmd);
@@ -95,14 +95,8 @@ impl Medium {
         cmd.i_ref_cc = self.i_ref_cc;
     }
 
-    /// The torque enable edge, the data-state entry check and the belt.
-    fn admit(
-        &mut self,
-        cfg: &KernelConfig,
-        shared: &Shared,
-        faults: &mut FaultLatch,
-        fast: &mut Fast,
-    ) {
+    /// The torque enable edge and the belt.
+    fn admit(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch, fast: &mut Fast) {
         let life = &self.ctl.life;
         // torque_enable 0->1 is the fault ack: latch, detectors, and the
         // limits pend all clear; a still-present condition re-latches
@@ -119,22 +113,10 @@ impl Medium {
         }
         self.te_prev = life.torque_enable;
 
-        // Data-state entry check (data_state module): at the enable edge and
-        // at a mode change under torque, a named reason refuses closed loop
-        // for this run. A reason that appears mid-run (a live edit) waits
-        // for the next entry; only the belt below stops a running loop.
-        if life.torque_enable && (enable_edge || life.mode != self.mode_prev) {
-            let p = shared.table.region_ptr();
-            // SAFETY: same volatile read contract as `Control::read`; boot
-            // and the dispatcher own this byte, the kernel only reads it.
-            let data = unsafe { (&raw const (*p).telemetry.mode.data_flags).read_volatile() };
-            if !crate::data_state::allows(life.mode, data) {
-                faults.raise(faults::BIT_DATA, faults::CODE_DATA);
-            }
-        }
-        // Physics belt: a closed loop on a zero Ke runs open and one on an
-        // unset limit has none fit for its motor, whatever the flags say -
-        // a live write of 0 into a running loop stops it here.
+        // Physics belt, the only check that refuses a mode: a closed loop on
+        // a zero Ke runs open and one on an unset limit has none fit for its
+        // motor. It reads the configuration as taken, so a live write of 0
+        // into a running loop stops it here too.
         if life.torque_enable && belt::refuses(cfg.belt, life.mode) {
             faults.raise(faults::BIT_DATA, faults::CODE_DATA);
         }

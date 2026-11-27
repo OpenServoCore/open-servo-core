@@ -574,7 +574,7 @@ impl Dispatcher<'_> {
     /// persist as the identity), the position table settles to what the kernel
     /// applies and a data-state checkpoint precedes the program (a stale
     /// stamp still persists: the reboot recomputes it anyway); success
-    /// retires the fresh-servo reasons (`data_state::SAVE_CLEARS`).
+    /// retires every image reason (`data_state::SAVE_CLEARS`).
     fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
         if self
             .shared

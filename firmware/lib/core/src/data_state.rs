@@ -1,8 +1,8 @@
 //! Data state: whether the persisted images and the identified set behind
 //! the closed loops are this servo's own. `data_flags` (TELEMETRY-MODE)
-//! names every reason they are not; the kernel refuses closed loop while
-//! one holds and latches `CODE_DATA` on the attempt (kernel/phases/loops/faults.rs), so
-//! a virgin servo in OpenLoop shows no ALERT.
+//! names every reason they are not, as information for the host: no reason
+//! refuses a mode. Only the kernel's belt does (`kernel::config::belt`, on
+//! the constants a loop would run on).
 //!
 //! Writers: boot (pre-IRQ); the bus dispatcher (a covered write, a stamp
 //! write and a LUT command mark, SAVE checkpoints and retires); and the
@@ -13,19 +13,16 @@
 //! and posts; the job clears it once the live set matches the stamp
 //! again. The publish runs with the bus masked and under a generation check,
 //! so a write landing mid-job leaves the mark standing and the job posted.
-//! The kernel reads.
 
 use crate::regions::calib::CalibMotor;
 use crate::regions::calib::addr::stamp::PLANT_STAMP;
-use crate::regions::control::Mode;
 use crate::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use crate::{RegionStorage, Shared, pos_lut, stamp};
 
 /// Boot found both CONFIG slots erased.
 pub const CONFIG_VIRGIN: u8 = 1 << 0;
-/// Boot found CONFIG bytes that parse under no version. Board defaults
-/// stand in for a lost tuned config (limits, polarity), so this alone
-/// refuses every mode; only FACTORY + reboot clears it.
+/// Boot found CONFIG bytes that parse under no version; board defaults
+/// run, as on a blank servo.
 pub const CONFIG_CORRUPT: u8 = 1 << 1;
 pub const CALIB_VIRGIN: u8 = 1 << 2;
 pub const CALIB_CORRUPT: u8 = 1 << 3;
@@ -40,11 +37,10 @@ pub const PLANT_UNSET: u8 = 1 << 5;
 pub const CONFIG_STALE: u8 = 1 << 6;
 pub const CALIB_STALE: u8 = 1 << 7;
 
-/// The reasons a successful SAVE retires: the persisted table is now this
-/// servo's own. CONFIG_CORRUPT stays, so a blind SAVE cannot bless board
-/// defaults as a tuned config.
+/// The reasons a successful SAVE retires, every image reason: the
+/// persisted table is now the one in RAM.
 pub const SAVE_CLEARS: u8 =
-    CONFIG_VIRGIN | CALIB_VIRGIN | CALIB_CORRUPT | CONFIG_STALE | CALIB_STALE;
+    CONFIG_VIRGIN | CONFIG_CORRUPT | CALIB_VIRGIN | CALIB_CORRUPT | CONFIG_STALE | CALIB_STALE;
 
 /// The reasons a checkpoint recomputes from the live set.
 const CHECKPOINT: u8 = STAMP_MISMATCH | PLANT_UNSET;
@@ -90,13 +86,6 @@ impl ImageState {
             ImageState::Stale => stale,
         }
     }
-}
-
-/// Entry verdict for `mode` under `flags`. OpenLoop and Current consume
-/// neither Ke nor the loop gains above the current loop, and cal/ident
-/// drive only those, so every reason but CONFIG_CORRUPT leaves them open.
-pub fn allows(mode: Mode, flags: u8) -> bool {
-    flags & CONFIG_CORRUPT == 0 && (flags == 0 || matches!(mode, Mode::OpenLoop | Mode::Current))
 }
 
 fn plant_flag(motor: &CalibMotor) -> u8 {
@@ -156,9 +145,8 @@ impl Shared {
     /// leaves the mismatch behind) and posts the checkpoint that clears it
     /// once the live set matches the stamp again; the job holds it while
     /// torque is on. A torque write moves the generation so a job in
-    /// flight re-judges under the new torque. Never stops a running loop;
-    /// the kernel reads the flags at its next entry. Bus dispatch only;
-    /// one copy behind both commit sites, O(1).
+    /// flight re-judges under the new torque. Bus dispatch only; one copy
+    /// behind both commit sites, O(1).
     #[inline(never)]
     #[rustc_align(4)]
     pub fn data_state_after_commit(&self, addr: u16, len: u16) {
@@ -259,23 +247,6 @@ mod tests {
     use crate::regions::config::addr::limits::{CURRENT_LIMIT_COUNTS, DRIVE_POLARITY};
     use crate::regions::config::addr::loop_velocity::V_KP_Q88;
 
-    const MODES: [Mode; 4] = [
-        Mode::OpenLoop,
-        Mode::Current,
-        Mode::Velocity,
-        Mode::Position,
-    ];
-    const REASONS: [u8; 8] = [
-        CONFIG_VIRGIN,
-        CONFIG_CORRUPT,
-        CALIB_VIRGIN,
-        CALIB_CORRUPT,
-        STAMP_MISMATCH,
-        PLANT_UNSET,
-        CONFIG_STALE,
-        CALIB_STALE,
-    ];
-
     fn flags(sh: &Shared) -> u8 {
         sh.table.with(|t| t.telemetry.mode.data_flags)
     }
@@ -291,28 +262,6 @@ mod tests {
     fn stamp(sh: &Shared) {
         sh.table
             .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
-    }
-
-    #[test]
-    fn allows_truth_table() {
-        for mode in MODES {
-            assert!(allows(mode, 0), "{mode:?} with no reason");
-        }
-        for reason in REASONS {
-            for extra in [0, CALIB_VIRGIN | PLANT_UNSET] {
-                let flags = reason | extra;
-                let open = flags & CONFIG_CORRUPT == 0;
-                assert_eq!(allows(Mode::OpenLoop, flags), open, "{flags:#04x}");
-                assert_eq!(allows(Mode::Current, flags), open, "{flags:#04x}");
-                assert!(!allows(Mode::Velocity, flags), "{flags:#04x}");
-                assert!(!allows(Mode::Position, flags), "{flags:#04x}");
-            }
-        }
-        assert_eq!(
-            REASONS.iter().fold(0, |m, r| m | r),
-            0xFF,
-            "every bit named"
-        );
     }
 
     #[test]
@@ -364,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn save_checkpoint_recomputes_and_success_retires_the_fresh_reasons() {
+    fn save_checkpoint_recomputes_and_success_retires_every_image_reason() {
         let sh = Shared::new();
         sh.publish_data_state(ImageState::Corrupt, ImageState::Stale);
         assert_eq!(
@@ -376,14 +325,10 @@ mod tests {
         sh.data_state_checkpoint();
         assert_eq!(flags(&sh), CONFIG_CORRUPT | CALIB_STALE);
         sh.data_state_saved();
-        assert_eq!(
-            flags(&sh),
-            CONFIG_CORRUPT,
-            "SAVE never blesses a corrupt config"
-        );
+        assert_eq!(flags(&sh), 0, "SAVE retires a corrupt config too");
         sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 0);
         sh.data_state_checkpoint();
-        assert_eq!(flags(&sh), CONFIG_CORRUPT | STAMP_MISMATCH | PLANT_UNSET);
+        assert_eq!(flags(&sh), STAMP_MISMATCH | PLANT_UNSET);
     }
 
     #[test]
