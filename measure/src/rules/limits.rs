@@ -54,16 +54,14 @@ fn speed_ceiling(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(speed_ceiling_deg_s(c)? * counts_per_deg(c)?)
 }
 
-/// The hard peak cap, A: the stated stall current, or the stated stall
-/// voltage over the winding as identified, at the nameplate's derate.
+/// The hard peak cap, A: the stated stall voltage over the seated winding
+/// as identified, at the nameplate's derate. A stated stall current never
+/// binds it: the gather reports it beside V / R.
 pub fn current_limit_a(c: &mut Ctx) -> Result<f64, Fail> {
     let rows = c.inputs.nameplate.stall.clone();
     let row = stated(c, "nameplate.stall", &rows, |r| r.at_v)?;
     let derate = share("nameplate.derate_other", get!(c, nameplate, derate_other)?)?;
-    match row.current_a {
-        Some(a) => Ok(derate * a),
-        None => Ok(derate * row.at_v / q!(c, measured, r_ohm)?),
-    }
+    Ok(derate * row.at_v / q!(c, measured, r_ohm)?)
 }
 
 fn current_limit(c: &mut Ctx) -> Result<f64, Fail> {

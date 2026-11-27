@@ -238,6 +238,33 @@ fn a_move_speed_over_the_ceiling_resolves_to_the_ceiling_and_says_so() {
     }
 }
 
+/// The current limit resolves to the stated volts over the identified R
+/// whether or not the profile states a stall current; a stated one is
+/// named as reported beside it, never as what binds.
+#[test]
+fn the_current_limit_is_the_stated_volts_over_r_a_stated_current_beside_it() {
+    let (mut p, q) = v1();
+    let note = |p: &ServoProfile| {
+        resolve(p, &q, Some(&BOARD))
+            .expect("resolves")
+            .report
+            .fields
+            .iter()
+            .find(|l| l.field == "protection.current_limit")
+            .and_then(|l| l.note.clone())
+            .unwrap()
+    };
+    let vr = "of the 4.8 V rating over the identified R, set by the run";
+    assert_eq!(note(&p), vr);
+    for s in &mut p.stall {
+        s.current_a = Some(0.9);
+    }
+    assert_eq!(
+        note(&p),
+        format!("{vr}; the 0.9 A the profile states there is reported beside it")
+    );
+}
+
 /// A form whose rule this tool does not have yet is refused naming the
 /// fixed form, so no field is left out unannounced.
 #[test]

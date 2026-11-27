@@ -273,15 +273,16 @@ pub fn resolve(
         "protection.current_limit",
         Form::Share,
         Value::Number(other),
-        "of the stated stall current",
+        "of the stall current, the stated volts over R",
         "nameplate.derate_other",
     );
+    let vr = format!(
+        "of the {} V rating over the identified R, set by the run",
+        stall.at_v
+    );
     l.note(match stall.current_a {
-        Some(a) => format!("of the {a} A stated at {} V", stall.at_v),
-        None => format!(
-            "of the {} V rating over the identified R, set by the run",
-            stall.at_v
-        ),
+        Some(a) => format!("{vr}; the {a} A the profile states there is reported beside it"),
+        None => vr,
     });
     match q.yield_ {
         Some(Yield::Ma(ma)) => {

@@ -552,3 +552,29 @@ fn a_table_step_on_other_stops_or_refused_is_refused() {
     let e = gather::gather(&r, &nameplate()).expect_err("refused");
     assert!(e.0.contains("run the table step again"), "{e}");
 }
+
+/// A stall current the profile states is reported beside the stated volts
+/// over the seated R, which the current limit derates; the record states
+/// none, so its gather says nothing of it.
+#[test]
+fn a_stated_stall_current_is_reported_beside_v_over_r() {
+    let said = |np: &Nameplate| -> Vec<String> {
+        gather::gather(&run(), np)
+            .expect("gathers")
+            .lines
+            .into_iter()
+            .filter(|l| l.starts_with("stall current"))
+            .collect()
+    };
+    assert!(said(&nameplate()).is_empty());
+    let mut np = nameplate();
+    for s in &mut np.stall {
+        s.current_a = Some(0.9);
+    }
+    assert_eq!(
+        said(&np),
+        [
+            "stall current at 4.8 V: V / R = 1.146 A over the seated R 4.1878 ohm, which the current limit derates; the profile states 0.9 A"
+        ]
+    );
+}
