@@ -37,6 +37,16 @@ pub mod belt {
     /// against both.
     pub const LIMITS_UNSET: u8 = bit(Mode::Current) | KE_UNSET;
 
+    /// The belt on the constants a loop would run on, as the table holds
+    /// them: both Ke, the current cap and the speed ceiling. A host that
+    /// models the servo derives `refused_modes` through this.
+    #[inline(always)]
+    pub const fn of(recip_ke_q: u16, ke_vpc_q: u16, cap: u16, ceiling: u16) -> u8 {
+        let ke_unset = recip_ke_q == 0 || ke_vpc_q == 0;
+        let limits_unset = cap == 0 || ceiling == 0;
+        (ke_unset as u8 * KE_UNSET) | (limits_unset as u8 * LIMITS_UNSET)
+    }
+
     /// Whether `belt` refuses `mode`: one shift, no mode match. The
     /// experiment image runs OpenLoop alone and refuses nothing.
     #[cfg(not(feature = "experiment"))]
@@ -203,9 +213,10 @@ impl KernelConfig {
         self.pos_soft = self.pos_soft.or_stops(&self.pos_phys);
         let lp = &mut self.loop_position;
         let lim = &mut self.limits;
-        let ke_unset = self.motor.recip_ke_q == 0 || self.motor.ke_vpc_q == 0;
-        let limits_unset = lim.current_limit_counts == 0 || lp.speed_ceiling_cps == 0;
-        self.belt = (ke_unset as u8 * belt::KE_UNSET) | (limits_unset as u8 * belt::LIMITS_UNSET);
+        let m = &self.motor;
+        let (cap, ceiling) = (lim.current_limit_counts, lp.speed_ceiling_cps);
+        self.belt = belt::of(m.recip_ke_q, m.ke_vpc_q, cap, ceiling);
+        let limits_unset = cap == 0 || ceiling == 0;
         self.unset_flag = limits_unset as u8 * limits::flag::UNSET;
         // Resolved here, so the tick tests nothing. While a limit is unset
         // the belt refuses every closed mode at the CONTROL ahead of any
@@ -247,7 +258,7 @@ impl KernelConfig {
         };
         // Finish the estimate's stores before the log calls, so its
         // inputs need not spill across them. The table keeps the host's 0.
-        self.limits.i_cont_counts = limits::i_cont_or_cap(&self.limits);
+        self.limits.yield_current_counts = limits::yield_current_or_cap(&self.limits);
         self.tau_shift = limits::tau_shift(self.limits.thermal_tau_s);
         self.tau2_shift = limits::tau_shift(tau2_s);
     }

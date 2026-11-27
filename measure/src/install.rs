@@ -3,7 +3,7 @@
 //! write read back, `save` keeps a backup of the stored state and then makes the
 //! set permanent, `restore` puts a recorded state back. Nothing drives the
 //! motor, every write is refused under torque, and there is no path that
-//! wipes the stored data. The data state is information: no verb refuses
+//! wipes the stored data. The stored state is information: no verb refuses
 //! on it, and a servo that boots on defaults is written like any.
 
 use std::fmt;
@@ -134,15 +134,17 @@ pub struct Checked {
     /// The fields a host writes that the set does not hold, each with the
     /// servo's value.
     pub unowned: Vec<String>,
-    pub data: String,
-    pub flags: u8,
+    /// `loaded`, or the images on their defaults (`State::settings_said`).
+    pub settings: String,
+    /// The modes the servo refuses now, `none` when it refuses none.
+    pub refused: String,
     pub unsaved: bool,
     /// The servo's fingerprint (`State::hash`).
     pub servo: String,
 }
 
 impl Checked {
-    /// The servo holds the set. The data state is no part of it.
+    /// The servo holds the set. The stored state is no part of it.
     pub fn clean(&self) -> bool {
         self.differences.is_empty()
     }
@@ -152,8 +154,8 @@ impl Checked {
     pub fn unsaveable(&self) -> Option<String> {
         (!self.clean()).then(|| {
             format!(
-                "after the install the servo is not the set (data state {}): {}",
-                self.data,
+                "after the install the servo is not the set (settings {}): {}",
+                self.settings,
                 self.differences.join("; ")
             )
         })
@@ -230,8 +232,8 @@ pub async fn check<P: Pipe>(
     Ok(Checked {
         differences: differences(set, &state, d),
         unowned: unowned(set, &state, d),
-        data: state.data_said(),
-        flags: state.data.flags,
+        settings: state.settings_said(),
+        refused: state.refused_said(),
         unsaved: state.unsaved,
         servo: state.hash(d),
     })
@@ -727,7 +729,7 @@ pub async fn put_back<P: Pipe>(
     let now = state::read(c, id, d).await;
     home(c, id, at, run, steps).await?;
     let now = now?;
-    if now.hash(d) == stored.hash(d) && now.data_said() == stored.data_said() {
+    if now.hash(d) == stored.hash(d) && now.settings_said() == stored.settings_said() {
         return Ok(Vec::new());
     }
     let mut out: Vec<String> = d
@@ -752,11 +754,11 @@ pub async fn put_back<P: Pipe>(
             now.points_sha1()
         ));
     }
-    if now.data_said() != stored.data_said() {
+    if now.settings_said() != stored.settings_said() {
         out.push(format!(
-            "data state: stored {}, now {}",
-            stored.data_said(),
-            now.data_said()
+            "settings: stored {}, now {}",
+            stored.settings_said(),
+            now.settings_said()
         ));
     }
     if out.is_empty() {
@@ -819,10 +821,10 @@ pub async fn save<P: Pipe>(
     sink.write(AFTER, &bytes)?;
     steps.push(Step::After(sink.shown(AFTER)));
     let left = differences(set, &after, d);
-    if !left.is_empty() || after.data.flags != 0 || after.unsaved {
+    if !left.is_empty() || !after.store.loaded() || after.unsaved {
         return Err(Refused(format!(
-            "after the SAVE and a reboot the servo is not the set (data state {}, unsaved {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc save` then makes it permanent",
-            after.data_said(),
+            "after the SAVE and a reboot the servo is not the set (settings {}, unsaved {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc save` then makes it permanent",
+            after.settings_said(),
             after.unsaved_said(),
             left.iter().map(|l| format!("; {l}")).collect::<String>(),
             sink.shown(AFTER)

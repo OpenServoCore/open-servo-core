@@ -413,13 +413,20 @@ async fn check<P: Pipe>(
         println!("not in the set: {}", checked.unowned.join(", "));
     }
     println!(
-        "{} differences; data state {}; unsaved {}; set {}; servo {}",
+        "{} differences; settings {}; unsaved {}; set {}; servo {}",
         checked.differences.len(),
-        checked.data,
+        checked.settings,
         if checked.unsaved { "yes" } else { "no" },
         &set.hash()[..12.min(set.hash().len())],
         &checked.servo[..12.min(checked.servo.len())]
     );
+    if checked.refused != "none" {
+        println!(
+            "refused {}: {}",
+            checked.refused,
+            osc_client::store_state::REFUSED
+        );
+    }
     Ok(checked.clean())
 }
 
@@ -493,13 +500,11 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
     });
     match cmd {
         Cmd::Save { .. } => {
-            let s = osc_client::data_state::read(c, id, d).await?;
-            let said = if s.flags == 0 {
-                "clean".into()
-            } else {
-                s.names()
-            };
-            println!("saved: after a reboot the servo reads as the set, data state {said}")
+            let s = osc_client::store_state::read(c, id, d).await?;
+            println!(
+                "saved: after a reboot the servo reads as the set, settings {}",
+                s.settings()
+            )
         }
         _ if wrote => println!("volatile, not saved: a reboot returns the saved state"),
         _ => println!("the servo holds the set: nothing written"),

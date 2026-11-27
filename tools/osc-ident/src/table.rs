@@ -8,10 +8,10 @@
 use std::fmt::Write;
 
 use anyhow::{Result, anyhow};
-use osc_client::data_state::DataState;
 use osc_client::descriptor::Descriptor;
 use osc_client::pipe::Pipe;
 use osc_client::pos_lut::{self, INTERVALS, PosLut};
+use osc_client::store_state::StoreState;
 use osc_client::{Client, Id};
 use osc_measure::state;
 use osc_servo_core::pos_lut::{GRID, POINTS, Reject, interp_q4, validate};
@@ -196,12 +196,12 @@ fn raw(k: usize) -> u16 {
     (k * GRID) as u16
 }
 
-/// The servo's table, its stops and its data state, as read.
+/// The servo's table, its stops and its stored state, as read.
 pub struct Table {
     id: Id,
     lut: PosLut,
     stops: (u16, u16),
-    data: DataState,
+    store: StoreState,
 }
 
 #[derive(Serialize)]
@@ -229,7 +229,7 @@ pub async fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<
         id,
         stops: (stop("raw_min")?, stop("raw_max")?),
         lut: s.lut,
-        data: s.data,
+        store: s.store,
     })
 }
 
@@ -244,14 +244,17 @@ impl Table {
         Report::new(&self.grid(), self.stops)
     }
 
-    /// The data state's one-line warning, when it names a reason.
+    /// The stored state's one-line warning, when an image is on its
+    /// defaults.
     pub fn warning(&self) -> Option<String> {
-        let msg = self.data.message()?;
-        Some(format!(
-            "warning: id {}: {} - {msg}",
-            self.id.as_byte(),
-            self.data.names()
-        ))
+        (!self.store.loaded()).then(|| {
+            format!(
+                "warning: id {}: settings {} - {}",
+                self.id.as_byte(),
+                self.store.settings(),
+                osc_client::store_state::DEFAULTS
+            )
+        })
     }
 
     /// The table and its report as JSON.

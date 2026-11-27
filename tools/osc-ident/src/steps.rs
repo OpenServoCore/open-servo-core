@@ -151,10 +151,11 @@ pub async fn plan<P: Pipe>(
             line.baud.as_hz()
         ),
         format!(
-            "rail {rail:.2} V ({:.2} V at the connector), board NTC {ntc_c:.1} C, position {pos:.0} counts; data state {}, unsaved {}",
+            "rail {rail:.2} V ({:.2} V at the connector), board NTC {ntc_c:.1} C, position {pos:.0} counts; settings {}, unsaved {}, refused {}",
             sense.supply_v(rail),
-            state.data_said(),
-            state.unsaved_said()
+            state.settings_said(),
+            state.unsaved_said(),
+            state.refused_said()
         ),
         format!(
             "floors: {}, {}; published window_floor_q15 {}, window_v_floor_q15 {}",

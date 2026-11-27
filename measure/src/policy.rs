@@ -30,7 +30,10 @@ pub struct Policy {
     pub velocity_shelf_margin_db: Option<f64>,
     /// The speed loop's crossover over the position gain.
     pub position_split: Option<f64>,
-    pub i_cont_ma: Option<f64>,
+    /// The press trigger and Yield fold level. A file written before the
+    /// rename names it `i_cont_ma`.
+    #[serde(alias = "i_cont_ma")]
+    pub yield_current_ma: Option<f64>,
     pub stall_release_ma: Option<f64>,
     pub oc_trip_samples: Option<f64>,
     pub collision_trip: Option<Switch>,

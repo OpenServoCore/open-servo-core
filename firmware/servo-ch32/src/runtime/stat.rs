@@ -6,12 +6,14 @@
 //! - lit for the lamp test at boot,
 //! - solid while a fault is latched (`fault_code` nonzero until the
 //!   torque ack clears it),
-//! - a ~1 Hz blink while `data_flags` names any reason (an image that did
-//!   not load: never saved, unreadable or of another layout),
+//! - a ~1 Hz blink while the belt refuses Position (`refused_modes`): the
+//!   servo needs an identification, whether its images did not load or a
+//!   loaded set holds a zero Ke, cap or ceiling,
 //! - dark when healthy.
 
 use osc_servo_core::kernel::TICK_HZ;
 use osc_servo_core::kernel::phases::loops::faults::CODE_NONE;
+use osc_servo_core::regions::control::Mode;
 use osc_servo_drivers::led::Pattern;
 use osc_servo_drivers::traits::Monotonic as _;
 
@@ -24,10 +26,10 @@ const SETUP_BLINK: Pattern = Pattern::Blink {
     period_us: 1_000_000,
 };
 
-pub fn pattern(flash: bool, lamp_test: bool, fault_code: u8, data_flags: u8) -> Pattern {
+pub fn pattern(flash: bool, lamp_test: bool, fault_code: u8, refused_modes: u8) -> Pattern {
     if flash || lamp_test || fault_code != CODE_NONE {
         Pattern::SolidOn
-    } else if data_flags != 0 {
+    } else if refused_modes & (1 << Mode::Position as u8) != 0 {
         SETUP_BLINK
     } else {
         Pattern::SolidOff
@@ -86,10 +88,12 @@ impl Flash {
 
 #[cfg(test)]
 mod tests {
-    use osc_servo_core::data_state::{CALIB_VIRGIN, CONFIG_STALE};
-    use osc_servo_core::kernel::phases::loops::faults::{CODE_DATA, CODE_STALL};
+    use osc_servo_core::kernel::belt::{KE_UNSET, LIMITS_UNSET};
+    use osc_servo_core::kernel::phases::loops::faults::{CODE_CONFIG, CODE_STALL};
 
     use super::*;
+
+    const CURRENT: u8 = 1 << Mode::Current as u8;
 
     #[test]
     fn healthy_is_dark() {
@@ -99,19 +103,22 @@ mod tests {
     #[test]
     fn a_latched_fault_is_solid_and_wins_over_setup() {
         assert!(pattern(false, false, CODE_STALL, 0) == Pattern::SolidOn);
-        assert!(pattern(false, false, CODE_DATA, CALIB_VIRGIN) == Pattern::SolidOn);
+        assert!(pattern(false, false, CODE_CONFIG, KE_UNSET) == Pattern::SolidOn);
     }
 
+    /// A refused Position blinks, whatever refuses it; a refusal that
+    /// leaves Position alone does not.
     #[test]
-    fn any_setup_reason_blinks_at_1_hz() {
-        for flags in [CONFIG_STALE, CALIB_VIRGIN, CONFIG_STALE | CALIB_VIRGIN] {
+    fn a_refused_position_blinks_at_1_hz() {
+        for refused in [KE_UNSET, LIMITS_UNSET, KE_UNSET | LIMITS_UNSET] {
             assert!(
-                pattern(false, false, CODE_NONE, flags)
+                pattern(false, false, CODE_NONE, refused)
                     == Pattern::Blink {
                         period_us: 1_000_000
                     }
             );
         }
+        assert!(pattern(false, false, CODE_NONE, CURRENT) == Pattern::SolidOff);
     }
 
     #[test]
@@ -121,7 +128,7 @@ mod tests {
 
     #[test]
     fn a_flash_lights_the_lamp_over_everything() {
-        assert!(pattern(true, false, CODE_STALL, CALIB_VIRGIN) == Pattern::SolidOn);
+        assert!(pattern(true, false, CODE_STALL, KE_UNSET) == Pattern::SolidOn);
         assert!(pattern(true, false, CODE_NONE, 0) == Pattern::SolidOn);
     }
 

@@ -90,12 +90,12 @@ baud = "B1000000"
 
 # Boot limits until the host supplies nameplate and thermal values.
 [protection]
-# The maxon A-max 12 data sheet gives 59.5 K/W winding to ambient and a
-# 5.03 s winding constant (source linked in control-theory). At a 60 K
-# rise, an assumed 5 ohm winding would hold about 0.45 A in free air. The
-# 250 mA default leaves unmeasured enclosure margin; the host must replace
-# it with the actual motor's rating.
-i_cont_ma = 250
+# The press detector's trigger (a held current over it with the shaft
+# still) and the level Yield folds the limit to. Not a thermal rating:
+# the winding estimate's cutoff is the one thermal limit. A default to
+# start from; the host replaces it with a value for the actual motor and
+# gear train.
+yield_current_ma = 250
 # Below the fold so a held press does not unfold.
 stall_release_ma = 90
 # Copper and shunt guard, not a gear-train limit: 2.2 A sits above any

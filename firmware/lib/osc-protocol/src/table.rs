@@ -43,7 +43,7 @@ pub const TELEMETRY_COMMON_END: u16 = 0x220;
 
 /// u8 RO -- the sec 5.3 alarm register, ALERT's read target.
 pub const FAULT_FLAGS: u16 = 0x200;
-/// u8 RO -- common node state bits; see `STATUS_FLAG_UNSAVED`.
+/// u8 RO -- common node state bits; see the `STATUS_FLAG_*` bits.
 pub const STATUS_FLAGS: u16 = 0x201;
 /// i8 RO -- applied clock-trim total in chip trim steps (sec 9.3).
 pub const TRIM_STEPS: u16 = 0x202;
@@ -56,6 +56,16 @@ pub const FRAMING_DROP_COUNT: u16 = 0x208;
 /// CALIB or the position table) modified since boot or the last SAVE
 /// (sec 9.4).
 pub const STATUS_FLAG_UNSAVED: u8 = 1 << 0;
+/// `STATUS_FLAGS` bit 1: boot loaded no CONFIG image (blank, unreadable
+/// or of another layout), so the board's defaults run (sec 9.4).
+pub const STATUS_FLAG_CONFIG_DEFAULTS: u8 = 1 << 1;
+/// `STATUS_FLAGS` bit 2: boot loaded no CALIB image, so the class
+/// defaults and the identity position table run (sec 9.4).
+pub const STATUS_FLAG_CALIB_DEFAULTS: u8 = 1 << 2;
+/// The bits a successful SAVE clears: the table in RAM is now the one
+/// stored and the one the next boot loads.
+pub const STATUS_SAVE_CLEARS: u8 =
+    STATUS_FLAG_UNSAVED | STATUS_FLAG_CONFIG_DEFAULTS | STATUS_FLAG_CALIB_DEFAULTS;
 
 /// PROFILE region span (sec 5.2, pinned by sec 5.4): read-profile slots.
 pub const PROFILE_START: u16 = 0x280;

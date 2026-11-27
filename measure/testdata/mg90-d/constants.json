@@ -18,7 +18,7 @@
   "5-closed-loop/cruise-friction": {"file": "stages/5-closed-loop/cruise-friction/results/mg90-d__dev-v006-2A-D.json", "sha1": "c21e12a10f893ba6391b7d189fbdd462db7ebf00"},
   "datasheet": {"file": "stages/5-closed-loop/calibration/vorpal-mg90.datasheet.json", "sha1": "9b890b42877683522fdb9909bdc5bdafe0a7bd4e"},
   "pins": {"file": "stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pins.json", "sha1": "7f951484d16c14880798abeb7e3d9a17b5abecc5"},
-  "policy": {"file": "stages/5-closed-loop/calibration/policy.json", "sha1": "c6a292c59dd228b0f03cac972e6978213aa6f117"},
+  "policy": {"file": "stages/5-closed-loop/calibration/policy.json", "sha1": "22e6731db84bf934f18da7414a712c17f03f2d74"},
   "pos_table": {"file": "stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"},
   "registry": {"board": {"tick_hz": 20000}, "servo": {"gear_ratio": 308.0533, "datasheet_class": "vorpal-mg90", "rated_v": 5.0, "gear_class": "metal"}},
   "sources": {"file": "stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.sources.json", "sha1": "09852ad9f869f5fc371f719249675f8edf7d2960"},
@@ -58,7 +58,7 @@
   "drive_polarity": {"value": "on", "class": "bench", "inputs": ["sources:bench.drive_polarity", "telemetry/mg90-d__dev-v006-2A-D/scorecard/14a-set-of-record/run-1/servo.json:fields.drive_polarity"], "protection": null, "record": "the state the reference rung 14a-set-of-record ran closed loop on, its moves settling: with the other sign the position loop drives the horn into a stop", "weak": "no calibration run found the sign on this servo, the record is a rung of record that ran on it: it awaits a recorded run that finds it"},
   "stall_time_ticks": {"value": 10000, "class": "policy", "inputs": ["policy:stall_time_ms", "registry:tick_hz"], "pos_unit": 0, "protection": {"looser": "up"}, "q": 0, "rule": "stall_time.policy", "rule_rev": 1, "unit": "ticks"},
   "stall_omega_max_cps": {"value": 500, "class": "policy", "inputs": ["policy:stall_omega_max_deg_s", "scale"], "pos_unit": 1, "protection": {"looser": "down"}, "q": 0, "rule": "stall_omega_max.policy", "rule_rev": 1, "scale_points_sha1": "e169fd753bddf3632413e1644932a01b08c17b44", "unit": "count/s"},
-  "i_cont_counts": {"value": 397, "class": "policy", "band": [397, 398], "inputs": ["policy:i_cont_ma", "1-board/current-scale:counts_per_a"], "pos_unit": 0, "protection": {"looser": "judged"}, "q": 0, "rule": "i_cont.policy", "rule_rev": 1, "unit": "ccounts"},
+  "yield_current_counts": {"value": 397, "class": "policy", "band": [397, 398], "inputs": ["policy:yield_current_ma", "1-board/current-scale:counts_per_a"], "pos_unit": 0, "protection": {"looser": "judged"}, "q": 0, "rule": "yield_current.policy", "rule_rev": 1, "unit": "ccounts"},
   "stall_release_counts": {"value": 143, "class": "policy", "band": [143, 143], "inputs": ["policy:stall_release_ma", "1-board/current-scale:counts_per_a"], "pos_unit": 0, "protection": {"looser": "up"}, "q": 0, "rule": "stall_release.policy", "rule_rev": 1, "unit": "ccounts"},
   "stall_tau_trip_counts": {"value": 65535, "class": "policy", "inputs": ["policy:collision_trip"], "pos_unit": 0, "protection": {"looser": "up"}, "q": 0, "rule": "stall_tau_trip.policy", "rule_rev": 1, "unit": "ccounts"},
   "oc_trip_counts": {"value": 2497, "class": "policy", "band": [2494, 2500], "inputs": ["policy:oc_trip_ma", "1-board/current-scale:counts_per_a"], "pos_unit": 0, "protection": {"looser": "up"}, "q": 0, "rule": "oc_trip.policy", "rule_rev": 1, "unit": "ccounts"},
@@ -102,6 +102,6 @@
   "brush_cps": {"value": 0, "class": "policy", "inputs": ["policy:brush_term", "scale"], "pos_unit": 1, "protection": null, "q": 0, "rule": "brush_cps.off", "rule_rev": 1, "scale_points_sha1": "e169fd753bddf3632413e1644932a01b08c17b44", "unit": "count/s"},
   "g_window_q016": {"value": 1178, "class": "measured", "band": [1165, 1190], "inputs": ["3-servo/window-term:g_over_mean_ms", "1-board/current-scale:counts_per_a", "1-board/terminal-chain:terminal_counts_per_v"], "pos_unit": 0, "protection": null, "q": 16, "rule": "g_window.onsets", "rule_rev": 1, "unit": "ccounts/vcount"}
  },
- "hash": {"plant": "85a9215518087a07949cf0961324be9e1b84ef37e188182cf632d1dc53d8667a", "protection": "6dc2d1003d18ba15489ba22a62e0c4aee89f9a023a2e05db1deac68c104a75fa", "scales": "ef6744736cf115b75e8b441a2e21ea74772bbde04bbb9c12ebc6e2aef96e9ead", "set": "afc7744b70383bd4c121028eabc19aeff42f8398348d2c3ae382962c160801a9"},
+ "hash": {"plant": "85a9215518087a07949cf0961324be9e1b84ef37e188182cf632d1dc53d8667a", "protection": "1d621d3ecfa672b5ca3df3d3350f5dd97348464880066814e3f3e205e956b7c9", "scales": "ef6744736cf115b75e8b441a2e21ea74772bbde04bbb9c12ebc6e2aef96e9ead", "set": "362e018756172017f612be404de097dd772706b54d109445344b1e5324a82242"},
  "previous": {"plant": "85a9215518087a07949cf0961324be9e1b84ef37e188182cf632d1dc53d8667a", "protection": "6dc2d1003d18ba15489ba22a62e0c4aee89f9a023a2e05db1deac68c104a75fa", "scales": "ef6744736cf115b75e8b441a2e21ea74772bbde04bbb9c12ebc6e2aef96e9ead", "set": "afc7744b70383bd4c121028eabc19aeff42f8398348d2c3ae382962c160801a9"}
 }

@@ -118,7 +118,7 @@ impl Medium {
         // motor. It reads the configuration as taken, so a live write of 0
         // into a running loop stops it here too.
         if life.torque_enable && belt::refuses(cfg.belt, life.mode) {
-            faults.raise(faults::BIT_DATA, faults::CODE_DATA);
+            faults.raise(faults::BIT_CONFIG, faults::CODE_CONFIG);
         }
     }
 

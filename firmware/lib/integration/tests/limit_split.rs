@@ -1,7 +1,7 @@
-//! The press detector against the continuous rating on the R-L plant rig
+//! The press detector against the yield current on the R-L plant rig
 //! (`kernel::phases::loops::limits`), over a randomized servo family: the
 //! winding from 3 to 9 ohm equivalent, the cap from 250 to 1000 mA on the
-//! osc-dev-v006 chain, the rating at 30 to 70% of it. OpenLoop locks the
+//! osc-dev-v006 chain, the yield current at 30 to 70% of it. OpenLoop locks the
 //! rotor at the duty whose stall current sits at a stated fraction of the
 //! cap, and the kernel reads that current through the shunt window one
 //! tick late. Every pin runs every seed: the worst seed is the verdict.
@@ -37,12 +37,12 @@ impl Lcg {
     }
 }
 
-/// One servo of the family: its winding, cap and rating.
+/// One servo of the family: its winding, cap and yield current.
 #[derive(Copy, Clone, Debug)]
 struct Family {
     r_q12: u16,
     cap: u16,
-    i_cont: u16,
+    yield_current: u16,
 }
 
 impl Family {
@@ -52,8 +52,12 @@ impl Family {
         let r_q12 = g.range(4450, 13350) as u16;
         // 250 to 1000 mA on the osc-dev-v006 chain (1108.5 counts/A)
         let cap = g.range(277, 1108) as u16;
-        let i_cont = (cap as u32 * g.range(30, 70) / 100) as u16;
-        Self { r_q12, cap, i_cont }
+        let yield_current = (cap as u32 * g.range(30, 70) / 100) as u16;
+        Self {
+            r_q12,
+            cap,
+            yield_current,
+        }
     }
 
     /// The duty whose locked-rotor current is `frac`/100 of the cap.
@@ -72,8 +76,8 @@ impl Family {
             t.calib.sense.v_window_min_ticks = 64;
             let l = &mut t.config.limits;
             l.current_limit_counts = self.cap;
-            l.i_cont_counts = self.i_cont;
-            l.stall_release_counts = self.i_cont / 2;
+            l.yield_current_counts = self.yield_current;
+            l.stall_release_counts = self.yield_current / 2;
             l.stall_response = response;
             l.stall_time_ticks = ms_ticks(STALL_MS);
             l.stall_tau_trip_counts = u16::MAX;
@@ -140,16 +144,16 @@ fn fold_tick(f: &Family, frac: u32, cap: u16) -> Option<u32> {
     })
 }
 
-/// a jam drawing more than the rating trips after the timer and
-/// folds to the rating; the same jam under the rating never trips,
+/// a jam drawing more than the yield current trips after the timer and
+/// folds to the yield current; the same jam under the yield current never trips,
 /// however long it is held.
 #[test]
-fn press_over_the_rating_trips_under_it_never() {
+fn press_over_the_yield_current_trips_under_it_never() {
     for seed in 0..SEEDS {
         let f = Family::draw(seed);
         let what = format!("seed {seed} {f:?}");
-        let over = (f.i_cont as u32 * 100).div_ceil(f.cap as u32) + 15;
-        let under = f.i_cont as u32 * 85 / (f.cap as u32);
+        let over = (f.yield_current as u32 * 100).div_ceil(f.cap as u32) + 15;
+        let under = f.yield_current as u32 * 85 / (f.cap as u32);
         assert!(over < 100 && under > 0, "{what}: fractions {over} {under}");
         let at = fold_tick(&f, over, f.cap).unwrap_or_else(|| panic!("{what}: never folded"));
         assert!(at >= STALL_MS * MS, "{what}: folded {} ms in", at / MS);
@@ -159,7 +163,7 @@ fn press_over_the_rating_trips_under_it_never() {
         assert_eq!(
             flags(&sh) & flag::YIELD,
             0,
-            "{what}: tripped under the rating"
+            "{what}: tripped under the yield current"
         );
         assert_eq!(i_lim(&sh), f.cap, "{what}");
         assert_eq!(faults(&sh), 0, "{what}");
@@ -168,13 +172,13 @@ fn press_over_the_rating_trips_under_it_never() {
 
 /// the cap moves the ceiling, never the trip: at twice the cap
 /// the same jam folds at the same tick, within a medium period, and to
-/// the same rating.
+/// the same yield current.
 #[test]
 fn raising_the_cap_does_not_move_the_trip() {
     for seed in 0..SEEDS {
         let f = Family::draw(seed);
         let what = format!("seed {seed} {f:?}");
-        let over = (f.i_cont as u32 * 100).div_ceil(f.cap as u32) + 15;
+        let over = (f.yield_current as u32 * 100).div_ceil(f.cap as u32) + 15;
         let at = fold_tick(&f, over, f.cap).unwrap_or_else(|| panic!("{what}: never folded"));
         let doubled = fold_tick(&f, over, f.cap.saturating_mul(2))
             .unwrap_or_else(|| panic!("{what}: never folded at twice the cap"));
@@ -187,12 +191,16 @@ fn raising_the_cap_does_not_move_the_trip() {
             .with_mut(|t| t.config.limits.current_limit_counts = f.cap.saturating_mul(2));
         let (mut k, mut p) = locked(&sh, f.r_q12, f.duty_at(over));
         run(&mut k, &sh, &mut p, (STALL_MS + SETTLE_MS) * MS);
-        assert_eq!(i_lim(&sh), f.i_cont, "{what}: the fold is the rating");
+        assert_eq!(
+            i_lim(&sh),
+            f.yield_current,
+            "{what}: the fold is the yield current"
+        );
     }
 }
 
 /// the permit lifts the press and the endstop, never a ceiling: a
-/// permitted jam over the rating never folds on the verdict and still
+/// permitted jam over the yield current never folds on the verdict and still
 /// sits under the cap.
 #[test]
 fn permit_lifts_the_press_not_the_cap() {

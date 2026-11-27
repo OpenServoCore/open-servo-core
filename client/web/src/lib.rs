@@ -62,20 +62,11 @@ pub fn parse_image(bytes: &[u8]) -> Result<Ts<ImageCheck>, JsError> {
     Ok(check.into_ts()?)
 }
 
-/// The reasons set in a `data_flags` byte, most urgent first.
-#[wasm_bindgen(js_name = dataReasons)]
-pub fn data_reasons(flags: u8) -> Result<Vec<Ts<DataReason>>, JsError> {
-    Ok(osc_client::data_state::reasons(flags)
-        .into_iter()
-        .map(|r| DataReason::from(r).into_ts())
-        .collect::<Result<_, _>>()?)
-}
-
-/// A `fault_code` by name (`"data"` for a refused closed-loop enable);
+/// A `fault_code` by name (`"config"` for a refused closed-loop enable);
 /// undefined for a code this build does not know.
 #[wasm_bindgen(js_name = faultName)]
 pub fn fault_name(code: u8) -> Option<String> {
-    osc_client::data_state::fault::name(code).map(String::from)
+    osc_client::store_state::fault::name(code).map(String::from)
 }
 
 /// A `pos_lut_state` by name (`"LIVE"` while the kernel applies the table);
@@ -248,22 +239,35 @@ mod tests {
     }
 
     #[test]
-    fn data_state_mirrors_name_text_and_the_refusal() {
-        use osc_client::data_state::{self, CALIB_STALE, CONFIG_VIRGIN, fault};
-        let s = DataState::from(data_state::DataState {
-            flags: CALIB_STALE | CONFIG_VIRGIN,
-            fault_code: fault::DATA,
+    fn store_state_mirrors_the_bits_the_modes_and_the_refusal() {
+        use osc_client::store_state::{self, CALIB_DEFAULTS, UNSAVED, fault};
+        let s = StoreState::from(store_state::StoreState {
+            status: CALIB_DEFAULTS | UNSAVED,
+            refused: 0b1100,
+            fault_code: fault::CONFIG,
+            refused_modes: vec!["Velocity".into(), "Position".into()],
         });
-        let names: Vec<&str> = s.reasons.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["CALIB_STALE", "CONFIG_VIRGIN"]);
-        assert_eq!(s.fault.as_deref(), Some("data"));
-        assert_eq!(s.message.as_deref(), Some(data_state::REFUSED));
-        let clean = DataState::from(data_state::DataState {
-            flags: 0,
+        assert_eq!(s.defaults, ["CALIB"]);
+        assert_eq!(s.settings, "defaults: CALIB");
+        assert!(s.unsaved);
+        assert_eq!(s.refused_modes, ["Velocity", "Position"]);
+        assert_eq!(s.fault.as_deref(), Some("config"));
+        assert_eq!(
+            s.messages,
+            [
+                store_state::REFUSED,
+                store_state::DEFAULTS,
+                store_state::NOT_SAVED
+            ]
+        );
+        let clean = StoreState::from(store_state::StoreState {
+            status: 0,
+            refused: 0,
             fault_code: fault::NONE,
+            refused_modes: Vec::new(),
         });
-        assert!(clean.reasons.is_empty());
-        assert_eq!(clean.message, None);
+        assert_eq!(clean.settings, "loaded");
+        assert!(clean.messages.is_empty());
         assert_eq!(fault_name(fault::STALL).as_deref(), Some("stall"));
         assert_eq!(fault_name(200), None);
     }

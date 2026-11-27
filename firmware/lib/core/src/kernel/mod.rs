@@ -24,7 +24,7 @@ mod config;
 pub mod phases;
 mod scheduler;
 
-pub use config::{KernelConfig, SPAN_END, SPAN_START};
+pub use config::{KernelConfig, SPAN_END, SPAN_START, belt};
 #[cfg(not(feature = "experiment"))]
 pub use phases::loops::current::CurrentLoop;
 pub use phases::loops::limits::{IBand, LimitState};

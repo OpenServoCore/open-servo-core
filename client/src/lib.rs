@@ -17,13 +17,13 @@ pub mod calib;
 mod client;
 pub mod common;
 pub mod cyclic;
-pub mod data_state;
 pub mod descriptor;
 mod error;
 pub mod mgmt;
 pub mod pipe;
 pub mod pos_lut;
 pub mod session;
+pub mod store_state;
 #[cfg(feature = "bench")]
 pub mod wire;
 

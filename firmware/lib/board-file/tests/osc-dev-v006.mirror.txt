@@ -30,7 +30,7 @@ pub const DEV_V006_SENSE_EXT: ::osc_servo_core::CalibSenseExt = ::osc_servo_core
 
 /// The board's protection defaults.
 pub const DEV_V006_PROTECTION: ::osc_servo_core::ProtectionDefaults = ::osc_servo_core::ProtectionDefaults { // board.toml:92 protection
-    i_cont_ma: 250, // board.toml:98 protection.i_cont_ma
+    yield_current_ma: 250, // board.toml:98 protection.yield_current_ma
     stall_release_ma: 90, // board.toml:100 protection.stall_release_ma
     oc_trip_ma: 2200, // board.toml:105 protection.oc_trip_ma
     oc_trip_us: 400, // board.toml:106 protection.oc_trip_us

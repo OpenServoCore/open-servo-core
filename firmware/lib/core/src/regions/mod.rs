@@ -113,7 +113,7 @@ impl ControlTableCell {
             cfg.limits.drive_polarity = p.drive_polarity;
             cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
             cfg.limits.stall_time_ticks = config::DEFAULT_STALL_TIME_TICKS;
-            cfg.limits.i_cont_counts = p.i_cont_counts;
+            cfg.limits.yield_current_counts = p.yield_current_counts;
             cfg.limits.stall_release_counts = p.stall_release_counts;
             cfg.limits.stall_tau_trip_counts = config::STALL_TAU_TRIP_OFF;
             cfg.limits.oc_trip_counts = p.oc_trip_counts;

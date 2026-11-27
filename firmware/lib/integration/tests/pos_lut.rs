@@ -12,9 +12,10 @@ use osc_integration::sim::{
     ImageKind, RamStore, Sim, Source, Tear, WireFrame, assert_valid, instruction, status,
 };
 use osc_protocol::crc::osc_crc_continue;
-use osc_protocol::table::{STATUS_FLAG_UNSAVED, STATUS_FLAGS};
+use osc_protocol::table::{
+    STATUS_FLAG_CALIB_DEFAULTS, STATUS_FLAG_CONFIG_DEFAULTS, STATUS_FLAG_UNSAVED, STATUS_FLAGS,
+};
 use osc_protocol::wire::{MgmtOp, Opcode, ResultCode};
-use osc_servo_core::data_state::{CALIB_CORRUPT, CALIB_STALE, CALIB_VIRGIN, CONFIG_VIRGIN};
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::persist::{CalibImage, Slot};
 use osc_servo_core::pos_lut::{INTERVALS, PAGE_POINTS, PAGES, POINTS, cmd, interp_q4, state};
@@ -25,7 +26,6 @@ use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::control::addr::pos_lut::{
     POS_LUT_CMD, POS_LUT_PAGE, POS_LUT_POINTS, POS_LUT_STATE,
 };
-use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
 use osc_servo_core::{Mode, MotorCmd, RegionStorage, Shared};
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -89,8 +89,9 @@ fn pos_lut_state(sim: &mut Sim) -> u8 {
     read_byte(sim, POS_LUT_STATE)
 }
 
-fn data_flags(sim: &mut Sim) -> u8 {
-    read_byte(sim, DATA_FLAGS)
+/// The store bits of `status_flags`: the images boot did not load.
+fn store_bits(sim: &mut Sim) -> u8 {
+    read_byte(sim, STATUS_FLAGS) & (STATUS_FLAG_CONFIG_DEFAULTS | STATUS_FLAG_CALIB_DEFAULTS)
 }
 
 fn set_torque(sim: &mut Sim, on: bool) {
@@ -145,7 +146,7 @@ fn mg90_servo(sim: &mut Sim, store: &'static RamStore) -> usize {
     write_ok(sim, RAW_MIN, &MG90_A_MIN.to_le_bytes());
     write_ok(sim, RAW_MAX, &MG90_A_MAX.to_le_bytes());
     assert_eq!(mgmt(sim, MgmtOp::Save), ResultCode::Ok);
-    assert_eq!(data_flags(sim), 0);
+    assert_eq!(store_bits(sim), 0);
     assert!(!unsaved(sim));
     assert_eq!(pos_lut_state(sim), state::IDENTITY);
     s
@@ -196,7 +197,7 @@ fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
         "the command cleared"
     );
     assert!(unsaved(&mut sim), "the live table is not saved yet");
-    assert_eq!(data_flags(&mut sim), 0);
+    assert_eq!(store_bits(&mut sim), 0);
     for page in 0..PAGES {
         assert_eq!(fetch(&mut sim, page), page_bytes(&k, page), "page {page}");
     }
@@ -344,7 +345,7 @@ fn save_while_loading_or_rejected_persists_identity(baud_idx: u8) {
     let s = rebooted.add_servo_with_store(ID5, flash);
     assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
-    assert_eq!(data_flags(&mut rebooted), 0);
+    assert_eq!(store_bits(&mut rebooted), 0);
 
     let mut shape = k;
     shape[100] = shape[99] - 16;
@@ -353,7 +354,7 @@ fn save_while_loading_or_rejected_persists_identity(baud_idx: u8) {
     assert_eq!(mgmt(&mut rebooted, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
-    assert_eq!(data_flags(&mut rebooted), 0);
+    assert_eq!(store_bits(&mut rebooted), 0);
     let mut again = support::sim(baud_idx);
     let s = again.add_servo_with_store(ID5, flash);
     assert_eq!(pos_lut_state(&mut again), state::IDENTITY);
@@ -362,7 +363,7 @@ fn save_while_loading_or_rejected_persists_identity(baud_idx: u8) {
 
 // The table in the CALIB image: SAVE, reboot, torn saves, rot, FACTORY
 
-const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN;
+const FRESH: u8 = STATUS_FLAG_CONFIG_DEFAULTS | STATUS_FLAG_CALIB_DEFAULTS;
 
 /// The mg90-a table loaded and LIVE.
 fn go_live(sim: &mut Sim) {
@@ -382,7 +383,7 @@ fn points_of(img: &[u8]) -> [i16; INTERVALS] {
 
 /// The per-servo switch's last step: one SAVE persists CONFIG and CALIB
 /// with the LUT inside it; the reboot loads it LIVE, point for point, with
-/// every reason clear; FACTORY wipes it back to the virgin identity.
+/// both images loaded; FACTORY wipes it back to the identity on defaults.
 #[apply(matrix)]
 fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
     let flash = RamStore::leak();
@@ -390,7 +391,7 @@ fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
     mg90_servo(&mut sim, flash);
     go_live(&mut sim);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
-    assert_eq!(data_flags(&mut sim), 0);
+    assert_eq!(store_bits(&mut sim), 0);
     assert!(!unsaved(&mut sim));
     assert_eq!(pos_lut_state(&mut sim), state::LIVE);
     let img = flash
@@ -409,7 +410,7 @@ fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
     let s = rebooted.add_servo_with_store(ID5, flash);
     assert_eq!(pos_lut_state(&mut rebooted), state::LIVE);
     assert_eq!(array(&rebooted, s), mg90_a());
-    assert_eq!(data_flags(&mut rebooted), 0);
+    assert_eq!(store_bits(&mut rebooted), 0);
     for page in 0..PAGES {
         assert_eq!(
             fetch(&mut rebooted, page),
@@ -425,13 +426,13 @@ fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
     let s = fresh.add_servo_with_store(ID5, flash);
     assert_eq!(pos_lut_state(&mut fresh), state::IDENTITY);
     assert_eq!(array(&fresh, s), ZERO);
-    assert_eq!(data_flags(&mut fresh), FRESH);
+    assert_eq!(store_bits(&mut fresh), FRESH);
 }
 
 /// A power cut partway through the CALIB program, both ways round: the
 /// slot being written is torn, the other still holds the last save whole -
-/// calibration and table together - so the reboot is that save with every
-/// reason clear. The image is all or nothing.
+/// calibration and table together - so the reboot is that save, both
+/// images loaded. The image is all or nothing.
 #[apply(matrix)]
 fn torn_calib_save_boots_the_previous_calibration_with_its_tables(baud_idx: u8) {
     // the table went LIVE since the identity save
@@ -449,7 +450,7 @@ fn torn_calib_save_boots_the_previous_calibration_with_its_tables(baud_idx: u8) 
     let s = rebooted.add_servo_with_store(ID5, flash);
     assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
-    assert_eq!(data_flags(&mut rebooted), 0, "the old identity");
+    assert_eq!(store_bits(&mut rebooted), 0, "the old identity");
 
     // the table SAVEd, then dropped to the identity: the old image holds
     // the table
@@ -470,21 +471,21 @@ fn torn_calib_save_boots_the_previous_calibration_with_its_tables(baud_idx: u8) 
         "the old table loads"
     );
     assert_eq!(array(&rebooted, s), mg90_a());
-    assert_eq!(data_flags(&mut rebooted), 0);
+    assert_eq!(store_bits(&mut rebooted), 0);
 }
 
 /// Flash rot or a save from another layout: the image does not load, and
-/// its tables go with it - the identity runs under the CALIB_* reason, the
-/// board's defaults under the saved gains. The older sound
-/// slot, when one stands, loads whole.
+/// its tables go with it - the identity runs under `CALIB_DEFAULTS`, the
+/// board's defaults under the saved gains. The older sound slot, when one
+/// stands, loads whole.
 #[apply(matrix)]
-fn corrupt_or_stale_calib_image_boots_identity_under_its_reason(baud_idx: u8) {
+fn an_unreadable_or_other_layout_calib_image_boots_identity_on_defaults(baud_idx: u8) {
     type Rot = fn(&RamStore, Slot);
-    let rots: [(Rot, u8); 2] = [
-        (|f, s| f.corrupt_slot(ImageKind::Calib, s), CALIB_CORRUPT),
-        (|f, s| f.stale_slot(ImageKind::Calib, s), CALIB_STALE),
+    let rots: [Rot; 2] = [
+        |f, s| f.corrupt_slot(ImageKind::Calib, s),
+        |f, s| f.other_layout_slot(ImageKind::Calib, s),
     ];
-    for (rot, reason) in rots {
+    for rot in rots {
         let flash = RamStore::leak();
         let mut sim = sim(baud_idx);
         mg90_servo(&mut sim, flash);
@@ -497,13 +498,13 @@ fn corrupt_or_stale_calib_image_boots_identity_under_its_reason(baud_idx: u8) {
         let s = rebooted.add_servo_with_store(ID5, flash);
         assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
         assert_eq!(array(&rebooted, s), ZERO);
-        assert_eq!(data_flags(&mut rebooted), 0, "the older save, whole");
+        assert_eq!(store_bits(&mut rebooted), 0, "the older save, whole");
         rot(flash, Slot::A);
         let mut again = support::sim(baud_idx);
         let s = again.add_servo_with_store(ID5, flash);
         assert_eq!(pos_lut_state(&mut again), state::IDENTITY);
         assert_eq!(array(&again, s), ZERO);
-        assert_eq!(data_flags(&mut again), reason);
+        assert_eq!(store_bits(&mut again), STATUS_FLAG_CALIB_DEFAULTS);
     }
 }
 

@@ -102,7 +102,7 @@ fn seed(shared: &Shared) {
         c.limits.drive_polarity = true;
         c.limits.stall_omega_max_cps = 500;
         c.limits.stall_time_ticks = ms_ticks(50);
-        c.limits.i_cont_counts = 300;
+        c.limits.yield_current_counts = 300;
         c.limits.stall_release_counts = 150;
         c.limits.stall_tau_trip_counts = 1200;
         c.limits.oc_trip_counts = 2400;
@@ -936,7 +936,7 @@ fn limit_flags_name_the_governor() {
     }
     assert!(k.fast.duty_q15 < 8000, "governed");
 
-    // yield: Current mode at the limit, the held current over i_cont on a
+    // yield: Current mode at the limit, the held current over yield_current on a
     // still shaft, folds; then a goal under the fold leaves only the fold
     // standing (the held current stays over the release)
     let sh = Shared::new();
@@ -969,7 +969,7 @@ fn limit_flags_name_the_governor() {
     assert_eq!(k.faults.mask(), 0);
 
     // the terms: the goal caps a Velocity drive and not an OpenLoop one,
-    // a long hold over i_cont folds nothing (bit 4 is retired), the rail a
+    // a long hold over yield_current folds nothing (bit 4 is retired), the rail a
     // sag into the band; each names itself
     let sh = Shared::new();
     seed(&sh);
@@ -1001,7 +1001,7 @@ fn limit_flags_name_the_governor() {
     );
     assert_eq!(sh.table.with(|t| t.telemetry.estimates.i_lim_counts), 1200);
     // 400 counts held for 156 SLOW periods (2.5 s) against a 300-count
-    // rating: nothing folds on the heat alone
+    // yield current: nothing folds on the heat alone
     for _ in 0..DECIM_MED as u32 * DECIM_SLOW as u32 * 156 {
         k.on_scan(frame(2000, BIAS + 400), &sh);
     }
@@ -2362,7 +2362,7 @@ fn seed_estimate(sh: &Shared) {
         t.control.lifecycle.goal_duty = 8000;
         // the hold sits over the continuous rating: the press is not under
         // test
-        t.config.limits.i_cont_counts = 0;
+        t.config.limits.yield_current_counts = 0;
     });
 }
 
@@ -3220,7 +3220,7 @@ fn a_draining_current_is_never_learned_as_zero() {
         t.control.lifecycle.goal_duty = i16::MAX;
         // the drive sits over the continuous rating: the press is not
         // under test
-        t.config.limits.i_cont_counts = 0;
+        t.config.limits.yield_current_counts = 0;
     });
     let mut k = kernel();
     // the slew up passes brake troughs at the zero; at full duty there is
@@ -4504,12 +4504,12 @@ fn loaded_hold(sh: &Shared, load_cps: i32) -> (Kernel<FakeIo>, Plant) {
 
 /// The plant of [`loaded_hold`] once its shaft has static friction past the
 /// load's own and a goal where it stuck, 0.5 s on: the press fold stays out
-/// of the way (the gravity arm's hold with `i_cont` at the cap).
+/// of the way (the gravity arm's hold with `yield_current` at the cap).
 fn stuck_loaded_hold(sh: &Shared) -> (Kernel<FakeIo>, Plant) {
     let (mut k, mut plant) = loaded_hold(sh, PLANT_LOAD_CPS);
     plant.stick_cps = 6 * PLANT_COULOMB_CPS as i32;
     write_config(sh, |t| {
-        t.config.limits.i_cont_counts = t.config.limits.current_limit_counts;
+        t.config.limits.yield_current_counts = t.config.limits.current_limit_counts;
     });
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_position = plant.pos());
@@ -4791,7 +4791,7 @@ fn hard_wall_stall_yields() {
     plant.frozen = true;
     // The live observer first books the wall current as tau_d, so the
     // wind-up is integrator-paced (~230 ms to the full limit); the press
-    // verdict then folds i_lim to i_cont and the fold holds while the
+    // verdict then folds i_lim to yield_current and the fold holds while the
     // held current sits at it. The observer's settle makes any
     // single-phase pin flaky - assert the run's invariants instead.
     let mut saw_full = false;
@@ -6896,7 +6896,7 @@ fn unset_rating_and_goal_follow_a_committed_cap_change() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
-        t.config.limits.i_cont_counts = 0;
+        t.config.limits.yield_current_counts = 0;
         t.control.lifecycle.mode = Mode::Velocity;
         t.control.lifecycle.goal_current = 0;
     });
@@ -6906,7 +6906,7 @@ fn unset_rating_and_goal_follow_a_committed_cap_change() {
         for _ in 0..2 * DECIM_MED as u32 * DECIM_SLOW as u32 {
             k.on_scan(frame(2000, BIAS), &sh);
         }
-        assert_eq!(sh.table.with(|t| t.config.limits.i_cont_counts), 0);
+        assert_eq!(sh.table.with(|t| t.config.limits.yield_current_counts), 0);
         assert_eq!(sh.table.with(|t| t.telemetry.estimates.i_lim_counts), cap);
         assert_eq!(limit_flags(&sh), 0);
     }
@@ -7040,7 +7040,7 @@ fn unset_limits_never_reach_a_closed_tick() {
                     "{case:?} tick {n}"
                 );
             }
-            assert_eq!(k.faults.code(), faults::CODE_DATA, "{case:?}");
+            assert_eq!(k.faults.code(), faults::CODE_CONFIG, "{case:?}");
             let flags = sh.table.with(|t| t.telemetry.limits.limit_flags);
             assert_ne!(flags & limits::flag::UNSET, 0, "{case:?}");
         }

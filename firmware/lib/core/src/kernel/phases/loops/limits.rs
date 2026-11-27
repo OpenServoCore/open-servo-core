@@ -3,7 +3,7 @@
 //! each term owning one physical quantity. i_lim = min of the peak cap
 //! (`current_limit_counts`, the nameplate stall current), the rail fold (a
 //! sagging source) and the application's `goal_current`; the press fold to
-//! `i_cont_counts` and the directional endstop come after. The copper has
+//! `yield_current_counts` and the directional endstop come after. The copper has
 //! no ceiling here: the winding estimate (the board NTC plus the rise on
 //! the two heat nodes kept here) latches the overtemperature fault at its
 //! cutoff. In Current mode the forward side then folds under the speed
@@ -19,7 +19,7 @@ pub mod flag {
     /// The command sat at the current ceiling: OpenLoop's duty ceiling held
     /// under the goal, or a closed loop's current reference at the band.
     pub const CEILING: u8 = 1 << 0;
-    /// The press or collision verdict folded the limit to `i_cont_counts`.
+    /// The press or collision verdict folded the limit to `yield_current_counts`.
     pub const YIELD: u8 = 1 << 1;
     /// A soft limit closed one side of the band.
     pub const ENDSTOP: u8 = 1 << 2;
@@ -89,14 +89,14 @@ pub fn tau_shift(tau_s: u16) -> u8 {
     k.min(TAU_SHIFT_MAX) as u8
 }
 
-/// `i_cont_counts` as the kernel runs it: 0 reads as the cap (the press
+/// `yield_current_counts` as the kernel runs it: 0 reads as the cap (the press
 /// at the cap). The configuration take writes this into the
 /// kernel's own copy of the block, so nothing on the tick path tests it.
-pub fn i_cont_or_cap(cfg: &ConfigLimits) -> u16 {
-    if cfg.i_cont_counts == 0 {
+pub fn yield_current_or_cap(cfg: &ConfigLimits) -> u16 {
+    if cfg.yield_current_counts == 0 {
         cfg.current_limit_counts
     } else {
-        cfg.i_cont_counts
+        cfg.yield_current_counts
     }
 }
 
@@ -285,11 +285,11 @@ impl LimitState {
     /// deadlocks at the wall - the clamp zeroes i_ref, zero reads as an
     /// inward push, and the door never reopens (caught on the bench).
     ///
-    /// Press: the held current over `i_cont` with the pot observer's
+    /// Press: the held current over `yield_current` with the pot observer's
     /// |omega_hat| under stall_omega_max for stall_time_ticks, so a jam at
-    /// any duty over the continuous rating trips and the cap never moves
+    /// any duty over the yield current trips and the cap never moves
     /// the trip point; or a tau_d spike past stall_tau_trip_counts
-    /// (collision). Yield folds to `i_cont` until the held current reads
+    /// (collision). Yield folds to `yield_current` until the held current reads
     /// under stall_release_counts: the current, not tau_d, because tau_d
     /// is held at zero on an unidentified servo and would unfold at once.
     /// Fault only pends - latching is kernel fault policy, and the kernel
@@ -315,7 +315,7 @@ impl LimitState {
                 self.stall_ticks = 0;
             }
             let mut trip = inp.tau_d_abs_counts > cfg.stall_tau_trip_counts;
-            if inp.i_held_abs > cfg.i_cont_counts as u32
+            if inp.i_held_abs > cfg.yield_current_counts as u32
                 && inp.omega_hat_abs_cps < cfg.stall_omega_max_cps as u32
             {
                 self.stall_ticks = self.stall_ticks.saturating_add(DECIM_MED as u32);
@@ -334,7 +334,7 @@ impl LimitState {
         let mut lim = ceiling as u16;
         let mut terms = (ceiling >> 16) as u8;
         if self.stalled {
-            lim = lim.min(cfg.i_cont_counts);
+            lim = lim.min(cfg.yield_current_counts);
         }
         // endstop: positive current moves counts up (drive polarity is
         // applied at the motor output), so the max wall zeroes hi and the
@@ -397,14 +397,14 @@ mod tests {
     use super::*;
 
     /// The fields the block reads, flat; the helpers hand them over as the
-    /// table's blocks, `i_cont_counts` as the take writes it.
+    /// table's blocks, `yield_current_counts` as the take writes it.
     #[derive(Copy, Clone)]
     struct LimitCfg {
         current_limit_counts: u16,
         stall_response: StallResponse,
         stall_omega_max_cps: u16,
         stall_time_ticks: u32,
-        i_cont_counts: u16,
+        yield_current_counts: u16,
         stall_release_counts: u16,
         stall_tau_trip_counts: u16,
         thermal_tau_s: u16,
@@ -421,13 +421,13 @@ mod tests {
                 stall_response: self.stall_response,
                 stall_omega_max_cps: self.stall_omega_max_cps,
                 stall_time_ticks: self.stall_time_ticks,
-                i_cont_counts: self.i_cont_counts,
+                yield_current_counts: self.yield_current_counts,
                 stall_release_counts: self.stall_release_counts,
                 stall_tau_trip_counts: self.stall_tau_trip_counts,
                 thermal_tau_s: self.thermal_tau_s,
                 ..ConfigLimits::new()
             };
-            limits.i_cont_counts = i_cont_or_cap(&limits);
+            limits.yield_current_counts = yield_current_or_cap(&limits);
             let soft = ConfigPosSoft {
                 pos_min_soft_counts: self.pos_min_soft_counts,
                 pos_max_soft_counts: self.pos_max_soft_counts,
@@ -481,7 +481,7 @@ mod tests {
         stall_response: StallResponse::Yield,
         stall_omega_max_cps: 500,
         stall_time_ticks: 100,
-        i_cont_counts: 300,
+        yield_current_counts: 300,
         stall_release_counts: 150,
         stall_tau_trip_counts: 1200,
         thermal_tau_s: 2,
@@ -604,10 +604,10 @@ mod tests {
         }
     }
 
-    /// a jam at 40% of the cap but over i_cont trips after
-    /// stall_time_ticks; the same jam under i_cont never does.
+    /// a jam at 40% of the cap but over yield_current trips after
+    /// stall_time_ticks; the same jam under yield_current never does.
     #[test]
-    fn press_over_i_cont_trips_under_it_never() {
+    fn press_over_yield_current_trips_under_it_never() {
         let mut st = LimitState::new();
         for _ in 0..9 {
             assert_eq!(fold_at(&mut st, 480, 0, &CFG).hi, 1200);
@@ -629,7 +629,7 @@ mod tests {
             assert_eq!(fold_at(&mut st, 299, 0, &CFG).hi, 1200);
         }
         assert!(!st.stalled());
-        // at i_cont is not over it
+        // at yield_current is not over it
         for _ in 0..1000 {
             assert_eq!(fold_at(&mut st, 300, 0, &CFG).hi, 1200);
         }
@@ -662,7 +662,7 @@ mod tests {
         for _ in 0..9 {
             fold_at(&mut st, 480, 0, &CFG);
         }
-        // one fast tick clears the count; so does one under i_cont
+        // one fast tick clears the count; so does one under yield_current
         fold_at(&mut st, 480, 500, &CFG);
         for _ in 0..9 {
             assert_eq!(fold_at(&mut st, 480, 0, &CFG).hi, 1200);
@@ -675,7 +675,7 @@ mod tests {
     }
 
     /// The fold holds while the held current sits at the fold (an OpenLoop
-    /// hold sits in `[7/8 i_cont, i_cont]`), lets go under the release,
+    /// hold sits in `[7/8 yield_current, yield_current]`), lets go under the release,
     /// and a fresh window is required after.
     #[test]
     fn release_on_current_under_release_restores_and_rearms() {
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn collision_folds_immediately() {
         let mut st = LimitState::new();
-        // under i_cont and moving: only the tau_d spike path can trip
+        // under yield_current and moving: only the tau_d spike path can trip
         let hit = FoldIn {
             i_held_abs: 100,
             omega_hat_abs_cps: 2000,
@@ -754,14 +754,14 @@ mod tests {
         assert!(!st.stalled());
     }
 
-    /// i_cont 0 reads as the cap: the press at the cap.
+    /// yield_current 0 reads as the cap: the press at the cap.
     #[test]
-    fn i_cont_zero_is_the_cap() {
+    fn yield_current_zero_is_the_cap() {
         let cfg = LimitCfg {
-            i_cont_counts: 0,
+            yield_current_counts: 0,
             ..CFG
         };
-        assert_eq!(cfg.blocks().0.i_cont_counts, 1200);
+        assert_eq!(cfg.blocks().0.yield_current_counts, 1200);
         let mut st = LimitState::new();
         for _ in 0..2000 {
             slow_period(&mut st, 1200, &cfg);
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn min_composition_names_the_tightest_term() {
         let mut st = LimitState::new();
-        rail(&mut st, 701, &CFG); // one vcount over the floor: 6, way under i_cont
+        rail(&mut st, 701, &CFG); // one vcount over the floor: 6, way under yield_current
         for _ in 0..10 {
             fold_at(&mut st, 480, 0, &CFG);
         }
@@ -971,7 +971,7 @@ mod tests {
         assert_eq!(at(&mut st, -4000, true).lo, -1200);
     }
 
-    /// Over i_cont and still is the press signature, and holding against a
+    /// Over yield_current and still is the press signature, and holding against a
     /// stop is exactly that. Under the permit the timer must never trip,
     /// however long it is held - a bench run presses for seconds before
     /// the first rung.

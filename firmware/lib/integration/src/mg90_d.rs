@@ -78,7 +78,7 @@ pub fn set_of_record(t: &mut ControlTable) {
     c.limits.drive_polarity = true;
     c.limits.stall_time_ticks = 10000;
     c.limits.stall_omega_max_cps = 500;
-    c.limits.i_cont_counts = 284;
+    c.limits.yield_current_counts = 284;
     c.limits.stall_release_counts = 102;
     c.limits.stall_tau_trip_counts = 65535;
     c.limits.oc_trip_counts = 2497;

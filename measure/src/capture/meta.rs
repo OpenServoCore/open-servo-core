@@ -54,7 +54,8 @@ pub fn servo(state: &State, d: &Descriptor, line: &Line) -> Map<String, Value> {
         json!({
             "lut_state": state.table_state(),
             "servo": state.hash(d),
-            "data_state": state.data_said(),
+            "settings": state.settings_said(),
+            "refused_modes": state.refused_said(),
         }),
     );
     m.insert("sense".into(), Value::Object(sense));

@@ -50,8 +50,8 @@ fn idx(slot: Slot) -> usize {
     }
 }
 
-/// Re-seal an assembled image under another layout version: CRC-valid, so
-/// boot classifies it stale rather than corrupt.
+/// Re-seal an assembled image under another layout version: CRC-valid
+/// bytes this firmware cannot read.
 fn reseal_version(img: &mut [u8], version: u8) {
     img[1] = version;
     let crc = osc_crc_continue(osc_crc(&img[..6]), &img[HEADER_LEN..]);
@@ -181,8 +181,8 @@ impl RamStore {
     }
 
     /// Overwrite the slot with bytes that parse under no version (flash
-    /// rot, a torn program): boot classifies the image corrupt unless the
-    /// other slot still holds a valid save.
+    /// rot, a torn program): boot runs on defaults unless the other slot
+    /// still holds a valid save.
     pub fn corrupt_slot(&self, kind: Kind, slot: Slot) {
         let mut g = self.inner.lock().unwrap();
         match kind {
@@ -193,8 +193,8 @@ impl RamStore {
 
     /// Re-seal the slot's image (an erased slot gets a zero body) under the
     /// next layout version: a save from another firmware, CRC-valid and
-    /// unreadable, so boot classifies the image stale.
-    pub fn stale_slot(&self, kind: Kind, slot: Slot) {
+    /// unreadable, so boot runs on defaults as on a blank store.
+    pub fn other_layout_slot(&self, kind: Kind, slot: Slot) {
         let mut g = self.inner.lock().unwrap();
         match kind {
             Kind::Config => {

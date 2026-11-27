@@ -13,10 +13,11 @@ pub struct TelemetryCommon {
     /// The sec 5.3 alarm register -- ALERT's read target.
     #[ct_field(access = ro)]
     pub fault_flags: u8,
-    /// Bit 0 = unsaved (sec 9.4): set when a committed write lands in
-    /// CONFIG, CALIB or PROFILE or a position table STORE or COMMIT runs,
-    /// cleared by a successful SAVE; boot state is saved. Bits 1-7
-    /// reserved.
+    /// sec 5.4 / 9.4, `osc_protocol::table::STATUS_FLAG_*`. Bit 0 unsaved:
+    /// set when a committed write lands in CONFIG, CALIB or PROFILE or a
+    /// position table STORE or COMMIT runs. Bits 1 and 2: boot loaded no
+    /// CONFIG, no CALIB image, and defaults run. A successful SAVE clears
+    /// all three. Bits 3-7 reserved. Written by boot and bus dispatch.
     #[ct_field(access = ro)]
     pub status_flags: u8,
     #[ct_field(access = ro)]
@@ -45,12 +46,12 @@ pub struct TelemetryMode {
     /// boxcar, 0 = none closed.
     #[ct_field(access = ro)]
     pub omega_hat_src: u8,
-    /// Why the persisted images are not this servo's own, one bit per
-    /// reason (`data_state` module consts); 0 = they are. Information for
-    /// the host: no reason refuses a mode. Written by boot and SAVE - the
-    /// one TELEMETRY-MODE byte the kernel does not own.
+    /// The modes the belt refuses now (`kernel::config::belt`): bit
+    /// `mode as u8` set. Published at every configuration take, so it
+    /// reads within a medium period of the write that moved it, torque on
+    /// or off; 0 on the experiment image, which refuses nothing.
     #[ct_field(access = ro)]
-    pub data_flags: u8,
+    pub refused_modes: u8,
 }
 
 /// One control tick (protocol sec 5.6). The chip's ADC DMA lands both scans

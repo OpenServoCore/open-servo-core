@@ -245,7 +245,7 @@
       "kind": "uint"
     },
     {
-      "name": "i_cont_counts",
+      "name": "yield_current_counts",
       "addr": 86,
       "width": 2,
       "access": "rw",
@@ -926,7 +926,7 @@
       "kind": "uint"
     },
     {
-      "name": "data_flags",
+      "name": "refused_modes",
       "addr": 547,
       "width": 1,
       "access": "ro",

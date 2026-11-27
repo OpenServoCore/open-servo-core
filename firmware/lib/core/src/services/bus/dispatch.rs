@@ -4,7 +4,7 @@ use control_table::{RegisterFile, Snapshot};
 use heapless::Vec;
 use osc_protocol::FrameBytes;
 use osc_protocol::frame::uid_prefix_matches;
-use osc_protocol::table::STATUS_FLAG_UNSAVED;
+use osc_protocol::table::{STATUS_FLAG_UNSAVED, STATUS_SAVE_CLEARS};
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::kernel;
@@ -578,8 +578,8 @@ impl Dispatcher<'_> {
     /// program surfaces as `hardware` instead of a lie. A posted data job
     /// runs here first (a COMMIT the main loop has not judged yet must not
     /// persist as the identity) and the position table settles to what the
-    /// kernel applies; success clears the unsaved bit and retires every
-    /// image reason (`data_state::SAVE_CLEARS`).
+    /// kernel applies; success clears the unsaved bit and both store bits
+    /// (`STATUS_SAVE_CLEARS`).
     fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
         if self
             .shared
@@ -595,8 +595,7 @@ impl Dispatcher<'_> {
             Ok(()) => {
                 self.shared
                     .table
-                    .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_FLAG_UNSAVED);
-                self.shared.data_state_saved();
+                    .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_SAVE_CLEARS);
                 ResultCode::Ok
             }
             Err(StoreError) => ResultCode::Hardware,

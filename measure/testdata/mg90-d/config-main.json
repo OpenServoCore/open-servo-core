@@ -22,7 +22,7 @@
   "drive_polarity": 1,
   "stall_time_ticks": 10000,
   "stall_omega_max_cps": 500,
-  "i_cont_counts": 397,
+  "yield_current_counts": 397,
   "stall_release_counts": 143,
   "stall_tau_trip_counts": 65535,
   "oc_trip_counts": 2497,

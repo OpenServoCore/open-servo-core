@@ -162,9 +162,9 @@ The lease and the flags (`core/src/kernel/tests.rs`,
 - `permit_written_with_torque_off_never_grants` - a request written
   under torque off grants nothing once torque comes back on.
 - `limit_flags_name_the_governor` - each bit alone: ceiling in OpenLoop,
-  yield after a Current-mode press over `i_cont`, endstop past a soft
+  yield after a Current-mode press over `yield_current`, endstop past a soft
   wall, permit with the endstop dropped, the goal capping a Velocity
-  drive and not an OpenLoop one, a long hold over `i_cont` folding
+  drive and not an OpenLoop one, a long hold over `yield_current` folding
   nothing, the rail fold binding on a sag into its band.
 - `off_soft_limits_wall_at_the_physical_stops` - soft limits 0 / 0 are
   off: the take holds the physical stops in their place, at or past a
@@ -203,7 +203,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   1000 counts/s is over 1.1x the limit only within the first
   millisecond, no fault.
 - `openloop_stall_yields_like_closed_loop` - Yield response: the limit
-  folds to `i_cont_counts` no sooner than `stall_time_ticks` and within
+  folds to `yield_current_counts` no sooner than `stall_time_ticks` and within
   100 ms after it, and stays folded on every tick of the next second.
 - `openloop_stall_faults_on_the_boot_response` - Fault response: STALL
   latches in the same window and the drive disables.
@@ -217,7 +217,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
 - `blind_band_caps_at_i_lim_when_r_is_known` - a limit of 200, under the
   floor's 239-count stall current: most ticks sit under the floor, each
   at a duty stalling at 95 to 100% of the limit, mean within 1.1x.
-- `yield_fold_reaches_the_blind_band` - after a fold to an `i_cont` of
+- `yield_fold_reaches_the_blind_band` - after a fold to an `yield_current` of
   168 the blind band holds it the same way for the whole second after
   it, mean within 1.2x.
 - `virgin_blind_band_passes_to_the_window_floor` - with `r_q12` at 0
