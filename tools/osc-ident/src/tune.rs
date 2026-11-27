@@ -79,7 +79,7 @@ pub(crate) fn set_at(
 }
 
 /// One try as tune.json keeps it.
-fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value {
+pub(crate) fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value {
     let mut t = json!({
         "try": n + 1,
         "kp": kp,
@@ -92,6 +92,63 @@ fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value {
         t.extend(r);
     }
     t
+}
+
+/// A try's first line: its number, gain and set.
+pub(crate) fn try_head(n: u32, kp: f64, k0: f64, file: &SetFile) -> String {
+    format!(
+        "try {}: kp {kp:.4} (v_kp_q88 {}, {:.0}% of the starting gain), set {}",
+        n + 1,
+        file.value("v_kp_q88")
+            .map_or("none".into(), Value::to_string),
+        100.0 * kp / k0,
+        &file.hash()[..12]
+    )
+}
+
+/// A try's check as the tune scores it.
+pub(crate) struct Scored {
+    pub verdict: String,
+    pub failed: Vec<String>,
+    pub why: Option<String>,
+    pub worst: Value,
+}
+
+impl Scored {
+    pub(crate) fn of(ran: &Result<Verified, Refused>) -> Self {
+        match ran {
+            Err(e) => Scored {
+                verdict: "refused".into(),
+                failed: vec![],
+                why: Some(e.0.clone()),
+                worst: Value::Null,
+            },
+            Ok(v) => Scored {
+                verdict: v.ended.way.name().to_string(),
+                failed: tune::failed(&v.checks),
+                why: v.ended.why.clone(),
+                worst: v.result.as_ref().map_or(Value::Null, tune::worst),
+            },
+        }
+    }
+
+    /// "the check refused on rest error; worst ...".
+    pub(crate) fn said(&self) -> String {
+        format!(
+            "the check {}{}; {}",
+            self.verdict,
+            if self.failed.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", self.failed.join(", "))
+            },
+            if self.worst.is_null() {
+                "no move scored".into()
+            } else {
+                tune::worst_said(&self.worst)
+            }
+        )
+    }
 }
 
 /// `tune` into the run folder `out`: the lines it prints, and whether a
@@ -199,14 +256,7 @@ where
                 break;
             }
         };
-        let head = format!(
-            "try {}: kp {kp:.4} (v_kp_q88 {}, {:.0}% of the starting gain), set {}",
-            n + 1,
-            file.value("v_kp_q88")
-                .map_or("none".into(), Value::to_string),
-            100.0 * kp / k0,
-            &file.hash()[..12]
-        );
+        let head = try_head(n, kp, k0, &file);
         let mut isteps = Vec::new();
         if let Err(e) = install::install(c, id, d, &file, points, &mut isteps).await {
             ended = format!("the install refused: {e}");
@@ -240,45 +290,20 @@ where
             };
             check(&mut rig, np).await
         };
-        let (verdict, failed, why, worst) = match &ran {
-            Err(e) => (
-                "refused".to_string(),
-                vec![],
-                Some(e.0.clone()),
-                json!(null),
-            ),
-            Ok(v) => (
-                v.ended.way.name().to_string(),
-                tune::failed(&v.checks),
-                v.ended.why.clone(),
-                v.result.as_ref().map_or(Value::Null, tune::worst),
-            ),
-        };
+        let s = Scored::of(&ran);
         let next = match &ran {
             Err(e) => Next::Stop(format!("the check refused before any write: {e}")),
-            Ok(_) => tune::next(&verdict, &failed, why.as_deref()),
+            Ok(_) => tune::next(&s.verdict, &s.failed, s.why.as_deref()),
         };
-        lines.push(format!(
-            "{head}: installed; the check {verdict}{}; {}",
-            if failed.is_empty() {
-                String::new()
-            } else {
-                format!(" on {}", failed.join(", "))
-            },
-            if worst.is_null() {
-                "no move scored".into()
-            } else {
-                tune::worst_said(&worst)
-            }
-        ));
+        lines.push(format!("{head}: installed; {}", s.said()));
         lines.extend(isteps.iter().map(|s| format!("  {s}")));
         kept.push(try_json(
             n,
             kp,
             k0,
             &file,
-            json!({"install": "installed", "verdict": verdict, "failed_on": failed,
-                   "why": why, "worst": worst, "check": format!("{dir}/{}", verify::RESULT),
+            json!({"install": "installed", "verdict": s.verdict, "failed_on": s.failed,
+                   "why": s.why, "worst": s.worst, "check": format!("{dir}/{}", verify::RESULT),
                    "next": match &next { Next::Accept => "accept", Next::Lower => "lower", Next::Stop(_) => "stop" }}),
         ));
         match next {

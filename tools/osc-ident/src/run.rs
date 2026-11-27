@@ -3,7 +3,8 @@
 //! window, spins), then, every step accepted, the
 //! gather into `<run folder>/inputs/` and the tune into
 //! `<run folder>/tune/`; on the set the tune accepts, the cruise step, the
-//! gather again and the final set's check into `<run folder>/final/`
+//! gather again and the final set's check into `<run folder>/final/`,
+//! backed off down the tune's tries on a refusal on rest error alone
 //! ([`crate::finish`]). Every argument is checked before the bus is
 //! touched.
 

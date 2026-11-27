@@ -67,6 +67,16 @@ pub fn next(verdict: &str, failed_on: &[String], why: Option<&str>) -> Next {
     }
 }
 
+/// Whether a check of the final set, on the cruise's friction line, backs
+/// the gain off to the tune's next try: refused on rest error alone. One
+/// accepted check at a high gain does not predict the next one there (the
+/// hold's thrown park lands a draw off the goal), so the final check goes
+/// on down the tune's schedule; a refusal on any other line ends as the
+/// tune's own refusals do.
+pub fn backs_off(verdict: &str, failed_on: &[String]) -> bool {
+    verdict == "refused" && failed_on.len() == 1 && failed_on[0] == sc::REST
+}
+
 fn largest(moves: &[Value], f: impl Fn(&Value) -> Option<f64>) -> Option<f64> {
     moves
         .iter()
@@ -155,6 +165,26 @@ mod tests {
                 Next::Stop(w) => assert!(w.contains(verdict) && w.contains("why"), "{w}"),
                 other => panic!("{verdict} {f:?}: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn only_a_final_check_refused_on_rest_error_alone_backs_off() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(backs_off("refused", &names(&[sc::REST])));
+        for f in [
+            names(&[]),
+            names(&[sc::OVERSHOOT]),
+            names(&[sc::QUIET]),
+            names(&[sc::FOLLOW]),
+            names(&[sc::REST, sc::OVERSHOOT]),
+            names(&[sc::REST, sc::NO_FAULT]),
+            names(&[sc::FIRST_ENABLE]),
+        ] {
+            assert!(!backs_off("refused", &f), "{f:?}");
+        }
+        for verdict in ["accepted", "aborted", "interrupted"] {
+            assert!(!backs_off(verdict, &names(&[sc::REST])), "{verdict}");
         }
     }
 
