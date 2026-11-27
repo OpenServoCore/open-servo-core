@@ -12,6 +12,9 @@ pub struct Board {
     /// so a measured supply is reported and never written.
     pub vdd_mv: f64,
     pub oc_trip_ma: f64,
+    /// The supply's source resistance the rail fold is designed for: the
+    /// board's default, which the image seeds the fold's slope from.
+    pub rail_source_mohm: f64,
     pub ntc_site: NtcSite,
     /// The board NTC's fixed-point quadratic as the CALIB words hold it.
     pub ntc_curve: NtcCurve,

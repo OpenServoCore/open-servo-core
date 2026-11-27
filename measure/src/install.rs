@@ -78,6 +78,8 @@ pub enum Step {
     Saved,
     After(String),
     Rebooted,
+    /// A field of the set the firmware took out of the table: not written.
+    Retired(String),
     /// After a reboot the servo answered at `at`, its saved baud, and was
     /// moved back to the run's rate `run`, volatile.
     Moved {
@@ -101,6 +103,10 @@ impl fmt::Display for Step {
             Step::Saved => write!(f, "SAVE: CONFIG and CALIB are in flash"),
             Step::After(p) => write!(f, "the state after the SAVE is in {p}"),
             Step::Rebooted => write!(f, "rebooted: the servo runs its saved state"),
+            Step::Retired(name) => write!(
+                f,
+                "{name}: the firmware has no such field any more, the set's value is not written"
+            ),
             Step::Moved { at, run } => write!(
                 f,
                 "after the reboot the servo answers at {}, its saved baud; moved it to {}, volatile",
@@ -166,6 +172,9 @@ impl Checked {
 pub fn differences(set: &SetFile, state: &State, d: &Descriptor) -> Vec<String> {
     let mut out = Vec::new();
     for (name, v) in set.values() {
+        if set::retired(name) {
+            continue;
+        }
         let Some(f) = d.field(name) else {
             out.push(format!(
                 "{name}: the servo names no such field, set {}",
@@ -276,6 +285,9 @@ fn plan<'d>(
     };
     let mut want: Vec<(&'d Field, Vec<u8>)> = Vec::new();
     for (name, v) in set.values() {
+        if set::retired(name) {
+            continue;
+        }
         let Some(f) = d
             .fields
             .iter()
@@ -668,6 +680,12 @@ pub async fn install<P: Pipe>(
 ) -> Result<(), Refused> {
     let state = state::read(c, id, d).await?;
     let p = plan(set, &state, d, points)?;
+    steps.extend(
+        set.values()
+            .into_iter()
+            .filter(|(name, _)| set::retired(name))
+            .map(|(name, _)| Step::Retired(name.to_owned())),
+    );
     let mut written = false;
     match apply(c, id, d, set, p, steps, &mut written).await {
         Ok(()) => Ok(()),

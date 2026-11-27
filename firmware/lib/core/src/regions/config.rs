@@ -230,9 +230,9 @@ pub const STALL_TAU_TRIP_OFF: u16 = u16::MAX;
 // `vmotor_counts`.
 pub const BURST_MAX_MV: u16 = 3200;
 
-/// The winding estimate's cutoff, the undervolt floor, and the body
-/// node's leak: `thermal_tau2_s` in seconds to the nearest octave of the
-/// SLOW period like `thermal_tau_s`, 0 = no body node.
+/// The winding estimate's cutoff and the body node's leak:
+/// `thermal_tau2_s` in seconds to the nearest octave of the SLOW period
+/// like `thermal_tau_s`, 0 = no body node.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
@@ -240,7 +240,9 @@ pub struct ConfigThermal {
     /// winding estimate reads this or more, and the host's ack relatches
     /// until it reads less.
     pub cutoff_cc: i16,
-    pub v_undervolt_counts: u16,
+    /// Held so the blocks after it and the saved image keep their layout.
+    #[ct_field(skip)]
+    pub _rsvd: u16,
     pub thermal_tau2_s: u16,
 }
 
@@ -278,7 +280,7 @@ pub const DEFAULT_L2_Q88: u16 = 1024;
 pub const DEFAULT_L3_Q88: u16 = 128;
 
 /// Fault thresholds: position-error window, sensor-delta screen, and the
-/// rail fold ahead of the undervolt fault.
+/// rail fold's slope.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigFaultCfg {
@@ -290,11 +292,11 @@ pub struct ConfigFaultCfg {
     #[ct_field(skip)]
     pub _rsvd_align: u8,
     /// The rail fold: the ceiling is this many counts per vcount the rail
-    /// sits over `v_undervolt_counts`, Q8, so it reaches the cap
-    /// `cap / slope` vcounts above the floor and zero at the floor, where
-    /// the fault latches, and a sagging source folds the torque instead of
-    /// browning out. The slope is the source admittance a stall must not
-    /// sag the rail through; 0 = off.
+    /// sits over the board's floor (`KernelTiming::rail_floor_counts`), Q8,
+    /// so it reaches the cap `cap / slope` vcounts above the floor and zero
+    /// at the floor, and a sagging source folds the torque instead of
+    /// browning the chip out. The slope is the source admittance a stall
+    /// must not sag the rail through; 0 = off.
     pub rail_fold_q8: u16,
 }
 
@@ -354,7 +356,6 @@ pub struct ProtectionDefaults {
     pub thermal_tau_s: u16,
     /// Deg C x100.
     pub cutoff_cc: i16,
-    pub v_undervolt_mv: u16,
     /// The source a stall may sag the rail through, `rail_fold_q8`.
     pub rail_source_mohm: u32,
     /// false = the motor leads are wired reversed.
@@ -372,7 +373,6 @@ pub struct ProtectionSeed {
     pub oc_trip_ticks: u8,
     pub thermal_tau_s: u16,
     pub cutoff_cc: i16,
-    pub v_undervolt_counts: u16,
     pub rail_fold_q8: u16,
     pub drive_polarity: bool,
 }
@@ -403,7 +403,6 @@ impl ProtectionSeed {
             oc_trip_ticks: us_ticks_u8(p.oc_trip_us),
             thermal_tau_s: p.thermal_tau_s,
             cutoff_cc: p.cutoff_cc,
-            v_undervolt_counts: vmotor_counts(p.v_undervolt_mv, div_top_ohm, div_bot_ohm, vdd_mv),
             rail_fold_q8: rail_fold_q8(
                 p.rail_source_mohm,
                 shunt_r_mohm,
@@ -438,7 +437,6 @@ pub(crate) const TEST_PROTECTION: ProtectionDefaults = ProtectionDefaults {
     oc_trip_us: 400,
     thermal_tau_s: 4,
     cutoff_cc: 9000,
-    v_undervolt_mv: 2900,
     rail_source_mohm: 800,
     drive_polarity: true,
 };
@@ -539,9 +537,9 @@ mod tests {
     }
 
     #[test]
-    fn undervolt_floor_in_vcounts_follows_the_terminal_divider() {
-        assert_eq!(vmotor_counts(2900, 6_400, 1_600, 3300), 720);
-        assert_eq!(vmotor_counts(2900, 20_000, 10_000, 3300), 1200);
+    fn rail_floor_in_vcounts_follows_the_terminal_divider() {
+        assert_eq!(vmotor_counts(3500, 6_400, 1_600, 3300), 869);
+        assert_eq!(vmotor_counts(3500, 20_000, 10_000, 3300), 1448);
     }
 
     #[test]
@@ -556,7 +554,6 @@ mod tests {
         assert_eq!(d.yield_current_counts, 154);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.oc_trip_counts, 1352);
-        assert_eq!(d.v_undervolt_counts, 1200);
     }
 
     #[test]

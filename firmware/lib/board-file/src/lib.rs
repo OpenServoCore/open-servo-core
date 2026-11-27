@@ -120,7 +120,8 @@ pub fn generate(text: &str, file: &str) -> Result<Generated, Error> {
 
 /// Reads `path` and writes the sim's mirror of the board: items named
 /// `<prefix>_SENSE`, `_SENSE_EXT`, `_PROTECTION`, `_BEMF_MIN_TICKS`,
-/// `_I_SETTLE_GAIN` and `_DEFAULTS` over the core's host types.
+/// `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN` and `_DEFAULTS` over the core's host
+/// types.
 pub fn emit_sim_mirror(path: &Path, prefix: &str) -> Result<String, Error> {
     let (file, text) = read(path)?;
     sim_mirror(&text, &file, prefix)
@@ -235,6 +236,13 @@ pub fn sim_mirror(text: &str, file: &str, prefix: &str) -> Result<String, Error>
     );
     let (v, tag) = m.value("calibration.bemf_window_min_ticks")?;
     let _ = writeln!(out, "pub const {prefix}_BEMF_MIN_TICKS: u16 = {v}; {tag}\n");
+
+    out.push_str(
+        "/// The lowest rail the board reads, mV, which the board hands the\n\
+         /// kernel through `KernelTiming` and not through CALIB.\n",
+    );
+    let (v, tag) = m.value("calibration.rail_floor_mv")?;
+    let _ = writeln!(out, "pub const {prefix}_RAIL_FLOOR_MV: u16 = {v}; {tag}\n");
 
     out.push_str(
         "/// The shunt amplifier's settle bands, which the board hands the\n\

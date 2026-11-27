@@ -60,7 +60,7 @@ impl Looser {
 /// The fields whose change is a change of what protects the motor, the
 /// train and the rail, as the notebooks list them (`LOOSER`), read off the
 /// kernel's use of each.
-const LOOSER: [(&str, Looser); 26] = [
+const LOOSER: [(&str, Looser); 25] = [
     ("current_limit_counts", Looser::Up),
     ("stall_tau_trip_counts", Looser::Up),
     // the press arms over the yield current and folds to it; 0 reads as the cap
@@ -73,7 +73,6 @@ const LOOSER: [(&str, Looser); 26] = [
     ("oc_trip_ticks", Looser::Up),
     ("duty_max_q15", Looser::Up),
     ("cutoff_cc", Looser::Up),
-    ("v_undervolt_counts", Looser::Down),
     // 0 turns the fold off
     ("rail_fold_q8", Looser::Judged),
     ("pos_error_counts", Looser::Up),
@@ -94,7 +93,10 @@ const LOOSER: [(&str, Looser); 26] = [
 ];
 /// A protection field a firmware change took out of the table: a set
 /// written while it stood still names it.
-const RETIRED: [(&str, Looser); 1] = [("derate_start_cc", Looser::Up)];
+const RETIRED: [(&str, Looser); 2] = [
+    ("derate_start_cc", Looser::Up),
+    ("v_undervolt_counts", Looser::Down),
+];
 
 /// The fields each bounding field bounds: none is ever over it.
 const BOUNDS: [(&str, &[&str]); 1] = [("speed_ceiling_cps", &["velocity_limit_cps"])];
@@ -127,6 +129,12 @@ const LEAD: [&str; 10] = [
     "needs",
     "datasheet_candidate",
 ];
+
+/// Whether the firmware took `name` out of the table: a set written while it
+/// stood still names it, and nothing writes or checks it.
+pub fn retired(name: &str) -> bool {
+    RETIRED.iter().any(|(n, _)| *n == name)
+}
 
 pub fn looser(name: &str) -> Option<Looser> {
     LOOSER

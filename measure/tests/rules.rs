@@ -75,6 +75,9 @@ fn refused(set: &osc_measure::Set, field: &str) -> String {
 /// breakaway: the set of record holds its 0 with no source, and the rule
 /// holds it the same way.
 const HELD_OF_RECORD: &str = "fric_breakaway_counts";
+/// The undervolt floor of record, 3.7 V: the firmware took the fault and
+/// its field out, and the fold's floor is the board's, so no rule makes it.
+const RETIRED_OF_RECORD: &str = "v_undervolt_counts";
 /// Tuning parameters newer than the set of record: off unless the user
 /// sets them.
 const TUNING: [&str; 2] = ["pot_steady_counts_per_a", "pot_fast_counts_per_a"];
@@ -92,26 +95,34 @@ fn rules_reproduce_the_set_of_record() {
             assert_eq!(held(&set, name), "measured.breakaway_ma");
             continue;
         }
+        if name == RETIRED_OF_RECORD {
+            assert_eq!((want.value, want.class.as_str()), (922, "policy"));
+            assert!(set.get(name).is_none());
+            continue;
+        }
         match set.get(name) {
             Some(Outcome::Bound(e)) if e.value == want.value => equal += 1,
             other => wrong.push(format!("{name}: record {}, rules {other:?}", want.value)),
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(equal, 63);
+    assert_eq!(equal, 62);
     for name in TUNING {
         assert_eq!(bound(&set, name), 0);
     }
-    assert_eq!(set.fields.len(), record.fields.len() + TUNING.len());
+    assert_eq!(set.fields.len(), record.fields.len() - 1 + TUNING.len());
 
     // The CONFIG the bench ran is the set's.
     let gate: BTreeMap<String, serde_json::Value> = load("testdata/mg90-d/config-main.json");
     let mut config = 0;
-    for (name, v) in gate.iter().filter(|(n, _)| *n != "source") {
+    for (name, v) in gate
+        .iter()
+        .filter(|(n, _)| !["source", RETIRED_OF_RECORD].contains(&n.as_str()))
+    {
         assert_eq!(Some(bound(&set, name)), v.as_i64(), "{name}");
         config += 1;
     }
-    assert_eq!(config, 40);
+    assert_eq!(config, 39);
 }
 
 /// A thermal band of record came from the winding measurement; a user
@@ -131,10 +142,13 @@ fn bands_reproduce() {
             assert!(want.band.is_some() && got != want.band, "{name}: {got:?}");
             continue;
         }
+        if name == RETIRED_OF_RECORD {
+            continue;
+        }
         assert_eq!(got, want.band, "{name}");
         same += want.band.is_some() as usize;
     }
-    assert_eq!(same, 25);
+    assert_eq!(same, 24);
 }
 
 #[test]
@@ -266,7 +280,7 @@ fn field_formats_match_the_descriptor() {
         .filter(|f| f.access == "rw" && f.addr < CONTROL_BASE)
         .filter(|f| !COMMS.contains(&f.name.as_str()) && !NOT_RULES.contains(&f.name.as_str()))
         .collect();
-    assert_eq!(writable.len(), 66);
+    assert_eq!(writable.len(), 65);
     let all: Vec<_> = rules().collect();
     assert_eq!(all.len(), writable.len());
     for f in writable {

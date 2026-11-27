@@ -127,20 +127,12 @@ fn cutoff(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(100.0 * get!(c, policy, cutoff_c)?)
 }
 
-/// The undervolt floor at the rail as the rail tap reads it, its offset
-/// with it.
-fn v_undervolt(c: &mut Ctx) -> Result<f64, Fail> {
-    let offset = q!(c, measured, rail_offset_counts)?;
-    let v = get!(c, policy, v_undervolt_v)?;
-    Ok(offset + v * q!(c, measured, rail_counts_per_v)?)
-}
-
-/// The rail fold's slope: the admittance of the source the policy
-/// designs for, shunt counts per rail count.
+/// The rail fold's slope: the admittance of the board's source, shunt
+/// counts per rail count through the measured chains.
 fn rail_fold(c: &mut Ctx) -> Result<f64, Fail> {
     let shunt = shunt_counts_per_a(c)?;
     let rail = q!(c, measured, rail_counts_per_v)?;
-    Ok(shunt / (rail * get!(c, policy, rail_source_ohm)?))
+    Ok(shunt * 1000.0 / (rail * board!(c, rail_source_mohm)))
 }
 
 fn pos_error(c: &mut Ctx) -> Result<f64, Fail> {
@@ -190,14 +182,13 @@ pub const RULES: &[Rule] = table![
     openloop_zero_brake: "openloop_zero_brake.policy", Format::of(Kind::Bool), "flag", Policy,
         zero_brake;
     cutoff_cc: "cutoff.policy", Format::of(Kind::I16), "cC", Policy, cutoff;
-    v_undervolt_counts: "v_undervolt.rail", Format::of(U16), "vcounts", Policy, v_undervolt;
     pos_error_time_ticks: "pos_error_time.policy", Format::of(Kind::U32), "ticks", Policy,
         pos_error_time;
     pos_error_counts: "pos_error.policy", Format::of(U16), "counts", Policy, pos_error;
     sensor_delta_max: "sensor_delta.policy", Format::of(U16), "raw counts/tick", Policy,
         sensor_delta;
     sensor_bad_count: "sensor_bad.policy", Format::of(Kind::U8), "samples", Policy, sensor_bad;
-    rail_fold_q8: "rail_fold.source", Format::q(U16, 8), "ccounts/vcount", Policy, rail_fold;
+    rail_fold_q8: "rail_fold.board", Format::q(U16, 8), "ccounts/vcount", Board, rail_fold;
     vdd_mv: "vdd.board", Format::of(U16), "mV", Board, vdd;
 ];
 

@@ -41,9 +41,6 @@ pub struct Policy {
     pub stall_time_ms: Option<f64>,
     pub cutoff_c: Option<f64>,
     pub duty_max_share: Option<f64>,
-    pub v_undervolt_v: Option<f64>,
-    /// The supply's source resistance the rail fold is designed for.
-    pub rail_source_ohm: Option<f64>,
     pub openloop_zero_brake: Option<Switch>,
     pub brush_term: Option<Switch>,
     pub velocity_limit_deg_s: Option<f64>,

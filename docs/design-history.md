@@ -342,6 +342,28 @@ power cut between the two images of a SAVE now boots the mix unflagged:
 that SAVE never acked, so the host knows. Lesson: a check whose verdict
 does not change what the user does is cost, not safety.
 
+### The undervolt fault
+
+The firmware once latched an undervolt fault when the filtered rail sat
+under a CONFIG floor at a slow tick, and the same field set the rail
+fold's zero and the floor of the voltage math. The one field held two
+different facts. The board's is the lowest rail it can read: under the
+regulator's dropout the chip's supply, the ADC's reference, follows the
+rail down and the rail reading stops falling, so a floor under that
+plateau never binds, and only the firmware can act within a period there.
+A battery's is how low the pack may be drained, and that belongs to the
+product: an identification policy wrote a 3.7 V pack line there, and with
+it moved the fold's zero and the voltage math's floor. The application
+reads `vbus_counts` and can refuse to drive or accept the lower torque and
+accuracy, so the fault went. The board default had been 2.9 V, under the
+plateau, so its fold never reached zero; the board file now sets 3.5 V,
+just over it. The fold stayed, because a stall sags the rail within a period and
+no host answers that fast. Its zero became a board constant,
+`rail_floor_mv` in the board file, and no register. The source resistance
+that sets the fold's slope stays a board default the host may rewrite.
+Lesson: one field, one fact; a floor the firmware must hold belongs to
+the board, and a line the product chooses belongs to the host.
+
 ## Recurring lessons
 
 - **Measure before structuring.** Twice I built structure to avoid a cost

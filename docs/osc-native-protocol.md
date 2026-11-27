@@ -970,11 +970,15 @@ newly-latched kind (`fault_code`, `0x221`):
 | 2   | 3    | `stall`          |
 | 3   | 4    | `position_error` |
 | 4   | 5    | `sensor`         |
-| 5   | 6    | `under_volt`     |
 | 6   | 7    | `config`         |
 | 7   | 9    | `deadman`        |
 
-Code 8 is unassigned. Any set bit forces the drive off; the
+Bit 5 and codes 6 and 8 are unassigned. No fault watches the supply: the
+rail fold (sec 5.8, `RAIL`) eases the current band to 0 as the rail
+nears the lowest rail the board can read, so the motor cannot sag the chip off
+its own supply, and a host that runs from a battery reads `vbus_counts`
+and decides itself when to stop driving (DES
+`a_rail_under_the_floor_folds_and_never_faults`). Any set bit forces the drive off; the
 `torque_enable` 0 to 1 edge is the only acknowledgement, and a
 still-present condition re-latches at once. `position_error` latches in
 Position when the profile's lead over the observer stays past

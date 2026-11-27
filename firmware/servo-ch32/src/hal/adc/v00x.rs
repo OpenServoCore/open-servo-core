@@ -191,8 +191,8 @@ pub fn start_continuous_dma() {
 /// which a trigger starts a scan the DMA cannot deliver, and the tap then
 /// opens partway through that scan -- the buffer fills from the middle of the
 /// sequence and every slot index is off by however far it got (bench: the
-/// sensor frame came back rotated three slots and the undervolt fault
-/// latched). Caller has SCAN, the regular sequence, and the DMA channel ready.
+/// sensor frame came back rotated three slots). Caller has SCAN, the regular
+/// sequence, and the DMA channel ready.
 /// The injected trigger [`park`] stopped comes back on its bringup source.
 pub fn arm_scan(source: Extsel) {
     ADC.ctlr2().modify(|w| {

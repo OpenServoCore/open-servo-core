@@ -1,7 +1,7 @@
 //! Supply-voltage estimator. EWMA of the direct rail tap (`vbus_raw`, every
 //! tick, drive or not) rescaled into motor-terminal divider counts - the
-//! unit `v_undervolt_counts`, the bemf math and the current loop already
-//! speak - plus the cached Q15 supply reciprocal the current loop
+//! unit the rail floor, the bemf math and the current loop already speak -
+//! plus the cached Q15 supply reciprocal the current loop
 //! compensates with. The spec sketches an incremental
 //! one-Newton-step-per-tick reciprocal; this runs the shared full-accuracy
 //! `math::recip_div` every step instead - ~10 multiplies at MEDIUM (2 kHz)
@@ -45,7 +45,7 @@ impl VbusEst {
     /// exactly as its code, on any scale; the slot's fraction lands on the
     /// guard bits. The slot's work sits behind its test, off every other
     /// tap's path.
-    pub fn step(&mut self, vbus_raw: u16, wide_q4: u16, undervolt_floor_counts: u16) {
+    pub fn step(&mut self, vbus_raw: u16, wide_q4: u16, floor_counts: u16) {
         let mut whole = vbus_raw as u32;
         let mut frac_qg = 0;
         if wide_q4 != 0 {
@@ -61,13 +61,13 @@ impl VbusEst {
             self.state_qg = x;
             self.initialized = true;
         }
-        self.update_recip(undervolt_floor_counts);
+        self.update_recip(floor_counts);
     }
 
     /// The floor clamp (>= 1 backstop) bounds the reciprocal: a glitched
     /// near-zero sample cannot blow it up and drive duty to the rail - the
-    /// worst case the current loop ever sees is the undervolt floor's own
-    /// reciprocal, and undervolt is the fault path's call.
+    /// worst case the current loop ever sees is the rail floor's own
+    /// reciprocal.
     fn update_recip(&mut self, floor: u16) {
         let d = (self.vbus_counts() as u32).max(floor.max(1) as u32);
         self.recip_q15 = recip_div(32767u32 << 15, d);

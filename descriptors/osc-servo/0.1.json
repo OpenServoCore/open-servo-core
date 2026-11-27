@@ -301,13 +301,6 @@
       "kind": "int"
     },
     {
-      "name": "v_undervolt_counts",
-      "addr": 102,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "thermal_tau2_s",
       "addr": 104,
       "width": 2,

@@ -27,12 +27,21 @@ use super::store::RamStore;
 use crate::plant::TIMING;
 
 // The osc-dev-v006 board file's values (`DEV_V006_SENSE`, `_SENSE_EXT`,
-// `_PROTECTION`, `_BEMF_MIN_TICKS`, `_I_SETTLE_GAIN`, `_DEFAULTS`), written
-// by build.rs from the file the board image is built from: the one host
-// mirror, which the fake adapter and the class-default tests read from
-// here. Per-servo board facts override the sense chain through
-// [`SimServo::set_sense`].
+// `_PROTECTION`, `_BEMF_MIN_TICKS`, `_RAIL_FLOOR_MV`, `_I_SETTLE_GAIN`,
+// `_DEFAULTS`), written by build.rs from the file the board image is built
+// from: the one host mirror, which the fake adapter and the class-default
+// tests read from here. Per-servo board facts override the sense chain
+// through [`SimServo::set_sense`].
 include!(concat!(env!("OUT_DIR"), "/dev_v006_board.rs"));
+
+/// `DEV_V006_RAIL_FLOOR_MV` through the terminal divider, as the image's
+/// `Precomputed` hands it the kernel.
+pub const DEV_V006_RAIL_FLOOR_COUNTS: u16 = osc_servo_core::regions::config::vmotor_counts(
+    DEV_V006_RAIL_FLOOR_MV,
+    DEV_V006_SENSE.vmotor_div_top as u32,
+    DEV_V006_SENSE.vmotor_div_bot as u32,
+    DEV_V006_SENSE.vdd_mv,
+);
 
 pub struct SimServo {
     /// Leaked per bringup, as the TEL channel: the row copies read the

@@ -8,8 +8,8 @@ use crate::{RegionStorageRaw, Shared};
 impl Medium {
     /// SLOW, every DECIM_SLOW periods, in two stages a period apart, so
     /// neither sets the period's longest tick: on the due tick the permit
-    /// lease, undervoltage and the two heats on the cycle's mean of the
-    /// held current squared (LIMITS sums it) warmed by the last estimate;
+    /// lease and the two heats on the cycle's mean of the held current
+    /// squared (LIMITS sums it) warmed by the last estimate;
     /// on the next period's SLOW phase the winding estimate from the NTC
     /// and the heats, its cutoff, the resistance at its temperature, and
     /// the bias tracker's aging step. Whether a stage ran.
@@ -32,20 +32,15 @@ impl Medium {
             return false;
         }
         self.slow_periods = 0;
-        self.slow_due(cfg, faults);
+        self.slow_due(cfg);
         true
     }
 
-    fn slow_due(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch) {
+    fn slow_due(&mut self, cfg: &KernelConfig) {
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
         let mean_sq = self.limits.take_heat_mean();
         self.limits
             .heat(mean_sq, self.thermal.warm_q16(), cfg.tau_shifts());
-        // the rail tap samples drive or not, so a held sag never outlives the
-        // sag itself: ack clears once the rail is back
-        if self.vbus.vbus_counts() < cfg.thermal.v_undervolt_counts {
-            faults.raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
-        }
     }
 
     /// The winding estimate on the NTC and the heats, its cutoff and the

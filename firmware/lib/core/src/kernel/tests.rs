@@ -21,6 +21,8 @@ const ARR: u16 = 1200;
 /// A non-unity rail scale (22k/10k tap over 20k/10k terminals), so the rig
 /// exercises the rescale.
 const VBUS_SCALE_Q15: u32 = 34952;
+/// The rig board's rail floor, vcounts: the rail sits 800 over it.
+const RAIL_FLOOR: u16 = 2200;
 
 // The chip-side const-eval for a 20 kHz FAST rate (MED 2 kHz).
 const TIMING: KernelTiming = KernelTiming {
@@ -33,6 +35,7 @@ const TIMING: KernelTiming = KernelTiming {
     bemf_min_ticks: 0,
     bridge_min_ticks: 27,
     i_settle_gain: window::SettleGain::UNITY,
+    rail_floor_counts: RAIL_FLOOR,
     // the development board's sense chain
     brush_dev_max: bemf::brush_dev_max(60, 14_884, 3300),
     amps_per_count_q17: pot_current::amps_per_count_q17(60, 14_884, 3300),
@@ -110,7 +113,6 @@ fn seed(shared: &Shared) {
         c.limits.openloop_zero_brake = false;
         c.limits.thermal_tau_s = 4;
         c.thermal.cutoff_cc = 10000;
-        c.thermal.v_undervolt_counts = 2200;
         // 1200 counts over 200 vcounts: 6 counts per vcount
         c.fault_cfg.rail_fold_q8 = 6 << 8;
         c.fusion.l1_q016 = 16384;
@@ -1019,7 +1021,7 @@ fn limit_flags_name_the_governor() {
         (e.i_lim_counts as i32, e.vbus_counts as i32)
     });
     // 1200 counts over the 200-vcount band: 6 counts per vcount over the floor
-    let want = (vbus - 2200) * 6;
+    let want = (vbus - RAIL_FLOOR as i32) * 6;
     assert!(
         (want - 1..=want).contains(&sagged),
         "sagged={sagged} vbus={vbus}"
@@ -1044,8 +1046,14 @@ fn limit_flags_name_the_governor() {
     assert_eq!(limit_flags(&sh), flag::ENDSTOP, "torque off ends the lease");
 }
 
+/// A rail under the floor, where an undervolt fault once latched, faults
+/// nothing: the fold holds the current band at 0 with the bridge enabled,
+/// eases it back through the band as the rail recovers, and lets go of it
+/// over the band.
 #[test]
-fn undervolt_follows_the_rail_tap_through_bridge_off() {
+fn a_rail_under_the_floor_folds_and_never_faults() {
+    use limits::flag;
+
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
@@ -1054,42 +1062,89 @@ fn undervolt_follows_the_rail_tap_through_bridge_off() {
         t.control.lifecycle.goal_duty = 8192;
     });
     let mut k = kernel();
+    let i_lim = |sh: &Shared| sh.table.with(|t| t.telemetry.estimates.i_lim_counts);
     // sagged rail on the direct tap; the terminal taps are irrelevant
     let mut sagged = frame(2000, BIAS);
     sagged.vbus_raw = vbus_raw(1000);
-    for _ in 0..400 {
+    for _ in 0..400 * DECIM_MED as u32 {
         k.on_scan(sagged, &sh);
     }
-    assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag latches");
-    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
-    // the tap keeps sampling with the bridge off: an ack against a still
-    // sagged rail re-latches, an ack against a recovered rail sticks
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    for _ in 0..400 {
-        k.on_scan(sagged, &sh);
+    assert_eq!(k.faults.mask(), 0, "a sag under the floor faults nothing");
+    assert_eq!(k.faults.code(), faults::CODE_NONE);
+    assert!(!matches!(last_cmd(&k), MotorCmd::Disabled));
+    assert_eq!((limit_flags(&sh), i_lim(&sh)), (flag::RAIL, 0));
+    // the rail halfway into the band: the fold eases to 6 counts per vcount
+    let mut band = frame(2000, BIAS);
+    band.vbus_raw = vbus_raw(RAIL_FLOOR + 100);
+    for _ in 0..200 * DECIM_MED as u32 {
+        k.on_scan(band, &sh);
     }
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    for _ in 0..2000 {
-        k.on_scan(sagged, &sh);
-    }
-    assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag re-latches");
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    for _ in 0..400 {
+    let v = sh.table.with(|t| t.telemetry.estimates.vbus_counts) as i32;
+    let want = (v - RAIL_FLOOR as i32) * 6;
+    assert_eq!(limit_flags(&sh), flag::RAIL);
+    assert!(
+        (want - 1..=want).contains(&(i_lim(&sh) as i32)),
+        "i_lim={} vbus={v}",
+        i_lim(&sh)
+    );
+    // recovered: over the band the cap binds again, with no ack between
+    for _ in 0..400 * DECIM_MED as u32 {
         k.on_scan(frame(2000, BIAS), &sh);
     }
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    for _ in 0..2000 {
-        k.on_scan(frame(2000, BIAS), &sh);
-    }
-    assert_eq!(k.faults.mask(), 0, "recovered rail re-latched undervolt");
+    assert_eq!(k.faults.mask(), 0);
+    assert_eq!((limit_flags(&sh), i_lim(&sh)), (0, 1200));
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // EWMA truncation tail: settles within 1 count of the rail
     let v = sh.table.with(|t| t.telemetry.estimates.vbus_counts) as i32;
     assert!((v - 3000).abs() <= 1, "vbus_counts={v}");
+}
+
+/// The fold's floor is the board's (`KernelTiming::rail_floor_counts`):
+/// the same rail and the same table fold the current band over each
+/// board's own floor, and CONFIG holds no floor of its own.
+#[test]
+fn the_rail_fold_floor_is_the_boards() {
+    let rail = RAIL_FLOOR + 150;
+    let i_lim_over = |floor: u16| {
+        let sh = Shared::new();
+        seed(&sh);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.mode = Mode::OpenLoop;
+            t.control.lifecycle.goal_duty = 8192;
+        });
+        let mut k = Kernel::new(
+            FakeIo {
+                sensors: FakeSensors,
+                motor: FakeMotor { last: None },
+            },
+            KernelTiming {
+                rail_floor_counts: floor,
+                ..TIMING
+            },
+        );
+        let mut f = frame(2000, BIAS);
+        f.vbus_raw = vbus_raw(rail);
+        for _ in 0..400 * DECIM_MED as u32 {
+            k.on_scan(f, &sh);
+        }
+        let (i_lim, v) = sh.table.with(|t| {
+            let e = &t.telemetry.estimates;
+            (e.i_lim_counts as i32, e.vbus_counts as i32)
+        });
+        assert_eq!(k.faults.mask(), 0);
+        (i_lim, (v - floor as i32) * 6)
+    };
+    let (rig, rig_want) = i_lim_over(RAIL_FLOOR);
+    let (higher, higher_want) = i_lim_over(RAIL_FLOOR + 100);
+    assert!((rig_want - 1..=rig_want).contains(&rig), "{rig} {rig_want}");
+    assert!(
+        (higher_want - 1..=higher_want).contains(&higher),
+        "{higher} {higher_want}"
+    );
+    assert!(higher_want < rig_want && higher < rig);
+    // and a floor under the rail by more than the band folds nothing
+    assert_eq!(i_lim_over(RAIL_FLOOR - 100).0, 1200);
 }
 
 #[test]
@@ -2225,7 +2280,7 @@ fn window_rig(goal: i16, g: u16) -> Shared {
 /// The window term the kernel's take and rail put on a `ticks` width, Q16
 /// counts.
 fn window_term(k: &Kernel<FakeIo>, ticks: u32) -> u32 {
-    let v = k.cmd.vbus_counts.max(k.cfg.thermal.v_undervolt_counts);
+    let v = k.cmd.vbus_counts.max(k.cfg.rail_floor_counts);
     let mut w = window::WindowTerm::default();
     w.set_rail(k.cfg.g_arr, v, ARR);
     w.q16(ticks)

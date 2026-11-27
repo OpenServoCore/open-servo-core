@@ -380,8 +380,8 @@ pub const fn tel_lane(held: bool, starts: bool) -> u32 {
 pub const TEL_LANE_MEAN: u32 = 124;
 
 /// The SLOW block's first stage on its due tick (phase SLOW, every
-/// DECIM_SLOW periods): the permit lease, undervoltage and the two heats,
-/// on top of the phase's row, per regime. M: the due bodies' maximum over
+/// DECIM_SLOW periods): the permit lease and the two heats, on top of the
+/// phase's row, per regime. M: the due bodies' maximum over
 /// the phase's plain maximum that sets its row, every gated window with no
 /// TEL, on the image and run of [`KERNEL`], with the rule's margin: Open
 /// 876 over 762, the 1M write window's; Closed 1305 over 1194, the
