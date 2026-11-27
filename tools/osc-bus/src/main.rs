@@ -1,8 +1,8 @@
-//! `osc` -- the bus driver CLI for an osc-native bus, driven through the
+//! `osc-bus` - the bus driver CLI for an osc-native bus, driven through the
 //! osc-adapter: discovery, rescue, id/baud management, firmware updates,
 //! persistence, profiles, one-shot reads/writes, typed get/set/dump, and the
 //! adapter's own management verbs (rails, bootloader). A thin surface over
-//! osc-client -- every choreography lives in the library. `osc-ident` is
+//! osc-client - every choreography lives in the library. `osc-ident` is
 //! the identification, calibration and tuning tool; wire measurement is the
 //! bench `tool-*` binaries' job.
 
@@ -32,7 +32,7 @@ use osc_protocol::wire::UID_LEN;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "osc",
+    name = "osc-bus",
     about = "The bus driver CLI: drive an osc-native servo bus through the osc-adapter. osc-ident is the identification, calibration and tuning tool."
 )]
 struct Cli {
@@ -67,24 +67,24 @@ enum Cmd {
     Bootloader,
     /// Install a firmware image on the roster servos in one session with
     /// each in its bootloader; one reset ends it. Bootloaders with no app
-    /// are left to `osc boot`.
+    /// are left to `osc-bus boot`.
     Flash(boot::FlashArgs),
     /// Firmware update one step at a time: check, enter, list, flash, reset.
     ///
     /// Preferred procedure for a firmware update:
     ///
     ///   1. Rest the robot: every servo goes limp.
-    ///   2. `osc boot check` prints each servo's rate; bring any odd one
-    ///      to the common rate with `osc baud`.
-    ///   3. `osc boot enter --rate R`
-    ///   4. `osc boot check` exits 0: every servo is in its bootloader.
-    ///   5. `osc boot list --rate R`
-    ///   6. `osc boot flash <bin> --rate R <uid>...` for each image.
-    ///   7. `osc boot reset --rate R`
-    ///   8. `osc discover` shows every servo again; confirm the versions
-    ///      (`osc ping`).
+    ///   2. `osc-bus boot check` prints each servo's rate; bring any odd one
+    ///      to the common rate with `osc-bus baud`.
+    ///   3. `osc-bus boot enter --rate R`
+    ///   4. `osc-bus boot check` exits 0: every servo is in its bootloader.
+    ///   5. `osc-bus boot list --rate R`
+    ///   6. `osc-bus boot flash <bin> --rate R <uid>...` for each image.
+    ///   7. `osc-bus boot reset --rate R`
+    ///   8. `osc-bus discover` shows every servo again; confirm the versions
+    ///      (`osc-bus ping`).
     ///
-    /// For a single image on a fleet of one board type, `osc flash <bin>
+    /// For a single image on a fleet of one board type, `osc-bus flash <bin>
     /// --rate R` runs steps 3 to 8 in one go. Bootloaders with no app
     /// (fresh boards, a failed install) take the steps above.
     #[command(verbatim_doc_comment)]
@@ -742,7 +742,7 @@ fn get(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor, name: &str)
     Ok(())
 }
 
-/// A hand edit: it runs as written and reads unsaved until `osc save`.
+/// A hand edit: it runs as written and reads unsaved until `osc-bus save`.
 fn set(
     c: &mut Client<NusbPipe>,
     id: Id,

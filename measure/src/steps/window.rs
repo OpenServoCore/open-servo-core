@@ -604,7 +604,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &WindowInputs<'_>) -> Result<B
         .unwrap_or(0);
     if faults != 0 {
         return Err(Refused(format!(
-            "a fault is latched (fault_flags {faults:#04x}): `osc status` names it"
+            "a fault is latched (fault_flags {faults:#04x}): `osc-bus status` names it"
         )));
     }
     let stored = state

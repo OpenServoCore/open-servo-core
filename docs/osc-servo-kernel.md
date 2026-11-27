@@ -241,7 +241,7 @@ Arbitration is the first `match` in `on_tick`: boot, then the take.
 
 ### 2.7 The experiment image
 
-One build of the same firmware, `--features experiment`, for captures where the host owns safety: the same control table, transport, TEL and shunt burst, the same bootloader path (`osc flash` keeps META and the saved configuration). The identity block sets `capability_flags` bit 1 (`CAP_EXPERIMENT`, protocol sec 5.4), which the host tools read at connect.
+One build of the same firmware, `--features experiment`, for captures where the host owns safety: the same control table, transport, TEL and shunt burst, the same bootloader path (`osc-bus flash` keeps META and the saved configuration). The identity block sets `capability_flags` bit 1 (`CAP_EXPERIMENT`, protocol sec 5.4), which the host tools read at connect.
 
 | Runs | Stripped (compiled out, not switched off) |
 | --- | --- |

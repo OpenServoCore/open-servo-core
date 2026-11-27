@@ -1,6 +1,6 @@
 //! The set file: the notebooks' format 1 (`oscnb.constants`), so either
 //! tool reads what the other writes. Every CONFIG and CALIB field a host
-//! writes past the bus front, each with its value as `osc dump` prints it,
+//! writes past the bus front, each with its value as `osc-bus dump` prints it,
 //! its class and where it came from, with the wide-code slots, the
 //! position table's state and the sha1 of its points, and the hashes of
 //! that content. A set is generated, never edited: a file whose hashes
@@ -557,7 +557,7 @@ fn entry(v: &Value) -> String {
     dumps(&Value::Object(ordered))
 }
 
-/// A field's value as `osc dump` prints it and a set holds it: a number,
+/// A field's value as `osc-bus dump` prints it and a set holds it: a number,
 /// `on`/`off`, an enum as `Name (n)`, the gear class as `n (name)`, bytes
 /// as spaced hex.
 pub fn text_of(f: &Field, bytes: &[u8]) -> Value {
@@ -601,7 +601,7 @@ pub fn bytes_of(f: &Field, v: &Value) -> Result<Vec<u8>, SetError> {
             dumps(v)
         ))
     };
-    // `osc dump`'s text less the note in parentheses after a name or a number
+    // `osc-bus dump`'s text less the note in parentheses after a name or a number
     let plain = match v {
         Value::String(s) => match s.find(" (") {
             Some(at) if s.ends_with(')') => s[..at].to_string(),

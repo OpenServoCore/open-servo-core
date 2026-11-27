@@ -621,7 +621,7 @@ async fn home<P: Pipe>(
         return Ok(());
     }
     Err(Refused(format!(
-        "after the reboot the servo answers at {}, its saved baud; moved to {}, volatile, it does not answer there: `osc discover` finds the rate it answers at",
+        "after the reboot the servo answers at {}, its saved baud; moved to {}, volatile, it does not answer there: `osc-bus discover` finds the rate it answers at",
         mbaud(at),
         mbaud(run)
     )))
@@ -841,7 +841,7 @@ pub async fn save<P: Pipe>(
     let left = differences(set, &after, d);
     if !left.is_empty() || !after.store.loaded() || after.unsaved {
         return Err(Refused(format!(
-            "after the SAVE and a reboot the servo is not the set (settings {}, unsaved {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc save` then makes it permanent",
+            "after the SAVE and a reboot the servo is not the set (settings {}, unsaved {}{}): flash holds the state {} records, no longer the old one. {put_back}; `osc-bus save` then makes it permanent",
             after.settings_said(),
             after.unsaved_said(),
             left.iter().map(|l| format!("; {l}")).collect::<String>(),

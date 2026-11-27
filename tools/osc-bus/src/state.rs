@@ -1,8 +1,8 @@
 //! Stored state on every servo verb: the one-line warning a command prints
 //! when an image is on its defaults or the belt refuses a mode
 //! (information: the command still runs, and the servo refuses a mode only
-//! on a constant it cannot run on), the `osc status` report, and
-//! `osc recover`.
+//! on a constant it cannot run on), the `osc-bus status` report, and
+//! `osc-bus recover`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,7 +29,7 @@ pub(crate) fn descriptor<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Descripto
 }
 
 /// Read the stored state; an image on its defaults or a refused mode
-/// prints its one-line warning. Unsaved changes print none: `osc status`
+/// prints its one-line warning. Unsaved changes print none: `osc-bus status`
 /// says them.
 pub(crate) fn warn<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<StoreState> {
     let s = c.store_state(id, d)?;
@@ -73,7 +73,7 @@ fn fault_name(code: u8) -> String {
     }
 }
 
-/// The `osc status` tail: the settings word, the refused modes, the
+/// The `osc-bus status` tail: the settings word, the refused modes, the
 /// operator lines and the latched fault.
 pub(crate) fn report(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<()> {
     let s = c.store_state(id, d)?;
@@ -112,7 +112,7 @@ pub(crate) fn mgmt_save<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
     Ok(())
 }
 
-/// `osc recover`: a saved table back onto a servo on its defaults.
+/// `osc-bus recover`: a saved table back onto a servo on its defaults.
 ///
 /// Nothing needs a wipe: a servo whose images did not load (blank,
 /// unreadable or of another layout) runs board defaults, and `--from`
@@ -123,9 +123,9 @@ pub(crate) fn mgmt_save<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
 ///
 /// The bench MG90 after a CALIB layout change boots `defaults: CALIB`;
 /// with no motion at all:
-///   osc status
-///   osc recover --from profiles/mg90-a.json
-///   osc status
+///   osc-bus status
+///   osc-bus recover --from profiles/mg90-a.json
+///   osc-bus status
 #[derive(clap::Args, Debug)]
 pub(crate) struct RecoverArgs {
     /// Restore CONFIG + CALIB fields from a JSON table: `{"fields": {name:
@@ -182,7 +182,7 @@ pub(crate) fn recover(args: &RecoverArgs, bus: Bus, id: u8) -> Result<()> {
         }
         None if args.factory => {
             println!(
-                "next: osc-ident run, then osc-ident save (or osc recover --from <table.json>)"
+                "next: osc-ident run, then osc-ident save (or osc-bus recover --from <table.json>)"
             );
         }
         None if s.loaded() => println!("nothing to recover"),
@@ -207,7 +207,7 @@ fn refind(c: &mut Client<NusbPipe>, id: Id) -> Result<Id> {
     match found.as_slice() {
         [f] => {
             println!(
-                "id {} is silent; the servo answers on its board id {} (osc assign moves it back)",
+                "id {} is silent; the servo answers on its board id {} (osc-bus assign moves it back)",
                 id.as_byte(),
                 f.id.as_byte()
             );

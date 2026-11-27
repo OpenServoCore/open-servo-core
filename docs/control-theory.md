@@ -193,7 +193,7 @@ $$d_\text{clean} = \frac{7}{8}\cdot \frac{i_\text{lim}\cdot R}{V_\text{bus}}$$
 
 At a limit of a few hundred milliamps on a 2S pack that is a small step, not far over the floor. On a shaft running at $i_\text{run}$ the headroom is what the running current leaves, $(\frac{7}{8} i_\text{lim} - i_\text{run})\cdot R/V_\text{bus}$. Anything bigger is governed: the duty climbs at whatever rate the current allows and reaches the goal only if the load lets it. A clean step is still a slew, one tick per 0.39% of duty, so a fit takes the applied duty from the TEL `duty` field as its input, never an ideal step. The rule a host uses to tell a governed window from a clean one is in the protocol doc, sec 5.8.
 
-`osc-ident`, the identification, calibration and tuning tool, plans its drives around that, in the `measure` crate (its envelope and runway); `osc` is the bus driver and plans no drive. The rules in this and the next three sections hold for any servo. The host plans every duty from the servo's own $R$, current limit, window floors and rail, so none of the duties below is a fixed number.
+`osc-ident`, the identification, calibration and tuning tool, plans its drives around that, in the `measure` crate (its envelope and runway); `osc-bus` is the bus driver and plans no drive. The rules in this and the next three sections hold for any servo. The host plans every duty from the servo's own $R$, current limit, window floors and rail, so none of the duties below is a fixed number.
 
 Every drive is one of two kinds.
 

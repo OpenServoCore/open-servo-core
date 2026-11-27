@@ -7,7 +7,7 @@ second probe, no button, no soldering:
 - **Stock WCH-LinkE probe** (`1a86:8010` RV mode): flashes and debugs targets
   with `wlink`, provides SDI print, powers the DUT rails.
 - **osc adapter** (`1209:0001`): the osc-host instrument this crate builds -
-  bus scheduling, rail control, bench tooling via `tools/osc`.
+  bus scheduling, rail control, bench tooling via `tools/osc-bus`.
 
 ## How the flip works
 
@@ -48,7 +48,7 @@ images under that same preserved loader:
 ## Adapter -> stock LinkE
 
 ```sh
-osc bootloader                        # adapter disarms the loader flag + resets
+osc-bus bootloader                    # adapter disarms the loader flag + resets
                                       # device re-enumerates as 4348:55e0
 wlink-iap -f FIRMWARE_CH32V305.bin    # flash stock APP; loader re-arms itself
 ```
@@ -68,8 +68,8 @@ wlink-iap -f osc-adapter.bin          # flash the adapter APP
 ```
 
 `wlink-iap -i` speaks the stock link-mode protocol to enter IAP; from the
-adapter side that door is `osc bootloader` (the adapter does not implement
-the stock protocol). Verify with `osc info` (enumerates as `1209:0001`).
+adapter side that door is `osc-bus bootloader` (the adapter does not implement
+the stock protocol). Verify with `osc-bus info` (enumerates as `1209:0001`).
 
 ## Bus wiring
 
@@ -83,7 +83,7 @@ pull-up becomes a pull-down, and the servo reads a held low as a rescue.
 
 ## Diagnostics
 
-`osc info` also prints what the adapter recorded about its last reset: the
+`osc-bus info` also prints what the adapter recorded about its last reset: the
 RCC reset cause (PIN/POR/SFT/IWDG), the main-loop phase the reset caught,
 and the last trapped exception (mcause/mepc/mtval, with a running count).
 The record lives in a reserved RAM word block that survives resets; a

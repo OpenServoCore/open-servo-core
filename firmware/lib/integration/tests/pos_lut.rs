@@ -173,7 +173,7 @@ fn fresh_servo_reports_identity(baud_idx: u8) {
     assert_eq!(array(&sim, s), ZERO);
 }
 
-/// The `osc lut write` sequence: eight STOREs, a COMMIT, LIVE and unsaved,
+/// The `write_pos_lut` sequence: eight STOREs, a COMMIT, LIVE and unsaved,
 /// and a point-for-point FETCH readback.
 #[apply(matrix)]
 fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {

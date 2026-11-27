@@ -1,5 +1,5 @@
 //! UID text form: 32 hex chars, most significant byte first - the order
-//! `osc discover` prints and `osc assign` reads.
+//! `osc-bus discover` prints and `osc-bus assign` reads.
 
 use osc_client::mgmt::Uid;
 use osc_protocol::wire::UID_LEN;
