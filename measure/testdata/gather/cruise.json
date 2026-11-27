@@ -8,6 +8,8 @@
       "value": 39.4237,
       "lo": 38.2465,
       "hi": 40.6009,
+      "sd": 1.1772,
+      "n": 14,
       "unit": "mA",
       "source": "synthetic: the analyst's closed-loop line (osc-dev-v006-bringup kb/scratch/friction-spins-vs-cruise/sitting/line.csv, its valid 1500, 2150 and 4025 counts/s legs)"
     },
@@ -15,6 +17,8 @@
       "value": 0.040364,
       "lo": 0.038648,
       "hi": 0.042081,
+      "sd": 0.0017165,
+      "n": 14,
       "unit": "mA per motor rad/s",
       "source": "synthetic: the analyst's closed-loop line (osc-dev-v006-bringup kb/scratch/friction-spins-vs-cruise/sitting/line.csv, its valid 1500, 2150 and 4025 counts/s legs)"
     }

@@ -153,7 +153,8 @@ impl<'a> Taken<'a> {
     }
 
     /// A step's estimate as a quantity: its value, its band where it gives
-    /// one, its unit, `scale` applied to all three numbers.
+    /// one, its sd and repeat count, its unit, `scale` applied to the
+    /// numbers.
     fn estimate(&self, name: &str, scale: f64, unit: Option<&str>) -> Result<Value, Refused> {
         let key = format!("estimates.{name}");
         let e = at(&self.r.doc, &key).ok_or_else(|| self.lacks(&key))?;
@@ -177,9 +178,11 @@ impl<'a> Taken<'a> {
         } else {
             format!("{key}, x {scale}")
         };
+        let n = e.get("n").and_then(Value::as_u64);
         Ok(quantity(
             value * scale,
             end("lo").zip(end("hi")),
+            Spread { sd: end("sd"), n },
             &unit,
             self.source(&key),
         ))
@@ -199,13 +202,30 @@ impl Out {
     }
 }
 
-fn quantity(value: f64, band: Option<(f64, f64)>, unit: &str, source: Value) -> Value {
+/// One sd over `n` repeats; `n` none is a nominal value.
+#[derive(Clone, Copy)]
+struct Spread {
+    sd: Option<f64>,
+    n: Option<u64>,
+}
+
+const NOMINAL: Spread = Spread { sd: None, n: None };
+
+fn quantity(
+    value: f64,
+    band: Option<(f64, f64)>,
+    spread: Spread,
+    unit: &str,
+    source: Value,
+) -> Value {
     let mut q = Map::new();
     q.insert("value".into(), value.into());
     if let Some((lo, hi)) = band {
         q.insert("lo".into(), lo.into());
         q.insert("hi".into(), hi.into());
     }
+    q.insert("sd".into(), spread.sd.into());
+    q.insert("n".into(), spread.n.into());
     q.insert("unit".into(), unit.into());
     q.insert("source".into(), source);
     Value::Object(q)
@@ -219,18 +239,27 @@ fn short(v: f64) -> String {
     }
 }
 
-/// A quantity's line: its value, band and unit, where it came from.
+/// A quantity's spread as a line says it: `+/- sd, n N`, `n N` where
+/// nothing repeated, or `nominal`.
+fn spread_said(q: &Value) -> String {
+    match (
+        q.get("sd").and_then(Value::as_f64),
+        q.get("n").and_then(Value::as_u64),
+    ) {
+        (Some(sd), Some(n)) => format!("+/- {}, n {n}", short(sd)),
+        (_, Some(n)) => format!("n {n}"),
+        (_, None) => "nominal".into(),
+    }
+}
+
+/// A quantity's line: its value, unit and spread, where it came from.
 fn said(name: &str, q: &Value) -> String {
-    let n = |k: &str| q.get(k).and_then(Value::as_f64);
-    let band = match (n("lo"), n("hi")) {
-        (Some(lo), Some(hi)) => format!(" ({} to {})", short(lo), short(hi)),
-        _ => String::new(),
-    };
     let s = &q["source"];
     format!(
-        "{name} {}{band} {}: {} {}",
-        short(n("value").unwrap_or(f64::NAN)),
+        "{name} {} {} {}: {} {}",
+        short(q.get("value").and_then(Value::as_f64).unwrap_or(f64::NAN)),
         q["unit"].as_str().unwrap_or(""),
+        spread_said(q),
         s["file"].as_str().unwrap_or(""),
         s["key"].as_str().unwrap_or("")
     )
@@ -248,6 +277,15 @@ fn median(v: &mut [f64]) -> Option<f64> {
         _ if n % 2 == 1 => Some(v[n / 2]),
         _ => Some((v[n / 2 - 1] + v[n / 2]) / 2.0),
     }
+}
+
+/// The sample sd, none under two values.
+fn sd(v: &[f64]) -> Option<f64> {
+    if v.len() < 2 {
+        return None;
+    }
+    let m = v.iter().sum::<f64>() / v.len() as f64;
+    Some((v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (v.len() - 1) as f64).sqrt())
 }
 
 fn same(a: f64, b: f64) -> bool {
@@ -314,6 +352,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         quantity(
             cpa,
             None,
+            NOMINAL,
             "counts/A",
             stops.source(&format!("{cpa_key} ({nominal})")),
         ),
@@ -323,6 +362,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         quantity(
             tcpv,
             None,
+            NOMINAL,
             "counts/V",
             stops.source(&format!("{tcpv_key} ({nominal})")),
         ),
@@ -340,6 +380,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
                 quantity(
                     rest.num(rail_key)?,
                     None,
+                    NOMINAL,
                     "counts/V",
                     rest.source(&format!("{rail_key} ({parts})")),
                 ),
@@ -349,6 +390,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
                 quantity(
                     0.0,
                     None,
+                    NOMINAL,
                     "counts",
                     rest.source(&format!("{rail_key} ({parts}: the divider has no offset)")),
                 ),
@@ -386,13 +428,26 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             stops.r.file
         )));
     }
+    let seats = |side: &str| -> Vec<f64> {
+        at(&stops.r.doc, &format!("stops.{side}.seats_counts"))
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_f64).collect())
+            .unwrap_or_default()
+    };
+    let (low_seats, high_seats) = (seats("low"), seats("high"));
+    let seat_sd = [sd(&low_seats), sd(&high_seats)];
+    let seats_n = low_seats.len().min(high_seats.len());
     o.m.insert(
         "stops".into(),
-        json!({"raw_min": low as i64, "raw_max": high as i64,
-               "source": stops.source(&format!("{lo_key} up, {hi_key} down: rounded inward"))}),
+        json!({"raw_min": low as i64, "raw_max": high as i64, "sd": seat_sd, "n": seats_n,
+               "source": stops.source(&format!("{lo_key} up, {hi_key} down: rounded inward; sd over the seats"))}),
     );
+    let seat_said = match seat_sd {
+        [Some(a), Some(b)] => format!("+/- {} / {}, n {seats_n}", short(a), short(b)),
+        _ => format!("n {seats_n}"),
+    };
     o.lines.push(format!(
-        "stops {low} to {high} counts: {} {lo_key} ({}) up, {hi_key} ({}) down",
+        "stops {low} to {high} counts {seat_said}: {} {lo_key} ({}) up, {hi_key} ({}) down",
         stops.r.file,
         stops.num(lo_key)?,
         stops.num(hi_key)?
@@ -440,6 +495,10 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
     };
 
     let r = stops.num("estimates.r_seated_ohm.value")?;
+    let r_spread = Spread {
+        sd: stops.opt("estimates.r_seated_ohm.sd"),
+        n: at(&stops.r.doc, "estimates.r_seated_ohm.n").and_then(Value::as_u64),
+    };
     let sd_key = "seated.r_sd_within_groups";
     let (low_key, high_key) = (
         "seated.by_stop.low.r_ohm.median",
@@ -460,6 +519,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         quantity(
             r,
             h.map(|h| (r - h, r + h)),
+            r_spread,
             "ohm",
             stops.source(&format!(
                 "estimates.r_seated_ohm; band +/- the larger of {sd_key} x R ({}) and half of {low_key} less {high_key} ({}), no band when neither is read",
@@ -482,21 +542,21 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_f64).collect())
         .unwrap_or_default();
+    let seats_spread = Spread {
+        sd: sd(&seats),
+        n: Some(seats.len() as u64),
+    };
     let board_c = match median(&mut seats).filter(|c| c.is_finite()) {
         Some(c) => quantity(
             c,
             None,
+            seats_spread,
             "C",
             stops.source(&format!(
                 "{ntc_key}, the median: the board NTC read before each seat's bursts"
             )),
         ),
-        None => quantity(
-            rest.num("estimates.board_ntc_c.value")?,
-            None,
-            "C",
-            rest.source("estimates.board_ntc_c"),
-        ),
+        None => rest.estimate("board_ntc_c", 1.0, None)?,
     };
     o.put("r_board_c", board_c);
     o.put("l_mh", stops.estimate("l_seated_h", 1000.0, Some("mH"))?);

@@ -37,8 +37,8 @@ use serde_json::{Map, Value, json};
 
 use super::polarity::{self, Comp, Ladder, LadderCfg, OnServo, Outcome};
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mode_value, read_u8, rest,
-    shunt, write,
+    Check, Ended, Halt, Rig, Scatter, Taken, Verdict, estimate, interrupted, keep_all, mode_value,
+    read_u8, rest, shunt, write,
 };
 use crate::Board;
 use crate::capture::burst::{self, CHANS_DIFF, Capture};
@@ -1170,10 +1170,6 @@ fn keep_bursts(
     Ok(())
 }
 
-fn est(value: f64, unit: &str, source: &str) -> Value {
-    json!({"value": value, "lo": null, "hi": null, "unit": unit, "source": source})
-}
-
 fn rise_json(r: &Rise) -> Value {
     json!({"r_ohm": r.r_ohm, "l_h": r.l_h, "tau_s": r.tau_s, "v0_v": r.v0_v, "pairs": r.pairs,
            "resid_rms_v": r.resid_rms_v(), "resid_v": r.resid_v})
@@ -1328,14 +1324,15 @@ pub async fn probe<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result
 /// each named so nothing takes it for the stored one.
 pub fn estimates(pooled: Option<&Rise>, r_price: Option<f64>) -> Map<String, Value> {
     let mut m = Map::new();
+    let fit = Scatter::Once(pooled.map_or(1, |p| p.pairs));
     if let Some(p) = pooled {
         let src = "part A's period-pair fit with an intercept over the bursts not first after a sign change and not set aside (a first window current over 12 % off its sign and level's others), nominal scales, the rotor free: planning grade, never a set field nor a rules input";
-        m.insert("r_plan_free_ohm".into(), est(p.r_ohm, "ohm", src));
-        m.insert("l_plan_free_h".into(), est(p.l_h, "H", src));
-        m.insert("tau_plan_free_s".into(), est(p.tau_s, "s", src));
+        m.insert("r_plan_free_ohm".into(), estimate(p.r_ohm, fit, "ohm", src));
+        m.insert("l_plan_free_h".into(), estimate(p.l_h, fit, "H", src));
+        m.insert("tau_plan_free_s".into(), estimate(p.tau_s, fit, "s", src));
     }
     if let Some(r) = r_price {
-        m.insert("r_price_ohm".into(), est(r, "ohm", PRICE_WORDS));
+        m.insert("r_price_ohm".into(), estimate(r, fit, "ohm", PRICE_WORDS));
     }
     m
 }

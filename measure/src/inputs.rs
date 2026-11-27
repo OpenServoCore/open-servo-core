@@ -6,7 +6,8 @@ use serde::Deserialize;
 use crate::{Board, Nameplate, Policy};
 
 /// A value with its band, its unit and where it came from. A rule is
-/// evaluated again at each end of every banded input it reads.
+/// evaluated again at each end of every banded input it reads. `sd` is one
+/// sd over the `n` repeats it was taken over; `n` none is a nominal value.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Quantity {
     pub value: f64,
@@ -14,6 +15,10 @@ pub struct Quantity {
     pub lo: Option<f64>,
     #[serde(default)]
     pub hi: Option<f64>,
+    #[serde(default)]
+    pub sd: Option<f64>,
+    #[serde(default)]
+    pub n: Option<u32>,
     pub unit: String,
     pub source: Source,
 }

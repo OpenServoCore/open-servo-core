@@ -106,6 +106,8 @@ pub fn thermal_of(h: &HeatModel, profile: &Path, sha1: &str) -> ThermalInputs {
             value,
             lo: None,
             hi: None,
+            sd: None,
+            n: None,
             unit: unit.into(),
             source: Source {
                 file: profile.display().to_string(),

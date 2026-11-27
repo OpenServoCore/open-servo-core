@@ -37,8 +37,8 @@ use super::drive::{self, Deadmen, Drive, End, priced_s};
 use super::probe::FromRest;
 use super::stops::{self, FromProbe};
 use super::{
-    Check, Ended, Halt, Rig, Taken, Verdict, interrupted, keep_all, mode_value, read_u16, rest,
-    seek, write,
+    Check, Ended, Halt, Rig, Scatter, Taken, Verdict, estimate, interrupted, keep_all, mode_value,
+    read_u16, rest, seek, write,
 };
 use crate::Board;
 use crate::capture::meta;
@@ -445,6 +445,8 @@ pub fn r_q12(
         value,
         lo: None,
         hi: None,
+        sd: None,
+        n: None,
         unit: unit.into(),
         source: Source::default(),
     };
@@ -1118,11 +1120,17 @@ fn result_json(
     let s = &b.scales;
     let w = judged.and_then(|j| j.window.as_ref().ok());
     let mut estimates = Map::new();
-    if let Some(w) = w {
+    if let (Some(w), Some(j)) = (w, judged) {
+        let gated = j.onsets.iter().filter(|o| o.ok).count();
         estimates.insert(
             "g_window_ms".into(),
-            json!({"value": w.g_over_mean_s * 1e3, "lo": null, "hi": null, "unit": "mS",
-                   "source": "open-loop onsets from rest, the window-term notebook's fit on the nominal scales, the board's terminal offset and its edge lags: g plus the crest sample's lateness past the window's middle, the term over the period's mean"}),
+            estimate(
+                w.g_over_mean_s * 1e3,
+                w.g_sd_s
+                    .map_or(Scatter::Once(gated), |sd| Scatter::of(sd * 1e3, gated)),
+                "mS",
+                "open-loop onsets from rest, the window-term notebook's fit on the nominal scales, the board's terminal offset and its edge lags: g plus the crest sample's lateness past the window's middle, the term over the period's mean; its sd the bootstrap sd of g over the gated onsets",
+            ),
         );
     }
     let fit = w.map_or(Value::Null, |w| {

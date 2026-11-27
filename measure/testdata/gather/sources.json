@@ -1,27 +1,29 @@
 {
- "method": "rest.json, probe.json and stops.json copied from one accepted `osc-ident step stops` run on the bench servo (mg90-d on dev-v006), probe.json and stops.json unchanged; window.json and spins.json are synthetic, the window and spins steps' estimate shape carrying the record's values",
+ "method": "rest.json, probe.json and stops.json copied from one accepted `osc-ident step stops` run on the bench servo (mg90-d on dev-v006), each estimate given the sd and n keys the steps now write by hand; window.json and spins.json are synthetic, the window and spins steps' estimate shape carrying the record's values",
  "files": {
   "rest.json": {
    "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/rest.json",
-   "sha1": "b465af70b34d330b22d2135606926b20fc3d3fb1",
+   "sha1": "bb1110aef06fffc43f56b42c8abd39bde375fb27",
    "sha1_as_run": "527928b2900a33475dc826e258e72534d8f69623",
-   "edited": "one key added by hand after counts_per_a_nominal: rail_counts_per_v_nominal 248.24242424242425, what Sense::rail_counts_per_v gives on the run's sense block (vdd_mv 3300, vbus_div_top_ohm 6400, vbus_div_bot_ohm 1600, captures/rest/01-rest.meta.json); the run's rest step predates the key"
+   "edited": "one key added by hand after counts_per_a_nominal: rail_counts_per_v_nominal 248.24242424242425, what Sense::rail_counts_per_v gives on the run's sense block (vdd_mv 3300, vbus_div_top_ohm 6400, vbus_div_bot_ohm 1600, captures/rest/01-rest.meta.json); the run's rest step predates the key; the estimates' sd and n keys added by hand, as the step writes them now: n the rest row's 20000 rows (vdd_v 1), no sd"
   },
   "probe.json": {
    "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/probe.json",
-   "sha1": "5d094b0fc7fc8ed83374bb843ad6c566dfb56904"
+   "sha1": "42136d9db797057adca18caa6df631873e1e6810",
+   "edited": "the estimates' sd and n keys added by hand, as the step writes them now: n part_a.pooled.pairs, no sd"
   },
   "stops.json": {
    "from": "osc-dev-v006-bringup/captures/ident-stops/run6/runs/00000000ffffffff76e5bc220ef6abcd/20261123T113358Z/results/stops.json",
-   "sha1": "38ddfcdc4b5a3ed49fdc4d5d893d031f6a270ecf"
+   "sha1": "3a3462b0382b9b386a5b9bb63463f579ca3bf092",
+   "edited": "the estimates' sd and n keys added by hand, as the step writes them now: sd the median times sd_share and n of the file's seated.all (r_ohm, r_25c_ohm, l_h; tau n alone), the band one sd either side"
   },
   "window.json": {
-   "from": "synthetic, from measure/testdata/mg90-d/measured.json",
-   "sha1": "e95c1fea119f5e1c927ab4ea67948745da7e71b9"
+   "from": "synthetic, from measure/testdata/mg90-d/measured.json; sd half the record's band, n the notebook's 105 onsets",
+   "sha1": "68df2d69b846e64aa64d822e5344d5c11596adbc"
   },
   "spins.json": {
-   "from": "synthetic, from measure/testdata/mg90-d/measured.json",
-   "sha1": "039309c0cb5612fd61de9442e71f4ab5551bb371"
+   "from": "synthetic, from measure/testdata/mg90-d/measured.json; sd half the record's band, n a bench run's counts (captures/dsr-gate: 12 coasts, 6 run-ups, 6 line points)",
+   "sha1": "b9e4b433370c1f786fb2a0653ce5c78755c33557"
   },
   "table.json": {
    "from": "synthetic, the table step's result shape: points_by_page the pooled fit (postable::fit_pooled, SMOOTH_WEIGHT) of testdata/table pass-1 and pass-2 (bringup capture A's 20 % passes) compensated with the slots of record, pinned to the stops 107 and 3729 of stops.json rounded inward; slots of record (testdata/mg90-d/wide-codes.json); scale from the ripple, the nameplate's brushes 2 x rotor_segments 3 and its gear_ratio",

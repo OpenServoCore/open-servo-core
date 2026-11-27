@@ -159,6 +159,41 @@ impl Check {
     }
 }
 
+/// What a step's estimate stands on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scatter {
+    /// One sd over `n` repeats.
+    Sd(f64, usize),
+    /// `n` readings, no spread over repeats: one hold, one fit.
+    Once(usize),
+    /// No reading: a part's or a design value.
+    Nominal,
+}
+
+impl Scatter {
+    /// The sd over `n` repeats where it is a number, else `n` readings.
+    pub fn of(sd: f64, n: usize) -> Self {
+        if sd.is_finite() && n > 1 {
+            Scatter::Sd(sd, n)
+        } else {
+            Scatter::Once(n)
+        }
+    }
+}
+
+/// A step's estimate: its value, its sd and repeat count, the band one sd
+/// either side as the notebooks' `results.mean_sd` writes it, its unit and
+/// source. `n` null is a nominal value.
+pub fn estimate(value: f64, s: Scatter, unit: &str, source: &str) -> Value {
+    let (sd, n) = match s {
+        Scatter::Sd(sd, n) => (Some(sd), Some(n)),
+        Scatter::Once(n) => (None, Some(n)),
+        Scatter::Nominal => (None, None),
+    };
+    json!({"value": value, "sd": sd, "n": n, "lo": sd.map(|sd| value - sd),
+           "hi": sd.map(|sd| value + sd), "unit": unit, "source": source})
+}
+
 pub(crate) fn interrupted(stop: &AtomicBool) -> Result<(), Halt> {
     if stop.load(Ordering::SeqCst) {
         Err(Halt::Interrupted)
@@ -373,4 +408,28 @@ pub(crate) fn mode_value(d: &Descriptor, name: &str) -> Result<u8, Halt> {
         .find(|v| v.name == name)
         .map(|v| v.value)
         .ok_or_else(|| Halt::Refused(format!("the servo's mode names no {name}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Scatter, estimate};
+    use serde_json::json;
+
+    #[test]
+    fn an_estimate_says_its_sd_and_n_or_that_it_is_nominal() {
+        assert_eq!(
+            estimate(2.0, Scatter::of(0.5, 4), "V", "s"),
+            json!({"value": 2.0, "sd": 0.5, "n": 4, "lo": 1.5, "hi": 2.5, "unit": "V", "source": "s"})
+        );
+        assert_eq!(Scatter::of(f64::NAN, 3), Scatter::Once(3));
+        assert_eq!(Scatter::of(0.5, 1), Scatter::Once(1));
+        assert_eq!(
+            estimate(2.0, Scatter::Once(1), "V", "s"),
+            json!({"value": 2.0, "sd": null, "n": 1, "lo": null, "hi": null, "unit": "V", "source": "s"})
+        );
+        assert_eq!(
+            estimate(2.0, Scatter::Nominal, "V", "s")["n"],
+            serde_json::Value::Null
+        );
+    }
 }

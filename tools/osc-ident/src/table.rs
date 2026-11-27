@@ -1,9 +1,8 @@
 //! `table`: the position table the servo holds, read as `install` and
-//! `check` read it, and graded; nothing written. The graph and the grade say
-//! what the table does to the pot's local gain, interval by interval, with
-//! an advisory letter from nb09's numbers: the firmware judges physics only
-//! (identity at the stops, monotone, under 16x), quality is the operator's
-//! call.
+//! `check` read it; nothing written. The numbers say what the table does to
+//! the pot's local gain, interval by interval and over nb09's windows: the
+//! firmware judges physics only (identity at the stops, monotone, under
+//! 16x), quality is the user's call.
 
 use std::fmt::Write;
 
@@ -20,40 +19,8 @@ use serde::Serialize;
 /// The firmware's shape bound: an interval's gain under this many times
 /// nominal (`pos_lut::validate`).
 const GAIN_MAX: i32 = 16;
-/// Local gain is judged over this many raw counts, as nb09 did.
+/// Local gain is read over this many raw counts, as nb09 did.
 const WINDOW: u16 = 25;
-/// Grade A: every window within this band of nominal (the mg90-a grid
-/// table: 0.61..1.88x; nb09's dense curve 0.53..1.53x).
-const SMOOTH: (f64, f64) = (0.5, 2.0);
-/// Grade B: within this band (the SG90 class swings ~6x across 20 mV bins).
-const COARSE: (f64, f64) = (0.25, 4.0);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum Grade {
-    A,
-    B,
-    C,
-}
-
-impl Grade {
-    fn text(self) -> &'static str {
-        match self {
-            Grade::A => "smooth",
-            Grade::B => "coarse track",
-            Grade::C => "suspect",
-        }
-    }
-
-    fn of(min: f64, max: f64) -> Grade {
-        if min >= SMOOTH.0 && max <= SMOOTH.1 {
-            Grade::A
-        } else if min >= COARSE.0 && max <= COARSE.1 {
-            Grade::B
-        } else {
-            Grade::C
-        }
-    }
-}
 
 /// One interval's gain, x nominal, at the raw count it starts.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -79,7 +46,6 @@ pub struct Report {
     pub steepest: Option<Interval>,
     pub shallowest: Option<Interval>,
     pub windows: Option<Windows>,
-    pub grade: Option<Grade>,
     /// The intervals the table touches: first nonzero point - 1 ..= last.
     #[serde(skip)]
     band: Option<(usize, usize)>,
@@ -100,7 +66,6 @@ impl Report {
             steepest: None,
             shallowest: None,
             windows: None,
-            grade: None,
             band: None,
         };
         let (Some(&first), Some(&last)) = (nonzero.first(), nonzero.last()) else {
@@ -138,7 +103,6 @@ impl Report {
             min,
             max,
         });
-        r.grade = Some(Grade::of(min, max));
         r
     }
 
@@ -156,8 +120,8 @@ impl Report {
             }
             None => s.push_str("calibration points: none nonzero (identity)\n"),
         }
-        if let (Some(steep), Some(shallow), Some(w), Some(g)) =
-            (self.steepest, self.shallowest, self.windows, self.grade)
+        if let (Some(steep), Some(shallow), Some(w)) =
+            (self.steepest, self.shallowest, self.windows)
         {
             let at = |i: Interval| format!("{}..{}", i.raw, i.raw + GRID as u16);
             let _ = writeln!(
@@ -177,15 +141,6 @@ impl Report {
                 raw(band1 + 1),
                 w.min,
                 w.max
-            );
-            let _ = writeln!(
-                s,
-                "grade {g:?} ({}): every window within {}..{}x is A, within {}..{}x is B, beyond is C; advisory only, the firmware accepts anything under 16x and the graph decides",
-                g.text(),
-                SMOOTH.0,
-                SMOOTH.1,
-                COARSE.0,
-                COARSE.1
             );
         }
         s
@@ -268,7 +223,7 @@ impl Table {
         })
     }
 
-    /// State, stops, nonzero calibration points, grade, and why the
+    /// State, stops, nonzero calibration points, local gains, and why the
     /// firmware would refuse the points against the servo's stops.
     pub fn text(&self) -> String {
         let state = match pos_lut::state::name(self.lut.state) {
@@ -357,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn mg90_a_grades_a_with_the_notebooks_numbers() {
+    fn mg90_a_reads_the_notebooks_numbers() {
         let (k, stops) = mg90_a();
         let r = Report::new(&k, stops);
         assert_eq!(r.stops, [209, 3849]);
@@ -370,7 +325,6 @@ mod tests {
         assert_eq!(w.counts, 25);
         assert!((w.min - 0.6125).abs() < 1e-9, "{}", w.min);
         assert!((w.max - 1.8825).abs() < 1e-9, "{}", w.max);
-        assert_eq!(r.grade, Some(Grade::A));
         let text = r.summary();
         assert!(
             text.contains("calibration points: 185 nonzero at raw 560..3504, |c| up to 71"),
@@ -384,27 +338,22 @@ mod tests {
             text.contains("25-count windows over raw 544..3520: 0.61x .. 1.88x"),
             "{text}"
         );
-        assert!(text.contains("grade A (smooth)"), "{text}");
+        assert!(!text.contains("grade"), "{text}");
         let json = serde_json::to_value(&r).unwrap();
-        assert_eq!(json["grade"], "A");
+        assert!(json.get("grade").is_none());
         assert_eq!(json["windows"]["counts"], 25);
         assert!(json.get("band").is_none());
     }
 
     #[test]
-    fn identity_has_nothing_to_grade() {
+    fn identity_has_no_gains_to_read() {
         let r = Report::new(&IDENTITY, (209, 3849));
-        assert_eq!((r.nonzero, r.span, r.grade), (0, None, None));
+        assert_eq!((r.nonzero, r.span, r.windows), (0, None, None));
         assert!(r.summary().contains("none nonzero (identity)"));
     }
 
     #[test]
-    fn grade_thresholds() {
-        assert_eq!(Grade::of(0.5, 2.0), Grade::A);
-        assert_eq!(Grade::of(0.49, 2.0), Grade::B);
-        assert_eq!(Grade::of(0.5, 4.0), Grade::B);
-        assert_eq!(Grade::of(0.24, 1.0), Grade::C);
-        assert_eq!(Grade::of(1.0, 4.01), Grade::C);
+    fn a_coarse_step_reads_its_steepest_interval() {
         // a coarse SG90-class step: one 6x interval
         let mut k = IDENTITY;
         k[100] = 80;
@@ -412,8 +361,9 @@ mod tests {
             k[i] = c * 15;
         }
         let r = Report::new(&k, (5, 4095));
-        assert_eq!(r.steepest.unwrap().raw, 1584);
-        assert_eq!(r.grade, Some(Grade::C));
+        let steep = r.steepest.unwrap();
+        assert_eq!(steep.raw, 1584);
+        assert!((steep.gain - 6.0).abs() < 1e-9, "{}", steep.gain);
     }
 
     #[test]
@@ -499,7 +449,6 @@ mod tests {
             "steepest",
             "shallowest",
             "windows",
-            "grade",
         ] {
             assert!(shown.get(key).is_some(), "{key} in {shown}");
         }

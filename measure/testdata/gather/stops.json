@@ -8,22 +8,28 @@
   "estimates": {
     "r_seated_ohm": {
       "value": 4.187787930981532,
-      "lo": null,
-      "hi": null,
+      "lo": 3.9175906825843394,
+      "hi": 4.457985179378724,
+      "sd": 0.2701972483971926,
+      "n": 20,
       "unit": "ohm",
       "source": "seated bursts from rest at both stops, 25 % and 40 % of the rail into the stop, the period-pair fit with no intercept per burst on the nominal scales and the board's edge lags, the first of each group and any whose first window current is over 12 % off its group's others set aside, the median over the kept"
     },
     "r_seated_25c_ohm": {
       "value": 4.253202474347905,
-      "lo": null,
-      "hi": null,
+      "lo": 3.9787589146270728,
+      "hi": 4.527646034068737,
+      "sd": 0.27444355972083223,
+      "n": 20,
       "unit": "ohm",
       "source": "the seated R per burst through copper's slope (the kernel's ALPHA_Q26) from the board NTC read before its seat's bursts, the median"
     },
     "l_seated_h": {
       "value": 0.0008534002319061124,
-      "lo": null,
-      "hi": null,
+      "lo": 0.0008126464878628306,
+      "hi": 0.0008941539759493942,
+      "sd": 4.075374404328177e-05,
+      "n": 20,
       "unit": "H",
       "source": "seated bursts from rest at both stops, 25 % and 40 % of the rail into the stop, the period-pair fit with no intercept per burst on the nominal scales and the board's edge lags, the first of each group and any whose first window current is over 12 % off its group's others set aside, the median over the kept"
     },
@@ -31,6 +37,8 @@
       "value": 0.00020749696303936548,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20,
       "unit": "s",
       "source": "seated bursts from rest at both stops, 25 % and 40 % of the rail into the stop, the period-pair fit with no intercept per burst on the nominal scales and the board's edge lags, the first of each group and any whose first window current is over 12 % off its group's others set aside, the median over the kept"
     }
@@ -321,7 +329,7 @@
       "lo": 0.00018941461154555142,
       "hi": 0.0003130587359620843
     },
-    "pwm_period_s": 0.000049999999999999996,
+    "pwm_period_s": 4.9999999999999996e-05,
     "ntc_c_by_seat": [
       21.085935179399826,
       21.107506429246882,
@@ -662,7 +670,7 @@
         "pos": 106,
         "ntc_c": 21.021229168843888,
         "permit": false,
-        "after_a": 0.00006107616347677314,
+        "after_a": 6.107616347677314e-05,
         "i_first_a": 0.05980381569266873,
         "move_share": 0.02189686351239173,
         "r_ohm": 4.241667121569467,

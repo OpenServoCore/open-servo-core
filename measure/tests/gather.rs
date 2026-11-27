@@ -382,6 +382,109 @@ fn the_r_band_is_built_from_the_spreads_the_stops_step_read() {
     assert_eq!((lo, hi), (None, None));
 }
 
+/// Each gathered term carries one sd over the repeats it was taken over
+/// and their count, `n` alone where nothing repeated, or neither where it
+/// is the board's nominal value; its line says the same.
+#[test]
+fn each_term_carries_its_sd_and_n_or_is_nominal() {
+    let g = gather::gather(&run(), &nameplate()).expect("gathers");
+    let m = &g.measured;
+    let sd_n = |k: &str| (m[k]["sd"].as_f64(), m[k]["n"].as_u64());
+    let (sd, n) = sd_n("r_ohm");
+    assert_eq!(n, Some(20), "the kept seated bursts");
+    assert!((sd.unwrap() - 0.06452027964411844 * 4.187787930981532).abs() < 1e-12);
+    let (sd, n) = sd_n("l_mh");
+    assert_eq!(n, Some(20));
+    assert!((sd.unwrap() - 0.04775454999848808 * 0.8534002319061124).abs() < 1e-9);
+    assert_eq!(sd_n("ke_v_s_per_rad").1, Some(12), "the gated coasts");
+    assert_eq!(sd_n("j_kg_m2").1, Some(6), "the run-ups");
+    assert_eq!(sd_n("g_window_ms").1, Some(105), "the gated onsets");
+    assert_eq!(sd_n("r_board_c").1, Some(4), "the seats");
+    assert_eq!(sd_n("pot_rest_sd_counts"), (None, Some(20000)), "one hold");
+    for k in [
+        "current_counts_per_a",
+        "terminal_counts_per_v",
+        "rail_counts_per_v",
+        "rail_offset_counts",
+    ] {
+        assert_eq!(sd_n(k), (None, None), "{k} is nominal");
+        assert!(m[k].get("n").is_some_and(Value::is_null), "{k}: n null");
+    }
+    assert_eq!(m["stops"]["n"], 2, "the seats a stop");
+    let line = |k: &str| {
+        g.lines
+            .iter()
+            .find(|l| l.starts_with(&format!("{k} ")))
+            .unwrap_or_else(|| panic!("{k} line"))
+            .clone()
+    };
+    assert!(
+        line("r_ohm").starts_with("r_ohm 4.1878 ohm +/- 0.2702, n 20: "),
+        "{}",
+        line("r_ohm")
+    );
+    assert!(line("current_counts_per_a").contains("counts/A nominal: "));
+    assert!(line("pot_rest_sd_counts").contains("counts n 20000: "));
+    assert!(line("stops").contains("+/- 1.4142 / 1.0607, n 2: "));
+    let measured: Measured = serde_json::from_str(&gather::render(m)).expect("loads");
+    let ke = measured.ke_v_s_per_rad.expect("ke");
+    assert_eq!((ke.n, ke.sd.is_some()), (Some(12), true));
+}
+
+/// A derived field's spread is half its band over its value: the rules
+/// on the gathered inputs give each field bound from a banded input its
+/// `spread_pct`, and the set's lines say it, `nominal` with no band.
+#[test]
+fn a_set_field_carries_its_spread_as_a_share_of_its_value() {
+    let g = gather::gather(&run(), &nameplate()).expect("gathers");
+    let measured: Measured = serde_json::from_str(&gather::render(&g.measured)).expect("loads");
+    let cpd = measured.table.as_ref().unwrap().counts_per_deg;
+    let table = TableFile::parse(&gather::render(&g.table)).expect("table");
+    let mut inputs = inputs_of(measured);
+    inputs.measured.speed_kp_verified = Some(speed_loop::starting_gain(&inputs).expect("gain"));
+    let (file, _) = set::from_rules(
+        &build(&inputs),
+        &FromRules {
+            pair: "mg90-d__osc-dev-v006",
+            nameplate: &inputs.nameplate,
+            counts_per_deg: Some(cpd),
+            table: Some(&table),
+            slots: None,
+            files: &[],
+        },
+        &descriptor(),
+    )
+    .expect("a set");
+    let doc: Value = serde_json::from_str(&file.render()).expect("json");
+    let f = &doc["fields"]["r_q12"];
+    let band = (
+        f["band"][0].as_i64().unwrap(),
+        f["band"][1].as_i64().unwrap(),
+    );
+    let v = f["value"].as_i64().unwrap();
+    let want = (5000.0 * (band.1 - band.0) as f64 / v as f64).round() / 100.0;
+    assert_eq!(f["spread_pct"].as_f64(), Some(want), "{f}");
+    assert!(want > 0.0);
+    assert!(doc["fields"]["oc_trip_counts"].get("spread_pct").is_none());
+    let terms = file.terms();
+    let said = |k: &str| {
+        terms
+            .iter()
+            .find(|l| l.starts_with(&format!("{k} ")))
+            .unwrap_or_else(|| panic!("{k}"))
+            .clone()
+    };
+    assert_eq!(
+        said("r_q12"),
+        format!("r_q12 {v} vcounts/ccount +/- {want:.2} %")
+    );
+    assert!(
+        said("oc_trip_counts").ends_with(" nominal"),
+        "{}",
+        said("oc_trip_counts")
+    );
+}
+
 /// The friction line is the cruise step's where the run holds it
 /// accepted, a line saying so; else the spins', a line saying why and
 /// that the spin line reads high at low speed. A cruise on another sense

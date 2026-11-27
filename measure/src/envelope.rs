@@ -163,6 +163,8 @@ impl HeatModel {
             value,
             lo: None,
             hi: None,
+            sd: None,
+            n: None,
             unit: unit.into(),
             source: Source::default(),
         };

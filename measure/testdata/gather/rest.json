@@ -9,6 +9,8 @@
       "value": 1205.9102,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "counts",
       "source": "rest row current_raw, torque off"
     },
@@ -16,6 +18,8 @@
       "value": 1211.6823,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "counts",
       "source": "raw row current_raw, torque on at zero duty"
     },
@@ -23,6 +27,8 @@
       "value": 1.0726598338938858,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "counts",
       "source": "the larger of the two rows, the VDD frame ripple out"
     },
@@ -30,6 +36,8 @@
       "value": 772.85045,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "counts",
       "source": "raw row vmotor_a, torque on"
     },
@@ -37,6 +45,8 @@
       "value": 771.77395,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "counts",
       "source": "raw row vmotor_b, torque on"
     },
@@ -44,6 +54,8 @@
       "value": 1.2576436825890236,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "counts",
       "source": "rest row pos, torque off, the VDD frame ripple out"
     },
@@ -51,6 +63,8 @@
       "value": 4.714170204762811,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "mV",
       "source": "rest row vref_raw folded by tick modulo 16, reported, not judged"
     },
@@ -58,6 +72,8 @@
       "value": 3.291764471010697,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 1,
       "unit": "V",
       "source": "rest row vref_raw, the 1.2 V reference"
     },
@@ -65,6 +81,8 @@
       "value": 4.9781898168470455,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "V",
       "source": "rest row vbus_raw through the rail divider, the measured supply"
     },
@@ -72,6 +90,8 @@
       "value": 5.2281898168470455,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "V",
       "source": "the rail and the board's input drop"
     },
@@ -79,6 +99,8 @@
       "value": 21.11885990249789,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "C",
       "source": "rest row ntc_raw through the part's nominal beta"
     },
@@ -86,6 +108,8 @@
       "value": 2.601210977851111,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 20000,
       "unit": "A",
       "source": "the awake zero to the converter's top, nominal counts per A"
     }

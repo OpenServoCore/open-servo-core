@@ -10,6 +10,8 @@
       "value": 4.450407499050414,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 112,
       "unit": "ohm",
       "source": "part A's period-pair fit with an intercept over the bursts not first after a sign change and not set aside (a first window current over 12 % off its sign and level's others), nominal scales, the rotor free: planning grade, never a set field nor a rules input"
     },
@@ -17,6 +19,8 @@
       "value": 0.0008508577264517764,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 112,
       "unit": "H",
       "source": "part A's period-pair fit with an intercept over the bursts not first after a sign change and not set aside (a first window current over 12 % off its sign and level's others), nominal scales, the rotor free: planning grade, never a set field nor a rules input"
     },
@@ -24,6 +28,8 @@
       "value": 0.00019118647598749655,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 112,
       "unit": "s",
       "source": "part A's period-pair fit with an intercept over the bursts not first after a sign change and not set aside (a first window current over 12 % off its sign and level's others), nominal scales, the rotor free: planning grade, never a set field nor a rules input"
     },
@@ -31,6 +37,8 @@
       "value": 4.005366749145373,
       "lo": null,
       "hi": null,
+      "sd": null,
+      "n": 112,
       "unit": "ohm",
       "source": "planning R (free rotor, x0.9 for pricing), not the stored R"
     }
@@ -71,7 +79,7 @@
             -0.010178421803802129,
             -0.0066732939000996305,
             0.02974345554032798,
-            0.00007020737522300813,
+            7.020737522300813e-05,
             0.010600873977482217,
             0.004402085379168419,
             -0.006744214469122434,
@@ -744,7 +752,7 @@
       ]
     },
     "bridge_fault": false,
-    "pwm_period_s": 0.000049999999999999996,
+    "pwm_period_s": 4.9999999999999996e-05,
     "scales": {
       "counts_per_a": 1108.4520727272727,
       "terminal_counts_per_v": 248.24242424242425,
