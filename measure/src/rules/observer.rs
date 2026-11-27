@@ -7,9 +7,20 @@ use osc_servo_core::regions::config::POT_COUNTS_PER_A_MAX;
 
 use super::units::{b_gain, medium_hz};
 use super::{Ctx, Fail, Format, Kind, Rule, get, table};
+use crate::policy::Observer;
+
+/// The policy's bandwidth, Hz.
+fn observer_hz(c: &mut Ctx) -> Result<f64, Fail> {
+    match get!(c, policy, observer)? {
+        Observer::Hz(hz) => Ok(hz),
+        Observer::MultipleOfMechanicalCorner(_) => Err(Fail::refused(
+            "policy.observer is a multiple of the mechanical corner, which this tool does not bind yet",
+        )),
+    }
+}
 
 fn pole(c: &mut Ctx) -> Result<f64, Fail> {
-    let hz = get!(c, policy, observer_hz)?;
+    let hz = observer_hz(c)?;
     Ok((-2.0 * core::f64::consts::PI * hz / medium_hz(c)).exp())
 }
 

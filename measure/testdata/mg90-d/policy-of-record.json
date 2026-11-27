@@ -29,5 +29,5 @@
   },
   "sensor": {"pot_jump": {"counts": 64}, "bad_samples": 4},
   "behavior": {"openloop_zero_brake": "off", "brush_term": "off"},
-  "source": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/policy.json", "sha1": "b12f35ed8cb4b322d6c57b8678065cf674464283"}
+  "source": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/policy.json", "sha1": "06b6b91594ab18cfb66f785e121c975196361bce"}
 }

@@ -1,6 +1,6 @@
 //! The set file against the notebooks' own: the set of record of mg90-d
 //! (`testdata/mg90-d/constants.json`, a byte copy of the notebooks'
-//! `mg90-d__dev-v006-2A-D.constants.json` at sha1 c94abef7) loads, hashes
+//! `mg90-d__dev-v006-2A-D.constants.json` at sha1 debfe7ec) loads, hashes
 //! and renders back byte for byte.
 
 mod common;
@@ -15,7 +15,7 @@ fn a_notebook_set_file_loads_and_round_trips() {
     let file = text("testdata/mg90-d/constants.json");
     assert_eq!(
         file_sha1(file.as_bytes()),
-        "c94abef7c670b1a3c3d5732374e72d478953c931"
+        "debfe7ecaafae6ec1d7f17dccfcb99ee51a5a430"
     );
     let set = record();
     assert_eq!(set.render(), file, "rendered back byte for byte");
