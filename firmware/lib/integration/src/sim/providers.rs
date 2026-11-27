@@ -63,6 +63,11 @@ impl RingState {
         self.written.get()
     }
 
+    /// Where the next received byte lands.
+    pub fn cursor(&self) -> u16 {
+        self.cursor.get()
+    }
+
     /// Empty the ring: the DMA state a reset leaves behind, so a rebuilt
     /// driver's framer (cursor 0) agrees with the buffer.
     pub fn reset(&self) {
@@ -153,14 +158,34 @@ impl BaudState {
     }
 }
 
-/// Break stamps latched at each detector trigger, the servo's local clock
-/// truncated to 16 bits as the chip's timer latches it.
+/// Break stamps latched at each detector trigger: the RX ring's position in
+/// traffic, and through a CAL train the servo's local clock truncated to
+/// 16 bits as the chip's timer latches it.
 #[derive(Default)]
-pub struct StampState(RefCell<VecDeque<u16>>);
+pub struct StampState(RefCell<Latch>);
+
+#[derive(Default)]
+pub struct Latch {
+    times: VecDeque<u16>,
+    newest: Option<u16>,
+    timing: bool,
+}
 
 impl StampState {
-    pub fn latch(&self, stamp: u16) {
-        self.0.borrow_mut().push_back(stamp);
+    /// One detector trigger: whichever of `time` and `position` the latch
+    /// reads now.
+    pub fn latch(&self, time: u16, position: u16) {
+        let mut l = self.0.borrow_mut();
+        if l.timing {
+            l.times.push_back(time);
+        } else {
+            l.newest = Some(position);
+        }
+    }
+
+    /// The latch as bringup arms it: on the ring, nothing latched.
+    fn reset(&self) {
+        *self.0.borrow_mut() = Latch::default();
     }
 }
 
@@ -590,17 +615,30 @@ pub struct SimStamps(Rc<StampState>);
 
 impl SimStamps {
     pub fn new(state: Rc<StampState>) -> Self {
+        state.reset();
         Self(state)
     }
 }
 
 impl BreakStamps for SimStamps {
-    fn take(&mut self) -> Option<u16> {
-        self.0.0.borrow_mut().pop_front()
+    fn newest(&mut self) -> Option<u16> {
+        self.0.0.borrow().newest
     }
 
-    fn clear(&mut self) {
-        self.0.0.borrow_mut().clear();
+    fn take(&mut self) -> Option<u16> {
+        self.0.0.borrow_mut().times.pop_front()
+    }
+
+    fn time(&mut self) {
+        let mut l = self.0.0.borrow_mut();
+        l.timing = true;
+        l.times.clear();
+    }
+
+    fn position(&mut self) {
+        let mut l = self.0.0.borrow_mut();
+        l.timing = false;
+        l.newest = None;
     }
 }
 

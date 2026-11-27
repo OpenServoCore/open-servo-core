@@ -519,10 +519,12 @@ fn sweep<P: Pipe>(c: &mut Client<P>, rates: &[BaudRate]) -> Result<Vec<(BaudRate
         c.host_baud(rate)?;
         out.push((rate, c.discover()?));
     }
-    // Faster-rate frames a slower servo cannot frame stay queued as junk until
-    // a real frame at its rate, which they then hold past its window. Silence
-    // does not clear them (the protocol sec 3.4 pacing rule's quiet is not
-    // enough); one throwaway frame and a pause do.
+    // Faster-rate frames a slower servo cannot frame ring at it as junk, which
+    // the next real frame's break ends (protocol sec 3.4): the first unicast
+    // after a sweep answers on time. One throwaway frame and a pause per found
+    // rate stay as margin, not correctness: a servo without the break stamp
+    // holds that junk past the first unicast's window, and silence alone does
+    // not clear it.
     if rates.len() > 1 {
         let mut p = [0u8; 2 + UID_LEN];
         let n = build::mgmt_enum(&mut p, 0, &[0u8; UID_LEN]).expect("root enum fits");
@@ -538,9 +540,9 @@ fn sweep<P: Pipe>(c: &mut Client<P>, rates: &[BaudRate]) -> Result<Vec<(BaudRate
     Ok(out)
 }
 
-/// 2.5x the 20 ms bound on that hold (an adapter window that long answered
-/// every first unicast after a sweep), so the throwaway's late reply lands in
-/// the pause.
+/// 2.5x the 20 ms bound on that hold at a servo without the break stamp (an
+/// adapter window that long answered every first unicast after a sweep), so
+/// the throwaway's late reply lands in the pause.
 const SWEEP_FLUSH_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
 
 fn rescue(set_baud: Option<&str>, do_save: bool) -> Result<()> {

@@ -296,8 +296,9 @@ pub const MAX_PAYLOAD: u8 = 252;
 /// control kernel above the bus, up to the published capacity.
 pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 1000;
 
-/// sec 3.4: byte-times of ring silence that kill a parked partial frame -- the
-/// fallback death authority servo-side, and the host's post-garble pacing gap.
+/// sec 3.4: byte-times of ring silence that kill a parked partial frame with
+/// no break behind it, servo-side. Hosts pace one after garble as margin for
+/// servos without the break stamp; a later break ends the junk on its own.
 pub const STARVE_HORIZON_BYTE_TIMES: u32 = 64;
 
 /// sec 9.1 rescue pulse: the servo sampler declares rescue at this much

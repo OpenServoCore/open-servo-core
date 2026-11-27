@@ -33,6 +33,7 @@ hot=(
     __qingke_rt_SysTick
     limits::floor_log2
     ServoBus::drive_framer
+    ServoBus::serve_break
     ServoBus::route_frame
     ServoBus::route_chain
     ServoBus::crc_gate

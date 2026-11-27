@@ -11,7 +11,9 @@
 //! arriving (the frontier). A frame with bytes beyond its end is complete
 //! by construction and resolves with zero clock involvement, however late
 //! or coalesced the FE wakes were (position from the stream: the ring is the
-//! queue).
+//! queue). The one position not read from data is a break's own, latched by
+//! hardware at the detector's fire: it only ends a frontier a newer break
+//! lies inside (a frame never straddles a break), and never accepts one.
 //!
 //! TIME is derived the way position is (the same stream-derivation extended
 //! to the clock): every aim and estimate is `now + missing*tpb` -- the bytes
@@ -23,6 +25,7 @@
 //! into a frame's own tail.
 
 use osc_protocol::frame::Header;
+use osc_protocol::wire;
 
 use super::ring_wrap;
 use crate::traits::bus::tick_reached;
@@ -55,6 +58,9 @@ pub enum FramerOut {
     /// A whole frame is in the ring (geometry pre-validated); the ladder has
     /// advanced past it. Resolve again for the next backlog frame.
     Frame(FrameSpan),
+    /// The frontier died at a newer break inside it; resolve again for the
+    /// candidate one byte in.
+    Cut,
 }
 
 /// The frontier milestones a frame's header asks for. The composite decides
@@ -166,6 +172,9 @@ pub struct Framer {
     hunting: bool,
     frontier: Frontier,
     drops: u32,
+    /// The newest break's hardware ring position, as the last wake read it
+    /// (sec 5.3); dropped once the ladder has passed it.
+    stamp: Option<u16>,
 }
 
 impl Framer {
@@ -175,7 +184,14 @@ impl Framer {
             hunting: false,
             frontier: Frontier::idle(),
             drops: 0,
+            stamp: None,
         }
+    }
+
+    /// A break wake read the newest break's hardware ring position: the
+    /// `0x00`'s index, or one past it when the byte drained first.
+    pub fn stamped(&mut self, stamp: Option<u16>) {
+        self.stamp = stamp;
     }
 
     /// Frames dropped at transport layer 1 (sec 5.3), monotonic.
@@ -233,14 +249,20 @@ impl Framer {
         self.hunting
     }
 
-    /// The next frame has begun: its break byte is ringed at the anchor
-    /// (position from the stream, with every earlier frame settled),
-    /// however many data bytes have ringed behind it.
-    pub fn break_ringed(&self, ring: &[u8], cursor: u16) -> bool {
+    /// Whether a break wake's service must look again, in byte-times
+    /// beyond one: `Some(0)` while the next frame's break byte has not rung
+    /// at the anchor (position from the stream, with every earlier frame
+    /// settled), `Some(1)` while the newest break's stamp sits at the
+    /// cursor with the ladder more than a byte behind it: its `0x00`, or the
+    /// ID that follows the break's tail when the byte drained first, has not
+    /// rung, so whether it ends the frontier is not yet in the ring.
+    pub fn relook(&self, ring: &[u8], cursor: u16) -> Option<u32> {
         let len = ring.len();
-        len != 0
-            && dist(cursor, self.anchor, len) != 0
-            && ring[self.anchor as usize] == BREAK_RING_BYTE
+        let ahead = dist(cursor, self.anchor, len);
+        if len == 0 || ahead == 0 || ring[ring_wrap(self.anchor as usize, len)] != BREAK_RING_BYTE {
+            return Some(0);
+        }
+        (self.stamp == Some(cursor) && ahead > 1).then_some(1)
     }
 
     /// One resolution step against the CURRENT ring state (data-first from
@@ -279,7 +301,7 @@ impl Framer {
                 break;
             }
             // Skipping noise sacrifices nothing: scan silently. Sacrificed
-            // FRAMES are counted where they die (giveup / crc_fail).
+            // FRAMES are counted where they die (giveup / straddle / crc_fail).
             self.hunting = true;
             self.anchor = ring_wrap(a + 1, len) as u16;
             self.frontier = Frontier::idle();
@@ -290,6 +312,29 @@ impl Framer {
             budget -= 1;
             if budget == 0 {
                 return FramerOut::Wait(now); // pend-on-past re-entry
+            }
+        }
+        // A frame never straddles a break (sec 5.3): a frontier a newer
+        // break lies inside is junk, dead with no horizon, and the hunt goes
+        // on one byte in. A whole frame is the CRC's alone.
+        let a = self.anchor as usize;
+        let whole = received >= HEADER_SPAN_BYTES
+            && received >= wire::footprint(ring[ring_wrap(a + 2, len)]) as u16;
+        if !whole && let Some(s) = self.stamp {
+            // A stamp one past the anchor over a data byte is the
+            // candidate's own break, latched after its `0x00` drained (an ID
+            // is never `0x00`); one at the cursor has not rung.
+            let off = dist(s, a as u16, len);
+            if off > received {
+                self.stamp = None; // behind the ladder: spent
+            } else if off != 0
+                && off < received
+                && (off != 1 || ring[ring_wrap(s as usize, len)] == BREAK_RING_BYTE)
+            {
+                self.sacrifice();
+                self.anchor = ring_wrap(a + 1, len) as u16;
+                self.frontier = Frontier::idle();
+                return FramerOut::Cut;
             }
         }
         if received < HEADER_SPAN_BYTES {
@@ -362,10 +407,10 @@ impl Framer {
     /// Progress-track the frontier and wake at the sooner of the aim and the
     /// giveup horizon. Aims are fresh projections from live ring state, so a
     /// stalled wire self-paces at byte-time intervals with no recheck
-    /// bookkeeping; the horizon is the sole death authority -- a wire that
-    /// makes NO progress for [`STARVE_GIVEUP_BYTES`] declares the partial
-    /// dead regardless of the aim (a junk header's far-future footprint must
-    /// not park the ladder).
+    /// bookkeeping; with no break behind the frontier, the horizon is the
+    /// sole death authority: a wire that makes NO progress for
+    /// [`STARVE_GIVEUP_BYTES`] declares the partial dead regardless of the
+    /// aim (a junk header's far-future footprint must not park the ladder).
     fn wait(&mut self, aim: u32, now: u32, tpb: u32, cursor: u16, len: usize) -> FramerOut {
         let giveup_span = STARVE_GIVEUP_BYTES.wrapping_mul(tpb);
         let stalled = self.frontier.observed && cursor == self.frontier.seen;
@@ -385,23 +430,27 @@ impl Framer {
         FramerOut::Wait(sooner)
     }
 
-    /// The candidate is dead -- the starve horizon expired (transmitter died,
-    /// or a junk header trapped the ladder): sacrifice one byte and resume
-    /// the hunt -- a real frame inside the span is still found, CRC-gated
-    /// (sec 3.3). Data is the only death authority (the fault contract): a
-    /// phantom born from garble dies by footprint-fill CRC or by starve,
-    /// never by fault position.
+    /// The candidate is dead - the starve horizon expired (transmitter died,
+    /// or a junk header trapped the ladder with no break behind it): sacrifice
+    /// one byte and resume the hunt - a real frame inside the span is still
+    /// found, CRC-gated (sec 3.3). The fault contract: a phantom born from
+    /// garble dies by footprint-fill CRC, by a later break's hardware
+    /// position, or by starve, never by a wake's.
     fn give_up(&mut self, len: usize, now: u32) -> FramerOut {
-        // A partial that will never complete is sacrificed -- count it, once
-        // per recovery episode (junk candidates inside an episode also give
-        // up, but they were never frames).
+        self.sacrifice();
+        self.anchor = ring_wrap(self.anchor as usize + 1, len) as u16;
+        self.frontier = Frontier::idle();
+        FramerOut::Wait(now) // pend-on-past re-entry: hunt continues
+    }
+
+    /// A partial that will never complete is sacrificed - count it, once
+    /// per recovery episode (junk candidates inside an episode die too, but
+    /// they were never frames).
+    fn sacrifice(&mut self) {
         if !self.hunting {
             self.drops = self.drops.wrapping_add(1);
             self.hunting = true;
         }
-        self.anchor = ring_wrap(self.anchor as usize + 1, len) as u16;
-        self.frontier = Frontier::idle();
-        FramerOut::Wait(now) // pend-on-past re-entry: hunt continues
     }
 }
 
@@ -412,3 +461,6 @@ impl Framer {
 fn dist(cursor: u16, anchor: u16, len: usize) -> u16 {
     ring_wrap((cursor as usize + len) - anchor as usize, len) as u16
 }
+
+#[cfg(test)]
+mod tests;

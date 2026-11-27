@@ -470,44 +470,47 @@ impl Body {
 
 /// Longest body of each bus vector at [`BUDGET_BAUD_HZ`], any traffic.
 ///
-/// M: r3-refill, each body's net maximum over every window, a 1M window's
-/// Deadline less [`spin_extra`], 3 runs: BreakWake 978 (TEL stepping),
-/// TxDone 305 (stepping), Deadline 5953 (the TEL chunk WRITE, arm10); the
-/// Deadline with [`BUS_TOUCH`] and [`COMMIT_TOUCH`], which the measurement
-/// predates.
+/// M, each body's net maximum over every gated window, a 1M window's
+/// Deadline less [`spin_extra`]. BreakWake and Deadline: fixa-step1, 2 runs
+/// of the budgets hardware test on a `scripts/build-image.sh` bench image
+/// of the break-stamp framer, BreakWake 1052 (TEL still and TEL stepping),
+/// Deadline 5635 (the goal WRITE at 1M); the measured Deadline holds
+/// [`BUS_TOUCH`] and [`COMMIT_TOUCH`]. TxDone: r3-refill, 3 runs, 305
+/// (stepping).
 pub const fn body(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 1026,
+        Body::BreakWake => 1100,
         Body::TxDone => 353,
-        Body::Deadline => 6132 + BUS_TOUCH + COMMIT_TOUCH,
+        Body::Deadline => 5805,
     }
 }
 
 /// The same bodies' mean over a window.
 ///
-/// M: r3-refill, each body's largest window mean (at least
-/// [`MEAN_MIN_BODIES`] bodies), the same spin rule, 3 runs: BreakWake 756
-/// (arm10), Deadline 4496 (the goal WRITE). TxDone 261 (ping 1M) on a
-/// build-image.sh image: cargo hashes the path of every path dependency
+/// M, each body's largest window mean (at least [`MEAN_MIN_BODIES`]
+/// bodies), the same spin rule. BreakWake and Deadline: fixa-step1, the
+/// same 2 runs, BreakWake 854 (openloop), Deadline 4249 (the goal WRITE),
+/// the touches held as the maximum's. TxDone: r3-refill, 261 (ping 1M) on
+/// a build-image.sh image: cargo hashes the path of every path dependency
 /// into the crate metadata, so the release layout links the ISR bodies in
 /// another function order than a checkout build, and the checkout's 243
-/// (stepping) does not transfer. The Deadline with the touches, as the
-/// maximum's.
+/// (stepping) does not transfer.
 pub const fn body_mean(b: Body) -> u32 {
     match b {
-        Body::BreakWake => 794,
+        Body::BreakWake => 897,
         Body::TxDone => 275,
-        Body::Deadline => 4721 + BUS_TOUCH + COMMIT_TOUCH,
+        Body::Deadline => 4462,
     }
 }
 
-/// E, on every frame dispatched to this servo and on the Deadline body that
-/// dispatches it, maximum and mean: the bus generation the dead-man reloads
+/// E, on every frame dispatched to this servo, maximum and mean (the
+/// measured Deadline body holds it): the bus generation the dead-man reloads
 /// on (`Shared::bus_touch`). Priced on the executed path of the release
 /// image with the fetch model ([`REFRESH`]): the dispatch's arms join at
 /// one exit for it, a taken transfer and the base address's reload, 10,
 /// and the touch, 10.5; COMMIT_TOUCH, a commit's own touch, 10.5 on its
-/// longest path. Plus 10%, rounded up. The bench must refill the rows.
+/// longest path. Plus 10%, rounded up. The bench must refill the frame
+/// rows.
 pub const BUS_TOUCH: u32 = 23;
 pub const COMMIT_TOUCH: u32 = 12;
 

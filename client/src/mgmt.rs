@@ -35,13 +35,14 @@ fn matches_prefix(uid: &[u8; UID_LEN], prefix: &[u8; UID_LEN], len: u8) -> bool 
     (0..len).all(|k| bit(uid, k) == bit(prefix, k))
 }
 
-/// Post-collision bus recovery (protocol sec 8 host-pacing rule): after a
-/// probe drew superimposed replies, every servo's resolver may be parked on
-/// the wire-AND junk; the engine paces exactly one starve horizon, which is
-/// a boundary race against the servos' own horizon (fleet-measured: probes
-/// fired straight through it get framing-dropped). The horizon at the
-/// slowest rate is 64 byte-times at 0.5M = 1.28 ms; the extra margin is
-/// fleet-measured (2 ms still lost occasional subtrees mid-walk).
+/// The pause after a probe that drew superimposed replies. The wire-AND
+/// junk dies at the next probe's break (protocol sec 3.4), so this is
+/// margin, not correctness: a servo without the break stamp parks on the
+/// junk until its starve horizon, which the engine's one-horizon pace races
+/// (fleet-measured: probes fired straight through it get framing-dropped).
+/// The horizon at the slowest rate is 64 byte-times at 0.5M = 1.28 ms; the
+/// extra margin is fleet-measured (2 ms still lost occasional subtrees
+/// mid-walk).
 const PROBE_SETTLE: std::time::Duration = std::time::Duration::from_millis(5);
 
 async fn settle<P: Pipe>(c: &mut Client<P>) {

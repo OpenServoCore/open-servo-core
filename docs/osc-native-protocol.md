@@ -252,10 +252,15 @@ error character [F4].
 
 The contract, binding on every implementation of this protocol:
 
-- **Positions come from ring data only** (§4.1). A break event MUST NOT
-  be assigned a position; no frame may be dropped, killed, or rejected
-  on wake evidence. Data is the only death authority: CRC verdicts,
-  geometry checks, and the starve horizon.
+- **Positions come from ring data** (§4.1), with one exception: a
+  break's position MAY be taken from a hardware latch at the detector's
+  fire (the ring position the detector's DMA stamps), never from a
+  wake's service time. Such a position may only END candidates - a frame
+  never straddles a break, so a candidate a later break lies inside is
+  junk - and never accepts one: the CRC remains the sole acceptance
+  authority. No frame may be dropped, killed, or rejected on wake
+  evidence. The death authorities are CRC verdicts, geometry checks, a
+  later break's latched position, and the starve horizon.
 - **Times come from data-cadence projections only** (`now + missing
   byte-times`). A wake's arrival time MUST NOT enter any timing grid.
   (The sec 9.3 CAL ruler times breaks too, by the detector's hardware
@@ -263,21 +268,23 @@ The contract, binding on every implementation of this protocol:
 - **Breaks are not countable events.** Service can lag the wire, and N
   breaks can coalesce into one service; all break handling MUST be
   idempotent, and freshness (did bytes ring since the last service?)
-  MUST be derived from the ring, never assumed.
+  MUST be derived from the ring, never assumed. Latched positions
+  coalesce too: only the newest is used, and it is enough.
 
-**The accepted limitation** (the price of break-framed delimiting):
-garble that forms a plausible frame header parks the resolver until data
-kills it — footprint-fill CRC (≤ 258 bytes) or the starve horizon (64
-byte-times of ring silence), whichever comes first, per plausible junk
-anchor. The length qualification shrinks that surface: only garble
-containing a dominant span past 9.5 bit-times (slower-baud traffic heard
-at a faster-configured servo) can wake the resolver into junk at all -
-noise and faster-baud garble ring silently and cost nothing until the
-next real break [F17]. **Host pacing rule:** after traffic a servo may
-have received as garble (wrong-baud probing, bus glitches), allow one
-starve horizon of bus silence before expecting crisp turnarounds; under
-continuous zero-gap retries, replies can lag by up to the parked span
-until a gap appears.
+Bytes before a break never delay the frame after it: whatever they
+spelt (noise, faster- or slower-baud garble, another protocol's traffic,
+a frame cut mid-send), the break's latched position ends every candidate
+that straddles it, so the next frame is answered as fast as on a quiet
+bus. **The accepted limitation** (the price of break-framed delimiting)
+is what no later break bounds: a plausible junk header with nothing but
+silence behind it, or garble inside a frame, parks the resolver until
+data kills it - footprint-fill CRC (≤ 258 bytes) or the starve horizon
+(64 byte-times of ring silence), whichever comes first - or until the
+next break arrives. The length qualification shrinks the wake surface:
+only garble containing a dominant span past 9.5 bit-times (slower-baud
+traffic heard at a faster-configured servo) can wake the resolver into
+junk at all - noise and faster-baud garble ring silently and cost
+nothing until the next real break [F17].
 
 ## 4. Servo RX/TX paths
 
@@ -1776,10 +1783,6 @@ ALERT bit on that servo's status (§5.3).
   through, stretched by its kernel: osc-host allows 5 ms,
   `CHAIN_READY_LAG_US`, sized from the V006 budget table at its moving
   kernel load).
-- Fault pacing (§3.4): after traffic a servo may have received as garble
-  (wrong-baud probes, glitches), allow one starve horizon (64
-  byte-times) of bus silence before expecting crisp turnarounds — don't
-  hammer zero-gap retries into a parked resolver.
 
 ## 9. Management plane (MGMT sub-ops)
 

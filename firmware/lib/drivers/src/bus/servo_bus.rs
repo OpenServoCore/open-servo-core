@@ -81,8 +81,9 @@ pub struct ServoBus<P: Providers> {
     // Deadline mux (sec 4.1/sec 6/sec 9.1): the soonest live slot arms the compare.
     framer_at: Option<u32>,
     chain_at: Option<u32>,
-    // A break wake serviced before its 0x00 rang: the wake's entry tick,
-    // re-inspected one byte-time on (the third mux slot).
+    // A break wake serviced before its 0x00 rang, or before its stamp can
+    // be judged: re-inspected one byte-time past this tick (the third mux
+    // slot).
     unringed: Option<u32>,
     // Clock discipline (sec 9.3): MGMT CAL + trim loop.
     clock: ClockDiscipline,
@@ -199,10 +200,15 @@ impl<P: Providers> ServoBus<P> {
                     self.framer_at = Some(t);
                 }
             }
+            if !self.clock.cal_active() {
+                self.stamps.position();
+            }
             self.arm_deadline();
             return;
         }
-        self.unringed = (!self.serve_break(d)).then_some(now);
+        self.unringed = self
+            .serve_break(d)
+            .map(|late| now.wrapping_add(late * self.tpb));
         // sec 6: a break while we hold a staged chain slot means the
         // predecessor is alive -- suspend its reclaim window while the
         // frame plays out.
@@ -212,7 +218,9 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Drop the staged or streaming reply; a TEL arm waiting on its
-    /// release goes with it.
+    /// release goes with it. Out of line: a cold path, ~130 B at each of
+    /// its four callers inlined.
+    #[cfg_attr(target_arch = "riscv32", inline(never))]
     fn abort_reply(&mut self) {
         if self.tx.abort()
             && let Some(t) = self.tel.as_mut()
@@ -254,15 +262,17 @@ impl<P: Providers> ServoBus<P> {
     /// in the ring and onto this break's byte once it has rung, however
     /// late the wake was served - a service lagging a byte-time or more
     /// finds data bytes newest (DES pin `lagged_break_wakes_resolve_every_frame`).
-    /// Returns false while this wake's byte has not rung: the caller
-    /// re-inspects one byte-time on.
-    fn serve_break<D: Dispatch>(&mut self, d: &mut D) -> bool {
+    /// The newest break's stamp ends a frontier it lies inside (sec 5.3).
+    /// Returns `Some` while this wake's byte, or the byte that judges its
+    /// stamp, has not rung: the caller re-inspects that many byte-times
+    /// past one.
+    #[rustc_align(4)]
+    fn serve_break<D: Dispatch>(&mut self, d: &mut D) -> Option<u32> {
+        self.framer.stamped(self.stamps.newest());
         self.drive_framer(d);
-        let ringed = self
-            .framer
-            .break_ringed(self.ring.bytes(), self.ring.cursor());
+        let late = self.framer.relook(self.ring.bytes(), self.ring.cursor());
         self.kill_stale_reply();
-        ringed
+        late
     }
 
     /// Wire safety: a staged, not-yet-streaming reply must never fire into
@@ -313,7 +323,10 @@ impl<P: Providers> ServoBus<P> {
                 // means the train died. Abandon it (no decision) and let
                 // the framer hunt whatever actually arrived. A dangling
                 // announce (train never started) dies here too.
-                self.clock.abandon_cal();
+                if self.clock.cal_active() {
+                    self.clock.abandon_cal();
+                    self.stamps.position();
+                }
                 self.drive_framer(d);
             }
             if due(now, self.chain_at) {

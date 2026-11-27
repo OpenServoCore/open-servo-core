@@ -22,7 +22,8 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 ///                                    of the other; at HIGH it would lose
 ///                                    every beat of a snapshot copy
 ///   HIGH      CH1 ADC              -- motor kernel; wins HIGH ties (lowest #)
-///             CH2 TIM2_UP stamp    -- one halfword of TIM3's count into the
+///             CH2 TIM2_UP stamp    -- one halfword of the RX ring's count
+///                                    (TIM3's through a CAL train) into the
 ///                                    break-stamp ring per detector overflow.
 ///                                    Below RX by priority, so it never
 ///                                    defers a byte; above CH4/CH6 by number,
@@ -194,6 +195,14 @@ pub fn is_ht_flag(ch: Channel) -> bool {
 pub fn is_tc_flag(ch: Channel) -> bool {
     let n = (ch as u8 - 1) as usize;
     DMA1.isr().read().tcif(n)
+}
+
+/// The remaining-count register's address, a DMA source like any
+/// peripheral register.
+#[inline]
+pub fn count_addr(ch: Channel) -> u32 {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ch(n).ndtr().as_ptr() as u32
 }
 
 #[inline]
