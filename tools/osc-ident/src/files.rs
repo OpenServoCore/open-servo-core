@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use osc_ident_inputs::migrate::{ProfileIn, slug};
+use osc_ident_inputs::profile::HeatModel;
+use osc_ident_inputs::{Resolved, read as file_of, resolve, upgrade};
 use osc_measure::inputs::{Measured, ShelfRecord, ThermalInputs, Tuning};
 use osc_measure::set::{SetFile, TableFile, file_sha1};
 use osc_measure::sink::{Sink, SinkError};
-use osc_measure::{Board, Inputs, Nameplate, Policy};
+use osc_measure::{Board, Inputs, Nameplate, Quantity, Source};
 use serde::de::DeserializeOwned;
 
 /// The dev board's description: the board a set is built for unless
@@ -25,17 +28,91 @@ pub fn board(path: Option<&Path>) -> Result<Board> {
     }
 }
 
-/// A user's nameplate file: parsed, then refused naming the first value it
-/// lacks ([`Nameplate::check_user`]).
-pub fn nameplate(path: &Path) -> Result<Nameplate> {
-    nameplate_of(path, &read(path)?)
+/// A profile (or a version 0 nameplate) and the policy beside it as the
+/// rules read them, with a line for each file read at an older version.
+pub struct Loaded {
+    pub resolved: Resolved,
+    pub notes: Vec<String>,
 }
 
-fn nameplate_of(path: &Path, bytes: &[u8]) -> Result<Nameplate> {
-    let np: Nameplate = json(path, bytes)?;
-    np.check_user()
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    Ok(np)
+/// The profile file and the policy file, either at version 0 or 1, resolved
+/// over the board's facts; refused naming the files and the first value the
+/// run cannot use. With no policy, a version 0 nameplate carries the three
+/// choices the steps read.
+pub fn inputs(profile: &Path, policy: Option<&Path>, board: &Board) -> Result<Loaded> {
+    let policy = match policy {
+        Some(p) => Some((p, read(p)?)),
+        None => None,
+    };
+    inputs_of(profile, &read(profile)?, policy, board)
+}
+
+fn utf8<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a str> {
+    std::str::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
+}
+
+fn inputs_of(
+    profile: &Path,
+    bytes: &[u8],
+    policy: Option<(&Path, Vec<u8>)>,
+    board: &Board,
+) -> Result<Loaded> {
+    let p = file_of::profile(utf8(profile, bytes)?)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", profile.display()))?;
+    let named = match &policy {
+        Some((q, _)) => format!("{} with {}", profile.display(), q.display()),
+        None => profile.display().to_string(),
+    };
+    let q = match &policy {
+        Some((path, bytes)) => {
+            let key = path
+                .file_stem()
+                .map_or("policy".into(), |s| slug(&s.to_string_lossy()));
+            Some(
+                file_of::policy(utf8(path, bytes)?, &key)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
+            )
+        }
+        None if matches!(p, ProfileIn::V1(_)) => bail!(
+            "{named}: a version 1 profile holds no run voltage or derates, which are the tuning policy's: name the policy with --policy"
+        ),
+        None => None,
+    };
+    let u = upgrade(p, q).map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
+    let resolved = resolve(&u.profile, &u.policy, Some(&board.facts()))
+        .map_err(|e| anyhow::anyhow!("{named}: {e}"))?;
+    let notes = u.notes.iter().map(|n| format!("{named}: {n}")).collect();
+    Ok(Loaded { resolved, notes })
+}
+
+/// The steps' nameplate: the profile resolved with the policy, where one is
+/// named.
+pub fn nameplate(path: &Path, policy: Option<&Path>) -> Result<Nameplate> {
+    Ok(inputs(path, policy, &board(None)?)?.resolved.nameplate)
+}
+
+/// The profile's heat model as the rules read thermal values, each named
+/// by its key in the profile file.
+pub fn thermal_of(h: &HeatModel, profile: &Path, sha1: &str) -> ThermalInputs {
+    let q = |value: f64, unit: &str, key: &str| {
+        Some(Quantity {
+            value,
+            lo: None,
+            hi: None,
+            unit: unit.into(),
+            source: Source {
+                file: profile.display().to_string(),
+                key: key.into(),
+                sha1: Some(sha1.into()),
+            },
+        })
+    };
+    ThermalInputs {
+        fast_tau_s: q(h.fast_tau_s, "s", "thermal.fast_tau_s"),
+        fast_gain_c_per_w: q(h.fast_gain_c_per_w, "C/W", "thermal.fast_gain_c_per_w"),
+        slow_tau_s: q(h.slow_tau_s, "s", "thermal.slow_tau_s"),
+        slow_gain_c_per_w: q(h.slow_gain_c_per_w, "C/W", "thermal.slow_gain_c_per_w"),
+    }
 }
 
 pub fn read(path: &Path) -> Result<Vec<u8>> {
@@ -89,11 +166,14 @@ pub struct RulesInputs {
     pub table: Option<TableFile>,
     pub slots: Option<Vec<u8>>,
     pub files: Vec<(String, String, String)>,
+    /// A line for each input file read at an older version.
+    pub notes: Vec<String>,
 }
 
-/// `dir` holds `measured.json`, `nameplate.json` and `policy.json`, and
-/// where they exist `thermal.json`, `shelf.json`, `pos_lut.json` (the
-/// table, a notebooks table file) and `wide-codes.json` (the slots).
+/// `dir` holds `measured.json`, `nameplate.json` (the servo profile, either
+/// version) and `policy.json`, and where they exist `thermal.json` (else the
+/// profile's heat model), `shelf.json`, `pos_lut.json` (the table, a
+/// notebooks table file) and `wide-codes.json` (the slots).
 pub fn rules_inputs(
     dir: &Path,
     policy: Option<&Path>,
@@ -122,18 +202,24 @@ pub fn rules_inputs(
     if let Some(b) = take("shelf", p.clone())? {
         measured.shelf = Some(json::<ShelfRecord>(&p, &b)?);
     }
-    let p = dir.join("nameplate.json");
-    let nameplate = nameplate_of(&p, &need("nameplate", take("nameplate", p.clone())?, &p)?)?;
-    let p = policy.map_or_else(|| dir.join("policy.json"), Path::to_path_buf);
-    let policy: Policy = json(&p, &need("policy", take("policy", p.clone())?, &p)?)?;
+    let np_path = dir.join("nameplate.json");
+    let np_bytes = need("nameplate", take("nameplate", np_path.clone())?, &np_path)?;
+    let q = policy.map_or_else(|| dir.join("policy.json"), Path::to_path_buf);
+    let q_bytes = need("policy", take("policy", q.clone())?, &q)?;
     let p = dir.join("thermal.json");
-    let thermal: ThermalInputs = match take("thermal", p.clone())? {
-        Some(b) => json(&p, &b)?,
-        None => ThermalInputs::default(),
-    };
+    let thermal_bytes = take("thermal", p.clone())?;
     let board: Board = match board {
         Some(p) => json(p, &need("board", take("board", p.to_path_buf())?, p)?)?,
         None => serde_json::from_str(DEV_BOARD).context("the built-in board")?,
+    };
+    let Loaded {
+        resolved: loaded,
+        notes,
+    } = inputs_of(&np_path, &np_bytes, Some((&q, q_bytes)), &board)?;
+    let thermal: ThermalInputs = match (thermal_bytes, &loaded.thermal) {
+        (Some(b), _) => json(&p, &b)?,
+        (None, Some(h)) => thermal_of(h, &np_path, &file_sha1(&np_bytes)),
+        (None, None) => ThermalInputs::default(),
     };
     let p = dir.join("pos_lut.json");
     let table = match take("pos_table", p.clone())? {
@@ -152,14 +238,15 @@ pub fn rules_inputs(
         inputs: Inputs {
             board,
             measured,
-            nameplate,
-            policy,
+            nameplate: loaded.nameplate,
+            policy: loaded.policy,
             thermal,
             tuning: Tuning::default(),
         },
         table,
         slots,
         files,
+        notes,
     })
 }
 
@@ -244,13 +331,15 @@ mod tests {
     fn a_nameplate_stating_ripple_per_rev_is_refused() {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../measure/testdata/mg90-d/nameplate.json");
-        let np = nameplate(&p).expect("the bench nameplate loads");
+        let np = nameplate(&p, None).expect("the bench nameplate loads");
         assert_eq!(np.events_per_rev(), Ok(6));
         let mut v: serde_json::Value =
             serde_json::from_slice(&read(&p).expect("read")).expect("json");
         v["ripple_per_rev"] = 6.into();
-        let why = nameplate_of(&p, &serde_json::to_vec(&v).expect("bytes"))
-            .expect_err("refused")
+        let board = board(None).expect("board");
+        let why = inputs_of(&p, &serde_json::to_vec(&v).expect("bytes"), None, &board)
+            .err()
+            .expect("refused")
             .to_string();
         assert_eq!(
             why,

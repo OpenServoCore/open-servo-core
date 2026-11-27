@@ -746,8 +746,17 @@ dependencies = [
  "ctrlc",
  "futures-lite",
  "osc-client",
+ "osc-ident-inputs",
  "osc-measure",
  "osc-servo-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "osc-ident-inputs"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]
@@ -779,6 +788,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "osc-client",
+ "osc-ident-inputs",
  "osc-protocol",
  "osc-servo-core",
  "serde",

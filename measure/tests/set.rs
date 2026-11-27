@@ -6,6 +6,7 @@
 mod common;
 
 use common::{inputs, record, rules_set, table, text};
+use osc_ident_inputs::{read, resolve, upgrade};
 use osc_measure::set::{SetFile, file_sha1, points_sha1};
 
 #[test]
@@ -66,4 +67,40 @@ fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
     }
     assert_eq!(ours.table(), rec.table());
     assert_eq!(ours.slots(), rec.slots());
+}
+
+/// The record's servo profile and its own policy, every rule-bound value in
+/// its fixed form, over the record's measured inputs give the set the
+/// version 0 files give, byte for byte; so do the version 0 files read
+/// through the migration. The overcurrent window comes from the board.
+#[test]
+fn the_record_inputs_as_profile_and_policy_bind_the_record_set() {
+    let v0 = rules_set(&inputs(), &table()).render();
+    let pairs = [
+        (
+            "testdata/mg90-d/profile.json",
+            "testdata/mg90-d/policy-of-record.json",
+        ),
+        (
+            "testdata/mg90-d/nameplate.json",
+            "testdata/mg90-d/policy.json",
+        ),
+    ];
+    for (profile, policy) in pairs {
+        let mut i = inputs();
+        let u = upgrade(
+            read::profile(&text(profile)).expect("profile"),
+            Some(read::policy(&text(policy), "policy").expect("policy")),
+        )
+        .expect("upgrades");
+        let r = resolve(&u.profile, &u.policy, Some(&i.board.facts())).expect("resolves");
+        assert_eq!(r.policy.oc_trip_samples, Some(8.0));
+        i.nameplate = r.nameplate;
+        i.policy = r.policy;
+        assert_eq!(
+            rules_set(&i, &table()).render(),
+            v0,
+            "{profile} with {policy}"
+        );
+    }
 }

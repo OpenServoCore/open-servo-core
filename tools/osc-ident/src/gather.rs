@@ -8,8 +8,8 @@ use osc_measure::gather::{
     self, CRUISE_RESULT, RunResults, SPINS_RESULT, StepResult, TABLE_RESULT, WINDOW_RESULT,
 };
 use osc_measure::inputs::ThermalInputs;
+use osc_measure::sink::Sink;
 use osc_measure::steps::{probe, rest, stops};
-use osc_measure::{Policy, sink::Sink};
 use serde::de::DeserializeOwned;
 
 use crate::files::{self, DirSink};
@@ -31,8 +31,10 @@ fn parsed<T: DeserializeOwned>(p: &Path, bytes: &[u8]) -> Result<T> {
 
 /// The inputs folder `out` from the run folder `run`: `measured.json`, the
 /// table `pos_lut.json` (the table step's, else straight), the table
-/// step's slots `wide-codes.json` where it ran, and the nameplate, the
-/// policy and the thermal values as given. The lines it prints.
+/// step's slots `wide-codes.json` where it ran, the profile (as
+/// `nameplate.json`), the policy and the thermal values as given, and
+/// `resolved.json`, the policy's values as this run resolved them. The
+/// lines it prints.
 pub fn gather(
     run: &Path,
     nameplate: &Path,
@@ -40,10 +42,14 @@ pub fn gather(
     policy: &Path,
     out: &Path,
 ) -> Result<Vec<String>> {
-    let np = files::nameplate(nameplate)?;
+    let loaded = files::inputs(nameplate, Some(policy), &files::board(None)?)?;
+    let np = &loaded.resolved.nameplate;
     let np_bytes = files::read(nameplate)?;
     let policy_bytes = files::read(policy)?;
-    parsed::<Policy>(policy, &policy_bytes)?;
+    let mut resolved = serde_json::to_value(&loaded.resolved.report)?;
+    resolved["notes"] = loaded.notes.clone().into();
+    let mut resolved = serde_json::to_vec_pretty(&resolved)?;
+    resolved.push(b'\n');
     let thermal_bytes = match thermal {
         Some(p) => {
             let b = files::read(p)?;
@@ -61,7 +67,7 @@ pub fn gather(
         cruise: result(run, CRUISE_RESULT)?,
         table: result(run, TABLE_RESULT)?,
     };
-    let g = gather::gather(&results, &np).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let g = gather::gather(&results, np).map_err(|e| anyhow::anyhow!("{e}"))?;
     if out.exists() {
         bail!(
             "{} exists: an inputs folder is gathered into a new one",
@@ -75,11 +81,13 @@ pub fn gather(
     sink.write("pos_lut.json", gather::render(&g.table).as_bytes())?;
     sink.write("nameplate.json", &np_bytes)?;
     sink.write("policy.json", &policy_bytes)?;
+    sink.write("resolved.json", &resolved)?;
     let mut wrote = vec![
         "measured.json",
         "pos_lut.json",
         "nameplate.json",
         "policy.json",
+        "resolved.json",
     ];
     if let Some(w) = &g.wide_codes {
         sink.write("wide-codes.json", gather::render(w).as_bytes())?;
@@ -89,7 +97,8 @@ pub fn gather(
         sink.write("thermal.json", b)?;
         wrote.push("thermal.json");
     }
-    let mut lines = g.lines;
+    let mut lines = loaded.notes;
+    lines.extend(g.lines);
     lines.push(format!("wrote {}: {}", out.display(), wrote.join(", ")));
     Ok(lines)
 }
@@ -144,10 +153,31 @@ mod tests {
             "pos_lut.json",
             "nameplate.json",
             "policy.json",
+            "resolved.json",
             "thermal.json",
         ] {
             assert!(out.join(f).exists(), "{f}");
         }
+        let resolved: serde_json::Value =
+            serde_json::from_slice(&files::read(&out.join("resolved.json")).expect("read"))
+                .expect("json");
+        assert_eq!(resolved["profile"]["key"], "mg90-d");
+        assert!(resolved["notes"][0].as_str().unwrap().contains("version 0"));
+        let line = |field: &str| {
+            resolved["fields"]
+                .as_array()
+                .expect("fields")
+                .iter()
+                .find(|l| l["field"] == field)
+                .cloned()
+                .unwrap_or_else(|| panic!("{field}"))
+        };
+        assert_eq!(line("motion.move_speed")["value"], 200.0);
+        assert_eq!(
+            line("protection.speed_ceiling")["value"],
+            serde_json::json!([2, 3])
+        );
+        assert_eq!(line("oc_trip")["form"], "board");
         assert!(
             gather(
                 &run,
@@ -179,6 +209,45 @@ mod tests {
         .expect_err("refused");
         assert!(format!("{e:#}").contains("osc-ident step stops"), "{e:#}");
         assert!(!dir.join("other").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The record's version 1 profile and policy gather into an inputs
+    /// folder whose set is the version 0 files' own, every field byte for
+    /// byte; only the input files' names and hashes differ.
+    #[test]
+    fn a_version_1_profile_and_policy_gather_to_the_version_0_set() {
+        let dir = scratch("gather-v1");
+        let run = dir.join("run");
+        std::fs::create_dir_all(run.join("results")).expect("mkdir");
+        for f in ["rest", "probe", "stops", "window", "spins"] {
+            std::fs::copy(
+                testdata(&format!("gather/{f}.json")),
+                run.join(format!("results/{f}.json")),
+            )
+            .expect("copy");
+        }
+        let mut sets = Vec::new();
+        for (profile, policy, name) in [
+            ("mg90-d/nameplate.json", "mg90-d/policy.json", "v0"),
+            ("mg90-d/profile.json", "mg90-d/policy-of-record.json", "v1"),
+        ] {
+            let out = dir.join(name);
+            gather(
+                &run,
+                &testdata(profile),
+                Some(&testdata("mg90-d/thermal.json")),
+                &testdata(policy),
+                &out,
+            )
+            .expect("gathers");
+            let set_out = dir.join(format!("{name}.json"));
+            crate::rules(&out, None, None, Some("pair"), &set_out).expect("rules");
+            let text = files::set(&set_out).expect("set").render();
+            let fields = text.split_once("\n \"fields\": {").expect("fields").1;
+            sets.push(fields.to_string());
+        }
+        assert_eq!(sets[0], sets[1]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

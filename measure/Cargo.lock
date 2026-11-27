@@ -477,6 +477,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "osc-ident-inputs"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "osc-integration"
 version = "0.0.0"
 dependencies = [
@@ -504,6 +512,7 @@ dependencies = [
  "flate2",
  "futures-lite",
  "osc-client",
+ "osc-ident-inputs",
  "osc-protocol",
  "osc-servo-core",
  "serde",

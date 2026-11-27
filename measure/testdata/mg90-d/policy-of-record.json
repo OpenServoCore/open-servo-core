@@ -1,0 +1,33 @@
+{
+  "schema": "osc.tuning-policy/1",
+  "key": "mg90-d-record",
+  "label": "The set of record's own policy, every rule-bound value fixed",
+  "protection": {
+    "run_v": 5.0,
+    "speed_ceiling": {"share_of_no_load": [2, 3]},
+    "current_limit": {"share_of_stall": 0.8},
+    "yield": {"ma": 350.0},
+    "stall_release": {"ma": 126.0},
+    "stall_response": "yield",
+    "stall_time_ms": 500.0,
+    "stall_speed": {"deg_s": 24.84},
+    "cutoff_c": 90.0,
+    "position_error": {"deg": 9.9, "time_ms": 100.0},
+    "duty_max_share": 1.0,
+    "collision_trip": "off"
+  },
+  "motion": {"move_speed": {"deg_s": 200.0}, "speed_up": {"deg_s2": 4000.0}, "soft_margin_share": 0.0625, "angle_cw_stop_deg": 0.0},
+  "loops": {
+    "current_loop": {"hz": 1000.0},
+    "observer": {"hz": 15.0},
+    "velocity_em_ratio": 1.34,
+    "velocity_zero_ratio": 3.0,
+    "velocity_shelf_margin_db": 1.0,
+    "position_split": 7.104,
+    "hold_band_noise_multiple": 2.5,
+    "hold_band_floor_counts": 4
+  },
+  "sensor": {"pot_jump": {"counts": 64}, "bad_samples": 4},
+  "behavior": {"openloop_zero_brake": "off", "brush_term": "off"},
+  "source": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/policy.json", "sha1": "b12f35ed8cb4b322d6c57b8678065cf674464283"}
+}

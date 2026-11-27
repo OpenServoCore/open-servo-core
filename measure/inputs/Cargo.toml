@@ -1,0 +1,22 @@
+[package]
+name        = "osc-ident-inputs"
+version     = "0.1.0"
+edition     = "2024"
+description = "The identification's user inputs, sans io: the servo profile and the tuning policy files, their versions, validation and resolution into the absolute values the rules read. Compiles to wasm for the GUI."
+license     = "MIT OR Apache-2.0"
+
+[features]
+# Reading a file's text: the version probe and parse. The web parses JSON in
+# JS and passes values in, so the wasm build leaves this off.
+json = ["dep:serde_json"]
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"], optional = true }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+
+[[test]]
+name              = "files"
+required-features = ["json"]

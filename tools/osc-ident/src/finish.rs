@@ -159,7 +159,7 @@ where
     let tune_set = files::set(&tune_dir.join("set.json"))?;
     let first = files::rules_inputs(&root.join("inputs"), None, None)?;
     let tune_points = first.table.as_ref().map(|t| t.points);
-    let np = files::nameplate(a.nameplate)?;
+    let np = files::nameplate(a.nameplate, Some(a.policy))?;
     let board = files::board(None)?;
     let stops_result = json_at(&root.join(stops::RESULT))?;
     let keep = (&tune_set, tune_points.as_ref());
