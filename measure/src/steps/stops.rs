@@ -5,8 +5,9 @@
 //! stop and the high alternated, every drive open loop and host-polled
 //! every [`seek::POLL_S`] under a [`POLL_DEADMAN_S`] bus dead-man, at
 //! three duties from the probe: the approach (the level that proved the
-//! sign and one ladder step, at most the ceiling), which every press
-//! toward a stop runs at and never above; the seat (half the ceiling);
+//! sign and one ladder step, at least [`APPROACH_MIN_SHARE`] of the
+//! ceiling and at most the ceiling), which every press toward a stop runs
+//! at and never above; the seat (half the ceiling);
 //! and the ceiling (the volts whose blocked current is half the gear's
 //! stop-hold ceiling at the pricing R), which only a leave rises to. No
 //! drive exceeds the ceiling.
@@ -181,7 +182,16 @@ pub fn needs_permit(pos: f64, soft: (f64, f64), band: f64) -> bool {
 /// The least share of the ceiling an approach runs at: a sign proven at
 /// the motor's breakaway leaves an approach one step over it, which the
 /// higher friction near an end of the travel can stall short of the stop.
-pub const APPROACH_MIN_SHARE: f64 = 0.6;
+/// The decided rule was one ladder step over the proven volts and at
+/// least 0.6 x the ceiling; the recorded table steps force 0.8 x. With
+/// the loop R risen and the torque some 15 % down at the same volts,
+/// every table whose approach came out at 0.68..0.73 V either stuck from
+/// rest far from the low stop or seated at the mesh's tight spot about
+/// 5 deg short of the bumper and took it as the contact; at 0.874 V and
+/// over every low rung reached the bumper with a shunt rise of 77..97
+/// counts. 0.874 V is 0.77 of the lowest ceiling seen (1.136 V), so the
+/// floor sits over it.
+pub const APPROACH_MIN_SHARE: f64 = 0.8;
 
 /// The step's three duties, Q15, from the probe's volts on `rail_v`: the
 /// approach one ladder step over the volts that proved the sign and at
@@ -2813,11 +2823,16 @@ mod tests {
         let c = cfg_of(5.0);
         let v = |x: i16| c.volts(x);
         assert!((v(c.ceiling_q15) - 0.945).abs() < 2e-4);
-        assert!((v(c.approach_q15) - (0.48 + 0.04 * 4.8)).abs() < 2e-4);
+        // one ladder step over the proven 0.48 V is 0.672 V, under the
+        // floor of 0.8 x the ceiling
+        assert!((v(c.approach_q15) - 0.756).abs() < 2e-4);
         assert!((v(c.seat_q15) - 0.945 / 2.0).abs() < 2e-4);
         assert!((v(c.step_q15) - 0.192).abs() < 2e-4);
-        // the approach is capped at the ceiling
         let mut p = FromProbe::of(&probe_json(true, true)).expect("probe");
+        p.proven_v = 0.6;
+        let c = duties(&p, 5.0, 4.8, 3.0);
+        assert!((c.volts(c.approach_q15) - (0.6 + 0.04 * 4.8)).abs() < 2e-4);
+        // the approach is capped at the ceiling
         p.proven_v = 0.9;
         let c = duties(&p, 5.0, 4.8, 3.0);
         assert_eq!(c.approach_q15, c.ceiling_q15);
