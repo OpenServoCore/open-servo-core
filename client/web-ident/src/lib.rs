@@ -17,11 +17,13 @@
 //!
 //! The run's files stay in memory: a store the run reads and writes as it
 //! goes must answer at once, and OPFS answers a page only through promises.
-//! They come back with the outcome, each at its path from the store's root
-//! (`<uid>/<UTC>/...`) with the bytes the CLI writes, for the page to copy
-//! into OPFS at the same paths. A page closed mid-run leaves the servo as a
-//! killed CLI does: each drive ends under the bus dead-man, and the run's
-//! volatile writes stay until a reboot.
+//! Each write and move is told to `onStore` as it happens, by its path from
+//! the store's root (`<uid>/<UTC>/...`) with the bytes the CLI writes, for
+//! the page to mirror into OPFS in order; the outcome carries the folder
+//! whole as well. A page closed mid-run leaves the servo as a killed CLI
+//! does: each drive ends under the bus dead-man, and the run's volatile
+//! writes stay until a reboot; the mirror holds the folder as far as the
+//! page applied it, and `resume` goes on from it.
 
 #[cfg(feature = "fake")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -47,6 +49,11 @@ export type Progress =
   | { event: "unit"; step: string; at: number; of: number; what: string }
   | { event: "lines"; lines: string[] }
   | { event: "ended"; step: string; state: string; why: string | null };
+
+/** A change to the run's store as it happens, by paths from the store's root. */
+export type Stored =
+  | { op: "write"; path: string; bytes: Uint8Array }
+  | { op: "move"; from: string; to: string };
 "#;
 
 /// A bus rate, as osc-client-web names it.
@@ -117,13 +124,122 @@ impl From<RunArgs> for run::Given {
     }
 }
 
+/// The CLI's `run --resume` arguments, and the files they name: the
+/// profile and the policy, and every file of the run folder.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeArgs {
+    /// The servo's bus id (`--id`).
+    pub id: u8,
+    /// The profile's path in `files` (`--nameplate`).
+    pub nameplate: String,
+    /// The policy's path in `files` (`--policy`).
+    pub policy: String,
+    /// The bus rate (`--baud`); found when not given.
+    #[tsify(optional)]
+    pub baud: Option<BaudRate>,
+    /// The run folder `<uid>/<UTC>` (`--resume`); the tune's tries are its
+    /// own.
+    pub folder: String,
+    /// The profile, the policy, and the run folder's files at their paths
+    /// from the store's root (`<uid>/<UTC>/run.json`).
+    pub files: Vec<RunFile>,
+}
+
+impl ResumeArgs {
+    fn given(self) -> (run::Given, String) {
+        let args = RunArgs {
+            id: self.id,
+            nameplate: self.nameplate,
+            policy: self.policy,
+            tries: None,
+            baud: self.baud,
+            files: self.files,
+        };
+        (args.into(), self.folder)
+    }
+}
+
+/// What a resume would do, decided from the folder's files alone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumePlan {
+    /// The step it restarts at, by its key in `run.json`.
+    pub from: String,
+    /// The new segment's number in `run.json`.
+    pub segment: u32,
+    /// The tune's tries, the run's.
+    pub tries: u32,
+    /// The wait for the winding to cool before the restart, s.
+    pub cool_s: f64,
+    /// Whether the high stop is pressed once first, to check it seats where
+    /// it did.
+    pub reseat: bool,
+    /// Why it restarts where it does, a line each.
+    pub why: Vec<String>,
+    /// The stopped attempt's files, each to its place under `segments/`.
+    pub moves: Vec<Moved>,
+}
+
+/// A path in the run folder moved to another.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Tsify)]
+pub struct Moved {
+    pub from: String,
+    pub to: String,
+}
+
+impl From<osc_measure::run::resume::Plan> for ResumePlan {
+    fn from(p: osc_measure::run::resume::Plan) -> Self {
+        ResumePlan {
+            from: p.from.into(),
+            segment: p.n,
+            tries: p.tries,
+            cool_s: p.cool_s,
+            reseat: p.reseat,
+            why: p.why,
+            moves: p
+                .moves
+                .into_iter()
+                .map(|(from, to)| Moved { from, to })
+                .collect(),
+        }
+    }
+}
+
+/// What a resume of `args.folder` would do at `now` (unix seconds; the
+/// page's clock when not given), from its files alone: nothing opened,
+/// nothing sent. Throws the refusal `resume` would end on before the bus,
+/// in the tool's words.
+#[wasm_bindgen(js_name = planResume)]
+pub fn plan_resume(
+    args: tsify::Ts<ResumeArgs>,
+    now: Option<f64>,
+) -> Result<tsify::Ts<ResumePlan>, JsError> {
+    let (given, folder) = args.to_rust()?.given();
+    let now = now.unwrap_or_else(now_s);
+    let p = run::plan(&given, &folder, now).map_err(|e| JsError::new(&format!("{e:#}")))?;
+    Ok(tsify::Tsify::into_ts(&ResumePlan::from(p))?)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_s() -> f64 {
+    js_sys::Date::now() / 1000.0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_s() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// What a run leaves.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Tsify)]
 pub struct RunOutcome {
     /// The run folder `<uid>/<UTC>`, once one was named.
     #[tsify(optional)]
     pub root: Option<String>,
-    /// Every file the run wrote, at its path from the store's root
+    /// Every file of the run folder, at its path from the store's root
     /// (`<uid>/<UTC>/run.json`), with the bytes the CLI writes.
     pub files: Vec<RunFile>,
     /// Every line told to the feed, in order: what the CLI prints.
@@ -224,45 +340,48 @@ impl IdentRun {
 
     /// The run on `device`, which the page's client has released (a device
     /// still open is refused before anything is sent). `onProgress` is told
-    /// each `Progress` as it happens; `clock` gives unix seconds, the
-    /// page's own `Date.now() / 1000` when not given. The device is closed
-    /// when the run ends, for `OscClient.reclaim()`. Resolves on every
-    /// run, a refused one too, with what it wrote.
+    /// each `Progress` as it happens, `onStore` each change to the run's
+    /// files; `clock` gives unix seconds, the page's own `Date.now() /
+    /// 1000` when not given. The device is closed when the run ends, for
+    /// `OscClient.reclaim()`. Resolves on every run, a refused one too,
+    /// with what it wrote.
     pub async fn run(
         &self,
         device: osc_client::webusb::UsbDevice,
         args: tsify::Ts<RunArgs>,
         #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(p: Progress) => void")]
         on_progress: &js_sys::Function,
+        #[wasm_bindgen(js_name = onStore, unchecked_optional_param_type = "(s: Stored) => void")]
+        on_store: Option<js_sys::Function>,
         #[wasm_bindgen(unchecked_optional_param_type = "() => number")] clock: Option<
             js_sys::Function,
         >,
     ) -> Result<tsify::Ts<RunOutcome>, JsError> {
-        use osc_client::webusb::{WebUsbPipe, close_device};
-        if device.opened() {
-            return Err(JsError::new(
-                "run: the device is open: the page's client still holds the bus; release it first",
-            ));
-        }
-        let given = self.take(args)?;
-        let open = async {
-            WebUsbPipe::open(device.clone())
-                .await
-                .map_err(anyhow::Error::from)
-        };
-        let feed = feed(on_progress);
-        let clock = clock_of(clock);
-        let (o, c) = self.go(open, &given, &feed, &clock).await;
-        drop(c);
-        let mut o = RunOutcome::from(o);
-        if let Err(e) = close_device(&device).await {
-            let line = format!("closing the device: {e}");
-            feed(&osc_measure::run::Progress::Lines {
-                lines: vec![line.clone()],
-            });
-            o.lines.push(line);
-        }
-        Ok(tsify::Tsify::into_ts(&o)?)
+        let given = self.take(args.to_rust()?.into())?;
+        self.on_device(device, &given, None, on_progress, on_store, clock)
+            .await
+    }
+
+    /// The CLI's `run --resume` of `args.folder` on `device`, as `run` runs:
+    /// the folder's own refusals come before the device is opened, then the
+    /// checks against what the run began on, before anything drives. The
+    /// outcome's files are the folder whole, as the resume leaves it.
+    pub async fn resume(
+        &self,
+        device: osc_client::webusb::UsbDevice,
+        args: tsify::Ts<ResumeArgs>,
+        #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(p: Progress) => void")]
+        on_progress: &js_sys::Function,
+        #[wasm_bindgen(js_name = onStore, unchecked_optional_param_type = "(s: Stored) => void")]
+        on_store: Option<js_sys::Function>,
+        #[wasm_bindgen(unchecked_optional_param_type = "() => number")] clock: Option<
+            js_sys::Function,
+        >,
+    ) -> Result<tsify::Ts<RunOutcome>, JsError> {
+        let (given, folder) = args.to_rust()?.given();
+        let given = self.take(given)?;
+        self.on_device(device, &given, Some(&folder), on_progress, on_store, clock)
+            .await
     }
 
     /// `run` on one simulated servo at rest, at `args.id`, with osc-client-web's
@@ -278,44 +397,136 @@ impl IdentRun {
         args: tsify::Ts<RunArgs>,
         #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(p: Progress) => void")]
         on_progress: &js_sys::Function,
+        #[wasm_bindgen(js_name = onStore, unchecked_optional_param_type = "(s: Stored) => void")]
+        on_store: Option<js_sys::Function>,
         #[wasm_bindgen(unchecked_optional_param_type = "() => number")] clock: Option<
             js_sys::Function,
         >,
     ) -> Result<tsify::Ts<RunOutcome>, JsError> {
-        let given = self.take(args)?;
-        let id = given.id;
-        let open = async move { Ok(fake::Yielding(fake::pipe(id))) };
-        let (o, _) = self
-            .go(open, &given, &feed(on_progress), &clock_of(clock))
-            .await;
-        Ok(tsify::Tsify::into_ts(&RunOutcome::from(o))?)
+        let given = self.take(args.to_rust()?.into())?;
+        self.on_fake(&given, None, on_progress, on_store, clock)
+            .await
+    }
+
+    /// `resume` on the simulated servo of `runFake`, as it is when a page
+    /// opens again: the same servo, its stored settings, at rest.
+    #[cfg(feature = "fake")]
+    #[wasm_bindgen(js_name = resumeFake)]
+    pub async fn resume_fake(
+        &self,
+        args: tsify::Ts<ResumeArgs>,
+        #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(p: Progress) => void")]
+        on_progress: &js_sys::Function,
+        #[wasm_bindgen(js_name = onStore, unchecked_optional_param_type = "(s: Stored) => void")]
+        on_store: Option<js_sys::Function>,
+        #[wasm_bindgen(unchecked_optional_param_type = "() => number")] clock: Option<
+            js_sys::Function,
+        >,
+    ) -> Result<tsify::Ts<RunOutcome>, JsError> {
+        let (given, folder) = args.to_rust()?.given();
+        let given = self.take(given)?;
+        self.on_fake(&given, Some(&folder), on_progress, on_store, clock)
+            .await
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl IdentRun {
-    fn take(&self, args: tsify::Ts<RunArgs>) -> Result<run::Given, JsError> {
+    fn take(&self, given: run::Given) -> Result<run::Given, JsError> {
         if self.used.replace(true) {
             return Err(JsError::new(
                 "run: this handle has run; another run takes a new IdentRun",
             ));
         }
-        Ok(args.to_rust()?.into())
+        Ok(given)
+    }
+
+    async fn on_device(
+        &self,
+        device: osc_client::webusb::UsbDevice,
+        given: &run::Given,
+        folder: Option<&str>,
+        on_progress: &js_sys::Function,
+        on_store: Option<js_sys::Function>,
+        clock: Option<js_sys::Function>,
+    ) -> Result<tsify::Ts<RunOutcome>, JsError> {
+        use osc_client::webusb::{WebUsbPipe, close_device};
+        if device.opened() {
+            return Err(JsError::new(
+                "run: the device is open: the page's client still holds the bus; release it first",
+            ));
+        }
+        let open = async {
+            WebUsbPipe::open(device.clone())
+                .await
+                .map_err(anyhow::Error::from)
+        };
+        let feed = feed(on_progress);
+        let (o, c) = self
+            .go(
+                open,
+                given,
+                folder,
+                &feed,
+                &stored(on_store),
+                &clock_of(clock),
+            )
+            .await;
+        drop(c);
+        let mut o = RunOutcome::from(o);
+        if let Err(e) = close_device(&device).await {
+            let line = format!("closing the device: {e}");
+            feed(&osc_measure::run::Progress::Lines {
+                lines: vec![line.clone()],
+            });
+            o.lines.push(line);
+        }
+        Ok(tsify::Tsify::into_ts(&o)?)
+    }
+
+    #[cfg(feature = "fake")]
+    async fn on_fake(
+        &self,
+        given: &run::Given,
+        folder: Option<&str>,
+        on_progress: &js_sys::Function,
+        on_store: Option<js_sys::Function>,
+        clock: Option<js_sys::Function>,
+    ) -> Result<tsify::Ts<RunOutcome>, JsError> {
+        let id = given.id;
+        let open = async move { Ok(fake::Yielding(fake::pipe(id))) };
+        let (o, _) = self
+            .go(
+                open,
+                given,
+                folder,
+                &feed(on_progress),
+                &stored(on_store),
+                &clock_of(clock),
+            )
+            .await;
+        Ok(tsify::Tsify::into_ts(&RunOutcome::from(o))?)
     }
 
     async fn go<P: osc_client::pipe::Pipe>(
         &self,
         open: impl std::future::Future<Output = anyhow::Result<P>>,
         given: &run::Given,
+        folder: Option<&str>,
         feed: &dyn Fn(&osc_measure::run::Progress),
+        store: &dyn Fn(run::Stored<'_>),
         clock: &dyn Fn() -> f64,
     ) -> (run::Outcome, Option<osc_client::Client<P>>) {
         let page = run::Page {
             feed,
             clock,
             stop: &self.stop,
+            store,
         };
-        run::run(open, given, &page).await
+        match folder {
+            Some(f) => run::resume(open, given, f, &page).await,
+            None => run::run(open, given, &page).await,
+        }
     }
 }
 
@@ -339,6 +550,33 @@ fn clock_of(f: Option<js_sys::Function>) -> impl Fn() -> f64 {
             .and_then(|f| f.call0(&JsValue::NULL).ok())
             .and_then(|v| v.as_f64())
             .filter(|t| t.is_finite())
-            .unwrap_or_else(|| js_sys::Date::now() / 1000.0)
+            .unwrap_or_else(now_s)
+    }
+}
+
+/// The page's store callback, each change as a `Stored` object with its
+/// bytes in a `Uint8Array` of their own; a callback that throws cannot stop
+/// the run, so its throw is dropped.
+#[cfg(target_arch = "wasm32")]
+fn stored(f: Option<js_sys::Function>) -> impl Fn(run::Stored<'_>) {
+    move |s| {
+        let Some(f) = f.as_ref() else { return };
+        let o = js_sys::Object::new();
+        let set = |k: &str, v: &JsValue| {
+            let _ = js_sys::Reflect::set(&o, &k.into(), v);
+        };
+        match s {
+            run::Stored::Write { path, bytes } => {
+                set("op", &"write".into());
+                set("path", &path.into());
+                set("bytes", &js_sys::Uint8Array::from(bytes).into());
+            }
+            run::Stored::Move { from, to } => {
+                set("op", &"move".into());
+                set("from", &from.into());
+                set("to", &to.into());
+            }
+        }
+        let _ = f.call1(&JsValue::NULL, &o);
     }
 }

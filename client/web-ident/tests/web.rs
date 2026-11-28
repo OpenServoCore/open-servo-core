@@ -6,7 +6,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use osc_client_web_ident::{DeviceKey, IdentRun, RunArgs, RunFile, RunOutcome, find_device};
+use std::collections::BTreeMap;
+
+use osc_client_web_ident::{
+    DeviceKey, IdentRun, ResumeArgs, ResumePlan, RunArgs, RunFile, RunOutcome, find_device,
+    plan_resume,
+};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
@@ -128,6 +133,7 @@ async fn a_page_run_tells_its_callback_and_hands_back_its_folder() {
             args().into_ts().expect("args"),
             push.as_ref().unchecked_ref(),
             None,
+            None,
         )
         .await
         .map_err(JsValue::from)
@@ -190,6 +196,7 @@ async fn a_page_run_tells_its_callback_and_hands_back_its_folder() {
             args().into_ts().expect("args"),
             push.as_ref().unchecked_ref(),
             None,
+            None,
         )
         .await;
     assert!(again.is_err(), "a handle runs once");
@@ -212,6 +219,7 @@ async fn a_stop_from_the_page_ends_the_step_through_its_way_out() {
         .run_fake(
             args().into_ts().expect("args"),
             cancel.as_ref().unchecked_ref(),
+            None,
             None,
         )
         .await
@@ -251,6 +259,7 @@ async fn the_page_gets_turns_while_the_run_goes() {
         .run_fake(
             args().into_ts().expect("args"),
             push.as_ref().unchecked_ref(),
+            None,
             None,
         )
         .await
@@ -292,6 +301,7 @@ async fn a_stop_from_a_page_timer_lands_mid_step() {
         .run_fake(
             args().into_ts().expect("args"),
             push.as_ref().unchecked_ref(),
+            None,
             None,
         )
         .await
@@ -386,4 +396,258 @@ async fn a_worker_finds_the_lent_device_by_its_key() {
         why.as_deref().is_some_and(|w| w.contains("several")),
         "{why:?}"
     );
+}
+
+/// A run folder as a page's mirror holds it: each change the run told,
+/// replayed in order onto `files`.
+fn replay(files: &mut BTreeMap<String, Vec<u8>>, told: &js_sys::Array) {
+    for s in told.iter() {
+        match get(&s, "op").as_string().as_deref() {
+            Some("write") => {
+                let bytes = js_sys::Uint8Array::from(get(&s, "bytes")).to_vec();
+                files.insert(get(&s, "path").as_string().expect("a path"), bytes);
+            }
+            Some("move") => {
+                let (from, to) = (
+                    get(&s, "from").as_string().expect("from"),
+                    get(&s, "to").as_string().expect("to"),
+                );
+                let below = format!("{from}/");
+                let moved: Vec<String> = files
+                    .keys()
+                    .filter(|k| **k == from || k.starts_with(&below))
+                    .cloned()
+                    .collect();
+                assert!(!moved.is_empty(), "{from} is there to move");
+                for k in moved {
+                    let bytes = files.remove(&k).expect("there");
+                    files.insert(format!("{to}{}", &k[from.len()..]), bytes);
+                }
+            }
+            op => panic!("an unknown change {op:?}"),
+        }
+    }
+}
+
+fn keep(into: &js_sys::Array) -> Closure<dyn Fn(JsValue)> {
+    let into = into.clone();
+    Closure::<dyn Fn(JsValue)>::new(move |v: JsValue| {
+        into.push(&v);
+    })
+}
+
+fn outcome_files(o: &RunOutcome) -> BTreeMap<String, Vec<u8>> {
+    o.files
+        .iter()
+        .map(|f| (f.path.clone(), f.bytes.to_vec()))
+        .collect()
+}
+
+/// The folder's files by their paths in it, the host clock's stamps zeroed
+/// and the segments' records and files left out.
+fn unsegmented(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    fn mask(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(o) => {
+                o.remove("segments");
+                o.remove("segment");
+                for (k, x) in o.iter_mut() {
+                    if ["host_t_start", "host_t_end", "started", "ended"].contains(&k.as_str())
+                        && x.is_number()
+                    {
+                        *x = 0.into();
+                    } else {
+                        mask(x);
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(mask),
+            _ => {}
+        }
+    }
+    let in_folder = |p: &str| p.splitn(3, '/').nth(2).unwrap_or_default().to_string();
+    files
+        .iter()
+        .map(|(p, b)| (in_folder(p), b))
+        .filter(|(p, _)| !p.starts_with("segments/"))
+        .map(
+            |(p, b)| match serde_json::from_slice::<serde_json::Value>(b) {
+                Ok(mut v) if p.ends_with(".json") => {
+                    mask(&mut v);
+                    (p, serde_json::to_vec(&v).expect("json"))
+                }
+                _ => (p, b.clone()),
+            },
+        )
+        .collect()
+}
+
+fn resume_args(folder: &str, files: &BTreeMap<String, Vec<u8>>) -> ResumeArgs {
+    let a = args();
+    let mut all = a.files;
+    all.extend(files.iter().map(|(path, bytes)| RunFile {
+        path: path.clone(),
+        bytes: serde_bytes::ByteBuf::from(bytes.clone()),
+    }));
+    ResumeArgs {
+        id: a.id,
+        nameplate: a.nameplate,
+        policy: a.policy,
+        baud: None,
+        folder: folder.into(),
+        files: all,
+    }
+}
+
+/// Cancel as the probe starts, the folder as the page mirrored it from
+/// `onStore`, then `resumeFake` on it a quarter of an hour later: the
+/// mirror held the folder whole,
+/// the resume goes on from the probe in segment 2, its own changes
+/// replayed onto the folder give its outcome, and the folder ends as an
+/// unbroken run's, the host's stamps, the segments and the probe's
+/// readings of the sim's noise aside.
+#[wasm_bindgen_test]
+async fn a_stopped_page_run_resumes_from_its_mirror() {
+    let quiet = Closure::<dyn Fn(JsValue)>::new(|_: JsValue| {});
+    let whole: RunOutcome = IdentRun::new()
+        .run_fake(
+            args().into_ts().expect("args"),
+            quiet.as_ref().unchecked_ref(),
+            None,
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("runs")
+        .to_rust()
+        .expect("outcome");
+
+    let h = Rc::new(IdentRun::new());
+    let stop = h.clone();
+    let cancel = Closure::<dyn Fn(JsValue)>::new(move |p: JsValue| {
+        if get(&p, "event").as_string().as_deref() == Some("started")
+            && get(&p, "step").as_string().as_deref() == Some("probe")
+        {
+            stop.stop();
+        }
+    });
+    let changes = js_sys::Array::new();
+    let mirror = keep(&changes);
+    let stopped: RunOutcome = h
+        .run_fake(
+            args().into_ts().expect("args"),
+            cancel.as_ref().unchecked_ref(),
+            Some(mirror.as_ref().unchecked_ref::<js_sys::Function>().clone()),
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("runs")
+        .to_rust()
+        .expect("outcome");
+    let mut folder = BTreeMap::new();
+    replay(&mut folder, &changes);
+    assert_eq!(folder, outcome_files(&stopped));
+    let root = stopped.root.clone().expect("a run folder");
+
+    let plan: ResumePlan = plan_resume(resume_args(&root, &folder).into_ts().expect("args"), None)
+        .map_err(JsValue::from)
+        .expect("plans")
+        .to_rust()
+        .expect("plan");
+    assert_eq!((plan.from.as_str(), plan.segment), ("probe", 2));
+
+    let told = js_sys::Array::new();
+    let feed = keep(&told);
+    let more = js_sys::Array::new();
+    let mirror = keep(&more);
+    // A quarter of an hour on: the winding has cooled, so the sim spends no
+    // simulated minutes waiting for it.
+    let later = Closure::<dyn Fn() -> f64>::new(|| js_sys::Date::now() / 1000.0 + 900.0);
+    let resumed: RunOutcome = IdentRun::new()
+        .resume_fake(
+            resume_args(&root, &folder).into_ts().expect("args"),
+            feed.as_ref().unchecked_ref(),
+            Some(mirror.as_ref().unchecked_ref::<js_sys::Function>().clone()),
+            Some(later.as_ref().unchecked_ref::<js_sys::Function>().clone()),
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("resumes")
+        .to_rust()
+        .expect("outcome");
+    assert_eq!(resumed.refused, None, "{:#?}", resumed.lines);
+    replay(&mut folder, &more);
+    assert_eq!(folder, outcome_files(&resumed));
+    let m = manifest(&resumed);
+    assert_eq!(m["segments"][1]["from"], "probe", "{m}");
+    assert_eq!(m["steps"]["probe"]["segment"], 2, "{m}");
+    assert!(folder.contains_key(&format!("{root}/segments/1/results/probe.json")));
+    let started: Vec<String> = events(&told, "started").into_iter().map(|e| e.0).collect();
+    assert_eq!(started, ["resume", "probe"]);
+
+    let probe = "results/probe.json".to_string();
+    let (mut again, mut once) = (unsegmented(&folder), unsegmented(&outcome_files(&whole)));
+    for (k, within) in [
+        ("rail_v", 5.0 / 1241.0 * 1.5),
+        ("position_before_counts", 1.5),
+        ("position_after_counts", 1.5),
+    ] {
+        let take = |files: &mut BTreeMap<String, Vec<u8>>| {
+            let b = files.get_mut(&probe).expect("probe");
+            let mut v: serde_json::Value = serde_json::from_slice(b).expect("json");
+            let x = v[k].as_f64().expect(k);
+            v.as_object_mut().expect("object").remove(k);
+            *b = serde_json::to_vec(&v).expect("json");
+            x
+        };
+        let (r, w) = (take(&mut again), take(&mut once));
+        assert!((r - w).abs() <= within, "{k}: {r} against {w}");
+    }
+    assert_eq!(again, once);
+}
+
+/// A folder a resume refuses on its files alone: `planResume` throws the
+/// tool's words, and `resumeFake` ends refused in them, nothing told to the
+/// mirror.
+#[wasm_bindgen_test]
+async fn a_resume_the_folder_refuses_is_refused_in_the_tool_s_words() {
+    let quiet = Closure::<dyn Fn(JsValue)>::new(|_: JsValue| {});
+    let whole: RunOutcome = IdentRun::new()
+        .run_fake(
+            args().into_ts().expect("args"),
+            quiet.as_ref().unchecked_ref(),
+            None,
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("runs")
+        .to_rust()
+        .expect("outcome");
+    let root = whole.root.clone().expect("a run folder");
+    let mut folder = outcome_files(&whole);
+    folder.retain(|p, _| !p.ends_with("/run.json"));
+    let words = format!("{root}: no run.json: not a run folder");
+    let thrown = plan_resume(resume_args(&root, &folder).into_ts().expect("args"), None)
+        .err()
+        .map(JsValue::from)
+        .map(|e| get(&e, "message").as_string().unwrap_or_default());
+    assert_eq!(thrown.as_deref(), Some(words.as_str()));
+    let more = js_sys::Array::new();
+    let mirror = keep(&more);
+    let o: RunOutcome = IdentRun::new()
+        .resume_fake(
+            resume_args(&root, &folder).into_ts().expect("args"),
+            quiet.as_ref().unchecked_ref(),
+            Some(mirror.as_ref().unchecked_ref::<js_sys::Function>().clone()),
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("resolves")
+        .to_rust()
+        .expect("outcome");
+    assert_eq!(o.refused.as_deref(), Some(words.as_str()));
+    assert_eq!(more.length(), 0);
 }

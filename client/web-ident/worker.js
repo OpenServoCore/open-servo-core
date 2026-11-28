@@ -3,12 +3,20 @@
 // not, so the run's pauses keep their length with the tab in the background.
 import init, * as ident from "./pkg/osc_client_web_ident.js";
 
+const RUNS = {
+  run: (run, m, device, told, stored) => run.run(device, m.args, told, stored),
+  runFake: (run, m, _device, told, stored) => run.runFake(m.args, told, stored),
+  resume: (run, m, device, told, stored) => run.resume(device, m.args, told, stored),
+  resumeFake: (run, m, _device, told, stored) => run.resumeFake(m.args, told, stored),
+};
+
 /**
  * One run served over `port` (the worker's scope, or a MessagePort in a
  * test), on the module `loaded` resolves to. Tells `ready` once the module
- * is in, each `progress` as the run goes, then its `outcome`, or `failed`
- * with the message of whatever threw. A `stop` before the run stops it at
- * its first step, as on the page.
+ * is in, each `progress` and each `store` change as the run goes, in the
+ * order they happen, then its `outcome`, or `failed` with the message of
+ * whatever threw. A `stop` before the run stops it at its first step, as
+ * on the page. A `plan` is answered at any time and is not the run.
  */
 export function serve(port, loaded) {
   let run;
@@ -25,15 +33,12 @@ export function serve(port, loaded) {
     run = new mod.IdentRun();
     if (stopped) run.stop();
     const told = (progress) => post({ kind: "progress", progress });
+    const stored = (change) =>
+      post({ kind: "store", stored: change }, change.op === "write" ? [change.bytes.buffer] : []);
     let device;
     try {
-      let outcome;
-      if (m.kind === "runFake") {
-        outcome = await run.runFake(m.args, told);
-      } else {
-        device = await mod.findDevice(m.device);
-        outcome = await run.run(device, m.args, told);
-      }
+      if (m.device !== undefined) device = await mod.findDevice(m.device);
+      const outcome = await RUNS[m.kind](run, m, device, told, stored);
       const buffers = new Set(outcome.files.map((f) => f.bytes.buffer));
       post({ kind: "outcome", outcome }, [...buffers]);
     } catch (e) {
@@ -44,12 +49,23 @@ export function serve(port, loaded) {
     }
   }
 
+  async function plan(m) {
+    const mod = await loaded;
+    try {
+      post({ kind: "planned", id: m.id, plan: mod.planResume(m.args, m.now) });
+    } catch (e) {
+      post({ kind: "planned", id: m.id, refused: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   port.onmessage = (e) => {
     const m = e.data;
     if (m.kind === "stop") {
       stopped = true;
       run?.stop();
-    } else if (m.kind === "run" || m.kind === "runFake") {
+    } else if (m.kind === "plan") {
+      plan(m).catch(failed);
+    } else if (m.kind in RUNS) {
       go(m).catch(failed);
     }
   };

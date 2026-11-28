@@ -12,15 +12,21 @@ const wasm = await readFile(new URL("../pkg/osc_client_web_ident_bg.wasm", impor
 const loaded = init({ module_or_path: wasm }).then(() => ident);
 
 const testdata = new URL("../../../measure/testdata/mg90-d/", import.meta.url);
-const file = async (name) => ({
+const file = async (name, edit = (t) => t) => ({
   path: `profiles/mg90-d/${name}`,
-  bytes: new Uint8Array(await readFile(new URL(name, testdata))),
+  bytes: new TextEncoder().encode(
+    edit(new TextDecoder().decode(await readFile(new URL(name, testdata)))),
+  ),
 });
-const args = async () => ({
+const args = async (edit) => ({
   id: 1,
   nameplate: "profiles/mg90-d/nameplate.json",
   policy: "profiles/mg90-d/policy.json",
-  files: await Promise.all(["nameplate.json", "policy.json", "thermal.json"].map(file)),
+  files: await Promise.all(
+    ["nameplate.json", "policy.json", "thermal.json"].map((n) =>
+      file(n, n === "thermal.json" ? edit : undefined),
+    ),
+  ),
 });
 
 /** A worker on a MessageChannel: what `new Worker` gives a page, minus the thread. */
@@ -134,4 +140,167 @@ test("a module that does not load fails the worker's ready and its run", async (
   } finally {
     w.close();
   }
+});
+
+/** The changes told, replayed in order onto `files` (a Map of path to bytes), as a page mirrors them. */
+function replay(files, changes) {
+  for (const c of changes) {
+    if (c.op === "write") {
+      files.set(c.path, c.bytes);
+    } else {
+      const moved = [...files.keys()].filter((k) => k === c.from || k.startsWith(`${c.from}/`));
+      assert.ok(moved.length > 0, `${c.from} is there to move`);
+      for (const k of moved) {
+        files.set(`${c.to}${k.slice(c.from.length)}`, files.get(k));
+        files.delete(k);
+      }
+    }
+  }
+  return files;
+}
+const filesOf = (o) => new Map(o.files.map((f) => [f.path, f.bytes]));
+const sameFiles = (a, b) => {
+  assert.deepEqual([...a.keys()].sort(), [...b.keys()].sort());
+  for (const [k, v] of a) assert.deepEqual(Buffer.from(v), Buffer.from(b.get(k)), k);
+};
+
+test("each file goes to onStore as it is written, one change at a time, and the run settles after the last", async () => {
+  const a = await args();
+  const changes = [];
+  let applying = 0;
+  let overlapped = false;
+  const onStore = async (c) => {
+    applying += 1;
+    overlapped ||= applying > 1;
+    await new Promise((go) => setTimeout(go, 1));
+    changes.push(c);
+    applying -= 1;
+  };
+  const { outcome } = await inWorker((w, on) => w.runFake(a, on, onStore));
+  assert.equal(overlapped, false, "one change at a time");
+  assert.ok(changes.length > 0);
+  sameFiles(replay(new Map(), changes), filesOf(outcome));
+  const runJson = changes.filter((c) => c.path?.endsWith("/run.json"));
+  assert.ok(runJson.length > 2, "run.json as each step begins and ends");
+});
+
+// The sim spends simulated time on the cooling wait, and stops itself past a
+// simulated minute: a heat model with a short slow time constant keeps the
+// wait inside it.
+const quick = (t) => t.replace('"value": 128.92', '"value": 5');
+
+test("a run cancelled in the probe resumes in a new worker from its mirror, and ends as an unbroken run does", async () => {
+  const { outcome: whole } = await inWorker(async (w, on) => w.runFake(await args(quick), on));
+  const changes = [];
+  const { outcome: stopped } = await inWorker(async (w, on) =>
+    w.runFake(
+      await args(quick),
+      (p) => {
+        on(p);
+        if (p.event === "started" && p.step === "probe") w.stop();
+      },
+      (c) => {
+        changes.push(c);
+      },
+    ),
+  );
+  assert.equal(manifest(stopped).steps.probe.state, "interrupted");
+  const folder = replay(new Map(), changes);
+  sameFiles(folder, filesOf(stopped));
+
+  const base = await args(quick);
+  const resumeArgs = {
+    id: base.id,
+    nameplate: base.nameplate,
+    policy: base.policy,
+    folder: stopped.root,
+    files: [...base.files, ...[...folder].map(([path, bytes]) => ({ path, bytes }))],
+  };
+  const more = [];
+  const w = spawn();
+  let plan, resumed;
+  const told = [];
+  try {
+    await w.ready;
+    plan = await w.planResume(resumeArgs);
+    resumed = await w.resumeFake(resumeArgs, (p) => told.push(p), (c) => {
+      more.push(c);
+    });
+  } finally {
+    w.close();
+  }
+  assert.equal(plan.from, "probe");
+  assert.equal(plan.segment, 2);
+  assert.ok(plan.coolS > 0 && plan.coolS <= 5 * Math.log(30) + 1e-9, String(plan.coolS));
+  assert.equal(resumed.refused, undefined, resumed.lines.join("\n"));
+  assert.deepEqual(started(told), ["resume", "probe"]);
+  assert.ok(
+    told.some((p) => p.event === "unit" && p.step === "resume" && p.what === "s cooling"),
+    "the cooling wait is told",
+  );
+  sameFiles(replay(folder, more), filesOf(resumed));
+  const m = manifest(resumed);
+  assert.equal(m.segments[1].from, "probe");
+  assert.equal(m.steps.rest.segment, 1);
+  assert.equal(m.steps.probe.segment, 2);
+  assert.ok(folder.has(`${stopped.root}/segments/1/results/probe.json`));
+
+  // The same folder as the unbroken run's, but for the host clock's stamps,
+  // the segments, and the re-run probe's readings of the sim's noise, which
+  // move by a count or so with the later sim time.
+  const readings = { rail_v: (5.0 / 1241) * 1.5, position_before_counts: 1.5, position_after_counts: 1.5 };
+  const masked = (files, root) => {
+    const strip = (v) => {
+      if (Array.isArray(v)) return v.map(strip);
+      if (v === null || typeof v !== "object") return v;
+      const out = {};
+      for (const [k, x] of Object.entries(v)) {
+        if (k === "segments" || k === "segment") continue;
+        out[k] =
+          ["host_t_start", "host_t_end", "started", "ended"].includes(k) && typeof x === "number"
+            ? 0
+            : strip(x);
+      }
+      return out;
+    };
+    const out = new Map();
+    for (const [p, b] of files) {
+      const rel = p.slice(root.length + 1);
+      if (rel.startsWith("segments/")) continue;
+      out.set(rel, rel.endsWith(".json") ? strip(JSON.parse(new TextDecoder().decode(b))) : Buffer.from(b));
+    }
+    const probe = out.get("results/probe.json");
+    const read = {};
+    for (const k of Object.keys(readings)) {
+      read[k] = probe[k];
+      delete probe[k];
+    }
+    return { out, read };
+  };
+  const again = masked(filesOf(resumed), resumed.root);
+  const once = masked(filesOf(whole), whole.root);
+  for (const [k, within] of Object.entries(readings)) {
+    assert.ok(Math.abs(again.read[k] - once.read[k]) <= within, `${k}: ${again.read[k]} against ${once.read[k]}`);
+  }
+  assert.deepEqual(again.out, once.out);
+});
+
+test("a resume the folder refuses is refused before the bus, in the tool's words, and planResume says the same", async () => {
+  const { outcome } = await inWorker(async (w, on) => w.runFake(await args(), on));
+  const base = await args();
+  const resumeArgs = {
+    id: 1,
+    nameplate: base.nameplate,
+    policy: base.policy,
+    folder: outcome.root,
+    files: [...base.files, ...outcome.files.filter((f) => !f.path.endsWith("/run.json"))],
+  };
+  const words = `${outcome.root}: no run.json: not a run folder`;
+  const changes = [];
+  const { outcome: refused } = await inWorker(async (w, on) => {
+    await assert.rejects(w.planResume(resumeArgs), (e) => e.message === words);
+    return w.resumeFake(resumeArgs, on, (c) => changes.push(c));
+  });
+  assert.equal(refused.refused, words);
+  assert.equal(changes.length, 0);
 });
