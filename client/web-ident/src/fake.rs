@@ -9,9 +9,12 @@ use osc_client::fake::{FakePipe, TelSample, TelemetryTick, uid_of};
 #[cfg(target_arch = "wasm32")]
 use osc_client::pipe::{Pipe, PipeError};
 
-/// The servo `id` alone on the bus.
+/// The servo `id` alone on the bus. Its pauses do not count toward the
+/// sim's minute: a resume's cooling wait on a real profile pauses minutes,
+/// torque off.
 pub fn pipe(id: u8) -> FakePipe {
     let mut pipe = FakePipe::new(BaudRate::B3000000, &[id]);
+    pipe.sim_mut().uncap_idle();
     pipe.sim_mut().seed_servo_uid(0, uid_of(id));
     pipe.seed_calibrated(0);
     pipe.set_track(0, resting());

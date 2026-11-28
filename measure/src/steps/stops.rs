@@ -68,8 +68,8 @@ pub const STEP: &str = "stops";
 /// The units the step tells: its seats, [`SEATS_A_STOP`] at each stop.
 pub const UNITS: u32 = 2 * SEATS_A_STOP as u32;
 pub const RESULT: &str = "results/stops.json";
-const METHOD: &str = "stops-and-seated-rl";
-const REVISION: u32 = 5;
+pub const METHOD: &str = "stops-and-seated-rl";
+pub const REVISION: u32 = 5;
 /// Every poll of every leg, a row each.
 pub const POLLS: &str = "captures/stops/polls.csv";
 /// The bus dead-man a polled drive runs under, s: five poll periods, so a
@@ -928,13 +928,14 @@ fn shots_of(taken: &[SeatShot]) -> Vec<Shot> {
 }
 
 /// The finder on the servo: each act of [`Seek`] written and polled, the
-/// seated bursts at each seat, a line a leg and a seat.
+/// seated bursts at each seat where `bursts`, a line a leg and a seat.
 async fn drive<P: Pipe>(
     rig: &mut Rig<'_, P>,
     b: &mut Before,
     seek: &mut Seek,
     found: &mut Found,
     lines: &mut Vec<String>,
+    bursts: bool,
 ) -> Result<(), Halt> {
     let mut on = OnServo::default();
     let mut said = 0;
@@ -1030,12 +1031,23 @@ async fn drive<P: Pipe>(
             Act::Seated(seat) => {
                 halt_drive(rig, b, &mut on).await?;
                 interrupted(rig.stop)?;
-                (rig.tell)(super::Unit {
-                    at: seat.n as u32,
-                    of: UNITS.max(seat.n as u32),
-                    what: "seat",
-                });
-                seat_bursts(rig, b, &seat, found, lines).await?;
+                if bursts {
+                    (rig.tell)(super::Unit {
+                        at: seat.n as u32,
+                        of: UNITS.max(seat.n as u32),
+                        what: "seat",
+                    });
+                    seat_bursts(rig, b, &seat, found, lines).await?;
+                } else {
+                    lines.push(format!(
+                        "seat {}: the {} stop reads {:.0} counts (range {:.0} over the last {} s)",
+                        seat.n,
+                        seat.stop.word(),
+                        seat.pos,
+                        seat.range,
+                        seek::READ_S
+                    ));
+                }
                 interrupted(rig.stop)?;
                 let (p, t) = logged_poll(rig, seek, 0, found).await?;
                 pos = p;
@@ -1146,9 +1158,105 @@ async fn body<P: Pipe>(
         seek::WINDOW_S
     ));
     let mut s = Seek::new(b.cfg.clone());
-    let ran = drive(rig, b, &mut s, found, lines).await;
+    let ran = drive(rig, b, &mut s, found, lines, true).await;
     found.seek = Some(s);
     ran
+}
+
+/// What a re-seat found: how it ended, and the high stop's seat.
+pub struct Reseated {
+    pub ended: Ended,
+    pub seat: Option<f64>,
+}
+
+async fn reseat_body<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    b: &mut Before,
+    low: f64,
+    ledger: &mut Ledger,
+    found: &mut Found,
+    lines: &mut Vec<String>,
+) -> Result<(), Halt> {
+    found.corrected = open_loop(rig, ledger, &b.probe, &b.soft, b.deadman_ticks, lines).await?;
+    lines.push(format!(
+        "volatile: the peak cap unset, the soft limits out to the physical range {:.0}..{:.0}, OpenLoop; dead-man {} ticks ({} s), then torque on at zero duty; the approach {:.3} V and the seat {:.3} V, the stops step's own",
+        b.soft_counts.0,
+        b.soft_counts.1,
+        b.deadman_ticks,
+        rest::DEADMAN_S,
+        b.cfg.volts(b.cfg.approach_q15),
+        b.cfg.volts(b.cfg.seat_q15)
+    ));
+    let mut s = Seek::reseat(b.cfg.clone(), Stop::High, low);
+    let ran = drive(rig, b, &mut s, found, lines, false).await;
+    found.seek = Some(s);
+    ran
+}
+
+/// A resume's re-seat of the high stop (plan sec 5.4): one approach to it
+/// at the stops step's own duties and permit, one seat read and no burst,
+/// then a leave to the middle of that seat and `low`, the low stop the run
+/// read. The polls are kept at `polls` in the run folder; it ends through
+/// the way out as the step does.
+pub async fn reseat<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    i: &StopsInputs<'_>,
+    low: f64,
+    polls: &str,
+) -> Result<Reseated, Refused> {
+    let mut b = before(rig, i).await?;
+    let mut lines = vec![format!(
+        "re-seat: the high stop from {:.0} counts, rail {:.2} V",
+        b.pos, b.rail_v
+    )];
+    let mut ledger = Ledger::default();
+    let mut found = Found::default();
+    let ran = reseat_body(rig, &mut b, low, &mut ledger, &mut found, &mut lines).await;
+    let exit = guard::exit(rig.c, rig.id, rig.d, &ledger).await;
+    let kept = rig
+        .sink
+        .write(polls, polls_csv(&found.polls).as_bytes())
+        .map(|()| {
+            lines.push(format!(
+                "kept {} ({} polls)",
+                rig.sink.shown(polls),
+                found.polls.len()
+            ))
+        })
+        .map_err(Halt::from);
+    let seek = found.seek.as_ref();
+    if let Some(s) = seek {
+        lines.extend(s.path().iter().map(|p| format!("decision: {p}")));
+    }
+    let seat = seek.and_then(|s| {
+        s.seats()
+            .iter()
+            .find(|x| x.stop == Stop::High)
+            .map(|x| x.pos)
+    });
+    let finished = seek.is_some_and(Seek::finished);
+    let (way, why) = match (&ran, &kept) {
+        (Err(h), _) => (h.way(), Some(h.why())),
+        (Ok(()), Err(h)) => (Way::Error, Some(h.why())),
+        (Ok(()), Ok(())) if !exit.torque_off => (
+            Way::Refused,
+            Some("torque_enable did not read back 0 at the end".into()),
+        ),
+        (Ok(()), Ok(())) if !finished || seat.is_none() => (
+            Way::Refused,
+            Some("the re-seat did not read the high stop".into()),
+        ),
+        _ => (Way::Done, None),
+    };
+    Ok(Reseated {
+        ended: Ended {
+            way,
+            why,
+            exit,
+            lines,
+        },
+        seat,
+    })
 }
 
 /// A stop as its seats read it: the median of its seats, their sample sd

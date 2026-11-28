@@ -76,8 +76,8 @@ use crate::state::{State, field};
 
 pub const STEP: &str = "cruise";
 pub const RESULT: &str = "results/cruise.json";
-const METHOD: &str = "closed-loop-velocity-cruises";
-const REVISION: u32 = 2;
+pub const METHOD: &str = "closed-loop-velocity-cruises";
+pub const REVISION: u32 = 2;
 
 /// The cruise speeds, shares of the speed ceiling (`speed_ceiling_cps`),
 /// each capped at the move speed the set allows, and each one's leg, s:

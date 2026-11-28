@@ -37,7 +37,7 @@ pub const RESULT: &str = "results/rest.json";
 pub const ROWS: u16 = 20_000;
 /// The dead-man the torque-on second runs under.
 pub const DEADMAN_S: f64 = 0.5;
-const METHOD: &str = "rest-noise";
+pub const METHOD: &str = "rest-noise";
 /// The result's revision: 2 reads the supply's frame pattern off a steady
 /// channel (`frame_ripple.pattern_*`, each channel's `pattern_gain`).
 pub const REVISION: u32 = 2;
