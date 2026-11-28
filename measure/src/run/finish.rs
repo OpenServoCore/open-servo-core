@@ -630,6 +630,7 @@ where
             last: json!({"state": "not run", "why": why}),
         });
     }
+    super::put(host.files, root, cruise::STEP, super::running())?;
     feed(&Progress::Started { step: cruise::STEP });
     lines.push(format!(
         "cruise on the tune's set {}, at kp {kp:.4}:",
@@ -674,6 +675,9 @@ where
     }
     let cruise_entry = json!({"state": state, "why": why, "started": t0, "ended": t1,
                               "files": [cruise::RESULT]});
+    if let Err(e) = super::put(host.files, root, cruise::STEP, cruise_entry.clone()) {
+        lines.push(format!("run.json not kept: {e:#}"));
+    }
     tell_lines(feed, &lines, told);
     tell_end(feed, cruise::STEP, &cruise_entry);
     if !matches!(&ran, Ok(r) if r.accepted()) {
@@ -684,6 +688,9 @@ where
         return Ok(short_of_final(c, id, d, keep, lines, cruise_entry, "not run", why).await);
     }
 
+    if let Err(e) = super::put(host.files, root, FINAL, super::running()) {
+        lines.push(format!("run.json not kept: {e:#}"));
+    }
     feed(&Progress::Started { step: FINAL });
     let final_dir = root.join("final");
     let inputs_dir = final_dir.join("inputs");
