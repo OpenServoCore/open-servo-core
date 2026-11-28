@@ -337,9 +337,22 @@ impl Sim {
     /// a no-op that far out and runs to it, so servo-side horizons that need
     /// wire silence (starve resync, sec 3.4) actually elapse.
     pub fn idle(&mut self, us: u64) {
-        let t = self.core.borrow().now() + us * TICKS_PER_US;
-        self.core.borrow_mut().schedule(Event::Idle, t);
+        let mut c = self.core.borrow_mut();
+        let t = c.now() + us * TICKS_PER_US;
+        if let Some(paused) = c.idle_ticks.as_mut() {
+            *paused += us * TICKS_PER_US;
+        }
+        c.schedule(Event::Idle, t);
+        drop(c);
         self.run();
+    }
+
+    /// From here [`Self::idle`]'s pauses do not count toward the 60 s
+    /// runaway guard on sim time; the event guard still holds. A long-lived
+    /// sim (the browser's simulated servo) waits minutes torque off, as a
+    /// resume's cooling wait does, where a test scenario never should.
+    pub fn uncap_idle(&mut self) {
+        self.core.borrow_mut().idle_ticks.get_or_insert(0);
     }
 
     /// A new host session on the pipe (the adapter's USB bus reset,
