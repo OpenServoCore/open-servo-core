@@ -494,14 +494,14 @@ This is actually part of the reason the precision current and voltage sensing is
 
 1. **Approach at one duty.** The approach duty with the stall permit held, and that duty is never raised: a soft stopper gives under a harder press, and on the bench servo's low stop it carries the shaft past the pot's range.
 2. **Seat.** Still for a whole 150 ms window, every reading within three of the pot's rest sds of the window's median (at least 3 counts), after at least 100 counts of the leg's travel. Still short of that travel on the first approach means the start was at or by that stop: no seat there, and the finder leaves for the other one.
-3. **Back down and read.** The duty drops to the seat duty toward the stop and holds for 300 ms, and the median of the last 100 ms is the stop. The shunt bursts that give the stored $R$ and $L$ are taken there, from rest, with the train wound against the stop.
+3. **Back down and read.** The duty drops to the seat duty toward the stop and holds for 300 ms, and the median of the last 100 ms is the seat's reading. The shunt bursts that give the stored $R$ and $L$ are taken there, from rest, with the train wound against the stop.
 4. **Leave** at the approach duty without the permit, a step up per still window up to the ceiling, until the shaft is 150 counts off the stop; the next approach carries on from there with no zero between.
 
-After the last seat a drive to the middle of the two stops ends it.
+After the last seat a drive to the middle of the two stops ends it. Every seat planned is pressed and read. Each stop is the median of its three seats, and the step reports their spread with it, the sd, the count and the range, without judging it: a stopper that gives shows as a wide spread, not as a refusal.
 
 Each part has a reason. Meeting the stop at a duty under the ceiling means it is met at a speed and a current the gear's stop holds. Reading it at the seat duty lets the stop's spring share relax while friction holds the seat, and approaching from the same side at the same duty every time makes the reading repeat.
 
-What the step refuses. A stop read more than 10 counts from its earlier seat ends all pressing, and so do a shaft blocked between the stops on a later approach and a shaft that does not leave a stop at the ceiling. A refusal taken at a seat first drives off that stop by a leave, to the middle when both stops are known. A leg that runs 30 s without reaching its end ends the step too, and so does one that falls back 150 counts from the farthest it got on two polls in a row, a shaft running the wrong way.
+What the step refuses. A shaft blocked between the stops on a later approach ends all pressing, and so does a shaft that does not leave a stop at the ceiling. A refusal taken at a seat first drives off that stop by a leave, to the middle when both stops are known. A leg that runs 30 s without reaching its end ends the step too, and so does one that falls back 150 counts from the farthest it got on two polls in a row, a shaft running the wrong way.
 
 ## Putting It All Together
 
