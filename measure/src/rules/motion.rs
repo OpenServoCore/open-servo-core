@@ -1,5 +1,5 @@
 //! The fields in counts of position: the stops, the soft limits, the
-//! angle map and the gearing records, the move's speed and acceleration,
+//! angle map, whose 0 deg is the servo's center, and the gearing records, the move's speed and acceleration,
 //! and the hold band. The kernel's estimate runs in the table's count, so
 //! an angle the policy states in degrees is that many counts there. Two
 //! fields are in raw pot counts whatever the table: the hold band, which
@@ -33,23 +33,22 @@ fn raw_max(c: &mut Ctx) -> Result<f64, Fail> {
 /// has no travel to land in.
 pub const SOFT_FLOOR_MARGINS: f64 = 2.0;
 
-/// The soft window in counts: its middle, its half width, and what it was
-/// narrowed or widened from where the stated width does not fit.
-struct Window {
-    mid: f64,
-    half: f64,
+/// The soft window's width W and what bounds it, output deg, and what it
+/// was narrowed or widened from where the stated width does not fit.
+struct Width {
+    width: f64,
+    margin: f64,
+    physical: f64,
     said: Option<String>,
 }
 
-/// The soft window (oscnb `constants.soft_window`): centered between the
-/// two first contacts by the ripple, its width W the policy's
+/// The soft window's width (oscnb `constants.soft_width`): the policy's
 /// soft_travel_deg where it states one, else the profile's rated travel,
 /// clamped to at most the physical travel P less the hold margin K at each
-/// end and to at least [`SOFT_FLOOR_MARGINS`] x K. The degrees are the
-/// table's, whose counts are linear in ripple cycles, so a half width
-/// reaches counts only through the table. A clamp is said, never refused;
-/// stops with no room for a window at all are refused.
-fn window(c: &mut Ctx) -> Result<Window, Fail> {
+/// end and to at least [`SOFT_FLOOR_MARGINS`] x K. P runs between the two
+/// first contacts by the ripple. A clamp is said, never refused; stops with
+/// no room for a window at all are refused.
+fn width(c: &mut Ctx) -> Result<Width, Fail> {
     let (asked, whose) = match c.inputs.policy.soft_travel_deg {
         Some(_) => (
             get!(c, policy, soft_travel_deg)?,
@@ -57,10 +56,7 @@ fn window(c: &mut Ctx) -> Result<Window, Fail> {
         ),
         None => (get!(c, nameplate, rated_travel_deg)?, "the rated travel"),
     };
-    let s = get!(c, measured, stops)?;
-    let [lo, hi] = s
-        .contact_counts
-        .ok_or_else(|| Fail::missing("measured.stops.contact_counts"))?;
+    let [lo, hi] = contacts(c)?;
     let cpd = counts_per_deg(c)?;
     let events = get!(c, nameplate, brushes)? * get!(c, nameplate, rotor_segments)?;
     let gear = get!(c, nameplate, gear_ratio)?;
@@ -83,31 +79,105 @@ fn window(c: &mut Ctx) -> Result<Window, Fail> {
             "soft limits: {whose}, {asked} deg, is {why}: the window is clamped to {width:.2} deg, centered on the stops"
         )
     });
-    Ok(Window {
-        mid: (lo + hi) / 2.0,
-        half: width / 2.0 * cpd,
+    Ok(Width {
+        width,
+        margin,
+        physical,
         said,
     })
 }
 
-/// A soft limit: an end of the soft window (protocol sec 5.8).
+fn contacts(c: &mut Ctx) -> Result<[f64; 2], Fail> {
+    get!(c, measured, stops)?
+        .contact_counts
+        .ok_or_else(|| Fail::missing("measured.stops.contact_counts"))
+}
+
+/// Where 0 deg is: the table count, the offset from the center of travel
+/// and the offset asked, output deg counterclockwise, and what a clamp says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Center {
+    pub counts: f64,
+    pub offset_deg: f64,
+    pub asked_offset_deg: Option<f64>,
+    pub said: Option<String>,
+}
+
+/// 0 deg (oscnb `constants.center`): the midpoint of the two first
+/// contacts by the ripple, in the table's counts, moved by the policy's
+/// center_offset_deg where it states one. The offset is clamped so the soft
+/// window, centered on 0 deg, keeps K inside each contact: 0 deg stays the
+/// window's middle. A clamp is said, never refused.
+fn center(c: &mut Ctx) -> Result<Center, Fail> {
+    let [lo, hi] = contacts(c)?;
+    let middle = (lo + hi) / 2.0;
+    if c.inputs.policy.center_offset_deg.is_none() {
+        return Ok(Center {
+            counts: middle,
+            offset_deg: 0.0,
+            asked_offset_deg: None,
+            said: None,
+        });
+    }
+    let asked = get!(c, policy, center_offset_deg)?;
+    let w = width(c)?;
+    let room = ((w.physical - 2.0 * w.margin - w.width) / 2.0).max(0.0);
+    let offset = asked.clamp(-room, room);
+    let said = (offset != asked).then(|| {
+        let end = if asked > 0.0 {
+            "counterclockwise"
+        } else {
+            "clockwise"
+        };
+        format!(
+            "center: the policy's center_offset_deg, {asked:+} deg, puts the {:.2} deg soft window past the stops less {:.2} deg at the {end} end: 0 deg is clamped to {offset:+.2} deg from the center of travel, the furthest the window fits",
+            w.width, w.margin
+        )
+    });
+    let ccw = if get!(c, nameplate, count_rises_ccw)? {
+        1.0
+    } else {
+        -1.0
+    };
+    Ok(Center {
+        counts: middle + ccw * offset * counts_per_deg(c)?,
+        offset_deg: offset,
+        asked_offset_deg: Some(asked),
+        said,
+    })
+}
+
+/// Where the set puts 0 deg, none where its inputs give no center.
+pub fn center_of(inputs: &Inputs) -> Option<Center> {
+    center(&mut Ctx::new(inputs)).ok()
+}
+
+/// A soft limit: an end of the soft window, centered on 0 deg (protocol
+/// sec 5.8). The degrees are the table's, whose counts are linear in
+/// ripple cycles, so a half width reaches counts only through the table.
 fn soft(c: &mut Ctx, high: bool) -> Result<f64, Fail> {
-    let w = window(c)?;
-    Ok(if high { w.mid + w.half } else { w.mid - w.half })
+    let half = width(c)?.width / 2.0 * counts_per_deg(c)?;
+    let zero = center(c)?.counts;
+    Ok(if high { zero + half } else { zero - half })
 }
 
 /// Each soft limit of a window narrowed or widened from its stated width
-/// says so.
-pub(super) fn say_soft(set: &mut Set, inputs: &Inputs) {
-    let Ok(Window {
-        said: Some(said), ..
-    }) = window(&mut Ctx::new(inputs))
-    else {
-        return;
-    };
+/// says so, and the soft limits and the angle map of a clamped center say
+/// that.
+pub(super) fn say_window(set: &mut Set, inputs: &Inputs) {
+    let width = width(&mut Ctx::new(inputs)).ok().and_then(|w| w.said);
+    let center = center_of(inputs).and_then(|c| c.said);
     for (name, outcome) in &mut set.fields {
-        if let ("pos_min_soft_counts" | "pos_max_soft_counts", Outcome::Bound(e)) = (*name, outcome)
-        {
+        let Outcome::Bound(e) = outcome else {
+            continue;
+        };
+        let soft = matches!(*name, "pos_min_soft_counts" | "pos_max_soft_counts");
+        let angle = matches!(*name, "angle_min_cdeg" | "angle_max_cdeg");
+        let says = [
+            width.as_ref().filter(|_| soft),
+            center.as_ref().filter(|_| soft || angle),
+        ];
+        for said in says.into_iter().flatten() {
             e.clamp = Some(match e.clamp.take() {
                 Some(was) => format!("{was}; {said}"),
                 None => said.clone(),
@@ -124,24 +194,19 @@ fn soft_max(c: &mut Ctx) -> Result<f64, Fail> {
     soft(c, true)
 }
 
-fn travel_from_stops_deg(c: &mut Ctx) -> Result<f64, Fail> {
-    let (lo, hi) = stops(c)?;
-    Ok((hi - lo) / counts_per_deg(c)?)
-}
-
-/// The angle map, centi-deg at each stop, rising counterclockwise facing
-/// the horn: the clockwise stop at the policy's angle, the other one the
-/// travel past it, so a host that divides the map's span by the stops'
-/// gets the table's counts per deg.
+/// An end of the angle map, centi-deg at its stop, rising counterclockwise
+/// facing the horn: the stop's angle from 0 deg ([`center`]), so the map
+/// crosses 0 there and a host that divides its span by the stops' gets the
+/// table's counts per deg (protocol sec 5.5).
 fn angle(c: &mut Ctx, at_high: bool) -> Result<f64, Fail> {
-    let cw = get!(c, policy, angle_cw_stop_deg)?;
-    let ccw_high = get!(c, nameplate, count_rises_ccw)?;
-    let past = if ccw_high == at_high {
-        travel_from_stops_deg(c)?
+    let zero = center(c)?.counts;
+    let stop = if at_high { raw_max(c)? } else { raw_min(c)? };
+    let ccw = if get!(c, nameplate, count_rises_ccw)? {
+        1.0
     } else {
-        0.0
+        -1.0
     };
-    Ok(100.0 * (cw + past))
+    Ok(100.0 * ccw * (stop - zero) / counts_per_deg(c)?)
 }
 
 fn angle_min(c: &mut Ctx) -> Result<f64, Fail> {
@@ -199,8 +264,8 @@ pub const RULES: &[Rule] = table![
         accel_limit;
     raw_min: "stops.low", Format::of(Kind::U16), COUNTS, Measured, raw_min;
     raw_max: "stops.high", Format::of(Kind::U16), COUNTS, Measured, raw_max;
-    angle_min_cdeg: "angle_min.travel", Format::of(Kind::I16), "cdeg", Measured, angle_min;
-    angle_max_cdeg: "angle_max.travel", Format::of(Kind::I16), "cdeg", Measured, angle_max;
+    angle_min_cdeg: "angle_min.center", Format::of(Kind::I16), "cdeg", Measured, angle_min;
+    angle_max_cdeg: "angle_max.center", Format::of(Kind::I16), "cdeg", Measured, angle_max;
     gear_ratio_centi: "gear_ratio.nameplate", Format::of(Kind::U16), "x100", Nameplate, gear_ratio;
     gear_class: "gear_class.nameplate", Format::of(Kind::U8), "class", Nameplate, gear_class;
 ];

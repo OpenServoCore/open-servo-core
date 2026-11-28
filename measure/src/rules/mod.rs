@@ -246,10 +246,12 @@ pub enum Outcome {
     Refused(Refusal),
 }
 
-/// Every field a rule binds.
+/// Every field a rule binds, and where they put 0 deg: no field, the angle
+/// map's 0 states it on the servo.
 #[derive(Clone, Debug)]
 pub struct Set {
     pub fields: Vec<(&'static str, Outcome)>,
+    pub center: Option<motion::Center>,
 }
 
 impl Set {
@@ -482,13 +484,15 @@ fn evaluate(rule: &Rule, inputs: &Inputs) -> Outcome {
 /// The set the rules give from `inputs`: every field, bound, held or
 /// refused. A field over the field that bounds it, where it cannot act, is
 /// stored at that bound and said ([`limits::bound_over_bounds`]), so is a
-/// soft window that does not fit its stated width ([`motion::say_soft`]),
+/// soft window that does not fit its stated width or a center that does
+/// not fit its stated offset ([`motion::say_window`]),
 /// and so is a body node a board without one does not use ([`thermal::can_body`]).
 pub fn build(inputs: &Inputs) -> Set {
     let mut set = Set {
         fields: rules().map(|r| (r.field, evaluate(r, inputs))).collect(),
+        center: motion::center_of(inputs),
     };
-    motion::say_soft(&mut set, inputs);
+    motion::say_window(&mut set, inputs);
     limits::bound_over_bounds(&mut set);
     thermal::can_body(&mut set, inputs);
     set

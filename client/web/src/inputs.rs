@@ -380,6 +380,17 @@ mod tests {
         assert!(e.contains("motion.soft_travel_deg is 0"), "{e}");
         v["motion"]["soft_travel_deg"] = 170.into();
         assert_eq!(check(&v, TuningPolicy::check), None);
+        let mut v = json(POLICY);
+        v["motion"]["angle_cw_stop_deg"] = 0.0.into();
+        let e = check(&v, TuningPolicy::check).expect("retired");
+        assert!(
+            e.starts_with("the policy states motion.angle_cw_stop_deg")
+                && e.contains("motion.center_offset_deg"),
+            "{e}"
+        );
+        let mut v = json(POLICY);
+        v["motion"]["center_offset_deg"] = (-12.5).into();
+        assert_eq!(check(&v, TuningPolicy::check), None);
 
         let policy: [(&str, Edit); 4] = [
             ("protection.run_v", |v| {

@@ -147,6 +147,8 @@ pub struct Checked {
     pub unsaved: bool,
     /// The servo's fingerprint (`State::hash`).
     pub servo: String,
+    /// Where the servo's angle map puts 0 deg, and the set's beside it.
+    pub center: String,
 }
 
 impl Checked {
@@ -245,7 +247,42 @@ pub async fn check<P: Pipe>(
         refused: state.refused_said(),
         unsaved: state.unsaved,
         servo: state.hash(d),
+        center: center_said(set, &state, d),
     })
+}
+
+/// The servo's 0 deg read off its angle map, table counts and raw through
+/// its table, and the set's beside it.
+pub fn center_said(set: &SetFile, state: &State, d: &Descriptor) -> String {
+    let servo = |name: &str| d.field(name).and_then(|f| state.text(f).as_i64());
+    let held = |name: &str| set.value(name).and_then(Value::as_i64);
+    let at = |v: &dyn Fn(&str) -> Option<i64>| {
+        Some((
+            (v("raw_min")?, v("raw_max")?),
+            (v("angle_min_cdeg")?, v("angle_max_cdeg")?),
+        ))
+    };
+    let servo = match at(&servo).and_then(|(r, a)| set::map_center(&state.lut.points, r, a)) {
+        Some((counts, raw)) => {
+            format!("the servo's 0 deg at {counts:.1} table counts, raw {raw:.1}")
+        }
+        None => "the servo's angle map is unset".into(),
+    };
+    let set_raw = set
+        .center()
+        .and_then(|c| c.get("raw"))
+        .and_then(Value::as_f64);
+    let held = match (at(&held), set_raw) {
+        (Some((r, a)), raw) => match set::map_center(&[0; INTERVALS], r, a) {
+            Some((counts, _)) => match raw {
+                Some(raw) => format!("the set's at {counts:.1}, raw {raw:.1}"),
+                None => format!("the set's at {counts:.1}"),
+            },
+            None => "the set's angle map is unset".into(),
+        },
+        (None, _) => "the set holds no angle map".into(),
+    };
+    format!("center: {servo}; {held}")
 }
 
 /// Refused with nothing written: torque on.

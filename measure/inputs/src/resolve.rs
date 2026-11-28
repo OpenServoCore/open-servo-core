@@ -554,7 +554,7 @@ pub fn resolve(
         }
         None => {}
     }
-    let centered = "centered between the stops; the run narrows it where the stops are closer than it and 1 deg inside each";
+    let centered = "centered on 0 deg; the run narrows it to the hold margin inside each stop where the stops are closer than that";
     match m.soft_travel_deg {
         Some(deg) => {
             out.soft_travel_deg = Some(deg);
@@ -581,13 +581,20 @@ pub fn resolve(
             ));
         }
     }
-    out.angle_cw_stop_deg = m.angle_cw_stop_deg;
+    out.center_offset_deg = m.center_offset_deg;
     l.number(
-        "motion.angle_cw_stop_deg",
+        "motion.center_offset_deg",
         Form::Stated,
-        m.angle_cw_stop_deg,
+        Some(m.center_offset_deg.unwrap_or(0.0)),
         "deg",
-        "policy.angle_cw_stop_deg",
+        "policy.center_offset_deg",
+    );
+    l.note(
+        match m.center_offset_deg {
+            Some(_) => "0 deg that many deg counterclockwise of the center of travel; the run clamps it to the furthest the soft window fits, and says so",
+            None => "0 deg at the center of travel, the policy stating no offset",
+        }
+        .into(),
     );
 
     let p = &policy.loops;

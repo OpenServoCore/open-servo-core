@@ -60,7 +60,9 @@ fn a_notebook_set_file_loads_and_round_trips() {
 /// But for the held field, and for the soft pair, which the rules now set
 /// to the rated 180 deg centered between the stops, clamped to K inside
 /// each (132 / 3742), and to the record's 314 / 3560 at the record's soft
-/// travel.
+/// travel; and for the angle map, which the rules center: 0 deg at the
+/// contacts' midpoint, -9217 / 9217, where the record put it at the
+/// clockwise stop, 0 / 18433. The set reports the center beside the map.
 #[test]
 fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
     let ours = rules_set(&inputs(), &table());
@@ -79,9 +81,26 @@ fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
                 assert_eq!(ours.value(name).and_then(|v| v.as_i64()), Some(rated));
                 assert_eq!(at_record.value(name), Some(v), "{name}");
             }
+            "angle_min_cdeg" | "angle_max_cdeg" => {
+                let centered = if name == "angle_min_cdeg" {
+                    -9217
+                } else {
+                    9217
+                };
+                assert_eq!(ours.value(name).and_then(|v| v.as_i64()), Some(centered));
+            }
             _ => assert_eq!(ours.value(name), Some(v), "{name}"),
         }
     }
+    assert_eq!(
+        ours.center(),
+        Some(
+            &serde_json::json!({"counts": 1937.0, "raw": 1963.08, "offset_deg": 0.0,
+                                 "asked_offset_deg": null, "clamped": false})
+        )
+    );
+    assert_eq!(rec.center(), None);
+    assert_eq!(SetFile::parse(&ours.render()).expect("round trip"), ours);
     assert_eq!(ours.table(), rec.table());
     assert_eq!(ours.slots(), rec.slots());
 }
