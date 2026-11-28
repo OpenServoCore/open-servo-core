@@ -21,7 +21,6 @@
   "stall_speed": {"deg_s": 24.84},
   "pos_error_deg": 9.9,
   "pos_error_time_ms": 100.0,
-  "soft_margin_share": 0.0625,
   "hold_band_noise_multiple": 2.5,
   "hold_band_floor_counts": 4,
   "pot_jump": {"counts": 64},

@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::nameplate::{GearClass, NoLoad, VoltRange};
@@ -43,9 +44,15 @@ pub struct ServoProfile {
     pub brushes: Option<u32>,
     #[serde(default)]
     pub rotor_segments: Option<u32>,
-    /// The output's travel from stop to stop, deg.
+    /// The output's travel as the maker rates it, deg: the soft window's
+    /// width unless the policy states its own, and the price the first
+    /// moves are paced at. The stops are measured.
     #[serde(default)]
-    pub travel_deg: Option<f64>,
+    pub rated_travel_deg: Option<f64>,
+    /// A field this tool no longer reads: its presence is refused, naming
+    /// the rated travel to enter instead.
+    #[serde(default, rename = "travel_deg", skip_serializing)]
+    pub(crate) retired_travel_deg: Option<IgnoredAny>,
     /// Whether the count rises as the horn turns counterclockwise, facing it.
     #[serde(default)]
     pub count_rises_ccw: Option<bool>,
@@ -207,17 +214,17 @@ impl ServoProfile {
     /// [`crate::resolve`].
     pub fn check(&self) -> Result<(), String> {
         check_key("profile", &self.key)?;
+        if self.retired_travel_deg.is_some() {
+            return Err(why::RETIRED_TRAVEL_DEG.into());
+        }
         if self.gear_class.is_none() {
             return Err(why::gear_class());
         }
         if !self.gear_ratio.is_some_and(|r| r.is_finite() && r > 0.0) {
             return Err(why::gear_ratio());
         }
-        if !self
-            .travel_deg
-            .is_some_and(|t| t.is_finite() && t > 0.0 && t <= 360.0)
-        {
-            return Err(why::travel_deg());
+        if !self.rated_travel_deg.is_some_and(why::within_a_turn) {
+            return Err(why::rated_travel_deg());
         }
         if self.count_rises_ccw.is_none() {
             return Err(why::count_rises_ccw());

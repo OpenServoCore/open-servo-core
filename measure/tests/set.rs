@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{descriptor, inputs, record, rules_set, table, text};
+use common::{descriptor, inputs, record, record_inputs, rules_set, table, text};
 use osc_ident_inputs::profile::FieldSource;
 use osc_ident_inputs::{read, resolve, upgrade_with};
 use osc_measure::build;
@@ -57,14 +57,28 @@ fn a_notebook_set_file_loads_and_round_trips() {
     assert_eq!(again.render(), ours.render());
 }
 
+/// But for the held field, and for the soft pair, which the rules now set
+/// to the rated 180 deg centered between the stops, clamped to K inside
+/// each (132 / 3742), and to the record's 314 / 3560 at the record's soft
+/// travel.
 #[test]
 fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
     let ours = rules_set(&inputs(), &table());
+    let at_record = rules_set(&record_inputs(), &table());
     let rec = record();
     assert_eq!(ours.values().len(), 62);
     for (name, v) in rec.values() {
         match name {
             "fric_breakaway_counts" => assert_eq!(ours.value(name), None),
+            "pos_min_soft_counts" | "pos_max_soft_counts" => {
+                let rated = if name == "pos_min_soft_counts" {
+                    132
+                } else {
+                    3742
+                };
+                assert_eq!(ours.value(name).and_then(|v| v.as_i64()), Some(rated));
+                assert_eq!(at_record.value(name), Some(v), "{name}");
+            }
             _ => assert_eq!(ours.value(name), Some(v), "{name}"),
         }
     }

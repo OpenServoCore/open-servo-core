@@ -756,8 +756,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &ProbeInputs<'_>) -> Result<Be
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let travel_deg = np
-        .travel_deg
-        .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
+        .rated_travel_deg
+        .ok_or_else(|| Refused("the nameplate has no usable rated_travel_deg".into()))?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);
     let pos = rest::pos_now(rig.c, rig.id, rig.d).await?;
@@ -1086,7 +1086,7 @@ async fn body<P: Pipe>(
         )));
     }
     lines.push(format!(
-        "part B: pulses of {} s with {} s of coast from {:.3} V up {:.3} V a level to the ceiling, +duty then -duty, the first pair that moves repeated; moving is {:.0} counts (the larger of {} and {} x the rest sd {:.2}); travel priced at {:.0} counts/s at {} V (the nameplate's {:.0} deg/s, {:.2} counts/deg: the converter's {ADC_COUNTS} counts over the nameplate's {:.1} deg travel); back-EMF read over the coast's first {} rows, at least the larger of {} counts and {} x the largest a level-0 pulse that left the pot still shows; a wedged train gets one press each way at {:.2}% duty ({:.3} V, the speed voltage or the servo's duty_max_q15) for at most {} s; every drive under a dead-man of {} ticks ({} s), priced into its time",
+        "part B: pulses of {} s with {} s of coast from {:.3} V up {:.3} V a level to the ceiling, +duty then -duty, the first pair that moves repeated; moving is {:.0} counts (the larger of {} and {} x the rest sd {:.2}); travel priced at {:.0} counts/s at {} V (the nameplate's {:.0} deg/s, {:.2} counts/deg: the converter's {ADC_COUNTS} counts over the profile's rated {:.1} deg travel); back-EMF read over the coast's first {} rows, at least the larger of {} counts and {} x the largest a level-0 pulse that left the pot still shows; a wedged train gets one press each way at {:.2}% duty ({:.3} V, the speed voltage or the servo's duty_max_q15) for at most {} s; every drive under a dead-man of {} ticks ({} s), priced into its time",
         polarity::PULSE_S,
         polarity::COAST_S,
         cfg.volts(cfg.start_q15),
@@ -1384,7 +1384,7 @@ fn result_json(
             "r_price_ohm": c.r_ohm, "unwedge_q15": c.unwedge_q15,
             "threshold_counts": c.threshold, "emf_min_counts": c.emf_min, "emf_floor_gain": polarity::EMF_FLOOR_GAIN,
             "emf_bound_counts": l.emf_bound(), "rated_cps": c.rated_cps,
-            "counts_per_deg": {"value": b.counts_per_deg, "source": "the converter's counts over the nameplate's travel_deg: more than the pot spans, so travel is priced high"},
+            "counts_per_deg": {"value": b.counts_per_deg, "source": "the converter's counts over the profile's rated_travel_deg: more than the pot spans, so travel is priced high"},
             "pulses": l.pulses().iter().map(|p| json!({
                 "n": p.planned.n, "level": p.planned.level, "repeat": p.planned.repeat, "unwedge": p.planned.unwedge, "dir": p.planned.dir,
                 "duty_q15": p.planned.duty_q15, "volts": p.planned.volts, "time_s": p.planned.time_s, "priced_counts": p.planned.priced_counts,

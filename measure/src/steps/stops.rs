@@ -401,8 +401,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let travel_deg = np
-        .travel_deg
-        .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
+        .rated_travel_deg
+        .ok_or_else(|| Refused("the nameplate has no usable rated_travel_deg".into()))?;
     let servo = meta::servo(&state, rig.d, &line);
     let pos_read = read_pos(rig.c, rig.id, rig.d).await?;
     let pos = pos_read.pos;
@@ -1317,9 +1317,10 @@ pub fn advice(name: &str) -> &'static str {
 }
 
 /// The stops' checks, pure: each stop's seats and their spread and the
-/// span against the converter and the nameplate's travel, reported; the
-/// start between them, a stop by a rail.
-pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
+/// span against the converter, reported; the start between them, a stop by
+/// a rail. The seats pace the steps after and are reported; no degree is
+/// read off them (the table step reads the stops by the ripple).
+pub fn judge_stops(seek: &Seek) -> Vec<Check> {
     let (Some(lo), Some(hi)) = (stop_read(seek, Stop::Low), stop_read(seek, Stop::High)) else {
         return vec![check(
             "both stops found",
@@ -1356,13 +1357,6 @@ pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
             lo.median,
             hi.median,
             100.0 * span / ADC_COUNTS
-        ),
-    ));
-    out.push(Check::reported(
-        "the span over the nameplate's travel",
-        format!(
-            "{span:.0} counts over the nameplate's {travel_deg:.1} deg: {:.2} counts/deg",
-            span / travel_deg
         ),
     ));
     let start = seek.start_pos().unwrap_or(f64::NAN);
@@ -1613,7 +1607,7 @@ pub async fn stops<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result
     if let Some(s) = &found.seek {
         lines.extend(s.path().iter().map(|p| format!("decision: {p}")));
         if finished {
-            checks.extend(judge_stops(s, b.travel_deg));
+            checks.extend(judge_stops(s));
             checks.extend(judge_r(&read, &found.shots));
         }
         checks.push(judge_reads(Some(s), &found.torn));
@@ -1710,8 +1704,7 @@ fn result_json(
         json!({
             "low": one(Stop::Low), "high": one(Stop::High),
             "travel_counts": span,
-            "counts_per_deg": span.map(|x| x / b.travel_deg),
-            "travel_deg": {"value": b.travel_deg, "source": "the nameplate's travel_deg"},
+            "rated_travel_deg": {"value": b.travel_deg, "source": "the profile's rated_travel_deg"},
             "start_counts": s.start_pos(),
             "seats": s.seats().iter().map(|x| json!({"n": x.n, "stop": x.stop.word(), "pos_counts": x.pos, "range_counts": x.range, "walk_counts": x.walk})).collect::<Vec<_>>(),
             "legs": s.legs().iter().map(|l| json!({"n": l.n, "kind": l.kind.word(), "toward": l.toward.word(), "from_counts": l.from, "to_counts": l.to, "secs": l.secs, "top_q15": l.top_q15, "top_v": s.cfg().volts(l.top_q15)})).collect::<Vec<_>>(),
@@ -2622,31 +2615,31 @@ mod tests {
     }
 
     /// The stops of the bench servo pass; a jam short of the low stop that
-    /// seated three times is accepted, its short span reported against the
-    /// nameplate's travel; a stop by a converter rail is accepted and
-    /// flagged.
+    /// seated three times is accepted, its short span reported; a stop by
+    /// a converter rail is accepted and flagged. No degree is read off the
+    /// seats.
     #[test]
     fn the_stops_are_judged_by_their_seats_and_start_and_the_span_reported() {
-        let travel = 184.33;
-        let ok = judge_stops(&found(2000.0, 432.0, 3626.0, None), travel);
+        let ok = judge_stops(&found(2000.0, 432.0, 3626.0, None));
         assert!(
             ok.iter()
                 .all(|c| matches!(c.verdict, Verdict::Pass | Verdict::NotJudged)),
             "{ok:?}"
         );
 
-        let jam = judge_stops(&found(2000.0, 432.0, 3626.0, Some(1900.0)), travel);
+        let jam = judge_stops(&found(2000.0, 432.0, 3626.0, Some(1900.0)));
         assert!(jam.iter().all(|c| c.verdict != Verdict::Fail), "{jam:?}");
-        let (v, said) = verdict(&jam, "the span over the nameplate's travel");
-        assert_eq!(v, Verdict::NotJudged, "{said}");
-        assert!(said.contains("counts/deg"), "{said}");
+        assert!(
+            jam.iter().all(|c| !c.value.contains("counts/deg")),
+            "{jam:?}"
+        );
 
-        let short = judge_stops(&found(2000.0, 1500.0, 2400.0, None), travel);
+        let short = judge_stops(&found(2000.0, 1500.0, 2400.0, None));
         let (v, said) = verdict(&short, "the stops' span");
         assert_eq!(v, Verdict::NotJudged, "{said}");
         assert!(said.contains("900 counts"), "{said}");
 
-        let rail = judge_stops(&found(2000.0, 4.0, 3626.0, None), travel);
+        let rail = judge_stops(&found(2000.0, 4.0, 3626.0, None));
         let (v, said) = verdict(&rail, "no stop at a converter rail");
         assert!(
             v == Verdict::Warn && said.contains("low stop at 4"),
@@ -2669,7 +2662,7 @@ mod tests {
             .map(|x| x.pos)
             .collect();
         assert_eq!(low, [6.0, 12.0, 109.0]);
-        let checks = judge_stops(&m, 184.33);
+        let checks = judge_stops(&m);
         assert!(
             checks.iter().all(|c| c.verdict != Verdict::Fail),
             "{checks:?}"

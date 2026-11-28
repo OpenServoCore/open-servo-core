@@ -420,7 +420,7 @@ fn the_pooled_table_matches_the_reference() {
     // the ripple scale at the nameplate's two brushes, three segments and
     // counted gear ratio, stop to stop: the reference's
     // at the stops, and the gather fixture's, made from this fit pinned
-    // to its stops 107 and 3729
+    // at 96 and 3744
     assert_eq!(events_per_rev(), 6);
     let scale = |lo, hi| {
         p.table
@@ -434,11 +434,11 @@ fn the_pooled_table_matches_the_reference() {
         1e-3,
     );
     let gathered = f(&json("testdata/gather/table.json")["scale"]["counts_per_deg"]);
-    near("pooled counts a degree", scale(107, 3729), gathered, 1e-6);
+    near("pooled counts a degree", scale(96, 3744), gathered, 1e-6);
     println!(
-        "pooled counts a degree {:.4} at the stops {STOPS:?}, {:.4} at 107..3729",
+        "pooled counts a degree {:.4} at the stops {STOPS:?}, {:.4} at 96..3744",
         scale(STOPS.0, STOPS.1),
-        scale(107, 3729)
+        scale(96, 3744)
     );
     // past the common span the table rests on one direction alone
     let (up, down) = (p.up.expect("up"), p.down.expect("down"));
@@ -601,7 +601,7 @@ fn the_crawl_set_names_carry_3_thin() {
 }
 
 /// The pot-hole rule over the four clean mid-travel passes, each its own
-/// pass, at the stops of record: every cycle inner, no hole, the noise and
+/// pass, none reaching a stop: every cycle inner, no hole, the noise and
 /// the line as the reference reads them (bringup `kb/scratch/pot-holes`,
 /// `run_all.py`'s ident-slice2 A reading: s 1.37, line 6.49).
 #[test]
@@ -615,11 +615,12 @@ fn the_clean_passes_hold_no_pot_hole() {
             pass: k + 1,
             dir: s.dir,
             cycles: postable::cycles(&s),
+            inner_until: None,
         })
         .collect();
     let lens: Vec<usize> = reads.iter().map(|r| r.cycles.len()).collect();
     assert_eq!(lens, [588, 617, 596, 617]);
-    let h = judge_pot_holes(&reads, RECORD_STOPS.0, RECORD_STOPS.1);
+    let h = judge_pot_holes(&reads);
     assert_eq!(h.holes, []);
     assert_eq!((h.cycles, h.inner_cycles), (2418, 2418));
     let s = h.s.expect("s");

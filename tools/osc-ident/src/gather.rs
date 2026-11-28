@@ -40,7 +40,7 @@ mod tests {
         let run = dir.join("run");
         std::fs::create_dir_all(run.join("results")).expect("mkdir");
         files::step_0(&run);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 run.join(format!("results/{f}.json")),
@@ -56,7 +56,7 @@ mod tests {
         )
         .expect("gathers");
         let text = lines.join("\n");
-        assert!(text.contains("stops 107 to 3729 counts"), "{text}");
+        assert!(text.contains("stops 96 to 3744 counts"), "{text}");
         assert!(
             text.contains("cross-check stall current at 4.8 V, V / R"),
             "{text}"
@@ -103,12 +103,12 @@ mod tests {
             "never writes over an inputs folder"
         );
         let r = files::rules_inputs(&out, None).expect("the rules read it");
-        assert_eq!(r.table.as_ref().map(|t| t.stops), Some((107, 3729)));
+        assert_eq!(r.table.as_ref().map(|t| t.stops), Some((96, 3744)));
         // without a gain the speed loop is held: `rules` still writes a set
         let set_out = dir.join("set.json");
         crate::rules(&out, None, None, &set_out).expect("rules");
         let set = files::set(&set_out).expect("set");
-        assert_eq!(set.table().0, "IDENTITY");
+        assert_eq!(set.table().0, "LIVE");
         assert!(set.value("v_kp_q88").is_none() && set.value("r_q12").is_some());
 
         std::fs::remove_file(run.join("results/stops.json")).expect("rm");
@@ -161,7 +161,7 @@ mod tests {
         let run = dir.join("run");
         std::fs::create_dir_all(run.join("results")).expect("mkdir");
         files::step_0(&run);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 run.join(format!("results/{f}.json")),

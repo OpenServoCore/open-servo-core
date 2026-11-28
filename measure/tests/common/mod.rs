@@ -86,7 +86,40 @@ struct Slots {
 }
 
 /// The set the rules give for `inputs` over `table`, as the CLI writes it.
+/// The record's soft pair, 314 / 3560 about the middle of its stops 82 /
+/// 3792, as a soft travel: the record's inputs with it give the set of
+/// record's soft limits, which the rated 180 deg no longer does.
+pub fn record_soft_travel_deg() -> f64 {
+    (3560.0 - 314.0) / 20.126631678008682
+}
+
+/// The record's inputs with [`record_soft_travel_deg`]: their rules give
+/// the set of record but for its held field.
+pub fn record_inputs() -> Inputs {
+    let mut i = inputs();
+    i.policy.soft_travel_deg = Some(record_soft_travel_deg());
+    i
+}
+
 pub fn rules_set(inputs: &Inputs, table: &TableFile) -> SetFile {
+    set_of(&build(inputs), inputs, table)
+}
+
+/// The rules' set with the soft limits 0 / 0, off: what an application
+/// that turned them off leaves on the servo.
+pub fn rules_set_soft_off(inputs: &Inputs, table: &TableFile) -> SetFile {
+    let mut rules = build(inputs);
+    for (name, outcome) in &mut rules.fields {
+        if let ("pos_min_soft_counts" | "pos_max_soft_counts", osc_measure::Outcome::Bound(e)) =
+            (*name, outcome)
+        {
+            e.value = 0;
+        }
+    }
+    set_of(&rules, inputs, table)
+}
+
+fn set_of(rules: &osc_measure::Set, inputs: &Inputs, table: &TableFile) -> SetFile {
     let slots: Slots = load("testdata/mg90-d/wide-codes.json");
     let files = vec![(
         "measured".to_string(),
@@ -94,7 +127,7 @@ pub fn rules_set(inputs: &Inputs, table: &TableFile) -> SetFile {
         file_sha1(text("testdata/mg90-d/measured.json").as_bytes()),
     )];
     let (set, _) = set::from_rules(
-        &build(inputs),
+        rules,
         &FromRules {
             pair: "mg90-d__dev-v006",
             nameplate: &inputs.nameplate,

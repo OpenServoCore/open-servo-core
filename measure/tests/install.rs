@@ -66,7 +66,7 @@ fn install_writes_only_what_differs() {
     let checked = block_on(check(&mut c, ID, &descriptor(), &old)).expect("check");
     assert!(checked.clean(), "{:?}", checked.differences);
 
-    let mut i = inputs();
+    let mut i = record_inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
     let set = rules_set(&i, &table());
     log.borrow_mut().clear();
@@ -91,15 +91,13 @@ fn install_writes_only_what_differs() {
     assert!(checked.differences[0].starts_with("velocity_limit_cps: servo 3019, set 4025"));
 }
 
-/// Soft limits off (no margin share) install over limits that are on, and
-/// back: each way the pair is one write, since 0 / 0 is no side alone.
+/// Soft limits off install over limits that are on, and back: each way
+/// the pair is one write, since 0 / 0 is no side alone.
 #[test]
 fn the_soft_limits_go_off_and_on_in_one_write() {
     let (mut c, log) = on_record();
     let pair = (field_addr("pos_min_soft_counts").0, 8);
-    let mut i = inputs();
-    i.policy.soft_margin_share = None;
-    let off = rules_set(&i, &table());
+    let off = rules_set_soft_off(&inputs(), &table());
     assert_eq!(
         off.value("pos_min_soft_counts").and_then(|v| v.as_i64()),
         Some(0)
@@ -434,7 +432,7 @@ fn a_refusal_after_the_first_write_reboots_to_the_saved_state() {
 fn a_set_that_moves_a_protection_installs_and_says_the_move() {
     let (mut c, _) = on_record();
     let with = |f: &dyn Fn(&mut osc_measure::Inputs)| {
-        let mut i = inputs();
+        let mut i = record_inputs();
         f(&mut i);
         rules_set(&i, &table())
     };
@@ -490,7 +488,7 @@ fn torque_on_refuses_every_write_verb() {
     assert_eq!(block_on(c.read(ID, torque, 1)).expect("read"), [1]);
     log.borrow_mut().clear();
 
-    let mut i = inputs();
+    let mut i = record_inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
     let (r, _) = install_set(&mut c, &rules_set(&i, &table()));
     let refusals = [
@@ -567,7 +565,7 @@ fn the_tool_has_no_factory_path() {
     let s = block_on(state::read(&mut c, ID, &d)).expect("state");
     assert_eq!(s.store.status & CONFIG_DEFAULTS, CONFIG_DEFAULTS);
     log.borrow_mut().clear();
-    let mut i = inputs();
+    let mut i = record_inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
     let (r, _) = install_set(&mut c, &rules_set(&i, &table()));
     r.expect("install");
