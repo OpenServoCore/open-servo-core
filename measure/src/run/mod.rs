@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use self::steps::StepInputs;
 pub use self::store::{At, Store};
 use crate::set::file_sha1;
-use crate::steps::cruise;
+use crate::steps::{Unit, cruise};
 
 /// The steps past the measurement chain, by their keys in `run.json`.
 pub const GATHER: &str = "gather";
@@ -75,6 +75,14 @@ pub enum Progress {
         at: u32,
         of: u32,
     },
+    /// Unit `at` of `of` inside the step begins: the step's planned count
+    /// at that moment, which never falls within it; `what` names the unit.
+    Unit {
+        step: &'static str,
+        at: u32,
+        of: u32,
+        what: &'static str,
+    },
     /// Lines as the CLI prints them, once said: a run's, in order, are
     /// the lines it returns.
     Lines { lines: Vec<String> },
@@ -88,6 +96,19 @@ pub enum Progress {
 
 /// The feed of a host that prints the lines at the end.
 pub fn quiet(_: &Progress) {}
+
+/// A rig's `tell` for the step keyed `step` in `run.json`: each unit told
+/// to `feed`.
+pub fn teller<'a>(feed: &'a dyn Fn(&Progress), step: &'static str) -> impl Fn(Unit) + 'a {
+    move |u: Unit| {
+        feed(&Progress::Unit {
+            step,
+            at: u.at,
+            of: u.of,
+            what: u.what,
+        })
+    }
+}
 
 /// The lines said past `told`, told.
 fn tell_lines(feed: &dyn Fn(&Progress), lines: &[String], told: &mut usize) {

@@ -68,6 +68,16 @@ pub const ENABLE_S: f64 = 0.2;
 /// The small steps: this share of the travel, each in one burst of
 /// [`SMALL_S`].
 pub const SMALL_SHARE: f64 = 0.01;
+/// The check's small steps: out and back each way.
+pub const SMALLS: usize = 4;
+
+/// The units the check tells, each before a goal write with the loop
+/// holding still: the first enable, the small steps, the self-test's
+/// `moves`, the `wide` holds of its slotted wide codes, and the return to
+/// the middle.
+pub fn units(moves: usize, wide: usize) -> u32 {
+    (1 + SMALLS + moves + wide + 1) as u32
+}
 pub const SMALL_S: f64 = 0.1;
 /// The self-test's moves, shares of the travel, each way from the middle.
 pub const SIZES: [f64; 3] = [0.01, 0.10, 0.33];
@@ -910,6 +920,17 @@ async fn body<P: Pipe>(
     ledger.keep(rig.c, rig.id, rig.d, "mode").await?;
     let goal0 = theta(rig).await?;
     found.goal0 = Some(goal0 as f64);
+    let of = units(b.moves.len(), b.wide.len());
+    let mut at = 0;
+    let mut tell = |rig: &Rig<'_, P>| {
+        at += 1;
+        (rig.tell)(super::Unit {
+            at,
+            of,
+            what: "move",
+        })
+    };
+    tell(rig);
     write(rig, "goal_position", &goal0.to_le_bytes()).await?;
     write(rig, "mode", &[position]).await?;
     write(rig, "bus_deadman_ticks", &b.deadman_ticks.to_le_bytes()).await?;
@@ -959,6 +980,7 @@ async fn body<P: Pipe>(
         ("- out", g - s),
         ("- back", g),
     ] {
+        tell(rig);
         let (bu, fault) = shot(
             rig,
             b,
@@ -1023,6 +1045,7 @@ async fn body<P: Pipe>(
     }
     for m in &b.moves {
         interrupted(rig.stop)?;
+        tell(rig);
         let plan = json!({"phase": "self-test", "move": m.name, "size_share": m.size,
                           "from_counts": m.from, "goal_counts": m.goal});
         let (bursts, fault) = capture(rig, b, &mut w, taken, m.rows, m.goal as i32, &plan).await?;
@@ -1061,6 +1084,7 @@ async fn body<P: Pipe>(
     lines.push(wide_said(b));
     for s in &b.wide {
         interrupted(rig.stop)?;
+        tell(rig);
         let plan = json!({"phase": s.test(), "stuck_code": s.code.stuck, "skipped": s.code.skipped,
                           "side": s.side.name(), "raw_counts": s.raw, "goal_counts": s.goal, "ms": s.ms});
         let rows = rows_for(s.ms as f64 / 1e3, b.tick_hz);
@@ -1081,6 +1105,7 @@ async fn body<P: Pipe>(
         found.wide.push((s.clone(), bursts));
     }
 
+    tell(rig);
     write(rig, "goal_position", &(b.mid as i32).to_le_bytes()).await?;
     let tol = b.deadband + CENTER_TOL;
     let mut still = 0;

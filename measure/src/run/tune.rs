@@ -331,6 +331,7 @@ where
                 sink: &mut tsink,
                 stop,
                 clock,
+                tell: &super::teller(feed, TUNE),
             };
             check(
                 &mut rig,

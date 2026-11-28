@@ -994,15 +994,33 @@ mod tests {
             &mut host,
             &args(&g, &dir),
             &root,
-            async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| cruised(rig, Way::Done, &doc),
+            async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| {
+                (rig.tell)(osc_measure::steps::Unit {
+                    at: 1,
+                    of: 4,
+                    what: "speed",
+                });
+                cruised(rig, Way::Done, &doc)
+            },
             async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
                 let (way, failed) = script[at];
                 at += 1;
+                (rig.tell)(osc_measure::steps::Unit {
+                    at: 1,
+                    of: 20,
+                    what: "move",
+                });
                 checked_on(rig, way, failed)
             },
         ))
         .expect("finishes");
         assert_eq!(f.last["state"], "accepted", "{}", f.last);
+        let moved = Progress::Unit {
+            step: "final",
+            at: 1,
+            of: 20,
+            what: "move",
+        };
         let told = told.take();
         let events: Vec<&Progress> = told
             .iter()
@@ -1017,6 +1035,12 @@ mod tests {
             events,
             [
                 &Progress::Started { step: "cruise" },
+                &Progress::Unit {
+                    step: "cruise",
+                    at: 1,
+                    of: 4,
+                    what: "speed"
+                },
                 &Progress::Ended {
                     step: "cruise",
                     state: "accepted".into(),
@@ -1024,8 +1048,11 @@ mod tests {
                 },
                 &Progress::Started { step: "final" },
                 &tried(1),
+                &moved,
                 &tried(2),
+                &moved,
                 &tried(3),
+                &moved,
             ]
         );
         let said: Vec<String> = told

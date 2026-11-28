@@ -91,6 +91,9 @@ pub const LEGS_EACH: usize = 2;
 /// before ran out. The plan keeps a speed's drift at this gap inside its
 /// span; a longer gap ends the speed.
 pub const GAP_S: f64 = 0.03;
+/// The units the step tells: each speed of [`SPEEDS`]; one left out or
+/// ended early is passed over.
+pub const UNITS: u32 = SPEEDS.len() as u32;
 /// A leg shortened under this share of its length is no leg: the speed
 /// is left out.
 pub const LEG_MIN_SHARE: f64 = 0.5;
@@ -1047,6 +1050,11 @@ async fn body<P: Pipe>(
     found.trusted = true;
     for (k, p) in b.plan.speeds.iter().enumerate() {
         interrupted(rig.stop)?;
+        (rig.tell)(super::Unit {
+            at: SPEEDS.iter().position(|s| s.0 == p.share).unwrap_or(k) as u32 + 1,
+            of: UNITS,
+            what: "speed",
+        });
         let (leg_rows, stop_rows) = b.bursts[k];
         let at = go_to(rig, b, &mut w, found, p.start, true).await?;
         lines.push(format!(

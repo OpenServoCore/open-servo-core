@@ -380,6 +380,7 @@ fn run_on(
         sink,
         stop,
         clock: &clock,
+        tell: &osc_measure::steps::untold,
     };
     block_on(cruise::cruise(
         &mut rig,

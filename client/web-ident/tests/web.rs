@@ -111,7 +111,8 @@ fn manifest(o: &RunOutcome) -> serde_json::Value {
 }
 
 /// The run on the simulated servo stops at the probe: the callback is told
-/// each step's start and end as JSON (a `why` of none as null) and every
+/// each step's start, its units and its end as JSON (a `why` of none as
+/// null) and every
 /// line the outcome carries; the outcome holds `run.json` in the servo's
 /// run folder; the handle runs once.
 #[wasm_bindgen_test]
@@ -144,6 +145,26 @@ async fn a_page_run_tells_its_callback_and_hands_back_its_folder() {
         ("probe", Some("aborted"))
     );
     assert!(ended[1].2.as_string().is_some());
+    let units: Vec<(String, f64, f64, String)> = told
+        .iter()
+        .filter(|p| get(p, "event").as_string().as_deref() == Some("unit"))
+        .map(|p| {
+            (
+                get(&p, "step").as_string().unwrap_or_default(),
+                get(&p, "at").as_f64().unwrap_or_default(),
+                get(&p, "of").as_f64().unwrap_or_default(),
+                get(&p, "what").as_string().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        units,
+        [
+            ("rest".to_string(), 1.0, 2.0, "burst".to_string()),
+            ("rest".to_string(), 2.0, 2.0, "burst".to_string()),
+            ("probe".to_string(), 1.0, 17.0, "burst".to_string())
+        ]
+    );
     let lines: Vec<String> = told
         .iter()
         .filter(|p| get(p, "event").as_string().as_deref() == Some("lines"))

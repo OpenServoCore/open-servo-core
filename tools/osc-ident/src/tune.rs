@@ -88,7 +88,7 @@ mod tests {
     use osc_measure::guard::{Exit, Way};
     use osc_measure::scorecard::{self as sc, Lin};
     use osc_measure::state;
-    use osc_measure::steps::{Check, Ended, Verdict};
+    use osc_measure::steps::{Check, Ended, Unit, Verdict};
 
     use super::*;
 
@@ -418,6 +418,13 @@ mod tests {
         let mut host = crate::host(&mut fs, &stop);
         host.feed = &feed;
         let check = async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
+            for at in 1..=2 {
+                (rig.tell)(Unit {
+                    at,
+                    of: 2,
+                    what: "move",
+                });
+            }
             verified(rig, Way::Refused, &[sc::QUIET])
         };
         let (_, accepted) = block_on(of::tune_with(
@@ -432,11 +439,23 @@ mod tests {
         ))
         .expect("runs");
         assert!(!accepted);
+        let unit = |at| Progress::Unit {
+            step: "tune",
+            at,
+            of: 2,
+            what: "move",
+        };
         let tries: Vec<Progress> = (1..=3)
-            .map(|at| Progress::Try {
-                step: "tune",
-                at,
-                of: 3,
+            .flat_map(|at| {
+                [
+                    Progress::Try {
+                        step: "tune",
+                        at,
+                        of: 3,
+                    },
+                    unit(1),
+                    unit(2),
+                ]
             })
             .collect();
         assert_eq!(told.take(), tries);

@@ -171,6 +171,17 @@ pub struct Schedule {
 }
 
 impl Schedule {
+    /// The passes it plans, the units the step tells: the half pass, then
+    /// two a round trip; each slow round trip added adds two.
+    pub fn passes(&self) -> u32 {
+        (1 + 2 * (self.slow_round_trips + self.fast_round_trips)) as u32
+    }
+
+    /// [`Schedule::passes`] with every slow round trip it may add.
+    pub fn passes_max(&self) -> u32 {
+        self.passes() + 2 * self.extra_slow_max as u32
+    }
+
     /// Two slow and two fast round trips, two slow ones more at most.
     pub const PLAN: Schedule = Schedule {
         slow_round_trips: 2,
@@ -1790,7 +1801,16 @@ async fn body<P: Pipe>(
     ));
     let mut seen = Speeds::of_legs(&b.stops.legs);
     let mut pass = 1;
+    let mut of = sched.passes();
+    let tell = |rig: &Rig<'_, P>, pass: usize, of: u32, what| {
+        (rig.tell)(super::Unit {
+            at: pass as u32,
+            of,
+            what,
+        })
+    };
     let place = |pass, kind, dir| Place { pass, kind, dir };
+    tell(rig, pass, of, "slow pass");
     let mut at = slow_pass(
         rig,
         b,
@@ -1829,10 +1849,12 @@ async fn body<P: Pipe>(
             if !more {
                 break;
             }
+            of += 2;
         }
         trips += 1;
         for dir in [1i8, -1] {
             pass += 1;
+            tell(rig, pass, of, "slow pass");
             at = slow_pass(
                 rig,
                 b,
@@ -1850,6 +1872,7 @@ async fn body<P: Pipe>(
     for _ in 0..sched.fast_round_trips {
         for dir in [1i8, -1] {
             pass += 1;
+            tell(rig, pass, of, "fast pass");
             fast_pass(
                 rig,
                 b,
@@ -3965,6 +3988,7 @@ mod tests {
         c: Client<Spy>,
         sink: MemSink,
         log: Vec<Sent>,
+        told: Vec<crate::steps::Unit>,
     }
 
     fn run(m: Motor, stops: Value, schedule: Schedule, also: OnSent) -> Ran {
@@ -3980,6 +4004,7 @@ mod tests {
         let (rest, probe) = (rest_json(), probe_json(stored));
         let clock = testkit::clock();
         let stop = AtomicBool::new(false);
+        let told = crate::steps::testkit::Told::default();
         let mut sink = MemSink::default();
         let out = {
             let mut rig = Rig {
@@ -3989,6 +4014,7 @@ mod tests {
                 sink: &mut sink,
                 stop: &stop,
                 clock: &clock,
+                tell: &told.tell(),
             };
             block_on(table(
                 &mut rig,
@@ -4004,7 +4030,13 @@ mod tests {
             ))
         };
         let log = log.borrow().clone();
-        Ran { out, c, sink, log }
+        Ran {
+            out,
+            c,
+            sink,
+            log,
+            told: told.take(),
+        }
     }
 
     fn torque_off(c: &mut Client<Spy>) -> bool {
@@ -4060,6 +4092,10 @@ mod tests {
         testkit::fields_back(&mut r.c, &descriptor(), true, &e.exit.to_string());
         let res = result(&mut r.sink);
         assert_eq!(res["verdict"], "accepted");
+        testkit::told_in_order(&r.told, &["slow pass", "fast pass"]);
+        let last = r.told.last().expect("a pass told");
+        assert_eq!((last.at, last.what), (last.of, "fast pass"), "{:?}", r.told);
+        assert!(last.of >= REDUCED.passes(), "{:?}", r.told);
         holes_block_is_whole(&res["holes"], &t.checks);
         assert!(
             t.checks

@@ -65,6 +65,8 @@ use crate::sink::Sink;
 use crate::state::{self, State, field};
 
 pub const STEP: &str = "stops";
+/// The units the step tells: its seats, [`SEATS_A_STOP`] at each stop.
+pub const UNITS: u32 = 2 * SEATS_A_STOP as u32;
 pub const RESULT: &str = "results/stops.json";
 const METHOD: &str = "stops-and-seated-rl";
 const REVISION: u32 = 5;
@@ -1028,6 +1030,11 @@ async fn drive<P: Pipe>(
             Act::Seated(seat) => {
                 halt_drive(rig, b, &mut on).await?;
                 interrupted(rig.stop)?;
+                (rig.tell)(super::Unit {
+                    at: seat.n as u32,
+                    of: UNITS.max(seat.n as u32),
+                    what: "seat",
+                });
                 seat_bursts(rig, b, &seat, found, lines).await?;
                 interrupted(rig.stop)?;
                 let (p, t) = logged_poll(rig, seek, 0, found).await?;
@@ -1859,6 +1866,7 @@ mod tests {
         c: Client<Spy>,
         stored: bool,
         files: std::collections::BTreeMap<String, Vec<u8>>,
+        told: Vec<crate::steps::Unit>,
     }
 
     /// The step on the simulated servo, which has no motor and runs no
@@ -1888,6 +1896,7 @@ mod tests {
             t.set(t.get() + 0.011);
             t.get()
         };
+        let told = crate::steps::testkit::Told::default();
         let mut sink = MemSink::default();
         let stopped = {
             let mut rig = Rig {
@@ -1897,6 +1906,7 @@ mod tests {
                 sink: &mut sink,
                 stop,
                 clock: &clock,
+                tell: &told.tell(),
             };
             block_on(stops(
                 &mut rig,
@@ -1932,6 +1942,7 @@ mod tests {
             c,
             stored,
             files: sink.files,
+            told: told.take(),
         }
     }
 
@@ -2105,6 +2116,15 @@ mod tests {
             e.why.as_deref().unwrap_or("").contains("seat 1 burst 1"),
             "{:?}",
             e.why
+        );
+        assert_eq!(
+            r.told,
+            [crate::steps::Unit {
+                at: 1,
+                of: UNITS,
+                what: "seat"
+            }],
+            "the first seat told, at zero duty, before its bursts"
         );
         let rail_v = r.stopped.result.as_ref().expect("result")["rail_v"]
             .as_f64()

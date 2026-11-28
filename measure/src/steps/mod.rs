@@ -44,7 +44,22 @@ pub struct Rig<'a, P: Pipe> {
     pub stop: &'a AtomicBool,
     /// The host's clock, unix seconds: the browser's and the CLI's own.
     pub clock: &'a dyn Fn() -> f64,
+    /// Told each unit of the step's progress as it begins, only with the
+    /// shaft at rest: it reads no clock, sends nothing and writes nothing.
+    pub tell: &'a dyn Fn(Unit),
 }
+
+/// A unit of a step's progress: unit `at` of `of` begins. `at <= of`, and
+/// `of` never falls within a step; a retake tells its unit again.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Unit {
+    pub at: u32,
+    pub of: u32,
+    pub what: &'static str,
+}
+
+/// A rig's `tell` that tells no one.
+pub fn untold(_: Unit) {}
 
 /// Why a step stops short.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -501,5 +516,28 @@ mod tests {
             estimate(2.0, Scatter::Nominal, "V", "s")["n"],
             serde_json::Value::Null
         );
+    }
+}
+
+#[cfg(test)]
+mod units {
+    use super::*;
+
+    /// Each step's planned units, beside its constants: the counts its
+    /// progress is told over.
+    #[test]
+    fn each_step_plans_its_units() {
+        assert_eq!(rest::UNITS, 2);
+        assert_eq!(probe::units(probe::shots(5.0, 5.0).len()), 17);
+        assert_eq!(stops::UNITS, 6);
+        let plan = table::Schedule::PLAN;
+        assert_eq!((plan.passes(), plan.passes_max()), (9, 13));
+        assert_eq!(
+            (window::units(1), window::units(window::SETS_MAX)),
+            (24, 48)
+        );
+        assert_eq!(spins::units(), 15);
+        assert_eq!(cruise::UNITS, 4);
+        assert_eq!(verify::units(6, 8), 20);
     }
 }

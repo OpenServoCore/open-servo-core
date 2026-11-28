@@ -210,6 +210,7 @@ mod tests {
                 sink: &mut sink,
                 stop: &stop,
                 clock: &clock,
+                tell: &crate::steps::untold,
             };
             block_on(drive(
                 &mut rig,

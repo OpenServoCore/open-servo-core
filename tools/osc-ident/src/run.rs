@@ -581,6 +581,26 @@ mod tests {
             serde_json::to_value(&f.told[0]).expect("json"),
             serde_json::json!({"event": "started", "step": "rest"})
         );
+        let units: Vec<(usize, &str, u32, u32)> = f
+            .told
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                of::Progress::Unit { step, at, of, .. } => Some((i, *step, *at, *of)),
+                _ => None,
+            })
+            .collect();
+        let plain: Vec<(&str, u32, u32)> = units.iter().map(|&(_, s, a, o)| (s, a, o)).collect();
+        assert_eq!(plain, [("rest", 1, 2), ("rest", 2, 2), ("probe", 1, 17)]);
+        for &(i, step, _, _) in &units {
+            let begun = at(&f.told, &of::Progress::Started { step });
+            assert!(begun < i && i < end_of(step), "{step} unit at {i}");
+        }
+        let first = units[0].0;
+        assert_eq!(
+            serde_json::to_value(&f.told[first]).expect("json"),
+            serde_json::json!({"event": "unit", "step": "rest", "at": 1, "of": 2, "what": "burst"})
+        );
         let _ = std::fs::remove_dir_all(f.dir);
     }
 
@@ -910,6 +930,53 @@ mod parity {
         }
         assert!(names.iter().any(|n| n.contains("/captures/rest/")));
         assert_eq!(in_memory(&m, &out), files, "the same files");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The parity run of [`a_run_into_a_mem_sink_writes_what_the_cli_writes`],
+    /// once with the quiet feed and once with one that keeps every event, on
+    /// the quarter-second clock, each into a memory store of its own: the
+    /// same files byte for byte and the same lines, as a feed reads no
+    /// clock.
+    #[test]
+    fn a_listening_feed_changes_no_byte() {
+        let dir = scratch("parity-listening");
+        let [nameplate, policy, _] = given();
+        let out = dir.join("out");
+        let run = |feed: &dyn Fn(&of::Progress)| {
+            let a = RunArgs {
+                nameplate: &nameplate,
+                policy: &policy,
+                out: &out,
+                tries: 6,
+            };
+            let (mut c, d) = fake();
+            let mut m = holding(&given());
+            let inputs = of::admit(&mut m, &a, &mut Vec::new()).expect("admitted");
+            let stop = AtomicBool::new(false);
+            let clock = clock();
+            let mut host = Host {
+                files: &mut m,
+                clock: &clock,
+                stop: &stop,
+                feed,
+                tool: TOOL,
+            };
+            let (lines, _) =
+                block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
+            (lines, in_memory(&m, &out))
+        };
+        let quiet = run(&of::quiet);
+        let told = std::cell::RefCell::new(Vec::new());
+        let listening = run(&|p: &of::Progress| told.borrow_mut().push(p.clone()));
+        assert!(
+            told.borrow()
+                .iter()
+                .any(|p| matches!(p, of::Progress::Unit { .. })),
+            "the feed was told units"
+        );
+        assert!(quiet.1.len() > 3, "{:?}", quiet.1.len());
+        assert_eq!(listening, quiet);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -16,6 +16,7 @@ use crate::Board;
 use crate::inputs::ThermalInputs;
 use crate::nameplate::Nameplate;
 use crate::state::{State, field};
+use crate::steps::Unit;
 
 const OSC_EXCHANGE: u8 = 0x20;
 pub const ID: Id = Id::new(1);
@@ -476,4 +477,33 @@ pub fn motor_servo(
     }))
     .expect("connect");
     (c, log, plant)
+}
+
+/// A rig's `tell` that keeps each unit told.
+#[derive(Default)]
+pub struct Told(RefCell<Vec<Unit>>);
+
+impl Told {
+    pub fn tell(&self) -> impl Fn(Unit) + '_ {
+        |u| self.0.borrow_mut().push(u)
+    }
+
+    pub fn take(&self) -> Vec<Unit> {
+        self.0.take()
+    }
+}
+
+/// The units a step told, as each step tells them: each a `what` of
+/// `whats`, `at` from 1, never falling (a retake tells its unit again) and
+/// at most `of`, and `of` never falling.
+pub fn told_in_order(told: &[Unit], whats: &[&str]) {
+    assert!(!told.is_empty(), "no unit told");
+    assert_eq!(told[0].at, 1, "{told:?}");
+    for u in told {
+        assert!(whats.contains(&u.what), "{told:?}");
+        assert!(u.at >= 1 && u.at <= u.of, "{told:?}");
+    }
+    for w in told.windows(2) {
+        assert!(w[1].at >= w[0].at && w[1].of >= w[0].of, "{told:?}");
+    }
 }
