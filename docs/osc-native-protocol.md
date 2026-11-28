@@ -1127,8 +1127,9 @@ value seeds and innovates the position observer; `theta_hat_q16` and everything 
 reads it (trajectory, position loop, soft limits and the stall speed
 gate) are in linearized counts. The raw sample stays
 raw for the published `pos` (which a TEL row carries) and the sensor-delta
-screen. The endstop brake and the soft limits trip at the same raw
-counts as before, because the table is the identity outside the stops
+screen. The endstop brake and soft limits set at the physical stops trip
+at the same raw counts as before, because the table is the identity
+outside the stops; soft limits inside the travel trip at table counts
 (DES `endstop_trips_at_the_same_raw_counts_under_a_live_lut`).
 
 The table lives in RAM behind a paged window in CONTROL:
@@ -1590,10 +1591,12 @@ unless all of these hold at the kernel tick that sees it:
 - at least 100 ms have passed since the previous accepted arm: 2000
   kernel ticks, and the kernel does not tick during a capture, so the
   gap in time is never shorter;
-- the raw `pos` lies strictly between `pos_min_soft_counts` and
+- the kernel's position (`theta_hat_q16 >> 16`, the value the walls
+  judge) lies strictly between `pos_min_soft_counts` and
   `pos_max_soft_counts` (the physical stops while those are 0 / 0,
   off), or the stall permit is granted (`limit_flags` bit 3; the
-  `stall_permit` request byte alone does not count).
+  `stall_permit` request byte alone does not count). The experiment
+  image, with no table, judges the raw `pos`.
 
 A refused arm drives nothing and publishes BURST `state` (`0x2C1`) 4,
 `REJECTED` (0 idle, 1 armed, 2 capturing, 3 done); it stays there until
@@ -1603,6 +1606,7 @@ millisecond every 100 ms inside the soft limits (control-theory "Open
 Loop Under the Same Band"; unit `burst_over_the_volts_cap_is_rejected`,
 `burst_inside_the_spacing_is_rejected`,
 `burst_outside_the_soft_limits_needs_the_permit`,
+`burst_arms_only_where_the_walls_are_open`,
 `burst_with_the_soft_limits_off_arms_inside_the_physical_stops`,
 `burst_at_the_cap_still_arms`).
 

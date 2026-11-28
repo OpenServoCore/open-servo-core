@@ -165,6 +165,23 @@ pub fn poll_arm(shared: &Shared) {
     handshake(p, s, arm);
 }
 
+/// The position the endstop walls judge, in the table's counts, so a burst
+/// arms without the permit exactly where neither wall is closed. The
+/// experiment image compiles out the table and the observer and leaves
+/// `theta_hat_q16` at its boot 0; there the raw sample is the kernel's
+/// position.
+#[inline(always)]
+fn wall_pos(p: *const ControlTable) -> i32 {
+    // SAFETY: published by the kernel, which runs in the handshake's context.
+    unsafe {
+        #[cfg(not(feature = "experiment"))]
+        let pos = (&raw const (*p).telemetry.estimates.theta_hat_q16).read_volatile() >> 16;
+        #[cfg(feature = "experiment")]
+        let pos = (&raw const (*p).telemetry.tick.pos).read_volatile() as i32;
+        pos
+    }
+}
+
 #[inline(never)]
 #[rustc_align(4)]
 fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
@@ -184,12 +201,12 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
                     (&raw const (*p).telemetry.tick.sample_tick).read_volatile(),
                 )
             };
-            // SAFETY: as above; `vbus_counts`, `pos` and `limit_flags` are
+            // SAFETY: as above; `vbus_counts` and `limit_flags` are
             // published by the kernel, which runs in this same context.
             let (vbus, pos, soft, phys, limit_flags) = unsafe {
                 (
                     (&raw const (*p).telemetry.estimates.vbus_counts).read_volatile(),
-                    (&raw const (*p).telemetry.tick.pos).read_volatile() as i32,
+                    wall_pos(p),
                     (&raw const (*p).config.pos_soft).read_volatile(),
                     (&raw const (*p).config.pos_phys).read_volatile(),
                     (&raw const (*p).telemetry.limits.limit_flags).read_volatile(),
@@ -469,12 +486,20 @@ mod tests {
             t.config.pos_soft.pos_min_soft_counts = SOFT_MIN;
             t.config.pos_soft.pos_max_soft_counts = SOFT_MAX;
             t.telemetry.tick.pos = 2048;
+            t.telemetry.estimates.theta_hat_q16 = 2048 << 16;
             t.telemetry.estimates.vbus_counts = RAIL_2S;
         });
         Rig {
             shared,
             _serial: serial,
         }
+    }
+
+    /// The shaft at rest at `pos`, the raw sample and the kernel's position
+    /// agreeing, as on an identity table.
+    fn park(t: &mut ControlTable, pos: u16) {
+        t.telemetry.tick.pos = pos;
+        t.telemetry.estimates.theta_hat_q16 = (pos as i32) << 16;
     }
 
     impl Rig {
@@ -599,7 +624,7 @@ mod tests {
     fn burst_outside_the_soft_limits_needs_the_permit() {
         for pos in [0, SOFT_MIN as u16, SOFT_MAX as u16, 4095] {
             let r = rig();
-            r.set(|t| t.telemetry.tick.pos = pos);
+            r.set(|t| park(t, pos));
             assert_eq!(r.arm(EDGE_2S), state::REJECTED, "pos {pos}");
             r.release();
             // The request byte alone is not the grant.
@@ -611,9 +636,49 @@ mod tests {
         }
         for pos in [SOFT_MIN as u16 + 1, SOFT_MAX as u16 - 1] {
             let r = rig();
-            r.set(|t| t.telemetry.tick.pos = pos);
+            r.set(|t| park(t, pos));
             assert_eq!(r.arm(EDGE_2S), state::ARMED, "pos {pos}");
         }
+    }
+
+    /// The arm judges the position the walls judge, the kernel's theta_hat in
+    /// the table's counts, not the raw sample: under a live table the two
+    /// differ by the correction, up to about 50 counts near a stop.
+    #[cfg(not(feature = "experiment"))]
+    #[test]
+    fn burst_arms_only_where_the_walls_are_open() {
+        let at = |raw: u16, theta: i32| {
+            let r = rig();
+            r.set(|t| {
+                t.telemetry.tick.pos = raw;
+                t.telemetry.estimates.theta_hat_q16 = theta << 16;
+            });
+            r.arm(EDGE_2S)
+        };
+        // the raw sample inside, the kernel at or past a wall: that wall is closed
+        assert_eq!(at(SOFT_MIN as u16 + 40, SOFT_MIN), state::REJECTED);
+        assert_eq!(at(SOFT_MAX as u16 - 40, SOFT_MAX + 10), state::REJECTED);
+        // the raw sample at or past a wall, the kernel inside: both walls open
+        assert_eq!(at(SOFT_MIN as u16 - 30, SOFT_MIN + 1), state::ARMED);
+        assert_eq!(at(SOFT_MAX as u16, SOFT_MAX - 1), state::ARMED);
+    }
+
+    /// The experiment image has no table and no observer: `theta_hat_q16`
+    /// stays at its boot 0 and the raw sample is what the arm judges.
+    #[cfg(feature = "experiment")]
+    #[test]
+    fn burst_in_the_experiment_image_judges_the_raw_sample() {
+        let at = |raw: u16| {
+            let r = rig();
+            r.set(|t| {
+                t.telemetry.tick.pos = raw;
+                t.telemetry.estimates.theta_hat_q16 = 0;
+            });
+            r.arm(EDGE_2S)
+        };
+        assert_eq!(at(2048), state::ARMED);
+        assert_eq!(at(SOFT_MIN as u16), state::REJECTED);
+        assert_eq!(at(SOFT_MAX as u16), state::REJECTED);
     }
 
     /// Soft limits 0 / 0 are off: the physical stops bound the arm in their
@@ -633,7 +698,7 @@ mod tests {
                 t.config.pos_phys.pos_max_phys_counts = SOFT_MAX;
                 t.config.pos_soft.pos_min_soft_counts = 0;
                 t.config.pos_soft.pos_max_soft_counts = 0;
-                t.telemetry.tick.pos = pos;
+                park(t, pos);
             });
             assert_eq!(r.arm(EDGE_2S), want, "pos {pos}");
         }
