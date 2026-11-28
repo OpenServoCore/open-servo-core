@@ -61,8 +61,8 @@ use crate::state::{self, State, field};
 
 pub const STEP: &str = "window";
 pub const RESULT: &str = "results/window.json";
-const METHOD: &str = "window-term-onsets";
-const REVISION: u32 = 2;
+pub const METHOD: &str = "window-term-onsets";
+pub const REVISION: u32 = 2;
 /// The notebook's duties, its onsets' 25, 27 and 29 % as osc-lab wrote
 /// them (`pct_q15`).
 pub const NOTEBOOK_Q15: [i16; 3] = [8191, 8847, 9502];

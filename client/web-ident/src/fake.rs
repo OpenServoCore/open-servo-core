@@ -9,18 +9,21 @@ use osc_client::fake::{FakePipe, TelSample, TelemetryTick, uid_of};
 #[cfg(target_arch = "wasm32")]
 use osc_client::pipe::{Pipe, PipeError};
 
-/// The servo `id` alone on the bus.
+/// The servo `id` alone on the bus. Its pauses do not count toward the
+/// sim's minute: a resume's cooling wait on a real profile pauses minutes,
+/// torque off.
 pub fn pipe(id: u8) -> FakePipe {
     let mut pipe = FakePipe::new(BaudRate::B3000000, &[id]);
+    pipe.sim_mut().uncap_idle();
     pipe.sim_mut().seed_servo_uid(0, uid_of(id));
     pipe.seed_calibrated(0);
     pipe.set_track(0, resting());
     pipe
 }
 
-/// [`pipe`] as the page runs it: each exchange and each pause gives the
-/// page a turn, as a device's transfers do, so it redraws and takes a
-/// Cancel mid-step; a turn takes no sim time. The rest step makes no
+/// [`pipe`] as a page or its worker runs it: each exchange and each pause
+/// gives the event loop a turn, as a device's transfers do, so a page
+/// redraws and a Cancel lands mid-step; a turn takes no sim time. The rest step makes no
 /// pause, so turns at the pauses alone would leave it none.
 #[cfg(target_arch = "wasm32")]
 pub struct Yielding(pub FakePipe);

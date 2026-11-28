@@ -139,6 +139,19 @@ async fn board_and_state<P: Pipe>(
     ))
 }
 
+/// The board NTC now, in C; none where the state holds no NTC parts or
+/// the read fails.
+pub async fn ntc_now<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    state: &State,
+) -> Option<f64> {
+    let sense = Sense::of(state, d).ok()?;
+    let raw = read_u16(c, id, d, "ntc_raw").await.ok()?;
+    Some(sense.ntc.c_of_raw(raw as f64))
+}
+
 /// A run's segment `n` as `run.json` records it when it begins at
 /// `started`, from the step `from`, on the servo's state `state`.
 pub fn segment(
@@ -607,10 +620,6 @@ fn tell_kept(feed: &dyn Fn(&Progress), lines: &[String], told: &mut usize, ran: 
     }
 }
 
-fn result_of(sink: &mut At, rel: &str, what: &str) -> Result<Value> {
-    serde_json::from_slice(&sink.read(rel)?).with_context(|| format!("the {what} result"))
-}
-
 /// `step verify` into `<out>/<servo>/<UTC time>/`: the closed-loop check
 /// of the installed set. The lines it prints, and whether the set
 /// was accepted.
@@ -764,7 +773,17 @@ pub async fn step_stops<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Stops, None).await
+    chain(
+        c,
+        id,
+        d,
+        host,
+        i,
+        Into::New { out, given: None },
+        servo,
+        Last::Stops,
+    )
+    .await
 }
 
 /// `step table` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
@@ -780,7 +799,17 @@ pub async fn step_table<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Table, None).await
+    chain(
+        c,
+        id,
+        d,
+        host,
+        i,
+        Into::New { out, given: None },
+        servo,
+        Last::Table,
+    )
+    .await
 }
 
 /// `step window` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
@@ -797,7 +826,17 @@ pub async fn step_window<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Window, None).await
+    chain(
+        c,
+        id,
+        d,
+        host,
+        i,
+        Into::New { out, given: None },
+        servo,
+        Last::Window,
+    )
+    .await
 }
 
 /// `step spins` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
@@ -813,7 +852,17 @@ pub async fn step_spins<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Spins, None).await
+    chain(
+        c,
+        id,
+        d,
+        host,
+        i,
+        Into::New { out, given: None },
+        servo,
+        Last::Spins,
+    )
+    .await
 }
 
 /// `run`'s steps, `step spins`'s own, as the first segment of a run whose
@@ -830,26 +879,231 @@ pub async fn run_spins<P: Pipe>(
     servo: &str,
     given: &Value,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Spins, Some(given)).await
+    chain(
+        c,
+        id,
+        d,
+        host,
+        i,
+        Into::New {
+            out,
+            given: Some(given),
+        },
+        servo,
+        Last::Spins,
+    )
+    .await
+}
+
+/// `run`'s steps from `from` on in the run folder `root` a resume
+/// continues, each under the run's last segment: `step spins`'s own from
+/// that step.
+pub async fn resume_spins<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    i: &StepInputs,
+    root: &Path,
+    from: &'static str,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    let servo = super::manifest_of(host.files, root)?["servo_uid"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    chain(
+        c,
+        id,
+        d,
+        host,
+        i,
+        Into::Resume { root, from },
+        &servo,
+        Last::Spins,
+    )
+    .await
+}
+
+/// The measurement steps in the chain's order, and what each needs of the
+/// one before it.
+pub const CHAIN: [&str; 6] = [
+    rest::STEP,
+    probe::STEP,
+    stops::STEP,
+    table::STEP,
+    window::STEP,
+    spin::STEP,
+];
+const NEEDS: [&str; 6] = [
+    "",
+    "an accepted rest step",
+    "an accepted probe",
+    "an accepted stops step",
+    "an accepted table step",
+    "an accepted window step",
+];
+
+/// Where the chain runs: a new run folder under `out`, a run's first
+/// segment where `given` is the run's; or the run folder `root` a resume
+/// continues from the step `from`.
+enum Into<'a> {
+    New {
+        out: &'a Path,
+        given: Option<&'a Value>,
+    },
+    Resume {
+        root: &'a Path,
+        from: &'static str,
+    },
 }
 
 /// `run.json` as the chain stands: the steps kept, and `running` begun.
+/// A step command's is written whole from them; a run's has each entry
+/// written into it, under its last segment, the run's image and the
+/// segment's NTC taken from the first result that names them.
 fn keep(
     sink: &mut At,
-    (tool, servo, head): (&str, &str, Option<&Value>),
+    (tool, servo, run): (&str, &str, bool),
     ran: &[Kept],
     running: Option<&'static str>,
 ) -> Result<()> {
-    let entries: Vec<Ran> = ran.iter().map(ran_of).collect();
-    let mut doc = manifest(tool, servo, &entries, head);
-    if let Some(step) = running {
-        let mut e = super::running();
-        if let Some(n) = head.and_then(|h| h["segments"].as_array()?.last()?.get("n").cloned()) {
-            e["segment"] = n;
+    let p = sink.root.join("run.json");
+    if !run {
+        let entries: Vec<Ran> = ran.iter().map(ran_of).collect();
+        let mut doc = manifest(tool, servo, &entries, None);
+        if let Some(step) = running {
+            doc["steps"][step] = super::running();
         }
-        doc["steps"][step] = e;
+        return super::rewrite(sink.files, &p, &doc);
     }
-    super::rewrite(sink.files, &sink.root.join("run.json"), &doc)
+    if let Some(step) = running {
+        return super::put(sink.files, &sink.root, step, super::running());
+    }
+    let Some(k) = ran.last() else { return Ok(()) };
+    super::put(sink.files, &sink.root, k.0, entry(&ran_of(k)))?;
+    let Some((_, Some(result))) = &k.1 else {
+        return Ok(());
+    };
+    let mut doc = super::manifest_of(sink.files, &sink.root)?;
+    if doc["image"].is_null() {
+        doc["image"] = result["image"].clone();
+        doc["capability_flags"] = result["capability_flags"].clone();
+    }
+    // the first segment's NTC is the rest step's read of it, taken as the
+    // segment begins
+    if k.0 == rest::STEP
+        && let Some(seg) = doc["segments"].as_array_mut().and_then(|s| s.last_mut())
+        && seg["ntc_c"].is_null()
+    {
+        seg["ntc_c"] = result["estimates"]["board_ntc_c"]["value"].clone();
+    }
+    super::rewrite(sink.files, &p, &doc)
+}
+
+/// A step's end, whatever step it was.
+struct Done {
+    ended: Ended,
+    checks: Vec<crate::steps::Check>,
+    result: Option<Value>,
+    accepted: bool,
+}
+
+macro_rules! done {
+    ($r:expr) => {
+        $r.map(|r| Done {
+            accepted: r.accepted(),
+            ended: r.ended,
+            checks: r.checks,
+            result: r.result,
+        })
+        .map_err(|e| e.0)
+    };
+}
+
+/// The chain's step `step` on the rig, each earlier step's result read
+/// from the run folder: its end, or its refusal before any write.
+async fn one<P: Pipe>(
+    rig: &mut Rig<'_, P>,
+    step: &str,
+    np: &Nameplate,
+    board: &Board,
+    thermal: Option<&ThermalInputs>,
+) -> Result<std::result::Result<Done, String>> {
+    let read = |rig: &mut Rig<'_, P>, rel: &str, what: &str| -> Result<Value> {
+        serde_json::from_slice(&rig.sink.read(rel)?).with_context(|| format!("the {what} result"))
+    };
+    Ok(match step {
+        rest::STEP => done!(rest::rest(rig, Some(np)).await),
+        probe::STEP => {
+            let rest = read(rig, rest::RESULT, "rest")?;
+            let i = ProbeInputs {
+                nameplate: np,
+                board,
+                thermal,
+                rest: &rest,
+            };
+            done!(probe::probe(rig, &i).await)
+        }
+        stops::STEP => {
+            let rest = read(rig, rest::RESULT, "rest")?;
+            let probe = read(rig, probe::RESULT, "probe")?;
+            let i = StopsInputs {
+                nameplate: np,
+                board,
+                thermal,
+                rest: &rest,
+                probe: &probe,
+            };
+            done!(stops::stops(rig, &i).await)
+        }
+        table::STEP => {
+            let rest = read(rig, rest::RESULT, "rest")?;
+            let probe = read(rig, probe::RESULT, "probe")?;
+            let stops = read(rig, stops::RESULT, "stops")?;
+            let i = TableInputs {
+                nameplate: np,
+                board,
+                thermal,
+                rest: &rest,
+                probe: &probe,
+                stops: &stops,
+                schedule: Schedule::PLAN,
+            };
+            done!(table::table(rig, &i).await)
+        }
+        window::STEP => {
+            let rest = read(rig, rest::RESULT, "rest")?;
+            let probe = read(rig, probe::RESULT, "probe")?;
+            let stops = read(rig, stops::RESULT, "stops")?;
+            let i = WindowInputs {
+                nameplate: np,
+                board,
+                thermal,
+                rest: &rest,
+                probe: &probe,
+                stops: &stops,
+            };
+            done!(window::window(rig, &i).await)
+        }
+        _ => {
+            let rest = read(rig, rest::RESULT, "rest")?;
+            let probe = read(rig, probe::RESULT, "probe")?;
+            let stops = read(rig, stops::RESULT, "stops")?;
+            let window = read(rig, window::RESULT, "window")?;
+            let table = read(rig, table::RESULT, "table")?;
+            let i = SpinsInputs {
+                nameplate: np,
+                board,
+                thermal,
+                rest: &rest,
+                probe: &probe,
+                stops: &stops,
+                window: Some(&window),
+                table: Some(&table),
+            };
+            done!(spin::spins(rig, &i).await)
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -859,10 +1113,9 @@ async fn chain<P: Pipe>(
     d: &Descriptor,
     host: &mut Host<'_>,
     i: &StepInputs,
-    out: &Path,
+    into: Into<'_>,
     servo: &str,
     last: Last,
-    given: Option<&Value>,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
     let name = match last {
         Last::Stops => stops::STEP,
@@ -873,77 +1126,55 @@ async fn chain<P: Pipe>(
     let np = i.nameplate.as_ref().with_context(|| {
         format!("step {name} drives the motor: it needs the servo's nameplate (--nameplate)")
     })?;
-    let (record, board, state) = board_and_state(c, id, d, servo).await?;
     let tool = host.tool;
-    let now = (host.clock)();
-    let mut head = given.map(
-        |g| json!({"given": g, "segments": [segment(1, tool, rest::STEP, now, &state, d, None)]}),
-    );
-    let (root, mut sink) = folder_with(&mut *host.files, now, out, servo, &record)?;
+    let (root, board, from, run) = match into {
+        Into::New { out, given } => {
+            let (record, board, state) = board_and_state(c, id, d, servo).await?;
+            let now = (host.clock)();
+            let root = files::run_folder(host.files, out, servo, now)?;
+            let mut sink = At {
+                files: &mut *host.files,
+                root: root.clone(),
+            };
+            sink.write(files::BOARD, record.render().as_bytes())?;
+            if let Some(g) = given {
+                let seg = segment(1, tool, rest::STEP, now, &state, d, None);
+                let head = json!({"given": g, "segments": [seg]});
+                super::rewrite(
+                    sink.files,
+                    &root.join("run.json"),
+                    &manifest(tool, servo, &[], Some(&head)),
+                )?;
+            }
+            (root, board, 0, given.is_some())
+        }
+        Into::Resume { root, from } => {
+            let (_, board, _) = files::board_in(host.files, &root.join("inputs"))?;
+            let at = CHAIN.iter().position(|s| *s == from).unwrap_or(0);
+            (root.to_path_buf(), board, at, true)
+        }
+    };
+    let mut sink = At {
+        files: &mut *host.files,
+        root: root.clone(),
+    };
     let (stop, clock, feed) = (host.stop, host.clock, host.feed);
     let (mut lines, mut told) = (Vec::new(), 0);
     let mut ran: Vec<Kept> = Vec::new();
-    keep(
-        &mut sink,
-        (tool, servo, head.as_ref()),
-        &ran,
-        Some(rest::STEP),
-    )?;
-    feed(&Progress::Started { step: rest::STEP });
-    let t0 = clock();
-    let rested = {
-        let mut rig = Rig {
-            c: &mut *c,
-            id,
-            d,
-            sink: &mut sink,
-            stop,
-            clock,
-            tell: &super::teller(host.feed, rest::STEP),
-        };
-        rest::rest(&mut rig, Some(np)).await
-    };
-    let t1 = clock();
-    let rest_ok = match &rested {
-        Err(e) => {
-            lines.push(format!("step rest refused before any write: {e}"));
-            false
+    let named = (tool, servo, run);
+    let upto = CHAIN.iter().position(|s| *s == name).unwrap_or(0);
+    let mut t = None;
+    let mut ok = true;
+    for (k, step) in CHAIN.iter().copied().enumerate().take(upto + 1).skip(from) {
+        if !ok {
+            lines.push(format!("step {step} not run: it needs {}", NEEDS[k]));
+            break;
         }
-        Ok(r) => {
-            said(rest::STEP, &r.ended, &r.checks, &mut lines);
-            r.accepted()
-        }
-    };
-    // the segment's NTC is the rest step's read of it, taken as the
-    // segment begins
-    if let (Some(h), Ok(r)) = (head.as_mut(), &rested) {
-        h["segments"][0]["ntc_c"] = r.result.as_ref().map_or(Value::Null, |r| {
-            r["estimates"]["board_ntc_c"]["value"].clone()
-        });
-    }
-    ran.push((
-        rest::STEP,
-        rested
-            .as_ref()
-            .ok()
-            .map(|r| (r.ended.clone(), r.result.clone())),
-        rested.as_ref().err().map(|e| e.0.clone()),
-        (t0, t1),
-    ));
-    keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
-    tell_kept(feed, &lines, &mut told, &ran);
-    let mut probe_ok = false;
-    let mut t2 = t1;
-    if rest_ok {
-        let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
-        keep(
-            &mut sink,
-            (tool, servo, head.as_ref()),
-            &ran,
-            Some(probe::STEP),
-        )?;
-        feed(&Progress::Started { step: probe::STEP });
-        let probed = {
+        keep(&mut sink, named, &ran, Some(step))?;
+        feed(&Progress::Started { step });
+        let t0 = *t.get_or_insert_with(clock);
+        let tell = super::teller(feed, step);
+        let done = {
             let mut rig = Rig {
                 c: &mut *c,
                 id,
@@ -951,284 +1182,34 @@ async fn chain<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
-                tell: &super::teller(host.feed, probe::STEP),
+                tell: &tell,
             };
-            probe::probe(
-                &mut rig,
-                &ProbeInputs {
-                    nameplate: np,
-                    board: &board,
-                    thermal: i.thermal.as_ref(),
-                    rest: &rest_result,
-                },
-            )
-            .await
+            one(&mut rig, step, np, &board, i.thermal.as_ref()).await?
         };
-        t2 = clock();
-        match &probed {
-            Err(e) => lines.push(format!("step probe refused before any write: {e}")),
-            Ok(p) => {
-                said(probe::STEP, &p.ended, &p.checks, &mut lines);
-                probe_ok = p.accepted();
+        let t1 = clock();
+        t = Some(t1);
+        ok = match &done {
+            Err(e) => {
+                lines.push(format!("step {step} refused before any write: {e}"));
+                false
             }
-        }
-        ran.push((
-            probe::STEP,
-            probed
-                .as_ref()
-                .ok()
-                .map(|p| (p.ended.clone(), p.result.clone())),
-            probed.as_ref().err().map(|e| e.0.clone()),
-            (t1, t2),
-        ));
-        keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
-        tell_kept(feed, &lines, &mut told, &ran);
-    } else {
-        lines.push("step probe not run: it needs an accepted rest step".into());
-    }
-    let mut stops_ok = false;
-    let mut t3 = t2;
-    if probe_ok {
-        let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
-        let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
-        keep(
-            &mut sink,
-            (tool, servo, head.as_ref()),
-            &ran,
-            Some(stops::STEP),
-        )?;
-        feed(&Progress::Started { step: stops::STEP });
-        let found = {
-            let mut rig = Rig {
-                c: &mut *c,
-                id,
-                d,
-                sink: &mut sink,
-                stop,
-                clock,
-                tell: &super::teller(host.feed, stops::STEP),
-            };
-            stops::stops(
-                &mut rig,
-                &StopsInputs {
-                    nameplate: np,
-                    board: &board,
-                    thermal: i.thermal.as_ref(),
-                    rest: &rest_result,
-                    probe: &probe_result,
-                },
-            )
-            .await
+            Ok(dn) => {
+                said(step, &dn.ended, &dn.checks, &mut lines);
+                dn.accepted
+            }
         };
-        t3 = clock();
-        match &found {
-            Err(e) => lines.push(format!("step stops refused before any write: {e}")),
-            Ok(s) => {
-                said(stops::STEP, &s.ended, &s.checks, &mut lines);
-                stops_ok = s.accepted();
-            }
-        }
         ran.push((
-            stops::STEP,
-            found
-                .as_ref()
+            step,
+            done.as_ref()
                 .ok()
-                .map(|s| (s.ended.clone(), s.result.clone())),
-            found.as_ref().err().map(|e| e.0.clone()),
-            (t2, t3),
+                .map(|dn| (dn.ended.clone(), dn.result.clone())),
+            done.as_ref().err().cloned(),
+            (t0, t1),
         ));
-        keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
+        keep(&mut sink, named, &ran, None)?;
         tell_kept(feed, &lines, &mut told, &ran);
-    } else if rest_ok {
-        lines.push("step stops not run: it needs an accepted probe".into());
-    }
-    let mut accepted = stops_ok;
-    let mut t4 = t3;
-    if last >= Last::Table {
-        accepted = false;
-        if stops_ok {
-            let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
-            let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
-            let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
-            keep(
-                &mut sink,
-                (tool, servo, head.as_ref()),
-                &ran,
-                Some(table::STEP),
-            )?;
-            feed(&Progress::Started { step: table::STEP });
-            let tabled = {
-                let mut rig = Rig {
-                    c: &mut *c,
-                    id,
-                    d,
-                    sink: &mut sink,
-                    stop,
-                    clock,
-                    tell: &super::teller(host.feed, table::STEP),
-                };
-                table::table(
-                    &mut rig,
-                    &TableInputs {
-                        nameplate: np,
-                        board: &board,
-                        thermal: i.thermal.as_ref(),
-                        rest: &rest_result,
-                        probe: &probe_result,
-                        stops: &stops_result,
-                        schedule: Schedule::PLAN,
-                    },
-                )
-                .await
-            };
-            t4 = clock();
-            match &tabled {
-                Err(e) => lines.push(format!("step table refused before any write: {e}")),
-                Ok(t) => {
-                    said(table::STEP, &t.ended, &t.checks, &mut lines);
-                    accepted = t.accepted();
-                }
-            }
-            ran.push((
-                table::STEP,
-                tabled
-                    .as_ref()
-                    .ok()
-                    .map(|t| (t.ended.clone(), t.result.clone())),
-                tabled.as_ref().err().map(|e| e.0.clone()),
-                (t3, t4),
-            ));
-            keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
-            tell_kept(feed, &lines, &mut told, &ran);
-        } else if probe_ok {
-            lines.push("step table not run: it needs an accepted stops step".into());
-        }
-    }
-    let table_ok = accepted;
-    let mut t5 = t4;
-    if last >= Last::Window {
-        accepted = false;
-        if table_ok {
-            let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
-            let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
-            let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
-            keep(
-                &mut sink,
-                (tool, servo, head.as_ref()),
-                &ran,
-                Some(window::STEP),
-            )?;
-            feed(&Progress::Started { step: window::STEP });
-            let windowed = {
-                let mut rig = Rig {
-                    c: &mut *c,
-                    id,
-                    d,
-                    sink: &mut sink,
-                    stop,
-                    clock,
-                    tell: &super::teller(host.feed, window::STEP),
-                };
-                window::window(
-                    &mut rig,
-                    &WindowInputs {
-                        nameplate: np,
-                        board: &board,
-                        thermal: i.thermal.as_ref(),
-                        rest: &rest_result,
-                        probe: &probe_result,
-                        stops: &stops_result,
-                    },
-                )
-                .await
-            };
-            t5 = clock();
-            match &windowed {
-                Err(e) => lines.push(format!("step window refused before any write: {e}")),
-                Ok(w) => {
-                    said(window::STEP, &w.ended, &w.checks, &mut lines);
-                    accepted = w.accepted();
-                }
-            }
-            ran.push((
-                window::STEP,
-                windowed
-                    .as_ref()
-                    .ok()
-                    .map(|w| (w.ended.clone(), w.result.clone())),
-                windowed.as_ref().err().map(|e| e.0.clone()),
-                (t4, t5),
-            ));
-            keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
-            tell_kept(feed, &lines, &mut told, &ran);
-        } else if stops_ok {
-            lines.push("step window not run: it needs an accepted table step".into());
-        }
-    }
-    if last == Last::Spins {
-        let window_ok = accepted;
-        accepted = false;
-        if window_ok {
-            let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
-            let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
-            let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
-            let window_result = result_of(&mut sink, window::RESULT, "window")?;
-            let table_result = result_of(&mut sink, table::RESULT, "table")?;
-            keep(
-                &mut sink,
-                (tool, servo, head.as_ref()),
-                &ran,
-                Some(spin::STEP),
-            )?;
-            feed(&Progress::Started { step: spin::STEP });
-            let spun = {
-                let mut rig = Rig {
-                    c: &mut *c,
-                    id,
-                    d,
-                    sink: &mut sink,
-                    stop,
-                    clock,
-                    tell: &super::teller(host.feed, spin::STEP),
-                };
-                spin::spins(
-                    &mut rig,
-                    &SpinsInputs {
-                        nameplate: np,
-                        board: &board,
-                        thermal: i.thermal.as_ref(),
-                        rest: &rest_result,
-                        probe: &probe_result,
-                        stops: &stops_result,
-                        window: Some(&window_result),
-                        table: Some(&table_result),
-                    },
-                )
-                .await
-            };
-            let t6 = clock();
-            match &spun {
-                Err(e) => lines.push(format!("step spins refused before any write: {e}")),
-                Ok(s) => {
-                    said(spin::STEP, &s.ended, &s.checks, &mut lines);
-                    accepted = s.accepted();
-                }
-            }
-            ran.push((
-                spin::STEP,
-                spun.as_ref()
-                    .ok()
-                    .map(|s| (s.ended.clone(), s.result.clone())),
-                spun.as_ref().err().map(|e| e.0.clone()),
-                (t5, t6),
-            ));
-            keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
-            tell_kept(feed, &lines, &mut told, &ran);
-        } else if table_ok {
-            lines.push("step spins not run: it needs an accepted window step".into());
-        }
     }
     lines.push(format!("run folder: {}", root.display()));
     tell_lines(feed, &lines, &mut told);
-    Ok((lines, accepted, root))
+    Ok((lines, ok && !ran.is_empty(), root))
 }

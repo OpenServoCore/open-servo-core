@@ -62,8 +62,8 @@ use crate::state::{self, State, field};
 
 pub const STEP: &str = "probe";
 pub const RESULT: &str = "results/probe.json";
-const METHOD: &str = "probe-rise-and-polarity";
-const REVISION: u32 = 1;
+pub const METHOD: &str = "probe-rise-and-polarity";
+pub const REVISION: u32 = 1;
 /// Part A's levels, shares of the stated voltage.
 pub const LEVELS: [f64; 2] = [0.20, 0.32];
 /// Bursts at each sign and level, one after another.

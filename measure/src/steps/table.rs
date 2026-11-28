@@ -92,8 +92,8 @@ use osc_servo_core::pos_lut::{self, GRID, INTERVALS, PAGE_POINTS, POINTS};
 
 pub const STEP: &str = "table";
 pub const RESULT: &str = "results/table.json";
-const METHOD: &str = "open-loop-slow-and-fast-passes";
-const REVISION: u32 = 2;
+pub const METHOD: &str = "open-loop-slow-and-fast-passes";
+pub const REVISION: u32 = 2;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 

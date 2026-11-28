@@ -160,7 +160,8 @@ enum Cmd {
     /// accepts, the cruise step for the friction line, the gather again into `final/inputs/` and
     /// the final set installed volatile and checked in `final/`; a final check refused on rest
     /// error alone goes on down the tune's tries on that friction line, into `tune/tries/`.
-    /// Never saves.
+    /// Never saves. With `--resume`, a stopped run goes on in its own folder from its first
+    /// step not accepted, every check against what it began on passed before anything drives.
     Run {
         /// The servo profile with its heat model, or a version 0
         /// nameplate.json with the thermal.json beside it.
@@ -170,10 +171,14 @@ enum Cmd {
         #[arg(long)]
         policy: PathBuf,
         /// Where the run folder `<servo uid>/<UTC time>/` goes.
+        #[arg(long, required_unless_present = "resume")]
+        out: Option<PathBuf>,
+        /// The tune's tries at most; 6 when not given.
         #[arg(long)]
-        out: PathBuf,
-        #[arg(long, default_value_t = osc_measure::tune::TRIES)]
-        tries: u32,
+        tries: Option<u32>,
+        /// The run folder of a stopped run to go on with.
+        #[arg(long)]
+        resume: Option<PathBuf>,
     },
 }
 
@@ -452,26 +457,8 @@ async fn check<P: Pipe>(
 ) -> Result<bool> {
     let set = files::set(set_path)?;
     let checked = install::check(c, id, d, &set).await?;
-    for line in &checked.differences {
+    for line in install::check_lines(&checked, &set) {
         println!("{line}");
-    }
-    if !checked.unowned.is_empty() {
-        println!("not in the set: {}", checked.unowned.join(", "));
-    }
-    println!(
-        "{} differences; settings {}; unsaved {}; set {}; servo {}",
-        checked.differences.len(),
-        checked.settings,
-        if checked.unsaved { "yes" } else { "no" },
-        &set.hash()[..12.min(set.hash().len())],
-        &checked.servo[..12.min(checked.servo.len())]
-    );
-    if checked.refused != "none" {
-        println!(
-            "refused {}: {}",
-            checked.refused,
-            osc_client::store_state::REFUSED
-        );
     }
     Ok(checked.clean())
 }
@@ -537,13 +524,7 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
         )
     });
     match cmd {
-        Cmd::Save { .. } => {
-            let s = osc_client::store_state::read(c, id, d).await?;
-            println!(
-                "saved: after a reboot the servo reads as the set, settings {}",
-                s.settings()
-            )
-        }
+        Cmd::Save { .. } => println!("{}", install::saved_line(c, id, d).await?),
         _ if wrote => println!("volatile, not saved: a reboot returns the saved state"),
         _ => println!("the servo holds the set: nothing written"),
     }
@@ -680,14 +661,50 @@ fn run(cli: &Cli) -> Result<bool> {
         Cmd::Run {
             nameplate,
             policy,
+            resume: Some(root),
             out,
             tries,
         } => {
+            let tries = run::resume_args(root, out.as_deref(), *tries)?;
+            let a = run::RunArgs {
+                nameplate,
+                policy,
+                out: root,
+                tries,
+            };
+            run::admit(&a)?;
+            ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))
+                .context("installing the Ctrl-C handler")?;
+            block_on(async {
+                let (mut c, d) = connect(&cli.baud, id).await?;
+                let servo = servo_name(&mut c, id).await?;
+                let before = osc_measure::state::read(&mut c, id, &d).await?;
+                let ran = run::resume(&mut c, id, &d, &a, root, &servo, &STOP)
+                    .await
+                    .map(|(lines, accepted)| (lines, accepted, ()));
+                let (lines, accepted, ()) =
+                    ended(ran, steps::clear_unsaved(&mut c, id, &d, &before).await)?;
+                for l in &lines {
+                    println!("{l}");
+                }
+                Ok(accepted)
+            })
+        }
+        Cmd::Run {
+            nameplate,
+            policy,
+            out,
+            tries,
+            resume: None,
+        } => {
+            let out = out
+                .as_deref()
+                .context("--out names the run folder's place")?;
             let a = run::RunArgs {
                 nameplate,
                 policy,
                 out,
-                tries: *tries,
+                tries: tries.unwrap_or(osc_measure::tune::TRIES),
             };
             run::admit(&a)?;
             ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst))

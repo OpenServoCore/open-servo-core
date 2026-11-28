@@ -308,11 +308,42 @@ pub struct Seek {
     raises: Vec<LeaveRaise>,
     path: Vec<String>,
     refused: Option<(Refusal, String)>,
+    /// The stop approached first, the seats each stop needs (low, high),
+    /// and a stop's place known without a seat.
+    first: Stop,
+    need: [usize; 2],
+    known: [Option<f64>; 2],
+}
+
+fn index(s: Stop) -> usize {
+    match s {
+        Stop::Low => 0,
+        Stop::High => 1,
+    }
 }
 
 impl Seek {
+    /// A resume's re-seat: one seat at `stop`, approached first, then a
+    /// leave to the middle of that seat and the other stop's known place,
+    /// `other_at`; no other stop is pressed.
+    pub fn reseat(cfg: SeekCfg, stop: Stop, other_at: f64) -> Self {
+        let mut s = Seek::new(cfg);
+        s.first = stop;
+        s.need = [0, 0];
+        s.need[index(stop)] = 1;
+        s.known[index(other(stop))] = Some(other_at);
+        s
+    }
+
+    fn reseating(&self) -> bool {
+        self.need != [SEATS_A_STOP; 2]
+    }
+
     pub fn new(cfg: SeekCfg) -> Self {
         Seek {
+            first: Stop::Low,
+            need: [SEATS_A_STOP; 2],
+            known: [None; 2],
             cfg,
             phase: Phase::Idle,
             window: Window::new(0.0, 0.0),
@@ -408,9 +439,10 @@ impl Seek {
             .collect()
     }
 
-    /// The middle of the stops, once each has a seat.
+    /// The middle of the stops, once each has a seat or a known place.
     fn middle(&self) -> Option<f64> {
-        Some((median(&self.seats_at(Stop::Low))? + median(&self.seats_at(Stop::High))?) / 2.0)
+        let at = |s: Stop| median(&self.seats_at(s)).or(self.known[index(s)]);
+        Some((at(Stop::Low)? + at(Stop::High)?) / 2.0)
     }
 
     fn stop(&mut self, kind: Refusal, why: String) -> Act {
@@ -521,7 +553,7 @@ impl Seek {
             return self.stop(Refusal::DeadPot, dead(pos));
         }
         self.start = Some(pos);
-        self.approach(Stop::Low, t, pos)
+        self.approach(self.first, t, pos)
     }
 
     /// The leg's checks common to every drive: the pot reads, the leg is
@@ -763,7 +795,12 @@ impl Seek {
                 );
             }
             if end == End::Approach {
-                return self.approach(to, t, pos);
+                let next = if self.reseating() && self.seats_at(to).len() >= self.need[index(to)] {
+                    from
+                } else {
+                    to
+                };
+                return self.approach(next, t, pos);
             }
             self.path
                 .push(format!("at {pos:.0}, the middle of the stops: zero"));
@@ -829,7 +866,7 @@ impl Seek {
         };
         let done = [Stop::Low, Stop::High]
             .iter()
-            .all(|s| self.seats_at(*s).len() >= SEATS_A_STOP);
+            .all(|s| self.seats_at(*s).len() >= self.need[index(*s)]);
         let end = match self.middle().filter(|_| done) {
             Some(m) => End::Center(m),
             None => End::Approach,
@@ -996,8 +1033,12 @@ mod tests {
     /// The machine run on `shaft` to its end, polled every POLL_S; each
     /// seat's bursts take a second, then the stopper walks if it does.
     fn run(shaft: &mut Shaft) -> Ran {
+        run_on(shaft, Seek::new(cfg()))
+    }
+
+    /// [`run`] with the machine `m`.
+    fn run_on(shaft: &mut Shaft, mut m: Seek) -> Ran {
         let c = cfg();
-        let mut m = Seek::new(c.clone());
         let mut t = 0.0;
         let mut duties = Vec::new();
         let mut act = m.start(t, shaft.read());
@@ -1058,6 +1099,38 @@ mod tests {
                 .iter()
                 .all(|q| q.unsigned_abs() <= c.ceiling_q15 as u16)
         );
+    }
+
+    /// A resume's re-seat presses the high stop once at the approach duty,
+    /// reads one seat there, and leaves to the middle of that seat and the
+    /// low stop's known place, at it from above; started at the high stop,
+    /// it leaves it and comes back. The low stop is never pressed.
+    #[test]
+    fn a_reseat_presses_the_high_stop_once_and_ends_at_the_middle() {
+        for (start, approaches) in [(2000.0, 1), (3626.0, 2)] {
+            let mut s = Shaft::bench();
+            s.pos = start;
+            let r = run_on(&mut s, Seek::reseat(cfg(), Stop::High, 432.0));
+            let m = &r.m;
+            assert!(m.finished(), "{:?}", m.path());
+            assert_eq!(m.approaches(), approaches, "{:?}", m.path());
+            assert!(seats(m, Stop::Low).is_empty(), "{:?}", m.path());
+            let high = seats(m, Stop::High);
+            assert_eq!(high.len(), 1, "{:?}", m.path());
+            assert!((high[0] - 3626.0).abs() <= 2.0, "{high:?}");
+            assert!(
+                m.legs()
+                    .iter()
+                    .filter(|l| l.kind == LegKind::Approach)
+                    .all(|l| l.toward == Stop::High),
+                "{:?}",
+                m.legs()
+            );
+            presses_at_most_the_approach(&r);
+            let mid = (432.0 + high[0]) / 2.0;
+            // the leave off the high stop ends as it reaches the middle
+            assert!(s.pos <= mid && s.pos >= mid - 200.0, "{} {mid}", s.pos);
+        }
     }
 
     #[test]

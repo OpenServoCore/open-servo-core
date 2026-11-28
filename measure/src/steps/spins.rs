@@ -71,8 +71,8 @@ pub const STEP: &str = "spins";
 pub const RESULT: &str = "results/spins.json";
 /// The window step's result, read when the run holds one.
 pub const WINDOW_RESULT: &str = "results/window.json";
-const METHOD: &str = "free-spins-and-coasts";
-const REVISION: u32 = 3;
+pub const METHOD: &str = "free-spins-and-coasts";
+pub const REVISION: u32 = 3;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 

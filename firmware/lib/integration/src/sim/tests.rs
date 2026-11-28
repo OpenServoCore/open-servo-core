@@ -51,6 +51,34 @@ fn ping_round_trip() {
     );
 }
 
+/// Ten minutes of host pause on a sim that lets them go uncounted: the
+/// servo still answers after it, past the 60 s guard on sim time.
+#[test]
+fn an_uncapped_pause_runs_past_the_time_guard() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    sim.add_servo(SERVO_ID);
+    sim.uncap_idle();
+    for _ in 0..120 {
+        sim.idle(5_000_000);
+    }
+    assert!(sim.now_us() >= 600_000_000);
+    sim.host_send(&instruction(SERVO_ID, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    assert!(
+        frames.iter().any(|f| matches!(f.from, Source::Servo(_))),
+        "{frames:#?}"
+    );
+}
+
+/// The guard on sim time counts every pause where nothing uncaps them.
+#[test]
+#[should_panic(expected = "sim runaway: >60 s of sim time")]
+fn a_pause_counts_toward_the_time_guard() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    sim.add_servo(SERVO_ID);
+    sim.idle(61_000_000);
+}
+
 /// A costly `on_break` body defers the framer deadlines past the whole frame:
 /// every byte is already ringed (DMA is CPU-independent) when the pended wake
 /// finally lands, so the exchange completes correctly -- just late. Occupancy
