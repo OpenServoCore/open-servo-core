@@ -25,12 +25,27 @@ pub fn gear_ratio() -> String {
     )
 }
 
-pub fn travel_deg() -> String {
+pub fn rated_travel_deg() -> String {
     no_usable(
-        "A horn cannot turn more than one turn between its stops, and the run paces its first moves by the travel",
+        "The run sets the soft limits to the rated travel and paces its first moves by it",
         "profile",
-        "travel_deg",
-        "the output's travel from stop to stop, deg, over 0 and at most 360",
+        "rated_travel_deg",
+        "the output's travel as the maker rates it, deg, over 0 and at most 360",
+    )
+}
+
+/// An output travel in degrees the tool takes: over 0 and at most a turn.
+pub fn within_a_turn(deg: f64) -> bool {
+    deg.is_finite() && deg > 0.0 && deg <= 360.0
+}
+
+pub const RETIRED_TRAVEL_DEG: &str = "the profile states travel_deg, the stop-to-stop travel, which this tool now measures: take it out and enter rated_travel_deg, the travel the maker's sheet states (180 for a servo sold as 180 deg)";
+
+pub const RETIRED_SOFT_MARGIN_SHARE: &str = "the policy states motion.soft_margin_share, which this tool no longer reads: take it out, and state motion.soft_travel_deg, the soft window's width in output deg centered between the stops, only to narrow or widen it from the profile's rated travel";
+
+pub fn soft_travel_deg(deg: f64) -> String {
+    format!(
+        "A soft window of no width or of more than one turn cannot be centered between the stops: the policy's motion.soft_travel_deg is {deg}; state one over 0 and at most 360, or leave it out for the profile's rated travel"
     )
 }
 

@@ -326,8 +326,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let travel_deg = np
-        .travel_deg
-        .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
+        .rated_travel_deg
+        .ok_or_else(|| Refused("the nameplate has no usable rated_travel_deg".into()))?;
     let per_rev = np.events_per_rev().map_err(Refused)?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);
@@ -728,6 +728,11 @@ async fn spin_from<P: Pipe>(
             "the high guard"
         };
         let start = go_to(rig, b, guard, name, lines).await?;
+        (rig.tell)(super::Unit {
+            at: n as u32 + 1,
+            of: units(),
+            what: "spin",
+        });
         let w = if n == 0 {
             plan.pilot(start)
         } else {
@@ -852,6 +857,12 @@ async fn body<P: Pipe>(
     }
     go_to(rig, b, b.travel.middle(), "the middle", lines).await?;
     Ok(())
+}
+
+/// The units the step tells: the pilot and each slot of
+/// [`runway::order`]; a slot left out is passed over.
+pub fn units() -> u32 {
+    runway::order().len() as u32 + 1
 }
 
 /// The spins the judge reads: those of [`runway::order`], not the pilot.
@@ -2357,6 +2368,7 @@ mod tests {
         spun: Result<Spun, Refused>,
         log: Vec<Ev>,
         c: Client<Spy>,
+        told: Vec<crate::steps::Unit>,
     }
 
     fn run_with(
@@ -2398,6 +2410,7 @@ mod tests {
             t.set(t.get() + 0.011);
             t.get()
         };
+        let told = crate::steps::testkit::Told::default();
         let mut sink = MemSink::default();
         let spun = {
             let mut rig = Rig {
@@ -2407,6 +2420,7 @@ mod tests {
                 sink: &mut sink,
                 stop,
                 clock: &clock,
+                tell: &told.tell(),
             };
             block_on(spins(
                 &mut rig,
@@ -2423,7 +2437,12 @@ mod tests {
             ))
         };
         let log = log.borrow().clone();
-        Ran { spun, log, c }
+        Ran {
+            spun,
+            log,
+            c,
+            told: told.take(),
+        }
     }
 
     /// The fake has no motor: a go-to's first duty puts the shaft at its
@@ -2468,6 +2487,15 @@ mod tests {
                 .contains("the pilot did not turn"),
             "{:?}",
             e.why
+        );
+        assert_eq!(
+            r.told,
+            [crate::steps::Unit {
+                at: 1,
+                of: units(),
+                what: "spin"
+            }],
+            "the pilot told, the go-to settled at its guard"
         );
         let (gd, dm, chunk0) = (
             addr(&d, "goal_duty"),

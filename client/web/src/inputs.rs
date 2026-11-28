@@ -235,6 +235,8 @@ mod tests {
     const PROFILE: &str = include_str!("../../../measure/testdata/mg90-d/profile.json");
     const POLICY: &str = include_str!("../../../measure/testdata/mg90-d/policy-of-record.json");
     const NAMEPLATE: &str = include_str!("../../../measure/testdata/mg90-d/nameplate.json");
+    const STOP_TO_STOP: &str =
+        include_str!("../../../measure/testdata/mg90-d/nameplate-stop-to-stop.json");
     const POLICY_V0: &str = include_str!("../../../measure/testdata/mg90-d/policy.json");
     const DEFAULT: &str = include_str!("../../../measure/testdata/mg90-d/default-policy.json");
     const THERMAL: &str = include_str!("../../../measure/testdata/mg90-d/thermal.json");
@@ -285,7 +287,7 @@ mod tests {
     #[test]
     fn each_required_field_refusal_returns_its_message() {
         type Edit = fn(&mut serde_json::Value);
-        let profile: [(&str, &str, Edit); 9] = [
+        let profile: [(&str, &str, Edit); 11] = [
             ("gear_class", "Without the gear material", |v| {
                 v["gear_class"] = serde_json::Value::Null
             }),
@@ -294,9 +296,21 @@ mod tests {
                 "Without the gear ratio the run cannot turn motor turns into horn degrees",
                 |v| v["gear_ratio"] = 0.into(),
             ),
-            ("travel_deg", "A horn cannot turn more than one turn", |v| {
-                v["travel_deg"] = 361.into()
-            }),
+            (
+                "rated_travel_deg",
+                "The run sets the soft limits to the rated travel",
+                |v| v["rated_travel_deg"] = 361.into(),
+            ),
+            (
+                "rated_travel_deg",
+                "The run sets the soft limits to the rated travel",
+                |v| v["rated_travel_deg"] = serde_json::Value::Null,
+            ),
+            (
+                "enter rated_travel_deg",
+                "the profile states travel_deg, the stop-to-stop travel",
+                |v| v["travel_deg"] = 184.33.into(),
+            ),
             (
                 "count_rises_ccw",
                 "Without it the run cannot tell which stop is which",
@@ -352,6 +366,21 @@ mod tests {
             assert!(e.starts_with(consequence) && e.contains(field), "{e}");
         }
 
+        let mut v = json(POLICY);
+        v["motion"]["soft_margin_share"] = 0.0625.into();
+        let e = check(&v, TuningPolicy::check).expect("retired");
+        assert!(
+            e.starts_with("the policy states motion.soft_margin_share")
+                && e.contains("motion.soft_travel_deg"),
+            "{e}"
+        );
+        let mut v = json(POLICY);
+        v["motion"]["soft_travel_deg"] = 0.into();
+        let e = check(&v, TuningPolicy::check).expect("no width");
+        assert!(e.contains("motion.soft_travel_deg is 0"), "{e}");
+        v["motion"]["soft_travel_deg"] = 170.into();
+        assert_eq!(check(&v, TuningPolicy::check), None);
+
         let policy: [(&str, Edit); 4] = [
             ("protection.run_v", |v| {
                 v["protection"]["run_v"] = serde_json::Value::Null
@@ -403,7 +432,7 @@ mod tests {
         let alone = migrate_files(&json(NAMEPLATE), None, None, None).expect("alone");
         let (record, _, _) = record();
         assert_eq!(alone.profile.no_load, record.no_load);
-        assert_eq!(alone.profile.travel_deg, record.travel_deg);
+        assert_eq!(alone.profile.rated_travel_deg, record.rated_travel_deg);
         assert_eq!(alone.policy.protection.run_v, Some(5.0));
         assert_eq!(alone.notes.len(), 1);
 
@@ -415,6 +444,24 @@ mod tests {
         let v1 = migrate_files(&json(PROFILE), Some(&json(POLICY)), None, None).expect("version 1");
         assert!(v1.notes.is_empty());
         assert_eq!(v1.profile, record);
+
+        // a version 0 travel_deg is the travel stop to stop: noted, never
+        // carried, and the profile it gives is refused until the rating
+        let m = migrate_files(&json(STOP_TO_STOP), None, None, None).expect("migrates");
+        assert_eq!(m.profile.rated_travel_deg, None);
+        assert!(
+            m.notes.iter().any(|n| n.starts_with(
+                "the version 0 nameplate's travel_deg (184.33) is the travel stop to stop"
+            )),
+            "{:?}",
+            m.notes
+        );
+        let e = check(
+            &json(&serde_json::to_string(&m.profile).expect("serializes")),
+            ServoProfile::check,
+        )
+        .expect("no rating");
+        assert!(e.contains("no usable rated_travel_deg"), "{e}");
 
         let newer = json(&PROFILE.replacen("osc.servo-profile/1", "osc.servo-profile/2", 1));
         let e = migrate_files(&newer, None, None, None).expect_err("newer");

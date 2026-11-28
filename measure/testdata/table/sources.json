@@ -66,7 +66,11 @@
    "duty_counts",
    "current_raw"
   ],
-  "expected": "low-stop.expected.json (bringup kb/scratch/pot-holes scripts/fixtures.py)"
+  "expected": "low-stop.expected.json (bringup kb/scratch/pot-holes scripts/fixtures.py)",
+  "counts_per_cycle": {
+   "value": 2.9696,
+   "from": "the run's table result (results/table.json), its counts over its cycles across the rung's free stretch"
+  }
  },
  "clean-low-stop.csv.gz": {
   "from": "osc-dev-v006-bringup captures/ident-hunt/run4/R/00000000ffffffff76e5bc220ef6abcd/20261125T194450Z/captures/table/05-raw.csv.gz",
@@ -78,6 +82,29 @@
    "duty_counts",
    "current_raw"
   ],
-  "expected": "low-stop.expected.json (bringup kb/scratch/pot-holes scripts/fixtures.py)"
+  "expected": "low-stop.expected.json (bringup kb/scratch/pot-holes scripts/fixtures.py)",
+  "counts_per_cycle": {
+   "value": 5.6411,
+   "from": "the run's table result (results/table.json), its counts over its cycles across the rung's free stretch"
+  }
+ },
+ "fast-high-stop.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/default-yield-gate/rerun-2/R2/00000000ffffffff76e5bc220ef6abcd/20261127T200853Z/captures/table/27-raw.csv.gz",
+  "sha1": "95f2179df30868d99f662147aa24ef66cf83adc8",
+  "rows": "every row: the table step's rung 14 (pass 4 up, onto the high stop), the four columns of a capture that holds more, a rung whose ripple a fixed 100..300 Hz seed band reads on a 131 Hz line",
+  "columns": [
+   "tick",
+   "pos",
+   "duty_counts",
+   "current_raw"
+  ],
+  "counts_per_cycle": {
+   "value": 4.3082,
+   "from": "the run's table result (results/table.json), its counts over its cycles across the rung's free stretch"
+  },
+  "table_counts_per_cycle": {
+   "value": 4.026,
+   "from": "the same table over the rung's placement samples"
+  }
  }
 }

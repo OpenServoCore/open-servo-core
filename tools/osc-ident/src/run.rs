@@ -248,7 +248,7 @@ mod tests {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
         files::step_0(&root);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),
@@ -306,7 +306,7 @@ mod tests {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
         files::step_0(&root);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),
@@ -581,6 +581,26 @@ mod tests {
             serde_json::to_value(&f.told[0]).expect("json"),
             serde_json::json!({"event": "started", "step": "rest"})
         );
+        let units: Vec<(usize, &str, u32, u32)> = f
+            .told
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                of::Progress::Unit { step, at, of, .. } => Some((i, *step, *at, *of)),
+                _ => None,
+            })
+            .collect();
+        let plain: Vec<(&str, u32, u32)> = units.iter().map(|&(_, s, a, o)| (s, a, o)).collect();
+        assert_eq!(plain, [("rest", 1, 2), ("rest", 2, 2), ("probe", 1, 17)]);
+        for &(i, step, _, _) in &units {
+            let begun = at(&f.told, &of::Progress::Started { step });
+            assert!(begun < i && i < end_of(step), "{step} unit at {i}");
+        }
+        let first = units[0].0;
+        assert_eq!(
+            serde_json::to_value(&f.told[first]).expect("json"),
+            serde_json::json!({"event": "unit", "step": "rest", "at": 1, "of": 2, "what": "burst"})
+        );
         let _ = std::fs::remove_dir_all(f.dir);
     }
 
@@ -627,6 +647,105 @@ mod tests {
             "{:?}",
             f.lines.last()
         );
+        let _ = std::fs::remove_dir_all(f.dir);
+    }
+    /// The run cut off mid-step, as a closed tab or a killed process cuts
+    /// it, must leave a folder a resume can read: each step's entry is in
+    /// `run.json` once the step has ended, before the next one begins, and
+    /// the step begun is there as running.
+    #[test]
+    fn run_json_records_each_step_as_it_ends() {
+        let dir = scratch("run-json-each-step");
+        let seen = RefCell::new(Vec::new());
+        let manifest_now = || -> Option<Value> {
+            let folder = std::fs::read_dir(dir.join("out/uid"))
+                .ok()?
+                .next()?
+                .ok()?
+                .path();
+            serde_json::from_slice(&std::fs::read(folder.join("run.json")).ok()?).ok()
+        };
+        let feed = |p: &of::Progress| {
+            if let of::Progress::Started { step } = p {
+                seen.borrow_mut().push((*step, manifest_now()));
+            }
+        };
+        let (mut c, d) = fake();
+        let policy = testdata("mg90-d/policy.json");
+        let g = given();
+        let out = dir.join("out");
+        let a = args(&g, &out, &policy);
+        let inputs = admit(&a).expect("admitted");
+        let stop = AtomicBool::new(false);
+        {
+            let mut fs = Fs;
+            let mut host = crate::host(&mut fs, &stop);
+            host.feed = &feed;
+            block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
+        }
+        let seen = seen.into_inner();
+        let (step, m) = &seen[1];
+        assert_eq!(*step, "probe");
+        let m = m.as_ref().expect("run.json is there as the probe begins");
+        assert_eq!(m["steps"]["rest"]["state"], "accepted", "{m}");
+        assert_eq!(m["steps"]["probe"]["state"], "running", "{m}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `run.json` records what the run was given, the files by path and
+    /// sha1 and the tries, and its first segment: the tool, the firmware,
+    /// the state it began on, the board NTC and its span; every entry
+    /// names the segment it ran in.
+    #[test]
+    fn run_json_records_what_the_run_was_given_and_its_first_segment() {
+        let f = fed("run-json-given", None);
+        let m = manifest(&f.root);
+        let sha1 = |p: &Path| osc_measure::set::file_sha1(&std::fs::read(p).expect("read"));
+        let (nameplate, policy, heat) = (
+            testdata("mg90-d/nameplate.json"),
+            testdata("mg90-d/policy.json"),
+            testdata("mg90-d/thermal.json"),
+        );
+        let g = &m["given"];
+        for (k, p) in [
+            ("nameplate", &nameplate),
+            ("policy", &policy),
+            ("heat", &heat),
+        ] {
+            assert_eq!(g[k]["path"], p.display().to_string(), "{k}: {g}");
+            assert_eq!(g[k]["sha1"], sha1(p), "{k}: {g}");
+        }
+        assert_eq!(g["tries"], 6, "{g}");
+        let segs = m["segments"].as_array().expect("segments");
+        assert_eq!(segs.len(), 1, "{m}");
+        let s = &segs[0];
+        assert_eq!(
+            (&s["n"], &s["from"]),
+            (&Value::from(1), &Value::from("rest"))
+        );
+        assert!(
+            s["tool"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("osc-ident ")),
+            "{s}"
+        );
+        let (mut c, d) = fake();
+        let state = block_on(osc_measure::state::read(&mut c, ID, &d)).expect("state");
+        assert_eq!(s["state"]["hash"], state.hash(&d), "{s}");
+        assert_eq!(s["state"]["unsaved"], false, "{s}");
+        for k in ["model", "version", "capability_flags"] {
+            assert!(s["firmware"][k].is_u64(), "{k}: {s}");
+        }
+        assert_eq!(
+            s["firmware"]["capability_flags"], m["capability_flags"],
+            "{m}"
+        );
+        assert!(s["ntc_c"].is_f64(), "{s}");
+        assert!(s["ended"].as_f64() > s["started"].as_f64(), "{s}");
+        assert_eq!(m["steps"]["rest"]["segment"], 1, "{m}");
+        for k in ["gather", "tune", "cruise", "final"] {
+            assert_eq!(m[k]["segment"], 1, "{k}: {m}");
+        }
         let _ = std::fs::remove_dir_all(f.dir);
     }
 }
@@ -814,6 +933,53 @@ mod parity {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The parity run of [`a_run_into_a_mem_sink_writes_what_the_cli_writes`],
+    /// once with the quiet feed and once with one that keeps every event, on
+    /// the quarter-second clock, each into a memory store of its own: the
+    /// same files byte for byte and the same lines, as a feed reads no
+    /// clock.
+    #[test]
+    fn a_listening_feed_changes_no_byte() {
+        let dir = scratch("parity-listening");
+        let [nameplate, policy, _] = given();
+        let out = dir.join("out");
+        let run = |feed: &dyn Fn(&of::Progress)| {
+            let a = RunArgs {
+                nameplate: &nameplate,
+                policy: &policy,
+                out: &out,
+                tries: 6,
+            };
+            let (mut c, d) = fake();
+            let mut m = holding(&given());
+            let inputs = of::admit(&mut m, &a, &mut Vec::new()).expect("admitted");
+            let stop = AtomicBool::new(false);
+            let clock = clock();
+            let mut host = Host {
+                files: &mut m,
+                clock: &clock,
+                stop: &stop,
+                feed,
+                tool: TOOL,
+            };
+            let (lines, _) =
+                block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
+            (lines, in_memory(&m, &out))
+        };
+        let quiet = run(&of::quiet);
+        let told = std::cell::RefCell::new(Vec::new());
+        let listening = run(&|p: &of::Progress| told.borrow_mut().push(p.clone()));
+        assert!(
+            told.borrow()
+                .iter()
+                .any(|p| matches!(p, of::Progress::Unit { .. })),
+            "the feed was told units"
+        );
+        assert!(quiet.1.len() > 3, "{:?}", quiet.1.len());
+        assert_eq!(listening, quiet);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn ended(way: Way) -> Ended {
         Ended {
             way,
@@ -870,7 +1036,12 @@ mod parity {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
         files::step_0(&root);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        std::fs::write(
+            root.join("run.json"),
+            r#"{"tool": "osc-ident", "steps": {}}"#,
+        )
+        .expect("manifest");
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),

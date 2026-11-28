@@ -200,6 +200,7 @@ fn run(
         sink,
         stop,
         clock: &clock,
+        tell: &osc_measure::steps::untold,
     };
     block_on(rest::rest(&mut rig, Some(&np)))
 }
@@ -586,6 +587,7 @@ mod probe {
             sink,
             stop,
             clock: &clock,
+            tell: &osc_measure::steps::untold,
         };
         block_on(probe::probe(
             &mut rig,
@@ -643,13 +645,13 @@ mod probe {
     fn the_probe_refuses_before_any_write() {
         let (mut c, writes, rest) = rested(BaudRate::B3000000);
         let mut np = nameplate();
-        np.travel_deg = None;
+        np.rated_travel_deg = None;
         let mut not_rested = rest.clone();
         not_rested["verdict"] = "refused".into();
         let full = nameplate();
         let t = thermal();
         let cases: [(&Nameplate, Option<&ThermalInputs>, &serde_json::Value, &str); 3] = [
-            (&np, Some(&t), &rest, "travel_deg"),
+            (&np, Some(&t), &rest, "rated_travel_deg"),
             (&full, None, &rest, "no heat model"),
             (&full, Some(&t), &not_rested, "an accepted rest step"),
         ];

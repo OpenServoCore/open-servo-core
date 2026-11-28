@@ -115,6 +115,17 @@ pub async fn board_of<P: Pipe>(
     d: &Descriptor,
     servo: &str,
 ) -> Result<(Record, Board)> {
+    let (record, b, _) = board_and_state(c, id, d, servo).await?;
+    Ok((record, b))
+}
+
+/// [`board_of`], with the state it was read from.
+async fn board_and_state<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    servo: &str,
+) -> Result<(Record, Board, State)> {
     let state = state::read(c, id, d).await?;
     let registers = board::Words::of(&state, d).map_err(|e| anyhow::anyhow!("step 0: {e}"))?;
     let b = Board::decode(&registers).map_err(|e| anyhow::anyhow!("step 0: {e}"))?;
@@ -124,7 +135,33 @@ pub async fn board_of<P: Pipe>(
             registers,
         },
         b,
+        state,
     ))
+}
+
+/// A run's segment `n` as `run.json` records it when it begins at
+/// `started`, from the step `from`, on the servo's state `state`.
+pub fn segment(
+    n: u32,
+    tool: &str,
+    from: &str,
+    started: f64,
+    state: &State,
+    d: &Descriptor,
+    ntc_c: Option<f64>,
+) -> Value {
+    let f = |name: &str| d.field(name).map_or(Value::Null, |f| state.text(f));
+    json!({
+        "n": n,
+        "tool": tool,
+        "from": from,
+        "started": started,
+        "ended": null,
+        "firmware": {"model": f("model_number"), "version": f("firmware_version"),
+                     "capability_flags": f("capability_flags")},
+        "state": {"hash": state.hash(d), "unsaved": state.unsaved},
+        "ntc_c": ntc_c,
+    })
 }
 
 /// The run folder for a step command, named at `now`, the board record
@@ -323,18 +360,40 @@ fn entry(r: &Ran) -> Value {
     })
 }
 
-/// The run folder's minimal manifest: every step it ran, in order.
-fn manifest(tool: &str, uid: &str, ran: &[Ran]) -> Value {
+/// The run folder's minimal manifest: every step it ran, in order; in a
+/// run, the run's `given` and `segments` blocks of `head` before them,
+/// each step under the segment it ran in.
+fn manifest(tool: &str, uid: &str, ran: &[Ran], head: Option<&Value>) -> Value {
     let result = ran.iter().find_map(|r| r.result);
-    let steps: serde_json::Map<String, Value> =
-        ran.iter().map(|r| (r.step.to_string(), entry(r))).collect();
-    json!({
-        "tool": tool,
-        "servo_uid": uid,
-        "image": result.map_or(Value::Null, |r| r["image"].clone()),
-        "capability_flags": result.map_or(Value::Null, |r| r["capability_flags"].clone()),
-        "steps": steps,
-    })
+    let seg = head.and_then(|h| h["segments"].as_array()?.last()?.get("n").cloned());
+    let steps: serde_json::Map<String, Value> = ran
+        .iter()
+        .map(|r| {
+            let mut e = entry(r);
+            if let Some(n) = &seg {
+                e["segment"] = n.clone();
+            }
+            (r.step.to_string(), e)
+        })
+        .collect();
+    let mut doc = serde_json::Map::new();
+    doc.insert("tool".into(), tool.into());
+    doc.insert("servo_uid".into(), uid.into());
+    doc.insert(
+        "image".into(),
+        result.map_or(Value::Null, |r| r["image"].clone()),
+    );
+    doc.insert(
+        "capability_flags".into(),
+        result.map_or(Value::Null, |r| r["capability_flags"].clone()),
+    );
+    if let Some(h) = head {
+        for k in ["given", "segments"] {
+            doc.insert(k.into(), h[k].clone());
+        }
+    }
+    doc.insert("steps".into(), steps.into());
+    doc.into()
 }
 
 /// A step's lines as the CLI prints them: what it did, its checks, the
@@ -377,6 +436,7 @@ pub async fn step_rest<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, rest::STEP),
         };
         rest::rest(&mut rig, i.nameplate.as_ref()).await
     };
@@ -389,7 +449,7 @@ pub async fn step_rest<P: Pipe>(
         refused: ran.as_ref().err().map(|e| e.0.clone()),
         times,
     };
-    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &[entry]))?;
+    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &[entry], None))?;
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let accepted = match ran {
@@ -437,6 +497,7 @@ pub async fn step_probe<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, rest::STEP),
         };
         rest::rest(&mut rig, Some(np)).await
     };
@@ -464,6 +525,7 @@ pub async fn step_probe<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
+                tell: &super::teller(host.feed, probe::STEP),
             };
             probe::probe(
                 &mut rig,
@@ -501,7 +563,7 @@ pub async fn step_probe<P: Pipe>(
             times: (t1, t2),
         });
     }
-    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &ran))?;
+    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &ran, None))?;
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let accepted = matches!(&probed, Some(Ok(p)) if p.accepted());
@@ -577,6 +639,7 @@ pub async fn step_verify<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, verify::STEP),
         };
         let holes = Holes::none("a step on its own reads no run's table");
         verify::verify(
@@ -595,7 +658,7 @@ pub async fn step_verify<P: Pipe>(
         refused: ran.as_ref().err().map(|e| e.0.clone()),
         times: (t0, clock()),
     };
-    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &[entry]))?;
+    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &[entry], None))?;
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let mut lines = Vec::new();
@@ -632,9 +695,9 @@ pub async fn step_cruise<P: Pipe>(
         .nameplate
         .as_ref()
         .context("step cruise drives the motor: it needs the servo's nameplate (--nameplate)")?;
-    let stops = run
+    let tabled = run
         .map(|r| -> Result<Value> {
-            let p = r.join(stops::RESULT);
+            let p = r.join(table::RESULT);
             serde_json::from_slice(&files::read(host.files, &p)?)
                 .with_context(|| format!("parsing {}", p.display()))
         })
@@ -651,13 +714,14 @@ pub async fn step_cruise<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, cruise::STEP),
         };
         cruise::cruise(
             &mut rig,
             &CruiseInputs {
                 nameplate: np,
                 board: &board,
-                stops: stops.as_ref(),
+                table: tabled.as_ref(),
             },
         )
         .await
@@ -669,7 +733,7 @@ pub async fn step_cruise<P: Pipe>(
         refused: ran.as_ref().err().map(|e| e.0.clone()),
         times: (t0, clock()),
     };
-    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &[entry]))?;
+    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &[entry], None))?;
     text.push(b'\n');
     sink.write("run.json", &text)?;
     let mut lines = Vec::new();
@@ -700,7 +764,7 @@ pub async fn step_stops<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Stops).await
+    chain(c, id, d, host, i, out, servo, Last::Stops, None).await
 }
 
 /// `step table` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
@@ -716,7 +780,7 @@ pub async fn step_table<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Table).await
+    chain(c, id, d, host, i, out, servo, Last::Table, None).await
 }
 
 /// `step window` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
@@ -733,7 +797,7 @@ pub async fn step_window<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Window).await
+    chain(c, id, d, host, i, out, servo, Last::Window, None).await
 }
 
 /// `step spins` into `<out>/<servo>/<UTC time>/`: rest, the probe, the
@@ -749,7 +813,43 @@ pub async fn step_spins<P: Pipe>(
     out: &Path,
     servo: &str,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
-    chain(c, id, d, host, i, out, servo, Last::Spins).await
+    chain(c, id, d, host, i, out, servo, Last::Spins, None).await
+}
+
+/// `run`'s steps, `step spins`'s own, as the first segment of a run whose
+/// `run.json` records `given`, the files and tries it was given: each
+/// step's entry kept as it begins and as it ends.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_spins<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    i: &StepInputs,
+    out: &Path,
+    servo: &str,
+    given: &Value,
+) -> Result<(Vec<String>, bool, PathBuf)> {
+    chain(c, id, d, host, i, out, servo, Last::Spins, Some(given)).await
+}
+
+/// `run.json` as the chain stands: the steps kept, and `running` begun.
+fn keep(
+    sink: &mut At,
+    (tool, servo, head): (&str, &str, Option<&Value>),
+    ran: &[Kept],
+    running: Option<&'static str>,
+) -> Result<()> {
+    let entries: Vec<Ran> = ran.iter().map(ran_of).collect();
+    let mut doc = manifest(tool, servo, &entries, head);
+    if let Some(step) = running {
+        let mut e = super::running();
+        if let Some(n) = head.and_then(|h| h["segments"].as_array()?.last()?.get("n").cloned()) {
+            e["segment"] = n;
+        }
+        doc["steps"][step] = e;
+    }
+    super::rewrite(sink.files, &sink.root.join("run.json"), &doc)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -762,6 +862,7 @@ async fn chain<P: Pipe>(
     out: &Path,
     servo: &str,
     last: Last,
+    given: Option<&Value>,
 ) -> Result<(Vec<String>, bool, PathBuf)> {
     let name = match last {
         Last::Stops => stops::STEP,
@@ -772,11 +873,22 @@ async fn chain<P: Pipe>(
     let np = i.nameplate.as_ref().with_context(|| {
         format!("step {name} drives the motor: it needs the servo's nameplate (--nameplate)")
     })?;
-    let (record, board) = board_of(c, id, d, servo).await?;
-    let (root, mut sink) = folder_with(&mut *host.files, (host.clock)(), out, servo, &record)?;
+    let (record, board, state) = board_and_state(c, id, d, servo).await?;
+    let tool = host.tool;
+    let now = (host.clock)();
+    let mut head = given.map(
+        |g| json!({"given": g, "segments": [segment(1, tool, rest::STEP, now, &state, d, None)]}),
+    );
+    let (root, mut sink) = folder_with(&mut *host.files, now, out, servo, &record)?;
     let (stop, clock, feed) = (host.stop, host.clock, host.feed);
     let (mut lines, mut told) = (Vec::new(), 0);
     let mut ran: Vec<Kept> = Vec::new();
+    keep(
+        &mut sink,
+        (tool, servo, head.as_ref()),
+        &ran,
+        Some(rest::STEP),
+    )?;
     feed(&Progress::Started { step: rest::STEP });
     let t0 = clock();
     let rested = {
@@ -787,6 +899,7 @@ async fn chain<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, rest::STEP),
         };
         rest::rest(&mut rig, Some(np)).await
     };
@@ -801,6 +914,13 @@ async fn chain<P: Pipe>(
             r.accepted()
         }
     };
+    // the segment's NTC is the rest step's read of it, taken as the
+    // segment begins
+    if let (Some(h), Ok(r)) = (head.as_mut(), &rested) {
+        h["segments"][0]["ntc_c"] = r.result.as_ref().map_or(Value::Null, |r| {
+            r["estimates"]["board_ntc_c"]["value"].clone()
+        });
+    }
     ran.push((
         rest::STEP,
         rested
@@ -810,11 +930,18 @@ async fn chain<P: Pipe>(
         rested.as_ref().err().map(|e| e.0.clone()),
         (t0, t1),
     ));
+    keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
     tell_kept(feed, &lines, &mut told, &ran);
     let mut probe_ok = false;
     let mut t2 = t1;
     if rest_ok {
         let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
+        keep(
+            &mut sink,
+            (tool, servo, head.as_ref()),
+            &ran,
+            Some(probe::STEP),
+        )?;
         feed(&Progress::Started { step: probe::STEP });
         let probed = {
             let mut rig = Rig {
@@ -824,6 +951,7 @@ async fn chain<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
+                tell: &super::teller(host.feed, probe::STEP),
             };
             probe::probe(
                 &mut rig,
@@ -853,6 +981,7 @@ async fn chain<P: Pipe>(
             probed.as_ref().err().map(|e| e.0.clone()),
             (t1, t2),
         ));
+        keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
         tell_kept(feed, &lines, &mut told, &ran);
     } else {
         lines.push("step probe not run: it needs an accepted rest step".into());
@@ -862,6 +991,12 @@ async fn chain<P: Pipe>(
     if probe_ok {
         let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
         let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
+        keep(
+            &mut sink,
+            (tool, servo, head.as_ref()),
+            &ran,
+            Some(stops::STEP),
+        )?;
         feed(&Progress::Started { step: stops::STEP });
         let found = {
             let mut rig = Rig {
@@ -871,6 +1006,7 @@ async fn chain<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
+                tell: &super::teller(host.feed, stops::STEP),
             };
             stops::stops(
                 &mut rig,
@@ -901,6 +1037,7 @@ async fn chain<P: Pipe>(
             found.as_ref().err().map(|e| e.0.clone()),
             (t2, t3),
         ));
+        keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
         tell_kept(feed, &lines, &mut told, &ran);
     } else if rest_ok {
         lines.push("step stops not run: it needs an accepted probe".into());
@@ -913,6 +1050,12 @@ async fn chain<P: Pipe>(
             let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
             let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
+            keep(
+                &mut sink,
+                (tool, servo, head.as_ref()),
+                &ran,
+                Some(table::STEP),
+            )?;
             feed(&Progress::Started { step: table::STEP });
             let tabled = {
                 let mut rig = Rig {
@@ -922,6 +1065,7 @@ async fn chain<P: Pipe>(
                     sink: &mut sink,
                     stop,
                     clock,
+                    tell: &super::teller(host.feed, table::STEP),
                 };
                 table::table(
                     &mut rig,
@@ -954,6 +1098,7 @@ async fn chain<P: Pipe>(
                 tabled.as_ref().err().map(|e| e.0.clone()),
                 (t3, t4),
             ));
+            keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
             tell_kept(feed, &lines, &mut told, &ran);
         } else if probe_ok {
             lines.push("step table not run: it needs an accepted stops step".into());
@@ -967,6 +1112,12 @@ async fn chain<P: Pipe>(
             let rest_result = result_of(&mut sink, rest::RESULT, "rest")?;
             let probe_result = result_of(&mut sink, probe::RESULT, "probe")?;
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
+            keep(
+                &mut sink,
+                (tool, servo, head.as_ref()),
+                &ran,
+                Some(window::STEP),
+            )?;
             feed(&Progress::Started { step: window::STEP });
             let windowed = {
                 let mut rig = Rig {
@@ -976,6 +1127,7 @@ async fn chain<P: Pipe>(
                     sink: &mut sink,
                     stop,
                     clock,
+                    tell: &super::teller(host.feed, window::STEP),
                 };
                 window::window(
                     &mut rig,
@@ -1007,6 +1159,7 @@ async fn chain<P: Pipe>(
                 windowed.as_ref().err().map(|e| e.0.clone()),
                 (t4, t5),
             ));
+            keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
             tell_kept(feed, &lines, &mut told, &ran);
         } else if stops_ok {
             lines.push("step window not run: it needs an accepted table step".into());
@@ -1021,6 +1174,12 @@ async fn chain<P: Pipe>(
             let stops_result = result_of(&mut sink, stops::RESULT, "stops")?;
             let window_result = result_of(&mut sink, window::RESULT, "window")?;
             let table_result = result_of(&mut sink, table::RESULT, "table")?;
+            keep(
+                &mut sink,
+                (tool, servo, head.as_ref()),
+                &ran,
+                Some(spin::STEP),
+            )?;
             feed(&Progress::Started { step: spin::STEP });
             let spun = {
                 let mut rig = Rig {
@@ -1030,6 +1189,7 @@ async fn chain<P: Pipe>(
                     sink: &mut sink,
                     stop,
                     clock,
+                    tell: &super::teller(host.feed, spin::STEP),
                 };
                 spin::spins(
                     &mut rig,
@@ -1062,15 +1222,12 @@ async fn chain<P: Pipe>(
                 spun.as_ref().err().map(|e| e.0.clone()),
                 (t5, t6),
             ));
+            keep(&mut sink, (tool, servo, head.as_ref()), &ran, None)?;
             tell_kept(feed, &lines, &mut told, &ran);
         } else if table_ok {
             lines.push("step spins not run: it needs an accepted window step".into());
         }
     }
-    let entries: Vec<Ran> = ran.iter().map(ran_of).collect();
-    let mut text = serde_json::to_vec_pretty(&manifest(host.tool, servo, &entries))?;
-    text.push(b'\n');
-    sink.write("run.json", &text)?;
     lines.push(format!("run folder: {}", root.display()));
     tell_lines(feed, &lines, &mut told);
     Ok((lines, accepted, root))

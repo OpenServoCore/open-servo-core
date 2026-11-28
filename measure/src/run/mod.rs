@@ -27,7 +27,8 @@ use serde_json::{Value, json};
 
 use self::steps::StepInputs;
 pub use self::store::{At, Store};
-use crate::steps::cruise;
+use crate::set::file_sha1;
+use crate::steps::{Unit, cruise};
 
 /// The steps past the measurement chain, by their keys in `run.json`.
 pub const GATHER: &str = "gather";
@@ -74,6 +75,14 @@ pub enum Progress {
         at: u32,
         of: u32,
     },
+    /// Unit `at` of `of` inside the step begins: the step's planned count
+    /// at that moment, which never falls within it; `what` names the unit.
+    Unit {
+        step: &'static str,
+        at: u32,
+        of: u32,
+        what: &'static str,
+    },
     /// Lines as the CLI prints them, once said: a run's, in order, are
     /// the lines it returns.
     Lines { lines: Vec<String> },
@@ -87,6 +96,19 @@ pub enum Progress {
 
 /// The feed of a host that prints the lines at the end.
 pub fn quiet(_: &Progress) {}
+
+/// A rig's `tell` for the step keyed `step` in `run.json`: each unit told
+/// to `feed`.
+pub fn teller<'a>(feed: &'a dyn Fn(&Progress), step: &'static str) -> impl Fn(Unit) + 'a {
+    move |u: Unit| {
+        feed(&Progress::Unit {
+            step,
+            at: u.at,
+            of: u.of,
+            what: u.what,
+        })
+    }
+}
 
 /// The lines said past `told`, told.
 fn tell_lines(feed: &dyn Fn(&Progress), lines: &[String], told: &mut usize) {
@@ -172,15 +194,11 @@ fn again(id: Id, a: &RunArgs) -> String {
     )
 }
 
-/// The run folder's manifest with the gather and the tune beside its
-/// steps.
-fn record(fs: &mut dyn Store, root: &Path, gather: Value, tune: Value) -> Result<()> {
+/// The run folder's `run.json`.
+pub fn manifest_of(fs: &mut dyn Store, root: &Path) -> Result<Value> {
     let p = root.join("run.json");
-    let mut doc: Value = serde_json::from_slice(&files::read(fs, &p)?)
-        .with_context(|| format!("parsing {}", p.display()))?;
-    doc[GATHER] = gather;
-    doc[TUNE] = tune;
-    rewrite(fs, &p, &doc)
+    serde_json::from_slice(&files::read(fs, &p)?)
+        .with_context(|| format!("parsing {}", p.display()))
 }
 
 /// `run.json` written over with `doc`.
@@ -192,14 +210,60 @@ fn rewrite(fs: &mut dyn Store, p: &Path, doc: &Value) -> Result<()> {
         .with_context(|| format!("writing {}", p.display()))
 }
 
-/// The cruise step and the final check beside the tune in `run.json`.
-fn record_finish(fs: &mut dyn Store, root: &Path, cruise: Value, last: Value) -> Result<()> {
+/// The entry of a step begun, before it ends.
+fn running() -> Value {
+    json!({"state": "running"})
+}
+
+/// `run.json` with `step`'s entry `entry`, as the step begins or ends: the
+/// gather, the tune, the cruise and the final check beside the steps, each
+/// under the run's last segment where `run.json` records segments.
+fn put(fs: &mut dyn Store, root: &Path, step: &str, mut entry: Value) -> Result<()> {
     let p = root.join("run.json");
-    let mut doc: Value = serde_json::from_slice(&files::read(fs, &p)?)
-        .with_context(|| format!("parsing {}", p.display()))?;
-    doc[cruise::STEP] = cruise;
-    doc[FINAL] = last;
+    let mut doc = manifest_of(fs, root)?;
+    if let Some(n) = doc["segments"]
+        .as_array()
+        .and_then(|s| s.last())
+        .and_then(|s| s.get("n"))
+    {
+        entry["segment"] = n.clone();
+    }
+    if [GATHER, TUNE, cruise::STEP, FINAL].contains(&step) {
+        doc[step] = entry;
+    } else {
+        doc["steps"][step] = entry;
+    }
     rewrite(fs, &p, &doc)
+}
+
+/// The run's last segment ended at `t`, where `run.json` records segments.
+fn end_segment(fs: &mut dyn Store, root: &Path, t: f64) -> Result<()> {
+    let p = root.join("run.json");
+    let mut doc = manifest_of(fs, root)?;
+    let Some(last) = doc["segments"].as_array_mut().and_then(|s| s.last_mut()) else {
+        return Ok(());
+    };
+    last["ended"] = t.into();
+    rewrite(fs, &p, &doc)
+}
+
+/// What the run was given, as `run.json` records it for a resume to check:
+/// the profile and the policy by path and sha1, the file the heat model
+/// was read from, and the tune's tries.
+fn given_of(fs: &mut dyn Store, a: &RunArgs, i: &StepInputs) -> Result<Value> {
+    let mut file = |p: &Path| -> Result<Value> {
+        Ok(json!({"path": p.display().to_string(), "sha1": file_sha1(&files::read(fs, p)?)}))
+    };
+    let (nameplate, policy) = (file(a.nameplate)?, file(a.policy)?);
+    let heat = i
+        .thermal
+        .as_ref()
+        .and_then(|t| t.slow_tau_s.as_ref())
+        .map_or(
+            Value::Null,
+            |q| json!({"path": q.source.file, "sha1": q.source.sha1}),
+        );
+    Ok(json!({"nameplate": nameplate, "policy": policy, "heat": heat, "tries": a.tries}))
 }
 
 fn not_run(why: &str) -> Value {
@@ -219,14 +283,35 @@ pub async fn run<P: Pipe>(
     inputs: &StepInputs,
     servo: &str,
 ) -> Result<(Vec<String>, bool)> {
+    let given = given_of(host.files, a, inputs)?;
+    let (lines, measured, root) =
+        steps::run_spins(c, id, d, host, inputs, a.out, servo, &given).await?;
+    let ran = past_steps(c, id, d, host, a, &root, lines, measured).await?;
+    end_segment(host.files, &root, (host.clock)())?;
+    Ok(ran)
+}
+
+/// The run past its measurement steps, which said `lines` and were all
+/// accepted where `measured`.
+#[allow(clippy::too_many_arguments)]
+async fn past_steps<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
+    mut lines: Vec<String>,
+    measured: bool,
+) -> Result<(Vec<String>, bool)> {
     let feed = host.feed;
-    let (mut lines, measured, root) =
-        steps::step_spins(c, id, d, host, inputs, a.out, servo).await?;
+    let root = root.to_path_buf();
     let mut told = lines.len();
     if !measured {
         let why = "not every step was accepted";
-        record(host.files, &root, not_run(why), not_run(why))?;
-        record_finish(host.files, &root, not_run(why), not_run(why))?;
+        for step in [GATHER, TUNE, cruise::STEP, FINAL] {
+            put(host.files, &root, step, not_run(why))?;
+        }
         for step in [GATHER, TUNE, cruise::STEP, FINAL] {
             tell_end(feed, step, &not_run(why));
         }
@@ -243,20 +328,23 @@ pub async fn run<P: Pipe>(
     told = lines.len();
     if !accepted {
         let why = "the tune accepted no set";
-        record_finish(host.files, &root, not_run(why), not_run(why))?;
+        put(host.files, &root, cruise::STEP, not_run(why))?;
+        put(host.files, &root, FINAL, not_run(why))?;
         tell_end(feed, cruise::STEP, &not_run(why));
         tell_end(feed, FINAL, &not_run(why));
         return Ok((lines, false));
     }
     match finish::finish(c, id, d, host, a, &root).await {
         Ok(f) => {
-            record_finish(host.files, &root, f.cruise, f.last.clone())?;
+            put(host.files, &root, cruise::STEP, f.cruise)?;
+            put(host.files, &root, FINAL, f.last.clone())?;
             tell_end(feed, FINAL, &f.last);
             lines.extend(f.lines);
         }
         Err(e) => {
             let why = format!("the run folder could not be read for the cruise: {e:#}");
-            record_finish(host.files, &root, not_run(&why), not_run(&why))?;
+            put(host.files, &root, cruise::STEP, not_run(&why))?;
+            put(host.files, &root, FINAL, not_run(&why))?;
             tell_end(feed, cruise::STEP, &not_run(&why));
             tell_end(feed, FINAL, &not_run(&why));
             lines.push(format!("{why}; nothing was written, the tune's set stays"));
@@ -280,6 +368,7 @@ pub async fn gather_and_tune<P: Pipe>(
     let feed = host.feed;
     let (mut lines, mut told) = (Vec::new(), 0);
     let inputs_dir = root.join("inputs");
+    put(host.files, root, GATHER, running())?;
     feed(&Progress::Started { step: GATHER });
     let t0 = (host.clock)();
     let gathered = gather::gather(host.files, root, a.nameplate, a.policy, &inputs_dir);
@@ -302,7 +391,8 @@ pub async fn gather_and_tune<P: Pipe>(
             let why = format!("{e:#}");
             let gather = json!({"state": "refused", "why": why, "started": t0, "ended": t1});
             let tune = not_run("the gather was refused");
-            record(host.files, root, gather.clone(), tune.clone())?;
+            put(host.files, root, GATHER, gather.clone())?;
+            put(host.files, root, TUNE, tune.clone())?;
             lines.push(format!("gather refused: {why}"));
             lines.push("the run stops: nothing is tuned".into());
             tell_lines(feed, &lines, &mut told);
@@ -316,10 +406,12 @@ pub async fn gather_and_tune<P: Pipe>(
         }
     }
     let gather = json!({"state": "accepted", "why": null, "started": t0, "ended": t1, "files": gather_files});
+    put(host.files, root, GATHER, gather.clone())?;
     tell_lines(feed, &lines, &mut told);
     tell_end(feed, GATHER, &gather);
 
     let tune_dir = root.join("tune");
+    put(host.files, root, TUNE, running())?;
     feed(&Progress::Started { step: TUNE });
     let tuned = tune::tune(c, id, d, host, &inputs_dir, &tune_dir, a.tries).await;
     let t2 = (host.clock)();
@@ -327,7 +419,7 @@ pub async fn gather_and_tune<P: Pipe>(
         Err(e) => {
             let why = format!("{e:#}");
             let tune = json!({"state": "refused", "why": why, "started": t1, "ended": t2});
-            record(host.files, root, gather, tune.clone())?;
+            put(host.files, root, TUNE, tune.clone())?;
             lines.push(format!("tune refused: {why}"));
             let mut kept = "nothing was written; the measured inputs are kept".to_string();
             if host.cli() {
@@ -351,7 +443,7 @@ pub async fn gather_and_tune<P: Pipe>(
             }
             let tune = json!({"state": if accepted { "accepted" } else { "refused" }, "why": null,
                               "started": t1, "ended": t2, "files": files});
-            record(host.files, root, gather, tune.clone())?;
+            put(host.files, root, TUNE, tune.clone())?;
             lines.push(format!("tune into {}:", tune_dir.display()));
             lines.extend(tune_lines);
             tell_lines(feed, &lines, &mut told);

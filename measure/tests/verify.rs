@@ -391,6 +391,7 @@ fn run_with(
         sink,
         stop,
         clock: &clock,
+        tell: &osc_measure::steps::untold,
     };
     block_on(verify::verify(
         &mut rig,
@@ -555,9 +556,7 @@ fn the_step_refuses_before_any_write() {
 #[test]
 fn with_the_soft_limits_off_the_travel_is_the_stops() {
     let (mut c, log) = servo(BaudRate::B3000000, MID_POT, Box::new(|_, _| false));
-    let mut i = common::inputs();
-    i.policy.soft_margin_share = None;
-    let off = common::rules_set(&i, &table());
+    let off = common::rules_set_soft_off(&common::inputs(), &table());
     block_on(install::install(
         &mut c,
         ID,

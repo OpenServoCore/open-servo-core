@@ -44,6 +44,7 @@ const PROGRESS: &str = r#"
 export type Progress =
   | { event: "started"; step: string }
   | { event: "try"; step: string; at: number; of: number }
+  | { event: "unit"; step: string; at: number; of: number; what: string }
   | { event: "lines"; lines: string[] }
   | { event: "ended"; step: string; state: string; why: string | null };
 "#;

@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
+use crate::ntc::ADC_COUNTS;
 use crate::set::file_sha1;
 use crate::steps::polarity::PROVING_PAIRS;
 use crate::steps::{cruise, probe, rest, stops, table, verify};
@@ -341,7 +342,12 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         table::STEP,
         TABLE_RESULT,
         "run the table step again",
-    )?;
+    )?
+    .ok_or_else(|| {
+        Refused(format!(
+            "the run holds no {TABLE_RESULT}: the stops, the table and its scale are read by the motor's ripple there; run the table step"
+        ))
+    })?;
 
     let mut o = Out::default();
 
@@ -434,80 +440,62 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         }
     ));
 
-    let (lo_key, hi_key) = ("stops.low.median_counts", "stops.high.median_counts");
-    let (low, high) = (stops.num(lo_key)?.ceil(), stops.num(hi_key)?.floor());
-    if low >= high || low < 0.0 {
-        return Err(Refused(format!(
-            "{}: the stops read {low} and {high} counts, no travel: {STOPS_RUN}",
-            stops.r.file
-        )));
-    }
-    let seats = |side: &str| -> Vec<f64> {
-        at(&stops.r.doc, &format!("stops.{side}.seats_counts"))
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_f64).collect())
-            .unwrap_or_default()
-    };
-    let (low_seats, high_seats) = (seats("low"), seats("high"));
-    let seat_sd = [sd(&low_seats), sd(&high_seats)];
-    let seats_n = low_seats.len().min(high_seats.len());
-    o.m.insert(
-        "stops".into(),
-        json!({"raw_min": low as i64, "raw_max": high as i64, "sd": seat_sd, "n": seats_n,
-               "source": stops.source(&format!("{lo_key} up, {hi_key} down: rounded inward; sd over the seats"))}),
-    );
-    let seat_said = match seat_sd {
-        [Some(a), Some(b)] => format!("+/- {} / {}, n {seats_n}", short(a), short(b)),
-        _ => format!("n {seats_n}"),
-    };
-    o.lines.push(format!(
-        "stops {low} to {high} counts {seat_said}: {} {lo_key} ({}) up, {hi_key} ({}) down",
-        stops.r.file,
-        stops.num(lo_key)?,
-        stops.num(hi_key)?
-    ));
-
     let travel = nameplate
-        .travel_deg
+        .rated_travel_deg
         .filter(|t| t.is_finite() && *t > 0.0)
         .ok_or_else(|| {
             Refused(
-                "the nameplate states no travel_deg: the table's scale is the stops' span over it"
+                "the nameplate states no rated_travel_deg: the soft window is the rated travel"
                     .into(),
             )
         })?;
-    let measured_table = match &tabled {
-        Some(t) => Some(MeasuredTable::of(t, low, high)?),
-        None => None,
-    };
-    let cpd = match &measured_table {
-        Some(m) => {
-            o.m.insert(
-                "table".into(),
-                json!({"counts_per_deg": m.cpd, "sd": ONE_FIT.sd, "n": ONE_FIT.n,
-                       "source": m.from.source(&format!("scale.counts_per_deg ({})", m.scale_source))}),
-            );
-            o.lines.push(format!(
-                "table from the table step, {:.4} counts/deg n 1 ({}): {} points_by_page, built against stops {low} to {high}",
-                m.cpd, m.scale_source, m.from.r.file
-            ));
-            m.cpd
-        }
-        None => {
-            let cpd = (high - low) / travel;
-            o.m.insert(
-                "table".into(),
-                json!({"counts_per_deg": cpd, "sd": NOMINAL.sd, "n": NOMINAL.n,
-                       "source": stops.source(&format!(
-                    "the stops' span, {lo_key} up to {hi_key} down, over the nameplate's travel_deg {travel}: nominal, as the stated travel"))}),
-            );
-            o.lines.push(format!(
-                "table straight, {cpd:.4} counts/deg nominal: the stops' {} count span over the nameplate's {travel} deg travel; the run holds no {TABLE_RESULT}",
-                high - low
-            ));
-            cpd
-        }
-    };
+    let m = MeasuredTable::of(&tabled)?;
+    let (low, high) = (m.pins.0 as f64, m.pins.1 as f64);
+    let n_stop = m.n.0.min(m.n.1);
+    o.m.insert(
+        "stops".into(),
+        json!({"raw_min": m.pins.0, "raw_max": m.pins.1,
+               "contact_counts": [m.contacts.0, m.contacts.1],
+               "sd_cycles": [m.sd_cycles.0, m.sd_cycles.1], "n": n_stop,
+               "source": tabled.source("stops: low.pin_raw, high.pin_raw, each first contact by the ripple moved outward to the grid; contact_counts each contact in the table's counts; sd over each stop's rungs")}),
+    );
+    o.lines.push(format!(
+        "stops {low} to {high} counts, the first contacts by the ripple at {:.1} and {:.1} table counts, n {} / {}, sd {:.2} / {:.2} cycles: {} stops; the stops step's seats {} up, {} down pace the steps only",
+        m.contacts.0,
+        m.contacts.1,
+        m.n.0,
+        m.n.1,
+        m.sd_cycles.0,
+        m.sd_cycles.1,
+        tabled.r.file,
+        stops.num("stops.low.median_counts")?,
+        stops.num("stops.high.median_counts")?
+    ));
+    o.m.insert(
+        "table".into(),
+        json!({"counts_per_deg": m.cpd, "sd": ONE_FIT.sd, "n": ONE_FIT.n,
+               "source": tabled.source(&format!("scale.counts_per_deg ({})", m.scale_source))}),
+    );
+    o.lines.push(format!(
+        "table from the table step, {:.4} counts/deg n 1 ({}): {} points_by_page, pinned at {low} and {high}",
+        m.cpd, m.scale_source, tabled.r.file
+    ));
+    let travel_sd = (m.sd_cycles.0.powi(2) + m.sd_cycles.1.powi(2)).sqrt() * m.deg_per_cycle;
+    let measured_travel = quantity(
+        m.travel_deg,
+        None,
+        Spread {
+            sd: Some(travel_sd),
+            n: Some(n_stop),
+        },
+        "deg",
+        tabled.source("stops.travel_deg (contact to contact by the ripple; sd the stops' sds over their rungs in quadrature)"),
+    );
+    o.m.insert("travel_deg".into(), measured_travel.clone());
+    o.lines.push(format!(
+        "travel {:.2} deg +/- {:.2} n {n_stop}: contact to contact by the ripple, {} stops.travel_deg",
+        m.travel_deg, travel_sd, tabled.r.file
+    ));
 
     let r = stops.num("estimates.r_seated_ohm.value")?;
     let r_spread = Spread {
@@ -649,14 +637,17 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
             "cruise_coulomb_ma, cruise_viscous_ma_s_per_rad: missing, the run holds no {SPINS_RESULT} and {why}"
         )),
     }
-    let step4 = [&spins, &tabled].into_iter().flatten().filter_map(|t| {
-        let key = format!("estimates.{POT_STEP4}");
-        at(&t.r.doc, &key)?;
-        Some(
-            t.estimate(POT_STEP4, 1.0, None)
-                .map(|q| (q["value"].as_f64(), q)),
-        )
-    });
+    let step4 = [spins.as_ref(), Some(&tabled)]
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            let key = format!("estimates.{POT_STEP4}");
+            at(&t.r.doc, &key)?;
+            Some(
+                t.estimate(POT_STEP4, 1.0, None)
+                    .map(|q| (q["value"].as_f64(), q)),
+            )
+        });
     let mut worst: Option<(Option<f64>, Value)> = None;
     for got in step4 {
         let got = got?;
@@ -676,79 +667,47 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         "shelf: none, a margin record is no step of a run".into(),
         "speed_kp_verified: not gathered, `osc-ident tune` settles it".into(),
     ]);
-    let measured_travel = match &measured_table {
-        Some(m) if m.scale_source == table::SCALE_RIPPLE => Ok(quantity(
-            (high - low) / m.cpd,
-            None,
-            ONE_FIT,
-            "deg",
-            m.from.source(&format!(
-                "the stops' span {low} to {high} counts over scale.counts_per_deg ({})",
-                m.scale_source
-            )),
-        )),
-        Some(m) => Err(format!(
-            "the table step's scale is {}, not measured",
-            m.scale_source
-        )),
-        None => Err(format!("the run holds no {TABLE_RESULT}")),
-    };
-    let cross_checks = cross_checks(nameplate, travel, measured_travel, &o.m, &mut o.lines);
-    o.lines.push(match &measured_table {
-        Some(m) => format!(
-            "wide-code slots {:?}: from {} slots, written with its table",
-            m.slots, m.from.r.file
-        ),
-        None => format!(
-            "wide-code slots: not gathered, the servo keeps the slots it holds; the run holds no {TABLE_RESULT}"
-        ),
-    });
+    let table_scale = Ok(quantity(
+        m.cpd,
+        None,
+        ONE_FIT,
+        "counts/deg",
+        tabled.source(&format!("scale.counts_per_deg ({})", m.scale_source)),
+    ));
+    let cross_checks = cross_checks(
+        nameplate,
+        travel,
+        Ok(measured_travel),
+        table_scale,
+        &o.m,
+        &mut o.lines,
+    );
+    o.lines.push(format!(
+        "wide-code slots {:?}: from {} slots, written with its table",
+        m.slots, tabled.r.file
+    ));
 
     let mut inputs = Map::new();
     inputs.insert(
         "stops".into(),
-        json!({"raw_min": low as i64, "raw_max": high as i64, "from": stops.r.file, "sha1": stops.r.sha1}),
+        json!({"raw_min": m.pins.0, "raw_max": m.pins.1, "from": tabled.r.file, "sha1": tabled.r.sha1}),
     );
-    let (table, wide_codes) = match &measured_table {
-        Some(m) => {
-            inputs.insert(
-                "table".into(),
-                json!({"from": m.from.r.file, "sha1": m.from.r.sha1}),
-            );
-            (
-                json!({
-                    "format": TABLE_FORMAT,
-                    "inputs": inputs,
-                    "target": {
-                        "counts_per_deg": m.cpd,
-                        "source": m.from.source(&format!("scale.counts_per_deg ({})", m.scale_source)),
-                        "line": "the table step's ripple table, pinned so both stops map to themselves",
-                    },
-                    "points_by_page": m.pages,
-                    "source": m.from.source("points_by_page"),
-                }),
-                Some(json!({"slots": m.slots, "source": m.from.source("slots")})),
-            )
-        }
-        None => {
-            inputs.insert(
-                "travel_deg".into(),
-                json!({"value": travel, "from": "the nameplate's travel_deg"}),
-            );
-            (
-                json!({
-                    "format": TABLE_FORMAT,
-                    "inputs": inputs,
-                    "target": {
-                        "counts_per_deg": cpd,
-                        "line": "straight between the stops: every correction point 0, the raw count is the table's count",
-                    },
-                    "points_by_page": vec![vec![0i16; PAGE_POINTS]; PAGES],
-                }),
-                None,
-            )
-        }
-    };
+    inputs.insert(
+        "table".into(),
+        json!({"from": tabled.r.file, "sha1": tabled.r.sha1}),
+    );
+    let table = json!({
+        "format": TABLE_FORMAT,
+        "inputs": inputs,
+        "target": {
+            "counts_per_deg": m.cpd,
+            "source": tabled.source(&format!("scale.counts_per_deg ({})", m.scale_source)),
+            "line": "the table step's ripple table, pinned at each stop's first contact moved outward to the grid, both pins mapping to themselves",
+        },
+        "points_by_page": m.pages,
+        "source": tabled.source("points_by_page"),
+    });
+    let wide_codes = Some(json!({"slots": m.slots, "source": tabled.source("slots")}));
     Ok(Gathered {
         measured: Value::Object(o.m),
         table,
@@ -875,7 +834,9 @@ fn check(
 }
 
 /// The profile's cross-checks (profile-policy sec 3): the travel the
-/// ripple measured against `travel_deg`; at each stated no-load voltage
+/// ripple measured against `rated_travel_deg`; the price the steps before
+/// the table pace their moves at, the converter's counts over the rated
+/// travel, against the table's scale; at each stated no-load voltage
 /// the free speed V / Ke through the gear ratio against the row; at each
 /// stated stall voltage V / seated R against the stated current. Each is
 /// reported, none judged, and the rules read none of them.
@@ -883,16 +844,46 @@ fn cross_checks(
     np: &Nameplate,
     travel_deg: f64,
     travel: Result<Value, String>,
+    table_scale: Result<Value, String>,
     measured: &Map<String, Value>,
     lines: &mut Vec<String>,
 ) -> Value {
     let travel = check(
         "travel",
         None,
-        Some((travel_deg, "deg", "the nameplate's travel_deg".into())),
+        Some((travel_deg, "deg", "the profile's rated_travel_deg".into())),
         travel,
         lines,
     );
+    let priced = ADC_COUNTS / travel_deg;
+    let read = table_scale
+        .as_ref()
+        .ok()
+        .and_then(|q| q.get("value").and_then(Value::as_f64));
+    let pacing = check(
+        "pacing",
+        None,
+        Some((
+            priced,
+            "counts/deg",
+            format!(
+                "the price the steps before the table pace their moves at: the converter's {ADC_COUNTS} counts over the profile's rated_travel_deg {travel_deg}"
+            ),
+        )),
+        table_scale,
+        lines,
+    );
+    lines.push(match read {
+        Some(t) if priced >= t => {
+            format!("pacing priced {priced:.2} counts/deg; the table reads {t:.2}: conservative")
+        }
+        Some(t) => format!(
+            "pacing priced {priced:.2} counts/deg; the table reads {t:.2}: not conservative, every travel bound before the table was priced short"
+        ),
+        None => format!(
+            "pacing priced {priced:.2} counts/deg; the run holds no {TABLE_RESULT} to read it against"
+        ),
+    });
     let said = |binds: bool| {
         if binds {
             " (the row the run voltage binds)"
@@ -977,29 +968,39 @@ fn cross_checks(
         .collect();
     json!({
         "travel": travel,
+        "pacing": pacing,
         "free_speed": free_speed,
         "stall_current": stall_current,
     })
 }
 
 /// What the gather takes from an accepted table step.
-struct MeasuredTable<'a> {
-    from: &'a Taken<'a>,
+struct MeasuredTable {
     cpd: f64,
     scale_source: String,
     pages: Vec<Vec<i16>>,
     slots: Vec<u8>,
+    /// The pins, each stop's first contact moved outward to the grid.
+    pins: (u16, u16),
+    /// Each first contact in the table's counts.
+    contacts: (f64, f64),
+    sd_cycles: (f64, f64),
+    n: (u64, u64),
+    travel_deg: f64,
+    deg_per_cycle: f64,
 }
 
-impl<'a> MeasuredTable<'a> {
-    /// The table step's scale, points and slots, refused unless built
-    /// against the stops `low`..`high` the gather writes.
-    fn of(t: &'a Taken<'a>, low: f64, high: f64) -> Result<Self, Refused> {
-        let built = (t.num("stops_used.raw_min")?, t.num("stops_used.raw_max")?);
-        if built != (low, high) {
+impl MeasuredTable {
+    /// The table step's scale, points, slots and stops by the ripple;
+    /// refused for a result from before the stops were read so.
+    fn of(t: &Taken) -> Result<Self, Refused> {
+        let revision = at(&t.r.doc, "revision")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if revision < 2 {
             return Err(Refused(format!(
-                "{} was built against stops {} and {}, the stops step's are {low} and {high}: run the table step on this run's stops",
-                t.r.file, built.0, built.1
+                "{} is the table step's revision {revision}, from before the stops were read by the motor's ripple: run the table step again",
+                t.r.file
             )));
         }
         let cpd = t.num("scale.counts_per_deg")?;
@@ -1030,12 +1031,39 @@ impl<'a> MeasuredTable<'a> {
                     .collect::<Option<Vec<u8>>>()
             })
             .ok_or_else(|| t.lacks("slots"))?;
+        let pin = |side: &str| -> Result<u16, Refused> {
+            let key = format!("stops.{side}.pin_raw");
+            u16::try_from(t.num(&key)? as i64).map_err(|_| t.lacks(&key))
+        };
+        let pins = (pin("low")?, pin("high")?);
+        if pins.1 <= pins.0 {
+            return Err(Refused(format!(
+                "{} pins its table at {} and {}: no travel; run the table step again",
+                t.r.file, pins.0, pins.1
+            )));
+        }
+        let n = |side: &str| {
+            at(&t.r.doc, &format!("stops.{side}.n"))
+                .and_then(Value::as_u64)
+                .ok_or_else(|| t.lacks(&format!("stops.{side}.n")))
+        };
         Ok(MeasuredTable {
-            from: t,
             cpd,
             scale_source,
             pages,
             slots,
+            pins,
+            contacts: (
+                t.num("stops.low.contact_counts")?,
+                t.num("stops.high.contact_counts")?,
+            ),
+            sd_cycles: (
+                t.num("stops.low.sd_cycles")?,
+                t.num("stops.high.sd_cycles")?,
+            ),
+            n: (n("low")?, n("high")?),
+            travel_deg: t.num("stops.travel_deg")?,
+            deg_per_cycle: t.num("stops.deg_per_cycle")?,
         })
     }
 }

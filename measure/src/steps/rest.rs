@@ -60,6 +60,8 @@ const STILL_MAX: f64 = 5.0;
 /// carries VDD's ripple and not the pot's code; the NTC sits behind the
 /// pot's twin RC filter, so over a frame its pin holds and it reads the
 /// ripple too.
+/// The units the step tells: its two bursts.
+pub const UNITS: u32 = 2;
 pub const PATTERN_SOURCES: [&str; 2] = ["vbus_raw", "ntc_raw"];
 
 /// The board's sense chain as the servo's CALIB holds it.
@@ -583,6 +585,11 @@ async fn body<P: Pipe>(
     ledger.touched = true;
     write(rig, "torque_enable", &[0]).await?;
     lines.push("torque off, a second of the rest row".into());
+    (rig.tell)(super::Unit {
+        at: 1,
+        of: UNITS,
+        what: "burst",
+    });
     let rest = take(
         rig,
         &b.stream,
@@ -606,6 +613,11 @@ async fn body<P: Pipe>(
         "dead-man {} ticks ({DEADMAN_S} s), then torque on at zero duty in OpenLoop, a second of the raw row",
         b.deadman_ticks
     ));
+    (rig.tell)(super::Unit {
+        at: 2,
+        of: UNITS,
+        what: "burst",
+    });
     let raw = take(
         rig,
         &b.stream,

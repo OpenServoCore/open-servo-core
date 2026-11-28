@@ -68,6 +68,16 @@ pub const ENABLE_S: f64 = 0.2;
 /// The small steps: this share of the travel, each in one burst of
 /// [`SMALL_S`].
 pub const SMALL_SHARE: f64 = 0.01;
+/// The check's small steps: out and back each way.
+pub const SMALLS: usize = 4;
+
+/// The units the check tells, each before a goal write with the loop
+/// holding still: the first enable, the small steps, the self-test's
+/// `moves`, the `wide` holds of its slotted wide codes, and the return to
+/// the middle.
+pub fn units(moves: usize, wide: usize) -> u32 {
+    (1 + SMALLS + moves + wide + 1) as u32
+}
 pub const SMALL_S: f64 = 0.1;
 /// The self-test's moves, shares of the travel, each way from the middle.
 pub const SIZES: [f64; 3] = [0.01, 0.10, 0.33];
@@ -290,28 +300,17 @@ pub struct Scale {
     pub source: String,
 }
 
-/// Counts per degree: the set's angle map when the servo stores one, else
-/// the nameplate's travel over the soft range.
-pub fn scale(
-    raw: (f64, f64),
-    angle_cdeg: (f64, f64),
-    travel_counts: f64,
-    nameplate_deg: Option<f64>,
-) -> Option<Scale> {
+/// Counts per degree: the set's angle map, its span over the pins'; None
+/// when the servo stores none. No straight pot scale stands in for it: the
+/// pot is not linear, and every angle comes from the ripple through the
+/// table.
+pub fn scale(raw: (f64, f64), angle_cdeg: (f64, f64)) -> Option<Scale> {
     let (span, deg) = (raw.1 - raw.0, (angle_cdeg.1 - angle_cdeg.0).abs() / 100.0);
-    if span > 0.0 && deg > 0.0 {
-        return Some(Scale {
-            counts_per_deg: span / deg,
-            source: format!(
-                "the set's angle map on the servo: {deg:.2} deg over raw {}..{}",
-                raw.0, raw.1
-            ),
-        });
-    }
-    nameplate_deg.filter(|d| *d > 0.0).map(|d| Scale {
-        counts_per_deg: travel_counts / d,
+    (span > 0.0 && deg > 0.0).then(|| Scale {
+        counts_per_deg: span / deg,
         source: format!(
-            "the servo stores no angle map: the nameplate's {d} deg travel over the {travel_counts:.0} count soft range"
+            "the set's angle map on the servo: {deg:.2} deg over raw {}..{}",
+            raw.0, raw.1
         ),
     })
 }
@@ -566,7 +565,7 @@ pub(crate) fn belt(
     )))
 }
 
-async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<Before, Refused> {
+async fn before<P: Pipe>(rig: &mut Rig<'_, P>) -> Result<Before, Refused> {
     let (line, state) = admit(rig.c, rig.id, rig.d).await?;
     belt(&state, rig.d, &["Position"])?;
     let n = |name: &str| num(&state, rig.d, name);
@@ -599,11 +598,9 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
     let scale = scale(
         (n("raw_min")?, n("raw_max")?),
         (n("angle_min_cdeg")?, n("angle_max_cdeg")?),
-        travel,
-        i.nameplate.travel_deg,
     )
     .ok_or_else(|| {
-        Refused("the servo stores no angle map and the nameplate states no travel_deg: no degree to score in".into())
+        Refused("the servo stores no angle map: no degree to score in; install a set that holds one (osc-ident run)".into())
     })?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let tick_hz = sense.tick_hz;
@@ -910,6 +907,17 @@ async fn body<P: Pipe>(
     ledger.keep(rig.c, rig.id, rig.d, "mode").await?;
     let goal0 = theta(rig).await?;
     found.goal0 = Some(goal0 as f64);
+    let of = units(b.moves.len(), b.wide.len());
+    let mut at = 0;
+    let mut tell = |rig: &Rig<'_, P>| {
+        at += 1;
+        (rig.tell)(super::Unit {
+            at,
+            of,
+            what: "move",
+        })
+    };
+    tell(rig);
     write(rig, "goal_position", &goal0.to_le_bytes()).await?;
     write(rig, "mode", &[position]).await?;
     write(rig, "bus_deadman_ticks", &b.deadman_ticks.to_le_bytes()).await?;
@@ -959,6 +967,7 @@ async fn body<P: Pipe>(
         ("- out", g - s),
         ("- back", g),
     ] {
+        tell(rig);
         let (bu, fault) = shot(
             rig,
             b,
@@ -1023,6 +1032,7 @@ async fn body<P: Pipe>(
     }
     for m in &b.moves {
         interrupted(rig.stop)?;
+        tell(rig);
         let plan = json!({"phase": "self-test", "move": m.name, "size_share": m.size,
                           "from_counts": m.from, "goal_counts": m.goal});
         let (bursts, fault) = capture(rig, b, &mut w, taken, m.rows, m.goal as i32, &plan).await?;
@@ -1061,6 +1071,7 @@ async fn body<P: Pipe>(
     lines.push(wide_said(b));
     for s in &b.wide {
         interrupted(rig.stop)?;
+        tell(rig);
         let plan = json!({"phase": s.test(), "stuck_code": s.code.stuck, "skipped": s.code.skipped,
                           "side": s.side.name(), "raw_counts": s.raw, "goal_counts": s.goal, "ms": s.ms});
         let rows = rows_for(s.ms as f64 / 1e3, b.tick_hz);
@@ -1081,6 +1092,7 @@ async fn body<P: Pipe>(
         found.wide.push((s.clone(), bursts));
     }
 
+    tell(rig);
     write(rig, "goal_position", &(b.mid as i32).to_le_bytes()).await?;
     let tol = b.deadband + CENTER_TOL;
     let mut still = 0;
@@ -1126,7 +1138,7 @@ pub async fn verify<P: Pipe>(
     rig: &mut Rig<'_, P>,
     i: &VerifyInputs<'_>,
 ) -> Result<Verified, Refused> {
-    let b = before(rig, i).await?;
+    let b = before(rig).await?;
     let mut lines = vec![
         format!("{}; bus at {} baud", b.line.said(), b.line.baud.as_hz()),
         format!(
