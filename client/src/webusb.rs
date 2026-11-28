@@ -3,22 +3,33 @@
 //! keeps its WebUSB types behind `--cfg=web_sys_unstable_apis`, which every
 //! downstream build would have to set in rustflags.
 
-use std::future::poll_fn;
-use std::pin::Pin;
-
 use js_sys::Promise;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use osc_host::link::record::USB_REQ_OPEN_SESSION;
 
+use crate::in_queue::InQueue;
 use crate::pipe::{OLD_ADAPTER, PID, Pipe, PipeError, VID};
 
 // WebUSB takes the endpoint number and derives the address from the
 // method (transferIn: `endpointNumber | 0x80`), so IN 0x81 is endpoint 1.
 const EP_OUT: u8 = 1;
 const EP_IN: u8 = 1;
+// The native pipe's sizing (`nusb` IN_DEPTH): each IN transfer completes on
+// a short packet, one record (~200 B at TEL rates, about 0.8 ms each), so
+// IN_DEPTH queued cover ~100 ms of the page not draining before the
+// adapter's TX queue fills and its UART RX ring laps. With one transfer
+// queued, every completion-to-reissue round trip through the page's event
+// loop left the endpoint unpolled.
+//
+// Results are taken oldest first, and that is arrival order: the queued
+// transfers share one bulk pipe, which the host controller services FIFO;
+// WebUSB transferIn() settles each promise from a task queued on the USB
+// task source as its transfer completes, and an event loop runs one
+// source's tasks in queue order.
 const IN_CAP: u32 = 4096;
+const IN_DEPTH: usize = 128;
 
 #[wasm_bindgen]
 extern "C" {
@@ -115,10 +126,9 @@ async fn open_session(device: &UsbDevice) -> Result<(), PipeError> {
 
 pub struct WebUsbPipe {
     device: UsbDevice,
-    // Dropping a JsFuture does not cancel the transfer; the browser would
-    // deliver its bytes to nobody, so a guard-lapsed recv resumes it.
-    pending: Option<JsFuture>,
-    transfers_in: u64,
+    // A pipe dropped unclosed leaves its transfers to the device's close,
+    // which every owner runs before the next opens it.
+    rx: InQueue<JsFuture>,
 }
 
 impl WebUsbPipe {
@@ -128,17 +138,15 @@ impl WebUsbPipe {
         settle(device.select_configuration(1)).await?;
         settle(device.claim_interface(0)).await?;
         open_session(&device).await?;
-        Ok(Self {
-            device,
-            pending: None,
-            transfers_in: 0,
-        })
+        let mut rx = InQueue::new(IN_DEPTH);
+        rx.fill(in_transfer(&device));
+        Ok(Self { device, rx })
     }
 
-    /// `transferIn` calls issued since open. A resumed recv reuses its
-    /// pending transfer, so this counts transfers, not recv calls.
+    /// `transferIn` calls issued since open: IN_DEPTH at open, then one per
+    /// result taken, so this counts transfers, not recv calls.
     pub fn transfers_in(&self) -> u64 {
-        self.transfers_in
+        self.rx.issued()
     }
 
     /// The device this pipe holds, for the owner the bus goes to next.
@@ -146,9 +154,20 @@ impl WebUsbPipe {
         &self.device
     }
 
-    pub async fn close(self) -> Result<(), PipeError> {
-        close_device(&self.device).await
+    pub async fn close(mut self) -> Result<(), PipeError> {
+        close_device(&self.device).await?;
+        // close() rejects every transfer still scheduled with an AbortError;
+        // settling them here leaves none of this session's in flight once
+        // the device goes to its next owner.
+        for t in self.rx.drain() {
+            let _ = t.await;
+        }
+        Ok(())
     }
+}
+
+fn in_transfer(device: &UsbDevice) -> impl FnMut() -> JsFuture + '_ {
+    || JsFuture::from(device.transfer_in(EP_IN, IN_CAP))
 }
 
 /// Close `device` with no pipe over it: a client whose GET_INFO failed
@@ -165,16 +184,7 @@ impl Pipe for WebUsbPipe {
     }
 
     async fn recv(&mut self) -> Result<Vec<u8>, PipeError> {
-        let (device, pending, issued) = (&self.device, &mut self.pending, &mut self.transfers_in);
-        let res = poll_fn(|cx| {
-            let f = pending.get_or_insert_with(|| {
-                *issued += 1;
-                JsFuture::from(device.transfer_in(EP_IN, IN_CAP))
-            });
-            Pin::new(f).poll(cx)
-        })
-        .await;
-        self.pending = None;
+        let res = self.rx.next(in_transfer(&self.device)).await;
         let res = res.map_err(js_err)?.unchecked_into::<UsbInTransferResult>();
         check(res.status())?;
         let dv = res

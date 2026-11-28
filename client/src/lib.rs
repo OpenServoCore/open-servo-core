@@ -19,6 +19,8 @@ pub mod common;
 pub mod cyclic;
 pub mod descriptor;
 mod error;
+#[cfg(any(test, all(feature = "webusb", target_arch = "wasm32")))]
+mod in_queue;
 pub mod mgmt;
 pub mod pipe;
 pub mod pos_lut;
