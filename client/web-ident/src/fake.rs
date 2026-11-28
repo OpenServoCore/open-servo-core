@@ -6,6 +6,8 @@
 
 use osc_client::BaudRate;
 use osc_client::fake::{FakePipe, TelSample, TelemetryTick, uid_of};
+#[cfg(target_arch = "wasm32")]
+use osc_client::pipe::{Pipe, PipeError};
 
 /// The servo `id` alone on the bus.
 pub fn pipe(id: u8) -> FakePipe {
@@ -14,6 +16,47 @@ pub fn pipe(id: u8) -> FakePipe {
     pipe.seed_calibrated(0);
     pipe.set_track(0, resting());
     pipe
+}
+
+/// [`pipe`] as the page runs it: each exchange and each pause gives the
+/// page a turn, as a device's transfers do, so it redraws and takes a
+/// Cancel mid-step; a turn takes no sim time. The rest step makes no
+/// pause, so turns at the pauses alone would leave it none.
+#[cfg(target_arch = "wasm32")]
+pub struct Yielding(pub FakePipe);
+
+#[cfg(target_arch = "wasm32")]
+impl Pipe for Yielding {
+    async fn send(&mut self, bytes: &[u8]) -> Result<(), PipeError> {
+        let sent = self.0.send(bytes).await;
+        page_turn().await;
+        sent
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>, PipeError> {
+        self.0.recv().await
+    }
+
+    async fn pause(&mut self, d: std::time::Duration) {
+        self.0.pause(d).await;
+        page_turn().await;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout(f: &js_sys::Function, ms: i32);
+}
+
+/// A zero-delay timer: a task of its own, so the page's events, timers and
+/// frames run before the run goes on. A resolved promise would not do,
+/// since its microtask runs before any of them.
+#[cfg(target_arch = "wasm32")]
+async fn page_turn() {
+    let turn = js_sys::Promise::new(&mut |go, _| set_timeout(&go, 0));
+    let _ = wasm_bindgen_futures::JsFuture::from(turn).await;
 }
 
 /// A servo at rest, a count or so of noise on each channel.

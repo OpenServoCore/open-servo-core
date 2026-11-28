@@ -3,6 +3,7 @@
 //! back. `wasm-pack test --node`.
 #![cfg(all(target_arch = "wasm32", feature = "fake"))]
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use osc_client_web_ident::{IdentRun, RunArgs, RunFile, RunOutcome};
@@ -54,6 +55,50 @@ fn events(told: &js_sys::Array, kind: &str) -> Vec<(String, Option<String>, JsVa
             )
         })
         .collect()
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = setInterval)]
+    fn set_interval(f: &js_sys::Function, ms: i32) -> JsValue;
+    #[wasm_bindgen(js_name = clearInterval)]
+    fn clear_interval(id: &JsValue);
+}
+
+/// The last step start or end told, as `started probe`.
+fn last_mark(told: &js_sys::Array) -> Option<String> {
+    told.iter()
+        .filter_map(|p| {
+            let event = get(&p, "event").as_string()?;
+            (event == "started" || event == "ended").then(|| {
+                format!(
+                    "{event} {}",
+                    get(&p, "step").as_string().unwrap_or_default()
+                )
+            })
+        })
+        .next_back()
+}
+
+/// A page's timer: `at` runs at every turn the run gives the page, until
+/// the ticker is dropped.
+struct Ticker {
+    id: JsValue,
+    _tick: Closure<dyn FnMut()>,
+}
+
+impl Ticker {
+    fn every_turn(at: impl FnMut() + 'static) -> Ticker {
+        let tick = Closure::<dyn FnMut()>::new(at);
+        let id = set_interval(tick.as_ref().unchecked_ref(), 0);
+        Ticker { id, _tick: tick }
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        clear_interval(&self.id);
+    }
 }
 
 fn manifest(o: &RunOutcome) -> serde_json::Value {
@@ -158,6 +203,104 @@ async fn a_stop_from_the_page_ends_the_step_through_its_way_out() {
     assert_eq!(m["steps"]["probe"]["state"], "interrupted", "{m}");
     assert!(
         o.lines
+            .iter()
+            .any(|l| l == "  torque_enable 0, read back 0"),
+        "{:?}",
+        o.lines
+    );
+}
+
+/// The run gives the page turns as it goes: a timer the page set fires
+/// between the rest's start and its end, and again in the probe, before
+/// the run resolves.
+#[wasm_bindgen_test]
+async fn the_page_gets_turns_while_the_run_goes() {
+    let told = js_sys::Array::new();
+    let keep = told.clone();
+    let push = Closure::<dyn Fn(JsValue)>::new(move |p: JsValue| {
+        keep.push(&p);
+    });
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (look, note) = (told.clone(), seen.clone());
+    let ticker = Ticker::every_turn(move || {
+        note.borrow_mut().push(last_mark(&look));
+    });
+    let h = IdentRun::new();
+    let o: RunOutcome = h
+        .run_fake(
+            args().into_ts().expect("args"),
+            push.as_ref().unchecked_ref(),
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("runs")
+        .to_rust()
+        .expect("outcome");
+    drop(ticker);
+    assert_eq!(manifest(&o)["steps"]["probe"]["state"], "aborted");
+    let seen = seen.take();
+    for mark in ["started rest", "started probe"] {
+        assert!(
+            seen.iter().any(|m| m.as_deref() == Some(mark)),
+            "no turn after `{mark}` before the step ended: {seen:?}"
+        );
+    }
+}
+
+/// Cancel from a page timer, not from the run's callback: raised at a turn
+/// inside the rest, it lands at the rest's next rung, the rest ends
+/// interrupted through its way out, and the run stops there.
+#[wasm_bindgen_test]
+async fn a_stop_from_a_page_timer_lands_mid_step() {
+    let told = js_sys::Array::new();
+    let keep = told.clone();
+    let push = Closure::<dyn Fn(JsValue)>::new(move |p: JsValue| {
+        keep.push(&p);
+    });
+    let h = Rc::new(IdentRun::new());
+    let raised = Rc::new(Cell::new(false));
+    let (look, stop, flag) = (told.clone(), h.clone(), raised.clone());
+    let ticker = Ticker::every_turn(move || {
+        if !flag.get() && last_mark(&look).as_deref() == Some("started rest") {
+            stop.stop();
+            flag.set(true);
+        }
+    });
+    let o: RunOutcome = h
+        .run_fake(
+            args().into_ts().expect("args"),
+            push.as_ref().unchecked_ref(),
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("runs")
+        .to_rust()
+        .expect("outcome");
+    drop(ticker);
+    assert!(raised.get() && h.stopped(), "the timer raised the stop");
+    let m = manifest(&o);
+    assert_eq!(m["steps"]["rest"]["state"], "interrupted", "{m}");
+    assert_eq!(
+        m["steps"]["rest"]["why"], "interrupted: the step stopped between rungs",
+        "{m}"
+    );
+    let started: Vec<String> = events(&told, "started").into_iter().map(|e| e.0).collect();
+    assert_eq!(started, ["rest"]);
+    let said = |head: &str| o.lines.iter().any(|l| l.starts_with(head));
+    assert!(
+        said("rest row: ") && !said("raw row: "),
+        "the stop lands between the rest's two rows: {:?}",
+        o.lines
+    );
+    let out = o
+        .lines
+        .iter()
+        .position(|l| l == "the way out:")
+        .expect("the rest's way out");
+    assert!(
+        o.lines[out..]
             .iter()
             .any(|l| l == "  torque_enable 0, read back 0"),
         "{:?}",

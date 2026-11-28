@@ -224,7 +224,9 @@ impl IdentRun {
 
     /// `run` on one simulated servo at rest, at `args.id`, with osc-client-web's
     /// simulated UID for that id. No device, no user gesture; the sim runs
-    /// no motor, so the run stops at the probe.
+    /// no motor, so the run stops at the probe. Each exchange and each pause
+    /// gives the page a turn, as a device's transfers do, so the page draws
+    /// its progress and takes a Cancel as the run goes.
     #[cfg(feature = "fake")]
     #[wasm_bindgen(js_name = runFake)]
     pub async fn run_fake(
@@ -238,7 +240,7 @@ impl IdentRun {
     ) -> Result<tsify::Ts<RunOutcome>, JsError> {
         let given = self.take(args)?;
         let id = given.id;
-        let open = async move { Ok(fake::pipe(id)) };
+        let open = async move { Ok(fake::Yielding(fake::pipe(id))) };
         let (o, _) = self
             .go(open, &given, &feed(on_progress), &clock_of(clock))
             .await;
