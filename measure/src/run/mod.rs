@@ -11,6 +11,7 @@
 pub mod files;
 pub mod finish;
 pub mod gather;
+pub mod resume;
 pub mod steps;
 pub mod store;
 pub mod tune;
@@ -27,7 +28,11 @@ use serde_json::{Value, json};
 
 use self::steps::StepInputs;
 pub use self::store::{At, Store};
+use crate::install::Refused;
 use crate::set::file_sha1;
+use crate::steps::Rig;
+use crate::steps::cruise::{CruiseInputs, Cruised};
+use crate::steps::verify::{self, Verified, VerifyInputs};
 use crate::steps::{Unit, cruise};
 
 /// The steps past the measurement chain, by their keys in `run.json`.
@@ -69,11 +74,13 @@ pub enum Progress {
     /// The step begins; a step not run never does.
     Started { step: &'static str },
     /// Try `at` of at most `of` begins: the tune's, and the final check's
-    /// down the back-off.
+    /// down the back-off, each counted from its own first try. `percent`
+    /// is the try's speed gain as a whole percent of the starting gain.
     Try {
         step: &'static str,
         at: u32,
         of: u32,
+        percent: u32,
     },
     /// Unit `at` of `of` inside the step begins: the step's planned count
     /// at that moment, which never falls within it; `what` names the unit.
@@ -286,15 +293,84 @@ pub async fn run<P: Pipe>(
     let given = given_of(host.files, a, inputs)?;
     let (lines, measured, root) =
         steps::run_spins(c, id, d, host, inputs, a.out, servo, &given).await?;
-    let ran = past_steps(c, id, d, host, a, &root, lines, measured).await?;
+    let past = Past {
+        from: at(GATHER),
+        tune: tune::Onward {
+            segment: Some(1),
+            ..tune::Onward::default()
+        },
+        last: None,
+    };
+    let (mut lines, accepted) =
+        past_steps(c, id, d, host, a, &root, lines, measured, &past).await?;
     end_segment(host.files, &root, (host.clock)())?;
-    Ok(ran)
+    if !measured
+        && host.cli()
+        && let Some(l) = resume::continue_line(host.files, id, &root, a, inputs, (host.clock)())
+    {
+        (host.feed)(&Progress::Lines {
+            lines: vec![l.clone()],
+        });
+        lines.push(l);
+    }
+    Ok((lines, accepted))
+}
+
+/// Every step of a run in its order, by its key in `run.json`.
+pub const ORDER: [&str; 10] = [
+    steps::CHAIN[0],
+    steps::CHAIN[1],
+    steps::CHAIN[2],
+    steps::CHAIN[3],
+    steps::CHAIN[4],
+    steps::CHAIN[5],
+    GATHER,
+    TUNE,
+    cruise::STEP,
+    FINAL,
+];
+
+/// `step`'s place in [`ORDER`].
+pub fn at(step: &str) -> usize {
+    ORDER.iter().position(|s| *s == step).unwrap_or(0)
+}
+
+/// Where a segment goes on past the measurement steps: from the step at
+/// `from` in [`ORDER`], the tune and the final checks as they go on.
+#[derive(Clone, Debug, Default)]
+pub struct Past {
+    pub from: usize,
+    pub tune: tune::Onward,
+    pub last: Option<finish::Onward>,
 }
 
 /// The run past its measurement steps, which said `lines` and were all
 /// accepted where `measured`.
 #[allow(clippy::too_many_arguments)]
-async fn past_steps<P: Pipe>(
+pub(crate) async fn past_steps<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
+    lines: Vec<String>,
+    measured: bool,
+    past: &Past,
+) -> Result<(Vec<String>, bool)> {
+    let run_cruise =
+        async |rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>| cruise::cruise(rig, i).await;
+    let check = async |rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>| verify::verify(rig, i).await;
+    past_steps_with(
+        c, id, d, host, a, root, lines, measured, past, run_cruise, check,
+    )
+    .await
+}
+
+/// [`past_steps`] with the cruise and the closed-loop check given: the
+/// simulated servo runs no loop, so its tests script both.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn past_steps_with<P: Pipe, C, V>(
     c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
@@ -303,7 +379,14 @@ async fn past_steps<P: Pipe>(
     root: &Path,
     mut lines: Vec<String>,
     measured: bool,
-) -> Result<(Vec<String>, bool)> {
+    past: &Past,
+    run_cruise: C,
+    mut check: V,
+) -> Result<(Vec<String>, bool)>
+where
+    C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
+{
     let feed = host.feed;
     let root = root.to_path_buf();
     let mut told = lines.len();
@@ -323,7 +406,11 @@ async fn past_steps<P: Pipe>(
         tell_lines(feed, &lines, &mut told);
         return Ok((lines, false));
     }
-    let (more, accepted) = gather_and_tune(c, id, d, host, a, &root).await?;
+    let (more, accepted) = if past.from <= at(TUNE) {
+        gather_and_tune_with(c, id, d, host, a, &root, past, &mut check).await?
+    } else {
+        (Vec::new(), true)
+    };
     lines.extend(more);
     told = lines.len();
     if !accepted {
@@ -334,7 +421,8 @@ async fn past_steps<P: Pipe>(
         tell_end(feed, FINAL, &not_run(why));
         return Ok((lines, false));
     }
-    match finish::finish(c, id, d, host, a, &root).await {
+    let on = past.last.as_ref().filter(|_| past.from > at(cruise::STEP));
+    match finish::finish_on(c, id, d, host, a, &root, run_cruise, check, on).await {
         Ok(f) => {
             put(host.files, &root, cruise::STEP, f.cruise)?;
             put(host.files, &root, FINAL, f.last.clone())?;
@@ -365,13 +453,75 @@ pub async fn gather_and_tune<P: Pipe>(
     a: &RunArgs<'_>,
     root: &Path,
 ) -> Result<(Vec<String>, bool)> {
+    let mut check = async |rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>| verify::verify(rig, i).await;
+    let past = Past {
+        from: at(GATHER),
+        ..Past::default()
+    };
+    gather_and_tune_with(c, id, d, host, a, root, &past, &mut check).await
+}
+
+/// [`gather_and_tune`] going on as `past` says, the tune's closed-loop
+/// check given: a resume past an accepted gather goes on with the tune.
+#[allow(clippy::too_many_arguments)]
+async fn gather_and_tune_with<P: Pipe, V>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
+    past: &Past,
+    check: &mut V,
+) -> Result<(Vec<String>, bool)>
+where
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
+{
     let feed = host.feed;
     let (mut lines, mut told) = (Vec::new(), 0);
     let inputs_dir = root.join("inputs");
+    let t1 = if past.from <= at(GATHER) {
+        match gather_into(host, a, root, &inputs_dir, &mut lines, &mut told)? {
+            Some(t1) => t1,
+            None => return Ok((lines, false)),
+        }
+    } else {
+        (host.clock)()
+    };
+
+    let tune_dir = root.join("tune");
+    put(host.files, root, TUNE, running())?;
+    feed(&Progress::Started { step: TUNE });
+    let tuned = tune::tune_on(
+        c,
+        id,
+        d,
+        host,
+        &inputs_dir,
+        &tune_dir,
+        a.tries,
+        async |rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>| check(rig, i).await,
+        &past.tune,
+    )
+    .await;
+    tuned_into(host, id, a, root, &inputs_dir, tuned, t1, lines, told)
+}
+
+/// The gather of `root` into `inputs_dir`, recorded and told; the time it
+/// ended, or none where it was refused.
+fn gather_into(
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
+    inputs_dir: &Path,
+    lines: &mut Vec<String>,
+    told: &mut usize,
+) -> Result<Option<f64>> {
+    let feed = host.feed;
     put(host.files, root, GATHER, running())?;
     feed(&Progress::Started { step: GATHER });
     let t0 = (host.clock)();
-    let gathered = gather::gather(host.files, root, a.nameplate, a.policy, &inputs_dir);
+    let gathered = gather::gather(host.files, root, a.nameplate, a.policy, inputs_dir);
     let t1 = (host.clock)();
     let gather_files: Vec<String> = [
         "measured.json",
@@ -395,10 +545,10 @@ pub async fn gather_and_tune<P: Pipe>(
             put(host.files, root, TUNE, tune.clone())?;
             lines.push(format!("gather refused: {why}"));
             lines.push("the run stops: nothing is tuned".into());
-            tell_lines(feed, &lines, &mut told);
+            tell_lines(feed, lines, told);
             tell_end(feed, GATHER, &gather);
             tell_end(feed, TUNE, &tune);
-            return Ok((lines, false));
+            return Ok(None);
         }
         Ok(g) => {
             lines.push(format!("gather into {}:", inputs_dir.display()));
@@ -407,13 +557,27 @@ pub async fn gather_and_tune<P: Pipe>(
     }
     let gather = json!({"state": "accepted", "why": null, "started": t0, "ended": t1, "files": gather_files});
     put(host.files, root, GATHER, gather.clone())?;
-    tell_lines(feed, &lines, &mut told);
+    tell_lines(feed, lines, told);
     tell_end(feed, GATHER, &gather);
+    Ok(Some(t1))
+}
 
+/// The tune's end, `tuned`, begun at `t1`, recorded and told after
+/// `lines`.
+#[allow(clippy::too_many_arguments)]
+fn tuned_into(
+    host: &mut Host<'_>,
+    id: Id,
+    a: &RunArgs<'_>,
+    root: &Path,
+    inputs_dir: &Path,
+    tuned: Result<(Vec<String>, bool)>,
+    t1: f64,
+    mut lines: Vec<String>,
+    mut told: usize,
+) -> Result<(Vec<String>, bool)> {
+    let feed = host.feed;
     let tune_dir = root.join("tune");
-    put(host.files, root, TUNE, running())?;
-    feed(&Progress::Started { step: TUNE });
-    let tuned = tune::tune(c, id, d, host, &inputs_dir, &tune_dir, a.tries).await;
     let t2 = (host.clock)();
     match tuned {
         Err(e) => {

@@ -67,3 +67,42 @@ fn the_recorded_run_gathers_to_its_own_inputs() {
         }
     }
 }
+
+/// The run's carries read again by the share over each direction alone,
+/// its even passes the rising ones and its odd the falling: the same
+/// slots, carry 7 read wide over every row.
+#[test]
+fn the_recorded_runs_slots_stand_under_the_share_by_direction() {
+    use osc_measure::fit::widecodes::{By, Q4_PER_SKIPPED, wide_by};
+    let t: Value = load(&format!("{RUN}/{}", table::RESULT));
+    let w = &t["wide_codes"];
+    let ratio = |half: &str, slot: usize| w[half]["carries"][slot]["ratio"].as_f64();
+    let mut slots = [0u64; 16];
+    let mut by = [None; 16];
+    for c in w["all"]["carries"].as_array().expect("carries") {
+        if !matches!(c["state"].as_str(), Some("wide" | "not wide")) {
+            continue;
+        }
+        let k = c["slot"].as_u64().expect("slot") as usize;
+        let skipped = c["skipped"].as_u64().expect("skipped") as usize;
+        let ratio_all = c["ratio"].as_f64().expect("ratio");
+        by[k] = wide_by(
+            skipped,
+            ratio_all,
+            ratio("even_passes", k),
+            ratio("odd_passes", k),
+        );
+        if by[k].is_some() {
+            slots[k] = Q4_PER_SKIPPED as u64 * skipped as u64;
+        }
+    }
+    let stored: Vec<u64> = w["all"]["slots"]
+        .as_array()
+        .expect("slots")
+        .iter()
+        .map(|v| v.as_u64().expect("slot"))
+        .collect();
+    assert_eq!(slots.to_vec(), stored);
+    assert_eq!(stored, [0, 48, 0, 80, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(by[7], Some(By::Pooled));
+}

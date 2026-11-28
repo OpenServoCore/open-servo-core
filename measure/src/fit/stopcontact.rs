@@ -18,6 +18,13 @@
 //! of a fitted table, the way one rung's offset enters a pooled table fit.
 //! A rung whose track reads counts a cycle off the table's has followed
 //! another line, and is left out of its stop, named.
+//!
+//! The rotor cannot pass its stop. Every sample a table is fitted on is a
+//! free-running shaft, each stop rung's cut [`CUT_CYCLES`] before its own
+//! contact, so every fitted sample lies on the free side of the true
+//! contact. A rung that went still with a rise short of its stop, at a
+//! stretch the train is stiffer over, reads a contact the fitted samples lie
+//! past: a stall short of the stop, left out of its stop, named.
 
 use osc_servo_core::adc::ADC_WIDE_SLOTS;
 
@@ -56,7 +63,8 @@ pub const CHECK_SHARE: f64 = 0.15;
 pub const CUT_CYCLES: f64 = 4.0;
 /// Rows a placement sample, and the pot's centered mean at it.
 pub const SAMPLE_ROWS: usize = 16;
-/// A rung this far off its stop's median, cycles, is named.
+/// A rung this far off its stop's median, cycles, is named, and a contact a
+/// fitted sample lies this far past toward its stop is a stall short of it.
 pub const ODD_CYCLES: f64 = 4.0;
 /// K, the least distance from a soft limit to first contact, deg: a landing
 /// at a soft limit overshoots it by up to 0.75 deg at the default move and
@@ -349,8 +357,8 @@ pub fn placed(
 
 /// One stop from its rungs' contacts, cycles: the median, the spread
 /// (max - min) and the sd over the rungs kept, the rungs more than
-/// [`ODD_CYCLES`] off the median and the rungs left out, each by its index
-/// in the list given.
+/// [`ODD_CYCLES`] off the median, the rungs left out and the rungs short of
+/// the stop, each by its index in the list given.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stop {
     pub contact: f64,
@@ -359,18 +367,31 @@ pub struct Stop {
     pub n: usize,
     pub odd: Vec<usize>,
     pub left_out: Vec<usize>,
+    pub short: Vec<usize>,
+}
+
+/// The rungs, by index, whose contact angle, cycles, a fitted sample lies
+/// past toward the stop by more than [`ODD_CYCLES`]: each a stall short of
+/// the stop. `dir` is the stop's side and `farthest` the table's angle,
+/// cycles, at the fitted sample farthest toward it. A rung `kept` marks
+/// false is left out already, its track on another line, and is not named
+/// here.
+pub fn short_of(angles: &[f64], kept: &[bool], dir: i8, farthest: f64) -> Vec<usize> {
+    (0..angles.len())
+        .filter(|&i| kept[i] && dir as f64 * (farthest - angles[i]) > ODD_CYCLES)
+        .collect()
 }
 
 /// The [`Stop`] of one end from each rung's contact angle, cycles. A rung
 /// `kept` marks false, one whose track failed its check, is left out of
-/// the median and named. No other rung is dropped: one far off the median
-/// is named. None when no rung is kept.
-pub fn stop(angles: &[f64], kept: &[bool]) -> Option<Stop> {
-    let k: Vec<f64> = angles
-        .iter()
-        .zip(kept)
-        .filter(|(_, k)| **k)
-        .map(|(a, _)| *a)
+/// the median and named, and so is a rung in `short` ([`short_of`]), a
+/// stall short of the stop. No other rung is dropped: one far off the
+/// median is named. None when no rung is left.
+pub fn stop(angles: &[f64], kept: &[bool], short: &[usize]) -> Option<Stop> {
+    let used = |i: usize| kept[i] && !short.contains(&i);
+    let k: Vec<f64> = (0..angles.len())
+        .filter(|&i| used(i))
+        .map(|i| angles[i])
         .collect();
     let m = median(&k)?;
     let (lo, hi) = k
@@ -384,9 +405,10 @@ pub fn stop(angles: &[f64], kept: &[bool]) -> Option<Stop> {
         sd: super::sd(&k, 1).unwrap_or(0.0),
         n: k.len(),
         odd: (0..angles.len())
-            .filter(|&i| kept[i] && (angles[i] - m).abs() > ODD_CYCLES)
+            .filter(|&i| used(i) && (angles[i] - m).abs() > ODD_CYCLES)
             .collect(),
         left_out: (0..angles.len()).filter(|&i| !kept[i]).collect(),
+        short: short.to_vec(),
     })
 }
 
@@ -492,7 +514,7 @@ mod tests {
 
     #[test]
     fn a_stop_is_its_rungs_median_with_the_spread_and_a_far_rung_named() {
-        let s = stop(&[27.31, 27.20, 27.35, 32.0, 27.38], &[true; 5]).expect("a stop");
+        let s = stop(&[27.31, 27.20, 27.35, 32.0, 27.38], &[true; 5], &[]).expect("a stop");
         assert_eq!(
             (s.contact, s.n, &s.odd[..], &s.left_out[..]),
             (27.35, 5, &[3][..], &[][..])
@@ -501,13 +523,49 @@ mod tests {
         let s = stop(
             &[27.31, 27.20, 27.35, 13.0, 27.38],
             &[true, true, true, false, true],
+            &[],
         )
         .expect("a stop");
         assert!((s.contact - 27.33).abs() < 1e-12);
         assert_eq!((s.n, &s.odd[..], &s.left_out[..]), (4, &[][..], &[3][..]));
         assert!((s.spread - (27.38 - 27.20)).abs() < 1e-12);
-        assert_eq!(stop(&[], &[]), None);
-        assert_eq!(stop(&[27.3], &[false]), None);
+        assert_eq!(stop(&[], &[], &[]), None);
+        assert_eq!(stop(&[27.3], &[false], &[]), None);
+        assert!(
+            stop(&[27.31, 27.20], &[true; 2], &[])
+                .expect("a stop")
+                .short
+                .is_empty()
+        );
+    }
+
+    /// A recorded table run's low stop, cycles in its fit's frame: two stop
+    /// rungs went still at a stretch the train is stiffer over, the third's
+    /// track read 41 % off the table's counts a cycle, and a fitted sample
+    /// (the third rung's, before its cut) lies at -39.58, 28 to 29 cycles
+    /// past the two contacts. The rotor cannot pass its stop, so both are
+    /// stalls short of it, and no contact is left.
+    #[test]
+    fn a_contact_a_fitted_sample_lies_past_is_a_stall_short_of_the_stop() {
+        let (low, kept) = ([-11.11, -10.25, -43.66], [true, true, false]);
+        let short = short_of(&low, &kept, -1, -39.58);
+        assert_eq!(short, [0, 1]);
+        assert_eq!(stop(&low, &kept, &short), None);
+        let high = [902.10, 902.64, 901.39];
+        assert_eq!(short_of(&high, &[true; 3], 1, 895.33), Vec::<usize>::new());
+        assert_eq!(
+            stop(&high, &[true; 3], &[]).expect("a stop").contact,
+            902.10
+        );
+        let low = [-38.4, -10.2, -38.9, -39.2];
+        let short = short_of(&low, &[true; 4], -1, -35.1);
+        assert_eq!(short, [1]);
+        let s = stop(&low, &[true; 4], &short).expect("a stop");
+        assert_eq!(
+            (s.contact, s.n, &s.short[..], &s.odd[..], &s.left_out[..]),
+            (-38.9, 3, &[1][..], &[][..], &[][..])
+        );
+        assert!(short_of(&[-10.0], &[true], -1, -10.0 - ODD_CYCLES).is_empty());
     }
 
     #[test]

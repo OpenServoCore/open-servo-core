@@ -2,11 +2,14 @@
 //! before the bus is touched, the servo reached and named, [`of::run`],
 //! and the reboot that clears the unsaved bit after it, every line told to
 //! the feed as it is said. The files are [`of::run`]'s own, so the run
-//! folder is the CLI's byte for byte.
+//! folder is the CLI's byte for byte. [`resume`] is `run --resume` on the
+//! same terms, the folder's files given, and both tell the page each file
+//! as the run writes or moves it. [`save`] is `save --set` of the folder's
+//! accepted final set, then `check --set`.
 
 use std::cell::RefCell;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, bail};
@@ -16,6 +19,7 @@ use osc_client::{BaudRate, Client, Error, Id, mgmt};
 use osc_measure::run::steps::{StepInputs, clear_unsaved};
 use osc_measure::run::{self as of, Host, Progress, RunArgs, Store, servo_name};
 use osc_measure::sink::MemSink;
+use serde::Serialize;
 
 /// The table layouts this module knows: the CLI's, from the checked-in
 /// export.
@@ -60,12 +64,80 @@ impl Outcome {
     }
 }
 
-/// The host a page runs on: its feed, its clock, its stop flag.
+/// The host a page runs on: its feed, its clock, its stop flag, and where
+/// each file goes as the run stores it.
 pub struct Page<'a> {
     pub feed: &'a dyn Fn(&Progress),
     /// Unix seconds.
     pub clock: &'a dyn Fn() -> f64,
     pub stop: &'a AtomicBool,
+    pub store: &'a dyn Fn(Stored<'_>),
+}
+
+/// A change to the run's store, told as it happens, by paths from the
+/// store's root: replayed in order onto the files the run was given, they
+/// give the run folder the outcome holds.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Stored<'a> {
+    /// `bytes`, whole, as the file at `path`, over one that is there.
+    Write {
+        path: &'a str,
+        #[serde(with = "serde_bytes")]
+        bytes: &'a [u8],
+    },
+    /// The file or the folder at `from`, whole, to `to`.
+    Move { from: &'a str, to: &'a str },
+}
+
+/// The store of a page that keeps no mirror.
+pub fn unmirrored(_: Stored<'_>) {}
+
+/// A memory store that tells each write and move once it is done. Reads
+/// answer from memory at once, as a run needs.
+struct Mirror<'a> {
+    files: MemSink,
+    tell: &'a dyn Fn(Stored<'_>),
+}
+
+impl Store for Mirror<'_> {
+    fn read_file(&mut self, path: &Path) -> std::result::Result<Vec<u8>, String> {
+        self.files.read_file(path)
+    }
+
+    fn write_file(&mut self, path: &Path, bytes: &[u8]) -> std::result::Result<(), String> {
+        self.files.write_file(path, bytes)?;
+        (self.tell)(Stored::Write {
+            path: &path.display().to_string(),
+            bytes,
+        });
+        Ok(())
+    }
+
+    fn make_dirs(&mut self, path: &Path) -> std::result::Result<(), String> {
+        self.files.make_dirs(path)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.files.exists(path)
+    }
+
+    fn entries(&self, path: &Path) -> std::result::Result<Vec<(String, bool)>, String> {
+        self.files.entries(path)
+    }
+
+    fn canonical(&self, path: &Path) -> std::result::Result<PathBuf, String> {
+        self.files.canonical(path)
+    }
+
+    fn rename(&mut self, from: &Path, to: &Path) -> std::result::Result<(), String> {
+        self.files.rename(from, to)?;
+        (self.tell)(Stored::Move {
+            from: &from.display().to_string(),
+            to: &to.display().to_string(),
+        });
+        Ok(())
+    }
 }
 
 /// The run on the pipe `open` yields: nothing opened when the arguments
@@ -74,6 +146,58 @@ pub struct Page<'a> {
 pub async fn run<P: Pipe>(
     open: impl Future<Output = Result<P>>,
     given: &Given,
+    page: &Page<'_>,
+) -> (Outcome, Option<Client<P>>) {
+    session(open, given, None, page).await
+}
+
+/// The CLI's `run --resume` of the run folder `folder` (`<uid>/<UTC>`),
+/// whose files are among `given.files`, on the pipe `open` yields: the
+/// tune's tries are the folder's, and every refusal the folder's files
+/// give comes before the pipe is opened, the folder untouched. The
+/// outcome's files are the folder whole, as the resume leaves it.
+pub async fn resume<P: Pipe>(
+    open: impl Future<Output = Result<P>>,
+    given: &Given,
+    folder: &str,
+    page: &Page<'_>,
+) -> (Outcome, Option<Client<P>>) {
+    session(open, given, Some(folder), page).await
+}
+
+/// What a resume of `folder` would do, decided from `given.files` alone
+/// at `now`, as [`resume`] decides it before the pipe is opened; the
+/// refusal in the tool's words where it would refuse.
+pub fn plan(given: &Given, folder: &str, now: f64) -> Result<of::resume::Plan> {
+    let mut store = MemSink::default();
+    for (path, bytes) in &given.files {
+        store.files.insert(key(path), bytes.clone());
+    }
+    let a = RunArgs {
+        nameplate: Path::new(&given.nameplate),
+        policy: Path::new(&given.policy),
+        out: Path::new(folder),
+        tries: folder_tries(&mut store, folder),
+    };
+    let inputs = of::admit(&mut store, &a, &mut Vec::new())?;
+    of::resume::plan(&mut store, Path::new(folder), &a, &inputs, now)
+}
+
+/// The tune's tries a run folder records, as the CLI's `--resume` takes
+/// them.
+fn folder_tries(store: &mut MemSink, folder: &str) -> u32 {
+    store
+        .read_file(&Path::new(folder).join("run.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|d| d["given"]["tries"].as_u64())
+        .map_or(osc_measure::tune::TRIES, |t| t as u32)
+}
+
+async fn session<P: Pipe>(
+    open: impl Future<Output = Result<P>>,
+    given: &Given,
+    folder: Option<&str>,
     page: &Page<'_>,
 ) -> (Outcome, Option<Client<P>>) {
     let said = RefCell::new(Vec::new());
@@ -88,34 +212,52 @@ pub async fn run<P: Pipe>(
             feed(&Progress::Lines { lines });
         }
     };
-    let mut store = MemSink::default();
+    let mut store = Mirror {
+        files: MemSink::default(),
+        tell: page.store,
+    };
     for (path, bytes) in &given.files {
-        store.files.insert(key(path), bytes.clone());
+        store.files.files.insert(key(path), bytes.clone());
     }
+    let tries = match folder {
+        Some(f) => folder_tries(&mut store.files, f),
+        None => given.tries,
+    };
     let a = RunArgs {
         nameplate: Path::new(&given.nameplate),
         policy: Path::new(&given.policy),
-        out: Path::new(""),
-        tries: given.tries,
+        out: Path::new(folder.unwrap_or("")),
+        tries,
     };
     let mut notes = Vec::new();
     let admitted = of::admit(&mut store, &a, &mut notes);
     tell(notes);
     let ended = |refused: Option<String>, accepted: bool, store: &MemSink| Outcome {
-        files: written(store, given),
+        files: match folder {
+            Some(f) => under(store, f),
+            None => written(store, given),
+        },
         lines: said.borrow().clone(),
         accepted,
         refused,
     };
     let inputs = match admitted {
         Ok(i) => i,
-        Err(e) => return (ended(Some(format!("{e:#}")), false, &store), None),
+        Err(e) => return (ended(Some(format!("{e:#}")), false, &store.files), None),
     };
-    let (mut c, d) = match connect(open, given, &tell).await {
+    if let Some(f) = folder
+        && let Err(e) = of::resume::plan(&mut store, Path::new(f), &a, &inputs, (page.clock)())
+    {
+        return (ended(Some(format!("{e:#}")), false, &store.files), None);
+    }
+    let (mut c, d) = match connect(open, (given.id, given.baud), &tell).await {
         Ok(cd) => cd,
-        Err(e) => return (ended(Some(format!("{e:#}")), false, &store), None),
+        Err(e) => return (ended(Some(format!("{e:#}")), false, &store.files), None),
     };
-    let ran = on_bus(&mut c, &d, given, &a, &inputs, &mut store, &feed, page).await;
+    let ran = on_bus(
+        &mut c, &d, given, &a, &inputs, folder, &mut store, &feed, page,
+    )
+    .await;
     let (accepted, refused) = match ran {
         Ok((accepted, more)) => {
             tell(more);
@@ -126,7 +268,7 @@ pub async fn run<P: Pipe>(
             (false, Some(format!("{e:#}")))
         }
     };
-    (ended(refused, accepted, &store), Some(c))
+    (ended(refused, accepted, &store.files), Some(c))
 }
 
 fn key(path: &str) -> String {
@@ -144,24 +286,35 @@ fn written(store: &MemSink, given: &Given) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
+/// The files of `store` in the run folder `folder`.
+fn under(store: &MemSink, folder: &str) -> Vec<(String, Vec<u8>)> {
+    let head = format!("{}/", key(folder));
+    store
+        .files
+        .iter()
+        .filter(|(k, _)| k.starts_with(&head))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// The CLI's `connect`: the session, the client's resend on, the bus rate
 /// found or set, the servo pinged (once more on a timeout) and its
 /// descriptor chosen.
 async fn connect<P: Pipe>(
     open: impl Future<Output = Result<P>>,
-    given: &Given,
+    (id, baud): (u8, Option<BaudRate>),
     tell: &dyn Fn(Vec<String>),
 ) -> Result<(Client<P>, Descriptor)> {
     let mut c = Client::connect(open.await?).await?;
     c.set_resend(true);
-    match given.baud {
+    match baud {
         None => match mgmt::find_bus_baud(&mut c).await? {
             Some(rate) => tell(vec![format!("bus at {} baud", rate.as_hz())]),
             None => bail!("no servo answers at any rate"),
         },
         Some(rate) => c.host_baud(rate).await?,
     }
-    let id = Id::new(given.id);
+    let id = Id::new(id);
     let ping = match c.ping(id).await {
         Err(Error::Timeout { .. }) => c.ping(id).await,
         p => p,
@@ -182,11 +335,198 @@ async fn connect<P: Pipe>(
     Ok((c, d))
 }
 
+/// What a page gives a save: the servo's bus id, the bus rate, and the
+/// run folder `<uid>/<UTC>` whose accepted final set it stores, by its
+/// files at their paths from the store's root.
+#[derive(Clone, Debug)]
+pub struct SaveGiven {
+    pub id: u8,
+    /// `None` finds the bus rate, as the CLI's `--baud auto`.
+    pub baud: Option<BaudRate>,
+    pub folder: String,
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// What a save leaves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SaveOutcome {
+    /// The lines `osc-ident save` prints, then those of `osc-ident check`
+    /// against the same set.
+    pub lines: Vec<String>,
+    /// The save's own folder `<uid>/<UTC>`, its backup of the stored state
+    /// and the state after the SAVE, at their paths from the store's root.
+    pub files: Vec<(String, Vec<u8>)>,
+    /// Whether the SAVE landed and the servo booted as the set.
+    pub saved: bool,
+    /// The check's differences once it ran: none when the servo is the set.
+    pub differences: Option<Vec<String>>,
+    /// The bus rate the servo boots at, as the state after the SAVE records.
+    pub boots_at: Option<BaudRate>,
+    /// Why the save ended short, as the CLI prints it after `refused: `.
+    pub refused: Option<String>,
+}
+
+/// The final set the run folder `folder` accepted, from `run.json`'s
+/// `final` entry, with its table where the set's is LIVE: the files the
+/// run's own `to store it` line names. Refused where the final check did
+/// not accept a set, or the set file is not the one `run.json` records.
+fn final_of(
+    store: &mut MemSink,
+    folder: &Path,
+) -> Result<(
+    osc_measure::set::SetFile,
+    Option<osc_measure::set::TableFile>,
+)> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(&of::files::read(store, &folder.join("run.json"))?)
+            .context("parsing run.json")?;
+    let last = &doc["final"];
+    match last["state"].as_str() {
+        Some("accepted") => {}
+        state => bail!(
+            "the run {} holds no accepted final set: its final check {}; nothing to save",
+            folder.display(),
+            match (state, last["why"].as_str()) {
+                (None, _) => "did not run".to_string(),
+                (Some(s), Some(why)) => format!("is {s} ({why})"),
+                (Some(s), None) => format!("is {s}"),
+            }
+        ),
+    }
+    let at = folder.join(
+        last["set_file"]
+            .as_str()
+            .context("run.json names no final set file")?,
+    );
+    let set = of::files::set(store, &at)?;
+    if last["set"].as_str() != Some(set.hash()) {
+        bail!(
+            "{} is not the final set run.json records (set {}, run.json {})",
+            at.display(),
+            &set.hash()[..12.min(set.hash().len())],
+            last["set"].as_str().unwrap_or("none")
+        );
+    }
+    let table = match set.table().0 {
+        "LIVE" => Some(of::files::table(
+            store,
+            &folder.join("final/inputs/pos_lut.json"),
+        )?),
+        _ => None,
+    };
+    Ok((set, table))
+}
+
+/// `osc-ident save` of the run folder's accepted final set, then `osc-ident
+/// check` against it, on the pipe `open` yields: the folder's refusals
+/// come before the pipe is opened, the servo's (another servo than the
+/// run's) before anything is written. The save keeps its backup in a run
+/// folder of its own beside the run's, as the CLI does. A SAVE stores the
+/// servo's CONFIG as it runs, its bus rate with it.
+pub async fn save<P: Pipe>(
+    open: impl Future<Output = Result<P>>,
+    given: &SaveGiven,
+    page: &Page<'_>,
+) -> (SaveOutcome, Option<Client<P>>) {
+    let said = RefCell::new(Vec::new());
+    let tell = |lines: Vec<String>| {
+        if !lines.is_empty() {
+            said.borrow_mut().extend(lines.iter().cloned());
+            (page.feed)(&Progress::Lines { lines });
+        }
+    };
+    let mut store = Mirror {
+        files: MemSink::default(),
+        tell: page.store,
+    };
+    for (path, bytes) in &given.files {
+        store.files.files.insert(key(path), bytes.clone());
+    }
+    let folder = Path::new(&given.folder);
+    let refused = |why: String, said: &RefCell<Vec<String>>| SaveOutcome {
+        lines: said.borrow().clone(),
+        refused: Some(why),
+        ..SaveOutcome::default()
+    };
+    let (set, table) = match final_of(&mut store.files, folder) {
+        Ok(f) => f,
+        Err(e) => return (refused(format!("{e:#}"), &said), None),
+    };
+    let (mut c, d) = match connect(open, (given.id, given.baud), &tell).await {
+        Ok(cd) => cd,
+        Err(e) => return (refused(format!("{e:#}"), &said), None),
+    };
+    let id = Id::new(given.id);
+    let uid = given.folder.split('/').next().unwrap_or_default();
+    let servo = match servo_name(&mut c, id).await {
+        Ok(s) if s == uid => s,
+        Ok(s) => {
+            let why = format!(
+                "servo {} is {s}, not the run's servo {uid}: nothing was written",
+                id.as_byte()
+            );
+            return (refused(why, &said), Some(c));
+        }
+        Err(e) => return (refused(format!("{e:#}"), &said), Some(c)),
+    };
+    let root = match of::files::run_folder(&store, Path::new(""), &servo, (page.clock)()) {
+        Ok(r) => r,
+        Err(e) => return (refused(format!("{e:#}"), &said), Some(c)),
+    };
+    let mut steps = Vec::new();
+    let done = {
+        let mut sink = of::At {
+            files: &mut store,
+            root: root.clone(),
+        };
+        osc_measure::install::save(
+            &mut c,
+            id,
+            &d,
+            &set,
+            table.as_ref().map(|t| &t.points),
+            &mut sink,
+            &mut steps,
+        )
+        .await
+    };
+    tell(steps.iter().map(ToString::to_string).collect());
+    let mut out = SaveOutcome::default();
+    match done {
+        Ok(()) => match osc_measure::install::saved_line(&mut c, id, &d).await {
+            Ok(l) => {
+                tell(vec![l]);
+                out.saved = true;
+            }
+            Err(e) => out.refused = Some(format!("{e}")),
+        },
+        Err(e) => out.refused = Some(e.to_string()),
+    }
+    match osc_measure::install::check(&mut c, id, &d, &set).await {
+        Ok(checked) => {
+            tell(osc_measure::install::check_lines(&checked, &set));
+            out.differences = Some(checked.differences);
+        }
+        Err(e) => tell(vec![format!("the check after the save: {e}")]),
+    }
+    out.boots_at = store
+        .files
+        .read_file(&root.join(osc_measure::install::AFTER))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|a| a["fields"]["baud_rate_idx"].as_u64())
+        .and_then(|i| BaudRate::from_idx(i as u8));
+    out.lines = said.borrow().clone();
+    out.files = under(&store.files, &root.display().to_string());
+    (out, Some(c))
+}
+
 type Ran = std::result::Result<(bool, Vec<String>), (anyhow::Error, Vec<String>)>;
 
 /// The CLI's `run` verb past `connect`: the servo named, its state read,
-/// the run, then the reboot that clears unsaved; the lines of that reboot
-/// with the outcome, as the CLI's `ended` joins them.
+/// the run (the resume of `folder` where one is given), then the reboot
+/// that clears unsaved; the lines of that reboot with the outcome, as the
+/// CLI's `ended` joins them.
 #[allow(clippy::too_many_arguments)]
 async fn on_bus<P: Pipe>(
     c: &mut Client<P>,
@@ -194,7 +534,8 @@ async fn on_bus<P: Pipe>(
     given: &Given,
     a: &RunArgs<'_>,
     inputs: &StepInputs,
-    store: &mut MemSink,
+    folder: Option<&str>,
+    store: &mut Mirror<'_>,
     feed: &dyn Fn(&Progress),
     page: &Page<'_>,
 ) -> Ran {
@@ -212,7 +553,10 @@ async fn on_bus<P: Pipe>(
         feed,
         tool: TOOL,
     };
-    let ran = of::run(c, id, d, &mut host, a, inputs, &servo).await;
+    let ran = match folder {
+        Some(f) => of::resume::resume(c, id, d, &mut host, a, inputs, Path::new(f), &servo).await,
+        None => of::run(c, id, d, &mut host, a, inputs, &servo).await,
+    };
     let cleared = clear_unsaved(c, id, d, &before).await;
     match (ran, cleared) {
         (Ok((_, accepted)), Ok(more)) => Ok((accepted, more)),
@@ -293,6 +637,7 @@ mod tests {
             feed: &feed,
             clock: &clock,
             stop: &stop,
+            store: &unmirrored,
         };
         let (o, c) = block_on(run(opened(), &given(), &page));
         (o, told.into_inner(), c.expect("connected"))
@@ -516,6 +861,298 @@ mod tests {
         assert_eq!(o.refused, None);
     }
 
+    /// A change as a test keeps it: a write as `(path, None, bytes)`, a
+    /// move as `(from, Some(to), [])`.
+    type Op = (String, Option<String>, Vec<u8>);
+    type Ops = RefCell<Vec<Op>>;
+    type Files = Vec<(String, Vec<u8>)>;
+
+    /// A page's store callback that keeps each change.
+    fn recorder(ops: &Ops) -> impl Fn(Stored<'_>) + '_ {
+        move |s| {
+            ops.borrow_mut().push(match s {
+                Stored::Write { path, bytes } => (path.into(), None, bytes.to_vec()),
+                Stored::Move { from, to } => (from.into(), Some(to.into()), Vec::new()),
+            });
+        }
+    }
+
+    /// The changes replayed in order onto `files`, as a page mirrors them.
+    fn replay(files: &[(String, Vec<u8>)], ops: &[Op]) -> Files {
+        let mut m = MemSink::default();
+        m.files.extend(files.iter().cloned());
+        for (path, to, bytes) in ops {
+            match to {
+                None => m.write_file(Path::new(path), bytes).expect("write"),
+                Some(to) => m.rename(Path::new(path), Path::new(to)).expect("move"),
+            }
+        }
+        m.files.into_iter().collect()
+    }
+
+    /// The run on the simulated servo from the clock at `t0`, its store's
+    /// changes kept, the stop raised as the step `stop_at` starts.
+    fn mirrored(
+        stop_at: Option<&str>,
+        resume_of: Option<(&str, &Files)>,
+        t0: f64,
+    ) -> (Outcome, Vec<Op>, Vec<Progress>) {
+        let ops = Ops::default();
+        let told = RefCell::new(Vec::new());
+        let stop = AtomicBool::new(false);
+        let feed = |p: &Progress| {
+            if matches!(p, Progress::Started { step } if Some(*step) == stop_at) {
+                stop.store(true, Ordering::SeqCst);
+            }
+            told.borrow_mut().push(p.clone());
+        };
+        let t = Cell::new(t0);
+        let clock = || {
+            let now = t.get();
+            t.set(now + 0.25);
+            now
+        };
+        let (o, _) = {
+            let store = recorder(&ops);
+            let page = Page {
+                feed: &feed,
+                clock: &clock,
+                stop: &stop,
+                store: &store,
+            };
+            match resume_of {
+                None => block_on(run(opened(), &given(), &page)),
+                Some((folder, files)) => {
+                    let mut g = given();
+                    g.files.extend(files.iter().cloned());
+                    block_on(resume(opened(), &g, folder, &page))
+                }
+            }
+        };
+        (o, ops.into_inner(), told.into_inner())
+    }
+
+    /// Each file goes to the page as the run writes it: the changes
+    /// replayed into an empty store are the outcome's files, and `run.json`
+    /// records a step accepted only once that step's result was told.
+    #[test]
+    fn the_store_tells_each_file_as_it_is_written() {
+        let (o, ops, _) = mirrored(None, None, T0);
+        assert!(!ops.is_empty());
+        assert_eq!(replay(&[], &ops), o.files);
+        let root = o.root().expect("a run folder");
+        let result = format!("{root}/results/rest.json");
+        let told_result = ops.iter().position(|(p, _, _)| *p == result).expect("told");
+        let accepted = ops
+            .iter()
+            .position(|(p, _, b)| {
+                p.ends_with("/run.json")
+                    && serde_json::from_slice::<Value>(b)
+                        .is_ok_and(|m| m["steps"]["rest"]["state"] == "accepted")
+            })
+            .expect("run.json records the rest accepted");
+        assert!(told_result < accepted, "{told_result} {accepted}");
+    }
+
+    const T0: f64 = 1_764_000_000.0;
+
+    /// The run folder's files with the host clock's stamps zeroed, the
+    /// segments' records and their files left out: what a stopped and
+    /// resumed run shares with one that ran unbroken.
+    fn unsegmented(files: &[(String, Vec<u8>)]) -> Files {
+        fn mask(v: &mut Value) {
+            match v {
+                Value::Object(o) => {
+                    o.remove("segments");
+                    o.remove("segment");
+                    for (k, x) in o.iter_mut() {
+                        if ["host_t_start", "host_t_end", "started", "ended"].contains(&k.as_str())
+                            && x.is_number()
+                        {
+                            *x = 0.into();
+                        } else {
+                            mask(x);
+                        }
+                    }
+                }
+                Value::Array(a) => a.iter_mut().for_each(mask),
+                _ => {}
+            }
+        }
+        files
+            .iter()
+            .filter(|(p, _)| !p.contains("/segments/"))
+            .map(|(p, b)| match serde_json::from_slice::<Value>(b) {
+                Ok(mut v) if p.ends_with(".json") => {
+                    mask(&mut v);
+                    (p.clone(), serde_json::to_vec_pretty(&v).expect("json"))
+                }
+                _ => (p.clone(), b.clone()),
+            })
+            .collect()
+    }
+
+    /// The run stopped in the probe, as Cancel stops it, then resumed
+    /// from the files the page mirrored: the rest stays the first
+    /// segment's, the stopped probe's result moves under `segments/1/`, the
+    /// probe runs again whole, and the folder ends as an unbroken run's
+    /// does, the host's stamps, the segments and the probe's readings of
+    /// the sim's noise aside; the resume's changes replayed onto the folder
+    /// give the outcome's files.
+    #[test]
+    fn a_run_stopped_in_the_probe_resumes_from_its_mirror() {
+        let (whole, _, _) = mirrored(None, None, T0);
+        let (stopped, ops, _) = mirrored(Some("probe"), None, T0);
+        let root = stopped.root().expect("a run folder");
+        assert_eq!(manifest(&stopped)["steps"]["probe"]["state"], "interrupted");
+        let folder = replay(&[], &ops);
+        assert_eq!(folder, stopped.files);
+
+        let (resumed, more, told) = mirrored(None, Some((&root, &folder)), T0 + 900.0);
+        assert_eq!(resumed.refused, None, "{:#?}", resumed.lines);
+        assert_eq!(resumed.root().as_deref(), Some(root.as_str()));
+        assert_eq!(replay(&folder, &more), resumed.files);
+        let m = manifest(&resumed);
+        assert_eq!(m["segments"][1]["from"], "probe", "{m}");
+        assert_eq!(m["steps"]["rest"]["segment"], 1, "{m}");
+        assert_eq!(m["steps"]["probe"]["segment"], 2, "{m}");
+        assert_eq!(m["steps"]["probe"]["state"], "aborted", "{m}");
+        let names: Vec<&str> = resumed.files.iter().map(|(p, _)| p.as_str()).collect();
+        let moved = format!("{root}/segments/1/results/probe.json");
+        assert!(names.contains(&moved.as_str()), "{names:#?}");
+        assert!(
+            more.iter()
+                .any(|(f, to, _)| *f == format!("{root}/results/probe.json")
+                    && to.as_deref() == Some(moved.as_str())),
+            "the move is told"
+        );
+        let started: Vec<&str> = told
+            .iter()
+            .filter_map(|p| match p {
+                Progress::Started { step } => Some(*step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, ["resume", "probe"]);
+        // The probe ran again later in sim time, so its readings of the sim's
+        // noise move by a count or so; every other byte is the unbroken run's.
+        let probe = format!("{root}/results/probe.json");
+        let readings = [
+            ("rail_v", 5.0 / 1241.0 * 1.5),
+            ("position_before_counts", 1.5),
+            ("position_after_counts", 1.5),
+        ];
+        let read = |files: &mut Files| -> Value {
+            let at = files.iter().position(|(p, _)| *p == probe).expect("probe");
+            let mut v: Value = serde_json::from_slice(&files[at].1).expect("json");
+            let o = v.as_object_mut().expect("an object");
+            let kept = readings
+                .iter()
+                .map(|(k, _)| (k.to_string(), o.remove(*k).unwrap_or_default()))
+                .collect();
+            files[at].1 = serde_json::to_vec(&v).expect("json");
+            kept
+        };
+        let (mut again, mut once) = (unsegmented(&resumed.files), unsegmented(&whole.files));
+        let (r, w) = (read(&mut again), read(&mut once));
+        for (k, within) in readings {
+            let (r, w) = (r[k].as_f64().expect(k), w[k].as_f64().expect(k));
+            assert!((r - w).abs() <= within, "{k}: {r} against {w}");
+        }
+        assert_eq!(again, once);
+    }
+
+    /// Cancel as the run's first step starts, as a page's Cancel before the
+    /// run gets going does, then Resume right after on mg90-d's own heat
+    /// model: the rest step left no result, so the resume goes on from it
+    /// in segment 2, ends its own step accepted, and waits for the winding
+    /// as a restart into the probe does, minutes the sim pauses through.
+    #[test]
+    fn a_run_stopped_in_its_first_step_resumes_from_the_rest_step() {
+        let (stopped, ops, _) = mirrored(Some("rest"), None, T0);
+        let root = stopped.root().expect("a run folder");
+        let m = manifest(&stopped);
+        assert_eq!(m["steps"]["rest"]["state"], "interrupted", "{m}");
+        let folder = replay(&[], &ops);
+        assert!(
+            !folder
+                .iter()
+                .any(|(p, _)| p.ends_with("/results/rest.json")),
+            "the rest step wrote no result"
+        );
+        let ended = m["segments"][0]["ended"].as_f64().expect("ended");
+
+        let (resumed, more, told) = mirrored(None, Some((&root, &folder)), ended + 1.0);
+        assert_eq!(resumed.refused, None, "{:#?}", resumed.lines);
+        assert_eq!(replay(&folder, &more), resumed.files);
+        let ends: Vec<(&str, &str)> = told
+            .iter()
+            .filter_map(|p| match p {
+                Progress::Ended { step, state, .. } => Some((*step, state.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends[..2], [("resume", "accepted"), ("rest", "accepted")]);
+        let m = manifest(&resumed);
+        let s = &m["segments"][1];
+        assert_eq!((&s["n"], &s["from"]), (&2.into(), &"rest".into()), "{m}");
+        let cooled = s["cooled_s"].as_f64().expect("cooled");
+        // the resume reads the clock a beat or so after it is handed
+        let (most, least) = (
+            of::resume::cooling_s(128.92, 1.0),
+            of::resume::cooling_s(128.92, 2.0),
+        );
+        assert!(
+            cooled > 60.0 && (least..=most).contains(&cooled),
+            "{cooled} not in {least}..{most}"
+        );
+        assert_eq!(m["steps"]["rest"]["segment"], 2, "{m}");
+        assert_eq!(m["steps"]["rest"]["state"], "accepted", "{m}");
+        assert_eq!(m["steps"]["probe"]["segment"], 2, "{m}");
+        let rest = format!("{root}/results/rest.json");
+        assert!(resumed.files.iter().any(|(p, _)| *p == rest));
+    }
+
+    /// The folder's own refusals come before the pipe is opened, in the
+    /// tool's words, the folder untouched; `plan` says the same.
+    #[test]
+    fn a_resume_the_folder_refuses_opens_no_pipe() {
+        let (whole, _, _) = mirrored(None, None, T0);
+        let root = whole.root().expect("a run folder");
+        let mut g = given();
+        let mut folder = whole.files.clone();
+        folder.retain(|(p, _)| !p.ends_with("/run.json"));
+        g.files.extend(folder);
+        let words = format!("{root}: no run.json: not a run folder");
+        let e = plan(&g, &root, T0).expect_err("refused");
+        assert_eq!(format!("{e:#}"), words);
+        let stop = AtomicBool::new(false);
+        let clock = clock();
+        let ops = Ops::default();
+        let store = recorder(&ops);
+        let page = Page {
+            feed: &of::quiet,
+            clock: &clock,
+            stop: &stop,
+            store: &store,
+        };
+        let opened = Cell::new(false);
+        let open = async {
+            opened.set(true);
+            Ok(crate::fake::pipe(ID))
+        };
+        let (o, c) = block_on(resume(open, &g, &root, &page));
+        assert!(!opened.get() && c.is_none());
+        assert_eq!(o.refused.as_deref(), Some(words.as_str()));
+        assert!(ops.borrow().is_empty(), "nothing written");
+
+        let mut g = given();
+        g.files.extend(whole.files.iter().cloned());
+        let p = plan(&g, &root, T0 + 900.0).expect("plans");
+        assert_eq!(p.from, "probe");
+        assert_eq!(p.n, 2);
+    }
+
     /// Arguments the CLI refuses before the bus are refused here before
     /// the pipe is opened: no session, no file written.
     #[test]
@@ -528,6 +1165,7 @@ mod tests {
             feed: &of::quiet,
             clock: &clock,
             stop: &stop,
+            store: &unmirrored,
         };
         let opened = Cell::new(false);
         let open = async {
@@ -538,5 +1176,192 @@ mod tests {
         assert!(!opened.get() && c.is_none());
         assert_eq!(o.refused.as_deref(), Some("--tries is at least 1"));
         assert!(o.files.is_empty() && o.root().is_none());
+    }
+
+    /// The simulated servo's name, as its run folders carry it.
+    fn uid() -> String {
+        format!("{:?}", Uid(uid_of(ID)))
+    }
+
+    /// A run folder under `uid` whose final check `last` ended, its final
+    /// set the set of record with its table, as a page keeps it.
+    fn folder_with(uid: &str, last: Value) -> SaveGiven {
+        let folder = format!("{uid}/20261127T120000Z");
+        let set = testdata("constants.json");
+        let run = serde_json::json!({"servo_uid": uid, "steps": {}, "final": last});
+        SaveGiven {
+            id: ID,
+            baud: None,
+            files: vec![
+                (format!("{folder}/run.json"), run.to_string().into_bytes()),
+                (format!("{folder}/final/set.json"), set),
+                (
+                    format!("{folder}/final/inputs/pos_lut.json"),
+                    testdata("pos_lut.json"),
+                ),
+            ],
+            folder,
+        }
+    }
+
+    fn accepted(uid: &str) -> SaveGiven {
+        let set = testdata("constants.json");
+        let hash = osc_measure::set::SetFile::parse(std::str::from_utf8(&set).expect("utf8"))
+            .expect("the set of record")
+            .hash()
+            .to_string();
+        folder_with(
+            uid,
+            serde_json::json!({"state": "accepted", "set": hash, "set_file": "final/set.json"}),
+        )
+    }
+
+    fn saved_on(open: FakePipe, g: &SaveGiven) -> (SaveOutcome, Vec<Op>, Client<FakePipe>) {
+        let ops = Ops::default();
+        let (o, c) = {
+            let stop = AtomicBool::new(false);
+            let clock = clock();
+            let store = recorder(&ops);
+            let page = Page {
+                feed: &of::quiet,
+                clock: &clock,
+                stop: &stop,
+                store: &store,
+            };
+            block_on(save(async { Ok(open) }, g, &page))
+        };
+        (o, ops.into_inner(), c.expect("connected"))
+    }
+
+    /// "Save this set" is the CLI's `save --set` of the run's final set
+    /// with its table, then its `check --set`: the stored state backed up
+    /// in a folder of its own beside the run's, the set SAVEd and booted,
+    /// no difference left. Each file is told to the page as it is written.
+    #[test]
+    fn a_save_stores_the_run_s_final_set_and_reads_it_back_clean() {
+        let g = accepted(&uid());
+        let (o, ops, _) = saved_on(crate::fake::pipe(ID), &g);
+        let text = o.lines.join("\n");
+        assert_eq!(o.refused, None, "{text}");
+        assert!(o.saved, "{text}");
+        assert_eq!(o.differences, Some(vec![]), "{text}");
+        assert!(
+            text.contains("SAVE: CONFIG and CALIB are in flash"),
+            "{text}"
+        );
+        assert!(
+            text.contains("saved: after a reboot the servo reads as the set, settings loaded"),
+            "{text}"
+        );
+        assert!(
+            o.lines
+                .iter()
+                .any(|l| l.starts_with("0 differences; settings loaded; unsaved no; set ")),
+            "{text}"
+        );
+        let paths: Vec<&str> = o.files.iter().map(|(p, _)| p.as_str()).collect();
+        let at = format!("{}/20251124T160000Z", uid());
+        assert_eq!(
+            paths,
+            [
+                format!("{at}/backup/after.json"),
+                format!("{at}/backup/stored.json")
+            ]
+        );
+        assert_eq!(replay(&[], &ops), o.files);
+        assert_eq!(o.boots_at, Some(BaudRate::B3000000));
+    }
+
+    /// A SAVE stores CONFIG as the servo runs it, its bus rate with it: a
+    /// servo saved at 1M on a bus moved to 3M volatile comes back from the
+    /// backup's reboot at 1M, is moved to 3M again, and after the SAVE it
+    /// boots at 3M.
+    #[test]
+    fn a_save_stores_the_bus_rate_the_servo_runs_at() {
+        let mut pipe = FakePipe::new(BaudRate::B1000000, &[ID]);
+        pipe.sim_mut().uncap_idle();
+        pipe.sim_mut().seed_servo_uid(0, uid_of(ID));
+        pipe.seed_calibrated(0);
+        let mut c = block_on(Client::connect(pipe)).expect("connect");
+        let moved =
+            block_on(mgmt::set_baud(&mut c, &[Id::new(ID)], BaudRate::B3000000)).expect("moved");
+        assert!(moved.iter().all(|(_, alive)| *alive));
+        let mut g = accepted(&uid());
+        g.baud = Some(BaudRate::B3000000);
+        let (o, _, mut c) = saved_on(c.into_pipe(), &g);
+        let text = o.lines.join("\n");
+        assert!(o.saved, "{text}");
+        let back =
+            "after the reboot the servo answers at 1M, its saved baud; moved it to 3M, volatile";
+        assert_eq!(o.lines.iter().filter(|l| *l == back).count(), 1, "{text}");
+        assert_eq!(o.boots_at, Some(BaudRate::B3000000));
+        let field = |name: &str| -> Value {
+            let (_, b) = o
+                .files
+                .iter()
+                .find(|(p, _)| p.ends_with(name))
+                .expect("a backup file");
+            serde_json::from_slice::<Value>(b).expect("json")["fields"]["baud_rate_idx"].clone()
+        };
+        assert_eq!(field("backup/stored.json"), 1, "the old saved rate");
+        assert_eq!(field("backup/after.json"), 3, "the rate saved");
+        block_on(mgmt::reboot(&mut c, Id::new(ID))).expect("reboot");
+        block_on(c.ping(Id::new(ID))).expect("boots at 3M");
+    }
+
+    /// A folder whose final check accepted no set is refused before the
+    /// pipe is opened, in the tool's words.
+    #[test]
+    fn a_save_of_a_run_without_an_accepted_final_set_opens_no_pipe() {
+        let g = folder_with(
+            &uid(),
+            serde_json::json!({"state": "refused", "why": "overshoot"}),
+        );
+        let stop = AtomicBool::new(false);
+        let clock = clock();
+        let page = Page {
+            feed: &of::quiet,
+            clock: &clock,
+            stop: &stop,
+            store: &unmirrored,
+        };
+        let opened = Cell::new(false);
+        let open = async {
+            opened.set(true);
+            Ok(crate::fake::pipe(ID))
+        };
+        let (o, c) = block_on(save(open, &g, &page));
+        assert!(!opened.get() && c.is_none());
+        assert_eq!(
+            o.refused.as_deref(),
+            Some(
+                format!(
+                    "the run {} holds no accepted final set: its final check is refused (overshoot); nothing to save",
+                    g.folder
+                )
+                .as_str()
+            )
+        );
+        assert!(o.files.is_empty() && !o.saved && o.differences.is_none());
+    }
+
+    /// The run's set on another servo is refused before anything is
+    /// written: no backup, no SAVE.
+    #[test]
+    fn a_save_on_a_servo_that_is_not_the_run_s_writes_nothing() {
+        let other = "0".repeat(32);
+        let g = accepted(&other);
+        let (o, ops, _) = saved_on(crate::fake::pipe(ID), &g);
+        assert_eq!(
+            o.refused.as_deref(),
+            Some(
+                format!(
+                    "servo {ID} is {}, not the run's servo {other}: nothing was written",
+                    uid()
+                )
+                .as_str()
+            )
+        );
+        assert!(ops.is_empty() && o.files.is_empty() && !o.saved);
     }
 }

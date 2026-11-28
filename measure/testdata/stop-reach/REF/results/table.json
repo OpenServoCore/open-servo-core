@@ -1,0 +1,6733 @@
+{
+  "step": "table",
+  "method": "open-loop-slow-and-fast-passes",
+  "revision": 2,
+  "image": "production",
+  "capability_flags": 1,
+  "verdict": "accepted",
+  "why": null,
+  "slots": [
+    0,
+    48,
+    0,
+    72,
+    0,
+    0,
+    0,
+    88,
+    0,
+    48,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "points_by_page": [
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      6,
+      14,
+      24,
+      34,
+      38,
+      37,
+      36,
+      32,
+      26,
+      19,
+      14,
+      11,
+      10,
+      10,
+      11,
+      12
+    ],
+    [
+      13,
+      13,
+      13,
+      12,
+      9,
+      5,
+      0,
+      -4,
+      -7,
+      -10,
+      -10,
+      -9,
+      -7,
+      -3,
+      1,
+      3,
+      2,
+      0,
+      -2,
+      -5,
+      -7,
+      -8,
+      -8,
+      -5,
+      -2,
+      0,
+      0,
+      -2,
+      -5,
+      -8,
+      -11,
+      -13
+    ],
+    [
+      -14,
+      -15,
+      -15,
+      -13,
+      -10,
+      -6,
+      -3,
+      -3,
+      -4,
+      -6,
+      -7,
+      -8,
+      -10,
+      -12,
+      -15,
+      -17,
+      -18,
+      -17,
+      -15,
+      -13,
+      -11,
+      -11,
+      -12,
+      -14,
+      -17,
+      -20,
+      -22,
+      -23,
+      -22,
+      -20,
+      -16,
+      -12
+    ],
+    [
+      -7,
+      -2,
+      0,
+      -1,
+      -3,
+      -7,
+      -11,
+      -15,
+      -18,
+      -19,
+      -19,
+      -17,
+      -12,
+      -8,
+      -6,
+      -6,
+      -6,
+      -5,
+      -1,
+      6,
+      15,
+      21,
+      24,
+      23,
+      20,
+      15,
+      9,
+      3,
+      -1,
+      -2,
+      -1,
+      2
+    ],
+    [
+      6,
+      9,
+      13,
+      18,
+      23,
+      27,
+      29,
+      31,
+      33,
+      34,
+      34,
+      32,
+      29,
+      25,
+      22,
+      20,
+      20,
+      22,
+      26,
+      30,
+      35,
+      38,
+      40,
+      41,
+      41,
+      40,
+      40,
+      39,
+      41,
+      45,
+      49,
+      51
+    ],
+    [
+      51,
+      49,
+      46,
+      43,
+      41,
+      41,
+      42,
+      43,
+      44,
+      44,
+      43,
+      43,
+      42,
+      43,
+      44,
+      45,
+      46,
+      49,
+      52,
+      55,
+      56,
+      55,
+      55,
+      55,
+      56,
+      56,
+      55,
+      53,
+      52,
+      52,
+      54,
+      56
+    ],
+    [
+      57,
+      57,
+      57,
+      54,
+      50,
+      45,
+      38,
+      32,
+      28,
+      26,
+      25,
+      27,
+      28,
+      29,
+      29,
+      26,
+      21,
+      16,
+      11,
+      10,
+      12,
+      16,
+      18,
+      17,
+      15,
+      16,
+      21,
+      24,
+      19,
+      12,
+      6,
+      3
+    ],
+    [
+      2,
+      6,
+      12,
+      17,
+      22,
+      18,
+      12,
+      6,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "scale": {
+    "counts_per_deg": 19.808185409409713,
+    "source": "the ripple: the pins' span over the output's degrees between them, the table's cycles from pin to pin x 360 over the nameplate's brushes x rotor_segments x gear_ratio"
+  },
+  "stops": {
+    "low": {
+      "contact_cycles": -10.677055921191485,
+      "contact_counts": 236.9073454541665,
+      "contact_raw": 235.81605299966583,
+      "pin_raw": 224,
+      "spread_cycles": 0.8589907958913798,
+      "spread_deg": 0.16730691654165952,
+      "sd_cycles": 0.6073982167516242,
+      "n": 2,
+      "odd": [],
+      "left_out": [
+        32
+      ],
+      "rungs": [
+        {
+          "n": 3,
+          "pass": 1,
+          "rise_counts": 30.080000000000155,
+          "line_hz": 109.375,
+          "contact_row": 10816,
+          "cut_row": 10109,
+          "cycle_from_spin_up": 55.703115100720225,
+          "pot_at_contact": 241,
+          "pot_at_rest": 234.0,
+          "contact_cycles": -11.106551319137175,
+          "samples": 498,
+          "residual_sd_cycles": 0.7877727446251368,
+          "counts_per_cycle": 3.4960518640515903,
+          "table_counts_per_cycle": 3.695928579246695,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 4,
+          "pass": 1,
+          "rise_counts": null,
+          "line_hz": null,
+          "contact_row": null,
+          "cut_row": null,
+          "cycle_from_spin_up": null,
+          "pot_at_contact": null,
+          "pot_at_rest": 233.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its rows read no rise or no ripple line"
+        },
+        {
+          "n": 12,
+          "pass": 3,
+          "rise_counts": 32.81499999999983,
+          "line_hz": 121.875,
+          "contact_row": 9795,
+          "cut_row": 9158,
+          "cycle_from_spin_up": 48.704004525341,
+          "pot_at_contact": 242,
+          "pot_at_rest": 225.0,
+          "contact_cycles": -10.247560523245795,
+          "samples": 442,
+          "residual_sd_cycles": 0.7969847959107779,
+          "counts_per_cycle": 3.7074087433812863,
+          "table_counts_per_cycle": 3.6026614864973197,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 13,
+          "pass": 3,
+          "rise_counts": null,
+          "line_hz": null,
+          "contact_row": null,
+          "cut_row": null,
+          "cycle_from_spin_up": null,
+          "pot_at_contact": null,
+          "pot_at_rest": 225.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its rows read no rise or no ripple line"
+        },
+        {
+          "n": 21,
+          "pass": 5,
+          "rise_counts": 12.5150000000001,
+          "line_hz": 78.125,
+          "contact_row": 2928,
+          "cut_row": 3,
+          "cycle_from_spin_up": 3.2463563022468227,
+          "pot_at_contact": 412,
+          "pot_at_rest": 168.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its shunt rose 13 counts, under 30"
+        },
+        {
+          "n": 22,
+          "pass": 5,
+          "rise_counts": 38.25999999999999,
+          "line_hz": 93.75,
+          "contact_row": 3184,
+          "cut_row": 3,
+          "cycle_from_spin_up": 5.603261177523328,
+          "pot_at_contact": 102,
+          "pot_at_rest": 100.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "it has no sample on the table's span before its cut"
+        },
+        {
+          "n": 31,
+          "pass": 7,
+          "rise_counts": 13.3900000000001,
+          "line_hz": 134.375,
+          "contact_row": 5713,
+          "cut_row": 5054,
+          "cycle_from_spin_up": 24.82916109376806,
+          "pot_at_contact": 301,
+          "pot_at_rest": 203.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its shunt rose 13 counts, under 30"
+        },
+        {
+          "n": 32,
+          "pass": 7,
+          "rise_counts": 53.085000000000036,
+          "line_hz": 121.875,
+          "contact_row": 4247,
+          "cut_row": 3415,
+          "cycle_from_spin_up": 12.414506878459694,
+          "pot_at_contact": 102,
+          "pot_at_rest": 99.0,
+          "contact_cycles": -43.6550109377038,
+          "samples": 23,
+          "residual_sd_cycles": 0.26254398809875673,
+          "counts_per_cycle": 2.3639391381365997,
+          "table_counts_per_cycle": 4.043597939757739,
+          "tracked": false,
+          "why": null
+        }
+      ]
+    },
+    "high": {
+      "contact_cycles": 902.1008402201984,
+      "contact_counts": 3758.4681541284267,
+      "contact_raw": 3758.4668201007607,
+      "pin_raw": 3760,
+      "spread_cycles": 1.2495471641250333,
+      "spread_deg": 0.24337616200671122,
+      "sd_cycles": 0.6269038542632123,
+      "n": 3,
+      "odd": [],
+      "left_out": [],
+      "rungs": [
+        {
+          "n": 7,
+          "pass": 2,
+          "rise_counts": 81.65499999999997,
+          "line_hz": 212.5,
+          "contact_row": 9625,
+          "cut_row": 9247,
+          "cycle_from_spin_up": 79.70632751258003,
+          "pot_at_contact": 3739,
+          "pot_at_rest": 3759.0,
+          "contact_cycles": 902.1008402201984,
+          "samples": 404,
+          "residual_sd_cycles": 0.6059292743875828,
+          "counts_per_cycle": 4.0578937882748,
+          "table_counts_per_cycle": 4.111634751990699,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 17,
+          "pass": 4,
+          "rise_counts": 88.86000000000013,
+          "line_hz": 221.875,
+          "contact_row": 8480,
+          "cut_row": 8042,
+          "cycle_from_spin_up": 67.01878110245342,
+          "pot_at_contact": 3745,
+          "pot_at_rest": 3761.0,
+          "contact_cycles": 902.636175326533,
+          "samples": 327,
+          "residual_sd_cycles": 0.5619743493411777,
+          "counts_per_cycle": 4.149320872373261,
+          "table_counts_per_cycle": 4.236348401410926,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 27,
+          "pass": 6,
+          "rise_counts": 72.78499999999985,
+          "line_hz": 231.25,
+          "contact_row": 9701,
+          "cut_row": 9305,
+          "cycle_from_spin_up": 82.11432733164969,
+          "pot_at_contact": 3738,
+          "pot_at_rest": 3751.0,
+          "contact_cycles": 901.386628162408,
+          "samples": 411,
+          "residual_sd_cycles": 0.573027590266782,
+          "counts_per_cycle": 4.059642241749626,
+          "table_counts_per_cycle": 4.108625481377459,
+          "tracked": true,
+          "why": null
+        }
+      ]
+    },
+    "travel_cycles": 912.7778961413899,
+    "travel_deg": 177.78311015815575,
+    "deg_per_cycle": 0.19477148921956042,
+    "g_cycles": 4.0,
+    "odd_cycles": 4.0,
+    "check_share": 0.15,
+    "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio"
+  },
+  "passes": [
+    {
+      "n": 1,
+      "kind": "half",
+      "dir": -1,
+      "start_counts": 1886.125,
+      "end_counts": 233.0
+    },
+    {
+      "n": 2,
+      "kind": "slow",
+      "dir": 1,
+      "start_counts": 233.0,
+      "end_counts": 3759.0
+    },
+    {
+      "n": 3,
+      "kind": "slow",
+      "dir": -1,
+      "start_counts": 3759.0,
+      "end_counts": 225.0
+    },
+    {
+      "n": 4,
+      "kind": "slow",
+      "dir": 1,
+      "start_counts": 225.0,
+      "end_counts": 3761.0
+    },
+    {
+      "n": 5,
+      "kind": "slow",
+      "dir": -1,
+      "start_counts": 3761.0,
+      "end_counts": 100.0
+    },
+    {
+      "n": 6,
+      "kind": "slow",
+      "dir": 1,
+      "start_counts": 100.0,
+      "end_counts": 3751.0
+    },
+    {
+      "n": 7,
+      "kind": "slow",
+      "dir": -1,
+      "start_counts": 3751.0,
+      "end_counts": 99.0
+    },
+    {
+      "n": 8,
+      "kind": "fast",
+      "dir": 1,
+      "start_counts": 192.0,
+      "end_counts": 690.0
+    },
+    {
+      "n": 9,
+      "kind": "fast",
+      "dir": -1,
+      "start_counts": 3628.0,
+      "end_counts": 2395.0
+    },
+    {
+      "n": 10,
+      "kind": "fast",
+      "dir": 1,
+      "start_counts": 243.0,
+      "end_counts": 2849.0
+    },
+    {
+      "n": 11,
+      "kind": "fast",
+      "dir": -1,
+      "start_counts": 3622.0,
+      "end_counts": 1065.0
+    }
+  ],
+  "rows_by_round_trips": [
+    {
+      "slow_round_trips": 2,
+      "median_rows_a_code": 104.0,
+      "thin_carries": [
+        255,
+        2559,
+        3071,
+        3327
+      ]
+    },
+    {
+      "slow_round_trips": 3,
+      "median_rows_a_code": 152.0,
+      "thin_carries": []
+    }
+  ],
+  "priced": {
+    "rungs_s": 41.106649999999995,
+    "blocked_s": 7.309400000000001,
+    "peak_rise_c": 6.46,
+    "words": "every rung priced blocked for its rows and dead-man; the stop rungs are the ones that end blocked"
+  },
+  "rungs": [
+    {
+      "n": 1,
+      "pass": 1,
+      "pass_kind": "half",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 1886.125,
+      "planned": {
+        "t_s": 1.6001,
+        "rows": 32002,
+        "share": 1.0,
+        "t_runway_s": 1.600125040004415,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 1678.825,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 1678.8009801245905
+      },
+      "priced": {
+        "time_s": 1.6501000000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 1.27,
+        "travel_counts": 1678.8009801245905
+      },
+      "on_s": 1.60315,
+      "end_counts": 668.0,
+      "travel_counts": 1218.125,
+      "drive_travel_counts": 1210.0,
+      "pot_speed_cps": 765.6395464928565,
+      "reach": null,
+      "captures": [
+        1,
+        2
+      ]
+    },
+    {
+      "n": 2,
+      "pass": 1,
+      "pass_kind": "half",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 668.0,
+      "planned": {
+        "t_s": 0.33025,
+        "rows": 6605,
+        "share": 1.0,
+        "t_runway_s": 0.3302660229208131,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 460.7,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 460.68462985248533
+      },
+      "priced": {
+        "time_s": 0.38025,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 1.42,
+        "travel_counts": 460.68462985248533
+      },
+      "on_s": 0.33315,
+      "end_counts": 478.0,
+      "travel_counts": 190.0,
+      "drive_travel_counts": 181.0,
+      "pot_speed_cps": 604.4641548212417,
+      "reach": null,
+      "captures": [
+        3,
+        4
+      ]
+    },
+    {
+      "n": 3,
+      "pass": 1,
+      "pass_kind": "half",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 478.0,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 1.0468539370058374,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 380.5,
+        "far_counts": 97.5,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 767.3600617397099
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 1.66,
+        "travel_counts": 767.3600617397099
+      },
+      "on_s": 0.65215,
+      "end_counts": 234.0,
+      "travel_counts": 244.0,
+      "drive_travel_counts": 245.0,
+      "pot_speed_cps": 266.25983311840423,
+      "reach": {
+        "reached": false,
+        "moving": true,
+        "rise": {
+          "free_counts": 1300.84,
+          "seated_counts": 1330.92,
+          "counts": 30.080000000000155,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        5,
+        6
+      ]
+    },
+    {
+      "n": 4,
+      "pass": 1,
+      "pass_kind": "half",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 234.0,
+      "planned": {
+        "t_s": 0.54225,
+        "rows": 10845,
+        "share": 1.0,
+        "t_runway_s": 0.542274802631529,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 136.5,
+        "far_counts": 97.5,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 664.0477564089183
+      },
+      "priced": {
+        "time_s": 0.59225,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 1.79,
+        "travel_counts": 664.0477564089183
+      },
+      "on_s": 0.5445,
+      "end_counts": 233.0,
+      "travel_counts": 1.0,
+      "drive_travel_counts": -0.0,
+      "pot_speed_cps": 0.34836019708191757,
+      "reach": {
+        "reached": true,
+        "still_counts": 233.0,
+        "rise": {
+          "free_counts": 1348.86,
+          "seated_counts": 1350.1,
+          "counts": 1.240000000000009,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        7,
+        8
+      ]
+    },
+    {
+      "n": 5,
+      "pass": 2,
+      "pass_kind": "slow",
+      "kind": "leave",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 233.0,
+      "planned": {
+        "t_s": 3.15,
+        "rows": 63000,
+        "share": 1.0,
+        "t_runway_s": 3.4083466470394943,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3414.7,
+        "far_counts": 3647.7,
+        "fastest_cps": 767.7048559259381,
+        "bound_speed_cps": 959.6310699074227,
+        "bound_coast_counts": 95.96310699074228,
+        "travel_bound_counts": 3166.7825306944947
+      },
+      "priced": {
+        "time_s": 3.1999999999999997,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.4,
+        "travel_counts": 3166.7825306944947
+      },
+      "on_s": 3.1541,
+      "end_counts": 2451.0,
+      "travel_counts": 2218.0,
+      "drive_travel_counts": 2199.0,
+      "pot_speed_cps": 813.3642387754682,
+      "reach": null,
+      "captures": [
+        9,
+        10
+      ]
+    },
+    {
+      "n": 6,
+      "pass": 2,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 2451.0,
+      "planned": {
+        "t_s": 1.027,
+        "rows": 20540,
+        "share": 1.0,
+        "t_runway_s": 1.027037241570049,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 1196.6999999999998,
+        "far_counts": 3647.7,
+        "fastest_cps": 813.3642387754682,
+        "bound_speed_cps": 1016.7052984693352,
+        "bound_coast_counts": 101.67052984693352,
+        "travel_bound_counts": 1196.6621362984074
+      },
+      "priced": {
+        "time_s": 1.077,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.46,
+        "travel_counts": 1196.6621362984074
+      },
+      "on_s": 1.02965,
+      "end_counts": 3398.0,
+      "travel_counts": 947.0,
+      "drive_travel_counts": 917.0,
+      "pot_speed_cps": 950.6491047544329,
+      "reach": null,
+      "captures": [
+        11,
+        12
+      ]
+    },
+    {
+      "n": 7,
+      "pass": 2,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 3398.0,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 0.862734802340794,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 359.5,
+        "far_counts": 3757.5,
+        "fastest_cps": 950.6491047544329,
+        "bound_speed_cps": 1188.311380943041,
+        "bound_coast_counts": 118.83113809430411,
+        "travel_bound_counts": 950.5896891853859
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.47,
+        "travel_counts": 950.5896891853859
+      },
+      "on_s": 0.65215,
+      "end_counts": 3759.0,
+      "travel_counts": 361.0,
+      "drive_travel_counts": 356.0,
+      "pot_speed_cps": 492.7194850058482,
+      "reach": {
+        "reached": true,
+        "still_counts": 3750.0,
+        "rise": {
+          "free_counts": 1288.645,
+          "seated_counts": 1370.3,
+          "counts": 81.65499999999997,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        13,
+        14
+      ]
+    },
+    {
+      "n": 8,
+      "pass": 3,
+      "pass_kind": "slow",
+      "kind": "leave",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 3759.0,
+      "planned": {
+        "t_s": 3.15,
+        "rows": 63000,
+        "share": 1.0,
+        "t_runway_s": 3.5525414230689205,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3551.7,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 3165.5581020576815
+      },
+      "priced": {
+        "time_s": 3.1999999999999997,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.76,
+        "travel_counts": 3165.5581020576815
+      },
+      "on_s": 3.15365,
+      "end_counts": 1291.0,
+      "travel_counts": 2468.0,
+      "drive_travel_counts": 2454.0,
+      "pot_speed_cps": 758.235068239326,
+      "reach": null,
+      "captures": [
+        15,
+        16
+      ]
+    },
+    {
+      "n": 9,
+      "pass": 3,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 1291.0,
+      "planned": {
+        "t_s": 0.9797,
+        "rows": 19594,
+        "share": 1.0,
+        "t_runway_s": 0.9797249599289888,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 1083.7,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 1083.6760569377464
+      },
+      "priced": {
+        "time_s": 1.0297,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.77,
+        "travel_counts": 1083.6760569377464
+      },
+      "on_s": 0.98215,
+      "end_counts": 624.0,
+      "travel_counts": 667.0,
+      "drive_travel_counts": 658.0,
+      "pot_speed_cps": 598.2281036767048,
+      "reach": null,
+      "captures": [
+        17,
+        18
+      ]
+    },
+    {
+      "n": 10,
+      "pass": 3,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 624.0,
+      "planned": {
+        "t_s": 0.28435,
+        "rows": 5687,
+        "share": 1.0,
+        "t_runway_s": 0.28439733395073324,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 416.7,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 416.6545944329557
+      },
+      "priced": {
+        "time_s": 0.33435,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.73,
+        "travel_counts": 416.6545944329557
+      },
+      "on_s": 0.28665,
+      "end_counts": 535.0,
+      "travel_counts": 89.0,
+      "drive_travel_counts": 80.0,
+      "pot_speed_cps": 506.4043572384466,
+      "reach": null,
+      "captures": [
+        19,
+        20
+      ]
+    },
+    {
+      "n": 11,
+      "pass": 3,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 535.0,
+      "planned": {
+        "t_s": 0.1916,
+        "rows": 3832,
+        "share": 1.0,
+        "t_runway_s": 0.19161748580670812,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 327.7,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 327.68322656451636
+      },
+      "priced": {
+        "time_s": 0.24159999999999998,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.67,
+        "travel_counts": 327.68322656451636
+      },
+      "on_s": 0.194,
+      "end_counts": 448.0,
+      "travel_counts": 87.0,
+      "drive_travel_counts": 76.0,
+      "pot_speed_cps": 427.4297014916961,
+      "reach": null,
+      "captures": [
+        21,
+        22
+      ]
+    },
+    {
+      "n": 12,
+      "pass": 3,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 448.0,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 1.2850223568249426,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 350.5,
+        "far_counts": 97.5,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 767.3600617397099
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.71,
+        "travel_counts": 767.3600617397099
+      },
+      "on_s": 0.65215,
+      "end_counts": 225.0,
+      "travel_counts": 223.0,
+      "drive_travel_counts": 222.0,
+      "pot_speed_cps": 234.18708356751577,
+      "reach": {
+        "reached": false,
+        "moving": true,
+        "rise": {
+          "free_counts": 1302.1950000000002,
+          "seated_counts": 1335.01,
+          "counts": 32.81499999999983,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        23,
+        24
+      ]
+    },
+    {
+      "n": 13,
+      "pass": 3,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 225.0,
+      "planned": {
+        "t_s": 0.63285,
+        "rows": 12657,
+        "share": 1.0,
+        "t_runway_s": 0.6328683323685598,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 127.5,
+        "far_counts": 97.5,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 750.9567152108655
+      },
+      "priced": {
+        "time_s": 0.6828500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 2.75,
+        "travel_counts": 750.9567152108655
+      },
+      "on_s": 0.63515,
+      "end_counts": 225.0,
+      "travel_counts": -0.0,
+      "drive_travel_counts": -0.0,
+      "pot_speed_cps": 0.4059487382211144,
+      "reach": {
+        "reached": true,
+        "still_counts": 224.0,
+        "rise": {
+          "free_counts": 1341.43,
+          "seated_counts": 1343.31,
+          "counts": 1.8799999999998818,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        25,
+        26
+      ]
+    },
+    {
+      "n": 14,
+      "pass": 4,
+      "pass_kind": "slow",
+      "kind": "leave",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 225.0,
+      "planned": {
+        "t_s": 2.7303,
+        "rows": 54606,
+        "share": 1.0,
+        "t_runway_s": 2.7303056630525186,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3422.7,
+        "far_counts": 3647.7,
+        "fastest_cps": 950.6491047544329,
+        "bound_speed_cps": 1188.311380943041,
+        "bound_coast_counts": 118.83113809430411,
+        "travel_bound_counts": 3422.693270530241
+      },
+      "priced": {
+        "time_s": 2.7803,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.05,
+        "travel_counts": 3422.693270530241
+      },
+      "on_s": 2.73345,
+      "end_counts": 2143.0,
+      "travel_counts": 1918.0,
+      "drive_travel_counts": 1905.0,
+      "pot_speed_cps": 816.8910612656246,
+      "reach": null,
+      "captures": [
+        27,
+        28
+      ]
+    },
+    {
+      "n": 15,
+      "pass": 4,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 2143.0,
+      "planned": {
+        "t_s": 1.11625,
+        "rows": 22325,
+        "share": 1.0,
+        "t_runway_s": 1.1162506007523663,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 1504.6999999999998,
+        "far_counts": 3647.7,
+        "fastest_cps": 950.6491047544329,
+        "bound_speed_cps": 1188.311380943041,
+        "bound_coast_counts": 118.83113809430411,
+        "travel_bound_counts": 1504.6992861191259
+      },
+      "priced": {
+        "time_s": 1.16625,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.09,
+        "travel_counts": 1504.6992861191259
+      },
+      "on_s": 1.11915,
+      "end_counts": 3088.0,
+      "travel_counts": 945.0,
+      "drive_travel_counts": 926.0,
+      "pot_speed_cps": 861.3045015326604,
+      "reach": null,
+      "captures": [
+        29,
+        30
+      ]
+    },
+    {
+      "n": 16,
+      "pass": 4,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 3088.0,
+      "planned": {
+        "t_s": 0.321,
+        "rows": 6420,
+        "share": 1.0,
+        "t_runway_s": 0.32100449341470016,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 559.6999999999998,
+        "far_counts": 3647.7,
+        "fastest_cps": 950.6491047544329,
+        "bound_speed_cps": 1188.311380943041,
+        "bound_coast_counts": 118.83113809430411,
+        "travel_bound_counts": 559.6946604241723
+      },
+      "priced": {
+        "time_s": 0.371,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.04,
+        "travel_counts": 559.6946604241723
+      },
+      "on_s": 0.32315,
+      "end_counts": 3423.0,
+      "travel_counts": 335.0,
+      "drive_travel_counts": 325.0,
+      "pot_speed_cps": 1133.0083004222076,
+      "reach": null,
+      "captures": [
+        31,
+        32
+      ]
+    },
+    {
+      "n": 17,
+      "pass": 4,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 3423.0,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 0.8208200038469975,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 334.5,
+        "far_counts": 3757.5,
+        "fastest_cps": 1133.0083004222076,
+        "bound_speed_cps": 1416.2603755277596,
+        "bound_coast_counts": 141.62603755277595,
+        "travel_bound_counts": 1132.9374874034313
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.06,
+        "travel_counts": 1132.9374874034313
+      },
+      "on_s": 0.65215,
+      "end_counts": 3761.0,
+      "travel_counts": 338.0,
+      "drive_travel_counts": 328.0,
+      "pot_speed_cps": 326.7353219667654,
+      "reach": {
+        "reached": true,
+        "still_counts": 3752.0,
+        "rise": {
+          "free_counts": 1285.55,
+          "seated_counts": 1374.41,
+          "counts": 88.86000000000013,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        33,
+        34
+      ]
+    },
+    {
+      "n": 18,
+      "pass": 5,
+      "pass_kind": "slow",
+      "kind": "leave",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 3761.0,
+      "planned": {
+        "t_s": 3.15,
+        "rows": 63000,
+        "share": 1.0,
+        "t_runway_s": 3.5546263634766517,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3553.7,
+        "far_counts": 207.3,
+        "fastest_cps": 767.4080247412561,
+        "bound_speed_cps": 959.2600309265702,
+        "bound_coast_counts": 95.92600309265703,
+        "travel_bound_counts": 3165.5581020576815
+      },
+      "priced": {
+        "time_s": 3.1999999999999997,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.36,
+        "travel_counts": 3165.5581020576815
+      },
+      "on_s": 3.15365,
+      "end_counts": 1175.0,
+      "travel_counts": 2586.0,
+      "drive_travel_counts": 2563.0,
+      "pot_speed_cps": 813.7702251481338,
+      "reach": null,
+      "captures": [
+        35,
+        36
+      ]
+    },
+    {
+      "n": 19,
+      "pass": 5,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 1175.0,
+      "planned": {
+        "t_s": 0.8013,
+        "rows": 16026,
+        "share": 1.0,
+        "t_runway_s": 0.8013250498432485,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 967.7,
+        "far_counts": 207.3,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 967.6745189792747
+      },
+      "priced": {
+        "time_s": 0.8513000000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.36,
+        "travel_counts": 967.6745189792747
+      },
+      "on_s": 0.80365,
+      "end_counts": 637.0,
+      "travel_counts": 538.0,
+      "drive_travel_counts": 523.0,
+      "pot_speed_cps": 610.6965028757253,
+      "reach": null,
+      "captures": [
+        37,
+        38
+      ]
+    },
+    {
+      "n": 20,
+      "pass": 5,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 637.0,
+      "planned": {
+        "t_s": 0.2724,
+        "rows": 5448,
+        "share": 1.0,
+        "t_runway_s": 0.2724288249639805,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 429.7,
+        "far_counts": 207.3,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 429.6706788782146
+      },
+      "priced": {
+        "time_s": 0.32239999999999996,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.3,
+        "travel_counts": 429.6706788782146
+      },
+      "on_s": 0.27465,
+      "end_counts": 482.0,
+      "travel_counts": 155.0,
+      "drive_travel_counts": 148.0,
+      "pot_speed_cps": 603.272192340302,
+      "reach": null,
+      "captures": [
+        39,
+        40
+      ]
+    },
+    {
+      "n": 21,
+      "pass": 5,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 482.0,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 1.384453912123225,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 384.5,
+        "far_counts": 97.5,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 813.7193645090622
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.32,
+        "travel_counts": 813.7193645090622
+      },
+      "on_s": 0.65215,
+      "end_counts": 168.0,
+      "travel_counts": 314.0,
+      "drive_travel_counts": 292.0,
+      "pot_speed_cps": 309.2297736528788,
+      "reach": {
+        "reached": false,
+        "moving": true,
+        "rise": {
+          "free_counts": 1298.99,
+          "seated_counts": 1311.505,
+          "counts": 12.5150000000001,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        41,
+        42
+      ]
+    },
+    {
+      "n": 22,
+      "pass": 5,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 168.0,
+      "planned": {
+        "t_s": 0.46615,
+        "rows": 9323,
+        "share": 1.0,
+        "t_runway_s": 0.4661742543684978,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 70.5,
+        "far_counts": 97.5,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 626.7556552812783
+      },
+      "priced": {
+        "time_s": 0.51615,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.31,
+        "travel_counts": 626.7556552812783
+      },
+      "on_s": 0.46815,
+      "end_counts": 100.0,
+      "travel_counts": 68.0,
+      "drive_travel_counts": 68.0,
+      "pot_speed_cps": 4.084198734364013,
+      "reach": {
+        "reached": true,
+        "still_counts": 100.0,
+        "rise": {
+          "free_counts": 1310.91,
+          "seated_counts": 1349.17,
+          "counts": 38.25999999999999,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        43,
+        44
+      ]
+    },
+    {
+      "n": 23,
+      "pass": 6,
+      "pass_kind": "slow",
+      "kind": "leave",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 100.0,
+      "planned": {
+        "t_s": 2.35495,
+        "rows": 47099,
+        "share": 1.0,
+        "t_runway_s": 2.35497723533215,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3547.7,
+        "far_counts": 3647.7,
+        "fastest_cps": 1133.0083004222076,
+        "bound_speed_cps": 1416.2603755277596,
+        "bound_coast_counts": 141.62603755277595,
+        "travel_bound_counts": 3547.661427678261
+      },
+      "priced": {
+        "time_s": 2.40495,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.56,
+        "travel_counts": 3547.661427678261
+      },
+      "on_s": 2.35815,
+      "end_counts": 1715.0,
+      "travel_counts": 1615.0,
+      "drive_travel_counts": 1598.0,
+      "pot_speed_cps": 791.4163830174024,
+      "reach": null,
+      "captures": [
+        45,
+        46
+      ]
+    },
+    {
+      "n": 24,
+      "pass": 6,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 1715.0,
+      "planned": {
+        "t_s": 1.21465,
+        "rows": 24293,
+        "share": 1.0,
+        "t_runway_s": 1.214650196670081,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 1932.6999999999998,
+        "far_counts": 3647.7,
+        "fastest_cps": 1133.0083004222076,
+        "bound_speed_cps": 1416.2603755277596,
+        "bound_coast_counts": 141.62603755277595,
+        "travel_bound_counts": 1932.699721463957
+      },
+      "priced": {
+        "time_s": 1.26465,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.62,
+        "travel_counts": 1932.699721463957
+      },
+      "on_s": 1.21715,
+      "end_counts": 2687.0,
+      "travel_counts": 972.0,
+      "drive_travel_counts": 958.0,
+      "pot_speed_cps": 820.3784391378538,
+      "reach": null,
+      "captures": [
+        47,
+        48
+      ]
+    },
+    {
+      "n": 25,
+      "pass": 6,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 2687.0,
+      "planned": {
+        "t_s": 0.5283,
+        "rows": 10566,
+        "share": 1.0,
+        "t_runway_s": 0.5283357189118573,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 960.6999999999998,
+        "far_counts": 3647.7,
+        "fastest_cps": 1133.0083004222076,
+        "bound_speed_cps": 1416.2603755277596,
+        "bound_coast_counts": 141.62603755277595,
+        "travel_bound_counts": 960.6494127204794
+      },
+      "priced": {
+        "time_s": 0.5783,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.59,
+        "travel_counts": 960.6494127204794
+      },
+      "on_s": 0.53065,
+      "end_counts": 3164.0,
+      "travel_counts": 477.0,
+      "drive_travel_counts": 441.0,
+      "pot_speed_cps": 901.1666854906227,
+      "reach": null,
+      "captures": [
+        49,
+        50
+      ]
+    },
+    {
+      "n": 26,
+      "pass": 6,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 3164.0,
+      "planned": {
+        "t_s": 0.1915,
+        "rows": 3830,
+        "share": 1.0,
+        "t_runway_s": 0.19153324371569197,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 483.6999999999998,
+        "far_counts": 3647.7,
+        "fastest_cps": 1133.0083004222076,
+        "bound_speed_cps": 1416.2603755277596,
+        "bound_coast_counts": 141.62603755277595,
+        "travel_bound_counts": 483.6529182427299
+      },
+      "priced": {
+        "time_s": 0.2415,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.53,
+        "travel_counts": 483.6529182427299
+      },
+      "on_s": 0.1936,
+      "end_counts": 3372.5,
+      "travel_counts": 208.5,
+      "drive_travel_counts": 186.0,
+      "pot_speed_cps": 993.0188434658127,
+      "reach": null,
+      "captures": [
+        51,
+        52
+      ]
+    },
+    {
+      "n": 27,
+      "pass": 6,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 4827,
+      "start_counts": 3372.5,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 0.9054878968044665,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 385.0,
+        "far_counts": 3757.5,
+        "fastest_cps": 1133.0083004222076,
+        "bound_speed_cps": 1416.2603755277596,
+        "bound_coast_counts": 141.62603755277595,
+        "travel_bound_counts": 1132.9374874034313
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.57,
+        "travel_counts": 1132.9374874034313
+      },
+      "on_s": 0.65215,
+      "end_counts": 3751.0,
+      "travel_counts": 378.5,
+      "drive_travel_counts": 379.0,
+      "pot_speed_cps": 490.55391309570916,
+      "reach": {
+        "reached": true,
+        "still_counts": 3745.0,
+        "rise": {
+          "free_counts": 1287.17,
+          "seated_counts": 1359.955,
+          "counts": 72.78499999999985,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        53,
+        54
+      ]
+    },
+    {
+      "n": 28,
+      "pass": 7,
+      "pass_kind": "slow",
+      "kind": "leave",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 3751.0,
+      "planned": {
+        "t_s": 3.15,
+        "rows": 63000,
+        "share": 1.0,
+        "t_runway_s": 3.333735226960339,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3543.7,
+        "far_counts": 207.3,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 3356.8021787360517
+      },
+      "priced": {
+        "time_s": 3.1999999999999997,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.88,
+        "travel_counts": 3356.8021787360517
+      },
+      "on_s": 3.1536,
+      "end_counts": 1178.0,
+      "travel_counts": 2573.0,
+      "drive_travel_counts": 2551.0,
+      "pot_speed_cps": 792.598674733488,
+      "reach": null,
+      "captures": [
+        55,
+        56
+      ]
+    },
+    {
+      "n": 29,
+      "pass": 7,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 1178.0,
+      "planned": {
+        "t_s": 0.80425,
+        "rows": 16085,
+        "share": 1.0,
+        "t_runway_s": 0.8042742852979656,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 970.7,
+        "far_counts": 207.3,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 970.6752966845085
+      },
+      "priced": {
+        "time_s": 0.8542500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.88,
+        "travel_counts": 970.6752966845085
+      },
+      "on_s": 0.80665,
+      "end_counts": 620.0,
+      "travel_counts": 558.0,
+      "drive_travel_counts": 548.0,
+      "pot_speed_cps": 629.0992121080853,
+      "reach": null,
+      "captures": [
+        57,
+        58
+      ]
+    },
+    {
+      "n": 30,
+      "pass": 7,
+      "pass_kind": "slow",
+      "kind": "free",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 620.0,
+      "planned": {
+        "t_s": 0.2557,
+        "rows": 5114,
+        "share": 1.0,
+        "t_runway_s": 0.25571649072058356,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 412.7,
+        "far_counts": 207.3,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 412.6832254282473
+      },
+      "priced": {
+        "time_s": 0.30569999999999997,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.82,
+        "travel_counts": 412.6832254282473
+      },
+      "on_s": 0.25765,
+      "end_counts": 462.0,
+      "travel_counts": 158.0,
+      "drive_travel_counts": 149.0,
+      "pot_speed_cps": 549.2991357376325,
+      "reach": null,
+      "captures": [
+        59,
+        60
+      ]
+    },
+    {
+      "n": 31,
+      "pass": 7,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 462.0,
+      "planned": {
+        "t_s": 0.64995,
+        "rows": 12999,
+        "share": 1.0,
+        "t_runway_s": 1.3259647619477648,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 364.5,
+        "far_counts": 97.5,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 813.7193645090622
+      },
+      "priced": {
+        "time_s": 0.6999500000000001,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.84,
+        "travel_counts": 813.7193645090622
+      },
+      "on_s": 0.65215,
+      "end_counts": 203.0,
+      "travel_counts": 259.0,
+      "drive_travel_counts": 252.0,
+      "pot_speed_cps": 245.08992801644234,
+      "reach": {
+        "reached": false,
+        "moving": true,
+        "rise": {
+          "free_counts": 1303.35,
+          "seated_counts": 1316.74,
+          "counts": 13.3900000000001,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        61,
+        62
+      ]
+    },
+    {
+      "n": 32,
+      "pass": 7,
+      "pass_kind": "slow",
+      "kind": "stop",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -4827,
+      "start_counts": 203.0,
+      "planned": {
+        "t_s": 0.5685,
+        "rows": 11370,
+        "share": 1.0,
+        "t_runway_s": 0.5685302671755533,
+        "t_burst_s": 0.6499999999999999,
+        "runway_counts": 105.5,
+        "far_counts": 97.5,
+        "fastest_cps": 813.7702251481338,
+        "bound_speed_cps": 1017.2127814351672,
+        "bound_coast_counts": 101.72127814351673,
+        "travel_bound_counts": 730.8673834611677
+      },
+      "priced": {
+        "time_s": 0.6185,
+        "blocked_a": 0.1497794873111389,
+        "rise_c": 3.84,
+        "travel_counts": 730.8673834611677
+      },
+      "on_s": 0.57115,
+      "end_counts": 99.0,
+      "travel_counts": 104.0,
+      "drive_travel_counts": 105.0,
+      "pot_speed_cps": 4.130287194660854,
+      "reach": {
+        "reached": true,
+        "still_counts": 99.0,
+        "rise": {
+          "free_counts": 1305.995,
+          "seated_counts": 1359.08,
+          "counts": 53.085000000000036,
+          "min_counts": 30.0
+        }
+      },
+      "captures": [
+        63,
+        64
+      ]
+    },
+    {
+      "n": 33,
+      "pass": 8,
+      "pass_kind": "fast",
+      "kind": "fast",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 6655,
+      "start_counts": 192.0,
+      "planned": {
+        "t_s": 0.4312,
+        "rows": 8624,
+        "share": 0.5,
+        "t_runway_s": 0.8624121093749997,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3455.7,
+        "far_counts": 3647.7,
+        "fastest_cps": 2730.666666666667,
+        "bound_speed_cps": 3413.333333333334,
+        "bound_coast_counts": 341.3333333333334,
+        "travel_bound_counts": 1983.8293333333338
+      },
+      "priced": {
+        "time_s": 0.4812,
+        "blocked_a": 0.20650144770160128,
+        "rise_c": 4.31,
+        "travel_counts": 1983.8293333333338
+      },
+      "on_s": 0.43315,
+      "end_counts": 690.0,
+      "travel_counts": 498.0,
+      "drive_travel_counts": 479.0,
+      "pot_speed_cps": 1328.825991466619,
+      "reach": null,
+      "captures": [
+        65,
+        66
+      ]
+    },
+    {
+      "n": 34,
+      "pass": 9,
+      "pass_kind": "fast",
+      "kind": "fast",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -6655,
+      "start_counts": 3628.0,
+      "planned": {
+        "t_s": 0.85215,
+        "rows": 17043,
+        "share": 1.0,
+        "t_runway_s": 0.8521582031249997,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3420.7,
+        "far_counts": 207.3,
+        "fastest_cps": 2730.666666666667,
+        "bound_speed_cps": 3413.333333333334,
+        "bound_coast_counts": 341.3333333333334,
+        "travel_bound_counts": 3420.672000000001
+      },
+      "priced": {
+        "time_s": 0.90215,
+        "blocked_a": 0.20650144770160128,
+        "rise_c": 5.14,
+        "travel_counts": 3420.672000000001
+      },
+      "on_s": 0.85465,
+      "end_counts": 2395.0,
+      "travel_counts": 1233.0,
+      "drive_travel_counts": 1202.0,
+      "pot_speed_cps": 1429.7642128607997,
+      "reach": null,
+      "captures": [
+        67,
+        68
+      ]
+    },
+    {
+      "n": 35,
+      "pass": 10,
+      "pass_kind": "fast",
+      "kind": "fast",
+      "dir": 1,
+      "attempt": 1,
+      "duty_q15": 6655,
+      "start_counts": 243.0,
+      "planned": {
+        "t_s": 1.8997,
+        "rows": 37994,
+        "share": 1.0,
+        "t_runway_s": 1.899749190256129,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3404.7,
+        "far_counts": 3647.7,
+        "fastest_cps": 1328.825991466619,
+        "bound_speed_cps": 1661.0324893332736,
+        "bound_coast_counts": 166.10324893332736,
+        "travel_bound_counts": 3404.618293386411
+      },
+      "priced": {
+        "time_s": 1.9497,
+        "blocked_a": 0.20650144770160128,
+        "rise_c": 6.07,
+        "travel_counts": 3404.618293386411
+      },
+      "on_s": 1.90265,
+      "end_counts": 2849.0,
+      "travel_counts": 2606.0,
+      "drive_travel_counts": 2576.0,
+      "pot_speed_cps": 1396.4323458776757,
+      "reach": null,
+      "captures": [
+        69,
+        70
+      ]
+    },
+    {
+      "n": 36,
+      "pass": 11,
+      "pass_kind": "fast",
+      "kind": "fast",
+      "dir": -1,
+      "attempt": 1,
+      "duty_q15": -6655,
+      "start_counts": 3622.0,
+      "planned": {
+        "t_s": 1.7606,
+        "rows": 35212,
+        "share": 1.0,
+        "t_runway_s": 1.7606367157799054,
+        "t_burst_s": 3.1500000000000004,
+        "runway_counts": 3414.7,
+        "far_counts": 207.3,
+        "fastest_cps": 1429.7642128607997,
+        "bound_speed_cps": 1787.2052660759996,
+        "bound_coast_counts": 178.72052660759996,
+        "travel_bound_counts": 3414.6343813648045
+      },
+      "priced": {
+        "time_s": 1.8106,
+        "blocked_a": 0.20650144770160128,
+        "rise_c": 6.46,
+        "travel_counts": 3414.6343813648045
+      },
+      "on_s": 1.7635,
+      "end_counts": 1065.0,
+      "travel_counts": 2557.0,
+      "drive_travel_counts": 2529.0,
+      "pot_speed_cps": 1420.2494115736965,
+      "reach": null,
+      "captures": [
+        71,
+        72
+      ]
+    }
+  ],
+  "unkept": [],
+  "path": [
+    "rung 1 (pass 1 down, free), attempt 1: T 1600 ms (1.00 of the lesser of the runway's 1600 ms over 1679 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 1679 counts to the guard at 207; bound from approach leg 5",
+    "rung 2 (pass 1 down, free), attempt 1: T 330 ms (1.00 of the lesser of the runway's 330 ms over 461 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 461 counts to the guard at 207; bound from approach leg 5",
+    "pass 1 down: no further free rung from 478: T 132 ms (1.00 of the lesser of the runway's 132 ms over 271 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 271 counts to the guard at 207",
+    "rung 3 (pass 1 down, onto the low stop), attempt 1: T 650 ms (380 counts to the stop at 98 at 604 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 4 (pass 1 down, onto the low stop), attempt 1: T 542 ms (136 counts to the stop at 98 at 604 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 5 (pass 2 up, leave), attempt 1: T 3150 ms (1.00 of the lesser of the runway's 3408 ms over 3415 counts and the burst's 3150 ms), bound 960 counts/s (1.25 x 768) and coast 96 counts: at most 3167 counts to the guard at 3648; bound from approach leg 11",
+    "rung 6 (pass 2 up, free), attempt 1: T 1027 ms (1.00 of the lesser of the runway's 1027 ms over 1197 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 813) and coast 102 counts: at most 1197 counts to the guard at 3648; bound from rung 5 (pass 2 up, leave)",
+    "pass 2 up: no further free rung from 3398: T 60 ms (1.00 of the lesser of the runway's 60 ms over 250 counts and the burst's 3150 ms), bound 1188 counts/s (1.25 x 951) and coast 119 counts: at most 250 counts to the guard at 3648",
+    "rung 7 (pass 2 up, onto the high stop), attempt 1: T 650 ms (360 counts to the stop at 3758 at 746 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 8 (pass 3 down, leave), attempt 1: T 3150 ms (1.00 of the lesser of the runway's 3553 ms over 3552 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 3166 counts to the guard at 207; bound from approach leg 5",
+    "rung 9 (pass 3 down, free), attempt 1: T 980 ms (1.00 of the lesser of the runway's 980 ms over 1084 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 1084 counts to the guard at 207; bound from approach leg 5",
+    "rung 10 (pass 3 down, free), attempt 1: T 284 ms (1.00 of the lesser of the runway's 284 ms over 417 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 417 counts to the guard at 207; bound from approach leg 5",
+    "rung 11 (pass 3 down, free), attempt 1: T 192 ms (1.00 of the lesser of the runway's 192 ms over 328 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 328 counts to the guard at 207; bound from approach leg 5",
+    "rung 12 (pass 3 down, onto the low stop), attempt 1: T 650 ms (350 counts to the stop at 98 at 427 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 13 (pass 3 down, onto the low stop), attempt 1: T 633 ms (128 counts to the stop at 98 at 427 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 14 (pass 4 up, leave), attempt 1: T 2730 ms (1.00 of the lesser of the runway's 2730 ms over 3423 counts and the burst's 3150 ms), bound 1188 counts/s (1.25 x 951) and coast 119 counts: at most 3423 counts to the guard at 3648; bound from rung 6 (pass 2 up, free)",
+    "rung 15 (pass 4 up, free), attempt 1: T 1116 ms (1.00 of the lesser of the runway's 1116 ms over 1505 counts and the burst's 3150 ms), bound 1188 counts/s (1.25 x 951) and coast 119 counts: at most 1505 counts to the guard at 3648; bound from rung 6 (pass 2 up, free)",
+    "rung 16 (pass 4 up, free), attempt 1: T 321 ms (1.00 of the lesser of the runway's 321 ms over 560 counts and the burst's 3150 ms), bound 1188 counts/s (1.25 x 951) and coast 119 counts: at most 560 counts to the guard at 3648; bound from rung 6 (pass 2 up, free)",
+    "pass 4 up: no further free rung from 3423: T 9 ms (1.00 of the lesser of the runway's 9 ms over 225 counts and the burst's 3150 ms), bound 1416 counts/s (1.25 x 1133) and coast 142 counts: at most 225 counts to the guard at 3648",
+    "rung 17 (pass 4 up, onto the high stop), attempt 1: T 650 ms (334 counts to the stop at 3758 at 746 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 18 (pass 5 down, leave), attempt 1: T 3150 ms (1.00 of the lesser of the runway's 3555 ms over 3554 counts and the burst's 3150 ms), bound 959 counts/s (1.25 x 767) and coast 96 counts: at most 3166 counts to the guard at 207; bound from approach leg 5",
+    "rung 19 (pass 5 down, free), attempt 1: T 801 ms (1.00 of the lesser of the runway's 801 ms over 968 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 968 counts to the guard at 207; bound from rung 18 (pass 5 down, leave)",
+    "rung 20 (pass 5 down, free), attempt 1: T 272 ms (1.00 of the lesser of the runway's 272 ms over 430 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 430 counts to the guard at 207; bound from rung 18 (pass 5 down, leave)",
+    "pass 5 down: no further free rung from 482: T 120 ms (1.00 of the lesser of the runway's 120 ms over 275 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 275 counts to the guard at 207",
+    "rung 21 (pass 5 down, onto the low stop), attempt 1: T 650 ms (384 counts to the stop at 98 at 427 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 22 (pass 5 down, onto the low stop), attempt 1: T 466 ms (70 counts to the stop at 98 at 427 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 23 (pass 6 up, leave), attempt 1: T 2355 ms (1.00 of the lesser of the runway's 2355 ms over 3548 counts and the burst's 3150 ms), bound 1416 counts/s (1.25 x 1133) and coast 142 counts: at most 3548 counts to the guard at 3648; bound from rung 16 (pass 4 up, free)",
+    "rung 24 (pass 6 up, free), attempt 1: T 1215 ms (1.00 of the lesser of the runway's 1215 ms over 1933 counts and the burst's 3150 ms), bound 1416 counts/s (1.25 x 1133) and coast 142 counts: at most 1933 counts to the guard at 3648; bound from rung 16 (pass 4 up, free)",
+    "rung 25 (pass 6 up, free), attempt 1: T 528 ms (1.00 of the lesser of the runway's 528 ms over 961 counts and the burst's 3150 ms), bound 1416 counts/s (1.25 x 1133) and coast 142 counts: at most 961 counts to the guard at 3648; bound from rung 16 (pass 4 up, free)",
+    "rung 26 (pass 6 up, free), attempt 1: T 192 ms (1.00 of the lesser of the runway's 192 ms over 484 counts and the burst's 3150 ms), bound 1416 counts/s (1.25 x 1133) and coast 142 counts: at most 484 counts to the guard at 3648; bound from rung 16 (pass 4 up, free)",
+    "rung 27 (pass 6 up, onto the high stop), attempt 1: T 650 ms (385 counts to the stop at 3758 at 746 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 28 (pass 7 down, leave), attempt 1: T 3150 ms (1.00 of the lesser of the runway's 3334 ms over 3544 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 3357 counts to the guard at 207; bound from rung 18 (pass 5 down, leave)",
+    "rung 29 (pass 7 down, free), attempt 1: T 804 ms (1.00 of the lesser of the runway's 804 ms over 971 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 971 counts to the guard at 207; bound from rung 18 (pass 5 down, leave)",
+    "rung 30 (pass 7 down, free), attempt 1: T 256 ms (1.00 of the lesser of the runway's 256 ms over 413 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 413 counts to the guard at 207; bound from rung 18 (pass 5 down, leave)",
+    "pass 7 down: no further free rung from 462: T 100 ms (1.00 of the lesser of the runway's 100 ms over 255 counts and the burst's 3150 ms), bound 1017 counts/s (1.25 x 814) and coast 102 counts: at most 255 counts to the guard at 207",
+    "rung 31 (pass 7 down, onto the low stop), attempt 1: T 650 ms (364 counts to the stop at 98 at 427 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 32 (pass 7 down, onto the low stop), attempt 1: T 568 ms (106 counts to the stop at 98 at 427 counts/s over the free margin, the spin-up and a still window, at most 650 ms), the permit held",
+    "rung 33 (pass 8 up, fast), attempt 1: T 431 ms (0.50 of the lesser of the runway's 862 ms over 3456 counts and the burst's 3150 ms), bound 3413 counts/s (1.25 x 2731) and coast 341 counts: at most 1984 counts to the guard at 3648; bound from the nameplate's speed per volt",
+    "rung 34 (pass 9 down, fast), attempt 1: T 852 ms (1.00 of the lesser of the runway's 852 ms over 3421 counts and the burst's 3150 ms), bound 3413 counts/s (1.25 x 2731) and coast 341 counts: at most 3421 counts to the guard at 207; bound from the fast passes run",
+    "rung 35 (pass 10 up, fast), attempt 1: T 1900 ms (1.00 of the lesser of the runway's 1900 ms over 3405 counts and the burst's 3150 ms), bound 1661 counts/s (1.25 x 1329) and coast 166 counts: at most 3405 counts to the guard at 3648; bound from the fast passes run",
+    "rung 36 (pass 11 down, fast), attempt 1: T 1761 ms (1.00 of the lesser of the runway's 1761 ms over 3415 counts and the burst's 3150 ms), bound 1787 counts/s (1.25 x 1430) and coast 179 counts: at most 3415 counts to the guard at 207; bound from the fast passes run"
+  ],
+  "drives": {
+    "stops_counts": [
+      97.5,
+      3757.5
+    ],
+    "guards_counts": [
+      207.3,
+      3647.7
+    ],
+    "guard_share": 0.03,
+    "g_cycles": 4.0,
+    "approach_q15": 4827,
+    "approach_v": 0.6962390118334667,
+    "fast_q15": 6655,
+    "fast_v": 0.9599069036154383,
+    "fast_predicted_cps": 2730.666666666667,
+    "window_ticks": 177,
+    "pwm_period_ticks": 1200,
+    "i_window_min_ticks": 64,
+    "rung_min_s": 0.15,
+    "free_margin": 1.25,
+    "coast_tau_s": 0.1,
+    "burst_max_s": 3.2,
+    "permit_max_s": 0.7,
+    "drive_deadman_s": 0.05,
+    "poll_deadman_s": 0.1,
+    "coast_s": 0.1,
+    "still_counts": 8.47739046018864,
+    "approach_legs": [
+      {
+        "n": 1,
+        "dir": -1,
+        "counts": 1959.0,
+        "secs": 2.8654658794403076,
+        "speed_cps": 683.6584633779128
+      },
+      {
+        "n": 3,
+        "dir": 1,
+        "counts": 3517.0,
+        "secs": 4.592318058013916,
+        "speed_cps": 765.8441674924038
+      },
+      {
+        "n": 5,
+        "dir": -1,
+        "counts": 3497.0,
+        "secs": 4.556897878646851,
+        "speed_cps": 767.4080247412561
+      },
+      {
+        "n": 7,
+        "dir": 1,
+        "counts": 3502.0,
+        "secs": 4.6971399784088135,
+        "speed_cps": 745.5600676363758
+      },
+      {
+        "n": 9,
+        "dir": -1,
+        "counts": 3496.0,
+        "secs": 4.6647279262542725,
+        "speed_cps": 749.4542136795642
+      },
+      {
+        "n": 11,
+        "dir": 1,
+        "counts": 3497.0,
+        "secs": 4.55513596534729,
+        "speed_cps": 767.7048559259381
+      }
+    ]
+  },
+  "drive_polarity": {
+    "stored": true,
+    "driven": true,
+    "corrected_volatile": false
+  },
+  "checks": [
+    {
+      "name": "rows a code",
+      "value": "median 152.0 over codes 132..3722 from the slow passes",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "wide codes",
+      "value": "slots [0, 48, 0, 72, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0], 14 of 16 carries reached",
+      "bound": "no stray run, no slot over a byte",
+      "verdict": "pass"
+    },
+    {
+      "name": "wide-code halves",
+      "value": "even passes [0, 48, 0, 72, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0], odd passes [0, 48, 0, 72, 0, 0, 0, 88, 0, 48, 0, 0, 0, 0, 0, 0]",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "table fit",
+      "value": "18 pieces, 10693 samples (53 % fast) over 144..3712 counts (101 % of the pins' span); not read: rung 4 (half): no first contact: its rows read no rise or no ripple line; its rows enter no table, rung 13 (slow): no first contact: its rows read no rise or no ripple line; its rows enter no table, rung 21 (slow): its shunt rose 13 counts, under 30: no first contact, its rows enter no table, rung 22 (slow): no driven row, rung 31 (slow): its shunt rose 13 counts, under 30: no first contact, its rows enter no table",
+      "bound": "a rung read each way, no hole over 4 grid intervals",
+      "verdict": "pass"
+    },
+    {
+      "name": "table residual",
+      "value": "2.77 counts rms",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "one fast pass out",
+      "value": "counts rms, line out: rung 33 out 0.13; rung 34 out 0.53; rung 35 out 2.31; rung 36 out 2.25",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "ripple cycles",
+      "value": "2 fast pairs one way sharing a grid interval, the most apart rungs 34 and 36: 271.72 and 271.32 cycles over 2434..3496, 0.04 % of the travel's 917 cycles; 55 pairs with a slow rung reported",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "stop contacts",
+      "value": "low -10.68 cycles, n 2, spread 0.86 cycles (0.17 deg), sd 0.61, rungs [32] left out: their tracks read over 15 % off the table's counts a cycle; high 902.10 cycles, n 3, spread 1.25 cycles (0.24 deg), sd 0.63; contact to contact 912.78 cycles, 177.78 deg; pins 224..3760",
+      "bound": "a first contact by the ripple at each stop",
+      "verdict": "pass"
+    },
+    {
+      "name": "table gains",
+      "value": "9..26 Q4",
+      "bound": "the firmware's pos_lut::validate: zero at and past the pins, every gain in 1..256 Q4",
+      "verdict": "pass"
+    },
+    {
+      "name": "directions",
+      "value": "up less down 3.82 counts rms, 13.04 max, line out",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "speed along a rung",
+      "value": "the largest about the mean 58 % (rung 23)",
+      "bound": "reported",
+      "verdict": "not judged"
+    },
+    {
+      "name": "position holes",
+      "value": "pot: no hole, the cycles over 6.82 x their pass's typical counts a ripple cycle, of 5411 read; ADC wide codes: the longest run of codes never read 11 counts (0.56 deg) at raw 2048..2058, just above carry 2047; 10 runs, 42 codes in all, over the 3580 codes (180.73 deg) the slow passes crossed, raw 132..3722, 15 counts off each turn",
+      "bound": "reported",
+      "verdict": "not judged"
+    }
+  ],
+  "rail_v": 4.72640562248996,
+  "position_before_counts": 1886.125,
+  "position_after_counts": 1925.0,
+  "exit": [
+    "goal_duty 0",
+    "torque_enable 0, read back 0",
+    "stall_permit 0",
+    "bus_deadman_ticks 0",
+    "tel_count 0",
+    "mode put back, read back",
+    "current_limit_counts put back, read back",
+    "pos_min_soft_counts put back, read back",
+    "pos_max_soft_counts put back, read back"
+  ],
+  "torque_off": true,
+  "wide_codes": {
+    "histogram_counts": [
+      117,
+      3737
+    ],
+    "rows_a_code": 152.0,
+    "all": {
+      "swept_counts": [
+        117,
+        3737
+      ],
+      "slots": [
+        0,
+        48,
+        0,
+        72,
+        0,
+        0,
+        0,
+        88,
+        0,
+        48,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "carries": [
+        {
+          "slot": 0,
+          "code": 255,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 2.5075528700906347,
+          "rows_ref": 165.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 1,
+          "code": 511,
+          "state": "wide",
+          "skipped": 6,
+          "ratio": 5.898901098901099,
+          "rows_ref": 227.5,
+          "slot_q4": 48,
+          "why_zero": null
+        },
+        {
+          "slot": 2,
+          "code": 767,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.25287356321839083,
+          "rows_ref": 217.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 3,
+          "code": 1023,
+          "state": "wide",
+          "skipped": 9,
+          "ratio": 8.473829201101928,
+          "rows_ref": 181.5,
+          "slot_q4": 72,
+          "why_zero": null
+        },
+        {
+          "slot": 4,
+          "code": 1279,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 2.111111111111111,
+          "rows_ref": 162.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 5,
+          "code": 1535,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.44047619047619047,
+          "rows_ref": 168.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 6,
+          "code": 1791,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.3520408163265306,
+          "rows_ref": 196.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 7,
+          "code": 2047,
+          "state": "wide",
+          "skipped": 11,
+          "ratio": 9.972508591065292,
+          "rows_ref": 145.5,
+          "slot_q4": 88,
+          "why_zero": null
+        },
+        {
+          "slot": 8,
+          "code": 2303,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.7215189873417722,
+          "rows_ref": 158.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 9,
+          "code": 2559,
+          "state": "wide",
+          "skipped": 6,
+          "ratio": 6.826771653543307,
+          "rows_ref": 127.0,
+          "slot_q4": 48,
+          "why_zero": null
+        },
+        {
+          "slot": 10,
+          "code": 2815,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.66875,
+          "rows_ref": 160.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 11,
+          "code": 3071,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.3202846975088968,
+          "rows_ref": 140.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 12,
+          "code": 3327,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.5066079295154184,
+          "rows_ref": 113.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 13,
+          "code": 3583,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.43103448275862066,
+          "rows_ref": 174.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 14,
+          "code": 3839,
+          "state": "unreached",
+          "skipped": 0,
+          "ratio": 0.0,
+          "rows_ref": 0.0,
+          "slot_q4": 0,
+          "why_zero": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+        },
+        {
+          "slot": 15,
+          "code": 4095,
+          "state": "unreached",
+          "skipped": 0,
+          "ratio": 0.0,
+          "rows_ref": 0.0,
+          "slot_q4": 0,
+          "why_zero": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+        }
+      ],
+      "strays": []
+    },
+    "even_passes": {
+      "swept_counts": [
+        117,
+        3737
+      ],
+      "slots": [
+        0,
+        48,
+        0,
+        72,
+        0,
+        0,
+        0,
+        88,
+        0,
+        48,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "carries": [
+        {
+          "slot": 0,
+          "code": 255,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.7964071856287425,
+          "rows_ref": 83.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 1,
+          "code": 511,
+          "state": "wide",
+          "skipped": 6,
+          "ratio": 5.055555555555555,
+          "rows_ref": 108.0,
+          "slot_q4": 48,
+          "why_zero": null
+        },
+        {
+          "slot": 2,
+          "code": 767,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.29545454545454547,
+          "rows_ref": 88.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 3,
+          "code": 1023,
+          "state": "wide",
+          "skipped": 9,
+          "ratio": 9.574468085106384,
+          "rows_ref": 70.5,
+          "slot_q4": 72,
+          "why_zero": null
+        },
+        {
+          "slot": 4,
+          "code": 1279,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.6541353383458646,
+          "rows_ref": 66.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 5,
+          "code": 1535,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.6216216216216216,
+          "rows_ref": 74.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 6,
+          "code": 1791,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.2823529411764706,
+          "rows_ref": 85.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 7,
+          "code": 2047,
+          "state": "wide",
+          "skipped": 11,
+          "ratio": 6.027972027972028,
+          "rows_ref": 71.5,
+          "slot_q4": 88,
+          "why_zero": null
+        },
+        {
+          "slot": 8,
+          "code": 2303,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.7655172413793103,
+          "rows_ref": 72.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 9,
+          "code": 2559,
+          "state": "wide",
+          "skipped": 6,
+          "ratio": 6.885245901639344,
+          "rows_ref": 61.0,
+          "slot_q4": 48,
+          "why_zero": null
+        },
+        {
+          "slot": 10,
+          "code": 2815,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.8243243243243243,
+          "rows_ref": 74.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 11,
+          "code": 3071,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.45112781954887216,
+          "rows_ref": 66.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 12,
+          "code": 3327,
+          "state": "thin",
+          "skipped": 3,
+          "ratio": 1.7777777777777777,
+          "rows_ref": 45.0,
+          "slot_q4": 0,
+          "why_zero": "under 100 rows a code around it: written 0"
+        },
+        {
+          "slot": 13,
+          "code": 3583,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.543046357615894,
+          "rows_ref": 75.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 14,
+          "code": 3839,
+          "state": "unreached",
+          "skipped": 0,
+          "ratio": 0.0,
+          "rows_ref": 0.0,
+          "slot_q4": 0,
+          "why_zero": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+        },
+        {
+          "slot": 15,
+          "code": 4095,
+          "state": "unreached",
+          "skipped": 0,
+          "ratio": 0.0,
+          "rows_ref": 0.0,
+          "slot_q4": 0,
+          "why_zero": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+        }
+      ],
+      "strays": []
+    },
+    "odd_passes": {
+      "swept_counts": [
+        117,
+        3737
+      ],
+      "slots": [
+        0,
+        48,
+        0,
+        72,
+        0,
+        0,
+        0,
+        88,
+        0,
+        48,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "carries": [
+        {
+          "slot": 0,
+          "code": 255,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 3.6301369863013697,
+          "rows_ref": 73.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 1,
+          "code": 511,
+          "state": "wide",
+          "skipped": 6,
+          "ratio": 6.951965065502184,
+          "rows_ref": 114.5,
+          "slot_q4": 48,
+          "why_zero": null
+        },
+        {
+          "slot": 2,
+          "code": 767,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.23107569721115537,
+          "rows_ref": 125.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 3,
+          "code": 1023,
+          "state": "wide",
+          "skipped": 9,
+          "ratio": 8.587064676616915,
+          "rows_ref": 100.5,
+          "slot_q4": 72,
+          "why_zero": null
+        },
+        {
+          "slot": 4,
+          "code": 1279,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 2.5494505494505493,
+          "rows_ref": 91.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 5,
+          "code": 1535,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.2916666666666667,
+          "rows_ref": 96.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 6,
+          "code": 1791,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.4090909090909091,
+          "rows_ref": 110.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 7,
+          "code": 2047,
+          "state": "wide",
+          "skipped": 11,
+          "ratio": 12.830188679245284,
+          "rows_ref": 79.5,
+          "slot_q4": 88,
+          "why_zero": null
+        },
+        {
+          "slot": 8,
+          "code": 2303,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.87012987012987,
+          "rows_ref": 77.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 9,
+          "code": 2559,
+          "state": "wide",
+          "skipped": 6,
+          "ratio": 6.573529411764706,
+          "rows_ref": 68.0,
+          "slot_q4": 48,
+          "why_zero": null
+        },
+        {
+          "slot": 10,
+          "code": 2815,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.5508982035928144,
+          "rows_ref": 83.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 11,
+          "code": 3071,
+          "state": "not wide",
+          "skipped": 0,
+          "ratio": 0.20408163265306123,
+          "rows_ref": 73.5,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 12,
+          "code": 3327,
+          "state": "not wide",
+          "skipped": 2,
+          "ratio": 1.5166666666666666,
+          "rows_ref": 60.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 13,
+          "code": 3583,
+          "state": "not wide",
+          "skipped": 1,
+          "ratio": 0.34,
+          "rows_ref": 100.0,
+          "slot_q4": 0,
+          "why_zero": null
+        },
+        {
+          "slot": 14,
+          "code": 3839,
+          "state": "unreached",
+          "skipped": 0,
+          "ratio": 0.0,
+          "rows_ref": 0.0,
+          "slot_q4": 0,
+          "why_zero": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+        },
+        {
+          "slot": 15,
+          "code": 4095,
+          "state": "unreached",
+          "skipped": 0,
+          "ratio": 0.0,
+          "rows_ref": 0.0,
+          "slot_q4": 0,
+          "why_zero": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+        }
+      ],
+      "strays": []
+    },
+    "thin_rows": 100.0,
+    "half_thin_rows": 50.0
+  },
+  "table": {
+    "method": "one pooled fit, pos = T(phase) + one offset a rung (stage 4 position.fit_pwl form), the motor's ripple the ruler",
+    "g_cycles": 4.0,
+    "stops": {
+      "low": {
+        "contact_cycles": -10.677055921191485,
+        "contact_counts": 236.9073454541665,
+        "contact_raw": 235.81605299966583,
+        "pin_raw": 224,
+        "spread_cycles": 0.8589907958913798,
+        "spread_deg": 0.16730691654165952,
+        "sd_cycles": 0.6073982167516242,
+        "n": 2,
+        "odd": [],
+        "left_out": [
+          32
+        ],
+        "rungs": [
+          {
+            "n": 3,
+            "pass": 1,
+            "rise_counts": 30.080000000000155,
+            "line_hz": 109.375,
+            "contact_row": 10816,
+            "cut_row": 10109,
+            "cycle_from_spin_up": 55.703115100720225,
+            "pot_at_contact": 241,
+            "pot_at_rest": 234.0,
+            "contact_cycles": -11.106551319137175,
+            "samples": 498,
+            "residual_sd_cycles": 0.7877727446251368,
+            "counts_per_cycle": 3.4960518640515903,
+            "table_counts_per_cycle": 3.695928579246695,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 4,
+            "pass": 1,
+            "rise_counts": null,
+            "line_hz": null,
+            "contact_row": null,
+            "cut_row": null,
+            "cycle_from_spin_up": null,
+            "pot_at_contact": null,
+            "pot_at_rest": 233.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its rows read no rise or no ripple line"
+          },
+          {
+            "n": 12,
+            "pass": 3,
+            "rise_counts": 32.81499999999983,
+            "line_hz": 121.875,
+            "contact_row": 9795,
+            "cut_row": 9158,
+            "cycle_from_spin_up": 48.704004525341,
+            "pot_at_contact": 242,
+            "pot_at_rest": 225.0,
+            "contact_cycles": -10.247560523245795,
+            "samples": 442,
+            "residual_sd_cycles": 0.7969847959107779,
+            "counts_per_cycle": 3.7074087433812863,
+            "table_counts_per_cycle": 3.6026614864973197,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 13,
+            "pass": 3,
+            "rise_counts": null,
+            "line_hz": null,
+            "contact_row": null,
+            "cut_row": null,
+            "cycle_from_spin_up": null,
+            "pot_at_contact": null,
+            "pot_at_rest": 225.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its rows read no rise or no ripple line"
+          },
+          {
+            "n": 21,
+            "pass": 5,
+            "rise_counts": 12.5150000000001,
+            "line_hz": 78.125,
+            "contact_row": 2928,
+            "cut_row": 3,
+            "cycle_from_spin_up": 3.2463563022468227,
+            "pot_at_contact": 412,
+            "pot_at_rest": 168.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its shunt rose 13 counts, under 30"
+          },
+          {
+            "n": 22,
+            "pass": 5,
+            "rise_counts": 38.25999999999999,
+            "line_hz": 93.75,
+            "contact_row": 3184,
+            "cut_row": 3,
+            "cycle_from_spin_up": 5.603261177523328,
+            "pot_at_contact": 102,
+            "pot_at_rest": 100.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "it has no sample on the table's span before its cut"
+          },
+          {
+            "n": 31,
+            "pass": 7,
+            "rise_counts": 13.3900000000001,
+            "line_hz": 134.375,
+            "contact_row": 5713,
+            "cut_row": 5054,
+            "cycle_from_spin_up": 24.82916109376806,
+            "pot_at_contact": 301,
+            "pot_at_rest": 203.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its shunt rose 13 counts, under 30"
+          },
+          {
+            "n": 32,
+            "pass": 7,
+            "rise_counts": 53.085000000000036,
+            "line_hz": 121.875,
+            "contact_row": 4247,
+            "cut_row": 3415,
+            "cycle_from_spin_up": 12.414506878459694,
+            "pot_at_contact": 102,
+            "pot_at_rest": 99.0,
+            "contact_cycles": -43.6550109377038,
+            "samples": 23,
+            "residual_sd_cycles": 0.26254398809875673,
+            "counts_per_cycle": 2.3639391381365997,
+            "table_counts_per_cycle": 4.043597939757739,
+            "tracked": false,
+            "why": null
+          }
+        ]
+      },
+      "high": {
+        "contact_cycles": 902.1008402201984,
+        "contact_counts": 3758.4681541284267,
+        "contact_raw": 3758.4668201007607,
+        "pin_raw": 3760,
+        "spread_cycles": 1.2495471641250333,
+        "spread_deg": 0.24337616200671122,
+        "sd_cycles": 0.6269038542632123,
+        "n": 3,
+        "odd": [],
+        "left_out": [],
+        "rungs": [
+          {
+            "n": 7,
+            "pass": 2,
+            "rise_counts": 81.65499999999997,
+            "line_hz": 212.5,
+            "contact_row": 9625,
+            "cut_row": 9247,
+            "cycle_from_spin_up": 79.70632751258003,
+            "pot_at_contact": 3739,
+            "pot_at_rest": 3759.0,
+            "contact_cycles": 902.1008402201984,
+            "samples": 404,
+            "residual_sd_cycles": 0.6059292743875828,
+            "counts_per_cycle": 4.0578937882748,
+            "table_counts_per_cycle": 4.111634751990699,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 17,
+            "pass": 4,
+            "rise_counts": 88.86000000000013,
+            "line_hz": 221.875,
+            "contact_row": 8480,
+            "cut_row": 8042,
+            "cycle_from_spin_up": 67.01878110245342,
+            "pot_at_contact": 3745,
+            "pot_at_rest": 3761.0,
+            "contact_cycles": 902.636175326533,
+            "samples": 327,
+            "residual_sd_cycles": 0.5619743493411777,
+            "counts_per_cycle": 4.149320872373261,
+            "table_counts_per_cycle": 4.236348401410926,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 27,
+            "pass": 6,
+            "rise_counts": 72.78499999999985,
+            "line_hz": 231.25,
+            "contact_row": 9701,
+            "cut_row": 9305,
+            "cycle_from_spin_up": 82.11432733164969,
+            "pot_at_contact": 3738,
+            "pot_at_rest": 3751.0,
+            "contact_cycles": 901.386628162408,
+            "samples": 411,
+            "residual_sd_cycles": 0.573027590266782,
+            "counts_per_cycle": 4.059642241749626,
+            "table_counts_per_cycle": 4.108625481377459,
+            "tracked": true,
+            "why": null
+          }
+        ]
+      },
+      "travel_cycles": 912.7778961413899,
+      "travel_deg": 177.78311015815575,
+      "deg_per_cycle": 0.19477148921956042,
+      "g_cycles": 4.0,
+      "odd_cycles": 4.0,
+      "check_share": 0.15,
+      "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio"
+    },
+    "seed": "fast rungs at the middle of the rung; slow rungs on the tallest line within 30 % of the pot's speed over its first 4000 rows tracked over the fast rungs' table's local counts a cycle; a slow rung at [(1.8, 2.2), (0.45, 0.55)] of a fast rung's cycles set aside",
+    "rungs": [
+      {
+        "n": 1,
+        "pass": 1,
+        "pass_kind": "half",
+        "dir": -1,
+        "counted_over_expected": 0.9791578214391093,
+        "read": true,
+        "samples": 1855,
+        "reach_counts": [
+          681.875,
+          1842.0625
+        ],
+        "cycles": 298.89930270903204,
+        "line_hz": 218.75,
+        "crossings": 300,
+        "odd_share": 0.0,
+        "speed_spread": 0.2361877480440043
+      },
+      {
+        "n": 2,
+        "pass": 1,
+        "pass_kind": "half",
+        "dir": -1,
+        "counted_over_expected": 0.9824085193871385,
+        "read": true,
+        "samples": 259,
+        "reach_counts": [
+          491.6875,
+          620.125
+        ],
+        "cycles": 28.976650360377786,
+        "line_hz": 144.375,
+        "crossings": 30,
+        "odd_share": 0.0,
+        "speed_spread": 0.19821361286143513
+      },
+      {
+        "n": 3,
+        "pass": 1,
+        "pass_kind": "half",
+        "dir": -1,
+        "counted_over_expected": 1.2367260541195166,
+        "read": true,
+        "samples": 487,
+        "reach_counts": [
+          252.25,
+          426.5625
+        ],
+        "cycles": 49.921806767665664,
+        "line_hz": 121.25,
+        "crossings": 51,
+        "odd_share": 0.06,
+        "speed_spread": 0.09405204283216112
+      },
+      {
+        "n": 4,
+        "pass": 1,
+        "pass_kind": "half",
+        "dir": -1,
+        "counted_over_expected": null,
+        "read": false,
+        "why": "no first contact: its rows read no rise or no ripple line; its rows enter no table"
+      },
+      {
+        "n": 5,
+        "pass": 2,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 1.0066975705809258,
+        "read": true,
+        "samples": 3791,
+        "reach_counts": [
+          272.0,
+          2426.1875
+        ],
+        "cycles": 564.9012421295362,
+        "line_hz": 118.125,
+        "crossings": 566,
+        "odd_share": 0.0,
+        "speed_spread": 0.4532660870124623
+      },
+      {
+        "n": 6,
+        "pass": 2,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.9770376847531002,
+        "read": true,
+        "samples": 1143,
+        "reach_counts": [
+          2516.5625,
+          3359.625
+        ],
+        "cycles": 204.85161606987114,
+        "line_hz": 227.5,
+        "crossings": 206,
+        "odd_share": 0.0,
+        "speed_spread": 0.07565665461140822
+      },
+      {
+        "n": 7,
+        "pass": 2,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.9885395868202138,
+        "read": true,
+        "samples": 436,
+        "reach_counts": [
+          3437.4375,
+          3728.3125
+        ],
+        "cycles": 72.84991152737204,
+        "line_hz": 215.0,
+        "crossings": 74,
+        "odd_share": 0.0,
+        "speed_spread": 0.06647547296629609
+      },
+      {
+        "n": 8,
+        "pass": 3,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9981409575362767,
+        "read": true,
+        "samples": 3794,
+        "reach_counts": [
+          1310.8125,
+          3676.75
+        ],
+        "cycles": 618.8707414061498,
+        "line_hz": 171.875,
+        "crossings": 620,
+        "odd_share": 0.0,
+        "speed_spread": 0.07892408139426649
+      },
+      {
+        "n": 9,
+        "pass": 3,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9782724212656777,
+        "read": true,
+        "samples": 1083,
+        "reach_counts": [
+          638.75,
+          1221.625
+        ],
+        "cycles": 146.94741409000991,
+        "line_hz": 195.625,
+        "crossings": 148,
+        "odd_share": 0.0,
+        "speed_spread": 0.2691665809933778
+      },
+      {
+        "n": 10,
+        "pass": 3,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 1.0899402334674724,
+        "read": true,
+        "samples": 92,
+        "reach_counts": [
+          552.25,
+          596.875
+        ],
+        "cycles": 9.914335659519264,
+        "line_hz": 134.02625820568926,
+        "crossings": 11,
+        "odd_share": 0.0,
+        "speed_spread": 0.22602808163680077
+      },
+      {
+        "n": 11,
+        "pass": 3,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 1.0492272722520346,
+        "read": true,
+        "samples": 98,
+        "reach_counts": [
+          464.4375,
+          499.5
+        ],
+        "cycles": 9.99007212943588,
+        "line_hz": 128.5634432643935,
+        "crossings": 11,
+        "odd_share": 0.0,
+        "speed_spread": 0.18255204926097537
+      },
+      {
+        "n": 12,
+        "pass": 3,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 1.139365722214576,
+        "read": true,
+        "samples": 420,
+        "reach_counts": [
+          253.25,
+          411.0625
+        ],
+        "cycles": 41.95166667537024,
+        "line_hz": 128.75,
+        "crossings": 43,
+        "odd_share": 0.023809523809523808,
+        "speed_spread": 0.16011994229683374
+      },
+      {
+        "n": 13,
+        "pass": 3,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": null,
+        "read": false,
+        "why": "no first contact: its rows read no rise or no ripple line; its rows enter no table"
+      },
+      {
+        "n": 14,
+        "pass": 4,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 1.0074988811204288,
+        "read": true,
+        "samples": 3265,
+        "reach_counts": [
+          265.4375,
+          2119.5
+        ],
+        "cycles": 482.87106017694725,
+        "line_hz": 112.5,
+        "crossings": 484,
+        "odd_share": 0.0,
+        "speed_spread": 0.437225171651944
+      },
+      {
+        "n": 15,
+        "pass": 4,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 1.0028912574105822,
+        "read": true,
+        "samples": 1258,
+        "reach_counts": [
+          2198.1875,
+          3064.5
+        ],
+        "cycles": 230.86551695607324,
+        "line_hz": 228.75,
+        "crossings": 232,
+        "odd_share": 0.0,
+        "speed_spread": 0.024474563120360147
+      },
+      {
+        "n": 16,
+        "pass": 4,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.916382290528838,
+        "read": true,
+        "samples": 264,
+        "reach_counts": [
+          3183.625,
+          3405.6875
+        ],
+        "cycles": 48.880492937404235,
+        "line_hz": 233.75,
+        "crossings": 50,
+        "odd_share": 0.0,
+        "speed_spread": 0.017365168316082764
+      },
+      {
+        "n": 17,
+        "pass": 4,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.9622273235075065,
+        "read": true,
+        "samples": 365,
+        "reach_counts": [
+          3486.25,
+          3732.3125
+        ],
+        "cycles": 60.94958986032603,
+        "line_hz": 202.5,
+        "crossings": 62,
+        "odd_share": 0.0,
+        "speed_spread": 0.06942320933621206
+      },
+      {
+        "n": 18,
+        "pass": 5,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9987775305415503,
+        "read": true,
+        "samples": 3791,
+        "reach_counts": [
+          1200.625,
+          3676.6875
+        ],
+        "cycles": 645.9877512002437,
+        "line_hz": 162.5,
+        "crossings": 647,
+        "odd_share": 0.0,
+        "speed_spread": 0.1432763360097975
+      },
+      {
+        "n": 19,
+        "pass": 5,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9969528826801702,
+        "read": true,
+        "samples": 860,
+        "reach_counts": [
+          660.75,
+          1114.5625
+        ],
+        "cycles": 118.96338754883939,
+        "line_hz": 188.75,
+        "crossings": 120,
+        "odd_share": 0.0,
+        "speed_spread": 0.16544334018943896
+      },
+      {
+        "n": 20,
+        "pass": 5,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9764463879369093,
+        "read": true,
+        "samples": 192,
+        "reach_counts": [
+          492.375,
+          589.0
+        ],
+        "cycles": 22.96615907229104,
+        "line_hz": 150.51395007342143,
+        "crossings": 24,
+        "odd_share": 0.0,
+        "speed_spread": 0.06846799850468906
+      },
+      {
+        "n": 21,
+        "pass": 5,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": null,
+        "read": false,
+        "why": "its shunt rose 13 counts, under 30: no first contact, its rows enter no table"
+      },
+      {
+        "n": 22,
+        "pass": 5,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": null,
+        "read": false,
+        "why": "no driven row"
+      },
+      {
+        "n": 23,
+        "pass": 6,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 1.019199866444528,
+        "read": true,
+        "samples": 2803,
+        "reach_counts": [
+          189.5625,
+          1689.25
+        ],
+        "cycles": 382.9582292115883,
+        "line_hz": 108.75,
+        "crossings": 384,
+        "odd_share": 0.0,
+        "speed_spread": 0.5789673457867065
+      },
+      {
+        "n": 24,
+        "pass": 6,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 1.0023667750093324,
+        "read": true,
+        "samples": 1379,
+        "reach_counts": [
+          1755.9375,
+          2666.5
+        ],
+        "cycles": 248.9696376766697,
+        "line_hz": 229.375,
+        "crossings": 250,
+        "odd_share": 0.0,
+        "speed_spread": 0.03220758980153624
+      },
+      {
+        "n": 25,
+        "pass": 6,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.9784003034566712,
+        "read": true,
+        "samples": 520,
+        "reach_counts": [
+          2752.5625,
+          3113.5
+        ],
+        "cycles": 94.84412801969997,
+        "line_hz": 225.0,
+        "crossings": 96,
+        "odd_share": 0.0,
+        "speed_spread": 0.03487586074899298
+      },
+      {
+        "n": 26,
+        "pass": 6,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.883192408872812,
+        "read": true,
+        "samples": 100,
+        "reach_counts": [
+          3241.875,
+          3322.9375
+        ],
+        "cycles": 17.98029163400793,
+        "line_hz": 226.5100671140939,
+        "crossings": 19,
+        "odd_share": 0.0,
+        "speed_spread": 0.049467300262472674
+      },
+      {
+        "n": 27,
+        "pass": 6,
+        "pass_kind": "slow",
+        "dir": 1,
+        "counted_over_expected": 0.9884537506246531,
+        "read": true,
+        "samples": 439,
+        "reach_counts": [
+          3426.375,
+          3725.9375
+        ],
+        "cycles": 74.89077836495369,
+        "line_hz": 221.25,
+        "crossings": 76,
+        "odd_share": 0.0,
+        "speed_spread": 0.09963402282891762
+      },
+      {
+        "n": 28,
+        "pass": 7,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9995802481969761,
+        "read": true,
+        "samples": 3798,
+        "reach_counts": [
+          1202.5625,
+          3675.875
+        ],
+        "cycles": 645.8448585163655,
+        "line_hz": 179.375,
+        "crossings": 647,
+        "odd_share": 0.0,
+        "speed_spread": 0.07604290304469666
+      },
+      {
+        "n": 29,
+        "pass": 7,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.9861185395267251,
+        "read": true,
+        "samples": 857,
+        "reach_counts": [
+          639.125,
+          1109.625
+        ],
+        "cycles": 120.9218442390632,
+        "line_hz": 188.75,
+        "crossings": 122,
+        "odd_share": 0.0,
+        "speed_spread": 0.129726490480649
+      },
+      {
+        "n": 30,
+        "pass": 7,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 1.0546603547830853,
+        "read": true,
+        "samples": 177,
+        "reach_counts": [
+          476.5625,
+          554.8125
+        ],
+        "cycles": 21.939706476337175,
+        "line_hz": 157.92901335070007,
+        "crossings": 23,
+        "odd_share": 0.0,
+        "speed_spread": 0.0744890361064189
+      },
+      {
+        "n": 31,
+        "pass": 7,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": null,
+        "read": false,
+        "why": "its shunt rose 13 counts, under 30: no first contact, its rows enter no table"
+      },
+      {
+        "n": 32,
+        "pass": 7,
+        "pass_kind": "slow",
+        "dir": -1,
+        "counted_over_expected": 0.8470544105163927,
+        "read": true,
+        "samples": 69,
+        "reach_counts": [
+          122.25,
+          149.6875
+        ],
+        "cycles": 5.99232867844173,
+        "line_hz": 102.0408163265306,
+        "crossings": 7,
+        "odd_share": 0.0,
+        "speed_spread": 0.30184983005693655
+      },
+      {
+        "n": 33,
+        "pass": 8,
+        "pass_kind": "fast",
+        "dir": 1,
+        "counted_over_expected": 1.0439588625986929,
+        "read": true,
+        "samples": 404,
+        "reach_counts": [
+          265.375,
+          663.3125
+        ],
+        "cycles": 96.83396964752109,
+        "line_hz": 295.625,
+        "crossings": 98,
+        "odd_share": 0.0,
+        "speed_spread": 0.12011134993361416
+      },
+      {
+        "n": 34,
+        "pass": 9,
+        "pass_kind": "fast",
+        "dir": -1,
+        "counted_over_expected": 1.0200379257459562,
+        "read": true,
+        "samples": 930,
+        "reach_counts": [
+          2431.75,
+          3499.625
+        ],
+        "cycles": 274.7973017777607,
+        "line_hz": 374.375,
+        "crossings": 276,
+        "odd_share": 0.0,
+        "speed_spread": 0.10684402905491958
+      },
+      {
+        "n": 35,
+        "pass": 10,
+        "pass_kind": "fast",
+        "dir": 1,
+        "counted_over_expected": 1.0004328562180462,
+        "read": true,
+        "samples": 2241,
+        "reach_counts": [
+          313.375,
+          2808.9375
+        ],
+        "cycles": 649.778027110101,
+        "line_hz": 381.875,
+        "crossings": 651,
+        "odd_share": 0.0,
+        "speed_spread": 0.18793500689054501
+      },
+      {
+        "n": 36,
+        "pass": 11,
+        "pass_kind": "fast",
+        "dir": -1,
+        "counted_over_expected": 1.0009206560458572,
+        "read": true,
+        "samples": 2066,
+        "reach_counts": [
+          1101.0625,
+          3498.5
+        ],
+        "cycles": 626.7935668316708,
+        "line_hz": 387.5,
+        "crossings": 628,
+        "odd_share": 0.0,
+        "speed_spread": 0.04983859227943313
+      }
+    ],
+    "fit": {
+      "span_counts": [
+        144.0,
+        3712.0
+      ],
+      "samples": 10693,
+      "residual_cycles_rms": 0.7161762887318459,
+      "residual_counts_rms": 2.765464334861615,
+      "counts_per_cycle": 3.8614296205735923,
+      "up_reach_counts": [
+        189.5625,
+        3732.3125
+      ],
+      "down_reach_counts": [
+        122.25,
+        3676.75
+      ],
+      "offsets_cycles": [
+        {
+          "rung": 33,
+          "cycles": 0.0
+        },
+        {
+          "rung": 34,
+          "cycles": -842.6215667833435
+        },
+        {
+          "rung": 35,
+          "cycles": -18.986160151967006
+        },
+        {
+          "rung": 36,
+          "cycles": -841.118477645594
+        },
+        {
+          "rung": 3,
+          "cycles": -43.8416754272243
+        },
+        {
+          "rung": 5,
+          "cycles": -1.933542878294859
+        },
+        {
+          "rung": 7,
+          "cycles": -823.4233167429821
+        },
+        {
+          "rung": 8,
+          "cycles": -884.4058196259624
+        },
+        {
+          "rung": 12,
+          "cycles": -37.88380374775057
+        },
+        {
+          "rung": 14,
+          "cycles": 0.1948714232419149
+        },
+        {
+          "rung": 16,
+          "cycles": -766.1908249586841
+        },
+        {
+          "rung": 17,
+          "cycles": -836.3119189810774
+        },
+        {
+          "rung": 18,
+          "cycles": -884.4630060288159
+        },
+        {
+          "rung": 18,
+          "cycles": -885.5447510049999
+        },
+        {
+          "rung": 23,
+          "cycles": 22.56079359399823
+        },
+        {
+          "rung": 27,
+          "cycles": -820.3582293135435
+        },
+        {
+          "rung": 28,
+          "cycles": -884.4029966453451
+        },
+        {
+          "rung": 32,
+          "cycles": 32.4849693157549
+        }
+      ],
+      "fast_share": 0.5275413822126624,
+      "fast_reach_counts": [
+        265.375,
+        3499.625
+      ],
+      "slow_overlap_counts": 128.0,
+      "pieces": [
+        {
+          "rung": 33,
+          "from_counts": 265.375,
+          "to_counts": 663.3125,
+          "samples": 404,
+          "slow_only": false
+        },
+        {
+          "rung": 34,
+          "from_counts": 2431.75,
+          "to_counts": 3499.625,
+          "samples": 930,
+          "slow_only": false
+        },
+        {
+          "rung": 35,
+          "from_counts": 313.375,
+          "to_counts": 2808.9375,
+          "samples": 2241,
+          "slow_only": false
+        },
+        {
+          "rung": 36,
+          "from_counts": 1101.0625,
+          "to_counts": 3498.5,
+          "samples": 2066,
+          "slow_only": false
+        },
+        {
+          "rung": 3,
+          "from_counts": 252.25,
+          "to_counts": 393.3125,
+          "samples": 407,
+          "slow_only": false
+        },
+        {
+          "rung": 5,
+          "from_counts": 272.0,
+          "to_counts": 391.75,
+          "samples": 350,
+          "slow_only": false
+        },
+        {
+          "rung": 7,
+          "from_counts": 3437.4375,
+          "to_counts": 3728.3125,
+          "samples": 436,
+          "slow_only": false
+        },
+        {
+          "rung": 8,
+          "from_counts": 3371.6875,
+          "to_counts": 3676.75,
+          "samples": 560,
+          "slow_only": false
+        },
+        {
+          "rung": 12,
+          "from_counts": 253.25,
+          "to_counts": 392.5625,
+          "samples": 399,
+          "slow_only": false
+        },
+        {
+          "rung": 14,
+          "from_counts": 265.4375,
+          "to_counts": 393.3125,
+          "samples": 376,
+          "slow_only": false
+        },
+        {
+          "rung": 16,
+          "from_counts": 3372.6875,
+          "to_counts": 3405.6875,
+          "samples": 49,
+          "slow_only": false
+        },
+        {
+          "rung": 17,
+          "from_counts": 3486.25,
+          "to_counts": 3732.3125,
+          "samples": 365,
+          "slow_only": false
+        },
+        {
+          "rung": 18,
+          "from_counts": 3373.3125,
+          "to_counts": 3676.6875,
+          "samples": 583,
+          "slow_only": false
+        },
+        {
+          "rung": 18,
+          "from_counts": 3371.875,
+          "to_counts": 3372.5625,
+          "samples": 2,
+          "slow_only": false
+        },
+        {
+          "rung": 23,
+          "from_counts": 189.5625,
+          "to_counts": 391.9375,
+          "samples": 624,
+          "slow_only": false
+        },
+        {
+          "rung": 27,
+          "from_counts": 3426.375,
+          "to_counts": 3725.9375,
+          "samples": 439,
+          "slow_only": false
+        },
+        {
+          "rung": 28,
+          "from_counts": 3373.1875,
+          "to_counts": 3675.875,
+          "samples": 544,
+          "slow_only": false
+        },
+        {
+          "rung": 32,
+          "from_counts": 122.25,
+          "to_counts": 149.6875,
+          "samples": 69,
+          "slow_only": true
+        }
+      ],
+      "smooth_weight": 1.0
+    },
+    "gain_q4": [
+      9,
+      26
+    ],
+    "validate": "ok",
+    "one_fast_pass_out": [
+      {
+        "rung": 33,
+        "pass": 8,
+        "line_out_counts_rms": 0.12731819321323465,
+        "why": null,
+        "judged_on_counts": [
+          [
+            144.0,
+            3712.0
+          ]
+        ]
+      },
+      {
+        "rung": 34,
+        "pass": 9,
+        "line_out_counts_rms": 0.5317956274047717,
+        "why": null,
+        "judged_on_counts": [
+          [
+            144.0,
+            3712.0
+          ]
+        ]
+      },
+      {
+        "rung": 35,
+        "pass": 10,
+        "line_out_counts_rms": 2.3146162964292567,
+        "why": null,
+        "judged_on_counts": [
+          [
+            144.0,
+            672.0
+          ],
+          [
+            1088.0,
+            3712.0
+          ]
+        ]
+      },
+      {
+        "rung": 36,
+        "pass": 11,
+        "line_out_counts_rms": 2.2518101428285924,
+        "why": null,
+        "judged_on_counts": [
+          [
+            144.0,
+            3712.0
+          ]
+        ]
+      }
+    ],
+    "pin_cycles": 916.5204908022083,
+    "cycles": [
+      {
+        "rungs": [
+          1,
+          8
+        ],
+        "from_counts": 1312.8125,
+        "to_counts": 1840.0625,
+        "cycles": [
+          138.98865857619987,
+          139.03894169281187
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          1,
+          9
+        ],
+        "from_counts": 683.875,
+        "to_counts": 1219.625,
+        "cycles": [
+          136.03883340521384,
+          136.3536375890877
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          1,
+          18
+        ],
+        "from_counts": 1202.625,
+        "to_counts": 1840.0625,
+        "cycles": [
+          165.9119736051664,
+          166.06059543414682
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          1,
+          19
+        ],
+        "from_counts": 683.875,
+        "to_counts": 1112.5625,
+        "cycles": [
+          111.77450020214411,
+          111.51407637490009
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          1,
+          28
+        ],
+        "from_counts": 1204.5625,
+        "to_counts": 1840.0625,
+        "cycles": [
+          165.33587606763328,
+          165.98151110151912
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          1,
+          29
+        ],
+        "from_counts": 683.875,
+        "to_counts": 1107.625,
+        "cycles": [
+          109.99525473678514,
+          109.39382423674766
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          1,
+          36
+        ],
+        "from_counts": 1103.0625,
+        "to_counts": 1840.0625,
+        "cycles": [
+          189.03366058604652,
+          191.30604459528905
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          2,
+          10
+        ],
+        "from_counts": 554.25,
+        "to_counts": 594.875,
+        "cycles": [
+          7.288029059935807,
+          8.81163132474774
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          2,
+          20
+        ],
+        "from_counts": 494.375,
+        "to_counts": 587.0,
+        "cycles": [
+          22.068126346433957,
+          22.063840338959672
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          2,
+          30
+        ],
+        "from_counts": 493.6875,
+        "to_counts": 552.8125,
+        "cycles": [
+          15.826723102943477,
+          16.18261331087415
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          3,
+          12
+        ],
+        "from_counts": 255.25,
+        "to_counts": 409.0625,
+        "cycles": [
+          41.312495235320206,
+          40.178810571333486
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          5,
+          14
+        ],
+        "from_counts": 274.0,
+        "to_counts": 2117.5,
+        "cycles": [
+          479.42219495518924,
+          479.7898418442977
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          5,
+          15
+        ],
+        "from_counts": 2200.1875,
+        "to_counts": 2424.1875,
+        "cycles": [
+          59.52274398334424,
+          59.21640540123706
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          5,
+          23
+        ],
+        "from_counts": 274.0,
+        "to_counts": 1687.25,
+        "cycles": [
+          356.89556913382745,
+          357.9214958602497
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          5,
+          24
+        ],
+        "from_counts": 1757.9375,
+        "to_counts": 2424.1875,
+        "cycles": [
+          183.08812671598156,
+          183.25331618328943
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          5,
+          33
+        ],
+        "from_counts": 274.0,
+        "to_counts": 661.3125,
+        "cycles": [
+          93.81628909087367,
+          93.65814572465459
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          5,
+          35
+        ],
+        "from_counts": 315.375,
+        "to_counts": 2424.1875,
+        "cycles": [
+          546.4612005179459,
+          547.2521326785995
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          6,
+          15
+        ],
+        "from_counts": 2518.5625,
+        "to_counts": 3062.5,
+        "cycles": [
+          143.16363862711205,
+          143.5656153777099
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          6,
+          16
+        ],
+        "from_counts": 3185.625,
+        "to_counts": 3357.625,
+        "cycles": [
+          36.15823817871686,
+          36.35643701214798
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          6,
+          24
+        ],
+        "from_counts": 2518.5625,
+        "to_counts": 2664.5,
+        "cycles": [
+          37.675630417216055,
+          37.575982581139186
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          6,
+          25
+        ],
+        "from_counts": 2754.5625,
+        "to_counts": 3111.5,
+        "cycles": [
+          94.03436664193606,
+          94.12437810240313
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          6,
+          26
+        ],
+        "from_counts": 3243.875,
+        "to_counts": 3320.9375,
+        "cycles": [
+          17.5634348306576,
+          16.651642196767146
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          6,
+          35
+        ],
+        "from_counts": 2518.5625,
+        "to_counts": 2806.9375,
+        "cycles": [
+          74.6034086494823,
+          75.36745872205586
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          7,
+          17
+        ],
+        "from_counts": 3488.25,
+        "to_counts": 3726.3125,
+        "cycles": [
+          58.052877318214776,
+          58.60141860810138
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          7,
+          27
+        ],
+        "from_counts": 3439.4375,
+        "to_counts": 3723.9375,
+        "cycles": [
+          70.48621305655577,
+          70.25964061233877
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          8,
+          18
+        ],
+        "from_counts": 1312.8125,
+        "to_counts": 3674.6875,
+        "cycles": [
+          617.9556014410769,
+          617.844787516784
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          8,
+          28
+        ],
+        "from_counts": 1312.8125,
+        "to_counts": 3673.875,
+        "cycles": [
+          617.6781116844704,
+          618.2949423340434
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          8,
+          34
+        ],
+        "from_counts": 2433.75,
+        "to_counts": 3497.625,
+        "cycles": [
+          273.34080538492384,
+          272.8355180313548
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          8,
+          36
+        ],
+        "from_counts": 1312.8125,
+        "to_counts": 3496.5,
+        "cycles": [
+          574.4749144751577,
+          574.1237174959819
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          9,
+          18
+        ],
+        "from_counts": 1202.625,
+        "to_counts": 1219.625,
+        "cycles": [
+          4.255283148250657,
+          4.451321255826201
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          9,
+          19
+        ],
+        "from_counts": 662.75,
+        "to_counts": 1112.5625,
+        "cycles": [
+          118.03930816322992,
+          117.77907548857473
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          9,
+          29
+        ],
+        "from_counts": 641.125,
+        "to_counts": 1107.625,
+        "cycles": [
+          120.07171576466268,
+          119.85863822524585
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          9,
+          36
+        ],
+        "from_counts": 1103.0625,
+        "to_counts": 1219.625,
+        "cycles": [
+          27.598036138028263,
+          27.616318671448994
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          10,
+          20
+        ],
+        "from_counts": 554.25,
+        "to_counts": 587.0,
+        "cycles": [
+          6.509326957618256,
+          5.827052388875058
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          11,
+          30
+        ],
+        "from_counts": 478.5625,
+        "to_counts": 497.5,
+        "cycles": [
+          5.5457304534481775,
+          5.557675268779395
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          14,
+          23
+        ],
+        "from_counts": 267.4375,
+        "to_counts": 1687.25,
+        "cycles": [
+          358.24648096932594,
+          359.72506347767523
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          14,
+          24
+        ],
+        "from_counts": 1757.9375,
+        "to_counts": 2117.5,
+        "cycles": [
+          99.13815799555874,
+          99.1978661279919
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          14,
+          33
+        ],
+        "from_counts": 267.4375,
+        "to_counts": 661.3125,
+        "cycles": [
+          95.32452812939283,
+          95.54747703270326
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          14,
+          35
+        ],
+        "from_counts": 315.375,
+        "to_counts": 2117.5,
+        "cycles": [
+          462.9482936599839,
+          464.09617620454634
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          15,
+          24
+        ],
+        "from_counts": 2200.1875,
+        "to_counts": 2664.5,
+        "cycles": [
+          123.64952381610368,
+          123.31976354227248
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          15,
+          25
+        ],
+        "from_counts": 2754.5625,
+        "to_counts": 3062.5,
+        "cycles": [
+          81.08101080466406,
+          80.92665044890146
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          15,
+          35
+        ],
+        "from_counts": 2200.1875,
+        "to_counts": 2806.9375,
+        "cycles": [
+          160.65219236900447,
+          160.58846452822638
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          16,
+          26
+        ],
+        "from_counts": 3243.875,
+        "to_counts": 3320.9375,
+        "cycles": [
+          16.629533897541283,
+          16.651642196767146
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          17,
+          27
+        ],
+        "from_counts": 3488.25,
+        "to_counts": 3723.9375,
+        "cycles": [
+          56.92027365354966,
+          57.00950123519411
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          18,
+          28
+        ],
+        "from_counts": 1204.5625,
+        "to_counts": 3673.875,
+        "cycles": [
+          644.2155093622176,
+          644.9010663597539
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          18,
+          34
+        ],
+        "from_counts": 2433.75,
+        "to_counts": 3497.625,
+        "cycles": [
+          273.097671800589,
+          272.8355180313548
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          18,
+          36
+        ],
+        "from_counts": 1202.625,
+        "to_counts": 3496.5,
+        "cycles": [
+          601.7223605477917,
+          600.9616455755731
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          19,
+          29
+        ],
+        "from_counts": 662.75,
+        "to_counts": 1107.625,
+        "cycles": [
+          115.87428646874878,
+          115.74097587402916
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          20,
+          30
+        ],
+        "from_counts": 494.375,
+        "to_counts": 552.8125,
+        "cycles": [
+          15.867307679813264,
+          15.8949731494386
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          23,
+          33
+        ],
+        "from_counts": 267.375,
+        "to_counts": 661.3125,
+        "cycles": [
+          96.65269236478497,
+          95.56477792214642
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          23,
+          35
+        ],
+        "from_counts": 315.375,
+        "to_counts": 1687.25,
+        "cycles": [
+          340.09631379993533,
+          340.03768319782347
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          24,
+          35
+        ],
+        "from_counts": 1757.9375,
+        "to_counts": 2664.5,
+        "cycles": [
+          247.19828128306605,
+          247.67075001503332
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          25,
+          35
+        ],
+        "from_counts": 2754.5625,
+        "to_counts": 2806.9375,
+        "cycles": [
+          12.519313594055715,
+          12.401492895078036
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          28,
+          34
+        ],
+        "from_counts": 2433.75,
+        "to_counts": 3497.625,
+        "cycles": [
+          273.0735595463975,
+          272.8355180313548
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          28,
+          36
+        ],
+        "from_counts": 1204.5625,
+        "to_counts": 3496.5,
+        "cycles": [
+          601.1447916059146,
+          600.4511323672981
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          33,
+          35
+        ],
+        "from_counts": 315.375,
+        "to_counts": 661.3125,
+        "cycles": [
+          77.10510729501371,
+          76.7209253530685
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      },
+      {
+        "rungs": [
+          34,
+          36
+        ],
+        "from_counts": 2433.75,
+        "to_counts": 3496.5,
+        "cycles": [
+          271.72033484096465,
+          271.3185421098635
+        ],
+        "limit": 2.749561472406625,
+        "holds": true
+      }
+    ],
+    "report": {
+      "directions": {
+        "up_less_down_counts_rms": 3.8212840012606413,
+        "max_counts": 13.042838481219942,
+        "bands": [
+          {
+            "from_counts": 0.0,
+            "counts_rms": 0.18098477877068866
+          },
+          {
+            "from_counts": 256.0,
+            "counts_rms": 1.1324158127421111
+          },
+          {
+            "from_counts": 1024.0,
+            "counts_rms": 7.002779411535078
+          },
+          {
+            "from_counts": 1280.0,
+            "counts_rms": 4.200260283184681
+          },
+          {
+            "from_counts": 1536.0,
+            "counts_rms": 5.168201661202777
+          },
+          {
+            "from_counts": 1792.0,
+            "counts_rms": 1.83465007471468
+          },
+          {
+            "from_counts": 2048.0,
+            "counts_rms": 2.846048481138257
+          },
+          {
+            "from_counts": 2304.0,
+            "counts_rms": 3.152908809928211
+          },
+          {
+            "from_counts": 2560.0,
+            "counts_rms": 3.740275681148892
+          },
+          {
+            "from_counts": 2816.0,
+            "counts_rms": 7.7769631899573834
+          },
+          {
+            "from_counts": 3328.0,
+            "counts_rms": 2.7974154689003834
+          },
+          {
+            "from_counts": 3584.0,
+            "counts_rms": 1.285466043976245
+          }
+        ],
+        "warn_over_counts_rms": 3.0,
+        "warning": true
+      },
+      "gear_play": {
+        "counts": null,
+        "why": "the plan takes the play from the mean difference of the pass offsets; these offsets hold each rung's own start of counting, so they cannot carry it"
+      },
+      "speed_spread": [
+        {
+          "rung": 1,
+          "spread": 0.2361877480440043,
+          "warning": true
+        },
+        {
+          "rung": 2,
+          "spread": 0.19821361286143513,
+          "warning": false
+        },
+        {
+          "rung": 3,
+          "spread": 0.09405204283216112,
+          "warning": false
+        },
+        {
+          "rung": 5,
+          "spread": 0.4532660870124623,
+          "warning": true
+        },
+        {
+          "rung": 6,
+          "spread": 0.07565665461140822,
+          "warning": false
+        },
+        {
+          "rung": 7,
+          "spread": 0.06647547296629609,
+          "warning": false
+        },
+        {
+          "rung": 8,
+          "spread": 0.07892408139426649,
+          "warning": false
+        },
+        {
+          "rung": 9,
+          "spread": 0.2691665809933778,
+          "warning": true
+        },
+        {
+          "rung": 10,
+          "spread": 0.22602808163680077,
+          "warning": true
+        },
+        {
+          "rung": 11,
+          "spread": 0.18255204926097537,
+          "warning": false
+        },
+        {
+          "rung": 12,
+          "spread": 0.16011994229683374,
+          "warning": false
+        },
+        {
+          "rung": 14,
+          "spread": 0.437225171651944,
+          "warning": true
+        },
+        {
+          "rung": 15,
+          "spread": 0.024474563120360147,
+          "warning": false
+        },
+        {
+          "rung": 16,
+          "spread": 0.017365168316082764,
+          "warning": false
+        },
+        {
+          "rung": 17,
+          "spread": 0.06942320933621206,
+          "warning": false
+        },
+        {
+          "rung": 18,
+          "spread": 0.1432763360097975,
+          "warning": false
+        },
+        {
+          "rung": 19,
+          "spread": 0.16544334018943896,
+          "warning": false
+        },
+        {
+          "rung": 20,
+          "spread": 0.06846799850468906,
+          "warning": false
+        },
+        {
+          "rung": 23,
+          "spread": 0.5789673457867065,
+          "warning": true
+        },
+        {
+          "rung": 24,
+          "spread": 0.03220758980153624,
+          "warning": false
+        },
+        {
+          "rung": 25,
+          "spread": 0.03487586074899298,
+          "warning": false
+        },
+        {
+          "rung": 26,
+          "spread": 0.049467300262472674,
+          "warning": false
+        },
+        {
+          "rung": 27,
+          "spread": 0.09963402282891762,
+          "warning": false
+        },
+        {
+          "rung": 28,
+          "spread": 0.07604290304469666,
+          "warning": false
+        },
+        {
+          "rung": 29,
+          "spread": 0.129726490480649,
+          "warning": false
+        },
+        {
+          "rung": 30,
+          "spread": 0.0744890361064189,
+          "warning": false
+        },
+        {
+          "rung": 32,
+          "spread": 0.30184983005693655,
+          "warning": true
+        },
+        {
+          "rung": 33,
+          "spread": 0.12011134993361416,
+          "warning": false
+        },
+        {
+          "rung": 34,
+          "spread": 0.10684402905491958,
+          "warning": false
+        },
+        {
+          "rung": 35,
+          "spread": 0.18793500689054501,
+          "warning": false
+        },
+        {
+          "rung": 36,
+          "spread": 0.04983859227943313,
+          "warning": false
+        }
+      ],
+      "cycles_with_a_slow_rung": [
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 8,
+              "kind": "leave",
+              "speed_cps": 779.7052135512786,
+              "speed_spread": 0.07892408139426649
+            }
+          ],
+          "from_counts": 1312.8125,
+          "to_counts": 1840.0625,
+          "cycles": [
+            138.98865857619987,
+            139.03894169281187
+          ],
+          "difference_pct": 0.0361647722571863,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 9,
+              "kind": "free",
+              "speed_cps": 673.3768484288355,
+              "speed_spread": 0.2691665809933778
+            }
+          ],
+          "from_counts": 683.875,
+          "to_counts": 1219.625,
+          "cycles": [
+            136.03883340521384,
+            136.3536375890877
+          ],
+          "difference_pct": 0.2308733301435988,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 18,
+              "kind": "leave",
+              "speed_cps": 816.6433047493404,
+              "speed_spread": 0.1432763360097975
+            }
+          ],
+          "from_counts": 1202.625,
+          "to_counts": 1840.0625,
+          "cycles": [
+            165.9119736051664,
+            166.06059543414682
+          ],
+          "difference_pct": 0.08949855237593787,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 19,
+              "kind": "free",
+              "speed_cps": 660.3790745052386,
+              "speed_spread": 0.16544334018943896
+            }
+          ],
+          "from_counts": 683.875,
+          "to_counts": 1112.5625,
+          "cycles": [
+            111.77450020214411,
+            111.51407637490009
+          ],
+          "difference_pct": 0.23299037506144,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 28,
+              "kind": "leave",
+              "speed_cps": 814.2324532525679,
+              "speed_spread": 0.07604290304469666
+            }
+          ],
+          "from_counts": 1204.5625,
+          "to_counts": 1840.0625,
+          "cycles": [
+            165.33587606763328,
+            165.98151110151912
+          ],
+          "difference_pct": 0.3889800915783622,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 29,
+              "kind": "free",
+              "speed_cps": 687.0619158878505,
+              "speed_spread": 0.129726490480649
+            }
+          ],
+          "from_counts": 683.875,
+          "to_counts": 1107.625,
+          "cycles": [
+            109.99525473678514,
+            109.39382423674766
+          ],
+          "difference_pct": 0.5467785873824129,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 1,
+              "kind": "free",
+              "speed_cps": 782.2191882416397,
+              "speed_spread": 0.2361877480440043
+            },
+            {
+              "rung": 36,
+              "kind": "fast",
+              "speed_cps": 1451.233353510896,
+              "speed_spread": 0.04983859227943313
+            }
+          ],
+          "from_counts": 1103.0625,
+          "to_counts": 1840.0625,
+          "cycles": [
+            189.03366058604652,
+            191.30604459528905
+          ],
+          "difference_pct": 1.1878265603419866,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 2,
+              "kind": "free",
+              "speed_cps": 622.2747093023256,
+              "speed_spread": 0.19821361286143513
+            },
+            {
+              "rung": 10,
+              "kind": "free",
+              "speed_cps": 612.9807692307692,
+              "speed_spread": 0.22602808163680077
+            }
+          ],
+          "from_counts": 554.25,
+          "to_counts": 594.875,
+          "cycles": [
+            7.288029059935807,
+            8.81163132474774
+          ],
+          "difference_pct": 17.290808122360367,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 2,
+              "kind": "free",
+              "speed_cps": 622.2747093023256,
+              "speed_spread": 0.19821361286143513
+            },
+            {
+              "rung": 20,
+              "kind": "free",
+              "speed_cps": 632.3625654450262,
+              "speed_spread": 0.06846799850468906
+            }
+          ],
+          "from_counts": 494.375,
+          "to_counts": 587.0,
+          "cycles": [
+            22.068126346433957,
+            22.063840338959672
+          ],
+          "difference_pct": 0.019421709876957204,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 2,
+              "kind": "free",
+              "speed_cps": 622.2747093023256,
+              "speed_spread": 0.19821361286143513
+            },
+            {
+              "rung": 30,
+              "kind": "free",
+              "speed_cps": 555.7528409090909,
+              "speed_spread": 0.0744890361064189
+            }
+          ],
+          "from_counts": 493.6875,
+          "to_counts": 552.8125,
+          "cycles": [
+            15.826723102943477,
+            16.18261331087415
+          ],
+          "difference_pct": 2.1992134465174824,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 3,
+              "kind": "stop",
+              "speed_cps": 448.17386831275724,
+              "speed_spread": 0.09405204283216112
+            },
+            {
+              "rung": 12,
+              "kind": "stop",
+              "speed_cps": 470.4281026252983,
+              "speed_spread": 0.16011994229683374
+            }
+          ],
+          "from_counts": 255.25,
+          "to_counts": 409.0625,
+          "cycles": [
+            41.312495235320206,
+            40.178810571333486
+          ],
+          "difference_pct": 2.744168943389007,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 5,
+              "kind": "leave",
+              "speed_cps": 710.4221635883905,
+              "speed_spread": 0.4532660870124623
+            },
+            {
+              "rung": 14,
+              "kind": "leave",
+              "speed_cps": 710.0423177083333,
+              "speed_spread": 0.437225171651944
+            }
+          ],
+          "from_counts": 274.0,
+          "to_counts": 2117.5,
+          "cycles": [
+            479.42219495518924,
+            479.7898418442977
+          ],
+          "difference_pct": 0.07662665130533973,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 5,
+              "kind": "leave",
+              "speed_cps": 710.4221635883905,
+              "speed_spread": 0.4532660870124623
+            },
+            {
+              "rung": 15,
+              "kind": "free",
+              "speed_cps": 861.4881662688941,
+              "speed_spread": 0.024474563120360147
+            }
+          ],
+          "from_counts": 2200.1875,
+          "to_counts": 2424.1875,
+          "cycles": [
+            59.52274398334424,
+            59.21640540123706
+          ],
+          "difference_pct": 0.5146580308745522,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 5,
+              "kind": "leave",
+              "speed_cps": 710.4221635883905,
+              "speed_spread": 0.4532660870124623
+            },
+            {
+              "rung": 23,
+              "kind": "leave",
+              "speed_cps": 669.0254728765168,
+              "speed_spread": 0.5789673457867065
+            }
+          ],
+          "from_counts": 274.0,
+          "to_counts": 1687.25,
+          "cycles": [
+            356.89556913382745,
+            357.9214958602497
+          ],
+          "difference_pct": 0.28663456603981907,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 5,
+              "kind": "leave",
+              "speed_cps": 710.4221635883905,
+              "speed_spread": 0.4532660870124623
+            },
+            {
+              "rung": 24,
+              "kind": "free",
+              "speed_cps": 825.9819484760523,
+              "speed_spread": 0.03220758980153624
+            }
+          ],
+          "from_counts": 1757.9375,
+          "to_counts": 2424.1875,
+          "cycles": [
+            183.08812671598156,
+            183.25331618328943
+          ],
+          "difference_pct": 0.09014268922841573,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 5,
+              "kind": "leave",
+              "speed_cps": 710.4221635883905,
+              "speed_spread": 0.4532660870124623
+            },
+            {
+              "rung": 33,
+              "kind": "fast",
+              "speed_cps": 1234.2974565756824,
+              "speed_spread": 0.12011134993361416
+            }
+          ],
+          "from_counts": 274.0,
+          "to_counts": 661.3125,
+          "cycles": [
+            93.81628909087367,
+            93.65814572465459
+          ],
+          "difference_pct": 0.16856706628621382,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 5,
+              "kind": "leave",
+              "speed_cps": 710.4221635883905,
+              "speed_spread": 0.4532660870124623
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 315.375,
+          "to_counts": 2424.1875,
+          "cycles": [
+            546.4612005179459,
+            547.2521326785995
+          ],
+          "difference_pct": 0.14452792660346017,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 6,
+              "kind": "free",
+              "speed_cps": 922.7917031523643,
+              "speed_spread": 0.07565665461140822
+            },
+            {
+              "rung": 15,
+              "kind": "free",
+              "speed_cps": 861.4881662688941,
+              "speed_spread": 0.024474563120360147
+            }
+          ],
+          "from_counts": 2518.5625,
+          "to_counts": 3062.5,
+          "cycles": [
+            143.16363862711205,
+            143.5656153777099
+          ],
+          "difference_pct": 0.27999514336372955,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 6,
+              "kind": "free",
+              "speed_cps": 922.7917031523643,
+              "speed_spread": 0.07565665461140822
+            },
+            {
+              "rung": 16,
+              "kind": "free",
+              "speed_cps": 1055.4301330798478,
+              "speed_spread": 0.017365168316082764
+            }
+          ],
+          "from_counts": 3185.625,
+          "to_counts": 3357.625,
+          "cycles": [
+            36.15823817871686,
+            36.35643701214798
+          ],
+          "difference_pct": 0.5451547228483798,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 6,
+              "kind": "free",
+              "speed_cps": 922.7917031523643,
+              "speed_spread": 0.07565665461140822
+            },
+            {
+              "rung": 24,
+              "kind": "free",
+              "speed_cps": 825.9819484760523,
+              "speed_spread": 0.03220758980153624
+            }
+          ],
+          "from_counts": 2518.5625,
+          "to_counts": 2664.5,
+          "cycles": [
+            37.675630417216055,
+            37.575982581139186
+          ],
+          "difference_pct": 0.2644888352852473,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 6,
+              "kind": "free",
+              "speed_cps": 922.7917031523643,
+              "speed_spread": 0.07565665461140822
+            },
+            {
+              "rung": 25,
+              "kind": "free",
+              "speed_cps": 869.3099710982659,
+              "speed_spread": 0.03487586074899298
+            }
+          ],
+          "from_counts": 2754.5625,
+          "to_counts": 3111.5,
+          "cycles": [
+            94.03436664193606,
+            94.12437810240313
+          ],
+          "difference_pct": 0.0956303375190848,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 6,
+              "kind": "free",
+              "speed_cps": 922.7917031523643,
+              "speed_spread": 0.07565665461140822
+            },
+            {
+              "rung": 26,
+              "kind": "free",
+              "speed_cps": 1023.5164141414141,
+              "speed_spread": 0.049467300262472674
+            }
+          ],
+          "from_counts": 3243.875,
+          "to_counts": 3320.9375,
+          "cycles": [
+            17.5634348306576,
+            16.651642196767146
+          ],
+          "difference_pct": 5.191425496673844,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 6,
+              "kind": "free",
+              "speed_cps": 922.7917031523643,
+              "speed_spread": 0.07565665461140822
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 2518.5625,
+          "to_counts": 2806.9375,
+          "cycles": [
+            74.6034086494823,
+            75.36745872205586
+          ],
+          "difference_pct": 1.013766532040384,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 7,
+              "kind": "stop",
+              "speed_cps": 835.8477011494253,
+              "speed_spread": 0.06647547296629609
+            },
+            {
+              "rung": 17,
+              "kind": "stop",
+              "speed_cps": 843.7070741758241,
+              "speed_spread": 0.06942320933621206
+            }
+          ],
+          "from_counts": 3488.25,
+          "to_counts": 3726.3125,
+          "cycles": [
+            58.052877318214776,
+            58.60141860810138
+          ],
+          "difference_pct": 0.9360546261772134,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 7,
+              "kind": "stop",
+              "speed_cps": 835.8477011494253,
+              "speed_spread": 0.06647547296629609
+            },
+            {
+              "rung": 27,
+              "kind": "stop",
+              "speed_cps": 853.845605022831,
+              "speed_spread": 0.09963402282891762
+            }
+          ],
+          "from_counts": 3439.4375,
+          "to_counts": 3723.9375,
+          "cycles": [
+            70.48621305655577,
+            70.25964061233877
+          ],
+          "difference_pct": 0.3214422145720954,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 8,
+              "kind": "leave",
+              "speed_cps": 779.7052135512786,
+              "speed_spread": 0.07892408139426649
+            },
+            {
+              "rung": 18,
+              "kind": "leave",
+              "speed_cps": 816.6433047493404,
+              "speed_spread": 0.1432763360097975
+            }
+          ],
+          "from_counts": 1312.8125,
+          "to_counts": 3674.6875,
+          "cycles": [
+            617.9556014410769,
+            617.844787516784
+          ],
+          "difference_pct": 0.01793234401216709,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 8,
+              "kind": "leave",
+              "speed_cps": 779.7052135512786,
+              "speed_spread": 0.07892408139426649
+            },
+            {
+              "rung": 28,
+              "kind": "leave",
+              "speed_cps": 814.2324532525679,
+              "speed_spread": 0.07604290304469666
+            }
+          ],
+          "from_counts": 1312.8125,
+          "to_counts": 3673.875,
+          "cycles": [
+            617.6781116844704,
+            618.2949423340434
+          ],
+          "difference_pct": 0.09976317245042854,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 8,
+              "kind": "leave",
+              "speed_cps": 779.7052135512786,
+              "speed_spread": 0.07892408139426649
+            },
+            {
+              "rung": 34,
+              "kind": "fast",
+              "speed_cps": 1436.776776103337,
+              "speed_spread": 0.10684402905491958
+            }
+          ],
+          "from_counts": 2433.75,
+          "to_counts": 3497.625,
+          "cycles": [
+            273.34080538492384,
+            272.8355180313548
+          ],
+          "difference_pct": 0.18485617354403983,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 8,
+              "kind": "leave",
+              "speed_cps": 779.7052135512786,
+              "speed_spread": 0.07892408139426649
+            },
+            {
+              "rung": 36,
+              "kind": "fast",
+              "speed_cps": 1451.233353510896,
+              "speed_spread": 0.04983859227943313
+            }
+          ],
+          "from_counts": 1312.8125,
+          "to_counts": 3496.5,
+          "cycles": [
+            574.4749144751577,
+            574.1237174959819
+          ],
+          "difference_pct": 0.06113356220204663,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 9,
+              "kind": "free",
+              "speed_cps": 673.3768484288355,
+              "speed_spread": 0.2691665809933778
+            },
+            {
+              "rung": 18,
+              "kind": "leave",
+              "speed_cps": 816.6433047493404,
+              "speed_spread": 0.1432763360097975
+            }
+          ],
+          "from_counts": 1202.625,
+          "to_counts": 1219.625,
+          "cycles": [
+            4.255283148250657,
+            4.451321255826201
+          ],
+          "difference_pct": 4.404043121330688,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 9,
+              "kind": "free",
+              "speed_cps": 673.3768484288355,
+              "speed_spread": 0.2691665809933778
+            },
+            {
+              "rung": 19,
+              "kind": "free",
+              "speed_cps": 660.3790745052386,
+              "speed_spread": 0.16544334018943896
+            }
+          ],
+          "from_counts": 662.75,
+          "to_counts": 1112.5625,
+          "cycles": [
+            118.03930816322992,
+            117.77907548857473
+          ],
+          "difference_pct": 0.22046272441323034,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 9,
+              "kind": "free",
+              "speed_cps": 673.3768484288355,
+              "speed_spread": 0.2691665809933778
+            },
+            {
+              "rung": 29,
+              "kind": "free",
+              "speed_cps": 687.0619158878505,
+              "speed_spread": 0.129726490480649
+            }
+          ],
+          "from_counts": 641.125,
+          "to_counts": 1107.625,
+          "cycles": [
+            120.07171576466268,
+            119.85863822524585
+          ],
+          "difference_pct": 0.17745856137714883,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 9,
+              "kind": "free",
+              "speed_cps": 673.3768484288355,
+              "speed_spread": 0.2691665809933778
+            },
+            {
+              "rung": 36,
+              "kind": "fast",
+              "speed_cps": 1451.233353510896,
+              "speed_spread": 0.04983859227943313
+            }
+          ],
+          "from_counts": 1103.0625,
+          "to_counts": 1219.625,
+          "cycles": [
+            27.598036138028263,
+            27.616318671448994
+          ],
+          "difference_pct": 0.06620192082166311,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 10,
+              "kind": "free",
+              "speed_cps": 612.9807692307692,
+              "speed_spread": 0.22602808163680077
+            },
+            {
+              "rung": 20,
+              "kind": "free",
+              "speed_cps": 632.3625654450262,
+              "speed_spread": 0.06846799850468906
+            }
+          ],
+          "from_counts": 554.25,
+          "to_counts": 587.0,
+          "cycles": [
+            6.509326957618256,
+            5.827052388875058
+          ],
+          "difference_pct": 10.4814917607525,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 11,
+              "kind": "free",
+              "speed_cps": 451.8363402061855,
+              "speed_spread": 0.18255204926097537
+            },
+            {
+              "rung": 30,
+              "kind": "free",
+              "speed_cps": 555.7528409090909,
+              "speed_spread": 0.0744890361064189
+            }
+          ],
+          "from_counts": 478.5625,
+          "to_counts": 497.5,
+          "cycles": [
+            5.5457304534481775,
+            5.557675268779395
+          ],
+          "difference_pct": 0.21492467180150246,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 14,
+              "kind": "leave",
+              "speed_cps": 710.0423177083333,
+              "speed_spread": 0.437225171651944
+            },
+            {
+              "rung": 23,
+              "kind": "leave",
+              "speed_cps": 669.0254728765168,
+              "speed_spread": 0.5789673457867065
+            }
+          ],
+          "from_counts": 267.4375,
+          "to_counts": 1687.25,
+          "cycles": [
+            358.24648096932594,
+            359.72506347767523
+          ],
+          "difference_pct": 0.4110312731770642,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 14,
+              "kind": "leave",
+              "speed_cps": 710.0423177083333,
+              "speed_spread": 0.437225171651944
+            },
+            {
+              "rung": 24,
+              "kind": "free",
+              "speed_cps": 825.9819484760523,
+              "speed_spread": 0.03220758980153624
+            }
+          ],
+          "from_counts": 1757.9375,
+          "to_counts": 2117.5,
+          "cycles": [
+            99.13815799555874,
+            99.1978661279919
+          ],
+          "difference_pct": 0.06019094438595965,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 14,
+              "kind": "leave",
+              "speed_cps": 710.0423177083333,
+              "speed_spread": 0.437225171651944
+            },
+            {
+              "rung": 33,
+              "kind": "fast",
+              "speed_cps": 1234.2974565756824,
+              "speed_spread": 0.12011134993361416
+            }
+          ],
+          "from_counts": 267.4375,
+          "to_counts": 661.3125,
+          "cycles": [
+            95.32452812939283,
+            95.54747703270326
+          ],
+          "difference_pct": 0.23333834679288826,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 14,
+              "kind": "leave",
+              "speed_cps": 710.0423177083333,
+              "speed_spread": 0.437225171651944
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 315.375,
+          "to_counts": 2117.5,
+          "cycles": [
+            462.9482936599839,
+            464.09617620454634
+          ],
+          "difference_pct": 0.24733721228862615,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 15,
+              "kind": "free",
+              "speed_cps": 861.4881662688941,
+              "speed_spread": 0.024474563120360147
+            },
+            {
+              "rung": 24,
+              "kind": "free",
+              "speed_cps": 825.9819484760523,
+              "speed_spread": 0.03220758980153624
+            }
+          ],
+          "from_counts": 2200.1875,
+          "to_counts": 2664.5,
+          "cycles": [
+            123.64952381610368,
+            123.31976354227248
+          ],
+          "difference_pct": 0.26668948141007814,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 15,
+              "kind": "free",
+              "speed_cps": 861.4881662688941,
+              "speed_spread": 0.024474563120360147
+            },
+            {
+              "rung": 25,
+              "kind": "free",
+              "speed_cps": 869.3099710982659,
+              "speed_spread": 0.03487586074899298
+            }
+          ],
+          "from_counts": 2754.5625,
+          "to_counts": 3062.5,
+          "cycles": [
+            81.08101080466406,
+            80.92665044890146
+          ],
+          "difference_pct": 0.19037793711585835,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 15,
+              "kind": "free",
+              "speed_cps": 861.4881662688941,
+              "speed_spread": 0.024474563120360147
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 2200.1875,
+          "to_counts": 2806.9375,
+          "cycles": [
+            160.65219236900447,
+            160.58846452822638
+          ],
+          "difference_pct": 0.03966820485817462,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 16,
+              "kind": "free",
+              "speed_cps": 1055.4301330798478,
+              "speed_spread": 0.017365168316082764
+            },
+            {
+              "rung": 26,
+              "kind": "free",
+              "speed_cps": 1023.5164141414141,
+              "speed_spread": 0.049467300262472674
+            }
+          ],
+          "from_counts": 3243.875,
+          "to_counts": 3320.9375,
+          "cycles": [
+            16.629533897541283,
+            16.651642196767146
+          ],
+          "difference_pct": 0.13276948282107118,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 17,
+              "kind": "stop",
+              "speed_cps": 843.7070741758241,
+              "speed_spread": 0.06942320933621206
+            },
+            {
+              "rung": 27,
+              "kind": "stop",
+              "speed_cps": 853.845605022831,
+              "speed_spread": 0.09963402282891762
+            }
+          ],
+          "from_counts": 3488.25,
+          "to_counts": 3723.9375,
+          "cycles": [
+            56.92027365354966,
+            57.00950123519411
+          ],
+          "difference_pct": 0.15651352794043996,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 18,
+              "kind": "leave",
+              "speed_cps": 816.6433047493404,
+              "speed_spread": 0.1432763360097975
+            },
+            {
+              "rung": 28,
+              "kind": "leave",
+              "speed_cps": 814.2324532525679,
+              "speed_spread": 0.07604290304469666
+            }
+          ],
+          "from_counts": 1204.5625,
+          "to_counts": 3673.875,
+          "cycles": [
+            644.2155093622176,
+            644.9010663597539
+          ],
+          "difference_pct": 0.10630421211830901,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 18,
+              "kind": "leave",
+              "speed_cps": 816.6433047493404,
+              "speed_spread": 0.1432763360097975
+            },
+            {
+              "rung": 34,
+              "kind": "fast",
+              "speed_cps": 1436.776776103337,
+              "speed_spread": 0.10684402905491958
+            }
+          ],
+          "from_counts": 2433.75,
+          "to_counts": 3497.625,
+          "cycles": [
+            273.097671800589,
+            272.8355180313548
+          ],
+          "difference_pct": 0.09599267818937066,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 18,
+              "kind": "leave",
+              "speed_cps": 816.6433047493404,
+              "speed_spread": 0.1432763360097975
+            },
+            {
+              "rung": 36,
+              "kind": "fast",
+              "speed_cps": 1451.233353510896,
+              "speed_spread": 0.04983859227943313
+            }
+          ],
+          "from_counts": 1202.625,
+          "to_counts": 3496.5,
+          "cycles": [
+            601.7223605477917,
+            600.9616455755731
+          ],
+          "difference_pct": 0.12642291895651764,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 19,
+              "kind": "free",
+              "speed_cps": 660.3790745052386,
+              "speed_spread": 0.16544334018943896
+            },
+            {
+              "rung": 29,
+              "kind": "free",
+              "speed_cps": 687.0619158878505,
+              "speed_spread": 0.129726490480649
+            }
+          ],
+          "from_counts": 662.75,
+          "to_counts": 1107.625,
+          "cycles": [
+            115.87428646874878,
+            115.74097587402916
+          ],
+          "difference_pct": 0.11504760787076877,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 20,
+              "kind": "free",
+              "speed_cps": 632.3625654450262,
+              "speed_spread": 0.06846799850468906
+            },
+            {
+              "rung": 30,
+              "kind": "free",
+              "speed_cps": 555.7528409090909,
+              "speed_spread": 0.0744890361064189
+            }
+          ],
+          "from_counts": 494.375,
+          "to_counts": 552.8125,
+          "cycles": [
+            15.867307679813264,
+            15.8949731494386
+          ],
+          "difference_pct": 0.17405169147022934,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 23,
+              "kind": "leave",
+              "speed_cps": 669.0254728765168,
+              "speed_spread": 0.5789673457867065
+            },
+            {
+              "rung": 33,
+              "kind": "fast",
+              "speed_cps": 1234.2974565756824,
+              "speed_spread": 0.12011134993361416
+            }
+          ],
+          "from_counts": 267.375,
+          "to_counts": 661.3125,
+          "cycles": [
+            96.65269236478497,
+            95.56477792214642
+          ],
+          "difference_pct": 1.1255914512267915,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 23,
+              "kind": "leave",
+              "speed_cps": 669.0254728765168,
+              "speed_spread": 0.5789673457867065
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 315.375,
+          "to_counts": 1687.25,
+          "cycles": [
+            340.09631379993533,
+            340.03768319782347
+          ],
+          "difference_pct": 0.01723941122935888,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 24,
+              "kind": "free",
+              "speed_cps": 825.9819484760523,
+              "speed_spread": 0.03220758980153624
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 1757.9375,
+          "to_counts": 2664.5,
+          "cycles": [
+            247.19828128306605,
+            247.67075001503332
+          ],
+          "difference_pct": 0.19076484887237993,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 25,
+              "kind": "free",
+              "speed_cps": 869.3099710982659,
+              "speed_spread": 0.03487586074899298
+            },
+            {
+              "rung": 35,
+              "kind": "fast",
+              "speed_cps": 1392.613002232143,
+              "speed_spread": 0.18793500689054501
+            }
+          ],
+          "from_counts": 2754.5625,
+          "to_counts": 2806.9375,
+          "cycles": [
+            12.519313594055715,
+            12.401492895078036
+          ],
+          "difference_pct": 0.9411114921957197,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 28,
+              "kind": "leave",
+              "speed_cps": 814.2324532525679,
+              "speed_spread": 0.07604290304469666
+            },
+            {
+              "rung": 34,
+              "kind": "fast",
+              "speed_cps": 1436.776776103337,
+              "speed_spread": 0.10684402905491958
+            }
+          ],
+          "from_counts": 2433.75,
+          "to_counts": 3497.625,
+          "cycles": [
+            273.0735595463975,
+            272.8355180313548
+          ],
+          "difference_pct": 0.08717120597033287,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        },
+        {
+          "rungs": [
+            {
+              "rung": 28,
+              "kind": "leave",
+              "speed_cps": 814.2324532525679,
+              "speed_spread": 0.07604290304469666
+            },
+            {
+              "rung": 36,
+              "kind": "fast",
+              "speed_cps": 1451.233353510896,
+              "speed_spread": 0.04983859227943313
+            }
+          ],
+          "from_counts": 1204.5625,
+          "to_counts": 3496.5,
+          "cycles": [
+            601.1447916059146,
+            600.4511323672981
+          ],
+          "difference_pct": 0.1153897111482032,
+          "limit_cycles": 2.749561472406625,
+          "holds": true
+        }
+      ],
+      "cycles_speed_words": "speed_cps the mean over each rung's whole counted stretch, speed_spread the (max - min) / mean of its ripple line over four quarters of that stretch; neither is over the counts the pair shares",
+      "on_the_slow_passes": [
+        {
+          "rung": 32,
+          "from_counts": 122.25,
+          "to_counts": 149.6875
+        }
+      ],
+      "one_fast_pass_alone": [
+        {
+          "from_counts": 672.0,
+          "to_counts": 1088.0,
+          "rung": 35,
+          "share_of_span": 0.11659192825112108
+        }
+      ],
+      "one_way": [
+        {
+          "from_counts": 144.0,
+          "to_counts": 189.5625,
+          "only": "down"
+        },
+        {
+          "from_counts": 3676.75,
+          "to_counts": 3712.0,
+          "only": "up"
+        }
+      ]
+    }
+  },
+  "holes": {
+    "pot": {
+      "holes": [],
+      "longest": null,
+      "m": [
+        {
+          "pass": 1,
+          "counts_per_cycle": 3.6331915295563704
+        },
+        {
+          "pass": 2,
+          "counts_per_cycle": 3.6963855598241935
+        },
+        {
+          "pass": 3,
+          "counts_per_cycle": 3.6168989676508545
+        },
+        {
+          "pass": 4,
+          "counts_per_cycle": 3.693498773576721
+        },
+        {
+          "pass": 5,
+          "counts_per_cycle": 3.6140641202358665
+        },
+        {
+          "pass": 6,
+          "counts_per_cycle": 3.651209327292122
+        },
+        {
+          "pass": 7,
+          "counts_per_cycle": 3.5562609619023533
+        }
+      ],
+      "s": 1.4544054249551341,
+      "line": 6.817621699820537,
+      "cycles": 5411,
+      "inner_cycles": 5222,
+      "not_read": [
+        {
+          "rung": 4,
+          "why": "the table did not read it: no first contact: its rows read no rise or no ripple line; its rows enter no table"
+        },
+        {
+          "rung": 13,
+          "why": "the table did not read it: no first contact: its rows read no rise or no ripple line; its rows enter no table"
+        },
+        {
+          "rung": 21,
+          "why": "the table did not read it: its shunt rose 13 counts, under 30: no first contact, its rows enter no table"
+        },
+        {
+          "rung": 22,
+          "why": "the table did not read it: no driven row"
+        },
+        {
+          "rung": 31,
+          "why": "the table did not read it: its shunt rose 13 counts, under 30: no first contact, its rows enter no table"
+        }
+      ],
+      "far_k": 4.0,
+      "noise_percentile": 99.0,
+      "inner": "every cycle of a rung but a stop rung's past its cut",
+      "merge_gap_cycles": 1,
+      "touch_counts": 2.0
+    },
+    "adc": {
+      "runs": [
+        {
+          "from_counts": 256,
+          "to_counts": 257,
+          "counts": 2,
+          "deg": 0.10096836023404328,
+          "above_carry": 255
+        },
+        {
+          "from_counts": 512,
+          "to_counts": 517,
+          "counts": 6,
+          "deg": 0.30290508070212985,
+          "above_carry": 511
+        },
+        {
+          "from_counts": 1024,
+          "to_counts": 1032,
+          "counts": 9,
+          "deg": 0.45435762105319477,
+          "above_carry": 1023
+        },
+        {
+          "from_counts": 1280,
+          "to_counts": 1281,
+          "counts": 2,
+          "deg": 0.10096836023404328,
+          "above_carry": 1279
+        },
+        {
+          "from_counts": 1792,
+          "to_counts": 1792,
+          "counts": 1,
+          "deg": 0.05048418011702164,
+          "above_carry": 1791
+        },
+        {
+          "from_counts": 2048,
+          "to_counts": 2058,
+          "counts": 11,
+          "deg": 0.5553259812872381,
+          "above_carry": 2047
+        },
+        {
+          "from_counts": 2304,
+          "to_counts": 2305,
+          "counts": 2,
+          "deg": 0.10096836023404328,
+          "above_carry": 2303
+        },
+        {
+          "from_counts": 2560,
+          "to_counts": 2565,
+          "counts": 6,
+          "deg": 0.30290508070212985,
+          "above_carry": 2559
+        },
+        {
+          "from_counts": 3328,
+          "to_counts": 3329,
+          "counts": 2,
+          "deg": 0.10096836023404328,
+          "above_carry": 3327
+        },
+        {
+          "from_counts": 3584,
+          "to_counts": 3584,
+          "counts": 1,
+          "deg": 0.05048418011702164,
+          "above_carry": 3583
+        }
+      ],
+      "longest": {
+        "from_counts": 2048,
+        "to_counts": 2058,
+        "counts": 11,
+        "deg": 0.5553259812872381,
+        "above_carry": 2047
+      },
+      "codes": 42,
+      "crossed": {
+        "counts": 3580,
+        "deg": 180.73336481893747,
+        "from_counts": 132,
+        "to_counts": 3722
+      },
+      "edge_margin_counts": 15
+    },
+    "source": {
+      "pot": "pot counts a ripple cycle on each slow rung the table read, read again over its whole drive on the line the table read was seeded on; r the counts over the pass's median over its inner cycles; a hole where r > 1 + far_k s, s the noise_percentile of |r - 1| over those inner cycles; flagged cycles merge_gap_cycles apart on a rung, and holes from any rungs within touch_counts, are one; degrees from the low pin through the run's table over its counts_per_deg, shaft_deg the cycles x 360 over the nameplate's brushes x rotor_segments x gear_ratio",
+      "adc": "the ADC's wide codes: runs of codes the slow passes' driven rows never read, each wholly inside the codes a slow rung crossed less the edge margin at each turn (oscnb widecodes.find's rule); degrees over the table's counts_per_deg"
+    }
+  },
+  "slots_zero": [
+    {
+      "slot": 0,
+      "code": 255,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 2,
+      "code": 767,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 4,
+      "code": 1279,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 5,
+      "code": 1535,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 6,
+      "code": 1791,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 8,
+      "code": 2303,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 10,
+      "code": 2815,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 11,
+      "code": 3071,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 12,
+      "code": 3327,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 13,
+      "code": 3583,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 14,
+      "code": 3839,
+      "state": "unreached",
+      "why": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+    },
+    {
+      "slot": 15,
+      "code": 4095,
+      "state": "unreached",
+      "why": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+    }
+  ],
+  "estimates": {
+    "pot_step4_counts": {
+      "value": 12.0,
+      "sd": null,
+      "n": 36,
+      "lo": null,
+      "hi": null,
+      "unit": "raw counts",
+      "source": "the worst level 4 successive RAIL-period pot steps all pass, every phase of the MEDIUM period, over the 36 drive bursts of the table's rungs; no run spans a hole in the ticks; samples inside a pot hole left out: the 0 pot holes this step found (results/table.json holes.pot)"
+    }
+  }
+}

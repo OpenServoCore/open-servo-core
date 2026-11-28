@@ -7,6 +7,13 @@
 //! open-loop sweep's speed, and so its rows a code, varies 2-3x along the
 //! travel.
 //!
+//! The run above a carry is counted over every row; the carry reads wide
+//! when its rows over the reference reach the share over every row, or
+//! over one direction's rows alone against that direction's own reference:
+//! the two directions do not dwell on a stuck code alike. The run is never
+//! counted over one direction, since half the rows turn a thin code into
+//! one never read.
+//!
 //! Carry k is code `(k << 8) | 255`, its slot 8 x the codes it skips (half
 //! the skipped span, Q4), as the firmware's map holds it.
 
@@ -41,6 +48,46 @@ pub const STRAY_REF_MIN_CODES: usize = 24;
 /// Codes in the converter's span.
 pub const CODES: usize = ADC_MASK as usize + 1;
 
+/// The rows that read a carry wide, every row first.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum By {
+    Pooled,
+    Rising,
+    Falling,
+}
+
+impl By {
+    pub fn word(self) -> &'static str {
+        match self {
+            By::Pooled => "pooled",
+            By::Rising => "rising",
+            By::Falling => "falling",
+        }
+    }
+}
+
+/// Which rows read a carry over `skipped` codes wide, from its ratio over
+/// every row and over each direction's rows alone.
+pub fn wide_by(
+    skipped: usize,
+    ratio: f64,
+    rising: Option<f64>,
+    falling: Option<f64>,
+) -> Option<By> {
+    if skipped < MIN_SKIPPED {
+        return None;
+    }
+    let bar = WIDE_MIN_SHARE * (1 + skipped) as f64;
+    [
+        (By::Pooled, Some(ratio)),
+        (By::Rising, rising),
+        (By::Falling, falling),
+    ]
+    .into_iter()
+    .find(|(_, r)| r.is_some_and(|r| r >= bar))
+    .map(|(by, _)| by)
+}
+
 /// What one carry's rows say.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum State {
@@ -63,6 +110,12 @@ pub struct Carry {
     pub ratio: f64,
     /// The reference: median rows a code around it.
     pub rows_ref: f64,
+    /// Its ratio over the rising and the falling rows alone, each against
+    /// its own reference; None on a finding not split.
+    pub rising: Option<f64>,
+    pub falling: Option<f64>,
+    /// None unless [`State::Wide`].
+    pub wide_by: Option<By>,
 }
 
 /// A run of [`MIN_SKIPPED`] or more codes never read under a code that is
@@ -148,7 +201,31 @@ pub fn find(codes: &[u16], lo: u16, hi: u16) -> Result<Finding, Refusal> {
 /// [`find`] on a histogram `h` (rows a code, [`CODES`] long), a carry with
 /// under `floor` reference rows a code thin.
 pub fn find_in(h: &[u32], lo: u16, hi: u16, floor: f64) -> Result<Finding, Refusal> {
-    let rows = |c: usize| h.get(c).copied().unwrap_or(0) as f64;
+    find_with(h, None, lo, hi, floor)
+}
+
+/// [`find_in`] on every row's histogram `h`, a carry also read wide by
+/// the `rising` or the `falling` rows' histogram alone.
+pub fn find_split(
+    h: &[u32],
+    rising: &[u32],
+    falling: &[u32],
+    lo: u16,
+    hi: u16,
+    floor: f64,
+) -> Result<Finding, Refusal> {
+    find_with(h, Some((rising, falling)), lo, hi, floor)
+}
+
+fn find_with(
+    h: &[u32],
+    split: Option<(&[u32], &[u32])>,
+    lo: u16,
+    hi: u16,
+    floor: f64,
+) -> Result<Finding, Refusal> {
+    let rows_of = |h: &[u32], c: usize| h.get(c).copied().unwrap_or(0) as f64;
+    let rows = |c: usize| rows_of(h, c);
     let a = lo as usize + EDGE_MARGIN_COUNTS;
     let b = (hi as usize).saturating_sub(EDGE_MARGIN_COUNTS);
     let mut slots = [0u8; ADC_WIDE_SLOTS];
@@ -162,23 +239,35 @@ pub fn find_in(h: &[u32], lo: u16, hi: u16, floor: f64) -> Result<Finding, Refus
             skipped: 0,
             ratio: 0.0,
             rows_ref: 0.0,
+            rising: None,
+            falling: None,
+            wide_by: None,
         };
         if a + REF_SIDE_CODES <= c && c + REACH_RUN_CODES + REF_SIDE_CODES <= b {
             let mut s = 0;
             while s < RUN_MAX_CODES && rows(c + 1 + s) == 0.0 {
                 s += 1;
             }
-            let reference: Vec<f64> = (c - REF_SIDE_CODES..c)
-                .chain(c + 1 + s..c + 1 + s + REF_SIDE_CODES)
-                .map(rows)
-                .collect();
-            let n = median(&reference).unwrap_or(0.0);
+            let ratio = |h: &[u32]| {
+                let reference: Vec<f64> = (c - REF_SIDE_CODES..c)
+                    .chain(c + 1 + s..c + 1 + s + REF_SIDE_CODES)
+                    .map(|k| rows_of(h, k))
+                    .collect();
+                let n = median(&reference).unwrap_or(0.0);
+                (if n > 0.0 { rows_of(h, c) / n } else { 0.0 }, n)
+            };
+            let (r, n) = ratio(h);
             carry.skipped = s;
             carry.rows_ref = n;
-            carry.ratio = if n > 0.0 { rows(c) / n } else { 0.0 };
+            carry.ratio = r;
+            carry.rising = split.map(|(up, _)| ratio(up).0);
+            carry.falling = split.map(|(_, down)| ratio(down).0);
+            if n >= floor {
+                carry.wide_by = wide_by(s, r, carry.rising, carry.falling);
+            }
             carry.state = if n < floor {
                 State::Thin
-            } else if s >= MIN_SKIPPED && carry.ratio >= WIDE_MIN_SHARE * (1 + s) as f64 {
+            } else if carry.wide_by.is_some() {
                 State::Wide
             } else {
                 State::NotWide
@@ -333,6 +422,84 @@ mod tests {
         }
         assert_eq!(f.carries[12].state, State::NotWide);
         assert!(f.strays.is_empty());
+    }
+
+    /// [`sweep`]'s rows split into two directions of 100 rows a code each,
+    /// carry 7 reading `up` and `down` times that over its 11 codes skipped.
+    fn split(up: u32, down: u32) -> [Vec<u32>; 3] {
+        let half: Vec<u32> = sweep(11).iter().map(|n| n / 2).collect();
+        let (mut rising, mut falling) = (half.clone(), half);
+        (rising[2047], falling[2047]) = (100 * up, 100 * down);
+        let all = rising.iter().zip(&falling).map(|(a, b)| a + b).collect();
+        [all, rising, falling]
+    }
+
+    #[test]
+    fn a_carry_one_direction_reads_wide_takes_its_slot_where_the_pool_falls_short() {
+        let [all, rising, falling] = split(8, 1);
+        let pooled = find_in(&all, 400, 3600, THIN_ROWS).expect("found");
+        let c7 = pooled.carries[7];
+        assert_eq!((c7.state, c7.skipped, c7.ratio), (State::NotWide, 11, 4.5));
+        assert_eq!((c7.rising, c7.wide_by, pooled.slots[7]), (None, None, 0));
+        let f = find_split(&all, &rising, &falling, 400, 3600, THIN_ROWS).expect("found");
+        let c7 = f.carries[7];
+        assert_eq!((c7.state, c7.ratio), (State::Wide, 4.5));
+        assert_eq!((c7.rising, c7.falling), (Some(8.0), Some(1.0)));
+        assert_eq!((c7.wide_by, f.slots[7]), (Some(By::Rising), 88));
+        assert_eq!(f.slots.iter().filter(|&&s| s != 0).count(), 1);
+        let [all, rising, falling] = split(1, 8);
+        let f = find_split(&all, &rising, &falling, 400, 3600, THIN_ROWS).expect("found");
+        assert_eq!((f.carries[7].wide_by, f.slots[7]), (Some(By::Falling), 88));
+        let [all, rising, falling] = split(7, 7);
+        let f = find_split(&all, &rising, &falling, 400, 3600, THIN_ROWS).expect("found");
+        assert_eq!(f.carries[7].wide_by, Some(By::Pooled));
+    }
+
+    #[test]
+    fn a_code_one_direction_never_reads_does_not_lengthen_the_run() {
+        // 2306 reads on the falling rows only: the rising rows alone would
+        // count a run of 3 over 2303, every row counts 2
+        let [mut all, mut rising, mut falling] = split(12, 12);
+        for h in [&mut all, &mut rising, &mut falling] {
+            h[2304..2307].fill(0);
+        }
+        (rising[2303], falling[2303], falling[2306]) = (400, 100, 50);
+        (all[2303], all[2306]) = (500, 50);
+        let f = find_split(&all, &rising, &falling, 400, 3600, THIN_ROWS).expect("found");
+        let c8 = f.carries[8];
+        assert_eq!(
+            (c8.state, c8.skipped, c8.wide_by, f.slots[8]),
+            (State::NotWide, 2, None, 0)
+        );
+        assert!(c8.rising.expect("split") >= WIDE_MIN_SHARE * (1 + MIN_SKIPPED) as f64);
+        assert_eq!(f.slots.iter().filter(|&&s| s != 0).count(), 1);
+    }
+
+    #[test]
+    fn a_thin_carry_stays_thin_whatever_a_direction_reads() {
+        let [all, rising, falling] = split(16, 1);
+        let quarter = |h: &[u32]| h.iter().map(|n| n / 4).collect::<Vec<_>>();
+        let f = find_split(
+            &quarter(&all),
+            &quarter(&rising),
+            &quarter(&falling),
+            400,
+            3600,
+            THIN_ROWS,
+        )
+        .expect("found");
+        assert_eq!(
+            (f.carries[7].state, f.carries[7].wide_by, f.slots[7]),
+            (State::Thin, None, 0)
+        );
+    }
+
+    #[test]
+    fn the_rule_reads_the_pool_first_and_never_a_short_run() {
+        assert_eq!(wide_by(11, 6.0, Some(9.0), Some(9.0)), Some(By::Pooled));
+        assert_eq!(wide_by(11, 5.9, None, None), None);
+        assert_eq!(wide_by(11, 5.9, Some(1.0), Some(6.0)), Some(By::Falling));
+        assert_eq!(wide_by(2, 9.0, Some(9.0), Some(9.0)), None);
     }
 
     #[test]

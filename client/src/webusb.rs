@@ -38,6 +38,14 @@ extern "C" {
     pub type UsbDevice;
     #[wasm_bindgen(js_namespace = ["navigator", "usb"], js_name = requestDevice, catch)]
     fn request_device_js(opts: &JsValue) -> Result<Promise, JsValue>;
+    #[wasm_bindgen(js_namespace = ["navigator", "usb"], js_name = getDevices, catch)]
+    fn get_devices_js() -> Result<Promise, JsValue>;
+    #[wasm_bindgen(method, getter, js_name = vendorId)]
+    fn vendor_id(this: &UsbDevice) -> u16;
+    #[wasm_bindgen(method, getter, js_name = productId)]
+    fn product_id(this: &UsbDevice) -> u16;
+    #[wasm_bindgen(method, getter, js_name = serialNumber)]
+    fn serial_number(this: &UsbDevice) -> Option<String>;
     #[wasm_bindgen(method)]
     fn open(this: &UsbDevice) -> Promise;
     #[wasm_bindgen(method, js_name = selectConfiguration)]
@@ -97,6 +105,46 @@ pub async fn request_device() -> Result<UsbDevice, PipeError> {
     js_sys::Reflect::set(&opts, &"filters".into(), &filters).map_err(js_err)?;
     let dev = settle(request_device_js(&opts).map_err(js_err)?).await?;
     Ok(dev.unchecked_into())
+}
+
+/// Which device another module lent. A `USBDevice` cannot be posted to a
+/// worker, so the worker finds its own object for the same device by these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceKey {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub serial: Option<String>,
+}
+
+impl DeviceKey {
+    pub fn of(device: &UsbDevice) -> Self {
+        DeviceKey {
+            vendor_id: device.vendor_id(),
+            product_id: device.product_id(),
+            serial: device.serial_number(),
+        }
+    }
+}
+
+/// The one device `key` names among those the origin was already granted,
+/// with no prompt: `getDevices` works in a worker, `requestDevice` only on a
+/// page. None, or several alike, is refused rather than guessed between.
+pub async fn find_device(key: &DeviceKey) -> Result<UsbDevice, PipeError> {
+    let all = js_sys::Array::from(&settle(get_devices_js().map_err(js_err)?).await?);
+    let mut found = all
+        .iter()
+        .map(JsCast::unchecked_into::<UsbDevice>)
+        .filter(|d| DeviceKey::of(d) == *key);
+    match (found.next(), found.next()) {
+        (Some(d), None) => Ok(d),
+        (None, _) => Err(PipeError::Io(
+            "the lent device is not among this site's granted devices: unplugged, or its grant revoked"
+                .into(),
+        )),
+        (Some(_), Some(_)) => Err(PipeError::Io(
+            "several devices match the lent one's vendor, product and serial number".into(),
+        )),
+    }
 }
 
 /// Before any bulk traffic: a previous page may have left records queued,

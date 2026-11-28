@@ -196,6 +196,9 @@ pub struct Core {
     recorded: Vec<WireFrame>,
     /// The end of the host's last byte sent with no break ahead of it.
     pub last_breakless_tx: Option<u64>,
+    /// Host pauses the time guard does not count, where a sim lets them go
+    /// uncounted (`Sim::uncap_idle`).
+    pub idle_ticks: Option<u64>,
 }
 
 impl Core {
@@ -210,6 +213,7 @@ impl Core {
             pending: None,
             recorded: Vec::new(),
             last_breakless_tx: None,
+            idle_ticks: None,
         }
     }
 
@@ -250,7 +254,11 @@ impl Core {
             self.processed <= MAX_EVENTS,
             "sim runaway: >{MAX_EVENTS} events"
         );
-        assert!(self.now <= MAX_SIM_TICKS, "sim runaway: >60 s of sim time");
+        let paused = self.idle_ticks.unwrap_or(0);
+        assert!(
+            self.now.saturating_sub(paused) <= MAX_SIM_TICKS,
+            "sim runaway: >60 s of sim time"
+        );
         Some(event)
     }
 

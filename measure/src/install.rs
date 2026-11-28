@@ -285,6 +285,48 @@ pub fn center_said(set: &SetFile, state: &State, d: &Descriptor) -> String {
     format!("center: {servo}; {held}")
 }
 
+/// The servo against `set` as `osc-ident check` says it: a line a
+/// difference, the fields the set does not hold, where each puts 0 deg,
+/// the count with the stored state and both hashes, and the modes refused
+/// where any are.
+pub fn check_lines(checked: &Checked, set: &SetFile) -> Vec<String> {
+    let mut out = checked.differences.clone();
+    if !checked.unowned.is_empty() {
+        out.push(format!("not in the set: {}", checked.unowned.join(", ")));
+    }
+    out.push(checked.center.clone());
+    out.push(format!(
+        "{} differences; settings {}; unsaved {}; set {}; servo {}",
+        checked.differences.len(),
+        checked.settings,
+        if checked.unsaved { "yes" } else { "no" },
+        &set.hash()[..12.min(set.hash().len())],
+        &checked.servo[..12.min(checked.servo.len())]
+    ));
+    if checked.refused != "none" {
+        out.push(format!(
+            "refused {}: {}",
+            checked.refused,
+            osc_client::store_state::REFUSED
+        ));
+    }
+    out
+}
+
+/// The line `osc-ident save` ends on, the stored settings read once the
+/// save is done.
+pub async fn saved_line<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+) -> Result<String, Error> {
+    let s = osc_client::store_state::read(c, id, d).await?;
+    Ok(format!(
+        "saved: after a reboot the servo reads as the set, settings {}",
+        s.settings()
+    ))
+}
+
 /// Refused with nothing written: torque on.
 pub fn writable_now(state: &State) -> Result<(), Refused> {
     if state.torque {
@@ -731,6 +773,22 @@ pub async fn install<P: Pipe>(
     }
 }
 
+/// The servo rebooted onto its stored state, read at the baud it boots
+/// on, before any move back to the run's rate.
+pub async fn stored_state<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    steps: &mut Vec<Step>,
+) -> Result<State, Refused> {
+    let run = c.info().bps;
+    let at = boot(c, id).await?;
+    steps.push(Step::Rebooted);
+    let stored = state::read(c, id, d).await;
+    home(c, id, at, run, steps).await?;
+    Ok(stored?)
+}
+
 /// Reboot the servo onto its stored state and keep the record of it in
 /// [`STORED`], which must read back the same before anything else is
 /// written: the state a save, and a tune that ends without a set, go back
@@ -743,12 +801,7 @@ pub async fn backup<P: Pipe>(
     sink: &mut dyn Sink,
     steps: &mut Vec<Step>,
 ) -> Result<State, Refused> {
-    let run = c.info().bps;
-    let at = boot(c, id).await?;
-    steps.push(Step::Rebooted);
-    let stored = state::read(c, id, d).await;
-    home(c, id, at, run, steps).await?;
-    let stored = stored?;
+    let stored = stored_state(c, id, d, steps).await?;
     let mut bytes =
         serde_json::to_vec_pretty(&stored.record(d)).map_err(|e| Refused(e.to_string()))?;
     bytes.push(b'\n');

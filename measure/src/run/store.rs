@@ -26,6 +26,9 @@ pub trait Store {
     /// The one name of the folder or file at `path`, links and `..`
     /// resolved, so that two names of one folder compare equal.
     fn canonical(&self, path: &Path) -> Result<PathBuf, String>;
+    /// The file or folder at `from` moved whole to `to`, which is not
+    /// there; the folder above `to` is there already.
+    fn rename(&mut self, from: &Path, to: &Path) -> Result<(), String>;
 }
 
 /// The run folder `root` in a store: a file a run kept is never written
@@ -112,6 +115,28 @@ impl Store for MemSink {
     fn canonical(&self, path: &Path) -> Result<PathBuf, String> {
         Ok(path.to_path_buf())
     }
+
+    fn rename(&mut self, from: &Path, to: &Path) -> Result<(), String> {
+        if self.exists(to) {
+            return Err(format!("{} exists", to.display()));
+        }
+        let (f, t) = (key(from), key(to));
+        let moved: Vec<String> = self
+            .files
+            .keys()
+            .filter(|k| **k == f || below(k, &f).is_some())
+            .cloned()
+            .collect();
+        if moved.is_empty() {
+            return Err("no such file or folder".into());
+        }
+        for k in moved {
+            let bytes = self.files.remove(&k).unwrap_or_default();
+            let rest = &k[f.len()..];
+            self.files.insert(format!("{t}{rest}"), bytes);
+        }
+        Ok(())
+    }
 }
 
 fn key(path: &Path) -> String {
@@ -165,5 +190,52 @@ mod tests {
             ]
         );
         assert!(m.entries(Path::new("/elsewhere")).is_err());
+    }
+
+    /// A move takes a file, or a folder whole, to a name not there, bytes
+    /// untouched, and refuses one that is.
+    #[test]
+    fn a_move_in_memory_takes_a_folder_whole() {
+        let mut m = MemSink::default();
+        for p in [
+            "/r/captures/probe/01.csv.gz",
+            "/r/captures/probe/02.csv.gz",
+            "/r/captures/prober",
+            "/r/results/probe.json",
+        ] {
+            m.write_file(Path::new(p), p.as_bytes()).expect("write");
+        }
+        m.rename(
+            Path::new("/r/captures/probe"),
+            Path::new("/r/segments/1/captures/probe"),
+        )
+        .expect("moves");
+        m.rename(
+            Path::new("/r/results/probe.json"),
+            Path::new("/r/segments/1/results/probe.json"),
+        )
+        .expect("moves");
+        let keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "/r/captures/prober",
+                "/r/segments/1/captures/probe/01.csv.gz",
+                "/r/segments/1/captures/probe/02.csv.gz",
+                "/r/segments/1/results/probe.json"
+            ]
+        );
+        assert_eq!(
+            m.files["/r/segments/1/captures/probe/01.csv.gz"],
+            b"/r/captures/probe/01.csv.gz"
+        );
+        assert!(
+            m.rename(
+                Path::new("/r/captures/prober"),
+                Path::new("/r/segments/1/results/probe.json")
+            )
+            .is_err()
+        );
+        assert!(m.rename(Path::new("/r/none"), Path::new("/r/x")).is_err());
     }
 }

@@ -121,6 +121,11 @@ pub fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value 
     t
 }
 
+/// The gain `kp` as a whole percent of the starting gain `k0`.
+pub fn percent(kp: f64, k0: f64) -> u32 {
+    (100.0 * kp / k0).round() as u32
+}
+
 /// A try's first line: its number, gain and set.
 pub fn try_head(n: u32, kp: f64, k0: f64, file: &SetFile) -> String {
     format!(
@@ -206,7 +211,57 @@ pub async fn tune_with<P: Pipe, F>(
     inputs: &Path,
     out: &Path,
     tries: u32,
+    check: F,
+) -> Result<(Vec<String>, bool)>
+where
+    F: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
+{
+    tune_on(
+        c,
+        id,
+        d,
+        host,
+        inputs,
+        out,
+        tries,
+        check,
+        &Onward::default(),
+    )
+    .await
+}
+
+/// Where a tune goes on: in a run, the segment its tries run in; in a
+/// resumed one, its next try's number, the gain of the try it goes on from
+/// and whether it goes one gain below it, and the tries kept before, which
+/// tune.json lists first. Try folders are never renumbered.
+#[derive(Clone, Debug, Default)]
+pub struct Onward {
+    pub segment: Option<u32>,
+    /// Whether the tune goes on in a folder a stopped tune left.
+    pub resumed: bool,
+    pub next: u32,
+    pub from_kp: Option<f64>,
+    pub lower: bool,
+    pub kept: Vec<Value>,
+}
+
+/// The tune's schedule index of the gain `kp` on the starting gain `k0`.
+pub fn index_of(kp: f64, k0: f64) -> u32 {
+    ((kp / k0).ln() / tune::SHARE.ln()).round().max(0.0) as u32
+}
+
+/// [`tune_with`], going on as `on` says.
+#[allow(clippy::too_many_arguments)]
+pub async fn tune_on<P: Pipe, F>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    inputs: &Path,
+    out: &Path,
+    tries: u32,
     mut check: F,
+    on: &Onward,
 ) -> Result<(Vec<String>, bool)>
 where
     F: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
@@ -235,9 +290,25 @@ where
     let nominal = speed_loop::nominal_starting_gain(&r.inputs).map_err(no_gain)?;
     let (first, _, clamps) = set_at(&r, &measured, k0, &Checked::default(), &pair, d)
         .with_context(|| format!("the rules on {} at the starting gain", inputs.display()))?;
-    if host.files.exists(out) {
+    if !on.resumed && host.files.exists(out) {
         bail!("{} exists: a tune runs into a new folder", out.display());
     }
+    let start = on
+        .from_kp
+        .map_or(0, |kp| index_of(kp, k0) + u32::from(on.lower));
+    if start >= tries {
+        bail!(
+            "the tune refused every gain it allows on the moves' scores (tries 1 to {}): nothing is left to try; start a new run",
+            on.next - 1
+        );
+    }
+    let next = on.next.max(1);
+    let seg = |mut v: Value| {
+        if let Some(k) = on.segment {
+            v["segment"] = k.into();
+        }
+        v
+    };
     let (_, state) = verify::admit(c, id, d)
         .await
         .map_err(|e| anyhow::anyhow!("refused before any write: {e}"))?;
@@ -270,21 +341,23 @@ where
     lines.extend(steps.iter().map(ToString::to_string));
     let started = clock();
     let np = &r.inputs.nameplate;
-    let mut kept = Vec::new();
+    let mut kept = on.kept.clone();
     let mut accepted: Option<(u32, f64, SetFile)> = None;
     let mut last: Option<(u32, String)> = None;
     let mut ended = format!("no try of {tries} was accepted, each refused on its scores");
-    for n in 0..tries {
+    for (j, i) in (start..tries).enumerate() {
+        let n = next - 1 + j as u32;
         if stop.load(Ordering::SeqCst) {
             ended = "interrupted between tries".into();
             break;
         }
+        let kp = tune::gain(k0, i);
         feed(&Progress::Try {
             step: TUNE,
             at: n + 1,
-            of: tries,
+            of: next - 1 + tries - start,
+            percent: percent(kp, k0),
         });
-        let kp = tune::gain(k0, n);
         let dir = format!("tries/{:02}", n + 1);
         let prepared = set_at(&r, &measured, kp, &Checked::default(), &pair, d).and_then(
             |(file, bytes, _)| {
@@ -305,13 +378,13 @@ where
         if let Err(e) = install::install(c, id, d, &file, points, &mut isteps).await {
             ended = format!("the install refused: {e}");
             lines.push(format!("{head}: the install refused; {ended}"));
-            kept.push(try_json(
+            kept.push(seg(try_json(
                 n,
                 kp,
                 k0,
                 &file,
                 json!({"install": format!("refused: {e}"), "next": "stop"}),
-            ));
+            )));
             lines.extend(install::moves(&isteps));
             if !isteps.is_empty() {
                 last = Some((n, file.hash().to_string()));
@@ -349,7 +422,7 @@ where
         };
         lines.push(format!("{head}: installed; {}", s.said()));
         lines.extend(isteps.iter().map(|s| format!("  {s}")));
-        kept.push(try_json(
+        kept.push(seg(try_json(
             n,
             kp,
             k0,
@@ -357,7 +430,7 @@ where
             json!({"install": "installed", "verdict": s.verdict, "failed_on": s.failed,
                    "why": s.why, "worst": s.worst, "check": format!("{dir}/{}", verify::RESULT),
                    "next": match &next { Next::Accept => "accept", Next::Lower => "lower", Next::Stop(_) => "stop" }}),
-        ));
+        )));
         match next {
             Next::Accept => {
                 accepted = Some((n, kp, file));
