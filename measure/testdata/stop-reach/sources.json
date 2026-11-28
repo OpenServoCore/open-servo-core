@@ -1,0 +1,10 @@
+{
+ "REF": {
+  "from": "osc-dev-v006-bringup captures/run-resume/REF/00000000ffffffff76e5bc220ef6abcd/20261128T093606Z (bringup b67f90b5c)",
+  "files": "results/table.json and, of captures/table, each rung's drive capture (the first its result names), copied unchanged; the coast captures and the .meta.json files left out: the judge reads none of them",
+  "sha1": {
+   "results/table.json": "f48a64bc248c89ef7fb9494e9abe0df33ac7c304"
+  },
+  "run": "the table step on the bench servo mg90-d whose first low stop rungs of passes 1 and 3 (rungs 3 and 12) went still at pot 241, the stretch of the train stiffer than the rest, 28 to 29 cycles before where rungs 23 and 32 turned freely, and were read as the low stop"
+ }
+}
