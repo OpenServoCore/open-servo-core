@@ -86,10 +86,13 @@ fn each_version_0_field_moves_to_its_version_1_place() {
         f["source"].sha1.as_deref(),
         Some("9b890b42877683522fdb9909bdc5bdafe0a7bd4e")
     );
-    assert_eq!(
-        f["travel_deg"].key.as_deref(),
-        Some("target.theta_at_stops_deg, the high less the low")
+    assert!(
+        f["rated_travel_deg"]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.starts_with("the MG90 is sold as a 180 deg servo"))
     );
+    assert_eq!(p.rated_travel_deg, Some(180.0));
     assert_eq!(
         f["registry"].file.as_deref(),
         Some("notebooks/oscnb/servos.py")
@@ -111,7 +114,7 @@ fn each_version_0_field_moves_to_its_version_1_place() {
     assert_eq!(r.collision_trip, Some(Switch::Off));
     assert_eq!(q.motion.move_speed, Some(MoveSpeed::DegS(200.0)));
     assert_eq!(q.motion.speed_up, Some(SpeedUp::DegS2(4000.0)));
-    assert_eq!(q.motion.soft_margin_share, Some(0.0625));
+    assert_eq!(q.motion.soft_travel_deg, None);
     assert_eq!(q.motion.angle_cw_stop_deg, Some(0.0));
     assert_eq!(q.loops.current_loop, Some(CurrentLoop::Hz(1000.0)));
     assert_eq!(q.loops.observer, Some(Observer::Hz(15.0)));
@@ -170,7 +173,7 @@ fn both_versions_of_the_record_resolve_to_the_version_0_values() {
         };
         assert_eq!(volts(&n.stall), volts(&nameplate.stall));
         assert_eq!(n.document, nameplate.document);
-        assert_eq!(n.travel_deg, nameplate.travel_deg);
+        assert_eq!(n.rated_travel_deg, nameplate.rated_travel_deg);
     }
     assert_eq!(from_v0.nameplate.stall, nameplate.stall);
     // the profile states the stall torque the yield torque is taken over
@@ -450,7 +453,7 @@ fn each_required_profile_field_is_refused_with_its_message() {
     let (p, q) = v1();
     assert!(p.check().is_ok() && q.check().is_ok());
     type Take = fn(&mut ServoProfile);
-    let cases: [(&str, &str, Take); 11] = [
+    let cases: [(&str, &str, Take); 12] = [
         ("gear_class", "Without the gear material", |p| {
             p.gear_class = None
         }),
@@ -459,9 +462,11 @@ fn each_required_profile_field_is_refused_with_its_message() {
             "Without the gear ratio the run cannot turn motor turns into horn degrees",
             |p| p.gear_ratio = Some(0.0),
         ),
-        ("travel_deg", "A horn cannot turn more than one turn", |p| {
-            p.travel_deg = Some(361.0)
-        }),
+        (
+            "rated_travel_deg",
+            "The run sets the soft limits to the rated travel",
+            |p| p.rated_travel_deg = Some(361.0),
+        ),
         (
             "count_rises_ccw",
             "Without it the run cannot tell which stop is which",
@@ -489,6 +494,11 @@ fn each_required_profile_field_is_refused_with_its_message() {
         ("stall", "The current limit cannot be set", |p| {
             p.stall.clear()
         }),
+        (
+            "rated_travel_deg",
+            "The run sets the soft limits to the rated travel",
+            |p| p.rated_travel_deg = None,
+        ),
         ("key", "The key names", |p| p.key = "Vorpal MG90".into()),
     ];
     for (field, consequence, take) in cases {
@@ -581,7 +591,7 @@ fn the_profiles_heat_model_resolves_to_four_profile_lines() {
         .report
         .fields
         .iter()
-        .filter(|l| l.form == Form::Profile)
+        .filter(|l| l.form == Form::Profile && l.field.starts_with("thermal."))
         .collect();
     let named: Vec<_> = lines.iter().map(|l| (l.field, l.unit)).collect();
     assert_eq!(
@@ -632,7 +642,12 @@ fn the_profiles_heat_model_resolves_to_four_profile_lines() {
     let mut none = p;
     none.thermal = None;
     let r = resolve(&none, &q, Some(&BOARD)).expect("resolves");
-    assert!(!r.report.fields.iter().any(|l| l.form == Form::Profile));
+    assert!(
+        !r.report
+            .fields
+            .iter()
+            .any(|l| l.form == Form::Profile && l.field.starts_with("thermal."))
+    );
 }
 
 /// A time constant under 0.5 s stores as 0 and turns its node off, so the
@@ -681,4 +696,149 @@ fn a_version_0_thermal_json_folds_into_the_profile_only_beside_a_version_0_namep
     let (np, pol) = v0();
     let u = upgrade(np, Some(pol)).expect("without one");
     assert_eq!(u.profile.thermal, None);
+}
+
+const STOP_TO_STOP: &str = include_str!("../../testdata/mg90-d/nameplate-stop-to-stop.json");
+
+/// A version 1 profile that states travel_deg, the stop-to-stop travel, is
+/// refused in plain words naming the rated travel to enter, not serde's
+/// unknown field; the field never serializes.
+#[test]
+fn a_profile_stating_travel_deg_is_refused_naming_the_rated_travel() {
+    let with = PROFILE.replacen(
+        "\"rated_travel_deg\": 180.0,",
+        "\"travel_deg\": 184.3328808989794,",
+        1,
+    );
+    let ProfileIn::V1(p) = read::profile(&with).expect("parses") else {
+        panic!("version 1")
+    };
+    let e = p.check().expect_err("refused");
+    assert!(
+        e.starts_with("the profile states travel_deg, the stop-to-stop travel")
+            && e.contains("enter rated_travel_deg"),
+        "{e}"
+    );
+    let (_, q) = v1();
+    assert_eq!(resolve(&p, &q, None).expect_err("refused"), e);
+    // read through the upgrade, as an import does, it is said before it drops
+    let u = upgrade(read::profile(&with).expect("parses"), None).expect("upgrades");
+    assert_eq!(u.notes, std::slice::from_ref(&e));
+    let json = serde_json::to_value(&p).expect("json");
+    assert!(json.get("travel_deg").is_none(), "{json}");
+    // beside the rating it is refused all the same: it is still not read
+    let both = PROFILE.replacen(
+        "\"rated_travel_deg\": 180.0,",
+        "\"rated_travel_deg\": 180.0, \"travel_deg\": 184.3,",
+        1,
+    );
+    let ProfileIn::V1(p) = read::profile(&both).expect("parses") else {
+        panic!("version 1")
+    };
+    assert_eq!(p.check().expect_err("refused"), e);
+}
+
+/// A version 0 nameplate's travel_deg is the travel stop to stop, so it is
+/// never carried as the rating, only noted; the upgraded profile is refused
+/// until the rating is entered. One stating rated_travel_deg carries it.
+#[test]
+fn a_version_0_travel_deg_is_noted_never_carried() {
+    let np = read::profile(STOP_TO_STOP).expect("nameplate");
+    let u = upgrade(np, None).expect("upgrades");
+    assert_eq!(u.profile.rated_travel_deg, None);
+    assert!(
+        u.notes.iter().any(|n| n == "the version 0 nameplate's travel_deg (184.33) is the travel stop to stop; the profile takes the maker's rated travel: enter rated_travel_deg"),
+        "{:?}",
+        u.notes
+    );
+    let e = resolve(&u.profile, &u.policy, None).expect_err("no rating");
+    assert!(
+        e.starts_with("The run sets the soft limits to the rated travel")
+            && e.contains("no usable rated_travel_deg"),
+        "{e}"
+    );
+    let u = upgrade(read::profile(NAMEPLATE).expect("nameplate"), None).expect("upgrades");
+    assert_eq!(u.profile.rated_travel_deg, Some(180.0));
+    assert!(
+        !u.notes.iter().any(|n| n.contains("travel_deg")),
+        "{:?}",
+        u.notes
+    );
+}
+
+/// The soft window's width is the policy's motion.soft_travel_deg where it
+/// states one, else the profile's rated travel; over 0 and at most a turn
+/// is all the input asks, the run narrowing it to the stops. A policy that
+/// states the retired soft_margin_share is refused naming soft_travel_deg;
+/// a version 0 one drops it with a note.
+#[test]
+fn the_soft_travel_is_the_policys_else_the_rated_travel() {
+    let (p, mut q) = v1();
+    let line = |r: &osc_ident_inputs::Resolved| {
+        r.report
+            .fields
+            .iter()
+            .find(|l| l.field == "motion.soft_travel_deg")
+            .cloned()
+            .expect("a line")
+    };
+    // none stated stays none, so the rules name the profile's rated travel
+    // as what binds; the report line gives its value
+    let r = resolve(&p, &q, None).expect("resolves");
+    assert_eq!(r.policy.soft_travel_deg, None);
+    let l = line(&r);
+    assert_eq!((&l.form, &l.value), (&Form::Profile, &Value::Number(180.0)));
+    assert!(
+        l.note
+            .as_deref()
+            .is_some_and(|n| n.starts_with("the profile's rated_travel_deg")),
+        "{l:?}"
+    );
+    for deg in [120.0, 190.0, 360.0] {
+        q.motion.soft_travel_deg = Some(deg);
+        let r = resolve(&p, &q, None).expect("resolves");
+        assert_eq!(r.policy.soft_travel_deg, Some(deg));
+        assert_eq!(line(&r).form, Form::Stated);
+    }
+    for deg in [0.0, -10.0, 361.0, f64::NAN] {
+        q.motion.soft_travel_deg = Some(deg);
+        let e = resolve(&p, &q, None).expect_err("refused");
+        assert!(e.contains("motion.soft_travel_deg is"), "{e}");
+    }
+
+    let with = RECORD_POLICY.replacen(
+        "\"angle_cw_stop_deg\"",
+        "\"soft_margin_share\": 0.0625, \"angle_cw_stop_deg\"",
+        1,
+    );
+    let PolicyIn::V1(q) = read::policy(&with, "unused").expect("parses") else {
+        panic!("version 1")
+    };
+    let e = q.check().expect_err("refused");
+    assert!(
+        e.starts_with("the policy states motion.soft_margin_share")
+            && e.contains("motion.soft_travel_deg"),
+        "{e}"
+    );
+    let json = serde_json::to_value(&*q).expect("json");
+    assert!(json["motion"].get("soft_margin_share").is_none(), "{json}");
+
+    let v0 = POLICY.replacen(
+        "\"hold_band_noise_multiple\"",
+        "\"soft_margin_share\": 0.0625, \"hold_band_noise_multiple\"",
+        1,
+    );
+    let pol = read::policy(&v0, "policy").expect("policy");
+    let u = upgrade(read::profile(NAMEPLATE).expect("nameplate"), Some(pol)).expect("upgrades");
+    assert_eq!(u.policy.motion.soft_travel_deg, None);
+    assert!(
+        u.notes
+            .iter()
+            .any(|n| n.starts_with("the version 0 policy's soft_margin_share (0.0625) is not read")),
+        "{:?}",
+        u.notes
+    );
+    let r = resolve(&u.profile, &u.policy, None).expect("resolves");
+    assert_eq!(r.policy.soft_travel_deg, None);
+    assert_eq!(line(&r).value, Value::Number(180.0));
 }

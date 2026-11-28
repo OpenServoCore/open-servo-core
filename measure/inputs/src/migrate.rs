@@ -199,7 +199,8 @@ fn profile_of(np: &Nameplate, source: &Source) -> Result<(ServoProfile, Carried)
         gear_stages: Vec::new(),
         brushes: np.brushes,
         rotor_segments: np.rotor_segments,
-        travel_deg: np.travel_deg,
+        rated_travel_deg: np.rated_travel_deg,
+        retired_travel_deg: None,
         count_rises_ccw: np.count_rises_ccw,
         operating_v: np.operating_v,
         no_load: np.no_load.clone(),
@@ -250,7 +251,7 @@ fn policy_of(p: &Policy, source: &Source, key: &str) -> TuningPolicy {
     let m = &mut t.motion;
     m.move_speed = p.velocity_limit_deg_s.map(MoveSpeed::DegS);
     m.speed_up = p.accel_limit_deg_s2.map(SpeedUp::DegS2);
-    m.soft_margin_share = p.soft_margin_share;
+    m.soft_travel_deg = p.soft_travel_deg;
     m.angle_cw_stop_deg = p.angle_cw_stop_deg;
     let l = &mut t.loops;
     l.current_loop = p.current_loop;
@@ -309,6 +310,19 @@ fn carry(c: Carried, t: &mut TuningPolicy) -> Result<(), String> {
     Ok(())
 }
 
+/// A version 0 nameplate's `travel_deg` meant the travel stop to stop, as
+/// a sheet stated it or a user measured it, so it is never carried as the
+/// rating.
+fn travel_note(travel_deg: f64, rated: bool) -> String {
+    let t = (travel_deg * 100.0).round() / 100.0;
+    let then = if rated {
+        "the profile takes the maker's rated travel, the nameplate's rated_travel_deg"
+    } else {
+        "the profile takes the maker's rated travel: enter rated_travel_deg"
+    };
+    format!("the version 0 nameplate's travel_deg ({t}) is the travel stop to stop; {then}")
+}
+
 /// A profile and a policy at version 1, whatever versions they were read
 /// at. With no policy, one holding only what a version 0 nameplate carried:
 /// the steps read the run voltage and the derates and nothing else of it.
@@ -340,12 +354,20 @@ pub fn upgrade_with(
                 "the nameplate is version 0: read as the servo profile {}, its run_v, derate_speed and derate_other as the policy's{with_heat}",
                 p.key
             ));
+            if let Some(t) = nameplate.v0_travel_deg {
+                notes.push(travel_note(t, nameplate.rated_travel_deg.is_some()));
+            }
             (p, Some(c))
         }
         ProfileIn::V1(_) if heat.is_some() => {
             return Err("The profile is the heat model's one source: a version 1 profile states its own thermal, so a thermal.json beside it is not read; enter the four values in the profile's thermal and take the file out".into());
         }
-        ProfileIn::V1(p) => (p, None),
+        ProfileIn::V1(p) => {
+            if p.retired_travel_deg.is_some() {
+                notes.push(why::RETIRED_TRAVEL_DEG.into());
+            }
+            (p, None)
+        }
     };
     let mut policy = match policy {
         Some(PolicyIn::V0 {
@@ -367,6 +389,11 @@ pub fn upgrade_with(
                 "the policy is version 0: read as the tuning policy {} {stated}{board}",
                 t.key
             ));
+            if let Some(share) = policy.v0_soft_margin_share {
+                notes.push(format!(
+                    "the version 0 policy's soft_margin_share ({share}) is not read: the soft window is the profile's rated travel centered between the stops, or the policy's motion.soft_travel_deg where it states one"
+                ));
+            }
             t
         }
         Some(PolicyIn::V1(t)) => *t,

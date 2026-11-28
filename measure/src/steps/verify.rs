@@ -610,10 +610,10 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
         (n("raw_min")?, n("raw_max")?),
         (n("angle_min_cdeg")?, n("angle_max_cdeg")?),
         travel,
-        i.nameplate.travel_deg,
+        i.nameplate.rated_travel_deg,
     )
     .ok_or_else(|| {
-        Refused("the servo stores no angle map and the nameplate states no travel_deg: no degree to score in".into())
+        Refused("the servo stores no angle map and the nameplate states no rated_travel_deg: no degree to score in".into())
     })?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let tick_hz = sense.tick_hz;

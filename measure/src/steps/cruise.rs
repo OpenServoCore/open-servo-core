@@ -646,8 +646,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
     ) {
         Some(s) => s,
         None => {
-            let deg = i.nameplate.travel_deg.filter(|d| *d > 0.0).ok_or_else(|| {
-                Refused("the servo stores no angle map and the nameplate states no travel_deg: no speed to read in motor rad/s".into())
+            let deg = i.nameplate.rated_travel_deg.filter(|d| *d > 0.0).ok_or_else(|| {
+                Refused("the servo stores no angle map and the nameplate states no rated_travel_deg: no speed to read in motor rad/s".into())
             })?;
             Scale {
                 counts_per_deg: (stops.1 - stops.0) / deg,

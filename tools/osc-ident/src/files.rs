@@ -374,6 +374,17 @@ mod tests {
         }
         std::fs::copy(run.join("final/measured.json"), dir.join("measured.json"))
             .expect("measured");
+        // the run's soft pair is its policy's old share of the stops' span,
+        // centered: the same window as a soft travel binds it again
+        let measured: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("measured.json")).expect("read")).expect("json");
+        let soft = |f: &str| recorded.value(f).and_then(|v| v.as_f64()).expect(f);
+        let width = (soft("pos_max_soft_counts") - soft("pos_min_soft_counts"))
+            / measured["table"]["counts_per_deg"].as_f64().expect("scale");
+        let mut policy: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("policy.json")).expect("read")).expect("json");
+        policy["soft_travel_deg"] = width.into();
+        std::fs::write(dir.join("policy.json"), policy.to_string()).expect("policy");
         let as_run = set_of(&dir);
         assert_eq!(words(&as_run), words(&recorded));
         assert_eq!(as_run.hashes().expect("hashes")["set"], recorded.hash());

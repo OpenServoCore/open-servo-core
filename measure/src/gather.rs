@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::install::Refused;
 use crate::nameplate::Nameplate;
+use crate::ntc::ADC_COUNTS;
 use crate::set::file_sha1;
 use crate::steps::polarity::PROVING_PAIRS;
 use crate::steps::{cruise, probe, rest, stops, table, verify};
@@ -468,11 +469,11 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
     ));
 
     let travel = nameplate
-        .travel_deg
+        .rated_travel_deg
         .filter(|t| t.is_finite() && *t > 0.0)
         .ok_or_else(|| {
             Refused(
-                "the nameplate states no travel_deg: the table's scale is the stops' span over it"
+                "the nameplate states no rated_travel_deg: the table's scale is the stops' span over it"
                     .into(),
             )
         })?;
@@ -499,7 +500,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
                 "table".into(),
                 json!({"counts_per_deg": cpd, "sd": NOMINAL.sd, "n": NOMINAL.n,
                        "source": stops.source(&format!(
-                    "the stops' span, {lo_key} up to {hi_key} down, over the nameplate's travel_deg {travel}: nominal, as the stated travel"))}),
+                    "the stops' span, {lo_key} up to {hi_key} down, over the profile's rated_travel_deg {travel}: nominal, as the stated travel"))}),
             );
             o.lines.push(format!(
                 "table straight, {cpd:.4} counts/deg nominal: the stops' {} count span over the nameplate's {travel} deg travel; the run holds no {TABLE_RESULT}",
@@ -693,7 +694,25 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         )),
         None => Err(format!("the run holds no {TABLE_RESULT}")),
     };
-    let cross_checks = cross_checks(nameplate, travel, measured_travel, &o.m, &mut o.lines);
+    let table_scale = match &measured_table {
+        Some(m) => Ok(quantity(
+            m.cpd,
+            None,
+            ONE_FIT,
+            "counts/deg",
+            m.from
+                .source(&format!("scale.counts_per_deg ({})", m.scale_source)),
+        )),
+        None => Err(format!("the run holds no {TABLE_RESULT}")),
+    };
+    let cross_checks = cross_checks(
+        nameplate,
+        travel,
+        measured_travel,
+        table_scale,
+        &o.m,
+        &mut o.lines,
+    );
     o.lines.push(match &measured_table {
         Some(m) => format!(
             "wide-code slots {:?}: from {} slots, written with its table",
@@ -733,7 +752,7 @@ pub fn gather(run: &RunResults, nameplate: &Nameplate) -> Result<Gathered, Refus
         None => {
             inputs.insert(
                 "travel_deg".into(),
-                json!({"value": travel, "from": "the nameplate's travel_deg"}),
+                json!({"value": travel, "from": "the profile's rated_travel_deg"}),
             );
             (
                 json!({
@@ -875,7 +894,9 @@ fn check(
 }
 
 /// The profile's cross-checks (profile-policy sec 3): the travel the
-/// ripple measured against `travel_deg`; at each stated no-load voltage
+/// ripple measured against `rated_travel_deg`; the price the steps before
+/// the table pace their moves at, the converter's counts over the rated
+/// travel, against the table's scale; at each stated no-load voltage
 /// the free speed V / Ke through the gear ratio against the row; at each
 /// stated stall voltage V / seated R against the stated current. Each is
 /// reported, none judged, and the rules read none of them.
@@ -883,16 +904,46 @@ fn cross_checks(
     np: &Nameplate,
     travel_deg: f64,
     travel: Result<Value, String>,
+    table_scale: Result<Value, String>,
     measured: &Map<String, Value>,
     lines: &mut Vec<String>,
 ) -> Value {
     let travel = check(
         "travel",
         None,
-        Some((travel_deg, "deg", "the nameplate's travel_deg".into())),
+        Some((travel_deg, "deg", "the profile's rated_travel_deg".into())),
         travel,
         lines,
     );
+    let priced = ADC_COUNTS / travel_deg;
+    let read = table_scale
+        .as_ref()
+        .ok()
+        .and_then(|q| q.get("value").and_then(Value::as_f64));
+    let pacing = check(
+        "pacing",
+        None,
+        Some((
+            priced,
+            "counts/deg",
+            format!(
+                "the price the steps before the table pace their moves at: the converter's {ADC_COUNTS} counts over the profile's rated_travel_deg {travel_deg}"
+            ),
+        )),
+        table_scale,
+        lines,
+    );
+    lines.push(match read {
+        Some(t) if priced >= t => {
+            format!("pacing priced {priced:.2} counts/deg; the table reads {t:.2}: conservative")
+        }
+        Some(t) => format!(
+            "pacing priced {priced:.2} counts/deg; the table reads {t:.2}: not conservative, every travel bound before the table was priced short"
+        ),
+        None => format!(
+            "pacing priced {priced:.2} counts/deg; the run holds no {TABLE_RESULT} to read it against"
+        ),
+    });
     let said = |binds: bool| {
         if binds {
             " (the row the run voltage binds)"
@@ -977,6 +1028,7 @@ fn cross_checks(
         .collect();
     json!({
         "travel": travel,
+        "pacing": pacing,
         "free_speed": free_speed,
         "stall_current": stall_current,
     })
