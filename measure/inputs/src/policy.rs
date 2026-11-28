@@ -103,8 +103,12 @@ pub struct Policy {
     pub stall_speed: Option<StallSpeed>,
     pub pos_error_deg: Option<f64>,
     pub pos_error_time_ms: Option<f64>,
-    /// The share of the stops' span each soft limit sits inside its stop.
-    pub soft_margin_share: Option<f64>,
+    /// The soft window's width, output deg, centered between the stops.
+    pub soft_travel_deg: Option<f64>,
+    /// A version 0 policy's share of the stops' span each soft limit sat
+    /// inside its stop: never read, only noted.
+    #[serde(rename = "soft_margin_share", skip_serializing)]
+    pub(crate) v0_soft_margin_share: Option<f64>,
     pub hold_band_noise_multiple: Option<f64>,
     pub hold_band_floor_counts: Option<f64>,
     #[serde(deserialize_with = "form")]

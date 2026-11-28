@@ -401,8 +401,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &StopsInputs<'_>) -> Result<Be
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let travel_deg = np
-        .travel_deg
-        .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
+        .rated_travel_deg
+        .ok_or_else(|| Refused("the nameplate has no usable rated_travel_deg".into()))?;
     let servo = meta::servo(&state, rig.d, &line);
     let pos_read = read_pos(rig.c, rig.id, rig.d).await?;
     let pos = pos_read.pos;
@@ -1209,7 +1209,7 @@ pub fn advice(name: &str) -> &'static str {
 }
 
 /// The stops' checks, pure: each stop's seats and their spread and the
-/// span against the converter and the nameplate's travel, reported; the
+/// span against the converter and the profile's rated travel, reported; the
 /// start between them, a stop by a rail.
 pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
     let (Some(lo), Some(hi)) = (stop_read(seek, Stop::Low), stop_read(seek, Stop::High)) else {
@@ -1251,9 +1251,9 @@ pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
         ),
     ));
     out.push(Check::reported(
-        "the span over the nameplate's travel",
+        "the span over the rated travel",
         format!(
-            "{span:.0} counts over the nameplate's {travel_deg:.1} deg: {:.2} counts/deg",
+            "{span:.0} counts over the profile's rated {travel_deg:.1} deg: {:.2} counts/deg",
             span / travel_deg
         ),
     ));
@@ -1603,7 +1603,7 @@ fn result_json(
             "low": one(Stop::Low), "high": one(Stop::High),
             "travel_counts": span,
             "counts_per_deg": span.map(|x| x / b.travel_deg),
-            "travel_deg": {"value": b.travel_deg, "source": "the nameplate's travel_deg"},
+            "rated_travel_deg": {"value": b.travel_deg, "source": "the profile's rated_travel_deg"},
             "start_counts": s.start_pos(),
             "seats": s.seats().iter().map(|x| json!({"n": x.n, "stop": x.stop.word(), "pos_counts": x.pos, "range_counts": x.range, "walk_counts": x.walk})).collect::<Vec<_>>(),
             "legs": s.legs().iter().map(|l| json!({"n": l.n, "kind": l.kind.word(), "toward": l.toward.word(), "from_counts": l.from, "to_counts": l.to, "secs": l.secs, "top_q15": l.top_q15, "top_v": s.cfg().volts(l.top_q15)})).collect::<Vec<_>>(),
@@ -2529,7 +2529,7 @@ mod tests {
 
         let jam = judge_stops(&found(2000.0, 432.0, 3626.0, Some(1900.0)), travel);
         assert!(jam.iter().all(|c| c.verdict != Verdict::Fail), "{jam:?}");
-        let (v, said) = verdict(&jam, "the span over the nameplate's travel");
+        let (v, said) = verdict(&jam, "the span over the rated travel");
         assert_eq!(v, Verdict::NotJudged, "{said}");
         assert!(said.contains("counts/deg"), "{said}");
 

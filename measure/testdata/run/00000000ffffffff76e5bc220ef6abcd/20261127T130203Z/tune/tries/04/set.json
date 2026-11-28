@@ -4,7 +4,7 @@
  "inputs": {
   "board": {"file": "/bench/run/inputs/board.json", "sha1": "581e850bfb5c476e59c0853e33b4b086a2b45d1f"},
   "measured": {"file": "/bench/run/inputs/measured.json, speed_kp_verified 0.30679651978791384", "sha1": "7e33e66da1fb136bd2a68bb92f8877e36dcf3c05"},
-  "nameplate": {"file": "/bench/run/inputs/nameplate.json", "sha1": "7028920c03ee9ce80537e2c6ab370f10e4cfc628"},
+  "nameplate": {"file": "/bench/run/inputs/nameplate.json", "sha1": "71def6f6fe06a8a794b308fbd2303773c3e67b3b"},
   "policy": {"file": "/bench/run/inputs/policy.json", "sha1": "48955866fe9d008726a454b653067c6929920309"},
   "pos_table": {"file": "/bench/run/inputs/pos_lut.json", "sha1": "9886cf7262bf1a7605ef81159b915062ca646852"},
   "thermal": {"file": "/bench/run/inputs/thermal.json", "sha1": "6deecfbae8c86bad94d7646f342f7f0796f9b767"},

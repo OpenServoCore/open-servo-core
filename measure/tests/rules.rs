@@ -85,6 +85,11 @@ fn refused(set: &osc_measure::Set, field: &str) -> String {
 /// breakaway: the set of record holds its 0 with no source, and the rule
 /// holds it the same way.
 const HELD_OF_RECORD: &str = "fric_breakaway_counts";
+/// The soft limits of record were the policy's share of the stops' span
+/// inside each stop, 314 / 3560; the rules now centre the rated travel
+/// between the stops (`the_soft_window_is_the_rated_travel_centered_between_the_stops`).
+const SOFT_SINCE_RECORD: [(&str, i64); 2] =
+    [("pos_min_soft_counts", 126), ("pos_max_soft_counts", 3748)];
 /// Tuning parameters newer than the set of record: off unless the user
 /// sets them.
 const TUNING: [&str; 2] = ["pot_steady_counts_per_a", "pot_fast_counts_per_a"];
@@ -102,13 +107,17 @@ fn rules_reproduce_the_set_of_record() {
             assert_eq!(held(&set, name), "measured.breakaway_ma");
             continue;
         }
+        if let Some((_, now)) = SOFT_SINCE_RECORD.iter().find(|(f, _)| f == name) {
+            assert_eq!(bound(&set, name), *now, "{name}");
+            continue;
+        }
         match set.get(name) {
             Some(Outcome::Bound(e)) if e.value == want.value => equal += 1,
             other => wrong.push(format!("{name}: record {}, rules {other:?}", want.value)),
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(equal, 62);
+    assert_eq!(equal, 60);
     for name in TUNING {
         assert_eq!(bound(&set, name), 0);
     }
@@ -118,7 +127,11 @@ fn rules_reproduce_the_set_of_record() {
     let gate: BTreeMap<String, serde_json::Value> = load("testdata/mg90-d/config-main.json");
     let mut config = 0;
     for (name, v) in gate.iter().filter(|(n, _)| *n != "source") {
-        assert_eq!(Some(bound(&set, name)), v.as_i64(), "{name}");
+        let want = match SOFT_SINCE_RECORD.iter().find(|(f, _)| f == name) {
+            Some((_, now)) => Some(*now),
+            None => v.as_i64(),
+        };
+        assert_eq!(Some(bound(&set, name)), want, "{name}");
         config += 1;
     }
     assert_eq!(config, 39);
@@ -326,32 +339,61 @@ fn a_missing_input_holds_the_field_and_names_it() {
     assert!(refused(&build(&i), "v_kp_q88").contains("only lowers it"));
 }
 
-/// The soft limits are an application's: a margin share of 0, or none,
-/// leaves both at 0, off, whatever the stops; a share over 0 sits them
-/// that share of the span inside each stop, as the set of record.
+/// The record's stops, 82 / 3792 table counts at 20.1266 counts/deg: the
+/// rated 180 deg is 3622.8 counts centered on 1937, more than 1.0 deg inside
+/// each stop. A narrower soft travel narrows it about the same middle; a
+/// wider one that does not fit 1.0 deg inside each stop is clamped and
+/// said, as is one under the floor. No stops, no soft limits.
 #[test]
-fn no_soft_margin_leaves_the_soft_limits_off() {
-    for share in [None, Some(0.0)] {
-        let mut i = inputs();
-        i.policy.soft_margin_share = share;
-        let set = build(&i);
-        assert_eq!(bound(&set, "pos_min_soft_counts"), 0, "{share:?}");
-        assert_eq!(bound(&set, "pos_max_soft_counts"), 0, "{share:?}");
-        assert_eq!(bound(&set, "pos_min_phys_counts"), 82);
-        assert_eq!(bound(&set, "pos_max_phys_counts"), 3792);
-        i.measured.stops = None;
-        let set = build(&i);
-        assert_eq!(bound(&set, "pos_min_soft_counts"), 0, "no stops needed");
-        assert_eq!(bound(&set, "pos_max_soft_counts"), 0, "no stops needed");
-    }
-    let set = build(&inputs());
-    assert_eq!(bound(&set, "pos_min_soft_counts"), 314);
-    assert_eq!(bound(&set, "pos_max_soft_counts"), 3560);
+fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
+    let soft = |set: &osc_measure::Set| {
+        (
+            bound(set, "pos_min_soft_counts"),
+            bound(set, "pos_max_soft_counts"),
+        )
+    };
     let mut i = inputs();
-    i.policy.soft_margin_share = Some(0.125);
+    assert_eq!(i.policy.soft_travel_deg, None);
+    assert_eq!(i.nameplate.rated_travel_deg, Some(180.0));
     let set = build(&i);
-    assert_eq!(bound(&set, "pos_min_soft_counts"), 82 + 464);
-    assert_eq!(bound(&set, "pos_max_soft_counts"), 3792 - 464);
+    assert_eq!(soft(&set), (126, 3748));
+    assert!(set.clamps().is_empty(), "{:?}", set.clamps());
+    match set.get("pos_min_soft_counts") {
+        Some(Outcome::Bound(e)) => assert_eq!(
+            e.inputs,
+            [
+                "nameplate.rated_travel_deg",
+                "measured.stops",
+                "measured.table",
+                "nameplate.brushes",
+                "nameplate.rotor_segments",
+                "nameplate.gear_ratio"
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    i.policy.soft_travel_deg = Some(90.0);
+    let set = build(&i);
+    // 45 deg of 20.1266 counts each side of 1937
+    assert_eq!(soft(&set), (1031, 2843));
+    assert!(set.clamps().is_empty());
+
+    i.policy.soft_travel_deg = Some(185.0);
+    let set = build(&i);
+    assert_eq!(soft(&set), (102, 3772));
+    assert!(clamp(&set, "pos_min_soft_counts").contains("clamped"));
+    assert!(clamp(&set, "pos_max_soft_counts").contains("clamped"));
+
+    i.policy.soft_travel_deg = Some(0.5);
+    let set = build(&i);
+    assert_eq!(soft(&set), (1927, 1947));
+    assert!(clamp(&set, "pos_min_soft_counts").contains("floor"));
+
+    i.measured.stops = None;
+    let set = build(&i);
+    assert_eq!(held(&set, "pos_min_soft_counts"), "measured.stops");
+    assert_eq!(held(&set, "pos_max_soft_counts"), "measured.stops");
 }
 
 #[test]

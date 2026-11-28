@@ -814,8 +814,8 @@ mod tests {
         let (a, b) = (v1.nameplate.expect("v1"), v0.nameplate.expect("v0"));
         assert_eq!(a.name, "vorpal-mg90");
         assert_eq!(
-            (a.run_v, a.derate_speed, a.derate_other, a.travel_deg),
-            (b.run_v, b.derate_speed, b.derate_other, b.travel_deg)
+            (a.run_v, a.derate_speed, a.derate_other, a.rated_travel_deg),
+            (b.run_v, b.derate_speed, b.derate_other, b.rated_travel_deg)
         );
         let volts = |s: Option<osc_measure::nameplate::Stall>| s.map(|s| (s.at_v, s.current_a));
         assert_eq!(
@@ -849,10 +849,26 @@ mod tests {
     #[test]
     fn rules_on_the_record_inputs_checks_clean_against_the_set_of_record() {
         let dir = scratch("rules");
+        // the record's inputs, its soft pair 314 / 3560 stated as the soft
+        // travel centered between its stops, where the rated 180 deg would
+        // set 126 / 3748
+        let inputs = dir.join("inputs");
+        std::fs::create_dir_all(&inputs).expect("mkdir");
+        for f in std::fs::read_dir(testdata("")).expect("testdata") {
+            let f = f.expect("entry").path();
+            if f.is_file() {
+                std::fs::copy(&f, inputs.join(f.file_name().expect("name"))).expect("copy");
+            }
+        }
+        let mut policy: serde_json::Value =
+            serde_json::from_slice(&files::read(&inputs.join("policy.json")).expect("read"))
+                .expect("json");
+        policy["soft_travel_deg"] = ((3560.0 - 314.0) / 20.126631678008682).into();
+        std::fs::write(inputs.join("policy.json"), policy.to_string()).expect("policy");
         let out = dir.join("set.json");
-        rules(&testdata(""), None, None, &out).expect("rules");
+        rules(&inputs, None, None, &out).expect("rules");
         assert!(
-            rules(&testdata(""), None, None, &out).is_err(),
+            rules(&inputs, None, None, &out).is_err(),
             "never writes over a set"
         );
 
@@ -1419,7 +1435,9 @@ mod tests {
         let mut v: serde_json::Value =
             serde_json::from_slice(&files::read(&testdata("nameplate.json")).expect("read"))
                 .expect("json");
-        v.as_object_mut().expect("object").remove("travel_deg");
+        v.as_object_mut()
+            .expect("object")
+            .remove("rated_travel_deg");
         let p = dir.join("nameplate.json");
         std::fs::write(&p, serde_json::to_vec(&v).expect("json")).expect("write");
         let e = steps::StepInputs::load(Some(&p), None)
@@ -1427,7 +1445,7 @@ mod tests {
             .expect("refused");
         let e = format!("{e:#}");
         assert!(
-            e.contains("nameplate.json") && e.contains("no usable travel_deg"),
+            e.contains("nameplate.json") && e.contains("no usable rated_travel_deg"),
             "{e}"
         );
 

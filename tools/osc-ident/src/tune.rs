@@ -871,8 +871,11 @@ mod tests {
         let (lines, accepted) = run_scripted_on(&mut c, &inputs, &out, 6, script).expect("runs");
         let text = lines.join("\n");
         assert!(accepted, "{text}");
+        // the nominal scale, the stops' span over the rated 180 deg, is the
+        // record's within 0.1 %, so the stall speed in counts stays put
         let installed: Vec<&str> = [
-            "stall_omega_max_cps",
+            "pos_min_soft_counts",
+            "pos_max_soft_counts",
             "yield_current_counts",
             "rail_fold_q8",
         ]
@@ -881,9 +884,10 @@ mod tests {
         .collect();
         assert_eq!(
             installed.len(),
-            3,
+            4,
             "the install's lines name each move: {text}"
         );
+        assert!(!text.contains("stall_omega_max_cps: "), "{text}");
         let save = format!(
             "to store it: osc-ident --id 1 save --set {}",
             out.join("set.json").display()

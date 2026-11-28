@@ -258,7 +258,8 @@ pub fn resolve(
         gear_class: profile.gear_class,
         gear_ratio: profile.gear_ratio,
         count_rises_ccw: profile.count_rises_ccw,
-        travel_deg: profile.travel_deg,
+        rated_travel_deg: profile.rated_travel_deg,
+        v0_travel_deg: None,
         operating_v: profile.operating_v,
         no_load: profile.no_load.clone(),
         stall: profile
@@ -553,14 +554,33 @@ pub fn resolve(
         }
         None => {}
     }
-    out.soft_margin_share = m.soft_margin_share;
-    l.number(
-        "motion.soft_margin_share",
-        Form::Stated,
-        m.soft_margin_share,
-        "of the stops' span",
-        "policy.soft_margin_share",
-    );
+    let centered = "centered between the stops; the run narrows it where the stops are closer than it and 1 deg inside each";
+    match m.soft_travel_deg {
+        Some(deg) => {
+            out.soft_travel_deg = Some(deg);
+            l.number(
+                "motion.soft_travel_deg",
+                Form::Stated,
+                Some(deg),
+                "deg",
+                "policy.soft_travel_deg",
+            );
+            l.note(centered.into());
+        }
+        None => {
+            // left unset so the rules name the profile's value as what binds
+            l.number(
+                "motion.soft_travel_deg",
+                Form::Profile,
+                profile.rated_travel_deg,
+                "deg",
+                "policy.soft_travel_deg",
+            );
+            l.note(format!(
+                "the profile's rated_travel_deg, the policy stating none; {centered}"
+            ));
+        }
+    }
     out.angle_cw_stop_deg = m.angle_cw_stop_deg;
     l.number(
         "motion.angle_cw_stop_deg",

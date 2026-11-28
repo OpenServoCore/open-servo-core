@@ -1,13 +1,13 @@
 {
   "schema": "osc.servo-profile/1",
   "key": "vorpal-mg90",
-  "revision": 2,
+  "revision": 3,
   "model": {"maker": "Vorpal Robotics", "name": "MG90 Micro Servo", "variant": ""},
   "gear_class": "metal",
   "gear_ratio": 308.0533,
   "brushes": 2,
   "rotor_segments": 3,
-  "travel_deg": 184.3328808989794,
+  "rated_travel_deg": 180.0,
   "count_rises_ccw": true,
   "operating_v": {"min": 4.8, "max": 6.6},
   "no_load": [{"at_v": 4.8, "seconds": 0.1, "per_deg": 60}, {"at_v": 6.0, "seconds": 0.08, "per_deg": 60}],
@@ -21,7 +21,7 @@
       "gear_class": {"how": "file", "file": "notebooks/oscnb/servos.py", "sha1": "b85c244d10e299ba1eba9c6a6ebc96aba12cf3d3"},
       "output_stopper": {"how": "file", "file": "notebooks/oscnb/servos.py", "key": "SERVOS[\"mg90-d\"].output_stopper", "sha1": "b85c244d10e299ba1eba9c6a6ebc96aba12cf3d3"},
       "count_rises_ccw": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "key": "target.theta_at_stops_deg", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"},
-      "travel_deg": {"how": "file", "file": "notebooks/stages/5-closed-loop/calibration/mg90-d__dev-v006-2A-D.pos_lut.json", "key": "target.theta_at_stops_deg, the high less the low", "sha1": "904c4575899f8215f5daec1d2bdd227a1ee9c4c3"},
+      "rated_travel_deg": {"how": "user", "note": "the MG90 is sold as a 180 deg servo; neither the Vorpal page nor the TowerPro MG90S record states a travel"},
       "thermal": {"how": "file", "file": "notebooks/stages/4-estimators/winding-temperature/results/mg90-d__dev-v006-2A-D.json", "key": "one_node_tau_s, joined_high_fast_gain_c_per_w, family_slow_tau_s, joined_high_fast_gain_c_per_w.slow_gain_c_per_w x policy winding_slow_basis_ratio (policy.json sha1 c6a292c59dd228b0f03cac972e6978213aa6f117)", "sha1": "97572d64c5fd200d635e678a51c50794db66cee6", "note": "the high reading; NTC in room air, board D; the slow node is the family's, from another MG90"},
       "brushes_and_rotor_segments": {"how": "counted", "file": "notebooks/oscnb/motors.py", "key": "MOTORS[\"mg90-d\"].brushes and .slots", "sha1": "055dbe4c7bc60bb5b779089297354bfb00ca7e96"}
     }

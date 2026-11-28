@@ -858,7 +858,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result<Be
     let probe = FromProbe::of(i.probe)?;
     let stops = FromStops::of(i.stops)?;
     let events_per_rev = np.events_per_rev().map_err(Refused)?;
-    let travel_deg = np.travel_deg.filter(|t| t.is_finite() && *t > 0.0);
+    let travel_deg = np.rated_travel_deg.filter(|t| t.is_finite() && *t > 0.0);
     let state = state::read(rig.c, rig.id, rig.d).await?;
     if state.torque {
         return Err(Refused(
@@ -894,7 +894,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result<Be
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let np_travel = travel_deg.ok_or_else(|| {
-        Refused("the nameplate has no usable travel_deg: the go-to's speed and the table's fallback scale need it".into())
+        Refused("the nameplate has no usable rated_travel_deg: the go-to's speed and the table's fallback scale need it".into())
     })?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);
@@ -2682,7 +2682,7 @@ fn read_table_with(
 }
 
 pub const SCALE_RIPPLE: &str = "the ripple: the stops' span over the output's degrees between them, the table's cycles from stop to stop x 360 over the nameplate's brushes x rotor_segments x gear_ratio";
-pub const SCALE_TRAVEL: &str = "the stops' span over the nameplate's travel_deg";
+pub const SCALE_TRAVEL: &str = "the stops' span over the profile's rated_travel_deg";
 
 /// The slow passes' driven rows to the wide-code slots, then the table on
 /// them: the finder on the rows more than [`NEAR_STOP_COUNTS`] inside both
@@ -4188,7 +4188,7 @@ mod tests {
         assert!((cpd / truth - 1.0).abs() < 0.003, "{cpd} against {truth}");
         assert_eq!(
             n(&rep["scales"]["span_over_travel_counts_per_deg"]),
-            (n(&raw["raw_max"]) - n(&raw["raw_min"])) / np.travel_deg.expect("travel")
+            (n(&raw["raw_max"]) - n(&raw["raw_min"])) / np.rated_travel_deg.expect("travel")
         );
         assert!(n(&res["table"]["fit"]["residual_counts_rms"]) <= RESIDUAL_MAX_COUNTS);
         let alone = rep["one_fast_pass_alone"].as_array().expect("stretches");
@@ -5300,7 +5300,7 @@ mod tests {
             raw_max: n(&res["stops_used"]["raw_max"]) as u16,
             events_per_rev: np.events_per_rev().expect("commutator counts"),
             gear_ratio: np.gear_ratio,
-            travel_deg: np.travel_deg.expect("travel"),
+            travel_deg: np.rated_travel_deg.expect("travel"),
         };
         for from_fast in [false, true] {
             let j = judge_with(&rungs, &c, from_fast);

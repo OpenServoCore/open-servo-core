@@ -282,7 +282,7 @@ fn a_step_missing_or_not_accepted_is_refused_naming_the_step() {
     assert!(e.0.contains("not the probe step's"), "{e}");
 
     let mut np = nameplate();
-    np.travel_deg = None;
+    np.rated_travel_deg = None;
     let e = gather::gather(&run(), &np).expect_err("refused");
     assert!(e.0.contains("travel_deg"), "{e}");
 }
@@ -338,7 +338,7 @@ fn the_stops_round_inward() {
     let g = gather::gather(&r, &nameplate()).expect("gathers");
     assert_eq!(g.measured["stops"]["raw_min"], 83);
     assert_eq!(g.measured["stops"]["raw_max"], 3791);
-    let travel = nameplate().travel_deg.unwrap();
+    let travel = nameplate().rated_travel_deg.unwrap();
     let cpd = g.measured["table"]["counts_per_deg"].as_f64().unwrap();
     assert_eq!(cpd, (3791.0 - 83.0) / travel);
 
@@ -725,12 +725,12 @@ fn the_cross_checks_equal_a_hand_computation() {
     let c = &g.cross_checks;
     assert_eq!(
         c.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["travel", "free_speed", "stall_current"]
+        ["travel", "pacing", "free_speed", "stall_current"]
     );
     assert!(!gather::render(c).contains("verdict"), "{c}");
 
     let travel = (3729.0 - 107.0) / 19.435025359344024;
-    let stated = 184.3328808989794;
+    let stated = 180.0;
     let t = &c["travel"];
     assert!(close(num(&t["run"]["value"]), travel), "{t}");
     assert_eq!(t["run"]["unit"], "deg");
@@ -744,6 +744,26 @@ fn the_cross_checks_equal_a_hand_computation() {
         num(&t["difference_pct"]),
         100.0 * (travel - stated) / stated
     ));
+
+    // the steps before the table paced at the converter's counts over the
+    // rated travel: over the table's scale, so conservative
+    let priced = 4096.0 / 180.0;
+    let p = &c["pacing"];
+    assert_eq!(num(&p["stated"]["value"]), priced);
+    assert_eq!(p["stated"]["unit"], "counts/deg");
+    assert!(close(num(&p["run"]["value"]), 19.435025359344024), "{p}");
+    assert_eq!(p["run"]["source"]["file"], "results/table.json");
+    assert!(close(
+        num(&p["difference_pct"]),
+        100.0 * (19.435025359344024 - priced) / priced
+    ));
+    assert!(
+        g.lines.contains(
+            &"pacing priced 22.76 counts/deg; the table reads 19.44: conservative".into()
+        ),
+        "{:?}",
+        g.lines
+    );
 
     let (ke, ke_sd, ke_lo, ke_hi) = (
         0.0011590992521478365,
@@ -805,19 +825,24 @@ fn the_cross_checks_equal_a_hand_computation() {
         .iter()
         .filter(|l| l.starts_with("cross-check "))
         .collect();
-    assert_eq!(said.len(), 5, "{said:?}");
+    assert_eq!(said.len(), 6, "{said:?}");
     assert_eq!(
         said[0],
         &format!(
-            "cross-check travel: run 186.3646 deg n 1; profile 184.3329 deg; {:+.2} %",
+            "cross-check travel: run 186.3646 deg n 1; profile 180.0000 deg; {:+.2} %",
             100.0 * (travel - stated) / stated
         )
     );
-    assert!(said[1].starts_with(
+    assert!(
+        said[1].starts_with("cross-check pacing: run 19.4350 counts/deg"),
+        "{}",
+        said[1]
+    );
+    assert!(said[2].starts_with(
         "cross-check free speed at 4.8 V, V / Ke (the row the run voltage binds): run 770.2246 deg/s +/- 4.8259, n 12; profile 600.0000 deg/s; +28.37 %"
     ));
     assert_eq!(
-        said[3],
+        said[4],
         "cross-check stall current at 4.8 V, V / R (the row the run voltage binds): run 1.1462 A +/- 0.0740, n 20; profile states none"
     );
 }
@@ -840,7 +865,7 @@ fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
     assert_eq!(row["stated"]["value"], 0.9);
     assert!((row["difference_pct"].as_f64().unwrap() - 100.0 * (a - 0.9) / 0.9).abs() < 1e-9);
     assert!(c["travel"]["run"].is_null() && c["travel"]["difference_pct"].is_null());
-    assert_eq!(c["travel"]["stated"]["value"], np.travel_deg.unwrap());
+    assert_eq!(c["travel"]["stated"]["value"], np.rated_travel_deg.unwrap());
     for row in c["free_speed"].as_array().unwrap() {
         assert!(
             row["run"].is_null() && row["difference_pct"].is_null(),
@@ -850,7 +875,9 @@ fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
     }
     let text = g.lines.join("\n");
     for want in [
-        "cross-check travel: run none, the run holds no results/table.json; profile 184.3329 deg",
+        "cross-check travel: run none, the run holds no results/table.json; profile 180.0000 deg",
+        "cross-check pacing: run none, the run holds no results/table.json; profile 22.7556 counts/deg",
+        "pacing priced 22.76 counts/deg; the run holds no results/table.json to read it against",
         "cross-check free speed at 6 V, V / Ke: run none, the run holds no results/spins.json; profile 750.0000 deg/s",
         "cross-check stall current at 4.8 V, V / R (the row the run voltage binds): run 1.1462 A +/- 0.0740, n 20; profile 0.9000 A; +27.35 %",
     ] {
