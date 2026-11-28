@@ -449,6 +449,22 @@ mod tests {
                 lines: vec![last.clone()]
             })
         );
+        let mut step = "";
+        let mut units = Vec::new();
+        for p in &told {
+            match p {
+                Progress::Started { step: s } => step = s,
+                Progress::Ended { .. } => step = "",
+                Progress::Unit {
+                    step: s, at, of, ..
+                } => {
+                    assert_eq!(*s, step, "a unit between its step's start and end");
+                    units.push((*s, *at, *of));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(units, [("rest", 1, 2), ("rest", 2, 2), ("probe", 1, 17)]);
     }
 
     /// A page has no command line: the run's lines name no command of the

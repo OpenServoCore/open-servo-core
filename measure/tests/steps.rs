@@ -200,6 +200,7 @@ fn run(
         sink,
         stop,
         clock: &clock,
+        tell: &osc_measure::steps::untold,
     };
     block_on(rest::rest(&mut rig, Some(&np)))
 }
@@ -586,6 +587,7 @@ mod probe {
             sink,
             stop,
             clock: &clock,
+            tell: &osc_measure::steps::untold,
         };
         block_on(probe::probe(
             &mut rig,

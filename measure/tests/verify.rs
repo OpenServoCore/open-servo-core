@@ -391,6 +391,7 @@ fn run_with(
         sink,
         stop,
         clock: &clock,
+        tell: &osc_measure::steps::untold,
     };
     block_on(verify::verify(
         &mut rig,

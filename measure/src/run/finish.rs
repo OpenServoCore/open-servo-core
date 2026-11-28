@@ -417,6 +417,7 @@ where
                 sink: &mut tsink,
                 stop,
                 clock,
+                tell: &super::teller(feed, FINAL),
             };
             check(
                 &mut rig,
@@ -649,6 +650,7 @@ where
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(feed, cruise::STEP),
         };
         run_cruise(
             &mut rig,

@@ -110,6 +110,12 @@ pub struct Shot {
     pub in_fit: bool,
 }
 
+/// The units the step tells: each of part A's `shots` bursts, then part B
+/// as one, its pulses not counted.
+pub fn units(shots: usize) -> u32 {
+    shots as u32 + 1
+}
+
 /// Part A's bursts at `stated_v` on `rail_v`, [`BURSTS_A_GROUP`] of each
 /// in turn: +low, +high, -high, -low.
 pub fn shots(stated_v: f64, rail_v: f64) -> Vec<Shot> {
@@ -1000,8 +1006,14 @@ async fn body<P: Pipe>(
         BURST_S,
         GAP_S
     ));
+    let of = units(b.shots.len());
     for s in b.shots.clone() {
         interrupted(rig.stop)?;
+        (rig.tell)(super::Unit {
+            at: s.k as u32 + 1,
+            of,
+            what: "burst",
+        });
         let r = shot(rig, b, &s).await?;
         found.reads.push(r);
         rig.c.pause(Duration::from_secs_f64(GAP_S)).await;
@@ -1119,6 +1131,11 @@ async fn body<P: Pipe>(
         counts_per_a: b.counts_per_a,
     };
     let mut ladder = Ladder::new(cfg);
+    (rig.tell)(super::Unit {
+        at: of,
+        of,
+        what: "pulses",
+    });
     let on = OnServo {
         stream: b.stream,
         deadman_ticks: b.deadman_ticks,
@@ -1497,6 +1514,7 @@ mod tests {
                 sink: &mut sink,
                 stop: &stop,
                 clock: &clock,
+                tell: &crate::steps::untold,
             };
             block_on(correct(&mut rig, &mut ledger, stored, &mut lines)).expect("corrects")
         };

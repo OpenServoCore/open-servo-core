@@ -436,6 +436,7 @@ pub async fn step_rest<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, rest::STEP),
         };
         rest::rest(&mut rig, i.nameplate.as_ref()).await
     };
@@ -496,6 +497,7 @@ pub async fn step_probe<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, rest::STEP),
         };
         rest::rest(&mut rig, Some(np)).await
     };
@@ -523,6 +525,7 @@ pub async fn step_probe<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
+                tell: &super::teller(host.feed, probe::STEP),
             };
             probe::probe(
                 &mut rig,
@@ -636,6 +639,7 @@ pub async fn step_verify<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, verify::STEP),
         };
         let holes = Holes::none("a step on its own reads no run's table");
         verify::verify(
@@ -710,6 +714,7 @@ pub async fn step_cruise<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, cruise::STEP),
         };
         cruise::cruise(
             &mut rig,
@@ -894,6 +899,7 @@ async fn chain<P: Pipe>(
             sink: &mut sink,
             stop,
             clock,
+            tell: &super::teller(host.feed, rest::STEP),
         };
         rest::rest(&mut rig, Some(np)).await
     };
@@ -945,6 +951,7 @@ async fn chain<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
+                tell: &super::teller(host.feed, probe::STEP),
             };
             probe::probe(
                 &mut rig,
@@ -999,6 +1006,7 @@ async fn chain<P: Pipe>(
                 sink: &mut sink,
                 stop,
                 clock,
+                tell: &super::teller(host.feed, stops::STEP),
             };
             stops::stops(
                 &mut rig,
@@ -1057,6 +1065,7 @@ async fn chain<P: Pipe>(
                     sink: &mut sink,
                     stop,
                     clock,
+                    tell: &super::teller(host.feed, table::STEP),
                 };
                 table::table(
                     &mut rig,
@@ -1118,6 +1127,7 @@ async fn chain<P: Pipe>(
                     sink: &mut sink,
                     stop,
                     clock,
+                    tell: &super::teller(host.feed, window::STEP),
                 };
                 window::window(
                     &mut rig,
@@ -1179,6 +1189,7 @@ async fn chain<P: Pipe>(
                     sink: &mut sink,
                     stop,
                     clock,
+                    tell: &super::teller(host.feed, spin::STEP),
                 };
                 spin::spins(
                     &mut rig,

@@ -72,6 +72,11 @@ pub const FLOOR_TIMES: u32 = 2;
 pub const EACH: usize = 4;
 pub const SET: usize = 2 * NOTEBOOK_Q15.len() * EACH;
 pub const SETS_MAX: usize = 2;
+
+/// The units the step tells: [`SET`] onsets a set, `sets` sets taken.
+pub fn units(sets: usize) -> u32 {
+    (SET * sets) as u32
+}
 pub const ONSET_S: f64 = 0.050;
 pub const COAST_S: f64 = 0.500;
 /// The longest wait past [`COAST_S`] for a shaft that is not yet still.
@@ -772,6 +777,11 @@ async fn take_set<P: Pipe>(
             if !b.band.holds(pos) {
                 return Err(Halt::Refused(b.band.drifted(pos, p.n - 1)));
             }
+            (rig.tell)(super::Unit {
+                at: p.n as u32,
+                of: units(set + 1).max(p.n as u32),
+                what: "onset",
+            });
             let r = onset_rung(b, format!("onset {}", p.n), p.duty_q15, pos);
             let price = b.env.admit(&r)?;
             inset(&r, &price, b.stops.lo, b.stops.hi).map_err(Halt::Refused)?;
@@ -1384,6 +1394,7 @@ mod tests {
         c: Client<Spy>,
         sink: MemSink,
         before: crate::state::State,
+        told: Vec<crate::steps::Unit>,
     }
 
     /// The step on the simulated servo resting at `pos`, which runs no
@@ -1403,6 +1414,7 @@ mod tests {
             stops_json(stops),
         );
         let clock = testkit::clock();
+        let told = crate::steps::testkit::Told::default();
         let mut sink = MemSink::default();
         let out = {
             let mut rig = Rig {
@@ -1412,6 +1424,7 @@ mod tests {
                 sink: &mut sink,
                 stop,
                 clock: &clock,
+                tell: &told.tell(),
             };
             block_on(window(
                 &mut rig,
@@ -1431,6 +1444,7 @@ mod tests {
             c,
             sink,
             before,
+            told: told.take(),
         }
     }
 
@@ -1471,6 +1485,8 @@ mod tests {
             "{:?}",
             e.why
         );
+        testkit::told_in_order(&r.told, &["onset"]);
+        assert!(r.told.iter().all(|u| u.of == units(1)), "{:?}", r.told);
         let d = descriptor();
         let log = r.log.borrow().clone();
         let at = |s: &Sent| log.iter().position(|x| x == s).expect("sent");

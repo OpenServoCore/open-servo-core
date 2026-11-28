@@ -1833,6 +1833,7 @@ mod tests {
                 sink: &mut sink,
                 stop,
                 clock: &clock,
+                tell: &crate::steps::untold,
             };
             let ran = block_on(body(
                 &mut rig,
