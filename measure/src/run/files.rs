@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use osc_ident_inputs::migrate::{ProfileIn, slug};
+use osc_ident_inputs::migrate::{PolicyIn, ProfileIn, slug};
 use osc_ident_inputs::profile::{FieldSource, HeatModel};
 use osc_ident_inputs::{BoardFacts, Resolved, read as file_of, resolve, upgrade_with};
 use serde::de::DeserializeOwned;
@@ -181,10 +181,16 @@ pub fn inputs_of(
             let key = path
                 .file_stem()
                 .map_or("policy".into(), |s| slug(&s.to_string_lossy()));
-            Some(
-                file_of::policy(utf8(path, bytes)?, &key)
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
-            )
+            let q = file_of::policy(utf8(path, bytes)?, &key)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            if let (ProfileIn::V1(_), PolicyIn::V0 { .. }) = (&p, &q) {
+                bail!(
+                    "{} is a version 1 profile and {} a version 0 policy: a version 1 profile takes a version 1 policy, such as policy-of-record.json; to use a version 0 pair, pass the version 0 nameplate",
+                    profile.display(),
+                    path.display()
+                );
+            }
+            Some(q)
         }
         None if matches!(p, ProfileIn::V1(_)) => bail!(
             "{named}: a version 1 profile holds no run voltage or derates, which are the tuning policy's: name the policy with --policy"

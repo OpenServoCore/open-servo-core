@@ -190,6 +190,48 @@ mod tests {
         );
     }
 
+    /// A version 0 policy beside a version 1 profile is refused naming both
+    /// files and the pairs that load: a version 0 policy holds no run
+    /// voltage, which only a version 0 nameplate carries to it.
+    #[test]
+    fn a_version_0_policy_beside_a_version_1_profile_is_refused_plainly() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../measure/testdata/mg90-d");
+        let profile = dir.join("profile.json");
+        let policy = dir.join("policy.json");
+        let e = inputs_of(
+            &profile,
+            &read(&profile).expect("read"),
+            Some((&policy, read(&policy).expect("read"))),
+            None,
+        )
+        .err()
+        .expect("refused");
+        assert_eq!(
+            format!("{e:#}"),
+            format!(
+                "{} is a version 1 profile and {} a version 0 policy: a version 1 profile takes a version 1 policy, such as policy-of-record.json; to use a version 0 pair, pass the version 0 nameplate",
+                profile.display(),
+                policy.display()
+            )
+        );
+        let record = dir.join("policy-of-record.json");
+        inputs_of(
+            &profile,
+            &read(&profile).expect("read"),
+            Some((&record, read(&record).expect("read"))),
+            None,
+        )
+        .expect("the version 1 pair loads");
+        let nameplate = dir.join("nameplate.json");
+        inputs_of(
+            &nameplate,
+            &read(&nameplate).expect("read"),
+            Some((&policy, read(&policy).expect("read"))),
+            None,
+        )
+        .expect("the version 0 pair loads");
+    }
+
     /// The check's pot holes are those of the table step's result the
     /// inputs name as their table's source, read again: none, said, where
     /// the inputs' table is no table step's result; refused where that
