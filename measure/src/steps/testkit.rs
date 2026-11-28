@@ -271,6 +271,12 @@ pub struct Motor {
     /// under a duty share, none at or over it.
     pub ripple2: (f64, f64),
     pub pwm_arr: f64,
+    /// A stretch the train is stiffer over driven down: below this
+    /// straight count the friction holds the shaft still under this duty
+    /// share, and held there under drive the shunt reads the stall's rise,
+    /// as a locked rotor draws its stall current wherever it locks (the
+    /// bench servo's mesh tight spot, about 27 cycles before its low stop).
+    pub drag: Option<(f64, f64)>,
 }
 
 /// Rows of the shaft's old state ahead of a committed duty: the burst
@@ -287,6 +293,25 @@ impl Motor {
     pub fn pot(&self, x: f64) -> f64 {
         let (mid, w, extra) = self.bend;
         x + extra / 2.0 * (1.0 + ((x - mid) / w).tanh())
+    }
+
+    /// The duty share the friction holds the shaft still under at `x`
+    /// driven at `q`.
+    fn dead_at(&self, x: f64, q: i16) -> f64 {
+        match self.drag {
+            Some((below, dead)) if q < 0 && x < below => dead,
+            _ => self.dead_duty,
+        }
+    }
+
+    /// The drag holds the shaft at `x`, speed `v`, under `q`.
+    fn held(&self, x: f64, q: i16, v: f64) -> bool {
+        let (lo, _) = self.stops;
+        self.drag.is_some()
+            && q != 0
+            && x > lo
+            && v.abs() < 1.0
+            && (q as f64 / 32768.0).abs() <= self.dead_at(x, q)
     }
 
     /// The code the converter reads at pot reading `pot`.
@@ -365,7 +390,8 @@ impl Motor {
                 q = 0;
             }
             let d = q as f64 / 32768.0;
-            let target = d.signum() * self.cps_full * (d.abs() - self.dead_duty).max(0.0);
+            let dead = self.dead_at(x, q);
+            let target = d.signum() * self.cps_full * (d.abs() - dead).max(0.0);
             let tau = if q != 0 {
                 self.rise_tau_s
             } else {
@@ -374,7 +400,8 @@ impl Motor {
             v += (target - v) * dt / tau;
             x += v * dt;
             let (lo, hi) = self.stops;
-            let pressed = (x <= lo && target <= 0.0) || (x >= hi && target >= 0.0);
+            let pressed =
+                (x <= lo && target <= 0.0) || (x >= hi && target >= 0.0) || self.held(x, q, v);
             if x <= lo || x >= hi {
                 x = x.clamp(lo, hi);
                 v = 0.0;
@@ -387,7 +414,7 @@ impl Motor {
         }
         let (lo, hi) = self.stops;
         let target = q.signum() as f64;
-        let held = (x <= lo && target <= 0.0) || (x >= hi && target >= 0.0);
+        let held = (x <= lo && target <= 0.0) || (x >= hi && target >= 0.0) || self.held(x, q, 0.0);
         for _ in 0..HOLD_ROWS {
             rows.push(self.sample(x, q, rows.len(), held));
             states.push((x, 0.0));

@@ -15,7 +15,7 @@ use osc_measure::steps::table::{
     RungKind, RungRead, RungRows, RungSegment, STOP_RUNGS_MAX, Schedule, Speeds, after,
     after_stop_rung, another_trip, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows,
     hole_reads, pass_reach, plan_rung, plan_stop_rung, reach, rows_a_code, rung_holes, stamp_ticks,
-    still_at, still_window_s, thin_carries,
+    still_at, still_window_s, stop_q15, thin_carries,
 };
 use serde_json::json;
 
@@ -118,7 +118,7 @@ fn stops(legs: serde_json::Value) -> serde_json::Value {
     json!({
         "verdict": "accepted",
         "stops": {"low": {"median_counts": 108.5}, "high": {"median_counts": 3729.25}, "legs": legs},
-        "drives": {"approach_q15": 4000},
+        "drives": {"approach_q15": 4000, "step_q15": 1329, "ceiling_q15": 8046},
     })
 }
 
@@ -132,7 +132,10 @@ fn the_stops_result_gives_the_stops_the_duty_and_the_approach_speeds() {
         {"n": 3, "kind": "approach", "toward": "high", "from_counts": 260.0, "to_counts": 3730.0, "secs": 5.0},
     ]);
     let s = FromStops::of(&stops(legs)).expect("reads");
-    assert_eq!((s.lo, s.hi, s.approach_q15), (108.5, 3729.25, 4000));
+    assert_eq!(
+        (s.lo, s.hi, s.approach_q15, s.step_q15, s.ceiling_q15),
+        (108.5, 3729.25, 4000, 1329, 8046)
+    );
     assert_eq!(s.legs.len(), 2);
     assert_eq!((s.legs[0].dir, s.legs[0].speed_cps()), (-1, 946.0));
     assert_eq!((s.legs[1].dir, s.legs[1].speed_cps()), (1, 694.0));
@@ -153,6 +156,36 @@ fn the_stops_result_gives_the_stops_the_duty_and_the_approach_speeds() {
     refused["verdict"] = json!("refused");
     let why = FromStops::of(&refused).expect_err("refused").0;
     assert!(why.contains("accepted stops step"), "{why}");
+    let mut no_step = stops(legs_both());
+    no_step["drives"]
+        .as_object_mut()
+        .expect("drives")
+        .remove("step_q15");
+    let why = FromStops::of(&no_step).expect_err("no step").0;
+    assert!(why.contains("drives.step_q15"), "{why}");
+}
+
+fn legs_both() -> serde_json::Value {
+    json!([
+        {"n": 1, "kind": "approach", "toward": "low", "from_counts": 2000.0, "to_counts": 108.0, "secs": 2.0},
+        {"n": 3, "kind": "approach", "toward": "high", "from_counts": 260.0, "to_counts": 3730.0, "secs": 5.0},
+    ])
+}
+
+/// The stop rungs' duty on the bench runs of record, Q15 from each stops
+/// result: where the sign was proven low the approach sits at the 0.6 x
+/// ceiling floor and the stop rungs run at 0.75 x the ceiling (0.697 V to
+/// 0.871 V, 0.683 V to 0.852 V); where it was proven a step higher the
+/// one-step cap holds (6066 + 1332 over 0.75 x 8585); never under the
+/// approach, never over the ceiling.
+#[test]
+fn the_stop_rungs_drive_at_three_quarters_of_the_ceiling_at_most_a_step_over_the_approach() {
+    assert_eq!(stop_q15(4827, 1329, 8046), 6034);
+    assert_eq!(stop_q15(4726, 1329, 7865), 5898);
+    assert_eq!(stop_q15(6066, 1332, 8585), 6438);
+    assert_eq!(stop_q15(6066, 100, 8585), 6166);
+    assert_eq!(stop_q15(7000, 1329, 8046), 7000);
+    assert_eq!(stop_q15(8046, 1329, 8046), 8046);
 }
 
 /// After a rung: one that did not turn, one past a guard and one past

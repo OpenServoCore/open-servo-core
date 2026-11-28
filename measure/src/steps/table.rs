@@ -217,7 +217,35 @@ pub struct FromStops {
     pub lo: f64,
     pub hi: f64,
     pub approach_q15: i16,
+    /// The probe's ladder step and ceiling, Q15 on the stops step's rail.
+    pub step_q15: i16,
+    pub ceiling_q15: i16,
     pub legs: Vec<ApproachLeg>,
+}
+
+/// The share of the probe's ceiling the stop rungs drive at
+/// ([`stop_q15`]). The ceiling is the volts whose blocked current is half
+/// the stop-hold ceiling at the pricing R, so a share of it holds the
+/// stall torque, not the volts, as R rises with the winding's heat.
+pub const STOP_SHARE: f64 = 0.75;
+
+/// The stop rungs' duty: the approach raised to [`STOP_SHARE`] of the
+/// ceiling, at most one ladder step over the approach, never over the
+/// ceiling. The approach is otherwise never raised toward a stop, and the
+/// free rungs, the stops step and every go-to keep it; the stop rungs
+/// alone depart from it, since at the 0.6 x ceiling floor the bench
+/// servo's stop rungs locked at the stiff stretch of its train 27 cycles
+/// short of the low stop, and two of them, read as the stop, laid a
+/// travel 5 deg short, where at 0.71 to 0.73 x the ceiling every first
+/// low stop rung met the stop. The one-step cap keeps a stop rung under
+/// twice the approach's speed, so its free stretch still reads a contact
+/// before the cut.
+pub fn stop_q15(approach_q15: i16, step_q15: i16, ceiling_q15: i16) -> i16 {
+    let share = (STOP_SHARE * ceiling_q15 as f64).floor() as i16;
+    share
+        .min(approach_q15.saturating_add(step_q15))
+        .max(approach_q15)
+        .min(ceiling_q15)
 }
 
 impl FromStops {
@@ -240,6 +268,14 @@ impl FromStops {
             .and_then(|q| i16::try_from(q).ok())
             .filter(|q| *q > 0)
             .ok_or_else(|| Refused("the stops result holds no drives.approach_q15".into()))?;
+        let q15 = |name: &str| {
+            v["drives"][name]
+                .as_i64()
+                .and_then(|q| i16::try_from(q).ok())
+                .filter(|q| *q > 0)
+                .ok_or_else(|| Refused(format!("the stops result holds no drives.{name}")))
+        };
+        let (step_q15, ceiling_q15) = (q15("step_q15")?, q15("ceiling_q15")?);
         let legs = v["stops"]["legs"]
             .as_array()
             .map(|a| {
@@ -280,6 +316,8 @@ impl FromStops {
             lo,
             hi,
             approach_q15,
+            step_q15,
+            ceiling_q15,
             legs,
         })
     }
@@ -790,6 +828,7 @@ struct Before {
     stops: FromStops,
     band: Band,
     approach_q15: i16,
+    stop_q15: i16,
     fast_q15: i16,
     fast_predicted_cps: f64,
     window_ticks: u32,
@@ -998,6 +1037,7 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &TableInputs<'_>) -> Result<Be
         stored,
         probe,
         approach_q15: stops.approach_q15,
+        stop_q15: stop_q15(stops.approach_q15, stops.step_q15, stops.ceiling_q15),
         fast_q15: fast_q15(speed.at_v, rail_v),
         fast_predicted_cps: fast_predicted_cps(
             speed.per_deg / speed.seconds * ADC_COUNTS / np_travel,
@@ -1561,7 +1601,7 @@ async fn stop_rungs<P: Pipe>(
             slowest,
             1e3 * p.t_burst_s
         ));
-        let q15 = b.approach_q15 * at.dir as i16;
+        let q15 = b.stop_q15 * at.dir as i16;
         let plan = plan_json(&what, at.pass, RungKind::Stop, q15, &p, attempt);
         let s = send(rig, b, taken, &what, q15, &p, true, plan).await?;
         if !s.lost.is_empty() {
@@ -4132,6 +4172,7 @@ fn result_json(
         "stops_counts": [b.stops.lo, b.stops.hi], "guards_counts": [b.band.lo, b.band.hi],
         "guard_share": GUARD_SHARE, "g_cycles": CUT_CYCLES,
         "approach_q15": b.approach_q15, "approach_v": v(b.approach_q15),
+        "stop_q15": b.stop_q15, "stop_v": v(b.stop_q15), "stop_share": STOP_SHARE,
         "fast_q15": b.fast_q15, "fast_v": v(b.fast_q15), "fast_predicted_cps": b.fast_predicted_cps,
         "window_ticks": b.window_ticks, "pwm_period_ticks": b.pwm_arr,
         "i_window_min_ticks": b.stream.i_window_min_ticks,
@@ -4393,6 +4434,10 @@ mod tests {
     use crate::steps::testkit::{self, ID, Motor, OnSent, Sent, Spy, addr, descriptor};
 
     const APPROACH_Q15: i16 = 4000;
+    /// The probe's ceiling, 0.945 V, and its ladder step, 0.04 x the
+    /// nameplate's 4.8 V, on the sim's 5 V rail.
+    const CEILING_Q15: i16 = 6193;
+    const STEP_Q15: i16 = 1258;
     /// Where the shaft rests before the step, straight counts.
     const X_START: f64 = 2050.0;
     /// The reduced schedule the fake can run: its runaway guard stops a
@@ -4431,6 +4476,7 @@ mod tests {
             ripple: 20.0,
             ripple2: (0.0, 0.0),
             pwm_arr: 1200.0,
+            drag: None,
         }
     }
 
@@ -4483,7 +4529,7 @@ mod tests {
                     leg(5, "approach", "low", hi - 150.0, lo),
                 ],
             },
-            "drives": {"approach_q15": q15},
+            "drives": {"approach_q15": q15, "step_q15": STEP_Q15, "ceiling_q15": CEILING_Q15},
         })
     }
 
@@ -4976,10 +5022,15 @@ mod tests {
     /// one contact and 109 at another), and the stops step's seats were
     /// taken there. On a pot seat the stop rung reads the stop moved or
     /// blocked; by the ripple the step is accepted, its low pin within one
-    /// grid interval of the same train's on a sound pot.
+    /// grid interval of the same train's on a sound pot. The train's
+    /// friction sits at the probe's proven 0.48 V, where a probe that
+    /// proved the sign leaves it, the approach's 380 counts/s kept.
     #[test]
     fn a_pot_dead_on_the_low_stop_is_located_by_the_ripple() {
-        let sound = motor();
+        let mut sound = motor();
+        let proven = 0.48 / 5.0;
+        sound.cps_full = 380.0 / (APPROACH_Q15 as f64 / Q15 - proven);
+        sound.dead_duty = proven;
         let mut r = run(
             sound.clone(),
             stops_json(&sound, APPROACH_Q15, 0.95),
@@ -4987,7 +5038,7 @@ mod tests {
             testkit::quiet(),
         );
         let (pin, raw) = low_pin(&mut r);
-        let mut dead = motor();
+        let mut dead = sound.clone();
         let at_contact = dead.pot(dead.stops.0);
         dead.pressed_low_reads = Some(at_contact - 50.0);
         let mut stops = stops_json(&dead, APPROACH_Q15, 0.95);
@@ -6132,6 +6183,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A stretch near the low stop the train is stiffer over driven down,
+    /// as the bench servo's mesh tight spot: the approach duty cannot turn
+    /// the shaft through it, where it locks at its stall current; the
+    /// stops step's approach legs crossed it at speed. A stop rung that
+    /// locks there must not be read as the low stop: the stop rungs run
+    /// at [`STOP_SHARE`] of the probe's ceiling, which turns the shaft
+    /// through, and the step is accepted with the travel the train has,
+    /// contact to contact.
+    #[test]
+    fn a_tight_stretch_the_approach_locks_in_is_not_read_as_the_stop() {
+        let mut m = motor();
+        m.drag = Some((m.stops.0 + 100.0, 0.130));
+        let mut r = run(
+            m.clone(),
+            stops_json(&m, APPROACH_Q15, 0.95),
+            REDUCED,
+            testkit::quiet(),
+        );
+        let res = result(&mut r.sink);
+        assert_eq!(res["verdict"], "accepted", "{}", res["why"]);
+        let stop = stop_q15(APPROACH_Q15, STEP_Q15, CEILING_Q15);
+        assert_eq!(res["drives"]["stop_q15"], stop);
+        for x in rungs(&res).iter().filter(|x| x["pass_kind"] != "fast") {
+            let q = x["duty_q15"].as_i64().expect("duty").unsigned_abs() as i16;
+            let want = if x["kind"] == "stop" {
+                stop
+            } else {
+                APPROACH_Q15
+            };
+            assert_eq!(q, want, "{x}");
+        }
+        let travel = (m.stops.1 - m.stops.0) * m.cycles_per_count;
+        let st = &res["stops"];
+        assert!(
+            (n(&st["travel_cycles"]) - travel).abs() <= 2.0,
+            "contact to contact {} cycles against the train's {travel}: {st}",
+            st["travel_cycles"]
+        );
     }
 
     /// The bench run whose table step took the mesh tight spot for the
