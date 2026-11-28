@@ -86,8 +86,8 @@ fn refused(set: &osc_measure::Set, field: &str) -> String {
 /// holds it the same way.
 const HELD_OF_RECORD: &str = "fric_breakaway_counts";
 /// The soft limits of record were the policy's share of the stops' span
-/// inside each stop, 314 / 3560; the rules now centre the rated travel
-/// between the stops (`the_soft_window_is_the_rated_travel_centered_between_the_stops`).
+/// inside each stop, 314 / 3560; the rules now center the rated travel on
+/// the first contacts (`the_soft_window_is_the_rated_travel_centered_on_the_contacts`).
 const SOFT_SINCE_RECORD: [(&str, i64); 2] =
     [("pos_min_soft_counts", 126), ("pos_max_soft_counts", 3748)];
 /// Tuning parameters newer than the set of record: off unless the user
@@ -339,13 +339,16 @@ fn a_missing_input_holds_the_field_and_names_it() {
     assert!(refused(&build(&i), "v_kp_q88").contains("only lowers it"));
 }
 
-/// The record's stops, 82 / 3792 table counts at 20.1266 counts/deg: the
-/// rated 180 deg is 3622.8 counts centered on 1937, more than 1.0 deg inside
-/// each stop. A narrower soft travel narrows it about the same middle; a
-/// wider one that does not fit 1.0 deg inside each stop is clamped and
-/// said, as is one under the floor. No stops, no soft limits.
+/// The record's stops as first contacts, 82 / 3792 table counts at
+/// 20.1266 counts/deg: the rated 180 deg is 3622.8 counts centered on 1937,
+/// more than K = 1.0 deg inside each contact. The window follows the
+/// contacts, not the pins: pins moved out to the grid leave it where it
+/// is. A narrower soft travel narrows it about the same middle; a wider one
+/// that does not fit K inside each contact is clamped and said, as is one
+/// under the least window, 2 K (oscnb `SOFT_FLOOR_MARGINS`). No contacts,
+/// no soft limits.
 #[test]
-fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
+fn the_soft_window_is_the_rated_travel_centered_on_the_contacts() {
     let soft = |set: &osc_measure::Set| {
         (
             bound(set, "pos_min_soft_counts"),
@@ -373,6 +376,20 @@ fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
         other => panic!("{other:?}"),
     }
 
+    let mut pinned = i.clone();
+    if let Some(s) = pinned.measured.stops.as_mut() {
+        (s.raw_min, s.raw_max) = (80, 3808);
+    }
+    let set = build(&pinned);
+    assert_eq!(soft(&set), (126, 3748));
+    assert_eq!(
+        (
+            bound(&set, "pos_min_phys_counts"),
+            bound(&set, "pos_max_phys_counts")
+        ),
+        (80, 3808)
+    );
+
     i.policy.soft_travel_deg = Some(90.0);
     let set = build(&i);
     // 45 deg of 20.1266 counts each side of 1937
@@ -387,8 +404,18 @@ fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
 
     i.policy.soft_travel_deg = Some(0.5);
     let set = build(&i);
-    assert_eq!(soft(&set), (1927, 1947));
-    assert!(clamp(&set, "pos_min_soft_counts").contains("floor"));
+    assert_eq!(soft(&set), (1917, 1957));
+    assert!(clamp(&set, "pos_min_soft_counts").contains("under the least window, 2.00 deg"));
+
+    let mut uncontacted = i.clone();
+    if let Some(s) = uncontacted.measured.stops.as_mut() {
+        s.contact_counts = None;
+    }
+    let set = build(&uncontacted);
+    assert_eq!(
+        held(&set, "pos_min_soft_counts"),
+        "measured.stops.contact_counts"
+    );
 
     i.measured.stops = None;
     let set = build(&i);
