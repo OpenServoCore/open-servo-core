@@ -11,9 +11,9 @@
 //! within the still band of its median is still. Still after at least
 //! [`TRAVEL_MIN_COUNTS`] of the leg's travel is seated: the duty backs
 //! down to the seat duty toward the stop for [`HOLD_S`], and the median of
-//! the last [`READ_S`] is the stop's reading; a stop read more than
-//! [`WALK_MAX_COUNTS`] from its earlier seat ends all pressing. Still
-//! short of that travel on the first approach means the start was at or
+//! the last [`READ_S`] is the stop's reading. Every seat planned is
+//! pressed and read: a seat's walk off the same stop's first seat is
+//! recorded, never judged. Still short of that travel on the first approach means the start was at or
 //! by that stop: no seat, and the finder leaves for the other one. On a
 //! later approach it is a shaft blocked between the stops.
 //!
@@ -28,8 +28,9 @@
 //! on one more poll period at the duty in force, and is counted as an odd
 //! read when the next poll is back inside.
 //!
-//! A refusal taken with the shaft at a seat it just read, the walk or a
-//! blocked approach, first drives off that stop by a leave: to the middle
+//! A refusal taken with the shaft at a seat it just read, a blocked
+//! approach or the approaches spent, first drives off that stop by a
+//! leave: to the middle
 //! when both stops are known, else [`CLEAR_COUNTS`] off it. Every other
 //! refusal stops at once.
 //!
@@ -58,6 +59,8 @@ pub const LEAVE_COUNTS: f64 = 150.0;
 /// known, counts.
 pub const CLEAR_COUNTS: f64 = 4.0 * LEAVE_COUNTS;
 pub const LEG_MAX_S: f64 = 30.0;
+/// The table step's reach of a stop: a still shaft within this of the
+/// stop's reading, counts.
 pub const WALK_MAX_COUNTS: f64 = 10.0;
 /// A leg whose shaft falls back this far from the farthest it got toward
 /// its end runs the wrong way.
@@ -181,7 +184,7 @@ pub struct Seat {
     pub pos: f64,
     /// The reading's spread over the same rows, counts.
     pub range: f64,
-    /// Off the same stop's earlier seat, counts.
+    /// Off the same stop's first seat, counts.
     pub walk: Option<f64>,
 }
 
@@ -189,7 +192,6 @@ pub struct Seat {
 pub enum Refusal {
     DeadPot,
     TimeOut,
-    Walked,
     Blocked,
     WrongWay,
 }
@@ -676,17 +678,6 @@ impl Seek {
             range,
             walk,
         });
-        if let Some(w) = walk.filter(|w| w.abs() > WALK_MAX_COUNTS) {
-            return self.refuse_off(
-                Refusal::Walked,
-                format!(
-                    "seat {n} reads the {} stop at {read:.0}, {w:+.0} counts off its earlier seat, over {WALK_MAX_COUNTS}: a stopper that yields, or a stall that was no stop. All pressing ends; check the horn and the stop for damage, then {HANDS}",
-                    stop.word()
-                ),
-                t,
-                pos,
-            );
-        }
         self.path.push(format!(
             "seat {n}: the {} stop reads {read:.0} (the median of the last {READ_S} s){}",
             stop.word(),
@@ -1203,53 +1194,65 @@ mod tests {
         assert!(low.iter().all(|p| (p - 1900.0).abs() <= 1.0), "{low:?}");
     }
 
-    /// A stopper that walks 15 counts: seat 3 refuses, all pressing ends,
-    /// and the horn is first driven off the stop to the middle.
+    /// A stopper that walks 15 counts: every seat planned is pressed and
+    /// read, the walk recorded on each later seat of that stop, and the
+    /// drive ends at the middle of the seats' medians.
     #[test]
-    fn a_stopper_that_walks_refuses_off_the_stop() {
+    fn a_stopper_that_walks_is_seated_six_times_and_its_walk_recorded() {
         let mut s = Shaft {
             walk: -15.0,
             ..Shaft::bench()
         };
         let r = run(&mut s);
-        assert_eq!(refusal(&r.m), Refusal::Walked);
-        assert_eq!(r.m.seats().len(), 3);
-        let why = &r.m.refused().expect("refused").1;
+        assert!(r.m.finished(), "{:?}", r.m.path());
+        assert!(matches!(r.last, Act::Done), "{:?}", r.last);
+        assert_eq!(r.m.seats().len(), 2 * SEATS_A_STOP);
+        let low: Vec<&Seat> = r.m.seats().iter().filter(|x| x.stop == Stop::Low).collect();
         assert!(
-            why.contains("-15 counts")
-                && why.contains("All pressing ends")
-                && why.contains("driven off the low stop first"),
-            "{why}"
+            (low[0].pos - 432.0).abs() <= 1.0 && low[0].walk.is_none(),
+            "{low:?}"
         );
-        let mid = (417.0 + 432.0) / 2.0 / 2.0 + 3626.0 / 2.0;
+        for x in &low[1..] {
+            assert!((x.pos - 417.0).abs() <= 1.0, "{x:?}");
+            assert!(x.walk.is_some_and(|w| (w + 15.0).abs() <= 2.0), "{x:?}");
+        }
+        assert!(
+            r.m.path()
+                .iter()
+                .any(|p| p.starts_with("seat 3:") && p.contains("-15 counts off its earlier seat")),
+            "{:?}",
+            r.m.path()
+        );
+        let mid = (417.0 + 3626.0) / 2.0;
         assert!(
             (s.pos - mid).abs() < 50.0,
             "near the middle: {} against {mid}",
             s.pos
         );
-        let last = r.m.legs().last().expect("legs");
-        assert_eq!(last.kind, LegKind::Center);
-        assert!(matches!(
-            r.last,
-            Act::Stopped {
-                kind: Refusal::Walked,
-                ..
-            }
-        ));
+        assert_eq!(r.m.legs().last().expect("legs").kind, LegKind::Center);
         presses_at_most_the_approach(&r);
+    }
 
-        // the same, the shaft stuck at the stop: the leave off it fails,
-        // and the refusal says the horn was left there
+    /// A low stop that walks 15 counts and holds the shaft once met
+    /// there: seat 3 is read, then the leave rises to the ceiling and
+    /// refuses there, the horn left at the stop.
+    #[test]
+    fn a_shaft_stuck_at_a_stop_refuses_at_the_ceiling() {
         let mut s = Shaft {
             walk: -15.0,
             freeze: true,
             ..Shaft::bench()
         };
         let r = run(&mut s);
-        assert_eq!(refusal(&r.m), Refusal::Walked);
+        assert_eq!(refusal(&r.m), Refusal::Blocked);
         let why = &r.m.refused().expect("refused").1;
-        assert!(why.contains("the horn was left at the low stop"), "{why}");
-        assert!((s.pos - 417.0).abs() <= 1.0);
+        assert!(
+            why.contains("does not leave the low stop at the ceiling") && why.contains(HANDS),
+            "{why}"
+        );
+        assert_eq!(r.m.seats().len(), 3);
+        assert!((s.pos - 417.0).abs() <= 1.0, "{}", s.pos);
+        presses_at_most_the_approach(&r);
     }
 
     #[test]

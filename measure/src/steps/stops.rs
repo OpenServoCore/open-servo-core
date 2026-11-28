@@ -67,7 +67,7 @@ use crate::state::{self, State, field};
 pub const STEP: &str = "stops";
 pub const RESULT: &str = "results/stops.json";
 const METHOD: &str = "stops-and-seated-rl";
-const REVISION: u32 = 4;
+const REVISION: u32 = 5;
 /// Every poll of every leg, a row each.
 pub const POLLS: &str = "captures/stops/polls.csv";
 /// The bus dead-man a polled drive runs under, s: five poll periods, so a
@@ -82,8 +82,6 @@ pub const BURSTS_A_LEVEL: usize = 4;
 /// The longest the current may take back to the rest zero after a seat,
 /// s.
 pub const ZERO_WAIT_S: f64 = 1.0;
-/// A stop's seats within this, counts.
-pub const SEATS_APART_MAX: f64 = seek::WALK_MAX_COUNTS;
 /// A stop this close to a converter rail is flagged.
 pub const RAIL_NEAR_COUNTS: f64 = 8.0;
 /// Two reads of the pos this far apart hold a torn read: the reply copies
@@ -1146,12 +1144,14 @@ async fn body<P: Pipe>(
     ran
 }
 
-/// A stop as its seats read it.
+/// A stop as its seats read it: the median of its seats, their sample sd
+/// and their range.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StopRead {
     pub stop: Stop,
     pub seats: Vec<f64>,
     pub median: f64,
+    pub sd: Option<f64>,
     pub spread: f64,
 }
 
@@ -1167,6 +1167,7 @@ fn stop_read(seek: &Seek, s: Stop) -> Option<StopRead> {
     let lo = seats.iter().copied().fold(f64::INFINITY, f64::min);
     Some(StopRead {
         stop: s,
+        sd: crate::fit::sd(&seats, 1),
         seats,
         median: m,
         spread: hi - lo,
@@ -1189,9 +1190,6 @@ fn check(name: &str, value: String, bound: String, verdict: Verdict) -> Check {
 /// What to do when a check refuses the step.
 pub fn advice(name: &str) -> &'static str {
     match name {
-        "each stop's seats agree" => {
-            "a stopper that yields or a stall that was no stop: check the horn and the stops, then run the step again"
-        }
         "the start lies between the stops" => HANDS,
         "R is a motor's this board can read" => {
             "not a motor this board can read: check the motor leads and the board"
@@ -1203,8 +1201,9 @@ pub fn advice(name: &str) -> &'static str {
     }
 }
 
-/// The stops' checks, pure: the seats, the span against the converter and
-/// the nameplate's travel, the start between them, a stop by a rail.
+/// The stops' checks, pure: each stop's seats and their spread and the
+/// span against the converter and the nameplate's travel, reported; the
+/// start between them, a stop by a rail.
 pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
     let (Some(lo), Some(hi)) = (stop_read(seek, Stop::Low), stop_read(seek, Stop::High)) else {
         return vec![check(
@@ -1217,26 +1216,22 @@ pub fn judge_stops(seek: &Seek, travel_deg: f64) -> Vec<Check> {
     let mut out = Vec::new();
     let said = |r: &StopRead| {
         format!(
-            "{} {} ({:.0} apart)",
+            "{} stop seats {}: {:.0} {}, n {}, spread {:.0} counts",
             r.stop.word(),
             r.seats
                 .iter()
                 .map(|p| format!("{p:.0}"))
                 .collect::<Vec<_>>()
                 .join(", "),
+            r.median,
+            r.sd.map_or("no sd".into(), |sd| format!("+/- {sd:.1}")),
+            r.seats.len(),
             r.spread
         )
     };
-    out.push(check(
-        "each stop's seats agree",
+    out.push(Check::reported(
+        "each stop's seats",
         format!("{}; {}", said(&lo), said(&hi)),
-        format!("{SEATS_A_STOP} seats each, within {SEATS_APART_MAX} counts"),
-        pass(
-            lo.seats.len() == SEATS_A_STOP
-                && hi.seats.len() == SEATS_A_STOP
-                && lo.spread <= SEATS_APART_MAX
-                && hi.spread <= SEATS_APART_MAX,
-        ),
     ));
     let span = hi.median - lo.median;
     out.push(Check::reported(
@@ -1592,7 +1587,7 @@ fn result_json(
     let stops = seek.map_or(Value::Null, |s| {
         let one = |stop: Stop| {
             stop_read(s, stop).map_or(Value::Null, |r| {
-                json!({"median_counts": r.median, "seats_counts": r.seats, "spread_counts": r.spread})
+                json!({"median_counts": r.median, "seats_counts": r.seats, "sd_counts": r.sd, "n": r.seats.len(), "spread_counts": r.spread})
             })
         };
         let (lo, hi) = (stop_read(s, Stop::Low), stop_read(s, Stop::High));
@@ -2448,6 +2443,14 @@ mod tests {
     /// The machine run to its end on a shaft between `lo` and `hi` from
     /// `start`, a jam at `jam` stopping it going down at any duty.
     fn found(start: f64, lo: f64, hi: f64, jam: Option<f64>) -> Seek {
+        found_walked(start, &[lo], hi, jam)
+    }
+
+    /// As [`found`], the low stop at `los[k]` once the high stop has been
+    /// seated `k` times, the last of them after that.
+    fn found_walked(start: f64, los: &[f64], hi: f64, jam: Option<f64>) -> Seek {
+        let mut lo = los[0];
+        let mut high_seats = 0;
         let c = cfg_of(5.0);
         let mut pos = start;
         let mut m = Seek::new(c.clone());
@@ -2467,7 +2470,11 @@ mod tests {
                     t += seek::POLL_S;
                     act = m.feed(t, pos);
                 }
-                Act::Seated(_) => {
+                Act::Seated(seat) => {
+                    if seat.stop == Stop::High {
+                        high_seats += 1;
+                        lo = los[high_seats.min(los.len() - 1)];
+                    }
                     t += 1.5;
                     act = m.resume(t, pos);
                 }
@@ -2518,6 +2525,39 @@ mod tests {
             "{said}"
         );
         assert!(rail.iter().all(|c| c.verdict != Verdict::Fail), "{rail:?}");
+    }
+
+    /// A low stop whose seats read 6, 12 and 109: every seat is pressed,
+    /// the stop is their median, and their spread is reported, never
+    /// refused.
+    #[test]
+    fn a_stops_seat_spread_is_reported_not_refused() {
+        let m = found_walked(2000.0, &[6.0, 12.0, 109.0], 3626.0, None);
+        assert!(m.finished(), "{:?}", m.path());
+        let low: Vec<f64> = m
+            .seats()
+            .iter()
+            .filter(|x| x.stop == Stop::Low)
+            .map(|x| x.pos)
+            .collect();
+        assert_eq!(low, [6.0, 12.0, 109.0]);
+        let checks = judge_stops(&m, 184.33);
+        assert!(
+            checks.iter().all(|c| c.verdict != Verdict::Fail),
+            "{checks:?}"
+        );
+        let (v, said) = verdict(&checks, "each stop's seats");
+        assert_eq!(v, Verdict::NotJudged, "{said}");
+        assert!(
+            said.contains("low stop seats 6, 12, 109: 12 +/- 57.8, n 3, spread 103 counts"),
+            "{said}"
+        );
+        assert!(
+            said.contains("high stop seats 3626, 3626, 3626: 3626 +/- 0.0, n 3, spread 0 counts"),
+            "{said}"
+        );
+        let lo = stop_read(&m, Stop::Low).expect("a low stop");
+        assert_eq!((lo.median, lo.spread), (12.0, 103.0));
     }
 
     /// Kept bursts of `r` ohm at a stop, three a group at both levels and
