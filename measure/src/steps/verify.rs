@@ -300,28 +300,17 @@ pub struct Scale {
     pub source: String,
 }
 
-/// Counts per degree: the set's angle map when the servo stores one, else
-/// the nameplate's travel over the soft range.
-pub fn scale(
-    raw: (f64, f64),
-    angle_cdeg: (f64, f64),
-    travel_counts: f64,
-    nameplate_deg: Option<f64>,
-) -> Option<Scale> {
+/// Counts per degree: the set's angle map, its span over the pins'; None
+/// when the servo stores none. No straight pot scale stands in for it: the
+/// pot is not linear, and every angle comes from the ripple through the
+/// table.
+pub fn scale(raw: (f64, f64), angle_cdeg: (f64, f64)) -> Option<Scale> {
     let (span, deg) = (raw.1 - raw.0, (angle_cdeg.1 - angle_cdeg.0).abs() / 100.0);
-    if span > 0.0 && deg > 0.0 {
-        return Some(Scale {
-            counts_per_deg: span / deg,
-            source: format!(
-                "the set's angle map on the servo: {deg:.2} deg over raw {}..{}",
-                raw.0, raw.1
-            ),
-        });
-    }
-    nameplate_deg.filter(|d| *d > 0.0).map(|d| Scale {
-        counts_per_deg: travel_counts / d,
+    (span > 0.0 && deg > 0.0).then(|| Scale {
+        counts_per_deg: span / deg,
         source: format!(
-            "the servo stores no angle map: the nameplate's {d} deg travel over the {travel_counts:.0} count soft range"
+            "the set's angle map on the servo: {deg:.2} deg over raw {}..{}",
+            raw.0, raw.1
         ),
     })
 }
@@ -576,7 +565,7 @@ pub(crate) fn belt(
     )))
 }
 
-async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<Before, Refused> {
+async fn before<P: Pipe>(rig: &mut Rig<'_, P>) -> Result<Before, Refused> {
     let (line, state) = admit(rig.c, rig.id, rig.d).await?;
     belt(&state, rig.d, &["Position"])?;
     let n = |name: &str| num(&state, rig.d, name);
@@ -609,11 +598,9 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &VerifyInputs<'_>) -> Result<B
     let scale = scale(
         (n("raw_min")?, n("raw_max")?),
         (n("angle_min_cdeg")?, n("angle_max_cdeg")?),
-        travel,
-        i.nameplate.rated_travel_deg,
     )
     .ok_or_else(|| {
-        Refused("the servo stores no angle map and the nameplate states no rated_travel_deg: no degree to score in".into())
+        Refused("the servo stores no angle map: no degree to score in; install a set that holds one (osc-ident run)".into())
     })?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let tick_hz = sense.tick_hz;
@@ -1151,7 +1138,7 @@ pub async fn verify<P: Pipe>(
     rig: &mut Rig<'_, P>,
     i: &VerifyInputs<'_>,
 ) -> Result<Verified, Refused> {
-    let b = before(rig, i).await?;
+    let b = before(rig).await?;
     let mut lines = vec![
         format!("{}; bus at {} baud", b.line.said(), b.line.baud.as_hz()),
         format!(

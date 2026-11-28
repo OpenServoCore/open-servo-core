@@ -846,7 +846,9 @@ mod tests {
             .sim_mut()
             .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
 
-        // the bench servo's run gathered: its nominal scales move protections
+        // the bench servo's run gathered on a table step that read the
+        // record's own table, its stops and scale: its nominal sense scales
+        // move protections
         let run_dir = dir.join("bench-run");
         std::fs::create_dir_all(run_dir.join("results")).expect("mkdir");
         files::step_0(&run_dir);
@@ -857,6 +859,18 @@ mod tests {
             )
             .expect("copy");
         }
+        let json = |p: &Path| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(p).expect("read")).expect("json")
+        };
+        let record = json(&testdata("mg90-d/pos_lut.json"));
+        let mut tabled = json(&testdata("gather/table.json"));
+        tabled["points_by_page"] = record["points_by_page"].clone();
+        tabled["scale"]["counts_per_deg"] = record["target"]["counts_per_deg"].clone();
+        for (side, at) in [("low", 82), ("high", 3792)] {
+            tabled["stops"][side]["pin_raw"] = at.into();
+            tabled["stops"][side]["contact_counts"] = at.into();
+        }
+        std::fs::write(run_dir.join("results/table.json"), tabled.to_string()).expect("table");
         let inputs = dir.join("inputs");
         crate::gather::gather(
             &run_dir,
@@ -871,8 +885,8 @@ mod tests {
         let (lines, accepted) = run_scripted_on(&mut c, &inputs, &out, 6, script).expect("runs");
         let text = lines.join("\n");
         assert!(accepted, "{text}");
-        // the nominal scale, the stops' span over the rated 180 deg, is the
-        // record's within 0.1 %, so the stall speed in counts stays put
+        // the table's scale is the record's, so the stall speed in counts
+        // stays put
         let installed: Vec<&str> = [
             "pos_min_soft_counts",
             "pos_max_soft_counts",

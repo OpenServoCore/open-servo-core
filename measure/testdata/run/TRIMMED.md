@@ -30,6 +30,13 @@ note and `sources.json` sit beside it.
   replaces the old one (7028920c) in the nine set files that record it. The two `cross-checks.json` files are
   gathered again against it: the travel against the rated 180, and the pacing price, 4096 over 180 counts/deg,
   against the table's scale. The run's steps paced at 4096 over 184.33; their results say so and stay the run's.
+- **The stops by ripple.** `results/table.json` is the table step's result re-judged at revision 2 from the run's
+  full table captures (the bringup path `sources.json` gives): each stop's first contact by the motor's ripple, the
+  stop rungs' rows cut 4 cycles before it, the table pinned at each contact moved outward to the grid (96 and 3760
+  where the run pinned it at the stops step's seats 6 and 3737), and each stop rung's reach as the revision 2 rule
+  reads it. The drives, rungs' plans, path and every other key are the run's. `inputs/` and `final/inputs/`
+  `measured.json`, `pos_lut.json`, `wide-codes.json` and `cross-checks.json` are gathered again from it. The tune's
+  and the final check's files stay the run's, built on the table it ran with.
 
 ## Kept
 

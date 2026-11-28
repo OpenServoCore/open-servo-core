@@ -695,9 +695,9 @@ pub async fn step_cruise<P: Pipe>(
         .nameplate
         .as_ref()
         .context("step cruise drives the motor: it needs the servo's nameplate (--nameplate)")?;
-    let stops = run
+    let tabled = run
         .map(|r| -> Result<Value> {
-            let p = r.join(stops::RESULT);
+            let p = r.join(table::RESULT);
             serde_json::from_slice(&files::read(host.files, &p)?)
                 .with_context(|| format!("parsing {}", p.display()))
         })
@@ -721,7 +721,7 @@ pub async fn step_cruise<P: Pipe>(
             &CruiseInputs {
                 nameplate: np,
                 board: &board,
-                stops: stops.as_ref(),
+                table: tabled.as_ref(),
             },
         )
         .await

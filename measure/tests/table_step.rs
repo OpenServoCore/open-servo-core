@@ -7,14 +7,15 @@
 use osc_measure::capture::rows::TelFrame;
 use osc_measure::envelope::{BURST_MAX_S, DRIVE_DEADMAN_S, FREE_MARGIN, GUARD_SHARE, PERMIT_MAX_S};
 use osc_measure::fit::postable::{self, Seed};
+use osc_measure::fit::stopcontact;
 use osc_measure::steps::runway::COAST_TAU_S;
 use osc_measure::steps::seek::WINDOW_S;
 use osc_measure::steps::table::{
-    Band, FIRST_FAST_SHARE, FromStops, HoleRead, NEAR_STOP_COUNTS, NextStop, PassKind, RUNG_MIN_S,
-    Reach, RungKind, RungRead, RungRows, RungSegment, STOP_RUNGS_MAX, Schedule, Speeds, after,
+    self, Band, FIRST_FAST_SHARE, FromStops, HoleRead, NextStop, PassKind, RUNG_MIN_S, Reach,
+    RungKind, RungRead, RungRows, RungSegment, STOP_RUNGS_MAX, Schedule, Speeds, after,
     after_stop_rung, another_trip, fast_bound_from, fast_predicted_cps, fast_q15, histogram_rows,
-    hole_reads, plan_rung, plan_stop_rung, reach, rows_a_code, rung_holes, stamp_ticks,
-    still_window_s, thin_carries,
+    hole_reads, pass_reach, plan_rung, plan_stop_rung, reach, rows_a_code, rung_holes, stamp_ticks,
+    still_at, still_window_s, thin_carries,
 };
 use serde_json::json;
 
@@ -132,7 +133,6 @@ fn the_stops_result_gives_the_stops_the_duty_and_the_approach_speeds() {
     ]);
     let s = FromStops::of(&stops(legs)).expect("reads");
     assert_eq!((s.lo, s.hi, s.approach_q15), (108.5, 3729.25, 4000));
-    assert_eq!(s.raw(), (109, 3729));
     assert_eq!(s.legs.len(), 2);
     assert_eq!((s.legs[0].dir, s.legs[0].speed_cps()), (-1, 946.0));
     assert_eq!((s.legs[1].dir, s.legs[1].speed_cps()), (1, 694.0));
@@ -281,58 +281,50 @@ fn rows(pos: &[f64]) -> Vec<TelFrame> {
         .collect()
 }
 
-/// The latest still window against the stop: on it within 10 counts,
-/// short of it, past it, or still moving.
-#[test]
-fn a_stop_rung_reads_reached_short_past_or_moving() {
-    let n = (still_window_s() * FS) as usize;
-    let still = |at: f64| rows(&vec![at; n + 100]);
-    assert_eq!(
-        reach(&still(3605.0), 1, 3600.0, 3.0, FS),
-        Reach::Reached(3605.0)
-    );
-    assert_eq!(
-        reach(&still(3580.0), 1, 3600.0, 3.0, FS),
-        Reach::Short(3580.0)
-    );
-    assert_eq!(
-        reach(&still(3620.0), 1, 3600.0, 3.0, FS),
-        Reach::Past(3620.0)
-    );
-    assert_eq!(
-        reach(&still(120.0), -1, 100.0, 3.0, FS),
-        Reach::Short(120.0)
-    );
-    assert_eq!(reach(&still(80.0), -1, 100.0, 3.0, FS), Reach::Past(80.0));
-    let moving: Vec<f64> = (0..n + 100).map(|k| 3400.0 + k as f64 * 0.05).collect();
-    assert_eq!(reach(&rows(&moving), 1, 3600.0, 3.0, FS), Reach::Moving);
-    assert_eq!(
-        reach(&still(3600.0)[..n - 1], 1, 3600.0, 3.0, FS),
-        Reach::Moving
-    );
+/// `rows` with the shunt at 1300 counts, stepping to 1300 + `rise` from
+/// row 3000.
+fn with_shunt(mut rows: Vec<TelFrame>, rise: u16) -> Vec<TelFrame> {
+    for (k, f) in rows.iter_mut().enumerate() {
+        f.current_raw = Some(if k < 3000 { 1300 } else { 1300 + rise });
+    }
+    rows
 }
 
-/// The histogram drops rows within 32 counts of a stop; the rows a code
-/// are the median of the rest over the codes between less stage 1's
+/// The latest still window, wherever the pot reads it: with the shunt
+/// risen onto the stop reached, with no rise short, never still moving.
+/// Nothing is judged against where the stops step read the stop.
+#[test]
+fn a_stop_rung_reads_reached_short_or_moving() {
+    let n = 6000;
+    let still = |at: f64, rise: u16| with_shunt(rows(&vec![at; n]), rise);
+    for at in [3605.0, 3580.0, 120.0, 4.0] {
+        assert_eq!(reach(&still(at, 76), 3.0, FS), Reach::Reached(at));
+        assert_eq!(reach(&still(at, 20), 3.0, FS), Reach::Short(at));
+    }
+    let moving: Vec<f64> = (0..n).map(|k| 3400.0 + k as f64 * 0.05).collect();
+    assert_eq!(
+        reach(&with_shunt(rows(&moving), 76), 3.0, FS),
+        Reach::Moving
+    );
+    let short = (still_window_s() * FS) as usize - 1;
+    assert_eq!(reach(&still(3600.0, 76)[..short], 3.0, FS), Reach::Moving);
+}
+
+/// The histogram counts every code it is given over the range they read;
+/// the rows a code are the median over the codes between less stage 1's
 /// 15-count margins.
 #[test]
-fn the_rows_a_code_leave_out_the_counts_by_the_stops() {
+fn the_rows_a_code_are_the_median_over_the_codes_read() {
     let codes: Vec<u16> = (110..=3729).flat_map(|c| [c, c]).collect();
-    let (inside, lo, hi) = histogram_rows(&codes, 110, 3729);
-    assert_eq!(
-        (lo, hi),
-        (
-            110 + NEAR_STOP_COUNTS as u16,
-            3729 - NEAR_STOP_COUNTS as u16
-        )
-    );
-    assert_eq!(inside.len(), 2 * (hi - lo + 1) as usize);
-    assert_eq!(rows_a_code(&codes, 110, 3729), 2.0);
-    assert_eq!(rows_a_code(&[], 110, 3729), 0.0);
+    let (inside, lo, hi) = histogram_rows(&codes);
+    assert_eq!((lo, hi), (110, 3729));
+    assert_eq!(inside.len(), codes.len());
+    assert_eq!(rows_a_code(&codes), 2.0);
+    assert_eq!(rows_a_code(&[]), 0.0);
     // a median, not a mean: a third of the codes read 10x leave it at 2
     let mut heavy = codes.clone();
     heavy.extend((500..1700).flat_map(|c| [c; 18]));
-    assert_eq!(rows_a_code(&heavy, 110, 3729), 2.0);
+    assert_eq!(rows_a_code(&heavy), 2.0);
 }
 
 /// The plan's slow round trips, then one more while a carry reads thin,
@@ -348,9 +340,9 @@ fn a_thin_carry_adds_a_slow_round_trip_up_to_the_extra() {
     let mut codes: Vec<u16> = (110..=3729).flat_map(|c| [c; 120]).collect();
     codes.retain(|&c| !(2495..2559).contains(&c));
     codes.extend((2495..2559).flat_map(|c| [c; 60]));
-    let thin = thin_carries(&codes, 110, 3729);
+    let thin = thin_carries(&codes);
     assert_eq!(thin, [2559]);
-    assert!(rows_a_code(&codes, 110, 3729) >= 100.0);
+    assert!(rows_a_code(&codes) >= 100.0);
 }
 
 /// One fifth of the rated speed by the nameplate's speed per volt: one
@@ -385,10 +377,11 @@ fn the_plans_schedule() {
 /// The bench's stop rungs (`testdata/table/stop-rungs.csv.gz`): pressed
 /// on the low stop, and twice on the high stop where the pot reads about
 /// +/-6 counts row to row; read at the poll spacing as the stops step
-/// reads its seats, all three reach their stop. The same rows cut to the
-/// last 0.15 s before the high stop, still climbing, read Moving.
+/// reads its seats, all three read still at their stop. The same rows cut
+/// to the last 0.15 s before the high stop, still climbing, read no still
+/// window.
 #[test]
-fn the_bench_stop_rungs_read_reached() {
+fn the_bench_stop_rungs_read_still() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/testdata/table/stop-rungs.csv.gz"
@@ -408,33 +401,39 @@ fn the_bench_stop_rungs_read_reached() {
             ..TelFrame::default()
         });
     }
-    for (k, dir, stop) in [("07", -1, 108.0), ("13", 1, 3726.0), ("15", 1, 3726.0)] {
-        let r = reach(&by[k], dir, stop, 3.0, FS);
-        assert!(
-            matches!(r, Reach::Reached(m) if (m - stop).abs() <= 10.0),
-            "{k}: {r:?}"
-        );
+    for (k, stop) in [("07", 108.0), ("13", 3726.0), ("15", 3726.0)] {
+        let r = still_at(&by[k], 3.0, FS);
+        assert!(r.is_some_and(|m| (m - stop).abs() <= 10.0), "{k}: {r:?}");
     }
     let climb = &by["13"];
     let top = climb
         .iter()
         .position(|f| f.pos.is_some_and(|p| p >= 3700))
         .expect("reaches the top");
-    assert_eq!(reach(&climb[..top], 1, 3726.0, 3.0, FS), Reach::Moving);
+    assert_eq!(still_at(&climb[..top], 3.0, FS), None);
 }
 
-/// After a stop rung: on the stop, done; past it, the stop moved; still
-/// short, one more stop rung at the same duty even past the count, then
-/// blocked; still moving, another up to the count, then unreached.
+/// A stop rung that starts pressed, after one in its pass that rose onto
+/// the stop and ended still moving on the pressed pot's noise, has no free
+/// level to rise from: still, it is on the stop (the recorded run's rungs
+/// 16 and 17, 21 and 22, 25 and 26). With no rise before it in the pass
+/// it is short.
+#[test]
+fn a_stop_rung_pressed_from_its_start_is_on_the_stop_after_a_rise() {
+    assert_eq!(pass_reach(Reach::Short(6.0), true), Reach::Reached(6.0));
+    assert_eq!(pass_reach(Reach::Short(6.0), false), Reach::Short(6.0));
+    assert_eq!(pass_reach(Reach::Moving, true), Reach::Moving);
+    assert_eq!(pass_reach(Reach::Reached(4.0), false), Reach::Reached(4.0));
+}
+
+/// After a stop rung: still with the rise, done wherever the pot reads;
+/// still with no rise, one more stop rung at the same duty even past the
+/// count, then blocked; still moving, another up to the count, then
+/// unreached.
 #[test]
 fn a_stop_rung_short_of_the_stop_takes_one_more() {
-    let (on, short, past) = (
-        Reach::Reached(100.0),
-        Reach::Short(119.0),
-        Reach::Past(80.0),
-    );
+    let (on, short) = (Reach::Reached(4.0), Reach::Short(119.0));
     assert_eq!(after_stop_rung(&on, 1, 0), NextStop::Done);
-    assert_eq!(after_stop_rung(&past, 1, 0), NextStop::Moved);
     assert_eq!(after_stop_rung(&short, 1, 0), NextStop::Another);
     assert_eq!(
         after_stop_rung(&short, STOP_RUNGS_MAX, 0),
@@ -479,6 +478,84 @@ fn low_stop(name: &str) -> (Vec<TelFrame>, serde_json::Value) {
 
 fn num(v: &serde_json::Value) -> f64 {
     v.as_f64().expect("number")
+}
+
+/// A stop fixture's counts a cycle from its run's table
+/// (`testdata/table/sources.json`).
+fn per_cycle(name: &str, key: &str) -> f64 {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/table/");
+    let s: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(format!("{dir}sources.json")).expect("sources"))
+            .expect("json");
+    num(&s[format!("{name}.csv.gz")][key]["value"])
+}
+
+/// A stop fixture's drive rows, its pot and its shunt as numbers.
+fn drive(name: &str) -> (Vec<TelFrame>, Vec<f64>) {
+    let (rows, _) = low_stop(name);
+    let (_, d) = table::drive_rows(&rows);
+    let pos = d.iter().map(|f| f64::from(f.pos.expect("pos"))).collect();
+    (d.to_vec(), pos)
+}
+
+/// One stop, two sittings (oscnb `stopcontact` on the same rows): the pot
+/// rests 96 counts apart, the ripple puts first contact 0.6 cycles apart,
+/// 48.93 and 49.53 cycles past the pot's 300 crossing (contact-analysis:
+/// 49.3 +/- 1.28 between sittings). At the contact row the clean pot reads
+/// 108 and the dead one 3. Judged against the other sitting's pot seat,
+/// the stop would read moved or short.
+#[test]
+fn the_low_stop_is_where_the_ripple_meets_it_not_where_the_pot_rests() {
+    let read = |name: &str| {
+        let (d, pos) = drive(name);
+        let per = per_cycle(name, "counts_per_cycle");
+        let c = table::stop_contact(&d, -1, &|_, _| per, FS).expect("a contact");
+        assert!(c.valid(), "{name}: rise {}", c.rise.counts());
+        let past = stopcontact::cycles_past(&c, &pos, 300.0).expect("300");
+        let rest = pos[pos.len() - 200..].iter().sum::<f64>() / 200.0;
+        (c.rise.counts(), past, rest, pos[c.row])
+    };
+    let (clean_rise, clean, clean_rest, clean_pot) = read("clean-low-stop");
+    let (dead_rise, dead, dead_rest, dead_pot) = read("dead-low-stop");
+    assert!((clean_rise - 79.6).abs() <= 0.1 && (dead_rise - 75.4).abs() <= 0.1);
+    assert_eq!(
+        [(clean * 100.0).round(), (dead * 100.0).round()],
+        [4893.0, 4953.0]
+    );
+    assert!((clean - dead).abs() <= 1.5 && (clean_rest - dead_rest).abs() > 90.0);
+    assert_eq!((clean_pot, dead_pot), (108.0, 3.0));
+}
+
+/// The fast high-stop rung of a bench run: its pot runs about 1100
+/// counts/s over the free stretch, so at its table's 4.31 counts a cycle
+/// the line sits near 259 Hz, and the ripple counts 67.02 cycles from the
+/// pot's 3480 to contact (a fixed 100..300 Hz band held a 131 Hz line on
+/// these rows and counted 33.0). Through a table at the 4.03 counts a
+/// cycle its placement samples read, the track holds; seeded at twice the
+/// counts a cycle it runs on the 131 Hz line, reads twice the table's
+/// counts a cycle and is named.
+#[test]
+fn a_fast_rung_is_counted_on_the_line_its_free_stretch_predicts() {
+    let (d, pos) = drive("fast-high-stop");
+    let per = per_cycle("fast-high-stop", "counts_per_cycle");
+    let c = table::stop_contact(&d, 1, &|_, _| per, FS).expect("a contact");
+    assert!(c.valid() && (c.f_seed - 259.4).abs() <= 0.5, "{}", c.f_seed);
+    let past = stopcontact::cycles_past(&c, &pos, 3480.0).expect("3480");
+    assert_eq!((past * 100.0).round(), 6702.0);
+    let codes: Vec<u16> = d.iter().map(|f| f.pos.expect("pos")).collect();
+    let table = per_cycle("fast-high-stop", "table_counts_per_cycle");
+    let p = stopcontact::placed(&c, &codes, &|x| x / table, None, None).expect("placed");
+    assert!(
+        p.tracked() && (p.counts_per_cycle - 4.09).abs() <= 0.01,
+        "{p:?}"
+    );
+    let wrong = table::stop_contact(&d, 1, &|_, _| 2.0 * per, FS).expect("a contact");
+    assert!((wrong.f_seed - 131.2).abs() <= 0.5, "{}", wrong.f_seed);
+    let off = stopcontact::placed(&wrong, &codes, &|x| x / table, None, None).expect("placed");
+    assert!(
+        !off.tracked() && (off.counts_per_cycle / table - 2.0).abs() <= 0.15,
+        "{off:?}"
+    );
 }
 
 /// A low-stop rung read for pot holes as the table step reads it: the

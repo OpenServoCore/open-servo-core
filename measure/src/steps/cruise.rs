@@ -114,18 +114,18 @@ pub const VELOCITY_DEADMAN_S: f64 = DRIVE_DEADMAN_S;
 /// them: the wall ramp stops the reference at a soft limit only, so where
 /// the soft limits sit on the stops the plan alone keeps the room.
 pub const STOP_CLEAR_COUNTS: f64 = 100.0;
-/// A stops result for the travel agrees with the installed set's raw_min
-/// and raw_max to this share of the set's span, or it is another servo's
-/// or an older seat's.
+/// A table result's pins for the travel agree with the installed set's
+/// raw_min and raw_max to this share of the set's span, or it is another
+/// servo's or an older table's.
 pub const STOPS_AGREE_SHARE: f64 = 0.03;
 
 /// What the step reads besides the servo.
 pub struct CruiseInputs<'a> {
     pub nameplate: &'a Nameplate,
     pub board: &'a Board,
-    /// The stops step's result whose stops are the travel; None takes the
-    /// stops the installed set holds.
-    pub stops: Option<&'a Value>,
+    /// The table step's result whose pins are the travel; None takes the
+    /// pins the installed set holds.
+    pub table: Option<&'a Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -509,11 +509,12 @@ fn ticks_for(s: f64, tick_hz: f64) -> Result<u16, Refused> {
     Ok(n as u16)
 }
 
-/// The travel the plan is sized by, raw pot counts: the stops step's
-/// stops, or the set's, and its words. A stops result is refused unless
-/// accepted and within [`STOPS_AGREE_SHARE`] of the set's.
+/// The travel the plan is sized by, raw pot counts: the table step's pins,
+/// each stop's first contact by the ripple on the grid, or the set's, and
+/// its words. A table result is refused unless accepted and within
+/// [`STOPS_AGREE_SHARE`] of the set's.
 fn travel_raw(i: &CruiseInputs, set: (f64, f64)) -> Result<((f64, f64), String), Refused> {
-    let Some(v) = i.stops else {
+    let Some(v) = i.table else {
         return Ok((
             set,
             "the stops the installed set holds (raw_min, raw_max)".into(),
@@ -521,23 +522,25 @@ fn travel_raw(i: &CruiseInputs, set: (f64, f64)) -> Result<((f64, f64), String),
     };
     if v["verdict"] != "accepted" {
         return Err(Refused(format!(
-            "the stops step's result is {}, not accepted: run the stops step again",
+            "the table step's result is {}, not accepted: run the table step again",
             v["verdict"].as_str().unwrap_or("of no verdict")
         )));
     }
     let n = |x: &Value, what: &str| {
-        x.as_f64()
-            .filter(|v| v.is_finite())
-            .ok_or_else(|| Refused(format!("the stops result holds no {what}")))
+        x.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+            Refused(format!(
+                "the table result holds no {what}: run the table step again"
+            ))
+        })
     };
     let stops = (
-        n(&v["stops"]["low"]["median_counts"], "low stop")?,
-        n(&v["stops"]["high"]["median_counts"], "high stop")?,
+        n(&v["stops"]["low"]["pin_raw"], "low pin")?,
+        n(&v["stops"]["high"]["pin_raw"], "high pin")?,
     );
     let tol = STOPS_AGREE_SHARE * (set.1 - set.0);
     if (stops.0 - set.0).abs() > tol || (stops.1 - set.1).abs() > tol {
         return Err(Refused(format!(
-            "the stops result's stops {:.0}..{:.0} are not the installed set's raw_min..raw_max {:.0}..{:.0} (within {:.0} counts, {:.0}% of its span): the run folder is another servo's or an older seat's; run the stops step on this servo, or leave --run out",
+            "the table result's pins {:.0}..{:.0} are not the installed set's raw_min..raw_max {:.0}..{:.0} (within {:.0} counts, {:.0}% of its span): the run folder is another servo's or an older table's; run the table step on this servo, or leave --run out",
             stops.0,
             stops.1,
             set.0,
@@ -546,7 +549,7 @@ fn travel_raw(i: &CruiseInputs, set: (f64, f64)) -> Result<((f64, f64), String),
             100.0 * STOPS_AGREE_SHARE
         )));
     }
-    Ok((stops, "the stops step's stops".into()))
+    Ok((stops, "the table step's pins".into()))
 }
 
 async fn read_word<P: Pipe>(rig: &mut Rig<'_, P>, name: &str) -> Result<u16, Refused> {
@@ -638,26 +641,11 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &CruiseInputs<'_>) -> Result<B
             soft.0, soft.1, stops.0, stops.1
         )));
     }
-    let scale = match verify::scale(
-        set_raw,
-        (n("angle_min_cdeg")?, n("angle_max_cdeg")?),
-        0.0,
-        None,
-    ) {
-        Some(s) => s,
-        None => {
-            let deg = i.nameplate.rated_travel_deg.filter(|d| *d > 0.0).ok_or_else(|| {
-                Refused("the servo stores no angle map and the nameplate states no rated_travel_deg: no speed to read in motor rad/s".into())
-            })?;
-            Scale {
-                counts_per_deg: (stops.1 - stops.0) / deg,
-                source: format!(
-                    "the servo stores no angle map: the nameplate's {deg} deg travel over the {:.0} count stops ({travel_from})",
-                    stops.1 - stops.0
-                ),
-            }
-        }
-    };
+    let scale = verify::scale(set_raw, (n("angle_min_cdeg")?, n("angle_max_cdeg")?)).ok_or_else(
+        || {
+            Refused("the servo stores no angle map: no speed to read in motor rad/s; install a set that holds one (osc-ident run)".into())
+        },
+    )?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let tick_hz = sense.tick_hz;
     let medium_hz = tick_hz / 10.0;

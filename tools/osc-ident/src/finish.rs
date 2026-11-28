@@ -172,7 +172,7 @@ mod tests {
             r#"{"tool": "osc-ident", "steps": {}}"#,
         )
         .expect("manifest");
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),
@@ -585,8 +585,9 @@ mod tests {
             "{text}"
         );
         let save = format!(
-            "to store it: osc-ident --id 1 save --set {}",
-            root.join("final/set.json").display()
+            "to store it: osc-ident --id 1 save --set {} --table {}",
+            root.join("final/set.json").display(),
+            root.join("final/inputs/pos_lut.json").display()
         );
         assert!(f.lines.contains(&save), "{text}");
         let live = format!(
@@ -1201,8 +1202,9 @@ mod tests {
             "{text}"
         );
         let save = format!(
-            "to store it: osc-ident --id 1 save --set {}",
-            root.join("final/set.json").display()
+            "to store it: osc-ident --id 1 save --set {} --table {}",
+            root.join("final/set.json").display(),
+            root.join("final/inputs/pos_lut.json").display()
         );
         assert!(f.lines.contains(&save), "{text}");
         assert_eq!(
