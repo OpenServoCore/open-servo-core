@@ -751,13 +751,15 @@ where
             } else {
                 format!("tune/tries/{t:02}/set.json")
             };
-            lines.push(save_line(
-                id,
-                &set,
-                pts.as_ref(),
-                &inputs_dir,
-                &root.join(&set_file),
-            ));
+            if host.cli() {
+                lines.push(save_line(
+                    id,
+                    &set,
+                    pts.as_ref(),
+                    &inputs_dir,
+                    &root.join(&set_file),
+                ));
+            }
             lines.push("a reboot returns the stored set".into());
             let (started, why) = checks
                 .first

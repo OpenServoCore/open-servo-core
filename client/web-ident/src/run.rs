@@ -451,6 +451,21 @@ mod tests {
         );
     }
 
+    /// A page has no command line: the run's lines name no command of the
+    /// CLI's, and the run that stops at the probe says so without the one
+    /// that runs it again.
+    #[test]
+    fn the_lines_name_no_command() {
+        let (o, _, _) = entry(None);
+        assert!(
+            !o.lines.iter().any(|l| l.contains("osc-ident --id")),
+            "{:?}",
+            o.lines
+        );
+        let stops = "the run stops: not every step was accepted, so nothing is gathered or tuned";
+        assert!(o.lines.iter().any(|l| l == stops), "{:?}", o.lines);
+    }
+
     /// The stop raised as the probe starts, as Cancel raises it: the probe
     /// ends through its way out, torque off and read back, `run.json`
     /// records it interrupted, and the run stops there with its files kept.

@@ -296,6 +296,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A run a page runs names no command: a tune refused before any write
+    /// keeps the measured inputs, said without the command that continues,
+    /// and a run whose steps were not all accepted stops without the one
+    /// that runs it again.
+    #[test]
+    fn a_run_on_a_page_names_no_command() {
+        let dir = scratch("run-page");
+        let root = dir.join("uid/run");
+        std::fs::create_dir_all(root.join("results")).expect("mkdir");
+        files::step_0(&root);
+        for f in ["rest", "probe", "stops", "window", "spins"] {
+            std::fs::copy(
+                testdata(&format!("gather/{f}.json")),
+                root.join(format!("results/{f}.json")),
+            )
+            .expect("copy");
+        }
+        std::fs::write(
+            root.join("run.json"),
+            r#"{"tool": "osc-client-web-ident test", "steps": {}}"#,
+        )
+        .expect("manifest");
+        let g = given();
+        let policy = testdata("mg90-d/policy.json");
+        let a = args(&g, &dir, &policy);
+        let stop = AtomicBool::new(false);
+        let mut fs = Fs;
+        let mut host = crate::host(&mut fs, &stop);
+        host.tool = "osc-client-web-ident test";
+        let (mut c, d) = fake();
+        let torque = d.field("torque_enable").expect("torque").addr;
+        block_on(c.write(ID, torque, &[1])).expect("torque on");
+        let (lines, accepted) =
+            block_on(of::gather_and_tune(&mut c, ID, &d, &mut host, &a, &root)).expect("runs");
+        assert!(!accepted);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("nothing was written; the measured inputs are kept")
+        );
+
+        let (mut c, d) = fake();
+        let out = dir.join("whole");
+        let a = args(&g, &out, &policy);
+        let inputs = admit(&a).expect("admitted");
+        let (lines, accepted) =
+            block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
+        assert!(!accepted);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("the run stops: not every step was accepted, so nothing is gathered or tuned")
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("osc-ident --id")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A policy that is not there, or no tries: refused before anything
     /// goes on the bus, and no run folder.
     #[test]
