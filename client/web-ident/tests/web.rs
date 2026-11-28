@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use osc_client_web_ident::{IdentRun, RunArgs, RunFile, RunOutcome};
+use osc_client_web_ident::{DeviceKey, IdentRun, RunArgs, RunFile, RunOutcome, find_device};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
@@ -305,5 +305,64 @@ async fn a_stop_from_a_page_timer_lands_mid_step() {
             .any(|l| l == "  torque_enable 0, read back 0"),
         "{:?}",
         o.lines
+    );
+}
+
+#[wasm_bindgen(inline_js = r#"
+export function grant(devices) {
+    const nav = globalThis.navigator ?? (globalThis.navigator = {});
+    const usb = { getDevices: async () => devices };
+    Object.defineProperty(nav, "usb", { value: usb, configurable: true, writable: true });
+}
+export function device(vendorId, productId, serialNumber, name) {
+    return { vendorId, productId, serialNumber, name };
+}
+"#)]
+extern "C" {
+    /// Stands in for the site's granted devices behind `navigator.usb`.
+    fn grant(devices: &js_sys::Array);
+    fn device(vendor: u16, product: u16, serial: Option<String>, name: &str) -> JsValue;
+}
+
+fn key(serial: Option<&str>) -> tsify::Ts<DeviceKey> {
+    DeviceKey {
+        vendor_id: 0x1209,
+        product_id: 0x0001,
+        serial_number: serial.map(Into::into),
+    }
+    .into_ts()
+    .expect("key")
+}
+
+/// A worker finds the lent adapter among the site's devices by its vendor,
+/// product and serial number, and refuses a key that names none, or one
+/// that two devices share.
+#[wasm_bindgen_test]
+async fn a_worker_finds_the_lent_device_by_its_key() {
+    let all = js_sys::Array::of3(
+        &device(0x1209, 0x0001, Some("A1".into()), "first"),
+        &device(0x1209, 0x0001, Some("B2".into()), "second"),
+        &device(0x2e8a, 0x0001, Some("B2".into()), "other vendor"),
+    );
+    grant(&all);
+    let found: JsValue = find_device(key(Some("B2"))).await.expect("found").into();
+    assert_eq!(get(&found, "name").as_string().as_deref(), Some("second"));
+
+    let gone = find_device(key(Some("C3"))).await.err().map(JsValue::from);
+    let why = gone.map(|e| get(&e, "message").as_string().unwrap_or_default());
+    assert!(
+        why.as_deref().is_some_and(|w| w.contains("not among")),
+        "{why:?}"
+    );
+
+    grant(&js_sys::Array::of2(
+        &device(0x1209, 0x0001, None, "first"),
+        &device(0x1209, 0x0001, None, "second"),
+    ));
+    let twins = find_device(key(None)).await.err().map(JsValue::from);
+    let why = twins.map(|e| get(&e, "message").as_string().unwrap_or_default());
+    assert!(
+        why.as_deref().is_some_and(|w| w.contains("several")),
+        "{why:?}"
     );
 }
