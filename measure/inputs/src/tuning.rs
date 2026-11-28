@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::policy::{StallResponse, Switch};
@@ -83,8 +84,13 @@ pub struct Protection {
 pub struct Motion {
     pub move_speed: Option<MoveSpeed>,
     pub speed_up: Option<SpeedUp>,
-    /// The share of the stops' span each soft limit sits inside its stop.
-    pub soft_margin_share: Option<f64>,
+    /// The soft window's width, output deg, centered between the stops;
+    /// none is the profile's rated travel.
+    pub soft_travel_deg: Option<f64>,
+    /// A field this tool no longer reads: its presence is refused, naming
+    /// `soft_travel_deg`.
+    #[serde(rename = "soft_margin_share", skip_serializing)]
+    pub(crate) retired_soft_margin_share: Option<IgnoredAny>,
     /// The angle map's value at the clockwise stop.
     pub angle_cw_stop_deg: Option<f64>,
 }
@@ -292,6 +298,14 @@ impl TuningPolicy {
     /// left out leaves its field as the servo holds it.
     pub fn check(&self) -> Result<(), String> {
         check_key("policy", &self.key)?;
+        if self.motion.retired_soft_margin_share.is_some() {
+            return Err(why::RETIRED_SOFT_MARGIN_SHARE.into());
+        }
+        if let Some(deg) = self.motion.soft_travel_deg
+            && !why::within_a_turn(deg)
+        {
+            return Err(why::soft_travel_deg(deg));
+        }
         let p = &self.protection;
         if !p.run_v.is_some_and(|v| v.is_finite() && v > 0.0) {
             return Err(why::run_v());

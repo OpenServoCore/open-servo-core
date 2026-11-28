@@ -30,7 +30,7 @@ use crate::set::SetFile;
 use crate::sink::Sink;
 use crate::steps::cruise::{self, CruiseInputs, Cruised};
 use crate::steps::verify::{self, Verified, VerifyInputs};
-use crate::steps::{Rig, stops};
+use crate::steps::{Rig, table};
 use crate::tune;
 
 /// What the finish did, for the lines and the manifest.
@@ -663,7 +663,7 @@ where
     let tune_points = first.table.as_ref().map(|t| t.points);
     let np = files::nameplate(host.files, a.nameplate, Some(a.policy))?;
     let board = first.inputs.board.clone();
-    let stops_result = json_at(host.files, &root.join(stops::RESULT))?;
+    let table_result = json_at(host.files, &root.join(table::RESULT))?;
     let keep = (&tune_set, tune_points.as_ref());
     let (stop, clock, feed) = (host.stop, host.clock, host.feed);
 
@@ -736,7 +736,7 @@ where
             &CruiseInputs {
                 nameplate: &np,
                 board: &board,
-                stops: Some(&stops_result),
+                table: Some(&table_result),
             },
         )
         .await

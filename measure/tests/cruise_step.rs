@@ -357,16 +357,16 @@ fn run_with(
     c: &mut Client<Bus>,
     stop: &AtomicBool,
     sink: &mut MemSink,
-    stops: Option<&Value>,
+    table: Option<&Value>,
 ) -> Result<Cruised, Refused> {
-    run_on(c, stop, sink, stops, &board())
+    run_on(c, stop, sink, table, &board())
 }
 
 fn run_on(
     c: &mut Client<Bus>,
     stop: &AtomicBool,
     sink: &mut MemSink,
-    stops: Option<&Value>,
+    table: Option<&Value>,
     b: &Board,
 ) -> Result<Cruised, Refused> {
     let d = descriptor();
@@ -387,7 +387,7 @@ fn run_on(
         &CruiseInputs {
             nameplate: &np,
             board: b,
-            stops,
+            table,
         },
     ))
 }
@@ -709,21 +709,22 @@ fn soft_limits_on_the_stops_or_off_cruise() {
     }
 }
 
-/// The travel from a run folder's stops result: an accepted one that
-/// agrees with the set is the travel, said; one not accepted, or another
-/// servo's, is refused with nothing written.
+/// The travel from a run folder's table result: its pins, where accepted
+/// and agreeing with the set, are the travel, said; one not accepted, or
+/// another servo's, is refused with nothing written. The stops step's
+/// pressed seats are never the travel.
 #[test]
-fn a_stops_result_is_the_travel_where_it_agrees_with_the_set() {
+fn a_table_result_is_the_travel_where_it_agrees_with_the_set() {
     let stops = |lo: f64, hi: f64, verdict: &str| {
-        json!({"step": "stops", "verdict": verdict,
-               "stops": {"low": {"median_counts": lo}, "high": {"median_counts": hi}}})
+        json!({"step": "table", "verdict": verdict,
+               "stops": {"low": {"pin_raw": lo}, "high": {"pin_raw": hi}}})
     };
     let (mut c, log) = servo(MID_POT, Box::new(|_, _, _| {}));
     for (doc, word) in [
         (stops(107.0, 3729.75, "refused"), "is refused, not accepted"),
         (
             stops(600.0, 3000.0, "accepted"),
-            "another servo's or an older seat's",
+            "another servo's or an older table's",
         ),
     ] {
         log.borrow_mut().clear();
@@ -736,11 +737,11 @@ fn a_stops_result_is_the_travel_where_it_agrees_with_the_set() {
         assert!(writes(&log).iter().all(|(a, _, _)| *a == page));
     }
     let mut sink = MemSink::default();
-    let doc = stops(107.0, 3729.75, "accepted");
+    let doc = stops(96.0, 3744.0, "accepted");
     let v = run_with(&mut c, &AtomicBool::new(false), &mut sink, Some(&doc)).expect("starts");
     assert_eq!(v.ended.way, Way::Done, "{}", said(&v));
     let r = result(&sink);
-    assert_eq!(r["travel"]["from"], "the stops step's stops");
+    assert_eq!(r["travel"]["from"], "the table step's pins");
 }
 
 /// A fault latched under the first leg: the loop is not trusted, so the

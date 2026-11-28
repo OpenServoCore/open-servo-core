@@ -1,7 +1,7 @@
 {
   "step": "table",
   "method": "open-loop-slow-and-fast-passes",
-  "revision": 1,
+  "revision": 2,
   "image": "production",
   "capability_flags": 1,
   "verdict": "accepted",
@@ -32,245 +32,245 @@
       0,
       0,
       0,
-      -6,
-      -11,
-      -15,
-      -20,
-      -27,
-      -36,
-      -43,
-      -47,
-      -47,
-      -45,
-      -38,
+      0,
+      0,
+      0,
+      0,
+      -10,
+      -19,
+      -26,
       -30,
+      -30,
+      -28,
       -21,
-      -14,
-      -12,
-      -12,
       -13,
-      -17,
-      -23,
-      -29,
+      -4,
+      3,
+      5,
+      5,
+      4,
+      0,
+      -6,
+      -12,
+      -16,
+      -18,
+      -20,
+      -21,
+      -22,
+      -21
+    ],
+    [
+      -20,
+      -19,
+      -19,
+      -20,
+      -24,
+      -28,
       -32,
       -35,
-      -36,
       -38,
+      -39,
+      -40,
+      -39,
+      -37,
+      -33,
+      -30,
+      -29,
+      -30,
+      -33,
+      -35,
+      -37,
+      -39,
+      -40,
+      -40,
       -38,
-      -38
+      -35,
+      -33,
+      -32,
+      -34,
+      -37,
+      -39,
+      -41,
+      -41
     ],
     [
+      -39,
+      -38,
       -37,
       -36,
       -35,
-      -37,
-      -40,
-      -44,
-      -49,
-      -52,
-      -54,
-      -56,
-      -56,
-      -55,
-      -53,
-      -49,
-      -46,
-      -45,
-      -46,
-      -49,
-      -51,
-      -53,
-      -55,
-      -56,
-      -56,
-      -54,
-      -51,
-      -49,
-      -48,
-      -50,
-      -52,
-      -55,
-      -57,
-      -56
-    ],
-    [
-      -55,
-      -53,
-      -52,
-      -52,
-      -50,
-      -49,
-      -49,
-      -49,
-      -50,
-      -51,
-      -52,
-      -53,
-      -54,
-      -56,
-      -58,
-      -61,
-      -62,
-      -62,
-      -60,
-      -59,
-      -57,
-      -56,
-      -57,
-      -58,
-      -60,
-      -61,
-      -62,
-      -62,
-      -62,
-      -60,
-      -57,
-      -54
-    ],
-    [
-      -50,
-      -47,
-      -45,
-      -45,
-      -46,
-      -48,
-      -50,
-      -52,
-      -54,
-      -54,
-      -53,
-      -50,
-      -47,
-      -45,
-      -43,
-      -43,
-      -43,
-      -43,
-      -40,
       -34,
-      -26,
-      -19,
-      -16,
-      -16,
-      -19,
-      -22,
-      -26,
-      -30,
+      -34,
+      -34,
+      -35,
+      -36,
+      -37,
+      -38,
+      -39,
+      -41,
+      -43,
+      -46,
+      -47,
+      -47,
+      -45,
+      -44,
+      -42,
+      -41,
+      -42,
+      -43,
+      -45,
+      -46,
+      -47,
+      -48,
+      -47,
+      -45,
+      -43,
+      -40
+    ],
+    [
+      -36,
+      -32,
+      -31,
+      -31,
+      -32,
       -33,
       -36,
-      -37,
-      -37
-    ],
-    [
+      -38,
+      -40,
+      -40,
+      -39,
       -36,
-      -34,
-      -30,
-      -23,
-      -17,
-      -11,
-      -6,
-      -2,
-      2,
-      5,
-      6,
-      5,
-      1,
-      -2,
-      -4,
-      -6,
-      -8,
-      -10,
-      -9,
+      -33,
+      -31,
+      -29,
+      -29,
+      -29,
+      -29,
+      -26,
+      -20,
+      -12,
       -6,
       -3,
-      1,
-      4,
-      7,
-      10,
-      11,
-      10,
-      10,
-      12,
-      16,
-      20,
-      22
-    ],
-    [
-      21,
-      20,
-      18,
-      16,
-      14,
-      13,
-      13,
-      13,
-      14,
-      14,
-      13,
-      13,
-      13,
-      14,
-      15,
-      16,
-      18,
-      20,
-      24,
-      28,
-      30,
-      31,
-      32,
-      33,
-      34,
-      35,
-      34,
-      33,
-      32,
-      31,
-      31,
-      31
-    ],
-    [
-      31,
-      31,
-      30,
-      29,
-      27,
-      23,
-      18,
-      13,
-      8,
-      7,
-      7,
-      8,
-      9,
-      11,
-      11,
-      11,
-      9,
-      6,
-      5,
-      8,
-      10,
-      9,
-      6,
-      4,
-      4,
-      6,
-      9,
-      9,
-      5,
-      -1,
+      -3,
       -5,
-      -8
+      -9,
+      -13,
+      -16,
+      -20,
+      -22,
+      -24,
+      -24
     ],
     [
+      -23,
+      -21,
+      -16,
       -10,
-      -8,
       -4,
       2,
-      5,
+      7,
+      11,
+      15,
+      18,
+      19,
+      17,
+      14,
+      11,
+      9,
+      7,
+      4,
       3,
-      0,
+      4,
+      6,
+      10,
+      13,
+      16,
+      20,
+      22,
+      23,
+      23,
+      22,
+      24,
+      28,
+      32,
+      34
+    ],
+    [
+      33,
+      32,
+      30,
+      28,
+      26,
+      25,
+      24,
+      25,
+      26,
+      26,
+      25,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      32,
+      36,
+      39,
+      41,
+      43,
+      44,
+      45,
+      46,
+      46,
+      45,
+      44,
+      43,
+      42,
+      42,
+      42
+    ],
+    [
+      42,
+      42,
+      41,
+      40,
+      38,
+      34,
+      29,
+      23,
+      19,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      22,
+      20,
+      16,
+      15,
+      18,
+      20,
+      19,
+      16,
+      15,
+      14,
+      16,
+      19,
+      19,
+      15,
+      9,
+      5,
+      2
+    ],
+    [
+      1,
+      2,
+      6,
+      12,
+      14,
+      12,
+      6,
       0,
       0,
       0,
@@ -299,14 +299,83 @@
     ]
   ],
   "scale": {
-    "counts_per_deg": 19.951947770104905,
-    "source": "the ripple: the stops' span over the output's degrees between them, the table's cycles from stop to stop x 360 over the nameplate's brushes x rotor_segments x gear_ratio"
+    "counts_per_deg": 19.909414241829584,
+    "source": "the ripple: the pins' span over the output's degrees between them, the table's cycles from pin to pin x 360 over the nameplate's brushes x rotor_segments x gear_ratio"
   },
-  "stops_used": {
-    "raw_min": 6,
-    "raw_max": 3737,
-    "source": "the stops step's stops.low.median_counts up and stops.high.median_counts down: rounded inward, as the gather writes them"
-  },
+  "slots_zero": [
+    {
+      "slot": 0,
+      "code": 255,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 2,
+      "code": 767,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 4,
+      "code": 1279,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 5,
+      "code": 1535,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 6,
+      "code": 1791,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 8,
+      "code": 2303,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 10,
+      "code": 2815,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 11,
+      "code": 3071,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 12,
+      "code": 3327,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 13,
+      "code": 3583,
+      "state": "not wide",
+      "why": "read, not wide: written 0"
+    },
+    {
+      "slot": 14,
+      "code": 3839,
+      "state": "unreached",
+      "why": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+    },
+    {
+      "slot": 15,
+      "code": 4095,
+      "state": "unreached",
+      "why": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+    }
+  ],
   "passes": [
     {
       "n": 1,
@@ -530,7 +599,13 @@
       "pot_speed_cps": 453.6057237916421,
       "reach": {
         "reached": true,
-        "still_counts": 6.0
+        "still_counts": 6.0,
+        "rise": {
+          "free_counts": 1312.505,
+          "seated_counts": 1387.23,
+          "counts": 74.72499999999991,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         5,
@@ -650,7 +725,13 @@
       "pot_speed_cps": 97.47018373871069,
       "reach": {
         "reached": true,
-        "still_counts": 3733.0
+        "still_counts": 3733.0,
+        "rise": {
+          "free_counts": 1295.4650000000001,
+          "seated_counts": 1387.29,
+          "counts": 91.82499999999982,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         11,
@@ -770,7 +851,13 @@
       "pot_speed_cps": 886.2520971156772,
       "reach": {
         "reached": true,
-        "still_counts": 4.0
+        "still_counts": 4.0,
+        "rise": {
+          "free_counts": 1308.69,
+          "seated_counts": 1386.7,
+          "counts": 78.00999999999999,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         17,
@@ -929,7 +1016,13 @@
       "pot_speed_cps": 466.0005807415119,
       "reach": {
         "reached": true,
-        "still_counts": 3732.0
+        "still_counts": 3732.0,
+        "rise": {
+          "free_counts": 1294.2649999999999,
+          "seated_counts": 1386.54,
+          "counts": 92.27500000000009,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         25,
@@ -1049,7 +1142,13 @@
       "pot_speed_cps": 938.9913066360692,
       "reach": {
         "reached": false,
-        "moving": true
+        "moving": true,
+        "rise": {
+          "free_counts": 1309.275,
+          "seated_counts": 1387.38,
+          "counts": 78.10500000000002,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         31,
@@ -1091,7 +1190,13 @@
       "pot_speed_cps": -0.22051458164901794,
       "reach": {
         "reached": true,
-        "still_counts": 6.0
+        "still_counts": 6.0,
+        "rise": {
+          "free_counts": 1386.83,
+          "seated_counts": 1386.23,
+          "counts": -0.599999999999909,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         33,
@@ -1250,7 +1355,13 @@
       "pot_speed_cps": 643.9944468930053,
       "reach": {
         "reached": false,
-        "moving": true
+        "moving": true,
+        "rise": {
+          "free_counts": 1291.125,
+          "seated_counts": 1387.02,
+          "counts": 95.89499999999998,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         41,
@@ -1292,7 +1403,13 @@
       "pot_speed_cps": 0.1774318381573788,
       "reach": {
         "reached": true,
-        "still_counts": 3733.0
+        "still_counts": 3733.0,
+        "rise": {
+          "free_counts": 1386.16,
+          "seated_counts": 1385.87,
+          "counts": -0.290000000000191,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         43,
@@ -1412,7 +1529,13 @@
       "pot_speed_cps": 930.5491121992983,
       "reach": {
         "reached": false,
-        "moving": true
+        "moving": true,
+        "rise": {
+          "free_counts": 1306.85,
+          "seated_counts": 1386.56,
+          "counts": 79.71000000000004,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         49,
@@ -1454,7 +1577,13 @@
       "pot_speed_cps": 0.5902578739425508,
       "reach": {
         "reached": true,
-        "still_counts": 6.0
+        "still_counts": 6.0,
+        "rise": {
+          "free_counts": 1385.77,
+          "seated_counts": 1385.565,
+          "counts": -0.20499999999992724,
+          "min_counts": 30.0
+        }
       },
       "captures": [
         51,
@@ -1668,24 +1797,6 @@
       3625.07
     ],
     "guard_share": 0.03,
-    "near_stop_counts": 32.0,
-    "approach_q15": 4736,
-    "approach_v": 0.6824388586956521,
-    "fast_q15": 6662,
-    "fast_v": 0.9599678371263587,
-    "fast_predicted_cps": 2666.4803240902497,
-    "window_ticks": 173,
-    "pwm_period_ticks": 1200,
-    "i_window_min_ticks": 64,
-    "rung_min_s": 0.15,
-    "free_margin": 1.25,
-    "coast_tau_s": 0.1,
-    "burst_max_s": 3.2,
-    "permit_max_s": 0.7,
-    "drive_deadman_s": 0.05,
-    "poll_deadman_s": 0.1,
-    "coast_s": 0.1,
-    "still_counts": 3.0,
     "approach_legs": [
       {
         "n": 1,
@@ -1729,7 +1840,25 @@
         "secs": 3.713747978210449,
         "speed_cps": 964.2549847245109
       }
-    ]
+    ],
+    "approach_q15": 4736,
+    "approach_v": 0.6824388586956521,
+    "fast_q15": 6662,
+    "fast_v": 0.9599678371263587,
+    "fast_predicted_cps": 2666.4803240902497,
+    "window_ticks": 173,
+    "pwm_period_ticks": 1200,
+    "i_window_min_ticks": 64,
+    "rung_min_s": 0.15,
+    "free_margin": 1.25,
+    "coast_tau_s": 0.1,
+    "burst_max_s": 3.2,
+    "permit_max_s": 0.7,
+    "drive_deadman_s": 0.05,
+    "poll_deadman_s": 0.1,
+    "coast_s": 0.1,
+    "still_counts": 3.0,
+    "g_cycles": 4.0
   },
   "drive_polarity": {
     "stored": true,
@@ -1739,7 +1868,7 @@
   "checks": [
     {
       "name": "rows a code",
-      "value": "median 114.0 over codes 53..3690 from the slow passes",
+      "value": "median 114.0 over codes 132..3716 from the slow passes",
       "bound": "reported",
       "verdict": "not judged"
     },
@@ -1757,37 +1886,43 @@
     },
     {
       "name": "table fit",
-      "value": "18 pieces, 9623 samples (51 % fast) over 80..3680 counts (96 % of the stops' span); not read: rung 17 (slow): it starts within 32 counts of the stop it drives toward, rung 22 (slow): it starts within 32 counts of the stop it drives toward, rung 26 (slow): it starts within 32 counts of the stop it drives toward",
+      "value": "18 pieces, 9459 samples (52 % fast) over 144..3696 counts (97 % of the pins' span); not read: rung 17 (slow): no first contact: its rows read no rise or no ripple line; its rows enter no table, rung 22 (slow): no first contact: its rows read no rise or no ripple line; its rows enter no table, rung 26 (slow): no first contact: its rows read no rise or no ripple line; its rows enter no table",
       "bound": "a rung read each way, no hole over 4 grid intervals",
       "verdict": "pass"
     },
     {
       "name": "table residual",
-      "value": "2.97 counts rms",
+      "value": "2.96 counts rms",
       "bound": "reported",
       "verdict": "not judged"
     },
     {
       "name": "one fast pass out",
-      "value": "counts rms, line out: rung 27 out 0.13; rung 28 out 0.45; rung 29 out 2.66; rung 30 out 2.44",
+      "value": "counts rms, line out: rung 27 out 0.13; rung 28 out 0.45; rung 29 out 2.69; rung 30 out 2.43",
       "bound": "reported",
       "verdict": "not judged"
     },
     {
       "name": "ripple cycles",
-      "value": "2 fast pairs one way sharing a grid interval, the most apart rungs 28 and 30: 363.84 and 364.14 cycles over 2065..3434, 0.03 % of the travel's 960 cycles; 48 pairs with a slow rung reported",
+      "value": "2 fast pairs one way sharing a grid interval, the most apart rungs 28 and 30: 363.84 and 364.14 cycles over 2065..3434, 0.03 % of the travel's 945 cycles; 48 pairs with a slow rung reported",
       "bound": "reported",
       "verdict": "not judged"
     },
     {
+      "name": "stop contacts",
+      "value": "low -36.63 cycles, n 4, spread 0.12 cycles (0.02 deg), sd 0.05; high 902.97 cycles, n 3, spread 0.06 cycles (0.01 deg), sd 0.03; contact to contact 939.60 cycles, 183.01 deg; pins 96..3760",
+      "bound": "a first contact by the ripple at each stop",
+      "verdict": "pass"
+    },
+    {
       "name": "table gains",
-      "value": "7..25 Q4",
-      "bound": "the firmware's pos_lut::validate: zero at and past the stops, every gain in 1..256 Q4",
+      "value": "6..25 Q4",
+      "bound": "the firmware's pos_lut::validate: zero at and past the pins, every gain in 1..256 Q4",
       "verdict": "pass"
     },
     {
       "name": "directions",
-      "value": "up less down 4.69 counts rms, 13.14 max, line out",
+      "value": "up less down 4.68 counts rms, 13.11 max, line out",
       "bound": "reported",
       "verdict": "not judged"
     },
@@ -1799,7 +1934,7 @@
     },
     {
       "name": "position holes",
-      "value": "pot: the longest hole 112 counts (4.97 deg) at raw 7..119; 1 hole in all, the cycles over 7.08 x their pass's typical counts a ripple cycle, of 5659 read; ADC wide codes: the longest run of codes never read 11 counts (0.55 deg) at raw 2048..2058, just above carry 2047; 10 runs, 41 codes in all, over the 3638 codes (182.34 deg) the slow passes crossed, raw 53..3690, 15 counts off each turn",
+      "value": "pot: the longest hole 112 counts (5.63 deg) at raw 7..119; 1 hole in all, the cycles over 6.89 x their pass's typical counts a ripple cycle, of 5659 read; ADC wide codes: the longest run of codes never read 11 counts (0.55 deg) at raw 2048..2058, just above carry 2047; 11 runs, 42 codes in all, over the 3585 codes (180.07 deg) the slow passes crossed, raw 132..3716, 15 counts off each turn",
       "bound": "reported",
       "verdict": "not judged"
     }
@@ -1821,14 +1956,14 @@
   "torque_off": true,
   "wide_codes": {
     "histogram_counts": [
-      38,
-      3705
+      117,
+      3731
     ],
     "rows_a_code": 114.0,
     "all": {
       "swept_counts": [
-        38,
-        3705
+        117,
+        3731
       ],
       "slots": [
         0,
@@ -1854,8 +1989,8 @@
           "code": 255,
           "state": "not wide",
           "skipped": 1,
-          "ratio": 2.502439024390244,
-          "rows_ref": 205.0,
+          "ratio": 2.664935064935065,
+          "rows_ref": 192.5,
           "slot_q4": 0,
           "why_zero": null
         },
@@ -1984,8 +2119,8 @@
           "code": 3583,
           "state": "not wide",
           "skipped": 1,
-          "ratio": 0.4,
-          "rows_ref": 120.0,
+          "ratio": 0.40336134453781514,
+          "rows_ref": 119.0,
           "slot_q4": 0,
           "why_zero": null
         },
@@ -2014,8 +2149,8 @@
     },
     "even_passes": {
       "swept_counts": [
-        38,
-        3705
+        117,
+        3731
       ],
       "slots": [
         0,
@@ -2041,8 +2176,8 @@
           "code": 255,
           "state": "not wide",
           "skipped": 2,
-          "ratio": 3.2409638554216866,
-          "rows_ref": 83.0,
+          "ratio": 3.4935064935064934,
+          "rows_ref": 77.0,
           "slot_q4": 0,
           "why_zero": null
         },
@@ -2201,8 +2336,8 @@
     },
     "odd_passes": {
       "swept_counts": [
-        38,
-        3705
+        117,
+        3731
       ],
       "slots": [
         0,
@@ -2358,8 +2493,8 @@
           "code": 3583,
           "state": "not wide",
           "skipped": 1,
-          "ratio": 0.38333333333333336,
-          "rows_ref": 60.0,
+          "ratio": 0.39316239316239315,
+          "rows_ref": 58.5,
           "slot_q4": 0,
           "why_zero": null
         },
@@ -2391,7 +2526,224 @@
   },
   "table": {
     "method": "one pooled fit, pos = T(phase) + one offset a rung (stage 4 position.fit_pwl form), the motor's ripple the ruler",
-    "near_stop_counts": 32.0,
+    "g_cycles": 4.0,
+    "stops": {
+      "low": {
+        "contact_cycles": -36.63262020305473,
+        "contact_counts": 105.05208414572277,
+        "contact_raw": 105.05208414572274,
+        "pin_raw": 96,
+        "spread_cycles": 0.11737505493023548,
+        "spread_deg": 0.02286131424598967,
+        "sd_cycles": 0.05032185775568938,
+        "n": 4,
+        "odd": [],
+        "left_out": [],
+        "rungs": [
+          {
+            "n": 3,
+            "pass": 1,
+            "rise_counts": 74.72499999999991,
+            "line_hz": 181.25,
+            "contact_row": 7309,
+            "cut_row": 6826,
+            "cycle_from_spin_up": 51.43537726633774,
+            "pot_at_contact": 39,
+            "pot_at_rest": 9.0,
+            "contact_cycles": -36.665914633787175,
+            "samples": 259,
+            "residual_sd_cycles": 0.537423499160552,
+            "counts_per_cycle": 3.7910915877655036,
+            "table_counts_per_cycle": 3.840689634721767,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 9,
+            "pass": 3,
+            "rise_counts": 78.00999999999999,
+            "line_hz": 209.375,
+            "contact_row": 9578,
+            "cut_row": 9079,
+            "cycle_from_spin_up": 74.84714574617598,
+            "pot_at_contact": 77,
+            "pot_at_rest": 5.0,
+            "contact_cycles": -36.54853957885694,
+            "samples": 396,
+            "residual_sd_cycles": 0.4597905206665336,
+            "counts_per_cycle": 4.144912925482542,
+            "table_counts_per_cycle": 4.081047944902068,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 16,
+            "pass": 5,
+            "rise_counts": 78.10500000000002,
+            "line_hz": 212.5,
+            "contact_row": 10402,
+            "cut_row": 9903,
+            "cycle_from_spin_up": 83.0514884308447,
+            "pot_at_contact": 66,
+            "pot_at_rest": 6.0,
+            "contact_cycles": -36.638259661465725,
+            "samples": 448,
+            "residual_sd_cycles": 0.535699176980456,
+            "counts_per_cycle": 4.068686829658496,
+            "table_counts_per_cycle": 4.13118111780489,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 17,
+            "pass": 5,
+            "rise_counts": null,
+            "line_hz": null,
+            "contact_row": null,
+            "cut_row": null,
+            "cycle_from_spin_up": null,
+            "pot_at_contact": null,
+            "pot_at_rest": 5.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its rows read no rise or no ripple line"
+          },
+          {
+            "n": 25,
+            "pass": 7,
+            "rise_counts": 79.71000000000004,
+            "line_hz": 218.75,
+            "contact_row": 10341,
+            "cut_row": 9837,
+            "cycle_from_spin_up": 82.8335596274687,
+            "pot_at_contact": 31,
+            "pot_at_rest": 7.0,
+            "contact_cycles": -36.62698074464374,
+            "samples": 446,
+            "residual_sd_cycles": 0.5194831488280895,
+            "counts_per_cycle": 4.091455023892832,
+            "table_counts_per_cycle": 4.139433042315055,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 26,
+            "pass": 7,
+            "rise_counts": null,
+            "line_hz": null,
+            "contact_row": null,
+            "cut_row": null,
+            "cycle_from_spin_up": null,
+            "pot_at_contact": null,
+            "pot_at_rest": 6.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its rows read no rise or no ripple line"
+          }
+        ]
+      },
+      "high": {
+        "contact_cycles": 902.9664243971949,
+        "contact_counts": 3748.6163504932056,
+        "contact_raw": 3748.6163504932047,
+        "pin_raw": 3760,
+        "spread_cycles": 0.06485365483069927,
+        "spread_deg": 0.012631642932706636,
+        "sd_cycles": 0.03321369561848232,
+        "n": 3,
+        "odd": [],
+        "left_out": [],
+        "rungs": [
+          {
+            "n": 6,
+            "pass": 2,
+            "rise_counts": 91.82499999999982,
+            "line_hz": 268.75,
+            "contact_row": 6787,
+            "cut_row": 6540,
+            "cycle_from_spin_up": 64.20855466332814,
+            "pot_at_contact": 3731,
+            "pot_at_rest": 3739.0,
+            "contact_cycles": 902.986403280152,
+            "samples": 237,
+            "residual_sd_cycles": 0.6398415938692905,
+            "counts_per_cycle": 4.296390375238353,
+            "table_counts_per_cycle": 4.231509066053897,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 13,
+            "pass": 4,
+            "rise_counts": 92.27500000000009,
+            "line_hz": 271.875,
+            "contact_row": 9007,
+            "cut_row": 8753,
+            "cycle_from_spin_up": 94.13813439377492,
+            "pot_at_contact": 3728,
+            "pot_at_rest": 3738.0,
+            "contact_cycles": 902.9664243971949,
+            "samples": 374,
+            "residual_sd_cycles": 0.5950028959082664,
+            "counts_per_cycle": 4.078171894903099,
+            "table_counts_per_cycle": 4.090180688306969,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 21,
+            "pass": 6,
+            "rise_counts": 95.89499999999998,
+            "line_hz": 281.25,
+            "contact_row": 9849,
+            "cut_row": 9598,
+            "cycle_from_spin_up": 105.82096102928972,
+            "pot_at_contact": 3727,
+            "pot_at_rest": 3738.0,
+            "contact_cycles": 902.9215496253213,
+            "samples": 424,
+            "residual_sd_cycles": 0.6452998126181988,
+            "counts_per_cycle": 4.190331635840388,
+            "table_counts_per_cycle": 4.103605707969166,
+            "tracked": true,
+            "why": null
+          },
+          {
+            "n": 22,
+            "pass": 6,
+            "rise_counts": null,
+            "line_hz": null,
+            "contact_row": null,
+            "cut_row": null,
+            "cycle_from_spin_up": null,
+            "pot_at_contact": null,
+            "pot_at_rest": 3739.0,
+            "contact_cycles": null,
+            "samples": null,
+            "residual_sd_cycles": null,
+            "counts_per_cycle": null,
+            "table_counts_per_cycle": null,
+            "tracked": null,
+            "why": "its rows read no rise or no ripple line"
+          }
+        ]
+      },
+      "travel_cycles": 939.5990446002497,
+      "travel_deg": 183.0071051860668,
+      "deg_per_cycle": 0.19477148921956042,
+      "g_cycles": 4.0,
+      "odd_cycles": 4.0,
+      "check_share": 0.15,
+      "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio"
+    },
     "seed": "fast rungs at the middle of the rung; slow rungs on the tallest line within 30 % of the pot's speed over its first 4000 rows tracked over the fast rungs' table's local counts a cycle; a slow rung at [(1.8, 2.2), (0.45, 0.55)] of a fast rung's cycles set aside",
     "rungs": [
       {
@@ -2435,18 +2787,18 @@
         "pass": 1,
         "pass_kind": "half",
         "dir": -1,
-        "counted_over_expected": 0.8837833503715378,
+        "counted_over_expected": 0.9836462788749534,
         "read": true,
-        "samples": 323,
+        "samples": 285,
         "reach_counts": [
-          53.25,
+          125.875,
           300.0
         ],
-        "cycles": 49.86469017027179,
+        "cycles": 44.968794008088096,
         "line_hz": 212.5,
-        "crossings": 51,
+        "crossings": 46,
         "odd_share": 0.0,
-        "speed_spread": 0.1452167454239874
+        "speed_spread": 0.15704039997529398
       },
       {
         "n": 4,
@@ -2489,18 +2841,18 @@
         "pass": 2,
         "pass_kind": "slow",
         "dir": 1,
-        "counted_over_expected": 0.8968450344057345,
+        "counted_over_expected": 0.9166028355392504,
         "read": true,
-        "samples": 237,
+        "samples": 273,
         "reach_counts": [
           3481.5,
-          3696.0
+          3724.5625
         ],
-        "cycles": 49.92304473082169,
-        "line_hz": 260.8471074380165,
-        "crossings": 51,
+        "cycles": 57.816943462414905,
+        "line_hz": 261.25,
+        "crossings": 59,
         "odd_share": 0.0,
-        "speed_spread": 0.040389532925580514
+        "speed_spread": 0.05920996390920047
       },
       {
         "n": 7,
@@ -2543,18 +2895,18 @@
         "pass": 3,
         "pass_kind": "slow",
         "dir": -1,
-        "counted_over_expected": 0.9681528785127828,
+        "counted_over_expected": 0.9768972716452046,
         "read": true,
-        "samples": 447,
+        "samples": 423,
         "reach_counts": [
-          111.5625,
+          126.5,
           409.4375
         ],
-        "cycles": 70.9956623950354,
+        "cycles": 67.85004776767727,
         "line_hz": 208.75,
-        "crossings": 72,
+        "crossings": 69,
         "odd_share": 0.0,
-        "speed_spread": 0.14476033736463773
+        "speed_spread": 0.14521188288199038
       },
       {
         "n": 10,
@@ -2615,18 +2967,18 @@
         "pass": 4,
         "pass_kind": "slow",
         "dir": 1,
-        "counted_over_expected": 0.9449995945982582,
+        "counted_over_expected": 0.9434829078441042,
         "read": true,
-        "samples": 370,
+        "samples": 407,
         "reach_counts": [
           3370.125,
-          3689.5
+          3722.6875
         ],
-        "cycles": 78.8175860988439,
+        "cycles": 86.81670571578127,
         "line_hz": 274.375,
-        "crossings": 80,
+        "crossings": 88,
         "odd_share": 0.0,
-        "speed_spread": 0.065141986518154
+        "speed_spread": 0.06538325079305118
       },
       {
         "n": 14,
@@ -2669,18 +3021,18 @@
         "pass": 5,
         "pass_kind": "slow",
         "dir": -1,
-        "counted_over_expected": 0.9641556889491967,
+        "counted_over_expected": 1.002520714409157,
         "read": true,
-        "samples": 497,
+        "samples": 474,
         "reach_counts": [
-          102.875,
+          126.5,
           437.625
         ],
-        "cycles": 78.93831724427915,
+        "cycles": 75.93295796144731,
         "line_hz": 201.25,
-        "crossings": 80,
+        "crossings": 77,
         "odd_share": 0.0,
-        "speed_spread": 0.13605010108222465
+        "speed_spread": 0.13648427181577327
       },
       {
         "n": 17,
@@ -2689,7 +3041,7 @@
         "dir": -1,
         "counted_over_expected": null,
         "read": false,
-        "why": "it starts within 32 counts of the stop it drives toward"
+        "why": "no first contact: its rows read no rise or no ripple line; its rows enter no table"
       },
       {
         "n": 18,
@@ -2750,18 +3102,18 @@
         "pass": 6,
         "pass_kind": "slow",
         "dir": 1,
-        "counted_over_expected": 0.928463407661044,
+        "counted_over_expected": 0.9315887514252053,
         "read": true,
-        "samples": 420,
+        "samples": 462,
         "reach_counts": [
           3315.125,
-          3689.0
+          3725.25
         ],
-        "cycles": 89.83840097613589,
+        "cycles": 98.90434745042053,
         "line_hz": 274.375,
-        "crossings": 91,
+        "crossings": 100,
         "odd_share": 0.0,
-        "speed_spread": 0.05930342701113764
+        "speed_spread": 0.06366161520400195
       },
       {
         "n": 22,
@@ -2770,7 +3122,7 @@
         "dir": 1,
         "counted_over_expected": null,
         "read": false,
-        "why": "it starts within 32 counts of the stop it drives toward"
+        "why": "no first contact: its rows read no rise or no ripple line; its rows enter no table"
       },
       {
         "n": 23,
@@ -2813,18 +3165,18 @@
         "pass": 7,
         "pass_kind": "slow",
         "dir": -1,
-        "counted_over_expected": 0.9935755773916725,
+        "counted_over_expected": 0.9967625140652216,
         "read": true,
-        "samples": 494,
+        "samples": 471,
         "reach_counts": [
-          111.4375,
+          126.125,
           438.8125
         ],
-        "cycles": 78.89514300687293,
+        "cycles": 75.8663675972736,
         "line_hz": 212.5,
-        "crossings": 80,
+        "crossings": 77,
         "odd_share": 0.0,
-        "speed_spread": 0.1426333551410411
+        "speed_spread": 0.14294942272730327
       },
       {
         "n": 26,
@@ -2833,7 +3185,7 @@
         "dir": -1,
         "counted_over_expected": null,
         "read": false,
-        "why": "it starts within 32 counts of the stop it drives toward"
+        "why": "no first contact: its rows read no rise or no ripple line; its rows enter no table"
       },
       {
         "n": 27,
@@ -2910,19 +3262,19 @@
     ],
     "fit": {
       "span_counts": [
-        80.0,
-        3680.0
-      ],
-      "samples": 9623,
-      "residual_cycles_rms": 0.7634308364879172,
-      "residual_counts_rms": 2.966746113551341,
-      "counts_per_cycle": 3.886070580014219,
-      "up_reach_counts": [
-        205.875,
+        144.0,
         3696.0
       ],
+      "samples": 9459,
+      "residual_cycles_rms": 0.7633892206095013,
+      "residual_counts_rms": 2.9602602317576845,
+      "counts_per_cycle": 3.8777862613702725,
+      "up_reach_counts": [
+        205.875,
+        3725.25
+      ],
       "down_reach_counts": [
-        53.25,
+        125.875,
         3639.6875
       ],
       "offsets_cycles": [
@@ -2932,74 +3284,74 @@
         },
         {
           "rung": 28,
-          "cycles": -826.7229984374108
+          "cycles": -826.7229128786958
         },
         {
           "rung": 29,
-          "cycles": -1.9566482376494525
+          "cycles": -1.9565690732414267
         },
         {
           "rung": 30,
-          "cycles": -829.3138765088049
+          "cycles": -829.3137891586639
         },
         {
           "rung": 3,
-          "cycles": -14.299940673577899
+          "cycles": -14.325193340034886
         },
         {
           "rung": 4,
-          "cycles": 17.270927871275354
+          "cycles": 17.270307251927434
         },
         {
           "rung": 5,
-          "cycles": -738.9412935739341
+          "cycles": -738.940869608383
         },
         {
           "rung": 6,
-          "cycles": -839.1792433127447
+          "cycles": -839.1782787872642
         },
         {
           "rung": 7,
-          "cycles": -878.866887953332
+          "cycles": -878.8692715592915
         },
         {
           "rung": 9,
-          "cycles": -37.38491654484071
+          "cycles": -37.38777197632822
         },
         {
           "rung": 10,
-          "cycles": 17.294612274786697
+          "cycles": 17.294012066580798
         },
         {
           "rung": 13,
-          "cycles": -809.2598962327079
+          "cycles": -809.2567523150514
         },
         {
           "rung": 14,
-          "cycles": -878.8172438598714
+          "cycles": -878.8196424172181
         },
         {
           "rung": 16,
-          "cycles": -45.338510570669506
+          "cycles": -45.33366710162487
         },
         {
           "rung": 18,
-          "cycles": 17.331958114916475
+          "cycles": 17.331331636618263
         },
         {
           "rung": 21,
-          "cycles": -798.275065208299
+          "cycles": -798.2689127884862
         },
         {
           "rung": 23,
-          "cycles": -878.8889873653316
+          "cycles": -878.8913657746987
         },
         {
           "rung": 25,
-          "cycles": -45.322482096021844
+          "cycles": -45.31466944064222
         }
       ],
-      "fast_share": 0.5128338356022031,
+      "fast_share": 0.5217253409451316,
       "fast_reach_counts": [
         262.8125,
         3447.375
@@ -3036,9 +3388,9 @@
         },
         {
           "rung": 3,
-          "from_counts": 53.25,
+          "from_counts": 125.875,
           "to_counts": 300.0,
-          "samples": 323,
+          "samples": 285,
           "slow_only": false
         },
         {
@@ -3058,8 +3410,8 @@
         {
           "rung": 6,
           "from_counts": 3481.5,
-          "to_counts": 3696.0,
-          "samples": 237,
+          "to_counts": 3724.5625,
+          "samples": 273,
           "slow_only": true
         },
         {
@@ -3071,9 +3423,9 @@
         },
         {
           "rung": 9,
-          "from_counts": 111.5625,
+          "from_counts": 126.5,
           "to_counts": 390.625,
-          "samples": 435,
+          "samples": 411,
           "slow_only": false
         },
         {
@@ -3086,8 +3438,8 @@
         {
           "rung": 13,
           "from_counts": 3370.125,
-          "to_counts": 3689.5,
-          "samples": 370,
+          "to_counts": 3722.6875,
+          "samples": 407,
           "slow_only": false
         },
         {
@@ -3099,9 +3451,9 @@
         },
         {
           "rung": 16,
-          "from_counts": 102.875,
+          "from_counts": 126.5,
           "to_counts": 390.5625,
-          "samples": 439,
+          "samples": 416,
           "slow_only": false
         },
         {
@@ -3114,8 +3466,8 @@
         {
           "rung": 21,
           "from_counts": 3320.6875,
-          "to_counts": 3689.0,
-          "samples": 416,
+          "to_counts": 3725.25,
+          "samples": 458,
           "slow_only": false
         },
         {
@@ -3127,16 +3479,16 @@
         },
         {
           "rung": 25,
-          "from_counts": 111.4375,
+          "from_counts": 126.125,
           "to_counts": 390.75,
-          "samples": 437,
+          "samples": 414,
           "slow_only": false
         }
       ],
       "smooth_weight": 1.0
     },
     "gain_q4": [
-      7,
+      6,
       25
     ],
     "validate": "ok",
@@ -3144,57 +3496,57 @@
       {
         "rung": 27,
         "pass": 8,
-        "line_out_counts_rms": 0.1283941558505785,
+        "line_out_counts_rms": 0.12850261331000748,
         "why": null,
         "judged_on_counts": [
           [
-            80.0,
-            3680.0
+            144.0,
+            3696.0
           ]
         ]
       },
       {
         "rung": 28,
         "pass": 9,
-        "line_out_counts_rms": 0.44720506761636103,
+        "line_out_counts_rms": 0.4471995384465392,
         "why": null,
         "judged_on_counts": [
           [
-            80.0,
-            3680.0
+            144.0,
+            3696.0
           ]
         ]
       },
       {
         "rung": 29,
         "pass": 10,
-        "line_out_counts_rms": 2.6568763678765444,
+        "line_out_counts_rms": 2.6914023353548755,
         "why": null,
         "judged_on_counts": [
           [
-            80.0,
+            144.0,
             800.0
           ],
           [
             1008.0,
-            3680.0
+            3696.0
           ]
         ]
       },
       {
         "rung": 30,
         "pass": 11,
-        "line_out_counts_rms": 2.4444039612451065,
+        "line_out_counts_rms": 2.43364168243484,
         "why": null,
         "judged_on_counts": [
           [
-            80.0,
-            3680.0
+            144.0,
+            3696.0
           ]
         ]
       }
     ],
-    "travel_cycles": 960.0957890956133,
+    "pin_cycles": 944.8689930386394,
     "cycles": [
       {
         "rungs": [
@@ -3207,7 +3559,7 @@
           229.35582794929496,
           229.82253747816452
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3221,7 +3573,7 @@
           47.10177749462241,
           46.83391367001075
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3235,7 +3587,7 @@
           194.08822972881887,
           194.51268359155688
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3249,7 +3601,7 @@
           77.63749965850164,
           77.59965515558895
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3263,7 +3615,7 @@
           193.74513551961067,
           193.70653497563438
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3277,7 +3629,7 @@
           78.4898668067658,
           78.46908642148503
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3291,7 +3643,7 @@
           188.58032626669242,
           187.61776805494964
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3305,7 +3657,7 @@
           6.697000121867333,
           6.982678919232477
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3319,7 +3671,7 @@
           7.208688829847135,
           6.905385782638522
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3327,13 +3679,13 @@
           3,
           9
         ],
-        "from_counts": 113.5625,
+        "from_counts": 128.5,
         "to_counts": 298.0,
         "cycles": [
-          46.80931061253863,
-          46.60919083832199
+          43.46612533505815,
+          43.66655749529936
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3341,13 +3693,13 @@
           3,
           16
         ],
-        "from_counts": 104.875,
+        "from_counts": 128.5,
         "to_counts": 298.0,
         "cycles": [
-          46.932293872321154,
-          47.541881311998836
+          43.46612533505815,
+          44.23046008779474
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3355,13 +3707,13 @@
           3,
           25
         ],
-        "from_counts": 113.4375,
+        "from_counts": 128.125,
         "to_counts": 298.0,
         "cycles": [
-          46.81098343269688,
-          46.99278566932034
+          43.502726181136055,
+          43.856774857259026
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3375,7 +3727,7 @@
           500.4864717044516,
           500.83301037168354
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3389,7 +3741,7 @@
           179.8969530091232,
           179.96794572553839
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3403,7 +3755,7 @@
           477.83730502650724,
           477.668312905408
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3417,7 +3769,7 @@
           182.33132309239454,
           181.95207720944782
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3431,7 +3783,7 @@
           132.84483342915325,
           132.69191797017032
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3445,7 +3797,7 @@
           636.9299698327405,
           636.3663073289888
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3459,7 +3811,7 @@
           38.40310354006074,
           38.42092275431947
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3473,7 +3825,7 @@
           26.288400508133464,
           26.078664304272756
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3487,7 +3839,7 @@
           10.14732215102051,
           9.871725388803254
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3496,12 +3848,12 @@
           13
         ],
         "from_counts": 3483.5,
-        "to_counts": 3687.5,
+        "to_counts": 3720.6875,
         "cycles": [
-          47.71283467691578,
-          47.35796595020336
+          55.088391368835595,
+          55.209597579283404
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3510,12 +3862,12 @@
           21
         ],
         "from_counts": 3483.5,
-        "to_counts": 3687.0,
+        "to_counts": 3722.5625,
         "cycles": [
-          47.64733917225625,
-          47.51914747668611
+          55.90053162141885,
+          55.89838651831942
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3529,7 +3881,7 @@
           689.3935030236165,
           689.404670320804
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3543,7 +3895,7 @@
           689.0304380727368,
           689.0368994676411
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3557,7 +3909,7 @@
           363.87771618084827,
           363.84044640197374
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3571,7 +3923,7 @@
           635.142305625149,
           635.6110076082701
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3585,7 +3937,7 @@
           52.717029636305874,
           53.07676275992601
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3599,7 +3951,7 @@
           51.481587065789,
           52.48482424916365
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3607,13 +3959,13 @@
           9,
           16
         ],
-        "from_counts": 113.5625,
+        "from_counts": 128.5,
         "to_counts": 407.4375,
         "cycles": [
-          70.4921943335754,
-          70.3509529114158
+          67.54956099055276,
+          67.41064413977266
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3621,13 +3973,13 @@
           9,
           25
         ],
-        "from_counts": 113.5625,
+        "from_counts": 128.5,
         "to_counts": 407.4375,
         "cycles": [
-          70.4921943335754,
-          70.404596010438
+          67.54956099055276,
+          67.20290509227036
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3641,7 +3993,7 @@
           477.8335825108779,
           477.668312905408
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3655,7 +4007,7 @@
           133.61609738616852,
           132.69191797017032
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3669,7 +4021,7 @@
           481.63700134382833,
           481.9187909167583
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3683,7 +4035,7 @@
           160.1800091790118,
           159.65312718886594
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3697,7 +4049,7 @@
           122.15807902538079,
           121.3988188972553
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3711,7 +4063,7 @@
           30.928878530405118,
           31.069051759563756
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3720,12 +4072,12 @@
           21
         ],
         "from_counts": 3372.125,
-        "to_counts": 3687.0,
+        "to_counts": 3720.6875,
         "cycles": [
-          77.51823291846208,
-          76.06298581691587
+          85.47304006147816,
+          83.66841561550612
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3739,7 +4091,7 @@
           689.0006645457546,
           689.0368994676411
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3753,7 +4105,7 @@
           363.524682704036,
           363.84044640197374
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3767,7 +4119,7 @@
           635.3100605214402,
           635.6110076082701
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3781,7 +4133,7 @@
           82.03432977204176,
           82.56671510955474
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3789,13 +4141,13 @@
           16,
           25
         ],
-        "from_counts": 113.4375,
+        "from_counts": 128.5,
         "to_counts": 435.625,
         "cycles": [
-          78.16388576539491,
-          78.05465326656075
+          75.19883616358103,
+          74.84793100061952
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3809,7 +4161,7 @@
           132.82219873606857,
           132.69191797017032
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3823,7 +4175,7 @@
           458.35402252680865,
           458.9951391481234
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3837,7 +4189,7 @@
           143.78800240304494,
           143.4812155155504
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3851,7 +4203,7 @@
           363.60117947094784,
           363.84044640197374
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3865,7 +4217,7 @@
           635.5961980565514,
           635.6110076082701
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3879,7 +4231,7 @@
           130.61363859418518,
           130.66756343134546
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       },
       {
@@ -3893,66 +4245,66 @@
           363.84044640197374,
           364.13639778631534
         ],
-        "limit": 2.88028736728684,
+        "limit": 2.834606979115918,
         "holds": true
       }
     ],
     "report": {
       "directions": {
-        "up_less_down_counts_rms": 4.693192942933786,
-        "max_counts": 13.138918105387535,
+        "up_less_down_counts_rms": 4.683187873965368,
+        "max_counts": 13.110908582147907,
         "bands": [
           {
             "from_counts": 0.0,
-            "counts_rms": 0.9068995015446608
+            "counts_rms": 0.9049661747318459
           },
           {
             "from_counts": 256.0,
-            "counts_rms": 1.873886507600289
+            "counts_rms": 1.8698917595348805
           },
           {
             "from_counts": 768.0,
-            "counts_rms": 13.138918105387535
+            "counts_rms": 13.110908582147907
           },
           {
             "from_counts": 1024.0,
-            "counts_rms": 7.185501782545054
+            "counts_rms": 7.17018374208295
           },
           {
             "from_counts": 1280.0,
-            "counts_rms": 2.9338443361667874
+            "counts_rms": 2.927589971807699
           },
           {
             "from_counts": 1536.0,
-            "counts_rms": 7.644658930630617
+            "counts_rms": 7.628362059742233
           },
           {
             "from_counts": 1792.0,
-            "counts_rms": 4.65107465322123
+            "counts_rms": 4.641159500196932
           },
           {
             "from_counts": 2048.0,
-            "counts_rms": 5.006093652897884
+            "counts_rms": 4.995421670974722
           },
           {
             "from_counts": 2304.0,
-            "counts_rms": 2.833927847382912
+            "counts_rms": 2.827886484824441
           },
           {
             "from_counts": 2560.0,
-            "counts_rms": 3.0950810588292974
+            "counts_rms": 3.0884829702994456
           },
           {
             "from_counts": 3072.0,
-            "counts_rms": 1.2513436590324245
+            "counts_rms": 1.24867865992823
           },
           {
             "from_counts": 3328.0,
-            "counts_rms": 1.7213509110568794
+            "counts_rms": 1.7176782418449725
           },
           {
             "from_counts": 3584.0,
-            "counts_rms": 1.9724223527672917
+            "counts_rms": 1.9682171341801051
           }
         ],
         "warn_over_counts_rms": 3.0,
@@ -3975,7 +4327,7 @@
         },
         {
           "rung": 3,
-          "spread": 0.1452167454239874,
+          "spread": 0.15704039997529398,
           "warning": false
         },
         {
@@ -3990,7 +4342,7 @@
         },
         {
           "rung": 6,
-          "spread": 0.040389532925580514,
+          "spread": 0.05920996390920047,
           "warning": false
         },
         {
@@ -4005,7 +4357,7 @@
         },
         {
           "rung": 9,
-          "spread": 0.14476033736463773,
+          "spread": 0.14521188288199038,
           "warning": false
         },
         {
@@ -4025,7 +4377,7 @@
         },
         {
           "rung": 13,
-          "spread": 0.065141986518154,
+          "spread": 0.06538325079305118,
           "warning": false
         },
         {
@@ -4040,7 +4392,7 @@
         },
         {
           "rung": 16,
-          "spread": 0.13605010108222465,
+          "spread": 0.13648427181577327,
           "warning": false
         },
         {
@@ -4060,7 +4412,7 @@
         },
         {
           "rung": 21,
-          "spread": 0.05930342701113764,
+          "spread": 0.06366161520400195,
           "warning": false
         },
         {
@@ -4075,7 +4427,7 @@
         },
         {
           "rung": 25,
-          "spread": 0.1426333551410411,
+          "spread": 0.14294942272730327,
           "warning": false
         },
         {
@@ -4122,7 +4474,7 @@
             229.82253747816452
           ],
           "difference_pct": 0.2030738734289277,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4147,7 +4499,7 @@
             46.83391367001075
           ],
           "difference_pct": 0.5686915417199299,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4172,7 +4524,7 @@
             194.51268359155688
           ],
           "difference_pct": 0.21821397705318035,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4197,7 +4549,7 @@
             77.59965515558895
           ],
           "difference_pct": 0.04874513357482486,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4222,7 +4574,7 @@
             193.70653497563438
           ],
           "difference_pct": 0.019923361622867567,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4247,7 +4599,7 @@
             78.46908642148503
           ],
           "difference_pct": 0.02647524594726615,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4272,7 +4624,7 @@
             187.61776805494964
           ],
           "difference_pct": 0.5104234523284934,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4286,8 +4638,8 @@
             {
               "rung": 16,
               "kind": "stop",
-              "speed_cps": 843.6239919354839,
-              "speed_spread": 0.13605010108222465
+              "speed_cps": 822.2119450317124,
+              "speed_spread": 0.13648427181577327
             }
           ],
           "from_counts": 411.8125,
@@ -4297,7 +4649,7 @@
             6.982678919232477
           ],
           "difference_pct": 4.091249227832817,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4311,8 +4663,8 @@
             {
               "rung": 25,
               "kind": "stop",
-              "speed_cps": 824.987322515213,
-              "speed_spread": 0.1426333551410411
+              "speed_cps": 831.6156914893617,
+              "speed_spread": 0.14294942272730327
             }
           ],
           "from_counts": 411.8125,
@@ -4322,7 +4674,7 @@
             6.905385782638522
           ],
           "difference_pct": 4.207464829842645,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4330,24 +4682,24 @@
             {
               "rung": 3,
               "kind": "stop",
-              "speed_cps": 836.0830745341615,
-              "speed_spread": 0.1452167454239874
+              "speed_cps": 766.3952464788732,
+              "speed_spread": 0.15704039997529398
             },
             {
               "rung": 9,
               "kind": "stop",
-              "speed_cps": 834.8514573991031,
-              "speed_spread": 0.14476033736463773
+              "speed_cps": 838.0850118483412,
+              "speed_spread": 0.14521188288199038
             }
           ],
-          "from_counts": 113.5625,
+          "from_counts": 128.5,
           "to_counts": 298.0,
           "cycles": [
-            46.80931061253863,
-            46.60919083832199
+            43.46612533505815,
+            43.66655749529936
           ],
-          "difference_pct": 0.427521302061289,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.45900609468191417,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4355,24 +4707,24 @@
             {
               "rung": 3,
               "kind": "stop",
-              "speed_cps": 836.0830745341615,
-              "speed_spread": 0.1452167454239874
+              "speed_cps": 766.3952464788732,
+              "speed_spread": 0.15704039997529398
             },
             {
               "rung": 16,
               "kind": "stop",
-              "speed_cps": 843.6239919354839,
-              "speed_spread": 0.13605010108222465
+              "speed_cps": 822.2119450317124,
+              "speed_spread": 0.13648427181577327
             }
           ],
-          "from_counts": 104.875,
+          "from_counts": 128.5,
           "to_counts": 298.0,
           "cycles": [
-            46.932293872321154,
-            47.541881311998836
+            43.46612533505815,
+            44.23046008779474
           ],
-          "difference_pct": 1.2822114372740057,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 1.7280732581560991,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4380,24 +4732,24 @@
             {
               "rung": 3,
               "kind": "stop",
-              "speed_cps": 836.0830745341615,
-              "speed_spread": 0.1452167454239874
+              "speed_cps": 766.3952464788732,
+              "speed_spread": 0.15704039997529398
             },
             {
               "rung": 25,
               "kind": "stop",
-              "speed_cps": 824.987322515213,
-              "speed_spread": 0.1426333551410411
+              "speed_cps": 831.6156914893617,
+              "speed_spread": 0.14294942272730327
             }
           ],
-          "from_counts": 113.4375,
+          "from_counts": 128.125,
           "to_counts": 298.0,
           "cycles": [
-            46.81098343269688,
-            46.99278566932034
+            43.502726181136055,
+            43.856774857259026
           ],
-          "difference_pct": 0.386872652970119,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.8072838855006926,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4422,7 +4774,7 @@
             500.83301037168354
           ],
           "difference_pct": 0.06919245737711029,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4447,7 +4799,7 @@
             179.96794572553839
           ],
           "difference_pct": 0.039447422777975534,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4472,7 +4824,7 @@
             477.668312905408
           ],
           "difference_pct": 0.035366037628612505,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4497,7 +4849,7 @@
             181.95207720944782
           ],
           "difference_pct": 0.20799820706316072,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4522,7 +4874,7 @@
             132.69191797017032
           ],
           "difference_pct": 0.11510832227019374,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4547,7 +4899,7 @@
             636.3663073289888
           ],
           "difference_pct": 0.08849677836635048,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4572,7 +4924,7 @@
             38.42092275431947
           ],
           "difference_pct": 0.046378933615606376,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4597,7 +4949,7 @@
             26.078664304272756
           ],
           "difference_pct": 0.7978279385838491,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4611,8 +4963,8 @@
             {
               "rung": 21,
               "kind": "stop",
-              "speed_cps": 1115.378878281623,
-              "speed_spread": 0.05930342701113764
+              "speed_cps": 1112.0526030368762,
+              "speed_spread": 0.06366161520400195
             }
           ],
           "from_counts": 3317.125,
@@ -4622,7 +4974,7 @@
             9.871725388803254
           ],
           "difference_pct": 2.715955580355158,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4630,24 +4982,24 @@
             {
               "rung": 6,
               "kind": "stop",
-              "speed_cps": 1136.1228813559321,
-              "speed_spread": 0.040389532925580514
+              "speed_cps": 1117.0151654411766,
+              "speed_spread": 0.05920996390920047
             },
             {
               "rung": 13,
               "kind": "stop",
-              "speed_cps": 1081.8936314363143,
-              "speed_spread": 0.065141986518154
+              "speed_cps": 1085.4756773399015,
+              "speed_spread": 0.06538325079305118
             }
           ],
           "from_counts": 3483.5,
-          "to_counts": 3687.5,
+          "to_counts": 3720.6875,
           "cycles": [
-            47.71283467691578,
-            47.35796595020336
+            55.088391368835595,
+            55.209597579283404
           ],
-          "difference_pct": 0.7437594708329416,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.21953829725665341,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4655,24 +5007,24 @@
             {
               "rung": 6,
               "kind": "stop",
-              "speed_cps": 1136.1228813559321,
-              "speed_spread": 0.040389532925580514
+              "speed_cps": 1117.0151654411766,
+              "speed_spread": 0.05920996390920047
             },
             {
               "rung": 21,
               "kind": "stop",
-              "speed_cps": 1115.378878281623,
-              "speed_spread": 0.05930342701113764
+              "speed_cps": 1112.0526030368762,
+              "speed_spread": 0.06366161520400195
             }
           ],
           "from_counts": 3483.5,
-          "to_counts": 3687.0,
+          "to_counts": 3722.5625,
           "cycles": [
-            47.64733917225625,
-            47.51914747668611
+            55.90053162141885,
+            55.89838651831942
           ],
-          "difference_pct": 0.26904271633448795,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.0038373572436796433,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4697,7 +5049,7 @@
             689.404670320804
           ],
           "difference_pct": 0.0016198464658378033,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4722,7 +5074,7 @@
             689.0368994676411
           ],
           "difference_pct": 0.0009377429437003637,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4747,7 +5099,7 @@
             363.84044640197374
           ],
           "difference_pct": 0.010242391115813237,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4772,7 +5124,7 @@
             635.6110076082701
           ],
           "difference_pct": 0.07374038169741912,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4797,7 +5149,7 @@
             53.07676275992601
           ],
           "difference_pct": 0.6777601061452526,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4822,7 +5174,7 @@
             52.48482424916365
           ],
           "difference_pct": 1.9114805045586822,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4830,24 +5182,24 @@
             {
               "rung": 9,
               "kind": "stop",
-              "speed_cps": 834.8514573991031,
-              "speed_spread": 0.14476033736463773
+              "speed_cps": 838.0850118483412,
+              "speed_spread": 0.14521188288199038
             },
             {
               "rung": 16,
               "kind": "stop",
-              "speed_cps": 843.6239919354839,
-              "speed_spread": 0.13605010108222465
+              "speed_cps": 822.2119450317124,
+              "speed_spread": 0.13648427181577327
             }
           ],
-          "from_counts": 113.5625,
+          "from_counts": 128.5,
           "to_counts": 407.4375,
           "cycles": [
-            70.4921943335754,
-            70.3509529114158
+            67.54956099055276,
+            67.41064413977266
           ],
-          "difference_pct": 0.20036462688511034,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.2056517447974745,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4855,24 +5207,24 @@
             {
               "rung": 9,
               "kind": "stop",
-              "speed_cps": 834.8514573991031,
-              "speed_spread": 0.14476033736463773
+              "speed_cps": 838.0850118483412,
+              "speed_spread": 0.14521188288199038
             },
             {
               "rung": 25,
               "kind": "stop",
-              "speed_cps": 824.987322515213,
-              "speed_spread": 0.1426333551410411
+              "speed_cps": 831.6156914893617,
+              "speed_spread": 0.14294942272730327
             }
           ],
-          "from_counts": 113.5625,
+          "from_counts": 128.5,
           "to_counts": 407.4375,
           "cycles": [
-            70.4921943335754,
-            70.404596010438
+            67.54956099055276,
+            67.20290509227036
           ],
-          "difference_pct": 0.12426669926442666,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.5131874925595576,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4897,7 +5249,7 @@
             477.668312905408
           ],
           "difference_pct": 0.034587272958383396,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4922,7 +5274,7 @@
             132.69191797017032
           ],
           "difference_pct": 0.691667721238103,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4947,7 +5299,7 @@
             481.9187909167583
           ],
           "difference_pct": 0.05847241864006674,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4972,7 +5324,7 @@
             159.65312718886594
           ],
           "difference_pct": 0.32893117739619254,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -4997,7 +5349,7 @@
             121.3988188972553
           ],
           "difference_pct": 0.6215390207370063,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5022,7 +5374,7 @@
             31.069051759563756
           ],
           "difference_pct": 0.4511667438176295,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5030,24 +5382,24 @@
             {
               "rung": 13,
               "kind": "stop",
-              "speed_cps": 1081.8936314363143,
-              "speed_spread": 0.065141986518154
+              "speed_cps": 1085.4756773399015,
+              "speed_spread": 0.06538325079305118
             },
             {
               "rung": 21,
               "kind": "stop",
-              "speed_cps": 1115.378878281623,
-              "speed_spread": 0.05930342701113764
+              "speed_cps": 1112.0526030368762,
+              "speed_spread": 0.06366161520400195
             }
           ],
           "from_counts": 3372.125,
-          "to_counts": 3687.0,
+          "to_counts": 3720.6875,
           "cycles": [
-            77.51823291846208,
-            76.06298581691587
+            85.47304006147816,
+            83.66841561550612
           ],
-          "difference_pct": 1.8772965362573664,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 2.111337615549917,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5072,7 +5424,7 @@
             689.0368994676411
           ],
           "difference_pct": 0.00525877814591422,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5097,7 +5449,7 @@
             363.84044640197374
           ],
           "difference_pct": 0.08678631005989187,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5122,7 +5474,7 @@
             635.6110076082701
           ],
           "difference_pct": 0.04734768328862134,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5147,7 +5499,7 @@
             82.56671510955474
           ],
           "difference_pct": 0.6447941362407051,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5155,24 +5507,24 @@
             {
               "rung": 16,
               "kind": "stop",
-              "speed_cps": 843.6239919354839,
-              "speed_spread": 0.13605010108222465
+              "speed_cps": 822.2119450317124,
+              "speed_spread": 0.13648427181577327
             },
             {
               "rung": 25,
               "kind": "stop",
-              "speed_cps": 824.987322515213,
-              "speed_spread": 0.1426333551410411
+              "speed_cps": 831.6156914893617,
+              "speed_spread": 0.14294942272730327
             }
           ],
-          "from_counts": 113.4375,
+          "from_counts": 128.5,
           "to_counts": 435.625,
           "cycles": [
-            78.16388576539491,
-            78.05465326656075
+            75.19883616358103,
+            74.84793100061952
           ],
-          "difference_pct": 0.1397480406258412,
-          "limit_cycles": 2.88028736728684,
+          "difference_pct": 0.4666364279869723,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5197,7 +5549,7 @@
             132.69191797017032
           ],
           "difference_pct": 0.0980865902974021,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5222,7 +5574,7 @@
             458.9951391481234
           ],
           "difference_pct": 0.13967830302182854,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5247,7 +5599,7 @@
             143.4812155155504
           ],
           "difference_pct": 0.21336056024661518,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5272,7 +5624,7 @@
             363.84044640197374
           ],
           "difference_pct": 0.06576149886358464,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         },
         {
@@ -5297,7 +5649,7 @@
             635.6110076082701
           ],
           "difference_pct": 0.0023299709321334162,
-          "limit_cycles": 2.88028736728684,
+          "limit_cycles": 2.834606979115918,
           "holds": true
         }
       ],
@@ -5306,7 +5658,7 @@
         {
           "rung": 6,
           "from_counts": 3481.5,
-          "to_counts": 3696.0
+          "to_counts": 3724.5625
         }
       ],
       "one_fast_pass_alone": [
@@ -5314,26 +5666,18 @@
           "from_counts": 800.0,
           "to_counts": 1008.0,
           "rung": 29,
-          "share_of_span": 0.057777777777777775
+          "share_of_span": 0.05855855855855856
         }
       ],
-      "scales": {
-        "span_over_travel_counts_per_deg": 20.24055600826156,
-        "ripple": {
-          "counts_per_deg": 19.951947770104905,
-          "events_per_rev": 6,
-          "from": "the nameplate's brushes x rotor_segments"
-        }
-      },
       "one_way": [
         {
-          "from_counts": 80.0,
+          "from_counts": 144.0,
           "to_counts": 205.875,
           "only": "down"
         },
         {
           "from_counts": 3639.6875,
-          "to_counts": 3680.0,
+          "to_counts": 3696.0,
           "only": "up"
         }
       ]
@@ -5347,13 +5691,13 @@
           "to_counts": 118.80480813779646,
           "counts": 112.05378020529147,
           "deg_from_low_stop": [
-            0.05012041989696639,
-            5.02457209467088
+            -4.470247035847565,
+            1.1552323800504944
           ],
-          "deg": 4.974451674773913,
+          "deg": 5.625479415898059,
           "cycles": 5,
           "shaft_deg": 0.9738574460978021,
-          "r_max": 24.89353710468131,
+          "r_max": 25.073785600953407,
           "rungs": [
             3,
             9,
@@ -5376,13 +5720,13 @@
         "to_counts": 118.80480813779646,
         "counts": 112.05378020529147,
         "deg_from_low_stop": [
-          0.05012041989696639,
-          5.02457209467088
+          -4.470247035847565,
+          1.1552323800504944
         ],
-        "deg": 4.974451674773913,
+        "deg": 5.625479415898059,
         "cycles": 5,
         "shaft_deg": 0.9738574460978021,
-        "r_max": 24.89353710468131,
+        "r_max": 25.073785600953407,
         "rungs": [
           3,
           9,
@@ -5402,7 +5746,7 @@
       "m": [
         {
           "pass": 1,
-          "counts_per_cycle": 3.6838961644517667
+          "counts_per_cycle": 3.6313940397766373
         },
         {
           "pass": 2,
@@ -5410,46 +5754,46 @@
         },
         {
           "pass": 3,
-          "counts_per_cycle": 3.6092427061795433
+          "counts_per_cycle": 3.5832968605532187
         },
         {
           "pass": 4,
-          "counts_per_cycle": 3.6890975823846475
+          "counts_per_cycle": 3.689225732916384
         },
         {
           "pass": 5,
-          "counts_per_cycle": 3.6946488480698463
+          "counts_per_cycle": 3.6917311220667415
         },
         {
           "pass": 6,
-          "counts_per_cycle": 3.7372315419993356
+          "counts_per_cycle": 3.7345997149068353
         },
         {
           "pass": 7,
-          "counts_per_cycle": 3.670807436095629
+          "counts_per_cycle": 3.666802168743743
         }
       ],
-      "s": 1.5193501968788525,
-      "line": 7.07740078751541,
+      "s": 1.4727005462802105,
+      "line": 6.890802185120842,
       "cycles": 5659,
-      "inner_cycles": 5357,
+      "inner_cycles": 5351,
       "not_read": [
         {
           "rung": 17,
-          "why": "the table did not read it: it starts within 32 counts of the stop it drives toward"
+          "why": "the table did not read it: no first contact: its rows read no rise or no ripple line; its rows enter no table"
         },
         {
           "rung": 22,
-          "why": "the table did not read it: it starts within 32 counts of the stop it drives toward"
+          "why": "the table did not read it: no first contact: its rows read no rise or no ripple line; its rows enter no table"
         },
         {
           "rung": 26,
-          "why": "the table did not read it: it starts within 32 counts of the stop it drives toward"
+          "why": "the table did not read it: no first contact: its rows read no rise or no ripple line; its rows enter no table"
         }
       ],
       "far_k": 4.0,
       "noise_percentile": 99.0,
-      "inner_margin_counts": 32.0,
+      "inner": "every cycle of a rung but a stop rung's past its cut",
       "merge_gap_cycles": 1,
       "touch_counts": 2.0
     },
@@ -5459,166 +5803,327 @@
           "from_counts": 256,
           "to_counts": 256,
           "counts": 1,
-          "deg": 0.05012041989696639,
+          "deg": 0.05022749478480411,
           "above_carry": 255
         },
         {
           "from_counts": 512,
           "to_counts": 517,
           "counts": 6,
-          "deg": 0.30072251938179834,
+          "deg": 0.3013649687088246,
           "above_carry": 511
         },
         {
           "from_counts": 1024,
           "to_counts": 1033,
           "counts": 10,
-          "deg": 0.5012041989696638,
+          "deg": 0.502274947848041,
           "above_carry": 1023
         },
         {
           "from_counts": 1280,
           "to_counts": 1280,
           "counts": 1,
-          "deg": 0.05012041989696639,
+          "deg": 0.05022749478480411,
           "above_carry": 1279
         },
         {
           "from_counts": 2048,
           "to_counts": 2058,
           "counts": 11,
-          "deg": 0.5513246188666302,
+          "deg": 0.5525024426328452,
           "above_carry": 2047
         },
         {
           "from_counts": 2304,
           "to_counts": 2305,
           "counts": 2,
-          "deg": 0.10024083979393278,
+          "deg": 0.10045498956960822,
           "above_carry": 2303
         },
         {
           "from_counts": 2560,
           "to_counts": 2565,
           "counts": 6,
-          "deg": 0.30072251938179834,
+          "deg": 0.3013649687088246,
           "above_carry": 2559
         },
         {
           "from_counts": 3072,
           "to_counts": 3072,
           "counts": 1,
-          "deg": 0.05012041989696639,
+          "deg": 0.05022749478480411,
           "above_carry": 3071
         },
         {
           "from_counts": 3328,
           "to_counts": 3329,
           "counts": 2,
-          "deg": 0.10024083979393278,
+          "deg": 0.10045498956960822,
           "above_carry": 3327
         },
         {
           "from_counts": 3584,
           "to_counts": 3584,
           "counts": 1,
-          "deg": 0.05012041989696639,
+          "deg": 0.05022749478480411,
           "above_carry": 3583
+        },
+        {
+          "from_counts": 3712,
+          "to_counts": 3712,
+          "counts": 1,
+          "deg": 0.05022749478480411,
+          "above_carry": null
         }
       ],
       "longest": {
         "from_counts": 2048,
         "to_counts": 2058,
         "counts": 11,
-        "deg": 0.5513246188666302,
+        "deg": 0.5525024426328452,
         "above_carry": 2047
       },
-      "codes": 41,
+      "codes": 42,
       "crossed": {
-        "counts": 3638,
-        "deg": 182.33808758516372,
-        "from_counts": 53,
-        "to_counts": 3690
+        "counts": 3585,
+        "deg": 180.06556880352272,
+        "from_counts": 132,
+        "to_counts": 3716
       },
       "edge_margin_counts": 15
     },
     "source": {
-      "pot": "pot counts a ripple cycle on each slow rung the table read, read again over its whole drive on the line the table read was seeded on; r the counts over the pass's median over its cycles more than inner_margin_counts inside both stops; a hole where r > 1 + far_k s, s the noise_percentile of |r - 1| over those inner cycles; flagged cycles merge_gap_cycles apart on a rung, and holes from any rungs within touch_counts, are one; degrees from the low stop through the run's table over its counts_per_deg, shaft_deg the cycles x 360 over the nameplate's brushes x rotor_segments x gear_ratio",
+      "pot": "pot counts a ripple cycle on each slow rung the table read, read again over its whole drive on the line the table read was seeded on; r the counts over the pass's median over its inner cycles; a hole where r > 1 + far_k s, s the noise_percentile of |r - 1| over those inner cycles; flagged cycles merge_gap_cycles apart on a rung, and holes from any rungs within touch_counts, are one; degrees from the low pin through the run's table over its counts_per_deg, shaft_deg the cycles x 360 over the nameplate's brushes x rotor_segments x gear_ratio",
       "adc": "the ADC's wide codes: runs of codes the slow passes' driven rows never read, each wholly inside the codes a slow rung crossed less the edge margin at each turn (oscnb widecodes.find's rule); degrees over the table's counts_per_deg"
     }
   },
-  "slots_zero": [
-    {
-      "slot": 0,
-      "code": 255,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
+  "stops": {
+    "low": {
+      "contact_cycles": -36.63262020305473,
+      "contact_counts": 105.05208414572277,
+      "contact_raw": 105.05208414572274,
+      "pin_raw": 96,
+      "spread_cycles": 0.11737505493023548,
+      "spread_deg": 0.02286131424598967,
+      "sd_cycles": 0.05032185775568938,
+      "n": 4,
+      "odd": [],
+      "left_out": [],
+      "rungs": [
+        {
+          "n": 3,
+          "pass": 1,
+          "rise_counts": 74.72499999999991,
+          "line_hz": 181.25,
+          "contact_row": 7309,
+          "cut_row": 6826,
+          "cycle_from_spin_up": 51.43537726633774,
+          "pot_at_contact": 39,
+          "pot_at_rest": 9.0,
+          "contact_cycles": -36.665914633787175,
+          "samples": 259,
+          "residual_sd_cycles": 0.537423499160552,
+          "counts_per_cycle": 3.7910915877655036,
+          "table_counts_per_cycle": 3.840689634721767,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 9,
+          "pass": 3,
+          "rise_counts": 78.00999999999999,
+          "line_hz": 209.375,
+          "contact_row": 9578,
+          "cut_row": 9079,
+          "cycle_from_spin_up": 74.84714574617598,
+          "pot_at_contact": 77,
+          "pot_at_rest": 5.0,
+          "contact_cycles": -36.54853957885694,
+          "samples": 396,
+          "residual_sd_cycles": 0.4597905206665336,
+          "counts_per_cycle": 4.144912925482542,
+          "table_counts_per_cycle": 4.081047944902068,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 16,
+          "pass": 5,
+          "rise_counts": 78.10500000000002,
+          "line_hz": 212.5,
+          "contact_row": 10402,
+          "cut_row": 9903,
+          "cycle_from_spin_up": 83.0514884308447,
+          "pot_at_contact": 66,
+          "pot_at_rest": 6.0,
+          "contact_cycles": -36.638259661465725,
+          "samples": 448,
+          "residual_sd_cycles": 0.535699176980456,
+          "counts_per_cycle": 4.068686829658496,
+          "table_counts_per_cycle": 4.13118111780489,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 17,
+          "pass": 5,
+          "rise_counts": null,
+          "line_hz": null,
+          "contact_row": null,
+          "cut_row": null,
+          "cycle_from_spin_up": null,
+          "pot_at_contact": null,
+          "pot_at_rest": 5.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its rows read no rise or no ripple line"
+        },
+        {
+          "n": 25,
+          "pass": 7,
+          "rise_counts": 79.71000000000004,
+          "line_hz": 218.75,
+          "contact_row": 10341,
+          "cut_row": 9837,
+          "cycle_from_spin_up": 82.8335596274687,
+          "pot_at_contact": 31,
+          "pot_at_rest": 7.0,
+          "contact_cycles": -36.62698074464374,
+          "samples": 446,
+          "residual_sd_cycles": 0.5194831488280895,
+          "counts_per_cycle": 4.091455023892832,
+          "table_counts_per_cycle": 4.139433042315055,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 26,
+          "pass": 7,
+          "rise_counts": null,
+          "line_hz": null,
+          "contact_row": null,
+          "cut_row": null,
+          "cycle_from_spin_up": null,
+          "pot_at_contact": null,
+          "pot_at_rest": 6.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its rows read no rise or no ripple line"
+        }
+      ]
     },
-    {
-      "slot": 2,
-      "code": 767,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
+    "high": {
+      "contact_cycles": 902.9664243971949,
+      "contact_counts": 3748.6163504932056,
+      "contact_raw": 3748.6163504932047,
+      "pin_raw": 3760,
+      "spread_cycles": 0.06485365483069927,
+      "spread_deg": 0.012631642932706636,
+      "sd_cycles": 0.03321369561848232,
+      "n": 3,
+      "odd": [],
+      "left_out": [],
+      "rungs": [
+        {
+          "n": 6,
+          "pass": 2,
+          "rise_counts": 91.82499999999982,
+          "line_hz": 268.75,
+          "contact_row": 6787,
+          "cut_row": 6540,
+          "cycle_from_spin_up": 64.20855466332814,
+          "pot_at_contact": 3731,
+          "pot_at_rest": 3739.0,
+          "contact_cycles": 902.986403280152,
+          "samples": 237,
+          "residual_sd_cycles": 0.6398415938692905,
+          "counts_per_cycle": 4.296390375238353,
+          "table_counts_per_cycle": 4.231509066053897,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 13,
+          "pass": 4,
+          "rise_counts": 92.27500000000009,
+          "line_hz": 271.875,
+          "contact_row": 9007,
+          "cut_row": 8753,
+          "cycle_from_spin_up": 94.13813439377492,
+          "pot_at_contact": 3728,
+          "pot_at_rest": 3738.0,
+          "contact_cycles": 902.9664243971949,
+          "samples": 374,
+          "residual_sd_cycles": 0.5950028959082664,
+          "counts_per_cycle": 4.078171894903099,
+          "table_counts_per_cycle": 4.090180688306969,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 21,
+          "pass": 6,
+          "rise_counts": 95.89499999999998,
+          "line_hz": 281.25,
+          "contact_row": 9849,
+          "cut_row": 9598,
+          "cycle_from_spin_up": 105.82096102928972,
+          "pot_at_contact": 3727,
+          "pot_at_rest": 3738.0,
+          "contact_cycles": 902.9215496253213,
+          "samples": 424,
+          "residual_sd_cycles": 0.6452998126181988,
+          "counts_per_cycle": 4.190331635840388,
+          "table_counts_per_cycle": 4.103605707969166,
+          "tracked": true,
+          "why": null
+        },
+        {
+          "n": 22,
+          "pass": 6,
+          "rise_counts": null,
+          "line_hz": null,
+          "contact_row": null,
+          "cut_row": null,
+          "cycle_from_spin_up": null,
+          "pot_at_contact": null,
+          "pot_at_rest": 3739.0,
+          "contact_cycles": null,
+          "samples": null,
+          "residual_sd_cycles": null,
+          "counts_per_cycle": null,
+          "table_counts_per_cycle": null,
+          "tracked": null,
+          "why": "its rows read no rise or no ripple line"
+        }
+      ]
     },
-    {
-      "slot": 4,
-      "code": 1279,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 5,
-      "code": 1535,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 6,
-      "code": 1791,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 8,
-      "code": 2303,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 10,
-      "code": 2815,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 11,
-      "code": 3071,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 12,
-      "code": 3327,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 13,
-      "code": 3583,
-      "state": "not wide",
-      "why": "read, not wide: written 0"
-    },
-    {
-      "slot": 14,
-      "code": 3839,
-      "state": "unreached",
-      "why": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
-    },
-    {
-      "slot": 15,
-      "code": 4095,
-      "state": "unreached",
-      "why": "the rows do not reach 64 codes either side of it inside the swept range: written 0"
+    "travel_cycles": 939.5990446002497,
+    "travel_deg": 183.0071051860668,
+    "deg_per_cycle": 0.19477148921956042,
+    "g_cycles": 4.0,
+    "odd_cycles": 4.0,
+    "check_share": 0.15,
+    "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio"
+  },
+  "estimates": {
+    "pot_step4_counts": {
+      "value": 5.0,
+      "sd": null,
+      "n": 30,
+      "lo": null,
+      "hi": null,
+      "unit": "raw counts",
+      "source": "the worst level 4 successive RAIL-period pot steps all pass, every phase of the MEDIUM period, over the 30 drive bursts of the table's rungs; no run spans a hole in the ticks; samples inside a pot hole left out: the 1 pot hole this step found (results/table.json holes.pot)"
     }
-  ]
+  }
 }

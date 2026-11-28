@@ -326,8 +326,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &SpinsInputs<'_>) -> Result<Be
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let travel_deg = np
-        .travel_deg
-        .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
+        .rated_travel_deg
+        .ok_or_else(|| Refused("the nameplate has no usable rated_travel_deg".into()))?;
     let per_rev = np.events_per_rev().map_err(Refused)?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let servo = meta::servo(&state, rig.d, &line);

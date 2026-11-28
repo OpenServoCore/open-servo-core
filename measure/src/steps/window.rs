@@ -627,8 +627,8 @@ async fn before<P: Pipe>(rig: &mut Rig<'_, P>, i: &WindowInputs<'_>) -> Result<B
         .speed_row()
         .ok_or_else(|| Refused("the nameplate has no usable no_load".into()))?;
     let travel_deg = np
-        .travel_deg
-        .ok_or_else(|| Refused("the nameplate has no usable travel_deg".into()))?;
+        .rated_travel_deg
+        .ok_or_else(|| Refused("the nameplate has no usable rated_travel_deg".into()))?;
     let sense = rest::Sense::of(&state, rig.d)?;
     let pos = rest::pos_now(rig.c, rig.id, rig.d).await?;
     let band = Band {

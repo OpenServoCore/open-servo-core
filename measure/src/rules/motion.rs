@@ -9,7 +9,9 @@
 use osc_servo_core::kernel::phases::loops::trajectory::GOAL_LIM_COUNTS;
 
 use super::units::{counts_per_deg, deg_to_counts, medium_hz};
-use super::{Ctx, Fail, Format, Kind, Rule, get, q, table};
+use super::{Ctx, Fail, Format, Kind, Outcome, Rule, Set, get, q, table};
+use crate::fit::stopcontact;
+use crate::inputs::Inputs;
 
 fn stops(c: &mut Ctx) -> Result<(f64, f64), Fail> {
     let s = get!(c, measured, stops)?;
@@ -24,20 +26,94 @@ fn raw_max(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(stops(c)?.1)
 }
 
-/// A soft limit: the policy's share of the stops' span inside a stop. A
-/// share of 0, or none, leaves both at 0, off: the servo then holds to
-/// its physical stops (protocol sec 5.8).
-fn soft(c: &mut Ctx, high: bool) -> Result<f64, Fail> {
-    let Some(share) = c.inputs.policy.soft_margin_share.filter(|&s| s != 0.0) else {
-        return Ok(0.0);
+/// The narrowest soft window, as a multiple of the hold margin K
+/// ([`stopcontact::hold_margin_deg`]): one K either side of the window's
+/// center, the room each soft limit keeps from its stop. A width under it,
+/// a typo of 0 among them, would put both limits on the center, where a goal
+/// has no travel to land in.
+pub const SOFT_FLOOR_MARGINS: f64 = 2.0;
+
+/// The soft window in counts: its middle, its half width, and what it was
+/// narrowed or widened from where the stated width does not fit.
+struct Window {
+    mid: f64,
+    half: f64,
+    said: Option<String>,
+}
+
+/// The soft window (oscnb `constants.soft_window`): centered between the
+/// two first contacts by the ripple, its width W the policy's
+/// soft_travel_deg where it states one, else the profile's rated travel,
+/// clamped to at most the physical travel P less the hold margin K at each
+/// end and to at least [`SOFT_FLOOR_MARGINS`] x K. The degrees are the
+/// table's, whose counts are linear in ripple cycles, so a half width
+/// reaches counts only through the table. A clamp is said, never refused;
+/// stops with no room for a window at all are refused.
+fn window(c: &mut Ctx) -> Result<Window, Fail> {
+    let (asked, whose) = match c.inputs.policy.soft_travel_deg {
+        Some(_) => (
+            get!(c, policy, soft_travel_deg)?,
+            "the policy's soft_travel_deg",
+        ),
+        None => (get!(c, nameplate, rated_travel_deg)?, "the rated travel"),
     };
-    let share = c.fact("policy.soft_margin_share", share);
-    let (lo, hi) = stops(c)?;
-    Ok(if high {
-        hi - share * (hi - lo)
-    } else {
-        lo + share * (hi - lo)
+    let s = get!(c, measured, stops)?;
+    let [lo, hi] = s
+        .contact_counts
+        .ok_or_else(|| Fail::missing("measured.stops.contact_counts"))?;
+    let cpd = counts_per_deg(c)?;
+    let events = get!(c, nameplate, brushes)? * get!(c, nameplate, rotor_segments)?;
+    let gear = get!(c, nameplate, gear_ratio)?;
+    let margin = stopcontact::hold_margin_deg(stopcontact::deg_per_cycle(events, gear));
+    let physical = (hi - lo) / cpd;
+    let (most, least) = (physical - 2.0 * margin, SOFT_FLOOR_MARGINS * margin);
+    if most <= 0.0 {
+        return Err(Fail::refused(format!(
+            "the stops are {physical:.2} deg apart, no wider than {margin:.2} deg at each end: there is no room for a soft window"
+        )));
+    }
+    let width = asked.max(least).min(most);
+    let said = (width != asked).then(|| {
+        let why = if asked > most {
+            format!("over the stops' {physical:.2} deg less {margin:.2} deg at each end")
+        } else {
+            format!("under the least window, {least:.2} deg")
+        };
+        format!(
+            "soft limits: {whose}, {asked} deg, is {why}: the window is clamped to {width:.2} deg, centered on the stops"
+        )
+    });
+    Ok(Window {
+        mid: (lo + hi) / 2.0,
+        half: width / 2.0 * cpd,
+        said,
     })
+}
+
+/// A soft limit: an end of the soft window (protocol sec 5.8).
+fn soft(c: &mut Ctx, high: bool) -> Result<f64, Fail> {
+    let w = window(c)?;
+    Ok(if high { w.mid + w.half } else { w.mid - w.half })
+}
+
+/// Each soft limit of a window narrowed or widened from its stated width
+/// says so.
+pub(super) fn say_soft(set: &mut Set, inputs: &Inputs) {
+    let Ok(Window {
+        said: Some(said), ..
+    }) = window(&mut Ctx::new(inputs))
+    else {
+        return;
+    };
+    for (name, outcome) in &mut set.fields {
+        if let ("pos_min_soft_counts" | "pos_max_soft_counts", Outcome::Bound(e)) = (*name, outcome)
+        {
+            e.clamp = Some(match e.clamp.take() {
+                Some(was) => format!("{was}; {said}"),
+                None => said.clone(),
+            });
+        }
+    }
 }
 
 fn soft_min(c: &mut Ctx) -> Result<f64, Fail> {
@@ -113,8 +189,8 @@ const COUNTS: &str = "counts";
 pub const RULES: &[Rule] = table![
     pos_min_phys_counts: "stops.low", Format::of(Kind::I32), COUNTS, Measured, raw_min;
     pos_max_phys_counts: "stops.high", Format::of(Kind::I32), COUNTS, Measured, raw_max;
-    pos_min_soft_counts: "soft_min.stops", SOFT, COUNTS, Policy, soft_min;
-    pos_max_soft_counts: "soft_max.stops", SOFT, COUNTS, Policy, soft_max;
+    pos_min_soft_counts: "soft_min.window", SOFT, COUNTS, Policy, soft_min;
+    pos_max_soft_counts: "soft_max.window", SOFT, COUNTS, Policy, soft_max;
     pos_deadband_counts: "deadband.pot_noise", Format::of(Kind::U16), "raw counts", Policy,
         deadband;
     velocity_limit_cps: "velocity_limit.policy", Format::of(Kind::U16), "count/s", Policy,

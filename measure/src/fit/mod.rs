@@ -6,6 +6,7 @@ pub mod postable;
 pub mod rise;
 pub mod runup;
 pub mod seated;
+pub mod stopcontact;
 pub mod widecodes;
 pub mod window;
 

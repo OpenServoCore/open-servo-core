@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::why;
 
-pub use crate::why::{COUNTS_MISSING, RETIRED_RIPPLE_PER_REV};
+pub use crate::why::{COUNTS_MISSING, RETIRED_RIPPLE_PER_REV, RETIRED_TRAVEL_DEG};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Nameplate {
@@ -20,9 +20,12 @@ pub struct Nameplate {
     /// Whether the count rises as the horn turns counterclockwise, facing
     /// it: which stop is the counterclockwise end.
     pub count_rises_ccw: Option<bool>,
-    /// The output's travel from stop to stop, deg, as the sheet states it or
-    /// the user measured it.
-    pub travel_deg: Option<f64>,
+    /// The output's travel as the maker rates it, deg.
+    pub rated_travel_deg: Option<f64>,
+    /// A version 0 nameplate's stop-to-stop travel, as the sheet stated it
+    /// or the user measured it: never read as the rating, only noted.
+    #[serde(default, rename = "travel_deg")]
+    pub(crate) v0_travel_deg: Option<f64>,
     pub operating_v: Option<VoltRange>,
     #[serde(default)]
     pub no_load: Vec<NoLoad>,
@@ -124,8 +127,8 @@ impl Nameplate {
         if !self.gear_ratio.is_some_and(|r| r > 0.0) {
             return Err(why::gear_ratio());
         }
-        if !self.travel_deg.is_some_and(|t| t > 0.0 && t <= 360.0) {
-            return Err(why::travel_deg());
+        if !self.rated_travel_deg.is_some_and(why::within_a_turn) {
+            return Err(why::rated_travel_deg());
         }
         if self.count_rises_ccw.is_none() {
             return Err(why::count_rises_ccw());
@@ -244,7 +247,7 @@ mod tests {
         let cases: [(&str, Take); 13] = [
             ("gear_class", |n| n.gear_class = None),
             ("gear_ratio", |n| n.gear_ratio = None),
-            ("travel_deg", |n| n.travel_deg = None),
+            ("rated_travel_deg", |n| n.rated_travel_deg = None),
             ("count_rises_ccw", |n| n.count_rises_ccw = None),
             ("brushes and rotor_segments", |n| n.brushes = None),
             ("brushes and rotor_segments", |n| n.rotor_segments = None),
