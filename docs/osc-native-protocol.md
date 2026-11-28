@@ -383,7 +383,7 @@ independently snapshotted and CRC'd.
 
 | flag  | name           | meaning                                                                        |
 | ----- | -------------- | ------------------------------------------------------------------------------ |
-| bit 0 | HOLD / PROFILE | writes: staged, applied by COMMIT · reads: payload names a profile slot (§5.2) |
+| bit 0 | HOLD / PROFILE | writes: staged, applied by COMMIT · reads: payload names a profile slot (protocol sec 5.2) |
 | bit 1 | —              | reserved (0) — future extension                                                |
 | bit 2 | NOREPLY        | suppress the status frame                                                      |
 | bit 3 | PER_TARGET     | group op uses per-target addressing                                            |
@@ -558,7 +558,7 @@ comms RW:
   a host that doesn't know a bit ignores the bytes it covers.
 - Everything else is model-specific space (`0x020..0x200`,
   `0x220..0x280`, `0x2C0..0x400`), except the profile region's own pin
-  at `0x280..0x2C0` (§5.2).
+  at `0x280..0x2C0` (protocol sec 5.2).
 - Deliberately absent: a torque switch (SAVE self-gates via `access`,
   §9.4, and sensor nodes have no torque), the UID (MGMT ENUM is its only
   reader, §9.2), boot mode (MGMT REBOOT's payload owns it), and every
@@ -1283,6 +1283,18 @@ Each side is judged against the other as stored, so a host writes both
 in one WRITE, which is the only way to reach 0 / 0 from limits that are
 on. A write to the physical stops reaches the kernel as a soft limit
 write does, so off limits follow the stops at once.
+
+**Goal range.** A `goal_position` write is judged against the physical
+stops as stored,
+`pos_min_phys_counts <= goal_position <= pos_max_phys_counts` with both
+ends included, in every mode: a goal past either stop is a `validation`
+nack (sec 5.3) and the write stores nothing, so the goal in force
+stands. The bound is that CONFIG pair, not the pot's `raw_min` /
+`raw_max` in CALIB. The soft limits refuse no goal, they clamp it: a
+goal inside the physical stops but past a soft limit is stored as
+written, and the trajectory runs to the soft wall and rests there
+(unit `i32_withins_match_their_pairs_across_every_bound`,
+`goal_q16_is_where_the_profile_lands`).
 
 **Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
 the motor stall on purpose, which calibration needs to seat a hard

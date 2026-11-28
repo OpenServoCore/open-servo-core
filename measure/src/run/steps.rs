@@ -686,9 +686,10 @@ pub async fn step_verify<P: Pipe>(
 }
 
 /// `step cruise` into `<out>/<servo>/<UTC time>/`: the friction line from
-/// closed-loop cruises on the installed set, the travel the stops
-/// step's of the run folder `run` where given, else the set's. The lines it
-/// prints, and whether the line was accepted.
+/// closed-loop cruises on the installed set, over the travel the table
+/// result of the run folder `run` pins where given, else the set's
+/// `raw_min` / `raw_max`. The lines it prints, and whether the line was
+/// accepted.
 #[allow(clippy::too_many_arguments)]
 pub async fn step_cruise<P: Pipe>(
     c: &mut Client<P>,
