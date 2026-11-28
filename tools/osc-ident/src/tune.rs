@@ -612,6 +612,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A tune a page runs says the CLI's lines but the command that stores
+    /// the accepted set: a page has no command line.
+    #[test]
+    fn a_tune_on_a_page_names_no_command() {
+        let dir = scratch("tune-page");
+        let out = dir.join("run");
+        let script = vec![(Way::Refused, vec![sc::REST]), (Way::Done, vec![])];
+        let (mut c, _) = servo(Box::new(|_, _| {}));
+        let (cli, _) = run_scripted(&mut c, &out, 4, script.clone()).expect("runs");
+        std::fs::remove_dir_all(&out).expect("a new folder for the page's");
+        let (mut c, _) = servo(Box::new(|_, _| {}));
+        let stop = AtomicBool::new(false);
+        let mut fs = Fs;
+        let mut host = crate::host(&mut fs, &stop);
+        host.tool = "osc-client-web-ident test";
+        let mut at = 0;
+        let check = async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| {
+            let (way, failed) = script[at.min(script.len() - 1)].clone();
+            at += 1;
+            verified(rig, way, &failed)
+        };
+        let (page, accepted) = block_on(of::tune_with(
+            &mut c,
+            ID,
+            &descriptor(),
+            &mut host,
+            &testdata("mg90-d"),
+            &out,
+            4,
+            check,
+        ))
+        .expect("runs");
+        assert!(accepted);
+        let store = |l: &String| l.starts_with("to store it: osc-ident ");
+        assert_eq!(cli.iter().filter(|l| store(l)).count(), 1, "{cli:?}");
+        let want: Vec<String> = cli.iter().filter(|l| !store(l)).cloned().collect();
+        assert_eq!(page, want);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A field the rules store at a bound is said in the tune's lines,
     /// under the starting gain: a move speed at the ceiling in deg/s lands
     /// a count over the ceiling, which rounds down.

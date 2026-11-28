@@ -36,7 +36,7 @@ pub const FINAL: &str = "final";
 
 /// What a run takes from the host it runs on: its files, its clock, the
 /// stop flag a step reads between rungs, the feed its progress goes to,
-/// and the tool's name the run's records carry.
+/// and the tool's name the run's records carry, which says who runs.
 pub struct Host<'a> {
     pub files: &'a mut dyn Store,
     /// Unix seconds: the CLI's system clock, the browser's `Date.now()`.
@@ -45,8 +45,19 @@ pub struct Host<'a> {
     /// The browser's progress block; [`quiet`] for the CLI, which prints
     /// the lines the run returns.
     pub feed: &'a dyn Fn(&Progress),
-    /// `osc-ident 0.1.0`.
+    /// `osc-ident 0.1.0`, `osc-client-web-ident 0.1.0`.
     pub tool: &'a str,
+}
+
+/// The CLI's name, the first word of the `tool` its runs carry.
+pub const CLI: &str = "osc-ident";
+
+impl Host<'_> {
+    /// Whether the CLI runs: only its lines name a command to type, as no
+    /// other host has its command line.
+    pub fn cli(&self) -> bool {
+        self.tool.split(' ').next() == Some(CLI)
+    }
 }
 
 /// What a run tells its host's feed as it goes, each step by its key in
@@ -219,10 +230,11 @@ pub async fn run<P: Pipe>(
         for step in [GATHER, TUNE, cruise::STEP, FINAL] {
             tell_end(feed, step, &not_run(why));
         }
-        lines.push(format!(
-            "the run stops: {why}, so nothing is gathered or tuned; to run it again: {}",
-            again(id, a)
-        ));
+        let mut stops = format!("the run stops: {why}, so nothing is gathered or tuned");
+        if host.cli() {
+            stops.push_str(&format!("; to run it again: {}", again(id, a)));
+        }
+        lines.push(stops);
         tell_lines(feed, &lines, &mut told);
         return Ok((lines, false));
     }
@@ -317,13 +329,17 @@ pub async fn gather_and_tune<P: Pipe>(
             let tune = json!({"state": "refused", "why": why, "started": t1, "ended": t2});
             record(host.files, root, gather, tune.clone())?;
             lines.push(format!("tune refused: {why}"));
-            lines.push(format!(
-                "nothing was written; the measured inputs are kept: osc-ident --id {} tune --inputs {} --out {} --tries {} continues from them",
-                id.as_byte(),
-                inputs_dir.display(),
-                tune_dir.display(),
-                a.tries
-            ));
+            let mut kept = "nothing was written; the measured inputs are kept".to_string();
+            if host.cli() {
+                kept.push_str(&format!(
+                    ": osc-ident --id {} tune --inputs {} --out {} --tries {} continues from them",
+                    id.as_byte(),
+                    inputs_dir.display(),
+                    tune_dir.display(),
+                    a.tries
+                ));
+            }
+            lines.push(kept);
             tell_lines(feed, &lines, &mut told);
             tell_end(feed, TUNE, &tune);
             Ok((lines, false))

@@ -246,6 +246,7 @@ where
     install::gate(&first, &state, d, points).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let root = out.to_path_buf();
+    let cli = host.cli();
     let (stop, clock, tool, feed) = (host.stop, host.clock, host.tool, host.feed);
     let mut sink = At {
         files: &mut *host.files,
@@ -386,15 +387,19 @@ where
                 n + 1,
                 100.0 * kp / k0
             ));
-            let table = match (file.table().0, &r.table) {
-                ("LIVE", Some(_)) => format!(" --table {}", inputs.join("pos_lut.json").display()),
-                _ => String::new(),
-            };
-            lines.push(format!(
-                "to store it: osc-ident --id {} save --set {}{table}",
-                id.as_byte(),
-                shown("set.json")
-            ));
+            if cli {
+                let table = match (file.table().0, &r.table) {
+                    ("LIVE", Some(_)) => {
+                        format!(" --table {}", inputs.join("pos_lut.json").display())
+                    }
+                    _ => String::new(),
+                };
+                lines.push(format!(
+                    "to store it: osc-ident --id {} save --set {}{table}",
+                    id.as_byte(),
+                    shown("set.json")
+                ));
+            }
             lines.push(format!(
                 "live on the servo, volatile: the accepted set {}; a reboot returns the stored one",
                 &file.hash()[..12]

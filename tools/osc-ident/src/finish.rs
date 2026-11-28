@@ -597,6 +597,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A finish a page runs says the CLI's lines but the command that stores
+    /// the final set: a page has no command line.
+    #[test]
+    fn a_finish_on_a_page_names_no_command() {
+        let g = given();
+        let finished = |name: &str, tool: &'static str| {
+            let dir = scratch(name);
+            let (root, _, mut c, _) = tuned(&dir, &g);
+            let d = crate::descriptor_builtin().expect("descriptor");
+            let doc = json_at(&testdata("gather/cruise.json")).expect("cruise.json");
+            let stop = AtomicBool::new(false);
+            let mut fs = Fs;
+            let mut host = crate::host(&mut fs, &stop);
+            host.tool = tool;
+            let f = block_on(osc_measure::run::finish::finish_with(
+                &mut c,
+                ID,
+                &d,
+                &mut host,
+                &args(&g, &dir),
+                &root,
+                async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| cruised(rig, Way::Done, &doc),
+                async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| checked(rig, Way::Done),
+            ))
+            .expect("finishes");
+            assert_eq!(f.last["state"], "accepted", "{}", f.last);
+            let shown = dir.display().to_string();
+            let lines: Vec<String> = f.lines.iter().map(|l| l.replace(&shown, "<dir>")).collect();
+            let _ = std::fs::remove_dir_all(dir);
+            lines
+        };
+        let cli = finished("finish-page-cli", "osc-ident test");
+        let page = finished("finish-page", "osc-client-web-ident test");
+        let store = |l: &String| l.starts_with("to store it: osc-ident ");
+        assert_eq!(cli.iter().filter(|l| store(l)).count(), 1, "{cli:?}");
+        let want: Vec<String> = cli.iter().filter(|l| !store(l)).cloned().collect();
+        assert_eq!(page, want);
+    }
+
     /// The final set refused by its check: the tune's set goes back on the
     /// servo, whole; nothing saved.
     #[test]
