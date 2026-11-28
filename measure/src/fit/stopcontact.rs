@@ -58,12 +58,17 @@ pub const CUT_CYCLES: f64 = 4.0;
 pub const SAMPLE_ROWS: usize = 16;
 /// A rung this far off its stop's median, cycles, is named.
 pub const ODD_CYCLES: f64 = 4.0;
-/// K, the least distance from a soft limit to first contact, deg: the high
-/// contact moved 0.58 deg within one day of sittings and the hold band is
-/// 0.2..0.3 deg, 0.9 deg together, rounded up.
-pub const HOLD_MARGIN_DEG: f64 = 1.0;
-/// On a low-ratio train, where [`CUT_CYCLES`] is more than 1 deg, K stays
-/// this many cuts, so a soft limit lies on samples a table was fitted on.
+/// K, the least distance from a soft limit to first contact, deg: a landing
+/// at a soft limit overshoots it by up to 0.75 deg at the default move and
+/// rests within the hold band, 0.3 deg, and the pot's low-end bumper starts
+/// up to 1.2 deg above the run's ripple contact, 2.3 deg together, rounded
+/// up. A K that covers only the contact's drift and the hold band lets every
+/// landing press the bumper, where a worn pot misreads and the loop answers
+/// the false error at full duty.
+pub const HOLD_MARGIN_DEG: f64 = 2.5;
+/// On a low-ratio train, where this many [`CUT_CYCLES`] are wider than
+/// [`HOLD_MARGIN_DEG`], K is that, so a soft limit lies on samples a table
+/// was fitted on.
 pub const HOLD_CUT_RATIO: f64 = 1.25;
 
 /// The shunt's levels on one stop rung: free over [`FREE_S`] after the
@@ -510,7 +515,7 @@ mod tests {
         let per = deg_per_cycle(6, 308.0533);
         assert!((per - 0.1948).abs() < 5e-5);
         assert!((travel_deg(27.31, 965.08, 6, 308.0533) - 937.77 * per).abs() < 1e-9);
-        assert_eq!(hold_margin_deg(per), 1.0);
+        assert_eq!(hold_margin_deg(per), 2.5);
         assert!((hold_margin_deg(deg_per_cycle(6, 30.0)) - 10.0).abs() < 1e-12);
     }
 }

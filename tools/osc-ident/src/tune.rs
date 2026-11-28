@@ -672,8 +672,9 @@ mod tests {
     }
 
     /// A field the rules store at a bound is said in the tune's lines,
-    /// under the starting gain: a move speed at the ceiling in deg/s lands
-    /// a count over the ceiling, which rounds down.
+    /// under the starting gain: the record's stops clamp the rated window,
+    /// and a move speed at the ceiling in deg/s lands a count over the
+    /// ceiling, which rounds down.
     #[test]
     fn a_field_stored_at_a_bound_is_said_in_the_tunes_lines() {
         let dir = scratch("tune-clamp");
@@ -699,9 +700,14 @@ mod tests {
             run_scripted_on(&mut c, &inputs, &out, 1, vec![(Way::Done, vec![])]).expect("runs");
         assert!(accepted, "{lines:?}");
         assert!(lines[0].starts_with("starting gain: "), "{lines:?}");
+        let window = "soft limits: the rated travel, 180 deg, is over the stops' 184.33 deg less 2.50 deg at each end: the window is clamped to 179.33 deg, centered on the stops";
         assert_eq!(
-            lines[1],
-            "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050"
+            lines[1..4],
+            [
+                format!("pos_min_soft_counts: {window}"),
+                format!("pos_max_soft_counts: {window}"),
+                "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050".to_string()
+            ]
         );
         let set = files::set(&out.join("set.json")).expect("set");
         assert_eq!(set.value("velocity_limit_cps"), Some(&8050.into()));
