@@ -3442,17 +3442,16 @@ fn pot_said(h: &PotHoles, deg: Option<&dyn Fn(f64) -> f64>) -> String {
 fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let contacts = contacts(rungs, c);
     let ends = ends(rungs, &contacts);
-    let slow = |odd: Option<bool>| -> Vec<u16> {
+    let slow = |keep: &dyn Fn(&RungRows) -> bool| -> Vec<u16> {
         rungs
             .iter()
             .zip(&ends)
-            .filter(|(r, _)| r.pass_kind != PassKind::Fast)
-            .filter(|(r, _)| odd.is_none_or(|o| (r.pass % 2 == 1) == o))
+            .filter(|(r, _)| r.pass_kind != PassKind::Fast && keep(r))
             .filter_map(|(r, e)| e.as_ref().ok().map(|e| (r, (*e).min(r.rows.len()))))
             .flat_map(|(r, e)| histogram_codes(r.kind, r.rows, e, c.fs))
             .collect()
     };
-    let all = slow(None);
+    let all = slow(&|_| true);
     let (_, lo, hi) = histogram_rows(&all);
     let rows_a_code = rows_a_code(&all);
     let mut checks = vec![Check::reported(
@@ -3468,7 +3467,16 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     // the halves the pooled read is checked against are the pooled read
     // itself: its own refusals (a stray run, a slot over a byte) stand,
     // the halves' disagreement and the carries reached are said below
-    let wide = widecodes::find(&all, lo, hi).and_then(|f| {
+    let dir = |d: i8| widecodes::histogram(&slow(&|r| r.dir == d));
+    let wide = widecodes::find_split(
+        &widecodes::histogram(&all),
+        &dir(1),
+        &dir(-1),
+        lo,
+        hi,
+        THIN_ROWS,
+    )
+    .and_then(|f| {
         let ok = widecodes::check(&f, &f, &f, lo, hi);
         finding = Some(f);
         ok
@@ -3476,7 +3484,10 @@ fn judge_with(rungs: &[RungRows], c: &JudgeCfg, from_fast: bool) -> Judged {
     let half = |v: &[u16]| {
         widecodes::find_in(&widecodes::histogram(v), lo, hi, HALF_THIN_ROWS).map_err(|e| e.said())
     };
-    let split = match (half(&slow(Some(false))), half(&slow(Some(true)))) {
+    let split = match (
+        half(&slow(&|r| r.pass % 2 == 0)),
+        half(&slow(&|r| r.pass % 2 == 1)),
+    ) {
         (Ok(even), Ok(odd)) => {
             let apart =
                 finding
@@ -3948,6 +3959,7 @@ fn finding_json(f: &Finding) -> Value {
         "slots": f.slots,
         "carries": f.carries.iter().map(|c| json!({"slot": c.slot, "code": c.code, "state": state_word(c.state),
             "skipped": c.skipped, "ratio": c.ratio, "rows_ref": c.rows_ref, "slot_q4": f.slots[c.slot],
+            "ratio_rising": c.rising, "ratio_falling": c.falling, "wide_by": c.wide_by.map(|b| b.word()),
             "why_zero": carry_reason(c.state)})).collect::<Vec<_>>(),
         "strays": f.strays.iter().map(|s| json!({"code": s.code, "skipped": s.skipped, "ratio": s.ratio})).collect::<Vec<_>>(),
     })
@@ -5394,6 +5406,13 @@ mod tests {
         let mut want = [0u8; 16];
         (want[4], want[9]) = (88, 48);
         assert_eq!(f.slots, want);
+        for k in [4, 9] {
+            let c = f.carries[k];
+            assert!(
+                c.rising.is_some() && c.falling.is_some() && c.wide_by.is_some(),
+                "{c:?}"
+            );
+        }
         assert!(j.rows_a_code >= ROWS_A_CODE_MIN, "{}", j.rows_a_code);
         assert_eq!(f.carries[13].state, State::Unreached);
         let g = CUT_CYCLES / m.cycles_per_count;
