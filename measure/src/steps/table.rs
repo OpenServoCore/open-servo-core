@@ -93,7 +93,7 @@ use osc_servo_core::pos_lut::{self, GRID, INTERVALS, PAGE_POINTS, POINTS};
 pub const STEP: &str = "table";
 pub const RESULT: &str = "results/table.json";
 pub const METHOD: &str = "open-loop-slow-and-fast-passes";
-pub const REVISION: u32 = 2;
+pub const REVISION: u32 = 3;
 const Q15: f64 = 32768.0;
 const PRICE_WORDS: &str = "the probe's pricing R (planning grade)";
 
@@ -668,13 +668,63 @@ pub fn reach(rows: &[TelFrame], still_counts: f64, fs: f64) -> Reach {
 }
 
 /// A stop rung's reach within its pass: still with no rise of its own is
-/// still on the stop when a stop rung before it in the pass rose onto it,
-/// since a rung that starts pressed has no free level to rise from (the
-/// bench's rung after one read still moving on a pressed pot's noise).
-pub fn pass_reach(r: Reach, risen_before: bool) -> Reach {
+/// still on the stop when the pass shows it `pressed` ([`StopPass`]), since
+/// a rung that starts pressed has no free level to rise from (the bench's
+/// rung after one read still moving on a pressed pot's noise).
+pub fn pass_reach(r: Reach, pressed: bool) -> Reach {
     match r {
-        Reach::Short(m) if risen_before => Reach::Reached(m),
+        Reach::Short(m) if pressed => Reach::Reached(m),
         r => r,
+    }
+}
+
+/// The stop rungs of one slow pass read so far, each as [`stop_rungs`]
+/// reads it: its reach within the pass ([`pass_reach`]) and what follows
+/// it ([`after_stop_rung`]). A rung after the first is pressed on the stop
+/// when a stop rung before it rose onto it, or when its seated level is
+/// [`stopcontact::MIN_RISE_COUNTS`] over the free level the pass's first
+/// stop rung read: a first rung that meets the stop only in its last rows
+/// reads its own rise short, and leaves the next pressed. A first rung
+/// locked short of the stop from rest reads its free level locked, so the
+/// next reads no rise over it.
+#[derive(Clone, Debug, Default)]
+pub struct StopPass {
+    rungs: usize,
+    shorts: usize,
+    risen: bool,
+    first_free: Option<f64>,
+}
+
+impl StopPass {
+    /// The stop rungs read so far.
+    pub fn rungs(&self) -> usize {
+        self.rungs
+    }
+
+    /// The pass's next stop rung, its drive's `rows`: its reach, its rise
+    /// and what follows it.
+    pub fn read(
+        &mut self,
+        rows: &[TelFrame],
+        still_counts: f64,
+        fs: f64,
+    ) -> (Reach, Option<Rise>, NextStop) {
+        self.rungs += 1;
+        let rise = rung_rise(rows, fs);
+        let over_first = self
+            .first_free
+            .zip(rise)
+            .is_some_and(|(free, x)| x.seated - free >= stopcontact::MIN_RISE_COUNTS);
+        let r = pass_reach(reach(rows, still_counts, fs), self.risen || over_first);
+        self.risen |= rise.is_some_and(|x| x.valid());
+        if self.rungs == 1 {
+            self.first_free = rise.map(|x| x.free);
+        }
+        let next = after_stop_rung(&r, self.rungs, self.shorts);
+        if next == NextStop::Another && matches!(r, Reach::Short(_)) {
+            self.shorts += 1;
+        }
+        (r, rise, next)
     }
 }
 
@@ -1539,10 +1589,8 @@ async fn stop_rungs<P: Pipe>(
     let stop = if at.dir > 0 { b.stops.hi } else { b.stops.lo };
     let word = if at.dir > 0 { "high" } else { "low" };
     let mut start = start;
-    let mut rungs = 0;
-    let mut shorts = 0;
+    let mut pass = StopPass::default();
     let mut attempt = 0;
-    let mut risen = false;
     loop {
         let slowest = seen.slowest(at.dir).map_or(seen.get(at.dir), |s| s.0);
         let p = plan_stop_rung(at.dir, start, stop, seen.get(at.dir), slowest, b.tick_hz);
@@ -1570,11 +1618,8 @@ async fn stop_rungs<P: Pipe>(
             continue;
         }
         attempt = 0;
-        rungs += 1;
         let rows = &taken[s.drive_k].burst.rows;
-        let rise = rung_rise(rows, b.tick_hz);
-        let r = pass_reach(reach(rows, b.still_counts, b.tick_hz), risen);
-        risen |= rise.is_some_and(|x| x.valid());
+        let (r, rise, next) = pass.read(rows, b.still_counts, b.tick_hz);
         let read = read_rung(at.dir, start, rows, s.end, b.tick_hz).unwrap_or(RungRead {
             start,
             end: s.end,
@@ -1608,11 +1653,10 @@ async fn stop_rungs<P: Pipe>(
             drive_k: s.drive_k,
             price: s.price,
         });
-        match after_stop_rung(&r, rungs, shorts) {
+        match next {
             NextStop::Done => return Ok(s.end),
             NextStop::Another => {
                 if let Reach::Short(m) = r {
-                    shorts += 1;
                     lines.push(format!(
                         "{what}: still at {m:.0} with the shunt's rise {risen}, under {}: one more stop rung at the same duty",
                         stopcontact::MIN_RISE_COUNTS
@@ -1630,9 +1674,10 @@ async fn stop_rungs<P: Pipe>(
             NextStop::Unreached => {
                 found.may_center = true;
                 return Err(Halt::Refused(format!(
-                    "pass {} {}: {rungs} stop rungs did not reach the {word} stop; the shaft rested at {:.0}",
+                    "pass {} {}: {} stop rungs did not reach the {word} stop; the shaft rested at {:.0}",
                     at.pass,
                     way(at.dir),
+                    pass.rungs(),
                     s.end
                 )));
             }
@@ -1989,7 +2034,7 @@ pub fn advice(name: &str) -> &'static str {
             "the ripple does not count the pot's travel cleanly; check that nothing loads the horn and that the motor's current reads, then run the step again"
         }
         STOPS => {
-            "no stop rung read a stop's first contact: the shunt did not rise onto it or its ripple did not count; check that nothing loads the horn, then run the step again"
+            "no stop rung read a stop's first contact: the shunt did not rise onto it, its ripple did not count, or it went still short of the stop; check that nothing loads the horn, then run the step again"
         }
         _ => "check the servo, then run the step again",
     }
@@ -2058,6 +2103,9 @@ pub struct StopRead {
     pub dir: i8,
     /// The places in [`StopsRead::rungs`] of its rungs.
     pub rungs: Vec<usize>,
+    /// The places in [`StopsRead::rungs`] of its rungs still short of it
+    /// ([`stopcontact::short_of`]).
+    pub short: Vec<usize>,
     pub stop: Result<Stop, String>,
 }
 
@@ -2647,12 +2695,28 @@ fn raw_at(t: &Table, angle: f64) -> f64 {
     (lo + hi) / 2.0
 }
 
-/// Each contact in the fit's frame, each stop its rungs' median, the travel
+/// The table's angle, cycles, at the sample of `segs` farthest toward the
+/// stop at `dir`; None with no sample.
+fn farthest(segs: &[Segment], t: &Table, dir: i8) -> Option<f64> {
+    let d = dir as f64;
+    segs.iter()
+        .filter_map(|s| {
+            s.x.iter()
+                .copied()
+                .reduce(|a, b| if d * b > d * a { b } else { a })
+        })
+        .map(|x| t.angle_at(x))
+        .reduce(|a, b| if d * b > d * a { b } else { a })
+}
+
+/// Each contact in the fit's frame, each stop its rungs' median less those
+/// the fit's samples `segs` lie past ([`stopcontact::short_of`]), the travel
 /// between them and the pins: each contact raw through the table, moved
 /// outward to the 16-count grid.
 fn stops_of(
     mut rungs: Vec<RungContact>,
     fit: &PooledFit,
+    segs: &[Segment],
     slots: &[u8; ADC_WIDE_SLOTS],
     all: &[RungRows],
     c: &JudgeCfg,
@@ -2681,12 +2745,23 @@ fn stops_of(
             .collect();
         let angles: Vec<f64> = placed.iter().map(|(_, p)| p.angle).collect();
         let kept: Vec<bool> = placed.iter().map(|(_, p)| p.tracked()).collect();
+        let short = farthest(segs, t, dir)
+            .map_or_else(Vec::new, |f| stopcontact::short_of(&angles, &kept, dir, f));
         let word = if dir > 0 { "high" } else { "low" };
         StopRead {
             dir,
             rungs: placed.iter().map(|(i, _)| *i).collect(),
-            stop: stopcontact::stop(&angles, &kept).ok_or_else(|| {
-                format!("no stop rung read the {word} stop's first contact on a ripple track that counts the table's line")
+            short: short.iter().map(|&i| placed[i].0).collect(),
+            stop: stopcontact::stop(&angles, &kept, &short).ok_or_else(|| {
+                let mut why = format!("no stop rung read the {word} stop's first contact on a ripple track that counts the table's line");
+                if !short.is_empty() {
+                    let n: Vec<usize> = short.iter().map(|&i| rungs[placed[i].0].n).collect();
+                    why.push_str(&format!(
+                        "; rungs {n:?} went still short of it, the fitted samples past their contacts by over {} cycles",
+                        stopcontact::ODD_CYCLES
+                    ));
+                }
+                why
             }),
         }
     };
@@ -2905,11 +2980,13 @@ fn read_table_with(
             low: StopRead {
                 dir: -1,
                 rungs: Vec::new(),
+                short: Vec::new(),
                 stop: Err("no table to place it in".into()),
             },
             high: StopRead {
                 dir: 1,
                 rungs: Vec::new(),
+                short: Vec::new(),
                 stop: Err("no table to place it in".into()),
             },
             rungs: contacts.clone(),
@@ -2936,7 +3013,7 @@ fn read_table_with(
     if let Ok(f) = &fit {
         let span = f.table.span;
         t.residual_counts = Some(f.residual_rms * f.table.counts_per_cycle());
-        t.stops = stops_of(contacts, f, slots, rungs, c);
+        t.stops = stops_of(contacts, f, &segs, slots, rungs, c);
         if let Some((raw_min, raw_max)) = t.stops.pins {
             let points = f.table.points(raw_min, raw_max);
             let mut full = [0i16; POINTS];
@@ -3564,8 +3641,9 @@ fn stops_check(s: &StopsRead, c: &JudgeCfg) -> Check {
         let st = r.stop.as_ref().map_err(Clone::clone)?;
         let odd: Vec<usize> = st.odd.iter().map(|&i| s.rungs[r.rungs[i]].n).collect();
         let out: Vec<usize> = st.left_out.iter().map(|&i| s.rungs[r.rungs[i]].n).collect();
+        let short: Vec<usize> = st.short.iter().map(|&i| s.rungs[r.rungs[i]].n).collect();
         Ok(format!(
-            "{word} {:.2} cycles, n {}, spread {:.2} cycles ({:.2} deg), sd {:.2}{}{}",
+            "{word} {:.2} cycles, n {}, spread {:.2} cycles ({:.2} deg), sd {:.2}{}{}{}",
             st.contact,
             st.n,
             st.spread,
@@ -3585,6 +3663,14 @@ fn stops_check(s: &StopsRead, c: &JudgeCfg) -> Check {
                 format!(
                     ", rungs {out:?} left out: their tracks read over {:.0} % off the table's counts a cycle",
                     100.0 * stopcontact::CHECK_SHARE
+                )
+            },
+            if short.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", rungs {short:?} left out: still short of the stop, the fitted samples past their contacts by over {} cycles",
+                    stopcontact::ODD_CYCLES
                 )
             }
         ))
@@ -4008,6 +4094,7 @@ fn stops_json(s: &StopsRead, rest: &dyn Fn(usize) -> Option<f64>, c: &JudgeCfg) 
             s.pins.map(|c| if at == 0 { c.0 } else { c.1 }),
         );
         let mine: Vec<&RungContact> = s.rungs.iter().filter(|k| k.dir == r.dir).collect();
+        let short: Vec<usize> = r.short.iter().map(|&i| s.rungs[i].n).collect();
         match &r.stop {
             Ok(st) => json!({
                 "contact_cycles": st.contact, "contact_counts": contact_counts, "contact_raw": raw,
@@ -4015,10 +4102,11 @@ fn stops_json(s: &StopsRead, rest: &dyn Fn(usize) -> Option<f64>, c: &JudgeCfg) 
                 "sd_cycles": st.sd, "n": st.n,
                 "odd": st.odd.iter().map(|&i| s.rungs[r.rungs[i]].n).collect::<Vec<_>>(),
                 "left_out": st.left_out.iter().map(|&i| s.rungs[r.rungs[i]].n).collect::<Vec<_>>(),
+                "short": short,
                 "rungs": mine.into_iter().map(rung).collect::<Vec<_>>(),
             }),
             Err(why) => {
-                json!({"why": why, "rungs": mine.into_iter().map(rung).collect::<Vec<_>>()})
+                json!({"why": why, "short": short, "rungs": mine.into_iter().map(rung).collect::<Vec<_>>()})
             }
         }
     };
@@ -4031,7 +4119,7 @@ fn stops_json(s: &StopsRead, rest: &dyn Fn(usize) -> Option<f64>, c: &JudgeCfg) 
         "g_cycles": CUT_CYCLES,
         "odd_cycles": stopcontact::ODD_CYCLES,
         "check_share": stopcontact::CHECK_SHARE,
-        "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio",
+        "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle, less the rungs short of it, whose contact a fitted sample lies past toward the stop by over odd_cycles; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio",
     })
 }
 
@@ -5912,6 +6000,329 @@ mod tests {
                     },
                     r.ratio.map_or("-".into(), |v| format!("{v:.3}"))
                 );
+            }
+        }
+    }
+
+    /// A recorded run's table rungs: (n, pass, pass kind, rung kind, dir,
+    /// drive rows), each read from the capture its `results/table.json`
+    /// names.
+    type Loaded = Vec<(usize, usize, PassKind, RungKind, i8, Vec<TelFrame>)>;
+
+    fn load_run(root: &std::path::Path) -> Loaded {
+        let res: Value =
+            serde_json::from_slice(&std::fs::read(root.join(RESULT)).expect("table.json"))
+                .expect("json");
+        let mut kept: Loaded = Vec::new();
+        for r in res["rungs"].as_array().expect("rungs") {
+            let k = r["captures"][0].as_u64().expect("capture");
+            let p = root.join(format!("captures/table/{k:02}-raw.csv.gz"));
+            let gz = std::fs::read(&p).expect("capture");
+            let text =
+                String::from_utf8(crate::capture::meta::gunzip(&gz).expect("gzip")).expect("utf8");
+            let mut lines = text.lines();
+            let head: Vec<&str> = lines.next().expect("header").split(',').collect();
+            let col = |name: &str| head.iter().position(|h| *h == name).expect(name);
+            let (tick, pos, cur, duty) = (
+                col("tick"),
+                col("pos"),
+                col("current_raw"),
+                col("duty_counts"),
+            );
+            let rows: Vec<TelFrame> = lines
+                .map(|l| {
+                    let v: Vec<&str> = l.split(',').collect();
+                    TelFrame {
+                        tick: v[tick].parse().unwrap_or(0),
+                        pos: v[pos].parse().ok(),
+                        current_raw: v[cur].parse().ok(),
+                        duty_counts: v[duty].parse().ok(),
+                        ..TelFrame::default()
+                    }
+                })
+                .collect();
+            let kind = match r["pass_kind"].as_str() {
+                Some("fast") => PassKind::Fast,
+                Some("half") => PassKind::Half,
+                _ => PassKind::Slow,
+            };
+            let rung = match r["kind"].as_str() {
+                Some("leave") => RungKind::Leave,
+                Some("stop") => RungKind::Stop,
+                Some("fast") => RungKind::Fast,
+                _ => RungKind::Free,
+            };
+            kept.push((
+                r["n"].as_u64().expect("n") as usize,
+                r["pass"].as_u64().expect("pass") as usize,
+                kind,
+                rung,
+                r["dir"].as_i64().expect("dir") as i8,
+                rows,
+            ));
+        }
+        kept
+    }
+
+    fn rung_rows(kept: &Loaded) -> Vec<RungRows<'_>> {
+        kept.iter()
+            .map(|(n, pass, kind, rung, dir, rows)| RungRows {
+                n: *n,
+                pass: *pass,
+                pass_kind: *kind,
+                kind: *rung,
+                dir: *dir,
+                rows,
+            })
+            .collect()
+    }
+
+    fn mg90_cfg() -> JudgeCfg {
+        let np = testkit::nameplate();
+        JudgeCfg {
+            fs: 20_000.0,
+            events_per_rev: np.events_per_rev().expect("commutator counts"),
+            gear_ratio: np.gear_ratio.expect("gear ratio"),
+        }
+    }
+
+    /// Diagnostic, not a pin: for each run folder in `OSC_TABLE_RUNS`
+    /// (`:`-separated), each stop's placed contacts against the farthest
+    /// fitted sample toward it, cycles in the fit's frame.
+    #[test]
+    #[ignore]
+    fn farthest_fitted_sample_against_each_stop() {
+        let Ok(dirs) = std::env::var("OSC_TABLE_RUNS") else {
+            eprintln!("OSC_TABLE_RUNS is not set: skipped");
+            return;
+        };
+        let c = mg90_cfg();
+        for dir in dirs.split(':').filter(|d| !d.is_empty()) {
+            let kept = load_run(std::path::Path::new(dir));
+            let rungs = rung_rows(&kept);
+            let j = judge(&rungs, &c);
+            let t = &j.table;
+            let stops = j.checks.iter().find(|k| k.name == STOPS);
+            println!(
+                "== {dir}\n  travel {:?} cycles; stops {:?}",
+                t.stops.travel_cycles,
+                stops.map(|k| k.verdict)
+            );
+            let Ok(fit) = &t.fit else {
+                println!("  no fit: {:?}", t.fit.as_ref().err());
+                continue;
+            };
+            for side in [-1i8, 1] {
+                let sr = t.stops.side(side);
+                let st = sr.stop.as_ref().map(|s| s.contact);
+                let short: Vec<usize> = sr.short.iter().map(|&i| t.stops.rungs[i].n).collect();
+                let (angles, tracked): (Vec<f64>, Vec<bool>) = sr
+                    .rungs
+                    .iter()
+                    .filter_map(|&i| t.stops.rungs[i].placed.as_ref().ok())
+                    .map(|p| (p.angle, p.tracked()))
+                    .unzip();
+                let unguarded = stopcontact::stop(&angles, &tracked, &[]).map(|s| s.contact);
+                let placed: Vec<String> = sr
+                    .rungs
+                    .iter()
+                    .map(|&i| {
+                        let k = &t.stops.rungs[i];
+                        let p = k.placed.as_ref().expect("placed");
+                        format!(
+                            "{}:{:.2}{}",
+                            k.n,
+                            p.angle,
+                            if p.tracked() { "" } else { "(untracked)" }
+                        )
+                    })
+                    .collect();
+                let mut far: Vec<(usize, &'static str, f64, f64)> = t
+                    .pieces
+                    .iter()
+                    .map(|p| {
+                        let r = &t.rungs[p.rung];
+                        let x = if side < 0 {
+                            p.segment.x.iter().copied().fold(f64::INFINITY, f64::min)
+                        } else {
+                            p.segment
+                                .x
+                                .iter()
+                                .copied()
+                                .fold(f64::NEG_INFINITY, f64::max)
+                        };
+                        (r.n, r.kind.word(), x, fit.table.angle_at(x))
+                    })
+                    .collect();
+                far.sort_by(|a, b| (side as f64 * b.3).total_cmp(&(side as f64 * a.3)));
+                let beyond: Vec<String> = far
+                    .iter()
+                    .take(4)
+                    .map(|(n, k, x, a)| {
+                        format!(
+                            "{n}({k}) x {x:.0} a {a:.2}{}",
+                            st.as_ref().map_or(String::new(), |c| format!(
+                                " past C by {:.2}",
+                                side as f64 * (a - c)
+                            ))
+                        )
+                    })
+                    .collect();
+                println!(
+                    "  {} C {:?} (unguarded {unguarded:?}) placed [{}] short {short:?}; farthest samples: {}",
+                    if side < 0 { "low" } else { "high" },
+                    st,
+                    placed.join(", "),
+                    beyond.join("; ")
+                );
+            }
+        }
+    }
+
+    /// A recorded stop rung's drive rows (`testdata/stop-reach`, its
+    /// `sources.json`).
+    fn recorded(name: &str) -> Vec<TelFrame> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/stop-reach")
+            .join(format!("{name}.csv.gz"));
+        let gz = std::fs::read(&p).expect("capture");
+        let text =
+            String::from_utf8(crate::capture::meta::gunzip(&gz).expect("gzip")).expect("utf8");
+        let mut lines = text.lines();
+        let head: Vec<&str> = lines.next().expect("header").split(',').collect();
+        let col = |name: &str| head.iter().position(|h| *h == name).expect(name);
+        let (tick, pos, cur, duty) = (
+            col("tick"),
+            col("pos"),
+            col("current_raw"),
+            col("duty_counts"),
+        );
+        lines
+            .map(|l| {
+                let v: Vec<&str> = l.split(',').collect();
+                TelFrame {
+                    tick: v[tick].parse().unwrap_or(0),
+                    pos: v[pos].parse().ok(),
+                    current_raw: v[cur].parse().ok(),
+                    duty_counts: v[duty].parse().ok(),
+                    ..TelFrame::default()
+                }
+            })
+            .collect()
+    }
+
+    /// A pass's recorded stop rungs read in order as the step reads them,
+    /// at the run's still band: what follows each.
+    fn walk(names: &[&str], still_counts: f64) -> Vec<NextStop> {
+        let mut pass = StopPass::default();
+        let mut out = Vec::new();
+        for name in names {
+            let rows = recorded(name);
+            let (_, _, next) = pass.read(&rows, still_counts, 20_000.0);
+            out.push(next);
+            if next != NextStop::Another {
+                break;
+            }
+        }
+        out
+    }
+
+    /// The first stop rung reaches the stop only in its last rows, its own
+    /// rise read short of the stop (D pass 3 at 0.69 V: 6 counts; A pass
+    /// 7 at 0.877 V: 19), and the next starts pressed, with no free
+    /// stretch to rise from. Its seated level over the free level the
+    /// pass's first stop rung read (49 and 79 counts) is the stop: the
+    /// pass ends there, not "blocked".
+    #[test]
+    fn a_stop_rung_that_starts_pressed_after_a_late_arrival_ends_its_pass() {
+        assert_eq!(
+            walk(&["D-10", "D-11", "D-12"], 3.0),
+            [NextStop::Another, NextStop::Done]
+        );
+        assert_eq!(
+            walk(&["A-23", "A-24", "A-25"], 3.0),
+            [NextStop::Another, NextStop::Done]
+        );
+    }
+
+    /// A stop rung locked from rest at 486, far from the stop, twice (A0
+    /// pass 7 at 0.68 V): the pass's first stop rung read its free level
+    /// locked, so the second's level is no rise over it, and the shaft is
+    /// blocked. The tight spot's rung, then the one pressed at it (REF
+    /// pass 1), end their pass on the first rung's own rise: the judge's
+    /// own read of each rung decides the contact.
+    #[test]
+    fn a_stop_rung_locked_from_rest_stays_blocked() {
+        assert_eq!(
+            walk(&["A0-31", "A0-32"], 3.0),
+            [NextStop::Another, NextStop::Blocked]
+        );
+        assert_eq!(
+            walk(
+                &["REF/captures/table/05-raw", "REF/captures/table/07-raw"],
+                8.48
+            ),
+            [NextStop::Another, NextStop::Done]
+        );
+    }
+
+    /// The bench run whose table step took the mesh tight spot for the
+    /// low stop (`testdata/stop-reach/REF`, its result and each rung's
+    /// drive capture: rungs 3 and 12 locked at pot 241, 28 to 29 cycles
+    /// before where rungs 23 and 32 turned freely) read again: the stop
+    /// rungs locked short are left out, named, and with no contact left at
+    /// the low stop the stops refuse.
+    #[test]
+    fn a_contact_a_fitted_sample_lies_past_is_not_the_stop() {
+        let c = mg90_cfg();
+        let reference =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/stop-reach/REF");
+        let kept = load_run(&reference);
+        let j = judge(&rung_rows(&kept), &c);
+        let low = &j.table.stops.low;
+        assert!(
+            low.stop.is_err(),
+            "REF's low stop taken at {:?} cycles",
+            low.stop.as_ref().map(|s| s.contact)
+        );
+        let short: Vec<usize> = low
+            .short
+            .iter()
+            .map(|&i| j.table.stops.rungs[i].n)
+            .collect();
+        assert_eq!(short, [3, 12]);
+        let why = low.stop.as_ref().err().cloned().unwrap_or_default();
+        assert!(why.contains("rungs [3, 12] went still short"), "{why}");
+        let stops = j
+            .checks
+            .iter()
+            .find(|k| k.name == STOPS)
+            .expect("stops check");
+        assert_eq!(stops.verdict, Verdict::Fail, "{}", stops.said());
+    }
+
+    /// The runs whose every stop rung met the stop read as before, within
+    /// 0.1 cycles of their recorded results. Ignored: the captures are not
+    /// in the repository; `OSC_STOP_REACH_RUNS` names the run folders.
+    #[test]
+    #[ignore]
+    fn a_run_whose_stop_rungs_met_the_stops_reads_as_recorded() {
+        let Ok(dirs) = std::env::var("OSC_STOP_REACH_RUNS") else {
+            eprintln!("OSC_STOP_REACH_RUNS is not set: skipped");
+            return;
+        };
+        let c = mg90_cfg();
+        for dir in dirs.split(':').filter(|d| !d.is_empty()) {
+            let kept = load_run(std::path::Path::new(dir));
+            let j = judge(&rung_rows(&kept), &c);
+            let res: Value = serde_json::from_slice(
+                &std::fs::read(std::path::Path::new(dir).join(RESULT)).expect("table.json"),
+            )
+            .expect("json");
+            for (side, sr) in [("low", &j.table.stops.low), ("high", &j.table.stops.high)] {
+                let was = n(&res["stops"][side]["contact_cycles"]);
+                let now = sr.stop.as_ref().map(|s| s.contact).expect("a contact");
+                assert!((now - was).abs() < 0.1, "{dir} {side}: {now} against {was}");
             }
         }
     }
