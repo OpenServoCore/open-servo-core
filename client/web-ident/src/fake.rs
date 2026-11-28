@@ -21,9 +21,9 @@ pub fn pipe(id: u8) -> FakePipe {
     pipe
 }
 
-/// [`pipe`] as the page runs it: each exchange and each pause gives the
-/// page a turn, as a device's transfers do, so it redraws and takes a
-/// Cancel mid-step; a turn takes no sim time. The rest step makes no
+/// [`pipe`] as a page or its worker runs it: each exchange and each pause
+/// gives the event loop a turn, as a device's transfers do, so a page
+/// redraws and a Cancel lands mid-step; a turn takes no sim time. The rest step makes no
 /// pause, so turns at the pauses alone would leave it none.
 #[cfg(target_arch = "wasm32")]
 pub struct Yielding(pub FakePipe);

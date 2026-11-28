@@ -1,12 +1,15 @@
 {
   "name": "@openservocore/client-ident",
   "version": "0.1.0",
-  "description": "The identification run in the browser: osc-measure's run over the osc-adapter by WebUSB, with generated TypeScript declarations. Loaded only on the run screen.",
+  "description": "The identification run in the browser: osc-measure's run over the osc-adapter by WebUSB, in a dedicated worker, with generated TypeScript declarations. Loaded only on the run screen.",
   "license": "MIT OR Apache-2.0",
   "private": false,
   "type": "module",
   "files": [
-    "pkg"
+    "pkg",
+    "worker.js",
+    "host.js",
+    "host.d.ts"
   ],
   "main": "./pkg/osc_client_web_ident.js",
   "types": "./pkg/osc_client_web_ident.d.ts",
@@ -14,9 +17,15 @@
     ".": {
       "types": "./pkg/osc_client_web_ident.d.ts",
       "default": "./pkg/osc_client_web_ident.js"
-    }
+    },
+    "./host": {
+      "types": "./host.d.ts",
+      "default": "./host.js"
+    },
+    "./worker": "./worker.js"
   },
   "scripts": {
-    "build": "wasm-pack build --target web --out-dir pkg"
+    "build": "wasm-pack build --target web --out-dir pkg",
+    "test": "node --test tests/*.test.mjs"
   }
 }

@@ -1027,10 +1027,11 @@ mod tests {
             .iter()
             .filter(|p| !matches!(p, Progress::Lines { .. }))
             .collect();
-        let tried = |at| Progress::Try {
+        let tried = |at, percent| Progress::Try {
             step: "final",
             at,
             of: 6,
+            percent,
         };
         assert_eq!(
             events,
@@ -1048,11 +1049,11 @@ mod tests {
                     why: None
                 },
                 &Progress::Started { step: "final" },
-                &tried(1),
+                &tried(1, 100),
                 &moved,
-                &tried(2),
+                &tried(2, 80),
                 &moved,
-                &tried(3),
+                &tried(3, 64),
                 &moved,
             ]
         );
@@ -1065,6 +1066,68 @@ mod tests {
             .flatten()
             .collect();
         assert_eq!(said, f.lines);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A resumed final check goes on counting its own tries: with two kept
+    /// before it, its first is try 3 of the 6 the tune left, at the gain
+    /// the back-off had reached.
+    #[test]
+    fn a_resumed_final_check_counts_the_tries_kept_before_it() {
+        use osc_measure::run::Progress;
+        use osc_measure::run::finish::Onward;
+        let dir = scratch("finish-resumed-feed");
+        let g = given();
+        let (root, _, mut c, _) = tuned(&dir, &g);
+        std::fs::write(
+            root.join(cruise::RESULT),
+            cruise_doc().to_string().as_bytes(),
+        )
+        .expect("cruise result");
+        let d = crate::descriptor_builtin().expect("descriptor");
+        let told = RefCell::new(Vec::new());
+        let feed = |p: &Progress| told.borrow_mut().push(p.clone());
+        let stop = AtomicBool::new(false);
+        let mut fs = Fs;
+        let mut host = crate::host(&mut fs, &stop);
+        host.feed = &feed;
+        let on = Onward {
+            next: 4,
+            index: 2,
+            kept: vec![
+                json!({"try": 2, "next": "lower"}),
+                json!({"try": 3, "next": "lower"}),
+            ],
+            after: "the check refused on rest error, then the run stopped between tries".into(),
+        };
+        let doc = cruise_doc();
+        let f = block_on(osc_measure::run::finish::finish_on(
+            &mut c,
+            ID,
+            &d,
+            &mut host,
+            &args(&g, &dir),
+            &root,
+            async |rig: &mut Rig<'_, Spy>, _: &CruiseInputs<'_>| cruised(rig, Way::Done, &doc),
+            async |rig: &mut Rig<'_, Spy>, _: &VerifyInputs<'_>| checked_on(rig, Way::Done, &[]),
+            Some(&on),
+        ))
+        .expect("finishes");
+        assert_eq!(f.last["state"], "accepted", "{}", f.last);
+        let tried: Vec<Progress> = told
+            .take()
+            .into_iter()
+            .filter(|p| matches!(p, Progress::Try { .. }))
+            .collect();
+        assert_eq!(
+            tried,
+            [Progress::Try {
+                step: "final",
+                at: 3,
+                of: 6,
+                percent: 64,
+            }]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -121,6 +121,11 @@ pub fn try_json(n: u32, kp: f64, k0: f64, file: &SetFile, rest: Value) -> Value 
     t
 }
 
+/// The gain `kp` as a whole percent of the starting gain `k0`.
+pub fn percent(kp: f64, k0: f64) -> u32 {
+    (100.0 * kp / k0).round() as u32
+}
+
 /// A try's first line: its number, gain and set.
 pub fn try_head(n: u32, kp: f64, k0: f64, file: &SetFile) -> String {
     format!(
@@ -346,12 +351,13 @@ where
             ended = "interrupted between tries".into();
             break;
         }
+        let kp = tune::gain(k0, i);
         feed(&Progress::Try {
             step: TUNE,
             at: n + 1,
             of: next - 1 + tries - start,
+            percent: percent(kp, k0),
         });
-        let kp = tune::gain(k0, i);
         let dir = format!("tries/{:02}", n + 1);
         let prepared = set_at(&r, &measured, kp, &Checked::default(), &pair, d).and_then(
             |(file, bytes, _)| {
