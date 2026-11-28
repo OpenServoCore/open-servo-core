@@ -629,6 +629,105 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(f.dir);
     }
+    /// The run cut off mid-step, as a closed tab or a killed process cuts
+    /// it, must leave a folder a resume can read: each step's entry is in
+    /// `run.json` once the step has ended, before the next one begins, and
+    /// the step begun is there as running.
+    #[test]
+    fn run_json_records_each_step_as_it_ends() {
+        let dir = scratch("run-json-each-step");
+        let seen = RefCell::new(Vec::new());
+        let manifest_now = || -> Option<Value> {
+            let folder = std::fs::read_dir(dir.join("out/uid"))
+                .ok()?
+                .next()?
+                .ok()?
+                .path();
+            serde_json::from_slice(&std::fs::read(folder.join("run.json")).ok()?).ok()
+        };
+        let feed = |p: &of::Progress| {
+            if let of::Progress::Started { step } = p {
+                seen.borrow_mut().push((*step, manifest_now()));
+            }
+        };
+        let (mut c, d) = fake();
+        let policy = testdata("mg90-d/policy.json");
+        let g = given();
+        let out = dir.join("out");
+        let a = args(&g, &out, &policy);
+        let inputs = admit(&a).expect("admitted");
+        let stop = AtomicBool::new(false);
+        {
+            let mut fs = Fs;
+            let mut host = crate::host(&mut fs, &stop);
+            host.feed = &feed;
+            block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
+        }
+        let seen = seen.into_inner();
+        let (step, m) = &seen[1];
+        assert_eq!(*step, "probe");
+        let m = m.as_ref().expect("run.json is there as the probe begins");
+        assert_eq!(m["steps"]["rest"]["state"], "accepted", "{m}");
+        assert_eq!(m["steps"]["probe"]["state"], "running", "{m}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `run.json` records what the run was given, the files by path and
+    /// sha1 and the tries, and its first segment: the tool, the firmware,
+    /// the state it began on, the board NTC and its span; every entry
+    /// names the segment it ran in.
+    #[test]
+    fn run_json_records_what_the_run_was_given_and_its_first_segment() {
+        let f = fed("run-json-given", None);
+        let m = manifest(&f.root);
+        let sha1 = |p: &Path| osc_measure::set::file_sha1(&std::fs::read(p).expect("read"));
+        let (nameplate, policy, heat) = (
+            testdata("mg90-d/nameplate.json"),
+            testdata("mg90-d/policy.json"),
+            testdata("mg90-d/thermal.json"),
+        );
+        let g = &m["given"];
+        for (k, p) in [
+            ("nameplate", &nameplate),
+            ("policy", &policy),
+            ("heat", &heat),
+        ] {
+            assert_eq!(g[k]["path"], p.display().to_string(), "{k}: {g}");
+            assert_eq!(g[k]["sha1"], sha1(p), "{k}: {g}");
+        }
+        assert_eq!(g["tries"], 6, "{g}");
+        let segs = m["segments"].as_array().expect("segments");
+        assert_eq!(segs.len(), 1, "{m}");
+        let s = &segs[0];
+        assert_eq!(
+            (&s["n"], &s["from"]),
+            (&Value::from(1), &Value::from("rest"))
+        );
+        assert!(
+            s["tool"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("osc-ident ")),
+            "{s}"
+        );
+        let (mut c, d) = fake();
+        let state = block_on(osc_measure::state::read(&mut c, ID, &d)).expect("state");
+        assert_eq!(s["state"]["hash"], state.hash(&d), "{s}");
+        assert_eq!(s["state"]["unsaved"], false, "{s}");
+        for k in ["model", "version", "capability_flags"] {
+            assert!(s["firmware"][k].is_u64(), "{k}: {s}");
+        }
+        assert_eq!(
+            s["firmware"]["capability_flags"], m["capability_flags"],
+            "{m}"
+        );
+        assert!(s["ntc_c"].is_f64(), "{s}");
+        assert!(s["ended"].as_f64() > s["started"].as_f64(), "{s}");
+        assert_eq!(m["steps"]["rest"]["segment"], 1, "{m}");
+        for k in ["gather", "tune", "cruise", "final"] {
+            assert_eq!(m[k]["segment"], 1, "{k}: {m}");
+        }
+        let _ = std::fs::remove_dir_all(f.dir);
+    }
 }
 
 /// The run into memory, as the browser keeps it, against the same run on
@@ -870,6 +969,11 @@ mod parity {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
         files::step_0(&root);
+        std::fs::write(
+            root.join("run.json"),
+            r#"{"tool": "osc-ident", "steps": {}}"#,
+        )
+        .expect("manifest");
         for f in ["rest", "probe", "stops", "window", "spins"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
