@@ -706,13 +706,63 @@ pub fn reach(rows: &[TelFrame], still_counts: f64, fs: f64) -> Reach {
 }
 
 /// A stop rung's reach within its pass: still with no rise of its own is
-/// still on the stop when a stop rung before it in the pass rose onto it,
-/// since a rung that starts pressed has no free level to rise from (the
-/// bench's rung after one read still moving on a pressed pot's noise).
-pub fn pass_reach(r: Reach, risen_before: bool) -> Reach {
+/// still on the stop when the pass shows it `pressed` ([`StopPass`]), since
+/// a rung that starts pressed has no free level to rise from (the bench's
+/// rung after one read still moving on a pressed pot's noise).
+pub fn pass_reach(r: Reach, pressed: bool) -> Reach {
     match r {
-        Reach::Short(m) if risen_before => Reach::Reached(m),
+        Reach::Short(m) if pressed => Reach::Reached(m),
         r => r,
+    }
+}
+
+/// The stop rungs of one slow pass read so far, each as [`stop_rungs`]
+/// reads it: its reach within the pass ([`pass_reach`]) and what follows
+/// it ([`after_stop_rung`]). A rung after the first is pressed on the stop
+/// when a stop rung before it rose onto it, or when its seated level is
+/// [`stopcontact::MIN_RISE_COUNTS`] over the free level the pass's first
+/// stop rung read: a first rung that meets the stop only in its last rows
+/// reads its own rise short, and leaves the next pressed. A first rung
+/// locked short of the stop from rest reads its free level locked, so the
+/// next reads no rise over it.
+#[derive(Clone, Debug, Default)]
+pub struct StopPass {
+    rungs: usize,
+    shorts: usize,
+    risen: bool,
+    first_free: Option<f64>,
+}
+
+impl StopPass {
+    /// The stop rungs read so far.
+    pub fn rungs(&self) -> usize {
+        self.rungs
+    }
+
+    /// The pass's next stop rung, its drive's `rows`: its reach, its rise
+    /// and what follows it.
+    pub fn read(
+        &mut self,
+        rows: &[TelFrame],
+        still_counts: f64,
+        fs: f64,
+    ) -> (Reach, Option<Rise>, NextStop) {
+        self.rungs += 1;
+        let rise = rung_rise(rows, fs);
+        let over_first = self
+            .first_free
+            .zip(rise)
+            .is_some_and(|(free, x)| x.seated - free >= stopcontact::MIN_RISE_COUNTS);
+        let r = pass_reach(reach(rows, still_counts, fs), self.risen || over_first);
+        self.risen |= rise.is_some_and(|x| x.valid());
+        if self.rungs == 1 {
+            self.first_free = rise.map(|x| x.free);
+        }
+        let next = after_stop_rung(&r, self.rungs, self.shorts);
+        if next == NextStop::Another && matches!(r, Reach::Short(_)) {
+            self.shorts += 1;
+        }
+        (r, rise, next)
     }
 }
 
@@ -1579,10 +1629,8 @@ async fn stop_rungs<P: Pipe>(
     let stop = if at.dir > 0 { b.stops.hi } else { b.stops.lo };
     let word = if at.dir > 0 { "high" } else { "low" };
     let mut start = start;
-    let mut rungs = 0;
-    let mut shorts = 0;
+    let mut pass = StopPass::default();
     let mut attempt = 0;
-    let mut risen = false;
     loop {
         let slowest = seen.slowest(at.dir).map_or(seen.get(at.dir), |s| s.0);
         let p = plan_stop_rung(at.dir, start, stop, seen.get(at.dir), slowest, b.tick_hz);
@@ -1610,11 +1658,8 @@ async fn stop_rungs<P: Pipe>(
             continue;
         }
         attempt = 0;
-        rungs += 1;
         let rows = &taken[s.drive_k].burst.rows;
-        let rise = rung_rise(rows, b.tick_hz);
-        let r = pass_reach(reach(rows, b.still_counts, b.tick_hz), risen);
-        risen |= rise.is_some_and(|x| x.valid());
+        let (r, rise, next) = pass.read(rows, b.still_counts, b.tick_hz);
         let read = read_rung(at.dir, start, rows, s.end, b.tick_hz).unwrap_or(RungRead {
             start,
             end: s.end,
@@ -1648,11 +1693,10 @@ async fn stop_rungs<P: Pipe>(
             drive_k: s.drive_k,
             price: s.price,
         });
-        match after_stop_rung(&r, rungs, shorts) {
+        match next {
             NextStop::Done => return Ok(s.end),
             NextStop::Another => {
                 if let Reach::Short(m) = r {
-                    shorts += 1;
                     lines.push(format!(
                         "{what}: still at {m:.0} with the shunt's rise {risen}, under {}: one more stop rung at the same duty",
                         stopcontact::MIN_RISE_COUNTS
@@ -1670,9 +1714,10 @@ async fn stop_rungs<P: Pipe>(
             NextStop::Unreached => {
                 found.may_center = true;
                 return Err(Halt::Refused(format!(
-                    "pass {} {}: {rungs} stop rungs did not reach the {word} stop; the shaft rested at {:.0}",
+                    "pass {} {}: {} stop rungs did not reach the {word} stop; the shaft rested at {:.0}",
                     at.pass,
                     way(at.dir),
+                    pass.rungs(),
                     s.end
                 )));
             }
@@ -6222,6 +6267,93 @@ mod tests {
             (n(&st["travel_cycles"]) - travel).abs() <= 2.0,
             "contact to contact {} cycles against the train's {travel}: {st}",
             st["travel_cycles"]
+        );
+    }
+
+    /// A recorded stop rung's drive rows (`testdata/stop-reach`, its
+    /// `sources.json`).
+    fn recorded(name: &str) -> Vec<TelFrame> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/stop-reach")
+            .join(format!("{name}.csv.gz"));
+        let gz = std::fs::read(&p).expect("capture");
+        let text =
+            String::from_utf8(crate::capture::meta::gunzip(&gz).expect("gzip")).expect("utf8");
+        let mut lines = text.lines();
+        let head: Vec<&str> = lines.next().expect("header").split(',').collect();
+        let col = |name: &str| head.iter().position(|h| *h == name).expect(name);
+        let (tick, pos, cur, duty) = (
+            col("tick"),
+            col("pos"),
+            col("current_raw"),
+            col("duty_counts"),
+        );
+        lines
+            .map(|l| {
+                let v: Vec<&str> = l.split(',').collect();
+                TelFrame {
+                    tick: v[tick].parse().unwrap_or(0),
+                    pos: v[pos].parse().ok(),
+                    current_raw: v[cur].parse().ok(),
+                    duty_counts: v[duty].parse().ok(),
+                    ..TelFrame::default()
+                }
+            })
+            .collect()
+    }
+
+    /// A pass's recorded stop rungs read in order as the step reads them,
+    /// at the run's still band: what follows each.
+    fn walk(names: &[&str], still_counts: f64) -> Vec<NextStop> {
+        let mut pass = StopPass::default();
+        let mut out = Vec::new();
+        for name in names {
+            let rows = recorded(name);
+            let (_, _, next) = pass.read(&rows, still_counts, 20_000.0);
+            out.push(next);
+            if next != NextStop::Another {
+                break;
+            }
+        }
+        out
+    }
+
+    /// The first stop rung reaches the stop only in its last rows, its own
+    /// rise read short of the stop (D pass 3 at 0.69 V: 6 counts; A pass
+    /// 7 at 0.877 V: 19), and the next starts pressed, with no free
+    /// stretch to rise from. Its seated level over the free level the
+    /// pass's first stop rung read (49 and 79 counts) is the stop: the
+    /// pass ends there, not "blocked".
+    #[test]
+    fn a_stop_rung_that_starts_pressed_after_a_late_arrival_ends_its_pass() {
+        assert_eq!(
+            walk(&["D-10", "D-11", "D-12"], 3.0),
+            [NextStop::Another, NextStop::Done]
+        );
+        assert_eq!(
+            walk(&["A-23", "A-24", "A-25"], 3.0),
+            [NextStop::Another, NextStop::Done]
+        );
+    }
+
+    /// A stop rung locked from rest at 486, far from the stop, twice (A0
+    /// pass 7 at 0.68 V): the pass's first stop rung read its free level
+    /// locked, so the second's level is no rise over it, and the shaft is
+    /// blocked, as on main. The tight spot's rung, then the one pressed
+    /// at it (REF pass 1), end their pass as on main: the judge's own
+    /// read of each rung decides the contact.
+    #[test]
+    fn a_stop_rung_locked_from_rest_stays_blocked() {
+        assert_eq!(
+            walk(&["A0-31", "A0-32"], 3.0),
+            [NextStop::Another, NextStop::Blocked]
+        );
+        assert_eq!(
+            walk(
+                &["REF/captures/table/05-raw", "REF/captures/table/07-raw"],
+                8.48
+            ),
+            [NextStop::Another, NextStop::Done]
         );
     }
 

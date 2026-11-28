@@ -1,4 +1,44 @@
 {
+ "D-10.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/D/00000000ffffffff76e5bc220ef6abcd/20261128T094750Z/captures/table/19-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "bb3db1ba4b14fb340ff6049921d1cfee58ac28fb",
+  "rows": "the table step's rung 10, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "D-11.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/D/00000000ffffffff76e5bc220ef6abcd/20261128T094750Z/captures/table/21-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "9ad2e9d9ffa64b4159b34190b553001a90477aaa",
+  "rows": "the table step's rung 11, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "D-12.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/D/00000000ffffffff76e5bc220ef6abcd/20261128T094750Z/captures/table/23-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "fce28501e9b4cfbeb4713829e60bdd3c9dcd133c",
+  "rows": "the table step's rung 12, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "A-23.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/A/00000000ffffffff76e5bc220ef6abcd/20261128T094352Z/captures/table/45-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "553b48d7ecf01ae9fbc81374cc31eee71220df18",
+  "rows": "the table step's rung 23, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "A-24.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/A/00000000ffffffff76e5bc220ef6abcd/20261128T094352Z/captures/table/47-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "81ade35e12fc054c72011c3d35bebfae69e93066",
+  "rows": "the table step's rung 24, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "A-25.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/A/00000000ffffffff76e5bc220ef6abcd/20261128T094352Z/captures/table/49-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "e29d87cb5996e4a61fe5de2314559bf01c6b78a6",
+  "rows": "the table step's rung 25, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "A0-31.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/A0/00000000ffffffff76e5bc220ef6abcd/20261128T094152Z/captures/table/61-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "684a154fb88bd2743777ead3398f23833ea7e492",
+  "rows": "the table step's rung 31, a stop rung onto the low stop: its drive capture, every row"
+ },
+ "A0-32.csv.gz": {
+  "from": "osc-dev-v006-bringup captures/run-resume/A0/00000000ffffffff76e5bc220ef6abcd/20261128T094152Z/captures/table/63-raw.csv.gz (bringup b67f90b5c), copied unchanged",
+  "sha1": "c5d998176c2514f80b28f3f84031887f0eac099a",
+  "rows": "the table step's rung 32, a stop rung onto the low stop: its drive capture, every row"
+ },
  "REF": {
   "from": "osc-dev-v006-bringup captures/run-resume/REF/00000000ffffffff76e5bc220ef6abcd/20261128T093606Z (bringup b67f90b5c)",
   "files": "results/table.json and, of captures/table, each rung's drive capture (the first its result names), copied unchanged; the coast captures and the .meta.json files left out: the judge reads none of them",
