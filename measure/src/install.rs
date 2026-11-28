@@ -694,6 +694,22 @@ pub async fn install<P: Pipe>(
     }
 }
 
+/// The servo rebooted onto its stored state, read at the baud it boots
+/// on, before any move back to the run's rate.
+pub async fn stored_state<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    steps: &mut Vec<Step>,
+) -> Result<State, Refused> {
+    let run = c.info().bps;
+    let at = boot(c, id).await?;
+    steps.push(Step::Rebooted);
+    let stored = state::read(c, id, d).await;
+    home(c, id, at, run, steps).await?;
+    Ok(stored?)
+}
+
 /// Reboot the servo onto its stored state and keep the record of it in
 /// [`STORED`], which must read back the same before anything else is
 /// written: the state a save, and a tune that ends without a set, go back
@@ -706,12 +722,7 @@ pub async fn backup<P: Pipe>(
     sink: &mut dyn Sink,
     steps: &mut Vec<Step>,
 ) -> Result<State, Refused> {
-    let run = c.info().bps;
-    let at = boot(c, id).await?;
-    steps.push(Step::Rebooted);
-    let stored = state::read(c, id, d).await;
-    home(c, id, at, run, steps).await?;
-    let stored = stored?;
+    let stored = stored_state(c, id, d, steps).await?;
     let mut bytes =
         serde_json::to_vec_pretty(&stored.record(d)).map_err(|e| Refused(e.to_string()))?;
     bytes.push(b'\n');

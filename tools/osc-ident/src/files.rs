@@ -57,6 +57,13 @@ impl Store for Fs {
     fn canonical(&self, path: &Path) -> Result<PathBuf, String> {
         path.canonicalize().map_err(|e| e.to_string())
     }
+
+    fn rename(&mut self, from: &Path, to: &Path) -> Result<(), String> {
+        if to.exists() {
+            return Err(format!("{} exists", to.display()));
+        }
+        std::fs::rename(from, to).map_err(|e| e.to_string())
+    }
 }
 
 /// The run's pot holes the closed-loop check's pot steps leave out

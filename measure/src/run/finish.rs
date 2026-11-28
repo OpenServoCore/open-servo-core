@@ -231,6 +231,18 @@ fn save_line(
     )
 }
 
+/// The next try number free in the tune folder `tune_dir`: try folders are
+/// never renumbered.
+pub fn next_free(fs: &dyn Store, tune_dir: &Path) -> u32 {
+    fs.entries(&tune_dir.join("tries"))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(n, dir)| dir.then(|| n.parse::<u32>().ok()).flatten())
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
 /// The final checks' record beside tune.json, in its shape.
 pub const BACK_OFF: &str = "back-off.json";
 
@@ -261,6 +273,17 @@ fn copy_into(from: &Path, to: &mut At) -> Result<(), String> {
         to.write(&f, &bytes).map_err(|e| e.0)?;
     }
     Ok(())
+}
+
+/// Where a resumed final check goes on: the next try's number, the
+/// tune's schedule index of its gain, the final checks kept before, which
+/// back-off.json lists first, and what it goes on after.
+#[derive(Clone, Debug)]
+pub struct Onward {
+    pub next: u32,
+    pub index: u32,
+    pub kept: Vec<Value>,
+    pub after: String,
 }
 
 /// The first final check, at the tune's gain, as it ended.
@@ -302,6 +325,7 @@ async fn final_checks<P: Pipe, V>(
     inputs_dir: &Path,
     tune_set: &SetFile,
     lines: &mut Vec<String>,
+    on: Option<&Onward>,
 ) -> Checks
 where
     V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
@@ -334,11 +358,19 @@ where
         root: tune_dir.clone(),
     };
     let started = clock();
-    let mut kept = Vec::new();
+    let mut kept = on.map_or_else(Vec::new, |o| o.kept.clone());
     let mut prev = String::new();
-    let (mut step, mut t, mut kp_now) = (from.saturating_sub(1), from + 1, kp);
+    let (mut step, mut t, mut kp_now) = match on {
+        Some(o) => (o.index, o.next, tune::gain(k0, o.index)),
+        None => (
+            from.saturating_sub(1),
+            next_free(sink.files, &tune_dir).max(from + 1),
+            kp,
+        ),
+    };
     out.why = loop {
-        let first = out.tries.is_empty();
+        let resumed = out.tries.is_empty() && on.is_some();
+        let first = out.tries.is_empty() && on.is_none();
         if !first && stop.load(Ordering::SeqCst) {
             break "interrupted between tries".into();
         }
@@ -366,10 +398,10 @@ where
             "{}, on the cruise's friction line",
             try_head(t - 1, kp_now, k0, &file)
         );
-        let after = if first {
-            format!("the tune's check accepted its try {from}")
-        } else {
-            format!("the check at v_kp {prev} refused on rest error")
+        let after = match on {
+            Some(o) if resumed => o.after.clone(),
+            _ if first => format!("the tune's check accepted its try {from}"),
+            _ => format!("the check at v_kp {prev} refused on rest error"),
         };
         if first {
             lines.push(format!(
@@ -379,6 +411,10 @@ where
                 word(&file, "fric_fv_q016"),
                 word(tune_set, "fric_fc_counts"),
                 word(tune_set, "fric_fv_q016")
+            ));
+        } else if resumed {
+            lines.push(format!(
+                "the final check goes on at v_kp {now}, try {t}: {after}"
             ));
         } else {
             lines.push(format!(
@@ -562,8 +598,30 @@ where
     C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
     V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
 {
+    finish_on(c, id, d, host, a, root, run_cruise, check, None).await
+}
+
+/// [`finish_with`] going on as `on` says: a resume past an accepted cruise
+/// takes the cruise's result as the run keeps it and goes on with the
+/// final checks.
+#[allow(clippy::too_many_arguments)]
+pub async fn finish_on<P: Pipe, C, V>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
+    run_cruise: C,
+    check: V,
+    on: Option<&Onward>,
+) -> Result<Finished>
+where
+    C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
+{
     let (feed, mut told) = (host.feed, 0);
-    let f = finish_told(c, id, d, host, a, root, run_cruise, check, &mut told).await?;
+    let f = finish_told(c, id, d, host, a, root, run_cruise, check, &mut told, on).await?;
     tell_lines(feed, &f.lines, &mut told);
     Ok(f)
 }
@@ -581,6 +639,7 @@ async fn finish_told<P: Pipe, C, V>(
     mut run_cruise: C,
     mut check: V,
     told: &mut usize,
+    on: Option<&Onward>,
 ) -> Result<Finished>
 where
     C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
@@ -630,6 +689,24 @@ where
             cruise,
             last: json!({"state": "not run", "why": why}),
         });
+    }
+    if on.is_some() {
+        let cruise_entry = super::manifest_of(host.files, root)?[cruise::STEP].clone();
+        return finals(
+            c,
+            id,
+            d,
+            host,
+            a,
+            root,
+            &mut check,
+            (from, kp, k0),
+            (&np, keep),
+            cruise_entry,
+            lines,
+            on,
+        )
+        .await;
     }
     super::put(host.files, root, cruise::STEP, super::running())?;
     feed(&Progress::Started { step: cruise::STEP });
@@ -689,7 +766,45 @@ where
         let why = format!("the cruise step was {state}");
         return Ok(short_of_final(c, id, d, keep, lines, cruise_entry, "not run", why).await);
     }
+    finals(
+        c,
+        id,
+        d,
+        host,
+        a,
+        root,
+        &mut check,
+        (from, kp, k0),
+        (&np, keep),
+        cruise_entry,
+        lines,
+        None,
+    )
+    .await
+}
 
+/// The finish past an accepted cruise, `cruise_entry`: the gather with
+/// its line, then the final checks after the tune's accepted try.
+#[allow(clippy::too_many_arguments)]
+async fn finals<P: Pipe, V>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    a: &RunArgs<'_>,
+    root: &Path,
+    check: &mut V,
+    (from, kp, k0): (u32, f64, f64),
+    (np, keep): (&Nameplate, (&SetFile, Option<&[i16; INTERVALS]>)),
+    cruise_entry: Value,
+    mut lines: Vec<String>,
+    on: Option<&Onward>,
+) -> Result<Finished>
+where
+    V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
+{
+    let (feed, clock) = (host.feed, host.clock);
+    let tune_set = keep.0;
     if let Err(e) = super::put(host.files, root, FINAL, super::running()) {
         lines.push(format!("run.json not kept: {e:#}"));
     }
@@ -713,12 +828,13 @@ where
         host,
         root,
         a.tries,
-        &mut check,
-        &np,
+        check,
+        np,
         (from, kp, k0),
         &inputs_dir,
-        &tune_set,
+        tune_set,
         &mut lines,
+        on,
     )
     .await;
     // final/ holds one try's files, written once: the accepted one, or the
