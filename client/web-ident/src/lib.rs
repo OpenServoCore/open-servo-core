@@ -9,6 +9,12 @@
 //! it, runs and closes it, and `OscClient.reclaim()` opens it again. `run`
 //! refuses a device that is still open, so the bus has one owner at a time.
 //!
+//! A page runs it in a dedicated worker (`worker.js`, driven from the page
+//! by `host.js`): a hidden page's timers are throttled, a dedicated worker's
+//! are not, and a pause stretched past the dead-man stops the run. The
+//! worker finds the lent device again with `findDevice`, since a
+//! `USBDevice` cannot be posted to it.
+//!
 //! The run's files stay in memory: a store the run reads and writes as it
 //! goes must answer at once, and OPFS answers a page only through promises.
 //! They come back with the outcome, each at its path from the store's root
@@ -148,6 +154,42 @@ impl From<run::Outcome> for RunOutcome {
     }
 }
 
+/// The device a page lent, by the `USBDevice` fields of the same names,
+/// for a worker to find its own object for it (`findDevice`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceKey {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    #[tsify(optional)]
+    pub serial_number: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl From<DeviceKey> for osc_client::webusb::DeviceKey {
+    fn from(k: DeviceKey) -> Self {
+        osc_client::webusb::DeviceKey {
+            vendor_id: k.vendor_id,
+            product_id: k.product_id,
+            serial: k.serial_number,
+        }
+    }
+}
+
+/// The device `key` names among those this site was granted, found
+/// without a prompt, so it works in a worker: a `USBDevice` cannot be posted
+/// to one. Refused when none matches, or several do.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = findDevice)]
+pub async fn find_device(
+    key: tsify::Ts<DeviceKey>,
+) -> Result<osc_client::webusb::UsbDevice, JsError> {
+    let key = key.to_rust()?.into();
+    osc_client::webusb::find_device(&key)
+        .await
+        .map_err(JsError::from)
+}
+
 /// One identification run. Made before the run starts, so the page's
 /// Cancel reaches its stop flag while the run holds the bus; a handle runs
 /// once.
@@ -226,8 +268,9 @@ impl IdentRun {
     /// `run` on one simulated servo at rest, at `args.id`, with osc-client-web's
     /// simulated UID for that id. No device, no user gesture; the sim runs
     /// no motor, so the run stops at the probe. Each exchange and each pause
-    /// gives the page a turn, as a device's transfers do, so the page draws
-    /// its progress and takes a Cancel as the run goes.
+    /// gives the event loop a turn, as a device's transfers do, so a page
+    /// draws its progress, and a page or a worker takes a Cancel, as the run
+    /// goes.
     #[cfg(feature = "fake")]
     #[wasm_bindgen(js_name = runFake)]
     pub async fn run_fake(

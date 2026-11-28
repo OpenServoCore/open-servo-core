@@ -323,6 +323,9 @@ jobs:
       - name: wasm-pack test (osc-client-web-ident in node)
         working-directory: client/web-ident
         run: wasm-pack test --node
+      - name: node test (osc-client-web-ident's worker and its page side, over the built package)
+        working-directory: client/web-ident
+        run: node --test tests/*.test.mjs
 
   osc-bus-cli:
     name: build (tools/osc-bus)
