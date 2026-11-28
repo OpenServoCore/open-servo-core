@@ -868,7 +868,8 @@ mod tests {
         let dir = scratch("rules");
         // the record's inputs, its soft pair 314 / 3560 stated as the soft
         // travel centered between its stops, where the rated 180 deg would
-        // set 126 / 3748
+        // set 132 / 3742; its angle map put 0 deg at the clockwise stop,
+        // which no policy states now: the rules put it at the center
         let inputs = dir.join("inputs");
         std::fs::create_dir_all(&inputs).expect("mkdir");
         for f in std::fs::read_dir(testdata("")).expect("testdata") {
@@ -911,12 +912,20 @@ mod tests {
         block_on(mgmt::save(&mut c, id)).expect("save");
         block_on(mgmt::reboot(&mut c, id)).expect("reboot");
 
-        assert!(
-            block_on(check(&mut c, id, &d, &out)).expect("check"),
-            "clean"
+        let ours = files::set(&out).expect("our set");
+        let checked = block_on(install::check(&mut c, id, &d, &ours)).expect("check");
+        assert_eq!(
+            checked.differences,
+            [
+                "angle_min_cdeg: servo 0, set -9217",
+                "angle_max_cdeg: servo 18433, set 9217"
+            ]
+        );
+        assert_eq!(
+            checked.center,
+            "center: the servo's 0 deg at 82.0 table counts, raw 82.0; the set's at 1937.0, raw 1963.1"
         );
         assert!(block_on(check(&mut c, id, &d, &testdata("constants.json"))).expect("check"));
-        let ours = files::set(&out).expect("our set");
         assert_eq!(ours.table(), record.table());
         assert_eq!(ours.values().len() + 1, record.values().len());
 
@@ -932,7 +941,17 @@ mod tests {
             &mut steps,
         ))
         .expect("installs");
-        assert_eq!(steps, [], "the servo already holds it");
+        let wrote: Vec<String> = steps.iter().map(ToString::to_string).collect();
+        assert!(
+            wrote.len() == 2
+                && wrote[0].contains("angle_min_cdeg")
+                && wrote[1].contains("angle_max_cdeg"),
+            "the servo holds the rest already: {wrote:?}"
+        );
+        assert!(
+            block_on(check(&mut c, id, &d, &out)).expect("check"),
+            "clean"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

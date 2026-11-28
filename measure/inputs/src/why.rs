@@ -43,6 +43,14 @@ pub const RETIRED_TRAVEL_DEG: &str = "the profile states travel_deg, the stop-to
 
 pub const RETIRED_SOFT_MARGIN_SHARE: &str = "the policy states motion.soft_margin_share, which this tool no longer reads: take it out, and state motion.soft_travel_deg, the soft window's width in output deg centered between the stops, only to narrow or widen it from the profile's rated travel";
 
+pub const RETIRED_ANGLE_CW_STOP_DEG: &str = "the policy states motion.angle_cw_stop_deg, which this tool no longer reads: 0 deg is the servo's center of travel; to move it, state motion.center_offset_deg, the degrees counterclockwise of the center";
+
+pub fn center_offset_deg(deg: f64) -> String {
+    format!(
+        "An offset that is no number cannot place 0 deg: the policy's motion.center_offset_deg is {deg}; state the degrees counterclockwise of the center of travel, or leave it out for the center"
+    )
+}
+
 pub fn soft_travel_deg(deg: f64) -> String {
     format!(
         "A soft window of no width or of more than one turn cannot be centered between the stops: the policy's motion.soft_travel_deg is {deg}; state one over 0 and at most 360, or leave it out for the profile's rated travel"

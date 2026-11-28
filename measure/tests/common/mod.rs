@@ -105,10 +105,40 @@ pub fn rules_set(inputs: &Inputs, table: &TableFile) -> SetFile {
     set_of(&build(inputs), inputs, table)
 }
 
+/// The record's angle map, 0 deg at the clockwise stop, which no policy
+/// states now: the rules put 0 deg at the center of travel, -9217 / 9217.
+pub const RECORD_MAP: [(&str, i64); 2] = [("angle_min_cdeg", 0), ("angle_max_cdeg", 18433)];
+
+/// `rules` with the record's angle map, so a set the record's inputs give
+/// differs from the set of record only where a test moves it.
+pub fn at_record_map(mut rules: osc_measure::Set) -> osc_measure::Set {
+    for (name, outcome) in &mut rules.fields {
+        if let (Some((_, v)), osc_measure::Outcome::Bound(e)) =
+            (RECORD_MAP.iter().find(|(f, _)| f == name), outcome)
+        {
+            e.value = *v;
+        }
+    }
+    rules
+}
+
+/// [`rules_set`] with the record's angle map ([`at_record_map`]).
+pub fn record_rules_set(inputs: &Inputs, table: &TableFile) -> SetFile {
+    set_of(&at_record_map(build(inputs)), inputs, table)
+}
+
 /// The rules' set with the soft limits 0 / 0, off: what an application
 /// that turned them off leaves on the servo.
 pub fn rules_set_soft_off(inputs: &Inputs, table: &TableFile) -> SetFile {
-    let mut rules = build(inputs);
+    set_of(&soft_off(build(inputs)), inputs, table)
+}
+
+/// [`rules_set_soft_off`] with the record's angle map.
+pub fn record_rules_set_soft_off(inputs: &Inputs, table: &TableFile) -> SetFile {
+    set_of(&at_record_map(soft_off(build(inputs))), inputs, table)
+}
+
+fn soft_off(mut rules: osc_measure::Set) -> osc_measure::Set {
     for (name, outcome) in &mut rules.fields {
         if let ("pos_min_soft_counts" | "pos_max_soft_counts", osc_measure::Outcome::Bound(e)) =
             (*name, outcome)
@@ -116,7 +146,7 @@ pub fn rules_set_soft_off(inputs: &Inputs, table: &TableFile) -> SetFile {
             e.value = 0;
         }
     }
-    set_of(&rules, inputs, table)
+    rules
 }
 
 fn set_of(rules: &osc_measure::Set, inputs: &Inputs, table: &TableFile) -> SetFile {

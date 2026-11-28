@@ -62,8 +62,13 @@ impl StallResponse {
 )]
 #[serde(default)]
 pub struct Policy {
-    /// The angle map's value at the clockwise stop.
-    pub angle_cw_stop_deg: Option<f64>,
+    /// Where 0 deg sits from the servo's center of travel, output deg
+    /// counterclockwise; none is the center.
+    pub center_offset_deg: Option<f64>,
+    /// A version 0 policy's angle at the clockwise stop: never read, only
+    /// noted.
+    #[serde(rename = "angle_cw_stop_deg", skip_serializing)]
+    pub(crate) v0_angle_cw_stop_deg: Option<f64>,
     #[serde(deserialize_with = "form")]
     pub observer: Option<Observer>,
     #[serde(deserialize_with = "form")]
@@ -103,7 +108,7 @@ pub struct Policy {
     pub stall_speed: Option<StallSpeed>,
     pub pos_error_deg: Option<f64>,
     pub pos_error_time_ms: Option<f64>,
-    /// The soft window's width, output deg, centered between the stops.
+    /// The soft window's width, output deg, centered on 0 deg.
     pub soft_travel_deg: Option<f64>,
     /// A version 0 policy's share of the stops' span each soft limit sat
     /// inside its stop: never read, only noted.

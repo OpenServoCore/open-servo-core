@@ -85,12 +85,19 @@ fn refused(set: &osc_measure::Set, field: &str) -> String {
 /// breakaway: the set of record holds its 0 with no source, and the rule
 /// holds it the same way.
 const HELD_OF_RECORD: &str = "fric_breakaway_counts";
-/// The soft limits of record were the policy's share of the stops' span
-/// inside each stop, 314 / 3560; the rules now center the rated travel on
-/// the first contacts, clamped to K inside each
-/// (`the_soft_window_is_the_rated_travel_centered_on_the_contacts`).
-const SOFT_SINCE_RECORD: [(&str, i64); 2] =
-    [("pos_min_soft_counts", 132), ("pos_max_soft_counts", 3742)];
+/// The fields the rated travel and the center moved off the record. Its soft
+/// limits were the policy's share of the stops' span inside each stop, 314 /
+/// 3560; the rules now center the rated travel on the first contacts,
+/// clamped to K inside each
+/// (`the_soft_window_is_the_rated_travel_centered_on_the_contacts`). Its
+/// angle map put 0 deg at the clockwise stop, 0 / 18433; the rules put 0 deg
+/// at the center of travel (`the_angle_map_crosses_0_at_the_centre_of_travel`).
+const SOFT_SINCE_RECORD: [(&str, i64); 4] = [
+    ("pos_min_soft_counts", 132),
+    ("pos_max_soft_counts", 3742),
+    ("angle_min_cdeg", -9217),
+    ("angle_max_cdeg", 9217),
+];
 /// Tuning parameters newer than the set of record: off unless the user
 /// sets them.
 const TUNING: [&str; 2] = ["pot_steady_counts_per_a", "pot_fast_counts_per_a"];
@@ -118,7 +125,7 @@ fn rules_reproduce_the_set_of_record() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(equal, 60);
+    assert_eq!(equal, 58);
     for name in TUNING {
         assert_eq!(bound(&set, name), 0);
     }
@@ -164,7 +171,7 @@ fn bands_reproduce() {
 /// The set's clamps but the soft window's, which the record's stops clamp
 /// on every build (`the_soft_window_is_the_rated_travel_centered_on_the_contacts`).
 fn clamps_but_soft(set: &osc_measure::Set) -> Vec<String> {
-    let soft = SOFT_SINCE_RECORD.map(|(f, _)| format!("{f}: "));
+    let soft = ["pos_min_soft_counts: ", "pos_max_soft_counts: "];
     set.clamps()
         .into_iter()
         .filter(|c| !soft.iter().any(|f| c.starts_with(f)))
@@ -443,6 +450,116 @@ fn the_soft_window_is_the_rated_travel_centered_on_the_contacts() {
     let set = build(&i);
     assert_eq!(held(&set, "pos_min_soft_counts"), "measured.stops");
     assert_eq!(held(&set, "pos_max_soft_counts"), "measured.stops");
+}
+
+/// Goal 0 deg is the center of travel: the set's angle map crosses 0 at
+/// the contacts' midpoint, (82 + 3792) / 2 = 1937 table counts, and the
+/// soft window is centered on it. The set reports the center beside the
+/// map, raw through the table, and stores no other word of it.
+#[test]
+fn the_angle_map_crosses_0_at_the_centre_of_travel() {
+    let set = build(&inputs());
+    let (lo, hi) = (bound(&set, "raw_min") as f64, bound(&set, "raw_max") as f64);
+    let (a0, a1) = (
+        bound(&set, "angle_min_cdeg") as f64,
+        bound(&set, "angle_max_cdeg") as f64,
+    );
+    let zero = lo + (0.0 - a0) * (hi - lo) / (a1 - a0);
+    assert!((zero - 1937.0).abs() <= 0.5, "{zero}");
+    let soft = (
+        bound(&set, "pos_min_soft_counts") as f64,
+        bound(&set, "pos_max_soft_counts") as f64,
+    );
+    assert!(((soft.0 + soft.1) / 2.0 - zero).abs() <= 1.0, "{soft:?}");
+    let c = set.center.as_ref().expect("a center");
+    assert_eq!(
+        (
+            c.counts,
+            c.offset_deg,
+            c.asked_offset_deg,
+            c.said.as_deref()
+        ),
+        (1937.0, 0.0, None, None)
+    );
+    match set.get("angle_min_cdeg") {
+        Some(Outcome::Bound(e)) => {
+            assert_eq!(e.rule, "angle_min.center");
+            assert_eq!(
+                e.inputs,
+                [
+                    "measured.stops",
+                    "nameplate.count_rises_ccw",
+                    "measured.table"
+                ]
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // counts falling counterclockwise: the map descends, 0 deg where it was
+    let mut i = inputs();
+    i.nameplate.count_rises_ccw = Some(false);
+    let set = build(&i);
+    assert_eq!(
+        (bound(&set, "angle_min_cdeg"), bound(&set, "angle_max_cdeg")),
+        (9217, -9217)
+    );
+}
+
+/// A tuned center moves 0 deg and the window with it; past the reach it
+/// clamps and says so, never refused. On the record's contacts, 184.33 deg
+/// apart, the rated 180 deg window is already clamped to 179.33 deg, K =
+/// 2.5 deg inside each, so it leaves 0 deg no room: an offset of +1 deg is
+/// clamped to the center. A 170 deg window leaves (184.33 - 5 - 170) / 2 =
+/// 4.67 deg each way: +1 deg moves 0 deg and the window 20.1 counts up the
+/// count, which rises counterclockwise, and +5 deg is clamped to +4.67.
+#[test]
+fn a_tuned_centre_moves_0_deg_and_the_window_and_clamps_at_the_reach() {
+    let soft = |set: &osc_measure::Set| {
+        (
+            bound(set, "pos_min_soft_counts"),
+            bound(set, "pos_max_soft_counts"),
+        )
+    };
+    let map = |set: &osc_measure::Set| (bound(set, "angle_min_cdeg"), bound(set, "angle_max_cdeg"));
+    let mut i = inputs();
+    i.policy.center_offset_deg = Some(1.0);
+    let set = build(&i);
+    assert_eq!((soft(&set), map(&set)), ((132, 3742), (-9217, 9217)));
+    assert!(clamp(&set, "angle_min_cdeg").contains("0 deg is clamped to +0.00 deg"));
+    assert!(set.center.as_ref().is_some_and(|c| c.said.is_some()));
+
+    i.policy.soft_travel_deg = Some(170.0);
+    let set = build(&i);
+    assert_eq!((soft(&set), map(&set)), ((246, 3668), (-9317, 9117)));
+    assert!(set.clamps().is_empty(), "{:?}", set.clamps());
+    let c = set.center.as_ref().expect("a center");
+    assert!((c.counts - 1957.13).abs() < 0.01, "{c:?}");
+    match set.get("angle_min_cdeg") {
+        Some(Outcome::Bound(e)) => assert!(e.inputs.contains(&"policy.center_offset_deg")),
+        other => panic!("{other:?}"),
+    }
+
+    i.policy.center_offset_deg = Some(5.0);
+    let set = build(&i);
+    assert_eq!((soft(&set), map(&set)), ((320, 3742), (-9683, 8750)));
+    let said = "center: the policy's center_offset_deg, +5 deg, puts the 170.00 deg soft window past the stops less 2.50 deg at the counterclockwise end: 0 deg is clamped to +4.67 deg from the center of travel, the furthest the window fits";
+    assert_eq!(clamp(&set, "angle_min_cdeg"), said);
+    assert_eq!(clamp(&set, "angle_max_cdeg"), said);
+    assert_eq!(clamp(&set, "pos_min_soft_counts"), said);
+    let c = set.center.as_ref().expect("a center");
+    assert_eq!(c.asked_offset_deg, Some(5.0));
+    assert!((c.offset_deg - 4.6666).abs() < 1e-3, "{c:?}");
+
+    // counts falling counterclockwise: +5 deg moves 0 deg down the count
+    i.nameplate.count_rises_ccw = Some(false);
+    let set = build(&i);
+    assert_eq!((soft(&set), map(&set)), ((132, 3554), (8750, -9683)));
+    i.policy.center_offset_deg = Some(-5.0);
+    let set = build(&i);
+    assert!(
+        clamp(&set, "angle_max_cdeg")
+            .contains("at the clockwise end: 0 deg is clamped to -4.67 deg")
+    );
 }
 
 #[test]

@@ -84,15 +84,20 @@ pub struct Protection {
 pub struct Motion {
     pub move_speed: Option<MoveSpeed>,
     pub speed_up: Option<SpeedUp>,
-    /// The soft window's width, output deg, centered between the stops;
-    /// none is the profile's rated travel.
+    /// The soft window's width, output deg, centered on 0 deg; none is the
+    /// profile's rated travel.
     pub soft_travel_deg: Option<f64>,
     /// A field this tool no longer reads: its presence is refused, naming
     /// `soft_travel_deg`.
     #[serde(rename = "soft_margin_share", skip_serializing)]
     pub(crate) retired_soft_margin_share: Option<IgnoredAny>,
-    /// The angle map's value at the clockwise stop.
-    pub angle_cw_stop_deg: Option<f64>,
+    /// Where the application's 0 deg sits from the servo's center of
+    /// travel, output deg counterclockwise; none is the center.
+    pub center_offset_deg: Option<f64>,
+    /// A field this tool no longer reads: its presence is refused, naming
+    /// `center_offset_deg`.
+    #[serde(rename = "angle_cw_stop_deg", skip_serializing)]
+    pub(crate) retired_angle_cw_stop_deg: Option<IgnoredAny>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -300,6 +305,14 @@ impl TuningPolicy {
         check_key("policy", &self.key)?;
         if self.motion.retired_soft_margin_share.is_some() {
             return Err(why::RETIRED_SOFT_MARGIN_SHARE.into());
+        }
+        if self.motion.retired_angle_cw_stop_deg.is_some() {
+            return Err(why::RETIRED_ANGLE_CW_STOP_DEG.into());
+        }
+        if let Some(deg) = self.motion.center_offset_deg
+            && !deg.is_finite()
+        {
+            return Err(why::center_offset_deg(deg));
         }
         if let Some(deg) = self.motion.soft_travel_deg
             && !why::within_a_turn(deg)

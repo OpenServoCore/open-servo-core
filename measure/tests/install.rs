@@ -68,7 +68,7 @@ fn install_writes_only_what_differs() {
 
     let mut i = record_inputs();
     i.policy.velocity_limit_deg_s = Some(150.0);
-    let set = rules_set(&i, &table());
+    let set = record_rules_set(&i, &table());
     log.borrow_mut().clear();
     let (r, steps) = install_set(&mut c, &set);
     r.expect("one plant field installs");
@@ -97,7 +97,7 @@ fn install_writes_only_what_differs() {
 fn the_soft_limits_go_off_and_on_in_one_write() {
     let (mut c, log) = on_record();
     let pair = (field_addr("pos_min_soft_counts").0, 8);
-    let off = rules_set_soft_off(&inputs(), &table());
+    let off = record_rules_set_soft_off(&inputs(), &table());
     assert_eq!(
         off.value("pos_min_soft_counts").and_then(|v| v.as_i64()),
         Some(0)
@@ -366,6 +366,7 @@ fn the_check_before_a_save_refuses_only_a_set_that_did_not_land() {
         refused: refused.into(),
         unsaved: true,
         servo: "0".repeat(64),
+        center: String::new(),
     };
     for (settings, refused) in [
         ("loaded", "none"),
@@ -434,7 +435,7 @@ fn a_set_that_moves_a_protection_installs_and_says_the_move() {
     let with = |f: &dyn Fn(&mut osc_measure::Inputs)| {
         let mut i = record_inputs();
         f(&mut i);
-        rules_set(&i, &table())
+        record_rules_set(&i, &table())
     };
     let moved = |steps: &[Step], name: &str| {
         steps.iter().find_map(|s| match s {

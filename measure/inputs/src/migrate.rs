@@ -252,7 +252,7 @@ fn policy_of(p: &Policy, source: &Source, key: &str) -> TuningPolicy {
     m.move_speed = p.velocity_limit_deg_s.map(MoveSpeed::DegS);
     m.speed_up = p.accel_limit_deg_s2.map(SpeedUp::DegS2);
     m.soft_travel_deg = p.soft_travel_deg;
-    m.angle_cw_stop_deg = p.angle_cw_stop_deg;
+    m.center_offset_deg = p.center_offset_deg;
     let l = &mut t.loops;
     l.current_loop = p.current_loop;
     l.observer = p.observer;
@@ -389,6 +389,11 @@ pub fn upgrade_with(
                 "the policy is version 0: read as the tuning policy {} {stated}{board}",
                 t.key
             ));
+            if let Some(deg) = policy.v0_angle_cw_stop_deg {
+                notes.push(format!(
+                    "the version 0 policy's angle_cw_stop_deg ({deg}) is not read: 0 deg is the servo's center of travel, or the policy's motion.center_offset_deg from it where it states one"
+                ));
+            }
             if let Some(share) = policy.v0_soft_margin_share {
                 notes.push(format!(
                     "the version 0 policy's soft_margin_share ({share}) is not read: the soft window is the profile's rated travel centered between the stops, or the policy's motion.soft_travel_deg where it states one"

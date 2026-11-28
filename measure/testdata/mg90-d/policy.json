@@ -1,5 +1,4 @@
 {
-  "angle_cw_stop_deg": 0.0,
   "observer": {"hz": 15.0},
   "current_loop": {"hz": 1000.0},
   "velocity_em_ratio": 1.34,

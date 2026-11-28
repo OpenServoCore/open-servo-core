@@ -93,8 +93,9 @@ pub struct CalibMotorExt {
 
 /// Count<->angle scale and gearing, pure host-facing metadata: firmware never
 /// reads it, the ISR stays in counts. Angles are centi-degrees at the pot
-/// stops raw_min/raw_max (which equal pos_min/max_phys); `gear_ratio_centi`
-/// is motor revs per output rev x100. All-zero = unset.
+/// stops raw_min/raw_max (which equal pos_min/max_phys); 0 cdeg is the
+/// servo's center, so a reader must not take `angle_min_cdeg` as 0.
+/// `gear_ratio_centi` is motor revs per output rev x100. All-zero = unset.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibKinematics {

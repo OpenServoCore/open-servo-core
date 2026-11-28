@@ -115,7 +115,7 @@ fn each_version_0_field_moves_to_its_version_1_place() {
     assert_eq!(q.motion.move_speed, Some(MoveSpeed::DegS(200.0)));
     assert_eq!(q.motion.speed_up, Some(SpeedUp::DegS2(4000.0)));
     assert_eq!(q.motion.soft_travel_deg, None);
-    assert_eq!(q.motion.angle_cw_stop_deg, Some(0.0));
+    assert_eq!(q.motion.center_offset_deg, None);
     assert_eq!(q.loops.current_loop, Some(CurrentLoop::Hz(1000.0)));
     assert_eq!(q.loops.observer, Some(Observer::Hz(15.0)));
     assert_eq!(q.loops.position_split, Some(7.104));
@@ -807,8 +807,8 @@ fn the_soft_travel_is_the_policys_else_the_rated_travel() {
     }
 
     let with = RECORD_POLICY.replacen(
-        "\"angle_cw_stop_deg\"",
-        "\"soft_margin_share\": 0.0625, \"angle_cw_stop_deg\"",
+        "\"move_speed\"",
+        "\"soft_margin_share\": 0.0625, \"move_speed\"",
         1,
     );
     let PolicyIn::V1(q) = read::policy(&with, "unused").expect("parses") else {
@@ -841,4 +841,71 @@ fn the_soft_travel_is_the_policys_else_the_rated_travel() {
     let r = resolve(&u.profile, &u.policy, None).expect("resolves");
     assert_eq!(r.policy.soft_travel_deg, None);
     assert_eq!(line(&r).value, Value::Number(180.0));
+}
+
+/// 0 deg is the servo's center of travel: the policy's
+/// motion.center_offset_deg moves it, counterclockwise positive, and none
+/// is the center. A version 1 policy that states the retired
+/// angle_cw_stop_deg is refused in plain words naming center_offset_deg; a
+/// version 0 one drops it with a note.
+#[test]
+fn the_center_offset_is_the_policys_and_the_clockwise_stop_angle_retires() {
+    let (p, mut q) = v1();
+    let line = |r: &osc_ident_inputs::Resolved| {
+        r.report
+            .fields
+            .iter()
+            .find(|l| l.field == "motion.center_offset_deg")
+            .cloned()
+            .expect("a line")
+    };
+    let r = resolve(&p, &q, None).expect("resolves");
+    assert_eq!(r.policy.center_offset_deg, None);
+    let l = line(&r);
+    assert_eq!((&l.form, &l.value), (&Form::Stated, &Value::Number(0.0)));
+    assert!(
+        l.note
+            .as_deref()
+            .is_some_and(|n| n.starts_with("0 deg at the center of travel")),
+        "{l:?}"
+    );
+    q.motion.center_offset_deg = Some(-12.5);
+    let r = resolve(&p, &q, None).expect("resolves");
+    assert_eq!(r.policy.center_offset_deg, Some(-12.5));
+    assert_eq!(line(&r).value, Value::Number(-12.5));
+    q.motion.center_offset_deg = Some(f64::NAN);
+    let e = resolve(&p, &q, None).expect_err("refused");
+    assert!(e.contains("motion.center_offset_deg is NaN"), "{e}");
+
+    let with = RECORD_POLICY.replacen(
+        "\"move_speed\"",
+        "\"angle_cw_stop_deg\": 0.0, \"move_speed\"",
+        1,
+    );
+    let PolicyIn::V1(q) = read::policy(&with, "unused").expect("parses") else {
+        panic!("version 1")
+    };
+    assert_eq!(
+        q.check().expect_err("refused"),
+        "the policy states motion.angle_cw_stop_deg, which this tool no longer reads: 0 deg is the servo's center of travel; to move it, state motion.center_offset_deg, the degrees counterclockwise of the center"
+    );
+    let json = serde_json::to_value(&*q).expect("json");
+    assert!(json["motion"].get("angle_cw_stop_deg").is_none(), "{json}");
+
+    let v0 = POLICY.replacen(
+        "\"hold_band_noise_multiple\"",
+        "\"angle_cw_stop_deg\": 0.0, \"hold_band_noise_multiple\"",
+        1,
+    );
+    let pol = read::policy(&v0, "policy").expect("policy");
+    let u = upgrade(read::profile(NAMEPLATE).expect("nameplate"), Some(pol)).expect("upgrades");
+    assert_eq!(u.policy.motion.center_offset_deg, None);
+    assert!(
+        u.notes
+            .iter()
+            .any(|n| n.starts_with("the version 0 policy's angle_cw_stop_deg (0) is not read")),
+        "{:?}",
+        u.notes
+    );
+    assert!(u.policy.check().is_ok());
 }

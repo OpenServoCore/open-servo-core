@@ -645,7 +645,14 @@ the servo, exported to the host, never converted on the way.
 
 The angle map (`angle_min_cdeg` at `raw_min`, `angle_max_cdeg` at
 `raw_max`) may descend: degrees are counterclockwise-positive facing the
-horn (ROS REP 103), while counts follow the pot.
+horn (ROS REP 103), while counts follow the pot. 0 deg is the servo's
+center: identification writes the map so it crosses 0 at the center of
+travel, the midpoint of the two stops' first contacts in the table's
+counts, or at the application's offset from it, and a host commands 0 deg
+there. A host finds the center as the count where the map is 0,
+`raw_min + (0 - angle_min_cdeg) x (raw_max - raw_min) / (angle_max_cdeg -
+angle_min_cdeg)`; it must not take `angle_min_cdeg` as 0. The firmware
+reads neither.
 
 A conductance between the two sense chains is a ratio of their counts:
 `g_window_q016` (sec 5.8) is counts of shunt current per count of the

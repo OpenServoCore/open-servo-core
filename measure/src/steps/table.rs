@@ -2125,6 +2125,9 @@ pub struct StopsRead {
     pub pins: Option<(u16, u16)>,
     /// Each contact in the table's counts.
     pub contact_counts: Option<(f64, f64)>,
+    /// The center of travel, the contacts' midpoint: cycles, the table's
+    /// counts, and raw through the table, reported only.
+    pub center: Option<(f64, f64, f64)>,
 }
 
 impl StopsRead {
@@ -2775,6 +2778,7 @@ fn stops_of(
         raw: None,
         pins: None,
         contact_counts: None,
+        center: None,
     };
     if let (Ok(lo), Ok(hi)) = (&out.low.stop, &out.high.stop) {
         let p = hi.contact - lo.contact;
@@ -2793,6 +2797,8 @@ fn stops_of(
                 pin_lo + (lo.contact - a_lo) * per,
                 pin_lo + (hi.contact - a_lo) * per,
             ));
+            let mid = (lo.contact + hi.contact) / 2.0;
+            out.center = Some((mid, pin_lo + (mid - a_lo) * per, raw_at(t, mid)));
         }
     }
     out
@@ -2995,6 +3001,7 @@ fn read_table_with(
             raw: None,
             pins: None,
             contact_counts: None,
+            center: None,
         },
     };
     for (i, (a, sa)) in used.iter().enumerate() {
@@ -4113,13 +4120,14 @@ fn stops_json(s: &StopsRead, rest: &dyn Fn(usize) -> Option<f64>, c: &JudgeCfg) 
     json!({
         "low": side(&s.low, 0),
         "high": side(&s.high, 1),
+        "center": s.center.map(|(cycles, counts, raw)| json!({"cycles": cycles, "counts": counts, "raw": raw})),
         "travel_cycles": s.travel_cycles,
         "travel_deg": s.travel_deg,
         "deg_per_cycle": deg,
         "g_cycles": CUT_CYCLES,
         "odd_cycles": stopcontact::ODD_CYCLES,
         "check_share": stopcontact::CHECK_SHARE,
-        "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle, less the rungs short of it, whose contact a fitted sample lies past toward the stop by over odd_cycles; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio",
+        "source": "oscnb stopcontact: first contact at half the shunt's rise from its free level (the 5 ms box's median over 40 ms after the 0.1 s spin-up) to its seated one (over the rung's last 100 ms less 5 ms), at least min rise counts; the rung's ripple seeded within 30 % of the line its free stretch's pot speed predicts at the fast rungs' table's counts a cycle; placed in the fit's frame by its samples up to g_cycles before contact; a stop the median of its rungs whose track holds within check_share of the table's counts a cycle, less the rungs short of it, whose contact a fitted sample lies past toward the stop by over odd_cycles; contact_raw through the table, pin_raw moved outward to the 16-count grid, contact_counts in the table's counts; center the contacts' midpoint, its raw through the table reported only; travel contact to contact x 360 over brushes x rotor_segments x gear_ratio",
     })
 }
 

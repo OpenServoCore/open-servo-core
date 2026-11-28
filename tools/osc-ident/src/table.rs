@@ -151,12 +151,22 @@ fn raw(k: usize) -> u16 {
     (k * GRID) as u16
 }
 
-/// The servo's table, its stops and its stored state, as read.
+/// The servo's table, its stops, its angle map and its stored state, as
+/// read.
 pub struct Table {
     id: Id,
     lut: PosLut,
     stops: (u16, u16),
+    angles: Option<(i64, i64)>,
     store: StoreState,
+}
+
+/// Where the angle map puts 0 deg, the servo's center: table counts, and
+/// raw through the table.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Center {
+    pub counts: f64,
+    pub raw: f64,
 }
 
 #[derive(Serialize)]
@@ -166,6 +176,7 @@ struct Shown<'a> {
     live: bool,
     #[serde(flatten)]
     report: Report,
+    center: Option<Center>,
     points: &'a [i16],
 }
 
@@ -180,9 +191,12 @@ pub async fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<
             _ => Err(anyhow!("{name} is not two bytes")),
         }
     };
+    let angle = |name: &str| d.field(name).and_then(|f| s.text(f).as_i64());
+    let angles = angle("angle_min_cdeg").zip(angle("angle_max_cdeg"));
     Ok(Table {
         id,
         stops: (stop("raw_min")?, stop("raw_max")?),
+        angles,
         lut: s.lut,
         store: s.store,
     })
@@ -197,6 +211,13 @@ impl Table {
 
     fn report(&self) -> Report {
         Report::new(&self.grid(), self.stops)
+    }
+
+    /// Where the servo's angle map crosses 0 deg; none while it is unset.
+    pub fn center(&self) -> Option<Center> {
+        let raw = (self.stops.0 as i64, self.stops.1 as i64);
+        let (counts, raw) = osc_measure::set::map_center(&self.lut.points, raw, self.angles?)?;
+        Some(Center { counts, raw })
     }
 
     /// The stored state's one-line warning, when an image is on its
@@ -219,6 +240,7 @@ impl Table {
             state_name: self.lut.state_name(),
             live: self.lut.live(),
             report: self.report(),
+            center: self.center(),
             points: &self.lut.points,
         })
     }
@@ -240,6 +262,16 @@ impl Table {
             }
         );
         s.push_str(&self.report().summary());
+        match self.center() {
+            Some(c) => {
+                let _ = writeln!(
+                    s,
+                    "center: 0 deg on the angle map at {:.1} table counts, raw {:.1}",
+                    c.counts, c.raw
+                );
+            }
+            None => s.push_str("center: the angle map is unset\n"),
+        }
         if let Some(why) = explain(&self.grid(), self.stops) {
             let _ = writeln!(s, "against the servo's stops: {why}");
         }
@@ -435,6 +467,15 @@ mod tests {
         assert_eq!(points, table.points.to_vec());
         assert_eq!(shown["state_name"], "LIVE");
         assert_eq!(shown["live"], true);
+        // the record's map puts 0 deg at its clockwise stop, raw 82
+        assert_eq!(
+            shown["center"],
+            serde_json::json!({"counts": 82.0, "raw": 82.0})
+        );
+        assert!(
+            t.text()
+                .contains("center: 0 deg on the angle map at 82.0 table counts, raw 82.0")
+        );
         assert_eq!(shown["state"], pos_lut::state::LIVE);
         let stops = [&shown["stops"][0], &shown["stops"][1]].map(|v| v.as_u64().unwrap() as u16);
         assert_eq!(

@@ -101,7 +101,7 @@ const RETIRED: [(&str, Looser); 2] = [
 /// The fields each bounding field bounds: none is ever over it.
 const BOUNDS: [(&str, &[&str]); 1] = [("speed_ceiling_cps", &["velocity_limit_cps"])];
 
-const TOP: [&str; 13] = [
+const TOP: [&str; 14] = [
     "format",
     "pair",
     "inputs",
@@ -109,6 +109,7 @@ const TOP: [&str; 13] = [
     "wide_codes",
     "pos_table",
     "scale",
+    "center",
     "scales",
     "limits",
     "fields",
@@ -149,6 +150,43 @@ fn protection_of(name: &str) -> Value {
         Some(l) => json!({"looser": l.word()}),
         None => Value::Null,
     }
+}
+
+/// The raw count the table reads as `counts` (oscnb `postable.Table.counts`):
+/// the line of the format between the points, inverted over every code.
+pub fn raw_at(points: &[i16; INTERVALS], counts: f64) -> f64 {
+    let grid = (1usize << osc_servo_core::pos_lut::GRID_SHIFT) as f64;
+    let c = |i: usize| points.get(i).copied().unwrap_or(0) as f64;
+    let codes: Vec<f64> = (0..=osc_servo_core::adc::ADC_MASK).map(f64::from).collect();
+    let lin: Vec<f64> = codes
+        .iter()
+        .map(|&r| {
+            let i = ((r / grid) as usize).min(INTERVALS - 1);
+            r + c(i) + (c(i + 1) - c(i)) * (r - grid * i as f64) / grid
+        })
+        .collect();
+    crate::fit::interp(counts, &lin, &codes, codes[0], codes[codes.len() - 1])
+}
+
+/// Where an angle map crosses 0 deg, the servo's center (protocol sec
+/// 5.5): the table count and its raw through `points`; none for a map of no
+/// span, unset.
+pub fn map_center(
+    points: &[i16; INTERVALS],
+    raw: (i64, i64),
+    angle_cdeg: (i64, i64),
+) -> Option<(f64, f64)> {
+    let span = (angle_cdeg.1 - angle_cdeg.0) as f64;
+    let (lo, hi) = (raw.0 as f64, raw.1 as f64);
+    if span == 0.0 || hi <= lo {
+        return None;
+    }
+    let counts = lo + (0.0 - angle_cdeg.0 as f64) * (hi - lo) / span;
+    Some((counts, raw_at(points, counts)))
+}
+
+fn round2(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
 }
 
 /// The sha1 a table's 256 points are named by: i16 LE in a row.
@@ -468,6 +506,12 @@ impl SetFile {
 
     pub fn value(&self, name: &str) -> Option<&Value> {
         self.doc.get("fields")?.get(name)?.get("value")
+    }
+
+    /// Where the set puts 0 deg (`center`), none in a set written before it
+    /// said.
+    pub fn center(&self) -> Option<&Value> {
+        self.doc.get("center")
     }
 
     /// A line a field: its value, unit and spread, `+/- p %` of its band
@@ -834,6 +878,14 @@ pub fn from_rules(
     doc.insert("pos_table".into(), pos_table);
     if r.counts_per_deg.is_some() {
         doc.insert("scale".into(), scale);
+    }
+    if let Some(c) = &set.center {
+        let raw = r.table.map_or(c.counts, |t| raw_at(&t.points, c.counts));
+        doc.insert(
+            "center".into(),
+            json!({"counts": round2(c.counts), "raw": round2(raw), "offset_deg": round2(c.offset_deg),
+                   "asked_offset_deg": c.asked_offset_deg, "clamped": c.said.is_some()}),
+        );
     }
     doc.insert("fields".into(), Value::Object(fields));
     doc.insert("previous".into(), Value::Null);

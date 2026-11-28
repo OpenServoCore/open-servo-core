@@ -16,7 +16,7 @@
     "duty_max_share": 1.0,
     "collision_trip": "off"
   },
-  "motion": {"move_speed": {"deg_s": 200.0}, "speed_up": {"deg_s2": 4000.0}, "angle_cw_stop_deg": 0.0},
+  "motion": {"move_speed": {"deg_s": 200.0}, "speed_up": {"deg_s2": 4000.0}},
   "loops": {
     "current_loop": {"hz": 1000.0},
     "observer": {"hz": 15.0},
