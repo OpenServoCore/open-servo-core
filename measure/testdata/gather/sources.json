@@ -26,8 +26,8 @@
    "sha1": "b9e4b433370c1f786fb2a0653ce5c78755c33557"
   },
   "table.json": {
-   "from": "synthetic, the table step's result shape: points_by_page the pooled fit (postable::fit_pooled, SMOOTH_WEIGHT) of testdata/table pass-1 and pass-2 (bringup capture A's 20 % passes) compensated with the slots of record, pinned to the stops 107 and 3729 of stops.json rounded inward; slots of record (testdata/mg90-d/wide-codes.json); scale from the ripple, the nameplate's brushes 2 x rotor_segments 3 and its gear_ratio",
-   "sha1": "a890534f21c51d5bd5091fa509301e1b82bcac74"
+   "from": "synthetic, the table step's result shape at revision 2: points_by_page the pooled fit (postable::fit_pooled, SMOOTH_WEIGHT) of testdata/table pass-1 and pass-2 (bringup capture A's 20 % passes) compensated with the slots of record, pinned at 96 and 3744; stops: first contacts placed at raw 104 and 3733 through that fit, moved outward to the grid as the pins, their contact_counts and travel through the same fit, sd 0.46 and 0.50 cycles and spread 1.1 over 3 rungs each (contact-analysis's within-sitting sd); slots of record (testdata/mg90-d/wide-codes.json); scale from the ripple pin to pin at the nameplate's brushes 2 x rotor_segments 3 and its gear_ratio",
+   "sha1": "0181f84d13aa47737c0780070b5f1630382121e0"
   }
  }
 }

@@ -10,6 +10,7 @@ use osc_servo_core::kernel::phases::loops::trajectory::GOAL_LIM_COUNTS;
 
 use super::units::{counts_per_deg, deg_to_counts, medium_hz};
 use super::{Ctx, Fail, Format, Kind, Outcome, Rule, Set, get, q, table};
+use crate::fit::stopcontact;
 use crate::inputs::Inputs;
 
 fn stops(c: &mut Ctx) -> Result<(f64, f64), Fail> {
@@ -25,18 +26,12 @@ fn raw_max(c: &mut Ctx) -> Result<f64, Fail> {
     Ok(stops(c)?.1)
 }
 
-/// The least a soft limit sits inside its stop, deg: the stop's drift over
-/// days of sittings plus the hold band.
-const STOP_CLEARANCE_DEG: f64 = 1.0;
-
-/// The motor cycles over which the rotor slows into a stop: the clearance
-/// is no less than 1.25 times their degrees, which on a low-ratio gear are
-/// more than [`STOP_CLEARANCE_DEG`].
-const CONTACT_CYCLES: f64 = 4.0;
-
-/// The narrowest soft window the run sets, deg: a narrower one is stored
-/// this wide.
-pub const SOFT_TRAVEL_FLOOR_DEG: f64 = 1.0;
+/// The narrowest soft window, as a multiple of the hold margin K
+/// ([`stopcontact::hold_margin_deg`]): one K either side of the window's
+/// center, the room each soft limit keeps from its stop. A width under it,
+/// a typo of 0 among them, would put both limits on the center, where a goal
+/// has no travel to land in.
+pub const SOFT_FLOOR_MARGINS: f64 = 2.0;
 
 /// The soft window in counts: its middle, its half width, and what it was
 /// narrowed or widened from where the stated width does not fit.
@@ -46,42 +41,51 @@ struct Window {
     said: Option<String>,
 }
 
-/// The soft window: the policy's width, else the profile's rated travel,
-/// centered between the stops, at least [`SOFT_TRAVEL_FLOOR_DEG`] and at
-/// most the stops' travel less the clearance inside each; refused when the
-/// stops leave no room for the floor.
+/// The soft window (oscnb `constants.soft_window`): centered between the
+/// two first contacts by the ripple, its width W the policy's
+/// soft_travel_deg where it states one, else the profile's rated travel,
+/// clamped to at most the physical travel P less the hold margin K at each
+/// end and to at least [`SOFT_FLOOR_MARGINS`] x K. The degrees are the
+/// table's, whose counts are linear in ripple cycles, so a half width
+/// reaches counts only through the table. A clamp is said, never refused;
+/// stops with no room for a window at all are refused.
 fn window(c: &mut Ctx) -> Result<Window, Fail> {
-    let width = match c.inputs.policy.soft_travel_deg {
-        Some(_) => get!(c, policy, soft_travel_deg)?,
-        None => get!(c, nameplate, rated_travel_deg)?,
+    let (asked, whose) = match c.inputs.policy.soft_travel_deg {
+        Some(_) => (
+            get!(c, policy, soft_travel_deg)?,
+            "the policy's soft_travel_deg",
+        ),
+        None => (get!(c, nameplate, rated_travel_deg)?, "the rated travel"),
     };
-    let (lo, hi) = stops(c)?;
+    let s = get!(c, measured, stops)?;
+    let [lo, hi] = s
+        .contact_counts
+        .ok_or_else(|| Fail::missing("measured.stops.contact_counts"))?;
     let cpd = counts_per_deg(c)?;
-    let events = (get!(c, nameplate, brushes)? * get!(c, nameplate, rotor_segments)?) as f64;
+    let events = get!(c, nameplate, brushes)? * get!(c, nameplate, rotor_segments)?;
     let gear = get!(c, nameplate, gear_ratio)?;
-    let clearance = STOP_CLEARANCE_DEG.max(1.25 * CONTACT_CYCLES * 360.0 / (events * gear));
-    let travel = (hi - lo) / cpd;
-    let most = travel - 2.0 * clearance;
-    if most < SOFT_TRAVEL_FLOOR_DEG {
+    let margin = stopcontact::hold_margin_deg(stopcontact::deg_per_cycle(events, gear));
+    let physical = (hi - lo) / cpd;
+    let (most, least) = (physical - 2.0 * margin, SOFT_FLOOR_MARGINS * margin);
+    if most <= 0.0 {
         return Err(Fail::refused(format!(
-            "the stops are {travel:.1} deg apart: no soft window of {SOFT_TRAVEL_FLOOR_DEG} deg fits {clearance:.1} deg inside each"
+            "the stops are {physical:.2} deg apart, no wider than {margin:.2} deg at each end: there is no room for a soft window"
         )));
     }
-    let set = width.clamp(SOFT_TRAVEL_FLOOR_DEG, most);
-    let said = if width > most {
-        Some(format!(
-            "the stops are {travel:.1} deg apart, under the {width} deg soft travel plus {clearance:.1} deg at each end: clamped to {set:.1} deg, centered"
-        ))
-    } else if width < SOFT_TRAVEL_FLOOR_DEG {
-        Some(format!(
-            "the {width} deg soft travel is under the {SOFT_TRAVEL_FLOOR_DEG} deg floor: clamped to {set:.1} deg, centered"
-        ))
-    } else {
-        None
-    };
+    let width = asked.max(least).min(most);
+    let said = (width != asked).then(|| {
+        let why = if asked > most {
+            format!("over the stops' {physical:.2} deg less {margin:.2} deg at each end")
+        } else {
+            format!("under the least window, {least:.2} deg")
+        };
+        format!(
+            "soft limits: {whose}, {asked} deg, is {why}: the window is clamped to {width:.2} deg, centered on the stops"
+        )
+    });
     Ok(Window {
         mid: (lo + hi) / 2.0,
-        half: set / 2.0 * cpd,
+        half: width / 2.0 * cpd,
         said,
     })
 }

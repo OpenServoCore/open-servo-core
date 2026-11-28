@@ -248,7 +248,7 @@ mod tests {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
         files::step_0(&root);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),
@@ -306,7 +306,7 @@ mod tests {
         let root = dir.join("uid/run");
         std::fs::create_dir_all(root.join("results")).expect("mkdir");
         files::step_0(&root);
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),
@@ -1041,7 +1041,7 @@ mod parity {
             r#"{"tool": "osc-ident", "steps": {}}"#,
         )
         .expect("manifest");
-        for f in ["rest", "probe", "stops", "window", "spins"] {
+        for f in ["rest", "probe", "stops", "window", "spins", "table"] {
             std::fs::copy(
                 testdata(&format!("gather/{f}.json")),
                 root.join(format!("results/{f}.json")),

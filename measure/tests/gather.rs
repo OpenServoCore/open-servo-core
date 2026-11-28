@@ -42,9 +42,12 @@ fn run() -> RunResults {
         window: Some(result("window")),
         spins: Some(result("spins")),
         cruise: None,
-        table: None,
+        table: Some(result("table")),
     }
 }
+
+/// The table fixture's pins.
+const PINS: (i64, i64) = (96, 3744);
 
 fn nameplate() -> Nameplate {
     load("testdata/mg90-d/nameplate.json")
@@ -73,7 +76,8 @@ struct Record {
 
 /// Every value names its result file, key and sha1; the gathered file
 /// loads as the rules' `Measured`, and the rules on it, the speed gain at
-/// the starting one, give a set file with its straight table.
+/// the starting one, give a set file with the table step's table, its
+/// physical range the table's pins.
 #[test]
 fn the_gathered_inputs_load_and_the_rules_give_a_set() {
     let g = gather::gather(&run(), &nameplate()).expect("gathers");
@@ -119,8 +123,8 @@ fn the_gathered_inputs_load_and_the_rules_give_a_set() {
 
     let table_text = gather::render(&g.table);
     let table = TableFile::parse(&table_text).expect("the table file parses");
-    assert!(table.points.iter().all(|&k| k == 0));
-    assert_eq!(table.stops, (107, 3729));
+    assert!(table.points.iter().any(|&k| k != 0));
+    assert_eq!(table.stops, PINS);
     let cpd = measured.table.as_ref().unwrap().counts_per_deg;
     assert_eq!(table.counts_per_deg, Some(cpd));
 
@@ -144,7 +148,7 @@ fn the_gathered_inputs_load_and_the_rules_give_a_set() {
     for n in &notes {
         println!("note: {n}");
     }
-    assert_eq!(file.table().0, "IDENTITY");
+    assert_eq!(file.table().0, "LIVE");
     assert_eq!(file.slots(), Ok(None));
 
     let record: Record = load("testdata/mg90-d/set-of-record.json");
@@ -182,8 +186,8 @@ fn the_gathered_inputs_load_and_the_rules_give_a_set() {
         .map(|(n, _)| *n)
         .collect();
     assert_eq!(held, ["fric_breakaway_counts"], "held");
-    assert_eq!(rules.value("pos_min_phys_counts"), Some(107));
-    assert_eq!(rules.value("pos_max_phys_counts"), Some(3729));
+    assert_eq!(rules.value("pos_min_phys_counts"), Some(PINS.0));
+    assert_eq!(rules.value("pos_max_phys_counts"), Some(PINS.1));
     assert_eq!(rules.value("drive_polarity"), Some(1));
 }
 
@@ -252,6 +256,13 @@ fn a_rest_result_without_the_rail_scale_leaves_the_rail_out() {
 /// step to run; so is a later step's result not accepted.
 #[test]
 fn a_step_missing_or_not_accepted_is_refused_naming_the_step() {
+    let mut r = run();
+    r.table = None;
+    let e = gather::gather(&r, &nameplate()).expect_err("no table");
+    assert!(
+        e.0.contains("results/table.json") && e.0.contains("run the table step"),
+        "{e}"
+    );
     for drop in ["rest", "probe", "stops"] {
         let mut r = run();
         match drop {
@@ -322,33 +333,41 @@ fn the_polarity_is_the_one_the_probe_proved() {
     assert!(e.0.contains("another sign"), "{e}");
 }
 
-/// The stops round inward, the low one up and the high one down, and the
-/// table's scale is their span over the nameplate's travel.
+/// The stops are the table step's pins, each stop's first contact by the
+/// ripple moved outward to the grid, with each contact in the table's
+/// counts and the travel between them; the stops step's pressed seats
+/// change none of it.
 #[test]
-fn the_stops_round_inward() {
+fn the_stops_are_the_table_steps_pins() {
+    let t = doc("table");
     let g = gather::gather(&run(), &nameplate()).expect("gathers");
-    assert_eq!(g.measured["stops"]["raw_min"], 107);
-    assert_eq!(g.measured["stops"]["raw_max"], 3729);
+    let s = &g.measured["stops"];
+    assert_eq!(
+        (s["raw_min"].clone(), s["raw_max"].clone()),
+        (PINS.0.into(), PINS.1.into())
+    );
+    assert_eq!(
+        s["contact_counts"],
+        serde_json::json!([
+            t["stops"]["low"]["contact_counts"],
+            t["stops"]["high"]["contact_counts"]
+        ])
+    );
+    assert_eq!(s["source"]["file"], "results/table.json");
+    assert_eq!(g.measured["travel_deg"]["value"], t["stops"]["travel_deg"]);
+    let measured: Measured = serde_json::from_value(g.measured.clone()).expect("loads");
+    let stops = measured.stops.expect("stops");
+    assert_eq!((stops.raw_min, stops.raw_max), PINS);
+    assert!(stops.contact_counts.is_some() && measured.travel_deg.is_some());
 
     let mut r = run();
     r.stops = Some(edited("stops", |v| {
-        v["stops"]["low"]["median_counts"] = 82.25.into();
+        v["stops"]["low"]["median_counts"] = 4.0.into();
         v["stops"]["high"]["median_counts"] = 3791.75.into();
     }));
-    let g = gather::gather(&r, &nameplate()).expect("gathers");
-    assert_eq!(g.measured["stops"]["raw_min"], 83);
-    assert_eq!(g.measured["stops"]["raw_max"], 3791);
-    let travel = nameplate().rated_travel_deg.unwrap();
-    let cpd = g.measured["table"]["counts_per_deg"].as_f64().unwrap();
-    assert_eq!(cpd, (3791.0 - 83.0) / travel);
-
-    let mut r = run();
-    r.stops = Some(edited("stops", |v| {
-        v["stops"]["low"]["median_counts"] = 500.5.into();
-        v["stops"]["high"]["median_counts"] = 500.7.into();
-    }));
-    let e = gather::gather(&r, &nameplate()).expect_err("no travel");
-    assert!(e.0.contains("no travel"), "{e}");
+    let seated = gather::gather(&r, &nameplate()).expect("gathers");
+    assert_eq!(seated.measured["stops"], g.measured["stops"]);
+    assert_eq!(seated.measured["table"], g.measured["table"]);
 }
 
 /// A stops step that kept too few bursts for a spread, or none at one
@@ -414,21 +433,14 @@ fn each_term_carries_its_sd_and_n_or_is_nominal() {
         assert!(m[k].get("n").is_some_and(Value::is_null), "{k}: n null");
         assert!(m[k].get("sd").is_some_and(Value::is_null), "{k}: sd null");
     }
-    assert_eq!(m["stops"]["n"], 2, "the seats a stop");
+    assert_eq!(m["stops"]["n"], 3, "the contact rungs a stop");
     assert_eq!(
         sd_n("drive_polarity"),
         (None, Some(2)),
         "the pulse pairs that agree"
     );
     assert!(m["drive_polarity"].get("sd").is_some_and(Value::is_null));
-    let t = &m["table"];
-    assert!(
-        t.get("sd").is_some_and(Value::is_null) && t.get("n").is_some_and(Value::is_null),
-        "a straight table's scale is nominal, the stated travel's: {t}"
-    );
-    let mut r = run();
-    r.table = Some(result("table"));
-    let tabled = gather::gather(&r, &nameplate()).expect("gathers");
+    let tabled = gather::gather(&run(), &nameplate()).expect("gathers");
     let t = &tabled.measured["table"];
     assert!(
         t.get("sd").is_some_and(Value::is_null) && t["n"] == 1,
@@ -474,12 +486,9 @@ fn each_term_carries_its_sd_and_n_or_is_nominal() {
     );
     assert!(line("current_counts_per_a").contains("counts/A nominal: "));
     assert!(line("pot_rest_sd_counts").contains("counts n 20000: "));
-    assert!(line("stops").contains("+/- 1.4142 / 1.0607, n 2: "));
+    assert!(line("stops").contains("n 3 / 3"), "{}", line("stops"));
     assert!(line("drive_polarity").starts_with("drive_polarity on n 2: "));
-    assert!(
-        line("table").starts_with("table straight, ")
-            && line("table").contains(" counts/deg nominal: ")
-    );
+    assert!(line("table").starts_with("table from the table step, "));
     let measured: Measured = serde_json::from_str(&gather::render(m)).expect("loads");
     let ke = measured.ke_v_s_per_rad.expect("ke");
     assert_eq!((ke.n, ke.sd.is_some()), (Some(12), true));
@@ -601,8 +610,7 @@ fn the_friction_line_is_the_cruise_steps_where_it_was_accepted() {
 /// An accepted table step's slots, points and scale are the ones gathered,
 /// each naming `results/table.json`, its key and sha1; the rules on them
 /// give a set whose table is LIVE on those points and whose slots are the
-/// step's, written together. Without the step the straight table and the
-/// servo's slots stay, said in a line.
+/// step's, written together.
 #[test]
 fn gather_carries_the_table_steps_points_slots_and_scale() {
     let tabled = result("table");
@@ -639,7 +647,7 @@ fn gather_carries_the_table_steps_points_slots_and_scale() {
         want
     );
     assert!(table.points.iter().any(|&k| k != 0));
-    assert_eq!(table.stops, (107, 3729));
+    assert_eq!(table.stops, PINS);
     assert_eq!(table.counts_per_deg, Some(cpd));
     assert_eq!(g.table["source"]["file"], "results/table.json");
     let wide = g.wide_codes.as_ref().expect("the slots file");
@@ -680,28 +688,18 @@ fn gather_carries_the_table_steps_points_slots_and_scale() {
     assert_eq!(file.table().0, "LIVE");
     assert_eq!(file.table().1, set::points_sha1(&table.points));
     assert_eq!(file.slots(), Ok(Some(slots)));
-
-    let g = gather::gather(&run(), &nameplate()).expect("gathers");
-    assert!(g.wide_codes.is_none());
-    assert!(
-        g.lines
-            .iter()
-            .any(|l| l.starts_with("wide-code slots: not gathered")
-                && l.contains("results/table.json")),
-        "{:?}",
-        g.lines
-    );
 }
 
-/// A table step built against other stops, or not accepted, refuses the
-/// gather naming the step.
+/// A table step from before the stops were read by the ripple, or not
+/// accepted, refuses the gather naming the step.
 #[test]
-fn a_table_step_on_other_stops_or_refused_is_refused() {
+fn a_table_step_before_the_ripple_stops_or_refused_is_refused() {
     let mut r = run();
-    r.table = Some(edited("table", |v| v["stops_used"]["raw_min"] = 110.into()));
-    let e = gather::gather(&r, &nameplate()).expect_err("other stops");
+    r.table = Some(edited("table", |v| v["revision"] = 1.into()));
+    let e = gather::gather(&r, &nameplate()).expect_err("revision 1");
     assert!(
-        e.0.contains("built against stops 110") && e.0.contains("table step"),
+        e.0.contains("revision 1, from before the stops were read by the motor's ripple")
+            && e.0.contains("run the table step again"),
         "{e}"
     );
     let mut r = run();
@@ -711,7 +709,7 @@ fn a_table_step_on_other_stops_or_refused_is_refused() {
 }
 
 /// The profile's cross-checks equal a hand computation on the bench
-/// servo's results: the travel the ripple scale measured, the free speed
+/// servo's results: the travel contact to contact by the ripple, the free speed
 /// V / Ke through the gear ratio at each no-load row, V / seated R at each
 /// stall row, each beside the profile's value with the difference in %,
 /// the run voltage's row marked, and nothing judged.
@@ -719,25 +717,26 @@ fn a_table_step_on_other_stops_or_refused_is_refused() {
 fn the_cross_checks_equal_a_hand_computation() {
     let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
     let num = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("{v}"));
-    let mut r = run();
-    r.table = Some(result("table"));
-    let g = gather::gather(&r, &nameplate()).expect("gathers");
+    let g = gather::gather(&run(), &nameplate()).expect("gathers");
     let c = &g.cross_checks;
+    let tab = doc("table");
+    let scale = num(&tab["scale"]["counts_per_deg"]);
     assert_eq!(
         c.as_object().unwrap().keys().collect::<Vec<_>>(),
         ["travel", "pacing", "free_speed", "stall_current"]
     );
     assert!(!gather::render(c).contains("verdict"), "{c}");
 
-    let travel = (3729.0 - 107.0) / 19.435025359344024;
+    let st = &tab["stops"];
+    let travel = num(&st["travel_deg"]);
+    let travel_sd = num(&st["low"]["sd_cycles"]).hypot(num(&st["high"]["sd_cycles"]))
+        * num(&st["deg_per_cycle"]);
     let stated = 180.0;
     let t = &c["travel"];
     assert!(close(num(&t["run"]["value"]), travel), "{t}");
     assert_eq!(t["run"]["unit"], "deg");
-    assert_eq!(
-        (t["run"]["sd"].clone(), t["run"]["n"].clone()),
-        (Value::Null, 1.into())
-    );
+    assert!(close(num(&t["run"]["sd"]), travel_sd), "{t}");
+    assert_eq!(t["run"]["n"], 3);
     assert_eq!(t["run"]["source"]["file"], "results/table.json");
     assert_eq!(num(&t["stated"]["value"]), stated);
     assert!(close(
@@ -751,16 +750,16 @@ fn the_cross_checks_equal_a_hand_computation() {
     let p = &c["pacing"];
     assert_eq!(num(&p["stated"]["value"]), priced);
     assert_eq!(p["stated"]["unit"], "counts/deg");
-    assert!(close(num(&p["run"]["value"]), 19.435025359344024), "{p}");
+    assert!(close(num(&p["run"]["value"]), scale), "{p}");
     assert_eq!(p["run"]["source"]["file"], "results/table.json");
     assert!(close(
         num(&p["difference_pct"]),
-        100.0 * (19.435025359344024 - priced) / priced
+        100.0 * (scale - priced) / priced
     ));
     assert!(
-        g.lines.contains(
-            &"pacing priced 22.76 counts/deg; the table reads 19.44: conservative".into()
-        ),
+        g.lines.contains(&format!(
+            "pacing priced 22.76 counts/deg; the table reads {scale:.2}: conservative"
+        )),
         "{:?}",
         g.lines
     );
@@ -826,15 +825,17 @@ fn the_cross_checks_equal_a_hand_computation() {
         .filter(|l| l.starts_with("cross-check "))
         .collect();
     assert_eq!(said.len(), 6, "{said:?}");
-    assert_eq!(
-        said[0],
-        &format!(
-            "cross-check travel: run 186.3646 deg n 1; profile 180.0000 deg; {:+.2} %",
-            100.0 * (travel - stated) / stated
-        )
+    assert!(
+        said[0].starts_with(&format!("cross-check travel: run {travel:.4} deg +/- "))
+            && said[0].ends_with(&format!(
+                ", n 3; profile 180.0000 deg; {:+.2} %",
+                100.0 * (travel - stated) / stated
+            )),
+        "{}",
+        said[0]
     );
     assert!(
-        said[1].starts_with("cross-check pacing: run 19.4350 counts/deg"),
+        said[1].starts_with(&format!("cross-check pacing: run {scale:.4} counts/deg")),
         "{}",
         said[1]
     );
@@ -848,8 +849,8 @@ fn the_cross_checks_equal_a_hand_computation() {
 }
 
 /// A stall current the profile states is the cross-check's stated value
-/// beside the stated volts over the seated R; without the table or the
-/// spins step the run's side is none, its line saying why.
+/// beside the stated volts over the seated R; without the spins step the
+/// free speed's run side is none, its line saying why.
 #[test]
 fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
     let mut np = nameplate();
@@ -864,7 +865,6 @@ fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
     let row = &c["stall_current"][0];
     assert_eq!(row["stated"]["value"], 0.9);
     assert!((row["difference_pct"].as_f64().unwrap() - 100.0 * (a - 0.9) / 0.9).abs() < 1e-9);
-    assert!(c["travel"]["run"].is_null() && c["travel"]["difference_pct"].is_null());
     assert_eq!(c["travel"]["stated"]["value"], np.rated_travel_deg.unwrap());
     for row in c["free_speed"].as_array().unwrap() {
         assert!(
@@ -875,9 +875,6 @@ fn the_cross_checks_say_what_the_run_and_the_profile_lack() {
     }
     let text = g.lines.join("\n");
     for want in [
-        "cross-check travel: run none, the run holds no results/table.json; profile 180.0000 deg",
-        "cross-check pacing: run none, the run holds no results/table.json; profile 22.7556 counts/deg",
-        "pacing priced 22.76 counts/deg; the run holds no results/table.json to read it against",
         "cross-check free speed at 6 V, V / Ke: run none, the run holds no results/spins.json; profile 750.0000 deg/s",
         "cross-check stall current at 4.8 V, V / R (the row the run voltage binds): run 1.1462 A +/- 0.0740, n 20; profile 0.9000 A; +27.35 %",
     ] {
@@ -896,7 +893,13 @@ fn the_pot_step_run_is_the_larger_of_the_driven_steps() {
                 serde_json::json!({"value": v, "sd": null, "n": 12, "unit": "raw counts"});
         }
     };
-    let g = gather::gather(&run(), &nameplate()).expect("gathers");
+    let mut r = run();
+    r.table = Some(edited("table", |d| {
+        if let Some(e) = d.get_mut("estimates").and_then(Value::as_object_mut) {
+            e.remove("pot_step4_counts");
+        }
+    }));
+    let g = gather::gather(&r, &nameplate()).expect("gathers");
     assert!(g.measured.get("pot_step4_counts").is_none());
     let said = |g: &gather::Gathered, start: &str| g.lines.iter().any(|l| l.starts_with(start));
     assert!(said(

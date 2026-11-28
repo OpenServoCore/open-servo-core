@@ -254,6 +254,12 @@ pub struct Motor {
     /// The pot's row-to-row noise while driven up onto the high stop,
     /// counts either way.
     pub pressed_noise: f64,
+    /// What the shunt adds over its free level while the drive presses the
+    /// shaft on a stop, counts: the stall's rise.
+    pub stall_counts: f64,
+    /// What the pot reads while the shaft is on the low stop, where it
+    /// reads its dead end; None reads the shaft.
+    pub pressed_low_reads: Option<f64>,
     /// Each carry the converter sticks at, and the codes over it it skips.
     pub wide: Vec<(u16, u16)>,
     /// The current's zero, its level at full duty and the ripple's
@@ -292,11 +298,16 @@ impl Motor {
             .map_or(c, |(k, _)| *k)
     }
 
-    pub fn sample(&self, x: f64, q: i16, k: usize) -> TelSample {
+    pub fn sample(&self, x: f64, q: i16, k: usize, pressed: bool) -> TelSample {
         let d = q as f64 / 32768.0;
         let phase = 2.0 * std::f64::consts::PI * self.cycles_per_count * x;
         let i = (self.zero
             + self.level * d.abs()
+            + if pressed && q != 0 {
+                self.stall_counts
+            } else {
+                0.0
+            }
             + self.ripple * phase.sin()
             + if d.abs() < self.ripple2.1 {
                 self.ripple2.0 * (2.0 * phase).sin()
@@ -315,7 +326,11 @@ impl Motor {
         } else {
             0.0
         };
-        let mut s = rest_row(self.code_of(self.pot(x) + wave + noise), k as u32);
+        let pot = match self.pressed_low_reads {
+            Some(dead) if x <= self.stops.0 => dead,
+            _ => self.pot(x) + wave + noise,
+        };
+        let mut s = rest_row(self.code_of(pot), k as u32);
         s.tick.current_raw = i;
         s.tick.current_trough = i;
         s.tick.duty_ticks = (d * self.pwm_arr).round() as i16;
@@ -340,7 +355,7 @@ impl Motor {
         let mut rows = Vec::new();
         let mut states = Vec::new();
         for k in 0..edge {
-            rows.push(self.sample(x, was, k));
+            rows.push(self.sample(x, was, k, false));
             states.push((x, v));
         }
         let dt = 1.0 / TICK_HZ;
@@ -364,14 +379,17 @@ impl Motor {
                 x = x.clamp(lo, hi);
                 v = 0.0;
             }
-            rows.push(self.sample(x, q, rows.len()));
+            rows.push(self.sample(x, q, rows.len(), pressed));
             states.push((x, v));
             if (q == 0 && v.abs() < 0.05) || (q != 0 && pressed && zero_after.is_none()) {
                 break;
             }
         }
+        let (lo, hi) = self.stops;
+        let target = q.signum() as f64;
+        let held = (x <= lo && target <= 0.0) || (x >= hi && target >= 0.0);
         for _ in 0..HOLD_ROWS {
-            rows.push(self.sample(x, q, rows.len()));
+            rows.push(self.sample(x, q, rows.len(), held));
             states.push((x, 0.0));
         }
         (rows, states)

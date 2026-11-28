@@ -307,6 +307,33 @@ mod tests {
         file
     }
 
+    /// The protection words but those in the table's counts, which follow
+    /// its scale: speed_ceiling_cps, stall_omega_max_cps, pos_error_counts.
+    const UNSCALED_PROTECTION: [&str; 22] = [
+        "duty_max_q15",
+        "current_limit_counts",
+        "stall_response",
+        "stall_time_ticks",
+        "yield_current_counts",
+        "stall_release_counts",
+        "stall_tau_trip_counts",
+        "oc_trip_counts",
+        "oc_trip_ticks",
+        "thermal_tau_s",
+        "cutoff_cc",
+        "thermal_tau2_s",
+        "pos_error_time_ticks",
+        "sensor_delta_max",
+        "sensor_bad_count",
+        "rail_fold_q8",
+        "th_rise_q016",
+        "th_rise2_q016",
+        "ntc_raw_ref",
+        "ntc_t_ref_cc",
+        "ntc_k1_q88",
+        "ntc_k2_q24",
+    ];
+
     const HEAT_WORDS: [&str; 4] = [
         "thermal_tau_s",
         "thermal_tau2_s",
@@ -352,11 +379,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The recorded bench run's final inputs bind its final set: as the run
-    /// gathered them (the version 0 nameplate with the thermal.json beside
-    /// it, folded into its heat model), the whole set; with the record's
-    /// profile and policy in their place and no thermal.json, the four
-    /// thermal words and the protection hash.
+    /// The recorded bench run's final inputs bind its final set's thermal
+    /// words and its protection words outside the table's counts: as the run gathered them (the version 0
+    /// nameplate with the thermal.json beside it, folded into its heat
+    /// model), and with the record's profile and policy in their place and
+    /// no thermal.json. The position words are not the run's: its final set
+    /// was built on the table it ran with, pinned at the stops step's seats,
+    /// and the folder's table result is that run re-judged by the ripple
+    /// (`measure/testdata/run/TRIMMED.md`).
     #[test]
     fn the_recorded_runs_final_inputs_bind_its_final_sets_thermal_words() {
         let run = testdata("run/00000000ffffffff76e5bc220ef6abcd/20261127T130203Z");
@@ -366,18 +396,22 @@ mod tests {
             words(&recorded),
             [Some(2), Some(129), Some(447), Some(1678)]
         );
-        let protection = |s: &SetFile| s.hashes().expect("hashes")["protection"].clone();
+        let protection =
+            |s: &SetFile| UNSCALED_PROTECTION.map(|f| s.value(f).and_then(|v| v.as_i64()));
         let dir = scratch("heat-run");
         for f in std::fs::read_dir(run.join("final/inputs")).expect("inputs") {
             let f = f.expect("entry").path();
             std::fs::copy(&f, dir.join(f.file_name().expect("name"))).expect("copy");
         }
-        std::fs::copy(run.join("final/measured.json"), dir.join("measured.json"))
-            .expect("measured");
-        // the run's soft pair is its policy's old share of the stops' span,
-        // centered: the same window as a soft travel binds it again
-        let measured: serde_json::Value =
+        let mut measured: serde_json::Value =
             serde_json::from_slice(&read(&dir.join("measured.json")).expect("read")).expect("json");
+        let run_measured: serde_json::Value =
+            serde_json::from_slice(&read(&run.join("final/measured.json")).expect("read"))
+                .expect("json");
+        measured["speed_kp_verified"] = run_measured["speed_kp_verified"].clone();
+        std::fs::write(dir.join("measured.json"), measured.to_string()).expect("measured");
+        // the run's soft pair is its policy's old share of the stops' span,
+        // centered: the same width as a soft travel
         let soft = |f: &str| recorded.value(f).and_then(|v| v.as_f64()).expect(f);
         let width = (soft("pos_max_soft_counts") - soft("pos_min_soft_counts"))
             / measured["table"]["counts_per_deg"].as_f64().expect("scale");
@@ -387,7 +421,7 @@ mod tests {
         std::fs::write(dir.join("policy.json"), policy.to_string()).expect("policy");
         let as_run = set_of(&dir);
         assert_eq!(words(&as_run), words(&recorded));
-        assert_eq!(as_run.hashes().expect("hashes")["set"], recorded.hash());
+        assert_eq!(protection(&as_run), protection(&recorded));
 
         std::fs::remove_file(dir.join("thermal.json")).expect("rm");
         std::fs::copy(testdata("mg90-d/profile.json"), dir.join("nameplate.json"))

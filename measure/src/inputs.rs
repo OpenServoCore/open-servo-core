@@ -40,11 +40,14 @@ pub struct Reading<T> {
     pub source: Source,
 }
 
-/// The pot's two mechanical stops, raw counts.
+/// The table's pins, raw counts, and each stop's first contact by the
+/// motor's ripple in the table's counts.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Stops {
     pub raw_min: i64,
     pub raw_max: i64,
+    #[serde(default)]
+    pub contact_counts: Option<[f64; 2]>,
     pub source: Source,
 }
 
@@ -93,6 +96,8 @@ pub struct Measured {
     pub drive_polarity: Option<Reading<bool>>,
     pub stops: Option<Stops>,
     pub table: Option<Table>,
+    /// The output's travel contact to contact by the ripple, deg.
+    pub travel_deg: Option<Quantity>,
     /// The winding's resistance at `r_board_c`, the board NTC's reading.
     pub r_ohm: Option<Quantity>,
     pub r_board_c: Option<Quantity>,

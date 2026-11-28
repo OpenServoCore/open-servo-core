@@ -58,8 +58,9 @@ fn a_notebook_set_file_loads_and_round_trips() {
 }
 
 /// But for the held field, and for the soft pair, which the rules now set
-/// to the rated 180 deg centered between the stops (126 / 3748), and to the
-/// record's 314 / 3560 at the record's soft travel.
+/// to the rated 180 deg centered between the stops, clamped to K inside
+/// each (132 / 3742), and to the record's 314 / 3560 at the record's soft
+/// travel.
 #[test]
 fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
     let ours = rules_set(&inputs(), &table());
@@ -71,9 +72,9 @@ fn a_set_from_the_rules_is_the_set_of_record_but_for_the_held_field() {
             "fric_breakaway_counts" => assert_eq!(ours.value(name), None),
             "pos_min_soft_counts" | "pos_max_soft_counts" => {
                 let rated = if name == "pos_min_soft_counts" {
-                    126
+                    132
                 } else {
-                    3748
+                    3742
                 };
                 assert_eq!(ours.value(name).and_then(|v| v.as_i64()), Some(rated));
                 assert_eq!(at_record.value(name), Some(v), "{name}");

@@ -86,10 +86,11 @@ fn refused(set: &osc_measure::Set, field: &str) -> String {
 /// holds it the same way.
 const HELD_OF_RECORD: &str = "fric_breakaway_counts";
 /// The soft limits of record were the policy's share of the stops' span
-/// inside each stop, 314 / 3560; the rules now centre the rated travel
-/// between the stops (`the_soft_window_is_the_rated_travel_centered_between_the_stops`).
+/// inside each stop, 314 / 3560; the rules now center the rated travel on
+/// the first contacts, clamped to K inside each
+/// (`the_soft_window_is_the_rated_travel_centered_on_the_contacts`).
 const SOFT_SINCE_RECORD: [(&str, i64); 2] =
-    [("pos_min_soft_counts", 126), ("pos_max_soft_counts", 3748)];
+    [("pos_min_soft_counts", 132), ("pos_max_soft_counts", 3742)];
 /// Tuning parameters newer than the set of record: off unless the user
 /// sets them.
 const TUNING: [&str; 2] = ["pot_steady_counts_per_a", "pot_fast_counts_per_a"];
@@ -160,6 +161,16 @@ fn bands_reproduce() {
     assert_eq!(same, 24);
 }
 
+/// The set's clamps but the soft window's, which the record's stops clamp
+/// on every build (`the_soft_window_is_the_rated_travel_centered_on_the_contacts`).
+fn clamps_but_soft(set: &osc_measure::Set) -> Vec<String> {
+    let soft = SOFT_SINCE_RECORD.map(|(f, _)| format!("{f}: "));
+    set.clamps()
+        .into_iter()
+        .filter(|c| !soft.iter().any(|f| c.starts_with(f)))
+        .collect()
+}
+
 fn clamp(set: &osc_measure::Set, field: &str) -> String {
     match set.get(field) {
         Some(Outcome::Bound(e)) => e
@@ -203,10 +214,12 @@ fn a_value_past_the_firmwares_bound_is_stored_at_it_and_said() {
             && c.ends_with("past the firmware's 0..32767: stored as 32767"),
         "{c}"
     );
-    assert!(set.clamps()[0].starts_with("speed_ceiling_cps: speed_ceiling.nameplate gives"));
+    assert!(
+        clamps_but_soft(&set)[0].starts_with("speed_ceiling_cps: speed_ceiling.nameplate gives")
+    );
     // the move speed is under the stored ceiling: nothing else moves
-    assert_eq!(set.clamps().len(), 1, "{:?}", set.clamps());
-    assert!(build(&inputs()).clamps().is_empty());
+    assert_eq!(clamps_but_soft(&set).len(), 1, "{:?}", set.clamps());
+    assert!(clamps_but_soft(&build(&inputs())).is_empty());
 }
 
 /// A move speed over the speed ceiling cannot act: it is stored at the
@@ -229,13 +242,13 @@ fn a_move_speed_over_the_ceiling_is_stored_at_the_ceiling() {
     let set = build(&i);
     assert_eq!(bound(&set, "velocity_limit_cps"), 8050);
     assert_eq!(
-        set.clamps(),
+        clamps_but_soft(&set),
         [
             "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050"
         ]
     );
     i.policy.velocity_limit_deg_s = Some(399.9);
-    assert!(build(&i).clamps().is_empty());
+    assert!(clamps_but_soft(&build(&i)).is_empty());
 }
 
 /// A current limit over the board's overcurrent trip cannot act, since the
@@ -339,13 +352,16 @@ fn a_missing_input_holds_the_field_and_names_it() {
     assert!(refused(&build(&i), "v_kp_q88").contains("only lowers it"));
 }
 
-/// The record's stops, 82 / 3792 table counts at 20.1266 counts/deg: the
-/// rated 180 deg is 3622.8 counts centered on 1937, more than 1.0 deg inside
-/// each stop. A narrower soft travel narrows it about the same middle; a
-/// wider one that does not fit 1.0 deg inside each stop is clamped and
-/// said, as is one under the floor. No stops, no soft limits.
+/// The record's stops as first contacts, 82 / 3792 table counts at
+/// 20.1266 counts/deg, 184.33 deg apart: the rated 180 deg does not fit
+/// K = 2.5 deg inside each contact, so it is clamped to 179.33 deg, 3609.4
+/// counts centered on 1937, and said. The window follows the contacts, not
+/// the pins: pins moved out to the grid leave it where it is. A narrower
+/// soft travel narrows it about the same middle; a wider one is clamped the
+/// same way, as is one under the least window, 2 K (oscnb
+/// `SOFT_FLOOR_MARGINS`). No contacts, no soft limits.
 #[test]
-fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
+fn the_soft_window_is_the_rated_travel_centered_on_the_contacts() {
     let soft = |set: &osc_measure::Set| {
         (
             bound(set, "pos_min_soft_counts"),
@@ -356,8 +372,16 @@ fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
     assert_eq!(i.policy.soft_travel_deg, None);
     assert_eq!(i.nameplate.rated_travel_deg, Some(180.0));
     let set = build(&i);
-    assert_eq!(soft(&set), (126, 3748));
-    assert!(set.clamps().is_empty(), "{:?}", set.clamps());
+    assert_eq!(soft(&set), (132, 3742));
+    assert_eq!(
+        clamp(&set, "pos_min_soft_counts"),
+        "soft limits: the rated travel, 180 deg, is over the stops' 184.33 deg less 2.50 deg at each end: \
+         the window is clamped to 179.33 deg, centered on the stops"
+    );
+    assert_eq!(
+        clamp(&set, "pos_max_soft_counts"),
+        clamp(&set, "pos_min_soft_counts")
+    );
     match set.get("pos_min_soft_counts") {
         Some(Outcome::Bound(e)) => assert_eq!(
             e.inputs,
@@ -373,6 +397,20 @@ fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
         other => panic!("{other:?}"),
     }
 
+    let mut pinned = i.clone();
+    if let Some(s) = pinned.measured.stops.as_mut() {
+        (s.raw_min, s.raw_max) = (80, 3808);
+    }
+    let set = build(&pinned);
+    assert_eq!(soft(&set), (132, 3742));
+    assert_eq!(
+        (
+            bound(&set, "pos_min_phys_counts"),
+            bound(&set, "pos_max_phys_counts")
+        ),
+        (80, 3808)
+    );
+
     i.policy.soft_travel_deg = Some(90.0);
     let set = build(&i);
     // 45 deg of 20.1266 counts each side of 1937
@@ -381,14 +419,25 @@ fn the_soft_window_is_the_rated_travel_centered_between_the_stops() {
 
     i.policy.soft_travel_deg = Some(185.0);
     let set = build(&i);
-    assert_eq!(soft(&set), (102, 3772));
+    assert_eq!(soft(&set), (132, 3742));
     assert!(clamp(&set, "pos_min_soft_counts").contains("clamped"));
     assert!(clamp(&set, "pos_max_soft_counts").contains("clamped"));
 
     i.policy.soft_travel_deg = Some(0.5);
     let set = build(&i);
-    assert_eq!(soft(&set), (1927, 1947));
-    assert!(clamp(&set, "pos_min_soft_counts").contains("floor"));
+    // 2.5 deg of 20.1266 counts each side of 1937
+    assert_eq!(soft(&set), (1887, 1987));
+    assert!(clamp(&set, "pos_min_soft_counts").contains("under the least window, 5.00 deg"));
+
+    let mut uncontacted = i.clone();
+    if let Some(s) = uncontacted.measured.stops.as_mut() {
+        s.contact_counts = None;
+    }
+    let set = build(&uncontacted);
+    assert_eq!(
+        held(&set, "pos_min_soft_counts"),
+        "measured.stops.contact_counts"
+    );
 
     i.measured.stops = None;
     let set = build(&i);
@@ -578,7 +627,7 @@ fn a_board_with_its_ntc_on_the_can_has_no_body_node() {
         (bound(&set, "thermal_tau2_s"), bound(&set, "th_rise2_q016")),
         (0, 0)
     );
-    assert!(set.clamps().is_empty(), "{:?}", set.clamps());
+    assert!(clamps_but_soft(&set).is_empty(), "{:?}", set.clamps());
 }
 
 /// A gain over 0 that rounds to a rise of 0 would turn its node off, so it

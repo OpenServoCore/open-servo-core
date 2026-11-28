@@ -672,8 +672,9 @@ mod tests {
     }
 
     /// A field the rules store at a bound is said in the tune's lines,
-    /// under the starting gain: a move speed at the ceiling in deg/s lands
-    /// a count over the ceiling, which rounds down.
+    /// under the starting gain: the record's stops clamp the rated window,
+    /// and a move speed at the ceiling in deg/s lands a count over the
+    /// ceiling, which rounds down.
     #[test]
     fn a_field_stored_at_a_bound_is_said_in_the_tunes_lines() {
         let dir = scratch("tune-clamp");
@@ -699,9 +700,14 @@ mod tests {
             run_scripted_on(&mut c, &inputs, &out, 1, vec![(Way::Done, vec![])]).expect("runs");
         assert!(accepted, "{lines:?}");
         assert!(lines[0].starts_with("starting gain: "), "{lines:?}");
+        let window = "soft limits: the rated travel, 180 deg, is over the stops' 184.33 deg less 2.50 deg at each end: the window is clamped to 179.33 deg, centered on the stops";
         assert_eq!(
-            lines[1],
-            "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050"
+            lines[1..4],
+            [
+                format!("pos_min_soft_counts: {window}"),
+                format!("pos_max_soft_counts: {window}"),
+                "velocity_limit_cps: the move speed gives 8051 count/s, over speed_ceiling_cps 8050, where it cannot act: stored as 8050".to_string()
+            ]
         );
         let set = files::set(&out.join("set.json")).expect("set");
         assert_eq!(set.value("velocity_limit_cps"), Some(&8050.into()));
@@ -846,7 +852,9 @@ mod tests {
             .sim_mut()
             .servo_table_mut(0, |t| t.telemetry.common.fault_flags = 0);
 
-        // the bench servo's run gathered: its nominal scales move protections
+        // the bench servo's run gathered on a table step that read the
+        // record's own table, its stops and scale: its nominal sense scales
+        // move protections
         let run_dir = dir.join("bench-run");
         std::fs::create_dir_all(run_dir.join("results")).expect("mkdir");
         files::step_0(&run_dir);
@@ -857,6 +865,18 @@ mod tests {
             )
             .expect("copy");
         }
+        let json = |p: &Path| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(p).expect("read")).expect("json")
+        };
+        let record = json(&testdata("mg90-d/pos_lut.json"));
+        let mut tabled = json(&testdata("gather/table.json"));
+        tabled["points_by_page"] = record["points_by_page"].clone();
+        tabled["scale"]["counts_per_deg"] = record["target"]["counts_per_deg"].clone();
+        for (side, at) in [("low", 82), ("high", 3792)] {
+            tabled["stops"][side]["pin_raw"] = at.into();
+            tabled["stops"][side]["contact_counts"] = at.into();
+        }
+        std::fs::write(run_dir.join("results/table.json"), tabled.to_string()).expect("table");
         let inputs = dir.join("inputs");
         crate::gather::gather(
             &run_dir,
@@ -871,8 +891,8 @@ mod tests {
         let (lines, accepted) = run_scripted_on(&mut c, &inputs, &out, 6, script).expect("runs");
         let text = lines.join("\n");
         assert!(accepted, "{text}");
-        // the nominal scale, the stops' span over the rated 180 deg, is the
-        // record's within 0.1 %, so the stall speed in counts stays put
+        // the table's scale is the record's, so the stall speed in counts
+        // stays put
         let installed: Vec<&str> = [
             "pos_min_soft_counts",
             "pos_max_soft_counts",

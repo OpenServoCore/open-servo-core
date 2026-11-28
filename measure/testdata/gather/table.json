@@ -1,13 +1,9 @@
 {
   "step": "table",
   "method": "open-loop-slow-and-fast-passes",
-  "revision": 1,
+  "revision": 2,
   "verdict": "accepted",
   "why": null,
-  "stops_used": {
-    "raw_min": 107,
-    "raw_max": 3729
-  },
   "slots": [
     0,
     48,
@@ -302,6 +298,38 @@
   ],
   "scale": {
     "counts_per_deg": 19.435025359344024,
-    "source": "the ripple: the stops' span over the output's degrees between them, the table's cycles from stop to stop x 360 over the nameplate's brushes x rotor_segments x gear_ratio"
+    "source": "the ripple: the pins' span over the output's degrees between them, the table's cycles from pin to pin x 360 over the nameplate's brushes x rotor_segments x gear_ratio"
+  },
+  "stops": {
+    "low": {
+      "contact_cycles": -123.28839148078576,
+      "contact_counts": 103.99999999999999,
+      "contact_raw": 104.0,
+      "pin_raw": 96,
+      "spread_cycles": 1.1,
+      "spread_deg": 0.21424863814151648,
+      "sd_cycles": 0.46,
+      "n": 3,
+      "odd": [],
+      "left_out": [],
+      "rungs": []
+    },
+    "high": {
+      "contact_cycles": 835.3977992411288,
+      "contact_counts": 3733.0,
+      "contact_raw": 3733.0,
+      "pin_raw": 3744,
+      "spread_cycles": 1.1,
+      "spread_deg": 0.21424863814151648,
+      "sd_cycles": 0.5,
+      "n": 3,
+      "odd": [],
+      "left_out": [],
+      "rungs": []
+    },
+    "travel_cycles": 958.6861907219146,
+    "travel_deg": 186.72473706113485,
+    "deg_per_cycle": 0.19477148921956042,
+    "g_cycles": 4.0
   }
 }
