@@ -1616,15 +1616,10 @@ mod parity {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A run cut off mid-probe, its entry `running` and a stray capture
-    /// left: the resume waits for the winding to cool, moves the probe's
-    /// files under `segments/1/`, and runs the probe again from its start
-    /// in segment 2. The heat model's slow time constant is 5 s here, so
-    /// the wait fits the simulated servo's minute.
-    #[test]
-    fn a_resume_of_a_cut_off_step_moves_its_files_and_runs_it_whole() {
-        let dir = scratch("resume-cut-off");
-        let out = dir.join("out");
+    /// mg90-d's profile and policy in `dir/profile`, its heat model's slow
+    /// time constant 5 s, so a cooling wait (17 s) fits the simulated
+    /// servo's minute.
+    fn quick_cooling(dir: &Path) -> (PathBuf, PathBuf) {
         let profile = dir.join("profile");
         std::fs::create_dir_all(&profile).expect("mkdir");
         for f in ["nameplate.json", "policy.json"] {
@@ -1633,34 +1628,60 @@ mod parity {
         let mut heat = doc(&testdata("mg90-d"), "thermal.json");
         heat["slow_tau_s"]["value"] = 5.0.into();
         put_doc(&profile, "thermal.json", &heat);
-        let (nameplate, policy) = (profile.join("nameplate.json"), profile.join("policy.json"));
+        (profile.join("nameplate.json"), profile.join("policy.json"))
+    }
+
+    /// A fresh run into `out` on the simulated servo, begun `ago_s` before
+    /// [`NOW`], the stop flag raised as the step `stop_at` starts where one
+    /// is given: its run folder.
+    fn stopped_run(
+        out: &Path,
+        (nameplate, policy): (&Path, &Path),
+        ago_s: f64,
+        stop_at: Option<&str>,
+    ) -> PathBuf {
         let a = RunArgs {
-            nameplate: &nameplate,
-            policy: &policy,
-            out: &out,
+            nameplate,
+            policy,
+            out,
             tries: 6,
         };
-        {
-            let (mut c, d) = fake();
-            let inputs = crate::run::admit(&a).expect("admitted");
-            let stop = AtomicBool::new(false);
-            let clock = clock_at(NOW - 30.0);
-            let mut fs = Fs;
-            let mut host = Host {
-                files: &mut fs,
-                clock: &clock,
-                stop: &stop,
-                feed: &of::quiet,
-                tool: TOOL,
-            };
-            block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
-        }
-        let root = std::fs::read_dir(out.join("uid"))
+        let (mut c, d) = fake();
+        let inputs = crate::run::admit(&a).expect("admitted");
+        let stop = AtomicBool::new(false);
+        let feed = |p: &of::Progress| {
+            if matches!(p, of::Progress::Started { step } if Some(*step) == stop_at) {
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        };
+        let clock = clock_at(NOW - ago_s);
+        let mut fs = Fs;
+        let mut host = Host {
+            files: &mut fs,
+            clock: &clock,
+            stop: &stop,
+            feed: &feed,
+            tool: TOOL,
+        };
+        block_on(of::run(&mut c, ID, &d, &mut host, &a, &inputs, "uid")).expect("runs");
+        std::fs::read_dir(out.join("uid"))
             .expect("folder")
             .next()
             .expect("one")
             .expect("entry")
-            .path();
+            .path()
+    }
+
+    /// A run cut off mid-probe, its entry `running` and a stray capture
+    /// left: the resume waits for the winding to cool, moves the probe's
+    /// files under `segments/1/`, and runs the probe again from its start
+    /// in segment 2. The heat model's slow time constant is 5 s here, so
+    /// the wait fits the simulated servo's minute.
+    #[test]
+    fn a_resume_of_a_cut_off_step_moves_its_files_and_runs_it_whole() {
+        let dir = scratch("resume-cut-off");
+        let (nameplate, policy) = quick_cooling(&dir);
+        let root = stopped_run(&dir.join("out"), (&nameplate, &policy), 30.0, None);
         let mut m = doc(&root, "run.json");
         m["steps"]["probe"] = json!({"state": "running", "segment": 1});
         put_doc(&root, "run.json", &m);
@@ -1718,6 +1739,108 @@ mod parity {
             })
             .count();
         assert!(cooling > 1, "the wait is told as it goes");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A run stopped as its first step began, the rest step interrupted
+    /// and its result never written: the resume plans from the rest step,
+    /// waits as a restart into the probe does, records segment 2 and ends
+    /// its own step accepted, and the rest step runs again in segment 2.
+    #[test]
+    fn a_resume_of_a_run_stopped_in_its_first_step_runs_from_the_rest_step() {
+        let dir = scratch("resume-rest");
+        let (nameplate, policy) = quick_cooling(&dir);
+        let root = stopped_run(&dir.join("out"), (&nameplate, &policy), 5.0, Some("rest"));
+        let m = doc(&root, "run.json");
+        assert_eq!(m["steps"]["rest"]["state"], "interrupted", "{m}");
+        let since = NOW - m["segments"][0]["ended"].as_f64().expect("ended");
+        assert!(!root.join("results/rest.json").exists(), "{m}");
+        let (c, _) = fake();
+        let r = resumed_on(c, &root, &nameplate, &policy);
+        let ended: Vec<(&str, &str)> = r
+            .told
+            .iter()
+            .filter_map(|p| match p {
+                of::Progress::Ended { step, state, .. } => Some((*step, state.as_str())),
+                _ => None,
+            })
+            .collect();
+        let (lines, _) = r.out.expect("resumes");
+        let text = lines.join("\n");
+        assert_eq!(
+            ended[..2],
+            [("resume", "accepted"), ("rest", "accepted")],
+            "{text}"
+        );
+        let m = doc(&root, "run.json");
+        let s = &m["segments"][1];
+        assert_eq!((&s["n"], &s["from"]), (&json!(2), &json!("rest")), "{m}");
+        assert!(s.get("refused").is_none(), "{m}");
+        assert!(s["rail_v"].is_f64() && s["ntc_c"].is_f64(), "{m}");
+        let rail = s["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .find(|c| c["name"] == "the rail");
+        assert!(rail.is_none(), "no accepted rest step to hold it to: {m}");
+        assert!(
+            text.contains("the rail: not checked: no accepted rest step"),
+            "{text}"
+        );
+        let cooled = s["cooled_s"].as_f64().expect("cooled");
+        let wait = of::resume::cooling_s(5.0, since);
+        assert!(
+            wait > 0.0 && (cooled - wait).abs() < 1e-9,
+            "{cooled} {wait}: {m}"
+        );
+        assert!(
+            text.contains("the winding cools before the rest step"),
+            "{text}"
+        );
+        assert_eq!(m["steps"]["rest"]["segment"], 2, "{m}");
+        assert_eq!(m["steps"]["rest"]["state"], "accepted", "{m}");
+        assert_eq!(m["steps"]["probe"]["segment"], 2, "{m}");
+        assert!(root.join("results/rest.json").exists(), "{text}");
+        assert!(
+            m["segments"][0]["ntc_c"].is_null(),
+            "segment 1 read no NTC: {m}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A check on the bus that cannot be made, the servo deaf to the state
+    /// read: the resume refuses with what stopped it, ends its own step
+    /// refused with those words, and records them in segment 2; nothing
+    /// moved.
+    #[test]
+    fn a_check_that_cannot_be_made_refuses_in_the_segment() {
+        let dir = scratch("resume-deaf");
+        let root = stopped_at_tune(&dir, 60.0);
+        tried_once(
+            &root,
+            json!({"install": "installed", "verdict": "aborted", "failed_on": [], "next": "stop"}),
+        );
+        let (mut c, _) = fake();
+        c.pipe_mut().lose_next(u32::MAX);
+        let r = resumed(c, &root);
+        let e = format!("{:#}", r.out.expect_err("refused"));
+        assert!(
+            e.starts_with("a check before the resume drives could not be made: "),
+            "{e}"
+        );
+        assert!(
+            r.told.contains(&of::Progress::Ended {
+                step: "resume",
+                state: "refused".into(),
+                why: Some(e.clone()),
+            }),
+            "{:?}",
+            r.told
+        );
+        let m = doc(&root, "run.json");
+        assert_eq!(m["segments"][1]["n"], 2, "{m}");
+        assert_eq!(m["segments"][1]["refused"], e, "{m}");
+        assert!(root.join("tune/tune.json").exists() && !root.join("segments").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1865,6 +1988,13 @@ mod parity {
             "{}",
             refused(&root, &a)
         );
+        m["tune"]["files"] = json!(["tune/tune.json", "tune/set.json"]);
+        put_doc(&root, "run.json", &m);
+        assert_eq!(
+            refused(&root, &a),
+            "tune/set.json, which run.json records accepted, is not in the folder"
+        );
+        m["tune"].as_object_mut().expect("tune").remove("files");
         m["final"]["state"] = "accepted".into();
         put_doc(&root, "run.json", &m);
         assert!(refused(&root, &a).starts_with("the run is complete"));

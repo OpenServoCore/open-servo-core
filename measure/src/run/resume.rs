@@ -254,6 +254,12 @@ pub fn plan(
             from = Some(step);
             break;
         }
+        let named = e["files"].as_array().into_iter().flatten();
+        for rel in named.filter_map(Value::as_str) {
+            if !fs.exists(&root.join(rel)) {
+                bail!("{rel}, which run.json records accepted, is not in the folder");
+            }
+        }
         let Some((method, revision)) = method_of(step) else {
             continue;
         };
@@ -493,7 +499,7 @@ where
     C: AsyncFnMut(&mut Rig<'_, P>, &CruiseInputs<'_>) -> Result<Cruised, Refused>,
     V: AsyncFnMut(&mut Rig<'_, P>, &VerifyInputs<'_>) -> Result<Verified, Refused>,
 {
-    let (feed, clock, stop) = (host.feed, host.clock, host.stop);
+    let (feed, clock) = (host.feed, host.clock);
     let t0 = clock();
     let p = plan(host.files, root, a, i, t0)?;
     let a = RunArgs {
@@ -514,8 +520,7 @@ where
     let mut told = 0;
     super::tell_lines(feed, &lines, &mut told);
 
-    let (seg, refused) = checks(c, id, d, &p, root, servo, host.files, &mut lines).await?;
-    let mut seg = seg;
+    let (mut seg, refused) = checks(c, id, d, &p, root, servo, host.files, &mut lines).await;
     seg["n"] = p.n.into();
     seg["tool"] = host.tool.into();
     seg["from"] = p.from.into();
@@ -533,18 +538,68 @@ where
     let mut doc = p.doc.clone();
     push_segment(&mut doc, seg);
     let manifest = root.join("run.json");
-    rewrite(host.files, &manifest, &doc)?;
     let ended = |why: Option<&String>| Progress::Ended {
         step: STEP,
         state: if why.is_some() { "refused" } else { "accepted" }.into(),
         why: why.cloned(),
     };
-    if let Some(w) = refused {
+    let gone_on = async {
+        rewrite(host.files, &manifest, &doc)?;
+        if let Some(w) = refused {
+            bail!("{w}");
+        }
+        before_the_steps(c, id, d, host, i, root, &p, &mut lines, &mut told).await
+    }
+    .await;
+    if let Err(e) = gone_on {
+        let w = format!("{e:#}");
+        // a refusal is in the segment already; anything else is put there
+        // now, as far as the store still takes a write
+        let _ = refuse_segment(host.files, &manifest, &w);
         super::tell_lines(feed, &lines, &mut told);
         feed(&ended(Some(&w)));
         bail!("{w}");
     }
+    super::tell_lines(feed, &lines, &mut told);
+    feed(&ended(None));
 
+    let (more, measured) = if at(p.from) < at(GATHER) {
+        let (more, measured, _) = chain::resume_spins(c, id, d, host, i, root, p.from).await?;
+        (more, measured)
+    } else {
+        (Vec::new(), true)
+    };
+    lines.extend(more);
+    let past = Past {
+        from: at(p.from).max(at(GATHER)),
+        tune: p.tune.clone(),
+        last: p.last.clone(),
+    };
+    let (lines, accepted) = super::past_steps_with(
+        c, id, d, host, &a, root, lines, measured, &past, run_cruise, check,
+    )
+    .await?;
+    end_segment(host.files, root, clock())?;
+    Ok((lines, accepted))
+}
+
+/// The resume's own work once its segment is recorded and its checks
+/// passed: the cooling wait, the re-seat, the stopped attempt's files
+/// moved; a refusal in the tool's words, the segment's own where it has one.
+#[allow(clippy::too_many_arguments)]
+async fn before_the_steps<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    host: &mut Host<'_>,
+    i: &StepInputs,
+    root: &Path,
+    p: &Plan,
+    lines: &mut Vec<String>,
+    told: &mut usize,
+) -> Result<()> {
+    let (feed, stop) = (host.feed, host.stop);
+    let manifest = root.join("run.json");
     if p.cool_s > 0.0 {
         let tau = i
             .thermal
@@ -557,20 +612,14 @@ where
             p.cool_s,
             (RISE_MAX_C / COOLED_C).ln()
         ));
-        super::tell_lines(feed, &lines, &mut told);
+        super::tell_lines(feed, lines, told);
         let of = p.cool_s.ceil().max(1.0) as u32;
         // the pauses' own sum: a pause is at least as long as asked
         let mut waited = 0.0;
-        loop {
-            if waited >= p.cool_s {
-                break;
-            }
+        while waited < p.cool_s {
             if stop.load(Ordering::SeqCst) {
-                let w = "interrupted while the winding cooled: nothing drove".to_string();
-                refuse_segment(host.files, &manifest, &w)?;
-                lines.push(w.clone());
-                super::tell_lines(feed, &lines, &mut told);
-                feed(&ended(Some(&w)));
+                let w = "interrupted while the winding cooled: nothing drove";
+                lines.push(w.into());
                 bail!("{w}");
             }
             feed(&Progress::Unit {
@@ -597,7 +646,7 @@ where
             of: 1,
             what: "re-seat",
         });
-        let r = reseated(c, id, d, host, i, root, p.n, &mut lines).await?;
+        let r = reseated(c, id, d, host, i, root, p.n, lines).await?;
         let mut doc = manifest_of(host.files, root)?;
         let fail = r["verdict"] != "pass";
         let why = r["why"].as_str().map(str::to_string);
@@ -609,10 +658,7 @@ where
         }
         rewrite(host.files, &manifest, &doc)?;
         if fail {
-            let w = why.unwrap_or_default();
-            super::tell_lines(feed, &lines, &mut told);
-            feed(&ended(Some(&w)));
-            bail!("{w}");
+            bail!("{}", why.unwrap_or_default());
         }
     }
 
@@ -628,27 +674,7 @@ where
             .map_err(|e| anyhow::anyhow!("moving {f} to {t}: {e}"))?;
         lines.push(format!("moved {f} to {t}"));
     }
-    super::tell_lines(feed, &lines, &mut told);
-    feed(&ended(None));
-
-    let (more, measured) = if at(p.from) < at(GATHER) {
-        let (more, measured, _) = chain::resume_spins(c, id, d, host, i, root, p.from).await?;
-        (more, measured)
-    } else {
-        (Vec::new(), true)
-    };
-    lines.extend(more);
-    let past = Past {
-        from: at(p.from).max(at(GATHER)),
-        tune: p.tune.clone(),
-        last: p.last.clone(),
-    };
-    let (lines, accepted) = super::past_steps_with(
-        c, id, d, host, &a, root, lines, measured, &past, run_cruise, check,
-    )
-    .await?;
-    end_segment(host.files, root, clock())?;
-    Ok((lines, accepted))
+    Ok(())
 }
 
 fn push_segment(doc: &mut Value, seg: Value) {
@@ -668,7 +694,8 @@ fn refuse_segment(fs: &mut dyn Store, manifest: &Path, why: &str) -> Result<()> 
 }
 
 /// The checks on the bus, before anything drives: the segment as far as
-/// they fill it, and the first refusal, in the tool's words.
+/// they fill it, and the first refusal, in the tool's words; a check that
+/// could not be made refuses with what stopped it.
 #[allow(clippy::too_many_arguments)]
 async fn checks<P: Pipe>(
     c: &mut Client<P>,
@@ -679,12 +706,13 @@ async fn checks<P: Pipe>(
     servo: &str,
     fs: &mut dyn Store,
     lines: &mut Vec<String>,
-) -> Result<(Value, Option<String>)> {
+) -> (Value, Option<String>) {
     let doc = &p.doc;
     let first = &doc["segments"][0];
     let mut seg = json!({"rebooted": false, "ntc_c": null, "rail_v": null, "checks": []});
     let mut said = Vec::new();
-    let refused = 'checks: {
+    let mut notes = Vec::new();
+    let made: Result<Option<String>> = async {
         let uid = doc["servo_uid"].as_str().unwrap_or_default();
         let pass = uid == servo;
         said.push(check(
@@ -694,10 +722,10 @@ async fn checks<P: Pipe>(
             pass,
         ));
         if !pass {
-            break 'checks Some(format!(
+            return Ok(Some(format!(
                 "servo {} is {servo}; the run is {uid}: a resume continues on the servo it began on",
                 id.as_byte()
-            ));
+            )));
         }
         let now = state::read(c, id, d).await?;
         let torque = install::writable_now(&now);
@@ -708,7 +736,7 @@ async fn checks<P: Pipe>(
             torque.is_ok(),
         ));
         if let Err(e) = torque {
-            break 'checks Some(e.0);
+            return Ok(Some(e.0));
         }
         let mut steps = Vec::new();
         let stored = install::stored_state(c, id, d, &mut steps)
@@ -738,10 +766,10 @@ async fn checks<P: Pipe>(
             pass,
         ));
         if !pass {
-            break 'checks Some(format!(
+            return Ok(Some(format!(
                 "the servo runs model {m} firmware {v} (capability_flags {cf}); the run began on {} {} ({}): start a new run",
                 w["model"], w["version"], w["capability_flags"]
-            ));
+            )));
         }
         let (record, _, _) = files::board_in(fs, &root.join("inputs"))?;
         let words = board::Words::of(&stored, d).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -769,10 +797,10 @@ async fn checks<P: Pipe>(
             differ.is_empty(),
         ));
         if !differ.is_empty() {
-            break 'checks Some(format!(
+            return Ok(Some(format!(
                 "the board facts differ from inputs/board.json ({}): the servo is on another board; start a new run",
                 differ.join(", ")
-            ));
+            )));
         }
         let unsaved = first["state"]["unsaved"].as_bool().unwrap_or(true);
         said.push(check(
@@ -782,10 +810,10 @@ async fn checks<P: Pipe>(
             !unsaved,
         ));
         if unsaved {
-            break 'checks Some(
+            return Ok(Some(
                 "the run began on settings not saved (unsaved yes): the stored settings it measured against are not known; start a new run"
                     .into(),
-            );
+            ));
         }
         let (now_h, then_h) = (
             stored.hash(d),
@@ -801,17 +829,26 @@ async fn checks<P: Pipe>(
             now_h == then_h,
         ));
         if now_h != then_h {
-            break 'checks Some(format!(
+            return Ok(Some(format!(
                 "the servo's stored settings are not the ones the run began on (state {now_h}, began {then_h}): a SAVE, a FACTORY or another tool's install since; start a new run"
-            ));
+            )));
         }
         let sense = Sense::of(&stored, d).map_err(|e| anyhow::anyhow!("{e}"))?;
         let rail = rest::rail_now(c, id, d, &sense).await?;
+        seg["rail_v"] = rail.into();
+        seg["ntc_c"] = chain::ntc_now(c, id, d, &stored)
+            .await
+            .map_or(Value::Null, Into::into);
+        if at(p.from) == at(rest::STEP) {
+            notes.push(format!(
+                "  the rail: not checked: no accepted rest step to hold {rail:.2} V to; the rest step runs again"
+            ));
+            return Ok(None);
+        }
         let rest_r = json_at(fs, &root.join(rest::RESULT))?;
         let then = rest_r["estimates"]["rail_v"]["value"]
             .as_f64()
             .context("the rest result holds no rail_v")?;
-        seg["rail_v"] = rail.into();
         let pass = (rail - then).abs() <= RAIL_SHARE * then;
         said.push(check(
             "the rail",
@@ -820,15 +857,18 @@ async fn checks<P: Pipe>(
             pass,
         ));
         if !pass {
-            break 'checks Some(format!(
+            return Ok(Some(format!(
                 "the rail reads {rail:.2} V; the run's rest step read {then:.2} V: more than 5 % apart; resume on the supply the run began on"
-            ));
+            )));
         }
-        seg["ntc_c"] = chain::ntc_now(c, id, d, &stored)
-            .await
-            .map_or(Value::Null, Into::into);
-        None
-    };
+        Ok(None)
+    }
+    .await;
+    let refused = made.unwrap_or_else(|e| {
+        Some(format!(
+            "a check before the resume drives could not be made: {e:#}"
+        ))
+    });
     for s in &said {
         lines.push(format!(
             "  {}: {}, {} ({})",
@@ -838,8 +878,9 @@ async fn checks<P: Pipe>(
             s["verdict"].as_str().unwrap_or_default()
         ));
     }
+    lines.extend(notes);
     seg["checks"] = said.into();
-    Ok((seg, refused))
+    (seg, refused)
 }
 
 /// The high stop re-seated and judged against the run's: the segment's
