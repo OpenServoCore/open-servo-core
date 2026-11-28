@@ -875,6 +875,57 @@ mod tests {
         assert_eq!(again, once);
     }
 
+    /// Cancel as the run's first step starts, as a page's Cancel before the
+    /// run gets going does, then Resume right after on mg90-d's own heat
+    /// model: the rest step left no result, so the resume goes on from it
+    /// in segment 2, ends its own step accepted, and waits for the winding
+    /// as a restart into the probe does, minutes the sim pauses through.
+    #[test]
+    fn a_run_stopped_in_its_first_step_resumes_from_the_rest_step() {
+        let (stopped, ops, _) = mirrored(Some("rest"), None, T0);
+        let root = stopped.root().expect("a run folder");
+        let m = manifest(&stopped);
+        assert_eq!(m["steps"]["rest"]["state"], "interrupted", "{m}");
+        let folder = replay(&[], &ops);
+        assert!(
+            !folder
+                .iter()
+                .any(|(p, _)| p.ends_with("/results/rest.json")),
+            "the rest step wrote no result"
+        );
+        let ended = m["segments"][0]["ended"].as_f64().expect("ended");
+
+        let (resumed, more, told) = mirrored(None, Some((&root, &folder)), ended + 1.0);
+        assert_eq!(resumed.refused, None, "{:#?}", resumed.lines);
+        assert_eq!(replay(&folder, &more), resumed.files);
+        let ends: Vec<(&str, &str)> = told
+            .iter()
+            .filter_map(|p| match p {
+                Progress::Ended { step, state, .. } => Some((*step, state.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends[..2], [("resume", "accepted"), ("rest", "accepted")]);
+        let m = manifest(&resumed);
+        let s = &m["segments"][1];
+        assert_eq!((&s["n"], &s["from"]), (&2.into(), &"rest".into()), "{m}");
+        let cooled = s["cooled_s"].as_f64().expect("cooled");
+        // the resume reads the clock a beat or so after it is handed
+        let (most, least) = (
+            of::resume::cooling_s(128.92, 1.0),
+            of::resume::cooling_s(128.92, 2.0),
+        );
+        assert!(
+            cooled > 60.0 && (least..=most).contains(&cooled),
+            "{cooled} not in {least}..{most}"
+        );
+        assert_eq!(m["steps"]["rest"]["segment"], 2, "{m}");
+        assert_eq!(m["steps"]["rest"]["state"], "accepted", "{m}");
+        assert_eq!(m["steps"]["probe"]["segment"], 2, "{m}");
+        let rest = format!("{root}/results/rest.json");
+        assert!(resumed.files.iter().any(|(p, _)| *p == rest));
+    }
+
     /// The folder's own refusals come before the pipe is opened, in the
     /// tool's words, the folder untouched; `plan` says the same.
     #[test]

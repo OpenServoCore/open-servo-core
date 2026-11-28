@@ -607,6 +607,69 @@ async fn a_stopped_page_run_resumes_from_its_mirror() {
     assert_eq!(again, once);
 }
 
+/// Cancel as the probe starts, then Resume at once on mg90-d's own heat
+/// model, on the page's clock, as a `?sim=1` page does: the resume waits
+/// out the cooling, minutes of sim time torque off, and goes on from the
+/// probe, where the sim stopped itself past its minute before.
+#[wasm_bindgen_test]
+async fn a_resume_right_after_a_stop_waits_out_the_cooling_on_the_sim() {
+    let h = Rc::new(IdentRun::new());
+    let stop = h.clone();
+    let cancel = Closure::<dyn Fn(JsValue)>::new(move |p: JsValue| {
+        if get(&p, "event").as_string().as_deref() == Some("started")
+            && get(&p, "step").as_string().as_deref() == Some("probe")
+        {
+            stop.stop();
+        }
+    });
+    let changes = js_sys::Array::new();
+    let mirror = keep(&changes);
+    let stopped: RunOutcome = h
+        .run_fake(
+            args().into_ts().expect("args"),
+            cancel.as_ref().unchecked_ref(),
+            Some(mirror.as_ref().unchecked_ref::<js_sys::Function>().clone()),
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("runs")
+        .to_rust()
+        .expect("outcome");
+    let mut folder = BTreeMap::new();
+    replay(&mut folder, &changes);
+    let root = stopped.root.clone().expect("a run folder");
+
+    let told = js_sys::Array::new();
+    let feed = keep(&told);
+    let resumed: RunOutcome = IdentRun::new()
+        .resume_fake(
+            resume_args(&root, &folder).into_ts().expect("args"),
+            feed.as_ref().unchecked_ref(),
+            None,
+            None,
+        )
+        .await
+        .map_err(JsValue::from)
+        .expect("resumes")
+        .to_rust()
+        .expect("outcome");
+    assert_eq!(resumed.refused, None, "{:#?}", resumed.lines);
+    let m = manifest(&resumed);
+    let cooled = m["segments"][1]["cooled_s"].as_f64().expect("cooled");
+    assert!(cooled > 60.0, "{m}");
+    assert_eq!(m["steps"]["probe"]["segment"], 2, "{m}");
+    let cooling = told
+        .iter()
+        .filter(|p| {
+            get(p, "event").as_string().as_deref() == Some("unit")
+                && get(p, "step").as_string().as_deref() == Some("resume")
+                && get(p, "what").as_string().as_deref() == Some("s cooling")
+        })
+        .count();
+    assert!(cooling > 12, "the wait is told as it goes: {cooling}");
+}
+
 /// A folder a resume refuses on its files alone: `planResume` throws the
 /// tool's words, and `resumeFake` ends refused in them, nothing told to the
 /// mirror.
