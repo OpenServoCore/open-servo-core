@@ -8,10 +8,12 @@ const RUNS = {
   runFake: (run, m, _device, told, stored) => run.runFake(m.args, told, stored),
   resume: (run, m, device, told, stored) => run.resume(device, m.args, told, stored),
   resumeFake: (run, m, _device, told, stored) => run.resumeFake(m.args, told, stored),
+  save: (run, m, device, told, stored) => run.save(device, m.args, told, stored),
+  saveFake: (run, m, _device, told, stored) => run.saveFake(m.args, told, stored),
 };
 
 /**
- * One run served over `port` (the worker's scope, or a MessagePort in a
+ * One run (or one save) served over `port` (the worker's scope, or a MessagePort in a
  * test), on the module `loaded` resolves to. Tells `ready` once the module
  * is in, each `progress` and each `store` change as the run goes, in the
  * order they happen, then its `outcome`, or `failed` with the message of

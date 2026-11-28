@@ -5,6 +5,8 @@ import type {
   ResumePlan,
   RunArgs,
   RunOutcome,
+  SaveArgs,
+  SaveOutcome,
   Stored,
 } from "./pkg/osc_client_web_ident.js";
 
@@ -17,13 +19,15 @@ export type ToWorker =
   | { kind: "runFake"; args: RunArgs }
   | { kind: "resume"; device: DeviceKey; args: ResumeArgs }
   | { kind: "resumeFake"; args: ResumeArgs }
+  | { kind: "save"; device: DeviceKey; args: SaveArgs }
+  | { kind: "saveFake"; args: SaveArgs }
   | { kind: "plan"; id: number; args: ResumeArgs; now?: number }
   | { kind: "stop" };
 export type FromWorker =
   | { kind: "ready" }
   | { kind: "progress"; progress: Progress }
   | { kind: "store"; stored: Stored }
-  | { kind: "outcome"; outcome: RunOutcome }
+  | { kind: "outcome"; outcome: RunOutcome | SaveOutcome }
   | { kind: "planned"; id: number; plan?: ResumePlan; refused?: string }
   | { kind: "failed"; message: string };
 
@@ -32,8 +36,8 @@ export type OnStore = (s: Stored) => void | Promise<void>;
 
 /**
  * One run in `worker`, a dedicated worker on worker.js: `ready` settles once
- * the worker's module is in, one `run`, `runFake`, `resume` or `resumeFake`
- * resolves with the outcome, `stop` raises the run's stop flag (before the
+ * the worker's module is in, one `run`, `runFake`, `resume`, `resumeFake`,
+ * `save` or `saveFake` resolves with the outcome, `stop` raises the run's stop flag (before the
  * run too), `close` ends the worker. `planResume` asks what a resume would
  * do, at any time. Each store change goes to `onStore` on one serial queue,
  * the next once the last one's promise settled, and the run settles once
@@ -64,6 +68,19 @@ export class IdentWorker {
     onProgress: (p: Progress) => void,
     onStore?: OnStore,
   ): Promise<RunOutcome>;
+  /** `IdentRun.save` in the worker, on its own object for `device`, which the page's client has released. */
+  save(
+    device: USBDevice,
+    args: SaveArgs,
+    onProgress: (p: Progress) => void,
+    onStore?: OnStore,
+  ): Promise<SaveOutcome>;
+  /** `IdentRun.saveFake` in the worker. */
+  saveFake(
+    args: SaveArgs,
+    onProgress: (p: Progress) => void,
+    onStore?: OnStore,
+  ): Promise<SaveOutcome>;
   /** `planResume` in the worker: rejects with the refusal, in the tool's words. */
   planResume(args: ResumeArgs, now?: number): Promise<ResumePlan>;
   stop(): void;

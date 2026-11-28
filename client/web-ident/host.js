@@ -12,8 +12,8 @@ export function keyOf(device) {
 
 /**
  * One run in `worker`, a dedicated worker on worker.js: `ready` settles once
- * the worker's module is in, one `run`, `runFake`, `resume` or `resumeFake`
- * resolves with the outcome, `stop` raises the run's stop flag (before the
+ * the worker's module is in, one `run`, `runFake`, `resume`, `resumeFake`,
+ * `save` or `saveFake` resolves with the outcome, `stop` raises the run's stop flag (before the
  * run too), `close` ends the worker. `planResume` asks what a resume would
  * do, at any time. Each store change goes to `onStore` on one serial queue,
  * the next once the last one's promise settled, and the run settles once
@@ -63,6 +63,14 @@ export class IdentWorker {
 
   resumeFake(args, onProgress, onStore) {
     return this.#start({ kind: "resumeFake", args }, onProgress, onStore);
+  }
+
+  save(device, args, onProgress, onStore) {
+    return this.#start({ kind: "save", device: keyOf(device), args }, onProgress, onStore);
+  }
+
+  saveFake(args, onProgress, onStore) {
+    return this.#start({ kind: "saveFake", args }, onProgress, onStore);
   }
 
   planResume(args, now) {

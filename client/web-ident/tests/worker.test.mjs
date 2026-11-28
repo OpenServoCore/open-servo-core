@@ -304,3 +304,38 @@ test("a resume the folder refuses is refused before the bus, in the tool's words
   assert.equal(refused.refused, words);
   assert.equal(changes.length, 0);
 });
+
+test("the worker's save stores a folder's accepted final set and reads it back clean", async () => {
+  const uid = "c94b8419d1092aec87de5fd151ce290f";
+  const folder = `${uid}/20261127T120000Z`;
+  const bytes = async (name) => new Uint8Array(await readFile(new URL(name, testdata)));
+  const set = await bytes("constants.json");
+  const hash = JSON.parse(new TextDecoder().decode(set)).hash.set;
+  const run = { servo_uid: uid, steps: {}, final: { state: "accepted", set: hash, set_file: "final/set.json" } };
+  const a = {
+    id: 1,
+    folder,
+    files: [
+      { path: `${folder}/run.json`, bytes: new TextEncoder().encode(JSON.stringify(run)) },
+      { path: `${folder}/final/set.json`, bytes: set },
+      { path: `${folder}/final/inputs/pos_lut.json`, bytes: await bytes("pos_lut.json") },
+    ],
+  };
+  const stored = [];
+  const { outcome, told } = await inWorker((w, on) =>
+    w.saveFake(a, on, (s) => {
+      stored.push(s.op === "write" ? s.path : `${s.from} -> ${s.to}`);
+    }),
+  );
+  assert.equal(outcome.refused, undefined, outcome.lines.join("\n"));
+  assert.equal(outcome.saved, true);
+  assert.deepEqual(outcome.differences, []);
+  assert.equal(outcome.bootsAt, "b3000000");
+  const fed = told.filter((p) => p.event === "lines").flatMap((p) => p.lines);
+  assert.deepEqual(fed, outcome.lines);
+  assert.ok(outcome.lines.some((l) => l.startsWith("0 differences; settings loaded; unsaved no")));
+  assert.deepEqual(
+    [...stored].sort(),
+    outcome.files.map((f) => f.path),
+  );
+});

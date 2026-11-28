@@ -74,11 +74,13 @@ pub enum Progress {
     /// The step begins; a step not run never does.
     Started { step: &'static str },
     /// Try `at` of at most `of` begins: the tune's, and the final check's
-    /// down the back-off.
+    /// down the back-off, each counted from its own first try. `percent`
+    /// is the try's speed gain as a whole percent of the starting gain.
     Try {
         step: &'static str,
         at: u32,
         of: u32,
+        percent: u32,
     },
     /// Unit `at` of `of` inside the step begins: the step's planned count
     /// at that moment, which never falls within it; `what` names the unit.

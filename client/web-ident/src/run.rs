@@ -4,7 +4,8 @@
 //! the feed as it is said. The files are [`of::run`]'s own, so the run
 //! folder is the CLI's byte for byte. [`resume`] is `run --resume` on the
 //! same terms, the folder's files given, and both tell the page each file
-//! as the run writes or moves it.
+//! as the run writes or moves it. [`save`] is `save --set` of the folder's
+//! accepted final set, then `check --set`.
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -249,7 +250,7 @@ async fn session<P: Pipe>(
     {
         return (ended(Some(format!("{e:#}")), false, &store.files), None);
     }
-    let (mut c, d) = match connect(open, given, &tell).await {
+    let (mut c, d) = match connect(open, (given.id, given.baud), &tell).await {
         Ok(cd) => cd,
         Err(e) => return (ended(Some(format!("{e:#}")), false, &store.files), None),
     };
@@ -301,19 +302,19 @@ fn under(store: &MemSink, folder: &str) -> Vec<(String, Vec<u8>)> {
 /// descriptor chosen.
 async fn connect<P: Pipe>(
     open: impl Future<Output = Result<P>>,
-    given: &Given,
+    (id, baud): (u8, Option<BaudRate>),
     tell: &dyn Fn(Vec<String>),
 ) -> Result<(Client<P>, Descriptor)> {
     let mut c = Client::connect(open.await?).await?;
     c.set_resend(true);
-    match given.baud {
+    match baud {
         None => match mgmt::find_bus_baud(&mut c).await? {
             Some(rate) => tell(vec![format!("bus at {} baud", rate.as_hz())]),
             None => bail!("no servo answers at any rate"),
         },
         Some(rate) => c.host_baud(rate).await?,
     }
-    let id = Id::new(given.id);
+    let id = Id::new(id);
     let ping = match c.ping(id).await {
         Err(Error::Timeout { .. }) => c.ping(id).await,
         p => p,
@@ -332,6 +333,192 @@ async fn connect<P: Pipe>(
         ),
     };
     Ok((c, d))
+}
+
+/// What a page gives a save: the servo's bus id, the bus rate, and the
+/// run folder `<uid>/<UTC>` whose accepted final set it stores, by its
+/// files at their paths from the store's root.
+#[derive(Clone, Debug)]
+pub struct SaveGiven {
+    pub id: u8,
+    /// `None` finds the bus rate, as the CLI's `--baud auto`.
+    pub baud: Option<BaudRate>,
+    pub folder: String,
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// What a save leaves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SaveOutcome {
+    /// The lines `osc-ident save` prints, then those of `osc-ident check`
+    /// against the same set.
+    pub lines: Vec<String>,
+    /// The save's own folder `<uid>/<UTC>`, its backup of the stored state
+    /// and the state after the SAVE, at their paths from the store's root.
+    pub files: Vec<(String, Vec<u8>)>,
+    /// Whether the SAVE landed and the servo booted as the set.
+    pub saved: bool,
+    /// The check's differences once it ran: none when the servo is the set.
+    pub differences: Option<Vec<String>>,
+    /// The bus rate the servo boots at, as the state after the SAVE records.
+    pub boots_at: Option<BaudRate>,
+    /// Why the save ended short, as the CLI prints it after `refused: `.
+    pub refused: Option<String>,
+}
+
+/// The final set the run folder `folder` accepted, from `run.json`'s
+/// `final` entry, with its table where the set's is LIVE: the files the
+/// run's own `to store it` line names. Refused where the final check did
+/// not accept a set, or the set file is not the one `run.json` records.
+fn final_of(
+    store: &mut MemSink,
+    folder: &Path,
+) -> Result<(
+    osc_measure::set::SetFile,
+    Option<osc_measure::set::TableFile>,
+)> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(&of::files::read(store, &folder.join("run.json"))?)
+            .context("parsing run.json")?;
+    let last = &doc["final"];
+    match last["state"].as_str() {
+        Some("accepted") => {}
+        state => bail!(
+            "the run {} holds no accepted final set: its final check {}; nothing to save",
+            folder.display(),
+            match (state, last["why"].as_str()) {
+                (None, _) => "did not run".to_string(),
+                (Some(s), Some(why)) => format!("is {s} ({why})"),
+                (Some(s), None) => format!("is {s}"),
+            }
+        ),
+    }
+    let at = folder.join(
+        last["set_file"]
+            .as_str()
+            .context("run.json names no final set file")?,
+    );
+    let set = of::files::set(store, &at)?;
+    if last["set"].as_str() != Some(set.hash()) {
+        bail!(
+            "{} is not the final set run.json records (set {}, run.json {})",
+            at.display(),
+            &set.hash()[..12.min(set.hash().len())],
+            last["set"].as_str().unwrap_or("none")
+        );
+    }
+    let table = match set.table().0 {
+        "LIVE" => Some(of::files::table(
+            store,
+            &folder.join("final/inputs/pos_lut.json"),
+        )?),
+        _ => None,
+    };
+    Ok((set, table))
+}
+
+/// `osc-ident save` of the run folder's accepted final set, then `osc-ident
+/// check` against it, on the pipe `open` yields: the folder's refusals
+/// come before the pipe is opened, the servo's (another servo than the
+/// run's) before anything is written. The save keeps its backup in a run
+/// folder of its own beside the run's, as the CLI does. A SAVE stores the
+/// servo's CONFIG as it runs, its bus rate with it.
+pub async fn save<P: Pipe>(
+    open: impl Future<Output = Result<P>>,
+    given: &SaveGiven,
+    page: &Page<'_>,
+) -> (SaveOutcome, Option<Client<P>>) {
+    let said = RefCell::new(Vec::new());
+    let tell = |lines: Vec<String>| {
+        if !lines.is_empty() {
+            said.borrow_mut().extend(lines.iter().cloned());
+            (page.feed)(&Progress::Lines { lines });
+        }
+    };
+    let mut store = Mirror {
+        files: MemSink::default(),
+        tell: page.store,
+    };
+    for (path, bytes) in &given.files {
+        store.files.files.insert(key(path), bytes.clone());
+    }
+    let folder = Path::new(&given.folder);
+    let refused = |why: String, said: &RefCell<Vec<String>>| SaveOutcome {
+        lines: said.borrow().clone(),
+        refused: Some(why),
+        ..SaveOutcome::default()
+    };
+    let (set, table) = match final_of(&mut store.files, folder) {
+        Ok(f) => f,
+        Err(e) => return (refused(format!("{e:#}"), &said), None),
+    };
+    let (mut c, d) = match connect(open, (given.id, given.baud), &tell).await {
+        Ok(cd) => cd,
+        Err(e) => return (refused(format!("{e:#}"), &said), None),
+    };
+    let id = Id::new(given.id);
+    let uid = given.folder.split('/').next().unwrap_or_default();
+    let servo = match servo_name(&mut c, id).await {
+        Ok(s) if s == uid => s,
+        Ok(s) => {
+            let why = format!(
+                "servo {} is {s}, not the run's servo {uid}: nothing was written",
+                id.as_byte()
+            );
+            return (refused(why, &said), Some(c));
+        }
+        Err(e) => return (refused(format!("{e:#}"), &said), Some(c)),
+    };
+    let root = match of::files::run_folder(&store, Path::new(""), &servo, (page.clock)()) {
+        Ok(r) => r,
+        Err(e) => return (refused(format!("{e:#}"), &said), Some(c)),
+    };
+    let mut steps = Vec::new();
+    let done = {
+        let mut sink = of::At {
+            files: &mut store,
+            root: root.clone(),
+        };
+        osc_measure::install::save(
+            &mut c,
+            id,
+            &d,
+            &set,
+            table.as_ref().map(|t| &t.points),
+            &mut sink,
+            &mut steps,
+        )
+        .await
+    };
+    tell(steps.iter().map(ToString::to_string).collect());
+    let mut out = SaveOutcome::default();
+    match done {
+        Ok(()) => match osc_measure::install::saved_line(&mut c, id, &d).await {
+            Ok(l) => {
+                tell(vec![l]);
+                out.saved = true;
+            }
+            Err(e) => out.refused = Some(format!("{e}")),
+        },
+        Err(e) => out.refused = Some(e.to_string()),
+    }
+    match osc_measure::install::check(&mut c, id, &d, &set).await {
+        Ok(checked) => {
+            tell(osc_measure::install::check_lines(&checked, &set));
+            out.differences = Some(checked.differences);
+        }
+        Err(e) => tell(vec![format!("the check after the save: {e}")]),
+    }
+    out.boots_at = store
+        .files
+        .read_file(&root.join(osc_measure::install::AFTER))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|a| a["fields"]["baud_rate_idx"].as_u64())
+        .and_then(|i| BaudRate::from_idx(i as u8));
+    out.lines = said.borrow().clone();
+    out.files = under(&store.files, &root.display().to_string());
+    (out, Some(c))
 }
 
 type Ran = std::result::Result<(bool, Vec<String>), (anyhow::Error, Vec<String>)>;
@@ -989,5 +1176,192 @@ mod tests {
         assert!(!opened.get() && c.is_none());
         assert_eq!(o.refused.as_deref(), Some("--tries is at least 1"));
         assert!(o.files.is_empty() && o.root().is_none());
+    }
+
+    /// The simulated servo's name, as its run folders carry it.
+    fn uid() -> String {
+        format!("{:?}", Uid(uid_of(ID)))
+    }
+
+    /// A run folder under `uid` whose final check `last` ended, its final
+    /// set the set of record with its table, as a page keeps it.
+    fn folder_with(uid: &str, last: Value) -> SaveGiven {
+        let folder = format!("{uid}/20261127T120000Z");
+        let set = testdata("constants.json");
+        let run = serde_json::json!({"servo_uid": uid, "steps": {}, "final": last});
+        SaveGiven {
+            id: ID,
+            baud: None,
+            files: vec![
+                (format!("{folder}/run.json"), run.to_string().into_bytes()),
+                (format!("{folder}/final/set.json"), set),
+                (
+                    format!("{folder}/final/inputs/pos_lut.json"),
+                    testdata("pos_lut.json"),
+                ),
+            ],
+            folder,
+        }
+    }
+
+    fn accepted(uid: &str) -> SaveGiven {
+        let set = testdata("constants.json");
+        let hash = osc_measure::set::SetFile::parse(std::str::from_utf8(&set).expect("utf8"))
+            .expect("the set of record")
+            .hash()
+            .to_string();
+        folder_with(
+            uid,
+            serde_json::json!({"state": "accepted", "set": hash, "set_file": "final/set.json"}),
+        )
+    }
+
+    fn saved_on(open: FakePipe, g: &SaveGiven) -> (SaveOutcome, Vec<Op>, Client<FakePipe>) {
+        let ops = Ops::default();
+        let (o, c) = {
+            let stop = AtomicBool::new(false);
+            let clock = clock();
+            let store = recorder(&ops);
+            let page = Page {
+                feed: &of::quiet,
+                clock: &clock,
+                stop: &stop,
+                store: &store,
+            };
+            block_on(save(async { Ok(open) }, g, &page))
+        };
+        (o, ops.into_inner(), c.expect("connected"))
+    }
+
+    /// "Save this set" is the CLI's `save --set` of the run's final set
+    /// with its table, then its `check --set`: the stored state backed up
+    /// in a folder of its own beside the run's, the set SAVEd and booted,
+    /// no difference left. Each file is told to the page as it is written.
+    #[test]
+    fn a_save_stores_the_run_s_final_set_and_reads_it_back_clean() {
+        let g = accepted(&uid());
+        let (o, ops, _) = saved_on(crate::fake::pipe(ID), &g);
+        let text = o.lines.join("\n");
+        assert_eq!(o.refused, None, "{text}");
+        assert!(o.saved, "{text}");
+        assert_eq!(o.differences, Some(vec![]), "{text}");
+        assert!(
+            text.contains("SAVE: CONFIG and CALIB are in flash"),
+            "{text}"
+        );
+        assert!(
+            text.contains("saved: after a reboot the servo reads as the set, settings loaded"),
+            "{text}"
+        );
+        assert!(
+            o.lines
+                .iter()
+                .any(|l| l.starts_with("0 differences; settings loaded; unsaved no; set ")),
+            "{text}"
+        );
+        let paths: Vec<&str> = o.files.iter().map(|(p, _)| p.as_str()).collect();
+        let at = format!("{}/20251124T160000Z", uid());
+        assert_eq!(
+            paths,
+            [
+                format!("{at}/backup/after.json"),
+                format!("{at}/backup/stored.json")
+            ]
+        );
+        assert_eq!(replay(&[], &ops), o.files);
+        assert_eq!(o.boots_at, Some(BaudRate::B3000000));
+    }
+
+    /// A SAVE stores CONFIG as the servo runs it, its bus rate with it: a
+    /// servo saved at 1M on a bus moved to 3M volatile comes back from the
+    /// backup's reboot at 1M, is moved to 3M again, and after the SAVE it
+    /// boots at 3M.
+    #[test]
+    fn a_save_stores_the_bus_rate_the_servo_runs_at() {
+        let mut pipe = FakePipe::new(BaudRate::B1000000, &[ID]);
+        pipe.sim_mut().uncap_idle();
+        pipe.sim_mut().seed_servo_uid(0, uid_of(ID));
+        pipe.seed_calibrated(0);
+        let mut c = block_on(Client::connect(pipe)).expect("connect");
+        let moved =
+            block_on(mgmt::set_baud(&mut c, &[Id::new(ID)], BaudRate::B3000000)).expect("moved");
+        assert!(moved.iter().all(|(_, alive)| *alive));
+        let mut g = accepted(&uid());
+        g.baud = Some(BaudRate::B3000000);
+        let (o, _, mut c) = saved_on(c.into_pipe(), &g);
+        let text = o.lines.join("\n");
+        assert!(o.saved, "{text}");
+        let back =
+            "after the reboot the servo answers at 1M, its saved baud; moved it to 3M, volatile";
+        assert_eq!(o.lines.iter().filter(|l| *l == back).count(), 1, "{text}");
+        assert_eq!(o.boots_at, Some(BaudRate::B3000000));
+        let field = |name: &str| -> Value {
+            let (_, b) = o
+                .files
+                .iter()
+                .find(|(p, _)| p.ends_with(name))
+                .expect("a backup file");
+            serde_json::from_slice::<Value>(b).expect("json")["fields"]["baud_rate_idx"].clone()
+        };
+        assert_eq!(field("backup/stored.json"), 1, "the old saved rate");
+        assert_eq!(field("backup/after.json"), 3, "the rate saved");
+        block_on(mgmt::reboot(&mut c, Id::new(ID))).expect("reboot");
+        block_on(c.ping(Id::new(ID))).expect("boots at 3M");
+    }
+
+    /// A folder whose final check accepted no set is refused before the
+    /// pipe is opened, in the tool's words.
+    #[test]
+    fn a_save_of_a_run_without_an_accepted_final_set_opens_no_pipe() {
+        let g = folder_with(
+            &uid(),
+            serde_json::json!({"state": "refused", "why": "overshoot"}),
+        );
+        let stop = AtomicBool::new(false);
+        let clock = clock();
+        let page = Page {
+            feed: &of::quiet,
+            clock: &clock,
+            stop: &stop,
+            store: &unmirrored,
+        };
+        let opened = Cell::new(false);
+        let open = async {
+            opened.set(true);
+            Ok(crate::fake::pipe(ID))
+        };
+        let (o, c) = block_on(save(open, &g, &page));
+        assert!(!opened.get() && c.is_none());
+        assert_eq!(
+            o.refused.as_deref(),
+            Some(
+                format!(
+                    "the run {} holds no accepted final set: its final check is refused (overshoot); nothing to save",
+                    g.folder
+                )
+                .as_str()
+            )
+        );
+        assert!(o.files.is_empty() && !o.saved && o.differences.is_none());
+    }
+
+    /// The run's set on another servo is refused before anything is
+    /// written: no backup, no SAVE.
+    #[test]
+    fn a_save_on_a_servo_that_is_not_the_run_s_writes_nothing() {
+        let other = "0".repeat(32);
+        let g = accepted(&other);
+        let (o, ops, _) = saved_on(crate::fake::pipe(ID), &g);
+        assert_eq!(
+            o.refused.as_deref(),
+            Some(
+                format!(
+                    "servo {ID} is {}, not the run's servo {other}: nothing was written",
+                    uid()
+                )
+                .as_str()
+            )
+        );
+        assert!(ops.is_empty() && o.files.is_empty() && !o.saved);
     }
 }

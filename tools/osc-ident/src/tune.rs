@@ -445,13 +445,15 @@ mod tests {
             of: 2,
             what: "move",
         };
-        let tries: Vec<Progress> = (1..=3)
-            .flat_map(|at| {
+        let tries: Vec<Progress> = [(1, 100), (2, 80), (3, 64)]
+            .into_iter()
+            .flat_map(|(at, percent)| {
                 [
                     Progress::Try {
                         step: "tune",
                         at,
                         of: 3,
+                        percent,
                     },
                     unit(1),
                     unit(2),

@@ -24,6 +24,9 @@
 //! does: each drive ends under the bus dead-man, and the run's volatile
 //! writes stay until a reboot; the mirror holds the folder as far as the
 //! page applied it, and `resume` goes on from it.
+//!
+//! `save` is the CLI's `save --set` of a run folder's accepted final set,
+//! then its `check --set`, on the same terms: the page's "Save this set".
 
 #[cfg(feature = "fake")]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -45,7 +48,7 @@ const PROGRESS: &str = r#"
 /** What a run tells its feed as it goes, each step by its key in run.json. */
 export type Progress =
   | { event: "started"; step: string }
-  | { event: "try"; step: string; at: number; of: number }
+  | { event: "try"; step: string; at: number; of: number; percent: number }
   | { event: "unit"; step: string; at: number; of: number; what: string }
   | { event: "lines"; lines: string[] }
   | { event: "ended"; step: string; state: string; why: string | null };
@@ -270,6 +273,92 @@ impl From<run::Outcome> for RunOutcome {
     }
 }
 
+/// What "Save this set" is given: the CLI's `save --set` of a run
+/// folder's accepted final set, and the folder's files it names.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveArgs {
+    /// The servo's bus id (`--id`).
+    pub id: u8,
+    /// The bus rate (`--baud`); found when not given.
+    #[tsify(optional)]
+    pub baud: Option<BaudRate>,
+    /// The run folder `<uid>/<UTC>` whose final set is stored.
+    pub folder: String,
+    /// The folder's files at their paths from the store's root: at least
+    /// `run.json`, the final set file it names and, for a LIVE table,
+    /// `final/inputs/pos_lut.json`.
+    pub files: Vec<RunFile>,
+}
+
+impl From<SaveArgs> for run::SaveGiven {
+    fn from(a: SaveArgs) -> Self {
+        run::SaveGiven {
+            id: a.id,
+            baud: a.baud.map(Into::into),
+            folder: a.folder,
+            files: a
+                .files
+                .into_iter()
+                .map(|f| (f.path, f.bytes.into_vec()))
+                .collect(),
+        }
+    }
+}
+
+/// What a save leaves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveOutcome {
+    /// The lines `osc-ident save` prints, then `osc-ident check`'s.
+    pub lines: Vec<String>,
+    /// The save's own folder: its backup of the stored state and the state
+    /// after the SAVE, at their paths from the store's root.
+    pub files: Vec<RunFile>,
+    /// Whether the SAVE landed and the servo booted as the set.
+    pub saved: bool,
+    /// The check's differences against the set, once it ran.
+    #[tsify(optional)]
+    pub differences: Option<Vec<String>>,
+    /// The bus rate the servo now boots at.
+    #[tsify(optional)]
+    pub boots_at: Option<BaudRate>,
+    /// Why the save ended short, as the CLI prints it after `refused: `.
+    #[tsify(optional)]
+    pub refused: Option<String>,
+}
+
+impl From<WireBaud> for BaudRate {
+    fn from(r: WireBaud) -> Self {
+        match r {
+            WireBaud::B500000 => BaudRate::B500000,
+            WireBaud::B1000000 => BaudRate::B1000000,
+            WireBaud::B2000000 => BaudRate::B2000000,
+            WireBaud::B3000000 => BaudRate::B3000000,
+        }
+    }
+}
+
+impl From<run::SaveOutcome> for SaveOutcome {
+    fn from(o: run::SaveOutcome) -> Self {
+        SaveOutcome {
+            lines: o.lines,
+            files: o
+                .files
+                .into_iter()
+                .map(|(path, bytes)| RunFile {
+                    path,
+                    bytes: serde_bytes::ByteBuf::from(bytes),
+                })
+                .collect(),
+            saved: o.saved,
+            differences: o.differences,
+            boots_at: o.boots_at.map(Into::into),
+            refused: o.refused,
+        }
+    }
+}
+
 /// The device a page lent, by the `USBDevice` fields of the same names,
 /// for a worker to find its own object for it (`findDevice`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Tsify)]
@@ -384,6 +473,88 @@ impl IdentRun {
             .await
     }
 
+    /// The CLI's `save --set` of the run folder's accepted final set, then
+    /// its `check --set`, on `device`, as `run` runs: the folder's refusals
+    /// come before the device is opened, a servo that is not the run's is
+    /// refused before anything is written. The servo is rebooted onto its
+    /// stored state and that state backed up, the set installed, checked,
+    /// SAVEd with the bus rate it runs at, rebooted and read back. The
+    /// device is closed when the save ends.
+    pub async fn save(
+        &self,
+        device: osc_client::webusb::UsbDevice,
+        args: tsify::Ts<SaveArgs>,
+        #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(p: Progress) => void")]
+        on_progress: &js_sys::Function,
+        #[wasm_bindgen(js_name = onStore, unchecked_optional_param_type = "(s: Stored) => void")]
+        on_store: Option<js_sys::Function>,
+        #[wasm_bindgen(unchecked_optional_param_type = "() => number")] clock: Option<
+            js_sys::Function,
+        >,
+    ) -> Result<tsify::Ts<SaveOutcome>, JsError> {
+        use osc_client::webusb::{WebUsbPipe, close_device};
+        self.once()?;
+        let given: run::SaveGiven = args.to_rust()?.into();
+        if device.opened() {
+            return Err(JsError::new(
+                "save: the device is open: the page's client still holds the bus; release it first",
+            ));
+        }
+        let open = async {
+            WebUsbPipe::open(device.clone())
+                .await
+                .map_err(anyhow::Error::from)
+        };
+        let feed = feed(on_progress);
+        let page = run::Page {
+            feed: &feed,
+            clock: &clock_of(clock),
+            stop: &self.stop,
+            store: &stored(on_store),
+        };
+        let (o, c) = run::save(open, &given, &page).await;
+        drop(c);
+        let mut o = SaveOutcome::from(o);
+        if let Err(e) = close_device(&device).await {
+            let line = format!("closing the device: {e}");
+            feed(&osc_measure::run::Progress::Lines {
+                lines: vec![line.clone()],
+            });
+            o.lines.push(line);
+        }
+        Ok(tsify::Tsify::into_ts(&o)?)
+    }
+
+    /// `save` on the simulated servo of `runFake`: calibrated, at rest, its
+    /// stored settings the seed's.
+    #[cfg(feature = "fake")]
+    #[wasm_bindgen(js_name = saveFake)]
+    pub async fn save_fake(
+        &self,
+        args: tsify::Ts<SaveArgs>,
+        #[wasm_bindgen(js_name = onProgress, unchecked_param_type = "(p: Progress) => void")]
+        on_progress: &js_sys::Function,
+        #[wasm_bindgen(js_name = onStore, unchecked_optional_param_type = "(s: Stored) => void")]
+        on_store: Option<js_sys::Function>,
+        #[wasm_bindgen(unchecked_optional_param_type = "() => number")] clock: Option<
+            js_sys::Function,
+        >,
+    ) -> Result<tsify::Ts<SaveOutcome>, JsError> {
+        self.once()?;
+        let given: run::SaveGiven = args.to_rust()?.into();
+        let id = given.id;
+        let open = async move { Ok(fake::Yielding(fake::pipe(id))) };
+        let feed = feed(on_progress);
+        let page = run::Page {
+            feed: &feed,
+            clock: &clock_of(clock),
+            stop: &self.stop,
+            store: &stored(on_store),
+        };
+        let (o, _) = run::save(open, &given, &page).await;
+        Ok(tsify::Tsify::into_ts(&SaveOutcome::from(o))?)
+    }
+
     /// `run` on one simulated servo at rest, at `args.id`, with osc-client-web's
     /// simulated UID for that id. No device, no user gesture; the sim runs
     /// no motor, so the run stops at the probe. Each exchange and each pause
@@ -433,12 +604,17 @@ impl IdentRun {
 #[cfg(target_arch = "wasm32")]
 impl IdentRun {
     fn take(&self, given: run::Given) -> Result<run::Given, JsError> {
+        self.once()?;
+        Ok(given)
+    }
+
+    fn once(&self) -> Result<(), JsError> {
         if self.used.replace(true) {
             return Err(JsError::new(
                 "run: this handle has run; another run takes a new IdentRun",
             ));
         }
-        Ok(given)
+        Ok(())
     }
 
     async fn on_device(

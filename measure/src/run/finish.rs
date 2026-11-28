@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use super::files;
 use super::store::{At, Store};
-use super::tune::{Checked, Scored, try_head, try_json};
+use super::tune::{Checked, Scored, percent, try_head, try_json};
 use super::{FINAL, Host, Progress, RunArgs, tell_end, tell_lines};
 use crate::gather::{self, POT_STEP4, StepResult};
 use crate::install::{self, Refused};
@@ -359,6 +359,7 @@ where
     };
     let started = clock();
     let mut kept = on.map_or_else(Vec::new, |o| o.kept.clone());
+    let before = kept.len() as u32;
     let mut prev = String::new();
     let (mut step, mut t, mut kp_now) = match on {
         Some(o) => (o.index, o.next, tune::gain(k0, o.index)),
@@ -376,8 +377,9 @@ where
         }
         feed(&Progress::Try {
             step: FINAL,
-            at: out.tries.len() as u32 + 1,
+            at: before + out.tries.len() as u32 + 1,
             of: allowed.saturating_sub(from.saturating_sub(1)),
+            percent: percent(kp_now, k0),
         });
         let dir = format!("tries/{t:02}");
         let prepared = final_set(&mut *sink.files, inputs_dir, kp_now, &checked, d).and_then(

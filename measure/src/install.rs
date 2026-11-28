@@ -248,6 +248,46 @@ pub async fn check<P: Pipe>(
     })
 }
 
+/// The servo against `set` as `osc-ident check` says it: a line a
+/// difference, the fields the set does not hold, the count with the
+/// stored state and both hashes, and the modes refused where any are.
+pub fn check_lines(checked: &Checked, set: &SetFile) -> Vec<String> {
+    let mut out = checked.differences.clone();
+    if !checked.unowned.is_empty() {
+        out.push(format!("not in the set: {}", checked.unowned.join(", ")));
+    }
+    out.push(format!(
+        "{} differences; settings {}; unsaved {}; set {}; servo {}",
+        checked.differences.len(),
+        checked.settings,
+        if checked.unsaved { "yes" } else { "no" },
+        &set.hash()[..12.min(set.hash().len())],
+        &checked.servo[..12.min(checked.servo.len())]
+    ));
+    if checked.refused != "none" {
+        out.push(format!(
+            "refused {}: {}",
+            checked.refused,
+            osc_client::store_state::REFUSED
+        ));
+    }
+    out
+}
+
+/// The line `osc-ident save` ends on, the stored settings read once the
+/// save is done.
+pub async fn saved_line<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+) -> Result<String, Error> {
+    let s = osc_client::store_state::read(c, id, d).await?;
+    Ok(format!(
+        "saved: after a reboot the servo reads as the set, settings {}",
+        s.settings()
+    ))
+}
+
 /// Refused with nothing written: torque on.
 pub fn writable_now(state: &State) -> Result<(), Refused> {
     if state.torque {

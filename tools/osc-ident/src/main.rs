@@ -457,26 +457,8 @@ async fn check<P: Pipe>(
 ) -> Result<bool> {
     let set = files::set(set_path)?;
     let checked = install::check(c, id, d, &set).await?;
-    for line in &checked.differences {
+    for line in install::check_lines(&checked, &set) {
         println!("{line}");
-    }
-    if !checked.unowned.is_empty() {
-        println!("not in the set: {}", checked.unowned.join(", "));
-    }
-    println!(
-        "{} differences; settings {}; unsaved {}; set {}; servo {}",
-        checked.differences.len(),
-        checked.settings,
-        if checked.unsaved { "yes" } else { "no" },
-        &set.hash()[..12.min(set.hash().len())],
-        &checked.servo[..12.min(checked.servo.len())]
-    );
-    if checked.refused != "none" {
-        println!(
-            "refused {}: {}",
-            checked.refused,
-            osc_client::store_state::REFUSED
-        );
     }
     Ok(checked.clean())
 }
@@ -542,13 +524,7 @@ async fn write_verb<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor, cmd: &Cm
         )
     });
     match cmd {
-        Cmd::Save { .. } => {
-            let s = osc_client::store_state::read(c, id, d).await?;
-            println!(
-                "saved: after a reboot the servo reads as the set, settings {}",
-                s.settings()
-            )
-        }
+        Cmd::Save { .. } => println!("{}", install::saved_line(c, id, d).await?),
         _ if wrote => println!("volatile, not saved: a reboot returns the saved state"),
         _ => println!("the servo holds the set: nothing written"),
     }
